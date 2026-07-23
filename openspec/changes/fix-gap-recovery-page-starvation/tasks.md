@@ -175,3 +175,19 @@ and Postgres (`LEAST`) clamp branches; only the SQLite branch was proven.
       shape test proving no identifier/locator/provider/content/error carrier.
 - [x] Run focused Gmail and runtime progress tests, touched-file lint and
       typecheck, strict OpenSpec validation, and final diff review.
+
+## 12. Revision (Gmail recovery byte-batch correction, 2026-07-23)
+
+- [x] Use the fixed-shape successful-run aggregate to establish that the 1 MiB
+      Gmail-local served-recovery byte budget, not scheduler/governor/metadata/
+      auth/hydration, limits throughput.
+- [x] Keep the generic recovery governor unchanged; add a Gmail-local 4 MiB
+      recovery default bounded by the existing 256 KiB..4 MiB safety range,
+      while preserving the ordinary 1 MiB historical-backfill default and the
+      legacy byte-budget environment override.
+- [x] Add mutation-resistant Gmail oracles for the measured 1,889,782-byte
+      shape (two admitted/recovered, one deferred), a first attachment larger
+      than 4 MiB, and recovery-specific/legacy override precedence.
+- [x] Wire the recovery-only override through Docker configuration; run focused
+      Gmail tests, connector typecheck/lint, strict OpenSpec validation, and
+      final diff review.

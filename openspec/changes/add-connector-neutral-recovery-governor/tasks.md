@@ -143,3 +143,10 @@ all-frozen trailing-STATE guard's own comment overclaimed what it covered
       suite WITH `PDPP_TEST_POSTGRES_URL` set against a dedicated throwaway
       Postgres container, typecheck, `openspec validate --all --strict`,
       touched-file lint, `git diff --check`.
+
+## 8. Gmail recovery byte-capacity boundary (2026-07-23)
+
+- [x] Determine that the generic governor has no appropriate attachment-byte
+      admission seam; retain its eligibility, pacing, and retry behavior.
+- [x] Record the Gmail-local bounded 4 MiB recovery-batch decision and its
+      deterministic acceptance target in the sibling starvation change.

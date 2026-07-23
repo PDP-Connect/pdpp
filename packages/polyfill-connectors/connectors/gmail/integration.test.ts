@@ -50,6 +50,7 @@ import {
   ATTACHMENT_BACKFILL_PAGE_MAX_BYTES,
   ATTACHMENT_BACKFILL_PAGE_MIN_BYTES,
   ATTACHMENT_BACKFILL_UNKNOWN_SIZE_FALLBACK_BYTES,
+  ATTACHMENT_RECOVERY_PAGE_DEFAULT_BYTES,
   type AttachmentDetailCoverage,
   addAttachmentBackfillRecordToSummary,
   attachmentBackfillPageByteBudget,
@@ -72,6 +73,7 @@ import {
   redactEmailForProgress,
   resolveAttachmentBackfillPageByteBudget,
   resolveAttachmentBackfillWindowUids,
+  resolveAttachmentRecoveryPageByteBudget,
   resolveGmailAddressFromEnv,
   resolveGmailPasswordFromEnv,
   resolveMaxAttachmentBytes,
@@ -1018,7 +1020,7 @@ test("recoverServedAttachmentGaps: a completed historical cursor still drains a 
     },
   };
   const attachmentCoverage = makeAttachmentDetailCoverage();
-  const recoveryMessage = makeServedRecoveryMsg();
+  const recoveryMessage = makeServedRecoveryMsg({ attachments: [5 * 1024 * 1024, 16] });
   const search = mock.fn((query: { emailId?: string }) => {
     assert.equal(query.emailId, "gmmsgid-recovery");
     return Promise.resolve([recoveryMessage.uid ?? 321]);
@@ -1538,6 +1540,98 @@ test("recoverServedAttachmentGaps: small candidates stop at budget after one rej
   }
 });
 
+test("recoverServedAttachmentGaps: default recovery batch admits two live-shape attachments without changing forward-backfill default", async () => {
+  const originalBackfillBudget = process.env.PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES;
+  const originalRecoveryBudget = process.env.PDPP_GMAIL_ATTACHMENT_RECOVERY_PAGE_BYTES;
+  delete process.env.PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES;
+  delete process.env.PDPP_GMAIL_ATTACHMENT_RECOVERY_PAGE_BYTES;
+  try {
+    const liveShapeBytes = 1_889_782;
+    const messagesById = new Map<string, FetchMessageObject>();
+    const servedGaps = Array.from({ length: 3 }, (_unused, index) => {
+      const messageId = `gmmsgid-live-shape-${index}`;
+      const message = makeServedRecoveryMsg({
+        attachments: [liveShapeBytes],
+        emailId: messageId,
+        threadId: `gmthrid-live-shape-${index}`,
+        uid: 6000 + index,
+      });
+      messagesById.set(messageId, message);
+      return makeServedRecoveryGap({ gapId: `gap-live-shape-${index}`, messageId, partIndex: 1 });
+    });
+    const search = mock.fn((query: { emailId?: string }) => {
+      const message = query.emailId ? messagesById.get(query.emailId) : undefined;
+      return Promise.resolve(message ? [message.uid ?? 0] : []);
+    });
+    const fetchOne = mock.fn((range: string) => {
+      const message = [...messagesById.values()].find((candidate) => candidate.uid === Number(range));
+      assert.ok(message, `unexpected uid lookup: ${range}`);
+      return Promise.resolve(message);
+    });
+    const hydrateAttachmentMock = mock.fn((_msg: FetchMessageObject, attachment: AttachmentRecord) =>
+      Promise.resolve({
+        ...attachment,
+        blob_ref: {
+          blob_id: `blob-${attachment.id}`,
+          mime_type: attachment.content_type ?? "application/octet-stream",
+          sha256: `sha-${attachment.id}`,
+          size_bytes: attachment.size_bytes ?? 0,
+        },
+        content_sha256: `sha-${attachment.id}`,
+        content_type: attachment.content_type,
+        hydration_error: null,
+        hydration_status: "hydrated" as const,
+        size_bytes: attachment.size_bytes,
+      })
+    );
+    const emitHarness = makeRecordingEmit();
+
+    const summary = await recoverServedAttachmentGaps(
+      { search, fetchOne },
+      {
+        detailGaps: servedGaps,
+        emitProtocol: emitHarness.emit,
+        emitRecord: async (stream, data) => {
+          await emitHarness.emitRecord(stream, data);
+          return true;
+        },
+        hydrateAttachment: hydrateAttachmentMock as HydrateAttachmentFn,
+      }
+    );
+
+    assert.equal(ATTACHMENT_BACKFILL_PAGE_DEFAULT_BYTES, 1024 * 1024);
+    assert.equal(ATTACHMENT_RECOVERY_PAGE_DEFAULT_BYTES, 4 * 1024 * 1024);
+    assert.equal(search.mock.callCount(), 3, "one overflow probe establishes the truthful deferred suffix");
+    assert.equal(
+      hydrateAttachmentMock.mock.callCount(),
+      2,
+      "the default recovery lane admits a bounded two-item batch"
+    );
+    assert.deepEqual(summary, {
+      admitted: 2,
+      admitted_bytes: liveShapeBytes * 2,
+      attempted: 3,
+      hydration_failed: 0,
+      lookup_miss: 0,
+      metadata_lookups: 3,
+      recovered: 2,
+      run_cap_deferred: 1,
+      served: 3,
+    });
+  } finally {
+    if (originalBackfillBudget === undefined) {
+      delete process.env.PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES;
+    } else {
+      process.env.PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES = originalBackfillBudget;
+    }
+    if (originalRecoveryBudget === undefined) {
+      delete process.env.PDPP_GMAIL_ATTACHMENT_RECOVERY_PAGE_BYTES;
+    } else {
+      process.env.PDPP_GMAIL_ATTACHMENT_RECOVERY_PAGE_BYTES = originalRecoveryBudget;
+    }
+  }
+});
+
 test("recoverServedAttachmentGaps: emits hydrating progress before a slow hydration resolves, then emits recovery and settled progress after record emission", async () => {
   const message = makeServedRecoveryMsg({
     attachments: [16],
@@ -1889,6 +1983,41 @@ test("resolveAttachmentBackfillPageByteBudget: env override must be a positive i
     resolveAttachmentBackfillPageByteBudget({ PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES: "not-a-number" }),
     ATTACHMENT_BACKFILL_PAGE_DEFAULT_BYTES
   );
+});
+
+test("resolveAttachmentRecoveryPageByteBudget: uses a recovery-specific override while preserving the legacy override", () => {
+  assert.equal(resolveAttachmentRecoveryPageByteBudget({}), ATTACHMENT_RECOVERY_PAGE_DEFAULT_BYTES);
+  assert.equal(
+    resolveAttachmentRecoveryPageByteBudget({ PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES: String(2 * 1024 * 1024) }),
+    2 * 1024 * 1024,
+    "existing operator configuration continues to constrain served recovery"
+  );
+  assert.equal(
+    resolveAttachmentRecoveryPageByteBudget({
+      PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES: String(2 * 1024 * 1024),
+      PDPP_GMAIL_ATTACHMENT_RECOVERY_PAGE_BYTES: String(3 * 1024 * 1024),
+    }),
+    3 * 1024 * 1024,
+    "the recovery-specific override takes precedence without altering backfill"
+  );
+  assert.equal(
+    resolveAttachmentRecoveryPageByteBudget({
+      PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES: String(2 * 1024 * 1024),
+      PDPP_GMAIL_ATTACHMENT_RECOVERY_PAGE_BYTES: "invalid",
+    }),
+    2 * 1024 * 1024,
+    "an invalid new override does not discard a valid legacy safety setting"
+  );
+  for (const invalidRecoveryBudget of ["0", "262143"]) {
+    assert.equal(
+      resolveAttachmentRecoveryPageByteBudget({
+        PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES: String(ATTACHMENT_BACKFILL_PAGE_MIN_BYTES),
+        PDPP_GMAIL_ATTACHMENT_RECOVERY_PAGE_BYTES: invalidRecoveryBudget,
+      }),
+      ATTACHMENT_BACKFILL_PAGE_MIN_BYTES,
+      `numeric out-of-range recovery override ${invalidRecoveryBudget} does not weaken the legacy safety setting`
+    );
+  }
 });
 
 test("trimAttachmentBackfillPageToByteBudget: a page is sized by cumulative byte cost, not a fixed UID count", () => {

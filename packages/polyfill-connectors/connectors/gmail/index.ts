@@ -1234,6 +1234,11 @@ function normalizeAttachmentBackfillWindowUids(value: number | undefined): numbe
 export const ATTACHMENT_BACKFILL_PAGE_MIN_BYTES = 256 * 1024;
 export const ATTACHMENT_BACKFILL_PAGE_DEFAULT_BYTES = 1024 * 1024;
 export const ATTACHMENT_BACKFILL_PAGE_MAX_BYTES = 4 * 1024 * 1024;
+// Served recovery is the whole run's bounded work unit: it returns before the
+// ordinary forward walk. It can therefore use the established 4 MiB safe
+// ceiling without changing the 1 MiB historical-backfill default, which
+// reserves time for ordinary sync work in mixed runs.
+export const ATTACHMENT_RECOVERY_PAGE_DEFAULT_BYTES = ATTACHMENT_BACKFILL_PAGE_MAX_BYTES;
 /**
  * Fixed conservative per-UID cost used only when BODYSTRUCTURE reported no
  * usable attachment size. Not learned or updated — a single documented
@@ -1243,6 +1248,7 @@ export const ATTACHMENT_BACKFILL_PAGE_MAX_BYTES = 4 * 1024 * 1024;
  */
 export const ATTACHMENT_BACKFILL_UNKNOWN_SIZE_FALLBACK_BYTES = 256 * 1024;
 const ATTACHMENT_BACKFILL_PAGE_BYTES_ENV = "PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES";
+const ATTACHMENT_RECOVERY_PAGE_BYTES_ENV = "PDPP_GMAIL_ATTACHMENT_RECOVERY_PAGE_BYTES";
 
 function boundedPositiveInteger(value: number | undefined, fallback: number, min: number, max: number): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value < min) {
@@ -1266,6 +1272,29 @@ export function resolveAttachmentBackfillPageByteBudget(env: NodeJS.ProcessEnv =
     return attachmentBackfillPageByteBudget();
   }
   return attachmentBackfillPageByteBudget(Number(value));
+}
+
+function resolveAttachmentPageByteBudgetOverride(value: string | undefined): number | undefined {
+  if (!(value && POSITIVE_INTEGER_PATTERN.test(value))) {
+    return;
+  }
+  const parsed = Number(value);
+  return parsed >= ATTACHMENT_BACKFILL_PAGE_MIN_BYTES && parsed <= ATTACHMENT_BACKFILL_PAGE_MAX_BYTES
+    ? parsed
+    : undefined;
+}
+
+/**
+ * Resolve the served-recovery byte budget without coupling it to ordinary
+ * forward backfill. The legacy backfill variable continues to override both
+ * lanes until an operator opts into the recovery-specific variable.
+ */
+export function resolveAttachmentRecoveryPageByteBudget(env: NodeJS.ProcessEnv = process.env): number {
+  return (
+    resolveAttachmentPageByteBudgetOverride(env[ATTACHMENT_RECOVERY_PAGE_BYTES_ENV]) ??
+    resolveAttachmentPageByteBudgetOverride(env[ATTACHMENT_BACKFILL_PAGE_BYTES_ENV]) ??
+    ATTACHMENT_RECOVERY_PAGE_DEFAULT_BYTES
+  );
 }
 
 const GMAIL_METADATA_FETCH_QUERY: ExtendedFetchQuery = {
@@ -1659,7 +1688,7 @@ export async function recoverServedAttachmentGaps(
       served: 0,
     };
   }
-  const byteBudget = resolveAttachmentBackfillPageByteBudget();
+  const byteBudget = resolveAttachmentRecoveryPageByteBudget();
   const recoveryState: ServedAttachmentRecoveryState = {
     admitted: 0,
     admittedBytesTotal: 0,

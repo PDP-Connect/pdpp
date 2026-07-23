@@ -218,3 +218,30 @@ The object contains no identifiers, locators, provider identities, content, or
 error text. `run_cap_deferred` counts served gaps left unadmitted because the
 byte budget stopped the ordered lane, including its untouched suffix, so an
 oversized admitted first candidate still reveals byte-budget binding.
+
+### Revision (throughput correction, 2026-07-23)
+
+The fixed-shape terminal aggregate from a successful run resolves the remaining
+uncertainty: `served=256`, `attempted=1`, `admitted=1`,
+`admitted_bytes=1889782`, `recovered=1`, `lookup_miss=0`,
+`hydration_failed=0`, `metadata_lookups=1`, and `run_cap_deferred=255` prove
+that Gmail's 1 MiB positional recovery budget is binding. Scheduler admission,
+the connector-neutral recovery governor, metadata lookup cap, authentication,
+and hydration are not the limiting path for this run.
+
+The recovery governor has no MIME-part byte-cost capacity seam: it governs
+eligible provider work, retries, pacing, and request/wall-clock blast radius.
+Making it admit attachment bytes would couple generic scheduling to
+connector-specific metadata and would not improve provider pacing. The Gmail
+connector therefore keeps that governor unchanged and applies the smallest
+local policy correction: served attachment recovery defaults to a bounded
+4 MiB byte batch, the existing validated maximum. Historical attachment
+backfill remains at its 1 MiB default, preserving ordinary forward-sync
+behavior. `PDPP_GMAIL_ATTACHMENT_RECOVERY_PAGE_BYTES` is a bounded
+recovery-only override; the existing `PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES`
+remains a compatible fallback until the recovery-specific variable is set.
+
+Acceptance target: with the measured 1,889,782-byte shape and no override,
+three served gaps admit and recover exactly two (3,779,564 bytes) and leave
+one as truthful `run_cap_deferred`. A first attachment larger than 4 MiB still
+admits exactly one, and the 32-unique-message lookup cap remains unchanged.
