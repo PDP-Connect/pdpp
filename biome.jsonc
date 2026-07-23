@@ -5,6 +5,13 @@
   "formatter": {
     "lineWidth": 120
   },
+  "assist": {
+    "actions": {
+      "source": {
+        "useSortedKeys": "off"
+      }
+    }
+  },
   "files": {
     "ignoreUnknown": true,
     // The tracked-source contract starts with all files Biome recognizes.
