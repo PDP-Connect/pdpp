@@ -5848,7 +5848,14 @@ export async function resolveNekoBrowserSurfaceControllerOptions({
     // actually live before the connector child is spawned. Prevents the
     // "ask the human for an OTP and discover the CDP socket was already
     // dead" failure mode that has burned Chase and USAA runs.
-    browserSurfaceReadinessProbe: createDefaultBrowserSurfaceReadinessProbe(),
+    // Dynamic mode has one configured readiness budget. It applies both while
+    // the allocator waits for a new surface and while the controller verifies
+    // the already-retained surface before dispatch. Leaving this probe on its
+    // five-second library default classified any slower semantic CDP command
+    // as dead, which triggers destructive surface replacement.
+    browserSurfaceReadinessProbe: createDefaultBrowserSurfaceReadinessProbe(
+      runtimeConfig.dynamic ? { timeoutMs: runtimeConfig.dynamic.readinessTimeoutMs } : {}
+    ),
   };
 
   if (runtimeConfig.dynamic) {

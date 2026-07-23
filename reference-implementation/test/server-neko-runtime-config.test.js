@@ -58,6 +58,66 @@ test('n.eko dynamic runtime config builds allocator and readiness controller opt
   assert.deepEqual(allocatorOptions, [{ baseUrl: 'http://allocator.test/api' }]);
 });
 
+test('dynamic readiness budget governs the semantic CDP preflight, not the five-second library default', async (t) => {
+  const originalFetch = globalThis.fetch;
+  const originalWebSocket = globalThis.WebSocket;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    globalThis.WebSocket = originalWebSocket;
+  });
+
+  globalThis.fetch = async (url) => {
+    const pathname = new URL(String(url)).pathname;
+    if (pathname === '/json/version') {
+      return { ok: true, status: 200, json: async () => ({ Browser: 'Chrome/test', webSocketDebuggerUrl: 'ws://neko.test/page' }) };
+    }
+    if (pathname === '/json/list') {
+      return { ok: true, status: 200, json: async () => ([{ id: 'page-1', type: 'page', url: 'https://example.test/', webSocketDebuggerUrl: 'ws://neko.test/page-1' }]) };
+    }
+    if (pathname === '/pdpp/window-settle') {
+      return { ok: true, status: 200, json: async () => ({ settled: true, width: 1440, height: 900 }) };
+    }
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+
+  globalThis.WebSocket = class {
+    #listeners = { open: [], message: [], error: [], close: [] };
+    constructor() {
+      queueMicrotask(() => this.#emit('open', {}));
+    }
+    addEventListener(type, listener) {
+      this.#listeners[type].push(listener);
+    }
+    close() {}
+    send(raw) {
+      const request = JSON.parse(raw);
+      setTimeout(() => this.#emit('message', { data: JSON.stringify({ id: request.id, result: { frameTree: { frame: { id: 'root' } } } }) }), 12);
+    }
+    #emit(type, event) {
+      for (const listener of this.#listeners[type]) listener(event);
+    }
+  };
+
+  const options = await resolveNekoBrowserSurfaceControllerOptions({
+    env: {
+      PDPP_NEKO_MANAGED_CONNECTORS: 'connector-a',
+      PDPP_NEKO_SURFACE_MODE: 'dynamic',
+      PDPP_NEKO_SURFACE_CAP: '2',
+      PDPP_NEKO_ALLOCATOR_URL: 'http://allocator.test/api',
+      PDPP_NEKO_PROFILE_STORAGE_POLICY: 'persistent',
+      PDPP_NEKO_PROFILE_STORAGE_ROOT: '/var/lib/pdpp/neko-profiles',
+      PDPP_NEKO_READINESS_TIMEOUT_MS: '25',
+    },
+    getBrowserSurfaceLeaseStore: () => createEmptyLeaseStore(),
+    createBrowserSurfaceAllocator: () => ({ ensureSurface: async () => undefined }),
+  });
+
+  const result = await options.browserSurfaceReadinessProbe.probe({
+    surface_id: 'surface-1', health: 'ready', cdp_url: 'http://neko.test:9223',
+  });
+  assert.equal(result.ok, true, 'a 12ms semantic CDP response must use the configured 25ms dynamic budget');
+});
+
 test('n.eko runtime config treats canonical connector URLs as matching short connector ids', async () => {
   const store = createEmptyLeaseStore();
   const options = await resolveNekoBrowserSurfaceControllerOptions({
