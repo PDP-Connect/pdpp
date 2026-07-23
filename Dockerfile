@@ -1,19 +1,20 @@
 # syntax=docker/dockerfile:1.7
 
-ARG NODE_VERSION=25-bookworm-slim
+ARG NODE_VERSION=25.8.2-bookworm-slim@sha256:71be4054ee7a5fc8d0b2a66060705988b09a782025d70ba9318b29ff1a931fc0
 ARG PNPM_VERSION=10.33.0
+ARG PNPM_INTEGRITY=sha512-EFaLtKavtYyes2MNqQzJUWQXq+vT+rvmc58K55VyjaFJHp21pUTHatjrdXD1xLs9bGN7LLQb/c20f6gjyGSTGQ==
 
 FROM node:${NODE_VERSION} AS base
 
 ARG PNPM_VERSION
+ARG PNPM_INTEGRITY
 
 # PLAYWRIGHT_BROWSERS_PATH is pinned to a stable, image-wide location so the
 # bundled-Patchright browser tree can be installed once in a dedicated cache
 # stage and copied into browser-enabled final images. Without this, Patchright defaults to
 # $HOME/.cache/ms-playwright which is invisible to inter-stage COPY and forces
 # every reference build to reinstall ~300MB of browsers + their apt deps.
-ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
-    NEXT_TELEMETRY_DISABLED=1 \
+ENV NEXT_TELEMETRY_DISABLED=1 \
     PNPM_HOME=/pnpm \
     PATH=/pnpm:$PATH \
     PLAYWRIGHT_BROWSERS_PATH=/opt/patchright-browsers
@@ -23,9 +24,10 @@ WORKDIR /app
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl g++ make python3 \
   && rm -rf /var/lib/apt/lists/* \
-  && npm install -g --force corepack \
-  && corepack enable \
-  && corepack prepare "pnpm@${PNPM_VERSION}" --activate
+  && npm pack --ignore-scripts --loglevel=error --pack-destination /tmp "pnpm@${PNPM_VERSION}" \
+  && node --input-type=module -e "import { createHash } from 'node:crypto'; import { readFileSync } from 'node:fs'; const [file, expected] = process.argv.slice(1); const actual = 'sha512-' + createHash('sha512').update(readFileSync(file)).digest('base64'); if (actual !== expected) throw new Error('pnpm integrity drift: ' + actual);" "/tmp/pnpm-${PNPM_VERSION}.tgz" "$PNPM_INTEGRITY" \
+  && npm install --global --ignore-scripts --no-audit --no-fund "/tmp/pnpm-${PNPM_VERSION}.tgz" \
+  && test "$(pnpm --version)" = "$PNPM_VERSION"
 
 FROM base AS deps
 

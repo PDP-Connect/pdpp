@@ -161,12 +161,29 @@ export function findPublishableWorkspaceDependencyErrors(publishablePackages) {
   return problems;
 }
 
+// The shared CLI/read-core matrix is deliberately integration-owned: ordinary
+// package verification stays lightweight, but a local release or dry-run
+// signoff cannot omit the together-install proof.
+export function findLocalReleaseMatrixAuthorityErrors(scripts) {
+  const problems = [];
+  if (scripts?.['release:local'] !== 'pnpm release:policy-check && pnpm release:matrix') {
+    problems.push('package.json release:local must run release:policy-check then the mandatory release:matrix authority');
+  }
+  if (scripts?.['release:signoff'] !== 'pnpm release:local && pnpm release:dry-run') {
+    problems.push('package.json release:signoff must run the mandatory release:local authority before release:dry-run');
+  }
+  return problems;
+}
+
 const isMainModule = process.argv[1] === fileURLToPath(import.meta.url);
 
 const errors = [];
 const rootPackage = readJson(path.join(repoRoot, 'package.json'));
 if (rootPackage.private !== true) {
   fail(errors, 'root package.json must remain private:true so the workspace root cannot publish');
+}
+for (const problem of findLocalReleaseMatrixAuthorityErrors(rootPackage.scripts)) {
+  fail(errors, problem);
 }
 
 const packageFiles = listPackageJsonFiles();

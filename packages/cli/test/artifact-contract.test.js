@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import {
   assertArtifactReceipt,
   bindNodeEnvironment,
+  gitHeadSha,
 } from '../scripts/artifact-receipt.mjs';
 import { discoverTestFiles, needsTsx } from '../scripts/discover-tests.mjs';
 import { assertManifestTargets } from '../scripts/package-contract.mjs';
@@ -155,6 +156,19 @@ test('artifact receipt binds revision, content, and tarball identities', () => {
 test('Node gate environment puts the exact executable directory first', () => {
   const env = bindNodeEnvironment({ PATH: '/other/bin' }, '/node-22.14/bin/node');
   assert.equal(env.PATH, ['/node-22.14/bin', '/other/bin'].join(':'));
+});
+
+test('artifact receipt accepts only an explicitly bound full commit SHA without git', () => {
+  const previous = process.env.PDPP_ARTIFACT_GIT_HEAD_SHA;
+  try {
+    process.env.PDPP_ARTIFACT_GIT_HEAD_SHA = 'a'.repeat(40);
+    assert.equal(gitHeadSha('/path/without/a/git/repository'), 'a'.repeat(40));
+    process.env.PDPP_ARTIFACT_GIT_HEAD_SHA = 'not-a-commit';
+    assert.throws(() => gitHeadSha('/path/without/a/git/repository'), /must bind one full commit SHA/);
+  } finally {
+    if (previous === undefined) delete process.env.PDPP_ARTIFACT_GIT_HEAD_SHA;
+    else process.env.PDPP_ARTIFACT_GIT_HEAD_SHA = previous;
+  }
 });
 
 test('the checked-in package contract points only at emitted files', () => {

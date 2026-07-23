@@ -166,8 +166,20 @@ Before adding or unprivatizing a public package:
   creation before trusted publisher setup.
 - Configure npm trusted publishing for
   `vana-com/pdpp/.github/workflows/semantic-release.yml` for that exact package.
-- Run `pnpm release:policy-check`, the package's `verify` script, and
+- Run `pnpm release:local` (the digest-pinned CLI/read-core candidate matrix),
+  the package's `verify` script, and
   `openspec validate <change> --strict`.
+
+`pnpm release:signoff` adds Semantic Release's non-mutating dry run only after
+the mandatory local matrix. The matrix is integration-owned: it builds and
+installs the two accepted package candidates together under its pinned Node
+images. Preserve and actively replay a machine-readable receipt with `pnpm
+--silent release:matrix -- --receipt <path>` followed by `pnpm --silent
+release:matrix -- --verify-receipt <path>`. Replay rebuilds each pinned runner
+from the bound clean committed head and compares tarball bytes/file lists,
+runtime and package-manager identities, installed resolutions, export/bin
+probes, and canonical command-outcome hashes. It does not make ordinary package `verify`
+commands run Docker or require network access.
 
 ### Owner steps to retire the beta channel completely
 

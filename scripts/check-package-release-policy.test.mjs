@@ -21,6 +21,7 @@ import test from 'node:test';
 
 import {
   findPublishableWorkspaceDependencyErrors,
+  findLocalReleaseMatrixAuthorityErrors,
   findRetiredTagInstallDocReferences,
   policyErrors,
 } from './check-package-release-policy.mjs';
@@ -74,7 +75,7 @@ test('doc-tag guard reports the offending file and line in its message', () => {
     readFile: () => 'npm i -g @pdpp/cli@beta',
   });
   assert.equal(problems.length, 1);
-  assert.match(problems[0], /docs\/local-collector\.md/);
+  assert.match(problems[0], /docs\/reference\/local-collector\.md/);
   assert.match(problems[0], /retired @beta/);
 });
 
@@ -116,6 +117,16 @@ test('publishable packages cannot carry workspace protocol dependencies', () => 
   assert.equal(problems.length, 2);
   assert.match(problems[0], /workspace:\*/);
   assert.match(problems[1], /workspace:\^/);
+});
+
+test('local release and signoff cannot bypass the shared release matrix authority', () => {
+  const scripts = {
+    'release:local': 'pnpm release:policy-check && pnpm release:matrix',
+    'release:signoff': 'pnpm release:local && pnpm release:dry-run',
+  };
+  assert.deepEqual(findLocalReleaseMatrixAuthorityErrors(scripts), []);
+  assert.equal(findLocalReleaseMatrixAuthorityErrors({ ...scripts, 'release:local': 'pnpm release:policy-check' }).length, 1);
+  assert.equal(findLocalReleaseMatrixAuthorityErrors({ ...scripts, 'release:signoff': 'pnpm release:dry-run' }).length, 1);
 });
 
 test('the live repository passes the hermetic package-release policy check', () => {

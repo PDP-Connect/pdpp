@@ -86,6 +86,11 @@ export function fileSha256(path) {
 }
 
 export function gitHeadSha(packageRoot) {
+  const boundHead = process.env.PDPP_ARTIFACT_GIT_HEAD_SHA;
+  if (boundHead) {
+    assert.match(boundHead, /^[a-f0-9]{40}$/, 'PDPP_ARTIFACT_GIT_HEAD_SHA must bind one full commit SHA');
+    return boundHead;
+  }
   return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: packageRoot, encoding: 'utf8' }).trim();
 }
 

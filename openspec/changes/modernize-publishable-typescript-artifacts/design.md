@@ -45,3 +45,19 @@ without proving a package contract.
 The four-package install-together oracle, package-specific gates, accounting parity,
 and runtime matrix must produce per-tranche receipts. A package class blocks on an
 artifact or runtime failure; work does not fan out around a failed contract.
+
+## Accepted pilot integration boundary
+
+CLI and read-core are the accepted emitted-artifact pilots. Their shared release
+authority is integration-owned rather than folded into either package's ordinary
+`verify`: it runs the exact Node 22.14.0 floor gates, packs both candidates,
+installs both tarballs into one empty offline consumer, and records the source
+closure, runtime image and runner identities, package-manager binding, command
+outcome hashes, tarball bytes/file lists, installed resolutions, and export/bin
+probes in a receipt. Receipt verification actively replays the complete matrix
+from a clean detached checkout of that exact committed head and compares the
+canonical evidence; a self-resealed transcript is not proof. The second row
+uses the repository Docker runtime. Docker build/bootstrap network access
+remains inside this authority; the consumer runs with Docker networking
+disabled. MCP and local-collector remain outside this two-pilot closure until
+their package gates are accepted.
