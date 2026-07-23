@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { getFileMode, getPdppCacheLayout, writePdppSecretFile } from '../src/cache-layout.js';
+import { assertManifestTargets, assertPackedFiles, parseNpmPackOutput } from '../scripts/package-contract.mjs';
 
 const packageRoot = fileURLToPath(new URL('..', import.meta.url));
 
@@ -16,7 +17,9 @@ test('package manifest stays intentionally narrow', () => {
   const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 
   assert.equal(manifest.name, '@pdpp/cli');
-  assert.deepEqual(manifest.bin, { pdpp: 'bin/pdpp.js' });
+  assert.deepEqual(manifest.bin, { pdpp: './dist/bin/pdpp.js' });
+  assert.equal(manifest.exports['.'].import, './dist/src/index.js');
+  assert.equal(manifest.exports['.'].types, './dist/src/index.d.ts');
   assert.equal(manifest.publishConfig.tag, 'latest');
   assert.equal(manifest.publishConfig.provenance, false);
   assert.equal(Object.hasOwn(manifest, 'dependencies'), false);
@@ -26,50 +29,20 @@ test('package manifest stays intentionally narrow', () => {
 });
 
 test('npm package contents stay narrowly allowlisted', () => {
-  const result = spawnSync('npm', ['pack', '--dry-run', '--json'], {
+  const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  assertManifestTargets(manifest, packageRoot);
+  const result = spawnSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], {
     cwd: packageRoot,
     encoding: 'utf8',
   });
 
   assert.equal(result.status, 0, result.stderr);
 
-  const [pack] = JSON.parse(result.stdout);
+  const [pack] = parseNpmPackOutput(result.stdout);
   const files = pack.files.map((file) => file.path).sort();
-  assert.deepEqual(files, [
-    'README.md',
-    'bin/pdpp.js',
-    'package.json',
-    'src/cache-layout.js',
-    'src/collector/commands.js',
-    'src/collector/errors.js',
-    'src/collector/runner.js',
-    ...(files.includes('src/connect/flow.js') ? ['src/connect/flow.js'] : []),
-    'src/index.js',
-    'src/owner-agent/command.js',
-    'src/owner-agent/control.js',
-    'src/owner-agent/credential-store.js',
-    'src/owner-agent/device-flow.js',
-    'src/owner-agent/discovery.js',
-    'src/owner-agent/errors.js',
-    'src/owner-agent/lifecycle.js',
-    'src/owner-agent/setup.js',
-    'src/package-info.d.ts',
-    'src/package-info.js',
-    'src/read/commands.js',
-    'src/ref/args.js',
-    'src/ref/auth.js',
-    'src/ref/commands/call.js',
-    'src/ref/commands/connectors.js',
-    'src/ref/commands/event-subscriptions.js',
-    'src/ref/commands/grant.js',
-    'src/ref/commands/login.js',
-    'src/ref/commands/run.js',
-    'src/ref/commands/trace.js',
-    'src/ref/errors.js',
-    'src/ref/fetch.js',
-    'src/ref/output.js',
-    'src/ref/session.js',
-  ]);
+  assertPackedFiles(manifest, files);
+  assert.equal(files.includes('dist/bin/pdpp.js'), true);
+  assert.equal(files.includes('dist/src/index.js'), true);
 
   for (const file of files) {
     assert.doesNotMatch(file, /^\.env/);
@@ -106,13 +79,13 @@ test('packed CLI installs and starts in an empty project', () => {
   try {
     mkdirSync(packageDir);
 
-    const packResult = spawnSync('npm', ['pack', '--json', '--pack-destination', tempRoot], {
+    const packResult = spawnSync('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', tempRoot], {
       cwd: packageRoot,
       encoding: 'utf8',
     });
     assert.equal(packResult.status, 0, packResult.stderr);
 
-    const [pack] = JSON.parse(packResult.stdout);
+    const [pack] = parseNpmPackOutput(packResult.stdout);
     const tarball = join(tempRoot, pack.filename);
 
     assert.equal(spawnSync('npm', ['init', '-y'], { cwd: packageDir }).status, 0);
