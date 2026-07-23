@@ -956,7 +956,6 @@ function parseManifest(raw: string, connectorId: string): ConnectorManifest {
   try {
     return JSON.parse(raw) as ConnectorManifest;
   } catch {
-    // biome-ignore lint/style/useErrorCause: custom error factory/constructor owns its domain-specific cause contract
     throw new RefControlError(
       `Connector manifest for ${connectorId} is malformed or no longer valid`,
       "connector_invalid"

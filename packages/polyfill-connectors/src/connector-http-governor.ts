@@ -274,7 +274,6 @@ export function createConnectorHttpGovernor(options: ConnectorHttpGovernorOption
       return response;
     } catch (error) {
       if (isRateLimitTerminal(error)) {
-        // biome-ignore lint/style/useErrorCause: custom error factory/constructor owns its domain-specific cause contract
         throw new ConnectorRateLimitedError(options.name);
       }
       throw error;

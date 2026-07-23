@@ -1035,7 +1035,6 @@ async function readPriorStateOrBlock(input: {
       status: "blocked",
     });
     input.onBlocked?.();
-    // biome-ignore lint/style/useErrorCause: custom error factory/constructor owns its domain-specific cause contract
     throw new CollectorStateReadError(
       `failed to read prior state for ${input.config.sourceInstanceId}: ${error instanceof Error ? error.message : String(error)}`,
       error

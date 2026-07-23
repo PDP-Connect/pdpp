@@ -315,7 +315,6 @@ export function RecordroomShell({
                 provider, not this shell. Pages that mount a command palette
                 pass onJump so the button and the shortcut open the same one. */}
             {onJump ? (
-              // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
               <button className="rr-chrome-btn" onClick={() => onJump()} type="button">
                 Jump <span className="rr-kbd">⌘K</span>
               </button>
@@ -323,7 +322,6 @@ export function RecordroomShell({
             <button
               aria-expanded={drawerOpen}
               className="rr-chrome-btn rr-menu-btn"
-              // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
               onClick={() => setDrawerOpen(true)}
               type="button"
             >

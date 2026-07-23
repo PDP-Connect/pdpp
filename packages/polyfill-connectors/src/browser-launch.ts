@@ -503,7 +503,6 @@ export async function connectOverCdpWithRetry<TBrowser>({
         // The ONLY point that knows the bounded retry budget was exhausted
         // specifically on this narrow race. Tag it here so no downstream
         // layer has to re-parse message text to learn the same fact.
-        // biome-ignore lint/style/useErrorCause: custom error factory/constructor owns its domain-specific cause contract
         throw new CdpAttachSessionRaceExhaustedError(err);
       }
       process.stderr.write(

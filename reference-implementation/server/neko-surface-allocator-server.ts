@@ -144,7 +144,6 @@ function deriveWindowSettleEndpoint(cdpUrl: string): string {
   try {
     return new URL("/pdpp/window-settle", cdpUrl).toString();
   } catch (cause) {
-    // biome-ignore lint/style/useErrorCause: custom error factory/constructor owns its domain-specific cause contract
     throw new NekoSurfaceAllocatorServiceError(
       "readiness_failed",
       "managed n.eko surface has an invalid CDP URL for its window-settle endpoint",
@@ -1189,7 +1188,6 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   try {
     return JSON.parse(body) as unknown;
   } catch (cause) {
-    // biome-ignore lint/style/useErrorCause: custom error factory/constructor owns its domain-specific cause contract
     throw new NekoSurfaceAllocatorServiceError("bad_request", "request body must be JSON", { cause });
   }
 }

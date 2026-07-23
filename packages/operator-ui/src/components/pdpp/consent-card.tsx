@@ -555,7 +555,6 @@ export function ConsentCard({
   const toggleExpand = (key: string) => setExpanded((v) => ({ ...v, [key]: !v[key] }));
 
   if (decided) {
-    // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
     return <DecidedState decided={decided} onReset={() => setDecided(null)} requesterName={requester.name} />;
   }
 
@@ -571,7 +570,6 @@ export function ConsentCard({
           </div>
           {technical.purposeCode === "ai_training" && <AITrainingWarning />}
           {commitments.length > 0 && <Commitments commitments={commitments} requesterName={requester.name} />}
-          {/** biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional */}
           <TechnicalDetails onToggle={() => setTechExpanded((v) => !v)} open={techExpanded} technical={technical} />
         </div>
 
@@ -588,7 +586,6 @@ export function ConsentCard({
               expanded={!!expanded[key]}
               key={key}
               label={label}
-              // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
               onToggle={() => toggleExpand(key)}
             />
           ))}
@@ -596,9 +593,7 @@ export function ConsentCard({
             <OptionalStreamRow
               enabled={optionalEnabled}
               expanded={!!expanded[optional.key]}
-              // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
               onToggleEnabled={() => setOptionalEnabled((v) => !v)}
-              // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
               onToggleExpand={() => toggleExpand(optional.key)}
               optional={optional}
             />
@@ -608,12 +603,10 @@ export function ConsentCard({
         <AccessDuration accessMode={accessMode} />
 
         <DecisionButtons
-          // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
           onAllow={() => {
             setDecided("approved");
             onAllow?.();
           }}
-          // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
           onDeny={() => {
             setDecided("denied");
             onDeny?.();

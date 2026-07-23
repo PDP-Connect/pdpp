@@ -184,7 +184,6 @@ export function GrantInspector({
               <button
                 aria-expanded={!!expanded[name]}
                 className="flex w-full items-center justify-between gap-2 py-2.5 text-left"
-                // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
                 onClick={() => toggleExpand(name)}
                 type="button"
               >
@@ -249,7 +248,6 @@ export function GrantInspector({
           <div className="px-5 py-4">
             <Button
               className="w-full"
-              // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
               onClick={() => {
                 setRevoked(true);
                 onRevoke();
@@ -273,7 +271,6 @@ export function GrantInspector({
       {revoked && status !== "revoked" && (
         <button
           className="mt-2 px-0.5 font-mono text-xs"
-          // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
           onClick={() => setRevoked(false)}
           style={{ color: "var(--muted-foreground)" }}
           type="button"

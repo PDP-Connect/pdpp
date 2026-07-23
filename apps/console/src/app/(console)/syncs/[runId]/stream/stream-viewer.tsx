@@ -5323,7 +5323,6 @@ function useMoreActionsDisclosure() {
     };
     window.addEventListener("keydown", handleWindowKeyDown, true);
     document.addEventListener("pointerdown", handlePointerDown, true);
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
     rowRef.current?.addEventListener("focusout", handleFocusOut);
     const row = rowRef.current;
     return () => {

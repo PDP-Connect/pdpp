@@ -797,7 +797,6 @@ function validateAttemptRecords(records: unknown[], streams: DeviceAttemptContex
       // Identity guards are intentionally detailed for general server writes,
       // but device envelopes must never reflect key/data values or raw guard
       // messages. The index is enough to repair the collector payload.
-      // biome-ignore lint/style/useErrorCause: custom error factory/constructor owns its domain-specific cause contract
       throw attemptContextError(`records[${index}] has invalid record identity`);
     }
   }
@@ -2091,7 +2090,6 @@ async function processDeviceIngestBatch(
       // Once a processing reservation exists, no storage/index/model/SQL
       // diagnostic is safe to expose to a collector. The reservation remains
       // sticky and the fixed retry envelope lets the next attempt resume it.
-      // biome-ignore lint/style/useErrorCause: custom error factory/constructor owns its domain-specific cause contract
       throw safeDeviceIngestAttemptError();
     }
   });
