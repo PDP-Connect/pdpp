@@ -27,7 +27,9 @@
  *     [--limit=100 --apply]
  */
 
+import { resolve } from 'node:path';
 import process from 'node:process';
+import { pathToFileURL } from 'node:url';
 
 import {
   closePostgresStorage,
@@ -135,7 +137,7 @@ async function main() {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   main().catch(async (err) => {
     console.error(err instanceof Error ? err.message : String(err));
     await closePostgresStorage().catch(() => {});
