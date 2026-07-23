@@ -31,7 +31,8 @@
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.build.json && node scripts/postbuild.mjs",
     "prepare": "pnpm build",
-    "test": "node scripts/run-tests.mjs",
+    "prepack": "pnpm build",
+    "test": "node ../../scripts/test-accounting/authority.mjs --run --suite local-collector --profile default",
     "pack-install-run": "node --import tsx scripts/pack-install-run.mjs",
     "validate:package": "node scripts/validate-package.mjs",
     "verify": "pnpm test && pnpm validate:package"

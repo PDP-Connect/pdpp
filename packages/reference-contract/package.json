@@ -19,7 +19,7 @@
     "generate:docs": "node ./src/docs/generate.ts",
     "generate:all": "node ./src/openapi/generate.ts && node ./src/docs/generate.ts",
     "check:generated": "pnpm run generate:all && node ./scripts/check-generated.js",
-    "test": "node --test --test-force-exit test/*.test.js",
+    "test": "node ../../scripts/test-accounting/authority.mjs --run --suite reference-contract --profile default",
     "typecheck": "tsc --noEmit",
     "check": "ultracite check",
     "fix": "ultracite fix",

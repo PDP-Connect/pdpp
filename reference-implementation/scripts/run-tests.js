@@ -1,21 +1,35 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { readdir } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { availableParallelism } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import pg from 'pg';
 import { buildScrubbedTestEnv } from './test-env.js';
+import { storageProfileEnvironment } from './test-profile-env.js';
+import { accountingResultLine, repositoryPaths, structuredNodeSummary } from '../../scripts/test-accounting/receipt.mjs';
+import { RUN_AUTHORITY_SCHEMA } from '../../scripts/test-accounting/inventory.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = dirname(__dirname);
 const testDir = join(repoRoot, 'test');
-const forwardedArgs = process.argv.slice(2);
+const rawForwardedArgs = process.argv.slice(2).filter((arg, index) => !(index === 0 && arg === '--'));
+const accountingIndex = rawForwardedArgs.indexOf('--accounting-authority');
+const accountingPath = accountingIndex === -1 ? undefined : rawForwardedArgs[accountingIndex + 1];
+if (accountingIndex === -1 || !accountingPath) throw new Error('run-tests.js requires verifier-issued --accounting-authority PATH');
+const forwardedArgs = accountingIndex === -1
+  ? rawForwardedArgs
+  : rawForwardedArgs.filter((_, index) => index !== accountingIndex && index !== accountingIndex + 1);
 const effectiveArgs = forwardedArgs.includes('--test-force-exit')
   ? forwardedArgs
   : ['--test-force-exit', ...forwardedArgs];
+if (!effectiveArgs.some((arg) => arg === '--test-reporter' || arg.startsWith('--test-reporter='))) effectiveArgs.push(`--test-reporter=${fileURLToPath(new URL('../../scripts/test-accounting/node-reporter.mjs', import.meta.url))}`);
+const accountingAuthority = JSON.parse(await readFile(accountingPath, 'utf8'));
+if (accountingAuthority.schema !== RUN_AUTHORITY_SCHEMA || new Date(accountingAuthority.expires_at) < new Date()) throw new Error('accounting authority is invalid or expired');
+if (accountingAuthority.suite !== 'ri-default' || accountingAuthority.profile !== process.env.PDPP_TEST_PROFILE) throw new Error('accounting authority does not bind the selected RI profile');
+if (accountingAuthority.profile === 'postgres' && !process.env.PDPP_TEST_POSTGRES_URL) throw new Error('postgres profile requires PDPP_TEST_POSTGRES_URL');
 const requestedConcurrency = Number.parseInt(process.env.PDPP_TEST_CONCURRENCY || '', 10);
 
 // --- Per-file Postgres database isolation ---
@@ -129,8 +143,9 @@ async function allocateTestDb(filePath, baseUrl) {
 }
 
 async function runNodeTest(filePath, extraArgs) {
-  const baseUrl = process.env.PDPP_TEST_POSTGRES_URL;
-  const baseEnv = buildScrubbedTestEnv(process.env);
+  const startedAt = Date.now();
+  const baseEnv = storageProfileEnvironment(accountingAuthority.profile, buildScrubbedTestEnv(process.env));
+  const baseUrl = baseEnv.PDPP_TEST_POSTGRES_URL;
 
   // Allocate a per-file DB when a base Postgres URL is configured.
   let allocation;
@@ -168,6 +183,7 @@ async function runNodeTest(filePath, extraArgs) {
           return;
         }
         resolve({
+          durationMs: Date.now() - startedAt,
           filePath,
           exitCode: code ?? 1,
           output: `\n==> ${filePath}\n${output}`,
@@ -183,21 +199,21 @@ async function runNodeTest(filePath, extraArgs) {
 }
 
 const entries = await readdir(testDir, { withFileTypes: true });
+const NODE_TEST_EXTENSIONS = ['.test.js', '.test.mjs', '.test.ts'];
+const isNodeTest = (name) => NODE_TEST_EXTENSIONS.some((extension) => name.endsWith(extension));
 const topLevelTests = entries
-  .filter((entry) => entry.isFile() && entry.name.endsWith('.test.js'))
+  .filter((entry) => entry.isFile() && isNodeTest(entry.name))
   .map((entry) => join('test', entry.name));
 
 // Co-located unit tests for focused server modules and operator scripts. The
-// discovery is intentionally narrow (explicit directories, explicit extensions)
-// to keep the runner deterministic and fast; broaden if more co-located tests
-// appear. Scripts use `.test.mjs` so the top-level `test/` discovery (strictly
-// `.test.js`) is unaffected.
+// discovery is intentionally narrow by directory, but extension-complete for the
+// Node loader used by the supported RI CI lines, including erasable TypeScript.
 const COLOCATED_TEST_DIRS = [
-  { dir: join('server', 'streaming'), extension: '.test.js' },
-  { dir: 'scripts', extension: '.test.mjs' },
+  { dir: join('server', 'streaming'), extensions: NODE_TEST_EXTENSIONS },
+  { dir: 'scripts', extensions: NODE_TEST_EXTENSIONS },
 ];
 const colocatedTests = [];
-for (const { dir: relDir, extension } of COLOCATED_TEST_DIRS) {
+for (const { dir: relDir, extensions } of COLOCATED_TEST_DIRS) {
   const absDir = join(repoRoot, relDir);
   let dirEntries;
   try {
@@ -206,7 +222,7 @@ for (const { dir: relDir, extension } of COLOCATED_TEST_DIRS) {
     continue;
   }
   for (const entry of dirEntries) {
-    if (entry.isFile() && entry.name.endsWith(extension)) {
+    if (entry.isFile() && extensions.some((extension) => entry.name.endsWith(extension))) {
       colocatedTests.push(join(relDir, entry.name));
     }
   }
@@ -236,7 +252,23 @@ async function worker() {
 
 await Promise.all(Array.from({ length: fileConcurrency }, () => worker()));
 
+const selectedFiles = repositoryPaths('reference-implementation', testFiles);
+if (JSON.stringify(selectedFiles) !== JSON.stringify(accountingAuthority.files)) throw new Error('RI discovery differs from authority-issued child selection');
+const summaries = results.map((result) => structuredNodeSummary(result.output));
+const skipReasons = {};
+for (const summary of summaries) for (const [reason, count] of Object.entries(summary.skip_reasons)) skipReasons[reason] = (skipReasons[reason] ?? 0) + count;
 const failed = results.find((result) => result.exitCode !== 0);
+const counts = {
+  assertions: summaries.reduce((sum, summary) => sum + summary.assertions, 0),
+  passed: summaries.reduce((sum, summary) => sum + summary.passed, 0),
+  failed: summaries.reduce((sum, summary) => sum + summary.failed, 0),
+  skipped: summaries.reduce((sum, summary) => sum + summary.skipped, 0),
+  skip_reasons: skipReasons,
+  planned_files: testFiles.length,
+  completed_files: failed ? 0 : results.length,
+};
+process.stdout.write(`${accountingResultLine({ run_id: accountingAuthority.run_id, nonce: accountingAuthority.nonce, suite: 'ri-default', profile: accountingAuthority.profile, files: selectedFiles, counts })}\n`);
+
 if (failed) {
   process.exit(failed.exitCode);
 }

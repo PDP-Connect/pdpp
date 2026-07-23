@@ -1,45 +1,54 @@
 ## Context
 
-The tracked census includes 1,213 test-like paths, while the reference runner's
-current rules execute 698. Package and app runners have additional, independent
-globs and explicit lists. The smallest useful seam is a source-derived checker
-around existing runners; runners remain responsible for execution and the checker
-owns classification and parity.
+The tracked census includes 1,213 test-like paths. Existing runners have
+independent globs and lists. The authority must own execution evidence, rather
+than verify receipt-shaped JSON after a runner has finished.
 
 ## Goals and non-goals
 
-Goals are complete discovery, structured execution evidence, explicit profile
-skips, and stale-task invalidation. This change does not choose a test framework,
-convert tests to TypeScript, change product behavior, or make live services a
-required dependency where the repository declares an optional profile.
+Goals are complete discovery, verifier-issued execution evidence, explicit
+profile skips, and stale-task invalidation. This change does not choose a test
+framework, convert tests to TypeScript, change product behavior, or require live
+services for an optional profile.
 
 ## Decisions
 
-- Derive tracked paths with `git ls-files`, classify `.test.js`, `.test.mjs`,
-  `.test.cjs`, `.test.ts`, `.test.tsx`, `.test.py`, `.test.sh`, `.spec.js`, and
-  `.spec.ts`, plus `test`/`tests` directories. The manifest records exact
-  intentional exclusions with path, reason, owner, profile, and expiry.
-- Check the planned set before execution and validate JSON receipts afterward.
-  A receipt records exact normalized files, assertions (or explicit `null` with
-  a mutation oracle), passes, failures, skips, reasons, profile, SHA, and exit.
-- Required profiles that cannot run are failures. Optional profiles are visible
-  skips with a declared predicate and reason; skips are never silently treated as pass.
-- Runtime edges are declared for dynamic imports, subprocesses, Docker commands,
-  generated files, exports, bins, and scripts. An edge hash is part of a task
-  closure, not inferred from a task title.
-- A task packet is valid only at its exact base SHA with its closure hash and
-  atomic lease. Integration invalidates packets whose base, closure, or forbidden
-  shared paths no longer match.
+- Derive tracked paths with `git ls-files`, classify supported test suffixes, and
+  keep every exclusion named, owned, profiled, and expiring.
+- The authority issues a single-use run ID and nonce with an expiry. Before it
+  spawns a child, it binds the integration base, current SHA, complete tracked
+  source tree, manifest, suite/profile, argv/cwd, and selected files. It owns the
+  transcript, completion, receipt, and verification ledger in Git-private
+  state; callers cannot select an authority directory.
+- Children emit one structured result for their issued selection. The result has
+  assertion, pass, failure, skip, reason, and profile counts. Empty and generic
+  skip reasons are invalid. Every required suite/profile is required by default;
+  optional profiles require explicit selection.
+- Runtime edges resolve literal imports and subprocess arguments from tokenized
+  source, not comments or substring matches. The authority's variable child
+  command is resolved from its checked manifest declaration, and every manifest
+  command edge is required in the packet. A generated check copies the source to
+  an isolated directory, removes the output, runs the canonical generator, and
+  compares recreated bytes.
+- A task packet validates its exact integration base and a closure that binds
+  owned and forbidden paths, resolved edges, generated artifacts, and manifest.
+  A tracked packet may also validate in the one commit that directly materializes
+  it from that base, avoiding an impossible self-referential commit SHA. That
+  materialization commit must add or modify the declared packet and may change
+  only its owned or explicitly retired paths; a later descendant is stale. Its
+  Git-private atomic lease binds those same inputs; it is not a distributed lease
+  service.
 
 ## Alternatives rejected
 
-Count-only checks, filesystem-only globs, and a static ledger are insufficient:
-they cannot prove replacement identity, runtime targets, or stale work. Replacing
-all runners with one new framework would add infrastructure without closing the
-specific false-pass seam.
+Hashing caller-written receipts, parsing concatenated TAP summaries, and using a
+static task ledger cannot prove execution, child selection, or output generation.
+Replacing all runners with a new framework would not close those seams.
 
 ## Acceptance checks
 
-The checker must pass on the unmutated fixture corpus and fail nonzero for every
-required mutation in the spec and tasks. The exact commands are recorded in
-`tasks.md`; all checks are local and deterministic.
+The unmutated focused authority and packet fixtures pass. Each reviewer
+reproduction fails: invented receipt, replay, expiry, selection/count/profile
+mutation, generic skip, comment-masked dynamic target, omitted manifest spawn
+edge, no-output or inert-argument generator, stale base, closure/lease boundary mutation,
+overlap, and escaped path. The commands are local and deterministic.

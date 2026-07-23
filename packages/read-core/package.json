@@ -22,7 +22,7 @@
     "build": "node scripts/build.mjs",
     "prepare": "pnpm build",
     "prepack": "pnpm build",
-    "test": "node scripts/run-tests.mjs",
+    "test": "node ../../scripts/test-accounting/authority.mjs --run --suite read-core --profile default",
     "validate-package": "pnpm build && node scripts/validate-package.mjs",
     "pack-install-test": "pnpm build && node scripts/pack-install-test.mjs",
     "verify:node-22.14": "pnpm build && node scripts/verify-node-22.14.mjs",

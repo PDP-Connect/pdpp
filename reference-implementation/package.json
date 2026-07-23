@@ -39,7 +39,7 @@
     "server": "sh -c 'PDPP_REFERENCE_OPERATIONAL_DEFAULTS=${PDPP_REFERENCE_OPERATIONAL_DEFAULTS:-1} node --env-file-if-exists=../.env.local server/index.js'",
     "cli": "node cli/index.js",
     "example-client": "node examples/third-party-app/server.js",
-    "test": "node scripts/run-tests.js",
+    "test": "node ../scripts/test-accounting/authority.mjs --run --suite ri-default --profile memory-default",
     "test:semantic-multilingual-smoke": "PDPP_MULTILINGUAL_MINILM_SMOKE=1 node --test --test-timeout=240000 --test-name-pattern \"multilingual-minilm profile\" test/semantic-retrieval.test.js",
     "test:live-cdp": "PDPP_TEST_LIVE_CDP=1 node --test test/run-interaction-stream-cdp-live.test.js",
     "test:live-neko": "PDPP_TEST_LIVE_NEKO=1 node --test test/run-interaction-stream-neko-live.test.js",
