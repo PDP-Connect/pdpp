@@ -4,22 +4,26 @@
   "description": "Local stdio MCP adapter for grant-scoped PDPP reads and event-subscription management.",
   "type": "module",
   "bin": {
-    "pdpp-mcp-server": "bin/pdpp-mcp-server.js"
+    "pdpp-mcp-server": "./dist/bin/pdpp-mcp-server.js"
   },
   "exports": {
-    ".": "./src/index.js",
-    "./server": "./src/server.js"
+    ".": "./dist/src/index.js",
+    "./server": "./dist/src/server.js"
   },
   "files": [
-    "bin/",
-    "src/",
+    "dist/",
     "README.md"
   ],
   "scripts": {
-    "test": "node --test test/*.test.js",
-    "test:read-surface": "node --test test/hostile-client-read-evidence.test.js test/server.integration.test.js",
-    "verify": "pnpm test && node bin/pdpp-mcp-server.js --help",
-    "pack:dry-run": "pnpm pack --dry-run"
+    "build": "node scripts/build.mjs",
+    "prepare": "pnpm build",
+    "prepack": "pnpm build",
+    "test": "node ../../scripts/test-accounting/authority.mjs --run --suite mcp-server --profile default",
+    "test:read-surface": "node ../../scripts/test-accounting/authority.mjs --run --suite mcp-server --profile default",
+    "validate:package": "pnpm build && node scripts/package-contract.mjs",
+    "verify:artifact": "pnpm build && node scripts/pack-install-run.mjs",
+    "verify": "pnpm test && pnpm validate:package",
+    "pack:dry-run": "pnpm build && npm pack --dry-run --ignore-scripts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
