@@ -83,13 +83,13 @@ Search exact trace/grant/run ids and record content across retained records.
 
 ### Query parameters
 
-- `q` — string
-- `limit` — integer · min: 1 · max: 200
-- `cursor` — string
 - `connector_id` — string
-- `stream` — string
+- `cursor` — string
+- `limit` — integer · min: 1 · max: 200
 - `order` — enum `asc | desc`
+- `q` — string
 - `sort` — enum `native | ingested`
+- `stream` — string
 
 ### Responses
 
@@ -604,9 +604,9 @@ Create a short-lived local device exporter enrollment code for an owner-approved
 
 `application/json`
 - `connector_id` (required) — string
-- `local_binding_name` (required) — string
 - `display_name` — string
 - `expires_in_seconds` — integer · min: 60 · max: 86400
+- `local_binding_name` (required) — string
 
 ### Responses
 
@@ -626,8 +626,8 @@ Exchange a one-time enrollment code for a device-scoped local exporter credentia
 ### Request body
 
 `application/json`
-- `enrollment_code` (required) — string
 - `agent_version` — string
+- `enrollment_code` (required) — string
 
 ### Responses
 
@@ -721,11 +721,11 @@ Accept a heartbeat from a device-scoped local exporter credential.
 `application/json`
 - `agent_version` — string
 - `connector_id` — string
-- `source_instance_id` — string
-- `status` — enum `starting | healthy | retrying | blocked | stopped`
-- `records_pending` — integer · min: 0
-- `source_instances` — array
 - `last_error` — object|null
+- `records_pending` — integer · min: 0
+- `source_instance_id` — string
+- `source_instances` — array
+- `status` — enum `starting | healthy | retrying | blocked | stopped`
 
 ### Responses
 
@@ -749,13 +749,13 @@ Accept an idempotent source-instance-aware ingest batch from a local device expo
 ### Request body
 
 `application/json`
-- `device_id` (required) — string
-- `source_instance_id` (required) — string
 - `batch_id` (required) — string
 - `batch_seq` (required) — integer · min: 0
 - `body_hash` (required) — string
 - `connector_id` (required) — string
+- `device_id` (required) — string
 - `records` (required) — array
+- `source_instance_id` (required) — string
 
 ### Responses
 
@@ -872,9 +872,9 @@ Create or replace the single schedule for a connector.
 ### Request body
 
 `application/json`
+- `enabled` — boolean
 - `interval_seconds` (required) — integer · min: 1
 - `jitter_seconds` — integer · min: 0
-- `enabled` — boolean
 
 ### Responses
 
@@ -896,9 +896,9 @@ Create or replace the schedule for one configured connection.
 ### Request body
 
 `application/json`
+- `enabled` — boolean
 - `interval_seconds` (required) — integer · min: 1
 - `jitter_seconds` — integer · min: 0
-- `enabled` — boolean
 
 ### Responses
 
@@ -1073,9 +1073,9 @@ Owner-only control surface: answer the current pending interaction for an active
 ### Request body
 
 `application/json`
+- `data` — object
 - `interaction_id` (required) — string
 - `status` (required) — enum `success | cancelled`
-- `data` — object
 
 ### Responses
 
@@ -1093,12 +1093,12 @@ Server-backed cross-connector recent-record feed for the Records > Timeline UI.
 ### Query parameters
 
 - `connector_id` — string
-- `stream` — string
-- `since` — string
-- `until` — string
 - `limit` — integer · min: 1 · max: 500
 - `order` — enum `asc | desc`
+- `since` — string
+- `stream` — string
 - `timestamp_mode` — enum `native | ingest`
+- `until` — string
 
 ### Responses
 
@@ -1171,8 +1171,8 @@ Projection-backed retained logical bytes by finite dataset grain.
 
 ### Query parameters
 
-- `grain` — enum `global | connection | stream`
 - `connector_instance_id` — string
+- `grain` — enum `global | connection | stream`
 - `stream` — string
 
 ### Responses
@@ -1190,9 +1190,9 @@ Bounded retained-size heavy hitters for owner dataset introspection.
 
 ### Query parameters
 
-- `scope` — enum `connection | stream | record | blob`
-- `measure` — enum `total_retained_bytes | current_record_json_bytes | record_history_json_bytes | blob_bytes | record_count | record_history_count | blob_count`
 - `limit` — integer · min: 1 · max: 25
+- `measure` — enum `total_retained_bytes | current_record_json_bytes | record_history_json_bytes | blob_bytes | record_count | record_history_count | blob_count`
+- `scope` — enum `connection | stream | record | blob`
 
 ### Responses
 
@@ -1210,9 +1210,9 @@ Record-version churn stats with projection and record-change authority for owner
 ### Query parameters
 
 - `connector_instance_id` — string
-- `stream` — string
-- `risk` — enum `normal | watch | high`
 - `limit` — integer · min: 1 · max: 500
+- `risk` — enum `normal | watch | high`
+- `stream` — string
 
 ### Responses
 
@@ -1307,20 +1307,20 @@ Owner Explore surface: exact dense over-time bucket counts across the scoped mer
 
 ### Query parameters
 
-- `connection_id` — string
 - `connection` — string
+- `connection_id` — string
 - `connections` — string
+- `granularity` — enum `auto | hour | day | week | month | quarter | year`
+- `since` — string
 - `stream` — string
 - `streams` — string
+- `time_zone` — const `UTC`
+- `until` — string
 - `xconnection` — string
 - `xconnection_id` — string
 - `xconnections` — string
 - `xstream` — string
 - `xstreams` — string
-- `since` — string
-- `until` — string
-- `granularity` — enum `auto | hour | day | week | month | quarter | year`
-- `time_zone` — const `UTC`
 
 ### Responses
 
@@ -1337,10 +1337,10 @@ Owner Explore surface: cross-source merged timeline with a single composite keys
 
 ### Query parameters
 
-- `limit` — integer · min: 1 · max: 500
-- `cursor` — string
-- `rewind` — enum `1 | true`
 - `connection_id` — string
+- `cursor` — string
+- `limit` — integer · min: 1 · max: 500
+- `rewind` — enum `1 | true`
 - `stream` — string
 
 ### Responses
