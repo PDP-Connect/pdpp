@@ -15,7 +15,7 @@ const ISO_DATE_OR_DATETIME_RE = /^\d{4}-\d{2}-\d{2}([T ].+)?$/;
 // strings like 'Apr 15, 2026' pass through untouched while real ISO
 // values get the full treatment.
 function DateLike({ value }: { value: string | null | undefined }) {
-  if (value == null || value === "") {
+  if (value === null || value === undefined || value === "") {
     return <>Never</>;
   }
   const looksISO = ISO_DATE_OR_DATETIME_RE.test(value);

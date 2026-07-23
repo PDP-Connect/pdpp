@@ -127,7 +127,7 @@ export function parseTimestampValue(
   value: TimestampProps["value"],
   valueKind: TimestampValueKind = "auto"
 ): ParsedTimestamp | null {
-  if (value == null || value === "") {
+  if (value === null || value === undefined || value === "") {
     return null;
   }
 

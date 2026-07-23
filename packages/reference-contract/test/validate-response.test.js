@@ -125,6 +125,7 @@ test("getStreamMetadata accepts an expand_capabilities entry carrying target_str
 
 test("getStreamMetadata rejects an expand_capabilities entry missing target_stream", () => {
   const entry = { ...VALID_EXPAND_ENTRY };
+  // biome-ignore lint/performance/noDelete: test must construct a genuinely absent JSON property.
   delete entry.target_stream;
   const result = validateResponse("getStreamMetadata", {
     body: streamMetadataWithExpandEntry(entry),
@@ -136,6 +137,7 @@ test("getStreamMetadata rejects an expand_capabilities entry missing target_stre
 
 test("getStreamMetadata rejects an expand_capabilities entry missing child_parent_key_field", () => {
   const entry = { ...VALID_EXPAND_ENTRY };
+  // biome-ignore lint/performance/noDelete: test must construct a genuinely absent JSON property.
   delete entry.child_parent_key_field;
   const result = validateResponse("getStreamMetadata", {
     body: streamMetadataWithExpandEntry(entry),

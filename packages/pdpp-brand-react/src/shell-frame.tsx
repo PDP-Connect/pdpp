@@ -320,12 +320,7 @@ export function RecordroomShell({
                 Jump <span className="rr-kbd">⌘K</span>
               </button>
             ) : null}
-            <button
-              aria-expanded={drawerOpen}
-              className="rr-chrome-btn rr-menu-btn"
-              onClick={openDrawer}
-              type="button"
-            >
+            <button aria-expanded={drawerOpen} className="rr-chrome-btn rr-menu-btn" onClick={openDrawer} type="button">
               Menu
             </button>
           </div>

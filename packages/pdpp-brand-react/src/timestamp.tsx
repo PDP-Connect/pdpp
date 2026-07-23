@@ -133,7 +133,7 @@ export function parseTimestampValue(
   value: IcTimestampProps["value"],
   valueKind: TimestampValueKind = "auto"
 ): ParsedTimestamp | null {
-  if (value == null || value === "") {
+  if (value === null || value === undefined || value === "") {
     return null;
   }
 

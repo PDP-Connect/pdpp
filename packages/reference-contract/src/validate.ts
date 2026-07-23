@@ -186,7 +186,7 @@ export function validateRequest(operationId: string, input: ValidateRequestInput
   const { params, query, body, headers } = input;
   const errors: ValidationFailure[] = [];
   const check = (fn: ValidateFunction | null, value: unknown, label: ValidationFailure["where"]): void => {
-    if (!fn || value == null) {
+    if (!fn || value === null || value === undefined) {
       return;
     }
     if (!fn(value)) {

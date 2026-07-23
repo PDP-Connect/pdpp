@@ -163,10 +163,10 @@ interface StreamBreakdown {
 }
 
 function formatStreamProgress(s: StreamBreakdown): string {
-  if (s.latestCount == null) {
+  if (s.latestCount === null) {
     return "";
   }
-  if (s.latestTotal != null && s.latestTotal > 0) {
+  if (s.latestTotal !== null && s.latestTotal > 0) {
     return ` · ${s.latestCount}/${s.latestTotal}`;
   }
   return ` · ${s.latestCount}`;

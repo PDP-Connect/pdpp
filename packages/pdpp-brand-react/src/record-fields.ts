@@ -244,8 +244,11 @@ export function displayTitle(record: {
     hint = `from ${f.from}`;
   } else if (typeof f.role === "string") {
     hint = `${f.role} turn`;
-  } else if (f.bytes != null || typeof f.charset === "string") {
-    const kb = f.bytes == null ? "" : `${Math.round(Number(String(f.bytes).replace(BYTES_DIGITS_RE, "")) / 1024)} KB`;
+  } else if ((f.bytes !== null && f.bytes !== undefined) || typeof f.charset === "string") {
+    const kb =
+      f.bytes === null || f.bytes === undefined
+        ? ""
+        : `${Math.round(Number(String(f.bytes).replace(BYTES_DIGITS_RE, "")) / 1024)} KB`;
     hint = [typeof f.charset === "string" ? f.charset : "", kb].filter(Boolean).join(" · ");
   } else if (typeof f.date === "string") {
     hint = f.date;
