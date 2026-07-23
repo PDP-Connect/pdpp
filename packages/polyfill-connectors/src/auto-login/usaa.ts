@@ -13,7 +13,7 @@
  * Returns true on success; throws on hard failure.
  */
 
-import type { BrowserContext, Page } from "playwright";
+import type { BrowserContext, Locator, Page } from "playwright";
 import { manualAction } from "../browser-handoff.ts";
 import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
 import type { CaptureSession } from "../fixture-capture.ts";
@@ -34,22 +34,20 @@ const LOGIN_NAVIGATION_INTERVENTION_ERROR = /page\.goto: net::ERR_(HTTP2_PROTOCO
 // phrases that unambiguously identify USAA's generic system-outage page.
 const USAA_SOURCE_UNAVAILABLE_TEXT =
   /unable to complete (your|this) request|(our |the )?system is (currently )?unavailable/i;
+const USAA_LOGIN_ACTION_NAME = /^(Log in|Log On)$/i;
+const USAA_ORIGIN = "https://www.usaa.com";
+const MEMBER_ID_INPUT = 'input[name="memberId"]';
 const MAX_OTP_ATTEMPTS = 3;
 const MANUAL_LOGIN_MESSAGE =
   "USAA could not finish sign-in automatically; open the browser to continue. PDPP resumes when sign-in succeeds.";
 // `classifyUsaaLoginStepFailure` returning `source_unavailable` proves only
 // that USAA's page copy matches known outage boilerplate — it does NOT prove
-// the provider is actually down. A prior fix (2026-07-10, since reverted)
-// treated this classification as sufficient to skip manual_action entirely
-// and throw a silently-retried error instead; that was wrong. The same
-// password-field stall had already been the connector's dominant failure
-// mode for weeks before that page text was ever seen, which is inconsistent
-// with an intermittent provider outage and consistent with a persistent
-// automation-side condition (stale/blocked profile, bot-detection challenge)
-// that happens to render USAA's generic-outage copy. Only a human completing
-// login in the visible browser can distinguish those cases; route both
-// failure points back through manual_action, with the classification result
-// surfaced as an owner-visible diagnostic instead of a silent bypass.
+// the provider is actually down. It still reaches manual_action unless this
+// exact state exposes exactly one visible semantic Log in/Log On action which,
+// when activated once, returns to USAA's same-origin member-ID form. That is a
+// proven continuation of the stored-credential flow, not a retry or an uptime
+// claim; every absent, ambiguous, foreign, or failed transition falls through
+// to the established owner handoff.
 const MANUAL_LOGIN_MESSAGE_SOURCE_UNAVAILABLE_SUFFIX =
   " USAA's page reported its own system as unavailable, but this exact failure has recurred — if USAA works normally in your own browser, this may be an automated sign-in issue rather than a real outage.";
 const STACK_TRACE_LOCATION_SUFFIX_RE = /\s+at\s+https?:\/\/\S+$/i;
@@ -67,6 +65,11 @@ interface InputProbe {
   type: string;
 }
 
+interface SourceUnavailableLoginAction {
+  locator: Locator;
+  visible: boolean;
+}
+
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -81,6 +84,115 @@ function trimForDiagnostic(value: string, maxLength: number): string {
 
 export function classifyUsaaLoginStepFailure(bodyText: string): "source_unavailable" | "password_field_missing" {
   return USAA_SOURCE_UNAVAILABLE_TEXT.test(bodyText) ? "source_unavailable" : "password_field_missing";
+}
+
+/**
+ * Admit only one visible semantic action.
+ *
+ * This is intentionally private: the browser recovery owns how candidates are
+ * discovered, while this pure policy owns the ambiguity invariant.
+ */
+function selectSourceUnavailableLoginAction(
+  actions: SourceUnavailableLoginAction[]
+): SourceUnavailableLoginAction | "absent" | "ambiguous" {
+  const visibleActions = actions.filter((action) => action.visible);
+  if (visibleActions.length === 0) {
+    return "absent";
+  }
+  if (visibleActions.length !== 1) {
+    return "ambiguous";
+  }
+  return visibleActions[0] ?? "ambiguous";
+}
+
+type SourceUnavailableLoginRecoveryOutcome =
+  | "absent"
+  | "action_error"
+  | "ambiguous"
+  | "foreign_origin"
+  | "member_id_form_missing"
+  | "resume_error"
+  | "recovered";
+
+function sourceUnavailableLoginRecoveryDiagnostic(outcome: SourceUnavailableLoginRecoveryOutcome): string {
+  return `source_unavailable_login_action=${outcome}`;
+}
+
+async function captureSourceUnavailableLoginActionStructure(
+  capture: CaptureSession | null | undefined,
+  page: Page
+): Promise<void> {
+  await capture
+    ?.captureLocatorProbe?.(page, "usaa-source-unavailable-login-action", [
+      {
+        description: "Exact accessible-name candidate; captures only structural locator evidence.",
+        id: "exact-login-button",
+        kind: "role",
+        namePattern: "^(Log in|Log On)$",
+        nameFlags: "i",
+        role: "button",
+      },
+      {
+        description: "Exact accessible-name candidate; captures only structural locator evidence.",
+        id: "exact-login-link",
+        kind: "role",
+        namePattern: "^(Log in|Log On)$",
+        nameFlags: "i",
+        role: "link",
+      },
+    ])
+    .catch((): undefined => undefined);
+}
+
+async function sourceUnavailableLoginActions(page: Page): Promise<SourceUnavailableLoginAction[]> {
+  const semanticActions = [
+    page.getByRole("button", { name: USAA_LOGIN_ACTION_NAME }),
+    page.getByRole("link", { name: USAA_LOGIN_ACTION_NAME }),
+  ];
+  const candidates: SourceUnavailableLoginAction[] = [];
+  for (const action of semanticActions) {
+    const count = await action.count().catch((): number => 0);
+    for (let index = 0; index < count; index++) {
+      const locator = action.nth(index);
+      candidates.push({
+        locator,
+        visible: await locator.isVisible().catch((): boolean => false),
+      });
+    }
+  }
+  return candidates;
+}
+
+async function attemptSourceUnavailableLoginRecovery(
+  capture: CaptureSession | null | undefined,
+  page: Page
+): Promise<SourceUnavailableLoginRecoveryOutcome> {
+  await captureSourceUnavailableLoginActionStructure(capture, page);
+  const actions = await sourceUnavailableLoginActions(page);
+  const selectedAction = selectSourceUnavailableLoginAction(actions);
+  if (typeof selectedAction === "string") {
+    return selectedAction;
+  }
+
+  try {
+    await selectedAction.locator.click({ timeout: 10_000 });
+    await page.waitForLoadState("domcontentloaded", { timeout: 10_000 }).catch((): undefined => undefined);
+  } catch {
+    return "action_error";
+  }
+  let sameOrigin = false;
+  try {
+    sameOrigin = new URL(page.url()).origin === USAA_ORIGIN;
+  } catch {
+    sameOrigin = false;
+  }
+  if (!sameOrigin) {
+    return "foreign_origin";
+  }
+  return page
+    .waitForSelector(MEMBER_ID_INPUT, { state: "visible", timeout: 10_000 })
+    .then((): SourceUnavailableLoginRecoveryOutcome => "recovered")
+    .catch((): SourceUnavailableLoginRecoveryOutcome => "member_id_form_missing");
 }
 
 function passwordStepFailureDiagnostic({
@@ -205,6 +317,94 @@ async function completeOtpChallenge({ context, page, sendInteraction }: EnsureUs
   return false;
 }
 
+async function submitMemberId(page: Page, username: string): Promise<boolean> {
+  // Give React a beat to initialize the form. USAA's SPA renders the
+  // memberId input immediately but hasn't bound React event handlers yet —
+  // filling in that <1s window produces a value that React discards.
+  await page.waitForSelector(MEMBER_ID_INPUT, { timeout: 20_000 });
+  await page.waitForTimeout(1500);
+  await page.fill(MEMBER_ID_INPUT, username);
+  // Wait until Next is enabled; USAA gates it on client-side validation.
+  // If it stays disabled, tick a key event to try again, then check.
+  try {
+    await page.locator("#next-button:not([disabled])").waitFor({ state: "visible", timeout: 5000 });
+  } catch {
+    // Fallback: press a throwaway key to nudge React.
+    await page
+      .locator(MEMBER_ID_INPUT)
+      .press("End")
+      .catch((): undefined => undefined);
+    await page.waitForTimeout(500);
+  }
+  await page.click("#next-button");
+  return page
+    .waitForSelector('input[name="password"]', { timeout: 25_000 })
+    .then((): true => true)
+    .catch((): false => false);
+}
+
+async function handlePasswordFieldStall(
+  { capture, context, page, sendInteraction }: EnsureUsaaSessionArgs,
+  username: string
+): Promise<"logged_in" | "password_ready"> {
+  const initialBody = await page
+    .locator("body")
+    .innerText()
+    .catch((): string => "");
+  const initialClassification = classifyUsaaLoginStepFailure(initialBody);
+  let recoveryOutcome: SourceUnavailableLoginRecoveryOutcome | null = null;
+  if (initialClassification === "source_unavailable") {
+    recoveryOutcome = await attemptSourceUnavailableLoginRecovery(capture, page);
+    if (recoveryOutcome === "recovered") {
+      try {
+        if (await submitMemberId(page, username)) {
+          return "password_ready";
+        }
+      } catch {
+        recoveryOutcome = "resume_error";
+      }
+    }
+  }
+
+  const body = await page
+    .locator("body")
+    .innerText()
+    .catch((): string => "");
+  const classification = classifyUsaaLoginStepFailure(body);
+  // The source-unavailable branch already captured only fixed semantic
+  // locator probes before the transition. Do not add a raw DOM snapshot after
+  // the member ID was filled; it could retain credential-adjacent data.
+  if (initialClassification !== "source_unavailable") {
+    await capture?.captureDom(page, "usaa-password-field-stall").catch((): undefined => undefined);
+  }
+  const inputs = await page
+    .evaluate((): InputProbe[] => {
+      const els = document.querySelectorAll("input");
+      return Array.from(els).map(
+        (i): InputProbe => ({
+          name: i.name,
+          type: i.type,
+          placeholder: i.placeholder,
+        })
+      );
+    })
+    .catch((): InputProbe[] => []);
+  const diagnostic = passwordStepFailureDiagnostic({ body, inputs, url: page.url() });
+  const manualLoginMessage =
+    classification === "source_unavailable"
+      ? `${MANUAL_LOGIN_MESSAGE}${MANUAL_LOGIN_MESSAGE_SOURCE_UNAVAILABLE_SUFFIX}`
+      : MANUAL_LOGIN_MESSAGE;
+  const recoveryDiagnostic = recoveryOutcome ? ` ${sourceUnavailableLoginRecoveryDiagnostic(recoveryOutcome)}.` : "";
+  if (
+    await requestManualLoginRecovery({ context, page, sendInteraction }, `${manualLoginMessage}${recoveryDiagnostic}`)
+  ) {
+    return "logged_in";
+  }
+  throw new Error(
+    `USAA login stalled after Next click (${diagnostic}${recoveryOutcome ? ` ${sourceUnavailableLoginRecoveryDiagnostic(recoveryOutcome)}` : ""}); manual action did not establish a session`
+  );
+}
+
 export async function ensureUsaaSession({
   capture,
   context,
@@ -239,55 +439,12 @@ export async function ensureUsaaSession({
     }
     throw err;
   }
-  // Give React a beat to initialize the form. USAA's SPA renders the
-  // memberId input immediately but hasn't bound React event handlers yet —
-  // filling in that <1s window produces a value that React discards.
-  await page.waitForSelector('input[name="memberId"]', { timeout: 20_000 });
-  await page.waitForTimeout(1500);
-  await page.fill('input[name="memberId"]', username);
-  // Wait until Next is enabled; USAA gates it on client-side validation.
-  // If it stays disabled, tick a key event to try again, then check.
-  try {
-    await page.locator("#next-button:not([disabled])").waitFor({ state: "visible", timeout: 5000 });
-  } catch {
-    // Fallback: press a throwaway key to nudge React
-    await page
-      .locator('input[name="memberId"]')
-      .press("End")
-      .catch((): undefined => undefined);
-    await page.waitForTimeout(500);
-  }
-  await page.click("#next-button");
-  try {
-    await page.waitForSelector('input[name="password"]', { timeout: 25_000 });
-  } catch {
-    const body = await page
-      .locator("body")
-      .innerText()
-      .catch((): string => "");
-    const classification = classifyUsaaLoginStepFailure(body);
-    await capture?.captureDom(page, "usaa-password-field-stall").catch((): undefined => undefined);
-    const inputs = await page
-      .evaluate((): InputProbe[] => {
-        const els = document.querySelectorAll("input");
-        return Array.from(els).map(
-          (i): InputProbe => ({
-            name: i.name,
-            type: i.type,
-            placeholder: i.placeholder,
-          })
-        );
-      })
-      .catch((): InputProbe[] => []);
-    const diagnostic = passwordStepFailureDiagnostic({ body, inputs, url: page.url() });
-    const manualLoginMessage =
-      classification === "source_unavailable"
-        ? `${MANUAL_LOGIN_MESSAGE}${MANUAL_LOGIN_MESSAGE_SOURCE_UNAVAILABLE_SUFFIX}`
-        : MANUAL_LOGIN_MESSAGE;
-    if (await requestManualLoginRecovery({ context, page, sendInteraction }, manualLoginMessage)) {
-      return true;
-    }
-    throw new Error(`USAA login stalled after Next click (${diagnostic}); manual action did not establish a session`);
+  if (
+    !(await submitMemberId(page, username)) &&
+    (await handlePasswordFieldStall({ capture: capture ?? null, context, page, sendInteraction }, username)) ===
+      "logged_in"
+  ) {
+    return true;
   }
   await page.fill('input[name="password"]', password);
   await page.waitForTimeout(500);
