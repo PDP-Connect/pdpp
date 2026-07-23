@@ -2,13 +2,51 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
 import { assertRunnableTestFiles, discoverTestFiles } from '../scripts/discover-tests.mjs';
+import { assertNpmBinding } from '../scripts/npm-runtime.mjs';
+import { assertExactRuntime, exactNodeVersion } from '../scripts/verify-node-22.14.mjs';
 import { assertManifestTargets, assertPackedFiles } from '../scripts/validate-package.mjs';
+
+test('build delegates dist emission to TypeScript rather than copying source', async () => {
+  const buildScript = await readFile(new URL('../scripts/build.mjs', import.meta.url), 'utf8');
+  assert.match(buildScript, /'pnpm', \['exec', 'tsc', '--project', 'tsconfig\.build\.json'\]/);
+  assert.doesNotMatch(buildScript, /--noEmit|copyFile/);
+});
+
+test('the exact Node floor is an explicit matrix artifact gate', async () => {
+  const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  const matrixScript = await readFile(new URL('../scripts/verify-node-22.14.mjs', import.meta.url), 'utf8');
+  assert.equal(manifest.scripts['verify:node-22.14'], 'pnpm build && node scripts/verify-node-22.14.mjs');
+  assert.equal(manifest.main, undefined);
+  assert.match(matrixScript, /process\.execPath/);
+  assert.doesNotMatch(matrixScript, /node@22\.14\.0|npx|latest|lts\//);
+  assert.equal(exactNodeVersion, 'v22.14.0');
+});
+
+test('the floor oracle rejects every non-exact runtime', () => {
+  assert.throws(() => assertExactRuntime('v22.14.1'), /requires Node v22\.14\.0/);
+});
+
+test('npm binding rejects a mutated executable path', () => {
+  const expected = { executable: '/runtime/bin/npm', version: '10.9.2' };
+  assert.throws(
+    () => assertNpmBinding({ ...expected, executable: '/other/bin/npm' }, expected),
+    /npm executable drifted/,
+  );
+});
+
+test('npm binding rejects a mutated version', () => {
+  const expected = { executable: '/runtime/bin/npm', version: '10.9.2' };
+  assert.throws(
+    () => assertNpmBinding({ ...expected, version: '11.0.0' }, expected),
+    /npm version drifted/,
+  );
+});
 
 test('artifact validation rejects a missing emitted export target', async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), 'pdpp-read-core-missing-target-'));
@@ -17,6 +55,18 @@ test('artifact validation rejects a missing emitted export target', async (t) =>
     assertManifestTargets({ exports: { '.': './dist/missing.js' } }, root),
     /ENOENT/,
   );
+});
+
+test('artifact validation rejects dangling package targets', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pdpp-read-core-dangling-target-'));
+  t.after(() => rm(root, { force: true, recursive: true }));
+  await mkdir(path.join(root, 'dist'));
+  await writeFile(path.join(root, 'dist/index.js'), 'export {};\n');
+  await writeFile(path.join(root, 'index.js'), 'export {};\n');
+
+  const manifest = { exports: { '.': './dist/index.js' }, main: './index.js' };
+  await assertManifestTargets(manifest, root);
+  assert.throws(() => assertPackedFiles(['dist/index.js'], manifest), /missing packed main target/);
 });
 
 test('artifact validation rejects source-only package contents', () => {

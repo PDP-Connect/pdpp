@@ -9,6 +9,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
+import { resolveNpmRuntime, runNpm } from './npm-runtime.mjs';
+
 const execFileAsync = promisify(execFile);
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -16,18 +18,33 @@ export function exportedTargets(manifest) {
   return Object.values(manifest.exports ?? {}).flatMap((target) => (typeof target === 'string' ? [target] : []));
 }
 
+export function declaredFileTargets(manifest) {
+  const targets = exportedTargets(manifest).map((target) => ['exports', target]);
+  if (typeof manifest.main === 'string') targets.push(['main', manifest.main]);
+  if (typeof manifest.types === 'string') targets.push(['types', manifest.types]);
+  const binTargets = typeof manifest.bin === 'string' ? [manifest.bin] : Object.values(manifest.bin ?? {});
+  for (const target of binTargets) {
+    if (typeof target === 'string') targets.push(['bin', target]);
+  }
+  return targets;
+}
+
 export async function assertManifestTargets(manifest, root) {
   const targets = exportedTargets(manifest);
   assert.ok(targets.length > 0, 'package.json must declare at least one export target');
   for (const target of targets) {
     assert.match(target, /^\.\/dist\/.+\.js$/, `export target must be emitted JavaScript: ${target}`);
-    await stat(path.join(root, target));
+  }
+  for (const [field, target] of declaredFileTargets(manifest)) {
+    assert.equal(path.isAbsolute(target) || path.win32.isAbsolute(target), false, `${field} must be package-relative: ${target}`);
+    assert.equal(target.split(/[\\/]/).includes('..'), false, `${field} must stay within the package: ${target}`);
+    await stat(path.join(root, target.replace(/^\.\//, '')));
   }
 }
 
 export function assertPackedFiles(packedFiles, manifest) {
-  for (const target of exportedTargets(manifest)) {
-    assert.ok(packedFiles.includes(target.slice(2)), `missing packed export target: ${target}`);
+  for (const [field, target] of declaredFileTargets(manifest)) {
+    assert.ok(packedFiles.includes(target.replace(/^\.\//, '')), `missing packed ${field} target: ${target}`);
   }
 
   for (const file of packedFiles) {
@@ -42,36 +59,38 @@ export function assertPackedFiles(packedFiles, manifest) {
 
 export function parsePackInfo(output) {
   const jsonStart = output.search(/^\[\s*\{/m);
-  assert.notEqual(jsonStart, -1, `npm pack did not return JSON output:\n${output}`);
-  return JSON.parse(output.slice(jsonStart))[0];
+  return jsonStart === -1 ? null : JSON.parse(output.slice(jsonStart))[0];
 }
 
-export async function packAndInspect(root, manifest) {
-  const { stdout } = await execFileAsync('npm', ['pack', '--json', '--ignore-scripts'], { cwd: root });
+export async function packAndInspect(root, manifest, options = {}) {
+  const tarballFilename = `${manifest.name.replace(/^@/, '').replace('/', '-')}-${manifest.version}.tgz`;
+  const tarballPath = path.join(root, tarballFilename);
+  await rm(tarballPath, { force: true });
+  const npmRuntime = options.npmRuntime ?? await resolveNpmRuntime(options.env ?? process.env);
+  const { stdout } = await runNpm(npmRuntime, ['pack', '--json', '--ignore-scripts'], { cwd: root });
   const packInfo = parsePackInfo(stdout);
-  const tarballPath = path.join(root, packInfo.filename);
+  await stat(tarballPath);
   const { stdout: tarListing } = await execFileAsync('tar', ['-tzf', tarballPath]);
   const packedFiles = tarListing
     .split('\n')
     .filter(Boolean)
     .map((entry) => entry.replace(/^package\//, ''))
     .sort();
-  assert.deepEqual(packedFiles, packInfo.files.map((file) => file.path).sort(), 'npm and tar file lists must agree');
+  if (packInfo) {
+    assert.deepEqual(packedFiles, packInfo.files.map((file) => file.path).sort(), 'npm and tar file lists must agree');
+  }
   assertPackedFiles(packedFiles, manifest);
   const tarballHash = createHash('sha256').update(await readFile(tarballPath)).digest('hex');
-  return { packedFiles, tarballHash, tarballPath };
+  return { npmExecutable: npmRuntime.executable, npmVersion: npmRuntime.version, packedFiles, tarballHash, tarballPath };
 }
 
 async function main() {
   const manifest = JSON.parse(await readFile(path.join(packageRoot, 'package.json'), 'utf8'));
   assert.equal(manifest.types, undefined, 'read-core does not expose a declaration contract');
   await assertManifestTargets(manifest, packageRoot);
-  const source = await readFile(path.join(packageRoot, 'src/index.js'));
-  const emitted = await readFile(path.join(packageRoot, 'dist/index.js'));
-  assert.deepEqual(emitted, source, 'dist/index.js must be byte-identical to the public JS source');
-
-  const { packedFiles, tarballHash, tarballPath } = await packAndInspect(packageRoot, manifest);
+  const { npmExecutable, npmVersion, packedFiles, tarballHash, tarballPath } = await packAndInspect(packageRoot, manifest);
   try {
+    process.stdout.write(`Validated npm: ${npmExecutable} (${npmVersion})\n`);
     process.stdout.write(`Validated tarball sha256: ${tarballHash}\n`);
     process.stdout.write(`Validated tarball files (${packedFiles.length}): ${packedFiles.join(', ')}\n`);
   } finally {

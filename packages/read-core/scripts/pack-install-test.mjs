@@ -9,69 +9,60 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
-import { parsePackInfo } from './validate-package.mjs';
+import { resolveNpmRuntime, runNpm } from './npm-runtime.mjs';
+import { packAndInspect } from './validate-package.mjs';
+import { installedPackageProbeSource } from './public-api.mjs';
 
 const execFileAsync = promisify(execFile);
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const publicExportNames = [
-  'binaryFieldMetadata',
-  'buildRecordContentLadder',
-  'buildRecordSetContentLadder',
-  'decodeContentHandle',
-  'defaultEncodeResourceUri',
-  'encodeContentHandle',
-  'extractRecordRows',
-  'formatEnvelopeHandles',
-  'sanitizeRecordForEvidence',
-  'stableInlineJson',
-  'summarizeFieldWindowEvidence',
-  'summarizeRecordEvidence',
-  'truncateText',
-];
-
-async function run(command, args, options) {
-  return execFileAsync(command, args, { maxBuffer: 1024 * 1024, ...options });
-}
-
-async function main() {
-  const manifest = JSON.parse(await readFile(path.join(packageRoot, 'package.json'), 'utf8'));
-  const { stdout } = await run('npm', ['pack', '--json', '--ignore-scripts'], { cwd: packageRoot });
-  const packInfo = parsePackInfo(stdout);
-  const tarballPath = path.join(packageRoot, packInfo.filename);
+export async function runOfflineConsumerProbe({ packageRoot: root = packageRoot, manifest, env = process.env, nodePath = process.execPath, npmRuntime, expectedNodeVersion = process.version }) {
+  const resolvedNpmRuntime = npmRuntime ?? await resolveNpmRuntime(env);
+  const { packedFiles, tarballHash, tarballPath } = await packAndInspect(root, manifest, { npmRuntime: resolvedNpmRuntime });
   const tempRoot = await mkdtemp(path.join(tmpdir(), 'pdpp-read-core-pack-'));
   const projectDir = path.join(tempRoot, 'consumer');
 
   try {
     await mkdir(projectDir, { recursive: true });
-    await run('npm', ['init', '--yes'], { cwd: projectDir });
-    await run('npm', ['install', '--ignore-scripts', '--offline', tarballPath], { cwd: projectDir });
+    await runNpm(resolvedNpmRuntime, ['init', '--yes'], { cwd: projectDir });
+    await runNpm(resolvedNpmRuntime, ['install', '--ignore-scripts', '--offline', tarballPath], { cwd: projectDir });
 
-    const { stdout: dependencyTree } = await run('npm', ['ls', '--json', '--all'], { cwd: projectDir });
-    const installed = JSON.parse(dependencyTree).dependencies?.[manifest.name];
+    const { stdout: dependencyTree } = await runNpm(resolvedNpmRuntime, ['ls', '--json', '--all'], { cwd: projectDir });
+    const parsedTree = dependencyTree.trim() ? JSON.parse(dependencyTree) : null;
+    const installed = parsedTree
+      ? parsedTree.dependencies?.[manifest.name]
+      : JSON.parse(await readFile(path.join(projectDir, 'node_modules', ...manifest.name.split('/'), 'package.json'), 'utf8'));
     assert.equal(installed?.version, manifest.version, 'consumer must resolve the candidate package version');
+    const consumerTree = parsedTree ?? {
+      name: 'consumer',
+      version: '0.0.0',
+      dependencies: { [manifest.name]: installed },
+    };
 
     const probePath = path.join(projectDir, 'probe.mjs');
-    const probeSource = [
-      "import assert from 'node:assert/strict';",
-      "import { createRequire } from 'node:module';",
-      'const require = createRequire(import.meta.url);',
-      `const resolved = require.resolve(${JSON.stringify(manifest.name)});`,
-      'assert.match(resolved, /node_modules\\/@pdpp\\/read-core\\/dist\\/index\\.js$/);',
-      `const readCore = await import(${JSON.stringify(manifest.name)});`,
-      `assert.deepEqual(Object.keys(readCore).sort(), ${JSON.stringify(publicExportNames)}.sort());`,
-      `for (const name of ${JSON.stringify(publicExportNames)}) {`,
-      "  assert.equal(typeof readCore[name], 'function', 'missing imported export: ' + name);",
-      '}',
-      "process.stdout.write('resolved=' + resolved + '\\nexports=' + Object.keys(readCore).sort().join(',') + '\\n');",
-      '',
-    ].join('\n');
+    const probeSource = installedPackageProbeSource(manifest.name, expectedNodeVersion);
     await writeFile(probePath, probeSource);
-    const { stdout: probeOutput } = await run(process.execPath, [probePath], { cwd: projectDir });
-    process.stdout.write(`Installed consumer proof:\n${probeOutput}`);
+    const { stdout: probeOutput } = await execFileAsync(nodePath, [probePath], { cwd: projectDir, env: resolvedNpmRuntime.env });
+    return {
+      dependencyTree: consumerTree,
+      npmExecutable: resolvedNpmRuntime.executable,
+      npmVersion: resolvedNpmRuntime.version,
+      packedFiles,
+      probeOutput,
+      tarballHash,
+    };
   } finally {
     await rm(tarballPath, { force: true });
     await rm(tempRoot, { force: true, recursive: true });
   }
 }
 
-await main();
+async function main() {
+  const manifest = JSON.parse(await readFile(path.join(packageRoot, 'package.json'), 'utf8'));
+  const result = await runOfflineConsumerProbe({ manifest });
+  process.stdout.write(`Installed npm: ${result.npmExecutable} (${result.npmVersion})\n`);
+  process.stdout.write(`Installed consumer proof:\n${result.probeOutput}`);
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  await main();
+}

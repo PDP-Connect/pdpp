@@ -33,3 +33,9 @@ any adapter can render — the adapter decides how to present them.
 
 The package keeps a deliberately small, stable public API so adapters can build
 against it safely.
+
+## TypeScript declarations
+
+This package does not currently publish declaration files. Its public contract
+is the emitted JavaScript root export; declarations will be added only with an
+explicit typed API contract.
