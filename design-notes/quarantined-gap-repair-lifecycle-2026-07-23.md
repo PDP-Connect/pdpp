@@ -59,4 +59,3 @@ the chosen lifecycle into OpenSpec. The acceptance oracle must include
 SQLite/Postgres parity, permanent-terminal exclusion, one-shot concurrency,
 re-quarantine after another bounded failure, and health remaining incomplete
 until item-level recovery.
-
