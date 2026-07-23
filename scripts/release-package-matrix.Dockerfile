@@ -19,4 +19,4 @@ COPY pnpm-lock.yaml ./
 # The lockfile's package integrities bind this networked prefetch. The matrix
 # row then uses this store with `--offline` and Docker networking disabled.
 RUN pnpm fetch --frozen-lockfile --store-dir /pdpp-pnpm-store \
-  && chmod -R a+rX /pdpp-pnpm-store
+  && chmod -R a+rwX /pdpp-pnpm-store
