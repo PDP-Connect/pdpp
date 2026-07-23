@@ -191,3 +191,23 @@ and Postgres (`LEAST`) clamp branches; only the SQLite branch was proven.
 - [x] Wire the recovery-only override through Docker configuration; run focused
       Gmail tests, connector typecheck/lint, strict OpenSpec validation, and
       final diff review.
+
+## 13. Revision (Gmail hydration-stage discriminator, 2026-07-23)
+
+- [x] Classify IMAP download/source-iterator pull and blob uploader transport
+      (including consumer cancellation), HTTP
+      4xx, HTTP 5xx, invalid-success-response, and integrity-mismatch
+      failures with typed boundary errors; preserve the original cause and
+      leave `too_large` separate.
+- [x] Add an exact aggregate-only `attachment_hydration_failure_outcome` to
+      the existing terminal served-recovery `PROGRESS` event. Prove its six
+      counters sum exactly to `hydration_failed` and each failure increments
+      exactly one counter.
+- [x] Validate and preserve the exact allowlisted object through the existing
+      runtime progress spine; reject key, locator, filename, URL, message,
+      body, raw-status, credential, non-integer, and negative mutations.
+- [x] Preserve retry, quarantine, terminal, admission, and owner-action
+      behavior; prove composed Gmail/uploader stream-cap, source-pull,
+      cancellation, timer-window source/transport race, and pre-recorded
+      source-marker mismatch boundaries; run focused/full relevant tests,
+      typecheck, lint, strict OpenSpec validation, and final diff review.

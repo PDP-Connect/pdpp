@@ -278,7 +278,23 @@ export interface AttachmentRecoveryOutcomeProgress {
   served: number;
 }
 
+/**
+ * Aggregate-only failure-stage evidence for Gmail served attachment recovery.
+ * This intentionally excludes item identity, provider responses, and raw
+ * status values so the terminal progress event remains safe to persist.
+ */
+export interface AttachmentHydrationFailureOutcomeProgress {
+  blob_upload_http_4xx: number;
+  blob_upload_http_5xx: number;
+  blob_upload_integrity_failed: number;
+  blob_upload_invalid_response: number;
+  blob_upload_transport_failed: number;
+  imap_download_failed: number;
+  object: "attachment_hydration_failure_outcome";
+}
+
 export interface ProgressExtra {
+  attachment_hydration_failure_outcome?: AttachmentHydrationFailureOutcomeProgress;
   attachment_recovery_outcome?: AttachmentRecoveryOutcomeProgress;
   count?: number;
   stream?: string;
@@ -302,6 +318,7 @@ export type EmittedMessage =
       count?: number;
       stream?: string;
       total?: number;
+      attachment_hydration_failure_outcome?: AttachmentHydrationFailureOutcomeProgress;
       attachment_recovery_outcome?: AttachmentRecoveryOutcomeProgress;
       provider_budget?: ProviderBudgetProgress;
       collection_rate?: CollectionRateProgress;

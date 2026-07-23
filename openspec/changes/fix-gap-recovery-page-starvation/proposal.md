@@ -245,3 +245,26 @@ Acceptance target: with the measured 1,889,782-byte shape and no override,
 three served gaps admit and recover exactly two (3,779,564 bytes) and leave
 one as truthful `run_cap_deferred`. A first attachment larger than 4 MiB still
 admits exactly one, and the 32-unique-message lookup cap remains unchanged.
+
+### Revision (hydration-stage discriminator, 2026-07-23)
+
+The controlled recovery audit proves `hydration_failed` is accounted correctly
+but cannot distinguish IMAP retrieval from blob-path failure. Add a second
+fixed-shape aggregate to the same final served-attachment recovery `PROGRESS`
+summary: `attachment_hydration_failure_outcome`. Its allowlist is
+`imap_download_failed`, `blob_upload_transport_failed`,
+`blob_upload_http_4xx`, `blob_upload_http_5xx`,
+`blob_upload_invalid_response`, and `blob_upload_integrity_failed` (plus its
+fixed object discriminator). The runtime validates and preserves it on the
+existing `run.progress_reported` spine event.
+
+The stages come from typed IMAP and blob-uploader catch boundaries. They do
+not use error-message matching, retain raw status or provider data, change the
+attachment record shape, or change retry, quarantine, terminal, admission, or
+owner-action behavior. A non-durable typed hydration result carries the stage
+to recovery accounting; `ReferenceBlobUploadFailure` retains its original
+cause for local classification, while consumer cancellation remains transport
+rather than a source-iterator failure. A fetch rejection is attributed to a
+source pull only when that pull has already failed and its preserved cause
+matches; timing alone is not evidence. `too_large` remains a separate
+local-policy outcome.

@@ -4329,6 +4329,15 @@ rl.on('line', (line) => {
       hydration_failed: 0,
       run_cap_deferred: 3,
     };
+    const attachmentHydrationFailureOutcome = {
+      object: 'attachment_hydration_failure_outcome',
+      imap_download_failed: 1,
+      blob_upload_transport_failed: 2,
+      blob_upload_http_4xx: 3,
+      blob_upload_http_5xx: 4,
+      blob_upload_invalid_response: 5,
+      blob_upload_integrity_failed: 6,
+    };
 
     const { connectorPath, cleanup } = createTestConnector([
       {
@@ -4337,6 +4346,7 @@ rl.on('line', (line) => {
         message: 'Collection rate 40/min (interval 1500ms; ceiling 60/min)',
         collection_rate: collectionRate,
         attachment_recovery_outcome: attachmentRecoveryOutcome,
+        attachment_hydration_failure_outcome: attachmentHydrationFailureOutcome,
       },
       { type: 'DONE', status: 'succeeded', records_emitted: 0 },
     ]);
@@ -4361,6 +4371,7 @@ rl.on('line', (line) => {
       assert.equal(seenProgress.length, 1);
       assert.deepEqual(seenProgress[0].collection_rate, collectionRate);
       assert.deepEqual(seenProgress[0].attachment_recovery_outcome, attachmentRecoveryOutcome);
+      assert.deepEqual(seenProgress[0].attachment_hydration_failure_outcome, attachmentHydrationFailureOutcome);
 
       // collection_rate must appear in the run.progress_reported spine event.
       const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
@@ -4370,6 +4381,8 @@ rl.on('line', (line) => {
         'collection_rate must be persisted in the spine event data');
       assert.deepEqual(progressEvent.data.attachment_recovery_outcome, attachmentRecoveryOutcome,
         'the aggregate recovery outcome must be preserved on the existing progress spine event');
+      assert.deepEqual(progressEvent.data.attachment_hydration_failure_outcome, attachmentHydrationFailureOutcome,
+        'the aggregate hydration failure stages must be preserved on the existing progress spine event');
 
       // collection_rate must also appear on the terminal event for post-run
       // projection (the reference→snapshot plumbing hop).

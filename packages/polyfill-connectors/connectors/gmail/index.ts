@@ -45,6 +45,7 @@ import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerp
 import { isMainModule } from "../../src/is-main-module.ts";
 import {
   makeReferenceBlobUploader as makeSharedReferenceBlobUploader,
+  ReferenceBlobUploadFailure,
   runtimeBlobUploadAvailable as sharedRuntimeBlobUploadAvailable,
 } from "../../src/reference-blob-uploader.ts";
 import { stringifyForJsonl } from "../../src/safe-emit.ts";
@@ -275,7 +276,28 @@ export type UploadAttachmentBlobFn = (args: {
   stream: "attachments";
 }) => Promise<BlobRef>;
 
-export type HydrateAttachmentFn = (msg: FetchMessageObject, attachment: AttachmentRecord) => Promise<AttachmentRecord>;
+type AttachmentHydrationFailureStage =
+  | "blob_upload_http_4xx"
+  | "blob_upload_http_5xx"
+  | "blob_upload_integrity_failed"
+  | "blob_upload_invalid_response"
+  | "blob_upload_transport_failed"
+  | "imap_download_failed";
+
+/** Aggregate-safe taxonomy retained only until recovery telemetry settles. */
+interface AttachmentHydrationFailure {
+  readonly stage: AttachmentHydrationFailureStage;
+}
+
+export interface AttachmentHydrationResult {
+  readonly failure: AttachmentHydrationFailure | null;
+  readonly record: AttachmentRecord;
+}
+
+export type HydrateAttachmentFn = (
+  msg: FetchMessageObject,
+  attachment: AttachmentRecord
+) => Promise<AttachmentHydrationResult>;
 
 export interface AttachmentBackfillSummary {
   failed: number;
@@ -544,7 +566,8 @@ async function emitAttachmentRecords(
   }
   const recoveredAttachmentGapIds = deps.recoveredAttachmentGapIds ?? new Set<string>();
   for (const a of attachments) {
-    const hydrated = await deps.hydrateAttachment(msg, a);
+    const hydration = await deps.hydrateAttachment(msg, a);
+    const hydrated = hydration.record;
     // Record the outcome BEFORE emitting so the coverage denominator counts
     // every attempt even if the emit is scope-filtered downstream.
     if (deps.attachmentCoverage) {
@@ -1328,6 +1351,7 @@ export interface AttachmentBackfillCandidate {
 export interface ServedAttachmentRecoverySummary {
   admitted: number;
   admitted_bytes: number;
+  attachment_hydration_failure_outcome: AttachmentHydrationFailureOutcome;
   attempted: number;
   hydration_failed: number;
   lookup_miss: number;
@@ -1335,6 +1359,26 @@ export interface ServedAttachmentRecoverySummary {
   recovered: number;
   run_cap_deferred: number;
   served: number;
+}
+
+interface AttachmentHydrationFailureOutcome {
+  blob_upload_http_4xx: number;
+  blob_upload_http_5xx: number;
+  blob_upload_integrity_failed: number;
+  blob_upload_invalid_response: number;
+  blob_upload_transport_failed: number;
+  imap_download_failed: number;
+}
+
+function createAttachmentHydrationFailureOutcome(): AttachmentHydrationFailureOutcome {
+  return {
+    blob_upload_http_4xx: 0,
+    blob_upload_http_5xx: 0,
+    blob_upload_integrity_failed: 0,
+    blob_upload_invalid_response: 0,
+    blob_upload_transport_failed: 0,
+    imap_download_failed: 0,
+  };
 }
 
 type GmailMessageLookupClient = Pick<ImapFlow, "search" | "fetchOne">;
@@ -1468,6 +1512,7 @@ async function emitServedAttachmentRecoveryProgress(
 interface ServedAttachmentRecoveryState {
   admitted: number;
   admittedBytesTotal: number;
+  attachmentHydrationFailureOutcome: AttachmentHydrationFailureOutcome;
   attempted: number;
   hydrationFailed: number;
   lookupMiss: number;
@@ -1507,8 +1552,9 @@ async function settleServedAttachmentRecoveryAttempt(
     emitRecord: EmitRecordFn;
   },
   state: ServedAttachmentRecoveryState,
-  hydrated: AttachmentRecord
+  hydration: AttachmentHydrationResult
 ): Promise<void> {
+  const hydrated = hydration.record;
   if (deps.attachmentCoverage) {
     recordAttachmentCoverage(deps.attachmentCoverage, hydrated);
   }
@@ -1529,7 +1575,11 @@ async function settleServedAttachmentRecoveryAttempt(
     }
   }
   if (hydrated.hydration_status === "failed") {
+    if (!hydration.failure) {
+      throw new Error("failed attachment hydration is missing a typed failure stage");
+    }
     state.hydrationFailed += 1;
+    state.attachmentHydrationFailureOutcome[hydration.failure.stage] += 1;
   }
   // Emit bounded, non-secret progress as each admitted attempt settles so a
   // long single hydration is visible before the whole recovery lane ends.
@@ -1658,8 +1708,8 @@ async function processServedAttachmentRecoveryGap(
     recovered: state.recovered,
   });
 
-  const hydrated = await deps.hydrateAttachment(loadedMessage, attachment);
-  await settleServedAttachmentRecoveryAttempt(deps, state, hydrated);
+  const hydration = await deps.hydrateAttachment(loadedMessage, attachment);
+  await settleServedAttachmentRecoveryAttempt(deps, state, hydration);
   return false;
 }
 
@@ -1680,6 +1730,7 @@ export async function recoverServedAttachmentGaps(
       admitted: 0,
       admitted_bytes: 0,
       attempted: 0,
+      attachment_hydration_failure_outcome: createAttachmentHydrationFailureOutcome(),
       hydration_failed: 0,
       lookup_miss: 0,
       metadata_lookups: 0,
@@ -1692,6 +1743,7 @@ export async function recoverServedAttachmentGaps(
   const recoveryState: ServedAttachmentRecoveryState = {
     admitted: 0,
     admittedBytesTotal: 0,
+    attachmentHydrationFailureOutcome: createAttachmentHydrationFailureOutcome(),
     attempted: 0,
     hydrationFailed: 0,
     lookupMiss: 0,
@@ -1722,6 +1774,7 @@ export async function recoverServedAttachmentGaps(
     admitted: recoveryState.admitted,
     admitted_bytes: recoveryState.admittedBytesTotal,
     attempted: recoveryState.attempted,
+    attachment_hydration_failure_outcome: recoveryState.attachmentHydrationFailureOutcome,
     hydration_failed: recoveryState.hydrationFailed,
     lookup_miss: recoveryState.lookupMiss,
     metadata_lookups: recoveryState.metadataLookups,
@@ -1753,6 +1806,7 @@ async function recoverServedAttachmentGapsIfRequested(
     hydrateAttachment: deps.hydrateAttachment,
     recoveredAttachmentGapIds: deps.recoveredAttachmentGapIds,
   });
+  const { attachment_hydration_failure_outcome, ...attachmentRecoveryOutcome } = recoverySummary;
   await deps.emitProtocol({
     type: "PROGRESS",
     stream: "attachments",
@@ -1761,7 +1815,11 @@ async function recoverServedAttachmentGapsIfRequested(
     total: recoverySummary.admitted,
     attachment_recovery_outcome: {
       object: "attachment_recovery_outcome",
-      ...recoverySummary,
+      ...attachmentRecoveryOutcome,
+    },
+    attachment_hydration_failure_outcome: {
+      object: "attachment_hydration_failure_outcome",
+      ...attachment_hydration_failure_outcome,
     },
   });
 }
@@ -1954,18 +2012,48 @@ function boundedHydrationError(err: unknown): string {
   return raw.slice(0, HYDRATION_ERROR_MAX_CHARS);
 }
 
-function attachmentWithHydrationFailure(
+function hydrationFailureResult(
   attachment: AttachmentRecord,
   status: Exclude<AttachmentHydrationStatus, "hydrated">,
-  err: unknown
-): AttachmentRecord {
+  err: unknown,
+  failure: AttachmentHydrationFailure | null = null
+): AttachmentHydrationResult {
   return {
-    ...attachment,
-    blob_ref: null,
-    content_sha256: null,
-    hydration_status: status,
-    hydration_error: boundedHydrationError(err),
+    failure,
+    record: {
+      ...attachment,
+      blob_ref: null,
+      content_sha256: null,
+      hydration_status: status,
+      hydration_error: boundedHydrationError(err),
+    },
   };
+}
+
+function originalHydrationError(err: unknown): unknown {
+  return err instanceof ReferenceBlobUploadFailure && err.cause !== undefined ? err.cause : err;
+}
+
+function hydrationFailureForBlobUpload(err: unknown): AttachmentHydrationFailure | null {
+  if (!(err instanceof ReferenceBlobUploadFailure)) {
+    return null;
+  }
+  switch (err.kind) {
+    case "http_4xx":
+      return { stage: "blob_upload_http_4xx" };
+    case "http_5xx":
+      return { stage: "blob_upload_http_5xx" };
+    case "invalid_response":
+      return { stage: "blob_upload_invalid_response" };
+    case "integrity_mismatch":
+      return { stage: "blob_upload_integrity_failed" };
+    case "source_content_failed":
+      return { stage: "imap_download_failed" };
+    case "transport":
+      return { stage: "blob_upload_transport_failed" };
+    default:
+      return null;
+  }
 }
 
 /**
@@ -2047,21 +2135,26 @@ export function makeAttachmentHydrator(args: {
   const maxBytes = args.maxBytes ?? DEFAULT_MAX_ATTACHMENT_BYTES;
   return async (msg, attachment) => {
     if (typeof attachment.size_bytes === "number" && attachment.size_bytes > maxBytes) {
-      return attachmentWithHydrationFailure(
+      return hydrationFailureResult(
         attachment,
         "too_large",
         new AttachmentTooLargeError(attachment.size_bytes, maxBytes)
       );
     }
+    let downloaded: AttachmentDownload;
     try {
-      const downloaded = await args.fetchAttachment(msg, attachment);
-      if (typeof downloaded.expectedSize === "number" && downloaded.expectedSize > maxBytes) {
-        return attachmentWithHydrationFailure(
-          attachment,
-          "too_large",
-          new AttachmentTooLargeError(downloaded.expectedSize, maxBytes)
-        );
-      }
+      downloaded = await args.fetchAttachment(msg, attachment);
+    } catch (err) {
+      return hydrationFailureResult(attachment, "failed", err, { stage: "imap_download_failed" });
+    }
+    if (typeof downloaded.expectedSize === "number" && downloaded.expectedSize > maxBytes) {
+      return hydrationFailureResult(
+        attachment,
+        "too_large",
+        new AttachmentTooLargeError(downloaded.expectedSize, maxBytes)
+      );
+    }
+    try {
       const guarded = enforceMaxBytes(downloaded.content, maxBytes);
       const blobRef = await args.uploadBlob({
         content: guarded,
@@ -2071,18 +2164,23 @@ export function makeAttachmentHydrator(args: {
         stream: "attachments",
       });
       return {
-        ...attachment,
-        blob_ref: blobRef,
-        content_sha256: blobRef.sha256,
-        content_type: blobRef.mime_type,
-        size_bytes: blobRef.size_bytes,
-        hydration_status: "hydrated",
-        hydration_error: null,
+        failure: null,
+        record: {
+          ...attachment,
+          blob_ref: blobRef,
+          content_sha256: blobRef.sha256,
+          content_type: blobRef.mime_type,
+          size_bytes: blobRef.size_bytes,
+          hydration_status: "hydrated",
+          hydration_error: null,
+        },
       };
     } catch (err) {
-      const status: Exclude<AttachmentHydrationStatus, "hydrated"> =
-        err instanceof AttachmentTooLargeError ? "too_large" : "failed";
-      return attachmentWithHydrationFailure(attachment, status, err);
+      const originalError = originalHydrationError(err);
+      if (originalError instanceof AttachmentTooLargeError) {
+        return hydrationFailureResult(attachment, "too_large", originalError);
+      }
+      return hydrationFailureResult(attachment, "failed", err, hydrationFailureForBlobUpload(err));
     }
   };
 }

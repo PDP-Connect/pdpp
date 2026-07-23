@@ -77,6 +77,15 @@ const ATTACHMENT_RECOVERY_OUTCOME_FIELDS = new Set([
   'run_cap_deferred',
   'served',
 ]);
+const ATTACHMENT_HYDRATION_FAILURE_OUTCOME_FIELDS = new Set([
+  'blob_upload_http_4xx',
+  'blob_upload_http_5xx',
+  'blob_upload_integrity_failed',
+  'blob_upload_invalid_response',
+  'blob_upload_transport_failed',
+  'imap_download_failed',
+  'object',
+]);
 
 function validateCollectionRateRequiredNumbers(collectionRate) {
   for (const fieldName of ['ceiling_interval_ms', 'ceiling_rate_per_min', 'current_interval_ms', 'effective_rate_per_min']) {
@@ -127,6 +136,30 @@ export function validateProgressAttachmentRecoveryOutcome(outcome) {
     if (fieldName === 'object') continue;
     if (!Number.isSafeInteger(outcome[fieldName]) || outcome[fieldName] < 0) {
       throw new Error(`Connector emitted invalid PROGRESS.attachment_recovery_outcome.${fieldName}: expected non-negative integer`);
+    }
+  }
+}
+
+export function validateProgressAttachmentHydrationFailureOutcome(outcome) {
+  if (!outcome || typeof outcome !== 'object' || Array.isArray(outcome)) {
+    throw new Error('Connector emitted invalid PROGRESS.attachment_hydration_failure_outcome: expected object');
+  }
+  if (outcome.object !== 'attachment_hydration_failure_outcome') {
+    throw new Error('Connector emitted invalid PROGRESS.attachment_hydration_failure_outcome.object');
+  }
+  const fields = Object.keys(outcome);
+  if (
+    fields.length !== ATTACHMENT_HYDRATION_FAILURE_OUTCOME_FIELDS.size
+    || fields.some((field) => !ATTACHMENT_HYDRATION_FAILURE_OUTCOME_FIELDS.has(field))
+  ) {
+    throw new Error('Connector emitted invalid PROGRESS.attachment_hydration_failure_outcome: unexpected field');
+  }
+  for (const fieldName of ATTACHMENT_HYDRATION_FAILURE_OUTCOME_FIELDS) {
+    if (fieldName === 'object') continue;
+    if (!Number.isSafeInteger(outcome[fieldName]) || outcome[fieldName] < 0) {
+      throw new Error(
+        `Connector emitted invalid PROGRESS.attachment_hydration_failure_outcome.${fieldName}: expected non-negative integer`
+      );
     }
   }
 }

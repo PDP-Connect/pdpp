@@ -170,3 +170,33 @@ or attachment-size safety.
 - **THEN** the connector SHALL admit and attempt that one attachment
 - **AND** it SHALL not hydrate a following attachment solely because the first
   attachment exceeded the budget.
+
+### Requirement: Gmail SHALL emit typed aggregate hydration failure stages without changing recovery behavior
+
+Gmail's existing terminal served-attachment recovery `PROGRESS` summary SHALL
+include `attachment_hydration_failure_outcome` with exactly the fixed object
+discriminator and non-negative integer fields `imap_download_failed`,
+`blob_upload_transport_failed`, `blob_upload_http_4xx`,
+`blob_upload_http_5xx`, `blob_upload_invalid_response`, and
+`blob_upload_integrity_failed`. The six counters SHALL sum exactly to
+`attachment_recovery_outcome.hydration_failed`. Each failed hydration attempt
+SHALL increment exactly one stage. `too_large` SHALL remain outside this
+outcome.
+
+The stage SHALL be derived from typed IMAP-download/source-stream and
+blob-uploader catch boundaries, not error-message matching. The object SHALL
+NOT contain a key, locator, filename, URL, message, body, raw HTTP status,
+credential, provider content, or any other field. This evidence SHALL NOT
+change retry, quarantine, terminal, admission, or owner-action behavior.
+
+#### Scenario: Typed stages preserve a re-failed recovery attempt
+
+- **WHEN** an admitted served attachment fails at one typed hydration boundary
+- **THEN** Gmail SHALL increment that boundary's one aggregate counter
+- **AND** it SHALL NOT emit `DETAIL_GAP_RECOVERED` or change the failed
+  attachment's existing retry behavior.
+
+#### Scenario: A successful or too-large attachment does not enter the stage outcome
+
+- **WHEN** an admitted served attachment hydrates successfully or is too large
+- **THEN** Gmail SHALL NOT increment any hydration failure-stage counter.

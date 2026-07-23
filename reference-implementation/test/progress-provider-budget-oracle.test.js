@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  validateProgressAttachmentHydrationFailureOutcome,
   validateProgressAttachmentRecoveryOutcome,
   validateProgressProviderBudget,
 } from '../runtime/progress-validators.js';
@@ -33,6 +34,16 @@ const validAttachmentRecoveryOutcome = {
   recovered: 2,
   run_cap_deferred: 3,
   served: 5,
+};
+
+const validAttachmentHydrationFailureOutcome = {
+  blob_upload_http_4xx: 1,
+  blob_upload_http_5xx: 2,
+  blob_upload_integrity_failed: 3,
+  blob_upload_invalid_response: 4,
+  blob_upload_transport_failed: 5,
+  imap_download_failed: 6,
+  object: 'attachment_hydration_failure_outcome',
 };
 
 function expectInvalidProviderBudget(value, messageFragment) {
@@ -116,5 +127,31 @@ test('validateProgressAttachmentRecoveryOutcome: rejects private fields and non-
   assert.throws(
     () => validateProgressAttachmentRecoveryOutcome({ ...validAttachmentRecoveryOutcome, lookup_miss: 0.5 }),
     /lookup_miss: expected non-negative integer/,
+  );
+});
+
+test('validateProgressAttachmentHydrationFailureOutcome: accepts only the complete aggregate-only stage shape', () => {
+  assert.doesNotThrow(() => validateProgressAttachmentHydrationFailureOutcome(validAttachmentHydrationFailureOutcome));
+  for (const privateField of ['record_key', 'detail_locator', 'filename', 'url', 'message', 'body', 'http_status', 'credential']) {
+    assert.throws(
+      () => validateProgressAttachmentHydrationFailureOutcome({ ...validAttachmentHydrationFailureOutcome, [privateField]: 'private-value' }),
+      /unexpected field/,
+      `${privateField} must not cross the terminal telemetry boundary`,
+    );
+  }
+});
+
+test('validateProgressAttachmentHydrationFailureOutcome: rejects an invalid discriminator and non-integer count', () => {
+  assert.throws(
+    () => validateProgressAttachmentHydrationFailureOutcome({ ...validAttachmentHydrationFailureOutcome, object: 'wrong' }),
+    /attachment_hydration_failure_outcome.object/,
+  );
+  assert.throws(
+    () => validateProgressAttachmentHydrationFailureOutcome({ ...validAttachmentHydrationFailureOutcome, imap_download_failed: 0.5 }),
+    /imap_download_failed: expected non-negative integer/,
+  );
+  assert.throws(
+    () => validateProgressAttachmentHydrationFailureOutcome({ ...validAttachmentHydrationFailureOutcome, imap_download_failed: -1 }),
+    /imap_download_failed: expected non-negative integer/,
   );
 });

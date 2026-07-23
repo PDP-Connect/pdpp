@@ -28,6 +28,7 @@ import { createDetailGapPageReader, validateDetailGapsPageRequest } from './deta
 import { validateDoneError, validateDoneExitCode, validateDoneRecordsEmitted, validateDoneStatus } from './done-validators.js';
 import {
   validateProgressAttachmentRecoveryOutcome,
+  validateProgressAttachmentHydrationFailureOutcome,
   validateProgressCollectionRate,
   validateProgressProviderBudget,
 } from './progress-validators.js';
@@ -556,6 +557,9 @@ function validateProgressMessage(msg, scopeByStream) {
   }
   if (msg.attachment_recovery_outcome != null) {
     validateProgressAttachmentRecoveryOutcome(msg.attachment_recovery_outcome);
+  }
+  if (msg.attachment_hydration_failure_outcome != null) {
+    validateProgressAttachmentHydrationFailureOutcome(msg.attachment_hydration_failure_outcome);
   }
 }
 
@@ -3030,6 +3034,9 @@ export async function runConnector(opts) {
               ...(msg.attachment_recovery_outcome == null
                 ? {}
                 : { attachment_recovery_outcome: msg.attachment_recovery_outcome }),
+              ...(msg.attachment_hydration_failure_outcome == null
+                ? {}
+                : { attachment_hydration_failure_outcome: msg.attachment_hydration_failure_outcome }),
             },
           });
           if (msg.collection_rate != null) {

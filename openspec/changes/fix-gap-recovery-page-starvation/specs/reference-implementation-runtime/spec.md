@@ -187,6 +187,32 @@ invalid count as a connector protocol violation.
   outside the fixed aggregate allowlist
 - **THEN** the runtime SHALL reject the message before it reaches the spine.
 
+### Requirement: The runtime SHALL preserve only validated aggregate hydration failure stages on existing progress events
+
+When a connector includes `attachment_hydration_failure_outcome` on a
+`PROGRESS` message, the runtime SHALL accept only its fixed discriminator and
+the exact non-negative integer fields `imap_download_failed`,
+`blob_upload_transport_failed`, `blob_upload_http_4xx`,
+`blob_upload_http_5xx`, `blob_upload_invalid_response`, and
+`blob_upload_integrity_failed`. The runtime SHALL preserve a valid object on
+the existing `run.progress_reported` event and SHALL reject every extra field,
+identifier, locator, filename, URL, message, body, raw status, credential,
+provider content, or invalid count as a connector protocol violation.
+
+#### Scenario: Aggregate failure stages reach the existing spine without a new event type
+
+- **WHEN** a connector emits a valid
+  `PROGRESS.attachment_hydration_failure_outcome`
+- **THEN** the runtime SHALL record it on that same `run.progress_reported`
+  event
+- **AND** it SHALL NOT create a new durable subsystem or event type.
+
+#### Scenario: Hydration failure stages cannot carry private detail
+
+- **WHEN** a connector emits an `attachment_hydration_failure_outcome` with a
+  field outside the fixed aggregate allowlist
+- **THEN** the runtime SHALL reject the message before it reaches the spine.
+
 #### Scenario: Success awaits accounting
 
 - **WHEN** a connector reports `DONE:succeeded` with outstanding leases

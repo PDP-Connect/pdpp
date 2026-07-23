@@ -86,6 +86,7 @@ export type {
   AssistanceRequest,
   AssistanceResponseContract,
   AssistanceSensitivity,
+  AttachmentHydrationFailureOutcomeProgress,
   AttachmentRecoveryOutcomeProgress,
   CollectionRateProgress,
   DetailCoverageMessage,
