@@ -1,10 +1,10 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import test from 'node:test';
-import assert from 'node:assert/strict';
+import assert from "node:assert/strict";
+import test from "node:test";
 
-import { publicManifests } from '../src/public/index.ts';
+import { publicManifests } from "../src/public/index.ts";
 
 function findOperation(operationId) {
   const operation = publicManifests.find((manifest) => manifest.id === operationId);
@@ -12,77 +12,57 @@ function findOperation(operationId) {
   return operation;
 }
 
-test('listStreams summary directs LLMs to /v1/schema for field capabilities', () => {
-  const operation = findOperation('listStreams');
-  assert.match(
-    operation.summary,
-    /\/v1\/schema/,
-    'listStreams.summary must reference /v1/schema',
-  );
+test("listStreams summary directs LLMs to /v1/schema for field capabilities", () => {
+  const operation = findOperation("listStreams");
+  assert.match(operation.summary, /\/v1\/schema/, "listStreams.summary must reference /v1/schema");
   assert.match(
     operation.summary,
     /field_capabilities|filter/i,
-    'listStreams.summary must explain why /v1/schema matters (filter / field_capabilities)',
+    "listStreams.summary must explain why /v1/schema matters (filter / field_capabilities)"
   );
 });
 
-test('getStreamMetadata summary directs LLMs to /v1/schema for field capabilities', () => {
-  const operation = findOperation('getStreamMetadata');
-  assert.match(
-    operation.summary,
-    /\/v1\/schema/,
-    'getStreamMetadata.summary must reference /v1/schema',
-  );
+test("getStreamMetadata summary directs LLMs to /v1/schema for field capabilities", () => {
+  const operation = findOperation("getStreamMetadata");
+  assert.match(operation.summary, /\/v1\/schema/, "getStreamMetadata.summary must reference /v1/schema");
   assert.match(
     operation.summary,
     /field_capabilities|filter/i,
-    'getStreamMetadata.summary must explain why /v1/schema matters',
+    "getStreamMetadata.summary must explain why /v1/schema matters"
   );
 });
 
-test('getSchema advertises compact token-efficient discovery controls', () => {
-  const operation = findOperation('getSchema');
-  assert.match(
-    operation.summary,
-    /view=compact/,
-    'getSchema.summary must tell agents about compact schema discovery',
-  );
+test("getSchema advertises compact token-efficient discovery controls", () => {
+  const operation = findOperation("getSchema");
+  assert.match(operation.summary, /view=compact/, "getSchema.summary must tell agents about compact schema discovery");
   assert.match(
     operation.summary,
     /stream=<name>/,
-    'getSchema.summary must tell agents about stream-scoped schema discovery',
+    "getSchema.summary must tell agents about stream-scoped schema discovery"
   );
-  assert.ok(operation.request?.query?.properties?.view, 'getSchema query must declare view');
-  assert.ok(operation.request?.query?.properties?.stream, 'getSchema query must declare stream');
+  assert.ok(operation.request?.query?.properties?.view, "getSchema query must declare view");
+  assert.ok(operation.request?.query?.properties?.stream, "getSchema query must declare stream");
 });
 
-test('searchRecordsHybrid summary references hybrid_pagination_supported and lexical fallback', () => {
-  const operation = findOperation('searchRecordsHybrid');
+test("searchRecordsHybrid summary references hybrid_pagination_supported and lexical fallback", () => {
+  const operation = findOperation("searchRecordsHybrid");
   assert.match(
     operation.summary,
     /hybrid_pagination_supported/,
-    'searchRecordsHybrid.summary must name the hybrid_pagination_supported discovery hint',
+    "searchRecordsHybrid.summary must name the hybrid_pagination_supported discovery hint"
   );
   assert.match(
     operation.summary,
     /lexical|\/v1\/search\b/,
-    'searchRecordsHybrid.summary must recommend the lexical fallback for cursor pagination',
+    "searchRecordsHybrid.summary must recommend the lexical fallback for cursor pagination"
   );
 });
 
-test('ListRecordsQuerySchema.filter description references field_capabilities and /v1/schema', () => {
-  const listRecords = findOperation('listRecords');
+test("ListRecordsQuerySchema.filter description references field_capabilities and /v1/schema", () => {
+  const listRecords = findOperation("listRecords");
   const filterSchema = listRecords.request?.query?.properties?.filter;
-  assert.ok(filterSchema, 'listRecords query must declare a filter property');
-  assert.equal(typeof filterSchema.description, 'string');
-  assert.match(
-    filterSchema.description,
-    /field_capabilities/,
-    'filter.description must name field_capabilities',
-  );
-  assert.match(
-    filterSchema.description,
-    /\/v1\/schema/,
-    'filter.description must reference /v1/schema',
-  );
+  assert.ok(filterSchema, "listRecords query must declare a filter property");
+  assert.equal(typeof filterSchema.description, "string");
+  assert.match(filterSchema.description, /field_capabilities/, "filter.description must name field_capabilities");
+  assert.match(filterSchema.description, /\/v1\/schema/, "filter.description must reference /v1/schema");
 });

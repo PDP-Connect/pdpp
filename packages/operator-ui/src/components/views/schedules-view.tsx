@@ -25,8 +25,8 @@ export function SchedulesView({
   summaries,
   unscheduledDescription,
 }: SchedulesViewProps) {
-  const withSchedule = summaries.filter((s) => s.schedule != null);
-  const unscheduled = summaries.filter((s) => s.schedule == null);
+  const withSchedule = summaries.filter((s) => s.schedule !== null);
+  const unscheduled = summaries.filter((s) => s.schedule === null);
   const needsHumanCount = summaries.filter((s) => s.schedule?.human_attention_needed).length;
 
   return (

@@ -99,8 +99,8 @@ export function buildStorageFootprintModel(
     return {
       measured: false,
       physicalLabel: "—",
-      retainedLabel,
       relations: [],
+      retainedLabel,
       unmeasuredNote: UNMEASURED_NOTE,
     };
   }
@@ -112,14 +112,14 @@ export function buildStorageFootprintModel(
     if (name === null || !isFiniteNonNegative(relation?.bytes)) {
       continue;
     }
-    relations.push({ name, bytes: relation.bytes, label: formatStorageBytes(relation.bytes) });
+    relations.push({ bytes: relation.bytes, label: formatStorageBytes(relation.bytes), name });
   }
 
   return {
     measured: true,
     physicalLabel: formatStorageBytes(physical),
-    retainedLabel,
     relations,
+    retainedLabel,
     unmeasuredNote: null,
   };
 }

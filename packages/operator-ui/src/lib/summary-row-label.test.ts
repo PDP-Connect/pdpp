@@ -24,7 +24,7 @@ test("runRowLabel leads with the connector, never the run id", () => {
 
 test("runRowLabel falls back source -> provider -> 'Run'", () => {
   assert.equal(
-    runRowLabel({ source: { kind: "connector", id: "ynab" } }),
+    runRowLabel({ source: { id: "ynab", kind: "connector" } }),
     "ynab",
     "uses the source connector key when connector_id is absent"
   );
@@ -39,13 +39,13 @@ test("runRowLabel falls back source -> provider -> 'Run'", () => {
 
 test("runRowLabel uses the source display label without technical kind prefixes", () => {
   // Connector-backed source rows must not carry technical `connector:` noise.
-  const label = runRowLabel({ source: { kind: "connector", id: "gmail" } });
+  const label = runRowLabel({ source: { id: "gmail", kind: "connector" } });
   assert.equal(label, "Gmail");
   assert.ok(!label.includes(":"));
 });
 
 test("traceRowLabel prefers source, then provider, then client, then kind", () => {
-  assert.equal(traceRowLabel({ source: { kind: "connector", id: "github" } }), "github");
+  assert.equal(traceRowLabel({ source: { id: "github", kind: "connector" } }), "github");
   assert.equal(traceRowLabel({ provider_id: "github" }), "github", "provider is formatted, not raw-prefixed");
   assert.equal(
     traceRowLabel({ client: { client_name: "Claude" }, client_id: "cli_42" }),
@@ -58,7 +58,7 @@ test("traceRowLabel prefers source, then provider, then client, then kind", () =
 });
 
 test("grantRowLabel prefers source, then connector, then client, then provider", () => {
-  assert.equal(grantRowLabel({ source: { kind: "connector", id: "slack" } }), "slack");
+  assert.equal(grantRowLabel({ source: { id: "slack", kind: "connector" } }), "slack");
   assert.equal(grantRowLabel({ connector_id: "gmail" }), "Gmail");
   assert.equal(
     grantRowLabel({ client: { client_name: "Claude" }, client_id: "cli_42" }),

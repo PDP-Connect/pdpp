@@ -72,33 +72,33 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     heading: null,
     items: [
-      { label: "Overview", href: "/" },
-      { label: "Explore", href: "/explore" },
+      { href: "/", label: "Overview" },
+      { href: "/explore", label: "Explore" },
     ],
   },
   {
     heading: "Collection",
     items: [
-      { label: "Sources", href: "/sources" },
-      { label: "Syncs", href: "/syncs" },
-      { label: "Schedules", href: "/schedules" },
+      { href: "/sources", label: "Sources" },
+      { href: "/syncs", label: "Syncs" },
+      { href: "/schedules", label: "Schedules" },
     ],
   },
   {
     heading: "Sharing",
     items: [
-      { label: "Connect AI apps", href: "/connect" },
-      { label: "Grants", href: "/grants" },
-      { label: "Audit", href: "/audit" },
+      { href: "/connect", label: "Connect AI apps" },
+      { href: "/grants", label: "Grants" },
+      { href: "/audit", label: "Audit" },
     ],
   },
   {
     heading: "Server",
     items: [
-      { label: "Notifications", href: "/notifications" },
-      { label: "Deployment", href: "/deployment" },
-      { label: "Device exporters", href: "/device-exporters" },
-      { label: "Event subscriptions", href: "/event-subscriptions" },
+      { href: "/notifications", label: "Notifications" },
+      { href: "/deployment", label: "Deployment" },
+      { href: "/device-exporters", label: "Device exporters" },
+      { href: "/event-subscriptions", label: "Event subscriptions" },
     ],
   },
 ];
@@ -261,10 +261,11 @@ export function RecordroomShell({
   build = "pdpp 0.1.0",
   onJump,
 }: RecordroomShellProps) {
-  const pathname = usePathname() ?? "/";
+  const pathname = usePathname();
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
+  const openDrawer = useCallback(() => setDrawerOpen(true), []);
 
   // Escape closes the mobile drawer. The ⌘K / Ctrl+K palette shortcut is owned
   // by EXACTLY ONE listener — the command-palette provider that wraps the
@@ -315,14 +316,14 @@ export function RecordroomShell({
                 provider, not this shell. Pages that mount a command palette
                 pass onJump so the button and the shortcut open the same one. */}
             {onJump ? (
-              <button className="rr-chrome-btn" onClick={() => onJump()} type="button">
+              <button className="rr-chrome-btn" onClick={onJump} type="button">
                 Jump <span className="rr-kbd">⌘K</span>
               </button>
             ) : null}
             <button
               aria-expanded={drawerOpen}
               className="rr-chrome-btn rr-menu-btn"
-              onClick={() => setDrawerOpen(true)}
+              onClick={openDrawer}
               type="button"
             >
               Menu

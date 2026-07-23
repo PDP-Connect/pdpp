@@ -24,10 +24,10 @@ function rsError(path: string, status: number, envelope: object): Error {
 
 const revokedEnvelope = {
   error: {
-    type: "invalid_request_error",
     code: "connector_instance_inactive",
     message: "Connector instance 'cin_abc' is 'revoked', not active.",
     request_id: "req_1",
+    type: "invalid_request_error",
   },
 };
 

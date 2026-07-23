@@ -9,20 +9,20 @@ import { useTheme } from "./theme-provider.tsx";
 import type { ThemeChoice } from "./theme-state.ts";
 
 const NEXT: Record<ThemeChoice, ThemeChoice> = {
-  light: "dark",
   dark: "system",
+  light: "dark",
   system: "light",
 };
 
 const NEXT_LABEL: Record<ThemeChoice, string> = {
-  light: "Switch to dark theme",
   dark: "Switch to system theme",
+  light: "Switch to dark theme",
   system: "Switch to light theme",
 };
 
 const CURRENT_LABEL: Record<ThemeChoice, string> = {
-  light: "Theme: light",
   dark: "Theme: dark",
+  light: "Theme: light",
   system: "Theme: system",
 };
 

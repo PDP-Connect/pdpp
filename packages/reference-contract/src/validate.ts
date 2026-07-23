@@ -52,9 +52,9 @@ interface AjvOptions {
 function makeAjv({ coerceTypes }: AjvOptions): AjvClass {
   const ajv = new Ajv({
     allErrors: true,
+    coerceTypes,
     strict: false,
     useDefaults: false,
-    coerceTypes,
   });
   addFormats(ajv);
   return ajv;
@@ -146,13 +146,13 @@ function shouldCompileBodyValidator(manifest: RouteManifest): boolean {
 
 for (const manifest of allManifests) {
   validators.set(manifest.id, {
-    manifest,
-    params: compilePart(manifest.request?.params, { coerceTypes: false }),
-    query: compilePart(manifest.request?.query, { coerceTypes: true }),
     body: shouldCompileBodyValidator(manifest)
       ? compilePart(manifest.request?.body?.schema, { coerceTypes: false })
       : null,
     headers: compilePart(manifest.request?.headers, { coerceTypes: false }),
+    manifest,
+    params: compilePart(manifest.request?.params, { coerceTypes: false }),
+    query: compilePart(manifest.request?.query, { coerceTypes: true }),
     responsesByStatus: new Map<string, ValidateFunction | null>(),
   });
 }
@@ -181,7 +181,7 @@ export type ValidationResult = { ok: true } | { ok: false; errors: Array<Validat
 export function validateRequest(operationId: string, input: ValidateRequestInput = {}): ValidationResult {
   const entry = validators.get(operationId);
   if (!entry) {
-    return { ok: false, errors: [{ message: `Unknown operation id: ${operationId}` }] };
+    return { errors: [{ message: `Unknown operation id: ${operationId}` }], ok: false };
   }
   const { params, query, body, headers } = input;
   const errors: ValidationFailure[] = [];
@@ -199,7 +199,7 @@ export function validateRequest(operationId: string, input: ValidateRequestInput
   check(entry.query, query, "query");
   check(entry.body, body, "body");
   check(entry.headers, headers, "headers");
-  return errors.length ? { ok: false, errors } : { ok: true };
+  return errors.length ? { errors, ok: false } : { ok: true };
 }
 
 export interface OperationSummary {
@@ -258,7 +258,7 @@ export type ResponseValidationResult =
 export function validateResponse(operationId: string, input: ValidateResponseInput): ResponseValidationResult {
   const entry = validators.get(operationId);
   if (!entry) {
-    return { ok: true, skipped: true, reason: "unknown_operation_id" };
+    return { ok: true, reason: "unknown_operation_id", skipped: true };
   }
   const statusKey = String(input.status);
   let validator = entry.responsesByStatus.get(statusKey);
@@ -270,7 +270,7 @@ export function validateResponse(operationId: string, input: ValidateResponseInp
     entry.responsesByStatus.set(statusKey, validator);
   }
   if (!validator) {
-    return { ok: true, skipped: true, reason: "no_schema_for_status" };
+    return { ok: true, reason: "no_schema_for_status", skipped: true };
   }
   if (validator(input.body)) {
     return { ok: true, skipped: false };
@@ -280,7 +280,7 @@ export function validateResponse(operationId: string, input: ValidateResponseInp
     message: e.message ?? "validation failed",
     params: e.params,
   }));
-  return { ok: false, errors };
+  return { errors, ok: false };
 }
 
 /**

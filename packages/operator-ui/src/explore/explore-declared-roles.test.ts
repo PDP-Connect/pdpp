@@ -28,24 +28,24 @@ import { declaredRolesFromCapabilities, fieldCapabilitiesFromMetadata } from "./
 // manifest declares `name → primary-title` and `description → secondary`. `role`
 // rides on the field_capabilities entry alongside `granted`/`type`, additive.
 const githubRepositoriesMetadata: StreamMetadata = {
-  name: "repositories",
-  object: "stream_metadata",
   field_capabilities: {
-    id: { granted: true, type: "id" },
-    name: { granted: true, type: "text", role: "primary-title" },
+    description: { granted: true, role: "secondary", type: "text" },
     full_name: { granted: true, type: "text" },
-    description: { granted: true, type: "text", role: "secondary" },
+    id: { granted: true, type: "id" },
     language: { granted: true, type: "text" },
+    name: { granted: true, role: "primary-title", type: "text" },
     stargazers_count: { granted: true, type: "number" },
   },
+  name: "repositories",
+  object: "stream_metadata",
 };
 
 const githubRepoRecord = {
-  id: "1296269",
-  name: "Hello-World",
-  full_name: "octocat/Hello-World",
   description: "My first repository on GitHub!",
+  full_name: "octocat/Hello-World",
+  id: "1296269",
   language: "Ruby",
+  name: "Hello-World",
   stargazers_count: 80,
 };
 
@@ -53,7 +53,7 @@ test("the github/repositories pilot renders title=name + body=description from s
   // 1. Capture the declared roles off the served field_capabilities.
   const capabilities = fieldCapabilitiesFromMetadata(githubRepositoriesMetadata);
   const roles = declaredRolesFromCapabilities(capabilities);
-  assert.deepEqual(roles, { name: "primary-title", description: "secondary" });
+  assert.deepEqual(roles, { description: "secondary", name: "primary-title" });
 
   // 2. The renderer places the declared fields into the title/body slots. The
   //    `repositories` stream classifies as `titled`; the declared roles drive
@@ -70,11 +70,11 @@ test("an unknown declared role degrades to the generic fallback (no crash, no gu
   // so the field carries no declared role and the record takes the honest
   // generic card — never a field-name guess (review constraint #2).
   const metadata: StreamMetadata = {
-    name: "widgets",
     field_capabilities: {
-      alpha: { granted: true, type: "text", role: "bogus" },
+      alpha: { granted: true, role: "bogus", type: "text" },
       bravo: { granted: true, type: "text" },
     },
+    name: "widgets",
   };
   const roles = declaredRolesFromCapabilities(fieldCapabilitiesFromMetadata(metadata));
   // The bogus role is dropped → no declared roles at all.
@@ -92,11 +92,11 @@ test("an unknown declared role degrades to the generic fallback (no crash, no gu
 
 test("a valid role alongside an unknown one keeps only the valid declaration", () => {
   const metadata: StreamMetadata = {
-    name: "mixed",
     field_capabilities: {
-      headline: { granted: true, type: "text", role: "primary-title" },
-      junk: { granted: true, type: "text", role: "not-a-role" },
+      headline: { granted: true, role: "primary-title", type: "text" },
+      junk: { granted: true, role: "not-a-role", type: "text" },
     },
+    name: "mixed",
   };
   const roles = declaredRolesFromCapabilities(fieldCapabilitiesFromMetadata(metadata));
   assert.deepEqual(roles, { headline: "primary-title" });
@@ -104,11 +104,11 @@ test("a valid role alongside an unknown one keeps only the valid declaration", (
 
 test("a stream with no declared roles yields the empty map → undeclared records take the generic card", () => {
   const metadata: StreamMetadata = {
-    name: "plain",
     field_capabilities: {
       headline: { granted: true, type: "text" },
       note: { granted: true, type: "text" },
     },
+    name: "plain",
   };
   const roles = declaredRolesFromCapabilities(fieldCapabilitiesFromMetadata(metadata));
   assert.deepEqual(roles, {});
@@ -135,12 +135,12 @@ test("declaredRolesFromCapabilities surfaces role only — it never reads or alt
   // record body itself is what gates whether the value is present; the role map
   // only says which SLOT a field would fill.)
   const metadata: StreamMetadata = {
-    name: "scoped",
     field_capabilities: {
-      title: { granted: false, type: "text", role: "primary-title" },
-      body: { granted: true, type: "text", role: "secondary" },
+      body: { granted: true, role: "secondary", type: "text" },
+      title: { granted: false, role: "primary-title", type: "text" },
     },
+    name: "scoped",
   };
   const roles = declaredRolesFromCapabilities(fieldCapabilitiesFromMetadata(metadata));
-  assert.deepEqual(roles, { title: "primary-title", body: "secondary" });
+  assert.deepEqual(roles, { body: "secondary", title: "primary-title" });
 });

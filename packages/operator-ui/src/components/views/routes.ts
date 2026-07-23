@@ -25,13 +25,13 @@
 
 export interface Routes {
   readonly basePath: string;
-  connector(id: string): string;
+  connector: (id: string) => string;
   /** `/grants/<id>` or `/sandbox/grants/<id>`. */
-  grant(id: string): string;
+  grant: (id: string) => string;
   /** Encoded peek query for the list `?peek=<id>` shortcut. */
-  peek(base: string, id: string, extra?: Record<string, string | undefined>): string;
-  record(connectorId: string, stream: string, recordId: string): string;
-  run(id: string): string;
+  peek: (base: string, id: string, extra?: Record<string, string | undefined>) => string;
+  record: (connectorId: string, stream: string, recordId: string) => string;
+  run: (id: string) => string;
   readonly section: {
     overview: string;
     /**
@@ -54,9 +54,9 @@ export interface Routes {
     eventSubscriptions: string;
     notifications: string;
   };
-  stream(connectorId: string, stream: string): string;
-  streamHealth(connectorId: string, stream: string): string;
-  trace(id: string): string;
+  stream: (connectorId: string, stream: string) => string;
+  streamHealth: (connectorId: string, stream: string) => string;
+  trace: (id: string) => string;
 }
 
 /**
@@ -86,30 +86,8 @@ function makeRoutes(basePath: string, opts: { overview?: string; segments?: Rout
   const overview = opts.overview ?? (basePath === "" ? "/" : basePath);
   return {
     basePath,
-    section: {
-      overview,
-      explore: `${basePath}/explore`,
-      addSource: `${basePath}/${seg.records}/add`,
-      records: `${basePath}/${seg.records}`,
-      schedules: `${basePath}/schedules`,
-      search: `${basePath}/search`,
-      grants: `${basePath}/grants`,
-      runs: `${basePath}/${seg.runs}`,
-      traces: `${basePath}/${seg.traces}`,
-      connect: `${basePath}/connect`,
-      deployment: `${basePath}/deployment`,
-      deploymentTokens: `${basePath}/deployment/tokens`,
-      deviceExporters: `${basePath}/device-exporters`,
-      eventSubscriptions: `${basePath}/event-subscriptions`,
-      notifications: `${basePath}/notifications`,
-    },
-    grant: (id) => `${basePath}/grants/${enc(id)}`,
-    run: (id) => `${basePath}/${seg.runs}/${enc(id)}`,
-    trace: (id) => `${basePath}/${seg.traces}/${enc(id)}`,
     connector: (id) => `${basePath}/${seg.records}/${enc(id)}`,
-    stream: (cid, s) => `${basePath}/${seg.records}/${enc(cid)}/${enc(s)}`,
-    record: (cid, s, rid) => `${basePath}/${seg.records}/${enc(cid)}/${enc(s)}/${enc(rid)}`,
-    streamHealth: (cid, s) => `${basePath}/${seg.records}/${enc(cid)}/${enc(s)}/health`,
+    grant: (id) => `${basePath}/grants/${enc(id)}`,
     peek: (base, id, extra) => {
       const params = new URLSearchParams();
       if (extra) {
@@ -122,6 +100,28 @@ function makeRoutes(basePath: string, opts: { overview?: string; segments?: Rout
       params.set("peek", id);
       return `${base}?${params.toString()}`;
     },
+    record: (cid, s, rid) => `${basePath}/${seg.records}/${enc(cid)}/${enc(s)}/${enc(rid)}`,
+    run: (id) => `${basePath}/${seg.runs}/${enc(id)}`,
+    section: {
+      addSource: `${basePath}/${seg.records}/add`,
+      connect: `${basePath}/connect`,
+      deployment: `${basePath}/deployment`,
+      deploymentTokens: `${basePath}/deployment/tokens`,
+      deviceExporters: `${basePath}/device-exporters`,
+      eventSubscriptions: `${basePath}/event-subscriptions`,
+      explore: `${basePath}/explore`,
+      grants: `${basePath}/grants`,
+      notifications: `${basePath}/notifications`,
+      overview,
+      records: `${basePath}/${seg.records}`,
+      runs: `${basePath}/${seg.runs}`,
+      schedules: `${basePath}/schedules`,
+      search: `${basePath}/search`,
+      traces: `${basePath}/${seg.traces}`,
+    },
+    stream: (cid, s) => `${basePath}/${seg.records}/${enc(cid)}/${enc(s)}`,
+    streamHealth: (cid, s) => `${basePath}/${seg.records}/${enc(cid)}/${enc(s)}/health`,
+    trace: (id) => `${basePath}/${seg.traces}/${enc(id)}`,
   };
 }
 

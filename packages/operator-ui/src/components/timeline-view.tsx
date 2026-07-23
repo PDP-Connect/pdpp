@@ -74,12 +74,12 @@ function groupTimeline(events: SpineEvent[]): TimelineNode[] {
       }
       const runLen = j - i;
       if (runLen >= PROGRESS_GROUP_THRESHOLD) {
-        nodes.push({ kind: "progress-group", events: events.slice(i, j), start: i });
+        nodes.push({ events: events.slice(i, j), kind: "progress-group", start: i });
         i = j;
         continue;
       }
     }
-    nodes.push({ kind: "event", event: current, index: i });
+    nodes.push({ event: current, index: i, kind: "event" });
     i += 1;
   }
   return nodes;
@@ -187,11 +187,11 @@ function summarizeStreams(events: SpineEvent[]): StreamBreakdown[] {
       existing.latestTotal = total ?? existing.latestTotal;
     } else {
       byStream.set(stream, {
-        stream,
         count: 1,
-        latestMessage: message,
         latestCount: count,
+        latestMessage: message,
         latestTotal: total,
+        stream,
       });
     }
   }

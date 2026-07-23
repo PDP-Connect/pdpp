@@ -24,22 +24,22 @@ import { type ButtonHTMLAttributes, forwardRef } from "react";
 import "./components.css";
 
 const buttonVariants = cva("pdpp-btn", {
+  defaultVariants: {
+    size: "default",
+    variant: "default",
+  },
   variants: {
-    variant: {
-      default: "",
-      human: "pdpp-btn--human",
-      ghost: "pdpp-btn--ghost",
-      destructive: "pdpp-btn--destructive",
-    },
     size: {
       default: "",
-      sm: "pdpp-btn--sm",
       lg: "pdpp-btn--lg",
+      sm: "pdpp-btn--sm",
     },
-  },
-  defaultVariants: {
-    variant: "default",
-    size: "default",
+    variant: {
+      default: "",
+      destructive: "pdpp-btn--destructive",
+      ghost: "pdpp-btn--ghost",
+      human: "pdpp-btn--human",
+    },
   },
 });
 
@@ -50,7 +50,7 @@ export interface IcButtonProps extends ButtonHTMLAttributes<HTMLButtonElement>, 
  * with the existing operator-ui Button during the Phase 1→2 migration.
  */
 const IcButton = forwardRef<HTMLButtonElement, IcButtonProps>(({ className, variant, size, ...props }, ref) => (
-  <button className={buttonVariants({ variant, size, className })} ref={ref} {...props} />
+  <button className={buttonVariants({ className, size, variant })} ref={ref} {...props} />
 ));
 IcButton.displayName = "IcButton";
 

@@ -64,34 +64,34 @@ function summaryListResponse(summaries: RefConnectorSummary[]): ListResponse<Ref
 function timeManifest(connectorId: string, streams: string[]): ConnectorManifest {
   return {
     connector_id: connectorId,
-    streams: streams.map((name) => ({ name, consent_time_field: "occurred_at" })),
+    streams: streams.map((name) => ({ consent_time_field: "occurred_at", name })),
   } as ConnectorManifest;
 }
 
 const rec = (connector: string, instance: string, stream: string, key: string, day: number) => ({
-  object: "timeline_record" as const,
   connector_id: connector,
   connector_instance_id: instance,
-  stream,
-  record_key: key,
-  emitted_at: `2026-06-0${day}T00:00:00Z`,
   data: {},
+  emitted_at: `2026-06-0${day}T00:00:00Z`,
+  object: "timeline_record" as const,
+  record_key: key,
+  stream,
 });
 
 const PAST = [rec("ynab", "cin_ynab", "transactions", "y1", 5), rec("chase", "cin_chase", "transactions", "c1", 3)];
 
 function browsePage(): ExploreTimelinePage {
   return {
-    object: "list",
     data: PAST,
     has_more: false,
-    next_cursor: null,
-    snapshot_at: "2026-06-19T00:00:00Z",
     new_since_snapshot: 0,
+    next_cursor: null,
+    object: "list",
+    snapshot_at: "2026-06-19T00:00:00Z",
     upcoming: [],
-    upcoming_total: 0,
     upcoming_has_more: false,
     upcoming_next_cursor: null,
+    upcoming_total: 0,
   } as ExploreTimelinePage;
 }
 
@@ -109,43 +109,43 @@ function chartDs(opts?: {
   searchHits?: SearchResultHit[];
 }): DashboardDataSource {
   return {
-    kind: "sandbox" as const,
     aggregateRecordsByTime: notStubbed,
+    getConnectorOverview: notStubbed,
+    getDatasetSummary: notStubbed,
+    getDeploymentDiagnostics: notStubbed,
+    getGrantTimeline: notStubbed,
+    getRecord: notStubbed,
+    getRunTimeline: notStubbed,
+    getStreamMetadata: notStubbed,
+    getTraceTimeline: notStubbed,
+    isHybridRetrievalAdvertised: () => Promise.resolve(false),
+    isSemanticRetrievalAdvertised: () => Promise.resolve(false),
+    kind: "sandbox" as const,
+    listConnectorManifests: async () =>
+      opts?.manifests ?? [timeManifest("ynab", ["transactions"]), timeManifest("chase", ["transactions"])],
+    listConnectorSummaries: async () =>
+      summaryListResponse([
+        makeSummary({ connection_id: "cin_ynab", connector_id: "ynab", streams: ["transactions"] }),
+        makeSummary({ connection_id: "cin_chase", connector_id: "chase", streams: ["transactions"] }),
+      ]),
     listExploreRecordBuckets: () => {
       if (opts?.inlineBucketCallCount) {
         opts.inlineBucketCallCount.value += 1;
       }
       return Promise.reject(new Error("assembleExplorerData must NOT call listExploreRecordBuckets inline"));
     },
-    isHybridRetrievalAdvertised: () => Promise.resolve(false),
-    isSemanticRetrievalAdvertised: () => Promise.resolve(false),
-    listConnectorSummaries: async () =>
-      summaryListResponse([
-        makeSummary({ connection_id: "cin_ynab", connector_id: "ynab", streams: ["transactions"] }),
-        makeSummary({ connection_id: "cin_chase", connector_id: "chase", streams: ["transactions"] }),
-      ]),
-    listConnectorManifests: async () =>
-      opts?.manifests ?? [timeManifest("ynab", ["transactions"]), timeManifest("chase", ["transactions"])],
-    searchRecordsLexical: () =>
-      Promise.resolve({ data: opts?.searchHits ?? [], has_more: false, object: "list" } as SearchResultPage),
-    searchRecordsHybrid: notStubbed,
-    searchRecordsSemantic: notStubbed,
-    queryRecords: notStubbed,
-    getRecord: notStubbed,
-    getConnectorOverview: notStubbed,
-    getStreamMetadata: notStubbed,
-    getTraceTimeline: notStubbed,
-    getGrantTimeline: notStubbed,
-    getRunTimeline: notStubbed,
-    getDatasetSummary: notStubbed,
-    getDeploymentDiagnostics: notStubbed,
+    listExploreTimeline: () => Promise.resolve(browsePage()),
     listGrants: notStubbed,
     listPendingApprovals: notStubbed,
     listRuns: notStubbed,
     listStreams: notStubbed,
     listTraces: notStubbed,
+    queryRecords: notStubbed,
     refSearch: notStubbed,
-    listExploreTimeline: () => Promise.resolve(browsePage()),
+    searchRecordsHybrid: notStubbed,
+    searchRecordsLexical: () =>
+      Promise.resolve({ data: opts?.searchHits ?? [], has_more: false, object: "list" } as SearchResultPage),
+    searchRecordsSemantic: notStubbed,
   } as DashboardDataSource;
 }
 

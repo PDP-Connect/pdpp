@@ -180,32 +180,32 @@ function renderVariant(
 // ─── Fixtures: one seeded record per identity case ──────────────────────────
 const FIXTURES = {
   declaredTitle: {
-    stream: "things",
-    data: { subject: "Quarterly review notes", body: "long body here", id: "rec-1" },
-    roles: { subject: "primary-title", body: "secondary" } as DeclaredFieldRoles,
-    expectedPrimary: "Quarterly review notes",
+    data: { body: "long body here", id: "rec-1", subject: "Quarterly review notes" },
     expectedDerived: false,
+    expectedPrimary: "Quarterly review notes",
+    roles: { body: "secondary", subject: "primary-title" } as DeclaredFieldRoles,
+    stream: "things",
   },
   generic: {
-    stream: "things",
     data: { color: "blue", note: "hello there" },
-    expectedPrimary: "Color: blue",
     expectedDerived: true,
-  },
-  money: {
-    stream: "transactions",
-    data: { payee: "Coffee Shop", amount: 3000 },
-    types: { amount: "currency" } as DeclaredFieldTypes,
-    roles: { payee: "primary-title", amount: "amount" } as DeclaredFieldRoles,
-    expectedPrimary: "Coffee Shop",
-    expectedDerived: false,
+    expectedPrimary: "Color: blue",
+    stream: "things",
   },
   idOnly: {
-    stream: "opaque",
-    data: { id: "550e8400-e29b-41d4-a716-446655440000", account_id: "acct-9" },
-    recordKey: "550e8400-e29b-41d4-a716-446655440000",
-    expectedPrimary: "550e8400-e29b-41d4-a716-446655440000",
+    data: { account_id: "acct-9", id: "550e8400-e29b-41d4-a716-446655440000" },
     expectedDerived: true,
+    expectedPrimary: "550e8400-e29b-41d4-a716-446655440000",
+    recordKey: "550e8400-e29b-41d4-a716-446655440000",
+    stream: "opaque",
+  },
+  money: {
+    data: { amount: 3000, payee: "Coffee Shop" },
+    expectedDerived: false,
+    expectedPrimary: "Coffee Shop",
+    roles: { amount: "amount", payee: "primary-title" } as DeclaredFieldRoles,
+    stream: "transactions",
+    types: { amount: "currency" } as DeclaredFieldTypes,
   },
 };
 
@@ -335,7 +335,7 @@ test("T6 — money is declared-only: a currency-declared amount formats as money
   const html = renderVariant("feed", preview, "txn-1");
   assert.equal(dataAttr(html, "primary"), "Coffee Shop");
   // No fabricated $ on an undeclared number.
-  const undeclared = previewFor({ stream: "opaque", data: { quantity: 4200, label: "Box" } });
+  const undeclared = previewFor({ data: { label: "Box", quantity: 4200 }, stream: "opaque" });
   assert.ok(!MONEY_SYMBOL_RE.test(JSON.stringify(undeclared)), "an undeclared number must not gain a $");
 });
 

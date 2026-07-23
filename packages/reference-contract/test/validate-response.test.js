@@ -1,13 +1,10 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import test from 'node:test';
-import assert from 'node:assert/strict';
+import assert from "node:assert/strict";
+import test from "node:test";
 
-import {
-  hasResponseSchema,
-  validateResponse,
-} from '../src/index.ts';
+import { hasResponseSchema, validateResponse } from "../src/index.ts";
 
 // `getRsDiscoveryIndex` is a stable JSON discovery operation whose
 // declared 200 response schema does not drift from the reference
@@ -15,72 +12,72 @@ import {
 // manifest because it is the canonical "exact-schema" candidate for
 // the response-validation canary allowlist in the reference transport.
 
-test('hasResponseSchema reports declared response statuses', () => {
-  assert.equal(hasResponseSchema('getRsDiscoveryIndex', 200), true);
+test("hasResponseSchema reports declared response statuses", () => {
+  assert.equal(hasResponseSchema("getRsDiscoveryIndex", 200), true);
   // The discovery operation does not declare a 418 response.
-  assert.equal(hasResponseSchema('getRsDiscoveryIndex', 418), false);
+  assert.equal(hasResponseSchema("getRsDiscoveryIndex", 418), false);
   // Unknown operation ids report no schema.
-  assert.equal(hasResponseSchema('definitely-not-a-real-op', 200), false);
+  assert.equal(hasResponseSchema("definitely-not-a-real-op", 200), false);
 });
 
-test('validateResponse passes a valid discovery envelope unchanged', () => {
+test("validateResponse passes a valid discovery envelope unchanged", () => {
   const payload = {
-    object: 'pdpp_discovery_index',
-    role: 'resource_server',
-    resource_name: 'PDPP Reference',
     links: {
-      well_known: '/.well-known/oauth-protected-resource',
-      schema: '/v1/schema',
-      core_query_base: '/v1',
-      connectors: '/v1/connectors',
+      connectors: "/v1/connectors",
+      core_query_base: "/v1",
+      schema: "/v1/schema",
+      well_known: "/.well-known/oauth-protected-resource",
     },
-    reference_revision: 'dev',
+    object: "pdpp_discovery_index",
+    reference_revision: "dev",
+    resource_name: "PDPP Reference",
+    role: "resource_server",
   };
   const before = JSON.stringify(payload);
-  const result = validateResponse('getRsDiscoveryIndex', {
-    status: 200,
+  const result = validateResponse("getRsDiscoveryIndex", {
     body: payload,
+    status: 200,
   });
   assert.deepEqual(result, { ok: true, skipped: false });
   // Validation must not mutate the input payload.
   assert.equal(JSON.stringify(payload), before);
 });
 
-test('validateResponse reports skip with reason for unknown operation ids', () => {
-  const result = validateResponse('definitely-not-a-real-op', {
-    status: 200,
+test("validateResponse reports skip with reason for unknown operation ids", () => {
+  const result = validateResponse("definitely-not-a-real-op", {
     body: {},
+    status: 200,
   });
   assert.deepEqual(result, {
     ok: true,
+    reason: "unknown_operation_id",
     skipped: true,
-    reason: 'unknown_operation_id',
   });
 });
 
-test('validateResponse reports skip when no schema is declared for a status', () => {
-  const result = validateResponse('getRsDiscoveryIndex', {
-    status: 204,
+test("validateResponse reports skip when no schema is declared for a status", () => {
+  const result = validateResponse("getRsDiscoveryIndex", {
     body: undefined,
+    status: 204,
   });
   assert.deepEqual(result, {
     ok: true,
+    reason: "no_schema_for_status",
     skipped: true,
-    reason: 'no_schema_for_status',
   });
 });
 
-test('validateResponse fails closed when payload violates declared response schema', () => {
+test("validateResponse fails closed when payload violates declared response schema", () => {
   // Missing required `links` field.
   const invalidPayload = {
-    object: 'pdpp_discovery_index',
-    role: 'resource_server',
-    resource_name: 'PDPP Reference',
-    reference_revision: 'dev',
+    object: "pdpp_discovery_index",
+    reference_revision: "dev",
+    resource_name: "PDPP Reference",
+    role: "resource_server",
   };
-  const result = validateResponse('getRsDiscoveryIndex', {
-    status: 200,
+  const result = validateResponse("getRsDiscoveryIndex", {
     body: invalidPayload,
+    status: 200,
   });
   assert.equal(result.ok, false);
   assert.ok(Array.isArray(result.errors));
@@ -88,7 +85,7 @@ test('validateResponse fails closed when payload violates declared response sche
   // Each error carries a structured message — useful for operator logs
   // even though the wire envelope is intentionally opaque.
   for (const err of result.errors) {
-    assert.equal(typeof err.message, 'string');
+    assert.equal(typeof err.message, "string");
   }
 });
 
@@ -100,78 +97,78 @@ test('validateResponse fails closed when payload violates declared response sche
 
 function streamMetadataWithExpandEntry(entry) {
   return {
-    object: 'stream_metadata',
-    name: 'user',
-    field_capabilities: {},
     expand_capabilities: [entry],
+    field_capabilities: {},
+    name: "user",
+    object: "stream_metadata",
   };
 }
 
 const VALID_EXPAND_ENTRY = {
-  name: 'user_stats',
-  stream: 'user_stats',
-  target_stream: 'user_stats',
-  cardinality: 'has_many',
-  child_parent_key_field: 'user_id',
-  foreign_key: 'user_id',
+  cardinality: "has_many",
+  child_parent_key_field: "user_id",
+  foreign_key: "user_id",
   granted: true,
+  name: "user_stats",
+  stream: "user_stats",
+  target_stream: "user_stats",
   usable: true,
 };
 
-test('getStreamMetadata accepts an expand_capabilities entry carrying target_stream and child_parent_key_field', () => {
-  const result = validateResponse('getStreamMetadata', {
-    status: 200,
+test("getStreamMetadata accepts an expand_capabilities entry carrying target_stream and child_parent_key_field", () => {
+  const result = validateResponse("getStreamMetadata", {
     body: streamMetadataWithExpandEntry({ ...VALID_EXPAND_ENTRY }),
+    status: 200,
   });
   assert.deepEqual(result, { ok: true, skipped: false });
 });
 
-test('getStreamMetadata rejects an expand_capabilities entry missing target_stream', () => {
+test("getStreamMetadata rejects an expand_capabilities entry missing target_stream", () => {
   const entry = { ...VALID_EXPAND_ENTRY };
   delete entry.target_stream;
-  const result = validateResponse('getStreamMetadata', {
-    status: 200,
+  const result = validateResponse("getStreamMetadata", {
     body: streamMetadataWithExpandEntry(entry),
+    status: 200,
   });
   assert.equal(result.ok, false);
   assert.ok(Array.isArray(result.errors) && result.errors.length > 0);
 });
 
-test('getStreamMetadata rejects an expand_capabilities entry missing child_parent_key_field', () => {
+test("getStreamMetadata rejects an expand_capabilities entry missing child_parent_key_field", () => {
   const entry = { ...VALID_EXPAND_ENTRY };
   delete entry.child_parent_key_field;
-  const result = validateResponse('getStreamMetadata', {
-    status: 200,
+  const result = validateResponse("getStreamMetadata", {
     body: streamMetadataWithExpandEntry(entry),
+    status: 200,
   });
   assert.equal(result.ok, false);
   assert.ok(Array.isArray(result.errors) && result.errors.length > 0);
 });
 
-test('getStreamMetadata rejects an expand_capabilities entry with an out-of-enum reason', () => {
-  const result = validateResponse('getStreamMetadata', {
-    status: 200,
+test("getStreamMetadata rejects an expand_capabilities entry with an out-of-enum reason", () => {
+  const result = validateResponse("getStreamMetadata", {
     body: streamMetadataWithExpandEntry({
       ...VALID_EXPAND_ENTRY,
       granted: false,
+      reason: "not_a_declared_reason",
       usable: false,
-      reason: 'not_a_declared_reason',
     }),
+    status: 200,
   });
   assert.equal(result.ok, false);
   assert.ok(Array.isArray(result.errors) && result.errors.length > 0);
 });
 
-test('getStreamMetadata accepts each declared reason enum value on an inert entry', () => {
-  for (const reason of ['related_stream_not_granted', 'related_stream_unknown', 'related_stream_not_loaded']) {
-    const result = validateResponse('getStreamMetadata', {
-      status: 200,
+test("getStreamMetadata accepts each declared reason enum value on an inert entry", () => {
+  for (const reason of ["related_stream_not_granted", "related_stream_unknown", "related_stream_not_loaded"]) {
+    const result = validateResponse("getStreamMetadata", {
       body: streamMetadataWithExpandEntry({
         ...VALID_EXPAND_ENTRY,
         granted: false,
-        usable: false,
         reason,
+        usable: false,
       }),
+      status: 200,
     });
     assert.deepEqual(result, { ok: true, skipped: false }, `reason ${reason} should validate`);
   }

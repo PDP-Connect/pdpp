@@ -42,7 +42,7 @@ test("connectionIdsFromEnvelope reads connector_instance_id from run event data"
     event_count: 2,
     events: [
       spineEvent({ data: { connector_instance_id: "cin_github_personal" } }),
-      spineEvent({ event_id: "evt_2", data: { connector_instance_id: "cin_github_personal" } }),
+      spineEvent({ data: { connector_instance_id: "cin_github_personal" }, event_id: "evt_2" }),
     ],
     object: "run_timeline",
     trace_id: "trc_1",
@@ -80,7 +80,7 @@ test("connectionIdsFromEnvelope collects multiple distinct connections (grant/tr
     event_count: 2,
     events: [
       spineEvent({ data: { connector_instance_id: "cin_a" } }),
-      spineEvent({ event_id: "evt_2", data: { connector_instance_id: "cin_b" } }),
+      spineEvent({ data: { connector_instance_id: "cin_b" }, event_id: "evt_2" }),
     ],
     object: "grant_timeline",
     trace_id: "trc_1",
@@ -128,8 +128,8 @@ test("exploreHrefFromEnvelope allows scoped Explore links without stream ids", (
     events: [
       spineEvent({ data: { connector_instance_id: "cin_github_personal" }, stream_id: null }),
       spineEvent({
-        event_id: "evt_2",
         data: { connector_instance_id: "cin_github_personal" },
+        event_id: "evt_2",
         stream_id: null,
       }),
     ],

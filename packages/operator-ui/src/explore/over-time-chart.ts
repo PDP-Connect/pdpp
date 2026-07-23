@@ -185,7 +185,7 @@ export function bucketKeyForMs(ms: number, granularity: BucketGranularity): stri
 export function bucketBounds(key: string, granularity: BucketGranularity): { startMs: number; endMs: number } {
   if (granularity === "hour") {
     const startMs = Date.parse(`${key}:00Z`);
-    return { startMs, endMs: startMs + 3_600_000 };
+    return { endMs: startMs + 3_600_000, startMs };
   }
   const startMs = Date.parse(`${key}T00:00:00Z`);
   const d = new Date(startMs);
@@ -193,18 +193,18 @@ export function bucketBounds(key: string, granularity: BucketGranularity): { sta
   const mo = d.getUTCMonth();
   switch (granularity) {
     case "day":
-      return { startMs, endMs: startMs + MS_PER_DAY };
+      return { endMs: startMs + MS_PER_DAY, startMs };
     case "week":
-      return { startMs, endMs: startMs + 7 * MS_PER_DAY };
+      return { endMs: startMs + 7 * MS_PER_DAY, startMs };
     case "month":
-      return { startMs, endMs: Date.UTC(y, mo + 1, 1) };
+      return { endMs: Date.UTC(y, mo + 1, 1), startMs };
     case "quarter":
       // Advance 3 months (DST-free in UTC; Date.UTC normalizes month overflow).
-      return { startMs, endMs: Date.UTC(y, mo + 3, 1) };
+      return { endMs: Date.UTC(y, mo + 3, 1), startMs };
     case "year":
-      return { startMs, endMs: Date.UTC(y + 1, mo, 1) };
+      return { endMs: Date.UTC(y + 1, mo, 1), startMs };
     default:
-      return { startMs, endMs: startMs + MS_PER_DAY };
+      return { endMs: startMs + MS_PER_DAY, startMs };
   }
 }
 
@@ -243,7 +243,7 @@ function pad2(n: number): string {
 export function deriveBucketSeries(sources: readonly AggregateSource[], granularity: BucketGranularity): BucketSeries {
   const { counts, partial } = accumulateSourceCounts(sources, granularity);
   const { buckets, total } = zeroFillBuckets(counts, granularity);
-  return { buckets, granularity, total, partial };
+  return { buckets, granularity, partial, total };
 }
 
 /**
@@ -264,7 +264,7 @@ function accumulateSourceCounts(
       continue;
     }
     for (const group of source.groups) {
-      if (group.key != null) {
+      if (group.key !== null) {
         counts.set(group.key, (counts.get(group.key) ?? 0) + group.count);
       }
     }
@@ -294,7 +294,7 @@ function zeroFillBuckets(
     const { startMs, endMs } = bucketBounds(key, granularity);
     const count = counts.get(key) ?? 0;
     total += count;
-    buckets.push({ key, count, startMs, endMs });
+    buckets.push({ count, endMs, key, startMs });
     if (key === lastKey) {
       break;
     }
@@ -417,11 +417,11 @@ export function chartIsVisible(kind: SetDescriptor["kind"], fromSearch: boolean)
 // ── Caption (design §4.1 / §4.5 — kind + unit legible, never "most recent N") ─
 
 const GRANULARITY_LABEL: Record<BucketGranularity, string> = {
-  hour: "by hour",
   day: "by day",
-  week: "by week",
+  hour: "by hour",
   month: "by month",
   quarter: "by quarter",
+  week: "by week",
   year: "by year",
 };
 
@@ -447,27 +447,27 @@ export function chartCaption(_kind: SetDescriptor["kind"], granularity: BucketGr
 
 /** Human bucket label for a tooltip / aria-label (e.g. "Mon, May 3, 2026" or the hour). */
 const TOOLTIP_DAY_FMT = new Intl.DateTimeFormat("en-US", {
+  day: "numeric",
+  month: "short",
+  timeZone: BUCKET_TIME_ZONE,
   weekday: "short",
   year: "numeric",
-  month: "short",
-  day: "numeric",
-  timeZone: BUCKET_TIME_ZONE,
 });
 const TOOLTIP_MONTH_FMT = new Intl.DateTimeFormat("en-US", {
-  year: "numeric",
   month: "long",
   timeZone: BUCKET_TIME_ZONE,
+  year: "numeric",
 });
 const TOOLTIP_HOUR_FMT = new Intl.DateTimeFormat("en-US", {
-  month: "short",
   day: "numeric",
   hour: "numeric",
+  month: "short",
   timeZone: BUCKET_TIME_ZONE,
 });
 /** Just the 4-digit calendar year (e.g. "2019") for a year bucket. */
 const TOOLTIP_YEAR_FMT = new Intl.DateTimeFormat("en-US", {
-  year: "numeric",
   timeZone: BUCKET_TIME_ZONE,
+  year: "numeric",
 });
 
 /** Human label for a bucket, by granularity. Used in tooltip + per-bar aria-label. */

@@ -111,7 +111,7 @@ export function CommandPaletteTrigger() {
 type PaletteRow = { kind: "command"; command: DashboardCommand } | { kind: "search"; query: string };
 
 function buildRows(query: string, commands: DashboardCommand[]): PaletteRow[] {
-  const rows: PaletteRow[] = commands.map((command) => ({ kind: "command", command }));
+  const rows: PaletteRow[] = commands.map((command) => ({ command, kind: "command" }));
   const trimmed = query.trim();
   if (trimmed) {
     // Explicit, selectable fallback — NOT the default Enter action.

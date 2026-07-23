@@ -51,10 +51,10 @@ test("kindOf classifies an image-bearing record as attachment", () => {
 });
 
 test("kindOf classifies media / agent / email / code / generic by signature", () => {
-  assert.equal(kindOf({ track: "Song", artist: "Band" }), "media");
-  assert.equal(kindOf({ role: "assistant", content: "hi" }), "agent");
+  assert.equal(kindOf({ artist: "Band", track: "Song" }), "media");
+  assert.equal(kindOf({ content: "hi", role: "assistant" }), "agent");
   assert.equal(kindOf({ from: "a@b.com", subject: "Hi" }), "email");
-  assert.equal(kindOf({ repo: "pdpp", commits: 12 }), "code");
+  assert.equal(kindOf({ commits: 12, repo: "pdpp" }), "code");
   assert.equal(kindOf({ note: "just a note" }), "generic");
 });
 
@@ -66,8 +66,8 @@ test("kindOf does NOT guess money from a bare integer with no declared type", ()
 // ─── displayTitle ─────────────────────────────────────────────────
 
 test("displayTitle uses display_name when present, no kicker", () => {
-  const t = displayTitle({ data: {}, stream: "messages", display_name: "Re: lunch" });
-  assert.deepEqual(t, { primary: "Re: lunch", kicker: null });
+  const t = displayTitle({ data: {}, display_name: "Re: lunch", stream: "messages" });
+  assert.deepEqual(t, { kicker: null, primary: "Re: lunch" });
 });
 
 test("displayTitle derives a quiet kicker + fact when untitled", () => {
@@ -92,7 +92,7 @@ test("isImageVal matches image URLs and data URIs, rejects other strings", () =>
 });
 
 test("findImageField returns the first image-shaped field, or null", () => {
-  assert.deepEqual(findImageField({ title: "x", avatar: "https://x.test/a.webp" }), [
+  assert.deepEqual(findImageField({ avatar: "https://x.test/a.webp", title: "x" }), [
     "avatar",
     "https://x.test/a.webp",
   ]);
@@ -111,7 +111,7 @@ test("isLongVal flags long body/content strings, not short ones or non-body keys
 
 test("resolveFieldValue formats a declared-currency minor-units integer as money", () => {
   const r = resolveFieldValue(3000, "currency");
-  assert.deepEqual(r, { text: "$30.00", empty: false, money: true, negative: false });
+  assert.deepEqual(r, { empty: false, money: true, negative: false, text: "$30.00" });
 });
 
 test("resolveFieldValue marks a negative declared amount", () => {
@@ -123,17 +123,17 @@ test("resolveFieldValue marks a negative declared amount", () => {
 
 test("resolveFieldValue does NOT reinterpret an undeclared integer as cents", () => {
   assert.deepEqual(resolveFieldValue(3000, undefined), {
-    text: "3000",
     empty: false,
     money: false,
     negative: false,
+    text: "3000",
   });
 });
 
 test("resolveFieldValue renders null / undefined / empty as explicit empty tokens", () => {
-  assert.deepEqual(resolveFieldValue(null, undefined), { text: "null", empty: true, money: false, negative: false });
+  assert.deepEqual(resolveFieldValue(null, undefined), { empty: true, money: false, negative: false, text: "null" });
   assert.equal(resolveFieldValue(undefined, undefined).text, "—");
-  assert.deepEqual(resolveFieldValue("", undefined), { text: "empty", empty: true, money: false, negative: false });
+  assert.deepEqual(resolveFieldValue("", undefined), { empty: true, money: false, negative: false, text: "empty" });
 });
 
 test("resolveFieldValue stringifies objects as JSON", () => {

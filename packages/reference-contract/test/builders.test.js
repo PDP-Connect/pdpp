@@ -1,121 +1,121 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import test from 'node:test';
-import assert from 'node:assert/strict';
+import assert from "node:assert/strict";
+import test from "node:test";
 
 import {
   buildExpandParams,
   buildOwnerDeviceAuthorizationRequest,
   buildParRequest,
   buildRecordsQuery,
-} from '../src/builders/index.ts';
+} from "../src/builders/index.ts";
 
-test('buildExpandParams normalizes repeated relation names and expand limits', () => {
+test("buildExpandParams normalizes repeated relation names and expand limits", () => {
   assert.deepEqual(
     buildExpandParams({
-      expand: ['albums', 'albums,artists', 'artists'],
-      expand_limit: { albums: 5, artists: 2, empty: '' },
+      expand: ["albums", "albums,artists", "artists"],
+      expand_limit: { albums: 5, artists: 2, empty: "" },
     }),
     {
-      expand: ['albums', 'artists'],
+      expand: ["albums", "artists"],
       expand_limit: { albums: 5, artists: 2 },
-    },
+    }
   );
 });
 
-test('buildRecordsQuery composes record-list query params without empty values', () => {
+test("buildRecordsQuery composes record-list query params without empty values", () => {
   assert.deepEqual(
     buildRecordsQuery({
-      limit: 25,
-      order: 'desc',
-      filter: { source_updated_at: { gte: '2026-04-01T00:00:00Z' } },
-      expand: ['artist'],
+      connector_id: "spotify",
+      expand: ["artist"],
       expand_limit: { artist: 1 },
-      connector_id: 'spotify',
-      fields: ['id', 'name'],
+      fields: ["id", "name"],
+      filter: { source_updated_at: { gte: "2026-04-01T00:00:00Z" } },
+      limit: 25,
+      order: "desc",
     }),
     {
-      limit: 25,
-      order: 'desc',
-      fields: 'id,name',
-      filter: { source_updated_at: { gte: '2026-04-01T00:00:00Z' } },
-      connector_id: 'spotify',
-      expand: ['artist'],
+      connector_id: "spotify",
+      expand: ["artist"],
       expand_limit: { artist: 1 },
-    },
+      fields: "id,name",
+      filter: { source_updated_at: { gte: "2026-04-01T00:00:00Z" } },
+      limit: 25,
+      order: "desc",
+    }
   );
 });
 
-test('buildRecordsQuery preserves malformed filters for downstream rejection', () => {
+test("buildRecordsQuery preserves malformed filters for downstream rejection", () => {
   assert.deepEqual(
     buildRecordsQuery({
+      filter: "date.gte=2026-01-01",
       limit: 25,
-      filter: 'date.gte=2026-01-01',
     }),
     {
+      filter: "date.gte=2026-01-01",
       limit: 25,
-      filter: 'date.gte=2026-01-01',
-    },
+    }
   );
 
   assert.deepEqual(
     buildRecordsQuery({
-      filter: ['date.gte=2026-01-01'],
+      filter: ["date.gte=2026-01-01"],
     }),
     {
-      filter: ['date.gte=2026-01-01'],
-    },
+      filter: ["date.gte=2026-01-01"],
+    }
   );
 });
 
-test('buildOwnerDeviceAuthorizationRequest builds x-www-form-urlencoded payloads', () => {
+test("buildOwnerDeviceAuthorizationRequest builds x-www-form-urlencoded payloads", () => {
   const params = buildOwnerDeviceAuthorizationRequest({
-    client_id: 'cli_longview',
-    scope: 'owner',
-    audience: 'pdpp',
+    audience: "pdpp",
+    client_id: "cli_longview",
+    scope: "owner",
   });
 
-  assert.equal(params.get('client_id'), 'cli_longview');
-  assert.equal(params.get('scope'), 'owner');
-  assert.equal(params.get('audience'), 'pdpp');
+  assert.equal(params.get("client_id"), "cli_longview");
+  assert.equal(params.get("scope"), "owner");
+  assert.equal(params.get("audience"), "pdpp");
 });
 
-test('buildParRequest lifts flat data-access inputs into authorization_details', () => {
+test("buildParRequest lifts flat data-access inputs into authorization_details", () => {
   assert.deepEqual(
     buildParRequest({
-      client_id: 'concert_recommendation_app',
-      scenario_id: 'scenario_contract_builders',
-      source: { kind: 'connector', id: 'spotify' },
-      purpose_code: 'https://pdpp.org/purpose/personalization',
-      purpose_description: 'Suggest concerts based on listening history',
-      access_mode: 'single_use',
-      streams: [{ name: 'top_artists', fields: ['id', 'name'] }],
+      access_mode: "single_use",
+      client_id: "concert_recommendation_app",
+      purpose_code: "https://pdpp.org/purpose/personalization",
+      purpose_description: "Suggest concerts based on listening history",
+      scenario_id: "scenario_contract_builders",
+      source: { id: "spotify", kind: "connector" },
+      streams: [{ fields: ["id", "name"], name: "top_artists" }],
     }),
     {
-      client_id: 'concert_recommendation_app',
-      scenario_id: 'scenario_contract_builders',
       authorization_details: [
         {
-          type: 'https://pdpp.org/data-access',
-          source: { kind: 'connector', id: 'spotify' },
-          purpose_code: 'https://pdpp.org/purpose/personalization',
-          purpose_description: 'Suggest concerts based on listening history',
-          access_mode: 'single_use',
-          streams: [{ name: 'top_artists', fields: ['id', 'name'] }],
+          access_mode: "single_use",
+          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_description: "Suggest concerts based on listening history",
+          source: { id: "spotify", kind: "connector" },
+          streams: [{ fields: ["id", "name"], name: "top_artists" }],
+          type: "https://pdpp.org/data-access",
         },
       ],
-    },
+      client_id: "concert_recommendation_app",
+      scenario_id: "scenario_contract_builders",
+    }
   );
 });
 
-test('buildParRequest rejects legacy source scalar inputs', () => {
+test("buildParRequest rejects legacy source scalar inputs", () => {
   assert.throws(
     () =>
       buildParRequest({
-        connector_id: 'spotify',
-        purpose_code: 'https://pdpp.org/purpose/personalization',
+        connector_id: "spotify",
+        purpose_code: "https://pdpp.org/purpose/personalization",
       }),
-    /source: \{ kind: 'connector' \| 'provider_native', id \}/,
+    /source: \{ kind: 'connector' \| 'provider_native', id \}/
   );
 });

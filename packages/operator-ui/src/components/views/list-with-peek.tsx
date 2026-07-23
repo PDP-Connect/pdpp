@@ -262,7 +262,7 @@ export function ListWithPeekView<T>({ params }: { params: ListWithPeekParams<T> 
                     {groupKey}
                   </li>
                 ) : null}
-                <li>{renderRow(item, { peeked, href, detailHref })}</li>
+                <li>{renderRow(item, { detailHref, href, peeked })}</li>
               </Fragment>
             );
           })}

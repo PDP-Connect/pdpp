@@ -276,17 +276,17 @@ function withSingleTrailingNewline(markdown: string): string {
 
 export function generateDocs(): { routes: string; referenceRoutes: string; cookbook: string } {
   return {
-    routes: manifestsToRouteMarkdown(
-      publicManifests,
-      "PDPP reference-implementation public API",
-      "Generated from `packages/reference-contract/src/public/`. Do not edit by hand."
-    ),
+    cookbook: queryCookbook(),
     referenceRoutes: manifestsToRouteMarkdown(
       referenceManifests,
       "PDPP reference-implementation /_ref operator surface",
       "Generated from `packages/reference-contract/src/reference/`. Reference-designated routes: not part of the public PDPP contract."
     ),
-    cookbook: queryCookbook(),
+    routes: manifestsToRouteMarkdown(
+      publicManifests,
+      "PDPP reference-implementation public API",
+      "Generated from `packages/reference-contract/src/public/`. Do not edit by hand."
+    ),
   };
 }
 

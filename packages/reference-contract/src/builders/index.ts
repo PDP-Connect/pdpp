@@ -87,15 +87,15 @@ export type RecordsQueryInput = ExpandParamsInput & {
 export function buildRecordsQuery(params: RecordsQueryInput = {}): ObjectLike {
   const expandParams = buildExpandParams(params);
   const query = compactObject({
-    limit: params.limit,
-    cursor: params.cursor,
-    order: params.order,
     changes_since: params.changes_since,
-    fields: Array.isArray(params.fields) ? params.fields.join(",") : params.fields,
-    view: params.view,
-    filter: isPlainObject(params.filter) ? params.filter : undefined,
     connector_id: params.connector_id,
+    cursor: params.cursor,
+    fields: Array.isArray(params.fields) ? params.fields.join(",") : params.fields,
+    filter: isPlainObject(params.filter) ? params.filter : undefined,
+    limit: params.limit,
+    order: params.order,
     subject_id: params.subject_id,
+    view: params.view,
     ...expandParams,
   });
   if ("filter" in params && params.filter !== undefined && params.filter !== null && !isPlainObject(params.filter)) {
@@ -169,19 +169,19 @@ export function buildParRequest(input: ParRequestInput = {}): ObjectLike {
   }
 
   const detail = compactObject({
-    type: input.type ?? "https://pdpp.org/data-access",
-    source: isPlainObject(input.source) ? input.source : undefined,
+    access_mode: input.access_mode,
     purpose_code: input.purpose_code,
     purpose_description: input.purpose_description,
-    access_mode: input.access_mode,
     retention: input.retention,
+    source: isPlainObject(input.source) ? input.source : undefined,
     streams: Array.isArray(input.streams) ? input.streams : undefined,
+    type: input.type ?? "https://pdpp.org/data-access",
   });
 
   return compactObject({
-    client_id: input.client_id,
-    client_display: input.client_display,
-    scenario_id: input.scenario_id ?? (typeof input.request_context === "string" ? input.request_context : undefined),
     authorization_details: Object.keys(detail).length > 1 ? [detail] : undefined,
+    client_display: input.client_display,
+    client_id: input.client_id,
+    scenario_id: input.scenario_id ?? (typeof input.request_context === "string" ? input.request_context : undefined),
   });
 }

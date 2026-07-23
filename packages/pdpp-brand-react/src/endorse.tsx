@@ -27,18 +27,18 @@ import "./components.css";
 export type EndorseStatus = "active" | "continuous" | "expiring" | "revoked" | "denied" | "unknown";
 
 const endorse = cva("pdpp-endorse", {
+  defaultVariants: {
+    status: "active",
+  },
   variants: {
     status: {
       active: "pdpp-endorse--active",
       continuous: "pdpp-endorse--continuous",
+      denied: "pdpp-endorse--denied",
       expiring: "pdpp-endorse--expiring",
       revoked: "pdpp-endorse--revoked",
-      denied: "pdpp-endorse--denied",
       unknown: "pdpp-endorse--unknown",
     },
-  },
-  defaultVariants: {
-    status: "active",
   },
 });
 
@@ -46,9 +46,9 @@ const endorse = cva("pdpp-endorse", {
 const LABEL: Record<EndorseStatus, string> = {
   active: "active",
   continuous: "continuous",
+  denied: "denied",
   expiring: "expiring",
   revoked: "revoked",
-  denied: "denied",
   unknown: "unknown",
 };
 
@@ -61,5 +61,5 @@ interface EndorseProps {
 
 export function Endorse({ status = "active", label, className }: EndorseProps) {
   const resolvedStatus = status ?? "active";
-  return <span className={endorse({ status: resolvedStatus, className })}>{label ?? LABEL[resolvedStatus]}</span>;
+  return <span className={endorse({ className, status: resolvedStatus })}>{label ?? LABEL[resolvedStatus]}</span>;
 }

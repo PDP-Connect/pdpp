@@ -62,14 +62,14 @@ import { type RecordPreview, rowPrimary, rowSecondary } from "../lib/record-prev
  * glyph map, not two (the design's §5 consolidation: "one glyph source").
  */
 export const KIND_GLYPHS: Record<RecordKind, string> = {
+  activity: "▣",
+  event: "◷",
+  generic: "•",
+  location: "⌖",
   message: "✉",
   money: "$",
-  event: "◷",
-  activity: "▣",
   reader: "¶",
-  location: "⌖",
   titled: "▤",
-  generic: "•",
 };
 
 /** The leading glyph for a record kind. Unknown/absent kind → a neutral dot. */

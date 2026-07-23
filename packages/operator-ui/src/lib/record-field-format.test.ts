@@ -8,20 +8,20 @@ import { deriveDeclaredFieldTypes, formatDeclaredAmount, isMonetaryDeclaredType 
 test("formats a declared `currency` integer as cents (the live chase bug)", () => {
   // chase current_activity `amount: 3000` is signed integer cents; declared
   // `x_pdpp_type: currency`. It must render `$30.00`, not `$3000.00`.
-  assert.deepEqual(formatDeclaredAmount(3000, "currency"), { text: "$30.00", positive: true });
+  assert.deepEqual(formatDeclaredAmount(3000, "currency"), { positive: true, text: "$30.00" });
 });
 
 test("formats a negative declared currency amount with a leading minus", () => {
-  assert.deepEqual(formatDeclaredAmount(-1245, "currency"), { text: "-$12.45", positive: false });
+  assert.deepEqual(formatDeclaredAmount(-1245, "currency"), { positive: false, text: "-$12.45" });
 });
 
 test("a declared currency amount formats as cents regardless of magnitude", () => {
   // No magnitude heuristic here: 438120 cents = $4381.20, not $438.12.
-  assert.deepEqual(formatDeclaredAmount(438_120, "currency"), { text: "$4381.20", positive: true });
+  assert.deepEqual(formatDeclaredAmount(438_120, "currency"), { positive: true, text: "$4381.20" });
 });
 
 test("a declared milliunits type divides by 1000", () => {
-  assert.deepEqual(formatDeclaredAmount(-12_450, "currency_milliunits"), { text: "-$12.45", positive: false });
+  assert.deepEqual(formatDeclaredAmount(-12_450, "currency_milliunits"), { positive: false, text: "-$12.45" });
 });
 
 test("accepts the minor-units aliases case-insensitively", () => {
@@ -54,9 +54,9 @@ test("isMonetaryDeclaredType recognizes only monetary units", () => {
 test("deriveDeclaredFieldTypes keeps only fields with a non-empty string type", () => {
   const types = deriveDeclaredFieldTypes({
     field_capabilities: {
+      account_id: { type: "" },
       amount: { type: "currency" },
       date: { type: "timestamp" },
-      account_id: { type: "" },
       memo: {},
       missing: null,
     },

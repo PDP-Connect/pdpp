@@ -94,20 +94,20 @@ function operationFromManifest(manifest: RouteManifest): OpenApiOperation {
   const req = manifest.request || {};
   const op: OpenApiOperation = {
     operationId: manifest.id,
-    tags: manifest.tags || [],
-    summary: manifest.summary,
     parameters: parametersFromRequest(req),
     responses: {},
+    summary: manifest.summary,
+    tags: manifest.tags || [],
   };
 
   if (req.body) {
     op.requestBody = {
-      required: req.body.required !== false,
       content: {
         [req.body.contentType || "application/json"]: {
           schema: req.body.schema || {},
         },
       },
+      required: req.body.required !== false,
     };
   }
 
@@ -136,36 +136,36 @@ export function generateOpenApi({ includeReference = false }: { includeReference
     ? [...publicCore, ...referenceCore, ...publicEventSubs, ...referenceEventSubs]
     : [...publicCore, ...publicEventSubs];
   const document: OpenApiDocument = {
-    openapi: "3.1.0",
+    components: { schemas: {} },
     info: {
+      description: includeReference
+        ? "Public PDPP JSON APIs plus reference-designated /_ref operator/control surfaces."
+        : "Public PDPP JSON APIs.",
       title: includeReference
         ? "PDPP Reference Implementation (full, includes /_ref)"
         : "PDPP Reference Implementation (public)",
       version: "0.1.0",
-      description: includeReference
-        ? "Public PDPP JSON APIs plus reference-designated /_ref operator/control surfaces."
-        : "Public PDPP JSON APIs.",
     },
+    openapi: "3.1.0",
+    paths: {},
     tags: [
-      { name: "metadata", description: "Authorization-server and protected-resource metadata" },
-      { name: "oauth", description: "OAuth-adjacent public flows used by the reference implementation" },
-      { name: "grants", description: "Grant initiation, approval, revocation, and introspection" },
-      { name: "records", description: "Record-query / read surface" },
+      { description: "Authorization-server and protected-resource metadata", name: "metadata" },
+      { description: "OAuth-adjacent public flows used by the reference implementation", name: "oauth" },
+      { description: "Grant initiation, approval, revocation, and introspection", name: "grants" },
+      { description: "Record-query / read surface", name: "records" },
       ...(includeReference
         ? [
-            { name: "reference", description: "Reference-only operator/control APIs (/_ref)" },
-            { name: "connectors", description: "Connector inventory and run control" },
-            { name: "runs", description: "Run and schedule control" },
+            { description: "Reference-only operator/control APIs (/_ref)", name: "reference" },
+            { description: "Connector inventory and run control", name: "connectors" },
+            { description: "Run and schedule control", name: "runs" },
           ]
         : []),
       {
-        name: "event-subscriptions",
         description:
           "Client event-subscription management (RI extension; CloudEvents 1.0 + Standard Webhooks delivery)",
+        name: "event-subscriptions",
       },
     ],
-    paths: {},
-    components: { schemas: {} },
   };
   // The reference splits some surfaces across two listening servers (AS and
   // RS) but advertises a single OpenAPI document. When two manifests share

@@ -65,8 +65,8 @@ function collectTimeAnchoredStreams(manifests: ConnectorManifest[]): TimeAnchore
       if (ctf && typeof ctf === "string") {
         anchored.push({
           connectorId: m.connector_id,
-          streamName: s.name,
           consentTimeField: ctf,
+          streamName: s.name,
         });
       }
     }
@@ -150,9 +150,9 @@ export async function loadTimeline(
           limit: perStreamLimit,
           order: "desc",
         });
-        return { t, records: page.data };
+        return { records: page.data, t };
       } catch {
-        return { t, records: [] as StreamRecord[] };
+        return { records: [] as StreamRecord[], t };
       }
     })
   );
@@ -176,10 +176,10 @@ export async function loadTimeline(
       }
       entries.push({
         connectorId: t.connectorId,
-        stream: t.streamName,
         recordId: r.id,
-        timestamp: isoFromMs(ms),
+        stream: t.streamName,
         summary: summarize(t.connectorId, t.streamName, (r.data ?? {}) as Record<string, unknown>),
+        timestamp: isoFromMs(ms),
       });
     }
   }

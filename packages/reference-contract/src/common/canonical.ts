@@ -25,8 +25,8 @@ import type { JsonSchema } from "./json-schema.ts";
 
 const CanonicalCursorSchema: JsonSchema = {
   $id: "pdpp/canonical/Cursor",
-  type: "string",
   description: "Opaque server-issued pagination cursor. Encodes the cursor-field/primary-key position.",
+  type: "string",
 };
 
 // ----- Connection identity (shared with public manifests) -----
@@ -36,24 +36,24 @@ const CanonicalCursorSchema: JsonSchema = {
 // schemas as the existing public manifests without introducing a circular
 // import. Keep field semantics in lock-step with public/index.ts.
 export const ConnectionIdSchema: JsonSchema = {
-  type: "string",
-  minLength: 1,
   description:
     "Canonical public identifier for a connection (one owner-configured account/device/profile). Capabilities and granted connection identities are advertised through `GET /v1/schema`.",
+  minLength: 1,
+  type: "string",
 };
 
 export const ConnectionDisplayNameSchema: JsonSchema = {
-  type: "string",
-  minLength: 1,
   description:
     "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`).",
+  minLength: 1,
+  type: "string",
 };
 
 export const ConnectorInstanceIdAliasSchema: JsonSchema = {
-  type: "string",
-  minLength: 1,
   description:
     "Deprecated wire alias for `connection_id`. Emitted alongside `connection_id` during the migration window. New clients SHOULD ignore this field and read `connection_id` instead.",
+  minLength: 1,
+  type: "string",
 };
 
 // ----- Envelope: links -----
@@ -66,15 +66,15 @@ export const ConnectorInstanceIdAliasSchema: JsonSchema = {
 // helpers below pull them in by default so the wire shape is uniform.
 export const LinksSchema: JsonSchema = {
   $id: "pdpp/canonical/Links",
-  type: "object",
   additionalProperties: false,
   properties: {
-    self: { type: "string", description: "Effective request URL for this response." },
     next: {
-      type: ["string", "null"],
       description: "Opaque server-built next-page URL or `null` when no further page is available.",
+      type: ["string", "null"],
     },
+    self: { description: "Effective request URL for this response.", type: "string" },
   },
+  type: "object",
 };
 
 // ----- Envelope: count meta -----
@@ -84,14 +84,13 @@ export const LinksSchema: JsonSchema = {
 // MUST emit a `count_downgraded` warning if they do.
 export const CountKindSchema: JsonSchema = {
   $id: "pdpp/canonical/CountKind",
-  type: "string",
-  enum: ["none", "estimated", "exact"],
   description: "Cost-graded count grade. `none` means the server returned no count value.",
+  enum: ["none", "estimated", "exact"],
+  type: "string",
 };
 
 export const CountMetaSchema: JsonSchema = {
   $id: "pdpp/canonical/CountMeta",
-  type: "object",
   additionalProperties: false,
   properties: {
     kind: CountKindSchema,
@@ -99,9 +98,10 @@ export const CountMetaSchema: JsonSchema = {
     // MAY omit it when `kind` is `none`. We keep the property optional rather
     // than tying it to `kind` via a oneOf so AJV stays cheap; runtime layer
     // is responsible for emitting them consistently.
-    value: { type: "integer", minimum: 0 },
+    value: { minimum: 0, type: "integer" },
   },
   required: ["kind"],
+  type: "object",
 };
 
 // ----- Envelope: bounded window aggregate -----
@@ -120,14 +120,14 @@ export const CountMetaSchema: JsonSchema = {
 //       (#"The record-list read MAY expose bounded window aggregate metadata").
 export const WindowMetaSchema: JsonSchema = {
   $id: "pdpp/canonical/WindowMeta",
-  type: "object",
   additionalProperties: false,
   properties: {
-    total: { type: "integer", minimum: 0 },
-    earliest_at: { type: "string", format: "date-time" },
-    latest_at: { type: "string", format: "date-time" },
+    earliest_at: { format: "date-time", type: "string" },
+    latest_at: { format: "date-time", type: "string" },
+    total: { minimum: 0, type: "integer" },
   },
   required: ["total"],
+  type: "object",
 };
 
 // ----- Envelope: warnings -----
@@ -137,7 +137,6 @@ export const WindowMetaSchema: JsonSchema = {
 // non-fatal lossiness instead of prose pattern matching.
 export const WarningCodeSchema: JsonSchema = {
   $id: "pdpp/canonical/WarningCode",
-  type: "string",
   enum: [
     // Server downgraded a requested count grade (e.g. exact -> estimated).
     "count_downgraded",
@@ -158,31 +157,32 @@ export const WarningCodeSchema: JsonSchema = {
     // expand_limit) that the client SHOULD be aware of.
     "compatibility_fallback",
   ],
+  type: "string",
 };
 
 export const WarningSchema: JsonSchema = {
   $id: "pdpp/canonical/Warning",
-  type: "object",
   additionalProperties: false,
   properties: {
     code: WarningCodeSchema,
-    message: { type: "string", description: "Human-readable explanation. Not a stable client signal." },
+    // When the warning relates to a particular connection, the
+    // `connection_id` it concerns.
+    connection_id: { minLength: 1, type: "string" },
     // Optional structured context. Open object because each warning code may
     // attach different fields (e.g. `source`, `requested_kind`, `field`).
     // Runtime is responsible for documenting per-code shapes; the wire
     // contract here just guarantees the envelope.
-    detail: { type: "object", additionalProperties: true },
+    detail: { additionalProperties: true, type: "object" },
+    // When the warning relates to a single field, the owning field path.
+    field: { type: "string" },
+    message: { description: "Human-readable explanation. Not a stable client signal.", type: "string" },
     // Request parameter responsible for the warning, when applicable. Existing
     // read-path warnings use this for deprecated aliases, fan-in pagination,
     // and count downgrades.
     param: { type: "string" },
-    // When the warning relates to a single field, the owning field path.
-    field: { type: "string" },
-    // When the warning relates to a particular connection, the
-    // `connection_id` it concerns.
-    connection_id: { type: "string", minLength: 1 },
   },
   required: ["code", "message"],
+  type: "object",
 };
 
 // ----- Envelope: meta block -----
@@ -192,13 +192,13 @@ export const WarningSchema: JsonSchema = {
 // counts/warnings; helpers below add them in the typical list cases.
 export const MetaSchema: JsonSchema = {
   $id: "pdpp/canonical/Meta",
-  type: "object",
   additionalProperties: false,
   properties: {
     count: CountMetaSchema,
+    warnings: { items: WarningSchema, type: "array" },
     window: WindowMetaSchema,
-    warnings: { type: "array", items: WarningSchema },
   },
+  type: "object",
 };
 
 // ----- Envelope helpers -----
@@ -208,9 +208,9 @@ export const MetaSchema: JsonSchema = {
 // to repeat it.
 function envelopeBaseProperties(objectConst: string): Record<string, JsonSchema> {
   return {
-    object: { const: objectConst },
     links: LinksSchema,
     meta: MetaSchema,
+    object: { const: objectConst },
   };
 }
 
@@ -223,27 +223,27 @@ function envelopeBaseProperties(objectConst: string): Record<string, JsonSchema>
 // one; new manifests SHOULD switch to this helper once they are ready to
 // emit `links` and `meta`.
 export const CanonicalListEnvelopeSchema = (itemSchema: JsonSchema): JsonSchema => ({
-  type: "object",
   additionalProperties: false,
   properties: {
     ...envelopeBaseProperties("list"),
-    data: { type: "array", items: itemSchema },
+    data: { items: itemSchema, type: "array" },
     has_more: { type: "boolean" },
   },
   required: ["object", "data", "has_more", "links", "meta"],
+  type: "object",
 });
 
 // Canonical single-object envelope. `data` is the single payload object; the
 // envelope keeps the same `object`/`links`/`meta` vocabulary as list
 // responses so clients consume one shape.
 export const CanonicalSingleEnvelopeSchema = (objectConst: string, dataSchema: JsonSchema): JsonSchema => ({
-  type: "object",
   additionalProperties: false,
   properties: {
     ...envelopeBaseProperties(objectConst),
     data: dataSchema,
   },
   required: ["object", "data", "links", "meta"],
+  type: "object",
 });
 
 // Canonical schema/capability envelope. Identical to the single-object
@@ -258,14 +258,14 @@ export const CanonicalSchemaEnvelopeSchema = (dataSchema: JsonSchema): JsonSchem
 // cursor pagination MUST advertise that limitation through `/v1/schema`
 // (see openspec/changes/canonicalize-public-read-contract).
 export const CanonicalSearchEnvelopeSchema = (hitSchema: JsonSchema): JsonSchema => ({
-  type: "object",
   additionalProperties: false,
   properties: {
     ...envelopeBaseProperties("search"),
-    data: { type: "array", items: hitSchema },
+    data: { items: hitSchema, type: "array" },
     has_more: { type: "boolean" },
   },
   required: ["object", "data", "has_more", "links", "meta"],
+  type: "object",
 });
 
 // Canonical aggregate envelope. Aggregations are single-object responses
@@ -282,16 +282,16 @@ export const CanonicalAggregateEnvelopeSchema = (dataSchema: JsonSchema): JsonSc
 // and MCP tool input. Runtime is responsible for splitting/normalizing.
 export const FieldsParamSchema: JsonSchema = {
   $id: "pdpp/canonical/FieldsParam",
-  description:
-    "Field allowlist for projection. CSV string or array of field paths. Dotted paths apply to expanded child records.",
   anyOf: [
-    { type: "string", minLength: 1 },
+    { minLength: 1, type: "string" },
     {
-      type: "array",
+      items: { minLength: 1, type: "string" },
       minItems: 1,
-      items: { type: "string", minLength: 1 },
+      type: "array",
     },
   ],
+  description:
+    "Field allowlist for projection. CSV string or array of field paths. Dotted paths apply to expanded child records.",
 };
 
 // `expand[]` is the one-hop inline expansion list. Server validates each
@@ -301,8 +301,8 @@ export const ExpandParamSchema: JsonSchema = {
   $id: "pdpp/canonical/ExpandParam",
   description:
     "One-hop inline expansion list. Each entry is a manifest-declared parent-to-child relation name advertised by `GET /v1/schema`.",
+  items: { minLength: 1, type: "string" },
   type: "array",
-  items: { type: "string", minLength: 1 },
 };
 
 // `expand_limit` caps the number of child records returned per has-many
@@ -311,10 +311,10 @@ export const ExpandParamSchema: JsonSchema = {
 // relation names with a typed error rather than a generic schema failure.
 export const ExpandLimitParamSchema: JsonSchema = {
   $id: "pdpp/canonical/ExpandLimitParam",
+  additionalProperties: { minimum: 1, type: "integer" },
   description:
     "Per-relation has-many cap, keyed by relation name. Values are positive integers; the server clamps to the per-relation `max_limit` advertised by `/v1/schema`.",
   type: "object",
-  additionalProperties: { type: "integer", minimum: 1 },
 };
 
 // `filter` is the per-field filter map. Each entry is either an exact value
@@ -323,9 +323,6 @@ export const ExpandLimitParamSchema: JsonSchema = {
 // only locks the wire shape.
 export const FilterParamSchema: JsonSchema = {
   $id: "pdpp/canonical/FilterParam",
-  description:
-    "Per-field filter map. Exact: `filter[field]=value`. Operator: `filter[field][op]=value`. Allowed operators per field come from `/v1/schema` `field_capabilities`.",
-  type: "object",
   additionalProperties: {
     anyOf: [
       { type: "string" },
@@ -333,15 +330,18 @@ export const FilterParamSchema: JsonSchema = {
       { type: "integer" },
       { type: "boolean" },
       {
-        type: "object",
         additionalProperties: {
           // Operator value. Accepts the same scalar set as exact filters; the
           // server is responsible for type-checking against the field schema.
           anyOf: [{ type: "string" }, { type: "number" }, { type: "integer" }, { type: "boolean" }],
         },
+        type: "object",
       },
     ],
   },
+  description:
+    "Per-field filter map. Exact: `filter[field]=value`. Operator: `filter[field][op]=value`. Allowed operators per field come from `/v1/schema` `field_capabilities`.",
+  type: "object",
 };
 
 // `sort` is a CSV or array of sign-prefixed field names. Example:
@@ -349,16 +349,16 @@ export const FilterParamSchema: JsonSchema = {
 // Sortable fields are advertised through `/v1/schema`.
 export const SortParamSchema: JsonSchema = {
   $id: "pdpp/canonical/SortParam",
-  description:
-    "Sign-prefix sort spec. CSV string (`sort=-emitted_at,name`) or array of `[-]field` entries. Sortable fields come from `/v1/schema`.",
   anyOf: [
-    { type: "string", minLength: 1, pattern: "^-?[A-Za-z0-9_.]+(,-?[A-Za-z0-9_.]+)*$" },
+    { minLength: 1, pattern: "^-?[A-Za-z0-9_.]+(,-?[A-Za-z0-9_.]+)*$", type: "string" },
     {
-      type: "array",
+      items: { minLength: 1, pattern: "^-?[A-Za-z0-9_.]+$", type: "string" },
       minItems: 1,
-      items: { type: "string", minLength: 1, pattern: "^-?[A-Za-z0-9_.]+$" },
+      type: "array",
     },
   ],
+  description:
+    "Sign-prefix sort spec. CSV string (`sort=-emitted_at,name`) or array of `[-]field` entries. Sortable fields come from `/v1/schema`.",
 };
 
 // `count` is the requested count grade. Mirrors the HTTP `Prefer: count=...`
@@ -367,8 +367,8 @@ export const CountParamSchema: JsonSchema = {
   $id: "pdpp/canonical/CountParam",
   description:
     "Requested count grade. Equivalent to the HTTP `Prefer: count=none|estimated|exact` header. The server MAY downgrade and SHALL emit a `count_downgraded` warning.",
-  type: "string",
   enum: ["none", "estimated", "exact"],
+  type: "string",
 };
 
 // Limit primitive. The canonical contract caps list/search pages at 500 in
@@ -377,10 +377,10 @@ export const CountParamSchema: JsonSchema = {
 // override this when wiring the manifest.
 export const LimitParamSchema: JsonSchema = {
   $id: "pdpp/canonical/LimitParam",
-  type: "integer",
-  minimum: 1,
-  maximum: 500,
   description: "Maximum number of items per page. Per-operation caps may be lower; see `/v1/schema`.",
+  maximum: 500,
+  minimum: 1,
+  type: "integer",
 };
 
 // Canonical read input bundle. Helper for assembling a manifest `query` or
@@ -392,16 +392,16 @@ export const LimitParamSchema: JsonSchema = {
 // deployments can scope reads without each operation re-declaring the
 // primitive.
 export const CanonicalReadInputProperties: Record<string, JsonSchema> = {
-  fields: FieldsParamSchema,
-  expand: ExpandParamSchema,
-  expand_limit: ExpandLimitParamSchema,
-  filter: FilterParamSchema,
-  sort: SortParamSchema,
-  count: CountParamSchema,
-  limit: LimitParamSchema,
-  cursor: CanonicalCursorSchema,
   connection_id: ConnectionIdSchema,
   connector_instance_id: ConnectorInstanceIdAliasSchema,
+  count: CountParamSchema,
+  cursor: CanonicalCursorSchema,
+  expand: ExpandParamSchema,
+  expand_limit: ExpandLimitParamSchema,
+  fields: FieldsParamSchema,
+  filter: FilterParamSchema,
+  limit: LimitParamSchema,
+  sort: SortParamSchema,
 };
 
 // Convenience helper for new manifests: returns a `query` JSON-Schema with
@@ -409,10 +409,10 @@ export const CanonicalReadInputProperties: Record<string, JsonSchema> = {
 // operations SHOULD use this so unknown parameters are rejected at the AJV
 // layer in addition to runtime strict-validation.
 export const CanonicalReadInputQuerySchema = (extraProperties: Record<string, JsonSchema> = {}): JsonSchema => ({
-  type: "object",
   additionalProperties: false,
   properties: {
     ...CanonicalReadInputProperties,
     ...extraProperties,
   },
+  type: "object",
 });

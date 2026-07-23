@@ -48,7 +48,7 @@ test("reproduce-the-bug: metadata keyed by the canonical key resolves a record's
   const manifest = {
     connector_id: "https://registry.pdpp.org/connectors/usaa",
     connector_key: "usaa",
-    streams: [{ name: "transactions", consent_time_field: "date", cursor_field: "date" }],
+    streams: [{ consent_time_field: "date", cursor_field: "date", name: "transactions" }],
   };
   // Build metadata the FIXED way — keyed by the canonical key.
   const key = manifestConnectorKey(manifest);
@@ -57,8 +57,8 @@ test("reproduce-the-bug: metadata keyed by the canonical key resolves a record's
   ]);
 
   // A record as stored: plain connector_id, a bare transaction date in data.
-  const record = { connector_id: "usaa", stream: "transactions", emitted_at: "2026-04-20T03:40:15.058Z" };
-  const data = { date: "2026-12-26", amount: 100_000 };
+  const record = { connector_id: "usaa", emitted_at: "2026-04-20T03:40:15.058Z", stream: "transactions" };
+  const data = { amount: 100_000, date: "2026-12-26" };
 
   const lookedUp = metadata.get(searchTimestampMetadataKey(record.connector_id, record.stream)) ?? null;
   assert.ok(lookedUp, "metadata MUST resolve for the record's plain connector_id");

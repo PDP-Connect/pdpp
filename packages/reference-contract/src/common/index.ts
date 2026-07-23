@@ -62,51 +62,51 @@ export interface RouteManifest {
 
 export const IdSchema: JsonSchema = {
   $id: "pdpp/common/Id",
-  type: "string",
-  minLength: 1,
   maxLength: 256,
+  minLength: 1,
+  type: "string",
 };
 
 export const UriSchema: JsonSchema = {
-  type: "string",
   format: "uri",
+  type: "string",
 };
 
 export const CursorSchema: JsonSchema = {
   $id: "pdpp/common/Cursor",
-  type: "string",
   description: "Opaque logical pagination cursor. Encodes (cursor_field, primary_key) position.",
+  type: "string",
 };
 
 export const ChangesSinceSchema: JsonSchema = {
   $id: "pdpp/common/ChangesSince",
-  type: "string",
   description:
     "`beginning` for initial sync, or an opaque changes-since token from next_changes_since. Distinct from list-page cursors.",
+  type: "string",
 };
 
 export const OrderSchema: JsonSchema = {
   $id: "pdpp/common/Order",
-  type: "string",
   enum: ["asc", "desc"],
+  type: "string",
 };
 
 export const FreshnessStatusSchema: JsonSchema = {
   $id: "pdpp/common/FreshnessStatus",
-  type: "string",
   enum: ["current", "stale", "unknown"],
+  type: "string",
 };
 
 export const FreshnessSchema: JsonSchema = {
   $id: "pdpp/common/Freshness",
-  type: "object",
   additionalProperties: false,
   properties: {
+    captured_at: { format: "date-time", type: "string" },
+    last_attempted_at: { format: "date-time", type: "string" },
     status: FreshnessStatusSchema,
-    captured_at: { type: "string", format: "date-time" },
-    last_attempted_at: { type: "string", format: "date-time" },
   },
   required: ["status"],
+  type: "object",
 };
 
 // Disambiguation summary carried in an ambiguity error's `available_connections`
@@ -118,53 +118,52 @@ export const FreshnessSchema: JsonSchema = {
 // Mirrors the owner-connection listing's identity fields; secret-free.
 export const ErrorAvailableConnectionSchema: JsonSchema = {
   $id: "pdpp/common/ErrorAvailableConnection",
-  type: "object",
   additionalProperties: false,
   properties: {
     connection_id: { type: "string" },
     connector_id: { type: "string" },
     connector_key: { type: "string" },
     display_name: { type: ["string", "null"] },
-    label_status: { type: "string", enum: ["owner_set", "fallback"] },
+    label_status: { enum: ["owner_set", "fallback"], type: "string" },
   },
   required: ["connection_id"],
+  type: "object",
 };
 
 export const ErrorObjectSchema: JsonSchema = {
   $id: "pdpp/common/PdppError",
-  type: "object",
   additionalProperties: false,
   properties: {
     error: {
-      type: "object",
       additionalProperties: false,
       properties: {
-        type: { type: "string" },
-        code: { type: "string" },
-        message: { type: "string" },
-        param: { type: "string" },
-        request_id: { type: "string" },
-        // Optional 401-only hints already emitted by `pdppError`: where to read
-        // protected-resource metadata and what to do next.
-        resource_metadata: { type: "string" },
-        next_step: { type: "string" },
         // Optional ambiguity-resolution hints. Emitted when an owner-agent
         // control action is rejected because a connector-only target matches
         // more than one configured connection: `available_connections` lists
         // every candidate's stable identity and `retry_with` names the field to
         // resubmit (e.g. `connection_id`). Absent on unambiguous errors.
-        available_connections: { type: "array", items: ErrorAvailableConnectionSchema },
+        available_connections: { items: ErrorAvailableConnectionSchema, type: "array" },
+        code: { type: "string" },
+        message: { type: "string" },
+        next_step: { type: "string" },
+        param: { type: "string" },
+        request_id: { type: "string" },
+        // Optional 401-only hints already emitted by `pdppError`: where to read
+        // protected-resource metadata and what to do next.
+        resource_metadata: { type: "string" },
         retry_with: { type: "string" },
+        type: { type: "string" },
       },
       required: ["type", "code", "message", "request_id"],
+      type: "object",
     },
   },
   required: ["error"],
+  type: "object",
 };
 
 export const OAuthErrorSchema: JsonSchema = {
   $id: "pdpp/common/OAuthError",
-  type: "object",
   additionalProperties: false,
   properties: {
     error: { type: "string" },
@@ -172,28 +171,29 @@ export const OAuthErrorSchema: JsonSchema = {
     request_id: { type: "string" },
   },
   required: ["error", "request_id"],
+  type: "object",
 };
 
 export const ListEnvelopeSchema = (itemSchema: JsonSchema): JsonSchema => ({
-  type: "object",
   additionalProperties: false,
   properties: {
-    object: { const: "list" },
-    data: { type: "array", items: itemSchema },
+    data: { items: itemSchema, type: "array" },
     has_more: { type: "boolean" },
     next_cursor: { type: "string" },
+    object: { const: "list" },
   },
   required: ["object", "data", "has_more"],
+  type: "object",
 });
 
 export const PaginationQuerySchema: JsonSchema = {
-  type: "object",
   additionalProperties: false,
   properties: {
-    limit: { type: "integer", minimum: 1, maximum: 500 },
     cursor: CursorSchema,
+    limit: { maximum: 500, minimum: 1, type: "integer" },
     order: OrderSchema,
   },
+  type: "object",
 };
 
 // Canonical public read contract primitives — envelope, warnings, counts,
