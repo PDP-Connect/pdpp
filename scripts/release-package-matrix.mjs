@@ -281,6 +281,7 @@ function runMatrixRow() {
     PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: '1',
     PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1',
     PDPP_ARTIFACT_GIT_HEAD_SHA: context.headSha,
+    PDPP_BUILD_TIMESTAMP: '2000-01-01T00:00:00.000Z',
   };
 
   runRecorded(commands, 'pnpm', ['install', '--frozen-lockfile', '--ignore-scripts', '--offline', '--store-dir', '/pdpp-pnpm-store'], { env });

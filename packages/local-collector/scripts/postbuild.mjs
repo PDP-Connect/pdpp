@@ -52,7 +52,7 @@ async function stampBuildInfo() {
   const compiled = path.join(distRoot, "polyfill-connectors", "src", "collector-build-info.js");
   const version = await resolvePackageVersion();
   const revision = resolveBuildRevision();
-  const builtAt = new Date().toISOString();
+  const builtAt = resolveBuildTimestamp();
   const body = `const COLLECTOR_BUILD_SOURCE_SENTINEL = "source";
 const COLLECTOR_BUILD_INFO = {
     builtAt: ${JSON.stringify(builtAt)},
@@ -65,6 +65,16 @@ function buildAgentVersion(info = COLLECTOR_BUILD_INFO) {
 export { COLLECTOR_BUILD_INFO, COLLECTOR_BUILD_SOURCE_SENTINEL, buildAgentVersion };
 `;
   await writeFile(compiled, body);
+}
+
+/** Use a validated release timestamp when the matrix needs byte-identical rows. */
+function resolveBuildTimestamp() {
+  const fromEnv = process.env.PDPP_BUILD_TIMESTAMP;
+  if (typeof fromEnv === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(fromEnv.trim())) {
+    const normalized = new Date(fromEnv.trim()).toISOString();
+    if (normalized === fromEnv.trim()) return normalized;
+  }
+  return new Date().toISOString();
 }
 
 /** Resolve the published collector package version from its own manifest. */
