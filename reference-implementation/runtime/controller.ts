@@ -1003,7 +1003,7 @@ function readManifestDisplayName(manifest: ConnectorManifest | null | undefined)
   if (typeof display === "string" && display.trim()) {
     return display.trim();
   }
-  const { name } = (manifest as { name?: unknown });
+  const { name } = manifest as { name?: unknown };
   if (typeof name === "string" && name.trim()) {
     return name.trim();
   }
@@ -1014,7 +1014,7 @@ function readManifestRefreshPolicy(manifest: ConnectorManifest | null | undefine
   if (!manifest || typeof manifest !== "object") {
     return null;
   }
-  const { capabilities } = (manifest as { capabilities?: unknown });
+  const { capabilities } = manifest as { capabilities?: unknown };
   if (!capabilities || typeof capabilities !== "object" || Array.isArray(capabilities)) {
     return null;
   }
@@ -2923,7 +2923,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       if (!gap || typeof gap !== "object") {
         return false;
       }
-      const { status } = (gap as { status?: unknown });
+      const { status } = gap as { status?: unknown };
       return status === "recovered" || status === "terminal";
     }).length;
   }

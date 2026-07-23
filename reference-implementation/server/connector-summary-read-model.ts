@@ -1131,7 +1131,7 @@ function mergeEventStreamFacts(
     if (!rawFact || typeof rawFact !== "object" || Array.isArray(rawFact)) {
       continue;
     }
-    const { stream } = (rawFact as Row);
+    const { stream } = rawFact as Row;
     if (typeof stream !== "string" || !stream) {
       continue;
     }

@@ -288,7 +288,7 @@ function errorMessage(err: unknown): string {
     // Some I/O errors carry a `.code` (`ENOENT`, etc.) on the Error
     // object directly; surface that when present, otherwise fall back
     // to the message.
-    const { code } = (err as { code?: unknown });
+    const { code } = err as { code?: unknown };
     if (typeof code === "string" && code.length > 0) {
       return code;
     }

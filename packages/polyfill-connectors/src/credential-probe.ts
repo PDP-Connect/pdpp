@@ -156,8 +156,8 @@ const gmailProbe: ConnectorCredentialProbe = async ({ context, secret, transport
     // imapflow surfaces a bad app password as an authentication failure. The
     // owner-causal reading is "Google rejected this app password" — never the
     // raw IMAP error, never the secret.
-        // biome-ignore lint/style/useErrorCause: custom error factory/constructor owns its domain-specific cause contract
-throw new CredentialProbeError(
+    // biome-ignore lint/style/useErrorCause: custom error factory/constructor owns its domain-specific cause contract
+    throw new CredentialProbeError(
       "gmail_credential_rejected",
       "Google rejected this app password for that mailbox. Check the Gmail address and create a fresh app password, then try again."
     );
@@ -195,8 +195,8 @@ const githubProbe: ConnectorCredentialProbe = async ({ secret, transport }) => {
   try {
     response = await ghTransport.getUser({ token: secret });
   } catch {
-        // biome-ignore lint/style/useErrorCause: custom error factory/constructor owns its domain-specific cause contract
-throw new CredentialProbeError(
+    // biome-ignore lint/style/useErrorCause: custom error factory/constructor owns its domain-specific cause contract
+    throw new CredentialProbeError(
       "github_unreachable",
       "Could not reach GitHub to check this token. Try again in a moment.",
       { retryable: true }

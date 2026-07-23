@@ -956,8 +956,8 @@ function parseManifest(raw: string, connectorId: string): ConnectorManifest {
   try {
     return JSON.parse(raw) as ConnectorManifest;
   } catch {
-        // biome-ignore lint/style/useErrorCause: custom error factory/constructor owns its domain-specific cause contract
-throw new RefControlError(
+    // biome-ignore lint/style/useErrorCause: custom error factory/constructor owns its domain-specific cause contract
+    throw new RefControlError(
       `Connector manifest for ${connectorId} is malformed or no longer valid`,
       "connector_invalid"
     );
@@ -1797,7 +1797,7 @@ function isRetiredSetupAttempt(instance: ConnectorInstanceRow): boolean {
   if (!binding || typeof binding !== "object" || Array.isArray(binding)) {
     return false;
   }
-  const { kind } = (binding as { readonly kind?: unknown });
+  const { kind } = binding as { readonly kind?: unknown };
   return kind === "browser_enrollment_shell" || kind === "static_secret_draft" || kind === "manual_upload_draft";
 }
 
@@ -2100,7 +2100,7 @@ function hasCompetingOwnerInteractionGap(knownGaps: readonly unknown[]): boolean
     if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
       continue;
     }
-    const { kind } = (gap as { kind?: unknown });
+    const { kind } = gap as { kind?: unknown };
     const recoveryAction = (gap as { recovery_hint?: { action?: unknown } }).recovery_hint?.action;
     if (
       (typeof kind === "string" && OWNER_INTERACTION_GAP_KINDS.has(kind)) ||
@@ -2155,11 +2155,11 @@ function credentialReasonFromGenericGap(gap: unknown, competingOwnerInteraction:
   if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
     return null;
   }
-  const { severity } = (gap as { severity?: unknown });
+  const { severity } = gap as { severity?: unknown };
   if (severity === "informational" || severity === "recoverable") {
     return null;
   }
-  const { message } = (gap as { message?: unknown });
+  const { message } = gap as { message?: unknown };
   if (isSourceUnavailableMessage(message)) {
     return null;
   }
@@ -4805,10 +4805,10 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
   let totalRecordsState: ConnectorSummary["total_records_state"];
   if (!evidence) {
     totalRecordsState = "unobserved";
-  } else if (!recordSnapshotCurrent) {
-    totalRecordsState = "stale";
-  } else {
+  } else if (recordSnapshotCurrent) {
     totalRecordsState = totalRecords > 0 ? "known" : "known_zero";
+  } else {
+    totalRecordsState = "stale";
   }
   const retainedBytes = evidence ? evidence.retained_bytes : live.retainedBytes;
   const totalRetainedBytes = evidence ? evidence.total_retained_bytes : (live.retainedBytes?.total_bytes ?? null);
@@ -4905,7 +4905,7 @@ function connectionBindingKind(instance: ConnectorInstanceRow): string | null {
   if (!binding || typeof binding !== "object" || Array.isArray(binding)) {
     return null;
   }
-  const { kind } = (binding as { readonly kind?: unknown });
+  const { kind } = binding as { readonly kind?: unknown };
   return typeof kind === "string" ? kind : null;
 }
 

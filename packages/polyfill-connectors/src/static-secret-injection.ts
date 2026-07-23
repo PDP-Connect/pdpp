@@ -252,8 +252,8 @@ function secretBundleFields(connectorId: string, secret: string): Record<string,
   try {
     parsed = JSON.parse(secret);
   } catch {
-        // biome-ignore lint/style/useErrorCause: custom error factory/constructor owns its domain-specific cause contract
-throw new StaticSecretInjectionError(
+    // biome-ignore lint/style/useErrorCause: custom error factory/constructor owns its domain-specific cause contract
+    throw new StaticSecretInjectionError(
       "recovered_secret_bundle_invalid",
       `Connector '${connectorId}' expects a sealed JSON credential bundle; recovered secret was not valid JSON.`
     );

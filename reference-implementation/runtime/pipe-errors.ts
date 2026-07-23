@@ -28,11 +28,11 @@ export function isClosedPipeWriteError(err: unknown): boolean {
   if (!err || typeof err !== "object") {
     return false;
   }
-  const { code } = (err as { code?: unknown });
+  const { code } = err as { code?: unknown };
   if (typeof code !== "string" || !CLOSED_PIPE_CODES.has(code)) {
     return false;
   }
-  const { syscall } = (err as { syscall?: unknown });
+  const { syscall } = err as { syscall?: unknown };
   if (syscall && syscall !== "write") {
     return false;
   }

@@ -239,7 +239,7 @@ interface DiscoveryInput {
  */
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: candidate classification is the complete precedence table for retained discovery evidence.
-function  classifyCandidate(input: DiscoveryInput): RepairCandidateReason | null {
+function classifyCandidate(input: DiscoveryInput): RepairCandidateReason | null {
   const { instance, existingEvidence, manifest, currentCheckpoint, retainedByteRow } = input;
 
   if (!existingEvidence) {
@@ -422,9 +422,7 @@ function readSqliteDiscoveryContext(connectorInstanceIds: readonly string[] | nu
   // consistent with the scoped path (no subject filter at all) and with
   // every other read/prune below.
   const instanceRows = scoped
-    ? db
-        .prepare(`SELECT * FROM connector_instances WHERE connector_instance_id IN (${placeholders})`)
-        .all(...scopedIds)
+    ? db.prepare(`SELECT * FROM connector_instances WHERE connector_instance_id IN (${placeholders})`).all(...scopedIds)
     : db.prepare("SELECT * FROM connector_instances ORDER BY connector_instance_id ASC").all();
   // Evidence/retained-bytes/version-counter/canonical-count reads are scoped
   // to the SAME requested id set (one batched query each, not a complete
@@ -1130,7 +1128,7 @@ interface RepairInputs {
  */
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: repaired rows must combine checkpoint, manifest, retained, and unexpected-stream evidence atomically.
-function  buildRepairedRow(inputs: RepairInputs): Row {
+function buildRepairedRow(inputs: RepairInputs): Row {
   const { instance, manifest, checkpoint, canonicalByStream, retainedByteRow, retainedByStream, unexpectedStreams } =
     inputs;
   const as_of = nowIso();

@@ -442,7 +442,7 @@ function ownerRepairCredentialCode(err: unknown): string | null {
   if (!err || typeof err !== "object" || !("code" in err)) {
     return null;
   }
-  const { code } = (err as { code?: unknown });
+  const { code } = err as { code?: unknown };
   return typeof code === "string" && OWNER_REPAIR_CREDENTIAL_CODES.has(code) ? code : null;
 }
 

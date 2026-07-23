@@ -373,7 +373,7 @@ test("SEARCH post-exclusion descriptor/count is the POST-exclusion set (no overs
   assert.equal(result.feed.length, nonExcludedCount, "visible feed count == non-excluded count");
   // A relevance_bounded descriptor carries no total; if a total IS present it must
   // be the post-exclusion count, never the pre-exclusion hit count.
-  const { total } = (result.descriptor as { total?: number });
+  const { total } = result.descriptor as { total?: number };
   if (typeof total === "number") {
     assert.equal(total, nonExcludedCount, "descriptor total reflects the POST-exclusion set");
   }

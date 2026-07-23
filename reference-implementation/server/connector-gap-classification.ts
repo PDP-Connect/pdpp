@@ -22,7 +22,7 @@ export function isDegradingKnownGap(gap: unknown): boolean {
   if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
     return true;
   }
-  const { severity } = (gap as { severity?: unknown });
+  const { severity } = gap as { severity?: unknown };
   return severity !== "informational" && severity !== "recoverable";
 }
 
@@ -39,7 +39,7 @@ export function gapRecoveryAction(gap: unknown): string | null {
     return hint;
   }
   if (hint && typeof hint === "object" && !Array.isArray(hint)) {
-    const { action } = (hint as { action?: unknown });
+    const { action } = hint as { action?: unknown };
     return typeof action === "string" ? action : null;
   }
   return null;
@@ -118,7 +118,7 @@ export function isRetryableKnownGap(gap: unknown): boolean {
   if (isSourceUnavailableKnownGap(gap)) {
     return true;
   }
-  const { severity } = (gap as { severity?: unknown });
+  const { severity } = gap as { severity?: unknown };
   return severity === "transient";
 }
 
@@ -191,7 +191,7 @@ export function hasTerminalKnownGap(
     if (isSourceUnavailableKnownGap(gap)) {
       return false;
     }
-    const { severity } = (gap as { severity?: unknown });
+    const { severity } = gap as { severity?: unknown };
     if (severity === "actionable") {
       return true;
     }
@@ -224,11 +224,11 @@ export function firstDegradingKnownGapReason(run: ConnectorRunSummary | null): s
     if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
       return null;
     }
-    const { severity } = (gap as { severity?: unknown });
+    const { severity } = gap as { severity?: unknown };
     if (severity === "informational" || severity === "recoverable") {
       continue;
     }
-    const { reason } = (gap as { reason?: unknown });
+    const { reason } = gap as { reason?: unknown };
     if (typeof reason === "string" && reason.length > 0) {
       return reason;
     }

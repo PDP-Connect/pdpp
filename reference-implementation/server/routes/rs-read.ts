@@ -443,7 +443,7 @@ async function runWithVisibilityRejection<T>(
   } catch (err) {
     if (err instanceof errorType) {
       const mapped = new Error((err as Error).message) as Error & { code?: string };
-      const { code } = (err as Error & { code?: string });
+      const { code } = err as Error & { code?: string };
       if (code !== undefined) {
         mapped.code = code;
       }

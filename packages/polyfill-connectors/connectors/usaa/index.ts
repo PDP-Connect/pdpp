@@ -1321,8 +1321,8 @@ async function waitForCsvArtifact(
     if (response) {
       return { buffer: response.body, suggestedFilename: response.suggestedFilename };
     }
-        // biome-ignore lint/style/useErrorCause: custom error factory/constructor owns its domain-specific cause contract
-throw new CsvArtifactError(err instanceof Error ? err.message : String(err), downloadDiag);
+    // biome-ignore lint/style/useErrorCause: custom error factory/constructor owns its domain-specific cause contract
+    throw new CsvArtifactError(err instanceof Error ? err.message : String(err), downloadDiag);
   }
 }
 

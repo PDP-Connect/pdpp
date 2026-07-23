@@ -316,7 +316,7 @@ export function RecordroomShell({
                 pass onJump so the button and the shortcut open the same one. */}
             {onJump ? (
               // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
-<button className="rr-chrome-btn" onClick={() => onJump()} type="button">
+              <button className="rr-chrome-btn" onClick={() => onJump()} type="button">
                 Jump <span className="rr-kbd">⌘K</span>
               </button>
             ) : null}

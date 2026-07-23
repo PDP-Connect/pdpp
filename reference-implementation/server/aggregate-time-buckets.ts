@@ -28,8 +28,8 @@ export function resolveAggregateTimeZone(rawZone: string | null | undefined): st
     new Intl.DateTimeFormat("en-US", { timeZone: rawZone });
     return rawZone;
   } catch {
-        // biome-ignore lint/style/useErrorCause: custom error factory/constructor owns its domain-specific cause contract
-throw invalidQueryError(`Unknown time_zone: '${rawZone}'`);
+    // biome-ignore lint/style/useErrorCause: custom error factory/constructor owns its domain-specific cause contract
+    throw invalidQueryError(`Unknown time_zone: '${rawZone}'`);
   }
 }
 

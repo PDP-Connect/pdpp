@@ -73,7 +73,7 @@ export function readCollectionFactsFromTerminalData(
   if (!block || typeof block !== "object" || Array.isArray(block)) {
     return null;
   }
-  const { streams } = (block as { streams?: unknown });
+  const { streams } = block as { streams?: unknown };
   if (!Array.isArray(streams)) {
     return null;
   }

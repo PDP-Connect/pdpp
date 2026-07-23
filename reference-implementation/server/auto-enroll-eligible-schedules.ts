@@ -442,7 +442,7 @@ export async function autoEnrollEligibleSchedules(opts: AutoEnrollOptions): Prom
 
 function errorMessage(err: unknown): string {
   if (err instanceof Error) {
-    const { code } = (err as { code?: unknown });
+    const { code } = err as { code?: unknown };
     if (typeof code === "string" && code.length > 0) {
       return `${code}: ${err.message}`;
     }

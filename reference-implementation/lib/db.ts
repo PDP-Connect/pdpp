@@ -151,15 +151,15 @@ function decodeCursor(cursor: string): CursorPayload {
   try {
     raw = Buffer.from(cursor, "base64url").toString("utf8");
   } catch {
-        // biome-ignore lint/style/useErrorCause: custom error factory/constructor owns its domain-specific cause contract
-throw new InvalidCursorError("Cursor is not base64url-encoded.");
+    // biome-ignore lint/style/useErrorCause: custom error factory/constructor owns its domain-specific cause contract
+    throw new InvalidCursorError("Cursor is not base64url-encoded.");
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-        // biome-ignore lint/style/useErrorCause: custom error factory/constructor owns its domain-specific cause contract
-throw new InvalidCursorError("Cursor payload is not valid JSON.");
+    // biome-ignore lint/style/useErrorCause: custom error factory/constructor owns its domain-specific cause contract
+    throw new InvalidCursorError("Cursor payload is not valid JSON.");
   }
   if (typeof parsed !== "object" || parsed === null || !("v" in parsed) || !("k" in parsed) || !("r" in parsed)) {
     throw new InvalidCursorError("Cursor payload is missing required fields.");
