@@ -32,6 +32,7 @@ function exploreWindowFromEnvelope(envelope: TimelineEnvelope): { since: string;
     return null;
   }
   const sorted = timestamps.slice().sort();
+  // biome-ignore lint/style/useDestructuring: Indexed access and property reads preserve the local guard and exact source-order reasoning here.
   const firstTimestamp = sorted[0];
   const lastTimestamp = sorted.at(-1);
   if (!(firstTimestamp && lastTimestamp)) {

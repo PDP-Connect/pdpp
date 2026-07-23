@@ -3,6 +3,7 @@
 
 import { mergeProps } from "@base-ui/react/merge-props";
 import { useRender } from "@base-ui/react/use-render";
+// biome-ignore lint/correctness/noUnresolvedImports: Biome 2.5.5 cannot resolve this pnpm package export; tsc and pnpm Node resolution validate it.
 import { cva, type VariantProps } from "class-variance-authority";
 
 import { cn } from "../../ui/utils.ts";

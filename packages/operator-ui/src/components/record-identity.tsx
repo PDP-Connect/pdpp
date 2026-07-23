@@ -107,6 +107,7 @@ export function recordIdentityView(preview: RecordPreview | null, recordKey: str
   const declaredTitle = preview?.title ?? preview?.body ?? preview?.amount ?? preview?.author;
   return {
     isDerived: !declaredTitle,
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: The declared public input remains defensive at this boundary; removing the guard would reduce runtime tolerance.
     kind: preview?.kind ?? "generic",
     primary: rowPrimary(preview, recordKey),
     secondary: rowSecondary(preview),

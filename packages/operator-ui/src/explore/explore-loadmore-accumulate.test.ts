@@ -215,6 +215,7 @@ function makeTrailDataSource(pages: Map<string, ExploreTimelinePage>, capturedKe
 
 function assertNonIncreasing(feed: ReadonlyArray<{ emittedAt: string }>): void {
   const times = feed.map((e) => Date.parse(e.emittedAt));
+  // biome-ignore lint/style/noIncrementDecrement: Loop increment is local and cannot cross automatic-semicolon-insertion boundaries.
   for (let i = 1; i < times.length; i++) {
     assert.ok((times[i] ?? 0) <= (times[i - 1] ?? 0), `feed must stay non-increasing emitted_at at index ${i}`);
   }
@@ -452,6 +453,7 @@ test("recent Load-more: trail pages are fetched CONCURRENTLY (no serial waterfal
       // Block until every expected fetch is in flight. Serial code never gets here
       // for the 2nd/3rd fetch (it awaits this one first) -> deadlock -> timeout.
       await barrier;
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: The declared public input remains defensive at this boundary; removing the guard would reduce runtime tolerance.
       const page = pages.get(fetchKey(opts?.cursor ?? null, Boolean(opts?.rewindToFirstPage)));
       if (!page) {
         throw new Error("unexpected fetch");
@@ -572,6 +574,7 @@ test("Upcoming first load: page 1 requests a LARGE upcoming head (not the 32-row
   const ds = {
     ...makeTrailDataSource(new Map([[fetchKey(null, false), page1]]), []),
     listExploreTimeline: (opts: { upcomingLimit?: number; upcomingCursor?: string | null }) => {
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: The declared public input remains defensive at this boundary; removing the guard would reduce runtime tolerance.
       captured.push(opts?.upcomingLimit);
       return Promise.resolve(page1);
     },

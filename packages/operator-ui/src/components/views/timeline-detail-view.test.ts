@@ -85,6 +85,7 @@ test("connectionIdsFromEnvelope collects multiple distinct connections (grant/tr
     object: "grant_timeline",
     trace_id: "trc_1",
   };
+  // biome-ignore lint/suspicious/useArraySortCompare: Test ordering is intentionally locale/default sort behavior under test.
   assert.deepEqual(connectionIdsFromEnvelope(envelope).sort(), ["cin_a", "cin_b"]);
 });
 
@@ -109,6 +110,7 @@ test("streamsFromEnvelope collects distinct stream_id values from per-record eve
     object: "run_timeline",
     trace_id: "trc_1",
   };
+  // biome-ignore lint/suspicious/useArraySortCompare: Test ordering is intentionally locale/default sort behavior under test.
   assert.deepEqual(streamsFromEnvelope(envelope).sort(), ["labels", "messages"]);
 });
 

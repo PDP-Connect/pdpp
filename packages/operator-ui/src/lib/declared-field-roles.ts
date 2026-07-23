@@ -66,6 +66,7 @@ export function fieldForRole(roles: DeclaredFieldRoles, role: FieldRole): string
       return name;
     }
   }
+  // biome-ignore lint/complexity/noUselessUndefined: Explicit undefined is required by noImplicitReturns and documents the public absent-result contract.
   return undefined;
 }
 

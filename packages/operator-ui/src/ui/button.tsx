@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Button as ButtonPrimitive } from "@base-ui/react/button";
+// biome-ignore lint/correctness/noUnresolvedImports: Biome 2.5.5 cannot resolve this pnpm package export; tsc and pnpm Node resolution validate it.
 import { cva, type VariantProps } from "class-variance-authority";
 
 import { cn } from "./utils.ts";

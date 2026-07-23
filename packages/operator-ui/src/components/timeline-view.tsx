@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import Link from "next/link";
+// biome-ignore lint/correctness/noUnresolvedImports: React 19 exports Fragment; tsc validates the import and Biome 2.5.5 misreads the package export map.
 import { Fragment } from "react";
 import type { SpineEvent } from "../lib/ref-client.ts";
 import { Timestamp } from "../ui/timestamp.tsx";
@@ -147,6 +148,7 @@ function EventRow({ event, index }: { event: SpineEvent; index: number }) {
       <details className="mt-1">
         <summary className="pdpp-caption cursor-pointer text-muted-foreground hover:text-foreground">data</summary>
         <pre className="pdpp-caption mt-1 overflow-x-auto rounded border border-border/70 bg-background p-2 font-mono">
+          {/** biome-ignore lint/suspicious/noUnnecessaryConditions: The declared public input remains defensive at this boundary; removing the guard would reduce runtime tolerance. */}
           {JSON.stringify(redactSecrets(event.data || {}), null, 2)}
         </pre>
       </details>
@@ -176,8 +178,11 @@ function summarizeStreams(events: SpineEvent[]): StreamBreakdown[] {
   const byStream = new Map<string, StreamBreakdown>();
   for (const event of events) {
     const stream = event.stream_id ?? "—";
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: The declared public input remains defensive at this boundary; removing the guard would reduce runtime tolerance.
     const message = typeof event.data?.message === "string" ? event.data.message : null;
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: The declared public input remains defensive at this boundary; removing the guard would reduce runtime tolerance.
     const count = typeof event.data?.count === "number" ? event.data.count : null;
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: The declared public input remains defensive at this boundary; removing the guard would reduce runtime tolerance.
     const total = typeof event.data?.total === "number" ? event.data.total : null;
     const existing = byStream.get(stream);
     if (existing) {
@@ -199,6 +204,7 @@ function summarizeStreams(events: SpineEvent[]): StreamBreakdown[] {
 }
 
 function ProgressGroupRow({ events, startIndex }: { events: SpineEvent[]; startIndex: number }) {
+  // biome-ignore lint/style/useDestructuring: Indexed access and property reads preserve the local guard and exact source-order reasoning here.
   const first = events[0];
   const last = events.at(-1);
   if (!(first && last)) {

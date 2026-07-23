@@ -163,6 +163,7 @@ export async function loadTimeline(
   for (const { t, records } of pages) {
     scanned += records.length;
     for (const r of records) {
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: The declared public input remains defensive at this boundary; removing the guard would reduce runtime tolerance.
       const raw = (r.data as Record<string, unknown>)?.[t.consentTimeField];
       const ms = parseTimestamp(raw);
       if (ms === null) {

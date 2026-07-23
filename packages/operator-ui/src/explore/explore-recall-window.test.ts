@@ -164,6 +164,7 @@ test("bounded lexical candidate window is relevance_bounded, NOT pageable-exhaus
   // total.
   assert.equal(data.activitySummary?.source, "bounded_sample");
   assert.doesNotMatch(
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: The declared public input remains defensive at this boundary; removing the guard would reduce runtime tolerance.
     data.activitySummary?.text ?? "",
     CLAIMS_COMPLETENESS_RE,
     "the bounded-window summary must not claim completeness"

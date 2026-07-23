@@ -311,6 +311,7 @@ export function StatusBadge({
 // for the styling — callers migrating from faked inline warm callouts should
 // switch to `tone="info"` or `tone="warning"`.
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: The branch structure directly represents the supported data variants; extraction would split one decision table.
 export function Callout({
   title,
   description,

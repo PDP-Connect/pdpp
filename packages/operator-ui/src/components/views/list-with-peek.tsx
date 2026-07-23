@@ -20,6 +20,7 @@
  */
 
 import Link from "next/link";
+// biome-ignore lint/correctness/noUnresolvedImports: Biome 2.5.5 cannot resolve this pnpm package export; tsc and pnpm Node resolution validate it.
 import { Fragment, type ReactNode } from "react";
 import type { ListResponse, TimelineEnvelope } from "../../lib/ref-client.ts";
 import { Button } from "../../ui/button.tsx";

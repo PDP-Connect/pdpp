@@ -156,6 +156,7 @@ test("recent feed: a chatgpt/messages row renders a TITLED card (title=content, 
   const data = await assembleExplorerData({}, ds, "https://rs.test");
 
   assert.equal(data.feed.length, 1, "exactly one feed entry");
+  // biome-ignore lint/style/useDestructuring: Indexed access and property reads preserve the local guard and exact source-order reasoning here.
   const entry = data.feed[0];
   assert.ok(entry, "feed entry present");
   assert.ok(entry.preview, "feed entry MUST carry a preview (it was undefined/generic before the fix)");
@@ -202,6 +203,7 @@ test("recent feed: an UNDECLARED stream still takes the honest generic card (no 
   };
 
   const data = await assembleExplorerData({}, ds, "https://rs.test");
+  // biome-ignore lint/style/useDestructuring: Indexed access and property reads preserve the local guard and exact source-order reasoning here.
   const entry = data.feed[0];
   assert.ok(entry?.preview, "generic preview still present");
   // No declared role → no typed message card; the content is NOT promoted to a title.

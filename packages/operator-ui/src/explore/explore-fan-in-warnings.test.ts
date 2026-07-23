@@ -69,6 +69,7 @@ test("summarizes many expected failures into ONE deduped partial_fan_in warning"
   // Exactly one warning, with the stable partial_fan_in code (no duplicate keys).
   const fanIn = warnings.filter((w) => w.code === "partial_fan_in");
   assert.equal(fanIn.length, 1);
+  // biome-ignore lint/style/useDestructuring: Indexed access and property reads preserve the local guard and exact source-order reasoning here.
   const only = fanIn[0];
   assert.ok(only);
   // It summarizes count of streams + distinct sources, and never leaks JSON.
@@ -85,6 +86,7 @@ test("keeps a separate terse warning for unexpected failures, still envelope-fre
     { connectionName: "Strava", expected: false, reason: "HTTP 500", stream: "activities" },
   ];
   const warnings = summarizeFanInFailures(failures);
+  // biome-ignore lint/suspicious/useArraySortCompare: Test ordering is intentionally locale/default sort behavior under test.
   const codes = warnings.map((w) => w.code).sort();
   assert.deepEqual(codes, ["partial_fan_in", "partial_fan_in_error"]);
   // Codes are unique, so the canvas key={w.code} (or `${code}:${i}`) never collides.

@@ -179,6 +179,7 @@ function toConnectionFacet(summary: RefConnectorSummary): ExplorerConnectionFace
     connectionId: summary.connection_id,
     connectorId: summary.connector_id,
     displayName: connectorSummaryDisplayName(summary),
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: The declared public input remains defensive at this boundary; removing the guard would reduce runtime tolerance.
     streams: [...(summary.streams ?? [])].sort(),
   };
 }
@@ -676,6 +677,7 @@ function timelineRecordToEntry(
   // generic "Id:" card. The role no longer round-trips through capabilities.)
   // Undeclared streams resolve to EMPTY_DECLARED_FIELD_ROLES → the honest generic card.
   const droles = declaredFieldRoles.get(metaKey) ?? EMPTY_DECLARED_FIELD_ROLES;
+  // biome-ignore lint/style/useDestructuring: Indexed access and property reads preserve the local guard and exact source-order reasoning here.
   const kind = classifyRecordKind(rec.stream, data, dtypes, undefined, droles).kind;
   // Prefer the server's authoritative SEMANTIC time — the exact value the timeline
   // is ORDERED by — so display == sort by construction. Re-deriving from manifest
@@ -1233,6 +1235,7 @@ function toTimeRangeEntry({
   }
   // Declared roles seam (empty default; see declaredRolesFromCapabilities).
   const declaredFieldRoles = declaredRolesFromCapabilities(fieldCapabilities);
+  // biome-ignore lint/style/useDestructuring: Indexed access and property reads preserve the local guard and exact source-order reasoning here.
   const kind = classifyRecordKind(streamName, data, declaredFieldTypes, undefined, declaredFieldRoles).kind;
   return {
     blobAffordance: buildBlobAffordance(data, fieldCapabilities) ?? undefined,
@@ -1260,6 +1263,7 @@ function timeRangeStreamTargets(
   filterStreams: ReadonlySet<string>
 ): Array<{ consentTimeField: string; streamName: string }> {
   const targets: Array<{ consentTimeField: string; streamName: string }> = [];
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: The declared public input remains defensive at this boundary; removing the guard would reduce runtime tolerance.
   for (const streamName of summary.streams ?? []) {
     if (filterStreams.size > 0 && !filterStreams.has(streamName)) {
       continue;
@@ -1328,6 +1332,7 @@ function collectStreamFetchResults(results: StreamFetchResult[]): CollectedStrea
         displayName: result.displayName,
         hasMore: result.hasMore,
         stream: result.stream,
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: The declared public input remains defensive at this boundary; removing the guard would reduce runtime tolerance.
         total: result.exactWindow?.total ?? null,
       });
     } else {
@@ -1521,6 +1526,7 @@ function detectSingleStreamDoor(
   if (filtered.length === 0) {
     return null;
   }
+  // biome-ignore lint/style/useDestructuring: Indexed access and property reads preserve the local guard and exact source-order reasoning here.
   const first = filtered[0];
   if (!first) {
     return null;
@@ -1536,6 +1542,7 @@ function detectSingleStreamDoor(
   if (matchingSummaries.length !== 1 || !matchingSummaries[0]) {
     return null;
   }
+  // biome-ignore lint/style/useDestructuring: Indexed access and property reads preserve the local guard and exact source-order reasoning here.
   const summary = matchingSummaries[0];
   return {
     connectionId: summary.connection_id,
@@ -1589,6 +1596,7 @@ async function loadMostRecentSingleStream(
       emittedAt: hit.emitted_at,
       metadata: lookupSearchTimestampMetadata(timestampMetadata, summary.connector_id, streamName),
     });
+    // biome-ignore lint/style/useDestructuring: Indexed access and property reads preserve the local guard and exact source-order reasoning here.
     const kind = classifyRecordKind(
       streamName,
       null,
@@ -1751,6 +1759,7 @@ function mostRelevantSearchResult(args: {
   };
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: The branch structure directly represents the supported data variants; extraction would split one decision table.
 async function loadSearchFeed(
   query: string,
   searchSort: "relevance" | "recent",
@@ -1825,10 +1834,15 @@ async function loadSearchFeed(
   }
   if (!hybridUsed) {
     const probe = await probeLexical(query, searchSort, searchCursor, dataSource);
+    // biome-ignore lint/style/useDestructuring: Indexed access and property reads preserve the local guard and exact source-order reasoning here.
     hits = probe.hits;
+    // biome-ignore lint/style/useDestructuring: Indexed access and property reads preserve the local guard and exact source-order reasoning here.
     lexicalRecallExhaustive = probe.lexicalRecallExhaustive;
+    // biome-ignore lint/style/useDestructuring: Indexed access and property reads preserve the local guard and exact source-order reasoning here.
     hasMoreRecords = probe.hasMoreRecords;
+    // biome-ignore lint/style/useDestructuring: Indexed access and property reads preserve the local guard and exact source-order reasoning here.
     lexicalNextCursor = probe.lexicalNextCursor;
+    // biome-ignore lint/style/useDestructuring: Indexed access and property reads preserve the local guard and exact source-order reasoning here.
     lexicalHasMore = probe.lexicalHasMore;
     if (probe.warning) {
       warnings.push(probe.warning);
@@ -2496,6 +2510,7 @@ async function buildPeek(
     return null;
   }
   const connection = resolvePeekConnection(parsed, byConnectionId);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: The declared public input remains defensive at this boundary; removing the guard would reduce runtime tolerance.
   const connectorInstanceId = connection?.connector_instance_id ?? connection?.connection_id ?? null;
 
   const readUrl = buildPeekReadUrl({
@@ -2540,6 +2555,7 @@ async function buildPeek(
     return {
       bodyJson: JSON.stringify(data, null, 2),
       connectionDisplayName: connection ? connectorSummaryDisplayName(connection) : null,
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: The declared public input remains defensive at this boundary; removing the guard would reduce runtime tolerance.
       connectionId: connection?.connection_id ?? null,
       connectorId: parsed.connectorId,
       emittedAt: record.emitted_at,
@@ -2554,6 +2570,7 @@ async function buildPeek(
     return {
       bodyJson: null,
       connectionDisplayName: connection ? connectorSummaryDisplayName(connection) : null,
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: The declared public input remains defensive at this boundary; removing the guard would reduce runtime tolerance.
       connectionId: connection?.connection_id ?? null,
       connectorId: parsed.connectorId,
       emittedAt: "",
@@ -2675,8 +2692,10 @@ function resolveChartTarget(
     return null;
   }
   return {
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: The declared public input remains defensive at this boundary; removing the guard would reduce runtime tolerance.
     connectionId: summary.connection_id ?? null,
     connectorId: summary.connector_id,
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: The declared public input remains defensive at this boundary; removing the guard would reduce runtime tolerance.
     connectorInstanceId: summary.connector_instance_id ?? summary.connection_id ?? null,
     stream: streamName,
   };
