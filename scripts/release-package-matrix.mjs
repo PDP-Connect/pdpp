@@ -322,6 +322,7 @@ function runMatrixRow() {
   const offlineEnv = {
     ...env,
     HOME: consumerHome,
+    XDG_CACHE_HOME: '/root/.cache',
     npm_config_audit: 'false',
     npm_config_fund: 'false',
     npm_config_offline: 'true',
@@ -329,7 +330,7 @@ function runMatrixRow() {
     npm_config_update_notifier: 'false',
   };
   runRecorded(commands, 'npm', ['init', '--yes'], { cwd: consumer, env: offlineEnv });
-  runRecorded(commands, 'pnpm', ['add', '--ignore-scripts', '--offline', '--store-dir', '/pdpp-pnpm-store', ...candidates.map(({ tarball }) => join(packRoot, tarball.filename))], { cwd: consumer, env: offlineEnv });
+  runRecorded(commands, 'pnpm', ['add', '--ignore-scripts', '--offline', '--registry', 'https://registry.npmjs.org', '--store-dir', '/pdpp-pnpm-store', ...candidates.map(({ tarball }) => join(packRoot, tarball.filename))], { cwd: consumer, env: offlineEnv });
   const [tree] = JSON.parse(runRecorded(commands, 'pnpm', ['list', '--json', '--depth', '-1'], { cwd: consumer, env: offlineEnv }));
   for (const candidate of candidates) {
     const installed = tree.dependencies?.[candidate.name];
@@ -436,7 +437,7 @@ function assertRowReceipt(rowReceipt, snapshot, receiptRows, expectedContracts) 
     ...PACKAGE_NAMES.map((name) => ({ command: ['pnpm', '--filter', name, 'run', 'build'], cwd: workspace })),
     ...rowReceipt.candidates.map(({ name }) => ({ command: ['npm', 'pack', '--json', '--ignore-scripts', '--pack-destination', `${workspace}/.release-matrix/candidates`], cwd: `${workspace}/${packagePath(name)}` })),
     { command: ['npm', 'init', '--yes'], cwd: consumer },
-    { command: ['pnpm', 'add', '--ignore-scripts', '--offline', '--store-dir', '/pdpp-pnpm-store', ...candidatePaths], cwd: consumer },
+    { command: ['pnpm', 'add', '--ignore-scripts', '--offline', '--registry', 'https://registry.npmjs.org', '--store-dir', '/pdpp-pnpm-store', ...candidatePaths], cwd: consumer },
     { command: ['pnpm', 'list', '--json', '--depth', '-1'], cwd: consumer },
     { command: [rowReceipt.runtime.nodePath, `${consumer}/candidate-probe.mjs`], cwd: consumer },
   ];
