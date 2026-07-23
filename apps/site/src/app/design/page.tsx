@@ -3558,8 +3558,8 @@ function DocsSection() {
       <div className="mt-12">
         <SubLabel>Docs primitives — DocsLayout, ArtifactLink, ProsePage, SourceLink</SubLabel>
         <p className="pdpp-caption mb-4 max-w-[64ch] text-muted-foreground">
-          Composite primitives used by <code className="font-mono">/docs</code> and intended for any future
-          repo-as-docs surface. <code className="font-mono">DocsLayout</code> provides the 13rem sidebar + main grid.{" "}
+          Composite primitives used by <code className="font-mono">/docs</code> and intended for any future repo-as-docs
+          surface. <code className="font-mono">DocsLayout</code> provides the 13rem sidebar + main grid.{" "}
           <code className="font-mono">ArtifactLink</code> is the canonical linked-row for markdown-backed indexes.{" "}
           <code className="font-mono">ProsePage</code> wraps raw markdown in a tinted reading surface using the{" "}
           <code className="font-mono">.docs-prose</code> class. <code className="font-mono">SourceLink</code> surfaces

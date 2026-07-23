@@ -24,10 +24,7 @@ export function createActiveViewerPresses(): ActiveViewerPresses {
  * before disposing the viewer, because a DOM terminal event can arrive after
  * the old viewer has gone away.
  */
-export function trackActiveViewerPress(
-  presses: ActiveViewerPresses,
-  intent: RemotePointerIntent
-): void {
+export function trackActiveViewerPress(presses: ActiveViewerPresses, intent: RemotePointerIntent): void {
   if (intent.action === "pointerdown") {
     presses.set(intent.pointerId ?? 0, {
       button: intent.button ?? 0,
