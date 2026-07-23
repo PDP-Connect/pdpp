@@ -63,25 +63,25 @@ plugins:
             section: "Reverts"
           - type: docs
             section: "Documentation"
-            hidden: true
+            effect: hidden
           - type: style
             section: "Styles"
-            hidden: true
+            effect: hidden
           - type: chore
             section: "Miscellaneous Chores"
-            hidden: true
+            effect: hidden
           - type: refactor
             section: "Code Refactoring"
-            hidden: true
+            effect: hidden
           - type: test
             section: "Tests"
-            hidden: true
+            effect: hidden
           - type: build
             section: "Build System"
-            hidden: true
+            effect: hidden
           - type: ci
             section: "Continuous Integration"
-            hidden: true
+            effect: hidden
   - - "@semantic-release/release-notes-generator"
     - preset: conventionalcommits
       presetConfig:
@@ -132,25 +132,25 @@ plugins:
             section: "Reverts"
           - type: docs
             section: "Documentation"
-            hidden: true
+            effect: hidden
           - type: style
             section: "Styles"
-            hidden: true
+            effect: hidden
           - type: chore
             section: "Miscellaneous Chores"
-            hidden: true
+            effect: hidden
           - type: refactor
             section: "Code Refactoring"
-            hidden: true
+            effect: hidden
           - type: test
             section: "Tests"
-            hidden: true
+            effect: hidden
           - type: build
             section: "Build System"
-            hidden: true
+            effect: hidden
           - type: ci
             section: "Continuous Integration"
-            hidden: true
+            effect: hidden
   - - "@semantic-release/npm"
     - pkgRoot: "packages/cli"
   - - "@semantic-release/npm"

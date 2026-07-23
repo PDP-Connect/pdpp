@@ -41,6 +41,9 @@
       "!!packages/polyfill-connectors/connectors/**/__fixtures__/**/*.html",
       "!!packages/polyfill-connectors/connectors/**/__fixtures__/**/*.json",
       "!!packages/polyfill-connectors/connectors/**/__fixtures__/**/*.csv",
+      // Twitter archive exports are provider-captured JavaScript data, not
+      // executable fixture helpers. Keep the archive subtree byte-faithful.
+      "!!packages/polyfill-connectors/connectors/twitter_archive/__fixtures__/archive-files/**/*.js",
       "!!reference-implementation/test/fixtures/*.json",
       "!!**/next-env.d.ts",
       "!!**/report.*.json"

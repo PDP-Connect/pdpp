@@ -2,6 +2,16 @@
   "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
   "root": false,
   "extends": ["ultracite/biome/core", "ultracite/biome/type-aware"],
+  "assist": {
+    "actions": {
+      "source": {
+        // Object key order is part of the captured fixture and subprocess
+        // protocol contract (for example JSON.stringify output). Biome
+        // documents that this assist changes that observable order.
+        "useSortedKeys": "off"
+      }
+    }
+  },
   "formatter": {
     "lineWidth": 120
   },
@@ -33,6 +43,9 @@
       "!!connectors/**/__fixtures__/**/*.html",
       "!!connectors/**/__fixtures__/**/*.json",
       "!!connectors/**/__fixtures__/**/*.csv",
+      // Provider-exported Twitter archive captures use .js despite being raw
+      // data. Authored executable fixture helpers remain selected.
+      "!!connectors/twitter_archive/__fixtures__/archive-files/**/*.js",
       "!!**/next-env.d.ts",
       "!!**/report.*.json"
     ]

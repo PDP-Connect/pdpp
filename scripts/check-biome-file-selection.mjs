@@ -33,6 +33,7 @@ const authoredExamples = [
 const excludedExamples = [
   "packages/polyfill-connectors/fixtures/claude_code/scrubbed/pilot-real-shape/records/messages.jsonl",
   "packages/polyfill-connectors/connectors/heb/__fixtures__/sign-in-page.html",
+  "packages/polyfill-connectors/connectors/twitter_archive/__fixtures__/archive-files/data/tweets.js",
   "reference-implementation/test/fixtures/amazon-browser-collector-proof-records.json",
   "reference-implementation/docs/generated/reference-routes.md",
   "packages/local-collector/dist/local-collector/src/runner.js",
@@ -43,7 +44,7 @@ const excludedExamples = [
 const processedFilesPattern = /Files processed:\s*\n([\s\S]*?)(?=\n[^\n]*Files fixed:|\nScanned project)/;
 const processedFileLinePattern = /^\s*-\s+(.+)$/gm;
 const excludedPath =
-  /(^|\/)(node_modules|\.git|dist|build|out|\.next|\.source|coverage|reports?)(\/|$)|(^|\/)docs\/generated(\/|$)|(^|\/)test\/fixtures\/[^/]+\.json$|(^|\/)fixtures\/.*\.(json|html|csv|md|log|dat)$|(^|\/)__fixtures__\/.*\.(html|json|csv)$|(^|\/)(generated|__generated__)(\/|$)|\.(auto|gen|generated)\.[^/]+$|(^|\/)(schema|schema\.graphql)\.d\.ts$|(^|\/)next-env\.d\.ts$|(^|\/)(package-lock\.json|yarn\.lock|bun\.lock|pnpm-lock\.yaml)$|\.(snap|har|jsonl)$/;
+  /(^|\/)(node_modules|\.git|dist|build|out|\.next|\.source|coverage|reports?)(\/|$)|(^|\/)docs\/generated(\/|$)|(^|\/)test\/fixtures\/[^/]+\.json$|(^|\/)fixtures\/.*\.(json|html|csv|md|log|dat)$|(^|\/)__fixtures__\/.*\.(html|json|csv)$|(^|\/)connectors\/twitter_archive\/__fixtures__\/archive-files\/.*\.js$|(^|\/)(generated|__generated__)(\/|$)|\.(auto|gen|generated)\.[^/]+$|(^|\/)(schema|schema\.graphql)\.d\.ts$|(^|\/)next-env\.d\.ts$|(^|\/)(package-lock\.json|yarn\.lock|bun\.lock|pnpm-lock\.yaml)$|\.(snap|har|jsonl)$/;
 
 function workspaceRoots() {
   const result = spawnSync("pnpm", ["list", "--recursive", "--depth=-1", "--json"], {
