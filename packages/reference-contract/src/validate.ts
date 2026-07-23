@@ -23,7 +23,9 @@
 // runtime behavior, and doesn't smuggle `any` or `as unknown as` into
 // the surface.
 import { createRequire } from "node:module";
+// biome-ignore lint/correctness/noUnresolvedImports: Biome 2.5.5 cannot resolve pnpm's package directory; pnpm's Node resolver and tsc both resolve this declared dependency.
 import type { Ajv as AjvClass, AnySchema, ErrorObject, Plugin, ValidateFunction } from "ajv";
+// biome-ignore lint/correctness/noUnresolvedImports: Biome 2.5.5 cannot resolve pnpm's package directory; pnpm's Node resolver and tsc both resolve this declared dependency.
 import type { FormatsPluginOptions } from "ajv-formats";
 import type { JsonSchema, RouteManifest } from "./common/index.ts";
 // The public / reference modules are still JS; their arrays structurally
@@ -189,7 +191,7 @@ export function validateRequest(operationId: string, input: ValidateRequestInput
     if (!fn || value === null || value === undefined) {
       return;
     }
-    if (!fn(value)) {
+    if (fn(value) === false) {
       for (const e of fn.errors ?? []) {
         errors.push({ ...e, where: label });
       }

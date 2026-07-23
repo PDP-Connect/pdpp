@@ -12,6 +12,15 @@ import {
   publicManifests,
 } from "../src/public/index.ts";
 
+const CONSENT_APPROVE_RE = /consent\/approve.*\{ grant_id, token, grant \}/;
+const GRANT_REVOKE_RE = /\/grants\/\{grantId\}\/revoke/;
+const OAUTH_PAR_RE = /\/oauth\/par/;
+const OAUTH_TOKEN_RE = /\/oauth\/token/;
+const RECORDS_ROUTE_RE = /\/v1\/streams\/\{stream\}\/records/;
+const REF_DATASET_REBUILD_RE = /\/_ref\/dataset\/summary\/rebuild/;
+const REF_DATASET_RECONCILE_RE = /\/_ref\/dataset\/summary\/reconcile/;
+const REF_SEARCH_RE = /\/_ref\/search/;
+
 test("public manifests cover metadata, auth, grant, and record surfaces", () => {
   const ids = new Set(publicManifests.map((manifest) => manifest.id));
 
@@ -197,14 +206,14 @@ test("OpenAPI and docs generation include the auth/control routes alongside reco
   assert.equal(publicDocument.paths["/_ref/dataset/summary/reconcile"], undefined);
   assert.equal(fullDocument.paths["/_ref/dataset/summary/reconcile"].post.operationId, "refDatasetSummaryReconcile");
 
-  assert.match(docs.routes, /\/oauth\/par/);
-  assert.match(docs.routes, /\/oauth\/token/);
-  assert.match(docs.routes, /\/grants\/\{grantId\}\/revoke/);
-  assert.match(docs.routes, /\/v1\/streams\/\{stream\}\/records/);
-  assert.match(docs.referenceRoutes, /\/_ref\/search/);
-  assert.match(docs.referenceRoutes, /\/_ref\/dataset\/summary\/rebuild/);
-  assert.match(docs.referenceRoutes, /\/_ref\/dataset\/summary\/reconcile/);
-  assert.match(docs.cookbook, /consent\/approve.*\{ grant_id, token, grant \}/);
+  assert.match(docs.routes, OAUTH_PAR_RE);
+  assert.match(docs.routes, OAUTH_TOKEN_RE);
+  assert.match(docs.routes, GRANT_REVOKE_RE);
+  assert.match(docs.routes, RECORDS_ROUTE_RE);
+  assert.match(docs.referenceRoutes, REF_SEARCH_RE);
+  assert.match(docs.referenceRoutes, REF_DATASET_REBUILD_RE);
+  assert.match(docs.referenceRoutes, REF_DATASET_RECONCILE_RE);
+  assert.match(docs.cookbook, CONSENT_APPROVE_RE);
   assert.ok(!publicDocument.paths["/v1/blobs/{blob_id}"].get.responses["302"]);
   assert.deepEqual(
     fullDocument.paths["/_ref/records/timeline"].get.parameters.find((parameter) => parameter.name === "timestamp_mode")

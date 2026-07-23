@@ -11,6 +11,8 @@ import {
   buildRecordsQuery,
 } from "../src/builders/index.ts";
 
+const LEGACY_SOURCE_RE = /source: \{ kind: 'connector' \| 'provider_native', id \}/;
+
 test("buildExpandParams normalizes repeated relation names and expand limits", () => {
   assert.deepEqual(
     buildExpandParams({
@@ -116,6 +118,6 @@ test("buildParRequest rejects legacy source scalar inputs", () => {
         connector_id: "spotify",
         purpose_code: "https://pdpp.org/purpose/personalization",
       }),
-    /source: \{ kind: 'connector' \| 'provider_native', id \}/
+    LEGACY_SOURCE_RE
   );
 });

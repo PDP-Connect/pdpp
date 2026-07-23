@@ -4,8 +4,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+// biome-ignore lint/correctness/noUnresolvedImports: Biome 2.5.5 cannot resolve pnpm's package directory; pnpm's Node resolver and tsc both resolve this declared dependency.
 import Ajv from "ajv";
+// biome-ignore lint/correctness/noUnresolvedImports: Biome 2.5.5 cannot resolve pnpm's package directory; pnpm's Node resolver and tsc both resolve this declared dependency.
 import addFormats from "ajv-formats";
+
+const DEPRECATED_RE = /[Dd]eprecated/;
 
 import {
   CanonicalAggregateEnvelopeSchema,
@@ -355,7 +359,7 @@ test("CanonicalReadInputProperties exposes the deprecated alias for the migratio
   assert.ok(CanonicalReadInputProperties.connector_instance_id, "must export connector_instance_id alias");
   assert.match(
     CanonicalReadInputProperties.connector_instance_id.description,
-    /[Dd]eprecated/,
+    DEPRECATED_RE,
     "alias description must call out deprecation"
   );
 });
