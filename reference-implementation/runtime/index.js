@@ -29,6 +29,7 @@ import { validateDoneError, validateDoneExitCode, validateDoneRecordsEmitted, va
 import {
   validateProgressAttachmentRecoveryOutcome,
   validateProgressAttachmentHydrationFailureOutcome,
+  validateProgressAttachmentHydrationFailureOutcomeSum,
   validateProgressCollectionRate,
   validateProgressProviderBudget,
 } from './progress-validators.js';
@@ -561,6 +562,10 @@ function validateProgressMessage(msg, scopeByStream) {
   if (msg.attachment_hydration_failure_outcome != null) {
     validateProgressAttachmentHydrationFailureOutcome(msg.attachment_hydration_failure_outcome);
   }
+  validateProgressAttachmentHydrationFailureOutcomeSum(
+    msg.attachment_recovery_outcome,
+    msg.attachment_hydration_failure_outcome,
+  );
 }
 
 function validateSkipResultMessage(msg, scopeByStream) {

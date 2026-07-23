@@ -6,6 +6,7 @@ import test from 'node:test';
 
 import {
   validateProgressAttachmentHydrationFailureOutcome,
+  validateProgressAttachmentHydrationFailureOutcomeSum,
   validateProgressAttachmentRecoveryOutcome,
   validateProgressProviderBudget,
 } from '../runtime/progress-validators.js';
@@ -44,6 +45,7 @@ const validAttachmentHydrationFailureOutcome = {
   blob_upload_transport_failed: 5,
   imap_download_failed: 6,
   object: 'attachment_hydration_failure_outcome',
+  unclassified_failed: 7,
 };
 
 function expectInvalidProviderBudget(value, messageFragment) {
@@ -153,5 +155,30 @@ test('validateProgressAttachmentHydrationFailureOutcome: rejects an invalid disc
   assert.throws(
     () => validateProgressAttachmentHydrationFailureOutcome({ ...validAttachmentHydrationFailureOutcome, imap_download_failed: -1 }),
     /imap_download_failed: expected non-negative integer/,
+  );
+});
+
+test('validateProgressAttachmentHydrationFailureOutcomeSum: failure stages require the recovery aggregate and exactly match its hydration failures', () => {
+  const hydrationFailed = Object.values(validAttachmentHydrationFailureOutcome)
+    .filter((value) => typeof value === 'number')
+    .reduce((total, count) => total + count, 0);
+  assert.doesNotThrow(() => validateProgressAttachmentHydrationFailureOutcomeSum(
+    { ...validAttachmentRecoveryOutcome, hydration_failed: hydrationFailed },
+    validAttachmentHydrationFailureOutcome,
+  ));
+  assert.throws(
+    () => validateProgressAttachmentHydrationFailureOutcomeSum(null, validAttachmentHydrationFailureOutcome),
+    /must be emitted together/,
+  );
+  assert.throws(
+    () => validateProgressAttachmentHydrationFailureOutcomeSum(validAttachmentRecoveryOutcome, null),
+    /must be emitted together/,
+  );
+  assert.throws(
+    () => validateProgressAttachmentHydrationFailureOutcomeSum(
+      { ...validAttachmentRecoveryOutcome, hydration_failed: hydrationFailed - 1 },
+      validAttachmentHydrationFailureOutcome,
+    ),
+    /stage counters must sum/,
   );
 });

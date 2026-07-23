@@ -4326,7 +4326,7 @@ rl.on('line', (line) => {
       admitted_bytes: 200000,
       recovered: 2,
       lookup_miss: 0,
-      hydration_failed: 0,
+      hydration_failed: 22,
       run_cap_deferred: 3,
     };
     const attachmentHydrationFailureOutcome = {
@@ -4337,6 +4337,7 @@ rl.on('line', (line) => {
       blob_upload_http_5xx: 4,
       blob_upload_invalid_response: 5,
       blob_upload_integrity_failed: 6,
+      unclassified_failed: 1,
     };
 
     const { connectorPath, cleanup } = createTestConnector([
@@ -4411,6 +4412,103 @@ rl.on('line', (line) => {
     } finally {
       cleanup();
       await closeServer(server);
+    }
+  });
+
+  await t.test('runtime rejects incomplete or mismatched attachment recovery aggregates before the progress spine', async (t) => {
+    const recoveryOutcome = {
+      object: 'attachment_recovery_outcome',
+      served: 1,
+      metadata_lookups: 1,
+      attempted: 1,
+      admitted: 1,
+      admitted_bytes: 16,
+      recovered: 0,
+      lookup_miss: 0,
+      hydration_failed: 1,
+      run_cap_deferred: 0,
+    };
+    const failureOutcome = {
+      object: 'attachment_hydration_failure_outcome',
+      imap_download_failed: 0,
+      blob_upload_transport_failed: 0,
+      blob_upload_http_4xx: 0,
+      blob_upload_http_5xx: 0,
+      blob_upload_invalid_response: 0,
+      blob_upload_integrity_failed: 0,
+      unclassified_failed: 1,
+    };
+    const invalidPairs = [
+      {
+        name: 'recovery-only aggregate',
+        progress: { attachment_recovery_outcome: recoveryOutcome },
+      },
+      {
+        name: 'failure-only aggregate',
+        progress: { attachment_hydration_failure_outcome: failureOutcome },
+      },
+      {
+        name: 'mismatched aggregate sum',
+        progress: {
+          attachment_recovery_outcome: { ...recoveryOutcome, hydration_failed: 0 },
+          attachment_hydration_failure_outcome: failureOutcome,
+        },
+      },
+    ];
+
+    for (const invalidPair of invalidPairs) {
+      await t.test(invalidPair.name, async () => {
+        const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+        const { asPort, rsPort } = server;
+        const { ownerToken, connectorId } = await setupConnector(server, asPort);
+        const asUrl = `http://localhost:${asPort}`;
+        const { connectorPath, cleanup } = createTestConnector([
+          {
+            type: 'PROGRESS',
+            stream: 'items',
+            message: 'Gmail served attachment-gap recovery summary',
+            ...invalidPair.progress,
+          },
+          { type: 'DONE', status: 'succeeded', records_emitted: 0 },
+        ]);
+
+        try {
+          let capturedError = null;
+          await assert.rejects(
+            runConnector({
+              connectorPath,
+              connectorId,
+              ownerToken,
+              manifest: MINIMAL_MANIFEST,
+              state: null,
+              collectionMode: 'full_refresh',
+              persistState: true,
+              rsUrl: `http://localhost:${rsPort}`,
+              onInteraction: async () => ({}),
+            }),
+            (err) => {
+              capturedError = err;
+              assert.equal(err.failure_reason, 'connector_protocol_violation');
+              return true;
+            },
+          );
+
+          assert.ok(capturedError?.run_id, 'protocol-violation errors should expose run_id for reference inspection');
+          const { body: runTimeline } = await fetchJson(
+            `${asUrl}/_ref/runs/${encodeURIComponent(capturedError.run_id)}/timeline`
+          );
+          assert.ok(
+            !(runTimeline.data || []).some((event) => event.event_type === 'run.progress_reported'),
+            'invalid aggregate pairs must not enter the progress spine'
+          );
+          const failedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.failed');
+          assert.ok(failedEvent, 'invalid aggregate pairs must terminalize the run');
+          assert.equal(failedEvent.data.reason, 'connector_protocol_violation');
+        } finally {
+          cleanup();
+          await closeServer(server);
+        }
+      });
     }
   });
 

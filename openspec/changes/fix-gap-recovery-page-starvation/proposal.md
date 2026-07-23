@@ -268,3 +268,20 @@ rather than a source-iterator failure. A fetch rejection is attributed to a
 source pull only when that pull has already failed and its preserved cause
 matches; timing alone is not evidence. `too_large` remains a separate
 local-policy outcome.
+
+### Revision (unclassified hydration failure preservation, 2026-07-23)
+
+A canary Gmail recovery run exposed a plain blob-upload error that reached a
+failed attachment result without a typed boundary stage. The prior accounting
+guard threw, converting that retryable connector outcome into a non-retryable
+connector protocol violation. Add `unclassified_failed` to the same exact,
+payload-free aggregate. A failed hydration with no typed stage increments this
+counter; it is not guessed to be transport or any other typed cause. The
+runtime requires the two recovery aggregates together and validates that all
+failure-stage counters sum exactly to `hydration_failed`.
+
+This preserves attachment record, retry, quarantine, terminal, admission,
+acknowledgement, cancellation, and privacy behavior. A composed Gmail
+hydrator/recovery regression uses a plain `Error` from `uploadBlob` to prove
+the recovery function completes, leaves the item retryable, emits no recovery
+acknowledgement, and reports one unclassified failure.

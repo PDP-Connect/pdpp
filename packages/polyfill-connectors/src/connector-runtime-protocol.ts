@@ -291,6 +291,8 @@ export interface AttachmentHydrationFailureOutcomeProgress {
   blob_upload_transport_failed: number;
   imap_download_failed: number;
   object: "attachment_hydration_failure_outcome";
+  /** A failed hydration with no honest typed boundary classification. */
+  unclassified_failed: number;
 }
 
 export interface ProgressExtra {

@@ -194,10 +194,13 @@ When a connector includes `attachment_hydration_failure_outcome` on a
 the exact non-negative integer fields `imap_download_failed`,
 `blob_upload_transport_failed`, `blob_upload_http_4xx`,
 `blob_upload_http_5xx`, `blob_upload_invalid_response`, and
-`blob_upload_integrity_failed`. The runtime SHALL preserve a valid object on
+`blob_upload_integrity_failed`, and `unclassified_failed`. The runtime SHALL preserve a valid object on
 the existing `run.progress_reported` event and SHALL reject every extra field,
 identifier, locator, filename, URL, message, body, raw status, credential,
 provider content, or invalid count as a connector protocol violation.
+It SHALL require this aggregate and `attachment_recovery_outcome` together and
+reject a pair whose stage counters do not sum exactly to
+`attachment_recovery_outcome.hydration_failed`.
 
 #### Scenario: Aggregate failure stages reach the existing spine without a new event type
 
@@ -211,6 +214,12 @@ provider content, or invalid count as a connector protocol violation.
 
 - **WHEN** a connector emits an `attachment_hydration_failure_outcome` with a
   field outside the fixed aggregate allowlist
+- **THEN** the runtime SHALL reject the message before it reaches the spine.
+
+#### Scenario: Failure-stage aggregates remain exact
+
+- **WHEN** a connector emits either recovery aggregate without the other, or
+  emits stage counters whose sum differs from `hydration_failed`
 - **THEN** the runtime SHALL reject the message before it reaches the spine.
 
 #### Scenario: Success awaits accounting

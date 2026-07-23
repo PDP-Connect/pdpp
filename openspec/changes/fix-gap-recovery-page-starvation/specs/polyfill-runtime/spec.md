@@ -171,16 +171,18 @@ or attachment-size safety.
 - **AND** it SHALL not hydrate a following attachment solely because the first
   attachment exceeded the budget.
 
-### Requirement: Gmail SHALL emit typed aggregate hydration failure stages without changing recovery behavior
+### Requirement: Gmail SHALL emit typed and unclassified aggregate hydration failure stages without changing recovery behavior
 
 Gmail's existing terminal served-attachment recovery `PROGRESS` summary SHALL
 include `attachment_hydration_failure_outcome` with exactly the fixed object
 discriminator and non-negative integer fields `imap_download_failed`,
 `blob_upload_transport_failed`, `blob_upload_http_4xx`,
 `blob_upload_http_5xx`, `blob_upload_invalid_response`, and
-`blob_upload_integrity_failed`. The six counters SHALL sum exactly to
+`blob_upload_integrity_failed`, and `unclassified_failed`. The seven counters SHALL sum exactly to
 `attachment_recovery_outcome.hydration_failed`. Each failed hydration attempt
-SHALL increment exactly one stage. `too_large` SHALL remain outside this
+SHALL increment exactly one stage. A failed hydration with no honest typed
+boundary stage SHALL increment `unclassified_failed`; it SHALL NOT be guessed
+as transport or another typed cause. `too_large` SHALL remain outside this
 outcome.
 
 The stage SHALL be derived from typed IMAP-download/source-stream and
@@ -200,3 +202,13 @@ change retry, quarantine, terminal, admission, or owner-action behavior.
 
 - **WHEN** an admitted served attachment hydrates successfully or is too large
 - **THEN** Gmail SHALL NOT increment any hydration failure-stage counter.
+
+#### Scenario: An unclassified blob failure preserves recovery behavior
+
+- **WHEN** an admitted served attachment's `uploadBlob` rejects with a plain
+  error that carries no typed failure stage
+- **THEN** Gmail SHALL complete the recovery pass and emit the failed
+  attachment's ordinary retryable detail-gap path
+- **AND** it SHALL NOT emit `DETAIL_GAP_RECOVERED`
+- **AND** it SHALL increment `hydration_failed` and `unclassified_failed` by
+  one while every typed stage remains unchanged.

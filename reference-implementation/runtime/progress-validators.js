@@ -85,6 +85,7 @@ const ATTACHMENT_HYDRATION_FAILURE_OUTCOME_FIELDS = new Set([
   'blob_upload_transport_failed',
   'imap_download_failed',
   'object',
+  'unclassified_failed',
 ]);
 
 function validateCollectionRateRequiredNumbers(collectionRate) {
@@ -161,5 +162,20 @@ export function validateProgressAttachmentHydrationFailureOutcome(outcome) {
         `Connector emitted invalid PROGRESS.attachment_hydration_failure_outcome.${fieldName}: expected non-negative integer`
       );
     }
+  }
+}
+
+export function validateProgressAttachmentHydrationFailureOutcomeSum(recoveryOutcome, failureOutcome) {
+  if (recoveryOutcome == null && failureOutcome == null) {
+    return;
+  }
+  if (recoveryOutcome == null || failureOutcome == null) {
+    throw new Error('Connector emitted invalid PROGRESS.attachment_recovery_aggregates: attachment_recovery_outcome and attachment_hydration_failure_outcome must be emitted together');
+  }
+  const stagesTotal = Object.entries(failureOutcome)
+    .filter(([fieldName]) => fieldName !== 'object')
+    .reduce((total, [, count]) => total + count, 0);
+  if (stagesTotal !== recoveryOutcome.hydration_failed) {
+    throw new Error('Connector emitted invalid PROGRESS.attachment_hydration_failure_aggregate: stage counters must sum to attachment_recovery_outcome.hydration_failed');
   }
 }

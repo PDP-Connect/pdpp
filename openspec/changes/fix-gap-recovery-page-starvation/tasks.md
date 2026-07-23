@@ -211,3 +211,16 @@ and Postgres (`LEAST`) clamp branches; only the SQLite branch was proven.
       cancellation, timer-window source/transport race, and pre-recorded
       source-marker mismatch boundaries; run focused/full relevant tests,
       typecheck, lint, strict OpenSpec validation, and final diff review.
+
+## 14. Revision (unclassified hydration failure preservation, 2026-07-23)
+
+- [x] Add the exact aggregate-only `unclassified_failed` counter for failed
+      hydrations with no typed stage; do not infer a typed cause.
+- [x] Require paired exact recovery aggregates and validate that stage counters
+      sum to `hydration_failed` before the existing progress spine accepts them.
+- [x] Add a mutation-resistant composed Gmail hydrator/recovery regression for
+      a plain `uploadBlob` error: the pass completes, retains the retryable
+      gap path, emits no recovery acknowledgement, and reports exactly one
+      unclassified failure.
+- [x] Run focused connector/runtime oracles, typecheck, lint, strict OpenSpec
+      validation, and final diff review.

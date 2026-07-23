@@ -1368,6 +1368,7 @@ interface AttachmentHydrationFailureOutcome {
   blob_upload_invalid_response: number;
   blob_upload_transport_failed: number;
   imap_download_failed: number;
+  unclassified_failed: number;
 }
 
 function createAttachmentHydrationFailureOutcome(): AttachmentHydrationFailureOutcome {
@@ -1378,6 +1379,7 @@ function createAttachmentHydrationFailureOutcome(): AttachmentHydrationFailureOu
     blob_upload_invalid_response: 0,
     blob_upload_transport_failed: 0,
     imap_download_failed: 0,
+    unclassified_failed: 0,
   };
 }
 
@@ -1575,11 +1577,12 @@ async function settleServedAttachmentRecoveryAttempt(
     }
   }
   if (hydrated.hydration_status === "failed") {
-    if (!hydration.failure) {
-      throw new Error("failed attachment hydration is missing a typed failure stage");
-    }
     state.hydrationFailed += 1;
-    state.attachmentHydrationFailureOutcome[hydration.failure.stage] += 1;
+    if (hydration.failure) {
+      state.attachmentHydrationFailureOutcome[hydration.failure.stage] += 1;
+    } else {
+      state.attachmentHydrationFailureOutcome.unclassified_failed += 1;
+    }
   }
   // Emit bounded, non-secret progress as each admitted attempt settles so a
   // long single hydration is visible before the whole recovery lane ends.

@@ -1253,6 +1253,7 @@ test("runAttachmentBackfillAndRecoveryPass: served gaps preempt historical attac
       blob_upload_invalid_response: 0,
       blob_upload_transport_failed: 0,
       imap_download_failed: 0,
+      unclassified_failed: 0,
       object: "attachment_hydration_failure_outcome",
     },
     "the terminal recovery summary carries the exact aggregate-only hydration failure stages"
@@ -1267,6 +1268,7 @@ test("runAttachmentBackfillAndRecoveryPass: served gaps preempt historical attac
       "blob_upload_transport_failed",
       "imap_download_failed",
       "object",
+      "unclassified_failed",
     ],
     "the stage outcome cannot become a carrier for keys, locators, provider data, or error content"
   );
@@ -1570,6 +1572,7 @@ test("recoverServedAttachmentGaps: small candidates stop at budget after one rej
         blob_upload_invalid_response: 0,
         blob_upload_transport_failed: 0,
         imap_download_failed: 0,
+        unclassified_failed: 0,
       },
       hydration_failed: 0,
       lookup_miss: 0,
@@ -1673,6 +1676,7 @@ test("recoverServedAttachmentGaps: default recovery batch admits two live-shape 
         blob_upload_invalid_response: 0,
         blob_upload_transport_failed: 0,
         imap_download_failed: 0,
+        unclassified_failed: 0,
       },
       attempted: 3,
       hydration_failed: 0,
@@ -1870,6 +1874,7 @@ test("recoverServedAttachmentGaps: 33 distinct lookup misses cap out at 32 uniqu
       blob_upload_invalid_response: 0,
       blob_upload_transport_failed: 0,
       imap_download_failed: 0,
+      unclassified_failed: 0,
     },
     hydration_failed: 0,
     lookup_miss: 32,
@@ -1892,15 +1897,28 @@ test("recoverServedAttachmentGaps: 33 distinct lookup misses cap out at 32 uniqu
   );
 });
 
-test("recoverServedAttachmentGaps: a settled hydration failure is counted without exposing its error", async () => {
+test("recoverServedAttachmentGaps: an unclassified plain blob failure remains retryable without changing the run", async () => {
   const message = makeServedRecoveryMsg({ attachments: [16], emailId: "gmmsgid-hydration-failure", uid: 6000 });
+  const attachmentCoverage = makeAttachmentDetailCoverage();
   const emitHarness = makeRecordingEmit();
+  let failedAttachment: AttachmentRecord | undefined;
+  const hydrateAttachment = makeAttachmentHydrator({
+    connectorId: "https://registry.pdpp.org/connectors/gmail",
+    fetchAttachment: () =>
+      Promise.resolve({
+        content: Readable.from([Buffer.from("attachment")]),
+        expectedSize: 16,
+        mimeType: "application/pdf",
+      }),
+    uploadBlob: () => Promise.reject(new Error("private unclassified blob failure")),
+  });
   const summary = await recoverServedAttachmentGaps(
     {
       search: mock.fn(() => Promise.resolve([message.uid ?? 6000])),
       fetchOne: mock.fn(() => Promise.resolve(message)),
     },
     {
+      attachmentCoverage,
       detailGaps: [
         makeServedRecoveryGap({
           gapId: "gap-hydration-failure",
@@ -1913,15 +1931,11 @@ test("recoverServedAttachmentGaps: a settled hydration failure is counted withou
         await emitHarness.emitRecord(stream, data);
         return true;
       },
-      hydrateAttachment: mock.fn((_msg: FetchMessageObject, attachment: AttachmentRecord) =>
-        Promise.resolve(
-          failedResult({
-            ...attachment,
-            hydration_error: "private upstream failure",
-            hydration_status: "failed" as const,
-          })
-        )
-      ) as HydrateAttachmentFn,
+      hydrateAttachment: async (loadedMessage, attachment) => {
+        const result = await hydrateAttachment(loadedMessage, attachment);
+        failedAttachment = result.record;
+        return result;
+      },
     }
   );
 
@@ -1934,8 +1948,9 @@ test("recoverServedAttachmentGaps: a settled hydration failure is counted withou
       blob_upload_http_5xx: 0,
       blob_upload_integrity_failed: 0,
       blob_upload_invalid_response: 0,
-      blob_upload_transport_failed: 1,
+      blob_upload_transport_failed: 0,
       imap_download_failed: 0,
+      unclassified_failed: 1,
     },
     hydration_failed: 1,
     lookup_miss: 0,
@@ -1944,7 +1959,34 @@ test("recoverServedAttachmentGaps: a settled hydration failure is counted withou
     run_cap_deferred: 0,
     served: 1,
   });
-  assert.equal(JSON.stringify(summary).includes("private upstream failure"), false);
+  assert.equal(
+    emitHarness.protocolMessages.some((msg) => msg.type === "DETAIL_GAP_RECOVERED"),
+    false,
+    "a failed hydration must not acknowledge the served gap as recovered"
+  );
+  assert.ok(failedAttachment, "the failed attachment record must still be emitted");
+  assert.equal(failedAttachment.hydration_status, "failed");
+  assert.deepEqual(attachmentCoverage.gapKeys, [failedAttachment.id]);
+  assert.deepEqual(attachmentCoverage.failedRecords, [failedAttachment]);
+  const [failedCoverageRecord] = attachmentCoverage.failedRecords;
+  assert.ok(failedCoverageRecord, "failed recovery records must be retained for detail-gap emission");
+  assert.deepEqual(buildAttachmentDetailGap(failedCoverageRecord), {
+    type: "DETAIL_GAP",
+    stream: "attachments",
+    parent_stream: "messages",
+    record_key: failedAttachment.id,
+    status: "pending",
+    reason: "temporary_unavailable",
+    detail_locator: {
+      kind: "gmail.attachment_detail",
+      message_id: failedAttachment.message_id,
+      part_index: failedAttachment.part_index,
+      attachment_id: failedAttachment.id,
+    },
+    retryable: true,
+    reference_only: true,
+  });
+  assert.equal(JSON.stringify(summary).includes("private unclassified blob failure"), false);
 });
 
 test("recoverServedAttachmentGaps: boundary-derived stages account for every failed hydration exactly once", async () => {
@@ -2008,6 +2050,7 @@ test("recoverServedAttachmentGaps: boundary-derived stages account for every fai
     blob_upload_invalid_response: 1,
     blob_upload_transport_failed: 1,
     imap_download_failed: 1,
+    unclassified_failed: 0,
   });
   assert.equal(
     Object.values(summary.attachment_hydration_failure_outcome).reduce((total, count) => total + count, 0),
