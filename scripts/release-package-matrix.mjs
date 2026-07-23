@@ -322,7 +322,7 @@ function runMatrixRow() {
   const offlineEnv = {
     ...env,
     HOME: consumerHome,
-    XDG_CACHE_HOME: '/root/.cache',
+    npm_config_cache: '/pdpp-npm-cache',
     npm_config_audit: 'false',
     npm_config_fund: 'false',
     npm_config_offline: 'true',
@@ -330,13 +330,12 @@ function runMatrixRow() {
     npm_config_update_notifier: 'false',
   };
   runRecorded(commands, 'npm', ['init', '--yes'], { cwd: consumer, env: offlineEnv });
-  runRecorded(commands, 'pnpm', ['add', '--ignore-scripts', '--offline', '--registry', 'https://registry.npmjs.org', '--store-dir', '/pdpp-pnpm-store', ...candidates.map(({ tarball }) => join(packRoot, tarball.filename))], { cwd: consumer, env: offlineEnv });
-  const [tree] = JSON.parse(runRecorded(commands, 'pnpm', ['list', '--json', '--depth', '-1'], { cwd: consumer, env: offlineEnv }));
+  runRecorded(commands, 'npm', ['install', '--ignore-scripts', '--offline', ...candidates.map(({ tarball }) => join(packRoot, tarball.filename))], { cwd: consumer, env: offlineEnv });
+  const tree = JSON.parse(runRecorded(commands, 'npm', ['ls', '--all', '--json'], { cwd: consumer, env: offlineEnv }));
   for (const candidate of candidates) {
     const installed = tree.dependencies?.[candidate.name];
     assert.equal(installed?.version, manifests.find(({ name }) => name === candidate.name)?.version, `consumer did not install ${candidate.name} candidate`);
-    const resolution = installed?.resolved ?? installed?.path;
-    assert.ok(typeof resolution === 'string' && resolution.includes(candidate.tarball.filename), `consumer did not resolve ${candidate.name} from its candidate tarball`);
+    assert.equal(installed?.resolved, `file:${join(packRoot, candidate.tarball.filename)}`, `consumer did not resolve ${candidate.name} from its candidate tarball`);
   }
   const probePath = join(consumer, 'candidate-probe.mjs');
   writeFileSync(probePath, consumerProbeSource(manifests));
@@ -396,8 +395,7 @@ function assertRowReceipt(rowReceipt, snapshot, receiptRows, expectedContracts) 
   for (const candidate of rowReceipt.candidates) {
     const installed = dependencies[candidate.name];
     assert.equal(installed?.version, candidate.version, `consumer version drifted for ${candidate.name}`);
-    const resolution = installed?.resolved ?? installed?.path;
-    assert.ok(typeof resolution === 'string' && resolution.includes(candidate.tarball.filename), `consumer source fallback drifted for ${candidate.name}`);
+    assert.equal(installed?.resolved, `file:${join('/workspace/.release-matrix/candidates', candidate.tarball.filename)}`, `consumer source fallback drifted for ${candidate.name}`);
   }
   assert.deepEqual(rowReceipt.consumer.probe.map(({ name }) => name).sort(), [...PACKAGE_NAMES].sort(), 'consumer export/bin probe package set drifted');
   for (const probe of rowReceipt.consumer.probe) {
@@ -437,8 +435,8 @@ function assertRowReceipt(rowReceipt, snapshot, receiptRows, expectedContracts) 
     ...PACKAGE_NAMES.map((name) => ({ command: ['pnpm', '--filter', name, 'run', 'build'], cwd: workspace })),
     ...rowReceipt.candidates.map(({ name }) => ({ command: ['npm', 'pack', '--json', '--ignore-scripts', '--pack-destination', `${workspace}/.release-matrix/candidates`], cwd: `${workspace}/${packagePath(name)}` })),
     { command: ['npm', 'init', '--yes'], cwd: consumer },
-    { command: ['pnpm', 'add', '--ignore-scripts', '--offline', '--registry', 'https://registry.npmjs.org', '--store-dir', '/pdpp-pnpm-store', ...candidatePaths], cwd: consumer },
-    { command: ['pnpm', 'list', '--json', '--depth', '-1'], cwd: consumer },
+    { command: ['npm', 'install', '--ignore-scripts', '--offline', ...candidatePaths], cwd: consumer },
+    { command: ['npm', 'ls', '--all', '--json'], cwd: consumer },
     { command: [rowReceipt.runtime.nodePath, `${consumer}/candidate-probe.mjs`], cwd: consumer },
   ];
   assert.deepEqual(rowReceipt.commands.map(({ command, cwd }) => ({ command, cwd })), expectedCommands, 'receipt runtime command sequence drifted');
