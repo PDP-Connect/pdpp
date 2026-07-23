@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: The PDP-Connect Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Dual-backend conformance test for the rs.explore.timeline k-way merge.
  *

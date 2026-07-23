@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: The PDP-Connect Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Pure helpers that exercise the current thin PDPP reference provider-connect
  * flow:
