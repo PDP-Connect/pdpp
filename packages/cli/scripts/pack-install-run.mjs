@@ -9,13 +9,31 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { parseNpmPackOutput } from './package-contract.mjs';
+import {
+  addNodeProbeToEnvironment,
+  assertArtifactReceipt,
+  bindNodeEnvironment,
+  createNodeProbe,
+  fileSha256,
+  gitHeadSha,
+  labelChildEnvironment,
+  packageContentSha256,
+  readNodeProbe,
+} from './artifact-receipt.mjs';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const manifest = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'));
 const tempRoot = mkdtempSync(join(tmpdir(), 'pdpp-cli-consumer-'));
 const consumerRoot = join(tempRoot, 'consumer');
 const packRoot = join(tempRoot, 'pack');
-const env = {
+const probe = process.env.PDPP_ARTIFACT_NODE_PROBE_FILE
+  ? { file: process.env.PDPP_ARTIFACT_NODE_PROBE_FILE, script: process.env.PDPP_ARTIFACT_NODE_PROBE_SCRIPT }
+  : createNodeProbe(tempRoot);
+const expectedNodeVersion = process.env.PDPP_ARTIFACT_EXPECTED_NODE_VERSION;
+const expectedNodeExecPath = process.env.PDPP_ARTIFACT_EXPECTED_NODE_EXEC_PATH;
+const expectedGitHeadSha = process.env.PDPP_ARTIFACT_EXPECTED_GIT_HEAD_SHA;
+const expectedContentSha256 = process.env.PDPP_ARTIFACT_EXPECTED_CONTENT_SHA256;
+const packageEnv = {
   ...process.env,
   HOME: join(tempRoot, 'home'),
   npm_config_audit: 'false',
@@ -23,11 +41,12 @@ const env = {
   npm_config_offline: 'true',
   npm_config_update_notifier: 'false',
 };
+const env = addNodeProbeToEnvironment(bindNodeEnvironment(packageEnv, process.execPath), probe);
 
 function run(command, args, options = {}) {
   return execFileSync(command, args, {
     encoding: 'utf8',
-    env,
+    env: labelChildEnvironment(env, `${command} ${args.join(' ')}`),
     maxBuffer: 1024 * 1024,
     ...options,
   });
@@ -80,6 +99,30 @@ try {
   assert.match(collectorFailure, /@pdpp\/local-collector/, 'CLI-only collector failure must name the optional package');
   assert.match(collectorFailure, /npm i -g @pdpp\/local-collector|npx -y @pdpp\/local-collector/);
   assert.doesNotMatch(collectorFailure, /not distributed with @pdpp\/cli yet/);
+  const receipt = {
+    nodeVersion: process.version,
+    nodeExecPath: process.execPath,
+    environment: {
+      path: env.PATH,
+      npmConfig: {
+        audit: env.npm_config_audit,
+        fund: env.npm_config_fund,
+        offline: env.npm_config_offline,
+        updateNotifier: env.npm_config_update_notifier,
+      },
+    },
+    gitHeadSha: gitHeadSha(packageRoot),
+    packageContentSha256: packageContentSha256(packageRoot),
+    tarballSha256: fileSha256(tarball),
+    subprocesses: readNodeProbe(probe.file),
+  };
+  assertArtifactReceipt(receipt, {
+    nodeVersion: expectedNodeVersion,
+    nodeExecPath: expectedNodeExecPath,
+    gitHeadSha: expectedGitHeadSha,
+    packageContentSha256: expectedContentSha256,
+  });
+  process.stdout.write(`ARTIFACT_RECEIPT ${JSON.stringify(receipt)}\n`);
   process.stdout.write(`Installed CLI consumer passed: ${exportSpecifiers.length} exports, pdpp --help, offline collector failure.\n`);
 } finally {
   rmSync(tempRoot, { force: true, recursive: true });

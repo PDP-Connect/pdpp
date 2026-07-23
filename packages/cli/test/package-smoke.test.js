@@ -12,6 +12,10 @@ import { getFileMode, getPdppCacheLayout, writePdppSecretFile } from '../src/cac
 import { assertManifestTargets, assertPackedFiles, parseNpmPackOutput } from '../scripts/package-contract.mjs';
 
 const packageRoot = fileURLToPath(new URL('..', import.meta.url));
+const npmEnv = {
+  ...process.env,
+  npm_config_cache: join(tmpdir(), 'pdpp-cli-package-smoke-npm-cache'),
+};
 
 test('package manifest stays intentionally narrow', () => {
   const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
@@ -34,6 +38,7 @@ test('npm package contents stay narrowly allowlisted', () => {
   const result = spawnSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], {
     cwd: packageRoot,
     encoding: 'utf8',
+    env: npmEnv,
   });
 
   assert.equal(result.status, 0, result.stderr);
@@ -82,16 +87,18 @@ test('packed CLI installs and starts in an empty project', () => {
     const packResult = spawnSync('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', tempRoot], {
       cwd: packageRoot,
       encoding: 'utf8',
+      env: npmEnv,
     });
     assert.equal(packResult.status, 0, packResult.stderr);
 
     const [pack] = parseNpmPackOutput(packResult.stdout);
     const tarball = join(tempRoot, pack.filename);
 
-    assert.equal(spawnSync('npm', ['init', '-y'], { cwd: packageDir }).status, 0);
+    assert.equal(spawnSync('npm', ['init', '-y'], { cwd: packageDir, env: npmEnv }).status, 0);
     const installResult = spawnSync('npm', ['install', tarball], {
       cwd: packageDir,
       encoding: 'utf8',
+      env: npmEnv,
     });
     assert.equal(installResult.status, 0, installResult.stderr);
 

@@ -12,13 +12,18 @@ import { assertManifestTargets, assertPackedFiles, parseNpmPackOutput } from './
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const manifest = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'));
 const tempRoot = mkdtempSync(join(tmpdir(), 'pdpp-cli-artifact-'));
+const env = {
+  ...process.env,
+  HOME: join(tempRoot, 'home'),
+  npm_config_cache: join(tempRoot, 'npm-cache'),
+};
 
 try {
   assertManifestTargets(manifest, packageRoot);
   const output = execFileSync(
     'npm',
     ['pack', '--json', '--ignore-scripts', '--pack-destination', tempRoot],
-    { cwd: packageRoot, encoding: 'utf8' },
+    { cwd: packageRoot, encoding: 'utf8', env },
   );
   const [pack] = parseNpmPackOutput(output);
   const tarball = join(tempRoot, pack.filename);

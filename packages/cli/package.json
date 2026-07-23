@@ -31,6 +31,7 @@
     "test": "pnpm build && node scripts/run-tests.mjs",
     "validate:package": "pnpm build && node scripts/validate-package.mjs",
     "pack-install-run": "pnpm build && node scripts/pack-install-run.mjs",
+    "pack-install-run:node-22.14": "node scripts/verify-node-22-14-artifact.mjs",
     "verify": "pnpm test && pnpm validate:package && pnpm pack-install-run",
     "pack:dry-run": "pnpm build && npm pack --dry-run --ignore-scripts"
   },
