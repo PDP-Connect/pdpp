@@ -227,7 +227,7 @@ for (const pkg of packages) {
     assert.equal(executable, resolve(root, target));
     const helpResult = spawnSync('npx', ['--no-install', bin, '--help'], { encoding: 'utf8' });
     assert.equal(helpResult.status, 0, bin + ' did not exit successfully');
-    const help = (helpResult.stdout ?? '') + (helpResult.stderr ?? '');
+    const help = helpResult.stdout || helpResult.stderr || '';
     assert.ok(help.length > 0, bin + ' did not produce help output');
     bins.push({ bin, executable: relative(process.cwd(), executable), helpSha256: sha256(help) });
   }
