@@ -1247,7 +1247,7 @@ function classifyUnreliableProjection(ctx: ClassificationContext): ReturnType<Cl
     axes: ctx.axes,
     badges: ctx.badges,
     remoteSurface: ctx.remoteSurface,
-    unknownReasons: ctx.input.projection?.unreliableSources ?? [],
+    unknownReasons: canonicalProjectionUnreliableSources(ctx.input.projection?.unreliableSources ?? []),
   };
 }
 
@@ -1712,7 +1712,10 @@ function conditionExpired(expiresAt: string | null, observedAt: string | null): 
 }
 
 function projectionReliableCondition(input: ComputeConnectionHealthInput): ConnectionHealthCondition {
-  const sources = input.projection?.unreliableSources ?? [];
+  // This is the canonical projection-reliability composition boundary. Several
+  // failed components can share one closed reason code (for example a repair
+  // lock failure); retain first-seen order while exposing each cause once.
+  const sources = canonicalProjectionUnreliableSources(input.projection?.unreliableSources ?? []);
   if (sources.length > 0) {
     return condition({
       type: "ProjectionReliable",
@@ -1741,6 +1744,10 @@ function projectionReliableCondition(input: ComputeConnectionHealthInput): Conne
     message: "Projection evidence is reliable.",
     origin: "read_model",
   });
+}
+
+function canonicalProjectionUnreliableSources(sources: readonly string[]): readonly string[] {
+  return [...new Set(sources)];
 }
 
 function scheduleEligibleCondition(input: ComputeConnectionHealthInput): ConnectionHealthCondition {

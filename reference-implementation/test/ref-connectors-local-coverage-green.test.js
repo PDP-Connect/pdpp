@@ -8,6 +8,11 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { closeDb, getDb, initDb } from '../server/db.js';
+import {
+  __setConnectorInstanceWritePhaseHookForTest,
+  withConnectorInstanceWrite,
+} from '../server/connector-instance-write-coordinator.ts';
+import { composeFleetHealthVerdict } from '../server/fleet-health.ts';
 import { deriveReferenceFreshness } from '../server/freshness.ts';
 import {
   deriveLocalCoverageAxis,
@@ -350,6 +355,77 @@ test(
       'a declared stream proven covered via local diagnostics still gets an exact retained-size zero',
     );
     assert.equal(retainedByStream.attachments, 0, 'co-emitted zero-record declared streams also synthesize exact zero');
+  }),
+);
+
+test(
+  'repair-lock failure reaches health, required-report authority, and fleet without degrading optional local policy semantics',
+  withTmpDb(async () => {
+    seedConnector();
+    await seedInstance();
+    seedCoverage([{ store: 'projects', stream: 'sessions', status: 'collected' }]);
+    await seedHealthyDrainedHeartbeat();
+    await rebuildRetainedSize();
+
+    // Establish current evidence, then change the canonical record checkpoint so
+    // the next owner read must repair under the shared instance writer fence.
+    await projectConnection();
+    seedRecord({
+      stream: 'messages',
+      key: 'repair-lock-probe',
+      data: { id: 'repair-lock-probe' },
+      emittedAt: NOW,
+      version: 2,
+    });
+
+    const previousWait = process.env.PDPP_INGEST_LOCK_WAIT_MS;
+    process.env.PDPP_INGEST_LOCK_WAIT_MS = '10';
+    let releaseHolder;
+    const acquired = new Promise((resolve) => {
+      __setConnectorInstanceWritePhaseHookForTest((stage, { connectorInstanceId }) => {
+        if (stage === 'after_acquire' && connectorInstanceId === CONNECTOR_INSTANCE_ID) {
+          resolve();
+        }
+      });
+    });
+    const release = new Promise((resolve) => {
+      releaseHolder = resolve;
+    });
+    const holder = withConnectorInstanceWrite(CONNECTOR_INSTANCE_ID, async () => release);
+
+    try {
+      await acquired;
+      const row = await projectConnection();
+      const report = new Map(row.collection_report.map((entry) => [entry.stream, entry]));
+
+      assert.equal(row.connection_health.state, 'unknown');
+      assert.deepEqual(row.connection_health.unknown_reasons, ['repair_lock_unavailable']);
+      for (const stream of ['sessions', 'messages', 'attachments', 'coverage_diagnostics']) {
+        const entry = report.get(stream);
+        assert.equal(entry?.considered, 'unknown', `${stream} has no authoritative denominator`);
+        assert.equal(entry?.covered, 'unknown', `${stream} has no authoritative numerator`);
+        assert.equal(entry?.checkpoint, 'unknown', `${stream} has no authoritative checkpoint`);
+        assert.equal(entry?.coverage_condition, 'unknown', `${stream} cannot present as complete after failed repair`);
+      }
+
+      const fleet = composeFleetHealthVerdict({
+        coverageAudit: { status: 'pass' },
+        inventory: [{ connectorId: CONNECTOR_ID, connectorInstanceId: CONNECTOR_INSTANCE_ID, displayName: 'laptop Claude Code', revokedAt: null, status: 'active' }],
+        runtime: { ok: true },
+        summaries: [row],
+      });
+      assert.equal(fleet.state, 'indeterminate');
+      assert.deepEqual(fleet.dimensions.unknown_evidence.map((entry) => entry.connection_id), [CONNECTOR_INSTANCE_ID]);
+    } finally {
+      releaseHolder();
+      await holder;
+      __setConnectorInstanceWritePhaseHookForTest(null);
+      if (previousWait === undefined) {
+        delete process.env.PDPP_INGEST_LOCK_WAIT_MS;
+      } else {
+        process.env.PDPP_INGEST_LOCK_WAIT_MS = previousWait;
+      }
+    }
   }),
 );
 

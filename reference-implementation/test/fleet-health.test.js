@@ -328,21 +328,43 @@ test("every closed headline state and owner resolver is classified without a hea
   }
 });
 
-test("unknown evidence axes independently prevent a strict fully-healthy claim", () => {
-  const variants = [
-    ["headline", { connection_health: { ...summary("x").connection_health, state: "unknown" } }],
-    ["coverage", { connection_health: { ...summary("x").connection_health, axes: { ...summary("x").connection_health.axes, coverage: "unknown" } } }],
-    ["freshness", { connection_health: { ...summary("x").connection_health, axes: { ...summary("x").connection_health.axes, freshness: "unknown" } } }],
-    ["outbox", { connection_health: { ...summary("x").connection_health, axes: { ...summary("x").connection_health.axes, outbox: "unknown" } } }],
-    ["remote_surface", { connection_health: { ...summary("x").connection_health, axes: { ...summary("x").connection_health.axes, remote_surface: "unknown" } } }],
-    ["forward_disposition", { connection_health: { ...summary("x").connection_health, forward_disposition: "unmeasured" } }],
-    ["owner_resolver", { owner_state: { resolver: "not_measured" } }],
-  ];
-  for (const [name, overrides] of variants) {
-    const item = summary(`unknown-${name}`, overrides);
+test("informational raw unknown axes do not override the canonical healthy headline", () => {
+  for (const axis of ["coverage", "freshness", "outbox", "remote_surface"]) {
+    const item = summary(`informational-${axis}`, {
+      connection_health: {
+        ...summary("x").connection_health,
+        axes: { ...summary("x").connection_health.axes, [axis]: "unknown" },
+      },
+    });
     const result = compose([inventory(item.connection_id)], [item]);
-    assert.equal(result.state, "indeterminate", `${name} must be indeterminate`);
-    assert.equal(result.fully_healthy, false, `${name} must not be fully healthy`);
+    assert.equal(result.state, "healthy", `${axis} applicability belongs to connection health`);
+    assert.deepEqual(result.dimensions.unknown_evidence, []);
+  }
+});
+
+test("headline and reason unknowns remain fleet-unknown", () => {
+  const headline = summary("headline-unknown", {
+    connection_health: { ...summary("x").connection_health, state: "unknown" },
+  });
+  const reason = summary("reason-unknown", {
+    connection_health: { ...summary("x").connection_health, unknown_reasons: ["repair_lock_unavailable"] },
+  });
+  for (const item of [headline, reason]) {
+    const result = compose([inventory(item.connection_id)], [item]);
+    assert.equal(result.state, "indeterminate");
+    assert.deepEqual(result.dimensions.unknown_evidence.map((entry) => entry.connection_id), [item.connection_id]);
+  }
+});
+
+test("unmeasured forward and owner dispositions remain independently load-bearing", () => {
+  const forward = summary("forward-unmeasured", {
+    connection_health: { ...summary("x").connection_health, forward_disposition: "unmeasured" },
+  });
+  const owner = summary("owner-unmeasured", { owner_state: { resolver: "not_measured" } });
+  for (const item of [forward, owner]) {
+    const result = compose([inventory(item.connection_id)], [item]);
+    assert.equal(result.state, "indeterminate");
+    assert.equal(result.fully_healthy, false);
     assert.deepEqual(result.dimensions.unknown_evidence.map((entry) => entry.connection_id), [item.connection_id]);
   }
 });
@@ -358,19 +380,19 @@ test("every closed non-green health member fails the strict fully-healthy claim"
       `attention:${attention}`,
       { connection_health: { ...baseHealth, axes: { ...baseHealth.axes, attention } } },
     ]),
-    ...["gaps", "partial", "retryable_gap", "terminal_gap", "unknown"].map((coverage) => [
+    ...["gaps", "partial", "retryable_gap", "terminal_gap"].map((coverage) => [
       `coverage:${coverage}`,
       { connection_health: { ...baseHealth, axes: { ...baseHealth.axes, coverage } } },
     ]),
-    ...["stale", "unknown"].map((freshness) => [
+    ...["stale"].map((freshness) => [
       `freshness:${freshness}`,
       { connection_health: { ...baseHealth, axes: { ...baseHealth.axes, freshness } } },
     ]),
-    ...["active", "stalled", "unknown"].map((outbox) => [
+    ...["active", "stalled"].map((outbox) => [
       `outbox:${outbox}`,
       { connection_health: { ...baseHealth, axes: { ...baseHealth.axes, outbox } } },
     ]),
-    ...["failed", "unknown"].map((remote_surface) => [
+    ...["failed"].map((remote_surface) => [
       `remote_surface:${remote_surface}`,
       { connection_health: { ...baseHealth, axes: { ...baseHealth.axes, remote_surface } } },
     ]),

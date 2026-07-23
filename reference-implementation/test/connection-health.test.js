@@ -83,6 +83,22 @@ test('unknown: any unreliable required projection forces unknown and names the s
   assert.equal(snap.dominant_condition_id, 'ProjectionReliable:projection_unreliable');
 });
 
+test('unknown: repeated projection reasons are canonicalized in first-seen order', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'fresh' },
+      projection: { unreliableSources: ['repair_lock_unavailable', 'repair_lock_unavailable', 'terminal_fold_failed', 'repair_lock_unavailable'] },
+    })
+  );
+  const projection = findCondition(snap, 'ProjectionReliable');
+  assert.equal(snap.state, 'unknown');
+  assert.deepEqual([...snap.unknown_reasons], ['repair_lock_unavailable', 'terminal_fold_failed']);
+  assert.equal(projection?.reason_code, 'repair_lock_unavailable');
+  assert.equal(projection?.message, 'Projection evidence is unreliable: repair_lock_unavailable, terminal_fold_failed.');
+});
+
 test('shared condition reasons expose canonical reason-code constants', () => {
   assert.equal(CONNECTION_CONDITION_REASONS.PROJECTION_UNRELIABLE, 'projection_unreliable');
   assert.equal(CONNECTION_CONDITION_REASONS.CREDENTIAL_REJECTED, 'credential_rejected');

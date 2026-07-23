@@ -2700,6 +2700,12 @@ export function buildCollectionReport(input: {
   readonly localCoverage?: LocalCoverageDiagnosticAxis | null;
   readonly manifestStreams: readonly ManifestStream[];
   /**
+   * Whether the composed projection still authorizes a required stream to
+   * claim `complete`. Defaults to true for callers that have no health
+   * projection; owner-summary projection supplies the typed reliability gate.
+   */
+  readonly requiredCoverageEvidenceAuthoritative?: boolean;
+  /**
    * Current durable pending DETAIL_GAP rows read from the gap store. Runtime
    * `collection_facts` are run-local; these rows are the current retry contract.
    * Threading them here keeps the per-stream report aligned with the connection
@@ -2736,6 +2742,7 @@ interface IndexedCollectionReportInputs {
   readonly manifestByStream: ReadonlyMap<string, ManifestStream>;
   readonly pendingGapCountByStream: ReadonlyMap<string, number>;
   readonly pendingGapReadHitLimit: boolean;
+  readonly requiredCoverageEvidenceAuthoritative: boolean;
   readonly terminalGapCountByStream: ReadonlyMap<string, number>;
 }
 
@@ -2751,6 +2758,7 @@ function indexCollectionReportInputs(input: {
   readonly latestStreamFacts?: ReadonlyMap<string, LatestStreamFactRecord> | null;
   readonly localCoverage?: LocalCoverageDiagnosticAxis | null;
   readonly manifestStreams: readonly ManifestStream[];
+  readonly requiredCoverageEvidenceAuthoritative?: boolean;
   readonly pendingDetailGaps?: readonly PendingDetailGapSummary[];
   readonly pendingDetailGapsReadLimit?: number | null;
   readonly terminalDetailGapsByStream?: ReadonlyMap<string, number> | null;
@@ -2771,6 +2779,7 @@ function indexCollectionReportInputs(input: {
     pendingGapCountByStream,
     terminalGapCountByStream,
     pendingGapReadHitLimit: pendingReadLimit !== null && pendingDetailGaps.length >= pendingReadLimit,
+    requiredCoverageEvidenceAuthoritative: input.requiredCoverageEvidenceAuthoritative !== false,
     manifestByStream,
     localCoverageConditionByStream: localCoverageConditionsByStream(input.localCoverage, manifestByStream),
     // In-scope universe: manifest streams ∪ fact-block streams. A zero-record or
@@ -2801,6 +2810,7 @@ function buildCollectionReportEntry(input: {
   readonly pendingGapCountByStream: ReadonlyMap<string, number>;
   readonly terminalGapCountByStream: ReadonlyMap<string, number>;
   readonly pendingGapReadHitLimit: boolean;
+  readonly requiredCoverageEvidenceAuthoritative: boolean;
   readonly manifestByStream: ReadonlyMap<string, ManifestStream>;
   readonly localCoverageConditionByStream: ReadonlyMap<string, CoverageAxis>;
   readonly localCoverage?: LocalCoverageDiagnosticAxis | null;
@@ -2852,6 +2862,7 @@ function deriveCollectionReportEntryCoverage(input: {
   readonly terminalGapCountByStream: ReadonlyMap<string, number>;
   readonly manifestByStream: ReadonlyMap<string, ManifestStream>;
   readonly localCoverageConditionByStream: ReadonlyMap<string, CoverageAxis>;
+  readonly requiredCoverageEvidenceAuthoritative: boolean;
 }): CollectionReportEntryCoverage {
   const effective = input.factByStream.get(input.stream);
   const hasRuntimeFact = effective !== undefined;
@@ -2881,14 +2892,24 @@ function deriveCollectionReportEntryCoverage(input: {
       ? input.localCoverageConditionByStream.get(input.stream)
       : null;
   const terminalDetailGaps = input.terminalGapCountByStream.get(input.stream) ?? 0;
+  const derivedCoverageCondition =
+    terminalDetailGaps > 0
+      ? "terminal_gap"
+      : (localCoverageCondition ?? deriveStreamCoverageCondition(effectiveFact, manifestStream));
   return {
     effective,
     effectiveFact,
     manifestStream,
+    // A failed projection repair means the typed health layer cannot vouch for
+    // its required evidence. A local policy result such as `inventory_only` or
+    // `deferred` remains meaningful; only an authoritative `complete` claim is
+    // withheld until that evidence is reliable again.
     coverageCondition:
-      terminalDetailGaps > 0
-        ? "terminal_gap"
-        : (localCoverageCondition ?? deriveStreamCoverageCondition(effectiveFact, manifestStream)),
+      !input.requiredCoverageEvidenceAuthoritative &&
+      isRequiredStream(manifestStream) &&
+      derivedCoverageCondition === "complete"
+        ? "unknown"
+        : derivedCoverageCondition,
   };
 }
 
@@ -2948,6 +2969,12 @@ export function projectCollectionReport(input: {
   readonly localCoverage?: LocalCoverageDiagnosticAxis | null;
   readonly localDeviceBacked?: boolean;
   readonly manifestStreams: readonly ManifestStream[];
+  /**
+   * Typed summary-evidence authority for required complete claims. Omit only
+   * in pure callers that have no evidence row; those retain the health-derived
+   * compatibility default below.
+   */
+  readonly requiredCoverageEvidenceAuthoritative?: boolean;
   readonly pendingDetailGaps?: readonly PendingDetailGapSummary[];
   readonly pendingDetailGapsReadLimit?: number | null;
   readonly terminalDetailGapsByStream?: ReadonlyMap<string, number> | null;
@@ -2966,6 +2993,10 @@ export function projectCollectionReport(input: {
     latestStreamFacts: input.localDeviceBacked ? null : (input.latestStreamFacts ?? null),
     localCoverage: input.localDeviceBacked === true ? (input.localCoverage ?? null) : null,
     manifestStreams: input.manifestStreams,
+    requiredCoverageEvidenceAuthoritative:
+      input.requiredCoverageEvidenceAuthoritative ??
+      input.connectionHealth.conditions?.find((condition) => condition.type === "ProjectionReliable")?.status !==
+        "false",
     pendingDetailGaps: input.pendingDetailGaps ?? [],
     pendingDetailGapsReadLimit: input.pendingDetailGapsReadLimit ?? null,
     terminalDetailGapsByStream: input.terminalDetailGapsByStream ?? null,
@@ -3369,6 +3400,14 @@ function evidenceUnreliableSources(
     sources.push("summary_evidence_dirty_backstop");
   }
   return sources;
+}
+
+function requiredCoverageEvidenceIsAuthoritative(evidence: ConnectorSummaryEvidenceRow | null): boolean {
+  return (
+    evidence?.record_snapshot.state === "current" &&
+    evidence.terminal_facts.state === "current" &&
+    evidence.manifest_declaration.state === "current"
+  );
 }
 
 /**
@@ -4749,6 +4788,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     localCoverage,
     localDeviceBacked,
     manifestStreams: manifest.streams ?? [],
+    requiredCoverageEvidenceAuthoritative: requiredCoverageEvidenceIsAuthoritative(evidence),
     pendingDetailGaps: detailGaps.gaps,
     pendingDetailGapsReadLimit: detailGaps.readLimit,
     terminalDetailGapsByStream: detailGaps.terminalByStream,

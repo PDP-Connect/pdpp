@@ -93,6 +93,38 @@ test('declared checkpoint-window strategy with committed checkpoint proves cover
   assert.equal(entry.forward_disposition, 'complete');
 });
 
+test('unreliable projection withholds required complete coverage but preserves optional policy outcomes', () => {
+  const entries = buildCollectionReport({
+    collectionFacts: null,
+    localCoverage: {
+      axis: 'complete',
+      reliable: true,
+      evidenceAsOf: '2026-07-23T00:00:00.000Z',
+      rows: [
+        { stream: 'required', status: 'collected' },
+        { stream: 'inventory', status: 'inventory_only' },
+        { stream: 'deferred', status: 'deferred' },
+      ],
+    },
+    manifestStreams: [
+      { name: 'required', coverage_strategy: 'checkpoint_window' },
+      { name: 'inventory', required: false, coverage_strategy: 'snapshot_import_receipt' },
+      { name: 'deferred', required: false, coverage_strategy: 'snapshot_import_receipt' },
+    ],
+    requiredCoverageEvidenceAuthoritative: false,
+    freshness: 'fresh',
+    attentionOpen: false,
+    refresh: null,
+  });
+  const required = entryFor(entries, 'required');
+  assert.equal(required.considered, 'unknown');
+  assert.equal(required.covered, 'unknown');
+  assert.equal(required.checkpoint, 'unknown');
+  assert.equal(required.coverage_condition, 'unknown');
+  assert.equal(entryFor(entries, 'inventory').coverage_condition, 'inventory_only');
+  assert.equal(entryFor(entries, 'deferred').coverage_condition, 'deferred');
+});
+
 test('declared coverage strategy without committed boundary does not fabricate completeness', () => {
   const entries = buildCollectionReport({
     collectionFacts: { streams: [fact({ stream: 'messages', collected: 1145, considered: null, checkpoint: 'not_staged' })] },

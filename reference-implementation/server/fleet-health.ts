@@ -264,14 +264,17 @@ function isActiveWork(summary: FleetSummary): boolean {
 function hasUnknownEvidence(summary: FleetSummary): boolean {
   const { connection_health: health, owner_state: ownerState } = summary;
   return (
+    // `connection_health.state` is the canonical composition of whether an
+    // axis applies. In particular, a normal server connection can carry an
+    // intentionally inapplicable raw `outbox: "unknown"` while remaining
+    // healthy. Do not recompose raw axes here.
     evidenceFor(HEADLINE_EVIDENCE, health.state) === "unknown" ||
+    health.unknown_reasons.length > 0 ||
+    // These are independent composed dispositions, not raw axes. Keep their
+    // fail-closed behavior until their owning projections fold them into the
+    // headline state.
     evidenceFor(OWNER_RESOLVER_EVIDENCE, ownerState.resolver) === "unknown" ||
-    evidenceFor(COVERAGE_EVIDENCE, health.axes.coverage) === "unknown" ||
-    evidenceFor(FRESHNESS_EVIDENCE, health.axes.freshness) === "unknown" ||
-    evidenceFor(OUTBOX_EVIDENCE, health.axes.outbox) === "unknown" ||
-    evidenceFor(REMOTE_SURFACE_EVIDENCE, health.axes.remote_surface) === "unknown" ||
-    evidenceFor(FORWARD_DISPOSITION_EVIDENCE, health.forward_disposition) === "unknown" ||
-    health.unknown_reasons.length > 0
+    evidenceFor(FORWARD_DISPOSITION_EVIDENCE, health.forward_disposition) === "unknown"
   );
 }
 
