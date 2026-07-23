@@ -815,12 +815,21 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
   }
 
   function promoteBrowserSurfaceLease(lease: BrowserSurfaceLease, reason: string): void {
-    const promotedOptions = pendingBrowserSurfaceLaunches.get(lease.run_id) ?? {};
+    const promotedOptions = pendingBrowserSurfaceLaunches.get(lease.run_id);
     pendingBrowserSurfaceLaunches.delete(lease.run_id);
+    // Mirrors the inverse encoding in acquireInitialBrowserSurfaceLease
+    // (surfaceSubjectId = connectorInstanceId === connectorId ? undefined : connectorInstanceId):
+    // when the in-memory launch options were lost (e.g. a process restart),
+    // reconstruct connectorInstanceId from the persisted lease's
+    // surface_subject_id instead of letting it silently default to the
+    // connector-wide connector_id.
+    const connectorInstanceId =
+      promotedOptions?.connectorInstanceId ?? lease.surface_subject_id ?? lease.connector_id;
     scheduleRun(
       lease.connector_id,
       {
         ...promotedOptions,
+        connectorInstanceId,
         runId: lease.run_id,
         priorityClass: lease.priority_class,
       },
