@@ -26,7 +26,11 @@ import { canonicalConnectorKey } from '../server/connector-key.js';
 import { buildHttpFailure, buildIngestHttpFailure, buildInvalidIngestResponseFailure } from './ingest-failures.js';
 import { createDetailGapPageReader, validateDetailGapsPageRequest } from './detail-gap-paging.js';
 import { validateDoneError, validateDoneExitCode, validateDoneRecordsEmitted, validateDoneStatus } from './done-validators.js';
-import { validateProgressCollectionRate, validateProgressProviderBudget } from './progress-validators.js';
+import {
+  validateProgressAttachmentRecoveryOutcome,
+  validateProgressCollectionRate,
+  validateProgressProviderBudget,
+} from './progress-validators.js';
 import { classifyRuntimeFailure } from './classify-runtime-failure.js';
 import {
   VIOLATION_LIST_MAX,
@@ -549,6 +553,9 @@ function validateProgressMessage(msg, scopeByStream) {
   }
   if (msg.collection_rate != null) {
     validateProgressCollectionRate(msg.collection_rate);
+  }
+  if (msg.attachment_recovery_outcome != null) {
+    validateProgressAttachmentRecoveryOutcome(msg.attachment_recovery_outcome);
   }
 }
 
@@ -3020,6 +3027,9 @@ export async function runConnector(opts) {
               ...(msg.total == null ? {} : { total: msg.total }),
               ...(msg.provider_budget == null ? {} : { provider_budget: msg.provider_budget }),
               ...(msg.collection_rate == null ? {} : { collection_rate: msg.collection_rate }),
+              ...(msg.attachment_recovery_outcome == null
+                ? {}
+                : { attachment_recovery_outcome: msg.attachment_recovery_outcome }),
             },
           });
           if (msg.collection_rate != null) {

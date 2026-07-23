@@ -5,6 +5,7 @@
 // and tests can import them without pulling in the IMAP runtime entry.
 
 import type {
+  AttachmentRecoveryOutcomeProgress,
   DetailCoverageMessage,
   DetailGapAttemptedMessage,
   DetailGapMessage,
@@ -44,6 +45,7 @@ export interface InteractionMessage {
 }
 
 export interface ProgressMessage {
+  attachment_recovery_outcome?: AttachmentRecoveryOutcomeProgress;
   count?: number;
   message: string;
   stream?: string;

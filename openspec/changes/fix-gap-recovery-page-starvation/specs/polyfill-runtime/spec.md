@@ -110,3 +110,26 @@ incremental UID walk.
 - **AND** `streamsToBackfill` does not include `attachments`
 - **THEN** the connector SHALL still run the historical attachment-backfill
   pass for the current run.
+
+### Requirement: Gmail served attachment recovery SHALL emit one aggregate-only terminal outcome
+
+When Gmail processes valid served attachment detail gaps, it SHALL enrich its
+existing final served-recovery `PROGRESS` summary with exactly one
+`attachment_recovery_outcome` object. The object SHALL contain only the fixed
+discriminator and non-negative integer aggregates `served`,
+`metadata_lookups`, `attempted`, `admitted`, `admitted_bytes`, `recovered`,
+`lookup_miss`, `hydration_failed`, and `run_cap_deferred`. It SHALL NOT
+contain identifiers, locators, provider identities, content, or error text.
+This evidence SHALL NOT alter the recovery byte budget, lookup cap, scheduler,
+governor, retry behavior, or user-facing progress copy.
+
+#### Scenario: One terminal aggregate distinguishes the served recovery outcomes
+
+- **WHEN** Gmail completes a served attachment recovery pass
+- **THEN** it SHALL emit its existing terminal served-recovery `PROGRESS`
+  summary with exact aggregate counts for the served page
+- **AND** `run_cap_deferred` SHALL count every served gap left unadmitted when
+  the byte budget stops the ordered lane, including an untouched suffix
+- **AND** a count near the byte budget with `run_cap_deferred > 0` SHALL be
+  observable separately from the metadata lookup count, lookup misses, and
+  hydration failures.

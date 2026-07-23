@@ -4,7 +4,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { validateProgressProviderBudget } from '../runtime/progress-validators.js';
+import {
+  validateProgressAttachmentRecoveryOutcome,
+  validateProgressProviderBudget,
+} from '../runtime/progress-validators.js';
 
 const validProviderBudget = {
   object: 'provider_budget_circuit_transition',
@@ -17,6 +20,19 @@ const validProviderBudget = {
   elapsed_ms: 0,
   request_count: 1,
   retry_tokens_remaining: 'unbounded',
+};
+
+const validAttachmentRecoveryOutcome = {
+  admitted: 2,
+  admitted_bytes: 200_000,
+  attempted: 3,
+  hydration_failed: 0,
+  lookup_miss: 0,
+  metadata_lookups: 3,
+  object: 'attachment_recovery_outcome',
+  recovered: 2,
+  run_cap_deferred: 3,
+  served: 5,
 };
 
 function expectInvalidProviderBudget(value, messageFragment) {
@@ -85,5 +101,20 @@ test('validateProgressProviderBudget: counters and retry capacity must be bounde
   expectInvalidProviderBudget(
     { ...validProviderBudget, retry_tokens_remaining: Infinity },
     'PROGRESS.provider_budget.retry_tokens_remaining',
+  );
+});
+
+test('validateProgressAttachmentRecoveryOutcome: accepts the complete aggregate-only shape', () => {
+  assert.doesNotThrow(() => validateProgressAttachmentRecoveryOutcome(validAttachmentRecoveryOutcome));
+});
+
+test('validateProgressAttachmentRecoveryOutcome: rejects private fields and non-integer counts', () => {
+  assert.throws(
+    () => validateProgressAttachmentRecoveryOutcome({ ...validAttachmentRecoveryOutcome, gap_id: 'private-gap' }),
+    /unexpected field/,
+  );
+  assert.throws(
+    () => validateProgressAttachmentRecoveryOutcome({ ...validAttachmentRecoveryOutcome, lookup_miss: 0.5 }),
+    /lookup_miss: expected non-negative integer/,
   );
 });

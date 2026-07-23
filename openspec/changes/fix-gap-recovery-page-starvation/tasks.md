@@ -159,3 +159,19 @@ and Postgres (`LEAST`) clamp branches; only the SQLite branch was proven.
 - [x] Add real old-schema SQLite and isolated-Postgres upgrade tests, rerun the
       prior recovery discriminators and broad validation, amend the signed
       commit, and update the closure report.
+
+## 11. Revision (Gmail recovery throughput discriminator, 2026-07-23)
+
+- [x] Enrich Gmail's existing final served-attachment recovery `PROGRESS`
+      summary with one `attachment_recovery_outcome` fixed-shape aggregate:
+      `served`, `metadata_lookups`, `attempted`, `admitted`,
+      `admitted_bytes`, `recovered`, `lookup_miss`, `hydration_failed`, and
+      `run_cap_deferred`; do not change the existing progress message copy.
+- [x] Validate and preserve that aggregate through the existing runtime
+      `run.progress_reported` spine path; reject every non-allowlisted field
+      and every non-integer or negative count.
+- [x] Add mutation-resistant Gmail tests for exact byte-cap, lookup-cap/miss,
+      and hydration-failure counts, plus an exact terminal-summary privacy
+      shape test proving no identifier/locator/provider/content/error carrier.
+- [x] Run focused Gmail and runtime progress tests, touched-file lint and
+      typecheck, strict OpenSpec validation, and final diff review.

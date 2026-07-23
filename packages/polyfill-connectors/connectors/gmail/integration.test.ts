@@ -1193,6 +1193,42 @@ test("runAttachmentBackfillAndRecoveryPass: served gaps preempt historical attac
     runHarness.protocolMessages.some((msg) => msg.type === "PROGRESS" && msg.stream === "attachments"),
     "the served-gap branch should emit its own recovery progress"
   );
+  const terminalRecoverySummary = runHarness.protocolMessages.find(
+    (msg): msg is ProgressMessage =>
+      msg.type === "PROGRESS" && msg.message.startsWith("Gmail served attachment-gap recovery summary:")
+  );
+  assert.deepEqual(
+    terminalRecoverySummary?.attachment_recovery_outcome,
+    {
+      admitted: 1,
+      admitted_bytes: 2 * 1024 * 1024,
+      attempted: 1,
+      hydration_failed: 0,
+      lookup_miss: 0,
+      metadata_lookups: 1,
+      object: "attachment_recovery_outcome",
+      recovered: 1,
+      run_cap_deferred: 0,
+      served: 1,
+    },
+    "the existing terminal recovery summary carries the exact aggregate-only outcome"
+  );
+  assert.deepEqual(
+    Object.keys(terminalRecoverySummary?.attachment_recovery_outcome ?? {}).sort(),
+    [
+      "admitted",
+      "admitted_bytes",
+      "attempted",
+      "hydration_failed",
+      "lookup_miss",
+      "metadata_lookups",
+      "object",
+      "recovered",
+      "run_cap_deferred",
+      "served",
+    ],
+    "the terminal outcome is an allowlisted aggregate shape, not a carrier for locators, identities, content, or errors"
+  );
   assert.equal(
     runHarness.protocolMessages.some((msg) => msg.type === "STATE" && msg.stream === "attachments"),
     false,
@@ -1476,6 +1512,17 @@ test("recoverServedAttachmentGaps: small candidates stop at budget after one rej
     assert.equal(hydrateAttachmentMock.mock.callCount(), 2, "only the budgeted prefix should hydrate");
     assert.equal(summary.admitted, 2);
     assert.equal(summary.recovered, 2);
+    assert.deepEqual(summary, {
+      admitted: 2,
+      admitted_bytes: 200_000,
+      attempted: 3,
+      hydration_failed: 0,
+      lookup_miss: 0,
+      metadata_lookups: 3,
+      recovered: 2,
+      run_cap_deferred: 3,
+      served: 5,
+    });
     const progressMessages = emitHarness.protocolMessages.filter((msg) => msg.type === "PROGRESS");
     assert.equal(progressMessages.length, 4, "each admitted attempt should emit hydrating and settled progress");
     assert.deepEqual(
@@ -1650,6 +1697,17 @@ test("recoverServedAttachmentGaps: 33 distinct lookup misses cap out at 32 uniqu
   assert.equal(fetchOne.mock.callCount(), 0, "misses never fetch a message body");
   assert.equal(summary.admitted, 0);
   assert.equal(summary.recovered, 0);
+  assert.deepEqual(summary, {
+    admitted: 0,
+    admitted_bytes: 0,
+    attempted: 32,
+    hydration_failed: 0,
+    lookup_miss: 32,
+    metadata_lookups: 32,
+    recovered: 0,
+    run_cap_deferred: 0,
+    served: 33,
+  });
   const attempts = emitHarness.protocolMessages.filter((msg) => msg.type === "DETAIL_GAP_ATTEMPTED");
   const deferred = emitHarness.protocolMessages.filter((msg) => msg.type === "DETAIL_GAP");
   assert.equal(attempts.length, 32, "each real metadata lookup is explicitly accounted as an attempt");
@@ -1662,6 +1720,51 @@ test("recoverServedAttachmentGaps: 33 distinct lookup misses cap out at 32 uniqu
     emitHarness.protocolMessages.some((msg) => msg.type === "PROGRESS"),
     false
   );
+});
+
+test("recoverServedAttachmentGaps: a settled hydration failure is counted without exposing its error", async () => {
+  const message = makeServedRecoveryMsg({ attachments: [16], emailId: "gmmsgid-hydration-failure", uid: 6000 });
+  const emitHarness = makeRecordingEmit();
+  const summary = await recoverServedAttachmentGaps(
+    {
+      search: mock.fn(() => Promise.resolve([message.uid ?? 6000])),
+      fetchOne: mock.fn(() => Promise.resolve(message)),
+    },
+    {
+      detailGaps: [
+        makeServedRecoveryGap({
+          gapId: "gap-hydration-failure",
+          messageId: "gmmsgid-hydration-failure",
+          partIndex: 1,
+        }),
+      ],
+      emitProtocol: emitHarness.emit,
+      emitRecord: async (stream, data) => {
+        await emitHarness.emitRecord(stream, data);
+        return true;
+      },
+      hydrateAttachment: mock.fn((_msg: FetchMessageObject, attachment: AttachmentRecord) =>
+        Promise.resolve({
+          ...attachment,
+          hydration_error: "private upstream failure",
+          hydration_status: "failed" as const,
+        })
+      ) as HydrateAttachmentFn,
+    }
+  );
+
+  assert.deepEqual(summary, {
+    admitted: 1,
+    admitted_bytes: 16,
+    attempted: 1,
+    hydration_failed: 1,
+    lookup_miss: 0,
+    metadata_lookups: 1,
+    recovered: 0,
+    run_cap_deferred: 0,
+    served: 1,
+  });
+  assert.equal(JSON.stringify(summary).includes("private upstream failure"), false);
 });
 
 test("recoverServedAttachmentGaps: same-message served gaps reuse one lookup", async () => {

@@ -4317,6 +4317,18 @@ rl.on('line', (line) => {
       effective_rate_per_min: 40,
       last_backoff: { at_interval_ms: 2000, reason: 'throttle' },
     };
+    const attachmentRecoveryOutcome = {
+      object: 'attachment_recovery_outcome',
+      served: 5,
+      metadata_lookups: 3,
+      attempted: 3,
+      admitted: 2,
+      admitted_bytes: 200000,
+      recovered: 2,
+      lookup_miss: 0,
+      hydration_failed: 0,
+      run_cap_deferred: 3,
+    };
 
     const { connectorPath, cleanup } = createTestConnector([
       {
@@ -4324,6 +4336,7 @@ rl.on('line', (line) => {
         stream: 'items',
         message: 'Collection rate 40/min (interval 1500ms; ceiling 60/min)',
         collection_rate: collectionRate,
+        attachment_recovery_outcome: attachmentRecoveryOutcome,
       },
       { type: 'DONE', status: 'succeeded', records_emitted: 0 },
     ]);
@@ -4347,6 +4360,7 @@ rl.on('line', (line) => {
       assert.equal(result.status, 'succeeded');
       assert.equal(seenProgress.length, 1);
       assert.deepEqual(seenProgress[0].collection_rate, collectionRate);
+      assert.deepEqual(seenProgress[0].attachment_recovery_outcome, attachmentRecoveryOutcome);
 
       // collection_rate must appear in the run.progress_reported spine event.
       const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
@@ -4354,6 +4368,8 @@ rl.on('line', (line) => {
       assert.ok(progressEvent, 'expected run.progress_reported event');
       assert.deepEqual(progressEvent.data.collection_rate, collectionRate,
         'collection_rate must be persisted in the spine event data');
+      assert.deepEqual(progressEvent.data.attachment_recovery_outcome, attachmentRecoveryOutcome,
+        'the aggregate recovery outcome must be preserved on the existing progress spine event');
 
       // collection_rate must also appear on the terminal event for post-run
       // projection (the reference→snapshot plumbing hop).

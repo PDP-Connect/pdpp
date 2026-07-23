@@ -259,7 +259,27 @@ export interface CollectionRateProgress {
   object: "collection_rate";
 }
 
+/**
+ * Aggregate-only outcome of Gmail's bounded served attachment-gap recovery
+ * lane. This is emitted on the lane's existing terminal PROGRESS summary;
+ * it carries no record identity, locator, provider identity, content, or
+ * error text.
+ */
+export interface AttachmentRecoveryOutcomeProgress {
+  admitted: number;
+  admitted_bytes: number;
+  attempted: number;
+  hydration_failed: number;
+  lookup_miss: number;
+  metadata_lookups: number;
+  object: "attachment_recovery_outcome";
+  recovered: number;
+  run_cap_deferred: number;
+  served: number;
+}
+
 export interface ProgressExtra {
+  attachment_recovery_outcome?: AttachmentRecoveryOutcomeProgress;
   count?: number;
   stream?: string;
   total?: number;
@@ -282,6 +302,7 @@ export type EmittedMessage =
       count?: number;
       stream?: string;
       total?: number;
+      attachment_recovery_outcome?: AttachmentRecoveryOutcomeProgress;
       provider_budget?: ProviderBudgetProgress;
       collection_rate?: CollectionRateProgress;
     }

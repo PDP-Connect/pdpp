@@ -199,3 +199,22 @@ gap/run/token tuple on every settlement, so a same-page swapped token fails
 closed. Real old-schema SQLite and isolated-Postgres upgrade oracles prove the
 legacy conversion; a runtime oracle proves unique same-page tokens and swap
 rejection.
+
+### Revision (throughput discriminator, 2026-07-23)
+
+The live audit proves that Gmail served-gap recovery is running but cannot yet
+separate byte-budget binding, the 32-unique-message metadata-lookup cap,
+lookup misses, hydration failures, and byte-cap deferrals from one successful
+run. Add one `attachment_recovery_outcome` aggregate to Gmail's existing final
+served-recovery `PROGRESS` summary. Its fixed allowlist is `served`,
+`metadata_lookups`, `attempted`, `admitted`, `admitted_bytes`, `recovered`,
+`lookup_miss`, `hydration_failed`, and `run_cap_deferred` (plus its fixed
+object discriminator). The runtime validates the exact aggregate shape and
+keeps it on the existing `run.progress_reported` spine event.
+
+This is evidence only: no byte budget, metadata-lookup cap, scheduler,
+governor, retry policy, durable schema, or user-facing progress copy changes.
+The object contains no identifiers, locators, provider identities, content, or
+error text. `run_cap_deferred` counts served gaps left unadmitted because the
+byte budget stopped the ordered lane, including its untouched suffix, so an
+oversized admitted first candidate still reveals byte-budget binding.

@@ -163,6 +163,30 @@ same gap, run, and lease identities.
 - **AND** an outcome or explicit attempt naming one gap with the other gap's
   lease id SHALL fail before settling either row.
 
+### Requirement: The runtime SHALL preserve only validated aggregate recovery outcomes on existing progress events
+
+When a connector includes an `attachment_recovery_outcome` on a `PROGRESS`
+message, the runtime SHALL accept only the fixed discriminator and exact set
+of non-negative integer aggregate fields: `served`, `metadata_lookups`,
+`attempted`, `admitted`, `admitted_bytes`, `recovered`, `lookup_miss`,
+`hydration_failed`, and `run_cap_deferred`. The runtime SHALL preserve a valid
+object on the existing `run.progress_reported` event and SHALL reject any
+extra field, identifier, locator, provider identity, content, error text, or
+invalid count as a connector protocol violation.
+
+#### Scenario: An aggregate recovery outcome reaches the existing spine without a new event type
+
+- **WHEN** a connector emits a valid `PROGRESS.attachment_recovery_outcome`
+- **THEN** the runtime SHALL record it on that same `run.progress_reported`
+  event
+- **AND** it SHALL NOT create a new durable subsystem or event type.
+
+#### Scenario: A recovery outcome cannot carry private detail
+
+- **WHEN** a connector emits an `attachment_recovery_outcome` with any field
+  outside the fixed aggregate allowlist
+- **THEN** the runtime SHALL reject the message before it reaches the spine.
+
 #### Scenario: Success awaits accounting
 
 - **WHEN** a connector reports `DONE:succeeded` with outstanding leases

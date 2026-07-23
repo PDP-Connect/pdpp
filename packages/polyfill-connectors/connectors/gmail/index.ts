@@ -1298,7 +1298,14 @@ export interface AttachmentBackfillCandidate {
 }
 export interface ServedAttachmentRecoverySummary {
   admitted: number;
+  admitted_bytes: number;
+  attempted: number;
+  hydration_failed: number;
+  lookup_miss: number;
+  metadata_lookups: number;
   recovered: number;
+  run_cap_deferred: number;
+  served: number;
 }
 
 type GmailMessageLookupClient = Pick<ImapFlow, "search" | "fetchOne">;
@@ -1432,13 +1439,18 @@ async function emitServedAttachmentRecoveryProgress(
 interface ServedAttachmentRecoveryState {
   admitted: number;
   admittedBytesTotal: number;
+  attempted: number;
+  hydrationFailed: number;
+  lookupMiss: number;
   messageCache: Map<string, FetchMessageObject | null>;
   metadataLookups: number;
   recovered: number;
   recoveredAttachmentGapIds: Set<string>;
+  runCapDeferred: number;
 }
 
 type ServedAttachmentRecoveryLookupResult = FetchMessageObject | null | "metadata_lookup_limit_reached";
+type ServedAttachmentRecoveryStop = "byte_budget" | "metadata_lookup_cap" | false;
 
 async function loadServedAttachmentRecoveryMessage(
   client: GmailMessageLookupClient,
@@ -1486,6 +1498,9 @@ async function settleServedAttachmentRecoveryAttempt(
       });
       state.recovered += 1;
     }
+  }
+  if (hydrated.hydration_status === "failed") {
+    state.hydrationFailed += 1;
   }
   // Emit bounded, non-secret progress as each admitted attempt settles so a
   // long single hydration is visible before the whole recovery lane ends.
@@ -1549,9 +1564,9 @@ async function processServedAttachmentRecoveryGap(
   },
   state: ServedAttachmentRecoveryState,
   byteBudget: number
-): Promise<boolean> {
+): Promise<ServedAttachmentRecoveryStop> {
   if (state.admitted > 0 && state.admittedBytesTotal >= byteBudget) {
-    return true;
+    return "byte_budget";
   }
 
   const locator = normalizeGmailAttachmentRecoveryLocator(gap);
@@ -1566,14 +1581,16 @@ async function processServedAttachmentRecoveryGap(
     !state.messageCache.has(locator.messageId) &&
     state.metadataLookups >= SERVED_ATTACHMENT_RECOVERY_METADATA_LOOKUP_LIMIT
   ) {
-    return true;
+    return "metadata_lookup_cap";
   }
+  state.attempted += 1;
   await markServedAttachmentRecoveryAttempt(gap, deps.emitProtocol);
   const loadedMessage = await loadServedAttachmentRecoveryMessage(client, locator.messageId, state);
   if (loadedMessage === "metadata_lookup_limit_reached") {
-    return true;
+    return "metadata_lookup_cap";
   }
   if (!loadedMessage) {
+    state.lookupMiss += 1;
     await deps.emitProtocol(buildServedAttachmentRecoveryDeferredGap(gap, "attachment_lookup_miss"));
     return false;
   }
@@ -1590,6 +1607,7 @@ async function processServedAttachmentRecoveryGap(
     attachmentDetailGapMatches(gap, candidate, normalizedAttachmentKey)
   );
   if (!attachment) {
+    state.lookupMiss += 1;
     await deps.emitProtocol(buildServedAttachmentRecoveryDeferredGap(gap, "attachment_lookup_miss"));
     return false;
   }
@@ -1598,7 +1616,7 @@ async function processServedAttachmentRecoveryGap(
     typeof attachment.size_bytes === "number" ? attachment.size_bytes : ATTACHMENT_BACKFILL_UNKNOWN_SIZE_FALLBACK_BYTES;
   if (state.admitted > 0 && state.admittedBytesTotal + attachmentBytes > byteBudget) {
     await deps.emitProtocol(buildServedAttachmentRecoveryDeferredGap(gap, "run_cap_deferred"));
-    return true;
+    return "byte_budget";
   }
 
   state.admitted += 1;
@@ -1629,16 +1647,30 @@ export async function recoverServedAttachmentGaps(
 ): Promise<ServedAttachmentRecoverySummary> {
   const servedGaps = servedAttachmentDetailGaps(deps.detailGaps);
   if (servedGaps.length === 0) {
-    return { admitted: 0, recovered: 0 };
+    return {
+      admitted: 0,
+      admitted_bytes: 0,
+      attempted: 0,
+      hydration_failed: 0,
+      lookup_miss: 0,
+      metadata_lookups: 0,
+      recovered: 0,
+      run_cap_deferred: 0,
+      served: 0,
+    };
   }
   const byteBudget = resolveAttachmentBackfillPageByteBudget();
   const recoveryState: ServedAttachmentRecoveryState = {
     admitted: 0,
     admittedBytesTotal: 0,
+    attempted: 0,
+    hydrationFailed: 0,
+    lookupMiss: 0,
     metadataLookups: 0,
     messageCache: new Map<string, FetchMessageObject | null>(),
     recovered: 0,
     recoveredAttachmentGapIds: deps.recoveredAttachmentGapIds ?? new Set<string>(),
+    runCapDeferred: 0,
   };
   const recoveryAttemptDeps = {
     ...(deps.attachmentCoverage ? { attachmentCoverage: deps.attachmentCoverage } : {}),
@@ -1648,12 +1680,26 @@ export async function recoverServedAttachmentGaps(
     hydrateAttachment: deps.hydrateAttachment,
   };
 
-  for (const gap of servedGaps) {
-    if (await processServedAttachmentRecoveryGap(client, gap, recoveryAttemptDeps, recoveryState, byteBudget)) {
+  for (const [index, gap] of servedGaps.entries()) {
+    const stop = await processServedAttachmentRecoveryGap(client, gap, recoveryAttemptDeps, recoveryState, byteBudget);
+    if (stop) {
+      if (stop === "byte_budget") {
+        recoveryState.runCapDeferred = servedGaps.length - index;
+      }
       break;
     }
   }
-  return { admitted: recoveryState.admitted, recovered: recoveryState.recovered };
+  return {
+    admitted: recoveryState.admitted,
+    admitted_bytes: recoveryState.admittedBytesTotal,
+    attempted: recoveryState.attempted,
+    hydration_failed: recoveryState.hydrationFailed,
+    lookup_miss: recoveryState.lookupMiss,
+    metadata_lookups: recoveryState.metadataLookups,
+    recovered: recoveryState.recovered,
+    run_cap_deferred: recoveryState.runCapDeferred,
+    served: servedGaps.length,
+  };
 }
 
 async function recoverServedAttachmentGapsIfRequested(
@@ -1684,6 +1730,10 @@ async function recoverServedAttachmentGapsIfRequested(
     message: `Gmail served attachment-gap recovery summary: admitted=${recoverySummary.admitted} recovered=${recoverySummary.recovered}`,
     count: recoverySummary.recovered,
     total: recoverySummary.admitted,
+    attachment_recovery_outcome: {
+      object: "attachment_recovery_outcome",
+      ...recoverySummary,
+    },
   });
 }
 
