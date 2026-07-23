@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import { npmPackMetadata } from "./pack-metadata.mjs";
 
 const execFileAsync = promisify(execFile);
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
@@ -78,8 +79,7 @@ function runWithInput(command, args, input, options = {}) {
 }
 
 async function packPackage(cwd) {
-  const { stdout } = await run("npm", ["pack", "--json", "--ignore-scripts"], { cwd });
-  const [packInfo] = JSON.parse(stdout);
+  const packInfo = await npmPackMetadata({ cwd });
   return path.join(cwd, packInfo.filename);
 }
 
@@ -119,7 +119,6 @@ async function main() {
   assert.equal(packageJson.scripts?.postinstall, undefined, "@pdpp/local-collector must not define postinstall");
 
   log("Building and packing @pdpp/local-collector...");
-  await run("pnpm", ["build"], { cwd: packageRoot });
   const collectorTarball = await packPackage(packageRoot);
 
   const tempRoot = await mkdtemp(path.join(tmpdir(), "pdpp-local-collector-pack-"));

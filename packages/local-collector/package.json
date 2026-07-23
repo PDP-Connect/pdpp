@@ -31,10 +31,9 @@
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.build.json && node scripts/postbuild.mjs",
     "prepare": "pnpm build",
-    "prepack": "pnpm build",
     "test": "node scripts/run-tests.mjs",
     "pack-install-run": "node scripts/pack-install-run.mjs",
-    "validate:package": "pnpm build && node scripts/validate-package.mjs",
+    "validate:package": "node scripts/validate-package.mjs",
     "verify": "pnpm test && pnpm validate:package"
   },
   "dependencies": {
