@@ -157,6 +157,7 @@ function connectionRouteId(connector: RefConnectorSummary): string {
 
 function connectorLabel(connector: RefConnectorSummary): string {
   return (
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: API display names can be absent at runtime despite optimistic generated types.
     connector.display_name?.trim() ||
     connector.connector_display_name?.trim() ||
     readableConnectorId(connector.connector_id)
@@ -211,6 +212,7 @@ export function primaryOwnerActionRemediation(
 }
 
 export function hasPrimaryOwnerLocalDeviceRemediation(verdict: RefRenderedVerdict | null | undefined): boolean {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: a valid owner action may omit remediation at runtime.
   return primaryOwnerActionRemediation(verdict)?.target.kind === "local_device";
 }
 
@@ -510,6 +512,7 @@ export function sourceWorkItemFromConnector(connector: RefConnectorSummary): Sou
   if (verdict.channel === "attention" && ownerAction) {
     return itemFromConnector(connector, "needsOwner", {
       actionLabel: ownerAction.cta,
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: a valid owner action may omit remediation at runtime.
       deviceLocal: ownerAction.remediation?.target.kind === "local_device",
       statusLabel: "needs you",
       what: verdict.forward_statement,
@@ -519,6 +522,7 @@ export function sourceWorkItemFromConnector(connector: RefConnectorSummary): Sou
   if (ownerAction) {
     return itemFromConnector(connector, "review", {
       actionLabel: ownerAction.cta,
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: a valid owner action may omit remediation at runtime.
       deviceLocal: ownerAction.remediation?.target.kind === "local_device",
       // The concrete CTA (`ownerAction.cta`, e.g. "Refresh now" / "Retry now")
       // carries the row copy; the statusLabel is a neutral fallback, never the

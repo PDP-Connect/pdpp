@@ -661,7 +661,7 @@ function nekoMediaSettleSampleHasDisplayableFrame(sample: NekoMediaSettleSample)
   if (!(positiveViewportSize(sample.media) && positiveViewportSize(sample.screen))) {
     return false;
   }
-  const inbound = sample.inbound;
+  const { inbound } = sample;
   const inboundHasFrame =
     !inbound ||
     (Number(inbound.frameWidth) > 0 && Number(inbound.frameHeight) > 0) ||
@@ -1398,7 +1398,7 @@ function readViewportObservation(): ViewportObservation | null {
   if (typeof window === "undefined") {
     return null;
   }
-  const visualViewport = window.visualViewport;
+  const { visualViewport } = window;
   const orientation = typeof screen === "undefined" ? null : screen.orientation;
   return {
     editableFocused: hasLocalTextInputFocus(),
@@ -1441,7 +1441,7 @@ function hasLocalTextInputFocus(): boolean {
 }
 
 function streamEventData(event: Event): string {
-  const data = (event as MessageEvent).data;
+  const { data } = event as MessageEvent;
   return typeof data === "string" ? data : "";
 }
 
@@ -1969,7 +1969,7 @@ function StreamStage({
     if (typeof navigator === "undefined") {
       return;
     }
-    const virtualKeyboard = (navigator as NavigatorWithVirtualKeyboard).virtualKeyboard;
+    const { virtualKeyboard } = navigator as NavigatorWithVirtualKeyboard;
     if (!(virtualKeyboard && "overlaysContent" in virtualKeyboard)) {
       logDebug("viewport.virtual_keyboard_overlay", {
         supported: false,
@@ -2777,8 +2777,8 @@ function StreamStage({
         },
         post: () => {
           keyboardResizeStateRef.current = createMobileKeyboardResizeState();
-          const viewportInfo = viewportInfoFromPayload(viewport);
-          setCanonicalViewportInfo(viewportInfo);
+          const appliedViewportInfo = viewportInfoFromPayload(viewport);
+          setCanonicalViewportInfo(appliedViewportInfo);
           logViewportDecision(decision.action, decision.reason);
           logDebug("viewport.post.start", debugPayload);
           const body = JSON.stringify(viewport);
@@ -3163,7 +3163,7 @@ function StreamStage({
     const windowResizeListener = () => scheduleSource("window.resize");
     const visualViewportResizeListener = () => scheduleSource("visualViewport.resize");
     const visualViewportScrollListener = () => scheduleSource("visualViewport.scroll");
-    const visualViewport = window.visualViewport;
+    const { visualViewport } = window;
     const screenOrientation = typeof screen !== "undefined" && "orientation" in screen ? screen.orientation : undefined;
     const screenOrientationListener = () => scheduleOrientationSource("screen.orientation.change");
     window.addEventListener("orientationchange", orientationListener);
@@ -3844,13 +3844,13 @@ function NekoSurface({
             },
             viewer: nextViewer,
           });
-        } catch (error) {
+        } catch (mountError) {
           if (viewerRef.current === nextViewer) {
             viewerRef.current = null;
           }
           adapter = null;
           viewer = null;
-          throw error;
+          throw mountError;
         }
         logDebug("remote_surface_viewer_mounted", {
           lifecycleState: nextViewer.getLifecycleState(),
@@ -4075,7 +4075,7 @@ function NekoSurface({
       if (isCoarsePointer() || event.button !== 0) {
         return;
       }
-      const target = event.target;
+      const { target } = event;
       if (!(target instanceof Node && mountNode.contains(target))) {
         return;
       }
@@ -4247,11 +4247,11 @@ function NekoSurface({
       return !cancelled && layoutRequestRef.current === requestId;
     }
 
-    function emitPlaygroundEvents(status: NekoStatusSnapshot) {
-      if (!status.playgroundEvents || status.playgroundEvents.length === 0) {
+    function emitPlaygroundEvents(statusSnapshot: NekoStatusSnapshot) {
+      if (!statusSnapshot.playgroundEvents || statusSnapshot.playgroundEvents.length === 0) {
         return;
       }
-      for (const entry of status.playgroundEvents) {
+      for (const entry of statusSnapshot.playgroundEvents) {
         if (claimPlaygroundEvent(playgroundSeenRef.current, entry) === "duplicate") {
           continue;
         }
@@ -4267,16 +4267,16 @@ function NekoSurface({
       }
     }
 
-    function handlePolledStatus(status: NekoStatusSnapshot) {
-      emitPlaygroundEvents(status);
+    function handlePolledStatus(statusSnapshot: NekoStatusSnapshot) {
+      emitPlaygroundEvents(statusSnapshot);
       if (!isCurrentRequest()) {
         return "done";
       }
-      const screen = status.screen;
+      const { screen } = statusSnapshot;
       if (!screen) {
         logDebug("neko.status.poll", {
-          page: status.page,
-          pageCdpAvailable: status.pageCdpAvailable,
+          page: statusSnapshot.page,
+          pageCdpAvailable: statusSnapshot.pageCdpAvailable,
           requestId,
           result: "missing-screen",
           viewport,
@@ -4286,16 +4286,16 @@ function NekoSurface({
 
       latestPolledScreen = screen;
       const fitsScreen = screenFitsViewport(screen, viewport);
-      const fitsPage = pageFitsViewport(status, viewport);
+      const fitsPage = pageFitsViewport(statusSnapshot, viewport);
       const fits = fitsScreen && fitsPage;
       logDebug("neko.status.poll", {
         fits,
         fitsPage,
         fitsScreen,
-        page: status.page,
-        pageCdpAvailable: status.pageCdpAvailable,
-        pageMetricsMismatch: status.pageMetricsMismatch,
-        pageMetricsMismatchAfterReapply: status.pageMetricsMismatchAfterReapply,
+        page: statusSnapshot.page,
+        pageCdpAvailable: statusSnapshot.pageCdpAvailable,
+        pageMetricsMismatch: statusSnapshot.pageMetricsMismatch,
+        pageMetricsMismatchAfterReapply: statusSnapshot.pageMetricsMismatchAfterReapply,
         requestId,
         result: fits ? "done" : "retry",
         screen,
@@ -4317,8 +4317,8 @@ function NekoSurface({
           viewport,
         });
         // biome-ignore lint/performance/noAwaitInLoops: sequential by design
-        const status = await fetchNekoStatusBestEffort(resolvedStatusPath);
-        if (handlePolledStatus(status) === "done") {
+        const polledStatus = await fetchNekoStatusBestEffort(resolvedStatusPath);
+        if (handlePolledStatus(polledStatus) === "done") {
           return;
         }
         const canRetry = attempt < STREAM_VIEWER_POLICY.nekoStatusPollAttempts;
@@ -4461,7 +4461,7 @@ function NekoSurface({
     if (!clientConfig?.statusPath) {
       return;
     }
-    const statusPath = clientConfig.statusPath;
+    const { statusPath } = clientConfig;
     let cancelled = false;
     let pollTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -5769,7 +5769,7 @@ function StreamInteractionDock({
           </IcButton>
           {interactionKind === "otp" ? (
             // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
-<IcButton disabled={isPending} onClick={() => submitInteraction()} size="sm" type="button" variant="ghost">
+            <IcButton disabled={isPending} onClick={() => submitInteraction()} size="sm" type="button" variant="ghost">
               I entered it in the browser
             </IcButton>
           ) : null}

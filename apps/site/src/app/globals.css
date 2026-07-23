@@ -214,9 +214,7 @@ html > body[data-scroll-locked] {
   width: 100vw;
   max-width: none;
   block-size: 100vh;
-  block-size: 100svh;
   height: 100vh;
-  height: 100svh;
   padding: 0;
   margin: 0;
   overflow: hidden;
@@ -226,6 +224,10 @@ html > body[data-scroll-locked] {
   box-shadow: none;
   scale: 1;
   translate: 0 0;
+  @supports (height: 100svh) {
+    block-size: 100svh;
+    height: 100svh;
+  }
 }
 
 .pdpp-stream-dialog:is([data-starting-style], [data-ending-style]) {

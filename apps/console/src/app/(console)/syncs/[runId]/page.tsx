@@ -589,7 +589,7 @@ function extractViolation(failure: SpineEvent | undefined): ViolationShape | nul
   if (!raw || typeof raw !== "object") {
     return null;
   }
-  const { subtype } = (raw as { subtype?: unknown });
+  const { subtype } = raw as { subtype?: unknown };
   if (typeof subtype !== "string" || subtype.length === 0) {
     return null;
   }

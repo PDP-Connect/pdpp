@@ -6,7 +6,7 @@ import { MobileDrawer, MobileDrawerProvider, MobileDrawerTrigger } from "@pdpp/o
 import { dashboardRoutes, type Routes, sandboxRoutes } from "@pdpp/operator-ui/components/views/routes";
 import Link from "next/link";
 import { cache, type ReactNode } from "react";
-import DensityToggle from "@/components/density/density-toggle.tsx";
+import { DensityToggle } from "@/components/density/density-toggle.tsx";
 import { PdppLogo } from "@/components/pdpp-logo.tsx";
 import { ThemeToggle } from "@/components/theme/theme-toggle.tsx";
 import { getAsInternalUrl, getOwnerLoginPath, getReferencePublicOrigin, getRsInternalUrl } from "../lib/owner-token.ts";

@@ -125,7 +125,7 @@ async function resolveRepoRoot(): Promise<string> {
   }
 
   let dir = process.cwd();
-  const root = path.parse(dir).root;
+  const { root } = path.parse(dir);
   // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
   while (true) {
     // biome-ignore lint/performance/noAwaitInLoops: sequential by design

@@ -264,7 +264,7 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
             )}
             {showScheduleSetup && (
               // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
-<IcButton disabled={isPending} onClick={() => setEditState("editing")} size="sm" variant="ghost">
+              <IcButton disabled={isPending} onClick={() => setEditState("editing")} size="sm" variant="ghost">
                 Set schedule
               </IcButton>
             )}

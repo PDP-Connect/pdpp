@@ -905,7 +905,7 @@ function QueryInput(props: QueryInputProps) {
       {/* Inline "Jump to record" affordance — command-palette style, NOT a 2nd box. */}
       {jumpId ? (
         // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
-<button className="rr-x-queryinput__jump" onClick={jump} onMouseDown={(e) => e.preventDefault()} type="button">
+        <button className="rr-x-queryinput__jump" onClick={jump} onMouseDown={(e) => e.preventDefault()} type="button">
           ↵ Jump to record <span className="rr-x-queryinput__jump-id">{jumpId}</span>
         </button>
       ) : null}
@@ -1756,7 +1756,7 @@ function SourceFacetGroup({
         ))}
         {hiddenCount > 0 ? (
           // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
-<button className="rr-x-source-group__more" onClick={() => setShowAll(true)} type="button">
+          <button className="rr-x-source-group__more" onClick={() => setShowAll(true)} type="button">
             Show all {group.streams.length.toLocaleString()} streams
           </button>
         ) : null}
@@ -1944,7 +1944,7 @@ function FeedRow({
                     server's honest <mark> highlight, rendered as real <strong> elements —
                     never dangerouslySetInnerHTML). Falls back to the plain excerpt. */}
                 {entry.snippetSegments && entry.snippetSegments.length > 0
-                  ? entry.snippetSegments.map((seg, i) =>
+                  ? entry.snippetSegments.map((seg) =>
                       seg.marked ? (
                         <strong className="rr-x-snippet-hit" key={`segment-marked-${seg.text}`}>
                           {seg.text}
@@ -2633,7 +2633,7 @@ function UpcomingSection({
               load-more below, which fetches MORE future records. */}
           {hiddenDayCount > 0 ? (
             // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
-<button className="rr-x-burst__toggle" onClick={() => setShowAllDays((v) => !v)} type="button">
+            <button className="rr-x-burst__toggle" onClick={() => setShowAllDays((v) => !v)} type="button">
               <span className="rr-x-burst__action">
                 {showAllDays
                   ? `Collapse to first ${UPCOMING_PREVIEW_DAYS} days ↑`
@@ -2863,7 +2863,7 @@ function SaveViewAction({ onSave }: { onSave: (name: string) => void }) {
   if (!naming) {
     return (
       // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
-<button className="rr-x-views-tab rr-x-views-tab--save" onClick={() => setNaming(true)} type="button">
+      <button className="rr-x-views-tab rr-x-views-tab--save" onClick={() => setNaming(true)} type="button">
         + Save view
       </button>
     );
@@ -3869,7 +3869,7 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
             live head (drops anchor + cursor). We do NOT auto-insert rows. */}
         {!data.fromSearch && data.newSinceAnchor !== null && data.newSinceAnchor > 0 ? (
           // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
-<button className="rr-x-new-pill" onClick={() => navigate({ clearCursor: true })} type="button">
+          <button className="rr-x-new-pill" onClick={() => navigate({ clearCursor: true })} type="button">
             {data.newSinceAnchor.toLocaleString()} new
           </button>
         ) : null}

@@ -203,7 +203,7 @@ export async function createStaticSecretConnectionAction(formData: FormData) {
     // status page reads the connection's projected setup_state and, for a
     // synchronous-probe connector, surfaces the echoed account identity.
     // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
-                target = statusHref(draft.connection_id, runId, captured.identity?.account_identity ?? null);
+    target = statusHref(draft.connection_id, runId, captured.identity?.account_identity ?? null);
   } catch (err) {
     if (err instanceof StaticSecretValidationError) {
       // Synchronous validation rejected the credential — nothing was stored, no

@@ -234,10 +234,15 @@ export default async function StreamPage({
         const manifest = findManifestForConnectorId(resolvedManifests, connectorId);
         return Promise.all(
           candidateParentStreamsForChild(manifest?.streams, streamName).map(async (parentStream) => {
-            const metadata = await getStreamMetadata(connectorId, parentStream, {
-              connectionId,
-              connectorInstanceId,
-            }).catch(() => null);
+            let metadata: Awaited<ReturnType<typeof getStreamMetadata>> | null = null;
+            try {
+              metadata = await getStreamMetadata(connectorId, parentStream, {
+                connectionId,
+                connectorInstanceId,
+              });
+            } catch {
+              // Metadata is optional; an unavailable parent stays expandable without it.
+            }
             return {
               expandCapabilities: Array.isArray(metadata?.expand_capabilities) ? metadata.expand_capabilities : [],
               parentStream,

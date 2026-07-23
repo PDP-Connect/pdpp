@@ -124,7 +124,7 @@ function formatMediaCoverage(value: unknown): string | null {
   if (!value || typeof value !== "object") {
     return null;
   }
-  const { status } = (value as { status?: unknown });
+  const { status } = value as { status?: unknown };
   return typeof status === "string" && status.length > 0 ? status.replaceAll("_", " ") : null;
 }
 
@@ -460,7 +460,7 @@ interface PreparedSubmission {
 }
 
 function submitIntent(event: FormEvent<HTMLFormElement>): PreparedSubmission["intent"] {
-  const { submitter } = (event.nativeEvent as SubmitEvent);
+  const { submitter } = event.nativeEvent as SubmitEvent;
   return submitter instanceof HTMLButtonElement && submitter.value === "preview" ? "preview" : "import";
 }
 
@@ -670,7 +670,7 @@ export function ManualUploadForm({
 
   return (
     // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
-<form className="grid max-w-2xl gap-4 rounded-md border border-border/80 bg-muted/20 p-4" onSubmit={handleSubmit}>
+    <form className="grid max-w-2xl gap-4 rounded-md border border-border/80 bg-muted/20 p-4" onSubmit={handleSubmit}>
       <input name="connector_id" type="hidden" value={setup.connector_id} />
       {targetConnectionId ? <input name="connection_id" type="hidden" value={targetConnectionId} /> : null}
       {targetConnectionId ? (

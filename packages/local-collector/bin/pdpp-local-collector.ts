@@ -31,10 +31,12 @@ import { basename, dirname, extname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LOCAL_COLLECTOR_DEFINITIONS } from "../../polyfill-connectors/src/collector-registry.ts";
 import { ALLOW_CUSTOM_COMMAND_ENV, CollectorCustomCommandRefusedError, CollectorUsageError } from "../src/errors.ts";
+
 const PROFILE_ENV_LINE_RE = /\r?\n/;
 const PROFILE_ENV_KEY_RE = /^[A-Z0-9_]+$/;
 const PROFILE_FILE_NAME_RE = /^[A-Za-z0-9._-]+$/;
 const PROFILE_ENV_EXTENSION_RE = /\.env$/;
+
 import {
   type BundledConnectorEntry,
   type BundledConnectorRegistry,
@@ -1356,8 +1358,8 @@ function applyProfileEnv(options: CliOptions, profile: LocalCollectorProfile): C
   const deviceId = keep("--device-id") ? options.deviceId : env.PDPP_LOCAL_DEVICE_ID?.trim() || options.deviceId;
   const deviceToken = keep("--device-token")
     ? options.deviceToken
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
-    : env.PDPP_LOCAL_DEVICE_TOKEN?.trim() || options.deviceToken;
+    : // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
+      env.PDPP_LOCAL_DEVICE_TOKEN?.trim() || options.deviceToken;
   if (sourceInstanceId) {
     next.sourceInstanceId = sourceInstanceId;
   }

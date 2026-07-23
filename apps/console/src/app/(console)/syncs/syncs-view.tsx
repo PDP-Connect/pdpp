@@ -100,6 +100,7 @@ function FailureCardPanel({ card }: { card: FailureCard }) {
   const { summary } = card;
   const ownerActionLabel = summary.actionLabel ?? (summary.cta === "reconnect" ? "Reconnect" : "Open source");
   return (
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: persisted failure cards from older runs can omit work details.
     <section className="rr-fix" data-cta={summary.cta} data-source-work={card.work?.group ?? "other"}>
       <div className="rr-fix__body">
         <h3 className="rr-fix__title">

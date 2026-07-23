@@ -551,7 +551,7 @@ function PassportActions({
 
         {interactive && revokeAction && instance.connectionId && !instance.revoked ? (
           // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
-<IcButton onClick={() => setConfirmingRevoke((v) => !v)} size="sm" type="button" variant="destructive">
+          <IcButton onClick={() => setConfirmingRevoke((v) => !v)} size="sm" type="button" variant="destructive">
             Revoke
           </IcButton>
         ) : null}

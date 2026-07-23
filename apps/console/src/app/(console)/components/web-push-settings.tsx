@@ -569,7 +569,13 @@ export function WebPushSettings({
     }
     try {
       const registration = await navigator.serviceWorker.getRegistration("/");
-      await registration?.update().catch(() => undefined);
+      if (registration) {
+        try {
+          await registration.update();
+        } catch {
+          // A refresh failure is non-fatal; subscription state remains usable.
+        }
+      }
       dispatch({ swState: registration ? "registered" : "absent", type: "swState" });
       const existing = await registration?.pushManager.getSubscription();
       dispatch({ endpoint: existing?.endpoint ?? null, type: "endpoint" });
@@ -597,7 +603,13 @@ export function WebPushSettings({
           return;
         }
         dispatch({ swState: registration ? "registered" : "absent", type: "swState" });
-        await registration?.update().catch(() => undefined);
+        if (registration) {
+          try {
+            await registration.update();
+          } catch {
+            // A refresh failure is non-fatal; subscription state remains usable.
+          }
+        }
         const existing = await registration?.pushManager.getSubscription();
         if (cancelled) {
           return;

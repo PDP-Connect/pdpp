@@ -175,11 +175,7 @@ test("ROUND-TRIP: the account key is the shared join value both directions use",
   const connectorStreams = connectorManifest.streams ?? [];
   const txStream = connectorStreams.find((s) => s.name === "transactions");
 
-  const [up] = childHasOneBackLinksFromManifest(
-    txStream,
-    { account_id: ACCOUNT_KEY },
-    { connectionId: CONNECTION_ID }
-  );
+  const [up] = childHasOneBackLinksFromManifest(txStream, { account_id: ACCOUNT_KEY }, { connectionId: CONNECTION_ID });
   const down = reverseChildListLinksFromManifest(connectorStreams, {
     connectionId: CONNECTION_ID,
     parentRecordKey: ACCOUNT_KEY,

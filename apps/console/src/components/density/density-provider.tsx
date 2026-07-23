@@ -78,5 +78,3 @@ export function useDensity(): DensityContextValue {
 
   return context;
 }
-
-export default DensityProvider;

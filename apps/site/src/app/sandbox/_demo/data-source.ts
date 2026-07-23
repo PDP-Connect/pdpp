@@ -88,7 +88,7 @@ function streamRecordCount(streamKey: string): number {
 function latestRecordTimeForStream(streamKey: string): string | null {
   const sorted = [...streamRecords(streamKey)]
     .map((r) => r.record_time)
-    .sort()
+    .sort((left, right) => left.localeCompare(right))
     .reverse();
   return sorted[0] ?? null;
 }

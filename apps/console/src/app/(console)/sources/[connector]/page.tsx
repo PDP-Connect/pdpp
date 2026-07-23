@@ -994,7 +994,7 @@ function RenderedVerdictHeaderAction({
     // guidance that points to the recovery commands in the diagnostics panel
     // below, the only place the owner can actually act.
     // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
-                                if (action.remediation?.target.kind === "local_device") {
+    if (action.remediation?.target.kind === "local_device") {
       return (
         <span
           className="pdpp-caption max-w-[18rem] text-right text-muted-foreground"
@@ -1180,7 +1180,7 @@ function acquisitionMediaCoverageLabel(mediaCoverage: unknown): string | null {
   if (!mediaCoverage || typeof mediaCoverage !== "object") {
     return null;
   }
-  const { status } = (mediaCoverage as { status?: unknown });
+  const { status } = mediaCoverage as { status?: unknown };
   return typeof status === "string" && status.length > 0 ? `media ${status.replaceAll("_", " ")}` : null;
 }
 
@@ -1449,7 +1449,7 @@ function StreakStrip({ dots }: { dots: StreakDot[] }) {
     <div className="flex items-center gap-3 border-border/70 border-b px-4 py-2" data-testid="streak-strip">
       <span className="pdpp-eyebrow text-muted-foreground">Last {dots.length} runs</span>
       <span className="flex items-center gap-1">
-        {dots.map((d, i) => (
+        {dots.map((d) => (
           <span
             aria-hidden
             className={["font-mono text-sm tabular-nums", streakDotToneClass(d.tone)].join(" ")}

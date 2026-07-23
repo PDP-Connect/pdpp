@@ -73,7 +73,7 @@ const VIRTUAL_KEY_CODES: Record<string, number> = {
   PageDown: 34,
 };
 
-type WireInput = Record<string, any>;
+type WireInput = Record<string, unknown>;
 type MouseCommandBuilder = (input: { x: number; y: number; button: string }) => CdpCommand[];
 
 function mouseCommand(type: string, x: number, y: number, button: string, clickCount = 1): CdpCommand {
@@ -119,7 +119,11 @@ function ensureNumber(value: unknown, label: string): number {
 function mapMouseEventToCdp(event: WireInput): CdpCommand[] {
   const x = ensureNumber(event.x, "x");
   const y = ensureNumber(event.y, "y");
-  const button = BUTTON_MAP[event.button ?? 0] ?? "left";
+  const buttonIndex = typeof event.button === "string" || typeof event.button === "number" ? Number(event.button) : 0;
+  const button = BUTTON_MAP[buttonIndex] ?? "left";
+  if (typeof event.action !== "string") {
+    throw invalidInput(`unknown mouse action: ${event.action}`);
+  }
   const buildCommands = MOUSE_COMMANDS[event.action];
   if (!buildCommands) {
     throw invalidInput(`unknown mouse action: ${event.action}`);
@@ -167,6 +171,9 @@ function mapTouchEventToCdp(event: WireInput): CdpCommand[] {
   const x = ensureNumber(event.x, "x");
   const y = ensureNumber(event.y, "y");
   const id = Number.isFinite(event.id) ? Number(event.id) : 1;
+  if (typeof event.action !== "string") {
+    throw invalidInput(`unknown touch action: ${event.action}`);
+  }
   const cdpType = TOUCH_TYPE_MAP[event.action] ?? null;
   if (!cdpType) {
     throw invalidInput(`unknown touch action: ${event.action}`);
@@ -217,15 +224,19 @@ const INPUT_EVENT_MAPPERS: Record<string, (event: WireInput) => CdpCommand[]> = 
  *
  * `event` is untrusted wire JSON; the function validates shape at runtime.
  */
-export function mapInputEventToCdp(event: any): CdpCommand[] {
+export function mapInputEventToCdp(event: unknown): CdpCommand[] {
   if (!event || typeof event !== "object") {
     throw invalidInput("input event must be an object");
   }
-  const mapEvent = INPUT_EVENT_MAPPERS[event.type];
-  if (!mapEvent) {
-    throw invalidInput(`unknown input event type: ${event.type}`);
+  const input = event as WireInput;
+  if (typeof input.type !== "string") {
+    throw invalidInput("input event type must be a string");
   }
-  return mapEvent(event);
+  const mapEvent = INPUT_EVENT_MAPPERS[input.type];
+  if (!mapEvent) {
+    throw invalidInput(`unknown input event type: ${input.type}`);
+  }
+  return mapEvent(input);
 }
 
 /** Screencast start parameters passed to `Page.startScreencast`. */

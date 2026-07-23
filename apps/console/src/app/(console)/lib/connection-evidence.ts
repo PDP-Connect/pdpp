@@ -18,7 +18,6 @@
  * without a browser harness.
  */
 
-import { formatTotalRecordsLabel, isTotalRecordsAuthoritative } from "./total-records.ts";
 import type {
   DeviceSourceInstance,
   RefCollectionRateSnapshot,
@@ -31,6 +30,7 @@ import type {
   RefSchedule,
 } from "./ref-client.ts";
 import type { ConnectorOverview, ConnectorRunRef } from "./rs-client.ts";
+import { formatTotalRecordsLabel, isTotalRecordsAuthoritative } from "./total-records.ts";
 
 export type EvidenceTone = "neutral" | "success" | "warning" | "danger";
 
@@ -1066,6 +1066,7 @@ export function deriveConnectionStatusDisplay(input: {
 }): ConnectionStatusDisplay {
   const { hasDurableProgress, health, localDeviceProgress } = input;
   const reason = health.reason_code ? ` · ${health.reason_code}` : "";
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime health snapshots can have no dominant condition despite optimistic generated types.
   const dominant = formatDominantCondition(health)?.title ?? null;
   switch (health.state) {
     case "healthy":
@@ -1081,6 +1082,7 @@ export function deriveConnectionStatusDisplay(input: {
       return {
         label: "Needs attention",
         shape: "diamond",
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime health snapshots can have no dominant condition despite optimistic generated types.
         title: dominant ?? `Owner action required${reason}.`,
         tone: "warning",
       };
@@ -1096,6 +1098,7 @@ export function deriveConnectionStatusDisplay(input: {
       return {
         label: "Cooling off",
         shape: "diamond",
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime health snapshots can have no dominant condition despite optimistic generated types.
         title: dominant ?? coolingTitle,
         tone: "warning",
       };
@@ -1104,17 +1107,20 @@ export function deriveConnectionStatusDisplay(input: {
       return {
         label: "Blocked",
         shape: "triangle",
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime health snapshots can have no dominant condition despite optimistic generated types.
         title: dominant ?? `Cannot make progress${reason}.`,
         tone: "danger",
       };
     case "degraded": {
       if (health.axes.coverage === "retryable_gap") {
+        const retryableGapTitle =
+          // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime health snapshots can have no dominant condition despite optimistic generated types.
+          dominant ??
+          `Some required detail is still outstanding, but it is recoverable — an ordinary run can fill it and the records already collected stay valid${reason}.`;
         return {
           label: "Resuming",
           shape: "diamond",
-          title:
-            dominant ??
-            `Some required detail is still outstanding, but it is recoverable — an ordinary run can fill it and the records already collected stay valid${reason}.`,
+          title: retryableGapTitle,
           tone: "warning",
         };
       }
@@ -1122,6 +1128,7 @@ export function deriveConnectionStatusDisplay(input: {
       return {
         label: partial ? "Partial" : "Degraded",
         shape: "diamond",
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime health snapshots can have no dominant condition despite optimistic generated types.
         title: dominant ?? `Useful data may exist, but coverage or freshness is incomplete${reason}.`,
         tone: "warning",
       };
@@ -1167,6 +1174,7 @@ function isSourcePressureCooldown(health: RefConnectionHealthSnapshot): boolean 
   // and a pending source-pressure backlog is a deferral, not a terminal stop —
   // the scheduler is spacing attempts, not giving up.
   const backlog = health.detail_gap_backlog;
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: older runtime snapshots can omit either pending count despite optimistic generated types.
   const hasPendingBacklog = Boolean(backlog && ((backlog.pending ?? 0) > 0 || (backlog.pending_other ?? 0) > 0));
   return hasPendingBacklog && Boolean(health.next_attempt_at);
 }

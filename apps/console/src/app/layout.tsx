@@ -6,7 +6,7 @@ import { RootProvider } from "fumadocs-ui/provider/next";
 import type { Metadata } from "next";
 import { Schibsted_Grotesk } from "next/font/google";
 import { cookies } from "next/headers";
-import DensityProvider from "@/components/density/density-provider.tsx";
+import { DensityProvider } from "@/components/density/density-provider.tsx";
 import { DENSITY_KEY, normalizeDensity } from "@/components/density/density-state.ts";
 import { ThemeProvider } from "@/components/theme/theme-provider.tsx";
 import { normalizeThemeChoice, THEME_KEY } from "@/components/theme/theme-state.ts";

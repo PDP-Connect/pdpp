@@ -47,5 +47,3 @@ export function DensityToggle({ className }: { className?: string }) {
     </Button>
   );
 }
-
-export default DensityToggle;

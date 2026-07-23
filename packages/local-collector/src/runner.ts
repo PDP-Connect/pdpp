@@ -35,6 +35,7 @@ import {
   type RuntimeCapabilityProfile,
 } from "../../polyfill-connectors/src/runner/index.ts";
 
+// biome-ignore lint/performance/noBarrelFile: public package facade re-exports its runner API from the source of truth.
 export {
   assertPlacementOrThrow,
   type BuildLocalDeviceOutboxIdInput,

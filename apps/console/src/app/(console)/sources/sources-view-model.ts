@@ -35,7 +35,6 @@ import {
 import { formatStreamCollectionFacts, indexCollectionReportByStream } from "../lib/collection-report.ts";
 import { isActiveConnectorRunSummaryStatus } from "../lib/connector-run-summary-status.ts";
 import type { FormattedNextAction } from "../lib/next-action.ts";
-import { formatTotalRecordsLabel, isTotalRecordsAuthoritative } from "../lib/total-records.ts";
 import type {
   RefConnectorRunSummary,
   RefConnectorRuntimeStatus,
@@ -52,6 +51,7 @@ import {
   type SourcePrimaryVerdictAction,
   type SourceStatusFlag,
 } from "../lib/source-actionability.ts";
+import { formatTotalRecordsLabel, isTotalRecordsAuthoritative } from "../lib/total-records.ts";
 import { summarizeVersionChurn } from "../lib/version-churn-summary.ts";
 
 /**
@@ -386,6 +386,7 @@ export function manualUploadHrefForSource(
   summary: Pick<RefConnectorSummary, "connection_id" | "connector_id" | "connector_instance_id">,
   manifests: readonly SourceManifestLike[] | undefined
 ): string | null {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: older API responses can omit either runtime identifier despite optimistic generated types.
   const connectionId = summary.connection_id ?? summary.connector_instance_id ?? null;
   if (!(connectionId && manifests)) {
     return null;
@@ -474,9 +475,11 @@ export function toSourceInstanceView(
   options: { fallbackDisambiguator?: string | null; manifests?: readonly SourceManifestLike[] } = {}
 ): SourceInstanceView {
   const connectorId = summary.connector_id;
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: connection identifiers can be absent in transitional API responses.
   const connectionId = summary.connection_id ?? null;
   const connectorInstanceId = summary.connector_instance_id ?? null;
   const actionability = projectSourceActionability(summary);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime identifier fallbacks preserve navigation for older API responses.
   const routeId = connectionId ?? connectorInstanceId ?? actionability.routeId;
   const revoked = isRevokedConnector(summary);
   // Modality is persisted server authority. A missing heartbeat must not
@@ -571,6 +574,7 @@ export function toSourceInstanceView(
         ? summary.total_records.toLocaleString()
         : formatTotalRecordsLabel(summary.total_records, summary.total_records_state, "records"),
     },
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: historical run payloads can omit the timestamp despite optimistic generated types.
     { k: "added", mono: true, value: summary.last_successful_run?.first_at ?? null },
   ];
 

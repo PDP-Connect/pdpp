@@ -82,7 +82,10 @@ function readOptionalDisplayNameField(formData: FormData): string | null {
   return trimmed;
 }
 
-export async function POST(request: Request, { params: routeParams }: { params: Promise<RouteParams> }): Promise<NextResponse> {
+export async function POST(
+  request: Request,
+  { params: routeParams }: { params: Promise<RouteParams> }
+): Promise<NextResponse> {
   const { connectorId: rawConnectorId } = await routeParams;
   const connectorId = decodeURIComponent(rawConnectorId);
 

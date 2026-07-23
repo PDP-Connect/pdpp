@@ -1119,7 +1119,7 @@ function buildAdvisoryHero(actions: AdvisoryOwnerActionConnection[], hrefs: Stan
     // Lead with the CONCRETE action the owner can run ("Refresh now" / "Retry
     // now"), not the "ready for review" taxonomy phrasing.
     // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
-            const action = only.actionLabel ?? "Run the available action";
+    const action = only.actionLabel ?? "Run the available action";
     return {
       cta: { href: hrefs.connection(only.routeId), human: true, label: action },
       kicker: "One optional action is available",

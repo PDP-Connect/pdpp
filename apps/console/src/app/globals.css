@@ -353,9 +353,7 @@ html:has(.pdpp-stream-dialog) {
   width: 100%;
   max-width: 100%;
   block-size: 100vh;
-  block-size: 100svh;
   height: 100vh;
-  height: 100svh;
   padding: 0;
   margin: 0;
   overflow: hidden;
@@ -366,6 +364,10 @@ html:has(.pdpp-stream-dialog) {
   transform: none;
   scale: 1;
   translate: 0 0;
+  @supports (height: 100svh) {
+    block-size: 100svh;
+    height: 100svh;
+  }
 }
 
 .pdpp-dialog.pdpp-stream-dialog:is([data-starting-style], [data-ending-style]) {

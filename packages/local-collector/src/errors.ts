@@ -11,6 +11,7 @@
  * Spec: openspec/changes/publish-pdpp-local-collector/design.md §1.
  */
 
+// biome-ignore lint/performance/noBarrelFile: public package facade re-exports its runner error contract from the source of truth.
 export {
   CollectorStateReadError,
   RUNTIME_CAPABILITY_MISMATCH_CODE,
