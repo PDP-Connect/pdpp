@@ -207,7 +207,13 @@ function LatelyBlock({ lately, tracesHref }: { lately: StandingData["lately"]; t
   );
 }
 
-function AttentionBlock({ sections }: { sections: StandingData["sourceWorkSections"] }) {
+function AttentionBlock({
+  sections,
+  fleetHealth,
+}: {
+  sections: StandingData["sourceWorkSections"];
+  fleetHealth: StandingData["fleetHealth"];
+}) {
   const rowCount = sections.reduce((sum, section) => sum + section.rows.length, 0);
   return (
     <section className="rr-stand-block">
@@ -233,7 +239,9 @@ function AttentionBlock({ sections }: { sections: StandingData["sourceWorkSectio
       ) : (
         <div className="rr-allclear">
           <span className="rr-allclear__text">
-            No source issues to review here. Source health checks completed for this overview.
+            {fleetHealth?.state === "healthy"
+              ? "All assessed sources are healthy."
+              : "No source rows need review here. Source health is still being checked."}
           </span>
         </div>
       )}
@@ -293,7 +301,7 @@ export function StandingOverview({
         />
         <LatelyBlock lately={data.lately} tracesHref={tracesHref} />
       </div>
-      <AttentionBlock sections={data.sourceWorkSections} />
+      <AttentionBlock fleetHealth={data.fleetHealth} sections={data.sourceWorkSections} />
       <NotificationsBlock href={notificationsHref} />
     </div>
   );

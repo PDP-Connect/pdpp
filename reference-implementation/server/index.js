@@ -251,9 +251,12 @@ import {
   getConnectorSummaryForRoute,
   getOwnerConnectionDiagnostics,
   invalidateConnectorSummariesCache,
+  listOwnerVisibleConnectorInstances,
   listConnectorSummaries,
   listPendingApprovals,
 } from './ref-control.ts';
+import { composeFleetHealthVerdict } from './fleet-health.ts';
+import { auditStreamHealth } from '../../scripts/stream-health-audit/audit.mjs';
 import { unresolvedOwnerActionEvidenceFromSummary } from './owner-action-gate.js';
 import {
   getConnectorSummaryEvidence,
@@ -438,6 +441,7 @@ import {
   mountRefConnectorScheduleResume,
   mountRefConnectorScheduleUpsert,
   mountRefConnectorsList,
+  mountRefFleetHealth,
 } from './routes/ref-connectors.ts';
 import { mountRefStaticSecretCredentialCapture } from './routes/ref-static-secret-credentials.ts';
 import { mountRefStaticSecretDraftConnection } from './routes/ref-static-secret-draft-connection.ts';
@@ -2857,7 +2861,7 @@ function resolveNekoWindowSettleProbe(probe) {
   return probe ?? defaultNekoWindowSettleProbe;
 }
 
-function buildAsApp(opts = {}) {
+export function buildAsApp(opts = {}) {
   const app = createApp({ logger: opts.logger });
   const nativeMode = !!resolveNativeManifest(opts);
   const providerName = resolveProviderName(opts);
@@ -3820,6 +3824,23 @@ function buildAsApp(opts = {}) {
   // owns owner-auth, namespace resolution, contract metadata, response
   // writing, and the `onScheduleMutation` callback.
   const attachActivationScheduleForConnection = createActivationScheduleAttacher(controller);
+  const getRuntimeStatus = () =>
+    controller
+      ? {
+          object: 'ref_runtime_status',
+          ok: true,
+          reason: null,
+          label: 'Collection runtime ready',
+          message: null,
+        }
+      : {
+          object: 'ref_runtime_status',
+          ok: false,
+          reason: 'controller_unavailable',
+          label: 'Collection runtime unavailable',
+          message:
+            'PDPP can still show saved sources, but automatic collection is paused until the reference runtime is back.',
+        };
 
   const refConnectorsContext = {
     requireOwnerSession: ownerAuth.requireOwnerSession,
@@ -3828,23 +3849,25 @@ function buildAsApp(opts = {}) {
     listConnectorSummaries: () => listConnectorSummaries(controller, { includeRunSummaries: 'singleton-active' }),
     getConnectorSummaryForRoute: (routeId) => getConnectorSummaryForRoute(routeId, controller),
     getConnectorDetail: (id) => getConnectorDetail(id, controller),
-    getRuntimeStatus: () =>
-      controller
-        ? {
-            object: 'ref_runtime_status',
-            ok: true,
-            reason: null,
-            label: 'Collection runtime ready',
-            message: null,
-          }
-        : {
-            object: 'ref_runtime_status',
-            ok: false,
-            reason: 'controller_unavailable',
-            label: 'Collection runtime unavailable',
-            message:
-              'PDPP can still show saved sources, but automatic collection is paused until the reference runtime is back.',
-          },
+    getRuntimeStatus,
+    getFleetHealthVerdict: async () => {
+      const ownerSubjectId = ownerAuth.subjectId || OWNER_AUTH_DEFAULT_SUBJECT_ID;
+      // Inventory and summaries consume one owner-visible snapshot. This
+      // boundary removes internal rows before reconciliation and preserves
+      // the configured owner subject instead of falling back to owner_local.
+      const inventory = await listOwnerVisibleConnectorInstances(ownerSubjectId);
+      const summaries = await listConnectorSummaries(controller, {
+        includeRunSummaries: 'singleton-active',
+        ownerSubjectId,
+        visibleConnections: inventory,
+      });
+      return composeFleetHealthVerdict({
+        inventory,
+        summaries,
+        runtime: getRuntimeStatus(),
+        coverageAudit: auditStreamHealth(summaries),
+      });
+    },
     invalidateConnectorSummariesCache,
     markConnectorSummaryEvidenceDirty,
     reconcileDirtyConnectorSummaryEvidence,
@@ -3890,6 +3913,7 @@ function buildAsApp(opts = {}) {
   };
 
   mountRefConnectorsList(app, refConnectorsContext);
+  mountRefFleetHealth(app, refConnectorsContext);
   mountRefConnectorDetail(app, refConnectorsContext);
 
   mountRefRecordsTimeline(app, refAdminContext);

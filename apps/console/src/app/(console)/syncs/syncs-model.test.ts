@@ -564,13 +564,14 @@ test("a draft connection counts toward needYourHand and inflates onSchedule by z
 });
 
 test("a draft connection's needs-you count matches sourceWorkFromConnectors' needsOwner group (shared attention headline)", () => {
-  // `sourceWorkFromConnectors` is the same shared projection the Sources
-  // dashboard hero uses, and it independently classifies a draft as
-  // needsOwner too (`source-actionability.test.ts`). The syncs band's
-  // needYourHand must equal that SAME count for the identical connector
-  // list — proving `buildHealthBand`'s explicit `pendingSetupWork` union
-  // does not double-count the draft that `pendingSetupCards` already
-  // special-cased out of `projections`.
+  // `sourceWorkFromConnectors` drives source rows and sync triage, and it
+  // independently classifies a draft as needsOwner too
+  // (`source-actionability.test.ts`). The syncs band's needYourHand must equal
+  // that SAME count for the identical connector list — proving
+  // `buildHealthBand`'s explicit `pendingSetupWork` union does not double-count
+  // the draft that `pendingSetupCards` already special-cased out of
+  // `projections`. The aggregate dashboard hero follows the server fleet
+  // verdict separately.
   const connectors = [draftConnector(), connector({ connection_id: "cin_healthy" })];
   const model = buildSyncsViewModel({ connectors, runs: [] });
   const sourceGroups = sourceWorkFromConnectors(connectors);

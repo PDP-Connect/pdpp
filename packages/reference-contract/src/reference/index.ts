@@ -77,6 +77,102 @@ const ConnectorListResponseSchema = {
   required: ["object", "data"],
 };
 
+// Owner-only aggregate composition over the existing connection-health
+// projection. This deliberately exposes evidence references and closed outcome
+// dimensions, not presentation copy or a new persisted health state.
+const FleetConnectionReferenceSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    connection_id: { type: "string" },
+    connector_id: { type: "string" },
+    connector_instance_id: { type: "string" },
+    display_name: { type: "string" },
+  },
+  required: ["connection_id", "connector_id", "connector_instance_id", "display_name"],
+};
+
+const FleetConnectionReferencesSchema = {
+  type: "array",
+  items: FleetConnectionReferenceSchema,
+};
+
+const FleetHealthVerdictResponseSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    dimensions: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        active_work: FleetConnectionReferencesSchema,
+        attention: {
+          type: "object",
+          additionalProperties: false,
+          properties: { needs_owner: FleetConnectionReferencesSchema },
+          required: ["needs_owner"],
+        },
+        coverage_audit: { type: "string", enum: ["fail", "inconclusive", "pass"] },
+        freshness_advisories: FleetConnectionReferencesSchema,
+        intentional_policy: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            manual: FleetConnectionReferencesSchema,
+            paused: FleetConnectionReferencesSchema,
+          },
+          required: ["manual", "paused"],
+        },
+        recovery: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            retryable: FleetConnectionReferencesSchema,
+            terminal: FleetConnectionReferencesSchema,
+          },
+          required: ["retryable", "terminal"],
+        },
+        runtime: { type: "string", enum: ["healthy", "unhealthy", "unknown"] },
+        stalled_work: FleetConnectionReferencesSchema,
+        system: {
+          type: "object",
+          additionalProperties: false,
+          properties: { degraded_or_broken: FleetConnectionReferencesSchema },
+          required: ["degraded_or_broken"],
+        },
+        unknown_evidence: FleetConnectionReferencesSchema,
+      },
+      required: [
+        "active_work",
+        "attention",
+        "coverage_audit",
+        "freshness_advisories",
+        "intentional_policy",
+        "recovery",
+        "runtime",
+        "stalled_work",
+        "system",
+        "unknown_evidence",
+      ],
+    },
+    fully_healthy: { type: "boolean" },
+    scope: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        assessed: FleetConnectionReferencesSchema,
+        configured: { type: "integer", minimum: 0 },
+        intentional_exclusions: FleetConnectionReferencesSchema,
+        setup_pending: FleetConnectionReferencesSchema,
+        unassessed: FleetConnectionReferencesSchema,
+      },
+      required: ["assessed", "configured", "intentional_exclusions", "setup_pending", "unassessed"],
+    },
+    state: { type: "string", enum: ["healthy", "healthy_with_advisories", "indeterminate", "unhealthy"] },
+  },
+  required: ["dimensions", "fully_healthy", "scope", "state"],
+};
+
 // Optional connection selector for the connection-summary list. When present,
 // the route projects only the resolved connection (an exact `connection_id` /
 // `connector_instance_id` match is preferred, else the first connection whose
@@ -1758,6 +1854,15 @@ export const referenceManifests = [
     summary: "List configured connection summaries with manifest, latest run, schedule, and freshness.",
     request: { query: ConnectorListQuerySchema },
     responses: { 200: { schema: ConnectorListResponseSchema }, ...CommonErrors },
+  },
+  {
+    id: "refGetFleetHealth",
+    method: "GET",
+    path: "/_ref/fleet-health",
+    surface: "reference",
+    tags: ["reference", "connectors", "owner"],
+    summary: "Get the owner-only composed fleet-health verdict for configured connections.",
+    responses: { 200: { schema: FleetHealthVerdictResponseSchema }, ...CommonErrors },
   },
   {
     id: "refGetConnector",

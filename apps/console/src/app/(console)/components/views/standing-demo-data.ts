@@ -190,6 +190,7 @@ export function buildDemoInputs(scenario: DemoScenario, hrefs: StandingHrefs): S
     pendingApprovals: [],
     failedTraces: [],
     failedRuns: [],
+    fleetHealth: null,
     sourceWork: EMPTY_SOURCE_WORK_GROUPS,
     advisoryOwnerActions: [],
     attentionConnections: [],
@@ -202,6 +203,23 @@ export function buildDemoInputs(scenario: DemoScenario, hrefs: StandingHrefs): S
   if (scenario === "alarm") {
     return {
       ...base,
+      fleetHealth: {
+        state: "unhealthy",
+        fully_healthy: false,
+        scope: { configured: 1, assessed: [], intentional_exclusions: [], setup_pending: [], unassessed: [] },
+        dimensions: {
+          runtime: "unhealthy",
+          coverage_audit: "pass",
+          attention: { needs_owner: [] },
+          system: { degraded_or_broken: [] },
+          recovery: { retryable: [], terminal: [] },
+          stalled_work: [],
+          active_work: [],
+          freshness_advisories: [],
+          intentional_policy: { manual: [], paused: [] },
+          unknown_evidence: [],
+        },
+      },
       failedRuns: FAILED_RUNS,
       attentionConnections: [
         {

@@ -188,7 +188,7 @@ test('getConnectorDetail: a connector_id shared by one active and one revoked co
   await rebuildRetainedSize();
 
   // A revoked instance row still counts as a real, owner-visible connection
-  // (`listConnectorInstanceRowsForDashboard` keeps it resolvable by its own
+  // (`listOwnerVisibleConnectorInstances` keeps it resolvable by its own
   // route id — see `reference connector summaries keep revoked connections
   // visible for owner manageability` in
   // ref-connectors-connection-projection.test.js) — so a bare connector_id

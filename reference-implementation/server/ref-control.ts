@@ -357,7 +357,7 @@ interface RetainedSizeProjectionSnapshot {
   readonly streamsByInstanceId: ReadonlyMap<string, readonly RecordProjectionRow[]>;
 }
 
-interface ConnectorInstanceRow {
+export interface ConnectorInstanceRow {
   readonly connectorId: string;
   readonly connectorInstanceId: string;
   readonly displayName: string;
@@ -1745,7 +1745,16 @@ async function getAcquisitionCoverageSummary(connectorInstanceId: string): Promi
   };
 }
 
-async function listConnectorInstanceRowsForDashboard(): Promise<readonly ConnectorInstanceRow[]> {
+/**
+ * The owner-visible connection boundary for summary-derived reads.
+ *
+ * Inventory and projections must start from these same rows: filtering an
+ * internal runtime row in only one branch creates a false reconciliation
+ * failure, while reading a different subject can expose its identities.
+ */
+export async function listOwnerVisibleConnectorInstances(
+  ownerSubjectId: string
+): Promise<readonly ConnectorInstanceRow[]> {
   // A read SHALL NOT persist a connection. The dashboard / catalog read
   // projects exactly the owner's real (configured or ingest-materialized)
   // connections and nothing else. Previously this path called
@@ -1774,8 +1783,9 @@ async function listConnectorInstanceRowsForDashboard(): Promise<readonly Connect
   // fix-pending-connection-discovery design. Callers project `instance.status`
   // through `owner_state.resolver` (`setup_in_progress`), so a draft never
   // reads as healthy/configured.
+  await retireExpiredBrowserEnrollmentShellsForDashboard(new Date().toISOString(), ownerSubjectId);
   const store = getConnectorInstanceStore();
-  const instances = await store.listByOwnerIncludingDrafts(REFERENCE_OWNER_SUBJECT_ID);
+  const instances = await store.listByOwnerIncludingDrafts(ownerSubjectId);
   // Filter out system-internal connector_instances (backfill jobs, runtime
   // stubs, etc.) that are never owner-created and must not appear on the
   // owner-facing source list. Same pattern list as isPublicReferenceConnector.
@@ -1800,7 +1810,10 @@ function isRetiredSetupAttempt(instance: ConnectorInstanceRow): boolean {
   return kind === "browser_enrollment_shell" || kind === "static_secret_draft" || kind === "manual_upload_draft";
 }
 
-function retireExpiredBrowserEnrollmentShellsForDashboard(now: string): Promise<readonly string[]> {
+function retireExpiredBrowserEnrollmentShellsForDashboard(
+  now: string,
+  ownerSubjectId = REFERENCE_OWNER_SUBJECT_ID
+): Promise<readonly string[]> {
   const store = getConnectorInstanceStore() as {
     listDraftBrowserEnrollmentShells(
       ownerSubjectId?: string | null
@@ -1821,7 +1834,7 @@ function retireExpiredBrowserEnrollmentShellsForDashboard(now: string): Promise<
     },
     {
       now,
-      ownerSubjectId: REFERENCE_OWNER_SUBJECT_ID,
+      ownerSubjectId,
     }
   );
 }
@@ -4188,6 +4201,13 @@ export interface ListConnectorSummariesOptions {
   readonly includeRunSummaries?: ConnectorRunSummaryInclusion;
   /** Test hook: invoked whenever the in-flight worker count changes. */
   readonly onInFlightChange?: (inFlight: number) => void;
+  /** Owner whose configured, owner-visible connections are projected. */
+  readonly ownerSubjectId?: string;
+  /**
+   * A previously read owner-visible inventory. Supplying it makes inventory
+   * reconciliation and summary projection consume one exact visibility set.
+   */
+  readonly visibleConnections?: readonly ConnectorInstanceRow[];
 }
 
 type ConnectorRunSummaryInclusion = boolean | "singleton-active";
@@ -4221,7 +4241,7 @@ export function decideConnectorSummariesCacheRead(
 function shouldCacheConnectorSummaries(options: ListConnectorSummariesOptions): boolean {
   // Coalesce only the all-list path. Hook/concurrency calls are explicit
   // diagnostics that must observe real worker behavior.
-  return options.concurrency == null && options.onInFlightChange == null;
+  return options.concurrency == null && options.onInFlightChange == null && options.visibleConnections == null;
 }
 
 function connectorSummariesCacheStorageKey(): string {
@@ -4258,7 +4278,8 @@ export function connectorSummariesCacheKey(
   } else if (options.includeRunSummaries === "singleton-active") {
     runDepth = "singleton-active-runs";
   }
-  return `${storageKey}:${controllerKey}:${runDepth}`;
+  const ownerSubjectId = options.ownerSubjectId ?? REFERENCE_OWNER_SUBJECT_ID;
+  return `${storageKey}:${controllerKey}:${runDepth}:owner:${ownerSubjectId}`;
 }
 
 /**
@@ -5510,12 +5531,12 @@ async function computeConnectorSummaries(
   controller?: ControllerLike | null,
   options: ListConnectorSummariesOptions = {}
 ): Promise<ConnectorSummary[]> {
-  await retireExpiredBrowserEnrollmentShellsForDashboard(new Date().toISOString());
+  const ownerSubjectId = options.ownerSubjectId ?? REFERENCE_OWNER_SUBJECT_ID;
   const deps = await loadConnectorSummaryProjectionDeps(controller, {
     includeRetainedSizeSnapshot: true,
     includeRunSummaries: options.includeRunSummaries ?? true,
   });
-  const rows = await listConnectorInstanceRowsForDashboard();
+  const rows = options.visibleConnections ?? (await listOwnerVisibleConnectorInstances(ownerSubjectId));
   const activeVisibleConnectionCounts = countActiveVisibleConnectionsByConnectorId(rows, deps.manifestsByConnectorId);
   const summaries = await runWithConcurrency(
     rows,
@@ -5572,8 +5593,7 @@ export async function getConnectorSummaryForRoute(
   routeId: string,
   controller?: ControllerLike | null
 ): Promise<ConnectorSummary | null> {
-  await retireExpiredBrowserEnrollmentShellsForDashboard(new Date().toISOString());
-  const rows = await listConnectorInstanceRowsForDashboard();
+  const rows = await listOwnerVisibleConnectorInstances(REFERENCE_OWNER_SUBJECT_ID);
   const { match } = resolveUnambiguousConnectionForConnectorId(rows, routeId);
   if (match === null) {
     return null;
@@ -5666,8 +5686,7 @@ export async function getConnectorDetail(
   // cache boundary"): a connector-keyed lookup with zero or multiple visible
   // connections must never merge/sum sibling evidence. Reuse the shared
   // resolver rather than a divergent connector-wide read.
-  await retireExpiredBrowserEnrollmentShellsForDashboard(new Date().toISOString());
-  const rows = await listConnectorInstanceRowsForDashboard();
+  const rows = await listOwnerVisibleConnectorInstances(REFERENCE_OWNER_SUBJECT_ID);
   const { match, matchCount } = resolveUnambiguousConnectionForConnectorId(rows, connectorId);
   if (match === null) {
     return buildUnresolvedConnectorDetail(connectorId, manifest, matchCount === 0 ? "unresolved" : "ambiguous");

@@ -528,11 +528,11 @@ function buildHealthBand(input: {
   projections: readonly SyncProjection[];
 }): HealthBand {
   const onSchedule = input.groups.filter((g) => g.health === "ok").reduce((sum, g) => sum + g.totalStreamCount, 0);
-  // "Need your hand" is the SHARED attention headline — the same derivation the
-  // dashboard hero uses — so the two surfaces can never disagree on how many
-  // sources need the owner. It counts ONLY the needs-you group, INCLUDING
-  // draft connections awaiting setup (`pendingSetupWork`) — a fresh connection
-  // genuinely needs the owner's hand, same as a reauth prompt.
+  // "Need your hand" is sync triage's shared source-work attention count. It
+  // counts ONLY the needs-you group, INCLUDING draft connections awaiting setup
+  // (`pendingSetupWork`) — a fresh connection genuinely needs the owner's hand,
+  // same as a reauth prompt. The aggregate dashboard hero follows the server
+  // fleet verdict separately.
   const needsOwner = [...input.projections.map((projection) => projection.work), ...input.pendingSetupWork].filter(
     (item): item is SourceWorkItem => item?.group === "needsOwner"
   );
