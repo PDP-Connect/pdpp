@@ -7,18 +7,26 @@
   },
   "files": {
     "ignoreUnknown": true,
-    // During the JS → TS migration, Biome lints and formats only the
-    // TypeScript modules that have landed in that form plus JSON config.
-    // Legacy .js files (reference, public, openapi, validate, docs,
-    // common, index) are exempt until their own migration slice lands —
-    // renaming to .ts automatically pulls them under the strict bar.
+    // The tracked-source contract includes authored JS/TS/config files;
+    // generated, build, raw data, and report artifacts are force-excluded;
+    // legacy JS is intentionally not renamed here.
     "includes": [
-      "src/**/*.ts",
-      "test/**/*.ts",
-      "*.jsonc",
-      "*.json",
-      "!node_modules",
-      "!dist"
+      "!!**/node_modules",
+      "!!**/.git",
+      "!!**/dist",
+      "!!**/build",
+      "!!**/out",
+      "!!**/.next",
+      "!!**/.source",
+      "!!**/coverage",
+      "!!**/reports",
+      "!!**/report",
+      "!!**/*.snap",
+      "!!**/*.har",
+      "!!**/*.jsonl",
+      "!!**/docs/generated",
+      "!!**/next-env.d.ts",
+      "!!**/report.*.json"
     ]
   }
 }

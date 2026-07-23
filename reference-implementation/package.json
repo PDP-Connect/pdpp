@@ -66,10 +66,10 @@
     "web-push": "^3.6.7"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.4.12",
+    "@biomejs/biome": "2.5.5",
     "jsdom": "^29.1.1",
     "pino-pretty": "^13.0.0",
-    "ultracite": "7.6.0"
+    "ultracite": "7.9.4"
   },
   "license": "Apache-2.0",
   "optionalDependencies": {

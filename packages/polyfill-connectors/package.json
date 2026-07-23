@@ -37,9 +37,9 @@
   "private": true,
   "description": "Polyfill connectors for non-PDPP platforms (YNAB, Gmail, Amazon, ChatGPT, USAA).",
   "devDependencies": {
-    "@biomejs/biome": "2.4.12",
+    "@biomejs/biome": "2.5.5",
     "@types/ws": "^8.18.1",
-    "ultracite": "7.6.0"
+    "ultracite": "7.9.4"
   },
   "license": "Apache-2.0"
 }

@@ -7,22 +7,34 @@
   },
   "files": {
     "ignoreUnknown": true,
-    // Everything TypeScript in src/, connectors/, bin/ is linted and
-    // formatted — including *.test.ts so tests are held to the same bar.
-    // Handcrafted fixture artifacts and captured DOM/JSONL live under
-    // __fixtures__/ or fixtures/ and are excluded (they're literal data,
-    // not code). Build outputs and vendored deps are excluded too.
+    // The tracked-source contract includes authored JS/TS/config files,
+    // including tests. Raw fixture captures and data extensions are excluded;
+    // executable fixture code remains selected.
     "includes": [
-      "src/**/*.ts",
-      "connectors/**/*.ts",
-      "bin/**/*.ts",
-      "bench/**/*.ts",
-      "*.jsonc",
-      "*.json",
-      "!node_modules",
-      "!fixtures",
-      "!**/__fixtures__",
-      "!dist"
+      "!!**/node_modules",
+      "!!**/.git",
+      "!!**/dist",
+      "!!**/build",
+      "!!**/out",
+      "!!**/.next",
+      "!!**/.source",
+      "!!**/coverage",
+      "!!**/reports",
+      "!!**/report",
+      "!!**/*.snap",
+      "!!**/*.har",
+      "!!**/*.jsonl",
+      "!!fixtures/**/*.json",
+      "!!fixtures/**/*.html",
+      "!!fixtures/**/*.csv",
+      "!!fixtures/**/*.md",
+      "!!fixtures/**/*.log",
+      "!!fixtures/**/*.dat",
+      "!!connectors/**/__fixtures__/**/*.html",
+      "!!connectors/**/__fixtures__/**/*.json",
+      "!!connectors/**/__fixtures__/**/*.csv",
+      "!!**/next-env.d.ts",
+      "!!**/report.*.json"
     ]
   },
   "overrides": [

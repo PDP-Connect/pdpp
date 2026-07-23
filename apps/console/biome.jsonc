@@ -7,27 +7,26 @@
   },
   "files": {
     "ignoreUnknown": true,
-    // Stock Ultracite + lineWidth 120 — no rule overrides beyond the
-    // single upstream-bug waiver below (per doctrine: "for apps/web let's
-    // use stock biome as much as possible"). The includes pattern scopes
-    // Biome to real source code: .ts + .tsx under src/ plus JSON config.
-    // Build outputs (.next/, .source/), generated types (next-env.d.ts),
-    // static assets (public/), authored Markdown (content/, not linted
-    // by Biome), and the .mjs build script are excluded. If a rule
-    // legitimately cannot be satisfied, stop and report with evidence —
-    // do not relax it here.
+    // The tracked-source contract includes authored JS/TS/config files and
+    // force-excludes dependency/build output, raw data, and generated/report
+    // artifacts. Selection is checked against Ultracite in the root script.
     "includes": [
-      "src/**/*.ts",
-      "src/**/*.tsx",
-      "*.jsonc",
-      "*.json",
-      "!node_modules",
-      "!.next",
-      "!.source",
-      "!next-env.d.ts",
-      "!public",
-      "!content",
-      "!scripts"
+      "!!**/node_modules",
+      "!!**/.git",
+      "!!**/dist",
+      "!!**/build",
+      "!!**/out",
+      "!!**/.next",
+      "!!**/.source",
+      "!!**/coverage",
+      "!!**/reports",
+      "!!**/report",
+      "!!**/*.snap",
+      "!!**/*.har",
+      "!!**/*.jsonl",
+      "!!**/docs/generated",
+      "!!**/next-env.d.ts",
+      "!!**/report.*.json"
     ]
   },
   "overrides": [

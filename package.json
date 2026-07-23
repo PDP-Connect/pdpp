@@ -45,6 +45,7 @@
     "agent-skill:check": "node scripts/sync-agent-skill.mjs --check",
     "agent-skill:sync": "node scripts/sync-agent-skill.mjs --write",
     "agent-skill:boundary-check": "node --test scripts/agent-skill-boundary.test.mjs",
+    "biome:selection": "node scripts/check-biome-file-selection.mjs",
     "spec:check": "node scripts/spec-check.mjs",
     "openspec:archive-check": "node scripts/openspec-archive-check.mjs",
     "openspec:archive-check:test": "node --test scripts/openspec-archive-check.test.mjs",
@@ -92,7 +93,7 @@
   "license": "Apache-2.0",
   "packageManager": "pnpm@10.33.0",
   "devDependencies": {
-    "@biomejs/biome": "^2.4.12",
+    "@biomejs/biome": "2.5.5",
     "@pdpp/brand": "workspace:*",
     "@semantic-release/exec": "^7.1.0",
     "@types/better-sqlite3": "^7.6.13",
@@ -103,6 +104,6 @@
     "semantic-release": "^25.0.3",
     "tsx": "^4.21.0",
     "typescript": "^7.0.2",
-    "ultracite": "^7.6.0"
+    "ultracite": "7.9.4"
   }
 }

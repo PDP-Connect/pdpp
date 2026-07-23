@@ -7,23 +7,27 @@
   },
   "files": {
     "ignoreUnknown": true,
-    // During the JS → TS migration, Biome lints and formats only the
-    // TypeScript modules that have already landed in that form. Every
-    // remaining .js file (server/, lib/, runtime/, cli/, examples/,
-    // test/, scripts/) is exempt until its own slice upgrades it.
-    // Renaming a file to .ts immediately pulls it under the strict bar.
+    // The tracked-source contract includes authored JS/TS/config files;
+    // generated, build, raw data, and report artifacts are force-excluded.
+    // Legacy JS and executable runtime fixtures remain in scope.
     "includes": [
-      "server/**/*.ts",
-      "lib/**/*.ts",
-      "runtime/**/*.ts",
-      "cli/**/*.ts",
-      "test/**/*.ts",
-      "scripts/**/*.ts",
-      "examples/**/*.ts",
-      "*.jsonc",
-      "*.json",
-      "!report.*.json",
-      "!node_modules"
+      "!!**/node_modules",
+      "!!**/.git",
+      "!!**/dist",
+      "!!**/build",
+      "!!**/out",
+      "!!**/.next",
+      "!!**/.source",
+      "!!**/coverage",
+      "!!**/reports",
+      "!!**/report",
+      "!!**/*.snap",
+      "!!**/*.har",
+      "!!**/*.jsonl",
+      "!!docs/generated",
+      "!!test/fixtures/*.json",
+      "!!**/next-env.d.ts",
+      "!!**/report.*.json"
     ]
   },
   "linter": {

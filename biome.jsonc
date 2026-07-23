@@ -7,22 +7,36 @@
   },
   "files": {
     "ignoreUnknown": true,
-    // During the JS→TS migration, Biome only lints/formats .ts files plus
-    // config. Legacy .js files are exempt until migrated — renaming to .ts
-    // automatically brings them under the strict bar. Flip this to include
-    // *.js once the migration is complete and delete the note.
+    // The tracked-source contract starts with all files Biome recognizes.
+    // Force-ignore patterns exclude dependency/build output, raw data, and
+    // generated/report artifacts; authored JS and executable fixtures remain.
     "includes": [
-      "src/**/*.ts",
-      "connectors/**/*.ts",
-      "bin/**/*.ts",
-      "packages/remote-surface/src/**/*.ts",
-      "packages/remote-surface/*.json",
-      "*.jsonc",
-      "*.json",
-      "!node_modules",
-      "!fixtures",
-      "!dist",
-      "!**/*.test.*"
+      "!!**/node_modules",
+      "!!**/.git",
+      "!!**/dist",
+      "!!**/build",
+      "!!**/out",
+      "!!**/.next",
+      "!!**/.source",
+      "!!**/coverage",
+      "!!**/reports",
+      "!!**/report",
+      "!!**/*.snap",
+      "!!**/*.har",
+      "!!**/*.jsonl",
+      "!!**/docs/generated",
+      "!!packages/polyfill-connectors/fixtures/**/*.json",
+      "!!packages/polyfill-connectors/fixtures/**/*.html",
+      "!!packages/polyfill-connectors/fixtures/**/*.csv",
+      "!!packages/polyfill-connectors/fixtures/**/*.md",
+      "!!packages/polyfill-connectors/fixtures/**/*.log",
+      "!!packages/polyfill-connectors/fixtures/**/*.dat",
+      "!!packages/polyfill-connectors/connectors/**/__fixtures__/**/*.html",
+      "!!packages/polyfill-connectors/connectors/**/__fixtures__/**/*.json",
+      "!!packages/polyfill-connectors/connectors/**/__fixtures__/**/*.csv",
+      "!!reference-implementation/test/fixtures/*.json",
+      "!!**/next-env.d.ts",
+      "!!**/report.*.json"
     ]
   },
   "overrides": [

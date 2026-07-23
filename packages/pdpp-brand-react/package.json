@@ -34,7 +34,7 @@
     "react-dom": "^19.2.0",
     "tsx": "^4.21.0",
     "typescript": "^7.0.2",
-    "ultracite": "7.6.0"
+    "ultracite": "7.9.4"
   },
   "license": "Apache-2.0"
 }
