@@ -330,6 +330,18 @@ function runMatrixRow() {
     npm_config_update_notifier: 'false',
   };
   runRecorded(commands, 'npm', ['init', '--yes'], { cwd: consumer, env: offlineEnv });
+  const candidatePathsByName = Object.fromEntries(candidates.map(({ name, tarball }) => [name, `file:${join(packRoot, tarball.filename)}`]));
+  writeFileSync(join(consumer, 'package.json'), `${JSON.stringify({
+    name: 'pdpp-release-matrix-consumer',
+    version: '0.0.0',
+    private: true,
+    overrides: {
+      '@pdpp/mcp-server': {
+        '@pdpp/cli': candidatePathsByName['@pdpp/cli'],
+        '@pdpp/read-core': candidatePathsByName['@pdpp/read-core'],
+      },
+    },
+  }, null, 2)}\n`);
   runRecorded(commands, 'npm', ['install', '--ignore-scripts', '--offline', '--force', ...candidates.map(({ tarball }) => join(packRoot, tarball.filename))], { cwd: consumer, env: offlineEnv });
   const tree = JSON.parse(runRecorded(commands, 'npm', ['ls', '--all', '--json'], { cwd: consumer, env: offlineEnv }));
   for (const candidate of candidates) {
