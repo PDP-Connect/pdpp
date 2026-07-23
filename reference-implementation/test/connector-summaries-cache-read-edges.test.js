@@ -15,7 +15,7 @@ import { closeDb, initDb } from '../server/db.js';
 // "Central consumer and cache boundary"; the central observation barrier
 // inside `loadConnectorSummaryProjectionDeps` already reconciles on every
 // read, so a resolved cached value can never legitimately be served); the
-// key maps (controller, run-inclusion) → a stable namespacing string.
+// key maps (controller, run-inclusion, owner) → a stable namespacing string.
 //
 // The key-matrix tests are unchanged from the pre-removal contract — the
 // removal only touched the value-caching layer, not cache-key derivation.
@@ -54,7 +54,7 @@ test('the decision never depends on elapsed time — there is no fresh/stale val
 });
 
 // --------------------------------------------------------------------------
-// connectorSummariesCacheKey — the controller × run-depth matrix
+// connectorSummariesCacheKey — the controller × run-depth × owner matrix
 // --------------------------------------------------------------------------
 
 test('cache key encodes controller presence and run-inclusion depth distinctly', () => {
@@ -69,18 +69,38 @@ test('cache key encodes controller presence and run-inclusion depth distinctly',
     assert.notEqual(noController, withController);
 
     // Run-depth segment: default/true → deep, false → shallow, singleton → singleton-active.
-    assert.match(connectorSummariesCacheKey(null, {}), /:deep-runs$/);
-    assert.match(connectorSummariesCacheKey(null, { includeRunSummaries: true }), /:deep-runs$/);
-    assert.match(connectorSummariesCacheKey(null, { includeRunSummaries: false }), /:shallow-runs$/);
+    // Owner scope follows it, so otherwise-identical reads cannot coalesce.
+    const ownerA = 'owner_cache_a';
+    const ownerB = 'owner_cache_b';
     assert.match(
-      connectorSummariesCacheKey(null, { includeRunSummaries: 'singleton-active' }),
-      /:singleton-active-runs$/
+      connectorSummariesCacheKey(null, { ownerSubjectId: ownerA }),
+      /:deep-runs:owner:owner_cache_a$/
+    );
+    assert.match(
+      connectorSummariesCacheKey(null, { includeRunSummaries: true, ownerSubjectId: ownerA }),
+      /:deep-runs:owner:owner_cache_a$/
+    );
+    assert.match(
+      connectorSummariesCacheKey(null, { includeRunSummaries: false, ownerSubjectId: ownerA }),
+      /:shallow-runs:owner:owner_cache_a$/
+    );
+    assert.match(
+      connectorSummariesCacheKey(null, { includeRunSummaries: 'singleton-active', ownerSubjectId: ownerA }),
+      /:singleton-active-runs:owner:owner_cache_a$/
+    );
+    assert.notEqual(
+      connectorSummariesCacheKey(null, { includeRunSummaries: true, ownerSubjectId: ownerA }),
+      connectorSummariesCacheKey(null, { includeRunSummaries: true, ownerSubjectId: ownerB }),
+      'owner scope isolates otherwise-identical summary reads'
     );
 
     // The three run-depths under the same controller state are mutually distinct.
-    const deep = connectorSummariesCacheKey(null, { includeRunSummaries: true });
-    const shallow = connectorSummariesCacheKey(null, { includeRunSummaries: false });
-    const singleton = connectorSummariesCacheKey(null, { includeRunSummaries: 'singleton-active' });
+    const deep = connectorSummariesCacheKey(null, { includeRunSummaries: true, ownerSubjectId: ownerA });
+    const shallow = connectorSummariesCacheKey(null, { includeRunSummaries: false, ownerSubjectId: ownerA });
+    const singleton = connectorSummariesCacheKey(null, {
+      includeRunSummaries: 'singleton-active',
+      ownerSubjectId: ownerA,
+    });
     assert.equal(new Set([deep, shallow, singleton]).size, 3, 'all three run-depths yield distinct keys');
   } finally {
     closeDb();
@@ -117,11 +137,11 @@ test('cache key uses the storage identity as its leading segment (sqlite here)',
     initDb(':memory:');
     const key = connectorSummariesCacheKey(null, {});
     assert.match(key, /^sqlite:/, 'storage backend identity leads the key');
-    // Structure is <storage-identity>:<controller>:<run-depth>. The sqlite
-    // storage identity is itself `sqlite:<path>:<gen>`, so assert the shape by
+    // Structure is <storage-identity>:<controller>:<run-depth>:owner:<owner>.
+    // The sqlite storage identity is itself `sqlite:<path>:<gen>`, so assert the shape by
     // its documented controller + run-depth SUFFIX rather than a raw segment
     // count (the identity contains its own colons).
-    assert.match(key, /:no-controller:deep-runs$/);
+    assert.match(key, /:no-controller:deep-runs:owner:owner_local$/);
   } finally {
     closeDb();
   }
