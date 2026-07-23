@@ -15,7 +15,15 @@ test("parseAllowedDevOrigins accepts hostnames, URLs, and wildcards", () => {
 });
 
 test("isLocalDevIpv4 permits loopback, private LAN, link-local, and CGNAT ranges", () => {
-  for (const address of ["127.0.0.1", "10.1.2.3", "172.16.0.10", "172.31.255.9", "192.168.0.2", "169.254.1.1", "100.64.0.2"]) {
+  for (const address of [
+    "127.0.0.1",
+    "10.1.2.3",
+    "172.16.0.10",
+    "172.31.255.9",
+    "192.168.0.2",
+    "169.254.1.1",
+    "100.64.0.2",
+  ]) {
     assert.equal(isLocalDevIpv4(address), true, address);
   }
 });

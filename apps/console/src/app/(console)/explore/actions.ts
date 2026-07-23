@@ -49,17 +49,17 @@ export async function loadExploreBuckets(req: ExploreBucketRequest): Promise<Buc
     await getOwnerToken();
     const response = await liveDashboardDataSource.listExploreRecordBuckets({
       connections: req.connections,
-      streams: req.streams,
       // Carry the feed's `-con:` exclusions so the aggregate drops the same
       // connections the feed hid (chart scope == feed scope). `chartTargets` does
       // not pre-filter excluded connections out of `connections`, so this is the
       // only place the exclusion is applied to the bucket scan.
       excludeConnections: req.excludeConnections,
       excludeStreams: req.excludeStreams,
-      since: req.since || undefined,
-      until: req.until || undefined,
       granularity: "auto",
+      since: req.since || undefined,
+      streams: req.streams,
       timeZone: BUCKET_TIME_ZONE,
+      until: req.until || undefined,
     });
     // `partial` is false here exactly as the old inline load reported it: the
     // single index-backed call either counts the in-scope set exactly or fails

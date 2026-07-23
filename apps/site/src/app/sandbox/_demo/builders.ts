@@ -92,13 +92,13 @@ export function paginate<T>(rows: readonly T[], opts: { limit?: number; cursor?:
   const next = start + limit;
   const hasMore = next < rows.length;
   return {
-    object: "list",
     data: slice as T[],
     has_more: hasMore,
-    next_cursor: hasMore ? encodeCursor(next) : null,
-    total: rows.length,
     is_demo: true,
+    next_cursor: hasMore ? encodeCursor(next) : null,
     notice: DEMO_NOTICE.notice,
+    object: "list",
+    total: rows.length,
   };
 }
 
@@ -122,23 +122,23 @@ export interface SchemaResponse {
 
 export function buildSchemaResponse(issuer = DEMO_ISSUER): SchemaResponse {
   return {
-    object: "schema_graph",
-    is_demo: true,
-    notice: DEMO_NOTICE.notice,
-    issuer,
     connectors: DEMO_CONNECTORS.map((connector) => ({
       connector_id: connector.connector_id,
       display_name: connector.display_name,
       streams: DEMO_STREAMS.filter((stream) => stream.connector_id === connector.connector_id).map((stream) => ({
-        stream: stream.key,
-        label: stream.label,
         fields: stream.fields.map((field) => ({
           name: field.name,
-          type: field.type,
           semantic_class: field.semantic_class,
+          type: field.type,
         })),
+        label: stream.label,
+        stream: stream.key,
       })),
     })),
+    is_demo: true,
+    issuer,
+    notice: DEMO_NOTICE.notice,
+    object: "schema_graph",
   };
 }
 
@@ -167,12 +167,12 @@ export function buildStreamsList(opts: {
     ? DEMO_STREAMS.filter((stream) => stream.connector_id === opts.connector_id)
     : DEMO_STREAMS;
   const summaries = filtered.map<StreamSummary>((stream) => ({
-    object: "stream_summary",
     connector_id: stream.connector_id,
     description: stream.description,
     field_count: stream.fields.length,
     label: stream.label,
     latest_record_time: stream.latest_record_time,
+    object: "stream_summary",
     record_count: streamRecordCount(stream.key),
     retention_label: stream.retention_label,
     stream: stream.key,
@@ -200,19 +200,19 @@ export function buildStreamDetail(streamKey: string): StreamDetail | null {
     return null;
   }
   return {
-    object: "stream",
-    is_demo: true,
-    notice: DEMO_NOTICE.notice,
     connector_id: stream.connector_id,
     description: stream.description,
     fields: stream.fields.map((field) => ({
-      name: field.name,
-      type: field.type,
-      semantic_class: field.semantic_class,
       description: field.description,
+      name: field.name,
+      semantic_class: field.semantic_class,
+      type: field.type,
     })),
+    is_demo: true,
     label: stream.label,
     latest_record_time: stream.latest_record_time,
+    notice: DEMO_NOTICE.notice,
+    object: "stream",
     record_count: streamRecordCount(stream.key),
     retention_label: stream.retention_label,
     stream: stream.key,
@@ -266,9 +266,9 @@ export function buildRecordsList(opts: {
   });
   const sorted = sortRecordsNewestFirst(matching);
   const summaries = sorted.map<RecordSummary>((record) => ({
-    object: "record",
     connector_id: record.connector_id,
     ingested_at: record.ingested_at,
+    object: "record",
     preview: recordPreview(record),
     record_id: record.record_id,
     record_time: record.record_time,
@@ -295,12 +295,12 @@ export function buildRecordDetail(streamKey: string, recordId: string): RecordDe
     return null;
   }
   return {
-    object: "record_detail",
-    is_demo: true,
-    notice: DEMO_NOTICE.notice,
     connector_id: record.connector_id,
     fields: record.fields,
     ingested_at: record.ingested_at,
+    is_demo: true,
+    notice: DEMO_NOTICE.notice,
+    object: "record_detail",
     record_id: record.record_id,
     record_time: record.record_time,
     stream: record.stream,
@@ -360,15 +360,15 @@ export function buildSearchResponse(query: string): SearchResponse {
   const trimmed = query.trim();
   if (trimmed.length === 0) {
     return {
-      object: "list",
+      data: [],
+      has_more: false,
       is_demo: true,
+      next_cursor: null,
       notice: DEMO_NOTICE.notice,
-      url: "/sandbox/v1/search",
+      object: "list",
       query: "",
       total: 0,
-      has_more: false,
-      next_cursor: null,
-      data: [],
+      url: "/sandbox/v1/search",
     };
   }
   const lower = trimmed.toLowerCase();
@@ -392,15 +392,15 @@ export function buildSearchResponse(query: string): SearchResponse {
     return 0;
   });
   return {
-    object: "list",
+    data: hits,
+    has_more: false,
     is_demo: true,
+    next_cursor: null,
     notice: DEMO_NOTICE.notice,
-    url: "/sandbox/v1/search",
+    object: "list",
     query: trimmed,
     total: hits.length,
-    has_more: false,
-    next_cursor: null,
-    data: hits,
+    url: "/sandbox/v1/search",
   };
 }
 
@@ -423,17 +423,17 @@ function buildSearchHit(record: DemoRecord, query: { lower: string; trimmed: str
     return null;
   }
   return {
-    object: "search_result",
     connector_id: record.connector_id,
     emitted_at: record.ingested_at,
     matched_fields: matchedFields,
+    object: "search_result",
     record_key: record.record_id,
     record_time: record.record_time,
     record_url: `/sandbox/v1/streams/${encodeURIComponent(record.stream)}/records/${encodeURIComponent(record.record_id)}`,
     score: {
       kind: "sandbox_lexical_rank",
-      value: matchedFields.length + bestMatch.score,
       order: "higher_is_better",
+      value: matchedFields.length + bestMatch.score,
       value_semantics: "demo_only",
     },
     snippet: { field: bestMatch.field, text: bestMatch.snippet },
@@ -469,16 +469,16 @@ function grantToSummary(grant: DemoGrantDef): GrantSummary {
     failure = "grant_revoked";
   }
   return {
-    object: "grant_summary",
-    grant_id: grant.grant_id,
     client_id: grant.client_id,
     connector_id: grant.connector_id,
-    stream: grant.stream,
-    status: grant.status,
+    event_count: grant.events.length,
     failure_reason: failure,
     first_at: grant.first_at,
+    grant_id: grant.grant_id,
     last_at: grant.last_at,
-    event_count: grant.events.length,
+    object: "grant_summary",
+    status: grant.status,
+    stream: grant.stream,
     trace_id: grant.trace_id,
   };
 }
@@ -518,14 +518,14 @@ export function buildGrantTimeline(grantId: string): TimelineEnvelope | null {
     return null;
   }
   return {
-    object: "timeline",
-    is_demo: true,
-    notice: DEMO_NOTICE.notice,
-    subject_type: "grant",
-    subject_id: grant.grant_id,
-    trace_id: grant.trace_id,
     event_count: grant.events.length,
     events: [...grant.events],
+    is_demo: true,
+    notice: DEMO_NOTICE.notice,
+    object: "timeline",
+    subject_id: grant.grant_id,
+    subject_type: "grant",
+    trace_id: grant.trace_id,
   };
 }
 
@@ -546,18 +546,18 @@ export interface RunSummary {
 
 function runToSummary(run: DemoRunDef): RunSummary {
   return {
-    object: "run_summary",
-    run_id: run.run_id,
     connector_id: run.connector_id,
-    grant_id: run.grant_id,
-    status: run.status,
-    needs_input: run.needs_input,
+    event_count: run.events.length,
     failure_reason: run.failure_reason,
-    started_at: run.started_at,
     finished_at: run.finished_at,
     first_at: run.first_at,
+    grant_id: run.grant_id,
     last_at: run.last_at,
-    event_count: run.events.length,
+    needs_input: run.needs_input,
+    object: "run_summary",
+    run_id: run.run_id,
+    started_at: run.started_at,
+    status: run.status,
   };
 }
 
@@ -586,14 +586,14 @@ export function buildRunTimeline(runId: string): TimelineEnvelope | null {
   }
   const traceId = run.events[0]?.trace_id ?? null;
   return {
-    object: "timeline",
-    is_demo: true,
-    notice: DEMO_NOTICE.notice,
-    subject_type: "run",
-    subject_id: run.run_id,
-    trace_id: traceId,
     event_count: run.events.length,
     events: [...run.events],
+    is_demo: true,
+    notice: DEMO_NOTICE.notice,
+    object: "timeline",
+    subject_id: run.run_id,
+    subject_type: "run",
+    trace_id: traceId,
   };
 }
 
@@ -613,17 +613,17 @@ export interface TraceSummary {
 
 function traceToSummary(trace: DemoTraceDef): TraceSummary {
   return {
-    object: "trace_summary",
-    trace_id: trace.trace_id,
     client_id: trace.client_id,
+    event_count: trace.kinds.length,
+    failure_reason: trace.failure_reason,
+    first_at: trace.first_at,
     grant_id: trace.grant_id,
+    kinds: [...trace.kinds],
+    last_at: trace.last_at,
+    object: "trace_summary",
     run_id: trace.run_id,
     status: trace.status,
-    failure_reason: trace.failure_reason,
-    kinds: [...trace.kinds],
-    first_at: trace.first_at,
-    last_at: trace.last_at,
-    event_count: trace.kinds.length,
+    trace_id: trace.trace_id,
   };
 }
 
@@ -647,14 +647,14 @@ export function buildTraceTimeline(traceId: string): TimelineEnvelope | null {
     return null;
   }
   return {
-    object: "timeline",
-    is_demo: true,
-    notice: DEMO_NOTICE.notice,
-    subject_type: "trace",
-    subject_id: traceId,
-    trace_id: traceId,
     event_count: events.length,
     events,
+    is_demo: true,
+    notice: DEMO_NOTICE.notice,
+    object: "timeline",
+    subject_id: traceId,
+    subject_type: "trace",
+    trace_id: traceId,
   };
 }
 
@@ -708,17 +708,17 @@ export function buildDatasetSummary(): DatasetSummary {
   const blobBytes = approximateRetainedBytes();
   const recordTimes = recordTimesSorted();
   return {
-    object: "dataset_summary",
-    is_demo: true,
-    notice: DEMO_NOTICE.notice,
-    connector_count: DEMO_CONNECTORS.length,
-    stream_count: DEMO_STREAMS.length,
-    record_count: DEMO_RECORDS.length,
-    earliest_record_time: recordTimes.earliest,
-    latest_record_time: recordTimes.latest,
     blob_bytes: blobBytes,
-    total_retained_bytes: blobBytes,
+    connector_count: DEMO_CONNECTORS.length,
+    earliest_record_time: recordTimes.earliest,
+    is_demo: true,
+    latest_record_time: recordTimes.latest,
+    notice: DEMO_NOTICE.notice,
+    object: "dataset_summary",
+    record_count: DEMO_RECORDS.length,
+    stream_count: DEMO_STREAMS.length,
     top_connectors: topConnectors,
+    total_retained_bytes: blobBytes,
   };
 }
 
@@ -776,28 +776,28 @@ export interface OAuthAuthServerMetadata {
 
 export function buildAuthServerMetadata(issuer = DEMO_ISSUER): OAuthAuthServerMetadata {
   return {
-    is_demo: true,
-    notice: DEMO_NOTICE.notice,
-    issuer,
     authorization_endpoint: `${issuer}/authorize`,
-    pushed_authorization_request_endpoint: `${issuer}/par`,
-    token_endpoint: `${issuer}/token`,
-    introspection_endpoint: `${issuer}/introspect`,
-    revocation_endpoint: `${issuer}/revoke`,
     grant_types_supported: ["authorization_code", "urn:pdpp:params:oauth:grant-type:scoped_grant"],
+    introspection_endpoint: `${issuer}/introspect`,
+    is_demo: true,
+    issuer,
+    notice: DEMO_NOTICE.notice,
+    pdpp_demo: {
+      note: "Sandbox demo metadata. The real reference advertises live AS endpoints under the deployment origin.",
+      schema_endpoint: `${issuer}/v1/schema`,
+      search_endpoint: `${issuer}/v1/search`,
+      streams_endpoint: `${issuer}/v1/streams`,
+    },
+    pushed_authorization_request_endpoint: `${issuer}/par`,
     response_types_supported: ["code"],
+    revocation_endpoint: `${issuer}/revoke`,
     scopes_supported: [
       "stream:pay_statements:read",
       "stream:tax_documents:read",
       "stream:clinical_visits:read",
       "stream:transactions:read",
     ],
-    pdpp_demo: {
-      note: "Sandbox demo metadata. The real reference advertises live AS endpoints under the deployment origin.",
-      streams_endpoint: `${issuer}/v1/streams`,
-      schema_endpoint: `${issuer}/v1/schema`,
-      search_endpoint: `${issuer}/v1/search`,
-    },
+    token_endpoint: `${issuer}/token`,
   };
 }
 
@@ -819,11 +819,17 @@ export interface OAuthProtectedResourceMetadata {
 
 export function buildProtectedResourceMetadata(issuer = DEMO_ISSUER): OAuthProtectedResourceMetadata {
   return {
-    is_demo: true,
-    notice: DEMO_NOTICE.notice,
-    resource: issuer,
     authorization_servers: [issuer],
     bearer_methods_supported: ["header"],
+    is_demo: true,
+    notice: DEMO_NOTICE.notice,
+    pdpp_demo: {
+      note: "Sandbox demo metadata. Advertises sandbox-prefixed endpoints.",
+      record_endpoint_template: `${issuer}/v1/streams/{stream}/records/{recordId}`,
+      search_endpoint: `${issuer}/v1/search`,
+      streams_endpoint: `${issuer}/v1/streams`,
+    },
+    resource: issuer,
     resource_documentation: issuer.replace(SANDBOX_PATH_SUFFIX_RE, "/docs"),
     scopes_supported: [
       "stream:pay_statements:read",
@@ -831,12 +837,6 @@ export function buildProtectedResourceMetadata(issuer = DEMO_ISSUER): OAuthProte
       "stream:clinical_visits:read",
       "stream:transactions:read",
     ],
-    pdpp_demo: {
-      note: "Sandbox demo metadata. Advertises sandbox-prefixed endpoints.",
-      streams_endpoint: `${issuer}/v1/streams`,
-      record_endpoint_template: `${issuer}/v1/streams/{stream}/records/{recordId}`,
-      search_endpoint: `${issuer}/v1/search`,
-    },
   };
 }
 
@@ -923,29 +923,29 @@ export function buildLiveStreamMetadata(stream: DemoStreamDef): LiveStreamMetada
   const properties: Record<string, { type: string; description?: string }> = {};
   for (const field of stream.fields) {
     properties[field.name] = {
-      type: liveTypeFor(field.type),
       description: field.description,
+      type: liveTypeFor(field.type),
     };
   }
   const allowed = stream.fields.map((f) => f.name);
   return {
-    object: "stream_metadata",
+    cursor_field: cursorFieldFor(stream),
+    expand_capabilities: [],
+    field_capabilities: { allowed_fields: allowed, restricted_fields: [] },
+    freshness: { last_updated: latestRecordTimeForStream(stream.key) ?? stream.latest_record_time },
     name: stream.key,
-    semantics: stream.label,
+    object: "stream_metadata",
+    primary_key: ["id"],
+    query: { expand: [], range_filters: {} },
+    relationships: [],
     schema: {
-      type: "object",
       properties,
       required: allowed,
+      type: "object",
     },
-    primary_key: ["id"],
-    cursor_field: cursorFieldFor(stream),
     selection: { all: true },
+    semantics: stream.label,
     views: [],
-    relationships: [],
-    query: { range_filters: {}, expand: [] },
-    field_capabilities: { allowed_fields: allowed, restricted_fields: [] },
-    expand_capabilities: [],
-    freshness: { last_updated: latestRecordTimeForStream(stream.key) ?? stream.latest_record_time },
   };
 }
 

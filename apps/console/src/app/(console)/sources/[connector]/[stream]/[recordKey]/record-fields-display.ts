@@ -52,16 +52,16 @@ export interface RenderedValue {
  */
 export function renderValue(value: unknown, declaredType: string | undefined): RenderedValue {
   if (value === null || value === undefined) {
-    return { text: value === null ? "null" : "—", empty: true, money: false };
+    return { empty: true, money: false, text: value === null ? "null" : "—" };
   }
   const amount = formatDeclaredAmount(value, declaredType);
   if (amount) {
-    return { text: amount.text, empty: false, money: true };
+    return { empty: false, money: true, text: amount.text };
   }
   if (typeof value === "string" && value.length === 0) {
-    return { text: "empty", empty: true, money: false };
+    return { empty: true, money: false, text: "empty" };
   }
-  return { text: stringifyValue(value), empty: false, money: false };
+  return { empty: false, money: false, text: stringifyValue(value) };
 }
 
 /** Tailwind classes for a value cell, tinting empties and aligning money. */

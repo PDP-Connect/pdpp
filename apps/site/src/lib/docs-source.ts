@@ -10,8 +10,8 @@ export const docsImageRoute = "/og/docs";
 
 export const source = loader({
   baseUrl: docsRoute,
-  source: docs.toFumadocsSource(),
   plugins: [lucideIconsPlugin()],
+  source: docs.toFumadocsSource(),
 });
 
 export function getPageImage(page: InferPageType<typeof source>) {

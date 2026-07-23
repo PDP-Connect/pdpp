@@ -110,9 +110,9 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
     startTransition(async () => {
       const res = await upsertScheduleAction(summary.connector_id, {
         connectionId: summary.connection_id ?? summary.connector_instance_id ?? null,
+        enabled: true,
         every,
         jitter: jitter || undefined,
-        enabled: true,
       });
       if (!res.ok) {
         showToast("error", res.message);

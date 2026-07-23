@@ -136,12 +136,12 @@ function normalizeTimeline(raw: unknown): TimelineEnvelope {
       ? r.terminal_status
       : null;
   return {
-    object: r.object ?? "timeline",
-    trace_id: r.trace_id ?? null,
     event_count: typeof r.event_count === "number" ? r.event_count : events.length,
     events,
     next_cursor: typeof r.next_cursor === "string" && r.next_cursor.length > 0 ? r.next_cursor : undefined,
+    object: r.object ?? "timeline",
     terminal_status: terminalStatus,
+    trace_id: r.trace_id ?? null,
     truncated: r.truncated === true,
   };
 }
@@ -1439,14 +1439,14 @@ export async function listExploreTimeline(
   return (await refFetch("/_ref/explore/records", {
     connection: connection || undefined,
     cursor: opts.cursor ?? undefined,
-    limit: opts.limit,
-    upcoming_limit: opts.upcomingLimit,
-    rewind: opts.rewindToFirstPage ? 1 : undefined,
-    stream: stream || undefined,
-    xconnection: xconnection || undefined,
-    xstream: xstream || undefined,
     // Only the oldest-first re-page sends a direction; newest-first is the default.
     direction: opts.direction === "asc" ? "asc" : undefined,
+    limit: opts.limit,
+    rewind: opts.rewindToFirstPage ? 1 : undefined,
+    stream: stream || undefined,
+    upcoming_limit: opts.upcomingLimit,
+    xconnection: xconnection || undefined,
+    xstream: xstream || undefined,
   })) as ExploreTimelinePage;
 }
 
@@ -2124,9 +2124,9 @@ async function postManualUploadFile(
     url.searchParams.set("display_name", options.displayName);
   }
   const init = await withOwnerSessionCookie({
-    method: "POST",
     body: file,
     cache: "no-store",
+    method: "POST",
   });
   let res: Response;
   try {
@@ -2621,7 +2621,7 @@ export async function lookupGrantPackageIdForGrant(grantId: string): Promise<str
     return null;
   }
   try {
-    const page = await listGrants({ q: grantId, limit: 5 });
+    const page = await listGrants({ limit: 5, q: grantId });
     for (const row of page.data) {
       if (row.grant_id === grantId && typeof row.grant_package_id === "string" && row.grant_package_id.length > 0) {
         return row.grant_package_id;

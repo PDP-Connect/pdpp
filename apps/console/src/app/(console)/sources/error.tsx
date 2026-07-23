@@ -109,7 +109,7 @@ export default function RecordsError({ error, reset }: { error: Error & { digest
       </p>
       <div className="mt-2.5 flex flex-wrap items-center gap-2">
         <button
-          className={buttonVariants({ variant: "default", size: "sm" })}
+          className={buttonVariants({ size: "sm", variant: "default" })}
           data-testid="records-read-failure-retry"
           onClick={() => {
             setAutoRetried(true);
@@ -119,7 +119,7 @@ export default function RecordsError({ error, reset }: { error: Error & { digest
         >
           Retry now
         </button>
-        <a className={buttonVariants({ variant: "ghost", size: "sm" })} href="/sources">
+        <a className={buttonVariants({ size: "sm", variant: "ghost" })} href="/sources">
           Reload Sources
         </a>
       </div>

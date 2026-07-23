@@ -25,8 +25,8 @@
 
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 const COMPONENT_PATH = new URL("../src/components/reference-app.tsx", import.meta.url);
 const BRAND_BASE_PATH = new URL("../../../packages/pdpp-brand/base.css", import.meta.url);
@@ -113,7 +113,11 @@ test("grant filter reads as a protocol fact via authorship tokens, no literals",
     "the grant filter line must use the protocol authorship accent token"
   );
   // No raw oklch/rgba/hex colour literals anywhere in the set-piece.
-  assert.doesNotMatch(projectionSrc, /oklch\(|rgba?\(|#[0-9a-fA-F]{3,8}\b/, "set-piece must not hardcode colour literals");
+  assert.doesNotMatch(
+    projectionSrc,
+    /oklch\(|rgba?\(|#[0-9a-fA-F]{3,8}\b/,
+    "set-piece must not hardcode colour literals"
+  );
 });
 
 test("brand base.css zeroes durations under prefers-reduced-motion", async () => {

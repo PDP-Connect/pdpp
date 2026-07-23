@@ -108,7 +108,7 @@ export function parseSavedViews(raw: string | null): SavedView[] {
       typeof (item as SavedView).href === "string" &&
       (item as SavedView).name.trim().length > 0
     ) {
-      out.push({ id: (item as SavedView).id, name: (item as SavedView).name, href: (item as SavedView).href });
+      out.push({ href: (item as SavedView).href, id: (item as SavedView).id, name: (item as SavedView).name });
     }
   }
   return out;

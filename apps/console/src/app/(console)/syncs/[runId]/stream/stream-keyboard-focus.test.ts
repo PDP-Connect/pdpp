@@ -253,12 +253,12 @@ test("failed affordance focus remains retryable and success consumes it", () => 
 });
 
 test("geometry extraction is fail-closed when the SSE element has no complete rect", () => {
-  assert.deepEqual(readRemoteEditableRect({ x: 1, y: 2, width: 3, height: 4 }), {
+  assert.deepEqual(readRemoteEditableRect({ height: 4, width: 3, x: 1, y: 2 }), {
     height: 4,
     width: 3,
     x: 1,
     y: 2,
   });
-  assert.equal(readRemoteEditableRect({ x: 1, y: 2, width: 3 }), null);
+  assert.equal(readRemoteEditableRect({ width: 3, x: 1, y: 2 }), null);
   assert.equal(readRemoteEditableRect(null), null);
 });

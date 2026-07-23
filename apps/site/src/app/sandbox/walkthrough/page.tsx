@@ -8,9 +8,9 @@ import { SandboxEducationalShell } from "../_demo/components/shell.tsx";
 import { SandboxWalkthrough } from "./sandbox-walkthrough.tsx";
 
 export const metadata: Metadata = {
-  title: "PDPP Sandbox walkthrough - scoped grant end to end",
   description:
     "An interactive PDPP reference scenario: a client requests scoped pay-statement access, the owner approves a bounded grant, the resource server returns only granted fields, and revocation refuses the next read.",
+  title: "PDPP Sandbox walkthrough - scoped grant end to end",
 };
 
 export default function WalkthroughPage() {
@@ -26,13 +26,13 @@ export default function WalkthroughPage() {
               The transcript shows the API-shaped artifact for each step.
             </p>
             <div className="mt-7 flex flex-wrap gap-2.5">
-              <Link className={buttonVariants({ variant: "default", size: "lg" })} href="#walkthrough">
+              <Link className={buttonVariants({ size: "lg", variant: "default" })} href="#walkthrough">
                 Start the walkthrough
               </Link>
-              <Link className={buttonVariants({ variant: "outline", size: "lg" })} href="/sandbox">
+              <Link className={buttonVariants({ size: "lg", variant: "outline" })} href="/sandbox">
                 Open sandbox dashboard
               </Link>
-              <Link className={buttonVariants({ variant: "outline", size: "lg" })} href="/docs">
+              <Link className={buttonVariants({ size: "lg", variant: "outline" })} href="/docs">
                 Protocol docs
               </Link>
             </div>

@@ -22,10 +22,7 @@ export function parseAllowedDevOrigins(value) {
   if (!value) {
     return [];
   }
-  return value
-    .split(",")
-    .map(normalizeOriginHost)
-    .filter(Boolean);
+  return value.split(",").map(normalizeOriginHost).filter(Boolean);
 }
 
 function parseIpv4(address) {

@@ -40,11 +40,11 @@ type DeviceAction =
 function deviceReducer(state: DeviceState, action: DeviceAction): DeviceState {
   switch (action.type) {
     case "supportDetected":
-      return { ...state, unavailable: action.unavailable, permission: action.permission, status: action.status };
+      return { ...state, permission: action.permission, status: action.status, unavailable: action.unavailable };
     case "swState":
       return action.status === undefined
         ? { ...state, swState: action.swState }
-        : { ...state, swState: action.swState, status: action.status };
+        : { ...state, status: action.status, swState: action.swState };
     case "subscribed":
       return { ...state, endpoint: action.endpoint, status: action.status };
     case "disabled":
@@ -177,91 +177,91 @@ function setupStepToneClass(state: DiagnosticState) {
 
 function secureContextRow(): DiagnosticRow {
   if (typeof window === "undefined") {
-    return { label: "Secure context (HTTPS/localhost)", state: "unknown", detail: "Server-rendered" };
+    return { detail: "Server-rendered", label: "Secure context (HTTPS/localhost)", state: "unknown" };
   }
   if (window.isSecureContext) {
-    return { label: "Secure context (HTTPS/localhost)", state: "ok", detail: window.location.origin };
+    return { detail: window.location.origin, label: "Secure context (HTTPS/localhost)", state: "ok" };
   }
   return {
+    detail: "Page is not served over a secure origin.",
     label: "Secure context (HTTPS/localhost)",
     state: "fail",
-    detail: "Page is not served over a secure origin.",
   };
 }
 
 function featureRow(label: string, present: boolean, presentDetail: string, missingDetail: string): DiagnosticRow {
-  return present ? { label, state: "ok", detail: presentDetail } : { label, state: "fail", detail: missingDetail };
+  return present ? { detail: presentDetail, label, state: "ok" } : { detail: missingDetail, label, state: "fail" };
 }
 
 function vapidRow(config: WebPushConfig): DiagnosticRow {
   if (config.enabled && config.public_key) {
     return {
+      detail: "/_ref/web-push/config reports enabled",
       label: "Server VAPID keys configured",
       state: "ok",
-      detail: "/_ref/web-push/config reports enabled",
     };
   }
   return {
+    detail: config.unavailable_reason || "Server VAPID keys are not configured.",
     label: "Server VAPID keys configured",
     state: "fail",
-    detail: config.unavailable_reason || "Server VAPID keys are not configured.",
   };
 }
 
 function swRow(swState: "registered" | "absent" | "unknown" | "unsupported"): DiagnosticRow {
   const label = "Service worker registered";
   if (swState === "registered") {
-    return { label, state: "ok", detail: "The PDPP service worker controls /." };
+    return { detail: "The PDPP service worker controls /.", label, state: "ok" };
   }
   if (swState === "absent") {
-    return { label, state: "warn", detail: "Not registered yet - use Enable this device." };
+    return { detail: "Not registered yet - use Enable this device.", label, state: "warn" };
   }
   if (swState === "unsupported") {
-    return { label, state: "fail", detail: "Browser lacks serviceWorker." };
+    return { detail: "Browser lacks serviceWorker.", label, state: "fail" };
   }
-  return { label, state: "unknown", detail: "Could not inspect registration." };
+  return { detail: "Could not inspect registration.", label, state: "unknown" };
 }
 
 function permissionRow(permission: NotificationPermission | "unknown"): DiagnosticRow {
   const label = "Notification permission granted";
   if (permission === "granted") {
-    return { label, state: "ok", detail: 'Notification.permission === "granted"' };
+    return { detail: 'Notification.permission === "granted"', label, state: "ok" };
   }
   if (permission === "denied") {
     return {
+      detail: 'Notification.permission === "denied" - change browser/OS notification settings to opt in.',
       label,
       state: "fail",
-      detail: 'Notification.permission === "denied" - change browser/OS notification settings to opt in.',
     };
   }
   if (permission === "default") {
     return {
+      detail: "Permission has not been requested on this device - use Enable this device.",
       label,
       state: "warn",
-      detail: "Permission has not been requested on this device - use Enable this device.",
     };
   }
-  return { label, state: "unknown", detail: "Notification API not available." };
+  return { detail: "Notification API not available.", label, state: "unknown" };
 }
 
 function browserSubscriptionRow(endpoint: string | null, matchesThisBrowser: boolean): DiagnosticRow {
   const label = "Browser push subscription active";
   if (!endpoint) {
     return {
-      label,
-      state: "warn",
       detail:
         "No active subscription on this device - use Enable this device to create one (installing the PWA alone does not subscribe).",
+      label,
+      state: "warn",
     };
   }
   if (matchesThisBrowser) {
-    return { label, state: "ok", detail: "Browser endpoint is registered for this owner on the server." };
+    return { detail: "Browser endpoint is registered for this owner on the server.", label, state: "ok" };
   }
   return {
-    label,
-    state: "warn",
     detail:
       "Browser has a subscription but the server does not list it for this owner - use Enable this device to re-register.",
+    label,
+    state: "warn",
   };
 }
 
@@ -269,15 +269,15 @@ function deliveryHealthRow(lastSubscription: WebPushSubscriptionSummary | undefi
   const label = "Last delivery health";
   if (lastSubscription?.last_failure_reason) {
     return {
+      detail: `Most recent failure: ${lastSubscription.last_failure_reason} (${lastSubscription.last_failure_at ?? "unknown time"}). Use Enable this device on the affected device to re-subscribe.`,
       label,
       state: "warn",
-      detail: `Most recent failure: ${lastSubscription.last_failure_reason} (${lastSubscription.last_failure_at ?? "unknown time"}). Use Enable this device on the affected device to re-subscribe.`,
     };
   }
   if (lastSubscription?.last_success_at) {
-    return { label, state: "ok", detail: `Last success: ${lastSubscription.last_success_at}.` };
+    return { detail: `Last success: ${lastSubscription.last_success_at}.`, label, state: "ok" };
   }
-  return { label, state: "unknown", detail: "No delivery attempt recorded yet." };
+  return { detail: "No delivery attempt recorded yet.", label, state: "unknown" };
 }
 
 function deviceStatus({
@@ -295,43 +295,43 @@ function deviceStatus({
 }): DeviceStatus {
   if (unavailable) {
     return {
-      title: "This browser cannot receive PDPP notifications.",
       detail: unavailable,
+      title: "This browser cannot receive PDPP notifications.",
     };
   }
   if (permission === "unknown" && swState === "unknown") {
     return {
-      title: "Checking this device…",
       detail: "Inspecting browser permission and subscription state.",
+      title: "Checking this device…",
     };
   }
   if (permission === "denied") {
     return {
-      title: "Notifications are blocked for this browser.",
       detail: "Change browser or OS notification settings, then return here and enable this device.",
+      title: "Notifications are blocked for this browser.",
     };
   }
   if (matchesThisBrowser) {
     return {
-      title: "This device is subscribed.",
       detail: "Pending connector interactions can send browser notifications to this browser or installed app.",
+      title: "This device is subscribed.",
     };
   }
   if (endpoint) {
     return {
-      title: "This browser has a local subscription, but the server does not recognize it.",
       detail: "Enable this device again to repair the server-side subscription.",
+      title: "This browser has a local subscription, but the server does not recognize it.",
     };
   }
   if (permission === "granted") {
     return {
-      title: "Notifications are allowed, but this device is not subscribed.",
       detail: "Enable this device once so PDPP can send alerts here.",
+      title: "Notifications are allowed, but this device is not subscribed.",
     };
   }
   return {
-    title: "This device is not subscribed yet.",
     detail: "Installing the PWA only adds the app icon. You still need to enable notifications from this device.",
+    title: "This device is not subscribed yet.",
   };
 }
 
@@ -352,26 +352,26 @@ function buildSetupSteps({
 
   return [
     {
+      detail: "This page configures notifications only for the browser or installed app you are using right now.",
       label: "Open the right device",
       state: "ok",
-      detail: "This page configures notifications only for the browser or installed app you are using right now.",
     },
     {
+      detail: setupPermissionDetail(permission),
       label: "Allow notifications",
       state: setupPermissionState(permission, unavailable),
-      detail: setupPermissionDetail(permission),
     },
     {
+      detail: setupSubscriptionDetail({ endpoint, matchesThisBrowser }),
       label: "Subscribe this device",
       state: setupSubscriptionState({ matchesThisBrowser, unavailable }),
-      detail: setupSubscriptionDetail({ endpoint, matchesThisBrowser }),
     },
     {
-      label: "Send a test",
-      state: setupTestState({ matchesThisBrowser, testNotificationAccepted }),
       detail: testNotificationAccepted
         ? "The push provider accepted the test. Only the device can confirm whether it displayed."
         : "Use Send test notification after this device is subscribed.",
+      label: "Send a test",
+      state: setupTestState({ matchesThisBrowser, testNotificationAccepted }),
     },
   ];
 }
@@ -493,12 +493,12 @@ function buildDiagnostics({
     permissionRow(permission),
     browserSubscriptionRow(endpoint, matchesThisBrowser),
     {
-      label: "Server-tracked subscriptions for this owner",
-      state: subscriptions.length > 0 ? "ok" : "warn",
       detail:
         subscriptions.length > 0
           ? `${subscriptions.length} saved across all of this owner's devices.`
           : "Server has no saved subscriptions yet for this owner.",
+      label: "Server-tracked subscriptions for this owner",
+      state: subscriptions.length > 0 ? "ok" : "warn",
     },
     deliveryHealthRow(lastSubscription),
   ];
@@ -564,27 +564,27 @@ export function WebPushSettings({
 
   async function refreshSubscriptionState() {
     if (!hasNavigatorFeature("serviceWorker")) {
-      dispatch({ type: "swState", swState: "unsupported" });
+      dispatch({ swState: "unsupported", type: "swState" });
       return;
     }
     try {
       const registration = await navigator.serviceWorker.getRegistration("/");
       await registration?.update().catch(() => undefined);
-      dispatch({ type: "swState", swState: registration ? "registered" : "absent" });
+      dispatch({ swState: registration ? "registered" : "absent", type: "swState" });
       const existing = await registration?.pushManager.getSubscription();
-      dispatch({ type: "endpoint", endpoint: existing?.endpoint ?? null });
+      dispatch({ endpoint: existing?.endpoint ?? null, type: "endpoint" });
     } catch {
-      dispatch({ type: "swState", swState: "unknown" });
+      dispatch({ swState: "unknown", type: "swState" });
     }
   }
 
   useEffect(() => {
     const reason = detectSupport(config);
     dispatch({
-      type: "supportDetected",
-      unavailable: reason,
       permission: "Notification" in window ? Notification.permission : "unknown",
       status: reason ? "Unavailable in this browser" : `Permission: ${Notification.permission}`,
+      type: "supportDetected",
+      unavailable: reason,
     });
     if (reason) {
       return;
@@ -596,7 +596,7 @@ export function WebPushSettings({
         if (cancelled) {
           return;
         }
-        dispatch({ type: "swState", swState: registration ? "registered" : "absent" });
+        dispatch({ swState: registration ? "registered" : "absent", type: "swState" });
         await registration?.update().catch(() => undefined);
         const existing = await registration?.pushManager.getSubscription();
         if (cancelled) {
@@ -604,18 +604,18 @@ export function WebPushSettings({
         }
         if (existing) {
           dispatch({
-            type: "subscribed",
             endpoint: existing.endpoint,
             status: "Web Push is enabled for this browser.",
+            type: "subscribed",
           });
         }
       })
       .catch(() => {
         if (!cancelled) {
           dispatch({
-            type: "swState",
-            swState: "unknown",
             status: "Could not inspect this browser's Web Push subscription.",
+            swState: "unknown",
+            type: "swState",
           });
         }
       });
@@ -632,45 +632,45 @@ export function WebPushSettings({
     setTestStatus(null);
     try {
       const registration = await navigator.serviceWorker.register("/pdpp-dashboard-sw.js");
-      dispatch({ type: "swState", swState: "registered" });
+      dispatch({ swState: "registered", type: "swState" });
       const result = await Notification.requestPermission();
-      dispatch({ type: "permission", permission: result });
+      dispatch({ permission: result, type: "permission" });
       if (result !== "granted") {
         dispatch({
-          type: "status",
           status:
             result === "denied"
               ? "Permission denied. Enable notifications in browser settings."
               : "Permission was not granted.",
+          type: "status",
         });
         return;
       }
       const subscription =
         (await registration.pushManager.getSubscription()) ??
         (await registration.pushManager.subscribe({
-          userVisibleOnly: true,
           applicationServerKey: urlBase64ToUint8Array(config.public_key),
+          userVisibleOnly: true,
         }));
       const response = await fetch("/_ref/web-push/subscriptions", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
         body: JSON.stringify({
-          subscription: subscription.toJSON(),
-          platform: navigator.platform || null,
           device_label: "PDPP browser",
+          platform: navigator.platform || null,
+          subscription: subscription.toJSON(),
         }),
+        credentials: "same-origin",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        method: "POST",
       });
       if (!response.ok) {
         throw await webPushResponseError(response, "Subscription failed");
       }
       dispatch({
-        type: "subscribed",
         endpoint: subscription.endpoint,
         status: "Web Push is enabled for this browser.",
+        type: "subscribed",
       });
     } catch (err) {
-      dispatch({ type: "status", status: err instanceof Error ? err.message : "Failed to enable Web Push." });
+      dispatch({ status: err instanceof Error ? err.message : "Failed to enable Web Push.", type: "status" });
     } finally {
       setBusy(false);
     }
@@ -681,9 +681,9 @@ export function WebPushSettings({
     setTestStatus("Sending test notification…");
     try {
       const response = await fetch("/_ref/web-push/test", {
-        method: "POST",
         credentials: "same-origin",
         headers: { Accept: "application/json" },
+        method: "POST",
       });
       if (!response.ok) {
         throw await webPushResponseError(response, "Test notification failed");
@@ -721,18 +721,18 @@ export function WebPushSettings({
       }
       if (targetEndpoint) {
         const response = await fetch("/_ref/web-push/subscriptions", {
-          method: "DELETE",
-          credentials: "same-origin",
-          headers: { "Content-Type": "application/json", Accept: "application/json" },
           body: JSON.stringify({ endpoint: targetEndpoint }),
+          credentials: "same-origin",
+          headers: { Accept: "application/json", "Content-Type": "application/json" },
+          method: "DELETE",
         });
         if (!response.ok) {
           throw await webPushResponseError(response, "Unsubscribe failed");
         }
       }
-      dispatch({ type: "disabled", status: "Web Push is disabled for this browser." });
+      dispatch({ status: "Web Push is disabled for this browser.", type: "disabled" });
     } catch (err) {
-      dispatch({ type: "status", status: err instanceof Error ? err.message : "Failed to disable Web Push." });
+      dispatch({ status: err instanceof Error ? err.message : "Failed to disable Web Push.", type: "status" });
     } finally {
       setBusy(false);
     }
@@ -746,17 +746,17 @@ export function WebPushSettings({
 
   const lastSubscription = subscriptions[0];
   const matchesThisBrowser = endpoint ? subscriptions.some((s) => s.endpoint === endpoint && !s.revoked_at) : false;
-  const currentDeviceStatus = deviceStatus({ unavailable, permission, endpoint, matchesThisBrowser, swState });
-  const setupSteps = buildSetupSteps({ unavailable, permission, endpoint, matchesThisBrowser, testStatus });
+  const currentDeviceStatus = deviceStatus({ endpoint, matchesThisBrowser, permission, swState, unavailable });
+  const setupSteps = buildSetupSteps({ endpoint, matchesThisBrowser, permission, testStatus, unavailable });
 
   const diagnostics = buildDiagnostics({
     config,
-    swState,
-    permission,
     endpoint,
-    matchesThisBrowser,
-    subscriptions,
     lastSubscription,
+    matchesThisBrowser,
+    permission,
+    subscriptions,
+    swState,
   });
 
   // Whether this browser is set up and healthy, so the demoted summary line can
@@ -791,7 +791,7 @@ export function WebPushSettings({
           <div className="flex shrink-0 items-center gap-2">
             {enabled || unavailable ? null : (
               <button
-                className={buttonVariants({ variant: "default", size: "sm" })}
+                className={buttonVariants({ size: "sm", variant: "default" })}
                 disabled={busy}
                 onClick={enable}
                 type="button"
@@ -888,7 +888,7 @@ function WebPushSetupDetails({
       <p className="pdpp-caption mt-1 max-w-3xl text-muted-foreground">{caveat}</p>
       <div className="mt-3 flex flex-wrap gap-2">
         <button
-          className={buttonVariants({ variant: "default", size: "sm" })}
+          className={buttonVariants({ size: "sm", variant: "default" })}
           disabled={busy || Boolean(unavailable)}
           onClick={onEnable}
           type="button"

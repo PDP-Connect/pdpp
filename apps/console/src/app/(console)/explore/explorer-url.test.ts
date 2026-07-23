@@ -22,8 +22,8 @@ const NO_CONNECTION_TOKEN = "~";
 
 test("buildExplorerHref preserves repeated connection params (no collapse)", () => {
   const href = buildExplorerHref(dashboardRoutes, {
-    query: "payroll",
     connectionIds: ["gmail-personal", "gmail-work"],
+    query: "payroll",
     streams: ["messages"],
   });
   const url = new URL(href, "https://example.test");
@@ -61,10 +61,10 @@ test("buildExplorerHref carries the date window when set", () => {
 
 test("buildExplorerHref preserves date window alongside chip + query state", () => {
   const href = buildExplorerHref(dashboardRoutes, {
-    query: "invoice",
     connectionIds: ["gmail-personal"],
-    streams: ["messages"],
+    query: "invoice",
     since: "2026-05-21",
+    streams: ["messages"],
     until: "2026-05-28",
   });
   const url = new URL(href, "https://example.test");
@@ -82,10 +82,10 @@ test("buildExplorerHref omits empty date params", () => {
 
 test("explorerPeekParam round-trips a concrete connection_id when known", () => {
   const entry = {
-    connectorId: "gmail",
     connectionId: "conn-personal",
-    stream: "messages",
+    connectorId: "gmail",
     recordId: "ABC123",
+    stream: "messages",
   };
   const raw = explorerPeekParam(entry);
   assert.equal(raw, "gmail::conn-personal::messages::ABC123");
@@ -94,7 +94,7 @@ test("explorerPeekParam round-trips a concrete connection_id when known", () => 
 });
 
 test("explorerPeekParam encodes the no-connection sentinel when unknown", () => {
-  const entry = { connectorId: "gmail", connectionId: null, stream: "messages", recordId: "ABC123" };
+  const entry = { connectionId: null, connectorId: "gmail", recordId: "ABC123", stream: "messages" };
   const raw = explorerPeekParam(entry);
   assert.equal(raw, `gmail::${NO_CONNECTION_TOKEN}::messages::ABC123`);
   const parsed = parseExplorerPeekParam(raw);
@@ -105,16 +105,16 @@ test("explorerPeekParam keeps two same-connector connections distinct in the URL
   // Regression: previously the peek param was `connectorId::stream::recordId`,
   // so two Gmail connections viewing the same logical record id collided.
   const a = explorerPeekParam({
-    connectorId: "gmail",
     connectionId: "conn-personal",
-    stream: "messages",
+    connectorId: "gmail",
     recordId: "ABC123",
+    stream: "messages",
   });
   const b = explorerPeekParam({
-    connectorId: "gmail",
     connectionId: "conn-work",
-    stream: "messages",
+    connectorId: "gmail",
     recordId: "ABC123",
+    stream: "messages",
   });
   assert.notEqual(a, b);
 });
@@ -133,10 +133,10 @@ test("explorerPeekParam round-trips record ids containing the ':: ' separator", 
   // contains `::`, so a record id like `thread::42` would parse as five
   // parts and be rejected, or worse, silently split mid-id.
   const entry = {
-    connectorId: "imap",
     connectionId: "conn-personal",
-    stream: "threads",
+    connectorId: "imap",
     recordId: "thread::42",
+    stream: "threads",
   };
   const raw = explorerPeekParam(entry);
   assert.deepEqual(parseExplorerPeekParam(raw), entry);
@@ -144,10 +144,10 @@ test("explorerPeekParam round-trips record ids containing the ':: ' separator", 
 
 test("explorerPeekParam round-trips ids containing /, #, and spaces", () => {
   const entry = {
-    connectorId: "github",
     connectionId: "owner/repo#42",
-    stream: "issues/comments",
+    connectorId: "github",
     recordId: "comment id with spaces",
+    stream: "issues/comments",
   };
   const raw = explorerPeekParam(entry);
   assert.deepEqual(parseExplorerPeekParam(raw), entry);
@@ -155,10 +155,10 @@ test("explorerPeekParam round-trips ids containing /, #, and spaces", () => {
 
 test("explorerPeekParam round-trips a stream containing the separator", () => {
   const entry = {
-    connectorId: "custom",
     connectionId: "conn-a",
-    stream: "ns::events",
+    connectorId: "custom",
     recordId: "rec-1",
+    stream: "ns::events",
   };
   const raw = explorerPeekParam(entry);
   assert.deepEqual(parseExplorerPeekParam(raw), entry);
@@ -166,10 +166,10 @@ test("explorerPeekParam round-trips a stream containing the separator", () => {
 
 test("explorerPeekParam round-trips a connection id containing the separator", () => {
   const entry = {
-    connectorId: "gmail",
     connectionId: "tenant::user",
-    stream: "messages",
+    connectorId: "gmail",
     recordId: "ABC123",
+    stream: "messages",
   };
   const raw = explorerPeekParam(entry);
   assert.deepEqual(parseExplorerPeekParam(raw), entry);
@@ -177,14 +177,14 @@ test("explorerPeekParam round-trips a connection id containing the separator", (
 
 function fakeEntry(displayAt: string, recordId: string): ExplorerFeedEntry {
   return {
-    connectorId: "gmail",
-    connectionId: "conn-personal",
     connectionDisplayName: "Personal Gmail",
-    stream: "messages",
-    recordId,
-    emittedAt: displayAt,
+    connectionId: "conn-personal",
+    connectorId: "gmail",
     displayAt,
     displayIsSemantic: false,
+    emittedAt: displayAt,
+    recordId,
+    stream: "messages",
   };
 }
 

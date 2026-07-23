@@ -22,28 +22,28 @@
 // Runs from `predev` and `prebuild`. Vercel builds from apps/site with the
 // monorepo root available, so the relative path to the repo root resolves.
 
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import path from 'node:path';
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
-const siteDir = path.join(scriptDir, '..');
-const repoRoot = path.join(siteDir, '..', '..');
-const contentDir = path.join(siteDir, 'content', 'docs');
-const headerDir = path.join(siteDir, 'spec-headers');
+const siteDir = path.join(scriptDir, "..");
+const repoRoot = path.join(siteDir, "..", "..");
+const contentDir = path.join(siteDir, "content", "docs");
+const headerDir = path.join(siteDir, "spec-headers");
 
 // The normative spec files that are single-sourced from the repo root.
 // Non-spec docs (reference-implementation*, open-questions, extension specs,
 // index, README) live only under content/docs and are NOT touched here.
 const SPECS = [
-  'spec-architecture',
-  'spec-auth-design',
-  'spec-change-tracking',
-  'spec-collection-profile',
-  'spec-connector-ecosystem',
-  'spec-core',
-  'spec-data-query-api',
-  'spec-deferred',
+  "spec-architecture",
+  "spec-auth-design",
+  "spec-change-tracking",
+  "spec-collection-profile",
+  "spec-connector-ecosystem",
+  "spec-core",
+  "spec-data-query-api",
+  "spec-deferred",
 ];
 
 // Root header shape (uniform across all spec files):
@@ -56,34 +56,38 @@ const SPECS = [
 //            site drops because the frontmatter block already separates head
 //            from body.
 function extractBody(rootText, specName) {
-  const lines = rootText.split('\n');
+  const lines = rootText.split("\n");
 
-  if (!lines[0]?.startsWith('# ')) {
+  if (!lines[0]?.startsWith("# ")) {
     throw new Error(
       `sync-spec-docs: ${specName}.md: expected a '# Title' heading on line 1, got: ${JSON.stringify(lines[0])}`
     );
   }
-  if (!lines[2]?.startsWith('Status:') || !lines[3]?.startsWith('Date:')) {
+  if (!(lines[2]?.startsWith("Status:") && lines[3]?.startsWith("Date:"))) {
     throw new Error(
       `sync-spec-docs: ${specName}.md: expected 'Status:'/'Date:' on lines 3-4; header shape changed. ` +
-        `Update scripts/sync-spec-docs.mjs to match the new root format.`
+        "Update scripts/sync-spec-docs.mjs to match the new root format."
     );
   }
 
-  const status = lines[2].slice('Status:'.length).trim();
-  const date = lines[3].slice('Date:'.length).trim();
+  const status = lines[2].slice("Status:".length).trim();
+  const date = lines[3].slice("Date:".length).trim();
 
   // Drop the four header lines, then any leading blank lines.
-  let body = lines.slice(4);
-  while (body.length && body[0].trim() === '') body.shift();
-
-  // Drop a leading horizontal rule + following blanks (header/body separator).
-  if (body[0] === '---') {
+  const body = lines.slice(4);
+  while (body.length && body[0].trim() === "") {
     body.shift();
-    while (body.length && body[0].trim() === '') body.shift();
   }
 
-  return { status, date, body: body.join('\n') };
+  // Drop a leading horizontal rule + following blanks (header/body separator).
+  if (body[0] === "---") {
+    body.shift();
+    while (body.length && body[0].trim() === "") {
+      body.shift();
+    }
+  }
+
+  return { body: body.join("\n"), date, status };
 }
 
 // The header sidecar mirrors the root Status/Date inside its <Callout>. Root is
@@ -122,12 +126,12 @@ for (const spec of SPECS) {
     throw new Error(`sync-spec-docs: missing header sidecar ${headerPath}`);
   }
 
-  const header = readFileSync(headerPath, 'utf8').replace(/\s*$/, '');
-  const root = extractBody(readFileSync(rootPath, 'utf8'), spec);
+  const header = readFileSync(headerPath, "utf8").replace(/\s*$/, "");
+  const root = extractBody(readFileSync(rootPath, "utf8"), spec);
   checkStatusDateDrift(header, root, spec);
 
   // header (frontmatter + Callout) + blank line + normative body.
-  const out = `${header}\n\n${root.body.replace(/\s*$/, '')}\n`;
+  const out = `${header}\n\n${root.body.replace(/\s*$/, "")}\n`;
   writeFileSync(outPath, out);
   generated += 1;
 }

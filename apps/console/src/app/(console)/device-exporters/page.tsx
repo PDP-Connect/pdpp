@@ -35,10 +35,10 @@ export const metadata = {
 
 const DEVICE_STATUS_VOCABULARY = {
   active: { label: "active", tone: "success" },
+  fresh: { label: "fresh", tone: "success" },
+  never: { label: "no heartbeat", tone: "warning" },
   revoked: { label: "revoked", tone: "danger" },
   stale: { label: "stale", tone: "warning" },
-  never: { label: "no heartbeat", tone: "warning" },
-  fresh: { label: "fresh", tone: "success" },
 } as const;
 
 export default async function DeviceExportersPage({
@@ -69,7 +69,7 @@ export default async function DeviceExportersPage({
   // already validated against the supported sets, so it never names an arbitrary
   // value. The bare page (no deep-link) keeps its existing diagnostics framing.
   const addConnectionBreadcrumbs = defaultConnectorId
-    ? [{ label: "Sources", href: "/sources" }, { label: `Add ${formatConnectorKeyForDisplay(defaultConnectorId)}` }]
+    ? [{ href: "/sources", label: "Sources" }, { label: `Add ${formatConnectorKeyForDisplay(defaultConnectorId)}` }]
     : undefined;
 
   try {

@@ -150,7 +150,7 @@ function transitionPointerMove(
   event: Extract<MobileKeyboardFocusEvent, { type: "pointermove" }>
 ): MobileKeyboardFocusTransition {
   const gesture = state.gesture;
-  if (!gesture || gesture.phase !== "active" || gesture.pointerId !== event.pointerId) {
+  if (gesture?.phase !== "active" || gesture.pointerId !== event.pointerId) {
     return { effect: "none", state };
   }
   return {
@@ -189,7 +189,7 @@ function transitionPointerUp(
   event: Extract<MobileKeyboardFocusEvent, { type: "pointerup" }>
 ): MobileKeyboardFocusTransition {
   const gesture = state.gesture;
-  if (!gesture || gesture.phase !== "active" || gesture.pointerId !== event.pointerId || gesture.moved) {
+  if (gesture?.phase !== "active" || gesture.pointerId !== event.pointerId || gesture.moved) {
     return gesture?.pointerId === event.pointerId && gesture.moved ? clearGesture(state) : { effect: "none", state };
   }
   if (isPointInsideRect(event.remotePoint, state.editableRectCache?.rect ?? null)) {

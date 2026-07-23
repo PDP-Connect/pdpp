@@ -20,10 +20,27 @@ export interface PurposeDoc {
 }
 
 export const PDPP_PURPOSE_DOCS: Record<string, PurposeDoc> = {
+  "https://pdpp.org/purpose/ai_training": {
+    description:
+      "Training or fine-tuning machine learning models. Requires explicit affirmative consent and may persist beyond a single session.",
+    label: "ai_training",
+    max_retention: "P3Y",
+    permitted_uses: [
+      "Training or fine-tuning ML recommendation models",
+      "Improving content ranking and personalization",
+    ],
+    prohibited_uses: [
+      "Advertising targeting",
+      "Resale or transfer to third parties",
+      "Identity verification or background checks",
+    ],
+    requires_explicit_consent: true,
+    uri: "https://pdpp.org/purpose/ai_training",
+  },
   "https://pdpp.org/purpose/research": {
-    uri: "https://pdpp.org/purpose/research",
-    label: "research",
     description: "Academic or market research that produces aggregate, non-identifying findings.",
+    label: "research",
+    max_retention: "P1Y",
     permitted_uses: [
       "Aggregate statistical analysis",
       "Network topology and influence studies",
@@ -35,24 +52,7 @@ export const PDPP_PURPOSE_DOCS: Record<string, PurposeDoc> = {
       "Resale or transfer to third parties",
       "Individual-level profiling",
     ],
-    max_retention: "P1Y",
     requires_explicit_consent: false,
-  },
-  "https://pdpp.org/purpose/ai_training": {
-    uri: "https://pdpp.org/purpose/ai_training",
-    label: "ai_training",
-    description:
-      "Training or fine-tuning machine learning models. Requires explicit affirmative consent and may persist beyond a single session.",
-    permitted_uses: [
-      "Training or fine-tuning ML recommendation models",
-      "Improving content ranking and personalization",
-    ],
-    prohibited_uses: [
-      "Advertising targeting",
-      "Resale or transfer to third parties",
-      "Identity verification or background checks",
-    ],
-    max_retention: "P3Y",
-    requires_explicit_consent: true,
+    uri: "https://pdpp.org/purpose/research",
   },
 };

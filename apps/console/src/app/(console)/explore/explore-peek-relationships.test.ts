@@ -15,8 +15,6 @@ function stubDataSource(over: {
 }): DashboardDataSource {
   const summaries = over.summaries ?? [{ connection_id: "conn_bank_chk", connector_id: "chase" }];
   return {
-    listConnectorSummaries: () => Promise.resolve({ object: "list", data: summaries, has_more: false } as never),
-    listConnectorManifests: () => Promise.resolve(over.manifests ?? []),
     getStreamMetadata: (_connectorId: string, stream: string) => {
       const meta = over.streamMetadata?.[stream];
       if (!meta) {
@@ -24,6 +22,8 @@ function stubDataSource(over: {
       }
       return Promise.resolve(meta);
     },
+    listConnectorManifests: () => Promise.resolve(over.manifests ?? []),
+    listConnectorSummaries: () => Promise.resolve({ data: summaries, has_more: false, object: "list" } as never),
   } as unknown as DashboardDataSource;
 }
 
@@ -35,7 +35,7 @@ test("buildPeekRelationships resolves a child → parent back-link from a child-
       streams: [
         {
           name: "transactions",
-          relationships: [{ name: "account", stream: "accounts", foreign_key: "account_id", cardinality: "has_one" }],
+          relationships: [{ cardinality: "has_one", foreign_key: "account_id", name: "account", stream: "accounts" }],
         },
         { name: "accounts" },
       ],
@@ -43,11 +43,11 @@ test("buildPeekRelationships resolves a child → parent back-link from a child-
   ];
   const rels = await buildPeekRelationships(
     {
-      connectorId: "chase",
       connectionId: "conn_bank_chk",
-      stream: "transactions",
+      connectorId: "chase",
+      data: { account_id: "acct_checking_4417", amount: -640 },
       recordId: "rec_tx_41203",
-      data: { amount: -640, account_id: "acct_checking_4417" },
+      stream: "transactions",
     },
     stubDataSource({ manifests })
   );
@@ -65,25 +65,25 @@ test("buildPeekRelationships resolves a parent → child has_many link from expa
   // Inspecting a PARENT (accounts) record whose metadata declares has_many → transactions.
   const streamMetadata: Record<string, StreamMetadata> = {
     accounts: {
-      name: "accounts",
       expand_capabilities: [
         {
+          cardinality: "has_many",
+          child_parent_key_field: "account_id",
           name: "transactions",
           target_stream: "transactions",
-          child_parent_key_field: "account_id",
-          cardinality: "has_many",
           usable: true,
         },
       ],
+      name: "accounts",
     },
   };
   const rels = await buildPeekRelationships(
     {
-      connectorId: "chase",
       connectionId: "conn_bank_chk",
-      stream: "accounts",
-      recordId: "acct_checking_4417",
+      connectorId: "chase",
       data: { name: "checking ····4417" },
+      recordId: "acct_checking_4417",
+      stream: "accounts",
     },
     stubDataSource({ streamMetadata })
   );
@@ -99,14 +99,14 @@ test("buildPeekRelationships resolves a parent → child has_many link from expa
 test("buildPeekRelationships returns empty (never throws) when no declared edge exists", async () => {
   const rels = await buildPeekRelationships(
     {
-      connectorId: "gmail",
       connectionId: "conn_mail_work",
-      stream: "messages",
+      connectorId: "gmail",
+      data: { from: "dana@studio.example", subject: "hi" },
       recordId: "rec_msg_8841",
-      data: { subject: "hi", from: "dana@studio.example" },
+      stream: "messages",
     },
     stubDataSource({ summaries: [{ connection_id: "conn_mail_work", connector_id: "gmail" }] })
   );
-  assert.deepEqual(rels, { relatedLinks: [], reverseChildListLinks: [], parentBackLinks: [] });
+  assert.deepEqual(rels, { parentBackLinks: [], relatedLinks: [], reverseChildListLinks: [] });
   assert.equal(hasPeekRelationships(rels), false);
 });

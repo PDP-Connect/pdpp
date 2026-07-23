@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 export function GET(request: Request) {
   return jsonResponse(
     executeAsAuthorizationServerMetadata(
-      { issuer: sandboxIssuerFromRequest(request), dynamicClientRegistrationEnabled: false },
+      { dynamicClientRegistrationEnabled: false, issuer: sandboxIssuerFromRequest(request) },
       createSandboxAsAuthorizationServerMetadataDependencies()
     )
   );

@@ -9,7 +9,7 @@ test("a declared-currency integer renders as money (the live chase bug)", () => 
   // chase current_activity `amount: 3000` (declared `currency`) must read
   // `$30.00`, never the raw `3000`.
   const rendered = renderValue(3000, "currency");
-  assert.deepEqual(rendered, { text: "$30.00", empty: false, money: true });
+  assert.deepEqual(rendered, { empty: false, money: true, text: "$30.00" });
   assert.ok(valueClassName(rendered).includes("tabular-nums"));
 });
 
@@ -38,12 +38,12 @@ test("an undeclared integer is NOT reinterpreted as cents", () => {
   // Without a declared currency type the value is shown verbatim; the detail
   // table never guesses a unit from magnitude.
   const rendered = renderValue(3000, undefined);
-  assert.deepEqual(rendered, { text: "3000", empty: false, money: false });
+  assert.deepEqual(rendered, { empty: false, money: false, text: "3000" });
 });
 
 test("a plain string renders verbatim and is not marked empty or money", () => {
   const rendered = renderValue("posted", "text");
-  assert.deepEqual(rendered, { text: "posted", empty: false, money: false });
+  assert.deepEqual(rendered, { empty: false, money: false, text: "posted" });
   assert.equal(valueClassName(rendered), "pdpp-caption break-words");
 });
 

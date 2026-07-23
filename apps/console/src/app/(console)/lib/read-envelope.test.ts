@@ -30,13 +30,13 @@ test("adaptListEnvelope reads canonical links.next and meta.warnings when presen
   const env = adaptListEnvelope<{ id: string }>({
     data: [],
     has_more: false,
-    links: { self: "/v1/streams/x/records", next: "/v1/streams/x/records?cursor=abc" },
+    links: { next: "/v1/streams/x/records?cursor=abc", self: "/v1/streams/x/records" },
     meta: {
+      count: { kind: "estimated", value: 42 },
       warnings: [
         { code: "deprecated_alias", message: "connector_instance_id is deprecated" },
         { code: "count_downgraded", dropped_parameter: "count=exact" },
       ],
-      count: { kind: "estimated", value: 42 },
     },
   });
   assert.equal(env.links.self, "/v1/streams/x/records");
@@ -70,9 +70,9 @@ test("adaptListEnvelope ignores unknown count kinds", () => {
 
 test("extractReadWarnings works on single-record envelopes", () => {
   const warnings = extractReadWarnings({
-    object: "record",
     data: { id: "rec_1" },
     meta: { warnings: [{ code: "skipped_source", message: "x not applicable" }] },
+    object: "record",
   });
   assert.equal(warnings.length, 1);
   assert.equal(warnings[0]?.code, "skipped_source");

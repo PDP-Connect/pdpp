@@ -59,11 +59,11 @@ export async function GET(request: Request): Promise<Response> {
     record_count: number;
   }
   const data: SandboxStream[] = slice.map((s) => ({
-    object: s.object,
-    name: s.name,
-    record_count: s.record_count,
-    last_updated: s.last_updated,
     freshness: { last_updated: s.last_updated },
+    last_updated: s.last_updated,
+    name: s.name,
+    object: s.object,
+    record_count: s.record_count,
   }));
 
   interface SandboxStreamsEnvelope {
@@ -73,9 +73,9 @@ export async function GET(request: Request): Promise<Response> {
     object: "list";
   }
   const envelope: SandboxStreamsEnvelope = {
-    object: "list",
-    has_more: hasMore,
     data,
+    has_more: hasMore,
+    object: "list",
   };
   if (hasMore) {
     envelope.next_cursor = String(next);

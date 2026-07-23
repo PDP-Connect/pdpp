@@ -29,7 +29,7 @@ test("summarizeIngestCounts totals source-instance accepted and rejected counts"
 test("formatLastError prefers message, then code, then generic state", () => {
   assert.equal(formatLastError(null), "none");
   assert.equal(
-    formatLastError({ message: "browser session expired", code: "session_expired" }),
+    formatLastError({ code: "session_expired", message: "browser session expired" }),
     "browser session expired"
   );
   assert.equal(formatLastError({ code: "rate_limited" }), "rate_limited");

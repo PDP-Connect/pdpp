@@ -24,26 +24,26 @@ test("409 classifies as session_consumed", () => {
 });
 
 test("410 with no code classifies as session_expired (the common expiry case)", () => {
-  const { reason } = classifyStreamReachFailure({ probeStatus: 410, probeCode: null });
+  const { reason } = classifyStreamReachFailure({ probeCode: null, probeStatus: 410 });
   assert.equal(reason, "session_expired");
 });
 
 test("410 with session_expired code classifies as session_expired", () => {
-  const { reason } = classifyStreamReachFailure({ probeStatus: 410, probeCode: "session_expired" });
+  const { reason } = classifyStreamReachFailure({ probeCode: "session_expired", probeStatus: 410 });
   assert.equal(reason, "session_expired");
 });
 
 test("410 with companion_unavailable code classifies as companion_unavailable", () => {
   // The two 410 cases share a status code; only the body code separates them.
   const { reason } = classifyStreamReachFailure({
-    probeStatus: 410,
     probeCode: "companion_unavailable",
+    probeStatus: 410,
   });
   assert.equal(reason, "companion_unavailable");
 });
 
 test("a thrown probe (no HTTP response) classifies as unreachable_origin", () => {
-  const { reason } = classifyStreamReachFailure({ probeStatus: null, probeError: true });
+  const { reason } = classifyStreamReachFailure({ probeError: true, probeStatus: null });
   assert.equal(reason, "unreachable_origin");
 });
 

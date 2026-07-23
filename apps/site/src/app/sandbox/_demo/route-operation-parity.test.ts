@@ -85,11 +85,11 @@ async function collectRouteSources(dir = SANDBOX_DIR): Promise<RouteSource[]> {
     }
     const src = await readFile(full, "utf8");
     routes.push({
-      rel: relative(SANDBOX_DIR, full).split(sep).join("/"),
-      src,
       operations: [...src.matchAll(OPERATIONS_IMPORT_RE)]
         .map((match) => match[1])
         .filter((operation): operation is string => typeof operation === "string"),
+      rel: relative(SANDBOX_DIR, full).split(sep).join("/"),
+      src,
     });
   }
   return routes.sort((a, b) => a.rel.localeCompare(b.rel));

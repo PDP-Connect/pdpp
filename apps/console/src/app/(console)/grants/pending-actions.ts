@@ -32,8 +32,8 @@ export async function approvePendingApprovalAction(formData: FormData) {
 
   try {
     await approvePendingApproval({
-      kind,
       approvalId,
+      kind,
       subjectId,
     });
   } catch (err) {
@@ -52,8 +52,8 @@ export async function denyPendingApprovalAction(formData: FormData) {
 
   try {
     await denyPendingApproval({
-      kind,
       approvalId,
+      kind,
       subjectId,
     });
   } catch (err) {

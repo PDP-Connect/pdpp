@@ -52,7 +52,7 @@ export function buildStaticSecretPayload(
     ? bundledSecretPayload(setup, formData)
     : singleSecretPayload(setup, formData);
   if ("error" in result) {
-    return { ok: false, error: result.error };
+    return { error: result.error, ok: false };
   }
   return { ok: true, secret: result.secret };
 }

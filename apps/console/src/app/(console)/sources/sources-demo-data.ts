@@ -37,13 +37,13 @@ function health(
   extra: Partial<RefConnectionHealthSnapshot> = {}
 ): RefConnectionHealthSnapshot {
   return {
-    state,
-    reason_code: null,
-    last_success_at: "2026-06-12T08:00:00Z",
-    next_attempt_at: null,
-    badges: { stale: false, syncing: false },
     axes: EMPTY_AXES,
+    badges: { stale: false, syncing: false },
+    last_success_at: "2026-06-12T08:00:00Z",
     next_action: null,
+    next_attempt_at: null,
+    reason_code: null,
+    state,
     unknown_reasons: [],
     ...extra,
   };
@@ -66,56 +66,53 @@ function summary(
   partial: Pick<RefConnectorSummary, "connector_id" | "connection_id" | "display_name"> & Partial<RefConnectorSummary>
 ): RefConnectorSummary {
   return {
+    connection_health: health("healthy"),
     // The TYPE label (distinct from the owner's per-instance display_name), so
     // the demo exercises the real "type · account" list line shape.
     connector_display_name: typeLabel(partial.connector_id),
     connector_instance_id: partial.connection_id,
     freshness: {},
-    manifest_version: "1.0.0",
     last_run: {
-      run_id: "run_demo_0001",
-      status: "succeeded",
-      started_at: "2026-06-12T08:00:00Z",
+      event_count: 42,
+      failure_reason: null,
       finished_at: "2026-06-12T08:01:00Z",
       first_at: "2026-04-01T00:00:00Z",
       last_at: "2026-06-12T08:01:00Z",
-      event_count: 42,
-      failure_reason: null,
+      run_id: "run_demo_0001",
+      started_at: "2026-06-12T08:00:00Z",
+      status: "succeeded",
     },
     last_successful_run: {
-      run_id: "run_demo_0001",
-      status: "succeeded",
-      started_at: "2026-06-12T08:00:00Z",
+      event_count: 42,
+      failure_reason: null,
       finished_at: "2026-06-12T08:01:00Z",
       first_at: "2026-04-01T00:00:00Z",
       last_at: "2026-06-12T08:01:00Z",
-      event_count: 42,
-      failure_reason: null,
+      run_id: "run_demo_0001",
+      started_at: "2026-06-12T08:00:00Z",
+      status: "succeeded",
     },
-    schedule: null,
+    manifest_version: "1.0.0",
     next_action: null,
-    connection_health: health("healthy"),
-    streams: ["messages", "threads"],
+    schedule: null,
     stream_count: 2,
+    streams: ["messages", "threads"],
     total_records: 1234,
     ...partial,
   };
 }
 
 const GMAIL = summary({
-  connector_id: "gmail",
-  connection_id: "conn_gmail_personal_01",
-  display_name: "Gmail (personal)",
-  streams: ["messages", "threads", "labels", "attachments"],
-  stream_count: 4,
-  total_records: 48_201,
   connection_health: health("healthy"),
+  connection_id: "conn_gmail_personal_01",
+  connector_id: "gmail",
+  display_name: "Gmail (personal)",
   schedule: {
-    object: "schedule",
-    connector_id: "gmail",
-    trigger_kind: "scheduled",
+    active_run_id: null,
     automation_mode: "unattended",
     automation_summary: "Runs automatically every day.",
+    connector_id: "gmail",
+    created_at: "2026-04-01T00:00:00Z",
     effective_mode: "automatic",
     enabled: true,
     human_attention_needed: false,
@@ -129,72 +126,75 @@ const GMAIL = summary({
     minimum_interval_warning: null,
     next_due_at: "2026-06-13T08:00:00Z",
     notification_posture: "none",
+    object: "schedule",
     policy_warning: null,
     recommended_policy: null,
     scheduler_backoff: null,
-    active_run_id: null,
-    created_at: "2026-04-01T00:00:00Z",
+    trigger_kind: "scheduled",
     updated_at: "2026-06-12T08:01:00Z",
   },
+  stream_count: 4,
+  streams: ["messages", "threads", "labels", "attachments"],
+  total_records: 48_201,
 });
 
 const CHATGPT = summary({
-  connector_id: "chatgpt",
-  connection_id: "conn_chatgpt_01",
-  display_name: "ChatGPT",
-  streams: ["conversations", "current_activity"],
-  stream_count: 2,
-  total_records: 5108,
   connection_health: health("needs_attention", {
-    reason_code: "owner_refresh_due",
     next_action: {
-      source: "structured",
-      reason_code: "owner_refresh_due",
-      owner_action: "act_elsewhere",
       action_target: "open_detail",
       attention_id: "att_demo_01",
       expires_at: null,
-      response_contract: "none",
       notification_state: "sent",
+      owner_action: "act_elsewhere",
+      reason_code: "owner_refresh_due",
+      response_contract: "none",
+      source: "structured",
     },
+    reason_code: "owner_refresh_due",
   }),
+  connection_id: "conn_chatgpt_01",
+  connector_id: "chatgpt",
+  display_name: "ChatGPT",
+  stream_count: 2,
+  streams: ["conversations", "current_activity"],
+  total_records: 5108,
 });
 
 const CHASE = summary({
-  connector_id: "chase",
-  connection_id: "conn_chase_01",
-  display_name: "Chase",
-  streams: ["statements", "current_activity"],
-  stream_count: 2,
-  total_records: 902,
   connection_health: health("blocked", { reason_code: "reauthorize_required" }),
+  connection_id: "conn_chase_01",
+  connector_id: "chase",
+  display_name: "Chase",
+  stream_count: 2,
+  streams: ["statements", "current_activity"],
+  total_records: 902,
 });
 
 const SPOTIFY_REVOKED = summary({
-  connector_id: "spotify",
-  connection_id: "conn_spotify_01",
-  display_name: "Spotify",
-  streams: ["plays", "playlists"],
-  stream_count: 2,
-  total_records: 12_044,
-  status: "revoked",
-  revoked_at: "2026-06-01T00:00:00Z",
   connection_health: health("idle"),
+  connection_id: "conn_spotify_01",
+  connector_id: "spotify",
+  display_name: "Spotify",
+  revoked_at: "2026-06-01T00:00:00Z",
+  status: "revoked",
+  stream_count: 2,
+  streams: ["plays", "playlists"],
+  total_records: 12_044,
 });
 
 const AMAZON = summary({
-  connector_id: "amazon",
-  connection_id: "conn_amazon_01",
-  display_name: "Amazon",
-  streams: ["orders", "returns", "addresses"],
-  stream_count: 3,
-  total_records: 311,
   connection_health: health("degraded", { reason_code: "partial_coverage" }),
+  connection_id: "conn_amazon_01",
+  connector_id: "amazon",
+  display_name: "Amazon",
+  stream_count: 3,
+  streams: ["orders", "returns", "addresses"],
+  total_records: 311,
 });
 
 export function buildSourcesDemoSummaries(scenario: SourcesDemoScenario): RefConnectorSummary[] {
   if (scenario === "healthy") {
-    return [GMAIL, summary({ connector_id: "github", connection_id: "conn_github_01", display_name: "GitHub" })];
+    return [GMAIL, summary({ connection_id: "conn_github_01", connector_id: "github", display_name: "GitHub" })];
   }
   if (scenario === "attention") {
     return [CHATGPT, CHASE, AMAZON];

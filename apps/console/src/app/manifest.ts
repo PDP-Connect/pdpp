@@ -12,21 +12,21 @@ import type { MetadataRoute } from "next";
 // truth) — manifests cannot carry oklch() or CSS vars, hence the imported hex.
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "PDPP Owner Console",
-    short_name: "PDPP",
-    description: "Owner console for your PDPP reference instance — connections, runs, grants, and the record explorer.",
-    start_url: "/",
-    scope: "/",
-    display: "standalone",
     background_color: LAUNCH_COLORS.light,
-    theme_color: LAUNCH_COLORS.light,
+    description: "Owner console for your PDPP reference instance — connections, runs, grants, and the record explorer.",
+    display: "standalone",
     icons: [
       {
-        src: "/brand/pdpp-favicon.svg",
-        sizes: "any",
-        type: "image/svg+xml",
         purpose: "any",
+        sizes: "any",
+        src: "/brand/pdpp-favicon.svg",
+        type: "image/svg+xml",
       },
     ],
+    name: "PDPP Owner Console",
+    scope: "/",
+    short_name: "PDPP",
+    start_url: "/",
+    theme_color: LAUNCH_COLORS.light,
   };
 }

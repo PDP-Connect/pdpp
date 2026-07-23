@@ -5,8 +5,8 @@ import type { Metadata } from "next";
 import { SandboxOverviewContent } from "../overview-content.tsx";
 
 export const metadata: Metadata = {
-  title: "PDPP reference instance · Overview",
   description: "Overview of the PDPP reference dashboard, bound to deterministic mock AS/RS data.",
+  title: "PDPP reference instance · Overview",
 };
 
 export const dynamic = "force-static";

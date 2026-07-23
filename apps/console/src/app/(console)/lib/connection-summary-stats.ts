@@ -118,11 +118,11 @@ export function summarizeConnectionHealth(overviews: readonly ConnectorOverview[
     }
   }
   return {
+    degraded,
+    needsAttention,
+    noData: overviews.length - primaryList.length,
     primaryList: primaryList.length,
     registeredTotal: overviews.length,
-    noData: overviews.length - primaryList.length,
-    needsAttention,
-    degraded,
     running,
     stale,
   };

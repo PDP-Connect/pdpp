@@ -203,10 +203,10 @@ test("parity: remote-surface's contain-fit reproduces the reviewer's exact live 
 
 test("parity: remote-surface's contain-fit never exceeds either host dimension across the required UAT viewports", () => {
   const cases: Array<{ captureHeight: number; captureWidth: number; hostHeight: number; hostWidth: number }> = [
-    { hostWidth: 1981, hostHeight: 960, captureWidth: 1400, captureHeight: 875 }, // desktop, 16:10-ish neko screen mode
-    { hostWidth: 1400, hostHeight: 1005, captureWidth: 1400, captureHeight: 875 },
-    { hostWidth: 390, hostHeight: 844, captureWidth: 412, captureHeight: 915 }, // phone portrait neko mode
-    { hostWidth: 844, hostHeight: 390, captureWidth: 915, captureHeight: 412 }, // phone landscape neko mode
+    { captureHeight: 875, captureWidth: 1400, hostHeight: 960, hostWidth: 1981 }, // desktop, 16:10-ish neko screen mode
+    { captureHeight: 875, captureWidth: 1400, hostHeight: 1005, hostWidth: 1400 },
+    { captureHeight: 915, captureWidth: 412, hostHeight: 844, hostWidth: 390 }, // phone portrait neko mode
+    { captureHeight: 412, captureWidth: 915, hostHeight: 390, hostWidth: 844 }, // phone landscape neko mode
   ];
 
   for (const { hostWidth, hostHeight, captureWidth, captureHeight } of cases) {

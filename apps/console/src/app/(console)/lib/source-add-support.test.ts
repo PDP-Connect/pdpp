@@ -41,11 +41,11 @@ function staticSecretManifest(connectorId: string): CatalogManifestLike {
     display_name: connectorId,
     runtime_requirements: { bindings: { network: {} } },
     setup: {
-      modality: "static_secret",
       credential_capture: {
         credential_kind: "api_token",
-        fields: [{ name: "api_token", label: "API token", secret: true }],
+        fields: [{ label: "API token", name: "api_token", secret: true }],
       },
+      modality: "static_secret",
     },
   } as unknown as CatalogManifestLike;
 }
@@ -80,12 +80,12 @@ function manualUploadManifest(connectorId: string): CatalogManifestLike {
     display_name: connectorId,
     runtime_requirements: { bindings: { filesystem: {} } },
     setup: {
-      modality: "manual_or_upload",
       manual_or_upload: {
         accepted_file_names: ["Timeline.json"],
         import_dir_env_var: "GOOGLE_MAPS_TIMELINE_DIR",
         label: "Timeline export",
       },
+      modality: "manual_or_upload",
     },
   };
 }
@@ -108,8 +108,8 @@ function providerAuthManifest(connectorId: string): CatalogManifestLike {
     display_name: connectorId,
     runtime_requirements: { bindings: { network: {} } },
     setup: {
-      modality: "provider_authorization",
       deployment_config: ["GOOGLE_DATAPORTABILITY_CLIENT_ID", "GOOGLE_DATAPORTABILITY_CLIENT_SECRET"],
+      modality: "provider_authorization",
     },
   };
 }

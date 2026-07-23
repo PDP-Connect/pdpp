@@ -88,21 +88,21 @@ export async function renameConnectionAction(
   await requireDashboardAccess(connectorHref(connectionId ?? ""));
   const trimmed = displayName.trim();
   if (!connectionId) {
-    return { ok: false, message: "This connector has no addressable connection to rename yet." };
+    return { message: "This connector has no addressable connection to rename yet.", ok: false };
   }
   if (!trimmed) {
-    return { ok: false, message: "Enter a label before saving." };
+    return { message: "Enter a label before saving.", ok: false };
   }
   if (trimmed.length > MAX_DISPLAY_NAME_LENGTH) {
-    return { ok: false, message: `Label is too long (max ${MAX_DISPLAY_NAME_LENGTH} characters).` };
+    return { message: `Label is too long (max ${MAX_DISPLAY_NAME_LENGTH} characters).`, ok: false };
   }
   try {
     await setConnectionDisplayName(connectionId, trimmed);
     revalidatePath("/sources");
     revalidatePath(`/sources/${encodeURIComponent(connectionId)}`);
-    return { ok: true, display_name: trimmed };
+    return { display_name: trimmed, ok: true };
   } catch (err) {
-    return { ok: false, message: errorMessage(err) };
+    return { message: errorMessage(err), ok: false };
   }
 }
 
@@ -119,8 +119,8 @@ export async function saveConnectorScheduleAction(formData: FormData) {
   let error: string | undefined;
   try {
     await (connectionId
-      ? saveConnectionSchedule(connectionId, { every, jitter, enabled })
-      : saveConnectorSchedule(connectorId, { every, jitter, enabled }));
+      ? saveConnectionSchedule(connectionId, { enabled, every, jitter })
+      : saveConnectorSchedule(connectorId, { enabled, every, jitter }));
     message = enabled ? "Schedule saved and enabled" : "Schedule saved as paused";
   } catch (err) {
     error = errorMessage(err);

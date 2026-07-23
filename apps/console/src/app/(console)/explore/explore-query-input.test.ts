@@ -51,13 +51,13 @@ const SEARCH_FALLBACK_LABEL_RE = /Search: yn/;
 
 test("typeahead surfaces source/stream/has-image/has-link/date chips, each carrying its operator", () => {
   const suggestions = buildTypeaheadSuggestions({
-    fragment: "",
     connections: CONNECTIONS,
-    streams: ["transactions"],
-    selectedConnectionIds: new Set(),
-    selectedStreams: new Set(),
+    fragment: "",
     hasImageActive: false,
     hasLinkActive: false,
+    selectedConnectionIds: new Set(),
+    selectedStreams: new Set(),
+    streams: ["transactions"],
   });
   // A source chip is EQUIVALENT to the con: operator (recognition over recall).
   const ynab = suggestions.find((s) => s.value === "cin_ynab");
@@ -73,13 +73,13 @@ test("typeahead surfaces source/stream/has-image/has-link/date chips, each carry
 
 test("typeahead narrows by the trailing fragment (recognition, fuzzy)", () => {
   const suggestions = buildTypeaheadSuggestions({
-    fragment: "yn",
     connections: CONNECTIONS,
-    streams: ["transactions"],
-    selectedConnectionIds: new Set(),
-    selectedStreams: new Set(),
+    fragment: "yn",
     hasImageActive: false,
     hasLinkActive: false,
+    selectedConnectionIds: new Set(),
+    selectedStreams: new Set(),
+    streams: ["transactions"],
   });
   const sources = suggestions.filter((s) => s.kind === "source");
   assert.equal(sources.length, 1, "only YNAB matches 'yn'");
@@ -88,13 +88,13 @@ test("typeahead narrows by the trailing fragment (recognition, fuzzy)", () => {
 
 test("typeahead excludes already-selected facets and already-active has:image (no noise)", () => {
   const suggestions = buildTypeaheadSuggestions({
-    fragment: "",
     connections: CONNECTIONS,
-    streams: ["transactions"],
-    selectedConnectionIds: new Set(["cin_ynab"]),
-    selectedStreams: new Set(["transactions"]),
+    fragment: "",
     hasImageActive: true,
     hasLinkActive: false,
+    selectedConnectionIds: new Set(["cin_ynab"]),
+    selectedStreams: new Set(["transactions"]),
+    streams: ["transactions"],
   });
   assert.ok(!suggestions.some((s) => s.value === "cin_ynab"), "selected source is not re-suggested");
   assert.ok(!suggestions.some((s) => s.value === "transactions"), "selected stream is not re-suggested");
@@ -104,14 +104,14 @@ test("typeahead excludes already-selected facets and already-active has:image (n
 test("typeahead is bounded by `limit` (popover never unbounded)", () => {
   const many = Array.from({ length: 50 }, (_, i) => ({ connectionId: `c${i}`, displayName: `Conn ${i}` }));
   const suggestions = buildTypeaheadSuggestions({
-    fragment: "",
     connections: many,
-    streams: [],
-    selectedConnectionIds: new Set(),
-    selectedStreams: new Set(),
+    fragment: "",
     hasImageActive: false,
     hasLinkActive: false,
     limit: 5,
+    selectedConnectionIds: new Set(),
+    selectedStreams: new Set(),
+    streams: [],
   });
   assert.ok(suggestions.length <= 5, "the suggestion menu is capped");
 });
@@ -129,13 +129,13 @@ test("appendOperatorToken replaces the trailing fragment with the operator token
 
 test("typeahead emits SOURCES section label on first source suggestion only", () => {
   const suggestions = buildTypeaheadSuggestions({
-    fragment: "",
     connections: CONNECTIONS,
-    streams: ["transactions"],
-    selectedConnectionIds: new Set(),
-    selectedStreams: new Set(),
+    fragment: "",
     hasImageActive: false,
     hasLinkActive: false,
+    selectedConnectionIds: new Set(),
+    selectedStreams: new Set(),
+    streams: ["transactions"],
   });
   const sources = suggestions.filter((s) => s.kind === "source");
   assert.ok(sources.length >= 2, "both connections should appear");
@@ -145,13 +145,13 @@ test("typeahead emits SOURCES section label on first source suggestion only", ()
 
 test("typeahead emits STREAMS section label on first stream suggestion", () => {
   const suggestions = buildTypeaheadSuggestions({
-    fragment: "",
     connections: [],
-    streams: ["transactions", "budgets"],
-    selectedConnectionIds: new Set(),
-    selectedStreams: new Set(),
+    fragment: "",
     hasImageActive: false,
     hasLinkActive: false,
+    selectedConnectionIds: new Set(),
+    selectedStreams: new Set(),
+    streams: ["transactions", "budgets"],
   });
   const streams = suggestions.filter((s) => s.kind === "stream");
   assert.equal(streams[0]?.sectionLabel, "STREAMS");
@@ -160,18 +160,18 @@ test("typeahead emits STREAMS section label on first stream suggestion", () => {
 
 test("typeahead attaches honest record counts when connectionCounts / streamCounts are provided", () => {
   const suggestions = buildTypeaheadSuggestions({
-    fragment: "",
-    connections: CONNECTIONS,
     connectionCounts: new Map([
       ["cin_ynab", 42],
       ["cin_chase", 7],
     ]),
-    streams: ["transactions"],
-    streamCounts: new Map([["transactions", 100]]),
-    selectedConnectionIds: new Set(),
-    selectedStreams: new Set(),
+    connections: CONNECTIONS,
+    fragment: "",
     hasImageActive: false,
     hasLinkActive: false,
+    selectedConnectionIds: new Set(),
+    selectedStreams: new Set(),
+    streamCounts: new Map([["transactions", 100]]),
+    streams: ["transactions"],
   });
   const ynab = suggestions.find((s) => s.value === "cin_ynab");
   assert.equal(ynab?.count, 42, "source carries its loaded count");
@@ -181,13 +181,13 @@ test("typeahead attaches honest record counts when connectionCounts / streamCoun
 
 test("typeahead omits counts when not provided (undefined, not 0)", () => {
   const suggestions = buildTypeaheadSuggestions({
-    fragment: "",
     connections: CONNECTIONS,
-    streams: ["transactions"],
-    selectedConnectionIds: new Set(),
-    selectedStreams: new Set(),
+    fragment: "",
     hasImageActive: false,
     hasLinkActive: false,
+    selectedConnectionIds: new Set(),
+    selectedStreams: new Set(),
+    streams: ["transactions"],
   });
   const ynab = suggestions.find((s) => s.value === "cin_ynab");
   assert.equal(ynab?.count, undefined, "no count when connectionCounts not provided");
@@ -195,13 +195,13 @@ test("typeahead omits counts when not provided (undefined, not 0)", () => {
 
 test("typeahead always appends SEARCH-fallback last when fragment is non-empty", () => {
   const suggestions = buildTypeaheadSuggestions({
-    fragment: "yn",
     connections: CONNECTIONS,
-    streams: ["transactions"],
-    selectedConnectionIds: new Set(),
-    selectedStreams: new Set(),
+    fragment: "yn",
     hasImageActive: false,
     hasLinkActive: false,
+    selectedConnectionIds: new Set(),
+    selectedStreams: new Set(),
+    streams: ["transactions"],
   });
   const last = suggestions.at(-1);
   assert.equal(last?.kind, "search", "last item is always SEARCH fallback");
@@ -211,13 +211,13 @@ test("typeahead always appends SEARCH-fallback last when fragment is non-empty",
 
 test("typeahead SEARCH-fallback is absent when fragment is empty", () => {
   const suggestions = buildTypeaheadSuggestions({
-    fragment: "",
     connections: CONNECTIONS,
-    streams: ["transactions"],
-    selectedConnectionIds: new Set(),
-    selectedStreams: new Set(),
+    fragment: "",
     hasImageActive: false,
     hasLinkActive: false,
+    selectedConnectionIds: new Set(),
+    selectedStreams: new Set(),
+    streams: ["transactions"],
   });
   assert.ok(!suggestions.some((s) => s.kind === "search"), "no SEARCH fallback when fragment is empty");
 });
@@ -225,13 +225,13 @@ test("typeahead SEARCH-fallback is absent when fragment is empty", () => {
 test("typeahead SEARCH-fallback carries SEARCH section label when it is the only suggestion", () => {
   // Fragment that matches nothing — only the SEARCH-fallback survives.
   const suggestions = buildTypeaheadSuggestions({
-    fragment: "xyzzy_no_match_ever",
     connections: [],
-    streams: [],
-    selectedConnectionIds: new Set(),
-    selectedStreams: new Set(),
+    fragment: "xyzzy_no_match_ever",
     hasImageActive: true,
     hasLinkActive: true,
+    selectedConnectionIds: new Set(),
+    selectedStreams: new Set(),
+    streams: [],
   });
   assert.equal(suggestions.length, 1);
   assert.equal(suggestions[0]?.kind, "search");

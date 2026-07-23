@@ -58,8 +58,8 @@ function parseViewport(value: unknown): ProtocolParseResult<StreamViewport | nul
   const screenWidth = optionalNumber(value.screenWidth);
   const screenHeight = optionalNumber(value.screenHeight);
   const viewport = {
-    width: typeof width === "number" ? Math.floor(width) : 0,
     height: typeof height === "number" ? Math.floor(height) : 0,
+    width: typeof width === "number" ? Math.floor(width) : 0,
     ...(typeof screenWidth === "number" ? { screenWidth: Math.floor(screenWidth) } : {}),
     ...(typeof screenHeight === "number" ? { screenHeight: Math.floor(screenHeight) } : {}),
   };

@@ -89,7 +89,7 @@ function useRefreshTokenAdvertisement(): RefreshTokenProbe {
         const grants = Array.isArray(body.grant_types_supported) ? body.grant_types_supported : [];
         const refreshTokenSupported = grants.some((g) => g === "refresh_token");
         if (!cancelled) {
-          setProbe({ state: "loaded", refreshTokenSupported });
+          setProbe({ refreshTokenSupported, state: "loaded" });
         }
       } catch {
         if (!cancelled) {
@@ -118,32 +118,32 @@ function verdictPresentation(verdict: Verdict): { label: string; body: string; t
   switch (verdict) {
     case "ready":
       return {
-        label: "Ready to share with Claude / ChatGPT",
         body: "Owner gate, origin, storage, embeddings, and refresh-token metadata all check out.",
+        label: "Ready to share with Claude / ChatGPT",
         toneClass: "border-[color:var(--success)]/30 bg-[color:var(--success-wash)] text-[color:var(--success)]",
       };
     case "attention":
       return {
-        label: "Attention needed before sharing",
         body: "Some rows are usable but suboptimal. Read the hints below.",
+        label: "Attention needed before sharing",
         toneClass: "border-[color:var(--warning)]/30 bg-[color:var(--warning-wash)] text-[color:var(--warning)]",
       };
     case "blocked":
       return {
-        label: "Not yet ready to share",
         body: "At least one row is in an error state. Fix it before handing the MCP URL to an agent.",
+        label: "Not yet ready to share",
         toneClass: "border-destructive/30 bg-destructive/5 text-destructive",
       };
     case "unknown":
       return {
-        label: "Some checks still running",
         body: "Browser-side probes have not returned yet.",
+        label: "Some checks still running",
         toneClass: "border-border/80 bg-muted/40 text-foreground",
       };
     default:
       return {
-        label: "Some checks still running",
         body: "Browser-side probes have not returned yet.",
+        label: "Some checks still running",
         toneClass: "border-border/80 bg-muted/40 text-foreground",
       };
   }
@@ -163,27 +163,27 @@ function ReadinessRowItem({ row }: { row: ReadinessRow }) {
 }
 
 const STATUS_TONE: Record<ReadinessStatus, string> = {
-  ok: "bg-[color:var(--success-wash)] text-[color:var(--success)]",
-  warn: "bg-[color:var(--warning-wash)] text-[color:var(--warning)]",
   error: "bg-destructive/10 text-destructive",
   info: "bg-muted text-muted-foreground",
+  ok: "bg-[color:var(--success-wash)] text-[color:var(--success)]",
   unknown: "bg-muted text-muted-foreground",
+  warn: "bg-[color:var(--warning-wash)] text-[color:var(--warning)]",
 };
 
 const STATUS_LABEL: Record<ReadinessStatus, string> = {
-  ok: "ready",
-  warn: "attention",
   error: "blocked",
   info: "n/a",
+  ok: "ready",
   unknown: "checking",
+  warn: "attention",
 };
 
 const STATUS_BADGE_TONE: Record<ReadinessStatus, string> = {
-  ok: "success",
-  warn: "warning",
   error: "danger",
   info: "neutral",
+  ok: "success",
   unknown: "neutral",
+  warn: "warning",
 };
 
 function StatusChip({ status }: { status: ReadinessStatus }) {

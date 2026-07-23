@@ -217,7 +217,7 @@ function RecentAttempts({ attempts }: { attempts: ClientEventSubscriptionAttempt
             </Typed>
             <span className="text-muted-foreground">{attempt.event_type}</span>
             <span className="text-muted-foreground tabular-nums">
-              {attempt.latency_ms == null ? "—" : `${attempt.latency_ms}ms`}
+              {attempt.latency_ms === null ? "—" : `${attempt.latency_ms}ms`}
             </span>
             <TypedSm className="text-muted-foreground">
               <IcTimestamp value={attempt.attempted_at} />

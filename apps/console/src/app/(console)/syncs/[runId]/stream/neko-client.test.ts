@@ -244,9 +244,9 @@ test("n.eko mobile scroll bridge defers to native n.eko touch when available", (
 });
 
 test("n.eko touch scroll intent prefers vertical drags and preserves taps", () => {
-  assert.equal(isNekoTouchScrollIntent({ startX: 20, startY: 20, currentX: 22, currentY: 26 }), false);
-  assert.equal(isNekoTouchScrollIntent({ startX: 20, startY: 20, currentX: 24, currentY: 56 }), true);
-  assert.equal(isNekoTouchScrollIntent({ startX: 20, startY: 20, currentX: 70, currentY: 44 }), false);
+  assert.equal(isNekoTouchScrollIntent({ currentX: 22, currentY: 26, startX: 20, startY: 20 }), false);
+  assert.equal(isNekoTouchScrollIntent({ currentX: 24, currentY: 56, startX: 20, startY: 20 }), true);
+  assert.equal(isNekoTouchScrollIntent({ currentX: 70, currentY: 44, startX: 20, startY: 20 }), false);
 });
 
 test("n.eko touch scroll bridge can recover parent-targeted touches by coordinates", () => {
@@ -258,9 +258,9 @@ test("n.eko touch scroll bridge can recover parent-targeted touches by coordinat
 });
 
 test("n.eko touch scroll steps preserve fractional movement between frames", () => {
-  assert.deepEqual(takeNekoTouchScrollSteps(49, 50), { steps: 0, remainderPx: 49 });
-  assert.deepEqual(takeNekoTouchScrollSteps(125, 50), { steps: 2, remainderPx: 25 });
-  assert.deepEqual(takeNekoTouchScrollSteps(-125, 50), { steps: -2, remainderPx: -25 });
+  assert.deepEqual(takeNekoTouchScrollSteps(49, 50), { remainderPx: 49, steps: 0 });
+  assert.deepEqual(takeNekoTouchScrollSteps(125, 50), { remainderPx: 25, steps: 2 });
+  assert.deepEqual(takeNekoTouchScrollSteps(-125, 50), { remainderPx: -25, steps: -2 });
 });
 
 test("n.eko native touch path does not schedule a delayed PDPP tap (no double-delivery)", async () => {
@@ -355,16 +355,16 @@ test("detectNekoPointerMappingIssues flags coordinate-space mismatch between act
   // have produced (450, 225) — a > 12 px disagreement in both axes.
   // This is the wrong-targeting fingerprint we want to catch.
   const reasons = detectNekoPointerMappingIssues({
-    insideWrapper: true,
-    insideMedia: true,
-    insideOverlay: true,
-    mapped: { x: 200, y: 100 },
-    screenState: { width: 1008, height: 1840 },
     alternativeMappings: {
-      nekoScreenOverlay: { x: 450, y: 225 },
       cssViewportOverlay: { x: 200, y: 100 },
       intrinsicMedia: { x: 451, y: 226 },
+      nekoScreenOverlay: { x: 450, y: 225 },
     },
+    insideMedia: true,
+    insideOverlay: true,
+    insideWrapper: true,
+    mapped: { x: 200, y: 100 },
+    screenState: { height: 1840, width: 1008 },
   });
   assert.ok(
     reasons.includes("coordinate-space-mismatch"),
@@ -376,41 +376,41 @@ test("detectNekoPointerMappingIssues stays quiet when active basis matches the s
   // Healthy case: active mapping equals the n.eko screen basis. No
   // mismatch reason should fire.
   const reasons = detectNekoPointerMappingIssues({
-    insideWrapper: true,
-    insideMedia: true,
-    insideOverlay: true,
-    mapped: { x: 450, y: 225 },
-    screenState: { width: 1008, height: 1840 },
     alternativeMappings: {
-      nekoScreenOverlay: { x: 451, y: 226 },
       cssViewportOverlay: { x: 200, y: 100 },
       intrinsicMedia: { x: 449, y: 224 },
+      nekoScreenOverlay: { x: 451, y: 226 },
     },
+    insideMedia: true,
+    insideOverlay: true,
+    insideWrapper: true,
+    mapped: { x: 450, y: 225 },
+    screenState: { height: 1840, width: 1008 },
   });
   assert.deepEqual(reasons, [], `expected no reasons, got ${JSON.stringify(reasons)}`);
 });
 
 test("detectNekoPointerMappingIssues still flags mapped-outside-screen and outside-media-and-overlay", () => {
   const outOfScreen = detectNekoPointerMappingIssues({
-    insideWrapper: true,
-    insideMedia: true,
-    insideOverlay: true,
-    mapped: { x: 2000, y: 100 },
-    screenState: { width: 1008, height: 1840 },
     alternativeMappings: {
       nekoScreenOverlay: { x: 2001, y: 101 },
     },
+    insideMedia: true,
+    insideOverlay: true,
+    insideWrapper: true,
+    mapped: { x: 2000, y: 100 },
+    screenState: { height: 1840, width: 1008 },
   });
   assert.ok(outOfScreen.includes("mapped-outside-screen"));
   assert.equal(outOfScreen.includes("coordinate-space-mismatch"), false);
 
   const outsideTargets = detectNekoPointerMappingIssues({
-    insideWrapper: true,
+    alternativeMappings: { nekoScreenOverlay: { x: 100, y: 100 } },
     insideMedia: false,
     insideOverlay: false,
+    insideWrapper: true,
     mapped: { x: 100, y: 100 },
-    screenState: { width: 1008, height: 1840 },
-    alternativeMappings: { nekoScreenOverlay: { x: 100, y: 100 } },
+    screenState: { height: 1840, width: 1008 },
   });
   assert.ok(outsideTargets.includes("point-outside-media-and-overlay"));
 });

@@ -336,7 +336,7 @@ function sendRawFile<T>(
     connectionId?: string | null;
     contentType?: string;
     displayName?: string | null;
-    onProgress(percent: number | null): void;
+    onProgress: (percent: number | null) => void;
   }
 ): Promise<T> {
   const url = new URL(path, window.location.origin);
@@ -386,7 +386,7 @@ async function pollArtifactStatus(
     currentFile: number;
     fileName: string;
     totalFiles: number;
-    update(progress: NonNullable<UploadState["progress"]>): void;
+    update: (progress: NonNullable<UploadState["progress"]>) => void;
   }
 ): Promise<ManualUploadArtifactWire> {
   for (let attempt = 0; attempt < 180; attempt += 1) {
@@ -552,8 +552,8 @@ async function stageManualUploadFile(
     `/_ref/connectors/${encodeURIComponent(setup.connector_id)}/manual-upload-staged-artifact`,
     file,
     {
-      contentType: "application/vnd.pdpp.manual-upload",
       connectionId: args.connectionId,
+      contentType: "application/vnd.pdpp.manual-upload",
       displayName: args.connectionId ? null : args.displayName,
       onProgress: (percent) =>
         args.setState(uploadProgress(file, { currentFile, percent, phase: "uploading", totalFiles: args.totalFiles })),
@@ -645,7 +645,7 @@ export function ManualUploadForm({
     }
     const submission = prepareSubmission(event, setup);
     if ("error" in submission) {
-      setState({ ok: false, message: submission.error });
+      setState({ message: submission.error, ok: false });
       return;
     }
 
@@ -657,7 +657,7 @@ export function ManualUploadForm({
       }
       window.location.href = await importManualUploads(setup, submission.files, submission.target, setState);
     } catch (err) {
-      setState({ ok: false, message: err instanceof Error ? err.message : "Manual upload setup failed." });
+      setState({ message: err instanceof Error ? err.message : "Manual upload setup failed.", ok: false });
     } finally {
       setPending(false);
     }

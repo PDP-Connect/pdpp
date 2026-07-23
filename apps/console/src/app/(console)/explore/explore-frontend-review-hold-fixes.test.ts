@@ -58,13 +58,13 @@ function makeTimelineRecord(over: {
   emitted_at?: string;
 }): ExploreTimelineRecord {
   return {
-    object: "timeline_record",
     connector_id: over.connector_id,
     connector_instance_id: over.connector_instance_id,
-    stream: over.stream ?? "records",
-    record_key: over.record_key ?? "rec-1",
-    emitted_at: over.emitted_at ?? "2026-01-01T00:00:00Z",
     data: { title: "test" },
+    emitted_at: over.emitted_at ?? "2026-01-01T00:00:00Z",
+    object: "timeline_record",
+    record_key: over.record_key ?? "rec-1",
+    stream: over.stream ?? "records",
   };
 }
 
@@ -76,12 +76,12 @@ function makeTimelinePage(
   }
 ): ExploreTimelinePage {
   return {
-    object: "list",
     data: records,
     has_more: opts?.has_more ?? false,
-    next_cursor: opts?.next_cursor ?? null,
-    snapshot_at: "2026-06-19T00:00:00Z",
     new_since_snapshot: 0,
+    next_cursor: opts?.next_cursor ?? null,
+    object: "list",
+    snapshot_at: "2026-06-19T00:00:00Z",
   };
 }
 
@@ -93,13 +93,13 @@ function makeHit(over: {
   emitted_at?: string;
 }): SearchResultHit {
   return {
-    connector_id: over.connector_id,
     connection_id: over.connection_id,
-    stream: over.stream ?? "records",
-    record_key: over.record_key ?? "rec-1",
+    connector_id: over.connector_id,
     emitted_at: over.emitted_at ?? "2026-01-01T00:00:00Z",
     matched_fields: [],
     object: "search_result",
+    record_key: over.record_key ?? "rec-1",
+    stream: over.stream ?? "records",
   };
 }
 
@@ -132,32 +132,32 @@ function notStubbed(name: string): Promise<never> {
 
 function makeDataSource(overrides: Partial<DashboardDataSource>): DashboardDataSource {
   const stub: DashboardDataSource = {
-    kind: "sandbox" as const,
     aggregateRecordsByTime: () => notStubbed("aggregateRecordsByTime"),
-    listExploreRecordBuckets: () => notStubbed("listExploreRecordBuckets"),
-    isHybridRetrievalAdvertised: () => Promise.resolve(false),
-    isSemanticRetrievalAdvertised: () => Promise.resolve(false),
-    listConnectorSummaries: () => notStubbed("listConnectorSummaries"),
-    listConnectorManifests: () => notStubbed("listConnectorManifests"),
-    searchRecordsLexical: () => notStubbed("searchRecordsLexical"),
-    searchRecordsHybrid: () => notStubbed("searchRecordsHybrid"),
-    searchRecordsSemantic: () => notStubbed("searchRecordsSemantic"),
-    queryRecords: () => notStubbed("queryRecords"),
-    getRecord: () => notStubbed("getRecord"),
     getConnectorOverview: () => notStubbed("getConnectorOverview"),
+    getDatasetSummary: () => notStubbed("getDatasetSummary"),
+    getDeploymentDiagnostics: () => notStubbed("getDeploymentDiagnostics"),
+    getGrantTimeline: () => notStubbed("getGrantTimeline"),
+    getRecord: () => notStubbed("getRecord"),
+    getRunTimeline: () => notStubbed("getRunTimeline"),
     getStreamMetadata: () => notStubbed("getStreamMetadata"),
     getTraceTimeline: () => notStubbed("getTraceTimeline"),
+    isHybridRetrievalAdvertised: () => Promise.resolve(false),
+    isSemanticRetrievalAdvertised: () => Promise.resolve(false),
+    kind: "sandbox" as const,
+    listConnectorManifests: () => notStubbed("listConnectorManifests"),
+    listConnectorSummaries: () => notStubbed("listConnectorSummaries"),
+    listExploreRecordBuckets: () => notStubbed("listExploreRecordBuckets"),
+    listExploreTimeline: () => Promise.resolve(makeTimelinePage([])),
     listGrants: () => notStubbed("listGrants"),
     listPendingApprovals: () => notStubbed("listPendingApprovals"),
     listRuns: () => notStubbed("listRuns"),
     listStreams: () => notStubbed("listStreams"),
     listTraces: () => notStubbed("listTraces"),
+    queryRecords: () => notStubbed("queryRecords"),
     refSearch: () => notStubbed("refSearch"),
-    listExploreTimeline: () => Promise.resolve(makeTimelinePage([])),
-    getDatasetSummary: () => notStubbed("getDatasetSummary"),
-    getDeploymentDiagnostics: () => notStubbed("getDeploymentDiagnostics"),
-    getGrantTimeline: () => notStubbed("getGrantTimeline"),
-    getRunTimeline: () => notStubbed("getRunTimeline"),
+    searchRecordsHybrid: () => notStubbed("searchRecordsHybrid"),
+    searchRecordsLexical: () => notStubbed("searchRecordsLexical"),
+    searchRecordsSemantic: () => notStubbed("searchRecordsSemantic"),
     ...overrides,
   };
   return stub;
@@ -182,35 +182,35 @@ test("F1 (P1): recent lens filters by selected connection — YNAB records do no
     connection_id: "cin_amazon_1",
     connector_id: "amazon",
     connector_instance_id: "cin_amazon_1",
-    streams: ["orders"],
     display_name: "Amazon",
+    streams: ["orders"],
   });
   const ynabSummary = makeSummary({
     connection_id: "cin_ynab_1",
     connector_id: "ynab",
     connector_instance_id: "cin_ynab_1",
-    streams: ["transactions"],
     display_name: "YNAB",
+    streams: ["transactions"],
   });
 
   // The endpoint returns records from BOTH connections (cross-source leak scenario).
   const amazonRecord = makeTimelineRecord({
     connector_id: "amazon",
     connector_instance_id: "cin_amazon_1",
-    stream: "orders",
     record_key: "order-1",
+    stream: "orders",
   });
   const ynabRecord = makeTimelineRecord({
     connector_id: "ynab",
     connector_instance_id: "cin_ynab_1",
-    stream: "transactions",
     record_key: "txn-1",
+    stream: "transactions",
   });
 
   const ds = makeDataSource({
-    listConnectorSummaries: () => Promise.resolve(summaryListResponse([amazonSummary, ynabSummary])),
     listConnectorManifests: () =>
       Promise.resolve([makeManifest("amazon", ["orders"]), makeManifest("ynab", ["transactions"])]),
+    listConnectorSummaries: () => Promise.resolve(summaryListResponse([amazonSummary, ynabSummary])),
     listExploreTimeline: (opts) => {
       assert.deepEqual(
         opts?.connectionIds,
@@ -257,30 +257,23 @@ test("F2 (P0): single-stream Most-recent calls lexical (not queryRecords) — on
     connection_id: "cin_amazon_1",
     connector_id: "amazon",
     connector_instance_id: "cin_amazon_1",
-    streams: ["orders"],
     display_name: "Amazon",
+    streams: ["orders"],
   });
   // Only one matching hit (connector+stream all same so streamDoor fires).
   const matchingHit = makeHit({
-    connector_id: "amazon",
-    stream: "orders",
-    record_key: "matching-order",
     connection_id: "cin_amazon_1",
+    connector_id: "amazon",
+    record_key: "matching-order",
+    stream: "orders",
   });
 
   let queryRecordsCalled = false;
   let lexicalCalledWithStream = false;
 
   const ds = makeDataSource({
-    listConnectorSummaries: () => Promise.resolve(summaryListResponse([summary])),
     listConnectorManifests: () => Promise.resolve([makeManifest("amazon", ["orders"])]),
-    // Lexical must be called for BOTH stream-door probe AND the display results.
-    searchRecordsLexical: (_q, opts) => {
-      if (opts?.streams?.includes("orders")) {
-        lexicalCalledWithStream = true;
-      }
-      return Promise.resolve(makeLexicalPage([matchingHit], { has_more: false }));
-    },
+    listConnectorSummaries: () => Promise.resolve(summaryListResponse([summary])),
     // PRE-FIX: assembler called queryRecords here. If we stub it to NOT throw,
     // all records (matching or not) would be returned. We stub it to throw so
     // the pre-fix behavior is caught as a test failure.
@@ -289,6 +282,13 @@ test("F2 (P0): single-stream Most-recent calls lexical (not queryRecords) — on
       return Promise.reject(
         new Error("queryRecords must not be called for Most-recent single-stream (F2 reproduce bug)")
       );
+    },
+    // Lexical must be called for BOTH stream-door probe AND the display results.
+    searchRecordsLexical: (_q, opts) => {
+      if (opts?.streams?.includes("orders")) {
+        lexicalCalledWithStream = true;
+      }
+      return Promise.resolve(makeLexicalPage([matchingHit], { has_more: false }));
     },
   });
 
@@ -327,26 +327,26 @@ test("F2 (P0): multi-stream Most-recent wires lexical cursor — searchHasMore r
   const summaryA = makeSummary({ connection_id: "cin_ynab_1", connector_id: "ynab", streams: ["transactions"] });
   const summaryB = makeSummary({ connection_id: "cin_amazon_1", connector_id: "amazon", streams: ["orders"] });
   const hitA = makeHit({
-    connector_id: "ynab",
-    stream: "transactions",
     connection_id: "cin_ynab_1",
+    connector_id: "ynab",
     record_key: "ynab-rec",
+    stream: "transactions",
   });
   const hitB = makeHit({
-    connector_id: "amazon",
-    stream: "orders",
     connection_id: "cin_amazon_1",
+    connector_id: "amazon",
     record_key: "amz-rec",
+    stream: "orders",
   });
 
   const ds = makeDataSource({
-    listConnectorSummaries: () => Promise.resolve(summaryListResponse([summaryA, summaryB])),
     listConnectorManifests: () =>
       Promise.resolve([makeManifest("ynab", ["transactions"]), makeManifest("amazon", ["orders"])]),
+    listConnectorSummaries: () => Promise.resolve(summaryListResponse([summaryA, summaryB])),
+    queryRecords: () => Promise.reject(new Error("queryRecords must not be called for multi-stream Most-recent")),
     // Lexical returns has_more=true with a cursor to simulate a deep result set.
     searchRecordsLexical: () =>
       Promise.resolve(makeLexicalPage([hitA, hitB], { has_more: true, next_cursor: "lex-cursor-99" })),
-    queryRecords: () => Promise.reject(new Error("queryRecords must not be called for multi-stream Most-recent")),
   });
 
   const result = await assembleExplorerData({ q: "payment", search_sort: "recent" }, ds, "https://rs.test");
@@ -391,28 +391,28 @@ test("F3 (P1): timelineRecordToEntry uses connector_instance_id to resolve corre
     connection_id: "cin_ynab_personal",
     connector_id: "ynab",
     connector_instance_id: "cin_ynab_personal",
-    streams: ["transactions"],
     display_name: "YNAB Personal",
+    streams: ["transactions"],
   });
   const workSummary = makeSummary({
     connection_id: "cin_ynab_work",
     connector_id: "ynab",
     connector_instance_id: "cin_ynab_work",
-    streams: ["transactions"],
     display_name: "YNAB Work",
+    streams: ["transactions"],
   });
 
   // Record belongs to the WORK instance.
   const workRecord = makeTimelineRecord({
     connector_id: "ynab", // type: "ynab"
     connector_instance_id: "cin_ynab_work", // instance: work
-    stream: "transactions",
     record_key: "work-txn-1",
+    stream: "transactions",
   });
 
   const ds = makeDataSource({
-    listConnectorSummaries: () => Promise.resolve(summaryListResponse([personalSummary, workSummary])),
     listConnectorManifests: () => Promise.resolve([makeManifest("ynab", ["transactions"])]),
+    listConnectorSummaries: () => Promise.resolve(summaryListResponse([personalSummary, workSummary])),
     // The endpoint returns a record whose connector_instance_id = "cin_ynab_work".
     listExploreTimeline: () => Promise.resolve(makeTimelinePage([workRecord])),
   });
@@ -465,21 +465,21 @@ test("F3 (P1): connectionId falls back to connector_instance_id (not connector_i
     connection_id: "cin_amazon_1",
     connector_id: "amazon",
     connector_instance_id: "cin_amazon_1",
-    streams: ["orders"],
     display_name: "Amazon",
+    streams: ["orders"],
   });
 
   // Record from "twitter" — no twitter summary exists in the owner's connections.
   const twitterRecord = makeTimelineRecord({
     connector_id: "twitter",
     connector_instance_id: "cin_twitter_unknown",
-    stream: "tweets",
     record_key: "tweet-999",
+    stream: "tweets",
   });
 
   const ds = makeDataSource({
-    listConnectorSummaries: () => Promise.resolve(summaryListResponse([amazonSummary])),
     listConnectorManifests: () => Promise.resolve([makeManifest("amazon", ["orders"])]),
+    listConnectorSummaries: () => Promise.resolve(summaryListResponse([amazonSummary])),
     listExploreTimeline: () => Promise.resolve(makeTimelinePage([twitterRecord])),
   });
 

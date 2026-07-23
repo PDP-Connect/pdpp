@@ -167,12 +167,12 @@ export function buildConsentCardConnections(
 ): ConsentConnectionLabel[] {
   const groupSize = connections.length;
   return connections.map((connection, index) => ({
-    id: connection.connectionId,
     displayName: deriveConnectionDisplayName({
       connector,
       displayName: connection.displayName,
-      ordinal: index + 1,
       groupSize,
+      ordinal: index + 1,
     }),
+    id: connection.connectionId,
   }));
 }

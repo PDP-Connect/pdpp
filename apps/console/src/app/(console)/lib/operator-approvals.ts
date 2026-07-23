@@ -48,12 +48,12 @@ async function fetchAs(path: string, init: RequestInit): Promise<Response> {
  */
 export async function approveConsentRequest(requestUri: string, subjectId = "owner_local") {
   const response = await fetchAs("/consent/approve", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       request_uri: requestUri,
       subject_id: subjectId,
     }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
   });
   const body = await readBody(response);
   if (!response.ok) {
@@ -64,11 +64,11 @@ export async function approveConsentRequest(requestUri: string, subjectId = "own
 
 export async function denyConsentRequest(requestUri: string) {
   const response = await fetchAs("/consent/deny", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       request_uri: requestUri,
     }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
   });
   const body = await readBody(response);
   if (!response.ok) {
@@ -90,12 +90,12 @@ export async function approvePendingApproval(input: {
 
   if (input.kind === "consent") {
     const response = await fetchAs("/consent/approve", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         approval_id: input.approvalId,
         subject_id: subjectId,
       }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
     });
     const body = await readBody(response);
     if (!response.ok) {
@@ -105,12 +105,12 @@ export async function approvePendingApproval(input: {
   }
 
   const response = await fetchAs("/device/approve", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: asForm({
       approval_id: input.approvalId,
       subject_id: subjectId,
     }),
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    method: "POST",
   });
   const body = await readBody(response);
   if (!response.ok) {
@@ -132,11 +132,11 @@ export async function denyPendingApproval(input: {
 
   if (input.kind === "consent") {
     const response = await fetchAs("/consent/deny", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         approval_id: input.approvalId,
       }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
     });
     const body = await readBody(response);
     if (!response.ok) {
@@ -146,12 +146,12 @@ export async function denyPendingApproval(input: {
   }
 
   const response = await fetchAs("/device/deny", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: asForm({
       approval_id: input.approvalId,
       subject_id: subjectId,
     }),
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    method: "POST",
   });
   const body = await readBody(response);
   if (!response.ok) {

@@ -133,7 +133,7 @@ export async function POST(request: Request) {
     ? ((payload as { events: unknown[] }).events.slice(0, MAX_EVENTS) as unknown[])
     : [];
   if (events.length === 0) {
-    return NextResponse.json({ ok: true, accepted: 0 });
+    return NextResponse.json({ accepted: 0, ok: true });
   }
 
   const sanitized = sanitizeValue({
@@ -154,5 +154,5 @@ export async function POST(request: Request) {
       )
     );
   }
-  return NextResponse.json({ ok: true, accepted: events.length });
+  return NextResponse.json({ accepted: events.length, ok: true });
 }

@@ -60,32 +60,32 @@ function describeActiveConnectionState(status: ConnectionSetupStatus): StatusDes
   if (status.setup_kind === "static_secret" && runStartedAfterCredentialRotation(status)) {
     if (status.running) {
       return {
-        tone: "pending",
-        headline: "Credential saved",
         detail:
           "A sync is running now to verify the updated credential. Existing records remain available while it runs.",
+        headline: "Credential saved",
+        tone: "pending",
       };
     }
     if (statusRunIsFailure(status)) {
       return {
-        tone: "failed",
-        headline: "Credential saved, sync failed",
         detail:
           "The updated credential was saved, but the verification sync failed. Re-enter it or open the run timeline for the exact failure.",
+        headline: "Credential saved, sync failed",
+        tone: "failed",
       };
     }
     if (statusRunIsSuccess(status)) {
       return {
-        tone: "active",
-        headline: "Connection active",
         detail: "The updated credential was verified by a completed sync. Records are available.",
+        headline: "Connection active",
+        tone: "active",
       };
     }
   }
   return {
-    tone: "active",
-    headline: "Connection active",
     detail: "Records are available for this account.",
+    headline: "Connection active",
+    tone: "active",
   };
 }
 
@@ -93,45 +93,45 @@ function describeImportState(status: ConnectionSetupStatus): StatusDescription {
   switch (status.setup_state) {
     case "active":
       return {
-        tone: "active",
-        headline: "Import complete",
         detail: status.import_receipt
           ? "Your import was validated and committed. Review the durable coverage receipt below."
           : "Your import was committed. This connector did not provide a validation preview for the setup receipt.",
+        headline: "Import complete",
+        tone: "active",
       };
     case "first_sync_running":
       return {
-        tone: "pending",
-        headline: "Import running",
         detail: "The import file is captured and the import is in progress. This page updates as it finishes.",
+        headline: "Import running",
+        tone: "pending",
       };
     case "first_sync_pending":
       return {
-        tone: "pending",
-        headline: "Import starting",
         detail: "The import file is captured and the import is queued. This page updates as it runs.",
+        headline: "Import starting",
+        tone: "pending",
       };
     case "awaiting_credential":
       return {
-        tone: "pending",
-        headline: "File needed",
         detail: "This source is set up but no import file is captured yet.",
+        headline: "File needed",
+        tone: "pending",
       };
     case "first_sync_failed":
       return {
-        tone: "failed",
-        headline: "Import failed",
         detail: status.last_error?.remediation ?? "Start the import again.",
+        headline: "Import failed",
+        tone: "failed",
       };
     case "paused":
-      return { tone: "pending", headline: "Connection paused", detail: "This connection is paused." };
+      return { detail: "This connection is paused.", headline: "Connection paused", tone: "pending" };
     case "revoked":
-      return { tone: "failed", headline: "Connection revoked", detail: "This connection has been revoked." };
+      return { detail: "This connection has been revoked.", headline: "Connection revoked", tone: "failed" };
     default:
       return {
-        tone: "pending",
-        headline: "Setting up",
         detail: "This connection is being set up. This page updates as the setup progresses.",
+        headline: "Setting up",
+        tone: "pending",
       };
   }
 }
@@ -142,38 +142,38 @@ function describeConnectionState(status: ConnectionSetupStatus): StatusDescripti
       return describeActiveConnectionState(status);
     case "first_sync_running":
       return {
-        tone: "pending",
-        headline: "First sync running",
         detail:
           "The provider credential is captured and the first sync is in progress. This page updates as it finishes.",
+        headline: "First sync running",
+        tone: "pending",
       };
     case "first_sync_pending":
       return {
-        tone: "pending",
-        headline: "First sync starting",
         detail: "The provider credential is captured and the first sync is queued. This page updates as it runs.",
+        headline: "First sync starting",
+        tone: "pending",
       };
     case "awaiting_credential":
       return {
-        tone: "pending",
-        headline: "Setup material needed",
         detail: "This connection is set up but no provider credential is captured yet.",
+        headline: "Setup material needed",
+        tone: "pending",
       };
     case "first_sync_failed":
       return {
-        tone: "failed",
-        headline: "First sync failed",
         detail: status.last_error?.remediation ?? "Start the first sync again.",
+        headline: "First sync failed",
+        tone: "failed",
       };
     case "paused":
-      return { tone: "pending", headline: "Connection paused", detail: "This connection is paused." };
+      return { detail: "This connection is paused.", headline: "Connection paused", tone: "pending" };
     case "revoked":
-      return { tone: "failed", headline: "Connection revoked", detail: "This connection has been revoked." };
+      return { detail: "This connection has been revoked.", headline: "Connection revoked", tone: "failed" };
     default:
       return {
-        tone: "pending",
-        headline: "Setting up",
         detail: "This connection is being set up. This page updates as the setup progresses.",
+        headline: "Setting up",
+        tone: "pending",
       };
   }
 }
@@ -274,7 +274,7 @@ interface ReceiptRow {
 
 function receiptRows(receipt: ImportReceipt): readonly ReceiptRow[] {
   const baseRows: ReceiptRow[] = [
-    { label: "Batch", value: receipt.batch_id, monospace: true },
+    { label: "Batch", monospace: true, value: receipt.batch_id },
     { label: "File", value: receipt.uploaded_file_name },
     { label: "Receipt status", value: receipt.status },
     { label: "Detected format", value: receipt.detected_format },
@@ -403,41 +403,41 @@ function importPhaseProgress(status: ConnectionSetupStatus): readonly ImportPhas
   const facts = importPhaseFacts(status);
   return [
     {
-      label: "Received",
       detail: facts.fileReceived ? "PDPP captured the file for this import." : "Choose a file to start.",
+      label: "Received",
       state: facts.fileReceived ? "done" : "waiting",
     },
     {
-      label: "Parsed",
       detail: facts.parsed
         ? "The connector parser produced safe validation facts."
         : "PDPP has not parsed this file yet.",
+      label: "Parsed",
       state: parsedPhaseState(facts),
     },
     {
-      label: "Deduplicated",
       detail: facts.deduped
         ? "Duplicate and skipped counts are available."
         : "Duplicate checks run before records commit.",
+      label: "Deduplicated",
       state: dedupedPhaseState(facts),
     },
     {
-      label: "Committed",
       detail: facts.committed
         ? "Accepted records or duplicate-only receipt facts are committed."
         : "Records are not committed yet.",
+      label: "Committed",
       state: committedPhaseState(facts),
     },
     {
-      label: "Indexed",
       detail: facts.active ? "Committed records are available on owner surfaces." : "Indexing follows commit.",
+      label: "Indexed",
       state: indexedPhaseState(facts),
     },
     {
-      label: "Health projected",
       detail: facts.active
         ? "Connection health and acquisition coverage include this batch."
         : "Coverage updates after commit.",
+      label: "Health projected",
       state: healthProjectedPhaseState(facts),
     },
   ];
@@ -526,7 +526,7 @@ export default async function ConnectionSetupStatusPage({
     <RecordroomShellWithPalette>
       <PageHeader
         actions={
-          <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href="/sources">
+          <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href="/sources">
             Back to Sources
           </Link>
         }
@@ -582,26 +582,26 @@ export default async function ConnectionSetupStatusPage({
         <div className="mt-4 flex flex-wrap gap-2">
           {described.tone === "active" ? (
             <>
-              <Link className={buttonVariants({ variant: "default", size: "sm" })} href={sourceRecordsHref(status)}>
+              <Link className={buttonVariants({ size: "sm", variant: "default" })} href={sourceRecordsHref(status)}>
                 Open in Explore
               </Link>
-              <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href={sourceDetailHref(status)}>
+              <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href={sourceDetailHref(status)}>
                 Source details
               </Link>
               {status.setup_kind === "manual_upload" ? (
-                <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href={setupHref(status)}>
+                <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href={setupHref(status)}>
                   Import another file
                 </Link>
               ) : null}
             </>
           ) : null}
           {described.tone === "failed" || status.setup_state === "awaiting_credential" ? (
-            <Link className={buttonVariants({ variant: "default", size: "sm" })} href={setupHref(status)}>
+            <Link className={buttonVariants({ size: "sm", variant: "default" })} href={setupHref(status)}>
               {retryLabel(status)}
             </Link>
           ) : null}
           {described.tone === "pending" && status.setup_state !== "awaiting_credential" ? (
-            <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href={refreshHref}>
+            <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href={refreshHref}>
               Refresh status
             </Link>
           ) : null}

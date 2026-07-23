@@ -55,8 +55,12 @@ function pdppDefaultTag(payload) {
     const reason = typeof payload.escalation_reason === "string" ? payload.escalation_reason : "escalation";
     return `pdpp-escalation-${connName}-${reason}`;
   }
-  if (typeof payload.assistance_request_id === "string") return `pdpp-${payload.assistance_request_id}`;
-  if (typeof payload.interaction_id === "string") return `pdpp-${payload.interaction_id}`;
+  if (typeof payload.assistance_request_id === "string") {
+    return `pdpp-${payload.assistance_request_id}`;
+  }
+  if (typeof payload.interaction_id === "string") {
+    return `pdpp-${payload.interaction_id}`;
+  }
   return "pdpp-pending-interaction";
 }
 
@@ -72,8 +76,10 @@ function pdppDefaultBody(type) {
 
 function pdppIsAllowedDashboardUrl(url) {
   // The overview root and any clean owner section.
-  if (url === "/") return true;
-  return PDPP_ALLOWED_URL_PREFIXES.some((prefix) => url === prefix || url.startsWith(prefix + "/"));
+  if (url === "/") {
+    return true;
+  }
+  return PDPP_ALLOWED_URL_PREFIXES.some((prefix) => url === prefix || url.startsWith(`${prefix}/`));
 }
 
 self.addEventListener("push", (event) => {
@@ -85,7 +91,9 @@ self.addEventListener("push", (event) => {
       } catch {
         payload = {};
       }
-      if (!PDPP_KNOWN_PUSH_TYPES.has(payload.type)) return;
+      if (!PDPP_KNOWN_PUSH_TYPES.has(payload.type)) {
+        return;
+      }
       const fallbackUrl = pdppDefaultFallbackUrl(payload.type);
       const rawUrl = typeof payload.url === "string" ? payload.url : fallbackUrl;
       const targetUrl = pdppIsAllowedDashboardUrl(rawUrl) ? rawUrl : fallbackUrl;
@@ -94,9 +102,9 @@ self.addEventListener("push", (event) => {
       const isTestNotification = payload.type === "pdpp.test_notification";
       await self.registration.showNotification(title, {
         body,
+        data: { url: targetUrl },
         renotify: isTestNotification,
         tag: pdppDefaultTag(payload),
-        data: { url: targetUrl },
       });
     })()
   );
@@ -106,16 +114,19 @@ self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   event.waitUntil(
     (async () => {
-      const rawUrl = event.notification.data && typeof event.notification.data.url === "string"
-        ? event.notification.data.url
-        : PDPP_RUNS_URL;
+      const rawUrl =
+        event.notification.data && typeof event.notification.data.url === "string"
+          ? event.notification.data.url
+          : PDPP_RUNS_URL;
       const targetUrl = pdppIsAllowedDashboardUrl(rawUrl) ? rawUrl : PDPP_RUNS_URL;
       const url = new URL(targetUrl, self.location.origin).href;
-      const clientList = await clients.matchAll({ type: "window", includeUncontrolled: true });
+      const clientList = await clients.matchAll({ includeUncontrolled: true, type: "window" });
       for (const client of clientList) {
         if ("focus" in client && new URL(client.url).origin === self.location.origin) {
           await client.focus();
-          if ("navigate" in client) await client.navigate(url);
+          if ("navigate" in client) {
+            await client.navigate(url);
+          }
           return;
         }
       }

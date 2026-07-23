@@ -176,12 +176,12 @@ function groupTimeline(events: SpineEvent[]): TimelineNode[] {
       }
       const runLen = j - i;
       if (runLen >= PROGRESS_GROUP_THRESHOLD) {
-        nodes.push({ kind: "progress-group", events: events.slice(i, j), start: i });
+        nodes.push({ events: events.slice(i, j), kind: "progress-group", start: i });
         i = j;
         continue;
       }
     }
-    nodes.push({ kind: "event", event: current, index: i });
+    nodes.push({ event: current, index: i, kind: "event" });
     i += 1;
   }
   return nodes;
@@ -413,10 +413,10 @@ export default async function TraceDetailPage({
               href={`/grants/${encodeURIComponent(id)}`}
               key={`grant:${id}`}
               style={{
+                alignItems: "center",
                 border: "1px solid var(--color-border)",
                 color: "var(--color-foreground)",
                 display: "inline-flex",
-                alignItems: "center",
                 padding: "var(--space-1) var(--space-2-5)",
               }}
             >
@@ -433,10 +433,10 @@ export default async function TraceDetailPage({
               href={`/syncs/${encodeURIComponent(id)}`}
               key={`run:${id}`}
               style={{
+                alignItems: "center",
                 border: "1px solid var(--color-border)",
                 color: "var(--color-foreground)",
                 display: "inline-flex",
-                alignItems: "center",
                 padding: "var(--space-1) var(--space-2-5)",
               }}
             >

@@ -107,13 +107,13 @@ function makeHit(over: {
   connection_id?: string;
 }): SearchResultHit {
   return {
-    connector_id: over.connector_id,
     connection_id: over.connection_id,
-    stream: over.stream ?? "records",
-    record_key: over.record_key ?? "rec-1",
+    connector_id: over.connector_id,
     emitted_at: "2026-01-01T00:00:00Z",
     matched_fields: [],
     object: "search_result",
+    record_key: over.record_key ?? "rec-1",
+    stream: over.stream ?? "records",
   };
 }
 
@@ -139,11 +139,11 @@ function makeLexicalPage(
 function makeRecordsPage(ids: string[], opts?: { has_more?: boolean; next_cursor?: string }): RecordsPage {
   return {
     data: ids.map((id) => ({
+      data: {},
+      emitted_at: "2026-01-01T00:00:00Z",
       id,
       object: "record" as const,
       stream: "transactions",
-      emitted_at: "2026-01-01T00:00:00Z",
-      data: {},
     })),
     has_more: opts?.has_more ?? false,
     ...(opts?.next_cursor ? { next_cursor: opts.next_cursor } : {}),
@@ -157,19 +157,19 @@ function makeTimelinePage(
 ): ExploreTimelinePage {
   return {
     data: Array.from({ length: count }, (_, i) => ({
-      object: "timeline_record" as const,
       connector_id: "ynab",
       connector_instance_id: `cin_ynab_stub_${i}`,
-      stream: "transactions",
-      record_key: `rec-${i}`,
-      emitted_at: `2026-01-0${i + 1}T00:00:00Z`,
       data: {},
+      emitted_at: `2026-01-0${i + 1}T00:00:00Z`,
+      object: "timeline_record" as const,
+      record_key: `rec-${i}`,
+      stream: "transactions",
     })),
     has_more: opts.has_more,
+    new_since_snapshot: 0,
     next_cursor: opts.next_cursor ?? null,
     object: "list",
     snapshot_at: opts.snapshot_at ?? "2026-06-19T00:00:00Z",
-    new_since_snapshot: 0,
   };
 }
 
@@ -177,40 +177,40 @@ const notStubbed = () => Promise.reject(new Error("not stubbed"));
 
 function makeDataSource(overrides: Partial<DashboardDataSource>): DashboardDataSource {
   return {
-    kind: "sandbox" as const,
     aggregateRecordsByTime: notStubbed,
-    listExploreRecordBuckets: notStubbed,
-    isHybridRetrievalAdvertised: () => Promise.resolve(false),
-    isSemanticRetrievalAdvertised: () => Promise.resolve(false),
-    listConnectorSummaries: notStubbed,
-    listConnectorManifests: notStubbed,
-    searchRecordsLexical: notStubbed,
-    searchRecordsHybrid: notStubbed,
-    searchRecordsSemantic: notStubbed,
-    queryRecords: notStubbed,
-    getRecord: notStubbed,
     getConnectorOverview: notStubbed,
-    getStreamMetadata: notStubbed,
-    getTraceTimeline: notStubbed,
-    getGrantTimeline: notStubbed,
-    getRunTimeline: notStubbed,
     getDatasetSummary: notStubbed,
     getDeploymentDiagnostics: notStubbed,
+    getGrantTimeline: notStubbed,
+    getRecord: notStubbed,
+    getRunTimeline: notStubbed,
+    getStreamMetadata: notStubbed,
+    getTraceTimeline: notStubbed,
+    isHybridRetrievalAdvertised: () => Promise.resolve(false),
+    isSemanticRetrievalAdvertised: () => Promise.resolve(false),
+    kind: "sandbox" as const,
+    listConnectorManifests: notStubbed,
+    listConnectorSummaries: notStubbed,
+    listExploreRecordBuckets: notStubbed,
+    listExploreTimeline: () =>
+      Promise.resolve({
+        data: [],
+        has_more: false,
+        new_since_snapshot: 0,
+        next_cursor: null,
+        object: "list" as const,
+        snapshot_at: new Date(0).toISOString(),
+      }),
     listGrants: notStubbed,
     listPendingApprovals: notStubbed,
     listRuns: notStubbed,
     listStreams: notStubbed,
     listTraces: notStubbed,
+    queryRecords: notStubbed,
     refSearch: notStubbed,
-    listExploreTimeline: () =>
-      Promise.resolve({
-        object: "list" as const,
-        data: [],
-        has_more: false,
-        next_cursor: null,
-        snapshot_at: new Date(0).toISOString(),
-        new_since_snapshot: 0,
-      }),
+    searchRecordsHybrid: notStubbed,
+    searchRecordsLexical: notStubbed,
+    searchRecordsSemantic: notStubbed,
     ...overrides,
   };
 }
@@ -333,7 +333,6 @@ test("P1 assembler: streamSeeAllLinks is non-empty when the time-range fan-out h
   // produce the ramps.
   const summary = makeSummary({ connection_id: "ynab-1", connector_id: "ynab", streams: ["transactions"] });
   const ds = makeDataSource({
-    listConnectorSummaries: async () => summaryListResponse([summary]),
     // The time-range fan-out requires a consent_time_field on the stream so
     // timeRangeStreamTargets includes it. The base makeManifest helper does not
     // set this field; provide an explicit manifest here with it declared.
@@ -341,22 +340,23 @@ test("P1 assembler: streamSeeAllLinks is non-empty when the time-range fan-out h
       [
         {
           connector_id: "ynab",
-          streams: [{ name: "transactions", consent_time_field: "date" }],
+          streams: [{ consent_time_field: "date", name: "transactions" }],
         },
       ] satisfies ConnectorManifest[],
-    // Time-range fan-out: queryRecords returns has_more=true so the see-all ramp fires.
-    queryRecords: async () =>
-      makeRecordsPage(["rec-1", "rec-2", "rec-3", "rec-4", "rec-5", "rec-6"], { has_more: true }),
+    listConnectorSummaries: async () => summaryListResponse([summary]),
     // The recent lens would call this; it is irrelevant here (time-range lens),
     // but provide a valid empty page rather than throwing.
     listExploreTimeline: async () => ({
-      object: "list" as const,
       data: [],
       has_more: false,
-      next_cursor: null,
-      snapshot_at: new Date(0).toISOString(),
       new_since_snapshot: 0,
+      next_cursor: null,
+      object: "list" as const,
+      snapshot_at: new Date(0).toISOString(),
     }),
+    // Time-range fan-out: queryRecords returns has_more=true so the see-all ramp fires.
+    queryRecords: async () =>
+      makeRecordsPage(["rec-1", "rec-2", "rec-3", "rec-4", "rec-5", "rec-6"], { has_more: true }),
   });
 
   const result = await assembleExplorerData(
@@ -387,8 +387,8 @@ test("P3 invariant: day-group (rr-x-day) and burst-collapse (rr-x-burst) class n
 test("P3 Load-more cursor: assembler returns non-null nextCursor when real endpoint has_more=true", async () => {
   const summary = makeSummary({ connection_id: "ynab-1", connector_id: "ynab", streams: ["transactions"] });
   const ds = makeDataSource({
-    listConnectorSummaries: async () => summaryListResponse([summary]),
     listConnectorManifests: async () => [makeManifest("ynab", ["transactions"])],
+    listConnectorSummaries: async () => summaryListResponse([summary]),
     // Real endpoint: returns has_more=true with a real composite cursor
     listExploreTimeline: async () => makeTimelinePage(32, { has_more: true, next_cursor: "composite-cursor-p2" }),
   });
@@ -404,8 +404,8 @@ test("P3 Load-more cursor: assembler returns non-null nextCursor when real endpo
 test("P3 Load-more cursor: assembler returns null nextCursor when real endpoint has_more=false (end of feed)", async () => {
   const summary = makeSummary({ connection_id: "ynab-1", connector_id: "ynab", streams: ["transactions"] });
   const ds = makeDataSource({
-    listConnectorSummaries: async () => summaryListResponse([summary]),
     listConnectorManifests: async () => [makeManifest("ynab", ["transactions"])],
+    listConnectorSummaries: async () => summaryListResponse([summary]),
     listExploreTimeline: async () => makeTimelinePage(5, { has_more: false, snapshot_at: "2026-06-19T00:00:00Z" }),
   });
 
@@ -430,39 +430,39 @@ test("P3 Load-more trail: second page ACCUMULATES (page 1 stays, page 2 appended
   // Snapshot newer than every record so the page-1 filter keeps the whole snapshot.
   const PAGE1_SNAPSHOT = "2026-12-31T00:00:00Z";
   const mkRecord = (page: string, i: number, dayOffset: number) => ({
-    object: "timeline_record" as const,
     connector_id: "ynab",
     connector_instance_id: "ynab-1",
-    stream: "transactions",
-    record_key: `${page}-${i}`,
-    emitted_at: new Date(baseMs - dayOffset * dayMs).toISOString(),
     data: {},
+    emitted_at: new Date(baseMs - dayOffset * dayMs).toISOString(),
+    object: "timeline_record" as const,
+    record_key: `${page}-${i}`,
+    stream: "transactions",
   });
   const page1Records = Array.from({ length: 32 }, (_, i) => mkRecord("p1", i, i));
   const page2Records = Array.from({ length: 3 }, (_, i) => mkRecord("p2", i, 100 + i));
   const page1: ExploreTimelinePage = {
-    object: "list",
     data: page1Records,
     has_more: true,
-    next_cursor: "composite-cursor-p2",
-    snapshot_at: PAGE1_SNAPSHOT,
     new_since_snapshot: 0,
+    next_cursor: "composite-cursor-p2",
+    object: "list",
+    snapshot_at: PAGE1_SNAPSHOT,
   };
   const page2: ExploreTimelinePage = {
-    object: "list",
     data: page2Records,
     has_more: false,
-    next_cursor: null,
-    snapshot_at: PAGE1_SNAPSHOT,
     new_since_snapshot: 0,
+    next_cursor: null,
+    object: "list",
+    snapshot_at: PAGE1_SNAPSHOT,
   };
   // Capture each fetch as `${rewind ? "rewind:" : "cursor:"}${cursor}` so we can
   // assert the fetch plan distinguishes a REWIND of the trail head (page 1) from a
   // plain fetch of the same cursor (page 2).
   const capturedFetches: string[] = [];
   const ds = makeDataSource({
-    listConnectorSummaries: async () => summaryListResponse([summary]),
     listConnectorManifests: async () => [makeManifest("ynab", ["transactions"])],
+    listConnectorSummaries: async () => summaryListResponse([summary]),
     listExploreTimeline: (opts) => {
       const cursor = opts?.cursor ?? null;
       const rewind = Boolean(opts?.rewindToFirstPage);
@@ -485,7 +485,7 @@ test("P3 Load-more trail: second page ACCUMULATES (page 1 stays, page 2 appended
 
   // Page 2: append the page-1 cursor to the trail (Load more), forwarding the anchor.
   const accumulated = await assembleExplorerData(
-    { cursors: "composite-cursor-p2", anchor: firstSnapshot ?? undefined },
+    { anchor: firstSnapshot ?? undefined, cursors: "composite-cursor-p2" },
     ds,
     "https://rs.test"
   );
@@ -549,28 +549,28 @@ test("P2 Option D invariant: escape links to search_sort=recent in the URL build
 
 test("P2 sort toggle: lexical Most-relevant and Most-recent return same hit count (same pool)", async () => {
   const summary = makeSummary({ connection_id: "ynab-1", connector_id: "ynab", streams: ["transactions"] });
-  const hit1 = makeHit({ connector_id: "ynab", stream: "transactions", record_key: "r1", connection_id: "ynab-1" });
-  const hit2 = makeHit({ connector_id: "ynab", stream: "transactions", record_key: "r2", connection_id: "ynab-1" });
+  const hit1 = makeHit({ connection_id: "ynab-1", connector_id: "ynab", record_key: "r1", stream: "transactions" });
+  const hit2 = makeHit({ connection_id: "ynab-1", connector_id: "ynab", record_key: "r2", stream: "transactions" });
 
   // Both orderings use the same assembler data source with the same hits.
   // Most-relevant: lexical call returns the hits ranked by relevance.
   // Most-recent (single-stream): switches to queryRecords for the same stream.
   // The feed count must be the same (same pool, different ordering).
   const dsRelevance = makeDataSource({
-    listConnectorSummaries: async () => summaryListResponse([summary]),
-    listConnectorManifests: async () => [makeManifest("ynab", ["transactions"])],
     isHybridRetrievalAdvertised: async () => false,
+    listConnectorManifests: async () => [makeManifest("ynab", ["transactions"])],
+    listConnectorSummaries: async () => summaryListResponse([summary]),
     searchRecordsLexical: async () => makeLexicalPage([hit1, hit2], { has_more: false }),
   });
 
   const dsRecent = makeDataSource({
-    listConnectorSummaries: async () => summaryListResponse([summary]),
-    listConnectorManifests: async () => [makeManifest("ynab", ["transactions"])],
     isHybridRetrievalAdvertised: async () => false,
-    // Most-recent detection path: lexical to find stream door
-    searchRecordsLexical: async () => makeLexicalPage([hit1, hit2], { has_more: false }),
+    listConnectorManifests: async () => [makeManifest("ynab", ["transactions"])],
+    listConnectorSummaries: async () => summaryListResponse([summary]),
     // Then queryRecords for the same 2 records in time order
     queryRecords: async () => makeRecordsPage(["r1", "r2"], { has_more: false }),
+    // Most-recent detection path: lexical to find stream door
+    searchRecordsLexical: async () => makeLexicalPage([hit1, hit2], { has_more: false }),
   });
 
   const relevanceResult = await assembleExplorerData({ q: "rent" }, dsRelevance, "https://rs.test");
@@ -586,14 +586,14 @@ test("P2 sort toggle: lexical Most-relevant and Most-recent return same hit coun
 
 test("P2 lexical Load-more forwards cursor (assembler advances, does not re-fetch from top)", async () => {
   const summary = makeSummary({ connection_id: "ynab-1", connector_id: "ynab", streams: ["transactions"] });
-  const hit1 = makeHit({ connector_id: "ynab", stream: "transactions", record_key: "p1", connection_id: "ynab-1" });
-  const hit2 = makeHit({ connector_id: "ynab", stream: "transactions", record_key: "p2", connection_id: "ynab-1" });
+  const hit1 = makeHit({ connection_id: "ynab-1", connector_id: "ynab", record_key: "p1", stream: "transactions" });
+  const hit2 = makeHit({ connection_id: "ynab-1", connector_id: "ynab", record_key: "p2", stream: "transactions" });
 
   const capturedCursors: (string | undefined)[] = [];
   const ds = makeDataSource({
-    listConnectorSummaries: async () => summaryListResponse([summary]),
-    listConnectorManifests: async () => [makeManifest("ynab", ["transactions"])],
     isHybridRetrievalAdvertised: () => Promise.resolve(false),
+    listConnectorManifests: async () => [makeManifest("ynab", ["transactions"])],
+    listConnectorSummaries: async () => summaryListResponse([summary]),
     searchRecordsLexical: (_q, opts) => {
       capturedCursors.push(opts?.cursor);
       // Recall proven complete: keyword_pageable, so the cursor pages exhaustively.
@@ -608,7 +608,7 @@ test("P2 lexical Load-more forwards cursor (assembler advances, does not re-fetc
   const page1 = await assembleExplorerData({ q: "coffee" }, ds, "https://rs.test");
   assert.equal(page1.searchNextCursor, "lex-p2");
 
-  const page2 = await assembleExplorerData({ q: "coffee", cursor: "lex-p2" }, ds, "https://rs.test");
+  const page2 = await assembleExplorerData({ cursor: "lex-p2", q: "coffee" }, ds, "https://rs.test");
   assert.equal(page2.searchNextCursor, null, "page 2 must be exhausted");
 
   assert.equal(capturedCursors[0], undefined, "page 1: no cursor");

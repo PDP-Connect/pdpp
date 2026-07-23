@@ -114,7 +114,7 @@ function findCurrentStructuredAssistance(
 ): CurrentRunAssistance | null {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
-    if (!event || event.event_type !== "run.assistance_requested") {
+    if (event?.event_type !== "run.assistance_requested") {
       continue;
     }
     const id = getEventAssistanceId(event);
@@ -140,7 +140,7 @@ function findCurrentLegacyInteraction(
 ): CurrentRunAssistance | null {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
-    if (!event || event.event_type !== "run.interaction_required") {
+    if (event?.event_type !== "run.interaction_required") {
       continue;
     }
     const id = getEventAssistanceId(event);
@@ -195,15 +195,15 @@ function isStreamableBrowserSurfaceAssistance(assistance: CurrentRunAssistance):
 function assistanceFromEvent(event: SpineEvent, id: string): CurrentRunAssistance {
   const data = event.data ?? {};
   return {
+    attachments: parseAttachments(data.attachments),
+    fields: parseFields(data.input_schema ?? data.schema),
     id,
     isLegacyInteraction: false,
     kind: stringField(data.kind) ?? "assistance",
     message: stringField(data.message) ?? "Waiting for the requested run assistance.",
-    progressPosture: progressPostureField(data.progress_posture) ?? "blocked",
     ownerAction: ownerActionField(data.owner_action) ?? "provide_value",
+    progressPosture: progressPostureField(data.progress_posture) ?? "blocked",
     responseContract: responseContractField(data.response_contract) ?? "response_required",
-    attachments: parseAttachments(data.attachments),
-    fields: parseFields(data.input_schema ?? data.schema),
     timeoutLabel: timeoutLabel(data.timeout_seconds),
   };
 }
@@ -213,15 +213,15 @@ function assistanceFromLegacyInteraction(event: SpineEvent, id: string): Current
   const kind = stringField(data.kind) ?? "interaction";
   const isManualAction = kind === "manual_action";
   return {
+    attachments: isManualAction ? [{ kind: "browser_surface", label: null, ref: null, status: null }] : [],
+    fields: parseFields(data.schema),
     id,
     isLegacyInteraction: true,
     kind,
     message: stringField(data.message) ?? "Awaiting operator response.",
-    progressPosture: "blocked",
     ownerAction: isManualAction ? "operate_attachment" : "provide_value",
+    progressPosture: "blocked",
     responseContract: "response_required",
-    attachments: isManualAction ? [{ kind: "browser_surface", label: null, ref: null, status: null }] : [],
-    fields: parseFields(data.schema),
     timeoutLabel: timeoutLabel(data.timeout_seconds),
   };
 }
@@ -298,9 +298,9 @@ function parseFields(schema: unknown): AssistanceField[] {
         .map(([name, rawDef]): AssistanceField => {
           const def = rawDef && typeof rawDef === "object" ? (rawDef as Record<string, unknown>) : {};
           return {
-            name,
-            label: stringField(def.title),
             format: def.format === "password" ? "password" : "text",
+            label: stringField(def.title),
+            name,
             required: requiredFields.has(name),
           };
         })

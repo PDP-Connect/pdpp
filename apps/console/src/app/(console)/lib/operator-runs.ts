@@ -62,10 +62,10 @@ function parseDurationInput(value: string, label: string): number {
   const amount = Number.parseInt(match[1] ?? "0", 10);
   const unit = (match[2] || "s").toLowerCase();
   const multipliers: Record<string, number> = {
-    s: 1,
-    m: 60,
-    h: 60 * 60,
     d: 24 * 60 * 60,
+    h: 60 * 60,
+    m: 60,
+    s: 1,
   };
   const multiplier = multipliers[unit] ?? 1;
   return amount * multiplier;
@@ -89,8 +89,8 @@ async function runNowAt(path: string, options: RunNowOptions = {}) {
     method: "POST",
     ...(force
       ? {
-          headers: { "Content-Type": "application/json" },
           body: asJson({ force: true }),
+          headers: { "Content-Type": "application/json" },
         }
       : {}),
   });
@@ -110,15 +110,15 @@ async function saveScheduleAt(
   }
 ) {
   const body = {
-    interval_seconds: parseDurationInput(input.every, "schedule interval"),
     enabled: input.enabled,
+    interval_seconds: parseDurationInput(input.every, "schedule interval"),
     ...(input.jitter?.trim() ? { jitter_seconds: parseDurationInput(input.jitter, "schedule jitter") } : {}),
   };
 
   const response = await fetchAs(path, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
     body: asJson(body),
+    headers: { "Content-Type": "application/json" },
+    method: "PUT",
   });
   const responseBody = await readBody(response);
   if (!response.ok) {
@@ -147,9 +147,9 @@ async function postScheduleMutationAt(path: string, fallback: string) {
  */
 export async function setConnectionDisplayName(connectionId: string, displayName: string) {
   const response = await fetchAs(connectionControlPath(connectionId, ""), {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
     body: asJson({ display_name: displayName }),
+    headers: { "Content-Type": "application/json" },
+    method: "PATCH",
   });
   const body = await readBody(response);
   if (!response.ok) {
@@ -229,9 +229,9 @@ export async function submitRunInteraction(
     payload.data = input.data;
   }
   const response = await fetchAs(`/_ref/runs/${encodeURIComponent(runId)}/interaction`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: asJson(payload),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
   });
   const body = await readBody(response);
   if (!response.ok) {
@@ -319,9 +319,9 @@ export async function mintRunInteractionStream(
     payload.idempotency_key = input.idempotencyKey;
   }
   const response = await fetchAs(`/_ref/runs/${encodeURIComponent(runId)}/run-interaction-stream`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: asJson(payload),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
   });
   const body = await readBody(response);
   if (!response.ok) {
@@ -346,13 +346,13 @@ export async function reportRunInteractionStreamReachFailure(
   input: { interactionId: string; reason: string; httpStatus: number | null }
 ): Promise<void> {
   const response = await fetchAs(`/_ref/runs/${encodeURIComponent(runId)}/run-interaction-stream/reach-failure`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: asJson({
+      http_status: input.httpStatus,
       interaction_id: input.interactionId,
       reason: input.reason,
-      http_status: input.httpStatus,
     }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
   });
   if (!response.ok) {
     const body = await readBody(response);

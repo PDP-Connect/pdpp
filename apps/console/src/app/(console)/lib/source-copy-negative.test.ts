@@ -86,8 +86,8 @@ function stripComments(src: string): string {
 function entryForDisposition(disposition: ConnectorCatalogEntry["disposition"]): ConnectorCatalogEntry {
   return {
     connectorKey: `stub-${disposition}`,
+    deploymentReadiness: { blockers: [], ready: true },
     disposition,
-    deploymentReadiness: { ready: true, blockers: [] },
   } as unknown as ConnectorCatalogEntry;
 }
 
@@ -172,8 +172,8 @@ test("the agreed add-account labels are exactly the realignment-plan vocabulary"
       display_name: "ynab",
       runtime_requirements: { bindings: { network: {} } },
       setup: {
+        credential_capture: { credential_kind: "api_token", fields: [{ label: "T", name: "t", secret: true }] },
         modality: "static_secret",
-        credential_capture: { credential_kind: "api_token", fields: [{ name: "t", label: "T", secret: true }] },
       },
     } as never,
     {

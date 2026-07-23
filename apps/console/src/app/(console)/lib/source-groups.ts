@@ -53,17 +53,17 @@ function needsAttention(overview: ConnectorOverview): boolean {
 function seedGroup(overview: ConnectorOverview): SourceGroup {
   const attention = needsAttention(overview);
   return {
+    attentionRouteId: attention ? routeId(overview) : null,
+    connectionCount: 1,
     connectorId: overview.connector.connector_id,
     displayName: formatConnectorNameForDisplay({
       connectorId: overview.connector.connector_id,
       displayName: overview.connectorDisplayName,
       name: overview.connector.name,
     }),
-    connectionCount: 1,
     needsAttentionCount: attention ? 1 : 0,
     revokedCount: isRevokedConnection(overview) ? 1 : 0,
     withDataCount: overview.totalRecords > 0 ? 1 : 0,
-    attentionRouteId: attention ? routeId(overview) : null,
   };
 }
 

@@ -184,7 +184,7 @@ export default async function RunDetailPage({
       <RunDetailPoller enabled={active} />
       <TimelineDetailView
         beforeTimelineContent={beforeTimeline}
-        breadcrumbs={[{ label: "Syncs", href: dashboardRoutes.section.runs }, { label: "Sync" }]}
+        breadcrumbs={[{ href: dashboardRoutes.section.runs, label: "Syncs" }, { label: "Sync" }]}
         cliCommand={`pdpp ref run timeline ${runId}`}
         description={description}
         envelope={envelope}
@@ -371,13 +371,13 @@ function LatestProgressSection({
             <dd>{latestProgress.stream}</dd>
           </>
         ) : null}
-        {latestProgress.count == null ? null : (
+        {latestProgress.count === null ? null : (
           <>
             <dt className="text-muted-foreground">count</dt>
             <dd>{String(latestProgress.count)}</dd>
           </>
         )}
-        {latestProgress.total == null ? null : (
+        {latestProgress.total === null ? null : (
           <>
             <dt className="text-muted-foreground">total</dt>
             <dd>{String(latestProgress.total)}</dd>
@@ -711,13 +711,13 @@ function extractStderrTail(failure: SpineEvent | undefined): StderrTailDiagnosti
     return null;
   }
   return {
-    text,
-    bytes_observed: typeof candidate.bytes_observed === "number" ? candidate.bytes_observed : text.length,
     bytes_captured: typeof candidate.bytes_captured === "number" ? candidate.bytes_captured : text.length,
-    truncated: candidate.truncated === true,
-    redacted: candidate.redacted === true,
+    bytes_observed: typeof candidate.bytes_observed === "number" ? candidate.bytes_observed : text.length,
     encoding: typeof candidate.encoding === "string" ? candidate.encoding : undefined,
     object: typeof candidate.object === "string" ? candidate.object : undefined,
+    redacted: candidate.redacted === true,
+    text,
+    truncated: candidate.truncated === true,
   };
 }
 
@@ -943,16 +943,16 @@ function getLatestProgress(events: SpineEvent[]): LatestProgress | null {
   const count = typeof latest.data?.count === "number" ? latest.data.count : null;
   const total = typeof latest.data?.total === "number" ? latest.data.total : null;
   const percentLabel =
-    count != null && total != null && total > 0
+    count !== null && total !== null && total > 0
       ? `${Math.max(0, Math.min(100, Math.round((count / total) * 100)))}%`
       : null;
 
   return {
-    message: String(latest.data?.message ?? "—"),
-    stream: typeof latest.stream_id === "string" && latest.stream_id ? latest.stream_id : null,
     count,
-    total,
+    message: String(latest.data?.message ?? "—"),
     percentLabel,
+    stream: typeof latest.stream_id === "string" && latest.stream_id ? latest.stream_id : null,
+    total,
   };
 }
 

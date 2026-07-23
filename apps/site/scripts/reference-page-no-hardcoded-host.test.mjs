@@ -15,8 +15,8 @@
 
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 const PAGE_PATH = new URL("../src/app/reference/page.tsx", import.meta.url);
 
@@ -30,6 +30,6 @@ test("reference page has no hardcoded localhost URL as a JSX attribute value", a
 
   assert.ok(
     !jsxLiteralPattern.test(src),
-    `reference/page.tsx must not contain a hardcoded localhost URL as a JSX attribute value (use providerUrl from getRequestOrigin() instead)`
+    "reference/page.tsx must not contain a hardcoded localhost URL as a JSX attribute value (use providerUrl from getRequestOrigin() instead)"
   );
 });

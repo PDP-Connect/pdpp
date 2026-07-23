@@ -5,7 +5,7 @@ import { ImageResponse } from "next/og";
 
 export const alt =
   "PDPP — Personal Data Portability Protocol. Clients request named records and fields; every response stays inside the grant.";
-export const size = { width: 1200, height: 630 };
+export const size = { height: 630, width: 1200 };
 export const contentType = "image/png";
 
 // Social card for the public site. Reused as both the Open Graph and Twitter
@@ -29,15 +29,15 @@ function Chip({ label, color, struck }: { label: string; color: string; struck?:
   return (
     <div
       style={{
-        display: "flex",
-        padding: "8px 16px",
+        background: struck ? "rgba(111,101,90,0.10)" : "rgba(44,115,217,0.12)",
         borderRadius: 10,
+        color,
+        display: "flex",
         fontFamily: "monospace",
         fontSize: 24,
-        color,
-        background: struck ? "rgba(111,101,90,0.10)" : "rgba(44,115,217,0.12)",
-        textDecoration: struck ? "line-through" : "none",
         opacity: struck ? 0.55 : 1,
+        padding: "8px 16px",
+        textDecoration: struck ? "line-through" : "none",
       }}
     >
       {label}
@@ -49,19 +49,19 @@ export default function OpengraphImage() {
   return new ImageResponse(
     <div
       style={{
-        width: "100%",
-        height: "100%",
-        display: "flex",
-        flexDirection: "column",
-        justifyContent: "space-between",
-        padding: 72,
         background: PAPER,
         backgroundImage:
           "radial-gradient(circle at 12% 16%, rgba(160,85,51,0.10), transparent 38%), radial-gradient(circle at 90% 6%, rgba(44,115,217,0.12), transparent 36%)",
+        display: "flex",
+        flexDirection: "column",
+        height: "100%",
+        justifyContent: "space-between",
+        padding: 72,
+        width: "100%",
       }}
     >
       {/* Wordmark */}
-      <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
+      <div style={{ alignItems: "center", display: "flex", gap: 18 }}>
         <svg aria-label="PDPP split P mark" height="56" role="img" viewBox="0 0 200 200" width="56">
           <path d="M 40 30 L 40 170 L 60 170 L 60 116 L 100 116 Q 105 116 105 110 L 105 30 Z" fill={COPPER} />
           <path
@@ -70,8 +70,8 @@ export default function OpengraphImage() {
           />
           <circle cx="105" cy="73" fill={PAPER_LIGHT} r="18" />
         </svg>
-        <div style={{ display: "flex", fontSize: 30, fontWeight: 700, letterSpacing: -0.5, color: INK }}>PDPP</div>
-        <div style={{ display: "flex", fontFamily: "monospace", fontSize: 22, color: MUTED }}>
+        <div style={{ color: INK, display: "flex", fontSize: 30, fontWeight: 700, letterSpacing: -0.5 }}>PDPP</div>
+        <div style={{ color: MUTED, display: "flex", fontFamily: "monospace", fontSize: 22 }}>
           v0.1.0 · Open reference
         </div>
       </div>
@@ -79,25 +79,25 @@ export default function OpengraphImage() {
       {/* Headline */}
       <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
         <div
-          style={{ display: "flex", fontSize: 76, fontWeight: 700, letterSpacing: -2.5, lineHeight: 1.04, color: INK }}
+          style={{ color: INK, display: "flex", fontSize: 76, fontWeight: 700, letterSpacing: -2.5, lineHeight: 1.04 }}
         >
           Granular access to personal data
         </div>
-        <div style={{ display: "flex", fontSize: 30, color: MUTED, maxWidth: 880 }}>
+        <div style={{ color: MUTED, display: "flex", fontSize: 30, maxWidth: 880 }}>
           Clients request named records and fields. Every response stays inside the grant.
         </div>
       </div>
 
       {/* Field-projection promise — eight fields enter, four come back */}
-      <div style={{ display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap" }}>
-        <div style={{ display: "flex", fontFamily: "monospace", fontSize: 22, color: MUTED }}>8 fields</div>
+      <div style={{ alignItems: "center", display: "flex", flexWrap: "wrap", gap: 18 }}>
+        <div style={{ color: MUTED, display: "flex", fontFamily: "monospace", fontSize: 22 }}>8 fields</div>
         <div style={{ display: "flex", gap: 8 }}>
           <Chip color={BLUE} label="employer" />
           <Chip color={BLUE} label="pay_period" />
           <Chip color={MUTED} label="home_address" struck />
           <Chip color={MUTED} label="tax_id" struck />
         </div>
-        <div style={{ display: "flex", fontSize: 28, color: BLUE }}>→ 4 returned</div>
+        <div style={{ color: BLUE, display: "flex", fontSize: 28 }}>→ 4 returned</div>
       </div>
     </div>,
     { ...size }

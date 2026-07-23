@@ -36,26 +36,26 @@ export interface ProtocolState {
 }
 
 const GRANT_TEMPLATE = {
+  access_mode: "continuous" as const,
+  client_id: LONGVIEW_CLIENT_ID,
+  expires_at: "2027-04-15T00:00:00Z",
   grant_id: "grt_longview01",
   issued_at: "2026-04-15T15:00:00Z",
-  client_id: LONGVIEW_CLIENT_ID,
   purpose_code: LONGVIEW_PURPOSE_CODE,
   purpose_description: LONGVIEW_PURPOSE_DESCRIPTION,
-  access_mode: "continuous" as const,
-  expires_at: "2027-04-15T00:00:00Z",
   retention: { max_duration: "P90D", on_expiry: "delete" as const },
   streams: [
     {
-      name: "pay_statements",
       fields: [...LONGVIEW_PAY_STATEMENT_GRANTED_FIELDS],
-      view: "summary",
+      name: "pay_statements",
       time_range: { since: "2025-01-01" },
+      view: "summary",
     },
     {
-      name: "equity_grants",
       fields: ["grant_type", "quantity", "vesting_start", "vesting_schedule"],
-      view: "vesting_summary",
+      name: "equity_grants",
       time_range: null,
+      view: "vesting_summary",
     },
   ],
 };
@@ -126,18 +126,18 @@ export function useProtocol() {
         const netPay = grossPay - 1540;
 
         server.addRecord("pay_statements", {
-          key: `pay_new_${idx}`,
           data: {
-            employer: "Northstar Labs",
-            pay_period: payDate.toISOString().slice(0, 10),
-            gross_pay: grossPay,
-            net_pay: netPay,
-            employee_id: `emp_${String(5124 + i).padStart(4, "0")}`,
-            home_address: "1207 W Maple Ave, Chicago, IL",
             bank_account_last4: "4821",
+            employee_id: `emp_${String(5124 + i).padStart(4, "0")}`,
+            employer: "Northstar Labs",
+            gross_pay: grossPay,
+            home_address: "1207 W Maple Ave, Chicago, IL",
+            net_pay: netPay,
+            pay_period: payDate.toISOString().slice(0, 10),
             tax_id_fragment: "2487",
           },
           emitted_at: payDate.toISOString(),
+          key: `pay_new_${idx}`,
         });
       }
 
@@ -176,19 +176,19 @@ export function useProtocol() {
   const introspection: ClientIntrospection = server.introspectClientToken(grant?.grant_id ?? GRANT_TEMPLATE.grant_id);
 
   return {
-    phase,
-    grant,
-    introspection,
-    queryResult,
-    syncResult,
-    syncCursor,
-    exportResult,
-    serverStats,
+    addNewPayStatements,
     approve,
     deny,
-    revoke,
-    addNewPayStatements,
-    selfExport,
+    exportResult,
+    grant,
+    introspection,
+    phase,
+    queryResult,
     reset,
+    revoke,
+    selfExport,
+    serverStats,
+    syncCursor,
+    syncResult,
   };
 }

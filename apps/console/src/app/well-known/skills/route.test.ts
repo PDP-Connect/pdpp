@@ -94,9 +94,9 @@ test("console .well-known skills route serves only allowlisted files", async () 
   assert.match(traversal.headers.get("content-type") ?? "", APPLICATION_JSON);
   assert.deepEqual(await jsonOf(traversal), {
     error: {
-      type: "not_found_error",
       code: "not_found",
       message: "Skill file not found",
+      type: "not_found_error",
     },
   });
 });

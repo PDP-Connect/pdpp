@@ -31,7 +31,7 @@ export async function upsertScheduleAction(
     revalidatePath("/sources");
     return { ok: true, policy_warning: body?.policy_warning ?? null };
   } catch (err) {
-    return { ok: false, message: err instanceof Error ? err.message : String(err) };
+    return { message: err instanceof Error ? err.message : String(err), ok: false };
   }
 }
 
@@ -45,7 +45,7 @@ export async function pauseScheduleAction(
     revalidatePath("/sources");
     return { ok: true };
   } catch (err) {
-    return { ok: false, message: err instanceof Error ? err.message : String(err) };
+    return { message: err instanceof Error ? err.message : String(err), ok: false };
   }
 }
 
@@ -59,7 +59,7 @@ export async function resumeScheduleAction(
     revalidatePath("/sources");
     return { ok: true };
   } catch (err) {
-    return { ok: false, message: err instanceof Error ? err.message : String(err) };
+    return { message: err instanceof Error ? err.message : String(err), ok: false };
   }
 }
 
@@ -73,6 +73,6 @@ export async function deleteScheduleAction(
     revalidatePath("/sources");
     return { ok: true };
   } catch (err) {
-    return { ok: false, message: err instanceof Error ? err.message : String(err) };
+    return { message: err instanceof Error ? err.message : String(err), ok: false };
   }
 }

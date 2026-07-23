@@ -57,9 +57,9 @@ export async function submitRunInteractionAction(
 
   try {
     await submitRunInteraction(runId, {
+      data: Object.keys(data).length > 0 ? data : undefined,
       interactionId,
       status,
-      data: Object.keys(data).length > 0 ? data : undefined,
     });
   } catch (err) {
     return { error: errorMessage(err), status: null };
@@ -92,7 +92,7 @@ export type CancelRunActionResult =
 export async function cancelRunAction(runId: string): Promise<CancelRunActionResult> {
   const trimmed = runId.trim();
   if (!trimmed) {
-    return { ok: false, kind: "error", message: "Missing run_id" };
+    return { kind: "error", message: "Missing run_id", ok: false };
   }
   await requireDashboardAccess(`/syncs/${encodeURIComponent(trimmed)}`);
 
@@ -101,9 +101,9 @@ export async function cancelRunAction(runId: string): Promise<CancelRunActionRes
     result = await cancelRun(trimmed);
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
-      return { ok: false, kind: "unreachable", message: err.message };
+      return { kind: "unreachable", message: err.message, ok: false };
     }
-    return { ok: false, kind: "error", message: errorMessage(err) };
+    return { kind: "error", message: errorMessage(err), ok: false };
   }
 
   // Always revalidate: on success the timeline gains a terminal event; on a
@@ -112,10 +112,10 @@ export async function cancelRunAction(runId: string): Promise<CancelRunActionRes
   revalidatePath(`/syncs/${trimmed}`);
 
   if (result.status === "run_already_terminal") {
-    return { ok: false, kind: "already_terminal", message: "This run already reached a terminal state." };
+    return { kind: "already_terminal", message: "This run already reached a terminal state.", ok: false };
   }
   if (result.status === "no_active_run") {
-    return { ok: false, kind: "no_active_run", message: "This run already reached a terminal state." };
+    return { kind: "no_active_run", message: "This run already reached a terminal state.", ok: false };
   }
   return { ok: true, status: result.status };
 }

@@ -238,10 +238,10 @@ async function mintOwnerToken(): Promise<string> {
     deviceRes = await fetch(
       `${asUrl}/oauth/device_authorization`,
       await withOwnerSessionCookie({
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ client_id: CLIENT_ID }),
         cache: "no-store",
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
       })
     );
   } catch (err) {
@@ -259,10 +259,10 @@ async function mintOwnerToken(): Promise<string> {
   const approveRes = await fetch(
     `${asUrl}/device/approve`,
     await withOwnerSessionCookie({
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ user_code: device.user_code }),
       cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
     })
   );
   if (!approveRes.ok) {
@@ -276,14 +276,14 @@ async function mintOwnerToken(): Promise<string> {
   const tokenRes = await fetch(
     `${asUrl}/oauth/token`,
     await withOwnerSessionCookie({
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-        device_code: device.device_code,
         client_id: CLIENT_ID,
+        device_code: device.device_code,
+        grant_type: "urn:ietf:params:oauth:grant-type:device_code",
       }),
       cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
     })
   );
   if (!tokenRes.ok) {

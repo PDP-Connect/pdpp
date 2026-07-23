@@ -52,8 +52,8 @@ export function ReferenceHeroProof() {
             <pre
               className="text-xs leading-6 md:text-sm"
               style={{
-                margin: 0,
                 color: "var(--foreground)",
+                margin: 0,
                 whiteSpace: "pre-wrap",
                 wordBreak: "break-word",
               }}

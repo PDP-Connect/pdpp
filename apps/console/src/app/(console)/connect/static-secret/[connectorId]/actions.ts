@@ -74,7 +74,7 @@ function autoResumeRunId(capture: StaticSecretCaptureResult): string | null {
 
 function shouldStartRunAfterCapture(capture: StaticSecretCaptureResult): boolean {
   const autoResume = capture.auto_resume;
-  return autoResume == null || autoResume.status === "no_satisfied_action";
+  return autoResume === null || autoResume.status === "no_satisfied_action";
 }
 
 async function runIdAfterCapture(connectionId: string, capture: StaticSecretCaptureResult): Promise<string | null> {

@@ -44,50 +44,50 @@ interface AgentSkillDefinition {
 
 const SKILLS: readonly AgentSkillDefinition[] = [
   {
-    name: DATA_ACCESS_SKILL_NAME,
-    description: DATA_ACCESS_SKILL_DESCRIPTION,
     canonical_source: "docs/agent-skills",
-    recommended_install: "npx skills add <repo-url> -g when supported; otherwise fetch files from this catalog",
+    description: DATA_ACCESS_SKILL_DESCRIPTION,
     files: [
       {
-        routePath: `${DATA_ACCESS_SKILL_NAME}/SKILL.md`,
+        mediaType: "text/markdown; charset=utf-8",
         repoRelativePath: `${DATA_ACCESS_SKILL_BASE_REPO_PATH}/SKILL.md`,
-        mediaType: "text/markdown; charset=utf-8",
+        routePath: `${DATA_ACCESS_SKILL_NAME}/SKILL.md`,
       },
       {
-        routePath: `${DATA_ACCESS_SKILL_NAME}/references/grant-design.md`,
+        mediaType: "text/markdown; charset=utf-8",
         repoRelativePath: `${DATA_ACCESS_SKILL_BASE_REPO_PATH}/references/grant-design.md`,
-        mediaType: "text/markdown; charset=utf-8",
+        routePath: `${DATA_ACCESS_SKILL_NAME}/references/grant-design.md`,
       },
       {
-        routePath: `${DATA_ACCESS_SKILL_NAME}/references/query-cookbook.md`,
+        mediaType: "text/markdown; charset=utf-8",
         repoRelativePath: `${DATA_ACCESS_SKILL_BASE_REPO_PATH}/references/query-cookbook.md`,
-        mediaType: "text/markdown; charset=utf-8",
+        routePath: `${DATA_ACCESS_SKILL_NAME}/references/query-cookbook.md`,
       },
       {
-        routePath: `${DATA_ACCESS_SKILL_NAME}/references/security.md`,
+        mediaType: "text/markdown; charset=utf-8",
         repoRelativePath: `${DATA_ACCESS_SKILL_BASE_REPO_PATH}/references/security.md`,
-        mediaType: "text/markdown; charset=utf-8",
+        routePath: `${DATA_ACCESS_SKILL_NAME}/references/security.md`,
       },
       {
-        routePath: `${DATA_ACCESS_SKILL_NAME}/references/troubleshooting.md`,
-        repoRelativePath: `${DATA_ACCESS_SKILL_BASE_REPO_PATH}/references/troubleshooting.md`,
         mediaType: "text/markdown; charset=utf-8",
+        repoRelativePath: `${DATA_ACCESS_SKILL_BASE_REPO_PATH}/references/troubleshooting.md`,
+        routePath: `${DATA_ACCESS_SKILL_NAME}/references/troubleshooting.md`,
       },
     ],
+    name: DATA_ACCESS_SKILL_NAME,
+    recommended_install: "npx skills add <repo-url> -g when supported; otherwise fetch files from this catalog",
   },
   {
-    name: OWNER_AGENT_SKILL_NAME,
-    description: OWNER_AGENT_SKILL_DESCRIPTION,
     canonical_source: "docs/agent-skills",
-    recommended_install: "npx skills add <repo-url> -g when supported; otherwise fetch files from this catalog",
+    description: OWNER_AGENT_SKILL_DESCRIPTION,
     files: [
       {
-        routePath: OWNER_AGENT_SKILL_ROUTE_PATH,
-        repoRelativePath: `${OWNER_AGENT_SKILL_BASE_REPO_PATH}/SKILL.md`,
         mediaType: "text/markdown; charset=utf-8",
+        repoRelativePath: `${OWNER_AGENT_SKILL_BASE_REPO_PATH}/SKILL.md`,
+        routePath: OWNER_AGENT_SKILL_ROUTE_PATH,
       },
     ],
+    name: OWNER_AGENT_SKILL_NAME,
+    recommended_install: "npx skills add <repo-url> -g when supported; otherwise fetch files from this catalog",
   },
 ];
 
@@ -140,10 +140,10 @@ export async function buildAgentSkillCatalog(origin: string): Promise<AgentSkill
         skill.files.map(async (file): Promise<AgentSkillCatalogFile> => {
           const bytes = await readRepoFile(file.repoRelativePath);
           return {
+            bytes: bytes.byteLength,
+            media_type: file.mediaType,
             path: file.routePath,
             repo_path: file.repoRelativePath,
-            media_type: file.mediaType,
-            bytes: bytes.byteLength,
             sha256: sha256(bytes),
             url: catalogUrl(origin, file.routePath),
           };
@@ -155,8 +155,8 @@ export async function buildAgentSkillCatalog(origin: string): Promise<AgentSkill
 
   return {
     object: "agent_skill_catalog",
-    version: "2026-04-26",
     skills,
+    version: "2026-04-26",
   };
 }
 
