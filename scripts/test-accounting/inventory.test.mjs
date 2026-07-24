@@ -11,7 +11,7 @@ import { execFileSync } from 'node:child_process';
 import test from 'node:test';
 import { checkInventory, classifyTrackedPath, contentDigest, fileDigest, parseInventoryArgs, readManifest, receiptBinding, RECEIPT_SCHEMA, RUN_AUTHORITY_SCHEMA, RUN_COMPLETION_SCHEMA, selectedRuns, trackedFiles, treeDigest, verifyReceipts } from './inventory.mjs';
 import { runAuthority } from './authority.mjs';
-import { repositoryPaths, structuredNodeSummary, structuredPythonSummary } from './receipt.mjs';
+import { POSTGRES_UNNAMED_SKIP_TEST_NAMES, repositoryPaths, structuredNodeSummary, structuredPythonSummary } from './receipt.mjs';
 import { storageProfileEnvironment } from '../../reference-implementation/scripts/test-profile-env.js';
 
 const digest = async (path) => contentDigest(await readFile(path));
@@ -93,7 +93,11 @@ test('accepts a complete named profile skip baseline and rejects an added skip',
 test('keeps the RI memory profile baseline aligned with explicitly named source skips', () => {
   const root = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim(); const manifestValue = JSON.parse(readFileSync(join(root, 'test-accounting.manifest.json'), 'utf8')); const baseline = manifestValue.suites.find((suite) => suite.id === 'ri-default').profiles.find((profile) => profile.id === 'memory-default').skip_reasons;
   const reasons = namedTrueSkipReasons(root);
-  assert.equal(reasons['PDPP_TEST_POSTGRES_URL unset'], baseline['PDPP_TEST_POSTGRES_URL unset']); assert.equal(reasons['dedicated disposable URL not selected'], baseline['dedicated disposable URL not selected']);
+  // The baseline also folds in receipt.mjs's exact POSTGRES_UNNAMED_SKIP_TEST_NAMES
+  // allowlist — bare `skip: !POSTGRES_URL` tests with no name-embedded reason,
+  // each individually traced to source (not statically re-countable here since
+  // some are inside loops emitting more than one skip per source occurrence).
+  assert.equal(reasons['PDPP_TEST_POSTGRES_URL unset'] + POSTGRES_UNNAMED_SKIP_TEST_NAMES.size, baseline['PDPP_TEST_POSTGRES_URL unset']); assert.equal(reasons['dedicated disposable URL not selected'], baseline['dedicated disposable URL not selected']);
 });
 test('does not leak a caller PostgreSQL URL into the RI memory profile', () => {
   assert.equal(storageProfileEnvironment('memory-default', { PDPP_TEST_POSTGRES_URL: 'postgres://caller', KEEP: 'yes' }).PDPP_TEST_POSTGRES_URL, undefined);
