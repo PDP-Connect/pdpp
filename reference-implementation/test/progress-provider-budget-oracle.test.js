@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { validateProgressProviderBudget } from '../runtime/progress-validators.js';
+import { validateProgressProviderBudget } from '../runtime/progress-validators.ts';
 
 const validProviderBudget = {
   object: 'provider_budget_circuit_transition',

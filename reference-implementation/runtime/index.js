@@ -23,11 +23,11 @@ import { classifyRecoveryGap } from './recovery-decision.ts';
 import { getDefaultConnectorAttentionStore } from '../server/stores/connector-attention-store.ts';
 import { createAttentionWriter } from './attention-writer.ts';
 import { canonicalConnectorKey } from '../server/connector-key.js';
-import { buildHttpFailure, buildIngestHttpFailure, buildInvalidIngestResponseFailure } from './ingest-failures.js';
-import { createDetailGapPageReader, validateDetailGapsPageRequest } from './detail-gap-paging.js';
-import { validateDoneError, validateDoneExitCode, validateDoneRecordsEmitted, validateDoneStatus } from './done-validators.js';
-import { validateProgressCollectionRate, validateProgressProviderBudget } from './progress-validators.js';
-import { classifyRuntimeFailure } from './classify-runtime-failure.js';
+import { buildHttpFailure, buildIngestHttpFailure, buildInvalidIngestResponseFailure } from './ingest-failures.ts';
+import { createDetailGapPageReader, validateDetailGapsPageRequest } from './detail-gap-paging.ts';
+import { validateDoneError, validateDoneExitCode, validateDoneRecordsEmitted, validateDoneStatus } from './done-validators.ts';
+import { validateProgressCollectionRate, validateProgressProviderBudget } from './progress-validators.ts';
+import { classifyRuntimeFailure } from './classify-runtime-failure.ts';
 import {
   VIOLATION_LIST_MAX,
   GAP_STRING_MAX,

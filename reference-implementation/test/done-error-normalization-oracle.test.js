@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { validateDoneError } from '../runtime/done-validators.js';
+import { validateDoneError } from '../runtime/done-validators.ts';
 
 test('validateDoneError returns null when DONE.error is absent', () => {
   assert.equal(validateDoneError('failed', null), null);

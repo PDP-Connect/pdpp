@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { validateProgressCollectionRate } from '../runtime/progress-validators.js';
+import { validateProgressCollectionRate } from '../runtime/progress-validators.ts';
 
 const validCollectionRate = {
   object: 'collection_rate',

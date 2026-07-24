@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { validateDetailGapsPageRequest } from '../runtime/detail-gap-paging.js';
+import { validateDetailGapsPageRequest } from '../runtime/detail-gap-paging.ts';
 
 const scopeByStream = new Map([['messages', {}], ['threads', {}]]);
 

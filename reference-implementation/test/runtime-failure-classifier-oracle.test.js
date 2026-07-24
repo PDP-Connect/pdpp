@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { classifyRuntimeFailure } from '../runtime/classify-runtime-failure.js';
+import { classifyRuntimeFailure } from '../runtime/classify-runtime-failure.ts';
 
 function errorWithMessage(message) {
   return new Error(message);
