@@ -103,7 +103,7 @@ import {
 import { resolveProviderAuthRunEnv } from './stores/provider-auth-run-credentials.js';
 import { resolveStaticSecretRunEnv } from './stores/static-secret-run-credentials.js';
 import { postgresPersistContentAddressedBlob } from './postgres-records.js';
-import { createConsentStore } from './stores/consent-store.js';
+import { createConsentStore } from './stores/consent-store.ts';
 import { createOwnerDeviceAuthStore } from './stores/owner-device-auth-store.js';
 import {
   buildEventPayload,

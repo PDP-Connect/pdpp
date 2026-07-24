@@ -32,7 +32,7 @@ import {
   CHATGPT_PROVIDER_PROFILE,
   maybeTerminateGap,
   terminalGapProfileForConnector,
-} from '../server/stores/terminal-gap-classifier.js';
+} from '../server/stores/terminal-gap-classifier.ts';
 
 // ─── terminalGapProfileForConnector: per-connector registry, NO default ──────
 

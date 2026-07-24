@@ -30,7 +30,7 @@ import {
   classifyRecoveryError,
   isNonTransientError,
   isAuthFailure,
-} from '../server/stores/terminal-gap-classifier.js';
+} from '../server/stores/terminal-gap-classifier.ts';
 
 // ─── §10-C: 401 auth class ──────────────────────────────────────────────────
 

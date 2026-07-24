@@ -23,7 +23,7 @@ import {
   DEFAULT_TERMINAL_GAP_PROFILE,
   resolveTerminalGapPolicy,
   terminalGapProfileForConnector,
-} from '../server/stores/terminal-gap-classifier.js';
+} from '../server/stores/terminal-gap-classifier.ts';
 
 test('terminalGapProfileForConnector returns the chatgpt profile for the bare key', () => {
   assert.equal(terminalGapProfileForConnector('chatgpt'), CHATGPT_PROVIDER_PROFILE);

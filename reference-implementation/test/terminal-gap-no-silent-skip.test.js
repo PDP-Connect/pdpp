@@ -40,7 +40,7 @@ import {
   maybeTerminateGap,
   resolveTerminalGapPolicy,
   terminalGapProfileForConnector,
-} from '../server/stores/terminal-gap-classifier.js';
+} from '../server/stores/terminal-gap-classifier.ts';
 
 function withTempDb(fn) {
   return async () => {

@@ -29,7 +29,7 @@ import { tmpdir } from 'node:os';
 
 import { closeDb, initDb } from '../server/db.js';
 import { createSqliteConnectorDetailGapStore } from '../server/stores/connector-detail-gap-store.js';
-import { maybeQuarantineGap } from '../server/stores/terminal-gap-classifier.js';
+import { maybeQuarantineGap } from '../server/stores/terminal-gap-classifier.ts';
 import {
   DEFAULT_QUARANTINE_POLICY,
   QUARANTINE_CLASS,

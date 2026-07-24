@@ -25,7 +25,7 @@
  * of terminalization: `resolveTerminalGapPolicy` falls every unregistered connector
  * back to a conservative `DEFAULT_TERMINAL_GAP_PROFILE` (spec §10-A option (b) —
  * "make the DEFAULT terminal behaviour safe"). This is distinct from the §3 rule-6
- * *safety/ban prior* (`pacingMinIntervalMs`, which stays strictly per-provider with
+ *safety/ban prior* (`pacingMinIntervalMs`, which stays strictly per-provider with
  * NO default): maxRecoveryAttempts is a terminalization budget (how long before a
  * deleted resource is declared gone), not a rate prior — so a safe shared default
  * is correct, and a SILENT skip (the pre-fix null-gate) is the real §10-A bug.
@@ -35,33 +35,49 @@
 
 // ─── Non-transient error classification ────────────────────────────────────
 
+interface ErrorInfo {
+  readonly errorClass?: string;
+  readonly status?: number;
+}
+
+interface ClassifyResult {
+  readonly nonTransient: boolean;
+  readonly reason: string | null;
+}
+
 /**
  * Classify an error info object as transient or non-transient.
  *
  * @param {object|null} errorInfo  — { status?: number, errorClass?: string }
  * @returns {{ nonTransient: boolean, reason: string|null }}
  */
-export function classifyRecoveryError(errorInfo) {
-  if (!errorInfo || typeof errorInfo !== 'object') {
+export function classifyRecoveryError(errorInfo: ErrorInfo | null | undefined): ClassifyResult {
+  if (!errorInfo || typeof errorInfo !== "object") {
     return { nonTransient: false, reason: null };
   }
 
   const { status, errorClass } = errorInfo;
-  const httpStatus = typeof status === 'number' ? status : null;
+  const httpStatus = typeof status === "number" ? status : null;
 
-  if (httpStatus === 404) return { nonTransient: true, reason: 'not_found' };
-  if (httpStatus === 410) return { nonTransient: true, reason: 'gone' };
+  if (httpStatus === 404) {
+    return { nonTransient: true, reason: "not_found" };
+  }
+  if (httpStatus === 410) {
+    return { nonTransient: true, reason: "gone" };
+  }
 
   // §10-C: 401 is a DISTINCT non-transient auth class (spec §10-C). It is
   // NOT source-pressure (must never arm the cooldown), NOT a deleted resource,
   // and NOT retryable as a plain gap — it requires owner re-authentication.
   // A token that returns 401 on every call will never recover on its own.
-  if (httpStatus === 401) return { nonTransient: true, reason: 'auth_failure' };
+  if (httpStatus === 401) {
+    return { nonTransient: true, reason: "auth_failure" };
+  }
 
   // 403 is only non-transient when the connector explicitly marks it permanent.
   // A bare 403 may resolve after a credential refresh and must remain transient.
-  if (httpStatus === 403 && errorClass === 'http_403_permanent') {
-    return { nonTransient: true, reason: 'permanent_forbidden' };
+  if (httpStatus === 403 && errorClass === "http_403_permanent") {
+    return { nonTransient: true, reason: "permanent_forbidden" };
   }
 
   // All other statuses (429, 5xx, bare 403, null) are transient.
@@ -76,7 +92,7 @@ export function classifyRecoveryError(errorInfo) {
  * @param {object|null} errorInfo
  * @returns {boolean}
  */
-export function isNonTransientError(errorInfo) {
+export function isNonTransientError(errorInfo: ErrorInfo | null | undefined): boolean {
   return classifyRecoveryError(errorInfo).nonTransient;
 }
 
@@ -90,8 +106,8 @@ export function isNonTransientError(errorInfo) {
  * @param {object|null} errorInfo
  * @returns {boolean}
  */
-export function isAuthFailure(errorInfo) {
-  return classifyRecoveryError(errorInfo).reason === 'auth_failure';
+export function isAuthFailure(errorInfo: ErrorInfo | null | undefined): boolean {
+  return classifyRecoveryError(errorInfo).reason === "auth_failure";
 }
 
 // ─── Provider profiles ─────────────────────────────────────────────────────
@@ -99,6 +115,10 @@ export function isAuthFailure(errorInfo) {
 // Each provider declares its own profile.  There is NO cross-provider default
 // for maxRecoveryAttempts — a missing or inherited value is a build-time error,
 // not a silent borrow of ChatGPT's number (spec §3 rule 6).
+
+interface ProviderProfile {
+  readonly maxRecoveryAttempts: number;
+}
 
 /**
  * ChatGPT provider profile for the terminal-gap classifier.
@@ -110,7 +130,7 @@ export function isAuthFailure(errorInfo) {
  * because retrying a deleted resource is pure waste.  3 attempts gives one
  * observed failure + two confirming retries before declaring permanent.
  */
-export const CHATGPT_PROVIDER_PROFILE = Object.freeze({
+export const CHATGPT_PROVIDER_PROFILE: Readonly<ProviderProfile> = Object.freeze({
   maxRecoveryAttempts: 3,
 });
 
@@ -139,7 +159,7 @@ export const CHATGPT_PROVIDER_PROFILE = Object.freeze({
  * provider gives a transient-looking error one extra confirming retry before
  * declaring it permanent.
  */
-export const DEFAULT_TERMINAL_GAP_PROFILE = Object.freeze({
+export const DEFAULT_TERMINAL_GAP_PROFILE: Readonly<ProviderProfile> = Object.freeze({
   maxRecoveryAttempts: 5,
 });
 
@@ -148,7 +168,7 @@ export const DEFAULT_TERMINAL_GAP_PROFILE = Object.freeze({
 // behaviour. A connector NOT listed here does NOT opt out of terminalization —
 // it falls back to DEFAULT_TERMINAL_GAP_PROFILE via `resolveTerminalGapPolicy`
 // (spec §10-A option (b)). The registry value is an override, never a gate.
-const TERMINAL_GAP_PROFILES = Object.freeze({
+const TERMINAL_GAP_PROFILES: Readonly<Record<string, ProviderProfile>> = Object.freeze({
   chatgpt: CHATGPT_PROVIDER_PROFILE,
 });
 
@@ -164,9 +184,14 @@ const TERMINAL_GAP_PROFILES = Object.freeze({
  * @param {string} connectorId
  * @returns {{ maxRecoveryAttempts: number } | null}
  */
-export function terminalGapProfileForConnector(connectorId) {
-  if (typeof connectorId !== 'string' || !connectorId) return null;
-  const base = connectorId.split(':')[0].split('@')[0];
+export function terminalGapProfileForConnector(connectorId: string): ProviderProfile | null {
+  if (typeof connectorId !== "string" || !connectorId) {
+    return null;
+  }
+  const base = connectorId.split(":")[0]?.split("@")[0];
+  if (!base) {
+    return null;
+  }
   return TERMINAL_GAP_PROFILES[base] ?? null;
 }
 
@@ -181,11 +206,26 @@ export function terminalGapProfileForConnector(connectorId) {
  * @param {string} connectorId
  * @returns {{ maxRecoveryAttempts: number }}
  */
-export function resolveTerminalGapPolicy(connectorId) {
+export function resolveTerminalGapPolicy(connectorId: string): ProviderProfile {
   return terminalGapProfileForConnector(connectorId) ?? DEFAULT_TERMINAL_GAP_PROFILE;
 }
 
 // ─── maybeTerminateGap ─────────────────────────────────────────────────────
+
+interface Gap {
+  readonly attempt_count?: number;
+  readonly [key: string]: unknown;
+}
+
+interface DetailGapStore {
+  getGapById: (gapId: string) => Promise<Gap | null>;
+  markGapStatus: (gapId: string, status: string, options?: Record<string, unknown>) => Promise<Gap | null>;
+}
+
+interface MaybeTerminateResult {
+  readonly gap: Gap | null;
+  readonly terminated: boolean;
+}
 
 /**
  * Examine a gap and transition it to 'terminal' iff BOTH hold:
@@ -208,37 +248,55 @@ export function resolveTerminalGapPolicy(connectorId) {
  * @param {{ maxRecoveryAttempts: number }} providerProfile
  * @returns {Promise<{ terminated: boolean, gap: object|null }>}
  */
-export async function maybeTerminateGap(store, gapId, errorInfo, providerProfile) {
-  if (!providerProfile || typeof providerProfile.maxRecoveryAttempts !== 'number') {
+export async function maybeTerminateGap(
+  store: DetailGapStore,
+  gapId: string,
+  errorInfo: ErrorInfo | null | undefined,
+  providerProfile: ProviderProfile
+): Promise<MaybeTerminateResult> {
+  if (!providerProfile || typeof providerProfile.maxRecoveryAttempts !== "number") {
     throw new Error(
-      'maybeTerminateGap requires providerProfile.maxRecoveryAttempts; ' +
-      'declare a per-provider profile — no cross-provider default (spec §3 rule 6)',
+      "maybeTerminateGap requires providerProfile.maxRecoveryAttempts; " +
+        "declare a per-provider profile — no cross-provider default (spec §3 rule 6)"
     );
   }
 
   const { nonTransient } = classifyRecoveryError(errorInfo);
   if (!nonTransient) {
-    return { terminated: false, gap: null };
+    return { gap: null, terminated: false };
   }
 
-  const current = typeof store.getGapById === 'function' ? await store.getGapById(gapId) : null;
+  const current = typeof store.getGapById === "function" ? await store.getGapById(gapId) : null;
   if (!current) {
     // Gap not found (already recovered/terminal, or never existed) — nothing to do.
-    return { terminated: false, gap: null };
+    return { gap: null, terminated: false };
   }
 
-  const attemptCount = typeof current.attempt_count === 'number' ? current.attempt_count : 0;
+  const attemptCount = typeof current.attempt_count === "number" ? current.attempt_count : 0;
   if (attemptCount < providerProfile.maxRecoveryAttempts) {
     // Budget not yet exhausted — leave the gap pending for another attempt.
-    return { terminated: false, gap: null };
+    return { gap: null, terminated: false };
   }
 
   // Budget exhausted against a non-transient error: terminalize in one write.
-  const terminated = await store.markGapStatus(gapId, 'terminal', { lastError: errorInfo });
-  return { terminated: Boolean(terminated), gap: terminated ?? null };
+  const terminated = await store.markGapStatus(gapId, "terminal", { lastError: errorInfo });
+  return { gap: terminated ?? null, terminated: Boolean(terminated) };
 }
 
 // ─── maybeQuarantineGap ────────────────────────────────────────────────────
+
+interface QuarantinePolicy {
+  readonly maxNoProgressAttempts: number;
+}
+
+interface Evidence {
+  readonly [key: string]: unknown;
+}
+
+interface MaybeQuarantineResult {
+  readonly gap: Gap | null;
+  readonly quarantined: boolean;
+}
 
 /**
  * Per-item poison-item quarantine (design.md D9/D10; OpenSpec
@@ -270,43 +328,48 @@ export async function maybeTerminateGap(store, gapId, errorInfo, providerProfile
  * @param {{ maxNoProgressAttempts: number }} policy
  * @returns {Promise<{ quarantined: boolean, gap: object|null }>}
  */
-export async function maybeQuarantineGap(store, gapId, evidence, policy) {
-  if (!policy || typeof policy.maxNoProgressAttempts !== 'number' || policy.maxNoProgressAttempts <= 0) {
+export async function maybeQuarantineGap(
+  store: DetailGapStore,
+  gapId: string,
+  evidence: Evidence | null | undefined,
+  policy: QuarantinePolicy
+): Promise<MaybeQuarantineResult> {
+  if (!policy || typeof policy.maxNoProgressAttempts !== "number" || policy.maxNoProgressAttempts <= 0) {
     throw new Error(
-      'maybeQuarantineGap requires policy.maxNoProgressAttempts as a positive integer; ' +
-      'a poison item must always have a finite no-progress budget (design.md D10)',
+      "maybeQuarantineGap requires policy.maxNoProgressAttempts as a positive integer; " +
+        "a poison item must always have a finite no-progress budget (design.md D10)"
     );
   }
 
-  const current = typeof store.getGapById === 'function' ? await store.getGapById(gapId) : null;
+  const current = typeof store.getGapById === "function" ? await store.getGapById(gapId) : null;
   if (!current) {
     // Gap not found (already recovered/terminal, or never existed) — nothing to do.
-    return { quarantined: false, gap: null };
+    return { gap: null, quarantined: false };
   }
-  if (current.status === 'terminal' || current.status === 'recovered') {
+  if (current.status === "terminal" || current.status === "recovered") {
     // Recovery already concluded; terminal (incl. a prior quarantine) is sticky.
-    return { quarantined: false, gap: null };
+    return { gap: null, quarantined: false };
   }
 
-  const attemptCount = typeof current.attempt_count === 'number' ? current.attempt_count : 0;
+  const attemptCount = typeof current.attempt_count === "number" ? current.attempt_count : 0;
   if (attemptCount < policy.maxNoProgressAttempts) {
     // Budget not yet exhausted — leave the item queued for another attempt so a
     // slow-but-progressing sibling is never quarantined prematurely.
-    return { quarantined: false, gap: null };
+    return { gap: null, quarantined: false };
   }
 
   // Budget exhausted with no recovery: quarantine in one write. The `reason`
   // carries the `quarantined` class the recovery-decision classifier routes to
   // `connector_defect`; the `last_error` carries the (sanitized) evidence trail.
-  const quarantineError = {
-    class: 'quarantined',
-    ...(evidence && typeof evidence === 'object' ? evidence : {}),
+  const quarantineError: Record<string, unknown> = {
+    class: "quarantined",
+    ...(evidence && typeof evidence === "object" ? evidence : {}),
     attempt_count: attemptCount,
     threshold: policy.maxNoProgressAttempts,
   };
-  const quarantined = await store.markGapStatus(gapId, 'terminal', {
-    reason: 'quarantined',
+  const quarantined = await store.markGapStatus(gapId, "terminal", {
     lastError: quarantineError,
+    reason: "quarantined",
   });
-  return { quarantined: Boolean(quarantined), gap: quarantined ?? null };
+  return { gap: quarantined ?? null, quarantined: Boolean(quarantined) };
 }
