@@ -9,6 +9,6 @@ import { accountingEventLine } from './receipt.mjs';
 export default async function* accountingReporter(source) {
   for await (const event of source) {
     const data = event.data ?? {}; const details = data.details ?? {};
-    yield `${accountingEventLine({ type: event.type, details: { type: details.type, name: data.name ?? details.name, skip: data.skip ?? details.skip } })}\n`;
+    yield `${accountingEventLine({ type: event.type, details: { type: details.type, name: data.name ?? details.name, skip: details.skip } })}\n`;
   }
 }
