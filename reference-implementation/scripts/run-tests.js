@@ -6,8 +6,10 @@ import { availableParallelism } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import pg from 'pg';
 import { buildScrubbedTestEnv } from './test-env.js';
+import { combineTestAndCleanupFailure, testProcessExitFailure } from './run-tests-failure.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = dirname(__dirname);
@@ -26,6 +28,7 @@ const requestedConcurrency = Number.parseInt(process.env.PDPP_TEST_CONCURRENCY |
 // requiring any changes to individual test files.
 
 let fileCounter = 0;
+const runnerId = randomBytes(4).toString('hex');
 
 /**
  * Derive the admin connection URL from a per-test URL by replacing the
@@ -40,8 +43,8 @@ function adminUrlFromBase(baseUrl) {
 }
 
 /**
- * Derive a short, safe DB name from the test file path and a monotonic
- * counter so concurrent workers never collide.
+ * Derive a short, safe DB name from the test file path, a per-run random ID,
+ * and a monotonic counter so concurrent runners and workers never collide.
  */
 function deriveDbName(filePath) {
   // Strip directory and extension; keep only alphanumeric/underscore chars.
@@ -52,9 +55,11 @@ function deriveDbName(filePath) {
     .replace(/\.[^.]+$/, '')
     .replace(/[^a-z0-9_]/gi, '_')
     .toLowerCase()
-    .slice(0, 40);
+    // PostgreSQL identifiers are limited to 63 bytes. The fixed prefix,
+    // random ID, and a base-36 counter leave 38 bytes for the file stem.
+    .slice(0, 38);
   fileCounter += 1;
-  return `pdpp_test_${base}_${fileCounter}`;
+  return `pdpp_test_${base}_${runnerId}_${fileCounter.toString(36)}`;
 }
 
 // Per-file databases currently allocated. Tracked so that if the runner
@@ -93,6 +98,10 @@ async function allocateTestDb(filePath, baseUrl) {
   try {
     await client.connect();
     // Identifier is safe: deriveDbName produces only [a-z0-9_] chars.
+    // A prior hard-killed runner can leave an allocated name behind. Remove
+    // it before allocating a fresh DB; the per-run random ID avoids collisions
+    // with any concurrently running test runner.
+    await client.query(`DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`);
     await client.query(`CREATE DATABASE "${dbName}"`);
     await client.end();
   } catch (err) {
@@ -106,18 +115,31 @@ async function allocateTestDb(filePath, baseUrl) {
   testUrl.pathname = `/${dbName}`;
 
   const allocation = { url: testUrl.toString() };
+  let releasePromise;
 
-  allocation.release = async function release() {
-    activeAllocations.delete(allocation);
-    const drop = new pg.Client({ connectionString: adminUrl });
-    try {
-      await drop.connect();
-      await drop.query(`DROP DATABASE IF EXISTS "${dbName}"`);
-      await drop.end();
-    } catch (err) {
-      try { await drop.end(); } catch (_) {}
-      process.stderr.write(`[run-tests] WARN: could not drop test DB ${dbName}: ${err.message}\n`);
-    }
+  allocation.release = function release() {
+    if (releasePromise) return releasePromise;
+
+    releasePromise = (async () => {
+      const drop = new pg.Client({ connectionString: adminUrl });
+      try {
+        await drop.connect();
+        // FORCE also closes a leaked test pool, so cleanup cannot silently leave
+        // a per-file database behind after a failed test.
+        await drop.query(`DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`);
+        await drop.end();
+        activeAllocations.delete(allocation);
+      } catch (err) {
+        try { await drop.end(); } catch (_) {}
+        throw new Error(`[run-tests] could not drop test DB ${dbName}: ${err.message}`, { cause: err });
+      }
+    })().catch((error) => {
+      // Keep failed allocations eligible for signal cleanup to retry.
+      releasePromise = undefined;
+      throw error;
+    });
+
+    return releasePromise;
   };
 
   // Track the live allocation and arm the runner-level signal cleanup so a
@@ -149,6 +171,13 @@ async function runNodeTest(filePath, extraArgs) {
       env: childEnv,
     });
     let output = '';
+    let settled = false;
+
+    const settle = (outcome, value) => {
+      if (settled) return;
+      settled = true;
+      outcome(value);
+    };
 
     child.stdout.on('data', (chunk) => {
       output += chunk.toString();
@@ -157,24 +186,45 @@ async function runNodeTest(filePath, extraArgs) {
       output += chunk.toString();
     });
 
-    child.on('error', (err) => {
-      if (allocation) allocation.release().finally(() => reject(err));
-      else reject(err);
+    child.on('error', async (err) => {
+      let cleanupError;
+      try {
+        if (allocation) await allocation.release();
+      } catch (error) {
+        cleanupError = error;
+      }
+      settle(reject, combineTestAndCleanupFailure(err, cleanupError, `could not start test process for ${filePath}`));
     });
-    child.on('exit', (code, signal) => {
+    child.on('exit', async (code, signal) => {
+      const testError = signal || code !== 0
+        ? testProcessExitFailure(filePath, code, signal, `\n==> ${filePath}\n${output}`)
+        : undefined;
       const finish = () => {
         if (signal) {
-          reject(new Error(`Test process for ${filePath} exited via signal ${signal}`));
+          settle(reject, testError);
           return;
         }
-        resolve({
+        settle(resolve, {
           filePath,
           exitCode: code ?? 1,
           output: `\n==> ${filePath}\n${output}`,
         });
       };
       if (allocation) {
-        allocation.release().finally(finish);
+        let cleanupError;
+        try {
+          await allocation.release();
+        } catch (error) {
+          cleanupError = error;
+        }
+        if (cleanupError) {
+          settle(
+            reject,
+            combineTestAndCleanupFailure(testError, cleanupError, `test process failed for ${filePath}`),
+          );
+          return;
+        }
+        finish();
       } else {
         finish();
       }

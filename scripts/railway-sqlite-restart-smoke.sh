@@ -47,7 +47,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-PROJECT_NAME="${COMPOSE_PROJECT_NAME:-pdpp-sqlite-restart-smoke}"
+PROJECT_NAME="${PDPP_RAILWAY_SQLITE_SMOKE_PROJECT_NAME:-pdpp-sqlite-restart-smoke}"
 ORIGIN="${PDPP_REFERENCE_ORIGIN:-http://localhost:3002}"
 OWNER_PASSWORD="${PDPP_OWNER_PASSWORD:-$(node -e "console.log(require('node:crypto').randomBytes(24).toString('base64url'))")}"
 
@@ -78,7 +78,7 @@ NODE
 cd "$REPO_ROOT"
 
 cleanup() {
-  docker compose down --remove-orphans >/dev/null 2>&1 || true
+  docker compose down --volumes --remove-orphans >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 

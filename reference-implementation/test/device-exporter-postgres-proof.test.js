@@ -18,6 +18,7 @@ import { closeDb, getDb, initDb } from '../server/db.js';
 import { ingestRecord, setClientEventEnqueueHook } from '../server/records.js';
 import { makeLocalTransformerBackend } from '../server/search-semantic.js';
 import { dedicatedPostgresTestUrl } from './helpers/dedicated-postgres-test-url.js';
+import { withTemporaryPostgresDatabase } from './helpers/postgres-temp-database.js';
 import {
   bootstrapPostgresSchema,
   closePostgresStorage,
@@ -43,37 +44,12 @@ function tempDbName() {
   return `pdpp_device_ingest_${process.pid}_${Date.now()}_${tempCounter}`;
 }
 
-function databaseUrl(url, name) {
-  const parsed = new URL(url);
-  parsed.pathname = `/${name}`;
-  return parsed.toString();
-}
-
-function adminUrl(url) {
-  const parsed = new URL(url);
-  parsed.pathname = '/postgres';
-  return parsed.toString();
-}
-
 async function withTempPostgres(fn) {
-  const admin = new Pool({ connectionString: adminUrl(POSTGRES_URL) });
   const name = tempDbName();
-  await admin.query(`DROP DATABASE IF EXISTS "${name}"`);
-  await admin.query(`CREATE DATABASE "${name}"`);
-  const url = databaseUrl(POSTGRES_URL, name);
-  try {
-    await fn(url);
-  } finally {
-    await closePostgresStorage().catch(() => undefined);
-    await admin.query(
-      `SELECT pg_terminate_backend(pid)
-         FROM pg_stat_activity
-        WHERE datname = $1 AND pid <> pg_backend_pid()`,
-      [name],
-    ).catch(() => undefined);
-    await admin.query(`DROP DATABASE IF EXISTS "${name}"`).catch(() => undefined);
-    await admin.end();
-  }
+  return withTemporaryPostgresDatabase(
+    { connectionString: POSTGRES_URL, databaseName: name, closeConnections: closePostgresStorage },
+    fn,
+  );
 }
 
 async function closeServer(server) {
