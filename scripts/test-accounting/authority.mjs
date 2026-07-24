@@ -53,9 +53,20 @@ function assertChildResult(result, issued) {
   if (!result.counts || typeof result.counts !== 'object') fail(`${issued.suite}/${issued.profile} child omitted structured counts`);
   return result.counts;
 }
-function leafCommand(run, authorityPath) {
+// Node resolves a bare relative --test-reporter value (no leading ./) as a
+// package specifier, not a file path, and fails closed. execute.mjs used to
+// paper over this by always resolving the reporter to an absolute path
+// before spawning; direct leaves must do the same since they run from an
+// arbitrary suite cwd, not necessarily the repo root.
+function resolveReporterArgument(command, root) {
+  const resolved = [...command];
+  const index = resolved.indexOf('--test-reporter');
+  if (index !== -1 && resolved[index + 1]) resolved[index + 1] = resolve(root, resolved[index + 1]);
+  return resolved;
+}
+function leafCommand(run, authorityPath, root) {
   if (run.suite.zero_tests) return null;
-  const command = [...run.suite.command];
+  const command = resolveReporterArgument(run.suite.command, root);
   if (run.suite.authority_argument) command.push(run.suite.authority_argument, authorityPath);
   if (run.suite.execution === 'direct') command.push(...run.files);
   return command;
@@ -89,7 +100,7 @@ export async function runAuthority({ root = gitRoot(), suites = [], profile, bas
     const authorityPath = resolve(directory, `${runId}.authority.json`); await writeNew(authorityPath, issued);
     const transcriptPath = resolve(directory, `${runId}.transcript`); const transcript = await open(transcriptPath, 'wx');
     const startedAt = instant(Date.now()); await transcript.write(`${JSON.stringify({ event: 'start', run_id: runId, nonce, started_at: startedAt, suite: issued.suite, profile: issued.profile, files: issued.files, cwd: issued.cwd, argv: issued.argv })}\n`);
-    const command = leafCommand(run, authorityPath);
+    const command = leafCommand(run, authorityPath, root);
     let observed;
     try { observed = command ? await capture(command, resolve(root, run.suite.cwd), { ...process.env, PDPP_TEST_PROFILE: run.profile.id, ...(run.suite.environment ?? {}) }, transcript, issued) : { exit_code: 0, signal: null, stdout: '' }; } catch (error) { await transcript.close(); throw error; }
     const endedAt = instant(Date.now()); await transcript.write(`${JSON.stringify({ event: 'end', run_id: runId, nonce, ended_at: endedAt, exit_code: observed.exit_code, signal: observed.signal })}\n`); await transcript.sync(); await transcript.close();
