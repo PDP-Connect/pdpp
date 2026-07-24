@@ -41,11 +41,11 @@ test('source-resolves literal dynamic and spawn targets rather than accepting co
 });
 test('requires every authority manifest command edge instead of trusting a partial declaration', async () => {
   const root = await fixture(); await mkdir(join(root, 'scripts', 'test-accounting'), { recursive: true });
-  await writeFile(join(root, 'scripts', 'test-accounting', 'authority.mjs'), 'const command = ["node", "scripts/test-accounting/execute.mjs"]; spawn(command[0], command.slice(1));\n');
-  await writeFile(join(root, 'scripts', 'test-accounting', 'execute.mjs'), 'export const runner = true;\n');
-  await writeFile(join(root, 'test-accounting.manifest.json'), JSON.stringify({ suites: [{ id: 'root-node', cwd: '.', command: ['node', 'scripts/test-accounting/execute.mjs'] }] }));
+  await writeFile(join(root, 'scripts', 'test-accounting', 'authority.mjs'), 'const command = ["node", "scripts/test-accounting/leaf.mjs"]; spawn(command[0], command.slice(1));\n');
+  await writeFile(join(root, 'scripts', 'test-accounting', 'leaf.mjs'), 'export const runner = true;\n');
+  await writeFile(join(root, 'test-accounting.manifest.json'), JSON.stringify({ suites: [{ id: 'root-node', cwd: '.', command: ['node', 'scripts/test-accounting/leaf.mjs'] }] }));
   assert.throws(() => packet(root), /runtime edge is missing/);
-  const edge = { from: 'scripts/test-accounting/authority.mjs', target: 'scripts/test-accounting/execute.mjs', kind: 'manifest-command', declaration: 'root-node' };
+  const edge = { from: 'scripts/test-accounting/authority.mjs', target: 'scripts/test-accounting/leaf.mjs', kind: 'manifest-command', declaration: 'root-node' };
   assert.equal(sourceResolvesEdge(root, edge).target, edge.target);
   const value = packet(root, { runtime_edges: [{ from: 'runner.mjs', target: 'target-b.mjs', kind: 'dynamic' }, { from: 'runner.mjs', target: 'target-b.mjs', kind: 'spawn' }, edge] });
   assert.deepEqual(validatePacket(value, { root, head: base, leaseDirectory: join(root, 'leases') }).base_sha, base);

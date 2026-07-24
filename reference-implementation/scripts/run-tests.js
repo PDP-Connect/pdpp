@@ -18,7 +18,7 @@ const testDir = join(repoRoot, 'test');
 const rawForwardedArgs = process.argv.slice(2).filter((arg, index) => !(index === 0 && arg === '--'));
 const accountingIndex = rawForwardedArgs.indexOf('--accounting-authority');
 const accountingPath = accountingIndex === -1 ? undefined : rawForwardedArgs[accountingIndex + 1];
-if (accountingIndex === -1 || !accountingPath) throw new Error('run-tests.js requires verifier-issued --accounting-authority PATH');
+if (accountingIndex !== -1 && !accountingPath) throw new Error('--accounting-authority requires PATH');
 const forwardedArgs = accountingIndex === -1
   ? rawForwardedArgs
   : rawForwardedArgs.filter((_, index) => index !== accountingIndex && index !== accountingIndex + 1);
@@ -26,10 +26,11 @@ const effectiveArgs = forwardedArgs.includes('--test-force-exit')
   ? forwardedArgs
   : ['--test-force-exit', ...forwardedArgs];
 if (!effectiveArgs.some((arg) => arg === '--test-reporter' || arg.startsWith('--test-reporter='))) effectiveArgs.push(`--test-reporter=${fileURLToPath(new URL('../../scripts/test-accounting/node-reporter.mjs', import.meta.url))}`);
-const accountingAuthority = JSON.parse(await readFile(accountingPath, 'utf8'));
-if (accountingAuthority.schema !== RUN_AUTHORITY_SCHEMA || new Date(accountingAuthority.expires_at) < new Date()) throw new Error('accounting authority is invalid or expired');
-if (accountingAuthority.suite !== 'ri-default' || accountingAuthority.profile !== process.env.PDPP_TEST_PROFILE) throw new Error('accounting authority does not bind the selected RI profile');
-if (accountingAuthority.profile === 'postgres' && !process.env.PDPP_TEST_POSTGRES_URL) throw new Error('postgres profile requires PDPP_TEST_POSTGRES_URL');
+const accountingAuthority = accountingPath ? JSON.parse(await readFile(accountingPath, 'utf8')) : undefined;
+if (accountingAuthority && (accountingAuthority.schema !== RUN_AUTHORITY_SCHEMA || new Date(accountingAuthority.expires_at) < new Date())) throw new Error('accounting authority is invalid or expired');
+if (accountingAuthority && (accountingAuthority.suite !== 'ri-default' || accountingAuthority.profile !== process.env.PDPP_TEST_PROFILE)) throw new Error('accounting authority does not bind the selected RI profile');
+if (accountingAuthority?.profile === 'postgres' && !process.env.PDPP_TEST_POSTGRES_URL) throw new Error('postgres profile requires PDPP_TEST_POSTGRES_URL');
+const selectedProfile = accountingAuthority?.profile ?? process.env.PDPP_TEST_PROFILE ?? 'memory-default';
 const requestedConcurrency = Number.parseInt(process.env.PDPP_TEST_CONCURRENCY || '', 10);
 
 // --- Per-file Postgres database isolation ---
@@ -144,7 +145,7 @@ async function allocateTestDb(filePath, baseUrl) {
 
 async function runNodeTest(filePath, extraArgs) {
   const startedAt = Date.now();
-  const baseEnv = storageProfileEnvironment(accountingAuthority.profile, buildScrubbedTestEnv(process.env));
+  const baseEnv = storageProfileEnvironment(selectedProfile, buildScrubbedTestEnv(process.env));
   const baseUrl = baseEnv.PDPP_TEST_POSTGRES_URL;
 
   // Allocate a per-file DB when a base Postgres URL is configured.
@@ -253,7 +254,7 @@ async function worker() {
 await Promise.all(Array.from({ length: fileConcurrency }, () => worker()));
 
 const selectedFiles = repositoryPaths('reference-implementation', testFiles);
-if (JSON.stringify(selectedFiles) !== JSON.stringify(accountingAuthority.files)) throw new Error('RI discovery differs from authority-issued child selection');
+if (accountingAuthority && JSON.stringify(selectedFiles) !== JSON.stringify(accountingAuthority.files)) throw new Error('RI discovery differs from authority-issued child selection');
 const summaries = results.map((result) => structuredNodeSummary(result.output));
 const skipReasons = {};
 for (const summary of summaries) for (const [reason, count] of Object.entries(summary.skip_reasons)) skipReasons[reason] = (skipReasons[reason] ?? 0) + count;
@@ -267,7 +268,7 @@ const counts = {
   planned_files: testFiles.length,
   completed_files: failed ? 0 : results.length,
 };
-process.stdout.write(`${accountingResultLine({ run_id: accountingAuthority.run_id, nonce: accountingAuthority.nonce, suite: 'ri-default', profile: accountingAuthority.profile, files: selectedFiles, counts })}\n`);
+if (accountingAuthority) process.stdout.write(`${accountingResultLine({ run_id: accountingAuthority.run_id, nonce: accountingAuthority.nonce, suite: 'ri-default', profile: accountingAuthority.profile, files: selectedFiles, counts })}\n`);
 
 if (failed) {
   process.exit(failed.exitCode);

@@ -93,6 +93,7 @@ function suiteProfiles(suite) {
   if (ids.some((id) => typeof id !== 'string' || !id) || new Set(ids).size !== ids.length) fail(`${suite.id} has invalid or duplicate profiles`);
   return ids;
 }
+function zeroTestSuite(suite) { return suite.zero_tests === true; }
 function validateSkipReasons(reasons, label) {
   if (!reasons || typeof reasons !== 'object' || Array.isArray(reasons)) fail(`${label} skip_reasons must be an object`);
   for (const [reason, count] of Object.entries(reasons)) {
@@ -111,9 +112,15 @@ export async function readManifest(manifestPath = 'test-accounting.manifest.json
   for (const suite of manifest.suites) {
     if (typeof suite.id !== 'string' || !suite.id || ids.has(suite.id)) fail(`invalid or duplicate suite id: ${suite.id}`);
     ids.add(suite.id); suiteProfiles(suite);
-    if (!Array.isArray(suite.include) || suite.include.length === 0) fail(`${suite.id} must include a non-empty plan`);
-    if (!Array.isArray(suite.command) || suite.command.length === 0 || suite.command.some((part) => typeof part !== 'string' || !part) || suite.command[0] === 'false') fail(`${suite.id} must declare a real command`);
-    if (!['--authority', '--accounting-authority'].includes(suite.authority_argument)) fail(`${suite.id} must declare its authority argument`);
+    if (!Array.isArray(suite.include) || (!zeroTestSuite(suite) && suite.include.length === 0) || (zeroTestSuite(suite) && suite.include.length !== 0)) fail(`${suite.id} must declare the correct inventory plan`);
+    if (zeroTestSuite(suite)) {
+      if (suite.execution !== 'zero-test-declaration' || suite.command !== null) fail(`${suite.id} zero-test declaration is malformed`);
+    } else if (!Array.isArray(suite.command) || suite.command.length === 0 || suite.command.some((part) => typeof part !== 'string' || !part) || suite.command[0] === 'false') fail(`${suite.id} must declare a real command`);
+    if (!['--authority', '--accounting-authority', null].includes(suite.authority_argument)) fail(`${suite.id} must declare a supported authority argument`);
+    if (suite.execution === undefined) suite.execution = suite.authority_argument ? 'authority-runner' : 'direct';
+    if (!['direct', 'authority-runner', 'zero-test-declaration'].includes(suite.execution)) fail(`${suite.id} must declare a supported execution mode`);
+    if (zeroTestSuite(suite) && !suite.profiles.every((entry) => entry.zero_tests === true)) fail(`${suite.id} zero-test profiles must be declared`);
+    if (!zeroTestSuite(suite) && suite.execution === 'direct' && suite.authority_argument !== null) fail(`${suite.id} direct leaf must not call authority`);
     if (typeof suite.cwd !== 'string' || !suite.cwd || suite.cwd.startsWith('/') || suite.cwd.includes('..')) fail(`${suite.id} must declare a repository-relative cwd`);
     if (!['node-test', 'python-unittest', 'shell'].includes(suite.loader)) fail(`${suite.id} must declare a supported loader`);
     for (const entry of suite.profiles) validateSkipReasons(entry.skip_reasons ?? {}, `${suite.id}/${profileId(entry)}`);
@@ -144,7 +151,8 @@ export function planFor(manifest, files, suiteIds = []) {
   const suites = selectedSuites(manifest, suiteIds); const executable = files.filter((path) => classifyTrackedPath(path).kind === 'executable');
   const plans = new Map(); const owners = new Map();
   for (const suite of suites) {
-    const plan = executable.filter((path) => suite.include.some((glob) => matchesGlob(path, glob))).sort();
+    if (zeroTestSuite(suite)) { plans.set(suite.id, []); continue; }
+    const plan = executable.filter((path) => suite.include.some((glob) => matchesGlob(path, glob)) && exclusionsFor(manifest, path).length === 0).sort();
     if (plan.length === 0) fail(`${suite.id} selects no executable tests`);
     plans.set(suite.id, plan);
     for (const path of plan) { if (owners.has(path)) fail(`${path} is planned by both ${owners.get(path)} and ${suite.id}`); owners.set(path, suite.id); }
@@ -164,9 +172,13 @@ export function selectedRuns(manifest, files, { suites = [], profile } = {}) {
 export function checkInventory(manifest, files, suiteIds = [], options = {}) {
   validateExclusions(manifest, new Set(files));
   const { executable, owners, plans, suites } = planFor(manifest, files, suiteIds);
+  for (const path of executable) {
+    const ownership = (owners.has(path) ? 1 : 0) + exclusionsFor(manifest, path).length;
+    if (ownership > 1) fail(`${path} has multiple accounting owners`);
+  }
   const unknown = executable.filter((path) => !owners.has(path) && exclusionsFor(manifest, path).length === 0);
   if ((suiteIds.length === 0 || suiteIds.includes('all') || options.failOnUnknown) && unknown.length) fail(`unaccounted executable tests: ${unknown.join(', ')}`);
-  if (options.failOnEmpty && [...plans.values()].some((plan) => !plan.length)) fail('a suite selected no executable tests');
+  if (options.failOnEmpty && suites.some((suite) => !zeroTestSuite(suite) && !plans.get(suite.id).length)) fail('a suite selected no executable tests');
   return { executable, helpers: files.filter((path) => classifyTrackedPath(path).kind === 'helper-or-fixture'), plans: Object.fromEntries(plans), suites: suites.map((suite) => suite.id), unaccounted: unknown };
 }
 function sortedUnique(paths, label) {
@@ -197,6 +209,10 @@ function verifyTranscript(receipt, root, authorityDirectory) {
 }
 function assertCounts(counts, key) {
   if (!counts || typeof counts !== 'object') fail(`${key} has no structured counts`);
+  if (counts.zero_test_declaration === true) {
+    if (counts.assertions !== 0 || counts.passed !== 0 || counts.failed !== 0 || counts.skipped !== 0 || counts.planned_files !== 0 || counts.completed_files !== 0 || Object.keys(counts.skip_reasons ?? {}).length !== 0) fail(`${key} zero-test declaration has observed tests`);
+    return;
+  }
   for (const field of ['assertions', 'passed', 'failed', 'skipped', 'planned_files', 'completed_files']) if (!Number.isInteger(counts[field]) || counts[field] < 0) fail(`${key} has invalid ${field}`);
   if (counts.assertions === 0 || counts.assertions !== counts.passed + counts.failed + counts.skipped) fail(`${key} has incomplete structured assertion counts`);
   validateSkipReasons(counts.skip_reasons ?? {}, key);
@@ -236,7 +252,9 @@ export async function verifyReceipts(manifest, files, receipts, { head = gitHead
     assertCounts(receipt.counts, key);
     const expectedSkips = selected.skip_reasons ?? {};
     if (stable(receipt.counts.skip_reasons) !== stable(expectedSkips)) fail(`${key} skips do not exactly match the profile baseline`);
-    if (receipt.counts.planned_files !== planned.length || receipt.counts.completed_files !== planned.length) fail(`${key} child selection was not completely observed`);
+    if (selected.zero_tests === true) {
+      if (receipt.files.length !== 0 || receipt.counts.zero_test_declaration !== true) fail(`${key} zero-test declaration is not exact`);
+    } else if (receipt.counts.planned_files !== planned.length || receipt.counts.completed_files !== planned.length) fail(`${key} child selection was not completely observed`);
     verified.push(receipt);
   }
   const required = requiredKeys ?? manifest.suites.flatMap((suite) => suite.profiles.filter((entry) => entry.required !== false).map((entry) => `${suite.id}/${profileId(entry)}`));

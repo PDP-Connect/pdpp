@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 import { mkdir, open, readFile, writeFile } from 'node:fs/promises';
 import { relative, resolve } from 'node:path';
 import { assertCleanSourceTree, contentDigest, gitHead, gitPath, gitRoot, readManifest, receiptBinding, RUN_AUTHORITY_SCHEMA, RUN_COMPLETION_SCHEMA, selectedRuns, sourceTreeDigest, treeDigest, trackedFiles, verifyReceipts } from './inventory.mjs';
-import { readStructuredChildResult } from './receipt.mjs';
+import { readStructuredChildResult, structuredNodeSummary, structuredPythonSummary } from './receipt.mjs';
 
 const AUTHORITY_TTL_MS = 2 * 60 * 60 * 1000;
 function fail(message) { throw new Error(`test accounting authority: ${message}`); }
@@ -53,11 +53,31 @@ function assertChildResult(result, issued) {
   if (!result.counts || typeof result.counts !== 'object') fail(`${issued.suite}/${issued.profile} child omitted structured counts`);
   return result.counts;
 }
+function leafCommand(run, authorityPath) {
+  if (run.suite.zero_tests) return null;
+  const command = [...run.suite.command];
+  if (run.suite.authority_argument) command.push(run.suite.authority_argument, authorityPath);
+  if (run.suite.execution === 'direct') command.push(...run.files);
+  return command;
+}
+function observedCounts(run, observed, issued) {
+  if (run.suite.zero_tests) return { assertions: 0, passed: 0, failed: 0, skipped: 0, skip_reasons: {}, planned_files: 0, completed_files: 0, zero_test_declaration: true };
+  if (run.suite.execution === 'authority-runner') return assertChildResult(readStructuredChildResult(observed.stdout), issued);
+  let counts;
+  if (run.suite.loader === 'node-test') counts = structuredNodeSummary(observed.stdout);
+  else if (run.suite.loader === 'python-unittest') counts = structuredPythonSummary(observed.stdout, observed.exit_code);
+  else counts = { assertions: issued.files.length, passed: observed.exit_code === 0 ? issued.files.length : 0, failed: observed.exit_code === 0 ? 0 : 1, skipped: 0, skip_reasons: {} };
+  return { ...counts, planned_files: issued.files.length, completed_files: observed.exit_code === 0 ? issued.files.length : 0 };
+}
 
 export async function runAuthority({ root = gitRoot(), suites = [], profile, base } = {}) {
   assertCleanSourceTree(root);
   const head = gitHead(root); const manifest = await readManifest(resolve(root, 'test-accounting.manifest.json'), { root, intendedBase: base });
   const files = trackedFiles(root); const selection = selectedRuns(manifest, files, { suites, profile });
+  if (profile) for (const run of selection.runs) {
+    const match = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(run.profile.optional_predicate ?? '');
+    if (run.profile.required === false && (!match || process.env[match[1]] !== match[2])) fail(`${run.suite.id}/${run.profile.id} requires its optional environment predicate`);
+  }
   const runs = selection.runs.filter((run) => profile || requiredByDefault(run.profile));
   if (runs.length === 0) fail('no required suite/profile runs were selected');
   const directory = authorityDirectory(root); await mkdir(directory, { recursive: true });
@@ -69,14 +89,14 @@ export async function runAuthority({ root = gitRoot(), suites = [], profile, bas
     const authorityPath = resolve(directory, `${runId}.authority.json`); await writeNew(authorityPath, issued);
     const transcriptPath = resolve(directory, `${runId}.transcript`); const transcript = await open(transcriptPath, 'wx');
     const startedAt = instant(Date.now()); await transcript.write(`${JSON.stringify({ event: 'start', run_id: runId, nonce, started_at: startedAt, suite: issued.suite, profile: issued.profile, files: issued.files, cwd: issued.cwd, argv: issued.argv })}\n`);
-    const command = [...run.suite.command, run.suite.authority_argument, authorityPath];
+    const command = leafCommand(run, authorityPath);
     let observed;
-    try { observed = await capture(command, resolve(root, run.suite.cwd), { ...process.env, PDPP_TEST_PROFILE: run.profile.id }, transcript, issued); } catch (error) { await transcript.close(); throw error; }
+    try { observed = command ? await capture(command, resolve(root, run.suite.cwd), { ...process.env, PDPP_TEST_PROFILE: run.profile.id, ...(run.suite.environment ?? {}) }, transcript, issued) : { exit_code: 0, signal: null, stdout: '' }; } catch (error) { await transcript.close(); throw error; }
     const endedAt = instant(Date.now()); await transcript.write(`${JSON.stringify({ event: 'end', run_id: runId, nonce, ended_at: endedAt, exit_code: observed.exit_code, signal: observed.signal })}\n`); await transcript.sync(); await transcript.close();
     assertCleanSourceTree(root);
     if (sourceTreeDigest(root, head) !== sourceTree) fail(`${issued.suite}/${issued.profile} changed the full source tree during execution`);
     let counts;
-    try { counts = assertChildResult(readStructuredChildResult(observed.stdout), issued); } catch (error) { counts = { assertions: 0, passed: 0, failed: 1, skipped: 0, skip_reasons: {}, planned_files: issued.files.length, completed_files: 0, protocol_error: error.message }; observed.exit_code ||= 1; }
+    try { counts = observedCounts(run, observed, issued); } catch (error) { counts = { assertions: 0, passed: 0, failed: 1, skipped: 0, skip_reasons: {}, planned_files: issued.files.length, completed_files: 0, protocol_error: error.message }; observed.exit_code ||= 1; }
     const transcriptRelative = relative(directory, transcriptPath);
     const completion = { schema: RUN_COMPLETION_SCHEMA, run_id: runId, nonce, observed: { exit_code: observed.exit_code, signal: observed.signal, transcript: transcriptRelative, transcript_sha256: contentDigest(await readFile(transcriptPath)), counts, files: issued.files } };
     const completionPath = resolve(directory, `${runId}.completion.json`); await writeNew(completionPath, completion);

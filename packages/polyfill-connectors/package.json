@@ -28,7 +28,7 @@
     "postinstall": "node ./scripts/install-patchright-browser.mjs",
     "check": "ultracite check",
     "fix": "ultracite fix",
-    "test": "node ../../scripts/test-accounting/authority.mjs --run --suite polyfill-connectors --profile default",
+    "test": "node --test --import tsx --test-concurrency=2 --test-timeout=120000 \"bin/**/*.test.ts\" \"connectors/**/*.test.ts\" \"src/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",
     "verify": "pnpm typecheck && pnpm check"
   },

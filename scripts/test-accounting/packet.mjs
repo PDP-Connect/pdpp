@@ -98,6 +98,7 @@ function manifestCommandTargets(root, from) {
   const manifest = JSON.parse(readFileSync(safePath(root, 'test-accounting.manifest.json'), 'utf8'));
   const values = [];
   for (const suite of manifest.suites ?? []) {
+    if (suite.execution === 'direct') continue;
     for (const argument of suite.command ?? []) {
       if (typeof argument !== 'string' || !/\.(?:[cm]?js|ts)$/.test(argument)) continue;
       const target = normalizePath(posix.join(suite.cwd, argument));

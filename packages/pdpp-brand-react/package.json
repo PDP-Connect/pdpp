@@ -13,7 +13,7 @@
     "typecheck": "tsc --noEmit",
     "check": "ultracite check",
     "fix": "ultracite fix",
-    "test": "node ../../scripts/test-accounting/authority.mjs --run --suite brand-react --profile default",
+    "test": "node --test --import tsx \"src/**/*.test.ts\"",
     "verify": "pnpm typecheck && pnpm check && pnpm test"
   },
   "dependencies": {

@@ -9,10 +9,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import test from 'node:test';
-import { checkInventory, classifyTrackedPath, contentDigest, fileDigest, parseInventoryArgs, receiptBinding, RECEIPT_SCHEMA, RUN_AUTHORITY_SCHEMA, RUN_COMPLETION_SCHEMA, treeDigest, verifyReceipts } from './inventory.mjs';
+import { checkInventory, classifyTrackedPath, contentDigest, fileDigest, parseInventoryArgs, readManifest, receiptBinding, RECEIPT_SCHEMA, RUN_AUTHORITY_SCHEMA, RUN_COMPLETION_SCHEMA, selectedRuns, trackedFiles, treeDigest, verifyReceipts } from './inventory.mjs';
 import { runAuthority } from './authority.mjs';
 import { repositoryPaths, structuredNodeSummary, structuredPythonSummary } from './receipt.mjs';
-import { commandsFor } from './runner.mjs';
 import { storageProfileEnvironment } from '../../reference-implementation/scripts/test-profile-env.js';
 
 const digest = async (path) => contentDigest(await readFile(path));
@@ -112,10 +111,36 @@ test('uses only structured runner events and rejects generic skips', () => {
   assert.throws(() => structuredNodeSummary('# pass 99\n'), /no structured node events/);
 });
 test('runs Python files directly and derives explicit unittest skips from verbose output', () => {
-  assert.deepEqual(commandsFor('python-unittest', ['docker/neko/cdp-proxy.test.py']), [['uv', 'run', 'python', 'docker/neko/cdp-proxy.test.py', '-v']]);
   const output = "test_unit (__main__.Unit.test_unit) ... ok\ntest_x11 (__main__.X11.test_x11) ... skipped 'requires Xvfb'\n\n----------------------------------------------------------------------\nRan 2 tests in 0.001s\n\nOK (skipped=1)\n";
   assert.deepEqual(structuredPythonSummary(output, 0), { assertions: 2, passed: 1, failed: 0, skipped: 1, skip_reasons: { 'requires Xvfb': 1 } });
   assert.throws(() => structuredPythonSummary('s\nRan 1 test in 0.001s\n\nOK (skipped=1)\n', 0), /omitted a skip reason/);
+});
+test('the checked authority graph contains only direct leaves and no recursive authority command', async () => {
+  const root = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim(); const manifestValue = await readManifest(join(root, 'test-accounting.manifest.json'), { root });
+  for (const suite of manifestValue.suites) {
+    if (suite.zero_tests) continue;
+    if (suite.id !== 'ri-default') {
+      assert.notEqual(suite.execution, 'authority-runner', 'only the RI custom runner may receive authority');
+      assert.equal(suite.authority_argument, null);
+    }
+    assert.ok(!suite.command.some((part) => /authority|adapter/.test(part)));
+  }
+  const packagePaths = ['packages/cli/package.json', 'packages/local-collector/package.json', 'packages/mcp-server/package.json', 'packages/operator-ui/package.json', 'packages/pdpp-brand-react/package.json', 'packages/polyfill-connectors/package.json', 'packages/read-core/package.json', 'packages/reference-contract/package.json', 'apps/console/package.json', 'apps/site/package.json', 'reference-implementation/package.json'];
+  for (const path of packagePaths) {
+    const scripts = JSON.parse(await readFile(join(root, path), 'utf8')).scripts ?? {};
+    for (const [name, command] of Object.entries(scripts)) if (/^test(?::|$)/.test(name)) assert.ok(!command.includes('authority.mjs'), `${path}:${name} re-enters authority`);
+  }
+});
+test('the current inventory has exact one-owner coverage and site is a real accounted suite', async () => {
+  const root = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim(); const manifestValue = await readManifest(join(root, 'test-accounting.manifest.json'), { root }); const tracked = trackedFiles(root); const result = checkInventory(manifestValue, tracked, [], { failOnUnknown: true, failOnEmpty: true });
+  const excluded = manifestValue.exclusions.length; const planned = Object.values(result.plans).reduce((sum, paths) => sum + paths.length, 0);
+  assert.equal(result.executable.length, planned + excluded);
+  const site = manifestValue.suites.find((suite) => suite.id === 'site'); assert.equal(site.zero_tests, undefined); assert.ok(result.plans.site.length > 0);
+});
+test('the optional PostgreSQL profile is not selected by the required default and rejects implicit execution', async () => {
+  const root = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim(); const manifestValue = await readManifest(join(root, 'test-accounting.manifest.json'), { root }); const runs = selectedRuns(manifestValue, trackedFiles(root), { suites: ['ri-default'] }).runs;
+  assert.deepEqual(runs.map((run) => run.profile.id), ['memory-default', 'postgres']);
+  assert.rejects(runAuthority({ root, suites: ['ri-default'], profile: 'postgres' }), /optional environment predicate/);
 });
 test('the authority spawns an issued child and consumes its only valid Git-private receipt', async () => {
   const root = await mkdtemp(join(tmpdir(), 'pdpp-authority-'));
