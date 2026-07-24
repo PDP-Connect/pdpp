@@ -64,6 +64,7 @@ import {
 import { __setPostgresRecordSortBackfillPhaseHookForTest } from '../server/postgres-records.js';
 import { closePostgresStorage, postgresQuery } from '../server/postgres-storage.js';
 import { dedicatedPostgresTestUrl } from './helpers/dedicated-postgres-test-url.js';
+import { withTemporaryPostgresDatabase } from './helpers/postgres-temp-database.js';
 
 const DEDICATED_POSTGRES_URL = dedicatedPostgresTestUrl(process.env.PDPP_TEST_POSTGRES_URL);
 const PROTOCOL_HEADERS = { 'X-PDPP-Collector-Protocol': COLLECTOR_PROTOCOL_VERSION };
@@ -189,36 +190,12 @@ function deviceIngestUrl(asUrl, device) {
   return `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/ingest-batches`;
 }
 
-function databaseUrl(url, name) {
-  const parsed = new URL(url);
-  parsed.pathname = `/${name}`;
-  return parsed.toString();
-}
-
-function adminUrl(url) {
-  const parsed = new URL(url);
-  parsed.pathname = '/postgres';
-  return parsed.toString();
-}
-
 async function withTemporaryPostgres(fn) {
-  const pg = await import('pg');
-  const { Pool } = pg.default;
-  const admin = new Pool({ connectionString: adminUrl(DEDICATED_POSTGRES_URL) });
   const database = `pdpp_devbatch_summary_${process.pid}_${Date.now()}_${unique}`;
-  await admin.query(`DROP DATABASE IF EXISTS "${database}"`);
-  await admin.query(`CREATE DATABASE "${database}"`);
-  try {
-    await fn(databaseUrl(DEDICATED_POSTGRES_URL, database));
-  } finally {
-    await closePostgresStorage().catch(() => undefined);
-    await admin.query(
-      `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()`,
-      [database],
-    ).catch(() => undefined);
-    await admin.query(`DROP DATABASE IF EXISTS "${database}"`).catch(() => undefined);
-    await admin.end();
-  }
+  return withTemporaryPostgresDatabase(
+    { connectionString: DEDICATED_POSTGRES_URL, databaseName: database, closeConnections: closePostgresStorage },
+    fn,
+  );
 }
 
 function createDriver(kind, server) {

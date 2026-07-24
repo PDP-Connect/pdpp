@@ -18,8 +18,6 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
-import pg from 'pg';
-
 import { closeDb, getDb, initDb } from '../server/db.js';
 import {
   initPostgresStorage,
@@ -27,8 +25,8 @@ import {
   getPostgresPool,
 } from '../server/postgres-storage.js';
 import { mergeEventRows, postgresListSpineCorrelations } from '../lib/postgres-spine.js';
+import { withTemporaryPostgresDatabase } from './helpers/postgres-temp-database.js';
 
-const { Pool } = pg;
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 
 // A deterministic temp DB name per file run. Date.now/Math.random are fine in
@@ -39,47 +37,11 @@ function tempDbName() {
   return `pdpp_spine_boot_${process.pid}_${tempCounter}`;
 }
 
-function adminUrl(url) {
-  const u = new URL(url);
-  u.pathname = '/postgres';
-  return u.toString();
-}
-
-function dbUrl(url, dbName) {
-  const u = new URL(url);
-  u.pathname = `/${dbName}`;
-  return u.toString();
-}
-
 async function withTempDb(fn) {
-  const admin = new Pool({ connectionString: adminUrl(POSTGRES_URL) });
-  const name = tempDbName();
-  try {
-    await admin.query(`DROP DATABASE IF EXISTS "${name}"`);
-    await admin.query(`CREATE DATABASE "${name}"`);
-  } catch (err) {
-    await admin.end();
-    throw err;
-  }
-  const url = dbUrl(POSTGRES_URL, name);
-  try {
-    await fn(url);
-  } finally {
-    try {
-      await closePostgresStorage();
-    } catch {}
-    // Terminate stragglers, then drop.
-    try {
-      await admin.query(
-        `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()`,
-        [name],
-      );
-    } catch {}
-    try {
-      await admin.query(`DROP DATABASE IF EXISTS "${name}"`);
-    } catch {}
-    await admin.end();
-  }
+  return withTemporaryPostgresDatabase(
+    { connectionString: POSTGRES_URL, databaseName: tempDbName(), closeConnections: closePostgresStorage },
+    fn,
+  );
 }
 
 // Insert a minimal spine_events row with NULL source columns. `actorType`

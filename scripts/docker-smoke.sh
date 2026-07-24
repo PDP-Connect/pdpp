@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-PROJECT_NAME="${COMPOSE_PROJECT_NAME:-pdpp-docker-smoke}"
+PROJECT_NAME="${PDPP_DOCKER_SMOKE_PROJECT_NAME:-pdpp-docker-smoke}"
 ORIGIN="${PDPP_REFERENCE_ORIGIN:-http://localhost:3002}"
 OWNER_PASSWORD="${PDPP_OWNER_PASSWORD:-$(node -e "console.log(require('node:crypto').randomBytes(24).toString('base64url'))")}"
 
@@ -15,7 +15,7 @@ export PDPP_DB_PATH="${PDPP_DB_PATH:-/tmp/pdpp-smoke.sqlite}"
 export PDPP_EMBEDDING_DOWNLOAD_ALLOWED="${PDPP_EMBEDDING_DOWNLOAD_ALLOWED:-0}"
 
 cleanup() {
-  docker compose down --remove-orphans >/dev/null
+  docker compose down --volumes --remove-orphans >/dev/null
 }
 trap cleanup EXIT
 

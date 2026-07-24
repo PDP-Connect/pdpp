@@ -9,20 +9,53 @@ if [[ "${PDPP_DOCKER_DYNAMIC_NEKO_ALLOCATOR_SMOKE:-}" != "1" ]]; then
   exit 0
 fi
 
-PROJECT_NAME="${COMPOSE_PROJECT_NAME:-pdppdynsmoke}"
-PROFILE_ROOT="${PDPP_NEKO_PROFILE_STORAGE_ROOT:-/tmp/pdpp-neko-profiles-smoke}"
-HOST_PORT_START="${PDPP_NEKO_WEBRTC_HOST_PORT_START:-59101}"
-HOST_PORT_END="${PDPP_NEKO_WEBRTC_HOST_PORT_END:-59102}"
-LABEL_OWNER="org.pdpp.reference.neko.owner=pdpp-reference"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SMOKE_RUN_ID_BASE="${PDPP_NEKO_DYNAMIC_SMOKE_RUN_ID:-smoke}"
+SMOKE_RUN_ID="${SMOKE_RUN_ID_BASE}-$(node -e "console.log(require('node:crypto').randomBytes(6).toString('hex'))")"
+SMOKE_CONFIG_OUTPUT="$(node "$SCRIPT_DIR/docker-neko-dynamic-allocator-smoke-config.mjs" "$SMOKE_RUN_ID")"
+mapfile -t SMOKE_CONFIG <<< "$SMOKE_CONFIG_OUTPUT"
+if (( ${#SMOKE_CONFIG[@]} != 5 )); then
+  echo "dynamic n.eko allocator Docker smoke failed: invalid derived configuration" >&2
+  exit 1
+fi
+PROJECT_NAME="${SMOKE_CONFIG[0]}"
+PROFILE_ROOT="${SMOKE_CONFIG[1]}"
+DEPLOYMENT_ID="${SMOKE_CONFIG[2]}"
+SMOKE_SURFACE_A="${SMOKE_CONFIG[3]}"
+SMOKE_SURFACE_B="${SMOKE_CONFIG[4]}"
+DEPLOYMENT_LABEL="org.pdpp.reference.neko.deployment_id"
 SURFACE_LABEL="org.pdpp.reference.neko.surface_id"
-SMOKE_SURFACE_A="dynamic-smoke-surface-a"
-SMOKE_SURFACE_B="dynamic-smoke-surface-b"
+
+allocate_default_port_range() {
+  local port
+  for ((port = 55000; port <= 64998; port += 2)); do
+    if ! ss -H -ltn "sport = :$port" | grep -q . \
+      && ! ss -H -lun "sport = :$port" | grep -q . \
+      && ! ss -H -ltn "sport = :$((port + 1))" | grep -q . \
+      && ! ss -H -lun "sport = :$((port + 1))" | grep -q .; then
+      HOST_PORT_START="$port"
+      HOST_PORT_END="$((port + 1))"
+      return
+    fi
+  done
+  echo "dynamic n.eko allocator Docker smoke failed: no free consecutive WebRTC ports" >&2
+  exit 1
+}
+
+command -v ss >/dev/null 2>&1 || { echo "dynamic n.eko allocator Docker smoke requires ss" >&2; exit 1; }
+command -v flock >/dev/null 2>&1 || { echo "dynamic n.eko allocator Docker smoke requires flock" >&2; exit 1; }
+exec {PORT_LOCK_FD}>"${PDPP_NEKO_DYNAMIC_SMOKE_PORT_LOCK_FILE:-/tmp/pdpp-neko-dynamic-smoke-ports.lock}"
+flock "$PORT_LOCK_FD"
+allocate_default_port_range
 
 export COMPOSE_PROJECT_NAME="$PROJECT_NAME"
 export PDPP_NEKO_PROFILE_STORAGE_ROOT="$PROFILE_ROOT"
 export PDPP_NEKO_WEBRTC_HOST_PORT_START="$HOST_PORT_START"
 export PDPP_NEKO_WEBRTC_HOST_PORT_END="$HOST_PORT_END"
+export PDPP_NEKO_DEPLOYMENT_ID="$DEPLOYMENT_ID"
 export PDPP_NEKO_ALLOCATOR_PORT="${PDPP_NEKO_ALLOCATOR_PORT:-7331}"
+export PDPP_NEKO_DYNAMIC_SMOKE_SURFACE_A="$SMOKE_SURFACE_A"
+export PDPP_NEKO_DYNAMIC_SMOKE_SURFACE_B="$SMOKE_SURFACE_B"
 export NEKO_PASSWORD="${NEKO_PASSWORD:-pdpp-dynamic-smoke}"
 export NEKO_USERNAME="${NEKO_USERNAME:-operator}"
 
@@ -32,12 +65,12 @@ cleanup() {
   set +e
   local surface ids
   for surface in "$SMOKE_SURFACE_A" "$SMOKE_SURFACE_B"; do
-    ids="$(docker ps -aq --filter "label=$LABEL_OWNER" --filter "label=$SURFACE_LABEL=$surface" 2>/dev/null || true)"
+    ids="$(docker ps -aq --filter "label=$DEPLOYMENT_LABEL=$DEPLOYMENT_ID" --filter "label=$SURFACE_LABEL=$surface" 2>/dev/null || true)"
     if [[ -n "$ids" ]]; then
       docker rm -f $ids >/dev/null 2>&1 || true
     fi
   done
-  "${DC[@]}" down --remove-orphans >/dev/null 2>&1 || true
+  "${DC[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -79,14 +112,14 @@ import assert from "node:assert/strict";
 const baseUrl = `http://127.0.0.1:${process.env.PDPP_NEKO_ALLOCATOR_PORT ?? "7331"}`;
 const surfaces = [
   {
-    surface_id: "dynamic-smoke-surface-a",
+    surface_id: process.env.PDPP_NEKO_DYNAMIC_SMOKE_SURFACE_A,
     connector_id: "chatgpt",
-    profile_key: "pdpp-smoke://profile/a",
+    profile_key: `pdpp-smoke://${process.env.PDPP_NEKO_DYNAMIC_SMOKE_SURFACE_A}`,
   },
   {
-    surface_id: "dynamic-smoke-surface-b",
+    surface_id: process.env.PDPP_NEKO_DYNAMIC_SMOKE_SURFACE_B,
     connector_id: "chatgpt",
-    profile_key: "pdpp-smoke://profile/b",
+    profile_key: `pdpp-smoke://${process.env.PDPP_NEKO_DYNAMIC_SMOKE_SURFACE_B}`,
   },
 ];
 
@@ -129,7 +162,7 @@ assert.equal(new Set(allocated.map((surface) => surface.allocator_metadata.conta
 assert.equal(new Set(allocated.map((surface) => surface.allocator_metadata.host_port)).size, 2);
 assert.deepEqual(
   allocated.map((surface) => surface.allocator_metadata.host_port).sort(),
-  ["59101", "59102"],
+  [process.env.PDPP_NEKO_WEBRTC_HOST_PORT_START, process.env.PDPP_NEKO_WEBRTC_HOST_PORT_END].sort(),
 );
 assert.equal(new Set(allocated.map((surface) => surface.allocator_metadata.profile_path)).size, 2);
 for (const surface of allocated) {
@@ -178,17 +211,17 @@ cleanup
 trap - EXIT
 
 for surface in "$SMOKE_SURFACE_A" "$SMOKE_SURFACE_B"; do
-  if [[ -n "$(docker ps -aq --filter "label=$LABEL_OWNER" --filter "label=$SURFACE_LABEL=$surface")" ]]; then
+  if [[ -n "$(docker ps -aq --filter "label=$DEPLOYMENT_LABEL=$DEPLOYMENT_ID" --filter "label=$SURFACE_LABEL=$surface")" ]]; then
     fail "labeled dynamic n.eko smoke container $surface remains after cleanup"
   fi
 done
 
-if docker network ls --filter "label=$LABEL_OWNER" --format '{{.Name}}' | grep -q .; then
-  fail "labeled dynamic n.eko networks remain after cleanup"
-fi
-
 if docker network ls --filter "label=com.docker.compose.project=$PROJECT_NAME" --format '{{.Name}}' | grep -q .; then
   fail "Compose network for $PROJECT_NAME remains after cleanup"
+fi
+
+if docker volume ls --filter "label=com.docker.compose.project=$PROJECT_NAME" --format '{{.Name}}' | grep -q .; then
+  fail "Compose volumes for $PROJECT_NAME remain after cleanup"
 fi
 
 echo "Dynamic n.eko allocator Docker smoke passed for project $PROJECT_NAME."

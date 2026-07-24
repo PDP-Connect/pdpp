@@ -31,14 +31,13 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import pg from 'pg';
-
 import { getRegisteredClient } from '../server/auth.js';
 import { closeDb } from '../server/db.js';
 import {
   closePostgresStorage,
   getStorageBackendKind,
 } from '../server/postgres-storage.js';
+import { withTemporaryPostgresDatabase } from './helpers/postgres-temp-database.js';
 import { startServer } from '../server/index.js';
 
 const SEED_CLIENT = {
@@ -48,7 +47,6 @@ const SEED_CLIENT = {
   token_endpoint_auth_method: 'none',
 };
 
-const { Pool } = pg;
 let tempPostgresCounter = 0;
 
 function tempPostgresDbName() {
@@ -56,42 +54,11 @@ function tempPostgresDbName() {
   return `pdpp_storage_boundary_${process.pid}_${tempPostgresCounter}`;
 }
 
-function adminUrl(url) {
-  const u = new URL(url);
-  u.pathname = '/postgres';
-  return u.toString();
-}
-
-function dbUrl(url, dbName) {
-  const u = new URL(url);
-  u.pathname = `/${dbName}`;
-  return u.toString();
-}
-
 async function withTempPostgresDb(fn) {
-  const admin = new Pool({ connectionString: adminUrl(POSTGRES_URL) });
-  const name = tempPostgresDbName();
-  try {
-    await admin.query(`DROP DATABASE IF EXISTS "${name}"`);
-    await admin.query(`CREATE DATABASE "${name}"`);
-    await fn(dbUrl(POSTGRES_URL, name));
-  } finally {
-    try {
-      await closePostgresStorage();
-    } catch {}
-    try {
-      await admin.query(
-        `SELECT pg_terminate_backend(pid)
-           FROM pg_stat_activity
-          WHERE datname = $1 AND pid <> pg_backend_pid()`,
-        [name],
-      );
-    } catch {}
-    try {
-      await admin.query(`DROP DATABASE IF EXISTS "${name}"`);
-    } catch {}
-    await admin.end();
-  }
+  return withTemporaryPostgresDatabase(
+    { connectionString: POSTGRES_URL, databaseName: tempPostgresDbName(), closeConnections: closePostgresStorage },
+    fn,
+  );
 }
 
 async function closeStartedServer(server) {

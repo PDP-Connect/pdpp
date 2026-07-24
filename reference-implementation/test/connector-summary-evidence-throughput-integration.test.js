@@ -35,6 +35,7 @@ import { reconcileConnectorSummaryEvidence } from '../server/connector-summary-e
 import { deleteAllRecordsForConnector, ingestRecord } from '../server/records.js';
 import { closePostgresStorage, initPostgresStorage, postgresQuery } from '../server/postgres-storage.js';
 import { dedicatedPostgresTestUrl } from './helpers/dedicated-postgres-test-url.js';
+import { withTemporaryPostgresDatabase } from './helpers/postgres-temp-database.js';
 
 const OWNER = 'owner_local';
 const NOW = '2026-07-17T00:00:00.000Z';
@@ -99,18 +100,6 @@ async function seedInstancePostgres(connectorInstanceId, connectorId) {
   );
 }
 
-function databaseUrl(url, name) {
-  const parsed = new URL(url);
-  parsed.pathname = `/${name}`;
-  return parsed.toString();
-}
-
-function adminUrl(url) {
-  const parsed = new URL(url);
-  parsed.pathname = '/postgres';
-  return parsed.toString();
-}
-
 let uniquePgDb = 0;
 
 /**
@@ -121,25 +110,15 @@ let uniquePgDb = 0;
  * loopback-only test listener, dropped again on the way out.
  */
 async function withTemporaryPostgres(fn) {
-  const pg = await import('pg');
-  const { Pool } = pg.default;
   uniquePgDb += 1;
-  const admin = new Pool({ connectionString: adminUrl(DEDICATED_POSTGRES_URL) });
   const database = `pdpp_summary_throughput_${process.pid}_${Date.now()}_${uniquePgDb}`;
-  await admin.query(`DROP DATABASE IF EXISTS "${database}"`);
-  await admin.query(`CREATE DATABASE "${database}"`);
-  try {
-    await initPostgresStorage({ backend: 'postgres', databaseUrl: databaseUrl(DEDICATED_POSTGRES_URL, database) });
-    await fn();
-  } finally {
-    await closePostgresStorage().catch(() => undefined);
-    await admin.query(
-      `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()`,
-      [database],
-    ).catch(() => undefined);
-    await admin.query(`DROP DATABASE IF EXISTS "${database}"`).catch(() => undefined);
-    await admin.end();
-  }
+  return withTemporaryPostgresDatabase(
+    { connectionString: DEDICATED_POSTGRES_URL, databaseName: database, closeConnections: closePostgresStorage },
+    async (databaseUrl) => {
+      await initPostgresStorage({ backend: 'postgres', databaseUrl });
+      await fn();
+    },
+  );
 }
 
 function storageTargetFor(connectorId, connectorInstanceId) {
