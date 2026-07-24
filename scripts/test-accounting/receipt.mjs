@@ -81,6 +81,12 @@ export const POSTGRES_UNNAMED_SKIP_TEST_NAMES = new Set([
 const UNNAMED_SKIP_REASONS_BY_TEST_NAME = new Map([
   ['live CDP smoke proves frame, click, and viewport resize against Chromium', 'set PDPP_TEST_LIVE_CDP=1 and PDPP_TEST_CDP_BIN or PDPP_TEST_CDP_WS_URL to run'],
   ['live-shadow-comparison: production projection has no unexpected drift', 'set PDPP_LIVE_CONNECTOR_HEALTH_GATE=1 to run'],
+  ['parseOrdersListDom: local real fixture parses ≥5 orders with ids + dates', 'local Amazon raw-DOM fixture directory not present'],
+  ['parseOrderDetailDom: local real fixtures yield items and grand_total', 'local Amazon raw-DOM fixture directory not present'],
+  ['parseDashboardAccountsDom: local real capture parses ≥1 account', 'local Chase raw-DOM fixture directory not present'],
+  ['parseStatementsListDom: local real capture parses ≥1 statement row', 'local Chase raw-DOM fixture directory not present'],
+  ['parseCurrentActivityDom: local real capture — dashboard-accounts.html parses ≥1 MDS row', 'local Chase raw-DOM fixture directory not present'],
+  ['parseModernCheckingEra: local statement text parses ≥1 txn (smoke)', 'local USAA raw fixture directory not present'],
 ]);
 function unnamedSkipReason(name) {
   if (POSTGRES_UNNAMED_SKIP_TEST_NAMES.has(name)) return 'PDPP_TEST_POSTGRES_URL unset';

@@ -34,15 +34,15 @@ async function writeNew(path, value) {
 async function capture(command, cwd, env, transcript, start) {
   return new Promise((resolveResult, reject) => {
     const child = spawn(command[0], command.slice(1), { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
-    let stdout = ''; const writes = [];
+    let stdout = ''; let stderr = ''; const writes = [];
     const append = (stream, chunk) => {
-      const text = chunk.toString(); if (stream === 'stdout') stdout += text;
+      const text = chunk.toString(); if (stream === 'stdout') stdout += text; else stderr += text;
       writes.push(transcript.write(`${JSON.stringify({ event: stream, run_id: start.run_id, chunk: text })}\n`));
     };
     child.stdout.on('data', (chunk) => append('stdout', chunk));
     child.stderr.on('data', (chunk) => append('stderr', chunk));
     child.on('error', reject);
-    child.on('exit', async (code, signal) => { await Promise.all(writes); resolveResult({ exit_code: code ?? 1, signal: signal ?? null, stdout }); });
+    child.on('exit', async (code, signal) => { await Promise.all(writes); resolveResult({ exit_code: code ?? 1, signal: signal ?? null, stdout, stderr }); });
   });
 }
 function requiredByDefault(entry) { return entry.required !== false; }
@@ -76,7 +76,7 @@ function observedCounts(run, observed, issued) {
   if (run.suite.execution === 'authority-runner') return assertChildResult(readStructuredChildResult(observed.stdout), issued);
   let counts;
   if (run.suite.loader === 'node-test') counts = structuredNodeSummary(observed.stdout);
-  else if (run.suite.loader === 'python-unittest') counts = structuredPythonSummary(observed.stdout, observed.exit_code);
+  else if (run.suite.loader === 'python-unittest') counts = structuredPythonSummary(observed.stdout + observed.stderr, observed.exit_code);
   else counts = { assertions: issued.files.length, passed: observed.exit_code === 0 ? issued.files.length : 0, failed: observed.exit_code === 0 ? 0 : 1, skipped: 0, skip_reasons: {} };
   return { ...counts, planned_files: issued.files.length, completed_files: observed.exit_code === 0 ? issued.files.length : 0 };
 }
