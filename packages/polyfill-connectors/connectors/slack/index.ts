@@ -55,7 +55,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, statSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -499,6 +499,7 @@ interface SlackOpts {
   CHANNEL_TYPES: string[];
   LOOKBACK_DAYS: number;
   MEMBER_ONLY: boolean;
+  RECLAIM_UPLOADS: boolean;
   SKIP_FILES: boolean;
 }
 
@@ -531,6 +532,7 @@ function readSlackOptions(): SlackOpts {
         },
         MEMBER_ONLY: { parse: "bool", default: true },
         SKIP_FILES: { parse: "bool", default: true },
+        RECLAIM_UPLOADS: { parse: "bool", default: false },
       },
     }
   ) as Record<string, unknown>;
@@ -540,6 +542,7 @@ function readSlackOptions(): SlackOpts {
     CHANNEL_TYPES: parsed.CHANNEL_TYPES as string[],
     MEMBER_ONLY: parsed.MEMBER_ONLY as boolean,
     SKIP_FILES: parsed.SKIP_FILES as boolean,
+    RECLAIM_UPLOADS: parsed.RECLAIM_UPLOADS as boolean,
   };
 }
 
@@ -578,6 +581,62 @@ function resolveArchivePaths(workspace: string): ArchivePaths {
   // default DB name under the archive dir
   const sqlitePath = join(archivePath, "slackdump.sqlite");
   return { dumpDir, archivePath, sqlitePath };
+}
+
+// slackdump downloads file-attachment bytes into `<archive>/__uploads/` (only
+// when files are enabled — SLACK_SKIP_FILES defaults true, so steady-state runs
+// don't grow it). The connector never reads these bytes: file/attachment
+// streams emit metadata only, and PDPP has no blob copy. See the reclaim
+// escape hatch below.
+function resolveUploadsDir(archivePath: string): string {
+  return join(archivePath, "__uploads");
+}
+
+// Sum a directory's byte size with a bounded recursive walk. Best-effort:
+// unreadable entries are skipped (returns what it could measure). Used only for
+// observability and reclaim reporting, never on a hot path.
+function directorySizeBytes(dir: string): number {
+  let total = 0;
+  let stack: string[] = [dir];
+  while (stack.length > 0) {
+    const current = stack.pop() as string;
+    let entries: import("node:fs").Dirent[];
+    try {
+      entries = readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const full = join(current, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(full);
+      } else {
+        total += existingFileSize(full);
+      }
+    }
+  }
+  stack = [];
+  return total;
+}
+
+// One-way reclaim of the `__uploads/` residue for a workspace archive. Only
+// called from the connector's onDurableCommit hook, i.e. AFTER the runtime
+// acknowledged durable ingest of this run's records. It removes ONLY the
+// `__uploads/` directory — never `slackdump.sqlite` or its -wal/-shm sidecars,
+// which are slackdump's resume state. Returns the reclaimed byte count.
+//
+// CAVEAT (documented, intentional): PDPP holds no copy of these bytes, and
+// slackdump will NOT re-download them (its resume file-dedup is DB-only, keyed
+// on the still-present FILE row), so this is unrecoverable. It is opt-in
+// (SLACK_RECLAIM_UPLOADS=1) precisely because it is lossy.
+export async function reclaimUploads(archivePath: string): Promise<number> {
+  const uploadsDir = resolveUploadsDir(archivePath);
+  if (!existsSync(uploadsDir)) {
+    return 0;
+  }
+  const reclaimedBytes = directorySizeBytes(uploadsDir);
+  await rm(uploadsDir, { recursive: true, force: true });
+  return reclaimedBytes;
 }
 
 function resolveScopedArchivePaths(base: ArchivePaths, positionalChannels: readonly string[]): ArchivePaths {
@@ -1371,15 +1430,14 @@ interface MessageCursorThresholds {
   legacyLastTs: string | null;
 }
 
-function buildMessageRowsQuery(thresholds: MessageCursorThresholds): { params: string[]; sql: string } {
+export function buildMessageRowsQuery(thresholds: MessageCursorThresholds): { params: string[]; sql: string } {
   const channelThresholds = Object.entries(thresholds.channelLastTs)
     .filter(([channelId, ts]) => channelId.length > 0 && ts.length > 0)
     .sort(([a], [b]) => a.localeCompare(b));
   const params: string[] = [];
   const thresholdCte =
     channelThresholds.length > 0
-      ? `,
-    thresholds(channel_id, last_ts) AS (
+      ? `thresholds(channel_id, last_ts) AS (
       VALUES ${channelThresholds
         .map(([channelId, ts]) => {
           params.push(channelId, ts);
@@ -1388,31 +1446,45 @@ function buildMessageRowsQuery(thresholds: MessageCursorThresholds): { params: s
         .join(", ")}
     )`
       : "";
-  const thresholdJoin = channelThresholds.length > 0 ? "LEFT JOIN thresholds t ON t.channel_id = m.CHANNEL_ID" : "";
-  let whereClause = "";
+  // The cursor predicate is pushed INTO the `latest` dedup CTE (not applied in
+  // an outer WHERE after the aggregation). The archive's MESSAGE table grows
+  // unbounded and has no (CHANNEL_ID, TS) index, so a `GROUP BY CHANNEL_ID, TS`
+  // over the whole table is a full scan + sort on every run — the dominant
+  // cost that made steady-state runs grow with archive size while only ~200
+  // rows were new. Filtering by TS before the GROUP BY restricts the
+  // aggregation to rows newer than the committed cursor.
+  //
+  // This is emit-identical to filtering after aggregation: any (CHANNEL_ID, TS)
+  // we emit has TS > threshold, so every chunk sharing that (CHANNEL_ID, TS)
+  // also has TS > threshold and survives the filter — the MAX(CHUNK_ID) pick is
+  // unchanged. Pairs at/below the threshold are dropped by both shapes. The
+  // no-cursor first run has no predicate and keeps the full aggregation.
+  const dedupJoin = channelThresholds.length > 0 ? "LEFT JOIN thresholds t ON t.channel_id = m.CHANNEL_ID" : "";
+  let dedupWhere = "";
   if (channelThresholds.length > 0 && thresholds.legacyLastTs) {
-    whereClause = "WHERE m.TS > COALESCE(t.last_ts, ?)";
+    dedupWhere = "WHERE m.TS > COALESCE(t.last_ts, ?)";
     params.push(thresholds.legacyLastTs);
   } else if (channelThresholds.length > 0) {
-    whereClause = "WHERE t.last_ts IS NULL OR m.TS > t.last_ts";
+    dedupWhere = "WHERE t.last_ts IS NULL OR m.TS > t.last_ts";
   } else if (thresholds.legacyLastTs) {
-    whereClause = "WHERE m.TS > ?";
+    dedupWhere = "WHERE m.TS > ?";
     params.push(thresholds.legacyLastTs);
   }
 
   return {
     params,
     sql: `
-    WITH latest AS (
-      SELECT CHANNEL_ID, TS, MAX(CHUNK_ID) AS mx
-      FROM MESSAGE
-      GROUP BY CHANNEL_ID, TS
-    )${thresholdCte}
+    WITH ${thresholdCte ? `${thresholdCte},` : ""}
+    latest AS (
+      SELECT m.CHANNEL_ID, m.TS, MAX(m.CHUNK_ID) AS mx
+      FROM MESSAGE m
+      ${dedupJoin}
+      ${dedupWhere}
+      GROUP BY m.CHANNEL_ID, m.TS
+    )
     SELECT m.CHANNEL_ID, m.TS, m.THREAD_TS, m.IS_PARENT, m.TXT, m.NUM_FILES, m.DATA
     FROM MESSAGE m
     JOIN latest ON latest.CHANNEL_ID = m.CHANNEL_ID AND latest.TS = m.TS AND latest.mx = m.CHUNK_ID
-    ${thresholdJoin}
-    ${whereClause}
   `,
   };
 }
@@ -1858,12 +1930,50 @@ async function runRequestedStreams(
   return result;
 }
 
+// ─── Phase timing observability ────────────────────────────────────────
+
+type ProgressFn = CollectContext["progress"];
+
+// Time an awaited phase and report its duration via `progress`. This splits
+// the run into measurable phases (slackdump subprocess, archive open, read+
+// emit) so the "run time scales with new data, not archive size" claim is a
+// number in run evidence, not an assumption — the diagnosis the archive-cost
+// investigation needed. `now()` uses Date.now via an injected clock so tests
+// stay deterministic.
+async function timedPhase<T>(progress: ProgressFn, phase: string, run: () => Promise<T>): Promise<T> {
+  const started = Date.now();
+  try {
+    return await run();
+  } finally {
+    progress(`Slack phase timing: ${phase} took ${Date.now() - started}ms`);
+  }
+}
+
+// End-of-run archive size snapshot: the sqlite (+ sidecars) byte size and the
+// `__uploads/` residue presence/size. Makes the steady-state disk bound
+// observable and shows whether reclaim would free anything.
+function reportArchiveSizeSnapshot(progress: ProgressFn, sqlitePath: string, archivePath: string): void {
+  const sqliteBytes =
+    existingFileSize(sqlitePath) + existingFileSize(`${sqlitePath}-wal`) + existingFileSize(`${sqlitePath}-shm`);
+  const uploadsDir = resolveUploadsDir(archivePath);
+  const uploadsBytes = existsSync(uploadsDir) ? directorySizeBytes(uploadsDir) : 0;
+  progress(
+    `Slack archive size: sqlite=${sqliteBytes}B uploads=${uploadsBytes}B (uploads are attachment bytes the connector does not ingest)`
+  );
+}
+
 // ─── Entry ─────────────────────────────────────────────────────────────
 
 // Guarded so `import "./index.ts"` in tests doesn't spin up the runtime
 // and block the Node event loop on stdin. Only fires when this module
 // IS the process entry point (i.e. `tsx connectors/slack/index.ts`).
 if (isMainModule(import.meta.url)) {
+  // Set by collect() when SLACK_RECLAIM_UPLOADS=1, consumed by onDurableCommit
+  // AFTER the runtime acknowledges durable ingest. Carrying it via a closure
+  // keeps the reclaim commit-gated (post-ack) without threading run state
+  // through the runtime protocol.
+  let reclaimPlan: { archivePath: string; progress: ProgressFn } | null = null;
+
   runConnector({
     name: "slack",
     retryablePattern: SLACK_RETRYABLE_FAILURE_RE,
@@ -1872,6 +1982,18 @@ if (isMainModule(import.meta.url)) {
     auth: {
       kind: "env",
       required: ["SLACK_WORKSPACE", "SLACK_TOKEN", "SLACK_COOKIE"],
+    },
+    // Runs only on a successful run, after durable ingest ack, before exit.
+    async onDurableCommit(): Promise<void> {
+      if (!reclaimPlan) {
+        return;
+      }
+      const { archivePath, progress } = reclaimPlan;
+      const reclaimedBytes = await reclaimUploads(archivePath);
+      await progress(
+        `Slack reclaim: removed __uploads/ after durable commit, reclaimed ${reclaimedBytes}B ` +
+          "(one-way: PDPP holds no copy; slackdump will not re-download these files)"
+      );
     },
     async collect(ctx: CollectContext): Promise<void> {
       const { state, requested, credentials, emit, progress } = ctx;
@@ -1907,23 +2029,34 @@ if (isMainModule(import.meta.url)) {
         messagesScope?.time_range as { from?: string | null; to?: string | null } | undefined
       );
 
-      await ensureArchiveOnDisk({
-        archivePath,
-        childEnv,
-        cookie,
-        opts,
-        positionalChannels,
-        priorArchive,
-        progress,
-        resumeTarget,
-        sqlitePath,
-        timeFrom,
-        timeTo,
-        token,
-        useResume,
-      });
+      // Register the opt-in __uploads reclaim BEFORE any early return. The
+      // actual deletion happens in onDurableCommit (post durable-ingest ack),
+      // never here — so nothing is deleted ahead of a commit receipt. Scoped
+      // runs keep their own archive dir; reclaim always targets the archive
+      // this run read from.
+      reclaimPlan = opts.RECLAIM_UPLOADS ? { archivePath, progress } : null;
 
-      const db = new DatabaseSync(sqlitePath, { readOnly: true });
+      await timedPhase(progress, "slackdump-subprocess", () =>
+        ensureArchiveOnDisk({
+          archivePath,
+          childEnv,
+          cookie,
+          opts,
+          positionalChannels,
+          priorArchive,
+          progress,
+          resumeTarget,
+          sqlitePath,
+          timeFrom,
+          timeTo,
+          token,
+          useResume,
+        })
+      );
+
+      const db = await timedPhase(progress, "archive-open", () =>
+        Promise.resolve(new DatabaseSync(sqlitePath, { readOnly: true }))
+      );
       // One per-record fingerprint cursor per fingerprinted stream. The
       // primitive seeds itself from the prior cursor so a record we skip
       // this run carries its fingerprint forward into the next STATE
@@ -1975,10 +2108,12 @@ if (isMainModule(import.meta.url)) {
         await emitMissingChannelDiagnostic(emit, reconciledSourceCache.missingChannelIds);
       }
 
-      let messageResult = await runRequestedStreams(deps, state, { workspace, token, cookie }, emit, {
-        allowLegacyMessageCursorFallback: isUnscopedMessageBoundary,
-        ignoreMessageChannelCursors: Boolean(msgResFilter && msgResFilter.size > 0),
-      });
+      let messageResult = await timedPhase(progress, "read-and-emit", () =>
+        runRequestedStreams(deps, state, { workspace, token, cookie }, emit, {
+          allowLegacyMessageCursorFallback: isUnscopedMessageBoundary,
+          ignoreMessageChannelCursors: Boolean(msgResFilter && msgResFilter.size > 0),
+        })
+      );
       if (messageFamilyRequested && isUnscopedMessageBoundary && reconciledSourceCache.scopedArchives.length > 0) {
         messageResult = await mergeScopedMessageArchivePasses({
           credentials: { workspace, token, cookie },
@@ -2019,6 +2154,11 @@ if (isMainModule(import.meta.url)) {
         observedChannelIds,
         requested,
       });
+
+      // End-of-run size snapshot: makes the steady-state disk bound and any
+      // reclaimable residue visible in run evidence.
+      db.close();
+      reportArchiveSizeSnapshot(progress, sqlitePath, archivePath);
     },
   });
 }

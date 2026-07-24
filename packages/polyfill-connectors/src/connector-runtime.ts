@@ -245,6 +245,16 @@ interface BaseRunConnectorConfig {
   isTombstone?: (stream: string, data: RecordData) => boolean;
   name: string;
   normalizeTerminalError?: NormalizeTerminalError;
+  /**
+   * Optional post-commit hook. Runs ONLY on a successful run, AFTER the
+   * runtime has acknowledged durable ingest (stdin EOF) and immediately
+   * BEFORE process exit. Use it for local side effects that must not precede
+   * a durable commit — e.g. reclaiming on-disk residue the connector does not
+   * ingest. Never runs on a failed/interrupted run, so no cleanup can outrun
+   * the commit receipt. Errors are swallowed (best-effort): a failed cleanup
+   * must not turn a durably-committed run into a failure.
+   */
+  onDurableCommit?: () => void | Promise<void>;
   retryablePattern?: RegExp;
   /** Record field that scope.time_range filters on. Default 'date'. */
   timeRangeField?: string | ((stream: string) => string);
@@ -593,6 +603,7 @@ export function runConnector(config: RunConnectorConfig): void {
     collect,
     browser,
     normalizeTerminalError = (error: TerminalErrorDetails): TerminalErrorDetails => error,
+    onDurableCommit,
     retryablePattern = DEFAULT_RETRYABLE_PATTERN,
     timeRangeField = "date",
     isTombstone,
@@ -628,6 +639,23 @@ export function runConnector(config: RunConnectorConfig): void {
   }
 
   const flushAndExit = (code: number): void => {
+    // On a successful run, run the optional durable-commit hook after the
+    // runtime acknowledges ingest (the `exit` callback fires post-ack) and
+    // before the real process exit. Best-effort: a hook failure never changes
+    // the already-committed run's outcome.
+    if (code === 0 && onDurableCommit) {
+      flushAndExitAfterRuntimeAck(code, {
+        exit: (finalCode: number): void => {
+          Promise.resolve()
+            .then(onDurableCommit)
+            .catch((): undefined => undefined)
+            .finally((): void => {
+              process.exit(finalCode);
+            });
+        },
+      });
+      return;
+    }
     flushAndExitAfterRuntimeAck(code);
   };
 

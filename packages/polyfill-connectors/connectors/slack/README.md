@@ -44,6 +44,49 @@ The SQLite schema has useful introspection views:
 
 Query them directly to answer "what's missing?" without running slackdump.
 
+## Disk and run-time
+
+The persistent archive has two independently-growing parts with different cost
+profiles — do not conflate them:
+
+- **`slackdump.sqlite`** is the connector's source of truth *and* slackdump's
+  resume state. Never delete it: doing so forces a full multi-hour re-dump and
+  can create resume gaps. This is not redundant with PDPP — PDPP stores the
+  emitted RECORDs, not slackdump's chunk/session structure.
+- **`__uploads/`** holds downloaded file-attachment bytes. **The connector
+  never reads these bytes** — file/attachment streams emit metadata only, and
+  PDPP has no blob copy of them. With `SLACK_SKIP_FILES=true` (the default),
+  slackdump runs `-files=false` and `__uploads/` never grows.
+
+**Run time scales with new data, not archive size.** The message read pushes
+the committed per-channel/legacy cursor into the dedup CTE, so the
+`MAX(CHUNK_ID) GROUP BY (CHANNEL_ID, TS)` aggregation only touches rows newer
+than the cursor instead of the whole (unbounded, un-indexed) `MESSAGE` table on
+every run. Every run reports per-phase timing and an archive size snapshot via
+`PROGRESS` (`slackdump-subprocess`, `archive-open`, `read-and-emit`, and
+`sqlite=…B uploads=…B`) so this bound is measurable and regressions are visible.
+
+### Reclaiming `__uploads/` (`SLACK_RECLAIM_UPLOADS=1`) — opt-in, one-way
+
+If a past run downloaded files (`SLACK_SKIP_FILES=false`), `__uploads/` can hold
+tens of GB of bytes the connector does not ingest. Set `SLACK_RECLAIM_UPLOADS=1`
+to remove `__uploads/` **after** the run's records are durably accepted (the
+reclaim runs on the runtime's durable-commit ack, never before, and never on a
+failed run). It removes only `__uploads/` — never `slackdump.sqlite` or its
+`-wal`/`-shm` sidecars — and reports the reclaimed byte count as run evidence.
+
+This is **one-way and unrecoverable**:
+
+- PDPP holds no copy of these bytes.
+- slackdump will **not** re-download them — its resume file-dedup is DB-only
+  (keyed on the still-present `FILE` row), so a reclaimed file is treated as
+  "already have it" forever. To force a re-fetch you must re-run `archive` (not
+  `resume`) with `SLACK_SKIP_FILES=false`.
+- The stored `url_private` URLs require live Slack auth and are short-lived.
+
+It is off by default and never automatic — an operator may have intentionally
+set `SLACK_SKIP_FILES=false` to retain bytes locally.
+
 ## Why we dedupe `MESSAGE` rows by `MAX(CHUNK_ID)`
 
 Slackdump writes the same logical message to multiple chunks within a single dump session — once during channel enumeration, again during thread expansion, possibly again during file cataloging, again on every subsequent session that touches the channel. A 574k-row `MESSAGE` table typically contains only 186k distinct `(CHANNEL_ID, TS)` tuples. Each row has a progressively richer `DATA` blob, so picking the `MAX(CHUNK_ID)` per tuple gets the most complete version of each message.
