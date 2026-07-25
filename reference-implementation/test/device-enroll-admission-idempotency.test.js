@@ -327,11 +327,10 @@ test('D3: transient connector_instance_busy on the enroll path becomes a typed 5
         expiresAt: '2999-01-01T00:00:00.000Z',
         consumedAt: null,
       }),
-      // No prior attempt for this code: the D5 resume check finds nothing and
-      // performFirstEnrollment runs, where its first write throws the
-      // admission error, simulating writer pressure.
-      getDevice: async () => null,
-      createDevice: async () => { throw busyError; },
+      // D6: performFirstEnrollment's first write is the locked
+      // resolveOrCreateEnrollmentDevice; throw the admission error there to
+      // simulate writer pressure.
+      resolveOrCreateEnrollmentDevice: async () => { throw busyError; },
     },
     pdppError: (_res, status, code, _msg, _param, extras) => {
       pdppArgs = { status, code, extras };

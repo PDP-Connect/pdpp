@@ -214,92 +214,157 @@ the derived-column repair.
 No change to D1/D2/D3's behavior or wire contracts. D2 (idempotent re-enroll)
 and D3 (typed 503) are preserved unmodified and re-verified green.
 
-### D5 — Deterministic per-code identity + unify pending/consumed resume (closes the pending-code partial-write gap)
+### D5 — Pending-code partial-write idempotency (closes the pending-code partial-write gap; superseded design, see D6 correction)
 
-**Fix (systemic-minimal, no wrapping transaction across stores):** make
-`deviceId` and `sourceInstanceId` **deterministic per enrollment code** —
-derived from `enrollment.enrollmentCodeId` (stable for the life of the code,
-already the anchor `handleIdempotentReEnroll` keys retries on) via the same
-SHA-256-prefix pattern `makeConnectorInstanceId` already uses. This makes
-`performFirstEnrollment`'s writes naturally convergent under `ON CONFLICT`
-instead of requiring a cross-table transaction:
+Live counterexample (post-deploy, `ace356a7d`): retrying the same still-
+**pending** code returned `HTTP 500` / Postgres `23505 duplicate key value
+violates unique constraint "connector_instances_pkey"`. Root cause: a first
+enroll attempt reached identity creation (device, credential, connector
+instance, source instance all durably written) then failed before
+`consumeEnrollmentCode`, leaving the code pending while identity persisted.
+`deviceId`/`sourceInstanceId` were random per call, but
+`connector_instances.connector_instance_id` is deterministic from `(owner,
+connector, source_kind, source_binding_key)` — retrying regenerated random
+device identity but recomputed the SAME connector-instance id as the orphan,
+colliding. D2 did not cover this: it only activates for a `consumed` code.
 
-- `createDevice` (`insert-device.sql`, both SQLite and Postgres):
-  `ON CONFLICT(device_id) DO NOTHING`. `device_id` is now deterministic, so a
-  retry — or a genuinely concurrent duplicate first attempt — resolves to the
-  SAME row instead of racing a second `device_exporters` insert.
-- `upsertSourceInstance` was already `ON CONFLICT(device_id, connector_id,
-  local_binding_id) DO UPDATE`; because `device_id` is now stable across
-  retries, this conflict target — previously unreachable on a retry since
-  `device_id` was random every call — now actually fires and converges.
-- The connector-instance `upsert`'s existing `ON CONFLICT` target
-  (`owner_subject_id, connector_id, source_kind, source_binding_key`) was
-  always reachable in principle; deterministic `device_id`/`source_instance_id`
-  removes the retry-generates-a-new-PK-first race that could beat it to
-  `connector_instances_pkey`.
-- **Credential issuance switches from a plain `createCredential` INSERT to
-  `rotateDeviceCredential`** (the same revoke-all-then-insert-one, transaction-
-  wrapped primitive D2 already uses) for the FIRST-attempt path too, not only
-  the D2 consumed-retry path. Reason: `device_id` is now shared across
-  concurrent/retried first attempts, so a plain insert would let two attempts
-  each mint a distinct *active* credential for the same device — violating
-  "exactly one active credential." `rotateDeviceCredential`'s row-lock
-  serialization on the revoke makes this safe under real concurrency, proven
-  by a genuinely-concurrent-connections Postgres oracle (not just SQLite's
-  single-writer serialization, which can mask this class of race).
+**D5's original fix** derived `deviceId`/`sourceInstanceId` deterministically
+from `enrollment.enrollmentCodeId` (the code row's own id). This made a retry
+of the *same code* converge cleanly, and was verified as such. It was
+**superseded before shipping** (see D6) once a live counterexample proved it
+moved the hole rather than closed it for the *actual* live remediation path —
+a fresh code, not a retry of the failed one. The rest of D5's contributions
+survive into D6 unchanged: the credential-rotation-not-plain-insert fix for
+concurrent first-attempt races, and the raw-`23505`-to-typed-503 defense in
+depth in `respondEnrollError`.
 
-**Dispatch: unify pending-partial-write resume with the existing D2
-consumed-retry resume**, since both now resolve to the identical device id for
-a given code. `resolveEnrollResumeDeviceId` (extracted from the route handler
-to keep its own complexity flat) returns:
-- `enrollment.deviceId` when the code is `consumed` (D2's original case), or
-- the deterministic device id, **only if a device row already exists there**,
-  when the code is still `pending` (D5's new case) — a pending code with no
-  existing device row is genuinely a first attempt and is NOT routed through
-  resume; `resolveEnrollResumeDeviceId` returns `null` and
-  `performFirstEnrollment` runs normally.
+### D6 — Stable-binding identity key, adopt-orphan-only, durably serialized (fix-enroll-stable-binding-identity-key)
 
-When resolved, both cases route through `handleIdempotentReEnroll`, extended
-to also **consume the code when it is still pending**
-(`WHERE status = 'pending'`, so a concurrent resume attempt racing an
-in-flight first attempt's own consume is a safe no-op either way — exactly-once
-consume is preserved regardless of which caller wins).
+**Second live counterexample, mid-turn correction to D5:** the original
+pending code from the D5 incident expired (`2026-07-25T04:50:12Z`) while its
+partial device/source/connector identity remained. The owner cannot retry an
+expired code — the only real remediation is a **fresh code** for the same
+physical collector (same connector + same `local_binding_name`). D5's
+code-id-keyed derivation meant a fresh code derives a **different**
+`deviceId`/`sourceInstanceId` than the expired code's orphan (different
+`enrollmentCodeId` input to the hash) — while `connector_instances` stays
+keyed on the STABLE `(owner, connector, binding)` tuple, independent of the
+code. So a fresh code would still collide on `connector_instances_pkey`
+(D5 did not actually fix this class), or — worse, once D5's early revert
+attempt swapped `createDevice` to `ON CONFLICT DO NOTHING` — silently leak a
+**second**, permanently-orphaned device with its own active credential that
+nothing would ever clean up, requiring manual DB intervention to notice or
+fix.
 
-`performFirstEnrollment`'s own `!consumed` fallback (a concurrent request
-already consumed the code between this attempt's own consume-write and this
-check) no longer revokes the device it just wrote — under D5, the winning
-concurrent attempt resolved to the SAME deterministic device, so there is no
-second orphaned device to revoke. It now resolves through the identical
-`handleIdempotentReEnroll` resume path (rotating again is free: this losing
-attempt's token was never returned to any client).
+**Fix: key identity resolution off the STABLE binding, not the ephemeral
+code.** `resolveOrCreateEnrollmentDevice` (new store method, both backends)
+looks up an existing **orphaned** device for `(ownerSubjectId, connectorId,
+localBindingId)` — a device with a `device_source_instances` row for that
+exact binding but **no enrollment code ever successfully consumed for it**
+(`NOT EXISTS (... device_enrollment_codes WHERE device_id = ... AND status =
+'consumed')`) — and adopts it if found; otherwise creates a fresh device.
+Ambiguity (more than one orphan candidate — should be structurally
+unreachable given this method is the sole writer under its own lock, but the
+query is defensive) **fails closed** by throwing, never guesses.
 
-**Defense-in-depth: map raw Postgres `23505` to a typed retryable `503`**
-(`enrollment_identity_conflict`, `Retry-After: 1`) in `respondEnrollError`,
-alongside the existing `connector_instance_busy` mapping. The deterministic-
-identity + resume-routing fix above should make a unique-violation
-unreachable on this route in practice; this is the same class of
-defense-in-depth D3 already established for `connector_instance_busy`.
+**Critical distinction preserved from a PRE-EXISTING, intentional product
+test** (`device-exporter-routes.test.js`: "re-enrolling the same connector +
+local_binding_name resumes one stable connector_instance", predates this
+entire change): a genuinely **new** enrollment for an **already-completed**
+binding — a live device with at least one *consumed* code — is explicitly
+**NOT** adopted. That case always mints a fresh device, resuming only the
+stable `connector_instance` (D5's original binding-keyed-everything design
+would have broken this pre-existing, deliberately-tested contract; the first
+D6 draft did break it, caught by re-running the full regression suite, and
+was corrected to the orphan-only adoption rule below before landing). Orphan
+eligibility is therefore load-bearing and precise:
+- exact `owner_subject_id` + `connector_id` + `local_binding_id` match
+- the device/source-instance are not revoked
+- **no** enrollment code has ever been successfully consumed for that device
 
-**Scope discipline:** no cross-store request-transaction was introduced (the
-same reasoning D1-D4 already established: threading a shared client through
-every device-exporter and connector-instance store method is large blast
-radius, not systemic-minimal). Deterministic identity + `ON CONFLICT` +
-reusing D2's existing `rotateDeviceCredential` primitive achieves the same
-one-device/one-credential/exactly-once-consume guarantee without it. D1-D4 are
-unmodified and re-verified green.
+**Durable serialization, not a process-local lock.** The lookup-then-create
+decision is itself a race: two genuinely concurrent enroll attempts for the
+same still-empty binding could both observe "no orphan" and each create a
+distinct device before either commits, since neither has written anything yet
+for a per-device lock (`rotateDeviceCredential`'s `SELECT ... FOR UPDATE`) to
+serialize on. On Postgres, `resolveOrCreateEnrollmentDevice` wraps the
+lookup-and-create in one transaction that opens with
+`pg_advisory_xact_lock(hash(owner, connector, binding))` — a durable,
+database-backed lock, auto-released on commit/rollback, in a namespace
+(`pdpp:enrollment-binding-identity:v1:`) distinct from
+`connector-instance-write-coordinator.ts`'s ingest-admission advisory-lock
+keyspace so the two fences can never accidentally couple. On SQLite,
+better-sqlite3's synchronous, single-connection execution model already
+provides the same exclusivity — no explicit lock needed (documented in the
+method itself, not left implicit).
+
+**The placeholder source-instance row must be created inside the SAME lock as
+the device.** The orphan-eligibility query requires a `device_source_instances`
+row to exist (that is where `connector_id`/`local_binding_id` live —
+`device_exporters` alone does not carry them). If that row were created later,
+outside the lock, by the caller's own (unlocked) `upsertSourceInstance` call —
+as an early D6 draft did — a concurrent second attempt's lock acquisition
+could land in the window between the first attempt's device-only commit and
+its later source-instance write, see no orphan, and create an independent
+second device. `resolveOrCreateEnrollmentDevice` therefore inserts BOTH
+`device_exporters` and a placeholder `device_source_instances` row
+(`connector_instance_id NULL`) atomically when creating fresh identity; the
+caller's subsequent `upsertSourceInstance` call fills in the real
+`connector_instance_id` afterward via its own existing `ON CONFLICT` target.
+
+**The dispatch-level `!consumed` fallback needed re-deriving, not reusing D5's
+assumption.** With code-id-keyed identity (D5), a concurrent loser's own
+freshly-written device was BY CONSTRUCTION identical to the winner's — the
+fallback could unconditionally treat any `!consumed` outcome as "same
+identity, race for consume" and resolve it via `handleIdempotentReEnroll`.
+With binding-keyed, adopt-orphan-only identity (D6), that assumption no
+longer holds in general: `handleIdempotentReEnroll`'s binding-match check
+alone cannot distinguish "this really is the winner's device" from "this is a
+same-binding orphan that also happens to have a live source instance for this
+binding" (`performFirstEnrollment` always writes one, win or lose) — the two
+look identical to that check. The route now re-reads the enrollment code's
+actual bound `device_id` after a failed consume and only treats it as the D2
+resume case when it matches; otherwise it explicitly revokes the losing
+attempt's own device before rejecting, so no active credential for an
+abandoned device survives the request.
+
+**Explicit rejection of a declined D2 resume**, not a fall-through. A
+`consumed` code that `handleIdempotentReEnroll` declines (revoked device;
+structurally-unreachable binding mismatch) must never reach
+`performFirstEnrollment` — a `consumed` code can never be claimed by
+`consumeEnrollmentCode` (`WHERE status = 'pending'`), so falling through would
+create a brand-new, permanently-unclaimable orphan device whose own
+`resolveOrCreateEnrollmentDevice`/`rotateDeviceCredential` would succeed
+*before* the doomed consume attempt is even reached — silently masking the
+decline as a `201` success. `respondIfConsumedCodeReplay` makes this an
+explicit, immediate rejection instead of relying on a later write to fail.
+
+**Defense-in-depth (unchanged from D5): map raw Postgres `23505` to a typed
+retryable `503`** (`enrollment_identity_conflict`, `Retry-After: 1`) in
+`respondEnrollError`, alongside the existing `connector_instance_busy`
+mapping. The binding-keyed identity + durable-lock fix above should make a
+unique-violation unreachable on this route in practice; this is the same
+class of defense-in-depth D3 already established.
 
 ## Scope discipline
 
 The proven live cause is D1 (starvation). D2 fixes a separately-proven data-loss
 defect the owner actually hit. D3 is a cheap, correctness-improving mapping at the
 same seam. D4 closes a residual coupling D1 missed — same seam, same flag, no new
-mechanism. D5 closes a pending-code partial-write gap D2 did not cover — same
-route, extends D2's existing rotate-and-reuse primitive rather than inventing a
-new one. No cross-store request-transaction rewrite is introduced anywhere in
-this change (that would require threading a shared client through every
-device-exporter and connector-instance store method — large blast radius, not
-systemic-minimal). The idempotent-response pattern (D2, extended by D5) achieves
-the same no-loss guarantee at the route boundary.
+mechanism. D5 closed the pending-code partial-write gap but with an identity key
+(code id) that a second live counterexample proved was the wrong stable anchor.
+D6 corrects it to the binding key `connector_instances` already uses, adds the
+durable Postgres advisory-lock serialization the naive lookup-then-create
+sequence needed, and restores the pre-existing "fresh device per completed-
+binding re-enroll, connector_instance stays stable" contract D5's blanket
+binding-keying would have broken. No cross-store request-transaction rewrite is
+introduced anywhere in this change (that would require threading a shared
+client through every device-exporter and connector-instance store method —
+large blast radius, not systemic-minimal); the locked `resolveOrCreateEnrollmentDevice`
+method is scoped to exactly the two tables (`device_exporters`,
+`device_source_instances`) whose identity-decision race needs it. The
+idempotent-response pattern (D2, extended by D6) achieves the same no-loss
+guarantee at the route boundary.
 
 ## Test oracle
 
@@ -330,32 +395,23 @@ the same no-loss guarantee at the route boundary.
   `connector_instance_id`. This is mutation-grade: reverting D4 alone (leaving
   D1-D3 intact) makes this oracle fail while the D1 oracle above still passes,
   proving it detects the specific residual coupling D1 did not close.
-- **Pending-code partial-write oracle (D5, Postgres, mutation-grade live-class):**
-  a test-only fault hook (`__setEnrollPhaseFaultHookForTest`, mirroring the
-  file's existing `deviceIngestPhaseFaultHook` seam; production never installs
-  it) throws immediately after `upsertSourceInstance` — identity fully durable —
-  and before the credential rotation + `consumeEnrollmentCode`. First attempt:
-  identity creation commits, the fault throws, the code stays `pending`.
-  Asserts exactly one orphaned device row exists. Retry the SAME still-pending
-  code with the hook cleared. Before D5 this reproduces the live counterexample
-  (500/23505 or, if the identity-collision path is avoided some other way, a
-  second orphaned device). After D5 the retry returns `201`, and the test
-  asserts convergence on exactly ONE device / ONE connector instance / ONE
-  source instance / ONE active credential, the code consumed exactly once
-  bound to the resumed device, and that the returned token actually
-  authenticates a heartbeat call (proves it was really delivered, not just
-  well-shaped). Mutation-grade, verified two ways: (a) reverting only the
-  deterministic-identity derivation (`deriveEnrollmentDeviceId` back to
-  `generateSpineId("dexp")`) makes this oracle fail 3/3 runs (`2 !== 1`
-  devices) while D1/D4 still pass; (b) reverting only the credential-issuance
-  change (`rotateDeviceCredential` back to a plain `createCredential` insert)
-  makes the companion concurrency oracle below fail 3/3 runs
-  (`2 !== 1` active credentials).
-- **Adversarial (D5):** a pending code with NO existing device row (a genuine
-  first attempt, nothing to resume) still enrolls normally through
-  `performFirstEnrollment` — proves `resolveEnrollResumeDeviceId` does not
-  misroute ordinary enrollment into the resume path.
-- **Concurrency oracle (D5, both backends):** N genuinely concurrent FIRST
+- **Pending-code partial-write oracle (D5→D6, Postgres, mutation-grade
+  live-class):** a test-only fault hook (`__setEnrollPhaseFaultHookForTest`,
+  mirroring the file's existing `deviceIngestPhaseFaultHook` seam; production
+  never installs it) throws immediately after `upsertSourceInstance` —
+  identity fully durable — and before the credential rotation +
+  `consumeEnrollmentCode`. First attempt: identity creation commits, the
+  fault throws, the code stays `pending`. Asserts exactly one orphaned device
+  row exists. Retry the SAME still-pending code with the hook cleared. Before
+  D6 this reproduces the live counterexample class. After D6 the retry
+  returns `201`, and the test asserts convergence on exactly ONE device / ONE
+  connector instance / ONE source instance / ONE active credential, the code
+  consumed exactly once bound to the resumed device, and that the returned
+  token actually authenticates a heartbeat call.
+- **Adversarial (D5→D6):** a pending code with NO existing device row (a
+  genuine first attempt, nothing to resume) still enrolls normally through
+  `performFirstEnrollment`.
+- **Concurrency oracle (D5→D6, both backends):** N genuinely concurrent FIRST
   attempts (`Promise.all`, no prior successful enroll) for the same still-
   pending code. On SQLite (`withServer`, in-process) and on real Postgres with
   independent connections (the class of race single-writer SQLite semantics
@@ -363,4 +419,43 @@ the same no-loss guarantee at the route boundary.
   device/connector-instance/source-instance id and exactly one active
   credential (verified both by querying store state directly on Postgres and,
   on both backends, by confirming exactly one of the concurrently-issued
-  tokens authenticates a heartbeat call).
+  tokens authenticates a heartbeat call). Mutation-grade: reverting the
+  `resolveOrCreateEnrollmentDevice` advisory lock alone makes this oracle fail
+  deterministically (see below).
+- **Stable-binding adoption oracle (D6, Postgres, mutation-grade live-class):**
+  code A reaches identity creation via the same fault hook, then its expiry is
+  moved into the past (simulating real time passing without a retry — the
+  exact live scenario, not a synthetic shortcut). Code A is confirmed to fail
+  closed as expired (`410`, no token). A FRESH code B is minted for the SAME
+  connector + local binding and exchanged. Asserts: code B succeeds and
+  ADOPTS code A's orphaned device (same `device_id`, not a new one); final
+  state has exactly one device / connector instance / source instance /
+  active credential for the binding; code A remains `revoked` (the expiry
+  check's own status transition), never consumed or resurrected; code B's own
+  row is the one actually consumed; the returned token authenticates.
+- **Isolation oracle (D6):** two DIFFERENT local bindings for the same
+  connector never share device/connector-instance/source-instance identity. A
+  FRESH code for an ALREADY-COMPLETED binding (a live device with a consumed
+  code) mints a NEW device while resuming the SAME connector_instance —
+  proves the pre-existing "re-enroll forks a fresh device_id, resumes the
+  connector_instance" contract (`device-exporter-routes.test.js`) still holds
+  under D6's orphan-only adoption rule, and that adoption never crosses
+  binding boundaries.
+- **Durable-lock oracle (D6, Postgres, deterministic, mutation-grade):** holds
+  TWO concurrent enroll attempts for the SAME pending code at the
+  `after_identity_before_consume` rendezvous — both have committed identity
+  with ZERO credential rows written (the exact empty-credential-row race
+  window a per-device lock cannot serialize, since it takes no lock on rows
+  that do not yet exist) — releases them together, then holds them AGAIN at a
+  second rendezvous (`after_rotation_before_consume`) immediately after each
+  attempt's OWN `rotateDeviceCredential` call returns but BEFORE either
+  consumes — the one moment before either D2's cleanup-rotation fallback can
+  run and mask a defect by cleaning it up. Asserts exactly one active
+  credential at that moment, then again in the final state. **Mutation-grade,
+  verified deterministically:** removing `resolveOrCreateEnrollmentDevice`'s
+  `pg_advisory_xact_lock` call makes this oracle fail 5/5 runs (`2 !== 1`
+  devices — the lookup-then-create race the lock exists to prevent); the same
+  mutation independently makes the D5→D6 concurrency oracle and the D6
+  stable-binding adoption oracle fail too (3 of 4 oracles catch it; only the
+  single-writer-at-a-time D6 isolation oracle does not, as expected). All
+  restored and re-verified green.

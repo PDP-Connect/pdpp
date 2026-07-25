@@ -38,12 +38,16 @@ catalog row without running retrieval-index (lexical/semantic) backfill inline.
 Because the server cannot know whether a committed enroll response reached the
 client, and because a failure can occur AFTER identity is durably created but
 BEFORE the enrollment code is consumed, a device SHALL be able to retry
-enrollment with the same enrollment code — whether that code is already
-`consumed` (the response was lost in transit) or still `pending` with identity
-already partially or fully created by a prior attempt — and obtain a usable
-credential, without duplicating device, source-instance, or connector-instance
-identity. The retry SHALL be accepted only when it resolves to the same device
-and binding a prior attempt for that exact code already established.
+enrollment — either by resubmitting the SAME code, when it is already
+`consumed` (the response was lost in transit), or by exchanging any code
+(including a FRESH one, when a prior code for the same physical collector
+expired before it could be retried) for the SAME physical collector
+identity — and obtain a usable credential, without duplicating device,
+source-instance, or connector-instance identity for that collector. Identity
+resolution for a pending code SHALL key on the collector's STABLE binding
+(owner, connector, local binding name) — never on the enrollment code's own
+id, which is fresh per code mint and therefore cannot serve as a durable
+identity anchor across multiple codes for the same collector.
 
 #### Scenario: A device retries enrollment after the response is lost in transit
 
@@ -59,22 +63,36 @@ and binding a prior attempt for that exact code already established.
 - **AND** the reference SHALL emit an audit receipt recording the credential
   rotation.
 
-#### Scenario: A device retries a still-PENDING code after a prior attempt created identity but failed before consume
+#### Scenario: A fresh code for the same binding adopts an expired code's partial-write identity with no manual cleanup
 
-- **WHEN** a prior enrollment attempt for a given code durably created the
-  device, connector instance, and source instance rows but failed (write
-  pressure, transport drop, process restart) before the code was consumed, so
-  the code remains `pending` while the identity rows persist, and the SAME
-  code is re-submitted
-- **THEN** the reference SHALL resolve the retry to the SAME device, connector
-  instance, and source instance the prior attempt created — NOT create a
-  second device or a second source instance, and SHALL NOT raise a duplicate-
-  key error on the connector-instance identity
+- **WHEN** a prior enrollment attempt for a code durably created the device,
+  connector instance, and source instance rows for a given (owner, connector,
+  local binding), then failed before the code was consumed; that code
+  subsequently expires WITHOUT being retried; and a FRESH enrollment code is
+  minted and exchanged for the SAME connector and local binding
+- **THEN** the reference SHALL resolve the fresh code's enrollment to the SAME
+  device, connector instance, and source instance the prior attempt's partial
+  write created — NOT create a second, independently-orphaned device — and
+  SHALL NOT raise a duplicate-key error on the connector-instance identity
 - **AND** the reference SHALL rotate the device credential and consume the
-  enrollment code, exactly as a retry of an already-consumed code does
-- **AND** genuinely concurrent retries or first attempts for the same still-
-  pending code SHALL converge on exactly one device and exactly one active
-  credential, regardless of how many requests race.
+  fresh enrollment code
+- **AND** the expired code SHALL remain rejected/fail-closed and SHALL NOT be
+  retroactively marked consumed or bound to any device
+- **AND** no operator action outside the enrollment API (e.g. direct database
+  access) SHALL be required to complete this enrollment.
+
+#### Scenario: Genuinely concurrent enrollment attempts for the same pending code or binding converge on one identity
+
+- **WHEN** multiple enrollment attempts race for the same still-pending code,
+  or for different codes minted for the same still-uncompleted (owner,
+  connector, binding), such that more than one attempt could observe "no
+  existing identity yet" before any commits
+- **THEN** the reference SHALL serialize the identity-resolution decision
+  through a durable, database-backed mechanism (not a process-local lock,
+  which provides no guarantee across concurrent requests or processes)
+- **AND** every attempt SHALL converge on exactly one device, one connector
+  instance, one source instance, and exactly one active credential —
+  regardless of how many requests race or in what order they arrive.
 
 #### Scenario: A consumed enrollment code is replayed after it expired
 
@@ -89,13 +107,44 @@ and binding a prior attempt for that exact code already established.
 - **THEN** the reference SHALL reject the request
 - **AND** SHALL NOT issue a credential for a different device or binding.
 
+#### Scenario: A declined consumed-code replay is never treated as a first enrollment
+
+- **WHEN** a CONSUMED enrollment code's idempotent-resume attempt is declined
+  (e.g. the bound device was revoked)
+- **THEN** the reference SHALL reject the request explicitly
+- **AND** SHALL NOT fall through to first-time enrollment logic, which would
+  create a new, permanently-unclaimable device identity for a code that can
+  never successfully consume it.
+
 #### Scenario: A pending code with no prior attempt is not misrouted into the resume path
 
-- **WHEN** a pending enrollment code has no existing device row (a genuine
-  first-time enrollment, not a retry of a partial write)
+- **WHEN** a pending enrollment code has no existing orphaned device for its
+  (owner, connector, binding) — a genuine first-time enrollment, not a resume
+  of a partial write
 - **THEN** the reference SHALL enroll it through the normal first-enrollment
   path, creating a new device, credential, connector instance, and source
   instance as usual.
+
+#### Scenario: A fresh enrollment for an already-completed binding mints a new device, not an adopted one
+
+- **WHEN** a physical collector's binding already has a LIVE, completed
+  enrollment (a device with at least one enrollment code successfully
+  consumed for it), and a genuinely new enrollment code is exchanged for that
+  SAME binding
+- **THEN** the reference SHALL mint a NEW device identity for this enrollment
+  — it SHALL NOT adopt the existing live device, which remains a separate,
+  independently-managed identity
+- **AND** the reference SHALL resume the SAME connector instance for that
+  binding rather than creating a second one.
+
+#### Scenario: Distinct local bindings for the same connector never share identity
+
+- **WHEN** two different physical collectors (distinct local binding names)
+  enroll for the same connector and owner
+- **THEN** the reference SHALL resolve each to its OWN distinct device,
+  connector instance, and source instance
+- **AND** neither binding's identity resolution SHALL ever adopt or reference
+  the other's identity, including under concurrent or repeated enrollment.
 
 ### Requirement: Enrollment SHALL return typed retryable backpressure rather than a server error under transient pressure
 
