@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { composeFleetHealthVerdict } from "../server/fleet-health.ts";
-import { auditStreamHealth } from "../../scripts/stream-health-audit/audit.mjs";
+import { auditStreamHealth } from "../../scripts/stream-health-audit/audit.ts";
 
 function inventory(id, overrides = {}) {
   return { connectorId: id.split("-")[0], connectorInstanceId: id, displayName: id, revokedAt: null, status: "active", ...overrides };

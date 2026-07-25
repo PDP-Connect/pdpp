@@ -256,7 +256,7 @@ import {
   listPendingApprovals,
 } from './ref-control.ts';
 import { composeFleetHealthVerdict } from './fleet-health.ts';
-import { auditStreamHealth } from '../../scripts/stream-health-audit/audit.mjs';
+import { auditStreamHealth } from '../../scripts/stream-health-audit/audit.ts';
 import { unresolvedOwnerActionEvidenceFromSummary } from './owner-action-gate.js';
 import {
   getConnectorSummaryEvidence,
