@@ -18,6 +18,21 @@ catalog row without running retrieval-index (lexical/semantic) backfill inline.
 - **AND** the enroll SHALL return a device credential rather than hanging on lock
   acquisition or failing with a writer-admission error.
 
+#### Scenario: A second device enrolls for a connector type that already has other, actively-ingesting instances
+
+- **WHEN** at least one OTHER connector instance already holds records under the
+  same connector_id (e.g. a prior device enrolled for the same connector type,
+  or an account-bound instance of that connector type), that other instance's
+  writer-admission gate is held by unrelated ingest, and a new device attempts to
+  enroll for that connector
+- **THEN** the enroll SHALL complete without entering the writer-admission gate
+  for ANY connector instance — including instances other than the one being
+  created
+- **AND** manifest re-registration performed at enroll time SHALL NOT enumerate
+  or repair derived per-record columns (cursor/primary-key/semantic-time) for
+  other instances of the same connector_id, since enroll registers the static,
+  unchanged local-collector manifest and has no derived-column drift to repair.
+
 ### Requirement: Enrollment SHALL be idempotent so a transport failure does not strand the one-time credential
 
 Because the server cannot know whether a committed enroll response reached the

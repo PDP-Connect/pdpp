@@ -16,8 +16,15 @@
 - [x] 3.1 In the enroll handler, catch `connector_instance_busy` and return `503` + `{ retryable: true }` + `Retry-After`, never `500`.
 - [x] 3.2 Test: force `connector_instance_busy` on the enroll path → assert `503` + `retryable` + `Retry-After`.
 
-## 4. Gates
+## 4. Close the D1 residual coupling: derived-column repair backfill (D4)
 
-- [x] 4.1 `openspec validate` passes.
-- [x] 4.2 Full device-exporter + coordinator test suites green; new oracles green.
-- [x] 4.3 Lint/format (biome) clean on touched files.
+- [x] 4.1 Gate `postgresBackfillRecordSortPositionsForManifest` (Postgres) and `backfillSqliteRecordSemanticTimesForManifest` (SQLite) inside `registerConnector` (auth.js) behind the same `options.backfillRetrievalIndexes !== false` condition that already guards lexical/semantic retrieval-index backfill. Keep Postgres manifest-cache invalidation unconditional (not fenced).
+- [x] 4.2 Add a Postgres mutation-grade oracle: enroll + ingest one record for a first `codex` device, hold the writer-admission gate on that first device's `connector_instance_id`, then enroll a second `codex` device while the gate is held; assert the second enroll completes and returns a distinct `connector_instance_id` (fails before 4.1, passes after; reverting 4.1 alone fails this oracle while the D1 oracle in 1.2 still passes).
+- [x] 4.3 Re-verify D2 (idempotent re-enroll) and D3 (typed 503) oracles unmodified and green.
+- [x] 4.4 Re-verify the `polyfill-manifest-reconcile-bounded-work-postgres` "zero records-table queries" oracle stays green (confirms `backfillRetrievalIndexes: false` callers other than enroll are unaffected).
+
+## 5. Gates
+
+- [x] 5.1 `openspec validate --strict` passes.
+- [x] 5.2 Full device-exporter + coordinator test suites green; all oracles (D1-D4) green.
+- [x] 5.3 Lint/format (biome) clean on touched files; `tsc --noEmit` clean.

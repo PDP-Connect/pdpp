@@ -2532,20 +2532,36 @@ export async function registerConnector(manifest, options = {}) {
   await persistManifestAndAdvanceGenerations(connectorId, JSON.stringify(storedManifest));
   await maybeRegisterConnectorPhaseForTest('after-manifest-persisted', { connectorId, manifest: storedManifest });
 
-  if (isPostgresStorageBackend()) {
-    const {
-      invalidatePostgresRecordManifestCache,
-      postgresBackfillRecordSortPositionsForManifest,
-    } = await import('./postgres-records.js');
+  const postgresBackend = isPostgresStorageBackend();
+  if (postgresBackend) {
+    // Not fenced — keep the manifest-shape cache coherent regardless of
+    // whether the fenced repair below runs.
+    const { invalidatePostgresRecordManifestCache } = await import('./postgres-records.js');
     invalidatePostgresRecordManifestCache(connectorId);
-    await postgresBackfillRecordSortPositionsForManifest(storedManifest);
-  } else {
-    const { backfillSqliteRecordSemanticTimesForManifest } = await import('./records.js');
-    await backfillSqliteRecordSemanticTimesForManifest(storedManifest);
   }
 
   if (options.backfillRetrievalIndexes === false) {
     return connectorId;
+  }
+
+  // Derived-column (cursor/primary-key/semantic-time) repair for records
+  // already stored under this connector_id. Like retrieval-index backfill
+  // below, this enumerates every OTHER connector_instance_id sharing this
+  // connector_id and takes withConnectorInstanceWrite (the same per-instance
+  // writer-admission fence bulk ingest holds) for each one — it is NOT a
+  // no-op just because the instance being registered is fresh, since a
+  // shared connector_id (e.g. a local-collector type enrolled by more than
+  // one device) can already have OTHER instances mid-ingest. A caller that
+  // opts out of retrieval-index maintenance because it is re-registering an
+  // unchanged manifest (enroll, manifest-reconcile) has no derived-column
+  // drift to repair either, so the early return above already skips this too.
+  // See fix-enroll-writer-fence-residual-coupling design D4.
+  if (postgresBackend) {
+    const { postgresBackfillRecordSortPositionsForManifest } = await import('./postgres-records.js');
+    await postgresBackfillRecordSortPositionsForManifest(storedManifest);
+  } else {
+    const { backfillSqliteRecordSemanticTimesForManifest } = await import('./records.js');
+    await backfillSqliteRecordSemanticTimesForManifest(storedManifest);
   }
 
   // Lexical retrieval index drift-detect + backfill. Handles three cases

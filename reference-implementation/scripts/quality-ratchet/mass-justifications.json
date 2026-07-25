@@ -38,5 +38,10 @@
     "allowed_mass": 33,
     "reason": "decouple-device-enrollment-from-ingest-writer-admission adds rotateDeviceCredential to both the SQLite and Postgres store backends (the store is a two-backend union, so a new durable primitive necessarily lands twice). Each revokes all non-revoked credentials for the device and inserts exactly one fresh credential; the Postgres variant wraps revoke+insert in withPostgresTransaction so concurrent rotations serialize on the revoke's row locks and exactly one active credential remains. This is the minimum surface for the credential-rotation guarantee and cannot be reduced without dropping one backend.",
     "date": "2026-07-24"
+  },
+  "server/auth.js": {
+    "allowed_mass": 581,
+    "reason": "D4 (fix-enroll-writer-fence-residual-coupling): gates registerConnector's derived-column repair backfill (postgresBackfillRecordSortPositionsForManifest / backfillSqliteRecordSemanticTimesForManifest) behind the same backfillRetrievalIndexes flag that already guards retrieval-index backfill, closing a live counterexample where enroll still entered the ingest writer-admission fence via this unconditional call. Tried three shapes: (1) a single nested if/else-if duplicating the Postgres-backend check (+5 mass), (2) two sequential top-level ifs sharing one cached postgresBackend check (+3, this version), (3) one combined if/else with an inner conditional on the fenced sub-call (+4, worse than (2) because the extra nesting level costs more than the duplicate branch). (2) is the minimum: the manifest-cache invalidation is unconditional and unfenced (must run every call) while the repair backfill is fenced and conditional (must be skippable), so at least one extra branch relative to the pre-fix code is unavoidable to express two different flag-gated behaviors sharing one backend check. Correctness (closing the live 503/hang counterexample) over a lower number here.",
+    "date": "2026-07-24"
   }
 }

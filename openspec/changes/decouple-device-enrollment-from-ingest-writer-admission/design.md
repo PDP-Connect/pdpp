@@ -46,12 +46,26 @@ and can be starved by, unrelated bulk ingest:
   bubbles out of `handleError` as an untyped **HTTP 500**.
 
 This backfill is a **no-op for a fresh enroll**: the just-created instance has no
-records to index. The record-sort backfill (`postgresBackfillRecordSortPositionsForManifest`,
-`postgres-records.js:446`) is *also* fenced, but it enumerates
-`SELECT DISTINCT connector_instance_id FROM records` first — zero rows for a fresh
-enroll → it never enters the fence. The catalog-row persistence
+records to index. The catalog-row persistence
 (`persistManifestAndAdvanceGenerations`, `auth.js:1608`) uses its own bounded
 `withPostgresTransaction` and does **not** take the writer fence.
+
+> **Correction (D4, post-deploy live counterexample on `f0a6fe0fe`):** the
+> record-sort backfill (`postgresBackfillRecordSortPositionsForManifest`,
+> `postgres-records.js:446`) was believed to be a no-op for a fresh enroll
+> because it enumerates `SELECT DISTINCT connector_instance_id FROM records`
+> first. That enumeration is scoped to the manifest's `connector_id` (`codex` /
+> `claude-code`), which is **shared across every device ever enrolled for that
+> connector type** — not scoped to the specific instance being created. It is
+> zero rows only for the very first-ever enroll of a connector type. Once ANY
+> device has ever ingested a record for `codex`/`claude-code` (the live steady
+> state, not a fresh install), a subsequent enroll's `registerConnector` call
+> still runs this backfill **unconditionally, before the
+> `backfillRetrievalIndexes` short-circuit**, enumerates every existing instance
+> under that connector_id, and takes `withConnectorInstanceWrite` for each —
+> re-introducing exactly the coupling D1 set out to remove. This is the
+> `503 connector_instance_busy` + idle-Postgres-session-after-`pg_try_advisory_lock`
+> counterexample observed live. See D4 below.
 
 **Second, independent defect (credential loss):** the one-time `device_token` is
 returned only in the final `res.json`. `consumeEnrollmentCode` (`ref-device-exporters.ts:1578`)
@@ -116,11 +130,64 @@ through to an untyped 500. After D1 the enroll should no longer hit the fence, s
 this is defense-in-depth for any future fenced call on the enroll path and makes
 the collector's retry behavior correct-by-contract.
 
+### D4 — Gate the derived-column repair backfill behind the same flag as retrieval-index backfill (closes the D1 residual coupling)
+
+Live counterexample (post-deploy, `f0a6fe0fe`): a direct enroll POST returned a
+typed `503 connector_instance_busy` while the fresh code remained pending, with
+`controller_active_runs=0` and an idle Postgres session after
+`SELECT pg_try_advisory_lock` — the exact D1 symptom class, on code that had
+already shipped D1. Deterministically reproduced: enroll+ingest one record for a
+first `codex` device (so `records` has a row under `connector_id=codex`), hold
+the writer-admission gate on that first device's `connector_instance_id`, then
+enroll a *second*, independent `codex` device. Before D4 the second enroll blocks
+on/rejects from the held fence; after D4 it completes promptly.
+
+`registerConnector` (`auth.js`) runs `postgresBackfillRecordSortPositionsForManifest`
+(Postgres) / `backfillSqliteRecordSemanticTimesForManifest` (SQLite)
+**unconditionally, before** the `options.backfillRetrievalIndexes === false`
+short-circuit that D1 added. Both functions enumerate every
+`connector_instance_id` already holding records under the manifest's
+`connector_id` and take `withConnectorInstanceWrite` — the same fence bulk
+ingest holds — for each one found, regardless of the option enroll already
+passes.
+
+**Fix:** move both derived-column-repair calls behind the same
+`options.backfillRetrievalIndexes !== false` gate that already guards the
+lexical/semantic retrieval-index backfill (`auth.js`, `registerConnector`). A
+caller that opts out of retrieval-index maintenance because it is
+re-registering an unchanged manifest has no derived-column
+(cursor/primary-key/semantic-time) drift to repair either — the same
+"unchanged manifest ⇒ nothing to backfill" reasoning D1 already applied to
+retrieval indexes applies identically here. Verified against every existing
+`backfillRetrievalIndexes: false` caller's actual need:
+
+- **Enroll** (`ensureReferenceConnectorCatalogEntry`, both `index.js` and
+  `reference-local-connector-catalog.ts`): registers the static, unchanged
+  local-collector manifest — no drift, ever.
+- **Manifest reconcile, invalidation path** (`polyfill-manifest-reconcile.ts`,
+  the `invalidatePriorRecords` → `applyShippedManifest` sequence): deletes all
+  prior records for the connector *before* re-registering, so there is nothing
+  left to backfill regardless.
+- **Manifest reconcile, other paths** (`applyShippedManifest`'s other two call
+  sites): already explicitly opt out of index maintenance; the caller's own
+  intent is "no fenced maintenance on this registration."
+
+The Postgres manifest-cache invalidation (`invalidatePostgresRecordManifestCache`)
+is NOT fenced and is kept regardless of the flag, so manifest-shape caching
+stays coherent even when the fenced repair is skipped. Real, user-driven
+manifest changes (`POST /connectors`, no `backfillRetrievalIndexes` option
+passed) are unaffected — they still get both the retrieval-index backfill and
+the derived-column repair.
+
+No change to D1/D2/D3's behavior or wire contracts. D2 (idempotent re-enroll)
+and D3 (typed 503) are preserved unmodified and re-verified green.
+
 ## Scope discipline
 
 The proven live cause is D1 (starvation). D2 fixes a separately-proven data-loss
 defect the owner actually hit. D3 is a cheap, correctness-improving mapping at the
-same seam. No cross-store request-transaction rewrite is introduced (that would
+same seam. D4 closes a residual coupling D1 missed — same seam, same flag, no new
+mechanism. No cross-store request-transaction rewrite is introduced (that would
 require threading a shared client through every device-exporter and
 connector-instance store method — large blast radius, not systemic-minimal). The
 idempotent-response pattern (D2) achieves the same no-loss guarantee at the route
@@ -144,3 +211,14 @@ boundary.
   rotation.
 - **Typed backpressure (D3):** force `connector_instance_busy` on the enroll path
   → assert `503` + `retryable: true` + `Retry-After`, never `500`.
+- **Second-instance concurrency oracle (D4, mutation-grade live-class):** enroll
+  and ingest one real record for a FIRST `codex` device on Postgres (populating
+  `records` under `connector_id=codex` for that device's `connector_instance_id`),
+  hold the writer-admission gate on that FIRST device's instance, then enroll a
+  SECOND, independent `codex` device while the gate is held. Before D4 this
+  reproduces the live counterexample (second enroll blocks on/is rejected by the
+  first device's held fence via `postgresBackfillRecordSortPositionsForManifest`).
+  After D4 the second enroll completes promptly and returns `201` with a distinct
+  `connector_instance_id`. This is mutation-grade: reverting D4 alone (leaving
+  D1-D3 intact) makes this oracle fail while the D1 oracle above still passes,
+  proving it detects the specific residual coupling D1 did not close.
