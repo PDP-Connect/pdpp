@@ -788,6 +788,48 @@ function archiveDueForResume(lastResumedAtIso: string | undefined, lookbackDays:
   return elapsedMs >= lookbackMs;
 }
 
+// One-time upgrade compatibility: `base_archive_resumed_at` did not exist
+// before this throttle shipped, so a connection whose base archive already
+// completed a real resume under the OLD code has no entry for it — and
+// `archiveDueForResume` treats "no entry" as "due", which replays the entire
+// base archive on the very first post-upgrade run (the live defect this
+// function exists to close). Deriving a synthetic timestamp is only safe
+// when prior STATE proves an ACTUAL completed base-archive resume, not mere
+// archive presence: `emitStateCheckpoints` (and its pre-this-change
+// predecessor) writes `last_ts`/`channel_last_ts` into `messages` STATE only
+// after a run reaches its normal durable-commit path — a failed or
+// interrupted run commits no STATE at all (see
+// "a failed base archive resume remains owed and retries successfully on
+// the next run"), so an on-disk archive with no such committed fact is
+// exactly the interrupted/failed case this must NOT treat as done. Requiring
+// `priorArchive === archivePath` additionally ties the proof to the base
+// archive's own resolved identity, not a stale or differently-scoped path.
+// The derived value is `nowIso` (this run counts as the fact-finding run
+// itself, not a backdated resume) so the very next scheduled run is
+// immediately throttled, while a genuine resume is still due again after one
+// full lookback window from here — the same lossless cadence a real resume
+// timestamp would produce, applied one run later than an already-migrated
+// connection would see it.
+function deriveMigratedBaseArchiveResumedAt(deps: {
+  archivePath: string;
+  isUnscopedMessageBoundary: boolean;
+  messagesState: MessagesState | undefined;
+  nowIso: string;
+  priorArchive: string | undefined;
+}): string | undefined {
+  const { archivePath, isUnscopedMessageBoundary, messagesState, nowIso, priorArchive } = deps;
+  if (!isUnscopedMessageBoundary) {
+    return;
+  }
+  if (priorArchive !== archivePath) {
+    return;
+  }
+  const provenPriorSuccess = Boolean(
+    messagesState?.last_ts || Object.keys(normalizeStringRecord(messagesState?.channel_last_ts)).length > 0
+  );
+  return provenPriorSuccess ? nowIso : undefined;
+}
+
 // A failed resume must surface as durable, governor-paced recovery evidence
 // — not as a connector-local suppression window meant only for genuinely
 // completed work. `record_key` is the archive path itself: stable across
@@ -2374,6 +2416,33 @@ if (isMainModule(import.meta.url)) {
       const messagesState = state.messages as MessagesState | undefined;
       const priorBaseArchiveResumedAt = normalizeStringRecord(messagesState?.base_archive_resumed_at);
       const baseArchiveResumedAt = { ...priorBaseArchiveResumedAt };
+      // Upgrade compatibility: a connection whose base archive already
+      // completed a real resume BEFORE this throttle shipped has no
+      // `base_archive_resumed_at` entry yet. Without this, the absent entry
+      // reads as "due" and the first post-upgrade run replays the entire
+      // base archive once more — the exact live defect this closes. Only
+      // fires when prior STATE proves a genuinely completed base-archive
+      // run (never from archive presence alone, which an interrupted/failed
+      // run leaves behind too) and never overrides an existing real fact.
+      const migratedBaseArchiveResumedAt =
+        priorBaseArchiveResumedAt[archivePath] === undefined
+          ? deriveMigratedBaseArchiveResumedAt({
+              archivePath,
+              isUnscopedMessageBoundary,
+              messagesState,
+              nowIso: ctx.emittedAt,
+              priorArchive,
+            })
+          : undefined;
+      if (migratedBaseArchiveResumedAt) {
+        baseArchiveResumedAt[archivePath] = migratedBaseArchiveResumedAt;
+        progress(
+          `Slack: base archive at ${archivePath} has no base_archive_resumed_at fact yet but prior STATE proves ` +
+            "a completed resume before this throttle shipped — seeding the throttle from this run instead of " +
+            "replaying the archive",
+          { stream: "messages" }
+        );
+      }
       // Map time_range from messages stream scope into -time-from / -time-to.
       const { timeFrom, timeTo } = extractMessageTimeRange(
         messagesScope?.time_range as { from?: string | null; to?: string | null } | undefined
@@ -2384,7 +2453,7 @@ if (isMainModule(import.meta.url)) {
         childEnv,
         cookie,
         isUnscopedMessageBoundary,
-        lastResumedAt: priorBaseArchiveResumedAt[archivePath],
+        lastResumedAt: migratedBaseArchiveResumedAt ?? priorBaseArchiveResumedAt[archivePath],
         nowIso: ctx.emittedAt,
         opts,
         positionalChannels,

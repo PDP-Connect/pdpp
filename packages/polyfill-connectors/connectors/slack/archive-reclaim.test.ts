@@ -252,6 +252,139 @@ test("base archive resume runs again after the seven-day lookback expires", asyn
   }
 });
 
+test("upgrade compatibility: a pre-upgrade successful base archive is throttled on the first post-upgrade run, not replayed", async () => {
+  // Reproduces the live pre-upgrade STATE shape exactly: a workspace whose
+  // base archive already completed real, successful resumes under the OLD
+  // code (proven by durably-committed `channel_last_ts`/`archive_dir` —
+  // fields only ever written by a run that reached its normal STATE commit),
+  // but with NO `base_archive_resumed_at` entry, because that field did not
+  // exist yet. Live evidence: deployed b7a6485f5/674eccb6e's first
+  // post-upgrade run (run_1784994300807) logged "Resuming slackdump at
+  // /root/.pdpp/slackdump/vana-org/archive" despite this being an
+  // already-successful, steady-state connection — a fresh ~4.6GB replay the
+  // throttle was supposed to prevent. This test fails against the code as
+  // shipped in b7a6485f5 (undefined base_archive_resumed_at entry reads as
+  // "due") and must pass once the migration/derivation closes the gap.
+  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-base-throttle-migration-"));
+  try {
+    const workspace = "base-throttle-migration-ws";
+    const archiveDir = await seedArchive(homeDir, workspace, false);
+    const fakeSlackdump = await writeCountingSlackdump(homeDir);
+    const preUpgradeState = {
+      messages: {
+        archive_dir: archiveDir,
+        channel_last_ts: { C1: "1714032849.123456" },
+        last_ts: "1714032849.123456",
+        // No base_archive_resumed_at key at all — the exact pre-upgrade shape.
+      },
+    };
+
+    const result = await runConnectorProtocolSubprocess({
+      cwd: PACKAGE_ROOT,
+      entrypoint: SLACK_ENTRYPOINT,
+      env: {
+        HOME: homeDir,
+        SLACK_COOKIE: "d=fake",
+        SLACK_TOKEN: "xoxc-fake",
+        SLACK_WORKSPACE: workspace,
+        SLACKDUMP_BIN: fakeSlackdump.path,
+        TEST_SLACKDUMP_CALL_LOG: fakeSlackdump.callLog,
+      },
+      start: {
+        type: "START",
+        scope: { streams: [{ name: "messages" }] },
+        state: preUpgradeState,
+      },
+    });
+
+    assert.ok(
+      !existsSync(fakeSlackdump.callLog),
+      "the first post-upgrade run launched zero slackdump resume subprocesses"
+    );
+    const migratedAt = (messagesState(result).base_archive_resumed_at as Record<string, string> | undefined)?.[
+      archiveDir
+    ];
+    assert.ok(migratedAt, "a synthetic base_archive_resumed_at fact is derived and committed for the next run");
+
+    // The immediate 90-minute follow-up (the schedule the live canary uses)
+    // must ALSO stay throttled off the derived fact, not just this run.
+    const followUp = await runConnectorProtocolSubprocess({
+      cwd: PACKAGE_ROOT,
+      entrypoint: SLACK_ENTRYPOINT,
+      env: {
+        HOME: homeDir,
+        SLACK_COOKIE: "d=fake",
+        SLACK_TOKEN: "xoxc-fake",
+        SLACK_WORKSPACE: workspace,
+        SLACKDUMP_BIN: fakeSlackdump.path,
+        TEST_SLACKDUMP_CALL_LOG: fakeSlackdump.callLog,
+      },
+      start: {
+        type: "START",
+        scope: { streams: [{ name: "messages" }] },
+        state: { messages: { ...preUpgradeState.messages, base_archive_resumed_at: { [archiveDir]: migratedAt } } },
+      },
+    });
+    assert.ok(
+      !existsSync(fakeSlackdump.callLog),
+      "the 90-minute follow-up after migration also launched zero slackdump resume subprocesses"
+    );
+    assert.equal(
+      (messagesState(followUp).base_archive_resumed_at as Record<string, string> | undefined)?.[archiveDir],
+      migratedAt,
+      "the derived fact is carried forward unchanged on the follow-up run"
+    );
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("upgrade compatibility does NOT seed the throttle from archive existence alone (interrupted/failed prior run)", async () => {
+  // The negative case the migration must not conflate with success: an
+  // archive directory that exists on disk (a timed-out or crashed prior run
+  // can leave one behind, per pickResumeTarget's own doc comment) but with
+  // NO durably-committed channel_last_ts/last_ts proof and NO
+  // base_archive_resumed_at fact. This must resume normally, exactly like
+  // today's pre-migration first-run behavior — seeding from mere existence
+  // would silently mask a prior run that never actually finished.
+  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-base-throttle-no-seed-"));
+  try {
+    const workspace = "base-throttle-no-seed-ws";
+    const archiveDir = await seedArchive(homeDir, workspace, false);
+    const fakeSlackdump = await writeCountingSlackdump(homeDir);
+
+    const result = await runConnectorProtocolSubprocess({
+      cwd: PACKAGE_ROOT,
+      entrypoint: SLACK_ENTRYPOINT,
+      env: {
+        HOME: homeDir,
+        SLACK_COOKIE: "d=fake",
+        SLACK_TOKEN: "xoxc-fake",
+        SLACK_WORKSPACE: workspace,
+        SLACKDUMP_BIN: fakeSlackdump.path,
+        TEST_SLACKDUMP_CALL_LOG: fakeSlackdump.callLog,
+      },
+      start: {
+        type: "START",
+        scope: { streams: [{ name: "messages" }] },
+        state: { messages: { archive_dir: archiveDir } },
+      },
+    });
+
+    assert.match(
+      await readFile(fakeSlackdump.callLog, "utf8"),
+      /^resume /,
+      "an archive with no proven-successful prior run still resumes, not throttled from existence alone"
+    );
+    assert.ok(
+      (messagesState(result).base_archive_resumed_at as Record<string, string> | undefined)?.[archiveDir],
+      "a genuinely completed resume this run still stamps the real success fact"
+    );
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("reclaimUploads is a no-op returning 0 when __uploads/ is absent", async () => {
   const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-reclaim-absent-"));
   try {

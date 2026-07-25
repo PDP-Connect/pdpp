@@ -423,7 +423,10 @@ DETAIL_GAP keyed by the archive path`. Both confirmed live, then reverted.
 - Existing connection upgrades safely — no manifest-breaking change; new option
   defaults preserve today's behavior; the incremental query falls back to full
   aggregation whenever no cursor exists (i.e. first run after upgrade behaves
-  exactly as today).
+  exactly as today). D8 closes the one throttle-specific upgrade gap this
+  general statement did not cover: a connection whose base archive already
+  proved success under pre-D7 STATE now derives the throttle fact instead of
+  replaying the archive once more on the first post-upgrade run.
 
 ### D7 — Base archive resumes need the same success throttle without sharing scoped state (2026-07-25)
 
@@ -445,6 +448,63 @@ travels through the ordinary messages STATE checkpoint. A failed resume throws
 before assignment; a later failure prevents STATE commit. Thus failures remain
 retryable and neither scoped nor base state can suppress the other. First-run
 `archive` creation and explicitly scoped archive/repair behavior are unchanged.
+
+### D8 — Live REVISE on D7: no compatibility path from pre-upgrade successful
+state permitted one more full base-archive replay (2026-07-25, live canary)
+
+**Blocker found.** Live canary on deployed `b7a6485f5`/`674eccb6e`: the first
+post-upgrade scheduled run (`run_1784994300807`) logged "Resuming slackdump at
+`/root/.pdpp/slackdump/vana-org/archive`" — a fresh multi-GB replay on a
+connection whose base archive had already completed real, successful resumes
+under the OLD code for months. Root cause: `base_archive_resumed_at` did not
+exist before D7 shipped, so no prior run had ever written it; D7's own
+`archiveDueForResume` treats an absent entry as unconditionally due
+(`if (!lastResumedAtIso) return true;`), and D7's design explicitly assumed
+"the field is absent, invalid, or at least `SLACK_LOOKBACK_DAYS` old" all mean
+the same thing — due — without asking whether prior STATE already proves the
+work was done. Every existing test seeded `base_archive_resumed_at` directly
+(including its absence for "first run"), so none reproduced the actual
+upgrade transition: durably-proven prior success with no entry for the new
+field.
+
+**Fix — a narrow, one-time derivation, not a relaxed due-check.**
+`deriveMigratedBaseArchiveResumedAt` (`index.ts`) fires only when ALL of:
+the current run is on the unscoped base boundary (scoped archives are
+untouched — base/scoped throttle remain fully independent, per the original
+requirement); `priorBaseArchiveResumedAt[archivePath]` is absent (never
+overrides a real fact, migrated or otherwise); the resolved prior-archive
+identity (`pickResumeTarget`'s `priorArchive`) equals this run's own
+`archivePath` (ties the proof to the base archive's own identity, not a
+stale/differently-scoped path); and prior STATE carries `messages.last_ts` or
+a non-empty `messages.channel_last_ts` — fields `emitStateCheckpoints` (and
+its pre-D7 predecessor) writes ONLY after a run reaches its normal
+durable-commit path. An interrupted or failed run commits no STATE at all
+(proven by the existing "a failed base archive resume remains owed" test),
+so this is durable proof of a genuinely **completed** prior run, not mere
+archive existence on disk (which an interrupted/crashed run leaves behind
+too, and which the migration deliberately does NOT treat as proof — see the
+negative test below). The derived timestamp is `ctx.emittedAt` (this run,
+not a backdated guess), so the very next scheduled run is immediately
+throttled and a genuine resume becomes due again after one full
+`SLACK_LOOKBACK_DAYS` from here — the same lossless cadence D5 already
+established for scoped archives, applied one run later than an
+already-migrated connection would see it. The derived fact only reaches
+durable STATE if this run itself commits, preserving the same crash-safety
+invariant as every other throttle fact in this change.
+
+**Mutation-tested:** a new regression
+(`upgrade compatibility: a pre-upgrade successful base archive is throttled
+on the first post-upgrade run, not replayed`) reproduces the exact live
+pre-upgrade STATE shape (`archive_dir` + `channel_last_ts` + `last_ts`, no
+`base_archive_resumed_at` key) and asserts zero `slackdump resume`
+invocations on both the migration run and the immediate 90-minute follow-up.
+Run against `b7a6485f5` unmodified (via `git stash`), it fails with the
+live symptom exactly reproduced — a `resume` subprocess launches — confirming
+the test would have caught this before deploy. A paired negative test
+(`upgrade compatibility does NOT seed the throttle from archive existence
+alone`) proves an archive with no committed success proof still resumes
+normally, so the migration cannot mask a genuinely interrupted/failed prior
+run as done.
 
 ## Residual risks (owner-only)
 

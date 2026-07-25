@@ -386,3 +386,51 @@ residual risks (D6).
 - [x] 10.4 Focused Slack protocol/reclaim tests and typecheck pass; final
   package, OpenSpec, lint, diff, and privacy gates are recorded with landing
   evidence.
+
+## 11. Live REVISE on task 10: upgrade-compatibility gap permitted one more
+   full base-archive replay (2026-07-25, live canary)
+
+Live canary on deployed `b7a6485f5`/`674eccb6e` disproved task 10's
+acceptance: the first post-upgrade scheduled run (`run_1784994300807`) logged
+a `slackdump resume` against the base archive despite the connection's base
+archive having already completed successful resumes for months before this
+throttle shipped. `base_archive_resumed_at` never existed pre-upgrade, so no
+prior run had written it, and `archiveDueForResume` reads an absent entry as
+unconditionally due — permitting the exact multi-GB replay the throttle
+exists to prevent.
+
+- [x] 11.1 Root-caused against the live evidence and D7's own design
+  assumption ("the field is absent, invalid, or at least
+  `SLACK_LOOKBACK_DAYS` old" all treated as "due") — confirmed no existing
+  test seeded the real upgrade-transition STATE shape (durably-proven prior
+  success, absent new field); every test either seeded the field explicitly
+  or seeded neither the field nor proof of prior success.
+- [x] 11.2 Added `deriveMigratedBaseArchiveResumedAt` (`index.ts`): fires only
+  on the unscoped base boundary, only when `base_archive_resumed_at` is
+  absent for this exact archive path, only when `pickResumeTarget`'s
+  resolved `priorArchive` equals this run's `archivePath`, and only when
+  prior STATE proves a genuinely COMPLETED prior run via `messages.last_ts`
+  or non-empty `messages.channel_last_ts` — fields only ever committed after
+  a run reaches its normal durable-commit path (a failed/interrupted run
+  commits no STATE, per the existing task-10 retry test). Explicitly does
+  NOT seed from archive existence on disk alone. Derived value is
+  `ctx.emittedAt` (this run), so the immediate next run is throttled and a
+  genuine resume becomes due again after one full `SLACK_LOOKBACK_DAYS` —
+  same cadence as a real resume fact. Persists to durable STATE only if this
+  run itself commits.
+- [x] 11.3 Two new tests in `archive-reclaim.test.ts`: the positive case
+  reproduces the exact live pre-upgrade STATE shape and asserts zero resume
+  invocations on both the migration run and the immediate 90-minute
+  follow-up; the negative case proves an archive with no committed
+  success proof (existence alone) still resumes normally, so an
+  interrupted/failed prior run is never masked as done. **Mutation-tested:**
+  the positive test run against `b7a6485f5` unmodified (via `git stash`)
+  fails with the live symptom exactly reproduced (a `resume` subprocess
+  launches) — confirmed, then the fix restored.
+- [x] 11.4 Full focused Slack suite green: 153 pass, 0 fail
+  (`connectors/slack/**/*.test.ts`). Full package suite: 2739 pass / 6
+  pre-existing skip / 0 fail. `tsc --noEmit` clean. `ultracite check` clean
+  on touched files. `openspec validate bound-slack-archive-steady-state-cost
+  --strict` passes (no capability-doc change needed — this closes an
+  implementation gap in D7's already-committed capability text, not a new
+  capability).
