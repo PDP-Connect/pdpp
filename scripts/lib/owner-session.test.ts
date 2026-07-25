@@ -2,13 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Unit tests for the shared owner-session acquisition helper
-// (scripts/lib/owner-session.mjs) — the one place that drives the
+// (scripts/lib/owner-session.ts) — the one place that drives the
 // CSRF-protected /owner/login form. Every consumer (stream-health-audit,
 // owner-journey-acceptance, railway-mcp-query-smoke, read-surface-smoke)
 // depends on this contract, so it is pinned directly here rather than only
 // indirectly through each consumer's own tests.
 //
-// Run: node --test scripts/lib/owner-session.test.mjs
+// Run: node --test --import tsx scripts/lib/owner-session.test.ts
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -16,19 +16,24 @@ import test from "node:test";
 import {
   establishOwnerSessionCookie,
   extractCsrfFieldValue,
+  type FetchImpl,
   findSetCookiePair,
   getSetCookieList,
   loginWithOwnerPassword,
   OWNER_LANDING_RETURN_TO,
   resolveOwnerAuthForLive,
-} from "./owner-session.mjs";
+} from "./owner-session.ts";
 
-function response(status, body, setCookieHeaders = []) {
+const CSRF_ERROR_PATTERN = /CSRF/;
+const NO_SESSION_COOKIE_ERROR_PATTERN = /did not issue a session cookie \(status 401\)/;
+const OWNER_LOGIN_FAILED_PATTERN = /owner login failed/;
+
+function response(status: number, body: string, setCookieHeaders: string[] = []) {
   return {
     status,
     headers: {
       getSetCookie: () => setCookieHeaders,
-      get: (name) => (name.toLowerCase() === "set-cookie" ? setCookieHeaders[0] ?? null : null),
+      get: (name: string) => (name.toLowerCase() === "set-cookie" ? (setCookieHeaders[0] ?? null) : null),
     },
     text: async () => body,
   };
@@ -58,18 +63,21 @@ test("extractCsrfFieldValue: reads the hidden _csrf input", () => {
 
 test("getSetCookieList: prefers getSetCookie(), falls back to a single set-cookie header", () => {
   assert.deepEqual(getSetCookieList(response(200, "", ["a=1", "b=2"])), ["a=1", "b=2"]);
-  const singleHeaderResp = { status: 200, headers: { get: (n) => (n === "set-cookie" ? "c=3" : null) } };
+  const singleHeaderResp = { status: 200, headers: { get: (n: string) => (n === "set-cookie" ? "c=3" : null) } };
   assert.deepEqual(getSetCookieList(singleHeaderResp), ["c=3"]);
   const noHeaderResp = { status: 200, headers: { get: () => null } };
   assert.deepEqual(getSetCookieList(noHeaderResp), []);
 });
 
 test("loginWithOwnerPassword: drives the CSRF form with return_to=/ and returns the session cookie", async () => {
-  const calls = [];
-  const fetchImpl = async (url, init = {}) => {
+  const calls: { url: string; init: RequestInit }[] = [];
+  // biome-ignore lint/suspicious/useAwait: mocks the FetchImpl contract; async is required to satisfy the type even though this mock body never awaits.
+  const fetchImpl: FetchImpl = async (url, init = {}) => {
     calls.push({ url: String(url), init });
     if (String(url).includes("/owner/login") && init.method !== "POST") {
-      return response(200, '<input type="hidden" name="_csrf" value="csrf-1" />', ["pdpp_owner_csrf=csrf-cookie; Path=/"]);
+      return response(200, '<input type="hidden" name="_csrf" value="csrf-1" />', [
+        "pdpp_owner_csrf=csrf-cookie; Path=/",
+      ]);
     }
     if (String(url).endsWith("/owner/login") && init.method === "POST") {
       return response(302, "", ["pdpp_owner_session=session-cookie; Path=/; HttpOnly"]);
@@ -79,38 +87,46 @@ test("loginWithOwnerPassword: drives the CSRF form with return_to=/ and returns 
 
   const result = await loginWithOwnerPassword({ base: "https://pdpp.example.com", password: "hunter2", fetchImpl });
 
-  assert.deepEqual(result, { header: { cookie: "pdpp_owner_session=session-cookie" }, mode: "password-session", error: null });
+  assert.deepEqual(result, {
+    header: { cookie: "pdpp_owner_session=session-cookie" },
+    mode: "password-session",
+    error: null,
+  });
   const getCall = calls.find((c) => c.init.method !== "POST");
-  assert.equal(getCall.url, "https://pdpp.example.com/owner/login?return_to=%2F");
+  assert.equal(getCall?.url, "https://pdpp.example.com/owner/login?return_to=%2F");
   const postCall = calls.find((c) => c.init.method === "POST");
-  const postParams = new URLSearchParams(postCall.init.body);
+  const postParams = new URLSearchParams(postCall?.init.body as string);
   assert.equal(postParams.get("return_to"), "/");
   assert.equal(postParams.get("password"), "hunter2");
   assert.equal(postParams.get("_csrf"), "csrf-1");
 });
 
 test("loginWithOwnerPassword: fails closed (no cookie leaked) when the login page has no CSRF cookie/field", async () => {
-  const fetchImpl = async () => response(200, "<html>no csrf here</html>", []);
+  const fetchImpl: FetchImpl = async () => response(200, "<html>no csrf here</html>", []);
   const result = await loginWithOwnerPassword({ base: "https://pdpp.example.com", password: "hunter2", fetchImpl });
   assert.equal(result.header.cookie, undefined);
-  assert.match(result.error, /CSRF/);
+  assert.match(result.error ?? "", CSRF_ERROR_PATTERN);
 });
 
 test("loginWithOwnerPassword: fails closed when the POST does not issue a session cookie", async () => {
-  const fetchImpl = async (url, init = {}) => {
+  // biome-ignore lint/suspicious/useAwait: mocks the FetchImpl contract; async is required to satisfy the type even though this mock body never awaits.
+  const fetchImpl: FetchImpl = async (_url, init = {}) => {
     if (init.method !== "POST") {
-      return response(200, '<input type="hidden" name="_csrf" value="csrf-1" />', ["pdpp_owner_csrf=csrf-cookie; Path=/"]);
+      return response(200, '<input type="hidden" name="_csrf" value="csrf-1" />', [
+        "pdpp_owner_csrf=csrf-cookie; Path=/",
+      ]);
     }
     return response(401, "", []);
   };
   const result = await loginWithOwnerPassword({ base: "https://pdpp.example.com", password: "wrong", fetchImpl });
   assert.equal(result.header.cookie, undefined);
-  assert.match(result.error, /did not issue a session cookie \(status 401\)/);
+  assert.match(result.error ?? "", NO_SESSION_COOKIE_ERROR_PATTERN);
 });
 
 test("resolveOwnerAuthForLive: PDPP_OWNER_SESSION_COOKIE precedence — never calls /owner/login", async () => {
   let loginCalled = false;
-  const fetchImpl = async (url) => {
+  // biome-ignore lint/suspicious/useAwait: mocks the FetchImpl contract; async is required to satisfy the type even though this mock body never awaits.
+  const fetchImpl: FetchImpl = async (url) => {
     if (String(url).includes("/owner/login")) {
       loginCalled = true;
       throw new Error("must not log in when a cookie is already supplied");
@@ -127,9 +143,12 @@ test("resolveOwnerAuthForLive: PDPP_OWNER_SESSION_COOKIE precedence — never ca
 });
 
 test("resolveOwnerAuthForLive: falls back to PDPP_OWNER_PASSWORD when no cookie is set", async () => {
-  const fetchImpl = async (url, init = {}) => {
+  // biome-ignore lint/suspicious/useAwait: mocks the FetchImpl contract; async is required to satisfy the type even though this mock body never awaits.
+  const fetchImpl: FetchImpl = async (url, init = {}) => {
     if (String(url).includes("/owner/login") && init.method !== "POST") {
-      return response(200, '<input type="hidden" name="_csrf" value="csrf-1" />', ["pdpp_owner_csrf=csrf-cookie; Path=/"]);
+      return response(200, '<input type="hidden" name="_csrf" value="csrf-1" />', [
+        "pdpp_owner_csrf=csrf-cookie; Path=/",
+      ]);
     }
     return response(302, "", ["pdpp_owner_session=session-cookie; Path=/; HttpOnly"]);
   };
@@ -146,6 +165,7 @@ test("resolveOwnerAuthForLive: mode none when neither cookie nor password is set
   const result = await resolveOwnerAuthForLive({
     base: "https://pdpp.example.com",
     env: {},
+    // biome-ignore lint/suspicious/useAwait: mocks the FetchImpl contract; async is required to satisfy the type even though this mock body never awaits.
     fetchImpl: async () => {
       throw new Error("must not fetch");
     },
@@ -154,31 +174,42 @@ test("resolveOwnerAuthForLive: mode none when neither cookie nor password is set
 });
 
 test("establishOwnerSessionCookie: resolves to the bare Cookie header string on success", async () => {
-  const fetchImpl = async (url, init = {}) => {
+  // biome-ignore lint/suspicious/useAwait: mocks the FetchImpl contract; async is required to satisfy the type even though this mock body never awaits.
+  const fetchImpl: FetchImpl = async (_url, init = {}) => {
     if (init.method !== "POST") {
-      return response(200, '<input type="hidden" name="_csrf" value="csrf-1" />', ["pdpp_owner_csrf=csrf-cookie; Path=/"]);
+      return response(200, '<input type="hidden" name="_csrf" value="csrf-1" />', [
+        "pdpp_owner_csrf=csrf-cookie; Path=/",
+      ]);
     }
     return response(302, "", ["pdpp_owner_session=session-cookie; Path=/; HttpOnly"]);
   };
-  const cookie = await establishOwnerSessionCookie({ origin: "https://pdpp.example.com", ownerPassword: "hunter2", fetchImpl });
+  const cookie = await establishOwnerSessionCookie({
+    origin: "https://pdpp.example.com",
+    ownerPassword: "hunter2",
+    fetchImpl,
+  });
   assert.equal(cookie, "pdpp_owner_session=session-cookie");
 });
 
 test("establishOwnerSessionCookie: throws (does not silently return undefined) on failure", async () => {
-  const fetchImpl = async () => response(200, "<html>no csrf</html>", []);
+  const fetchImpl: FetchImpl = async () => response(200, "<html>no csrf</html>", []);
   await assert.rejects(
     () => establishOwnerSessionCookie({ origin: "https://pdpp.example.com", ownerPassword: "hunter2", fetchImpl }),
-    /owner login failed/
+    OWNER_LOGIN_FAILED_PATTERN
   );
 });
 
 test("no secret ever appears in a thrown error or returned result", async () => {
-  const fetchImpl = async () => response(200, "<html>no csrf</html>", []);
-  let thrown = null;
+  const fetchImpl: FetchImpl = async () => response(200, "<html>no csrf</html>", []);
+  let thrown: Error | null = null;
   try {
-    await establishOwnerSessionCookie({ origin: "https://pdpp.example.com", ownerPassword: "super-secret-pw", fetchImpl });
+    await establishOwnerSessionCookie({
+      origin: "https://pdpp.example.com",
+      ownerPassword: "super-secret-pw",
+      fetchImpl,
+    });
   } catch (err) {
-    thrown = err;
+    thrown = err as Error;
   }
   assert.ok(thrown);
   assert.ok(!String(thrown.message).includes("super-secret-pw"));
