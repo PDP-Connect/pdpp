@@ -36,7 +36,10 @@ async function fetchAs(path: string, init: RequestInit): Promise<Response> {
       })
     );
   } catch (err) {
-    // biome-ignore lint/style/useErrorCause: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+    // ReferenceServerUnreachableError already threads `err` through to
+    // Error's native `cause` (see its constructor in owner-token.ts); Biome's
+    // syntactic check doesn't look inside a custom class to see that.
+    // biome-ignore lint/style/useErrorCause: see comment above.
     throw new ReferenceServerUnreachableError(`Cannot reach authorization server at ${getAsInternalUrl()}`, err);
   }
 }
