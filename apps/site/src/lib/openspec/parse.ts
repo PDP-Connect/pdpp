@@ -47,8 +47,7 @@ function isListBlock(lines: string[]): boolean {
 function skipBlankLines(lines: string[], from: number): number {
   let i = from;
   while (i < lines.length && (lines[i] ?? "").trim() === "") {
-    // biome-ignore lint/style/noIncrementDecrement: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
-    i++;
+    i += 1;
   }
   return i;
 }
@@ -70,8 +69,7 @@ function readParagraph(lines: string[], from: number): { paragraph: string[]; ne
   let i = from;
   while (i < lines.length && (lines[i] ?? "").trim() !== "") {
     paragraph.push((lines[i] ?? "").trim());
-    // biome-ignore lint/style/noIncrementDecrement: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
-    i++;
+    i += 1;
   }
   return { next: i, paragraph };
 }
@@ -83,8 +81,7 @@ export function extractExcerpt(markdown: string): string | null {
   while (i < lines.length) {
     const trimmed = (lines[i] ?? "").trim();
     if (isSkippableExcerptLine(trimmed)) {
-      // biome-ignore lint/style/noIncrementDecrement: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
-      i++;
+      i += 1;
       continue;
     }
 
@@ -124,13 +121,10 @@ export function countTasks(markdown: string): TaskCounts {
   for (const raw of lines) {
     const line = raw.trimStart();
     if (line.startsWith("- [x]") || line.startsWith("- [X]")) {
-      // biome-ignore lint/style/noIncrementDecrement: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
-      completed++;
-      // biome-ignore lint/style/noIncrementDecrement: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
-      total++;
+      completed += 1;
+      total += 1;
     } else if (line.startsWith("- [ ]")) {
-      // biome-ignore lint/style/noIncrementDecrement: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
-      total++;
+      total += 1;
     }
   }
   return { completed, total };

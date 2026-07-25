@@ -119,8 +119,7 @@ export function useProtocol() {
 
   const addNewPayStatements = useCallback(
     (count: number) => {
-      // biome-ignore lint/style/noIncrementDecrement: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
-      for (let i = 0; i < count; i++) {
+      for (let i = 0; i < count; i += 1) {
         const idx = 24 + i;
         const payDate = new Date(Date.UTC(2026, 3, 15 + idx * 14));
         const grossPay = 6420 + i * 110;
