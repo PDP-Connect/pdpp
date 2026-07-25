@@ -31,9 +31,7 @@
           "secret": true,
           "autocomplete": "username",
           "placeholder": "you@example.com",
-          "env": [
-            "CHATGPT_USERNAME"
-          ]
+          "env": ["CHATGPT_USERNAME"]
         },
         {
           "name": "password",
@@ -42,17 +40,13 @@
           "required": true,
           "secret": true,
           "autocomplete": "current-password",
-          "env": [
-            "CHATGPT_PASSWORD"
-          ]
+          "env": ["CHATGPT_PASSWORD"]
         }
       ]
     }
   },
   "capabilities": {
-    "human_interaction": [
-      "manual_action"
-    ],
+    "human_interaction": ["manual_action"],
     "refresh_policy": {
       "recommended_mode": "automatic",
       "recommended_interval_seconds": 3600,
@@ -86,70 +80,39 @@
             "type": "string"
           },
           "title": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "create_time": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time"
           },
           "update_time": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time"
           },
           "is_archived": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "is_starred": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "workspace_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "current_node": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "message_count_on_current_branch": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "gizmo_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           }
         },
-        "required": [
-          "id"
-        ]
+        "required": ["id"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "update_time",
       "consent_time_field": "create_time",
       "selection": {
@@ -159,39 +122,17 @@
       "incremental": true,
       "query": {
         "search": {
-          "lexical_fields": [
-            "title"
-          ],
-          "semantic_fields": [
-            "title"
-          ]
+          "lexical_fields": ["title"],
+          "semantic_fields": ["title"]
         },
         "range_filters": {
-          "create_time": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "update_time": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "message_count_on_current_branch": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "create_time": ["gte", "gt", "lte", "lt"],
+          "update_time": ["gte", "gt", "lte", "lt"],
+          "message_count_on_current_branch": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "update_time",
-            "create_time"
-          ]
+          "group_by_time": ["update_time", "create_time"]
         }
       },
       "coverage_strategy": "checkpoint_window",
@@ -215,52 +156,31 @@
             "type": "string"
           },
           "parent_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "children_ids": {
             "type": "array"
           },
           "role": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "actor"
           },
           "content": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "content_type": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "model_slug": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "create_time": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time"
           },
           "finish_reason": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "citations": {
             "type": "array"
@@ -275,14 +195,9 @@
             "type": "boolean"
           }
         },
-        "required": [
-          "id",
-          "conversation_id"
-        ]
+        "required": ["id", "conversation_id"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "create_time",
       "consent_time_field": "create_time",
       "selection": {
@@ -300,29 +215,15 @@
       ],
       "query": {
         "search": {
-          "lexical_fields": [
-            "role",
-            "content",
-            "model_slug",
-            "finish_reason"
-          ],
-          "semantic_fields": [
-            "content"
-          ]
+          "lexical_fields": ["role", "content", "model_slug", "finish_reason"],
+          "semantic_fields": ["content"]
         },
         "range_filters": {
-          "create_time": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "create_time": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "create_time"
-          ]
+          "group_by_time": ["create_time"]
         }
       },
       "coverage_strategy": "parent_detail_accounting",
@@ -347,29 +248,18 @@
             "x_pdpp_role": "primary-title"
           },
           "created_at": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time",
             "x_pdpp_role": "event-time"
           },
           "updated_at": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time"
           }
         },
-        "required": [
-          "id",
-          "content"
-        ]
+        "required": ["id", "content"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "updated_at",
       "consent_time_field": "created_at",
       "selection": {
@@ -379,33 +269,16 @@
       "incremental": true,
       "query": {
         "search": {
-          "lexical_fields": [
-            "content"
-          ],
-          "semantic_fields": [
-            "content"
-          ]
+          "lexical_fields": ["content"],
+          "semantic_fields": ["content"]
         },
         "range_filters": {
-          "created_at": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "updated_at": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "created_at": ["gte", "gt", "lte", "lt"],
+          "updated_at": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "updated_at",
-            "created_at"
-          ]
+          "group_by_time": ["updated_at", "created_at"]
         }
       },
       "coverage_strategy": "full_inventory",
@@ -426,89 +299,52 @@
             "type": "string"
           },
           "short_url": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "display_name": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "display_description": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "display_welcome_message": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "instructions": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "tools": {
             "type": "array"
           },
           "created_at": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time",
             "x_pdpp_role": "event-time"
           },
           "updated_at": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time"
           },
           "author_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "author_name": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "is_public": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "category": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "tags": {
             "type": "array"
           }
         },
-        "required": [
-          "id"
-        ]
+        "required": ["id"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "updated_at",
       "consent_time_field": "created_at",
       "selection": {
@@ -533,28 +369,13 @@
           ]
         },
         "range_filters": {
-          "created_at": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "updated_at": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "created_at": ["gte", "gt", "lte", "lt"],
+          "updated_at": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "updated_at",
-            "created_at"
-          ],
-          "group_by": [
-            "category"
-          ]
+          "group_by_time": ["updated_at", "created_at"],
+          "group_by": ["category"]
         }
       },
       "coverage_strategy": "full_inventory",
@@ -575,39 +396,23 @@
             "type": "string"
           },
           "about_user": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "response_style": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "enabled": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "updated_at": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time",
             "x_pdpp_role": "event-time"
           }
         },
-        "required": [
-          "id"
-        ]
+        "required": ["id"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "updated_at",
       "consent_time_field": "updated_at",
       "selection": {
@@ -617,28 +422,15 @@
       "incremental": true,
       "query": {
         "search": {
-          "lexical_fields": [
-            "about_user",
-            "response_style"
-          ],
-          "semantic_fields": [
-            "about_user",
-            "response_style"
-          ]
+          "lexical_fields": ["about_user", "response_style"],
+          "semantic_fields": ["about_user", "response_style"]
         },
         "range_filters": {
-          "updated_at": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "updated_at": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "updated_at"
-          ]
+          "group_by_time": ["updated_at"]
         }
       },
       "coverage_strategy": "singleton_presence",
@@ -659,58 +451,33 @@
             "type": "string"
           },
           "conversation_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "share_url": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "title": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "created_at": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time",
             "x_pdpp_role": "event-time"
           },
           "anonymous": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "is_public": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "highlighted_text": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           }
         },
-        "required": [
-          "id"
-        ]
+        "required": ["id"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "created_at",
       "consent_time_field": "created_at",
       "selection": {
@@ -728,28 +495,15 @@
       ],
       "query": {
         "search": {
-          "lexical_fields": [
-            "title",
-            "highlighted_text"
-          ],
-          "semantic_fields": [
-            "title",
-            "highlighted_text"
-          ]
+          "lexical_fields": ["title", "highlighted_text"],
+          "semantic_fields": ["title", "highlighted_text"]
         },
         "range_filters": {
-          "created_at": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "created_at": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "created_at"
-          ]
+          "group_by_time": ["created_at"]
         }
       },
       "coverage_strategy": "checkpoint_window",

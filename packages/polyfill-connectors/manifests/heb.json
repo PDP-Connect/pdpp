@@ -30,9 +30,7 @@
           "required": true,
           "secret": true,
           "autocomplete": "username",
-          "env": [
-            "HEB_USERNAME"
-          ]
+          "env": ["HEB_USERNAME"]
         },
         {
           "name": "password",
@@ -41,18 +39,13 @@
           "required": true,
           "secret": true,
           "autocomplete": "current-password",
-          "env": [
-            "HEB_PASSWORD"
-          ]
+          "env": ["HEB_PASSWORD"]
         }
       ]
     }
   },
   "capabilities": {
-    "human_interaction": [
-      "manual_action",
-      "otp"
-    ],
+    "human_interaction": ["manual_action", "otp"],
     "refresh_policy": {
       "recommended_mode": "manual",
       "minimum_interval_seconds": 7200,
@@ -91,79 +84,45 @@
           },
           "fulfillment_method": {
             "type": "string",
-            "enum": [
-              "curbside",
-              "delivery",
-              "unknown"
-            ]
+            "enum": ["curbside", "delivery", "unknown"]
           },
           "fulfillment_location": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "status": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "secondary"
           },
           "status_code": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "description": "Machine-readable order status code from the structured order-list source (e.g. \"PAYMENT_RECEIPTED\"), distinct from the human-readable `status` message. An honest bounded/open string reflecting values actually observed in structured source evidence, not a closed enum inferred from one account's order history. Null when the structured source did not supply this row."
           },
           "store_name": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "description": "Fulfilling store name from the structured order-list source. Null when the structured source did not supply this row."
           },
           "timeslot_start": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time",
             "description": "Delivery/pickup timeslot start (ISO-8601 UTC) from the structured order-list source. Null when the structured source did not supply this row."
           },
           "timeslot_end": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time",
             "description": "Delivery/pickup timeslot end (ISO-8601 UTC) from the structured order-list source. Null when the structured source did not supply this row."
           },
           "total": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "total_cents": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "item_count": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "unfulfilled_count": {
-            "type": [
-              "integer",
-              "null"
-            ],
+            "type": ["integer", "null"],
             "description": "Count of purchase-line items the source reports as unfulfilled on this order, from the structured order-list source's orderChangesOverview.unfulfilledCount. Distinct from item_count (the order's total item count). Null when the structured source did not supply this row."
           },
           "fetched_at": {
@@ -171,14 +130,9 @@
             "format": "date-time"
           }
         },
-        "required": [
-          "id",
-          "order_date"
-        ]
+        "required": ["id", "order_date"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "order_date",
       "consent_time_field": "order_date",
       "selection": {
@@ -229,57 +183,20 @@
       ],
       "query": {
         "search": {
-          "lexical_fields": [
-            "fulfillment_location",
-            "status",
-            "store_name"
-          ]
+          "lexical_fields": ["fulfillment_location", "status", "store_name"]
         },
         "range_filters": {
-          "order_date": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "total_cents": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "item_count": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "timeslot_start": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "timeslot_end": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "order_date": ["gte", "gt", "lte", "lt"],
+          "total_cents": ["gte", "gt", "lte", "lt"],
+          "item_count": ["gte", "gt", "lte", "lt"],
+          "timeslot_start": ["gte", "gt", "lte", "lt"],
+          "timeslot_end": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "sum": [
-            "total_cents"
-          ],
-          "group_by": [
-            "fulfillment_method",
-            "status",
-            "status_code"
-          ],
-          "group_by_time": [
-            "order_date"
-          ]
+          "sum": ["total_cents"],
+          "group_by": ["fulfillment_method", "status", "status_code"],
+          "group_by_time": ["order_date"]
         },
         "expand": [
           {
@@ -315,48 +232,27 @@
             "x_pdpp_role": "primary-title"
           },
           "department": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "secondary"
           },
           "product_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "product_url": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "image_url": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "media"
           },
           "quantity": {
-            "type": [
-              "number",
-              "null"
-            ]
+            "type": ["number", "null"]
           },
           "line_total": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "line_total_cents": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "order_date": {
             "type": "string",
@@ -368,16 +264,9 @@
             "format": "date-time"
           }
         },
-        "required": [
-          "id",
-          "order_id",
-          "name",
-          "order_date"
-        ]
+        "required": ["id", "order_id", "name", "order_date"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "order_date",
       "consent_time_field": "order_date",
       "selection": {
@@ -395,48 +284,20 @@
       ],
       "query": {
         "search": {
-          "lexical_fields": [
-            "name",
-            "department"
-          ],
-          "semantic_fields": [
-            "name"
-          ]
+          "lexical_fields": ["name", "department"],
+          "semantic_fields": ["name"]
         },
         "range_filters": {
-          "order_date": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "line_total_cents": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "quantity": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "order_date": ["gte", "gt", "lte", "lt"],
+          "line_total_cents": ["gte", "gt", "lte", "lt"],
+          "quantity": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "sum": [
-            "line_total_cents"
-          ],
-          "group_by": [
-            "department"
-          ],
-          "group_by_time": [
-            "order_date"
-          ],
-          "count_distinct": [
-            "product_id"
-          ]
+          "sum": ["line_total_cents"],
+          "group_by": ["department"],
+          "group_by_time": ["order_date"],
+          "count_distinct": ["product_id"]
         }
       },
       "coverage_strategy": "parent_detail_accounting",

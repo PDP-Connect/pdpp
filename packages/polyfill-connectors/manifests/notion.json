@@ -29,9 +29,7 @@
           "autocomplete": "off",
           "help_url": "https://www.notion.so/profile/integrations",
           "help_text": "Create an internal integration at notion.so/profile/integrations, then paste the token here. The integration must be connected to the pages you want to collect.",
-          "env": [
-            "NOTION_API_TOKEN"
-          ]
+          "env": ["NOTION_API_TOKEN"]
         }
       ]
     }
@@ -55,9 +53,7 @@
     },
     "auth": {
       "kind": "env",
-      "required": [
-        "NOTION_API_TOKEN"
-      ]
+      "required": ["NOTION_API_TOKEN"]
     }
   },
   "streams": [
@@ -76,77 +72,43 @@
             "type": "string"
           },
           "object": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "parent_type": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "parent_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "title": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "url": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "archived": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "created_time": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time",
             "x_pdpp_role": "event-time"
           },
           "last_edited_time": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time"
           },
           "created_by_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "last_edited_by_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           }
         },
-        "required": [
-          "id"
-        ]
+        "required": ["id"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "last_edited_time",
       "consent_time_field": "created_time",
       "selection": {
@@ -156,26 +118,15 @@
       "incremental": true,
       "query": {
         "search": {
-          "lexical_fields": [
-            "title"
-          ],
-          "semantic_fields": [
-            "title"
-          ]
+          "lexical_fields": ["title"],
+          "semantic_fields": ["title"]
         },
         "range_filters": {
-          "created_time": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "created_time": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "created_time"
-          ]
+          "group_by_time": ["created_time"]
         }
       },
       "coverage_strategy": "full_inventory",
@@ -196,62 +147,37 @@
             "type": "string"
           },
           "title": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "parent_type": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "parent_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "url": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "archived": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "created_time": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time",
             "x_pdpp_role": "event-time"
           },
           "last_edited_time": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time"
           },
           "property_names": {
             "type": "array"
           }
         },
-        "required": [
-          "id"
-        ]
+        "required": ["id"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "last_edited_time",
       "consent_time_field": "created_time",
       "selection": {
@@ -261,26 +187,15 @@
       "incremental": true,
       "query": {
         "search": {
-          "lexical_fields": [
-            "title"
-          ],
-          "semantic_fields": [
-            "title"
-          ]
+          "lexical_fields": ["title"],
+          "semantic_fields": ["title"]
         },
         "range_filters": {
-          "created_time": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "created_time": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "created_time"
-          ]
+          "group_by_time": ["created_time"]
         }
       },
       "coverage_strategy": "full_inventory",

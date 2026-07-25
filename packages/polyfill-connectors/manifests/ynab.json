@@ -29,10 +29,7 @@
           "autocomplete": "off",
           "help_url": "https://app.ynab.com/settings/developer",
           "help_text": "Create a Personal Access Token in your YNAB developer settings, then paste it here.",
-          "env": [
-            "YNAB_PERSONAL_ACCESS_TOKEN",
-            "YNAB_PAT"
-          ]
+          "env": ["YNAB_PERSONAL_ACCESS_TOKEN", "YNAB_PAT"]
         }
       ]
     }
@@ -75,78 +72,43 @@
             "x_pdpp_role": "primary-title"
           },
           "last_modified_on": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time"
           },
           "first_month": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "last_month": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "currency_iso_code": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "currency_symbol": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "currency_symbol_first": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "currency_decimal_digits": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "currency_decimal_separator": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "currency_group_separator": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "date_format_string": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "deleted": {
             "type": "boolean"
           }
         },
-        "required": [
-          "id",
-          "name"
-        ]
+        "required": ["id", "name"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "last_modified_on",
       "selection": {
         "fields": true,
@@ -157,11 +119,7 @@
         {
           "id": "basic",
           "label": "Budget names and metadata",
-          "fields": [
-            "id",
-            "name",
-            "currency_iso_code"
-          ]
+          "fields": ["id", "name", "currency_iso_code"]
         },
         {
           "id": "full",
@@ -193,18 +151,11 @@
           ]
         },
         "range_filters": {
-          "last_modified_on": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "last_modified_on": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "last_modified_on"
-          ]
+          "group_by_time": ["last_modified_on"]
         }
       },
       "coverage_strategy": "full_inventory",
@@ -241,69 +192,38 @@
             "type": "boolean"
           },
           "transfer_payee_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "direct_import_linked": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "direct_import_in_error": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "last_reconciled_at": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time"
           },
           "note": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "secondary"
           },
           "debt_interest_rates": {
-            "type": [
-              "object",
-              "null"
-            ]
+            "type": ["object", "null"]
           },
           "debt_minimum_payments": {
-            "type": [
-              "object",
-              "null"
-            ]
+            "type": ["object", "null"]
           },
           "debt_escrow_amounts": {
-            "type": [
-              "object",
-              "null"
-            ]
+            "type": ["object", "null"]
           },
           "deleted": {
             "type": "boolean"
           }
         },
-        "required": [
-          "id",
-          "budget_id",
-          "name",
-          "type"
-        ]
+        "required": ["id", "budget_id", "name", "type"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "selection": {
         "fields": true,
         "resources": true
@@ -327,14 +247,7 @@
         {
           "id": "basic",
           "label": "Account names and types",
-          "fields": [
-            "id",
-            "budget_id",
-            "name",
-            "type",
-            "on_budget",
-            "closed"
-          ]
+          "fields": ["id", "budget_id", "name", "type", "on_budget", "closed"]
         },
         {
           "id": "full",
@@ -360,22 +273,11 @@
       ],
       "query": {
         "search": {
-          "lexical_fields": [
-            "name",
-            "type",
-            "note"
-          ],
-          "semantic_fields": [
-            "note"
-          ]
+          "lexical_fields": ["name", "type", "note"],
+          "semantic_fields": ["note"]
         },
         "range_filters": {
-          "last_reconciled_at": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "last_reconciled_at": ["gte", "gt", "lte", "lt"]
         }
       },
       "coverage_strategy": "full_inventory",
@@ -417,16 +319,9 @@
             "type": "integer"
           }
         },
-        "required": [
-          "id",
-          "account_id",
-          "budget_id",
-          "observed_on"
-        ]
+        "required": ["id", "account_id", "budget_id", "observed_on"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "observed_on",
       "consent_time_field": "observed_on",
       "selection": {
@@ -451,36 +346,14 @@
       "query": {
         "search": {},
         "range_filters": {
-          "observed_on": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "balance": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "cleared_balance": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "uncleared_balance": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "observed_on": ["gte", "gt", "lte", "lt"],
+          "balance": ["gte", "gt", "lte", "lt"],
+          "cleared_balance": ["gte", "gt", "lte", "lt"],
+          "uncleared_balance": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "observed_on"
-          ]
+          "group_by_time": ["observed_on"]
         }
       },
       "coverage_strategy": "singleton_presence",
@@ -511,25 +384,16 @@
             "type": "boolean"
           },
           "note": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "secondary"
           },
           "deleted": {
             "type": "boolean"
           }
         },
-        "required": [
-          "id",
-          "budget_id",
-          "name"
-        ]
+        "required": ["id", "budget_id", "name"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "selection": {
         "fields": true,
         "resources": true
@@ -537,13 +401,8 @@
       "incremental": true,
       "query": {
         "search": {
-          "lexical_fields": [
-            "name",
-            "note"
-          ],
-          "semantic_fields": [
-            "note"
-          ]
+          "lexical_fields": ["name", "note"],
+          "semantic_fields": ["note"]
         }
       },
       "coverage_strategy": "full_inventory",
@@ -570,10 +429,7 @@
             "type": "string"
           },
           "category_group_name": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "name": {
             "type": "string",
@@ -592,111 +448,60 @@
             "type": "integer"
           },
           "note": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "secondary"
           },
           "goal_type": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "goal_needs_whole_amount": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "goal_day": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "goal_cadence": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "goal_cadence_frequency": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "goal_creation_month": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "goal_target": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "goal_target_date": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time"
           },
           "goal_percentage_complete": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "goal_months_to_budget": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "goal_under_funded": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "goal_overall_funded": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "goal_overall_left": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "goal_snoozed_at": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time"
           },
           "deleted": {
             "type": "boolean"
           }
         },
-        "required": [
-          "id",
-          "budget_id",
-          "name"
-        ]
+        "required": ["id", "budget_id", "name"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "selection": {
         "fields": true,
         "resources": true
@@ -718,65 +523,18 @@
             "note",
             "goal_type"
           ],
-          "semantic_fields": [
-            "note"
-          ]
+          "semantic_fields": ["note"]
         },
         "range_filters": {
-          "budgeted": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "activity": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "balance": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "goal_target": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "goal_target_date": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "goal_percentage_complete": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "goal_overall_funded": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "goal_overall_left": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "goal_under_funded": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "budgeted": ["gte", "gt", "lte", "lt"],
+          "activity": ["gte", "gt", "lte", "lt"],
+          "balance": ["gte", "gt", "lte", "lt"],
+          "goal_target": ["gte", "gt", "lte", "lt"],
+          "goal_target_date": ["gte", "gt", "lte", "lt"],
+          "goal_percentage_complete": ["gte", "gt", "lte", "lt"],
+          "goal_overall_funded": ["gte", "gt", "lte", "lt"],
+          "goal_overall_left": ["gte", "gt", "lte", "lt"],
+          "goal_under_funded": ["gte", "gt", "lte", "lt"]
         }
       },
       "coverage_strategy": "full_inventory",
@@ -804,24 +562,15 @@
             "x_pdpp_role": "primary-title"
           },
           "transfer_account_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "deleted": {
             "type": "boolean"
           }
         },
-        "required": [
-          "id",
-          "budget_id",
-          "name"
-        ]
+        "required": ["id", "budget_id", "name"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "selection": {
         "fields": true,
         "resources": true
@@ -829,9 +578,7 @@
       "incremental": true,
       "query": {
         "search": {
-          "lexical_fields": [
-            "name"
-          ]
+          "lexical_fields": ["name"]
         }
       },
       "coverage_strategy": "full_inventory",
@@ -868,15 +615,9 @@
             "type": "boolean"
           }
         },
-        "required": [
-          "id",
-          "budget_id",
-          "payee_id"
-        ]
+        "required": ["id", "budget_id", "payee_id"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "selection": {
         "fields": true,
         "resources": true
@@ -914,17 +655,11 @@
             "type": "string"
           },
           "account_name": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "account_type": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "date": {
             "type": "string",
@@ -935,34 +670,19 @@
             "type": "integer"
           },
           "payee_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "payee_name": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "category_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "category_name": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "memo": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "secondary"
           },
           "cleared": {
@@ -972,58 +692,31 @@
             "type": "boolean"
           },
           "flag_color": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "flag_name": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "transfer_account_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "transfer_transaction_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "matched_transaction_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "import_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "import_payee_name": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "import_payee_name_original": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "debt_transaction_type": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "is_split": {
             "type": "boolean"
@@ -1035,17 +728,9 @@
             "type": "boolean"
           }
         },
-        "required": [
-          "id",
-          "budget_id",
-          "account_id",
-          "date",
-          "amount"
-        ]
+        "required": ["id", "budget_id", "account_id", "date", "amount"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "date",
       "consent_time_field": "date",
       "selection": {
@@ -1174,45 +859,19 @@
             "import_payee_name_original",
             "debt_transaction_type"
           ],
-          "semantic_fields": [
-            "memo"
-          ]
+          "semantic_fields": ["memo"]
         },
         "range_filters": {
-          "date": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "amount": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "date": ["gte", "gt", "lte", "lt"],
+          "amount": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "sum": [
-            "amount"
-          ],
-          "min": [
-            "date",
-            "amount"
-          ],
-          "max": [
-            "date",
-            "amount"
-          ],
-          "group_by": [
-            "cleared",
-            "approved",
-            "account_type"
-          ],
-          "group_by_time": [
-            "date"
-          ]
+          "sum": ["amount"],
+          "min": ["date", "amount"],
+          "max": ["date", "amount"],
+          "group_by": ["cleared", "approved", "account_type"],
+          "group_by_time": ["date"]
         }
       },
       "coverage_strategy": "checkpoint_window",
@@ -1253,60 +912,33 @@
             "type": "string"
           },
           "account_name": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "payee_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "payee_name": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "category_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "category_name": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "memo": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "secondary"
           },
           "transfer_account_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "flag_color": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "flag_name": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "subtransactions": {
             "type": "array"
@@ -1325,9 +957,7 @@
           "account_id"
         ]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "date_next",
       "consent_time_field": "date_first",
       "selection": {
@@ -1354,35 +984,16 @@
             "flag_name",
             "frequency"
           ],
-          "semantic_fields": [
-            "memo"
-          ]
+          "semantic_fields": ["memo"]
         },
         "range_filters": {
-          "date_first": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "date_next": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "amount": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "date_first": ["gte", "gt", "lte", "lt"],
+          "date_next": ["gte", "gt", "lte", "lt"],
+          "amount": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "date_next"
-          ]
+          "group_by_time": ["date_next"]
         }
       },
       "coverage_strategy": "checkpoint_window",
@@ -1422,31 +1033,19 @@
             "type": "integer"
           },
           "age_of_money": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "note": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "secondary"
           },
           "deleted": {
             "type": "boolean"
           }
         },
-        "required": [
-          "id",
-          "budget_id",
-          "month"
-        ]
+        "required": ["id", "budget_id", "month"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "month",
       "consent_time_field": "month",
       "selection": {
@@ -1456,56 +1055,20 @@
       "incremental": true,
       "query": {
         "search": {
-          "lexical_fields": [
-            "note"
-          ],
-          "semantic_fields": [
-            "note"
-          ]
+          "lexical_fields": ["note"],
+          "semantic_fields": ["note"]
         },
         "range_filters": {
-          "month": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "income": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "budgeted": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "activity": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "to_be_budgeted": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "age_of_money": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "month": ["gte", "gt", "lte", "lt"],
+          "income": ["gte", "gt", "lte", "lt"],
+          "budgeted": ["gte", "gt", "lte", "lt"],
+          "activity": ["gte", "gt", "lte", "lt"],
+          "to_be_budgeted": ["gte", "gt", "lte", "lt"],
+          "age_of_money": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "month"
-          ]
+          "group_by_time": ["month"]
         }
       },
       "coverage_strategy": "full_inventory",
@@ -1539,16 +1102,10 @@
             "type": "string"
           },
           "category_group_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "category_group_name": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "budgeted": {
             "type": "integer"
@@ -1560,86 +1117,44 @@
             "type": "integer"
           },
           "goal_type": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "enum": [
-              "TB",
-              "TBD",
-              "MF",
-              "NEED",
-              "DEBT",
-              null
-            ]
+            "type": ["string", "null"],
+            "enum": ["TB", "TBD", "MF", "NEED", "DEBT", null]
           },
           "goal_target": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "goal_percentage_complete": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "goal_months_to_budget": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "goal_creation_month": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "goal_under_funded": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "goal_overall_funded": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "goal_overall_left": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "hidden": {
             "type": "boolean"
           },
           "note": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "secondary"
           },
           "deleted": {
             "type": "boolean"
           }
         },
-        "required": [
-          "id",
-          "budget_id",
-          "month",
-          "category_id",
-          "category_name"
-        ]
+        "required": ["id", "budget_id", "month", "category_id", "category_name"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "month",
       "consent_time_field": "month",
       "selection": {
@@ -1739,71 +1254,22 @@
             "goal_type",
             "note"
           ],
-          "semantic_fields": [
-            "note"
-          ]
+          "semantic_fields": ["note"]
         },
         "range_filters": {
-          "month": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "budgeted": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "activity": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "balance": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "goal_target": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "goal_percentage_complete": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "goal_overall_funded": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "goal_overall_left": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "goal_under_funded": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "month": ["gte", "gt", "lte", "lt"],
+          "budgeted": ["gte", "gt", "lte", "lt"],
+          "activity": ["gte", "gt", "lte", "lt"],
+          "balance": ["gte", "gt", "lte", "lt"],
+          "goal_target": ["gte", "gt", "lte", "lt"],
+          "goal_percentage_complete": ["gte", "gt", "lte", "lt"],
+          "goal_overall_funded": ["gte", "gt", "lte", "lt"],
+          "goal_overall_left": ["gte", "gt", "lte", "lt"],
+          "goal_under_funded": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "month"
-          ]
+          "group_by_time": ["month"]
         }
       },
       "coverage_strategy": "full_inventory",

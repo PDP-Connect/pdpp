@@ -16,9 +16,7 @@
     }
   },
   "capabilities": {
-    "human_interaction": [
-      "manual_action"
-    ],
+    "human_interaction": ["manual_action"],
     "refresh_policy": {
       "recommended_mode": "manual",
       "minimum_interval_seconds": 3600,
@@ -49,52 +47,30 @@
             "type": "string"
           },
           "title": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "create_time": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time"
           },
           "update_time": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time"
           },
           "project_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "model": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "message_count": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           }
         },
-        "required": [
-          "id"
-        ]
+        "required": ["id"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "update_time",
       "consent_time_field": "create_time",
       "selection": {
@@ -104,26 +80,15 @@
       "incremental": true,
       "query": {
         "search": {
-          "lexical_fields": [
-            "title"
-          ],
-          "semantic_fields": [
-            "title"
-          ]
+          "lexical_fields": ["title"],
+          "semantic_fields": ["title"]
         },
         "range_filters": {
-          "create_time": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "create_time": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "create_time"
-          ]
+          "group_by_time": ["create_time"]
         }
       },
       "coverage_strategy": "checkpoint_window",
@@ -147,42 +112,25 @@
             "type": "string"
           },
           "role": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "actor"
           },
           "content": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "model": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "create_time": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time",
             "x_pdpp_role": "event-time"
           }
         },
-        "required": [
-          "id",
-          "conversation_id"
-        ]
+        "required": ["id", "conversation_id"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "create_time",
       "consent_time_field": "create_time",
       "selection": {
@@ -200,26 +148,15 @@
       ],
       "query": {
         "search": {
-          "lexical_fields": [
-            "content"
-          ],
-          "semantic_fields": [
-            "content"
-          ]
+          "lexical_fields": ["content"],
+          "semantic_fields": ["content"]
         },
         "range_filters": {
-          "create_time": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "create_time": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "create_time"
-          ]
+          "group_by_time": ["create_time"]
         }
       },
       "coverage_strategy": "checkpoint_window",
@@ -244,35 +181,21 @@
             "x_pdpp_role": "primary-title"
           },
           "description": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "secondary"
           },
           "create_time": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time"
           },
           "update_time": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time"
           }
         },
-        "required": [
-          "id",
-          "name"
-        ]
+        "required": ["id", "name"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "update_time",
       "consent_time_field": "create_time",
       "selection": {
@@ -282,27 +205,15 @@
       "incremental": true,
       "query": {
         "search": {
-          "lexical_fields": [
-            "name",
-            "description"
-          ],
-          "semantic_fields": [
-            "description"
-          ]
+          "lexical_fields": ["name", "description"],
+          "semantic_fields": ["description"]
         },
         "range_filters": {
-          "create_time": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "create_time": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "create_time"
-          ]
+          "group_by_time": ["create_time"]
         }
       },
       "coverage_strategy": "full_inventory",

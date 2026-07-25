@@ -22,9 +22,7 @@
         "install_hint": "go install github.com/rusq/slackdump/v4/cmd/slackdump@latest",
         "detect": {
           "executable": "slackdump",
-          "args": [
-            "version"
-          ],
+          "args": ["version"],
           "exit_code": 0
         }
       }
@@ -48,9 +46,7 @@
           "autocomplete": "off",
           "placeholder": "myteam (from myteam.slack.com)",
           "help_text": "Enter just the subdomain — e.g. 'myteam' from myteam.slack.com.",
-          "env": [
-            "SLACK_WORKSPACE"
-          ]
+          "env": ["SLACK_WORKSPACE"]
         },
         {
           "name": "slack_token",
@@ -61,9 +57,7 @@
           "autocomplete": "off",
           "help_url": "https://github.com/rusq/slackdump/wiki/How-to-get-your-Slack-credentials",
           "help_text": "Copy the xoxc-… token from your browser's Slack JS context. See the runbook link for exact steps.",
-          "env": [
-            "SLACK_TOKEN"
-          ]
+          "env": ["SLACK_TOKEN"]
         },
         {
           "name": "slack_cookie",
@@ -73,17 +67,13 @@
           "secret": true,
           "autocomplete": "off",
           "help_text": "Copy the 'd' cookie from your browser while logged in to Slack. Same runbook as above.",
-          "env": [
-            "SLACK_COOKIE"
-          ]
+          "env": ["SLACK_COOKIE"]
         }
       ]
     }
   },
   "capabilities": {
-    "human_interaction": [
-      "credentials"
-    ],
+    "human_interaction": ["credentials"],
     "refresh_policy": {
       "recommended_mode": "automatic",
       "recommended_interval_seconds": 1800,
@@ -116,65 +106,35 @@
             "type": "string"
           },
           "name": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "domain": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "email_domain": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "enterprise_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "enterprise_name": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "url": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "icon_url": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "authenticated_user_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "authenticated_username": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "authenticated_bot_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "fetched_at": {
             "type": "string",
@@ -182,13 +142,9 @@
             "x_pdpp_role": "event-time"
           }
         },
-        "required": [
-          "id"
-        ]
+        "required": ["id"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "fetched_at",
       "selection": {
         "fields": true,
@@ -197,18 +153,11 @@
       "incremental": true,
       "query": {
         "search": {
-          "lexical_fields": [
-            "name",
-            "domain",
-            "enterprise_name",
-            "url"
-          ]
+          "lexical_fields": ["name", "domain", "enterprise_name", "url"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "fetched_at"
-          ]
+          "group_by_time": ["fetched_at"]
         }
       },
       "coverage_strategy": "singleton_presence",
@@ -229,210 +178,113 @@
             "type": "string"
           },
           "name": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "name_normalized": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "is_channel": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "is_group": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "is_im": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "is_mpim": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "is_private": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "is_shared": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "is_ext_shared": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "is_org_shared": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "is_archived": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "is_general": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "is_member": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "is_read_only": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "creator": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "created": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "created_at": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time",
             "x_pdpp_role": "event-time"
           },
           "topic": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "secondary"
           },
           "topic_creator": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "topic_last_set": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "purpose": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "purpose_creator": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "purpose_last_set": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "user": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "actor"
           },
           "shared_team_ids": {
-            "type": [
-              "array",
-              "null"
-            ],
+            "type": ["array", "null"],
             "items": {
               "type": "string"
             }
           },
           "context_team_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "previous_names": {
-            "type": [
-              "array",
-              "null"
-            ],
+            "type": ["array", "null"],
             "items": {
               "type": "string"
             }
           },
           "has_canvas": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "canvas_file_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "posting_restricted": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "threads_restricted": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           }
         },
-        "required": [
-          "id"
-        ]
+        "required": ["id"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "created",
       "selection": {
         "fields": true,
@@ -441,30 +293,15 @@
       "incremental": true,
       "query": {
         "search": {
-          "lexical_fields": [
-            "name",
-            "name_normalized",
-            "topic",
-            "purpose"
-          ],
-          "semantic_fields": [
-            "topic",
-            "purpose"
-          ]
+          "lexical_fields": ["name", "name_normalized", "topic", "purpose"],
+          "semantic_fields": ["topic", "purpose"]
         },
         "range_filters": {
-          "created_at": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "created_at": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "created_at"
-          ]
+          "group_by_time": ["created_at"]
         }
       },
       "coverage_strategy": "full_inventory",
@@ -493,21 +330,12 @@
             "format": "date"
           },
           "num_members": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           }
         },
-        "required": [
-          "id",
-          "channel_id",
-          "observed_on"
-        ]
+        "required": ["id", "channel_id", "observed_on"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "observed_on",
       "consent_time_field": "observed_on",
       "selection": {
@@ -526,24 +354,12 @@
       "query": {
         "search": {},
         "range_filters": {
-          "observed_on": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "num_members": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "observed_on": ["gte", "gt", "lte", "lt"],
+          "num_members": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "observed_on"
-          ]
+          "group_by_time": ["observed_on"]
         }
       },
       "coverage_strategy": "singleton_presence",
@@ -575,15 +391,9 @@
             "x_pdpp_role": "event-time"
           }
         },
-        "required": [
-          "id",
-          "channel_id",
-          "user_id"
-        ]
+        "required": ["id", "channel_id", "user_id"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "selection": {
         "fields": true,
         "resources": true
@@ -621,214 +431,111 @@
             "type": "string"
           },
           "team_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "name": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "real_name": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "secondary"
           },
           "real_name_normalized": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "display_name": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "display_name_normalized": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "first_name": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "last_name": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "email": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "phone": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "title": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "secondary"
           },
           "status_text": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "status_emoji": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "status_expiration": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "tz": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "tz_label": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "tz_offset": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "color": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "is_bot": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "is_admin": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "is_owner": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "is_primary_owner": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "is_restricted": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "is_ultra_restricted": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "is_stranger": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "is_invited_user": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "is_app_user": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "deleted": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "has_2fa": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "two_factor_type": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "image_192_url": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "enterprise_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "updated": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           }
         },
-        "required": [
-          "id"
-        ]
+        "required": ["id"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "updated",
       "selection": {
         "fields": true,
@@ -847,9 +554,7 @@
             "title",
             "status_text"
           ],
-          "semantic_fields": [
-            "title"
-          ]
+          "semantic_fields": ["title"]
         }
       },
       "coverage_strategy": "full_inventory",
@@ -873,28 +578,16 @@
             "type": "string"
           },
           "user_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "bot_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "team_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "client_msg_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "ts": {
             "type": "string"
@@ -905,142 +598,76 @@
             "x_pdpp_role": "event-time"
           },
           "thread_ts": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "parent_user_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "is_thread_parent": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "reply_count": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "reply_user_ids": {
-            "type": [
-              "array",
-              "null"
-            ],
+            "type": ["array", "null"],
             "items": {
               "type": "string"
             }
           },
           "latest_reply": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "subtype": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "is_tombstone": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "text": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "edited_ts": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "edited_by": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "has_files": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "file_count": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "has_attachments": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "attachment_count": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "has_blocks": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "reaction_count": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "is_pinned": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "pinned_to": {
-            "type": [
-              "array",
-              "null"
-            ],
+            "type": ["array", "null"],
             "items": {
               "type": "string"
             }
           },
           "metadata_event_type": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           }
         },
-        "required": [
-          "id",
-          "channel_id",
-          "ts"
-        ]
+        "required": ["id", "channel_id", "ts"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "sent_at",
       "consent_time_field": "sent_at",
       "selection": {
@@ -1077,46 +704,15 @@
       ],
       "query": {
         "search": {
-          "lexical_fields": [
-            "text",
-            "subtype",
-            "metadata_event_type"
-          ],
-          "semantic_fields": [
-            "text"
-          ]
+          "lexical_fields": ["text", "subtype", "metadata_event_type"],
+          "semantic_fields": ["text"]
         },
         "range_filters": {
-          "sent_at": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "reply_count": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "file_count": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "attachment_count": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "reaction_count": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "sent_at": ["gte", "gt", "lte", "lt"],
+          "reply_count": ["gte", "gt", "lte", "lt"],
+          "file_count": ["gte", "gt", "lte", "lt"],
+          "attachment_count": ["gte", "gt", "lte", "lt"],
+          "reaction_count": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
@@ -1146,9 +742,7 @@
             "is_thread_parent",
             "is_tombstone"
           ],
-          "group_by_time": [
-            "sent_at"
-          ]
+          "group_by_time": ["sent_at"]
         },
         "expand": [
           {
@@ -1190,91 +784,48 @@
             "type": "integer"
           },
           "fallback": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "service_name": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "service_icon": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "title": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "secondary"
           },
           "title_link": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "text": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "secondary"
           },
           "from_url": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "image_url": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "thumb_url": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "author_name": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "author_link": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "color": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           }
         },
-        "required": [
-          "id",
-          "message_id",
-          "channel_id",
-          "index"
-        ]
+        "required": ["id", "message_id", "channel_id", "index"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "selection": {
         "fields": true,
         "resources": true
@@ -1297,11 +848,7 @@
             "text",
             "author_name"
           ],
-          "semantic_fields": [
-            "title",
-            "text",
-            "fallback"
-          ]
+          "semantic_fields": ["title", "text", "fallback"]
         }
       },
       "coverage_strategy": "checkpoint_window",
@@ -1336,17 +883,9 @@
             "x_pdpp_role": "primary-title"
           }
         },
-        "required": [
-          "id",
-          "message_id",
-          "channel_id",
-          "user_id",
-          "emoji"
-        ]
+        "required": ["id", "message_id", "channel_id", "user_id", "emoji"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "selection": {
         "fields": true,
         "resources": true
@@ -1385,125 +924,67 @@
             "type": "string"
           },
           "name": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "secondary"
           },
           "title": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "mimetype": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "filetype": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "pretty_type": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "size": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "created": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "created_at": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time",
             "x_pdpp_role": "event-time"
           },
           "uploader_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "is_public": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "is_external": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "is_starred": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "external_type": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "mode": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "permalink": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "url_private": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "original_w": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "original_h": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           }
         },
-        "required": [
-          "id"
-        ]
+        "required": ["id"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "created",
       "selection": {
         "fields": true,
@@ -1512,46 +993,18 @@
       "incremental": true,
       "query": {
         "search": {
-          "lexical_fields": [
-            "name",
-            "title",
-            "pretty_type"
-          ],
-          "semantic_fields": [
-            "title"
-          ]
+          "lexical_fields": ["name", "title", "pretty_type"],
+          "semantic_fields": ["title"]
         },
         "range_filters": {
-          "created_at": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "size": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "original_w": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "original_h": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "created_at": ["gte", "gt", "lte", "lt"],
+          "size": ["gte", "gt", "lte", "lt"],
+          "original_w": ["gte", "gt", "lte", "lt"],
+          "original_h": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "created_at"
-          ]
+          "group_by_time": ["created_at"]
         }
       },
       "coverage_strategy": "checkpoint_window",
@@ -1575,128 +1028,69 @@
             "type": "string"
           },
           "channel_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "message_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "title": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "name": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "secondary"
           },
           "author_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "is_empty": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "quip_thread_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "content_bytes": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "content_markdown": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "secondary"
           },
           "mimetype": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "filetype": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "pretty_type": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "created": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "created_at": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time",
             "x_pdpp_role": "event-time"
           },
           "updated": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "updated_at": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time"
           },
           "permalink": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "url_private": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           }
         },
-        "required": [
-          "id",
-          "file_id"
-        ]
+        "required": ["id", "file_id"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "updated",
       "selection": {
         "fields": true,
@@ -1719,41 +1113,17 @@
       ],
       "query": {
         "search": {
-          "lexical_fields": [
-            "title",
-            "name",
-            "content_markdown"
-          ],
-          "semantic_fields": [
-            "title",
-            "content_markdown"
-          ]
+          "lexical_fields": ["title", "name", "content_markdown"],
+          "semantic_fields": ["title", "content_markdown"]
         },
         "range_filters": {
-          "created_at": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "updated_at": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "content_bytes": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "created_at": ["gte", "gt", "lte", "lt"],
+          "updated_at": ["gte", "gt", "lte", "lt"],
+          "content_bytes": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "created_at"
-          ]
+          "group_by_time": ["created_at"]
         }
       },
       "coverage_strategy": "full_inventory",
@@ -1775,57 +1145,32 @@
             "type": "string"
           },
           "item_type": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "target_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "channel_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "message_ts": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "file_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "user_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "starred_at": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time",
             "x_pdpp_role": "event-time"
           }
         },
-        "required": [
-          "id"
-        ]
+        "required": ["id"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "starred_at",
       "selection": {
         "fields": true,
@@ -1834,18 +1179,11 @@
       "incremental": true,
       "query": {
         "range_filters": {
-          "starred_at": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "starred_at": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "starred_at"
-          ]
+          "group_by_time": ["starred_at"]
         }
       },
       "coverage_strategy": "full_inventory",
@@ -1867,95 +1205,55 @@
             "type": "string"
           },
           "team_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "handle": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "name": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "description": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "secondary"
           },
           "is_external": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "is_subteam": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "member_ids": {
-            "type": [
-              "array",
-              "null"
-            ],
+            "type": ["array", "null"],
             "items": {
               "type": "string"
             }
           },
           "channel_ids": {
-            "type": [
-              "array",
-              "null"
-            ],
+            "type": ["array", "null"],
             "items": {
               "type": "string"
             }
           },
           "created": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "created_at": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time",
             "x_pdpp_role": "event-time"
           },
           "updated": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "deleted": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           }
         },
-        "required": [
-          "id"
-        ]
+        "required": ["id"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "updated",
       "selection": {
         "fields": true,
@@ -1964,22 +1262,11 @@
       "incremental": true,
       "query": {
         "search": {
-          "lexical_fields": [
-            "handle",
-            "name",
-            "description"
-          ],
-          "semantic_fields": [
-            "description"
-          ]
+          "lexical_fields": ["handle", "name", "description"],
+          "semantic_fields": ["description"]
         },
         "range_filters": {
-          "created_at": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "created_at": ["gte", "gt", "lte", "lt"]
         }
       },
       "coverage_strategy": "full_inventory",
@@ -2001,65 +1288,37 @@
             "type": "string"
           },
           "creator_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "user_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "text": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "recurring": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "time": {
-            "type": [
-              "integer",
-              "null"
-            ],
+            "type": ["integer", "null"],
             "x_pdpp_role": "event-time"
           },
           "scheduled_at": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time"
           },
           "complete_ts": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "completed_at": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time"
           }
         },
-        "required": [
-          "id"
-        ]
+        "required": ["id"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "scheduled_at",
       "selection": {
         "fields": true,
@@ -2068,32 +1327,16 @@
       "incremental": true,
       "query": {
         "search": {
-          "lexical_fields": [
-            "text"
-          ],
-          "semantic_fields": [
-            "text"
-          ]
+          "lexical_fields": ["text"],
+          "semantic_fields": ["text"]
         },
         "range_filters": {
-          "scheduled_at": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "completed_at": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "scheduled_at": ["gte", "gt", "lte", "lt"],
+          "completed_at": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "scheduled_at"
-          ]
+          "group_by_time": ["scheduled_at"]
         }
       },
       "coverage_strategy": "full_inventory",
@@ -2118,30 +1361,18 @@
             "type": "string"
           },
           "last_read": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time"
           },
           "last_read_at": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time"
           },
           "unread_count": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "unread_count_display": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "fetched_at": {
             "type": "string",
@@ -2149,14 +1380,9 @@
             "x_pdpp_role": "event-time"
           }
         },
-        "required": [
-          "id",
-          "channel_id"
-        ]
+        "required": ["id", "channel_id"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "last_read",
       "selection": {
         "fields": true,
@@ -2173,30 +1399,13 @@
       ],
       "query": {
         "range_filters": {
-          "last_read_at": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "unread_count": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "unread_count_display": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "last_read_at": ["gte", "gt", "lte", "lt"],
+          "unread_count": ["gte", "gt", "lte", "lt"],
+          "unread_count_display": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "last_read"
-          ]
+          "group_by_time": ["last_read"]
         }
       },
       "coverage_strategy": "full_inventory",

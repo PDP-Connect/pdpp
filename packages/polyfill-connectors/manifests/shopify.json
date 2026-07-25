@@ -16,9 +16,7 @@
     }
   },
   "capabilities": {
-    "human_interaction": [
-      "manual_action"
-    ],
+    "human_interaction": ["manual_action"],
     "refresh_policy": {
       "recommended_mode": "manual",
       "minimum_interval_seconds": 3600,
@@ -49,64 +47,36 @@
             "type": "string"
           },
           "order_date": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time",
             "x_pdpp_role": "event-time"
           },
           "merchant_name": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "status": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "total_cents": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "currency": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "tracking_number": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "tracking_url": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "item_count": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           }
         },
-        "required": [
-          "id"
-        ]
+        "required": ["id"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "order_date",
       "consent_time_field": "order_date",
       "selection": {
@@ -116,27 +86,15 @@
       "incremental": true,
       "query": {
         "search": {
-          "lexical_fields": [
-            "merchant_name"
-          ]
+          "lexical_fields": ["merchant_name"]
         },
         "range_filters": {
-          "order_date": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "order_date": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "order_date"
-          ],
-          "group_by": [
-            "status",
-            "currency"
-          ]
+          "group_by_time": ["order_date"],
+          "group_by": ["status", "currency"]
         }
       },
       "coverage_strategy": "checkpoint_window",

@@ -16,10 +16,7 @@
     }
   },
   "capabilities": {
-    "human_interaction": [
-      "manual_action",
-      "otp"
-    ],
+    "human_interaction": ["manual_action", "otp"],
     "refresh_policy": {
       "recommended_mode": "manual",
       "minimum_interval_seconds": 7200,
@@ -50,45 +47,26 @@
             "type": "string"
           },
           "order_date": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time",
             "x_pdpp_role": "event-time"
           },
           "store": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "method": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "total_cents": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "item_count": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           }
         },
-        "required": [
-          "id"
-        ]
+        "required": ["id"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "order_date",
       "consent_time_field": "order_date",
       "selection": {
@@ -98,26 +76,15 @@
       "incremental": true,
       "query": {
         "search": {
-          "lexical_fields": [
-            "store"
-          ]
+          "lexical_fields": ["store"]
         },
         "range_filters": {
-          "order_date": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "order_date": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "order_date"
-          ],
-          "group_by": [
-            "method"
-          ]
+          "group_by_time": ["order_date"],
+          "group_by": ["method"]
         }
       },
       "coverage_strategy": "checkpoint_window",
@@ -145,33 +112,18 @@
             "x_pdpp_role": "primary-title"
           },
           "quantity": {
-            "type": [
-              "number",
-              "null"
-            ]
+            "type": ["number", "null"]
           },
           "unit_price_cents": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "nutrition": {
-            "type": [
-              "object",
-              "null"
-            ]
+            "type": ["object", "null"]
           }
         },
-        "required": [
-          "id",
-          "order_id",
-          "name"
-        ]
+        "required": ["id", "order_id", "name"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "selection": {
         "fields": true,
         "resources": true
@@ -179,9 +131,7 @@
       "incremental": true,
       "query": {
         "search": {
-          "lexical_fields": [
-            "name"
-          ]
+          "lexical_fields": ["name"]
         }
       },
       "coverage_strategy": "parent_detail_accounting",

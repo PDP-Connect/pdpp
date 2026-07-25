@@ -30,9 +30,7 @@
           "required": true,
           "secret": true,
           "autocomplete": "username",
-          "env": [
-            "CHASE_USERNAME"
-          ]
+          "env": ["CHASE_USERNAME"]
         },
         {
           "name": "password",
@@ -41,18 +39,13 @@
           "required": true,
           "secret": true,
           "autocomplete": "current-password",
-          "env": [
-            "CHASE_PASSWORD"
-          ]
+          "env": ["CHASE_PASSWORD"]
         }
       ]
     }
   },
   "capabilities": {
-    "human_interaction": [
-      "otp",
-      "manual_action"
-    ],
+    "human_interaction": ["otp", "manual_action"],
     "refresh_policy": {
       "recommended_mode": "manual",
       "minimum_interval_seconds": 7200,
@@ -85,71 +78,41 @@
             "description": "Stable connector-scoped identifier. Currently a hash of (account_type, account_number); will stabilize on Chase's internal account id once we scrape it from the dashboard DOM."
           },
           "name": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "type": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "description": "checking | savings | credit_card | money_market | other"
           },
           "last_four": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "balance_cents": {
-            "type": [
-              "integer",
-              "null"
-            ],
+            "type": ["integer", "null"],
             "description": "Ledger balance as of statement_as_of_date (QFX LEDGERBAL)."
           },
           "available_balance_cents": {
-            "type": [
-              "integer",
-              "null"
-            ],
+            "type": ["integer", "null"],
             "description": "Available balance if reported (QFX AVAILBAL)."
           },
           "credit_limit_cents": {
-            "type": [
-              "integer",
-              "null"
-            ],
+            "type": ["integer", "null"],
             "description": "Credit cards only. Null for checking/savings."
           },
           "available_credit_cents": {
-            "type": [
-              "integer",
-              "null"
-            ],
+            "type": ["integer", "null"],
             "description": "Credit cards only. Null for checking/savings."
           },
           "statement_balance_cents": {
-            "type": [
-              "integer",
-              "null"
-            ],
+            "type": ["integer", "null"],
             "description": "Credit cards only. Balance on most recent statement; null for checking/savings."
           },
           "status": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "balance_as_of": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time"
           },
           "fetched_at": {
@@ -158,13 +121,9 @@
             "x_pdpp_role": "event-time"
           }
         },
-        "required": [
-          "id"
-        ]
+        "required": ["id"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "selection": {
         "fields": true,
         "resources": true
@@ -172,49 +131,15 @@
       "incremental": false,
       "query": {
         "search": {
-          "lexical_fields": [
-            "name",
-            "type",
-            "status"
-          ]
+          "lexical_fields": ["name", "type", "status"]
         },
         "range_filters": {
-          "balance_cents": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "available_balance_cents": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "available_credit_cents": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "credit_limit_cents": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "statement_balance_cents": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "balance_as_of": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "balance_cents": ["gte", "gt", "lte", "lt"],
+          "available_balance_cents": ["gte", "gt", "lte", "lt"],
+          "available_credit_cents": ["gte", "gt", "lte", "lt"],
+          "credit_limit_cents": ["gte", "gt", "lte", "lt"],
+          "statement_balance_cents": ["gte", "gt", "lte", "lt"],
+          "balance_as_of": ["gte", "gt", "lte", "lt"]
         }
       },
       "coverage_strategy": "full_inventory",
@@ -239,10 +164,7 @@
             "type": "string"
           },
           "account_name": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "actor"
           },
           "fitid": {
@@ -266,41 +188,26 @@
             "description": "Always 'USD' for Chase retail accounts. QFX CURDEF."
           },
           "type": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "description": "QFX TRNTYPE: CREDIT | DEBIT | CHECK | XFER | PAYMENT | DEP | DIRECTDEP | DIRECTDEBIT | ATM | POS | FEE | SRVCHG | INT | DIV | CASH | OTHER."
           },
           "name": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_type": "text",
             "description": "Payee or merchant name. QFX NAME.",
             "x_pdpp_role": "primary-title"
           },
           "memo": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "description": "QFX MEMO. Often contains merchant city for CC transactions, or the raw bank descriptor for checking.",
             "x_pdpp_role": "secondary"
           },
           "check_number": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "description": "QFX CHECKNUM, when present."
           },
           "reference_number": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "description": "QFX REFNUM. Chase uses this for Zelle and wire transfers."
           },
           "source": {
@@ -312,18 +219,9 @@
             "format": "date-time"
           }
         },
-        "required": [
-          "id",
-          "account_id",
-          "fitid",
-          "date",
-          "amount",
-          "currency"
-        ]
+        "required": ["id", "account_id", "fitid", "date", "amount", "currency"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "date",
       "consent_time_field": "date",
       "selection": {
@@ -365,44 +263,19 @@
             "source",
             "reference_number"
           ],
-          "semantic_fields": [
-            "memo"
-          ]
+          "semantic_fields": ["memo"]
         },
         "range_filters": {
-          "date": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "amount": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "date": ["gte", "gt", "lte", "lt"],
+          "amount": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "sum": [
-            "amount"
-          ],
-          "min": [
-            "date",
-            "amount"
-          ],
-          "max": [
-            "date",
-            "amount"
-          ],
-          "group_by": [
-            "currency",
-            "type"
-          ],
-          "group_by_time": [
-            "date"
-          ]
+          "sum": ["amount"],
+          "min": ["date", "amount"],
+          "max": ["date", "amount"],
+          "group_by": ["currency", "type"],
+          "group_by_time": ["date"]
         }
       },
       "coverage_strategy": "parent_detail_accounting",
@@ -427,10 +300,7 @@
             "type": "string"
           },
           "account_name": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "actor"
           },
           "status": {
@@ -442,10 +312,7 @@
             "format": "date"
           },
           "posted_date": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date"
           },
           "amount": {
@@ -462,17 +329,11 @@
             "x_pdpp_role": "primary-title"
           },
           "memo": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "secondary"
           },
           "ui_transaction_id": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "description": "Source-provided Chase UI transaction/activity id when present in DOM; null when the connector used the deterministic fallback key."
           },
           "source": {
@@ -501,9 +362,7 @@
           "fetched_at"
         ]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "activity_date",
       "consent_time_field": "activity_date",
       "selection": {
@@ -528,36 +387,16 @@
             "status",
             "source"
           ],
-          "semantic_fields": [
-            "description",
-            "memo"
-          ]
+          "semantic_fields": ["description", "memo"]
         },
         "range_filters": {
-          "activity_date": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "posted_date": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "amount": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "activity_date": ["gte", "gt", "lte", "lt"],
+          "posted_date": ["gte", "gt", "lte", "lt"],
+          "amount": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "activity_date"
-          ]
+          "group_by_time": ["activity_date"]
         }
       },
       "coverage_strategy": "checkpoint_window",
@@ -579,10 +418,7 @@
             "description": "SHA-256(account_reference|date_delivered|title), 32 hex chars."
           },
           "account_id": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "description": "FK to accounts.id. Resolved by matching the statement row's account_reference back to the accounts stream. Null when neither last-four nor name substring match succeed."
           },
           "title": {
@@ -591,51 +427,30 @@
             "x_pdpp_role": "primary-title"
           },
           "date_delivered": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date"
           },
           "account_reference": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "document_url": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "description": "file:// URI for the stored PDF on disk. Populated only after blob hydration; null on index-only scrapes."
           },
           "pdf_path": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "description": "Absolute filesystem path of the downloaded PDF under ~/.pdpp/chase-statements/. Null until hydrated."
           },
           "pdf_sha256": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "description": "SHA-256 of the downloaded PDF bytes (raw blob content-address, not the content fingerprint — Chase re-encrypts the PDF per download, so it churns on no-op re-fetches)."
           },
           "pdf_text_sha256": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "description": "Positive content fingerprint: SHA-256 of the statement's extracted PDF text after deterministic normalization (NFC, whitespace collapse, trim). Stable across raw-byte churn so a re-download with unchanged content is provably a no-op. Null when text extraction failed or returned empty text."
           },
           "pdf_page_count": {
-            "type": [
-              "integer",
-              "null"
-            ],
+            "type": ["integer", "null"],
             "description": "Integer page count from the PDF structure. A structural content invariant alongside pdf_text_sha256. Null when extraction failed."
           },
           "fetched_at": {
@@ -644,14 +459,9 @@
             "x_pdpp_role": "event-time"
           }
         },
-        "required": [
-          "id",
-          "title"
-        ]
+        "required": ["id", "title"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "date_delivered",
       "consent_time_field": "date_delivered",
       "selection": {
@@ -669,27 +479,15 @@
       ],
       "query": {
         "search": {
-          "lexical_fields": [
-            "title",
-            "account_reference"
-          ],
-          "semantic_fields": [
-            "title"
-          ]
+          "lexical_fields": ["title", "account_reference"],
+          "semantic_fields": ["title"]
         },
         "range_filters": {
-          "date_delivered": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "date_delivered": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "date_delivered"
-          ]
+          "group_by_time": ["date_delivered"]
         }
       },
       "coverage_strategy": "parent_detail_accounting",
@@ -719,17 +517,11 @@
             "description": "QFX DTASOF — when Chase measured the balance."
           },
           "ledger_balance_cents": {
-            "type": [
-              "integer",
-              "null"
-            ],
+            "type": ["integer", "null"],
             "description": "QFX LEDGERBAL."
           },
           "available_balance_cents": {
-            "type": [
-              "integer",
-              "null"
-            ],
+            "type": ["integer", "null"],
             "description": "QFX AVAILBAL."
           },
           "fetched_at": {
@@ -738,15 +530,9 @@
             "x_pdpp_role": "event-time"
           }
         },
-        "required": [
-          "id",
-          "account_id",
-          "as_of"
-        ]
+        "required": ["id", "account_id", "as_of"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "as_of",
       "consent_time_field": "as_of",
       "selection": {
@@ -764,30 +550,13 @@
       ],
       "query": {
         "range_filters": {
-          "as_of": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "ledger_balance_cents": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "available_balance_cents": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "as_of": ["gte", "gt", "lte", "lt"],
+          "ledger_balance_cents": ["gte", "gt", "lte", "lt"],
+          "available_balance_cents": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "as_of"
-          ]
+          "group_by_time": ["as_of"]
         }
       },
       "coverage_strategy": "parent_detail_accounting",

@@ -46,35 +46,20 @@
             "type": "string"
           },
           "source_name": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "actor"
           },
           "source_version": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "unit": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "value": {
-            "type": [
-              "number",
-              "null"
-            ]
+            "type": ["number", "null"]
           },
           "value_raw": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "start_date": {
             "type": "string",
@@ -82,22 +67,13 @@
             "x_pdpp_role": "event-time"
           },
           "end_date": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time"
           }
         },
-        "required": [
-          "id",
-          "type",
-          "start_date"
-        ]
+        "required": ["id", "type", "start_date"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "start_date",
       "consent_time_field": "start_date",
       "selection": {
@@ -107,27 +83,13 @@
       "incremental": true,
       "query": {
         "range_filters": {
-          "start_date": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "end_date": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "start_date": ["gte", "gt", "lte", "lt"],
+          "end_date": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "start_date"
-          ],
-          "group_by": [
-            "type"
-          ]
+          "group_by_time": ["start_date"],
+          "group_by": ["type"]
         }
       },
       "coverage_strategy": "snapshot_import_receipt",
@@ -148,34 +110,19 @@
             "type": "string"
           },
           "workout_activity_type": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "duration_minutes": {
-            "type": [
-              "number",
-              "null"
-            ]
+            "type": ["number", "null"]
           },
           "total_energy_burned_kcal": {
-            "type": [
-              "number",
-              "null"
-            ]
+            "type": ["number", "null"]
           },
           "total_distance_km": {
-            "type": [
-              "number",
-              "null"
-            ]
+            "type": ["number", "null"]
           },
           "source_name": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "actor"
           },
           "start_date": {
@@ -184,21 +131,13 @@
             "x_pdpp_role": "event-time"
           },
           "end_date": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time"
           }
         },
-        "required": [
-          "id",
-          "start_date"
-        ]
+        "required": ["id", "start_date"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "start_date",
       "consent_time_field": "start_date",
       "selection": {
@@ -208,27 +147,13 @@
       "incremental": true,
       "query": {
         "range_filters": {
-          "start_date": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "end_date": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "start_date": ["gte", "gt", "lte", "lt"],
+          "end_date": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "start_date"
-          ],
-          "group_by": [
-            "workout_activity_type"
-          ]
+          "group_by_time": ["start_date"],
+          "group_by": ["workout_activity_type"]
         }
       },
       "coverage_strategy": "snapshot_import_receipt",
