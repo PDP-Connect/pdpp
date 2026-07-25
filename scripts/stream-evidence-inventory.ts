@@ -10,8 +10,8 @@
 // posture: docs/reference/stream-evidence-inventory.md.
 //
 // Modes:
-//   node scripts/stream-evidence-inventory.mjs           writes the file
-//   node scripts/stream-evidence-inventory.mjs --check    regenerates to a
+//   node scripts/stream-evidence-inventory.ts           writes the file
+//   node scripts/stream-evidence-inventory.ts --check    regenerates to a
 //     buffer and exits 1 with a diff hint if the committed file is stale,
 //     OR if any stream is missing a coverage_strategy/freshness_strategy,
 //     OR if any stream combines required:true/default-required with an
@@ -36,11 +36,32 @@ const MANIFEST_DIRS = [
   { label: "reference", path: join(REPO_ROOT, "reference-implementation", "manifests") },
 ];
 
-/**
- * @returns {Array<{ manifestSet: string, connectorId: string, manifest: object }>}
- */
-export function readManifests() {
-  const manifests = [];
+const JSON_EXTENSION_PATTERN = /\.json$/;
+
+interface ManifestStream {
+  availability?: { state?: string };
+  coverage_policy?: string;
+  coverage_strategy?: string;
+  freshness_strategy?: string;
+  name?: string;
+  required?: boolean;
+  state_stream?: string;
+}
+
+interface Manifest {
+  connector_id?: string;
+  connector_key?: string;
+  streams?: ManifestStream[];
+}
+
+export interface ManifestEntry {
+  connectorId: string;
+  manifest: Manifest;
+  manifestSet: string;
+}
+
+export function readManifests(): ManifestEntry[] {
+  const manifests: ManifestEntry[] = [];
   for (const dir of MANIFEST_DIRS) {
     if (!existsSync(dir.path)) {
       continue;
@@ -50,10 +71,10 @@ export function readManifests() {
         continue;
       }
       const manifestPath = join(dir.path, filename);
-      const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+      const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Manifest;
       manifests.push({
         manifestSet: dir.label,
-        connectorId: manifest.connector_key ?? manifest.connector_id ?? filename.replace(/\.json$/, ""),
+        connectorId: manifest.connector_key ?? manifest.connector_id ?? filename.replace(JSON_EXTENSION_PATTERN, ""),
         manifest,
       });
     }
@@ -61,7 +82,7 @@ export function readManifests() {
   return manifests;
 }
 
-function cell(value) {
+function cell(value: unknown): string {
   if (value === null || value === undefined || value === "") {
     return "—";
   }
@@ -70,16 +91,18 @@ function cell(value) {
 
 const ACCEPTED_ABSENCE_POLICIES = new Set(["deferred", "inventory_only", "unavailable", "unsupported"]);
 
-function isAcceptedAbsencePolicy(policy) {
-  return ACCEPTED_ABSENCE_POLICIES.has(policy);
+function isAcceptedAbsencePolicy(policy: string | undefined): boolean {
+  return policy !== undefined && ACCEPTED_ABSENCE_POLICIES.has(policy);
 }
 
-/**
- * @param {Array<{ manifestSet: string, connectorId: string, manifest: object }>} manifests
- * @returns {{ markdown: string, missingStrategyCount: number, requiredAcceptedAbsenceCount: number }}
- */
-export function renderInventory(manifests) {
-  const lines = [];
+export interface RenderedInventory {
+  markdown: string;
+  missingStrategyCount: number;
+  requiredAcceptedAbsenceCount: number;
+}
+
+export function renderInventory(manifests: ManifestEntry[]): RenderedInventory {
+  const lines: string[] = [];
   lines.push("# Stream evidence inventory");
   lines.push("");
   lines.push(
@@ -111,7 +134,7 @@ export function renderInventory(manifests) {
     for (const stream of streams) {
       const coverageStrategy = stream?.coverage_strategy ?? null;
       const freshnessStrategy = stream?.freshness_strategy ?? null;
-      if (coverageStrategy == null || freshnessStrategy == null) {
+      if (coverageStrategy === null || freshnessStrategy === null) {
         missingStrategyCount += 1;
       }
       const required = stream?.required === false ? "false" : "true";
@@ -129,9 +152,7 @@ export function renderInventory(manifests) {
 
   lines.push("## Summary");
   lines.push("");
-  lines.push(
-    `${missingStrategyCount} stream(s) missing a coverage_strategy or freshness_strategy declaration (debt).`
-  );
+  lines.push(`${missingStrategyCount} stream(s) missing a coverage_strategy or freshness_strategy declaration (debt).`);
   lines.push(
     `${requiredAcceptedAbsenceCount} stream(s) combine required=true/default-required with an accepted-absence coverage_policy (debt).`
   );
@@ -139,11 +160,11 @@ export function renderInventory(manifests) {
   return { markdown: `${lines.join("\n")}\n`, missingStrategyCount, requiredAcceptedAbsenceCount };
 }
 
-function parseArgs(argv) {
+function parseArgs(argv: string[]): { check: boolean } {
   return { check: argv.includes("--check") };
 }
 
-function main() {
+function main(): void {
   const args = parseArgs(process.argv.slice(2));
   const manifests = readManifests();
   const { markdown, missingStrategyCount, requiredAcceptedAbsenceCount } = renderInventory(manifests);
@@ -167,7 +188,7 @@ function main() {
   const stale = existing !== markdown;
   const hasNewDebt = missingStrategyCount > 0 || requiredAcceptedAbsenceCount > 0;
 
-  if (!stale && !hasNewDebt) {
+  if (!(stale || hasNewDebt)) {
     process.stdout.write(
       "stream-evidence inventory: PASS (artifact current, no missing strategies, no required+accepted-absence contradictions)\n"
     );

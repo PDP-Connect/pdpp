@@ -25,18 +25,25 @@
 // frozen historical record.
 //
 // Usage:
-//   node scripts/check-public-tree-hygiene.mjs
-//   node scripts/check-public-tree-hygiene.mjs --json
+//   node scripts/check-public-tree-hygiene.ts
+//   node scripts/check-public-tree-hygiene.ts --json
 
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
-const SELF_PATH = "scripts/check-public-tree-hygiene.mjs";
+const SELF_PATH = "scripts/check-public-tree-hygiene.ts";
 
-export const RESIDUE_CLASSES = [
+interface ResidueClass {
+  describe: (match: string) => string;
+  id: string;
+  pattern: RegExp;
+}
+
+export const RESIDUE_CLASSES: ResidueClass[] = [
   {
     id: "operator-home-path",
     pattern: /\/home\/tnunamak\b/,
@@ -59,25 +66,32 @@ export const RESIDUE_CLASSES = [
   },
 ];
 
-function isArchivePath(path) {
+function isArchivePath(path: string): boolean {
   return path.split("/").includes("archive");
 }
 
-export function listScannedFiles(repoRoot = REPO_ROOT) {
+export function listScannedFiles(repoRoot: string = REPO_ROOT): string[] {
   const out = execFileSync("git", ["ls-files"], { cwd: repoRoot, encoding: "utf8" });
   return out
     .split("\n")
     .filter(Boolean)
     .filter((p) => !isArchivePath(p))
-    .filter((p) => p !== SELF_PATH && !p.endsWith("check-public-tree-hygiene.test.mjs"));
+    .filter((p) => p !== SELF_PATH && !p.endsWith("check-public-tree-hygiene.test.ts"));
 }
 
-/** Scan one file's text for residue-class hits. Returns a list of {classId, line, lineNumber, match}. */
-export function scanText(text, classes = RESIDUE_CLASSES) {
-  const hits = [];
+interface ResidueHit {
+  classId: string;
+  line: string;
+  lineNumber: number;
+  match: string;
+}
+
+/** Scan one file's text for residue-class hits. */
+export function scanText(text: string, classes: ResidueClass[] = RESIDUE_CLASSES): ResidueHit[] {
+  const hits: ResidueHit[] = [];
   const lines = text.split("\n");
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i] ?? "";
     for (const cls of classes) {
       const match = line.match(cls.pattern);
       if (match) {
@@ -88,7 +102,7 @@ export function scanText(text, classes = RESIDUE_CLASSES) {
   return hits;
 }
 
-function readFileIfText(path, repoRoot) {
+function readFileIfText(path: string, repoRoot: string): string | null {
   try {
     return readFileSync(resolve(repoRoot, path), "utf8");
   } catch {
@@ -96,14 +110,34 @@ function readFileIfText(path, repoRoot) {
   }
 }
 
-export function runScan({ repoRoot = REPO_ROOT, files = null, readFile = readFileIfText } = {}) {
+export interface HygieneFinding {
+  classId: string;
+  description: string;
+  file: string;
+  line: number;
+}
+
+export function runScan({
+  repoRoot = REPO_ROOT,
+  files = null,
+  readFile = readFileIfText,
+}: {
+  files?: string[] | null;
+  readFile?: (path: string, repoRoot: string) => string | null;
+  repoRoot?: string;
+} = {}): HygieneFinding[] {
   const scanFiles = files ?? listScannedFiles(repoRoot);
-  const findings = [];
+  const findings: HygieneFinding[] = [];
   for (const path of scanFiles) {
     const text = readFile(path, repoRoot);
-    if (text === null) continue;
+    if (text === null) {
+      continue;
+    }
     for (const hit of scanText(text)) {
       const cls = RESIDUE_CLASSES.find((c) => c.id === hit.classId);
+      if (!cls) {
+        continue;
+      }
       findings.push({
         file: path,
         line: hit.lineNumber,
@@ -115,11 +149,11 @@ export function runScan({ repoRoot = REPO_ROOT, files = null, readFile = readFil
   return findings;
 }
 
-function parseArgs(argv) {
+function parseArgs(argv: string[]): { json: boolean } {
   return { json: argv.includes("--json") };
 }
 
-export function runCli(argv, { log = console.log } = {}) {
+export function runCli(argv: string[], { log = console.log }: { log?: (message: string) => void } = {}): number {
   const args = parseArgs(argv);
   const findings = runScan();
 
@@ -148,9 +182,9 @@ export function runCli(argv, { log = console.log } = {}) {
   return findings.length;
 }
 
-function isMain() {
+function isMain(): boolean {
   const here = fileURLToPath(import.meta.url);
-  return process.argv[1] && resolve(process.argv[1]) === here;
+  return Boolean(process.argv[1]) && resolve(process.argv[1] ?? "") === here;
 }
 
 if (isMain()) {

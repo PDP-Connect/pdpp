@@ -2,7 +2,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// Hermetic guard for scripts/check-public-tree-hygiene.mjs.
+// Hermetic guard for scripts/check-public-tree-hygiene.ts.
 //
 // Pins the four narrow residue-class patterns against both hazard and
 // legitimate-content cases so the check can never regress into a broad
@@ -12,9 +12,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { scanText, RESIDUE_CLASSES } from "./check-public-tree-hygiene.mjs";
+import { RESIDUE_CLASSES, scanText } from "./check-public-tree-hygiene.ts";
 
-function classIds(hits) {
+function classIds(hits: { classId: string }[]): string[] {
   return hits.map((h) => h.classId);
 }
 
@@ -49,16 +49,14 @@ test("does not flag legitimate product/connector names", () => {
 });
 
 test("does not flag an unrelated *.fish-less hostname or bare 'wasp'", () => {
-  const text = ["visit example.com for docs", "a wasp landed on the wasplow near the pond"].join(
-    "\n"
-  );
+  const text = ["visit example.com for docs", "a wasp landed on the wasplow near the pond"].join("\n");
   assert.deepEqual(scanText(text), []);
 });
 
 test("reports 1-indexed line numbers matching the source text", () => {
   const hits = scanText("line one\nline two has peregrine\nline three");
   assert.equal(hits.length, 1);
-  assert.equal(hits[0].lineNumber, 2);
+  assert.equal(hits[0]?.lineNumber, 2);
 });
 
 test("every declared residue class has a working describe()", () => {

@@ -79,7 +79,7 @@ jobs:
               scripts/check-owner-journey-acceptance.ts|\
               scripts/check-owner-journey-acceptance.test.ts|\
               scripts/owner-journey-acceptance/*|scripts/owner-journey-acceptance/**|\
-              scripts/stream-evidence-inventory.mjs|\
+              scripts/stream-evidence-inventory.ts|\
               scripts/stream-health-audit/*|scripts/stream-health-audit/**|\
               scripts/check-stream-health-audit.ts|\
               docs/reference/stream-evidence-inventory.md|\

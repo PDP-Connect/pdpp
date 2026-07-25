@@ -27,7 +27,7 @@ guardrail, now reachable from `ci:signoff`.
 
 ## What Changes
 
-- `scripts/ci-mode.mjs signoff` now runs the connector-conformance test
+- `scripts/ci-mode.ts signoff` now runs the connector-conformance test
   files (`stream-evidence-strategy-manifest.test.ts`,
   `coverage-policy-manifest-honesty.test.ts`, `connector-conformance.test.ts`)
   before posting a success status, whenever the diff against `--base`
@@ -48,8 +48,8 @@ guardrail, now reachable from `ci:signoff`.
   embedded-newline names below either protected root cannot evade the prefix
   boundary and a rename out of either root still reports the protected
   deletion.
-- A change to the gate's own files (`scripts/ci-mode.mjs`,
-  `scripts/ci-mode.test.mjs`, `package.json`, or any of the three pinned
+- A change to the gate's own files (`scripts/ci-mode.ts`,
+  `scripts/ci-mode.test.ts`, `package.json`, or any of the three pinned
   connector-conformance test paths) also runs `ci:mode:test` — the gate
   cannot weaken itself without exercising its own tests.
 - Write-time manifest validation (`connector-manifest-validation.ts`,
@@ -123,7 +123,7 @@ independent checks in this session).
 
 ## Impact
 
-- `scripts/ci-mode.mjs`, `scripts/ci-mode.test.mjs`,
+- `scripts/ci-mode.ts`, `scripts/ci-mode.test.ts`,
   `docs/reference/ci-mode.md`.
 - `reference-implementation/server/connector-manifest-validation.ts`,
   `reference-implementation/test/connector-manifest-validation.test.js`.

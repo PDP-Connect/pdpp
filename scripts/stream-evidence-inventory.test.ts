@@ -5,9 +5,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { readManifests, renderInventory } from "./stream-evidence-inventory.mjs";
+import { type ManifestEntry, readManifests, renderInventory } from "./stream-evidence-inventory.ts";
 
-function manifestRow(overrides = {}) {
+function manifestRow(overrides: Record<string, unknown> = {}): ManifestEntry {
   return {
     manifestSet: "polyfill",
     connectorId: "demo",
@@ -49,7 +49,7 @@ test("codex skills stays required because it is content-bearing", () => {
 
   assert.ok(codex);
 
-  const skills = codex.manifest.streams.find((stream) => stream.name === "skills");
+  const skills = codex.manifest.streams?.find((stream) => stream.name === "skills");
   assert.ok(skills);
   assert.equal(skills.required ?? true, true);
   assert.equal(skills.coverage_policy, undefined);
