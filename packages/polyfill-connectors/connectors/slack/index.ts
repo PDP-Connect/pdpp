@@ -1971,8 +1971,11 @@ if (isMainModule(import.meta.url)) {
   // Set by collect() when SLACK_RECLAIM_UPLOADS=1, consumed by onDurableCommit
   // AFTER the runtime acknowledges durable ingest. Carrying it via a closure
   // keeps the reclaim commit-gated (post-ack) without threading run state
-  // through the runtime protocol.
-  let reclaimPlan: { archivePath: string; progress: ProgressFn } | null = null;
+  // through the runtime protocol. Lists every archive this run actually read
+  // (the base/scoped archive plus any reconciled scoped archives) so reclaim
+  // is not silently confined to one path while other archives' __uploads/
+  // residue survives untouched.
+  let reclaimPlan: readonly string[] | null = null;
 
   runConnector({
     name: "slack",
@@ -1984,16 +1987,22 @@ if (isMainModule(import.meta.url)) {
       required: ["SLACK_WORKSPACE", "SLACK_TOKEN", "SLACK_COOKIE"],
     },
     // Runs only on a successful run, after durable ingest ack, before exit.
-    async onDurableCommit(): Promise<void> {
-      if (!reclaimPlan) {
+    // MUST NOT call `progress`/`emit` — the runtime has already consumed this
+    // run's DONE and torn down its message loop; any further stdout JSONL
+    // (including PROGRESS) fails the ALREADY-SUCCEEDED run as
+    // connector_protocol_violation ("Connector emitted PROGRESS after DONE").
+    // Report via the stderr-only `log` the runtime hands in instead.
+    async onDurableCommit(log): Promise<void> {
+      if (!reclaimPlan || reclaimPlan.length === 0) {
         return;
       }
-      const { archivePath, progress } = reclaimPlan;
-      const reclaimedBytes = await reclaimUploads(archivePath);
-      await progress(
-        `Slack reclaim: removed __uploads/ after durable commit, reclaimed ${reclaimedBytes}B ` +
-          "(one-way: PDPP holds no copy; slackdump will not re-download these files)"
-      );
+      for (const archivePath of reclaimPlan) {
+        const reclaimedBytes = await reclaimUploads(archivePath);
+        log(
+          `Slack reclaim: removed __uploads/ at ${archivePath} after durable commit, reclaimed ${reclaimedBytes}B ` +
+            "(one-way: PDPP holds no copy; slackdump will not re-download these files)"
+        );
+      }
     },
     async collect(ctx: CollectContext): Promise<void> {
       const { state, requested, credentials, emit, progress } = ctx;
@@ -2028,13 +2037,6 @@ if (isMainModule(import.meta.url)) {
       const { timeFrom, timeTo } = extractMessageTimeRange(
         messagesScope?.time_range as { from?: string | null; to?: string | null } | undefined
       );
-
-      // Register the opt-in __uploads reclaim BEFORE any early return. The
-      // actual deletion happens in onDurableCommit (post durable-ingest ack),
-      // never here — so nothing is deleted ahead of a commit receipt. Scoped
-      // runs keep their own archive dir; reclaim always targets the archive
-      // this run read from.
-      reclaimPlan = opts.RECLAIM_UPLOADS ? { archivePath, progress } : null;
 
       await timedPhase(progress, "slackdump-subprocess", () =>
         ensureArchiveOnDisk({
@@ -2095,18 +2097,37 @@ if (isMainModule(import.meta.url)) {
       const priorChannelLastTs = normalizeStringRecord(messagesState?.channel_last_ts);
       const priorObservedChannelIds = readPriorObservedChannelIds(messagesState);
       const baseChannelIds = currentArchiveChannelIds(db);
-      const reconciledSourceCache = await reconcileMessageSourceCache({
-        archiveRuntime: { childEnv, cookie, opts, progress, timeFrom, timeTo, token },
-        baseArchivePaths,
-        baseChannelIds,
-        isUnscopedMessageBoundary,
-        messageFamilyRequested,
-        priorObservedChannelIds,
-      });
+      // Each missing-channel partition drives its own slackdump `resume`
+      // subprocess (real Slack API backlog catch-up per channel, gated by
+      // Slack's own rate limits) — cost that was previously invisible: it
+      // runs between the `slackdump-subprocess` and `read-and-emit` phases
+      // but was not itself timed, so it silently inflated total run wall-
+      // clock outside every reported phase.
+      const reconciledSourceCache = await timedPhase(progress, "scoped-archive-reconcile", () =>
+        reconcileMessageSourceCache({
+          archiveRuntime: { childEnv, cookie, opts, progress, timeFrom, timeTo, token },
+          baseArchivePaths,
+          baseChannelIds,
+          isUnscopedMessageBoundary,
+          messageFamilyRequested,
+          priorObservedChannelIds,
+        })
+      );
 
       if (reconciledSourceCache.missingChannelIds.length > 0) {
         await emitMissingChannelDiagnostic(emit, reconciledSourceCache.missingChannelIds);
       }
+
+      // Register the opt-in __uploads reclaim once every archive this run
+      // actually read is known: the base/scoped archive plus any scoped
+      // archives reconcileMessageSourceCache refreshed or repaired. Without
+      // the latter, reclaim silently covered only the base archive while
+      // scoped-archive __uploads/ residue accumulated forever. The actual
+      // deletion happens in onDurableCommit (post durable-ingest ack), never
+      // here — so nothing is deleted ahead of a commit receipt.
+      reclaimPlan = opts.RECLAIM_UPLOADS
+        ? [archivePath, ...reconciledSourceCache.scopedArchives.map((archive) => archive.paths.archivePath)]
+        : null;
 
       let messageResult = await timedPhase(progress, "read-and-emit", () =>
         runRequestedStreams(deps, state, { workspace, token, cookie }, emit, {

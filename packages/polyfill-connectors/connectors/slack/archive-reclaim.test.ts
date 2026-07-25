@@ -10,6 +10,7 @@
 // All fixtures are synthetic — no private payloads.
 
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -24,6 +25,44 @@ import { reclaimUploads } from "./index.ts";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = resolve(__dirname, "../..");
 const SLACK_ENTRYPOINT = join(PACKAGE_ROOT, "connectors", "slack", "index.ts");
+
+function scopedArchiveDigest(channels: readonly string[]): string {
+  return createHash("sha256")
+    .update(JSON.stringify([...new Set(channels)].sort()))
+    .digest("hex")
+    .slice(0, 12);
+}
+
+function seedArchiveSchema(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE CHANNEL (ID TEXT NOT NULL, NAME TEXT, DATA TEXT, CHUNK_ID INTEGER NOT NULL);
+    CREATE TABLE MESSAGE (
+      CHANNEL_ID TEXT NOT NULL, TS TEXT NOT NULL, THREAD_TS TEXT, IS_PARENT INTEGER,
+      TXT TEXT, NUM_FILES INTEGER, DATA BLOB, CHUNK_ID INTEGER NOT NULL
+    );
+  `);
+}
+
+function insertChannel(db: DatabaseSync, id: string, name: string): void {
+  db.prepare("INSERT INTO CHANNEL (ID, NAME, DATA, CHUNK_ID) VALUES (?, ?, ?, ?)").run(
+    id,
+    name,
+    JSON.stringify({ is_channel: true, is_member: true, name }),
+    1
+  );
+}
+
+function insertMessage(db: DatabaseSync, channelId: string, ts: string, text: string): void {
+  db.prepare(
+    "INSERT INTO MESSAGE (CHANNEL_ID, TS, THREAD_TS, IS_PARENT, TXT, NUM_FILES, DATA, CHUNK_ID) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+  ).run(channelId, ts, null, null, text, null, new TextEncoder().encode(JSON.stringify({ text, user: "U1" })), 1);
+}
+
+async function seedUploads(archiveDir: string, fileId: string, bytes: number): Promise<void> {
+  const uploadsDir = join(archiveDir, "__uploads", fileId);
+  await mkdir(uploadsDir, { recursive: true });
+  await writeFile(join(uploadsDir, "attachment.bin"), Buffer.alloc(bytes, 7));
+}
 
 async function seedArchive(homeDir: string, workspace: string, withUploads: boolean): Promise<string> {
   const archiveDir = join(homeDir, ".pdpp", "slackdump", workspace, "archive");
@@ -214,9 +253,178 @@ test("SLACK_RECLAIM_UPLOADS=1 removes __uploads after a successful run, sqlite i
     assert.equal(done?.status, "succeeded", "run succeeded (reclaim runs post-commit)");
     assert.ok(!existsSync(join(archiveDir, "__uploads")), "__uploads reclaimed after durable commit");
     assert.ok(existsSync(join(archiveDir, "slackdump.sqlite")), "sqlite (resume state) untouched");
-    const reclaimLine = progressLines(result.messages).find((l) => l.includes("reclaim: removed __uploads/"));
-    assert.ok(reclaimLine, "reports the reclaim as run evidence");
-    assert.ok(reclaimLine?.includes("one-way"), "reclaim evidence states it is one-way/unrecoverable");
+    // Reclaim evidence MUST NOT be a stdout PROGRESS/JSONL message: by the time
+    // onDurableCommit runs, the runtime has already consumed this run's DONE
+    // and would reject any further stdout JSONL as "message after DONE",
+    // failing an already-succeeded run. It goes to stderr instead. Matches the
+    // specific reclaim-evidence phrase (not a bare "reclaim" substring, which
+    // false-positives against this test's own "pdpp-slack-reclaim-on-*" tmpdir
+    // prefix appearing inside unrelated archive-path PROGRESS messages).
+    assert.ok(
+      !result.rawStdout.includes("Slack reclaim: removed __uploads/"),
+      "reclaim evidence is NOT emitted as a stdout PROGRESS message (would violate the DONE-then-silence protocol)"
+    );
+    assert.ok(
+      result.stderr.includes("[onDurableCommit]") && result.stderr.includes("reclaim: removed __uploads/"),
+      "reports the reclaim as stderr evidence"
+    );
+    assert.ok(result.stderr.includes("one-way"), "reclaim evidence states it is one-way/unrecoverable");
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("SLACK_RECLAIM_UPLOADS=1 reclaims __uploads/ in every archive the run actually read, not just the base archive", async () => {
+  // Reproduces the auto-reconciliation path (reconcileMessageSourceCache):
+  // C0MISSING disappeared from the base archive but a prior run's state still
+  // lists it as observed, so the connector heals it from an existing scoped
+  // archive at archive-scoped/<digest>/. Both the base archive and the scoped
+  // archive have their own __uploads/ residue — a reclaim plan that only
+  // tracks the base archive (the pre-fix behavior) leaves the scoped
+  // archive's bytes stranded forever.
+  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-reclaim-multi-"));
+  try {
+    const workspace = "reclaim-multi-ws";
+    const baseArchiveDir = join(homeDir, ".pdpp", "slackdump", workspace, "archive");
+    const scopedArchiveDir = join(
+      homeDir,
+      ".pdpp",
+      "slackdump",
+      workspace,
+      "archive-scoped",
+      scopedArchiveDigest(["C0MISSING"])
+    );
+    await mkdir(baseArchiveDir, { recursive: true });
+    await mkdir(scopedArchiveDir, { recursive: true });
+
+    const baseDb = new DatabaseSync(join(baseArchiveDir, "slackdump.sqlite"));
+    try {
+      seedArchiveSchema(baseDb);
+      insertChannel(baseDb, "C0PRESENT", "present");
+      insertMessage(baseDb, "C0PRESENT", "1714032849.123456", "still present");
+    } finally {
+      baseDb.close();
+    }
+    const scopedDb = new DatabaseSync(join(scopedArchiveDir, "slackdump.sqlite"));
+    try {
+      seedArchiveSchema(scopedDb);
+      insertChannel(scopedDb, "C0MISSING", "missing");
+      insertMessage(scopedDb, "C0MISSING", "1714032850.123456", "recovered from scoped archive");
+    } finally {
+      scopedDb.close();
+    }
+    await seedUploads(baseArchiveDir, "F_BASE", 4096);
+    await seedUploads(scopedArchiveDir, "F_SCOPED", 2048);
+
+    const result = await runConnectorProtocolSubprocess({
+      cwd: PACKAGE_ROOT,
+      entrypoint: SLACK_ENTRYPOINT,
+      env: {
+        HOME: homeDir,
+        PDPP_SLACK_SKIP_SLACKDUMP: "1",
+        SLACK_COOKIE: "d=fake",
+        SLACK_RECLAIM_UPLOADS: "1",
+        SLACK_TOKEN: "xoxc-fake",
+        SLACK_WORKSPACE: workspace,
+      },
+      start: {
+        type: "START",
+        scope: { streams: [{ name: "messages" }] },
+        state: {
+          messages: {
+            last_ts: "1714032800.000000",
+            channel_last_ts: { C0MISSING: "1714032800.000000", C0PRESENT: "1714032800.000000" },
+            observed_channel_ids: ["C0MISSING", "C0PRESENT"],
+          },
+        },
+      },
+    });
+
+    const done = result.messages.findLast((m): m is Extract<EmittedMessage, { type: "DONE" }> => m.type === "DONE");
+    assert.equal(done?.status, "succeeded", "run healed the missing channel and succeeded");
+    assert.ok(!existsSync(join(baseArchiveDir, "__uploads")), "base archive __uploads/ reclaimed");
+    assert.ok(!existsSync(join(scopedArchiveDir, "__uploads")), "scoped archive __uploads/ ALSO reclaimed");
+    assert.ok(existsSync(join(baseArchiveDir, "slackdump.sqlite")), "base sqlite (resume state) untouched");
+    assert.ok(existsSync(join(scopedArchiveDir, "slackdump.sqlite")), "scoped sqlite (resume state) untouched");
+    assert.ok(
+      result.stderr.includes(baseArchiveDir) && result.stderr.includes("reclaimed 4096B"),
+      "reports the base archive's reclaimed bytes"
+    );
+    assert.ok(
+      result.stderr.includes(scopedArchiveDir) && result.stderr.includes("reclaimed 2048B"),
+      "reports the scoped archive's reclaimed bytes"
+    );
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("scoped-archive-reconcile phase timing is reported when source-cache healing runs", async () => {
+  // Before this fix, reconcileMessageSourceCache's own slackdump subprocess
+  // calls (one per healed scoped archive) ran between the
+  // slackdump-subprocess and read-and-emit phases but were not themselves
+  // timed — their cost was silently absorbed into total run wall-clock,
+  // invisible in run evidence.
+  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-reconcile-timing-"));
+  try {
+    const workspace = "reconcile-timing-ws";
+    const baseArchiveDir = join(homeDir, ".pdpp", "slackdump", workspace, "archive");
+    const scopedArchiveDir = join(
+      homeDir,
+      ".pdpp",
+      "slackdump",
+      workspace,
+      "archive-scoped",
+      scopedArchiveDigest(["C0MISSING"])
+    );
+    await mkdir(baseArchiveDir, { recursive: true });
+    await mkdir(scopedArchiveDir, { recursive: true });
+
+    const baseDb = new DatabaseSync(join(baseArchiveDir, "slackdump.sqlite"));
+    try {
+      seedArchiveSchema(baseDb);
+      insertChannel(baseDb, "C0PRESENT", "present");
+      insertMessage(baseDb, "C0PRESENT", "1714032849.123456", "still present");
+    } finally {
+      baseDb.close();
+    }
+    const scopedDb = new DatabaseSync(join(scopedArchiveDir, "slackdump.sqlite"));
+    try {
+      seedArchiveSchema(scopedDb);
+      insertChannel(scopedDb, "C0MISSING", "missing");
+      insertMessage(scopedDb, "C0MISSING", "1714032850.123456", "recovered from scoped archive");
+    } finally {
+      scopedDb.close();
+    }
+
+    const result = await runConnectorProtocolSubprocess({
+      cwd: PACKAGE_ROOT,
+      entrypoint: SLACK_ENTRYPOINT,
+      env: {
+        HOME: homeDir,
+        PDPP_SLACK_SKIP_SLACKDUMP: "1",
+        SLACK_COOKIE: "d=fake",
+        SLACK_TOKEN: "xoxc-fake",
+        SLACK_WORKSPACE: workspace,
+      },
+      start: {
+        type: "START",
+        scope: { streams: [{ name: "messages" }] },
+        state: {
+          messages: {
+            last_ts: "1714032800.000000",
+            channel_last_ts: { C0MISSING: "1714032800.000000", C0PRESENT: "1714032800.000000" },
+            observed_channel_ids: ["C0MISSING", "C0PRESENT"],
+          },
+        },
+      },
+    });
+
+    const lines = progressLines(result.messages);
+    assert.ok(
+      lines.some((l) => l.includes("phase timing: scoped-archive-reconcile")),
+      "reports scoped-archive-reconcile phase timing when healing runs"
+    );
   } finally {
     await rm(homeDir, { recursive: true, force: true });
   }

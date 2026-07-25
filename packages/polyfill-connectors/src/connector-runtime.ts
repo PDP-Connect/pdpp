@@ -253,8 +253,16 @@ interface BaseRunConnectorConfig {
    * ingest. Never runs on a failed/interrupted run, so no cleanup can outrun
    * the commit receipt. Errors are swallowed (best-effort): a failed cleanup
    * must not turn a durably-committed run into a failure.
+   *
+   * MUST NOT call `emit`/`progress`/any stdout-JSONL write. By the time this
+   * hook runs, the runtime has already consumed this run's DONE message and
+   * torn down its message loop for this connector instance; any further
+   * stdout JSONL (including PROGRESS) is parsed as "message after DONE" and
+   * fails the ALREADY-SUCCEEDED run as `connector_protocol_violation` on the
+   * next run's read of this one's exit, not a no-op. Use `logDurableCommit`
+   * (stderr, outside the protocol channel) to report hook activity instead.
    */
-  onDurableCommit?: () => void | Promise<void>;
+  onDurableCommit?: (log: (message: string) => void) => void | Promise<void>;
   retryablePattern?: RegExp;
   /** Record field that scope.time_range filters on. Default 'date'. */
   timeRangeField?: string | ((stream: string) => string);
@@ -644,10 +652,13 @@ export function runConnector(config: RunConnectorConfig): void {
     // before the real process exit. Best-effort: a hook failure never changes
     // the already-committed run's outcome.
     if (code === 0 && onDurableCommit) {
+      const logDurableCommit = (message: string): void => {
+        process.stderr.write(`[onDurableCommit] ${message}\n`);
+      };
       flushAndExitAfterRuntimeAck(code, {
         exit: (finalCode: number): void => {
           Promise.resolve()
-            .then(onDurableCommit)
+            .then(() => onDurableCommit(logDurableCommit))
             .catch((): undefined => undefined)
             .finally((): void => {
               process.exit(finalCode);

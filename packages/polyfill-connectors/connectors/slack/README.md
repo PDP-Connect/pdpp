@@ -72,8 +72,14 @@ If a past run downloaded files (`SLACK_SKIP_FILES=false`), `__uploads/` can hold
 tens of GB of bytes the connector does not ingest. Set `SLACK_RECLAIM_UPLOADS=1`
 to remove `__uploads/` **after** the run's records are durably accepted (the
 reclaim runs on the runtime's durable-commit ack, never before, and never on a
-failed run). It removes only `__uploads/` — never `slackdump.sqlite` or its
-`-wal`/`-shm` sidecars — and reports the reclaimed byte count as run evidence.
+failed run). It reclaims **every archive this run actually read** — the base
+archive plus any scoped archive `reconcileMessageSourceCache` refreshed or
+repaired while healing a previously-observed channel — not only the base
+archive. It removes only each archive's `__uploads/` — never `slackdump.sqlite`
+or its `-wal`/`-shm` sidecars — and reports the reclaimed byte count as **stderr**
+evidence (`[onDurableCommit] ...`), not a `PROGRESS` line: by the time this hook
+runs, the runtime has already consumed the run's `DONE` and would reject any
+further stdout JSONL as a protocol violation.
 
 This is **one-way and unrecoverable**:
 

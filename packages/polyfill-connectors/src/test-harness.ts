@@ -210,7 +210,12 @@ export function runConnectorProtocolSubprocess(
       finish(() => reject(err));
     });
 
-    child.on("exit", (code, signal) => {
+    // 'close' (not 'exit'): 'exit' can fire before the stdio pipes have
+    // finished draining their last buffered chunk, so `messages` may still be
+    // missing the connector's final PROGRESS/DONE line at that instant. 'close'
+    // is documented to fire only after the stdio streams have ended, so every
+    // byte the child wrote is guaranteed parsed into `messages` by then.
+    child.on("close", (code, signal) => {
       if (stdoutBuffer.trim()) {
         parseLine(stdoutBuffer);
       }
