@@ -20,52 +20,64 @@ const FILES = [
 
 const mode = process.argv.includes("--write") ? "write" : "check";
 
-async function readIfExists(filePath) {
+function compareStrings(a: string, b: string): number {
+  if (a < b) {
+    return -1;
+  }
+  if (a > b) {
+    return 1;
+  }
+  return 0;
+}
+
+async function readIfExists(filePath: string): Promise<Buffer | null> {
   try {
     return await fs.readFile(filePath);
   } catch (err) {
-    if (err?.code === "ENOENT") {
+    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
       return null;
     }
     throw err;
   }
 }
 
-async function listFiles(root, prefix = "") {
-  let entries;
+async function listFiles(root: string, prefix = ""): Promise<string[]> {
+  let entries: import("node:fs").Dirent[];
   try {
     entries = await fs.readdir(path.join(root, prefix), { withFileTypes: true });
   } catch (err) {
-    if (err?.code === "ENOENT") {
+    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
       return [];
     }
     throw err;
   }
 
-  const files = [];
+  const files: string[] = [];
   for (const entry of entries) {
     const relativePath = path.posix.join(prefix, entry.name);
     if (entry.isDirectory()) {
+      // biome-ignore lint/performance/noAwaitInLoops: recursive directory walk — each subdirectory's listing depends on nothing else, but sequential recursion keeps this a plain depth-first walk rather than an unbounded-fanout Promise.all over an unknown tree depth.
       files.push(...(await listFiles(root, relativePath)));
     } else if (entry.isFile()) {
       files.push(relativePath);
     }
   }
-  return files.sort();
+  return files.sort(compareStrings);
 }
 
-async function sync() {
+async function sync(): Promise<void> {
   await fs.rm(DIST_ROOT, { recursive: true, force: true });
   for (const relativePath of FILES) {
     const sourcePath = path.join(SOURCE_ROOT, relativePath);
     const distPath = path.join(DIST_ROOT, relativePath);
+    // biome-ignore lint/performance/noAwaitInLoops: this is a small, fixed FILES list — sequential mkdir+copy keeps a failure attributable to one file instead of a partial concurrent write.
     await fs.mkdir(path.dirname(distPath), { recursive: true });
     await fs.copyFile(sourcePath, distPath);
   }
 }
 
-async function check() {
-  const problems = [];
+async function check(): Promise<void> {
+  const problems: string[] = [];
   const expected = [...FILES].sort();
   const actual = await listFiles(DIST_ROOT);
 
@@ -79,9 +91,10 @@ async function check() {
   }
 
   for (const relativePath of expected) {
+    // biome-ignore lint/performance/noAwaitInLoops: this is a small, fixed FILES list — sequential drift checks keep each file's problem message ordered and attributable.
     const source = await readIfExists(path.join(SOURCE_ROOT, relativePath));
     const dist = await readIfExists(path.join(DIST_ROOT, relativePath));
-    if (!source || !dist) {
+    if (!(source && dist)) {
       continue;
     }
     if (!source.equals(dist)) {

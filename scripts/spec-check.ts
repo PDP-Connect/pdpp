@@ -15,7 +15,7 @@ const SITE_DOCS = join(REPO_ROOT, "apps/site/content/docs");
 // the sync first so the comparison below runs against freshly-built output —
 // which also asserts the generator itself stays a faithful, drift-free
 // transform of the root specs.
-function syncSpecs() {
+function syncSpecs(): void {
   execFileSync("node", [join(REPO_ROOT, "apps/site/scripts/sync-spec-docs.mjs")], {
     stdio: "inherit",
   });
@@ -29,14 +29,18 @@ const SITE_ONLY_EXTENSIONS = new Set([
 
 const REFERENCE_ONLY_ROOT_SPECS = new Set(["spec-reference-implementation-examples.md"]);
 
-function specFiles(dir) {
+const SPEC_FILENAME_PATTERN = /^spec-.*\.md$/;
+
+function specFiles(dir: string): string[] {
   return readdirSync(dir)
-    .filter((name) => /^spec-.*\.md$/.test(name))
+    .filter((name) => SPEC_FILENAME_PATTERN.test(name))
     .sort();
 }
 
-function stripFrontmatter(text) {
-  const normalized = text.replace(/\r\n/g, "\n");
+const CRLF_PATTERN = /\r\n/g;
+
+function stripFrontmatter(text: string): string {
+  const normalized = text.replace(CRLF_PATTERN, "\n");
   if (!normalized.startsWith("---\n")) {
     return normalized;
   }
@@ -47,112 +51,141 @@ function stripFrontmatter(text) {
   return normalized.slice(end + "\n---".length);
 }
 
-function stripTitleAndRootStatus(text) {
-  const lines = text.replace(/\r\n/g, "\n").split("\n");
-  if (/^#\s+/.test(lines[0] ?? "")) {
+const HEADING_PATTERN = /^#\s+/;
+const STATUS_LINE_PATTERN = /^Status:\s*/;
+const DATE_LINE_PATTERN = /^Date:\s*/;
+const HORIZONTAL_RULE_PATTERN = /^---\s*$/;
+
+function stripTitleAndRootStatus(text: string): string {
+  const lines = text.replace(CRLF_PATTERN, "\n").split("\n");
+  if (HEADING_PATTERN.test(lines[0] ?? "")) {
     lines.shift();
   }
   stripLeadingBlank(lines);
-  if (/^Status:\s*/.test(lines[0] ?? "")) {
+  if (STATUS_LINE_PATTERN.test(lines[0] ?? "")) {
     lines.shift();
   }
-  if (/^Date:\s*/.test(lines[0] ?? "")) {
+  if (DATE_LINE_PATTERN.test(lines[0] ?? "")) {
     lines.shift();
   }
   stripLeadingBlank(lines);
-  if (/^---\s*$/.test(lines[0] ?? "")) {
+  if (HORIZONTAL_RULE_PATTERN.test(lines[0] ?? "")) {
     lines.shift();
   }
   stripLeadingBlank(lines);
   return lines.join("\n");
 }
 
-function stripLeadingSiteCallout(text) {
+const CALLOUT_OPEN_PATTERN = /^<Callout\b/;
+const CALLOUT_CLOSE_PATTERN = /^<\/Callout>\s*$/;
+
+function stripLeadingSiteCallout(text: string): string {
   const withoutFrontmatter = stripFrontmatter(text);
   const lines = withoutFrontmatter.split("\n");
   stripLeadingBlank(lines);
-  if (!/^<Callout\b/.test(lines[0] ?? "")) {
+  if (!CALLOUT_OPEN_PATTERN.test(lines[0] ?? "")) {
     return lines.join("\n");
   }
   while (lines.length > 0) {
     const line = lines.shift();
-    if (/^<\/Callout>\s*$/.test(line ?? "")) {
+    if (CALLOUT_CLOSE_PATTERN.test(line ?? "")) {
       break;
     }
   }
   stripLeadingBlank(lines);
-  if (/^#\s+/.test(lines[0] ?? "")) {
+  if (HEADING_PATTERN.test(lines[0] ?? "")) {
     lines.shift();
   }
   stripLeadingBlank(lines);
-  if (/^---\s*$/.test(lines[0] ?? "")) {
+  if (HORIZONTAL_RULE_PATTERN.test(lines[0] ?? "")) {
     lines.shift();
   }
   stripLeadingBlank(lines);
   return lines.join("\n");
 }
 
-function stripLeadingBlank(lines) {
+function stripLeadingBlank(lines: string[]): void {
   while (lines.length > 0 && (lines[0] ?? "").trim() === "") {
     lines.shift();
   }
 }
 
-function normalizeBody(text) {
+const ANCHOR_ID_PATTERN = /[ \t]+\{#[A-Za-z0-9_-]+\}/g;
+
+function normalizeBody(text: string): string {
   return text
-    .replace(/\r\n/g, "\n")
-    .replace(/[ \t]+\{#[A-Za-z0-9_-]+\}/g, "")
+    .replace(CRLF_PATTERN, "\n")
+    .replace(ANCHOR_ID_PATTERN, "")
     .split("\n")
     .map((line) => line.trimEnd())
     .join("\n")
     .trim();
 }
 
-function rootMetadata(text) {
-  const status = text.match(/^Status:\s*(.+)$/m)?.[1]?.trim() ?? null;
-  const date = text.match(/^Date:\s*(.+)$/m)?.[1]?.trim() ?? null;
+interface Metadata {
+  date: string | null;
+  status: string | null;
+}
+
+const STATUS_VALUE_PATTERN = /^Status:\s*(.+)$/m;
+const DATE_VALUE_PATTERN = /^Date:\s*(.+)$/m;
+
+function rootMetadata(text: string): Metadata {
+  const status = text.match(STATUS_VALUE_PATTERN)?.[1]?.trim() ?? null;
+  const date = text.match(DATE_VALUE_PATTERN)?.[1]?.trim() ?? null;
   return { status, date };
 }
 
-function leadingCallout(text) {
+function leadingCallout(text: string): string | null {
   const lines = stripFrontmatter(text).split("\n");
   stripLeadingBlank(lines);
-  if (!/^<Callout\b/.test(lines[0] ?? "")) {
+  if (!CALLOUT_OPEN_PATTERN.test(lines[0] ?? "")) {
     return null;
   }
-  const out = [];
+  const out: string[] = [];
   while (lines.length > 0) {
     const line = lines.shift() ?? "";
     out.push(line);
-    if (/^<\/Callout>\s*$/.test(line)) {
+    if (CALLOUT_CLOSE_PATTERN.test(line)) {
       break;
     }
   }
   return out.join("\n");
 }
 
-function cleanMetadataValue(value) {
-  return value.replace(/\*\*/g, "").trim();
+const BOLD_MARKER_PATTERN = /\*\*/g;
+
+function cleanMetadataValue(value: string): string {
+  return value.replace(BOLD_MARKER_PATTERN, "").trim();
 }
 
-function calloutMetadata(text) {
+const CALLOUT_STATUS_PATTERN = /^\s*Status:\s*(.+)$/m;
+const CALLOUT_DATE_PATTERN = /^\s*Date:\s*(.+)$/m;
+
+function calloutMetadata(text: string): Metadata {
   const callout = leadingCallout(text);
   if (!callout) {
     return { status: null, date: null };
   }
-  const status = callout.match(/^\s*Status:\s*(.+)$/m)?.[1] ?? null;
-  const date = callout.match(/^\s*Date:\s*(.+)$/m)?.[1] ?? null;
+  const status = callout.match(CALLOUT_STATUS_PATTERN)?.[1] ?? null;
+  const date = callout.match(CALLOUT_DATE_PATTERN)?.[1] ?? null;
   return {
     status: status ? cleanMetadataValue(status) : null,
     date: date ? cleanMetadataValue(date) : null,
   };
 }
 
-function firstDiff(expected, actual) {
+interface LineDiff {
+  line: number;
+  root: string;
+  site: string;
+}
+
+function firstDiff(expected: string, actual: string): LineDiff | null {
   const a = expected.split("\n");
   const b = actual.split("\n");
   const max = Math.max(a.length, b.length);
-  for (let i = 0; i < max; i++) {
+  for (let i = 0; i < max; i += 1) {
     if ((a[i] ?? "") !== (b[i] ?? "")) {
       return {
         line: i + 1,
@@ -164,24 +197,28 @@ function firstDiff(expected, actual) {
   return null;
 }
 
-function checkPair(file) {
+function checkPair(file: string): string[] {
   const rootText = readFileSync(join(REPO_ROOT, file), "utf8");
   const siteText = readFileSync(join(SITE_DOCS, file), "utf8");
   const expectedMeta = rootMetadata(rootText);
   const actualMeta = calloutMetadata(siteText);
-  const errors = [];
+  const errors: string[] = [];
 
-  if (!expectedMeta.status || !expectedMeta.date) {
+  if (!(expectedMeta.status && expectedMeta.date)) {
     errors.push(`${file}: root spec must declare Status and Date`);
   }
-  if (!actualMeta.status || !actualMeta.date) {
+  if (!(actualMeta.status && actualMeta.date)) {
     errors.push(`${file}: public-site copy must start with a Status/Date Callout`);
   }
   if (expectedMeta.status && actualMeta.status !== expectedMeta.status) {
-    errors.push(`${file}: site Status mismatch (root=${JSON.stringify(expectedMeta.status)} site=${JSON.stringify(actualMeta.status)})`);
+    errors.push(
+      `${file}: site Status mismatch (root=${JSON.stringify(expectedMeta.status)} site=${JSON.stringify(actualMeta.status)})`
+    );
   }
   if (expectedMeta.date && actualMeta.date !== expectedMeta.date) {
-    errors.push(`${file}: site Date mismatch (root=${JSON.stringify(expectedMeta.date)} site=${JSON.stringify(actualMeta.date)})`);
+    errors.push(
+      `${file}: site Date mismatch (root=${JSON.stringify(expectedMeta.date)} site=${JSON.stringify(actualMeta.date)})`
+    );
   }
 
   const expected = normalizeBody(stripTitleAndRootStatus(rootText));
@@ -202,13 +239,13 @@ function checkPair(file) {
   return errors;
 }
 
-function main() {
+function main(): void {
   syncSpecs();
   const rootSpecs = specFiles(REPO_ROOT);
   const siteSpecs = specFiles(SITE_DOCS);
   const rootSet = new Set(rootSpecs);
   const siteSet = new Set(siteSpecs);
-  const errors = [];
+  const errors: string[] = [];
 
   for (const file of rootSpecs) {
     if (REFERENCE_ONLY_ROOT_SPECS.has(file)) {

@@ -25,8 +25,8 @@ const authoredExamples = [
   "packages/polyfill-connectors/connectors/apple_health/__fixtures__/record-step-count.ts",
   "reference-implementation/test/fixtures/device-ingest-failstop-server.mjs",
   "apps/console/public/pdpp-dashboard-sw.js",
-  "scripts/spec-check.mjs",
-  "deploy/railway/core-supervisor.mjs",
+  "scripts/spec-check.ts",
+  "deploy/railway/core-supervisor.ts",
   "docker/neko/policies.json",
 ];
 
@@ -46,7 +46,7 @@ const processedFileLinePattern = /^\s*-\s+(.+)$/gm;
 const excludedPath =
   /(^|\/)(node_modules|\.git|dist|build|out|\.next|\.source|coverage|reports?)(\/|$)|(^|\/)docs\/generated(\/|$)|(^|\/)test\/fixtures\/[^/]+\.json$|(^|\/)fixtures\/.*\.(json|html|csv|md|log|dat)$|(^|\/)__fixtures__\/.*\.(html|json|csv)$|(^|\/)connectors\/twitter_archive\/__fixtures__\/archive-files\/.*\.js$|(^|\/)(generated|__generated__)(\/|$)|\.(auto|gen|generated)\.[^/]+$|(^|\/)(schema|schema\.graphql)\.d\.ts$|(^|\/)next-env\.d\.ts$|(^|\/)(package-lock\.json|yarn\.lock|bun\.lock|pnpm-lock\.yaml)$|\.(snap|har|jsonl)$/;
 
-function workspaceRoots() {
+function workspaceRoots(): string[] {
   const result = spawnSync("pnpm", ["list", "--recursive", "--depth=-1", "--json"], {
     encoding: "utf8",
     maxBuffer: 2 * 1024 * 1024,
@@ -58,11 +58,11 @@ function workspaceRoots() {
     throw new Error(`Workspace discovery failed with exit code ${result.status}: ${result.stderr}`);
   }
 
-  let workspaces;
+  let workspaces: unknown;
   try {
     workspaces = JSON.parse(result.stdout);
   } catch (error) {
-    throw new Error(`Workspace discovery returned invalid JSON: ${error.message}`, { cause: error });
+    throw new Error(`Workspace discovery returned invalid JSON: ${(error as Error).message}`, { cause: error });
   }
   if (!Array.isArray(workspaces) || workspaces.length === 0) {
     throw new Error("Workspace discovery returned no workspaces");
@@ -71,7 +71,7 @@ function workspaceRoots() {
   const cwd = process.cwd();
   return [
     ...new Set(
-      workspaces.map(({ path }) => {
+      (workspaces as { path: unknown }[]).map(({ path }) => {
         if (path === cwd) {
           return ".";
         }
@@ -84,7 +84,7 @@ function workspaceRoots() {
   ];
 }
 
-function processedFiles(command, args) {
+function processedFiles(command: string, args: string[]): Set<string> {
   const result = spawnSync(command, args, { encoding: "utf8", maxBuffer: 20 * 1024 * 1024 });
   const output = `${result.stdout}\n${result.stderr}`;
   const match = output.match(processedFilesPattern);
@@ -92,19 +92,19 @@ function processedFiles(command, args) {
     throw new Error(`Could not read the processed-file list from ${command} ${args.join(" ")}`);
   }
 
-  const files = [...match[1].matchAll(processedFileLinePattern)].map((entry) => entry[1].trim());
+  const files = [...(match[1] ?? "").matchAll(processedFileLinePattern)].map((entry) => (entry[1] ?? "").trim());
   if (result.error) {
     throw result.error;
   }
   return new Set(files);
 }
 
-function sorted(set) {
+function sorted(set: Set<string>): string[] {
   return [...set].sort();
 }
 
-const biomeFiles = new Set();
-const ultraciteFiles = new Set();
+const biomeFiles = new Set<string>();
+const ultraciteFiles = new Set<string>();
 const roots = workspaceRoots();
 
 for (const root of roots) {

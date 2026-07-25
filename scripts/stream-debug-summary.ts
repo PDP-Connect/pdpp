@@ -6,42 +6,53 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 
-function todayUtc() {
+function todayUtc(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-function parseArgs(argv) {
-  const args = {
+interface Args {
+  file: string;
+  viewer: string | null;
+}
+
+function parseArgs(argv: string[]): Args {
+  const args: Args = {
     file: path.join("tmp", "stream-debug", `${todayUtc()}.jsonl`),
     viewer: null,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--file" && argv[index + 1]) {
-      args.file = argv[index + 1];
+      args.file = argv[index + 1] as string;
       index += 1;
     } else if (arg === "--viewer" && argv[index + 1]) {
-      args.viewer = argv[index + 1];
+      args.viewer = argv[index + 1] as string;
       index += 1;
     }
   }
   return args;
 }
 
-function increment(map, key, by = 1) {
+function increment(map: Map<string, number>, key: unknown, by = 1): void {
   const value = key === undefined || key === null || key === "" ? "unknown" : String(key);
   map.set(value, (map.get(value) ?? 0) + by);
 }
 
-function sortedEntries(map, limit = 12) {
+function sortedEntries(map: Map<string, number>, limit = 12): [string, number][] {
   return [...map.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, limit);
 }
 
-function parseJsonl(file) {
+interface TelemetryRecord {
+  events?: unknown[];
+  receivedAt?: string;
+}
+type TelemetryEvent = Record<string, unknown> & { type?: unknown; name?: unknown };
+
+function parseJsonl(file: string): TelemetryRecord[] {
   if (!existsSync(file)) {
     throw new Error(`No telemetry file found at ${file}`);
   }
-  const records = [];
+  const records: TelemetryRecord[] = [];
   const lines = readFileSync(file, "utf8").split("\n");
   for (const [index, line] of lines.entries()) {
     const trimmed = line.trim();
@@ -51,56 +62,97 @@ function parseJsonl(file) {
     try {
       records.push(JSON.parse(trimmed));
     } catch (error) {
-      throw new Error(`Invalid JSONL at line ${index + 1}: ${error.message}`);
+      throw new Error(`Invalid JSONL at line ${index + 1}: ${(error as Error).message}`, { cause: error });
     }
   }
   return records;
 }
 
-function flattenEvents(records) {
+function flattenEvents(records: TelemetryRecord[]): TelemetryEvent[] {
   return records.flatMap((record) =>
     Array.isArray(record.events)
       ? record.events.map((event) => ({
-          ...event,
+          ...(event as TelemetryEvent),
           receivedAt: record.receivedAt,
-          type: event.type ?? event.name ?? "unknown",
+          type: (event as TelemetryEvent).type ?? (event as TelemetryEvent).name ?? "unknown",
         }))
       : []
   );
 }
 
-function latestViewer(events) {
-  const latestByViewer = new Map();
+function latestViewer(events: TelemetryEvent[]): string | null {
+  const latestByViewer = new Map<string, number>();
   for (const event of events) {
-    if (!event.viewerId) {
+    const { viewerId } = event;
+    if (!viewerId) {
       continue;
     }
-    const at = Date.parse(event.at ?? event.receivedAt ?? "");
-    const previous = latestByViewer.get(event.viewerId) ?? 0;
-    latestByViewer.set(event.viewerId, Number.isFinite(at) ? Math.max(previous, at) : previous);
+    const at = Date.parse(String(event.at ?? event.receivedAt ?? ""));
+    const previous = latestByViewer.get(String(viewerId)) ?? 0;
+    latestByViewer.set(String(viewerId), Number.isFinite(at) ? Math.max(previous, at) : previous);
   }
   return [...latestByViewer.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
 }
 
-function payload(event) {
-  return event.payload && typeof event.payload === "object" ? event.payload : {};
+function payload(event: TelemetryEvent): Record<string, unknown> {
+  return event.payload && typeof event.payload === "object" ? (event.payload as Record<string, unknown>) : {};
 }
 
-function summarize(events) {
-  const counts = new Map();
-  const visualReasons = new Map();
-  const viewportDecisions = new Map();
-  const viewportPosts = new Map();
-  const pointerIssues = new Map();
-  const keyboardPhases = new Map();
-  const clipboardPhases = new Map();
-  const connection = new Map();
+interface LastPointer {
+  client: unknown;
+  eventType: unknown;
+  insideMedia: unknown;
+  insideOverlay: unknown;
+  mapped: unknown;
+  screenState: unknown;
+}
+interface LastKeyboard {
+  active: unknown;
+  focused: unknown;
+  source: unknown;
+  type: string;
+}
+interface LastClipboard {
+  lengthBucket: unknown;
+  method: unknown;
+  phase: unknown;
+  reason: unknown;
+  type: string;
+}
+
+interface Summary {
+  clipboardPhases: Map<string, number>;
+  connection: Map<string, number>;
+  counts: Map<string, number>;
+  keyboardPhases: Map<string, number>;
+  lastClipboard: LastClipboard | null;
+  lastKeyboard: LastKeyboard | null;
+  lastPointer: LastPointer | null;
+  lastViewport: unknown;
+  maxEmptyAreaRatio: number;
+  maxStretchRatio: number;
+  pointerIssues: Map<string, number>;
+  viewportDecisions: Map<string, number>;
+  viewportPosts: Map<string, number>;
+  visualReasons: Map<string, number>;
+}
+
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: this is a debug telemetry classifier — one independent per-event-type branch per signal family (viewport, pointer, keyboard, clipboard, connection), carried over unchanged from the .mjs source.
+function summarize(events: TelemetryEvent[]): Summary {
+  const counts = new Map<string, number>();
+  const visualReasons = new Map<string, number>();
+  const viewportDecisions = new Map<string, number>();
+  const viewportPosts = new Map<string, number>();
+  const pointerIssues = new Map<string, number>();
+  const keyboardPhases = new Map<string, number>();
+  const clipboardPhases = new Map<string, number>();
+  const connection = new Map<string, number>();
   let maxEmptyAreaRatio = 0;
   let maxStretchRatio = 1;
-  let lastViewport = null;
-  let lastPointer = null;
-  let lastKeyboard = null;
-  let lastClipboard = null;
+  let lastViewport: unknown = null;
+  let lastPointer: LastPointer | null = null;
+  let lastKeyboard: LastKeyboard | null = null;
+  let lastClipboard: LastClipboard | null = null;
 
   for (const event of events) {
     const type = String(event.type ?? "unknown");
@@ -134,7 +186,11 @@ function summarize(events) {
     } else if (type.startsWith("viewport.post.")) {
       increment(viewportPosts, `${type}:${data.status ?? data.ok ?? "unknown"}`);
       lastViewport = data.viewport ?? lastViewport;
-    } else if (type.startsWith("viewport.") || type.startsWith("neko.layout") || type.startsWith("neko.client.layout")) {
+    } else if (
+      type.startsWith("viewport.") ||
+      type.startsWith("neko.layout") ||
+      type.startsWith("neko.client.layout")
+    ) {
       lastViewport = data.viewport ?? data.layout ?? lastViewport;
     }
 
@@ -198,12 +254,12 @@ function summarize(events) {
   };
 }
 
-function printMap(title, map, limit) {
+function printMap(title: string, map: Map<string, number>, limit: number): void {
   const entries = sortedEntries(map, limit);
   console.log(`${title}: ${entries.length ? entries.map(([key, value]) => `${key}=${value}`).join(", ") : "none"}`);
 }
 
-function main() {
+function main(): void {
   const args = parseArgs(process.argv.slice(2));
   const records = parseJsonl(args.file);
   const allEvents = flattenEvents(records);

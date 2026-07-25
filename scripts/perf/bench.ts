@@ -17,13 +17,13 @@
  * stdout.
  *
  * Usage:
- *   node scripts/perf/bench.mjs                          # live, default samples
- *   PDPP_BASE=https://pdpp.example.com node scripts/perf/bench.mjs
- *   PDPP_OWNER_TOKEN=... node scripts/perf/bench.mjs      # auth RS targets
- *   PDPP_BENCH_SAMPLES=30 node scripts/perf/bench.mjs
- *   node scripts/perf/bench.mjs --api-only | --pages-only
- *   node scripts/perf/bench.mjs --pages-only --login            # authed page timings (real owner experience)
- *   node scripts/perf/bench.mjs --compare <prior-result.json>   # regression diff
+ *   node --import tsx scripts/perf/bench.ts                          # live, default samples
+ *   PDPP_BASE=https://pdpp.example.com node --import tsx scripts/perf/bench.ts
+ *   PDPP_OWNER_TOKEN=... node --import tsx scripts/perf/bench.ts      # auth RS targets
+ *   PDPP_BENCH_SAMPLES=30 node --import tsx scripts/perf/bench.ts
+ *   node --import tsx scripts/perf/bench.ts --api-only | --pages-only
+ *   node --import tsx scripts/perf/bench.ts --pages-only --login            # authed page timings (real owner experience)
+ *   node --import tsx scripts/perf/bench.ts --compare <prior-result.json>   # regression diff
  *
  * Env:
  *   PDPP_BASE              base URL (default https://pdpp.example.com)
@@ -34,7 +34,7 @@
  *   PDPP_BENCH_TIMEOUT_MS  per-request timeout (default 30000)
  */
 
-import { writeFileSync, mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -42,11 +42,12 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..");
 const RESULTS_DIR = join(REPO_ROOT, "perf-results");
 
-const BASE = (process.env.PDPP_BASE || "https://pdpp.example.com").replace(/\/$/, "");
+const TRAILING_SLASH_PATTERN = /\/$/;
+const BASE = (process.env.PDPP_BASE || "https://pdpp.example.com").replace(TRAILING_SLASH_PATTERN, "");
 const OWNER_TOKEN = process.env.PDPP_OWNER_TOKEN || "";
 const SAMPLES = Number(process.env.PDPP_BENCH_SAMPLES || 12);
 const WARMUP = Number(process.env.PDPP_BENCH_WARMUP || 2);
-const TIMEOUT_MS = Number(process.env.PDPP_BENCH_TIMEOUT_MS || 30000);
+const TIMEOUT_MS = Number(process.env.PDPP_BENCH_TIMEOUT_MS || 30_000);
 // A real connection to disambiguate the shared `messages` stream for records targets.
 const CONNECTION_ID = process.env.PDPP_BENCH_CONNECTION_ID || "cin_f565a96cb0a114b0a27e9606";
 
@@ -58,16 +59,35 @@ const COMPARE_PATH = compareIdx >= 0 ? process.argv[compareIdx + 1] : null;
 
 // ── targets ────────────────────────────────────────────────────────────────
 
+interface Target {
+  group: "api" | "page";
+  headers: Record<string, string>;
+  name: string;
+  url: string;
+}
+
 /** RS read-surface API targets. Skipped entirely when no owner token. */
-function apiTargets() {
-  if (!OWNER_TOKEN) return [];
+function apiTargets(): Target[] {
+  if (!OWNER_TOKEN) {
+    return [];
+  }
   const h = { Authorization: `Bearer ${OWNER_TOKEN}` };
-  const q = (params) => "?" + new URLSearchParams(params).toString();
+  const q = (params: Record<string, string>) => `?${new URLSearchParams(params).toString()}`;
   return [
     { group: "api", name: "schema", url: `${BASE}/v1/schema`, headers: h },
     { group: "api", name: "search.lexical", url: `${BASE}/v1/search${q({ q: "error", limit: "25" })}`, headers: h },
-    { group: "api", name: "search.semantic", url: `${BASE}/v1/search/semantic${q({ q: "deployment failure", limit: "25" })}`, headers: h },
-    { group: "api", name: "search.hybrid", url: `${BASE}/v1/search/hybrid${q({ q: "deployment failure", limit: "25" })}`, headers: h },
+    {
+      group: "api",
+      name: "search.semantic",
+      url: `${BASE}/v1/search/semantic${q({ q: "deployment failure", limit: "25" })}`,
+      headers: h,
+    },
+    {
+      group: "api",
+      name: "search.hybrid",
+      url: `${BASE}/v1/search/hybrid${q({ q: "deployment failure", limit: "25" })}`,
+      headers: h,
+    },
     // messages is shared across connectors → must disambiguate with connection_id.
     // PDPP_BENCH_CONNECTION_ID lets a run pin a real connection; default below is a
     // live Slack connection (override per-instance). A 400 here in results means the
@@ -90,9 +110,11 @@ function apiTargets() {
 /** Fetch an owner-session cookie via PDPP_OWNER_PASSWORD so authed page profiling
  *  is a one-liner (`--login`). Returns "" if unavailable; pages then measure the
  *  unauthenticated shell/redirect instead. */
-async function fetchOwnerCookie() {
+async function fetchOwnerCookie(): Promise<string> {
   const password = process.env.PDPP_OWNER_PASSWORD;
-  if (!password) return "";
+  if (!password) {
+    return "";
+  }
   try {
     const resp = await fetch(`${BASE}/owner/login`, {
       method: "POST",
@@ -102,7 +124,7 @@ async function fetchOwnerCookie() {
     });
     const setCookie = resp.headers.getSetCookie?.() || [];
     const session = setCookie.find((c) => c.startsWith("pdpp_owner_session="));
-    return session ? session.split(";")[0] : "";
+    return session ? (session.split(";")[0] ?? "") : "";
   } catch {
     return "";
   }
@@ -111,44 +133,42 @@ async function fetchOwnerCookie() {
 /** Console page targets. Measured unauthenticated (TTFB of the shell/redirect) by
  *  default; pass a cookie (auto via --login, or PDPP_BENCH_COOKIE) for authed
  *  timings — the real owner experience. */
-function pageTargets(cookieOverride) {
+function pageTargets(cookieOverride: string): Target[] {
   const cookie = cookieOverride || process.env.PDPP_BENCH_COOKIE || "";
   const headers = cookie ? { Cookie: cookie } : {};
-  const routes = [
-    "/",
-    "/sources",
-    "/sources/add",
-    "/explore",
-    "/syncs",
-    "/grants",
-    "/connect",
-    "/search",
-  ];
-  return routes.map((r) => ({ group: "page", name: r, url: `${BASE}${r}`, headers }));
+  const routes = ["/", "/sources", "/sources/add", "/explore", "/syncs", "/grants", "/connect", "/search"];
+  return routes.map((r) => ({ group: "page" as const, name: r, url: `${BASE}${r}`, headers }));
 }
 
 // ── measurement ──────────────────────────────────────────────────────────────
 
-async function timeOnce(target) {
+interface SampleResult {
+  bytes: number;
+  status: number;
+  totalMs: number;
+  ttfbMs: number | null;
+}
+
+async function timeOnce(target: Target): Promise<SampleResult> {
   const ctrl = new AbortController();
   const to = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
   const t0 = performance.now();
   let status = 0;
   let bytes = 0;
-  let ttfbMs = null;
+  let ttfbMs: number | null = null;
   try {
     const resp = await fetch(target.url, {
-      headers: target.headers || {},
+      headers: target.headers,
       redirect: "manual",
       signal: ctrl.signal,
     });
-    status = resp.status;
+    ({ status } = resp);
     // TTFB ≈ time to headers; we approximate by marking now (fetch resolves on
     // headers received for the body stream).
     ttfbMs = performance.now() - t0;
     const body = await resp.arrayBuffer();
     bytes = body.byteLength;
-  } catch (err) {
+  } catch {
     status = -1;
   } finally {
     clearTimeout(to);
@@ -157,61 +177,91 @@ async function timeOnce(target) {
   return { totalMs, ttfbMs, status, bytes };
 }
 
-function pct(sorted, p) {
-  if (sorted.length === 0) return null;
+function pct(sorted: number[], p: number): number | null {
+  if (sorted.length === 0) {
+    return null;
+  }
   const idx = Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length));
-  return sorted[idx];
+  return sorted[idx] ?? null;
 }
 
-function stats(samples) {
+interface Stats {
+  bytes: number;
+  max: number | null;
+  mean: number | null;
+  min: number | null;
+  n: number;
+  p50: number | null;
+  p95: number | null;
+  p99: number | null;
+  statuses: number[];
+}
+
+function stats(samples: SampleResult[]): Stats {
   const totals = samples.map((s) => s.totalMs).sort((a, b) => a - b);
   const sum = totals.reduce((a, b) => a + b, 0);
   return {
     n: totals.length,
-    min: round(totals[0]),
+    min: round(totals[0] ?? null),
     p50: round(pct(totals, 50)),
     p95: round(pct(totals, 95)),
     p99: round(pct(totals, 99)),
-    max: round(totals[totals.length - 1]),
+    max: round(totals.at(-1) ?? null),
     mean: round(sum / totals.length),
     statuses: [...new Set(samples.map((s) => s.status))],
     bytes: Math.round(samples.reduce((a, s) => a + s.bytes, 0) / samples.length),
   };
 }
 
-const round = (n) => (n == null ? null : Math.round(n * 10) / 10);
+const round = (n: number | null): number | null => (n === null ? null : Math.round(n * 10) / 10);
 
-async function benchTarget(target) {
-  for (let i = 0; i < WARMUP; i++) await timeOnce(target);
-  const samples = [];
-  for (let i = 0; i < SAMPLES; i++) samples.push(await timeOnce(target));
+type BenchResult = { group: string; name: string; url: string } & Stats;
+
+async function benchTarget(target: Target): Promise<BenchResult> {
+  for (let i = 0; i < WARMUP; i += 1) {
+    // biome-ignore lint/performance/noAwaitInLoops: intentionally sequential — one request at a time to get accurate per-request latency, not throughput; concurrent requests would distort the timing this benchmark measures.
+    await timeOnce(target);
+  }
+  const samples: SampleResult[] = [];
+  for (let i = 0; i < SAMPLES; i += 1) {
+    // biome-ignore lint/performance/noAwaitInLoops: see the warmup loop above — sequential by design.
+    samples.push(await timeOnce(target));
+  }
   return { group: target.group, name: target.name, url: target.url, ...stats(samples) };
 }
 
 // ── main ─────────────────────────────────────────────────────────────────────
 
-async function main() {
+interface BenchOutput {
+  base: string;
+  ran_at: string;
+  results: BenchResult[];
+  samples: number;
+  schema: string;
+  warmup: number;
+}
+
+async function main(): Promise<void> {
   // --login auto-fetches an owner-session cookie so page timings are the real
   // authed experience without manual cookie extraction.
   const cookie = args.has("--login") ? await fetchOwnerCookie() : "";
   if (args.has("--login") && !cookie) {
     console.error("# --login: no cookie (set PDPP_OWNER_PASSWORD) — pages measured unauthenticated");
   }
-  const targets = [
-    ...(PAGES_ONLY ? [] : apiTargets()),
-    ...(API_ONLY ? [] : pageTargets(cookie)),
-  ];
+  const targets: Target[] = [...(PAGES_ONLY ? [] : apiTargets()), ...(API_ONLY ? [] : pageTargets(cookie))];
   if (targets.length === 0) {
     console.error("No targets. (RS API targets need PDPP_OWNER_TOKEN; pages need none.)");
     process.exit(2);
   }
 
   console.error(`# PDPP perf bench — base=${BASE} samples=${SAMPLES} warmup=${WARMUP}`);
-  if (!OWNER_TOKEN && !PAGES_ONLY) console.error("# (no PDPP_OWNER_TOKEN → RS /v1 API targets skipped)");
+  if (!(OWNER_TOKEN || PAGES_ONLY)) {
+    console.error("# (no PDPP_OWNER_TOKEN → RS /v1 API targets skipped)");
+  }
 
-  const results = [];
+  const results: BenchResult[] = [];
   for (const t of targets) {
-    process.error?.write?.("");
+    // biome-ignore lint/performance/noAwaitInLoops: intentionally sequential — one target benchmarked at a time so its own warmup+sample requests aren't contending with another target's for the same server/network capacity.
     const r = await benchTarget(t);
     results.push(r);
     console.error(
@@ -219,7 +269,7 @@ async function main() {
     );
   }
 
-  const out = {
+  const out: BenchOutput = {
     schema: "pdpp-perf-bench/1",
     base: BASE,
     samples: SAMPLES,
@@ -230,43 +280,59 @@ async function main() {
   };
 
   mkdirSync(RESULTS_DIR, { recursive: true });
-  const stamp = out.ran_at.replace(/[:.]/g, "-");
+  const TIMESTAMP_SANITIZE_PATTERN = /[:.]/g;
+  const stamp = out.ran_at.replace(TIMESTAMP_SANITIZE_PATTERN, "-");
   const outPath = join(RESULTS_DIR, `bench-${stamp}.json`);
   writeFileSync(outPath, JSON.stringify(out, null, 2));
   writeFileSync(join(RESULTS_DIR, "bench-latest.json"), JSON.stringify(out, null, 2));
   console.error(`\n# wrote ${outPath}`);
 
-  if (COMPARE_PATH) compare(out, COMPARE_PATH);
+  if (COMPARE_PATH) {
+    compare(out, COMPARE_PATH);
+  }
 
   // Machine-readable to stdout for piping.
   console.log(JSON.stringify(out));
 }
 
-function compare(current, priorPath) {
-  let prior;
+function compare(current: BenchOutput, priorPath: string): void {
+  let prior: BenchOutput;
   try {
     prior = JSON.parse(readFileSync(priorPath, "utf8"));
   } catch (e) {
-    console.error(`# --compare: cannot read ${priorPath}: ${e.message}`);
+    console.error(`# --compare: cannot read ${priorPath}: ${(e as Error).message}`);
     return;
   }
   const byName = new Map(prior.results.map((r) => [`${r.group}:${r.name}`, r]));
   console.error(`\n# regression vs ${priorPath} (p50 Δ, >15% slower flagged):`);
   for (const r of current.results) {
     const p = byName.get(`${r.group}:${r.name}`);
-    if (!p || p.p50 == null || r.p50 == null) continue;
+    if (!p || p.p50 === null || r.p50 === null) {
+      continue;
+    }
     const deltaPct = ((r.p50 - p.p50) / p.p50) * 100;
-    const flag = deltaPct > 15 ? " ⚠ SLOWER" : deltaPct < -15 ? " ✓ faster" : "";
-    console.error(`  ${pad(r.name, 26)} ${pad(p.p50, 7)} → ${pad(r.p50, 7)}ms (${deltaPct >= 0 ? "+" : ""}${deltaPct.toFixed(0)}%)${flag}`);
+    let flag = "";
+    if (deltaPct > 15) {
+      flag = " ⚠ SLOWER";
+    } else if (deltaPct < -15) {
+      flag = " ✓ faster";
+    }
+    console.error(
+      `  ${pad(r.name, 26)} ${pad(p.p50, 7)} → ${pad(r.p50, 7)}ms (${deltaPct >= 0 ? "+" : ""}${deltaPct.toFixed(0)}%)${flag}`
+    );
   }
 }
 
-function pad(v, n) {
+function pad(v: unknown, n: number): string {
   return String(v ?? "").padStart(n);
 }
-function fmtBytes(b) {
-  if (b < 1024) return `${b}B`;
-  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)}KB`;
+function fmtBytes(b: number): string {
+  if (b < 1024) {
+    return `${b}B`;
+  }
+  if (b < 1024 * 1024) {
+    return `${(b / 1024).toFixed(1)}KB`;
+  }
   return `${(b / 1024 / 1024).toFixed(1)}MB`;
 }
 
