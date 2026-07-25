@@ -163,7 +163,7 @@ For a live source project or scratch template deploy:
 7. Run the deterministic MCP smoke:
 
    ```sh
-   node scripts/railway-mcp-query-smoke.mjs \
+   node --import tsx scripts/railway-mcp-query-smoke.ts \
      --origin https://<core-domain> \
      --owner-password "$PDPP_OWNER_PASSWORD"
    ```
@@ -196,6 +196,6 @@ backend on the operator's Railway account.
 
 ## Related
 
-- [`scripts/railway-mcp-query-smoke.mjs`](../../scripts/railway-mcp-query-smoke.mjs)
+- [`scripts/railway-mcp-query-smoke.ts`](../../scripts/railway-mcp-query-smoke.ts)
 - [`scripts/check-railway-deploy-env.ts`](../../scripts/check-railway-deploy-env.ts)
 - [`scripts/check-railway-ghcr-public.ts`](../../scripts/check-railway-ghcr-public.ts)

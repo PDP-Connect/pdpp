@@ -19,7 +19,7 @@
 // the reference server, touch a database directly, or require any package
 // install: it runs on Node's built-in fetch with zero dependencies, exactly
 // like check-railway-deploy-env.ts. The pure helpers below are exercised
-// offline by railway-mcp-query-smoke.test.mjs; the live driver runs against a
+// offline by railway-mcp-query-smoke.test.ts; the live driver runs against a
 // real stack (local composed-origin via `pnpm docker:smoke`'s images, or a live
 // Railway origin) only when an --origin is given.
 //
@@ -39,10 +39,10 @@
 //                                 → seeded record returned
 //
 // Usage:
-//   node scripts/railway-mcp-query-smoke.mjs --origin https://your-console-domain
-//   node scripts/railway-mcp-query-smoke.mjs --origin http://localhost:3002 \
+//   node scripts/railway-mcp-query-smoke.ts --origin https://your-console-domain
+//   node scripts/railway-mcp-query-smoke.ts --origin http://localhost:3002 \
 //        --owner-password "$PDPP_OWNER_PASSWORD"
-//   node scripts/railway-mcp-query-smoke.mjs --origin <origin> --json
+//   node scripts/railway-mcp-query-smoke.ts --origin <origin> --json
 //
 // When the deploy follows the documented security posture, PDPP_OWNER_PASSWORD
 // is set; pass it via --owner-password or the env var so the seed step can
@@ -52,22 +52,16 @@
 // Exit codes: 0 = the seed + MCP query gate passed; 1 = a check failed or the
 // origin was unreachable; 2 = usage error.
 
-import crypto from 'node:crypto';
-import process from 'node:process';
-import { fileURLToPath } from 'node:url';
+import crypto from "node:crypto";
+import process from "node:process";
+import { fileURLToPath } from "node:url";
 
 import {
   establishOwnerSessionCookie,
   extractCsrfFieldValue,
   findSetCookiePair,
   getSetCookieList,
-} from './lib/owner-session.mjs';
-
-// Re-exported for this module's own offline unit tests
-// (railway-mcp-query-smoke.test.mjs), which pin the cookie/CSRF parsing
-// contract. The implementation lives in scripts/lib/owner-session.mjs —
-// the one shared owner-session acquisition path — not here.
-export { extractCsrfFieldValue, findSetCookiePair };
+} from "./lib/owner-session.ts";
 
 // ---------------------------------------------------------------------------
 // Deterministic seed corpus (pure data).
@@ -79,90 +73,120 @@ export { extractCsrfFieldValue, findSetCookiePair };
 // rather than inventing a connector. The records are hand-built here, NOT
 // produced by running the seed connector — task 3.2 is explicit that the seed is
 // a hand-imported fixture with no connector run.
-export const SEED_CONNECTOR_ID = 'https://registry.pdpp.org/connectors/spotify';
-export const SEED_STREAM = 'top_artists';
+export const SEED_CONNECTOR_ID = "https://registry.pdpp.org/connectors/spotify";
+export const SEED_STREAM = "top_artists";
+
+export interface SeedRecord {
+  data: {
+    followers: number;
+    genres: string[];
+    id: string;
+    name: string;
+    popularity: number;
+    source_updated_at: string;
+  };
+  emitted_at: string;
+  key: string;
+}
 
 // Stable keys + matching data.id (ingestRecord rejects a key that disagrees with
 // data.id). Deterministic timestamps keep re-runs byte-identical; the live
 // smoke deliberately avoids unadvertised sort fields and only asserts presence.
-export const SEED_RECORDS = [
+export const SEED_RECORDS: SeedRecord[] = [
   {
-    key: 'railway-seed-artist-1',
+    key: "railway-seed-artist-1",
     data: {
-      id: 'railway-seed-artist-1',
-      name: 'Deploy Test Quartet',
-      genres: ['test-fixture'],
+      id: "railway-seed-artist-1",
+      name: "Deploy Test Quartet",
+      genres: ["test-fixture"],
       popularity: 41,
       followers: 10,
-      source_updated_at: '2026-01-01T00:00:01.000Z',
+      source_updated_at: "2026-01-01T00:00:01.000Z",
     },
-    emitted_at: '2026-01-01T00:00:01.000Z',
+    emitted_at: "2026-01-01T00:00:01.000Z",
   },
   {
-    key: 'railway-seed-artist-2',
+    key: "railway-seed-artist-2",
     data: {
-      id: 'railway-seed-artist-2',
-      name: 'Restart Survival Band',
-      genres: ['test-fixture'],
+      id: "railway-seed-artist-2",
+      name: "Restart Survival Band",
+      genres: ["test-fixture"],
       popularity: 42,
       followers: 20,
-      source_updated_at: '2026-01-01T00:00:02.000Z',
+      source_updated_at: "2026-01-01T00:00:02.000Z",
     },
-    emitted_at: '2026-01-01T00:00:02.000Z',
+    emitted_at: "2026-01-01T00:00:02.000Z",
   },
 ];
 
 // Build the NDJSON body POST /v1/ingest/:stream expects: one JSON record per
 // line. The operation splits on \n and JSON.parses each non-empty line.
-export function buildSeedNdjson(records = SEED_RECORDS) {
-  return records.map((record) => JSON.stringify(record)).join('\n');
+export function buildSeedNdjson(records: SeedRecord[] = SEED_RECORDS): string {
+  return records.map((record) => JSON.stringify(record)).join("\n");
 }
 
 // ---------------------------------------------------------------------------
 // MCP JSON-RPC framing (pure).
 // ---------------------------------------------------------------------------
 
-export function mcpInitializeMessage(id = 1) {
+interface McpMessage {
+  id: number;
+  jsonrpc: "2.0";
+  method: string;
+  params: Record<string, unknown>;
+}
+
+export function mcpInitializeMessage(id = 1): McpMessage {
   return {
-    jsonrpc: '2.0',
+    jsonrpc: "2.0",
     id,
-    method: 'initialize',
+    method: "initialize",
     params: {
-      protocolVersion: '2024-11-05',
+      protocolVersion: "2024-11-05",
       capabilities: {},
-      clientInfo: { name: 'railway-mcp-query-smoke', version: '1' },
+      clientInfo: { name: "railway-mcp-query-smoke", version: "1" },
     },
   };
 }
 
-export function mcpToolsListMessage(id = 2) {
-  return { jsonrpc: '2.0', id, method: 'tools/list', params: {} };
+export function mcpToolsListMessage(id = 2): McpMessage {
+  return { jsonrpc: "2.0", id, method: "tools/list", params: {} };
 }
 
-export function mcpQueryRecordsMessage(stream, args = {}, id = 3) {
+export function mcpQueryRecordsMessage(stream: string, args: Record<string, unknown> = {}, id = 3): McpMessage {
   return {
-    jsonrpc: '2.0',
+    jsonrpc: "2.0",
     id,
-    method: 'tools/call',
-    params: { name: 'query_records', arguments: { stream, ...args } },
+    method: "tools/call",
+    params: { name: "query_records", arguments: { stream, ...args } },
+  };
+}
+
+const SSE_LINE_ENDING_PATTERN = /\r$/;
+
+interface JsonRpcResponse {
+  result?: {
+    isError?: boolean;
+    structuredContent?: { data?: unknown };
+    tools?: { name?: string }[];
   };
 }
 
 // The hosted MCP server may answer JSON-RPC over either application/json or an
 // SSE-framed text/event-stream. Normalize both to the parsed JSON-RPC object so
 // the assertions do not care which transport the deploy negotiated.
-export function parseMcpResponseText(contentType, text) {
-  const ct = String(contentType || '').toLowerCase();
-  if (ct.includes('text/event-stream')) {
+export function parseMcpResponseText(contentType: string | null | undefined, text: string): JsonRpcResponse | null {
+  const ct = String(contentType || "").toLowerCase();
+  if (ct.includes("text/event-stream")) {
     // Concatenate the data: lines of the last event and JSON.parse them.
-    const dataLines = [];
-    for (const rawLine of String(text).split('\n')) {
-      const line = rawLine.replace(/\r$/, '');
-      if (line.startsWith('data:')) {
-        dataLines.push(line.slice('data:'.length).trim());
+    const dataLines: string[] = [];
+    for (const rawLine of String(text).split("\n")) {
+      const line = rawLine.replace(SSE_LINE_ENDING_PATTERN, "");
+      if (line.startsWith("data:")) {
+        dataLines.push(line.slice("data:".length).trim());
       }
     }
-    const payload = dataLines.join('');
+    const payload = dataLines.join("");
     return payload ? JSON.parse(payload) : null;
   }
   return text ? JSON.parse(text) : null;
@@ -171,53 +195,89 @@ export function parseMcpResponseText(contentType, text) {
 // query_records returns its page under result.structuredContent.data; the RS
 // body is the canonical { data: [...] } (or a bare array). Pull the record list
 // out without caring which envelope nesting the version uses.
-export function extractRecordsFromQueryResult(rpc) {
+export function extractRecordsFromQueryResult(rpc: JsonRpcResponse | null): unknown[] {
   const structured = rpc?.result?.structuredContent?.data;
-  if (structured == null) return [];
+  if (structured === null || structured === undefined) {
+    return [];
+  }
   // Canonical RS read body: { data: [...] } or a bare array.
-  if (Array.isArray(structured)) return structured;
-  if (Array.isArray(structured.data)) return structured.data;
-  if (Array.isArray(structured.records)) return structured.records;
+  if (Array.isArray(structured)) {
+    return structured;
+  }
+  const structuredObj = structured as { data?: unknown; records?: unknown };
+  if (Array.isArray(structuredObj.data)) {
+    return structuredObj.data;
+  }
+  if (Array.isArray(structuredObj.records)) {
+    return structuredObj.records;
+  }
   return [];
+}
+
+export interface SeedPresenceVerdict {
+  foundKeys?: string[];
+  ok: boolean;
+  reason?: string;
+  returnedKeys?: string[];
 }
 
 // Assert the seeded records are present in a query_records result. Returns a
 // structured verdict so the caller can report which keys were found/missing.
-export function assertSeedRecordsPresent(rpc, expectedRecords = SEED_RECORDS) {
+export function assertSeedRecordsPresent(
+  rpc: JsonRpcResponse | null,
+  expectedRecords: SeedRecord[] = SEED_RECORDS
+): SeedPresenceVerdict {
   if (rpc?.result?.isError) {
     return { ok: false, reason: `query_records returned an MCP error: ${JSON.stringify(rpc.result)}` };
   }
   const returned = extractRecordsFromQueryResult(rpc);
   const returnedKeys = new Set(
-    returned.map((entry) => entry?.key ?? entry?.id ?? entry?.data?.id).filter((k) => k != null),
+    returned
+      .map((entry) => {
+        const e = entry as { data?: { id?: unknown }; id?: unknown; key?: unknown };
+        return e.key ?? e.id ?? e.data?.id;
+      })
+      .filter((k): k is string | number => k !== null && k !== undefined)
+      .map(String)
   );
   const expectedKeys = expectedRecords.map((record) => record.key);
   const missing = expectedKeys.filter((key) => !returnedKeys.has(key));
   if (missing.length > 0) {
     return {
       ok: false,
-      reason: `seeded record(s) missing from query result: ${missing.join(', ')}`,
+      reason: `seeded record(s) missing from query result: ${missing.join(", ")}`,
       returnedKeys: [...returnedKeys],
     };
   }
   return { ok: true, foundKeys: expectedKeys };
 }
 
+export interface AnonymousMcpVerdict {
+  code: string;
+  refused: boolean;
+}
+
 // Classify an anonymous /mcp probe. The hosted MCP surface must refuse a
 // request with no Authorization header. 401 is the contract; we also treat 403
 // as a refusal (token-kind guard) but the gate asserts 401 specifically per the
 // runbook. Any 2xx is a hard failure (anonymous data access).
-export function classifyAnonymousMcpStatus(status) {
-  if (status === 401) return { refused: true, code: 'unauthorized' };
-  if (status === 403) return { refused: true, code: 'forbidden' };
-  if (status >= 200 && status < 300) return { refused: false, code: 'allowed' };
+export function classifyAnonymousMcpStatus(status: number): AnonymousMcpVerdict {
+  if (status === 401) {
+    return { refused: true, code: "unauthorized" };
+  }
+  if (status === 403) {
+    return { refused: true, code: "forbidden" };
+  }
+  if (status >= 200 && status < 300) {
+    return { refused: false, code: "allowed" };
+  }
   // Any other non-2xx still means anonymous access did not succeed.
   return { refused: true, code: `http_${status}` };
 }
 
 // PKCE S256 challenge for the client authorization-code flow.
-export function pkceChallenge(verifier) {
-  return crypto.createHash('sha256').update(verifier).digest('base64url');
+export function pkceChallenge(verifier: string): string {
+  return crypto.createHash("sha256").update(verifier).digest("base64url");
 }
 
 // ---------------------------------------------------------------------------
@@ -226,9 +286,14 @@ export function pkceChallenge(verifier) {
 
 class SmokeError extends Error {}
 
-async function readBody(resp) {
+interface ReadBodyResult {
+  json: unknown;
+  text: string;
+}
+
+async function readBody(resp: Response): Promise<ReadBodyResult> {
   const text = await resp.text();
-  let json = null;
+  let json: unknown = null;
   try {
     json = text ? JSON.parse(text) : null;
   } catch {
@@ -237,49 +302,52 @@ async function readBody(resp) {
   return { text, json };
 }
 
+type LogFn = (message: string) => void;
+
 // Establish an owner session via the shared owner-session helper
-// (scripts/lib/owner-session.mjs — the one place that drives the
+// (scripts/lib/owner-session.ts — the one place that drives the
 // CSRF-protected /owner/login form). When the deploy has no owner password
 // (open local-dev), GET /owner/login still returns a usable form or a
 // redirect and we proceed with no cookie; the device flow then mints a
 // token directly.
-async function establishOwnerSession(origin, ownerPassword, log) {
+async function establishOwnerSession(origin: string, ownerPassword: string, log: LogFn): Promise<string> {
   if (!ownerPassword) {
-    log('owner-login: no --owner-password given; assuming open local-dev owner auth');
-    return '';
+    log("owner-login: no --owner-password given; assuming open local-dev owner auth");
+    return "";
   }
-  let sessionCookie;
+  let sessionCookie: string | undefined;
   try {
     sessionCookie = await establishOwnerSessionCookie({ origin, ownerPassword });
   } catch (err) {
     throw new SmokeError(
       `owner-login: ${err instanceof Error ? err.message : String(err)}. ` +
-        'Is owner auth enabled (PDPP_OWNER_PASSWORD set) and the origin correct?',
+        "Is owner auth enabled (PDPP_OWNER_PASSWORD set) and the origin correct?",
+      { cause: err }
     );
   }
-  log('owner-login: owner session established');
-  return sessionCookie;
+  log("owner-login: owner session established");
+  return sessionCookie ?? "";
 }
 
 // Mint an owner access token via the device flow. /device/approve is owner-
 // session gated when a password is set, so we carry the session cookie.
-async function mintOwnerToken(origin, sessionCookie, subjectId, log) {
-  const clientId = 'pdpp-polyfill-owner-bootstrap';
+async function mintOwnerToken(origin: string, sessionCookie: string, subjectId: string, log: LogFn): Promise<string> {
+  const clientId = "pdpp-polyfill-owner-bootstrap";
   const deviceResp = await fetch(`${origin}/oauth/device_authorization`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ client_id: clientId }),
   });
   if (deviceResp.status !== 200) {
     const { text } = await readBody(deviceResp);
     throw new SmokeError(`device_authorization failed ${deviceResp.status}: ${text}`);
   }
-  const device = (await readBody(deviceResp)).json;
+  const device = (await readBody(deviceResp)).json as { device_code: string; user_code: string };
 
   const approveResp = await fetch(`${origin}/device/approve`, {
-    method: 'POST',
+    method: "POST",
     headers: {
-      'Content-Type': 'application/json',
+      "Content-Type": "application/json",
       ...(sessionCookie ? { Cookie: sessionCookie } : {}),
     },
     body: JSON.stringify({ user_code: device.user_code, subject_id: subjectId }),
@@ -288,15 +356,15 @@ async function mintOwnerToken(origin, sessionCookie, subjectId, log) {
     const { text } = await readBody(approveResp);
     throw new SmokeError(
       `device/approve failed ${approveResp.status}: ${text}. ` +
-        'If owner auth is enabled, pass --owner-password so the session can approve.',
+        "If owner auth is enabled, pass --owner-password so the session can approve."
     );
   }
 
   const tokenResp = await fetch(`${origin}/oauth/token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+      grant_type: "urn:ietf:params:oauth:grant-type:device_code",
       device_code: device.device_code,
       client_id: clientId,
     }),
@@ -305,45 +373,45 @@ async function mintOwnerToken(origin, sessionCookie, subjectId, log) {
     const { text } = await readBody(tokenResp);
     throw new SmokeError(`/oauth/token (device_code) failed ${tokenResp.status}: ${text}`);
   }
-  log('owner-token: minted owner access token');
-  return (await readBody(tokenResp)).json.access_token;
+  log("owner-token: minted owner access token");
+  return ((await readBody(tokenResp)).json as { access_token: string }).access_token;
 }
 
-async function registerSeedManifest(origin, log) {
+async function registerSeedManifest(origin: string, log: LogFn): Promise<Record<string, unknown>> {
   // The manifest body is small; fetch it from the running AS would be circular,
   // so we register the same connector_id/streams the committed spotify fixture
   // declares. Re-register is idempotent (409 on unchanged version is fine).
   const manifest = {
     connector_id: SEED_CONNECTOR_ID,
-    name: 'Spotify (Railway seed fixture)',
-    version: '1.0.0',
+    name: "Spotify (Railway seed fixture)",
+    version: "1.0.0",
     streams: [
       {
         name: SEED_STREAM,
-        description: 'Railway Core smoke fixture artists',
-        semantics: 'mutable_state',
+        description: "Railway Core smoke fixture artists",
+        semantics: "mutable_state",
         schema: {
-          type: 'object',
+          type: "object",
           properties: {
-            id: { type: 'string' },
-            name: { type: 'string' },
-            genres: { type: 'array', items: { type: 'string' } },
-            popularity: { type: 'integer' },
-            followers: { type: 'integer' },
-            source_updated_at: { type: 'string', format: 'date-time' },
+            id: { type: "string" },
+            name: { type: "string" },
+            genres: { type: "array", items: { type: "string" } },
+            popularity: { type: "integer" },
+            followers: { type: "integer" },
+            source_updated_at: { type: "string", format: "date-time" },
           },
-          required: ['id', 'name'],
+          required: ["id", "name"],
         },
-        primary_key: ['id'],
-        cursor_field: 'source_updated_at',
-        consent_time_field: 'source_updated_at',
+        primary_key: ["id"],
+        cursor_field: "source_updated_at",
+        consent_time_field: "source_updated_at",
         selection: { fields: true, resources: true },
       },
     ],
   };
   const resp = await fetch(`${origin}/connectors`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(manifest),
   });
   if (![200, 201, 409].includes(resp.status)) {
@@ -354,13 +422,13 @@ async function registerSeedManifest(origin, log) {
   return manifest;
 }
 
-async function seedRecords(origin, ownerToken, log) {
+async function seedRecords(origin: string, ownerToken: string, log: LogFn): Promise<void> {
   const url = `${origin}/v1/ingest/${encodeURIComponent(SEED_STREAM)}?connector_id=${encodeURIComponent(SEED_CONNECTOR_ID)}`;
   const resp = await fetch(url, {
-    method: 'POST',
+    method: "POST",
     headers: {
       Authorization: `Bearer ${ownerToken}`,
-      'Content-Type': 'application/x-ndjson',
+      "Content-Type": "application/x-ndjson",
     },
     body: buildSeedNdjson(),
   });
@@ -368,107 +436,116 @@ async function seedRecords(origin, ownerToken, log) {
   if (resp.status !== 200) {
     throw new SmokeError(`ingest failed ${resp.status}: ${text}`);
   }
-  if (!json || json.records_accepted !== SEED_RECORDS.length) {
+  const ingestResult = json as { errors?: unknown; records_accepted?: number; records_rejected?: number } | null;
+  if (!ingestResult || ingestResult.records_accepted !== SEED_RECORDS.length) {
     throw new SmokeError(
-      `ingest accepted ${json?.records_accepted} of ${SEED_RECORDS.length} records; rejected ${json?.records_rejected}. errors=${JSON.stringify(json?.errors)}`,
+      `ingest accepted ${ingestResult?.records_accepted} of ${SEED_RECORDS.length} records; rejected ${ingestResult?.records_rejected}. errors=${JSON.stringify(ingestResult?.errors)}`
     );
   }
-  log(`seed: ingested ${json.records_accepted} record(s) into ${SEED_STREAM}`);
+  log(`seed: ingested ${ingestResult.records_accepted} record(s) into ${SEED_STREAM}`);
 }
 
-async function assertAnonymousMcpRefused(origin, log) {
+async function assertAnonymousMcpRefused(origin: string, log: LogFn): Promise<number> {
   const resp = await fetch(`${origin}/mcp`, {
-    method: 'POST',
-    headers: { Accept: 'application/json, text/event-stream', 'Content-Type': 'application/json' },
+    method: "POST",
+    headers: { Accept: "application/json, text/event-stream", "Content-Type": "application/json" },
     body: JSON.stringify(mcpInitializeMessage()),
   });
   const verdict = classifyAnonymousMcpStatus(resp.status);
   if (!verdict.refused) {
     throw new SmokeError(
-      `anonymous /mcp was NOT refused (status ${resp.status}). A public origin must not serve MCP anonymously.`,
+      `anonymous /mcp was NOT refused (status ${resp.status}). A public origin must not serve MCP anonymously.`
     );
   }
-  if (resp.status !== 401) {
-    log(`anonymous /mcp refused with ${resp.status} (${verdict.code}); runbook expects 401`);
+  if (resp.status === 401) {
+    log("anonymous /mcp refused with 401");
   } else {
-    log('anonymous /mcp refused with 401');
+    log(`anonymous /mcp refused with ${resp.status} (${verdict.code}); runbook expects 401`);
   }
   return resp.status;
 }
 
 // Mint a client access token scoped to the seeded connector via the OAuth
 // authorization-code flow with consent approval under the owner session.
-async function mintClientToken(origin, sessionCookie, log) {
+async function mintClientToken(origin: string, sessionCookie: string, log: LogFn): Promise<string> {
   const registerResp = await fetch(`${origin}/oauth/register`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      client_name: 'Railway MCP query smoke client',
-      redirect_uris: ['https://client.example/callback'],
-      grant_types: ['authorization_code', 'refresh_token'],
-      response_types: ['code'],
-      application_type: 'web',
-      token_endpoint_auth_method: 'none',
+      client_name: "Railway MCP query smoke client",
+      redirect_uris: ["https://client.example/callback"],
+      grant_types: ["authorization_code", "refresh_token"],
+      response_types: ["code"],
+      application_type: "web",
+      token_endpoint_auth_method: "none",
     }),
   });
   if (registerResp.status !== 201) {
     const { text } = await readBody(registerResp);
     throw new SmokeError(`oauth/register failed ${registerResp.status}: ${text}`);
   }
-  const client = (await readBody(registerResp)).json;
+  const client = (await readBody(registerResp)).json as { client_id: string };
 
-  const verifier = crypto.randomBytes(32).toString('base64url');
+  const verifier = crypto.randomBytes(32).toString("base64url");
   const authorizationDetails = [
     {
-      type: 'https://pdpp.org/data-access',
-      source: { kind: 'connector', id: SEED_CONNECTOR_ID },
-      purpose_code: 'https://pdpp.org/purpose/personal_ai_assistant',
-      purpose_description: 'Railway MCP query smoke',
-      access_mode: 'continuous',
-      streams: [{ name: '*' }],
+      type: "https://pdpp.org/data-access",
+      source: { kind: "connector", id: SEED_CONNECTOR_ID },
+      purpose_code: "https://pdpp.org/purpose/personal_ai_assistant",
+      purpose_description: "Railway MCP query smoke",
+      access_mode: "continuous",
+      streams: [{ name: "*" }],
     },
   ];
   const authorizeUrl = new URL(`${origin}/oauth/authorize`);
-  authorizeUrl.searchParams.set('client_id', client.client_id);
-  authorizeUrl.searchParams.set('redirect_uri', 'https://client.example/callback');
-  authorizeUrl.searchParams.set('response_type', 'code');
-  authorizeUrl.searchParams.set('state', 'railway-smoke');
-  authorizeUrl.searchParams.set('code_challenge', pkceChallenge(verifier));
-  authorizeUrl.searchParams.set('code_challenge_method', 'S256');
-  authorizeUrl.searchParams.set('authorization_details', JSON.stringify(authorizationDetails));
+  authorizeUrl.searchParams.set("client_id", client.client_id);
+  authorizeUrl.searchParams.set("redirect_uri", "https://client.example/callback");
+  authorizeUrl.searchParams.set("response_type", "code");
+  authorizeUrl.searchParams.set("state", "railway-smoke");
+  authorizeUrl.searchParams.set("code_challenge", pkceChallenge(verifier));
+  authorizeUrl.searchParams.set("code_challenge_method", "S256");
+  authorizeUrl.searchParams.set("authorization_details", JSON.stringify(authorizationDetails));
 
   const authorizeResp = await fetch(authorizeUrl, {
-    redirect: 'manual',
+    redirect: "manual",
     headers: sessionCookie ? { Cookie: sessionCookie } : {},
   });
   if (authorizeResp.status !== 302) {
     const { text } = await readBody(authorizeResp);
     throw new SmokeError(`oauth/authorize expected 302, got ${authorizeResp.status}: ${text}`);
   }
-  const consentUrl = new URL(authorizeResp.headers.get('location'), origin);
-  const requestUri = consentUrl.searchParams.get('request_uri');
+  const authorizeLocation = authorizeResp.headers.get("location");
+  if (!authorizeLocation) {
+    throw new SmokeError("oauth/authorize returned 302 with no Location header");
+  }
+  const consentUrl = new URL(authorizeLocation, origin);
+  const requestUri = consentUrl.searchParams.get("request_uri");
   if (!requestUri) {
-    throw new SmokeError('oauth/authorize did not return a consent request_uri');
+    throw new SmokeError("oauth/authorize did not return a consent request_uri");
   }
 
   // Consent approval is owner-session + CSRF gated. Read the consent CSRF from
   // the consent page rendered for this request_uri, then approve.
   const consentPageResp = await fetch(consentUrl, {
-    headers: { Accept: 'text/html', ...(sessionCookie ? { Cookie: sessionCookie } : {}) },
-    redirect: 'manual',
+    headers: { Accept: "text/html", ...(sessionCookie ? { Cookie: sessionCookie } : {}) },
+    redirect: "manual",
   });
-  const consentCsrfCookie = findSetCookiePair(getSetCookieList(consentPageResp), 'pdpp_owner_csrf');
+  const consentCsrfCookie = findSetCookiePair(getSetCookieList(consentPageResp), "pdpp_owner_csrf");
   const consentCsrfField = extractCsrfFieldValue(await consentPageResp.text());
 
-  const approveHeaders = { 'Content-Type': 'application/x-www-form-urlencoded' };
+  const approveHeaders: Record<string, string> = { "Content-Type": "application/x-www-form-urlencoded" };
   const cookieParts = [sessionCookie, consentCsrfCookie].filter(Boolean);
-  if (cookieParts.length > 0) approveHeaders.Cookie = cookieParts.join('; ');
-  const approveBody = { request_uri: requestUri, subject_id: 'owner_railway_smoke' };
-  if (consentCsrfField) approveBody._csrf = consentCsrfField;
+  if (cookieParts.length > 0) {
+    approveHeaders.Cookie = cookieParts.join("; ");
+  }
+  const approveBody: Record<string, string> = { request_uri: requestUri, subject_id: "owner_railway_smoke" };
+  if (consentCsrfField) {
+    approveBody._csrf = consentCsrfField;
+  }
 
   const approveResp = await fetch(`${origin}/consent/approve`, {
-    method: 'POST',
-    redirect: 'manual',
+    method: "POST",
+    redirect: "manual",
     headers: approveHeaders,
     body: new URLSearchParams(approveBody).toString(),
   });
@@ -476,20 +553,24 @@ async function mintClientToken(origin, sessionCookie, log) {
     const { text } = await readBody(approveResp);
     throw new SmokeError(`consent/approve expected 302, got ${approveResp.status}: ${text}`);
   }
-  const callback = new URL(approveResp.headers.get('location'));
-  const code = callback.searchParams.get('code');
+  const approveLocation = approveResp.headers.get("location");
+  if (!approveLocation) {
+    throw new SmokeError("consent/approve returned 302 with no Location header");
+  }
+  const callback = new URL(approveLocation);
+  const code = callback.searchParams.get("code");
   if (!code) {
-    throw new SmokeError('consent/approve did not return an authorization code');
+    throw new SmokeError("consent/approve did not return an authorization code");
   }
 
   const tokenResp = await fetch(`${origin}/oauth/token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
-      grant_type: 'authorization_code',
+      grant_type: "authorization_code",
       code,
       client_id: client.client_id,
-      redirect_uri: 'https://client.example/callback',
+      redirect_uri: "https://client.example/callback",
       code_verifier: verifier,
     }).toString(),
   });
@@ -497,26 +578,32 @@ async function mintClientToken(origin, sessionCookie, log) {
     const { text } = await readBody(tokenResp);
     throw new SmokeError(`oauth/token (authorization_code) failed ${tokenResp.status}: ${text}`);
   }
-  log('client-token: minted scoped client access token');
-  return (await readBody(tokenResp)).json.access_token;
+  log("client-token: minted scoped client access token");
+  return ((await readBody(tokenResp)).json as { access_token: string }).access_token;
 }
 
-async function mcpPost(origin, token, message) {
+interface McpPostResult {
+  rpc: JsonRpcResponse | null;
+  status: number;
+  text: string;
+}
+
+async function mcpPost(origin: string, token: string, message: McpMessage): Promise<McpPostResult> {
   const resp = await fetch(`${origin}/mcp`, {
-    method: 'POST',
+    method: "POST",
     headers: {
-      Accept: 'application/json, text/event-stream',
+      Accept: "application/json, text/event-stream",
       Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
+      "Content-Type": "application/json",
     },
     body: JSON.stringify(message),
   });
   const text = await resp.text();
-  const rpc = parseMcpResponseText(resp.headers.get('content-type'), text);
+  const rpc = parseMcpResponseText(resp.headers.get("content-type"), text);
   return { status: resp.status, rpc, text };
 }
 
-async function runScopedMcpQuery(origin, clientToken, log) {
+async function runScopedMcpQuery(origin: string, clientToken: string, log: LogFn): Promise<void> {
   const init = await mcpPost(origin, clientToken, mcpInitializeMessage());
   if (init.status !== 200) {
     throw new SmokeError(`MCP initialize failed ${init.status}: ${init.text}`);
@@ -527,19 +614,15 @@ async function runScopedMcpQuery(origin, clientToken, log) {
     throw new SmokeError(`MCP tools/list failed ${list.status}: ${list.text}`);
   }
   const tools = list.rpc?.result?.tools ?? [];
-  const hasQuery = tools.some((t) => t?.name === 'query_records');
+  const hasQuery = tools.some((t) => t?.name === "query_records");
   if (!hasQuery) {
     throw new SmokeError(
-      `tools/list did not advertise query_records (got ${tools.map((t) => t?.name).join(', ') || 'none'})`,
+      `tools/list did not advertise query_records (got ${tools.map((t) => t?.name).join(", ") || "none"})`
     );
   }
   log(`tools/list: ${tools.length} tool(s); query_records present`);
 
-  const query = await mcpPost(
-    origin,
-    clientToken,
-    mcpQueryRecordsMessage(SEED_STREAM, { limit: 10 }),
-  );
+  const query = await mcpPost(origin, clientToken, mcpQueryRecordsMessage(SEED_STREAM, { limit: 10 }));
   if (query.status !== 200) {
     throw new SmokeError(`query_records failed ${query.status}: ${query.text}`);
   }
@@ -547,12 +630,20 @@ async function runScopedMcpQuery(origin, clientToken, log) {
   if (!verdict.ok) {
     throw new SmokeError(`query_records: ${verdict.reason}`);
   }
-  log(`query_records: seeded record(s) returned (${verdict.foundKeys.join(', ')})`);
+  log(`query_records: seeded record(s) returned (${verdict.foundKeys?.join(", ")})`);
 }
 
-export async function runLiveSmoke(options) {
+export interface RunLiveSmokeOptions {
+  logger?: LogFn;
+  origin: string;
+  ownerPassword: string;
+  seed?: boolean;
+  subjectId: string;
+}
+
+export async function runLiveSmoke(options: RunLiveSmokeOptions): Promise<void> {
   const { origin, ownerPassword, subjectId, logger, seed = true } = options;
-  const log = logger ?? (() => {});
+  const log = logger ?? (() => undefined);
   // An owner session is needed either way: the seed ingest is owner-gated, and
   // the client-token consent approval is owner-gated. In --no-seed mode we skip
   // the manifest/owner-token/ingest steps and only re-query — used by the
@@ -563,7 +654,7 @@ export async function runLiveSmoke(options) {
     await registerSeedManifest(origin, log);
     await seedRecords(origin, ownerToken, log);
   } else {
-    log('seed: skipped (--no-seed); querying existing records only');
+    log("seed: skipped (--no-seed); querying existing records only");
   }
   await assertAnonymousMcpRefused(origin, log);
   const clientToken = await mintClientToken(origin, sessionCookie, log);
@@ -574,22 +665,43 @@ export async function runLiveSmoke(options) {
 // CLI entry.
 // ---------------------------------------------------------------------------
 
-export function parseArgs(argv) {
+interface ParsedArgs {
+  help?: boolean;
+  json: boolean;
+  noSeed?: boolean;
+  origin?: string | undefined;
+  ownerPassword?: string | undefined;
+  subjectId?: string | undefined;
+}
+
+export function parseArgs(argv: string[]): ParsedArgs {
   const args = argv.slice(2);
-  const out = { json: false };
-  for (let i = 0; i < args.length; i += 1) {
+  const out: ParsedArgs = { json: false };
+  let i = 0;
+  while (i < args.length) {
     const arg = args[i];
-    if (arg === '--json') out.json = true;
-    else if (arg === '--no-seed') out.noSeed = true;
-    else if (arg === '--origin') out.origin = args[++i];
-    else if (arg === '--owner-password') out.ownerPassword = args[++i];
-    else if (arg === '--subject') out.subjectId = args[++i];
-    else if (arg === '--help' || arg === '-h') out.help = true;
+    if (arg === "--json") {
+      out.json = true;
+    } else if (arg === "--no-seed") {
+      out.noSeed = true;
+    } else if (arg === "--origin") {
+      i += 1;
+      out.origin = args[i];
+    } else if (arg === "--owner-password") {
+      i += 1;
+      out.ownerPassword = args[i];
+    } else if (arg === "--subject") {
+      i += 1;
+      out.subjectId = args[i];
+    } else if (arg === "--help" || arg === "-h") {
+      out.help = true;
+    }
+    i += 1;
   }
   return out;
 }
 
-const USAGE = `Usage: node scripts/railway-mcp-query-smoke.mjs --origin <https-origin> [options]
+const USAGE = `Usage: node scripts/railway-mcp-query-smoke.ts --origin <https-origin> [options]
 
 Options:
   --origin <url>            Composed-origin base URL (required for the live run).
@@ -605,7 +717,9 @@ Options:
 Seeds a deterministic record set (no connector run) and proves the hosted MCP
 endpoint refuses anonymous access and returns those records for a scoped grant.`;
 
-async function main(argv) {
+const TRAILING_SLASH_PATTERN = /\/$/;
+
+async function main(argv: string[]): Promise<void> {
   const opts = parseArgs(argv);
   if (opts.help) {
     process.stdout.write(`${USAGE}\n`);
@@ -615,21 +729,25 @@ async function main(argv) {
     process.stderr.write(`--origin is required.\n\n${USAGE}\n`);
     process.exit(2);
   }
-  const origin = opts.origin.replace(/\/$/, '');
-  const ownerPassword = opts.ownerPassword ?? process.env.PDPP_OWNER_PASSWORD ?? '';
-  const subjectId = opts.subjectId ?? process.env.PDPP_OWNER_SUBJECT_ID ?? 'owner_local';
+  const origin = opts.origin.replace(TRAILING_SLASH_PATTERN, "");
+  const ownerPassword = opts.ownerPassword ?? process.env.PDPP_OWNER_PASSWORD ?? "";
+  const subjectId = opts.subjectId ?? process.env.PDPP_OWNER_SUBJECT_ID ?? "owner_local";
 
-  const steps = [];
-  const log = (message) => {
+  const steps: string[] = [];
+  const log: LogFn = (message) => {
     steps.push(message);
-    if (!opts.json) process.stdout.write(`  ${message}\n`);
+    if (!opts.json) {
+      process.stdout.write(`  ${message}\n`);
+    }
   };
 
-  if (!opts.json) process.stdout.write(`Railway MCP query smoke against ${origin}\n`);
+  if (!opts.json) {
+    process.stdout.write(`Railway MCP query smoke against ${origin}\n`);
+  }
   try {
     await runLiveSmoke({ origin, ownerPassword, subjectId, logger: log, seed: !opts.noSeed });
   } catch (error) {
-    const message = error?.message ?? String(error);
+    const message = error instanceof Error ? error.message : String(error);
     if (opts.json) {
       process.stdout.write(`${JSON.stringify({ ok: false, origin, steps, error: message }, null, 2)}\n`);
     } else {

@@ -196,4 +196,4 @@ you need to keep.
 ## Related
 
 - [`scripts/check-flyio-deploy-env.ts`](../../scripts/check-flyio-deploy-env.ts)
-- [`scripts/railway-mcp-query-smoke.mjs`](../../scripts/railway-mcp-query-smoke.mjs)
+- [`scripts/railway-mcp-query-smoke.ts`](../../scripts/railway-mcp-query-smoke.ts)
