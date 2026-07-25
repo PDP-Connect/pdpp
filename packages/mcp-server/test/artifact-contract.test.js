@@ -132,6 +132,73 @@ test("consumer proof rejects an installed package symlinked to source", () => {
   );
 });
 
+// `@pdpp/cli` (and `@pdpp/mcp-server`, `@pdpp/read-core`) are real packages
+// already published on the public npm registry. pack-install-run.mjs used to
+// install every candidate tarball under one blanket `pnpm add --offline`,
+// which incidentally also proved the two local `@pdpp/*` deps could never
+// resolve from the registry. That single flag broke when @pdpp/mcp-server
+// gained an ordinary external dependency (@modelcontextprotocol/sdk) with no
+// offline-store entry in this environment — this is pre-existing
+// artifact-harness debt (the flag was never scoped to "the two local
+// candidates only"), not an MCP behavior regression. The fix scopes
+// `--offline` to just the local-candidate install step and lets a second,
+// separate step install the package with real external dependencies online.
+// This test reproduces that exact shape against the real, live registry (the
+// same one a `file:`-tarball @pdpp/cli could otherwise silently fall back
+// to) and proves the pnpm-workspace.yaml `overrides` pin still forces the
+// local tarball's exact bytes through an *online* `pnpm add`, not the real
+// published package.
+test(
+  "pnpm-workspace overrides pin a local candidate tarball through an online install, not the public registry",
+  { skip: process.env.PDPP_SKIP_NETWORK_TESTS ? "network tests disabled" : false },
+  () => {
+    const root = mkdtempSync(join(tmpdir(), "pdpp-mcp-online-override-"));
+    const fakeCliRoot = join(root, "fake-cli");
+    const consumerRoot = join(root, "consumer");
+    mkdirSync(fakeCliRoot, { recursive: true });
+    mkdirSync(consumerRoot, { recursive: true });
+
+    // A local @pdpp/cli candidate with content that could never be mistaken
+    // for the real published package (different version, marker file).
+    const localMarker = "local-candidate-not-the-published-package";
+    writeFileSync(
+      join(fakeCliRoot, "package.json"),
+      JSON.stringify({ name: "@pdpp/cli", version: "0.0.0-local-candidate", private: false })
+    );
+    writeFileSync(join(fakeCliRoot, "MARKER.txt"), `${localMarker}\n`);
+    const tarball = join(root, "pdpp-cli-local-candidate.tgz");
+    execFileSync("npm", ["pack", "--json", "--pack-destination", root], { cwd: fakeCliRoot });
+    // npm pack names the tarball from the manifest; rename to a stable path.
+    const packedName = join(root, "pdpp-cli-0.0.0-local-candidate.tgz");
+    execFileSync("mv", [packedName, tarball]);
+
+    execFileSync("npm", ["init", "--yes"], { cwd: consumerRoot });
+    writeFileSync(
+      join(consumerRoot, "pnpm-workspace.yaml"),
+      `packages:\n  - .\noverrides:\n  "@pdpp/cli": "file:${tarball}"\n`
+    );
+    // Intentionally no --offline here: this is the online step's exact shape.
+    execFileSync("pnpm", ["add", "--ignore-scripts", "@pdpp/cli"], {
+      cwd: consumerRoot,
+      encoding: "utf8",
+      env: { ...process.env, npm_config_audit: "false", npm_config_fund: "false" },
+    });
+
+    const installedRoot = assertInstalledPackageMatchesTarball({
+      consumerRoot,
+      packageName: "@pdpp/cli",
+      tarball,
+    });
+    const installedManifest = JSON.parse(readFileSync(join(installedRoot, "package.json"), "utf8"));
+    assert.equal(installedManifest.version, "0.0.0-local-candidate");
+    assert.equal(
+      readFileSync(join(installedRoot, "MARKER.txt"), "utf8").trim(),
+      localMarker,
+      "override must install the local candidate tarball's exact bytes, not the published @pdpp/cli"
+    );
+  }
+);
+
 test("receipt validation rejects stale/replayed source closure and tarball drift", () => {
   assert.throws(
     () =>

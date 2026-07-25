@@ -276,10 +276,30 @@ export async function main() {
       ...process.env,
       npm_config_audit: "false",
       npm_config_fund: "false",
-      npm_config_offline: "true",
       npm_config_update_notifier: "false",
     };
-    run(pnpmExecutable, ["add", "--ignore-scripts", "--offline", cliTarball, readCoreTarball, mcpTarball], {
+    // Two-step install, not one blanket `--offline` add. `@pdpp/cli` and
+    // `@pdpp/read-core` declare zero external dependencies (verified above by
+    // rebuilding them from the clean reviewed tree), so pinning them via
+    // `--offline` here proves they resolve from the exact local candidate
+    // tarballs with no possibility of reaching the public registry — both
+    // packages are also published there under real version numbers, so a
+    // silent registry fallback would be a real, not hypothetical, risk.
+    // `@pdpp/mcp-server` itself is also installed from a local `file:`-style
+    // tarball, but its manifest declares ordinary external dependencies
+    // (`@modelcontextprotocol/sdk`, `zod`) that this isolated consumer has
+    // never fetched before, so that second step is intentionally online.
+    // `overrides` in pnpm-workspace.yaml keeps forcing the two `@pdpp/*`
+    // packages to the exact candidate tarballs during the online step too;
+    // assertInstalledPackageMatchesTarball below re-verifies by content hash
+    // after both steps, independent of which step or network mode installed
+    // them, so an override that silently failed to apply would still fail
+    // the hash check.
+    run(pnpmExecutable, ["add", "--ignore-scripts", "--offline", cliTarball, readCoreTarball], {
+      cwd: consumerRoot,
+      env: installEnv,
+    });
+    run(pnpmExecutable, ["add", "--ignore-scripts", mcpTarball], {
       cwd: consumerRoot,
       env: installEnv,
     });
@@ -346,7 +366,8 @@ export async function main() {
         "pnpm build @pdpp/cli and @pdpp/read-core from the clean reviewed tree",
         "npm pack --json --ignore-scripts each sibling, then stamp an isolated release-candidate version",
         "repack and bind each sibling candidate to current base, head, source closure, source tarball, and candidate tarball",
-        "pnpm add --ignore-scripts --offline <fresh exact candidate tarballs>",
+        "pnpm add --ignore-scripts --offline <fresh exact @pdpp/cli and @pdpp/read-core candidate tarballs>",
+        "pnpm add --ignore-scripts <mcp-server candidate tarball> (online: resolves ordinary external registry dependencies)",
         "pnpm overrides pin @pdpp/cli and @pdpp/read-core to the verified candidate tarballs",
         "pnpm list --json --depth -1",
         "import every declared export",
