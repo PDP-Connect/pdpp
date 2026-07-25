@@ -95,7 +95,19 @@ test("validateResponse fails closed when payload violates declared response sche
 // declared 200 response schema. See
 //   openspec/changes/add-record-relationship-navigation/.
 
-function streamMetadataWithExpandEntry(entry) {
+interface ExpandCapabilityEntry {
+  cardinality: string;
+  child_parent_key_field?: string;
+  foreign_key: string;
+  granted: boolean;
+  name: string;
+  reason?: string;
+  stream: string;
+  target_stream?: string;
+  usable: boolean;
+}
+
+function streamMetadataWithExpandEntry(entry: ExpandCapabilityEntry) {
   return {
     expand_capabilities: [entry],
     field_capabilities: {},
@@ -104,7 +116,7 @@ function streamMetadataWithExpandEntry(entry) {
   };
 }
 
-const VALID_EXPAND_ENTRY = {
+const VALID_EXPAND_ENTRY: ExpandCapabilityEntry = {
   cardinality: "has_many",
   child_parent_key_field: "user_id",
   foreign_key: "user_id",

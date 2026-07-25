@@ -2,12 +2,21 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
 import test from "node:test";
 
 // biome-ignore lint/correctness/noUnresolvedImports: Biome 2.5.5 cannot resolve pnpm's package directory; pnpm's Node resolver and tsc both resolve this declared dependency.
-import Ajv from "ajv";
+import type { Ajv as AjvClass, Plugin, ValidateFunction } from "ajv";
 // biome-ignore lint/correctness/noUnresolvedImports: Biome 2.5.5 cannot resolve pnpm's package directory; pnpm's Node resolver and tsc both resolve this declared dependency.
-import addFormats from "ajv-formats";
+import type { FormatsPluginOptions } from "ajv-formats";
+
+const requireCjs = createRequire(import.meta.url);
+// The CJS .d.ts entry points expose ESM defaults that aren't callable
+// under `verbatimModuleSyntax`. Pulling the real exports through Node's
+// own CJS resolver gives us the runtime-correct, type-correct objects.
+// Same pattern as src/validate.ts.
+const Ajv = requireCjs("ajv") as { new (opts?: Record<string, unknown>): AjvClass };
+const addFormats = requireCjs("ajv-formats") as Plugin<FormatsPluginOptions>;
 
 const DEPRECATED_RE = /[Dd]eprecated/;
 
@@ -39,16 +48,16 @@ import {
 const ajv = new Ajv({ allErrors: true, strict: false });
 addFormats(ajv);
 
-function compile(schema) {
+function compile(schema: Record<string, unknown>): ValidateFunction {
   return ajv.compile(schema);
 }
 
-function assertValid(validator, value, label) {
+function assertValid(validator: ValidateFunction, value: unknown, label: string) {
   const ok = validator(value);
   assert.ok(ok, `${label} should be valid: ${JSON.stringify(validator.errors)}`);
 }
 
-function assertInvalid(validator, value, label) {
+function assertInvalid(validator: ValidateFunction, value: unknown, label: string) {
   const ok = validator(value);
   assert.ok(!ok, `${label} should be invalid`);
 }
@@ -356,10 +365,8 @@ test("CanonicalReadInputProperties exposes the deprecated alias for the migratio
   // to compose their own query shape instead of using
   // CanonicalReadInputQuerySchema.
   assert.ok(CanonicalReadInputProperties.connection_id, "must export connection_id");
-  assert.ok(CanonicalReadInputProperties.connector_instance_id, "must export connector_instance_id alias");
-  assert.match(
-    CanonicalReadInputProperties.connector_instance_id.description,
-    DEPRECATED_RE,
-    "alias description must call out deprecation"
-  );
+  const alias = CanonicalReadInputProperties.connector_instance_id;
+  assert.ok(alias, "must export connector_instance_id alias");
+  assert.ok(alias.description, "alias must have a description");
+  assert.match(alias.description, DEPRECATED_RE, "alias description must call out deprecation");
 });

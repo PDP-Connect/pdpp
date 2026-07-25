@@ -86,7 +86,9 @@ test("request validators accept the shipped public flow shapes", () => {
     body: {},
   });
   assert.equal(introspectionRequest.ok, false);
-  assert.ok(introspectionRequest.errors.some((error) => error.where === "body"));
+  assert.ok(
+    !introspectionRequest.ok && introspectionRequest.errors.some((error) => "where" in error && error.where === "body")
+  );
 });
 
 test("PAR contract advertises batch consent caps as advisory metadata, not hard maxItems", () => {
@@ -110,9 +112,15 @@ test("PAR contract advertises batch consent caps as advisory metadata, not hard 
   assert.deepEqual(result, { ok: true });
 
   const publicDocument = generateOpenApi({ includeReference: false });
-  const schema =
-    publicDocument.paths["/oauth/par"].post.requestBody.content["application/json"].schema.properties
-      .authorization_details;
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: tsc (noUncheckedIndexedAccess) requires this chain; biome's simpler type model disagrees on the Record<string, OpenApiOperation> index access.
+  const parOperation = publicDocument.paths["/oauth/par"]?.post;
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: parOperation is possibly undefined per the same index-access disagreement.
+  assert.ok(parOperation?.requestBody, "/oauth/par must declare a request body");
+  const mediaType = parOperation.requestBody.content["application/json"];
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: mediaType is possibly undefined per the same Record index-access disagreement.
+  assert.ok(mediaType?.schema?.properties, "/oauth/par requestBody must declare a JSON schema with properties");
+  const schema = mediaType.schema.properties.authorization_details;
+  assert.ok(schema, "/oauth/par requestBody must declare authorization_details schema");
   assert.equal(schema.maxItems, undefined);
   assert.equal(schema["x-pdpp-soft-cap"], BATCH_CONSENT_STAGED_ENTRY_SOFT_CAP);
   assert.equal(schema["x-pdpp-warning-threshold"], BATCH_CONSENT_STAGED_ENTRY_WARNING_THRESHOLD);
@@ -202,9 +210,15 @@ test("OpenAPI and docs generation include the auth/control routes alongside reco
   assert.ok(fullDocument.paths["/_ref/connectors"]);
   assert.ok(fullDocument.paths["/_ref/search"]);
   assert.equal(publicDocument.paths["/_ref/dataset/summary/rebuild"], undefined);
-  assert.equal(fullDocument.paths["/_ref/dataset/summary/rebuild"].post.operationId, "refDatasetSummaryRebuild");
+  const rebuildOperation = fullDocument.paths["/_ref/dataset/summary/rebuild"];
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: tsc (noUncheckedIndexedAccess) requires this chain; biome's simpler type model disagrees on the Record<string, OpenApiOperation> index access.
+  assert.ok(rebuildOperation?.post, "/_ref/dataset/summary/rebuild must declare a post operation");
+  assert.equal(rebuildOperation.post.operationId, "refDatasetSummaryRebuild");
   assert.equal(publicDocument.paths["/_ref/dataset/summary/reconcile"], undefined);
-  assert.equal(fullDocument.paths["/_ref/dataset/summary/reconcile"].post.operationId, "refDatasetSummaryReconcile");
+  const reconcileOperation = fullDocument.paths["/_ref/dataset/summary/reconcile"];
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: tsc (noUncheckedIndexedAccess) requires this chain; biome's simpler type model disagrees on the Record<string, OpenApiOperation> index access.
+  assert.ok(reconcileOperation?.post, "/_ref/dataset/summary/reconcile must declare a post operation");
+  assert.equal(reconcileOperation.post.operationId, "refDatasetSummaryReconcile");
 
   assert.match(docs.routes, OAUTH_PAR_RE);
   assert.match(docs.routes, OAUTH_TOKEN_RE);
@@ -214,11 +228,19 @@ test("OpenAPI and docs generation include the auth/control routes alongside reco
   assert.match(docs.referenceRoutes, REF_DATASET_REBUILD_RE);
   assert.match(docs.referenceRoutes, REF_DATASET_RECONCILE_RE);
   assert.match(docs.cookbook, CONSENT_APPROVE_RE);
-  assert.ok(!publicDocument.paths["/v1/blobs/{blob_id}"].get.responses["302"]);
-  assert.deepEqual(
-    fullDocument.paths["/_ref/records/timeline"].get.parameters.find((parameter) => parameter.name === "timestamp_mode")
-      ?.schema?.enum,
-    ["native", "ingest"]
-  );
-  assert.ok(!fullDocument.paths["/_ref/dataset/summary"].get.responses["401"]);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: tsc (noUncheckedIndexedAccess) requires this chain; biome's simpler type model disagrees on the Record<string, OpenApiOperation> index access.
+  const blobGet = publicDocument.paths["/v1/blobs/{blob_id}"]?.get;
+  assert.ok(blobGet, "/v1/blobs/{blob_id} must declare a get operation");
+  assert.ok(!blobGet.responses["302"]);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: tsc (noUncheckedIndexedAccess) requires this chain; biome's simpler type model disagrees on the Record<string, OpenApiOperation> index access.
+  const timelineGet = fullDocument.paths["/_ref/records/timeline"]?.get;
+  assert.ok(timelineGet, "/_ref/records/timeline must declare a get operation");
+  assert.deepEqual(timelineGet.parameters.find((parameter) => parameter.name === "timestamp_mode")?.schema?.enum, [
+    "native",
+    "ingest",
+  ]);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: tsc (noUncheckedIndexedAccess) requires this chain; biome's simpler type model disagrees on the Record<string, OpenApiOperation> index access.
+  const datasetSummaryGet = fullDocument.paths["/_ref/dataset/summary"]?.get;
+  assert.ok(datasetSummaryGet, "/_ref/dataset/summary must declare a get operation");
+  assert.ok(!datasetSummaryGet.responses["401"]);
 });

@@ -112,12 +112,9 @@ test("buildParRequest lifts flat data-access inputs into authorization_details",
 });
 
 test("buildParRequest rejects legacy source scalar inputs", () => {
-  assert.throws(
-    () =>
-      buildParRequest({
-        connector_id: "spotify",
-        purpose_code: "https://pdpp.org/purpose/personalization",
-      }),
-    LEGACY_SOURCE_RE
-  );
+  const legacyInput: Record<string, unknown> = {
+    connector_id: "spotify",
+    purpose_code: "https://pdpp.org/purpose/personalization",
+  };
+  assert.throws(() => buildParRequest(legacyInput), LEGACY_SOURCE_RE);
 });

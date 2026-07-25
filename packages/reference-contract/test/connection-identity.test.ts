@@ -3,23 +3,29 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { JsonSchema, RouteManifest } from "../src/common/index.ts";
 import { validateRequest } from "../src/index.ts";
-import { publicManifests } from "../src/public/index.ts";
+import { publicManifests as publicManifestsRaw } from "../src/public/index.ts";
 
-function findOperation(operationId) {
+// The public module is still JS; its array structurally matches
+// RouteManifest[] and Node type-stripping loads it as an untyped binding.
+// Cast once at import, same pattern as src/validate.ts.
+const publicManifests = publicManifestsRaw as readonly RouteManifest[];
+
+function findOperation(operationId: string): RouteManifest {
   const operation = publicManifests.find((manifest) => manifest.id === operationId);
   assert.ok(operation, `expected public manifest ${operationId}`);
   return operation;
 }
 
-function queryProperties(operationId) {
+function queryProperties(operationId: string): Record<string, JsonSchema> {
   const op = findOperation(operationId);
   return op.request?.query?.properties ?? {};
 }
 
-function responseSchema(operationId, status = 200) {
+function responseSchema(operationId: string, status = 200): JsonSchema | null {
   const op = findOperation(operationId);
-  return op.responses?.[status]?.schema ?? null;
+  return op.responses?.[String(status)]?.schema ?? null;
 }
 
 const OPERATIONS_WITH_OPTIONAL_CONNECTION_INPUT = [
@@ -47,12 +53,13 @@ test("every grant-authorized read operation accepts optional connection_id and c
 
 test("stream list response items carry connection_id and display_name", () => {
   const schema = responseSchema("listStreams");
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: tsc (noUncheckedIndexedAccess) requires this chain; biome's simpler type model disagrees on the Record<string, JsonSchema> index access.
   const item = schema?.properties?.data?.items;
   assert.ok(item, "listStreams 200 must declare data items");
-  assert.ok(item.properties.connection_id, "stream list item must declare connection_id");
-  assert.ok(item.properties.display_name, "stream list item must declare display_name");
+  assert.ok(item.properties?.connection_id, "stream list item must declare connection_id");
+  assert.ok(item.properties?.display_name, "stream list item must declare display_name");
   assert.ok(
-    item.properties.connector_instance_id,
+    item.properties?.connector_instance_id,
     "stream list item must declare deprecated connector_instance_id alias"
   );
 });
@@ -67,11 +74,12 @@ test("record response carries connection_id and display_name", () => {
 
 test("search result items carry connection_id and display_name on lexical/semantic/hybrid", () => {
   for (const id of ["searchRecordsLexical", "searchRecordsSemantic", "searchRecordsHybrid"]) {
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: tsc (noUncheckedIndexedAccess) requires this chain; biome's simpler type model disagrees on the Record<string, JsonSchema> index access.
     const item = responseSchema(id)?.properties?.data?.items;
     assert.ok(item, `${id} 200 must declare data items`);
-    assert.ok(item.properties.connection_id, `${id} hit must declare connection_id`);
-    assert.ok(item.properties.display_name, `${id} hit must declare display_name`);
-    assert.ok(item.properties.connector_instance_id, `${id} hit must declare connector_instance_id alias`);
+    assert.ok(item.properties?.connection_id, `${id} hit must declare connection_id`);
+    assert.ok(item.properties?.display_name, `${id} hit must declare display_name`);
+    assert.ok(item.properties?.connector_instance_id, `${id} hit must declare connector_instance_id alias`);
   }
 });
 
@@ -83,14 +91,17 @@ test("getRecord and getBlob declare a typed ambiguous_connection 409 envelope", 
     const errorSchema = response.schema?.properties?.error;
     assert.ok(errorSchema, `${id} 409 must declare error envelope`);
     assert.equal(
-      errorSchema.properties.code.const,
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: tsc (noUncheckedIndexedAccess) requires this chain; biome's simpler type model disagrees on the Record<string, JsonSchema> index access.
+      errorSchema.properties?.code?.const,
       "ambiguous_connection",
       `${id} 409 must use code "ambiguous_connection"`
     );
-    assert.ok(errorSchema.properties.available_connections, `${id} 409 must include available_connections`);
-    assert.ok(errorSchema.properties.retry_with, `${id} 409 must include retry_with`);
+    assert.ok(errorSchema.properties?.available_connections, `${id} 409 must include available_connections`);
+    const retryWith = errorSchema.properties?.retry_with;
+    assert.ok(retryWith, `${id} 409 must include retry_with`);
     assert.equal(
-      errorSchema.properties.retry_with.properties.field.const,
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: tsc (noUncheckedIndexedAccess) requires this chain; biome's simpler type model disagrees on the Record<string, JsonSchema> index access.
+      retryWith.properties?.field?.const,
       "connection_id",
       `${id} retry_with.field must point at connection_id`
     );
