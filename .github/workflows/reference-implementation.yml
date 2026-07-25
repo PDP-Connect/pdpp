@@ -84,8 +84,8 @@ jobs:
               scripts/check-stream-health-audit.ts|\
               docs/reference/stream-evidence-inventory.md|\
               .releaserc.yaml|\
-              scripts/check-package-release-policy.mjs|\
-              scripts/check-package-release-policy.test.mjs|\
+              scripts/check-package-release-policy.ts|\
+              scripts/check-package-release-policy.test.ts|\
               packages/*/package.json)
                 reference_impacting=true
                 break
