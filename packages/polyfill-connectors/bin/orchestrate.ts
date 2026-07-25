@@ -141,13 +141,22 @@ async function cmdRun(name: string): Promise<{ ok: boolean; result: RunResult }>
       console.error(`[orchestrate] error: ${JSON.stringify(result.error).slice(0, 800)}`);
     }
 
-    // Verify: query each stream and report record count
+    // Verify: query each stream and report record count. Each stream's query is
+    // an independent read against the RS with no shared state between streams,
+    // so they fan out concurrently; results are printed after in declared
+    // `streams` order so the summary stays deterministic regardless of which
+    // query resolves first.
     console.error("\n[orchestrate] verifying records in RS:");
-    for (const stream of streams) {
-      const countQ = await queryStream(rsUrl, ownerToken, stream.name, {
-        limit: 100,
-        connectorId: manifest.connector_id,
-      });
+    const streamReports = await Promise.all(
+      streams.map(async (stream) => {
+        const countQ = await queryStream(rsUrl, ownerToken, stream.name, {
+          limit: 100,
+          connectorId: manifest.connector_id,
+        });
+        return { stream, countQ };
+      })
+    );
+    for (const { stream, countQ } of streamReports) {
       if (countQ.status !== 200) {
         console.error(
           `  ✗ ${stream.name.padEnd(28)} status=${countQ.status} ${JSON.stringify(countQ.body).slice(0, 100)}`
