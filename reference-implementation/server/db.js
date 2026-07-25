@@ -215,6 +215,26 @@ CREATE TABLE IF NOT EXISTS connector_instances (
 CREATE INDEX IF NOT EXISTS idx_connector_instances_owner_connector_status
   ON connector_instances(owner_subject_id, connector_id, status);
 
+-- Durable record that a connector-instance IDENTITY was owner-deleted.
+-- connector_instance_id is deterministic (hash of owner + connector +
+-- source_kind + source_binding_key), so once deleteConnection removes the
+-- connector_instances row, that same id/binding key is free to be reused by
+-- a later upsert (e.g. a device-exporter re-enrollment under the same
+-- local_binding_name). This table is the durable fact that blocks that
+-- reuse: upsert's no-existing-row path checks it and fails closed with
+-- connection_tombstoned instead of silently resurrecting the identity.
+-- Identity + timestamp only -- no configuration, secrets, or record data.
+-- See openspec/changes/fix-owner-delete-resurrection.
+CREATE TABLE IF NOT EXISTS connector_instance_tombstones (
+  connector_instance_id TEXT PRIMARY KEY,
+  owner_subject_id      TEXT NOT NULL,
+  connector_id          TEXT NOT NULL,
+  source_kind           TEXT NOT NULL,
+  source_binding_key    TEXT NOT NULL,
+  deleted_at            TEXT NOT NULL,
+  UNIQUE(owner_subject_id, connector_id, source_kind, source_binding_key)
+);
+
 -- Per-connection encrypted static-secret credential store. A peer of the
 -- instance-scoped storage / schedule state: a single connector-declared static
 -- provider secret sealed at rest under the owner/operator key and keyed to

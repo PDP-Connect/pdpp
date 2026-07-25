@@ -551,6 +551,22 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
       CREATE INDEX IF NOT EXISTS idx_pg_connector_instances_owner_connector_status
         ON connector_instances(owner_subject_id, connector_id, status);
 
+      -- Durable record that a connector-instance IDENTITY was owner-deleted.
+      -- See the SQLite arm (server/db.js) for the full rationale: the
+      -- deterministic connector_instance_id/binding key would otherwise let a
+      -- later upsert (e.g. device-exporter re-enrollment) silently
+      -- resurrect a deleted identity once its row is gone. Identity + a
+      -- timestamp only. See openspec/changes/fix-owner-delete-resurrection.
+      CREATE TABLE IF NOT EXISTS connector_instance_tombstones (
+        connector_instance_id TEXT PRIMARY KEY,
+        owner_subject_id TEXT NOT NULL,
+        connector_id TEXT NOT NULL,
+        source_kind TEXT NOT NULL,
+        source_binding_key TEXT NOT NULL,
+        deleted_at TEXT NOT NULL,
+        UNIQUE(owner_subject_id, connector_id, source_kind, source_binding_key)
+      );
+
       -- Reset-safe record-source checkpoint: incremented by a supported
       -- stream/connector-wide reset over the distinct stream namespaces it
       -- touched, in the same transaction as the deletes. Combined with the

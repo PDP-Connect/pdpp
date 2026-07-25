@@ -48,6 +48,7 @@ const EXPECTED_CODE_TO_STATUS = {
   ambiguous_schema_detail: 409,
   connection_not_found: 404,
   connection_run_active: 409,
+  connection_tombstoned: 409,
   default_account_delete_unsupported: 409,
   local_device_control_unsupported: 409,
   connector_instance_connector_mismatch: 400,

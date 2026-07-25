@@ -10,14 +10,18 @@ import { COLLECTOR_PROTOCOL_VERSION } from '../server/collector-protocol.ts';
 import { getDb } from '../server/db.js';
 import { startServer } from '../server/index.js';
 import { __setDeviceIngestStoreFaultHookForTest } from '../server/routes/ref-device-exporters.ts';
+import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
 import {
   buildLocalDeviceIngestBatchRequest,
   buildLocalDeviceRecordEnvelope,
 } from '../../packages/polyfill-connectors/src/local-device-envelope.ts';
 import {
   __setIngestFaultHookForTest,
+  deleteConnectionRecordRowsSqlite,
+  enumerateConnectionStreams,
   ingestRecord,
   setClientEventEnqueueHook,
+  teardownConnectionSearchProjection,
 } from '../server/records.js';
 
 const PROTOCOL_HEADERS = { 'X-PDPP-Collector-Protocol': COLLECTOR_PROTOCOL_VERSION };
@@ -1359,6 +1363,71 @@ test('re-enrolling the same connector + local_binding_name resumes one stable co
       )
       .all('codex');
     assert.equal(distinctRows.length, 2);
+  });
+});
+
+test('enrollment against an owner-deleted binding fails closed with a typed 409, never resurrects', async () => {
+  // Live incident regression (fix-owner-delete-resurrection): an owner
+  // DELETE on a device-collected connection removes the connector_instances
+  // row, but source_binding_key for local_device is derived from
+  // {kind, local_binding_name} only — independent of device_id/
+  // source_instance_id. A later enroll for the SAME local_binding_name (a
+  // genuinely new device pairing, e.g. after a reinstall) used to silently
+  // materialize a fresh active row on the SAME connector_instance_id. This
+  // proves enroll now fails closed instead.
+  await withServer(async ({ asUrl }) => {
+    const first = await enrollDevice(asUrl, 'laptop-deleted');
+    const ownerRow = getDb()
+      .prepare(`SELECT owner_subject_id FROM connector_instances WHERE connector_instance_id = ?`)
+      .get(first.connector_instance_id);
+    assert.ok(ownerRow, 'connector instance row exists before delete');
+
+    const store = createSqliteConnectorInstanceStore();
+    await store.deleteConnection(first.connector_instance_id, {
+      ownerSubjectId: ownerRow.owner_subject_id,
+      now: new Date().toISOString(),
+      purge: {
+        enumerateStreams: (target) => enumerateConnectionStreams(target),
+        deleteRecordRowsSqlite: (id) => deleteConnectionRecordRowsSqlite(id),
+        teardownProjection: (args) => teardownConnectionSearchProjection(args),
+      },
+    });
+    assert.equal(
+      getDb().prepare(`SELECT 1 x FROM connector_instances WHERE connector_instance_id = ?`).get(first.connector_instance_id),
+      undefined,
+      'row is gone after owner delete',
+    );
+
+    // Re-enroll under the SAME local_binding_name — a genuinely new device
+    // pairing (fresh enrollment code, fresh device_id/source_instance_id
+    // under the hood), targeting the tombstoned identity.
+    const codeResp = await postJson(`${asUrl}/_ref/device-exporters/enrollment-codes`, {
+      connector_id: 'codex',
+      local_binding_name: 'laptop-deleted',
+    });
+    assert.equal(codeResp.status, 201);
+    const enrollResp = await postJson(
+      `${asUrl}/_ref/device-exporters/enroll`,
+      { enrollment_code: codeResp.body.enrollment_code },
+      PROTOCOL_HEADERS,
+    );
+    assert.equal(enrollResp.status, 409, 'enroll against a tombstoned identity is a typed 409, not a 201');
+    assert.equal(enrollResp.body.error?.code, 'connection_tombstoned');
+    assert.ok(
+      !JSON.stringify(enrollResp.body).includes('device_token'),
+      'a failed enroll never leaks a device token',
+    );
+
+    assert.equal(
+      getDb().prepare(`SELECT 1 x FROM connector_instances WHERE connector_instance_id = ?`).get(first.connector_instance_id),
+      undefined,
+      'no row was resurrected by the rejected enroll attempt',
+    );
+
+    // A DIFFERENT local_binding_name for the same connector is unaffected
+    // and enrolls normally.
+    const distinct = await enrollDevice(asUrl, 'laptop-deleted-v2');
+    assert.notEqual(distinct.connector_instance_id, first.connector_instance_id);
   });
 });
 

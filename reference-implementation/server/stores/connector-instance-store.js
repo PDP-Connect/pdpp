@@ -81,15 +81,17 @@ function assertDeletableConnection(instance, { connectorInstanceId, ownerSubject
   if (instance.sourceKind === 'account' && instance.sourceBindingKey === DEFAULT_ACCOUNT_SOURCE_BINDING_KEY) {
     // The default-account id is deterministic, so a hard row delete would be
     // silently re-materialized to active (with zero records) by the next
-    // `ensureDefaultAccountConnection` read. This slice does not ship the
-    // tombstone ledger that would let the materialization path refuse a
-    // deleted binding, so default-account delete stays typed-unsupported
-    // rather than shipping silent resurrection. Device-collected and explicit
-    // (non-default) account connections have non-deterministic binding keys and
-    // are deletable. See add-owner-connection-delete-contract Decision 1.
+    // `ensureDefaultAccountConnection` read. A tombstone ledger now exists
+    // (see fix-owner-delete-resurrection) and WOULD block that
+    // materialization the same way it blocks device-exporter re-enroll — but
+    // default-account delete stays typed-unsupported regardless, rather than
+    // changing this route's behavior as a side effect of the tombstone fix.
+    // Device-collected and explicit (non-default) account connections have
+    // non-deterministic binding keys and are deletable. See
+    // add-owner-connection-delete-contract Decision 1.
     throw new ConnectorInstanceDeleteError(
       'default_account_delete_unsupported',
-      `Connection '${connectorInstanceId}' is a default-account binding; deleting it is not supported until a deletion tombstone exists, because the deterministic default-account id would otherwise silently re-materialize on the next owner read. Revoke it instead, or re-initiate to replace it.`,
+      `Connection '${connectorInstanceId}' is a default-account binding; deleting it is not supported, because the deterministic default-account id would otherwise be resolved outside the normal upsert path. Revoke it instead, or re-initiate to replace it.`,
       { ownerSubjectId, connectorInstanceId, connectorId: instance.connectorId },
     );
   }
@@ -242,6 +244,40 @@ function mapInstance(row) {
     updatedAt: row.updated_at,
     revokedAt: row.revoked_at,
   };
+}
+
+function mapTombstone(row) {
+  if (!row) return null;
+  return {
+    connectorInstanceId: row.connector_instance_id,
+    ownerSubjectId: row.owner_subject_id,
+    connectorId: row.connector_id,
+    sourceKind: row.source_kind,
+    sourceBindingKey: row.source_binding_key,
+    deletedAt: row.deleted_at,
+  };
+}
+
+// Throws `connection_tombstoned` when `normalized`'s identity
+// (owner/connector/source_kind/source_binding_key) was previously
+// owner-deleted. `tombstone` is the already-fetched tombstone row (or null),
+// resolved by the caller so this stays a plain sync assertion usable from
+// both the sync SQLite store and the awaited Postgres store. See
+// openspec/changes/fix-owner-delete-resurrection.
+function assertIdentityNotTombstoned(tombstone, normalized) {
+  if (!tombstone) {
+    return;
+  }
+  throw new ConnectorInstanceDeleteError(
+    'connection_tombstoned',
+    `Connector instance identity for owner '${normalized.ownerSubjectId}', connector '${normalized.connectorId}' was previously deleted by the owner and cannot be silently re-created. Re-enroll under a distinct binding, or ask the owner to explicitly re-initiate this connection.`,
+    {
+      ownerSubjectId: normalized.ownerSubjectId,
+      connectorId: normalized.connectorId,
+      sourceKind: normalized.sourceKind,
+      sourceBindingKey: normalized.sourceBindingKey,
+    },
+  );
 }
 
 function resolveSingleActive(rows, ownerSubjectId, connectorId) {
@@ -463,6 +499,23 @@ export function createSqliteConnectorInstanceStore() {
     upsert(record) {
       const normalized = normalizeRecord(record);
       const currentLocalBindingName = extractLocalBindingName(record.sourceBinding);
+      // Tombstone guard: only relevant when no LIVE row exists for this
+      // identity yet — an `ON CONFLICT DO UPDATE` hit against an existing row
+      // (revoke, pause, reactivate-by-re-enroll) is untouched by this check.
+      // A missing row for a tombstoned identity means the identity was
+      // owner-deleted; refuse to silently re-materialize it. See
+      // openspec/changes/fix-owner-delete-resurrection.
+      if (!this.get(normalized.connectorInstanceId)) {
+        assertIdentityNotTombstoned(
+          this.getTombstoneByBinding({
+            ownerSubjectId: normalized.ownerSubjectId,
+            connectorId: normalized.connectorId,
+            sourceKind: normalized.sourceKind,
+            sourceBindingKey: normalized.sourceBindingKey,
+          }),
+          normalized,
+        );
+      }
       try {
         exec(referenceQueries.connectorInstancesInsert, [
           normalized.connectorInstanceId,
@@ -556,6 +609,20 @@ export function createSqliteConnectorInstanceStore() {
     getByBinding({ ownerSubjectId, connectorId, sourceKind, sourceBindingKey }) {
       return mapInstance(
         getOne(referenceQueries.connectorInstancesGetByBinding, [
+          ownerSubjectId,
+          connectorId,
+          sourceKind,
+          sourceBindingKey,
+        ]),
+      );
+    },
+
+    // Reads the tombstone (if any) for one identity. Consulted ONLY by
+    // `upsert`'s no-existing-row path; no other read surface in the system
+    // queries this table. See openspec/changes/fix-owner-delete-resurrection.
+    getTombstoneByBinding({ ownerSubjectId, connectorId, sourceKind, sourceBindingKey }) {
+      return mapTombstone(
+        getOne(referenceQueries.connectorInstancesGetTombstoneByBinding, [
           ownerSubjectId,
           connectorId,
           sourceKind,
@@ -718,6 +785,18 @@ export function createSqliteConnectorInstanceStore() {
         exec(referenceQueries.connectorInstancesDeleteSummaryEvidenceByConnectorInstance, [connectorInstanceId]);
         const schedule = exec(referenceQueries.controllerDeleteSchedule, [connectorInstanceId]);
         const device = exec(referenceQueries.deviceExportersClearSourceInstanceConnectorRef, [stamp, connectorInstanceId]);
+        // Record the tombstone BEFORE removing the row, same transaction: the
+        // durable fact that this identity was owner-deleted must survive even
+        // though the row itself is about to be erased. See
+        // openspec/changes/fix-owner-delete-resurrection.
+        exec(referenceQueries.connectorInstancesInsertTombstone, [
+          instance.connectorInstanceId,
+          instance.ownerSubjectId,
+          instance.connectorId,
+          instance.sourceKind,
+          instance.sourceBindingKey,
+          stamp,
+        ]);
         exec(referenceQueries.connectorInstancesDeleteById, [connectorInstanceId]);
         return {
           deletedRecordCount: recordCount,
@@ -824,6 +903,21 @@ export function createPostgresConnectorInstanceStore() {
     async upsert(record) {
       const normalized = normalizeRecord(record);
       const currentLocalBindingName = extractLocalBindingName(record.sourceBinding);
+      // Tombstone guard: only relevant when no LIVE row exists for this
+      // identity yet — an `ON CONFLICT DO UPDATE` hit against an existing row
+      // (revoke, pause, reactivate-by-re-enroll) is untouched by this check.
+      // See the SQLite arm for the full rationale.
+      if (!(await this.get(normalized.connectorInstanceId))) {
+        assertIdentityNotTombstoned(
+          await this.getTombstoneByBinding({
+            ownerSubjectId: normalized.ownerSubjectId,
+            connectorId: normalized.connectorId,
+            sourceKind: normalized.sourceKind,
+            sourceBindingKey: normalized.sourceBindingKey,
+          }),
+          normalized,
+        );
+      }
       try {
         await postgresQuery(
           `INSERT INTO connector_instances(connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at)
@@ -949,6 +1043,19 @@ export function createPostgresConnectorInstanceStore() {
         [ownerSubjectId, connectorId, sourceKind, sourceBindingKey],
       );
       return mapInstance(result.rows[0]);
+    },
+
+    // Reads the tombstone (if any) for one identity. Consulted ONLY by
+    // `upsert`'s no-existing-row path; no other read surface in the system
+    // queries this table. See openspec/changes/fix-owner-delete-resurrection.
+    async getTombstoneByBinding({ ownerSubjectId, connectorId, sourceKind, sourceBindingKey }) {
+      const result = await postgresQuery(
+        `SELECT connector_instance_id, owner_subject_id, connector_id, source_kind, source_binding_key, deleted_at
+         FROM connector_instance_tombstones
+         WHERE owner_subject_id = $1 AND connector_id = $2 AND source_kind = $3 AND source_binding_key = $4`,
+        [ownerSubjectId, connectorId, sourceKind, sourceBindingKey],
+      );
+      return mapTombstone(result.rows[0]);
     },
 
     async listByOwner(ownerSubjectId, { limit = LIST_LIMIT } = {}) {
@@ -1109,6 +1216,16 @@ export function createPostgresConnectorInstanceStore() {
         const device = await client.query(
           `UPDATE device_source_instances SET connector_instance_id = NULL, updated_at = $1 WHERE connector_instance_id = $2`,
           [stamp, connectorInstanceId],
+        );
+        // Record the tombstone BEFORE removing the row, same transaction: the
+        // durable fact that this identity was owner-deleted must survive even
+        // though the row itself is about to be erased. See
+        // openspec/changes/fix-owner-delete-resurrection.
+        await client.query(
+          `INSERT INTO connector_instance_tombstones(connector_instance_id, owner_subject_id, connector_id, source_kind, source_binding_key, deleted_at)
+           VALUES($1, $2, $3, $4, $5, $6)
+           ON CONFLICT(owner_subject_id, connector_id, source_kind, source_binding_key) DO NOTHING`,
+          [instance.connectorInstanceId, instance.ownerSubjectId, instance.connectorId, instance.sourceKind, instance.sourceBindingKey, stamp],
         );
         await client.query(
           `DELETE FROM connector_instances WHERE connector_instance_id = $1`,

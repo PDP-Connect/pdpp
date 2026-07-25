@@ -49,6 +49,7 @@ const EXPECTED = {
   ambiguous_connection: 409,
   ambiguous_schema_detail: 409,
   connection_run_active: 409,
+  connection_tombstoned: 409,
   default_account_delete_unsupported: 409,
   local_device_control_unsupported: 409,
   connector_instance_not_revoked: 409,
@@ -75,6 +76,6 @@ test('codeToStatus has no added or removed codes versus the pinned contract', ()
   assert.deepEqual(Object.keys(codeToStatus).sort(), Object.keys(EXPECTED).sort());
 });
 
-test('codeToStatus contains all 48 committed error codes', () => {
-  assert.equal(Object.keys(codeToStatus).length, 48);
+test('codeToStatus contains all 49 committed error codes', () => {
+  assert.equal(Object.keys(codeToStatus).length, 49);
 });
