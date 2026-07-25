@@ -3,14 +3,22 @@
 
 /**
  * Checked-in exact allowlist for the package-wide `lint/performance/noAwaitInLoops`
- * policy. `noAwaitInLoops` stays enabled by DEFAULT everywhere in this package —
- * there is no blanket override in biome.jsonc. This file is the sole exception
- * mechanism: every (path, line, column) below is a specific, reviewed, genuinely
- * intentional sequential await, not an escape hatch.
+ * policy.
+ *
+ * Two-layer design. biome.jsonc deliberately keeps `noAwaitInLoops: "off"`
+ * for `src/`, `bin/`, `bench/`, `connectors/` (its own comment explains why:
+ * the package's dominant loop shapes are genuinely sequential) — that
+ * override is NOT removed by this file and stays in effect for ordinary
+ * `pnpm check`/`biome check` runs. This file is the independent second
+ * layer: the sole sanctioned exception mechanism, checked by a dedicated
+ * gate that re-enables the rule out-of-band. Every (path, line, column)
+ * below is a specific, reviewed, genuinely intentional sequential await,
+ * not an escape hatch.
  *
  * Enforcement: `scripts/check-no-await-in-loops-conformance.ts` (wired into
- * `pnpm check` and `pnpm verify`) re-runs Biome with the rule at "error" and
- * fails the build on:
+ * `pnpm verify` as `check:noAwaitInLoops-conformance`) re-runs Biome with
+ * the rule forced back to "error" for its own invocation only and fails
+ * the build on:
  *   1. any LIVE finding whose location is not listed here (a new sequential
  *      await was introduced and was never reviewed/categorized), and
  *   2. any LISTED row whose location Biome no longer flags (the code moved or

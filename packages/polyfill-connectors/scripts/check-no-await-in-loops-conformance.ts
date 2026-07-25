@@ -5,14 +5,23 @@
 /**
  * Conformance gate for `lint/performance/noAwaitInLoops`.
  *
- * The rule stays enabled by DEFAULT everywhere in this package — there is no
- * blanket biome.jsonc override that turns it off. The only sanctioned
- * exception mechanism is the checked-in exact allowlist in
- * `scripts/no-await-in-loops-allowlist.ts`.
+ * Two-layer design. biome.jsonc DELIBERATELY keeps a package-wide
+ * `noAwaitInLoops: "off"` override in place (see its own comment for why:
+ * the package's dominant loop shapes are genuinely sequential — ordered
+ * protocol emission, one-shared-page browser interaction, dependent
+ * pagination, retry/backoff, etc.) — that override is NOT removed or
+ * bypassed by this script, and ordinary `pnpm check`/`biome check` runs
+ * never re-enable the rule on their own.
  *
- * This script re-runs Biome with the rule forced to "error" (via a scratch
+ * This script is the independent second layer: it re-runs Biome with the
+ * rule forced back to "error" for its own invocation only (via a scratch
  * config that `extends` the real biome.jsonc, so every OTHER rule/override
- * stays exactly as configured) and fails the build on either divergence:
+ * stays exactly as configured), and diffs the resulting live findings
+ * against the checked-in exact allowlist in
+ * `scripts/no-await-in-loops-allowlist.ts` — the only sanctioned exception
+ * mechanism. That allowlist diff, not the biome.jsonc override, is what
+ * actually prevents an unreviewed new sequential await from landing. The
+ * script fails the build on either divergence:
  *
  *   1. NEW/UNLISTED — a live finding whose (path, line, column) is not in
  *      the allowlist. This is the actual "did a new sequential await sneak
