@@ -79,7 +79,7 @@ async function readIndex(pool, indexName) {
 }
 
 if (!POSTGRES_URL) {
-  test('Postgres record index bootstrap tests (skipped: PDPP_TEST_POSTGRES_URL unset)', { skip: true }, () => {});
+  test('Postgres record index idempotency-oracle tests (skipped: PDPP_TEST_POSTGRES_URL unset)', { skip: true }, () => {});
 } else {
   test('record index bootstrap keeps matching stream/version index oid across restart', async () => {
     await withTempDb(async (url) => {
