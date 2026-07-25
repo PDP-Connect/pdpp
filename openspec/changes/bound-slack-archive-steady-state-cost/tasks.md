@@ -63,11 +63,11 @@
 ## 6. Live-closure follow-up (2026-07-25): the above shipped, but live UAT
    surfaced three real defects in tasks 2/3 — fixed here
 
-Live run `run_1784954046064` (2026-07-25) ran `SLACK_RECLAIM_UPLOADS=1` against
-the real archive and terminated `run.failed` /
+A live run (2026-07-25) ran `SLACK_RECLAIM_UPLOADS=1` against the real
+archive and terminated `run.failed` /
 `connector_protocol_violation` ("Connector emitted PROGRESS after DONE"),
 despite ingesting 322 records across all required streams. Root-caused via the
-live spine events (`docker exec pdpp-postgres-1 psql`) and `pdpp-reference-1`
+live spine events (database evidence and the reference runtime)
 container logs, not assumption.
 
 - [x] 6.1 **Protocol-violation root cause (task 3.2 defect):** `onDurableCommit`
@@ -189,18 +189,18 @@ figure for. Owner UAT (below) is the only way to observe the real number, and
 the claim this closure makes is deliberately scoped to the bound, not that
 number.
 
-## 8. Live REVISE after deploy `aa038775d` (2026-07-25): repair-unit count
+## 8. Live REVISE after a live deploy (2026-07-25): repair-unit count
    bound (task 7.2) was correct but insufficient — a retained unit's `resume`
    still ran unbounded, forever — fixed here
 
-Live evidence, `run_1784962644222`: run succeeded (no `connector_protocol_
+Live evidence: a subsequent run succeeded (no `connector_protocol_
 violation` — task 6.1's fix held), but `scoped-archive-reconcile` still took
-3,291,850ms (54m52s) with the selection message reading `selected 1 repair
+~55 minutes with the selection message reading `selected 1 repair
 unit(s) (1 existing scoped archive refresh(es) + 0 new-repair attempt(s) for
 0 uncovered channel(s)), each bounded to lookback=p7d` — the task 7.2 bound
-was reported accurately, and was still not enough. The single unit
-(`archive-scoped/62fd13bace2a/`, ~4.9GB / ~1.95M messages / ~137k `CHANNEL`
-rows) showed continuous `messages`/`channels`/`max_chunk` growth for the
+was reported accurately, and was still not enough. The single retained
+scoped archive (several GB / millions of messages / hundreds of thousands of
+`CHANNEL` rows) showed continuous `messages`/`channels`/`max_chunk` growth for the
 entire run via the connector's own per-minute progress snapshots — genuine,
 ongoing Slack-side activity, not a stalled/inaccessible channel.
 
@@ -363,7 +363,7 @@ recoverable gap for up to a week.
 
 ### Still not reproduced locally (task 9)
 
-Whether a real, live resume failure against `vana-org` (as opposed to the
+Whether a real, live resume failure against the live workspace (as opposed to the
 synthetic fake-binary failure this task's tests inject) produces a
 `DETAIL_GAP` the recovery governor's durable store actually persists and
 later drains — this exercises the runtime side of the protocol, which these

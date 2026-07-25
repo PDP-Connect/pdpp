@@ -687,14 +687,14 @@ test("scoped-archive-reconcile declares 0 selected repair units and does no work
   }
 });
 
-// Reproduces the live incident (run_1784962644222, 2026-07-25): a scoped
-// archive covering exactly one permanently-missing channel (0 uncovered
-// channels — fully covered by an EXISTING scoped archive every run) still got
-// a full `slackdump resume` re-sync every single connector run, taking
-// ~55 minutes against a large (4.9GB / 1.95M message) accumulated archive,
-// forever — because "this archive is selected to cover a missing channel"
-// was treated as sufficient reason to resume it, with no check for whether a
-// resume could possibly discover anything new since the last one.
+// Reproduces a live incident: a scoped archive covering exactly one
+// permanently-missing channel (0 uncovered channels — fully covered by an
+// EXISTING scoped archive every run) still got a full `slackdump resume`
+// re-sync every single connector run, taking ~55 minutes against a large
+// (multi-GB, multi-million-message) accumulated archive, forever — because
+// "this archive is selected to cover a missing channel" was treated as
+// sufficient reason to resume it, with no check for whether a resume could
+// possibly discover anything new since the last one.
 test("scoped-archive-reconcile throttles a scoped archive's resume to at most once per lookback window", async () => {
   const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-reconcile-throttle-"));
   try {
@@ -1095,6 +1095,251 @@ test("scoped-archive-reconcile emits DETAIL_GAP_RECOVERED when a previously-fail
     assert.ok(recovered, "emits DETAIL_GAP_RECOVERED once the archive resumes successfully again");
     assert.equal(recovered?.gap_id, "gap_prior_scoped_archive_resume");
     assert.equal(recovered?.record_key, scopedArchiveDir);
+    assert.equal(recovered?.stream, "messages");
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+// RI final gate: round 5's fix covered ONLY the existing-archive-refresh
+// failure path (refreshScopedArchive). repairMissingScopedArchive — the
+// separate new-repair-attempt path for an UNCOVERED missing channel (no
+// existing scoped archive selects it) — has its own ensureArchiveOnDisk
+// failure branch that withheld the timestamp (already correct) but emitted
+// no typed DETAIL_GAP at all, leaving this failure invisible to the
+// recovery governor. This test drives the REAL (non-skip) slackdump path
+// via a fake SLACKDUMP_BIN that fails only for the repair-target archive
+// path (the base archive succeeds), with NO existing scoped archive for
+// C0MISSING on disk — forcing reconcileMessageSourceCache into the
+// new-repair-attempt branch, not the existing-archive-refresh branch.
+test("a failed NEW-repair attempt for an uncovered missing channel emits the same typed retryable gap and leaves the archive owed", async () => {
+  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-reconcile-repair-fail-"));
+  const priorBin = process.env.SLACKDUMP_BIN;
+  try {
+    const workspace = "reconcile-repair-fail-ws";
+    const baseArchiveDir = join(homeDir, ".pdpp", "slackdump", workspace, "archive");
+    const repairArchiveDir = join(
+      homeDir,
+      ".pdpp",
+      "slackdump",
+      workspace,
+      "archive-scoped",
+      scopedArchiveDigest(["C0MISSING"])
+    );
+    await mkdir(baseArchiveDir, { recursive: true });
+    // Deliberately do NOT create repairArchiveDir — no existing scoped
+    // archive covers C0MISSING, so selectScopedArchivesForChannels selects
+    // nothing for it and reconcileMessageSourceCache falls through to the
+    // new-repair-attempt branch (repairMissingScopedArchive), not the
+    // existing-archive-refresh branch (refreshScopedArchive).
+
+    const baseDb = new DatabaseSync(join(baseArchiveDir, "slackdump.sqlite"));
+    try {
+      seedArchiveSchema(baseDb);
+      insertChannel(baseDb, "C0PRESENT", "present");
+      insertMessage(baseDb, "C0PRESENT", "1714032849.123456", "still present");
+    } finally {
+      baseDb.close();
+    }
+
+    // Fake slackdump binary: exits non-zero ONLY when its last argument (the
+    // archive/resume target path) is the repair-target archive — the base
+    // archive's own invocation succeeds. Before failing, it writes a
+    // partial __uploads/ file at the repair target — modeling a real
+    // slackdump crash mid-dump that leaves residue on disk despite the run
+    // never durably completing, so the reclaim gate has real bytes to
+    // (correctly) refuse to touch.
+    // The new-repair attempt runs slackdump's "archive" subcommand (not
+    // "resume" — there is no existing archive on disk yet), whose args end
+    // with the target's positional CHANNEL IDs, not the archive path itself
+    // (unlike "resume", where the path IS the last arg). The archive path
+    // instead follows the "-o" flag, so the fake binary locates it there.
+    const fakeSlackdumpPath = join(homeDir, "fake-slackdump.mjs");
+    await writeFile(
+      fakeSlackdumpPath,
+      `#!/usr/bin/env node
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+const oIndex = process.argv.indexOf("-o");
+const target = oIndex >= 0 ? (process.argv[oIndex + 1] ?? "") : "";
+if (target.includes("archive-scoped")) {
+  const uploadsDir = join(target, "__uploads", "F_PARTIAL");
+  mkdirSync(uploadsDir, { recursive: true });
+  writeFileSync(join(uploadsDir, "partial.bin"), Buffer.alloc(512, 9));
+  process.stderr.write("simulated: slackdump archive failed for new-repair attempt\\n");
+  process.exit(6);
+}
+process.exit(0);
+`,
+      "utf8"
+    );
+    await chmod(fakeSlackdumpPath, 0o755);
+    process.env.SLACKDUMP_BIN = fakeSlackdumpPath;
+
+    const result = await runConnectorProtocolSubprocess({
+      cwd: PACKAGE_ROOT,
+      entrypoint: SLACK_ENTRYPOINT,
+      env: {
+        HOME: homeDir,
+        SLACK_COOKIE: "d=fake",
+        SLACK_RECLAIM_UPLOADS: "1",
+        SLACK_TOKEN: "xoxc-fake",
+        SLACK_WORKSPACE: workspace,
+        SLACKDUMP_BIN: fakeSlackdumpPath,
+      },
+      start: {
+        type: "START",
+        scope: { streams: [{ name: "messages" }] },
+        state: {
+          messages: {
+            last_ts: "1714032800.000000",
+            channel_last_ts: { C0MISSING: "1714032800.000000", C0PRESENT: "1714032800.000000" },
+            observed_channel_ids: ["C0MISSING", "C0PRESENT"],
+            // No prior scoped_archive_resumed_at entry for the repair path
+            // — there is no existing archive to have a prior timestamp yet.
+          },
+        },
+      },
+    });
+
+    const done = result.messages.findLast((m): m is Extract<EmittedMessage, { type: "DONE" }> => m.type === "DONE");
+    assert.equal(done?.status, "succeeded", "a failed optional new-repair attempt is non-fatal to the run");
+
+    const lines = progressLines(result.messages);
+    assert.ok(
+      lines.some((l) => l.includes("scoped archive auto-reconcile failed") && l.includes("channel(s)")),
+      "reports the new-repair failure as progress evidence"
+    );
+    assert.ok(
+      lines.some((l) => l.includes("(failed, gap recorded)")),
+      "the completed cursor honestly reports the new-repair attempt as failed, not resumed — SAME label as the existing-archive-refresh path, not a parallel taxonomy"
+    );
+
+    // The decisive fix: a failed new-repair attempt must NOT stamp a
+    // scoped_archive_resumed_at entry for the repair-target path — there was
+    // no prior entry, and none must appear now.
+    const cursor = messagesState(result);
+    const resumedAtAfter = (cursor.scoped_archive_resumed_at as Record<string, string> | undefined)?.[repairArchiveDir];
+    assert.equal(
+      resumedAtAfter,
+      undefined,
+      "a failed new-repair attempt records NO scoped_archive_resumed_at entry — it must remain owed, not silently marked done"
+    );
+
+    // Typed, durable recovery evidence — the SAME gap shape the
+    // existing-archive-refresh path uses, keyed to the repair archive path.
+    const gap = result.messages.find(
+      (m): m is Extract<EmittedMessage, { type: "DETAIL_GAP" }> =>
+        m.type === "DETAIL_GAP" && (m as { record_key?: unknown }).record_key === repairArchiveDir
+    );
+    assert.ok(gap, "emits a DETAIL_GAP keyed by the repair archive path");
+    assert.equal(gap?.stream, "messages");
+    assert.equal(gap?.reason, "temporary_unavailable");
+    assert.equal(gap?.retryable, true);
+    assert.equal(gap?.status, "pending");
+    assert.equal((gap?.detail_locator as { kind?: unknown } | undefined)?.kind, "slack.scoped_archive_resume");
+    assert.ok(
+      !result.messages.some((m) => m.type === "DETAIL_GAP_RECOVERED"),
+      "does not emit DETAIL_GAP_RECOVERED for a new-repair attempt that never succeeded"
+    );
+
+    // Preserves the pre-existing invariant: even though the fake binary left
+    // real partial __uploads/ bytes on disk before failing (modeling a
+    // genuine mid-dump crash), SLACK_RECLAIM_UPLOADS=1 must NOT reclaim them
+    // — there is no durable-commit receipt for a failed attempt. This is the
+    // exact gate `repair.outcome.kind === "resumed"` enforces (not the old
+    // `repair.archivePath` truthiness check, which is now always true
+    // regardless of success/failure and would incorrectly reclaim here).
+    assert.ok(
+      existsSync(join(repairArchiveDir, "__uploads")),
+      "the partial __uploads/ residue from the failed attempt is untouched, not silently reclaimed"
+    );
+  } finally {
+    if (priorBin === undefined) {
+      delete process.env.SLACKDUMP_BIN;
+    } else {
+      process.env.SLACKDUMP_BIN = priorBin;
+    }
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("a later successful NEW-repair attempt emits DETAIL_GAP_RECOVERED for a previously-failed repair archive path", async () => {
+  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-reconcile-repair-recovered-"));
+  try {
+    const workspace = "reconcile-repair-recovered-ws";
+    const baseArchiveDir = join(homeDir, ".pdpp", "slackdump", workspace, "archive");
+    const repairArchiveDir = join(
+      homeDir,
+      ".pdpp",
+      "slackdump",
+      workspace,
+      "archive-scoped",
+      scopedArchiveDigest(["C0MISSING"])
+    );
+    await mkdir(baseArchiveDir, { recursive: true });
+    // This time the repair archive already exists with the channel data —
+    // modeling "the new-repair attempt now succeeds" (PDPP_SLACK_SKIP_SLACKDUMP=1
+    // reads the existing, valid archive rather than failing to find one).
+    await mkdir(repairArchiveDir, { recursive: true });
+
+    const baseDb = new DatabaseSync(join(baseArchiveDir, "slackdump.sqlite"));
+    try {
+      seedArchiveSchema(baseDb);
+      insertChannel(baseDb, "C0PRESENT", "present");
+      insertMessage(baseDb, "C0PRESENT", "1714032849.123456", "still present");
+    } finally {
+      baseDb.close();
+    }
+    const repairDb = new DatabaseSync(join(repairArchiveDir, "slackdump.sqlite"));
+    try {
+      seedArchiveSchema(repairDb);
+      insertChannel(repairDb, "C0MISSING", "missing");
+      insertMessage(repairDb, "C0MISSING", "1714032850.123456", "recovered via new-repair attempt");
+    } finally {
+      repairDb.close();
+    }
+
+    const result = await runConnectorProtocolSubprocess({
+      cwd: PACKAGE_ROOT,
+      entrypoint: SLACK_ENTRYPOINT,
+      env: {
+        HOME: homeDir,
+        PDPP_SLACK_SKIP_SLACKDUMP: "1",
+        SLACK_COOKIE: "d=fake",
+        SLACK_TOKEN: "xoxc-fake",
+        SLACK_WORKSPACE: workspace,
+      },
+      start: {
+        type: "START",
+        scope: { streams: [{ name: "messages" }] },
+        state: {
+          messages: {
+            last_ts: "1714032800.000000",
+            channel_last_ts: { C0MISSING: "1714032800.000000", C0PRESENT: "1714032800.000000" },
+            observed_channel_ids: ["C0MISSING", "C0PRESENT"],
+          },
+        },
+        // A prior run's failed new-repair attempt left this durable gap
+        // pending, keyed to the repair archive path exactly as this fix's
+        // repairMissingScopedArchive path now emits it.
+        detail_gaps: [
+          {
+            gap_id: "gap_prior_new_repair_attempt",
+            record_key: repairArchiveDir,
+            status: "pending",
+            stream: "messages",
+          },
+        ],
+      },
+    });
+
+    const recovered = result.messages.find(
+      (m): m is Extract<EmittedMessage, { type: "DETAIL_GAP_RECOVERED" }> => m.type === "DETAIL_GAP_RECOVERED"
+    );
+    assert.ok(recovered, "emits DETAIL_GAP_RECOVERED once the new-repair attempt succeeds");
+    assert.equal(recovered?.gap_id, "gap_prior_new_repair_attempt");
+    assert.equal(recovered?.record_key, repairArchiveDir);
     assert.equal(recovered?.stream, "messages");
   } finally {
     await rm(homeDir, { recursive: true, force: true });

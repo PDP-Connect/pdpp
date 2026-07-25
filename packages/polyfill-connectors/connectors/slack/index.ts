@@ -894,14 +894,27 @@ async function refreshScopedArchive(
 }
 
 interface ScopedArchiveRepairResult {
-  // Set whenever ensureArchiveOnDisk succeeded and this run therefore created
-  // or read bytes at repairPaths.archivePath — independent of whether the
-  // repair recovered a matching channel. A reclaim plan built only from
-  // `selected` would silently exclude a successful-but-empty repair archive
-  // (see `selected: null` below), stranding its __uploads/ residue forever.
-  archivePath: string | null;
+  // The repair-target archive path — always known (resolveScopedArchivePaths
+  // is a pure digest of missingChannelIds), independent of whether the
+  // attempt succeeded. This is the SAME `record_key`/reclaim identity a
+  // refresh-path archive uses: repeated failed repair attempts for the same
+  // missing-channel set upsert one durable gap row, not one per run, exactly
+  // like an existing-archive refresh failure.
+  archivePath: string;
+  // The refresh path's own outcome vocabulary — "resumed" here means
+  // "ensureArchiveOnDisk completed for this repair attempt," never a
+  // conflation with a successful CHANNEL recovery (see `selected`, which is
+  // the separate, repair-specific fact). Unifies the failed/resumed
+  // distinction (and its typed-gap/timestamp handling) across both the
+  // existing-archive-refresh and new-repair-attempt call sites through the
+  // same `applyScopedArchiveRefreshOutcome` helper — one invariant, one
+  // enforcement point, not two independently-maintained copies.
+  outcome: RefreshScopedArchiveOutcome;
   // Non-null only when the repair recovered at least one of the requested
   // missing channel IDs — the shape the message-family merge pass needs.
+  // Independent of `outcome`: a "resumed" repair can still recover zero
+  // channels (see the empty-repair-archive test), which is why reclaim
+  // coverage (task 7.1) reads `archivePath`, not `selected`.
   selected: SelectedScopedArchive | null;
 }
 
@@ -939,8 +952,11 @@ async function repairMissingScopedArchive(
     );
     // ensureArchiveOnDisk threw: nothing durable was created/read this run
     // (or a pre-existing archive from a prior run is left as-is, already
-    // covered by its own prior reclaim registration) — correctly excluded.
-    return { archivePath: null, selected: null };
+    // covered by its own prior reclaim registration). `selected: null` keeps
+    // this failed attempt out of the message-pass merge and the caller's
+    // `scoped_archive_resumed_at` advance; `outcome: "failed"` is what
+    // routes this into the SAME typed-gap path a refresh failure uses.
+    return { archivePath: repairPaths.archivePath, outcome: { kind: "failed", message }, selected: null };
   }
 
   const repairedChannelIds = readArchiveChannelIds(repairPaths.sqlitePath).filter((id) =>
@@ -948,6 +964,7 @@ async function repairMissingScopedArchive(
   );
   return {
     archivePath: repairPaths.archivePath,
+    outcome: { kind: "resumed" },
     selected: repairedChannelIds.length > 0 ? { channelIds: repairedChannelIds, paths: repairPaths } : null,
   };
 }
@@ -1118,20 +1135,34 @@ async function reconcileMessageSourceCache(deps: {
 
   if (missingChannelIds.length > 0) {
     const repair = await repairMissingScopedArchive(baseArchivePaths, missingChannelIds, archiveRuntime);
-    if (repair.archivePath) {
-      scopedArchiveResumedAt[repair.archivePath] = nowIso;
-    }
+    // Same outcome type, same enforcement point as the existing-archive
+    // refresh loop above: one invariant (only "resumed" advances the
+    // timestamp; only "failed" emits a DETAIL_GAP; a later "resumed" closes
+    // out any pending gap via DETAIL_GAP_RECOVERED), not two independently
+    // maintained copies that could drift out of sync with each other.
+    const outcomeLabel = await applyScopedArchiveRefreshOutcome(repair.outcome, {
+      archivePath: repair.archivePath,
+      detailGaps,
+      emit,
+      nowIso,
+      scopedArchiveResumedAt,
+    });
     completedRepairUnits += 1;
     archiveRuntime.progress(
-      `Slack: scoped-archive-reconcile completed ${String(completedRepairUnits)}/${String(repairUnitCount)} repair unit(s)`,
+      `Slack: scoped-archive-reconcile completed ${String(completedRepairUnits)}/${String(repairUnitCount)} repair unit(s) ` +
+        `(${outcomeLabel})`,
       { stream: "messages" }
     );
-    // A successful repair (ensureArchiveOnDisk did not throw) created/read
-    // durable bytes at repair.archivePath regardless of whether a matching
-    // channel was recovered — that archive's __uploads/ must still be
-    // reclaimable. `repair.selected` (only set when a channel was recovered)
-    // additionally folds into this run's message pass.
-    if (repair.archivePath) {
+    // A successful repair (outcome "resumed" — ensureArchiveOnDisk did not
+    // throw) created/read durable bytes at repair.archivePath regardless of
+    // whether a matching channel was recovered — that archive's __uploads/
+    // must still be reclaimable. A FAILED attempt must NOT be reclaimed:
+    // ensureArchiveOnDisk can leave partial files on disk before throwing,
+    // and there is no durable-commit receipt for a failed attempt (task 7.1's
+    // "failed-before-durable runs delete nothing" invariant — preserved here
+    // by gating on the outcome, not on `archivePath` truthiness, since
+    // `archivePath` is now always non-null regardless of success/failure).
+    if (repair.outcome.kind === "resumed") {
       reclaimedRepairArchivePaths.push(repair.archivePath);
     }
     if (repair.selected) {

@@ -186,18 +186,18 @@ any specific elapsed-time figure is capped.
 but not sufficient — a retained scoped archive still resumed every run
 forever (2026-07-25, live UAT of D4)
 
-Live deploy (`aa038775d`, run `run_1784962644222`) proved D4.2's claim
-incomplete. Ground truth: the run succeeded (D4.1's protocol fix held), and
+A live deploy and a subsequent live run proved D4.2's claim incomplete.
+Ground truth: the run succeeded (D4.1's protocol fix held), and
 `scoped-archive-reconcile` reported `selected 1 repair unit(s) (1 existing
 scoped archive refresh(es) + 0 new-repair attempt(s) for 0 uncovered
 channel(s)), each bounded to lookback=p7d` — the bound D4.2 promised was
-correctly stated. But that single "bounded" unit still took 3,291,850ms
-(54m52s), because it was a `resume` against a scoped archive
-(`archive-scoped/62fd13bace2a/`) that had accumulated ~4.9GB / ~1.95M
-messages / ~137k `CHANNEL` rows, and `messages`/`channels`/`max_chunk` grew
-continuously throughout the entire run (confirmed via the connector's own
-per-minute progress snapshots) — genuine, ongoing Slack-side traffic, not a
-stalled or inaccessible channel.
+correctly stated. But that single "bounded" unit still took ~55 minutes,
+because it was a `resume` against a retained scoped archive that had
+accumulated several GB / millions of messages / hundreds of thousands of
+`CHANNEL` rows, and `messages`/`channels`/`max_chunk` grew continuously
+throughout the entire run (confirmed via the connector's own per-minute
+progress snapshots) — genuine, ongoing Slack-side traffic, not a stalled or
+inaccessible channel.
 
 **Root cause.** D4.2's bound counted *repair units*, correctly, but treated
 "this archive is selected because it covers a currently-missing channel" as
@@ -434,42 +434,41 @@ DETAIL_GAP keyed by the archive path`. Both confirmed live, then reverted.
 - **One-time reclaim decision.** Whether to run `SLACK_RECLAIM_UPLOADS=1` once
   on the live host to reclaim the 29 GB is an operator judgment (accepts the
   documented byte loss). Not performed by this change.
-- **D4 live UAT — DONE, and it found a real gap (D5).** Deploy `aa038775d`,
-  run `run_1784962644222` (2026-07-25) confirmed D4.1 (protocol safety, no
+- **D4 live UAT — DONE, and it found a real gap (D5).** A live deploy and
+  subsequent live run confirmed D4.1 (protocol safety, no
   `connector_protocol_violation`) but disproved D4.2's implicit assumption
   that repair-unit-count bounding alone was sufficient: a single "bounded"
-  unit still took 54m52s every run, forever, because nothing throttled how
-  often that specific unit's `resume` was invoked. Fixed in D5. This item is
-  resolved by D5's fix, not by further observation — the residual UAT need is
-  now D5's own, below.
+  unit still took ~55 minutes every run, forever, because nothing throttled
+  how often that specific unit's `resume` was invoked. Fixed in D5. This item
+  is resolved by D5's fix, not by further observation — the residual UAT need
+  is now D5's own, below.
 - **D5 live UAT.** Confirm on the real workspace, over multiple scheduled
   runs spanning more than `SLACK_LOOKBACK_DAYS`, that: (a) the first run after
-  this deploy still resumes `archive-scoped/62fd13bace2a/` (or whichever
-  archive covers the permanently-missing channel) since it has no prior
-  `scoped_archive_resumed_at` entry yet; (b) subsequent runs within the
-  lookback window report `... due for resume` = 0 and `not due for resume
-  yet` in progress evidence, with `scoped-archive-reconcile`
-  completing in seconds, not tens of minutes; (c) once the lookback window
-  elapses, a resume fires again and finds the accumulated backlog with no
-  gap. Cannot be verified here without the live host/credentials and without
-  waiting out a real multi-day window — synthetic subprocess tests
-  (`archive-reclaim.test.ts`) prove the throttle/resume-again mechanism
-  deterministically via injected `scoped_archive_resumed_at` timestamps, not
-  the real multi-day elapsed-time behavior.
-- **D5's own gate found a real defect (D6).** RI-owner REVISE (2026-07-25,
-  same day) caught that D5's success/failure conflation would have silently
-  hidden a real resume failure for up to 7 days with zero durable evidence.
-  Fixed in D6, mutation-tested. This item is resolved by code + tests here,
-  not by further live observation for the specific conflation bug — the
-  residual live-UAT need is D6's own, below.
+  this deploy still resumes the scoped archive covering the permanently-
+  missing channel, since it has no prior `scoped_archive_resumed_at` entry
+  yet; (b) subsequent runs within the lookback window report `... due for
+  resume` = 0 and `not due for resume yet` in progress evidence, with
+  `scoped-archive-reconcile` completing in seconds, not tens of minutes; (c)
+  once the lookback window elapses, a resume fires again and finds the
+  accumulated backlog with no gap. Cannot be verified here without the live
+  host/credentials and without waiting out a real multi-day window —
+  synthetic subprocess tests (`archive-reclaim.test.ts`) prove the
+  throttle/resume-again mechanism deterministically via injected
+  `scoped_archive_resumed_at` timestamps, not the real multi-day
+  elapsed-time behavior.
+- **D5's own gate found a real defect (D6).** An RI-owner REVISE caught that
+  D5's success/failure conflation would have silently hidden a real resume
+  failure for up to 7 days with zero durable evidence. Fixed in D6,
+  mutation-tested. This item is resolved by code + tests here, not by
+  further live observation for the specific conflation bug — the residual
+  live-UAT need is D6's own, below.
 - **D6 live UAT.** Confirm on the real workspace that a genuine resume
-  failure (if one ever occurs against the live `vana-org` archive) produces
-  a `DETAIL_GAP` visible in the connection's durable gap store (not merely a
-  progress line), that `scoped_archive_resumed_at` for that archive is
-  confirmed unchanged in the next run's committed STATE, and that a later
-  successful resume of the same archive produces a matching
-  `DETAIL_GAP_RECOVERED` closing the row. Cannot be verified here without
-  provoking (or waiting for) a real live resume failure — synthetic
-  subprocess tests prove the mechanism deterministically via a fake
-  `SLACKDUMP_BIN` that fails only for the scoped-archive path, not a live
-  failure.
+  failure (if one ever occurs) produces a `DETAIL_GAP` visible in the
+  connection's durable gap store (not merely a progress line), that
+  `scoped_archive_resumed_at` for that archive is confirmed unchanged in the
+  next run's committed STATE, and that a later successful resume of the same
+  archive produces a matching `DETAIL_GAP_RECOVERED` closing the row. Cannot
+  be verified here without provoking (or waiting for) a real live resume
+  failure — synthetic subprocess tests prove the mechanism deterministically
+  via a fake `SLACKDUMP_BIN` that fails only for the scoped-archive path, not
+  a live failure.
