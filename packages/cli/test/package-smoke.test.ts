@@ -8,8 +8,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { getFileMode, getPdppCacheLayout, writePdppSecretFile } from "../src/cache-layout.ts";
 import { assertManifestTargets, assertPackedFiles, parseNpmPackOutput } from "../scripts/package-contract.ts";
+import { getFileMode, getPdppCacheLayout, writePdppSecretFile } from "../src/cache-layout.ts";
 
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 const npmEnv = {
@@ -50,10 +50,15 @@ test("npm package contents stay narrowly allowlisted", () => {
   assert.equal(files.includes("dist/src/index.js"), true);
 
   for (const file of files) {
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.doesNotMatch(file, /^\.env/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.doesNotMatch(file, /^\.pdpp\//);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.doesNotMatch(file, /^server\//);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.doesNotMatch(file, /^test\//);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.doesNotMatch(file, /sqlite|fixture|capture|screenshot/i);
   }
 });
@@ -106,6 +111,7 @@ test("packed CLI installs and starts in an empty project", () => {
       encoding: "utf8",
     });
     assert.equal(helpResult.status, 0, helpResult.stderr);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(helpResult.stdout, /PDPP CLI/);
 
     // Outside the monorepo and without @pdpp/local-collector installed,
@@ -117,8 +123,11 @@ test("packed CLI installs and starts in an empty project", () => {
       encoding: "utf8",
     });
     assert.notEqual(collectorResult.status, 0);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(collectorResult.stderr, /@pdpp\/local-collector/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(collectorResult.stderr, /npm i -g @pdpp\/local-collector|npx -y @pdpp\/local-collector/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.doesNotMatch(collectorResult.stderr, /not distributed with @pdpp\/cli yet/);
   } finally {
     rmSync(tempRoot, { force: true, recursive: true });

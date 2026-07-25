@@ -5,14 +5,15 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { runCli } from "../src/index.ts";
-import { runRefRun } from "../src/ref/commands/run.ts";
 import { runRefGrant } from "../src/ref/commands/grant.ts";
+import { runRefRun } from "../src/ref/commands/run.ts";
 import { runRefTrace } from "../src/ref/commands/trace.ts";
 import { PdppCliError, PdppHttpError, PdppUsageError } from "../src/ref/errors.ts";
 
 // ---- helpers ----------------------------------------------------------------
 
 function mockFetch(responses) {
+  // biome-ignore lint/suspicious/useAwait: mocks the fetch(...) => Promise<Response> contract (or Response.text()/json()); async is required to satisfy the type even though this mock body never awaits.
   return async (url) => {
     const key = url.toString();
     if (!Object.hasOwn(responses, key)) {
@@ -72,7 +73,9 @@ test("ref run timeline: fetches correct URL and outputs table", async () => {
   );
 
   assert.equal(code, 0);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stdout, /started/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stdout, /event/);
 });
 
@@ -91,7 +94,8 @@ test("ref run timeline: outputs JSON when --format json", async () => {
 });
 
 test("ref run timeline: sends Cookie header from --owner-session flag", async () => {
-  let capturedHeaders = null;
+  let capturedHeaders: Record<string, unknown> | null = null;
+  // biome-ignore lint/suspicious/useAwait: mocks the fetch(...) => Promise<Response> contract (or Response.text()/json()); async is required to satisfy the type even though this mock body never awaits.
   const fetch = async (_url, opts = {}) => {
     capturedHeaders = opts.headers || {};
     return {
@@ -109,7 +113,8 @@ test("ref run timeline: sends Cookie header from --owner-session flag", async ()
 });
 
 test("ref run timeline: sends Cookie from PDPP_OWNER_SESSION_COOKIE env var", async () => {
-  let capturedHeaders = null;
+  let capturedHeaders: Record<string, unknown> | null = null;
+  // biome-ignore lint/suspicious/useAwait: mocks the fetch(...) => Promise<Response> contract (or Response.text()/json()); async is required to satisfy the type even though this mock body never awaits.
   const fetch = async (_url, opts = {}) => {
     capturedHeaders = opts.headers || {};
     return {
@@ -139,6 +144,7 @@ test("ref run timeline: throws PdppUsageError when missing run-id", async () => 
   const { io } = capture();
   await assert.rejects(
     () => runRefRun(["timeline", "--as-url", "https://ref.test"], io, mockFetch({})),
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     (err) => err instanceof PdppUsageError && /run-id/.test(err.message)
   );
 });
@@ -151,10 +157,13 @@ test("ref run timeline: throws PdppCliError when --as-url missing", async () => 
     const { io } = capture();
     await assert.rejects(
       () => runRefRun(["timeline", "run-abc"], io, mockFetch({})),
+      // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
       (err) => err instanceof PdppCliError && /as-url/.test(err.message)
     );
   } finally {
-    if (orig !== undefined) process.env.PDPP_AS_URL = orig;
+    if (orig !== undefined) {
+      process.env.PDPP_AS_URL = orig;
+    }
   }
 });
 
@@ -190,11 +199,13 @@ test("ref grant timeline: fetches correct URL and outputs table", async () => {
   );
 
   assert.equal(code, 0);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stdout, /granted/);
 });
 
 test("ref grant timeline: sends Cookie header from --owner-session", async () => {
-  let capturedHeaders = null;
+  let capturedHeaders: Record<string, unknown> | null = null;
+  // biome-ignore lint/suspicious/useAwait: mocks the fetch(...) => Promise<Response> contract (or Response.text()/json()); async is required to satisfy the type even though this mock body never awaits.
   const fetch = async (_url, opts = {}) => {
     capturedHeaders = opts.headers || {};
     return {
@@ -236,6 +247,7 @@ test("ref trace show: fetches correct URL and outputs table", async () => {
   );
 
   assert.equal(code, 0);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stdout, /auth/);
 });
 
@@ -315,7 +327,7 @@ test("runCli ref trace show routes to handler and returns 0", async () => {
       captured.io
     );
     assert.equal(code, 0);
-    void captured.stdout; // captured but not asserted in this test
+    // captured.stdout is intentionally not asserted in this test.
   } finally {
     globalThis.fetch = origFetch;
   }
@@ -325,8 +337,11 @@ test("runCli ref --help prints reference diagnostics", async () => {
   const captured = capture();
   const code = await runCli(["ref", "--help"], captured.io);
   assert.equal(code, 0);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stdout, /ref run timeline/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stdout, /ref grant timeline/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stdout, /ref trace show/);
 });
 
@@ -334,6 +349,7 @@ test("runCli ref unknown subcommand returns 64", async () => {
   const captured = capture();
   const code = await runCli(["ref", "unknown-cmd"], captured.io);
   assert.equal(code, 64);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stderr, /Unknown ref command/);
 });
 
@@ -353,8 +369,11 @@ test("runCli ref missing session error exits with non-zero code", async () => {
     const code = await runCli(["ref", "run", "timeline", "missing-run"], io);
     assert.equal(code, 3);
   } finally {
-    if (orig === undefined) delete process.env.PDPP_AS_URL;
-    else process.env.PDPP_AS_URL = orig;
+    if (orig === undefined) {
+      delete process.env.PDPP_AS_URL;
+    } else {
+      process.env.PDPP_AS_URL = orig;
+    }
     globalThis.fetch = origFetch;
   }
 });
@@ -363,7 +382,9 @@ test("help output mentions reference diagnostics section", async () => {
   const captured = capture();
   const code = await runCli(["--help"], captured.io);
   assert.equal(code, 0);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stdout, /Reference diagnostics/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stdout, /ref run timeline/);
 });
 
@@ -394,7 +415,9 @@ test("ref run timeline: surfaces meta.warnings on stderr without polluting JSON 
   assert.equal(code, 0);
   const parsed = JSON.parse(captured.stdout);
   assert.equal(parsed.data.length, 1);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stderr, /warning: deprecated_alias/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stderr, /connector_instance_id is deprecated/);
 });
 
@@ -416,6 +439,7 @@ test("ref grant timeline: surfaces meta.warnings on stderr", async () => {
   );
 
   assert.equal(code, 0);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stderr, /warning: partial_results — one source unavailable/);
 });
 
@@ -437,7 +461,9 @@ test("ref trace show: surfaces meta.warnings on stderr", async () => {
   );
 
   assert.equal(code, 0);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stderr, /warning: count_downgraded/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stderr, /\(dropped: count=exact\)/);
 });
 

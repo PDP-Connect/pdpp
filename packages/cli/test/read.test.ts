@@ -17,20 +17,29 @@ test("read help advertises grant-scoped read commands", async () => {
   const code = await runCli(["read", "--help"], captured.io);
 
   assert.equal(code, 0);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stdout(), /read schema/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stdout(), /read streams/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stdout(), /read query-records/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stdout(), /read fetch/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stdout(), /read search/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stdout(), /read aggregate/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stdout(), /read schema .*--stream <name>.*--connection-id <cin>/s);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.doesNotMatch(captured.stdout(), /connector-instance-id/);
 });
 
 test("read schema maps compact stream and connection selectors through cached grant", async () => {
   const cacheRoot = await makeCredentialCache("schema-token");
-  const calls = [];
+  const calls: { url: URL; init: Record<string, unknown> }[] = [];
   const originalFetch = globalThis.fetch;
+  // biome-ignore lint/suspicious/useAwait: mocks the fetch(...) => Promise<Response> contract; async is required to satisfy the type even though this mock body never awaits.
   globalThis.fetch = async (input, init = {}) => {
     const url = new URL(input);
     calls.push({ url, init });
@@ -70,6 +79,7 @@ test("read schema maps compact stream and connection selectors through cached gr
     assert.equal(code, 0);
     assert.equal(calls.length, 1);
     assert.equal(JSON.parse(captured.stdout()).detail, "compact");
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.doesNotMatch(captured.stdout(), /schema-token/);
   } finally {
     globalThis.fetch = originalFetch;
@@ -79,8 +89,9 @@ test("read schema maps compact stream and connection selectors through cached gr
 
 test("read query-records uses cached grant, builds query params, and writes warnings to stderr", async () => {
   const cacheRoot = await makeCredentialCache("query-token");
-  const calls = [];
+  const calls: { url: URL; init: Record<string, unknown> }[] = [];
   const originalFetch = globalThis.fetch;
+  // biome-ignore lint/suspicious/useAwait: mocks the fetch(...) => Promise<Response> contract; async is required to satisfy the type even though this mock body never awaits.
   globalThis.fetch = async (input, init = {}) => {
     const url = new URL(input);
     calls.push({ url, init });
@@ -127,7 +138,9 @@ test("read query-records uses cached grant, builds query params, and writes warn
     assert.equal(code, 0);
     assert.equal(calls.length, 1);
     assert.deepEqual(JSON.parse(captured.stdout()).data, [{ id: "m1", text: "hello" }]);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stderr(), /warning: count_downgraded/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.doesNotMatch(captured.stdout(), /query-token/);
   } finally {
     globalThis.fetch = originalFetch;
@@ -137,8 +150,9 @@ test("read query-records uses cached grant, builds query params, and writes warn
 
 test("read fetch forwards projection fields through cached grant", async () => {
   const cacheRoot = await makeCredentialCache("fetch-token");
-  const calls = [];
+  const calls: { url: URL; init: Record<string, unknown> }[] = [];
   const originalFetch = globalThis.fetch;
+  // biome-ignore lint/suspicious/useAwait: mocks the fetch(...) => Promise<Response> contract (or Response.text()/json()); async is required to satisfy the type even though this mock body never awaits.
   globalThis.fetch = async (input, init = {}) => {
     const url = new URL(input);
     calls.push({ url, init });
@@ -181,8 +195,9 @@ test("read fetch forwards projection fields through cached grant", async () => {
 
 test("read field-window forwards bounded field reads through cached grant", async () => {
   const cacheRoot = await makeCredentialCache("field-window-token");
-  const calls = [];
+  const calls: { url: URL; init: Record<string, unknown> }[] = [];
   const originalFetch = globalThis.fetch;
+  // biome-ignore lint/suspicious/useAwait: mocks the fetch(...) => Promise<Response> contract (or Response.text()/json()); async is required to satisfy the type even though this mock body never awaits.
   globalThis.fetch = async (input, init = {}) => {
     const url = new URL(input);
     calls.push({ url, init });
@@ -237,6 +252,7 @@ test("read field-window forwards bounded field reads through cached grant", asyn
     assert.equal(code, 0);
     assert.equal(calls.length, 1);
     assert.equal(JSON.parse(captured.stdout()).data.text, "bounded Hyperlane evidence");
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.doesNotMatch(captured.stdout(), /field-window-token/);
     assert.equal(captured.stderr(), "");
   } finally {
@@ -247,8 +263,9 @@ test("read field-window forwards bounded field reads through cached grant", asyn
 
 test("read search routes modes and stream scopes through cached grant", async () => {
   const cacheRoot = await makeCredentialCache("search-token");
-  const calls = [];
+  const calls: { url: URL; init: Record<string, unknown> }[] = [];
   const originalFetch = globalThis.fetch;
+  // biome-ignore lint/suspicious/useAwait: mocks the fetch(...) => Promise<Response> contract (or Response.text()/json()); async is required to satisfy the type even though this mock body never awaits.
   globalThis.fetch = async (input, init = {}) => {
     const url = new URL(input);
     calls.push({ url, init });
@@ -322,6 +339,7 @@ test("read search preserves bounded evidence descriptors and read continuation i
       },
     ],
   };
+  // biome-ignore lint/suspicious/useAwait: mocks the fetch(...) => Promise<Response> contract (or Response.text()/json()); async is required to satisfy the type even though this mock body never awaits.
   globalThis.fetch = async (input) => {
     assert.equal(new URL(input).pathname, "/v1/search");
     return jsonResponse(200, { object: "search_result_list", data: [hit] });
@@ -335,7 +353,8 @@ test("read search preserves bounded evidence descriptors and read continuation i
     // The CLI must NOT strip the evidence descriptor — a CLI user inspecting a
     // search result gets the bounded preview AND the read continuation needed
     // to follow it, matching MCP/REST parity.
-    const excerpt = JSON.parse(captured.stdout()).data[0].evidence_excerpts[0];
+    const [record] = JSON.parse(captured.stdout()).data;
+    const [excerpt] = record.evidence_excerpts;
     assert.equal(excerpt.preview_text, "…using Hyperlane or LayerZero?…");
     assert.equal(excerpt.truncated, true);
     assert.equal(excerpt.read.route, "/v1/streams/messages/records/m1/field-window");
@@ -348,8 +367,9 @@ test("read search preserves bounded evidence descriptors and read continuation i
 
 test("read commands ignore owner-token flags and use cached client grant only", async () => {
   const cacheRoot = await makeCredentialCache("client-read-token");
-  const calls = [];
+  const calls: { url: URL; init: Record<string, unknown> }[] = [];
   const originalFetch = globalThis.fetch;
+  // biome-ignore lint/suspicious/useAwait: mocks the fetch(...) => Promise<Response> contract (or Response.text()/json()); async is required to satisfy the type even though this mock body never awaits.
   globalThis.fetch = async (input, init = {}) => {
     const url = new URL(input);
     calls.push({ url, init });
@@ -369,6 +389,7 @@ test("read commands ignore owner-token flags and use cached client grant only", 
 
     assert.equal(code, 0);
     assert.equal(calls.length, 1);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.doesNotMatch(captured.stdout(), /owner-secret|client-read-token/);
   } finally {
     globalThis.fetch = originalFetch;
@@ -378,8 +399,9 @@ test("read commands ignore owner-token flags and use cached client grant only", 
 
 test("read aggregate builds group_by_time aggregate requests from cached grant", async () => {
   const cacheRoot = await makeCredentialCache("aggregate-token");
-  const calls = [];
+  const calls: { url: URL; init: Record<string, unknown> }[] = [];
   const originalFetch = globalThis.fetch;
+  // biome-ignore lint/suspicious/useAwait: mocks the fetch(...) => Promise<Response> contract (or Response.text()/json()); async is required to satisfy the type even though this mock body never awaits.
   globalThis.fetch = async (input, init = {}) => {
     const url = new URL(input);
     calls.push({ url, init });
@@ -474,10 +496,13 @@ function jsonResponse(status, body) {
     statusText: status >= 200 && status < 300 ? "OK" : "Error",
     headers: {
       get(name) {
-        if (name.toLowerCase() === "content-type") return "application/json";
+        if (name.toLowerCase() === "content-type") {
+          return "application/json";
+        }
         return null;
       },
     },
+    // biome-ignore lint/suspicious/useAwait: mocks the fetch(...) => Promise<Response> contract (or Response.text()/json()); async is required to satisfy the type even though this mock body never awaits.
     async text() {
       return JSON.stringify(body);
     },

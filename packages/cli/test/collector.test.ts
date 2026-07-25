@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -29,8 +29,16 @@ function makeIo() {
   let stderr = "";
   return {
     io: {
-      stdout: { write: (chunk) => (stdout += chunk) },
-      stderr: { write: (chunk) => (stderr += chunk) },
+      stdout: {
+        write: (chunk) => {
+          stdout += chunk;
+        },
+      },
+      stderr: {
+        write: (chunk) => {
+          stderr += chunk;
+        },
+      },
     },
     get stdout() {
       return stdout;
@@ -45,10 +53,15 @@ test("collector help lists the three subcommands and operator flow", async () =>
   const io = makeIo();
   const code = await runCollector([], io.io);
   assert.equal(code, 0);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(io.stdout, /pdpp collector advertise/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(io.stdout, /pdpp collector enroll/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(io.stdout, /pdpp collector run/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(io.stdout, /Suggested operator flow/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(io.stdout, /device-scoped/);
 });
 
@@ -57,9 +70,13 @@ test("collector help advertises the published @pdpp/local-collector path", async
   const code = await runCollector([], io.io);
   assert.equal(code, 0);
   // The supported public path is the npm-installable runner, not a monorepo clone.
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(io.stdout, /@pdpp\/local-collector/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(io.stdout, /npm i -g @pdpp\/local-collector|npx -y @pdpp\/local-collector/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.doesNotMatch(io.stdout, /monorepo only/i);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.doesNotMatch(io.stdout, /git clone/);
 });
 
@@ -69,17 +86,24 @@ test("collector help names device_id, device_token, and connection id from enrol
   assert.equal(code, 0);
   // Enrollment still returns source_instance_id, but operator-facing run
   // commands should name it as the local connection id.
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(io.stdout, /device_id/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(io.stdout, /device_token/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(io.stdout, /source_instance_id/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(io.stdout, /PDPP_CONNECTION_ID/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(io.stdout, /--connection-id/);
 });
 
-test("top-level help advertises the collector namespace", async () => {
+test("top-level help advertises the collector namespace", () => {
   const result = spawnSync(process.execPath, [binPath, "--help"], { encoding: "utf8" });
   assert.equal(result.status, 0);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(result.stdout, /pdpp collector advertise/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(result.stdout, /pdpp collector enroll/);
 });
 
@@ -87,7 +111,9 @@ test("unknown collector subcommand exits 64 with help", async () => {
   const io = makeIo();
   const code = await runCollector(["frobnicate"], io.io);
   assert.equal(code, 64);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(io.stderr, /Unknown collector subcommand: frobnicate/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(io.stderr, /pdpp collector run/);
 });
 
@@ -96,6 +122,7 @@ test("runner resolver walks up to the workspace root", () => {
   const cliSrcDir = fileURLToPath(new URL("../src/collector/", import.meta.url));
   const script = resolveCollectorRunnerScript(cliSrcDir);
   assert.ok(script, "expected to resolve a collector-runner script from inside the workspace");
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(script, /packages\/polyfill-connectors\/bin\/collector-runner\.ts$/);
 });
 
@@ -113,6 +140,7 @@ test("@pdpp/local-collector resolver resolves the workspace package", () => {
   // monorepo workspace fallback (packages/local-collector) is acceptable.
   assert.match(
     resolved.manifestPath,
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     /(?:@pdpp[\\/]+local-collector|packages[\\/]+local-collector)[\\/]+package\.json$/
   );
   assert.ok(resolved.packageDir.endsWith("local-collector"));
@@ -131,7 +159,9 @@ test("spawnCollectorRunner throws actionable install hint when nothing resolves"
       }),
     (err) => {
       assert.ok(err instanceof CollectorUsageError);
+      // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
       assert.match(err.message, /@pdpp\/local-collector/);
+      // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
       assert.match(err.message, /npm i -g @pdpp\/local-collector|npx -y @pdpp\/local-collector/);
       return true;
     }
@@ -149,12 +179,13 @@ test("spawnCollectorRunner throws actionable error when tsx is missing", async (
           throw new Error("should not spawn");
         },
       }),
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     /Could not locate tsx/
   );
 });
 
 test("spawnCollectorRunner forwards subcommand, args, env, and exit code", async () => {
-  const spawned = [];
+  const spawned: { binary: string; args: string[]; options: Record<string, unknown> }[] = [];
   const fakeSpawn = (binary, args, options) => {
     spawned.push({ binary, args, options });
     const child = new EventEmitter();
@@ -180,7 +211,7 @@ test("spawnCollectorRunner forwards subcommand, args, env, and exit code", async
 });
 
 test("spawnCollectorRunner prefers monorepo runner over @pdpp/local-collector", async () => {
-  const spawned = [];
+  const spawned: { binary: string; args: string[]; options: Record<string, unknown> }[] = [];
   const fakeSpawn = (binary, args, options) => {
     spawned.push({ binary, args, options });
     const child = new EventEmitter();
@@ -211,7 +242,7 @@ test("spawnCollectorRunner falls back to @pdpp/local-collector when monorepo run
   );
   await writeFile(join(dir, "dist", "local-collector", "bin", "pdpp-local-collector.js"), "");
 
-  const spawned = [];
+  const spawned: { binary: string; args: string[]; options: Record<string, unknown> }[] = [];
   const fakeSpawn = (binary, args, options) => {
     spawned.push({ binary, args, options });
     const child = new EventEmitter();
@@ -247,6 +278,7 @@ test("spawnCollectorRunner rejects when child terminates by signal", async () =>
         tsxBinary: "/tsx",
         spawnFn: fakeSpawn,
       }),
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     /terminated by signal SIGTERM/
   );
 });
@@ -268,7 +300,7 @@ test("pdpp collector advertise (real subprocess) emits the capability profile", 
   // verify the JSON profile reaches stdout.
   const result = spawnSync(process.execPath, [binPath, "collector", "advertise"], {
     encoding: "utf8",
-    timeout: 20000,
+    timeout: 20_000,
   });
   assert.equal(result.status, 0, `stderr=${result.stderr}`);
   const parsed = JSON.parse(result.stdout);
@@ -279,13 +311,15 @@ test("pdpp collector advertise (real subprocess) emits the capability profile", 
 test("pdpp collector enroll missing --code surfaces collector-runner usage error", () => {
   const result = spawnSync(process.execPath, [binPath, "collector", "enroll", "--base-url", "http://127.0.0.1:1"], {
     encoding: "utf8",
-    timeout: 20000,
+    timeout: 20_000,
   });
   assert.notEqual(result.status, 0);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(result.stderr, /enroll requires --code/);
 });
 
 test("COLLECTOR_HELP names the openspec design doc as source of truth", () => {
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(COLLECTOR_HELP, /openspec\/changes\/publish-pdpp-local-collector/);
 });
 

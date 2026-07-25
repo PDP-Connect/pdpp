@@ -8,7 +8,8 @@ import { runRefEventSubscriptions } from "../src/ref/commands/event-subscription
 import { PdppUsageError } from "../src/ref/errors.ts";
 
 function mockFetch(responses) {
-  const calls = [];
+  const calls: { url: string; opts: Record<string, unknown> }[] = [];
+  // biome-ignore lint/suspicious/useAwait: mocks the fetch(...) => Promise<Response> contract (or Response.text()/json()); async is required to satisfy the type even though this mock body never awaits.
   const impl = async (url, opts = {}) => {
     const key = typeof url === "string" ? url : url.toString();
     calls.push({ url: key, opts });
@@ -145,7 +146,9 @@ test("event-subscriptions list table format renders projection rows", async () =
   const c = capture();
   await runRefEventSubscriptions(["list", "--as-url", "http://ref.test", "--format", "table"], c.io, fetchImpl);
   // Table prints headers + rows; check we see subscription id and callback host.
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(c.stdout, /sub_alpha/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(c.stdout, /client\.example/);
 });
 
@@ -188,7 +191,7 @@ test("event-subscriptions disable --yes posts the disable request without prompt
   );
   assert.equal(code, 0);
   assert.equal(fetchImpl.calls.length, 1);
-  const call = fetchImpl.calls[0];
+  const [call] = fetchImpl.calls;
   assert.equal(call.opts.method, "POST");
   assert.equal(JSON.parse(call.opts.body).reason, "loop_suspected");
   const detail = JSON.parse(c.stdout);
@@ -209,7 +212,9 @@ test('event-subscriptions disable without --yes prompts and accepts "yes"', asyn
     fetchImpl
   );
   assert.equal(code, 0);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(c.stderr, /Subscription sub_alpha/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(c.stderr, /Disable subscription\?/);
   // Two calls: detail fetch + disable POST.
   assert.equal(fetchImpl.calls.length, 2);
@@ -224,6 +229,7 @@ test("event-subscriptions disable without --yes aborts on no answer", async () =
   });
   const code = await runRefEventSubscriptions(["disable", "sub_alpha", "--as-url", "http://ref.test"], c.io, fetchImpl);
   assert.equal(code, 1);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(c.stderr, /Aborted/);
   // Only the detail fetch; no POST.
   assert.equal(fetchImpl.calls.length, 1);
@@ -246,9 +252,11 @@ test("unknown subcommand throws usage error", async () => {
 // helpers
 
 import { Readable } from "node:stream";
+
 function makeStdinStream(text) {
   const stream = Readable.from([Buffer.from(text, "utf8")]);
   stream.isTTY = true;
+  // biome-ignore lint/suspicious/noEmptyBlockStatements: deliberate no-op stub for a real TTY method the mocked stream never needs to act on.
   stream.setRawMode = () => {};
   return stream;
 }

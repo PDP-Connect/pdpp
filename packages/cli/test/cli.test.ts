@@ -9,7 +9,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-
+import { connectProvider } from "../src/connect/flow.ts";
+import { normalizeProviderUrl, runCli } from "../src/index.ts";
 import {
   createPdppCliCommand,
   getPdppCliPackageInfo,
@@ -18,8 +19,6 @@ import {
   PDPP_CLI_PACKAGE_NAME,
   PDPP_CLI_PACKAGE_SPECIFIER,
 } from "../src/package-info.js";
-import { normalizeProviderUrl, runCli } from "../src/index.ts";
-import { connectProvider } from "../src/connect/flow.ts";
 
 // The bin facade (bin/pdpp.js) imports the emitted `dist/src/index.js`, so
 // subprocess smoke tests must exercise the built artifact — pnpm test builds
@@ -57,7 +56,9 @@ test("help starts from an installed-style bin invocation", () => {
   });
 
   assert.equal(result.status, 0);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(result.stdout, /PDPP CLI/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(result.stdout, /npx -y @pdpp\/cli connect <provider-url>/);
 });
 
@@ -66,8 +67,16 @@ test("package-info command prints machine-readable install metadata", async () =
   let stderr = "";
 
   const code = await runCli(["package-info", "--provider-url", "https://pdpp.example"], {
-    stdout: { write: (chunk) => (stdout += chunk) },
-    stderr: { write: (chunk) => (stderr += chunk) },
+    stdout: {
+      write: (chunk) => {
+        stdout += chunk;
+      },
+    },
+    stderr: {
+      write: (chunk) => {
+        stderr += chunk;
+      },
+    },
   });
 
   assert.equal(code, 0);
@@ -79,18 +88,24 @@ test("connect validates provider URLs before any network flow", async () => {
   let stderr = "";
 
   const code = await runCli(["connect", "http://[::1"], {
-    stdout: { write: () => {} },
-    stderr: { write: (chunk) => (stderr += chunk) },
+    stdout: { write: () => undefined },
+    stderr: {
+      write: (chunk) => {
+        stderr += chunk;
+      },
+    },
   });
 
   assert.equal(code, 64);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(stderr, /Invalid provider URL/);
   assert.equal(normalizeProviderUrl("pdpp.example.com"), "https://pdpp.example.com");
 });
 
 test("connect discovers metadata, polls approval, verifies schema, and stores project-local credentials", async () => {
   const cacheRoot = await mkdtemp(join(tmpdir(), "pdpp-cli-test-"));
-  const calls = [];
+  const calls: { url: string; init: Record<string, unknown> }[] = [];
+  // biome-ignore lint/suspicious/useAwait: mocks the fetch(...) => Promise<Response> contract (or Response.text()/json()); async is required to satisfy the type even though this mock body never awaits.
   const fetch = async (input, init = {}) => {
     const url = input.toString();
     calls.push({ url, init });
@@ -159,16 +174,26 @@ test("connect discovers metadata, polls approval, verifies schema, and stores pr
   const result = await connectProvider("provider.test/path?ignored=1#frag", {
     fetch,
     cacheRoot,
-    io: { stdout: { write: (chunk) => (stdout += chunk) }, stderr: { write: () => {} } },
+    io: {
+      stdout: {
+        write: (chunk) => {
+          stdout += chunk;
+        },
+      },
+      stderr: { write: () => undefined },
+    },
     now: () => 0,
   });
 
   assert.equal(result.providerUrl, "https://provider.test/path");
   assert.equal(result.clientId, "cli_dynamic_123");
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(stdout, /Open this URL to approve access/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(stdout, /Verified \/v1\/schema/);
   assert.equal(await readFile(join(cacheRoot, ".gitignore"), "utf8"), "*\n!.gitignore\n");
   assert.ok(existsSync(result.cacheFile));
+  // biome-ignore lint/suspicious/noBitwiseOperators: genuine POSIX file-mode bitmask, not a style mistake.
   assert.equal((await stat(result.cacheFile)).mode & 0o777, 0o600);
   const stored = JSON.parse(await readFile(result.cacheFile, "utf8"));
   assert.equal(stored.credential.access_token, "test-access-token");
@@ -183,8 +208,16 @@ test("connect discovers metadata, polls approval, verifies schema, and stores pr
   let tokenStdout = "";
   let tokenStderr = "";
   const tokenCode = await runCli(["token", "provider.test/path?ignored=1#frag", "--cache-root", cacheRoot], {
-    stdout: { write: (chunk) => (tokenStdout += chunk) },
-    stderr: { write: (chunk) => (tokenStderr += chunk) },
+    stdout: {
+      write: (chunk) => {
+        tokenStdout += chunk;
+      },
+    },
+    stderr: {
+      write: (chunk) => {
+        tokenStderr += chunk;
+      },
+    },
   });
   assert.equal(tokenCode, 0);
   assert.equal(tokenStderr, "");
@@ -204,6 +237,7 @@ test("connect discovers metadata, polls approval, verifies schema, and stores pr
 });
 
 test("connect fails honestly when backend metadata lacks agent connect support", async () => {
+  // biome-ignore lint/suspicious/useAwait: mocks the fetch(...) => Promise<Response> contract (or Response.text()/json()); async is required to satisfy the type even though this mock body never awaits.
   const fetch = async (input) => {
     const url = input.toString();
     if (url === "https://provider.test/.well-known/oauth-protected-resource") {
@@ -217,11 +251,13 @@ test("connect fails honestly when backend metadata lacks agent connect support",
 
   await assert.rejects(
     () => connectProvider("https://provider.test", { fetch }),
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     /does not advertise a no-owner-token agent connect endpoint/
   );
 });
 
 test("connect stops when provider metadata gates no-owner-token completion", async () => {
+  // biome-ignore lint/suspicious/useAwait: mocks the fetch(...) => Promise<Response> contract (or Response.text()/json()); async is required to satisfy the type even though this mock body never awaits.
   const fetch = async (input) => {
     const url = input.toString();
     if (url === "https://provider.test/.well-known/oauth-protected-resource") {
@@ -241,24 +277,32 @@ test("connect stops when provider metadata gates no-owner-token completion", asy
 
   await assert.rejects(
     () => connectProvider("https://provider.test", { fetch }),
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     /does not advertise a complete no-owner-token connect flow/
   );
 });
 
 test("connect maps denied, expired, insufficient-scope, and verification errors", async () => {
   for (const [status, message] of [
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     ["denied", /denied/],
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     ["expired", /expired/],
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     ["insufficient_scope", /required PDPP scope/],
   ]) {
+    // biome-ignore lint/performance/noAwaitInLoops: each iteration asserts an independent rejection case; sequential runs keep the per-status assertion failure attributable.
     await assert.rejects(() => runMockConnect({ poll: { status } }), message);
   }
 
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   await assert.rejects(() => runMockConnect({ schemaStatus: 401 }), /rejected by \/v1\/schema/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   await assert.rejects(() => runMockConnect({ schemaStatus: 403 }), /required scope is missing/);
 });
 
 async function runMockConnect({ poll = { status: "approved", access_token: "token" }, schemaStatus = 200 }) {
+  // biome-ignore lint/suspicious/useAwait: mocks the fetch(...) => Promise<Response> contract (or Response.text()/json()); async is required to satisfy the type even though this mock body never awaits.
   const fetch = async (input) => {
     const url = input.toString();
     if (url.endsWith("/.well-known/oauth-protected-resource")) {
@@ -282,7 +326,7 @@ async function runMockConnect({ poll = { status: "approved", access_token: "toke
   return connectProvider("https://provider.test", {
     fetch,
     cacheRoot: await mkdtemp(join(tmpdir(), "pdpp-cli-test-")),
-    io: { stdout: { write: () => {} }, stderr: { write: () => {} } },
+    io: { stdout: { write: () => undefined }, stderr: { write: () => undefined } },
   });
 }
 

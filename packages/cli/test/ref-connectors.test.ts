@@ -9,6 +9,7 @@ import { runRefConnectors } from "../src/ref/commands/connectors.ts";
 import { PdppHttpError, PdppUsageError } from "../src/ref/errors.ts";
 
 function mockFetch(responses) {
+  // biome-ignore lint/suspicious/useAwait: mocks the fetch(...) => Promise<Response> contract (or Response.text()/json()); async is required to satisfy the type even though this mock body never awaits.
   return async (url) => {
     const key = url.toString();
     if (!Object.hasOwn(responses, key)) {
@@ -215,7 +216,7 @@ test("ref connectors list: projects summary fields in JSON list", async () => {
   const parsed = JSON.parse(captured.stdout);
   assert.equal(parsed.object, "list");
   assert.equal(parsed.data.length, 1);
-  const row = parsed.data[0];
+  const [row] = parsed.data;
   assert.equal(row.connector_id, "github");
   assert.equal(row.connection_id, "github");
   assert.equal(row.state, "needs_attention");
@@ -288,17 +289,29 @@ test("ref connectors list: table format includes projected columns", async () =>
   const captured = capture();
   await runRefConnectors(["list", "--as-url", "https://ref.test", "--format", "table"], captured.io, fetch);
 
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stdout, /connector_id/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stdout, /state/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stdout, /dominant_condition_reason/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stdout, /github/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stdout, /needs_attention/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stdout, /primary_action_kind/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stdout, /reauth/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stdout, /Reconnect this account/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stdout, /latest_acquisition_status/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stdout, /owner_artifact/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.doesNotMatch(captured.stdout, /Owner action is required before collection can continue/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.doesNotMatch(captured.stdout, /artifact_sha256/);
 });
 
@@ -326,7 +339,7 @@ test("ref connectors list: handles missing axes / next_action without crashing",
   const captured = capture();
   await runRefConnectors(["list", "--as-url", "https://ref.test", "--format", "json"], captured.io, fetch);
 
-  const row = JSON.parse(captured.stdout).data[0];
+  const [row] = JSON.parse(captured.stdout).data;
   assert.equal(row.state, "unknown");
   assert.equal(row.coverage, "unknown");
   assert.equal(row.freshness, "unknown");
@@ -386,7 +399,8 @@ test("ref connectors show: --verbose returns raw envelope", async () => {
 });
 
 test("ref connectors show: percent-encodes connector id", async () => {
-  let capturedUrl = null;
+  let capturedUrl: string | null = null;
+  // biome-ignore lint/suspicious/useAwait: mocks the fetch(...) => Promise<Response> contract (or Response.text()/json()); async is required to satisfy the type even though this mock body never awaits.
   const fetch = async (url) => {
     capturedUrl = url.toString();
     return {
@@ -428,6 +442,7 @@ test("ref connectors show: throws PdppUsageError when missing connector id", asy
   const { io } = capture();
   await assert.rejects(
     () => runRefConnectors(["show", "--as-url", "https://ref.test"], io, mockFetch({})),
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     (err) => err instanceof PdppUsageError && /connector-id/.test(err.message)
   );
 });
@@ -480,7 +495,9 @@ test("runCli ref --help mentions connectors commands", async () => {
   const captured = capture();
   const code = await runCli(["ref", "--help"], captured.io);
   assert.equal(code, 0);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stdout, /ref connectors list/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stdout, /ref connectors show/);
 });
 
@@ -511,9 +528,13 @@ test("ref connectors list: surfaces canonical meta.warnings to stderr without po
   assert.equal(parsed.object, "list");
   assert.equal(parsed.data.length, 1);
   // stderr carries the warnings.
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stderr, /warning: deprecated_alias/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stderr, /connector_instance_id is deprecated/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stderr, /warning: count_downgraded/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stderr, /\(dropped: count=exact\)/);
 });
 
@@ -539,6 +560,7 @@ test("ref connectors show: surfaces canonical meta.warnings on single-record res
   const parsed = JSON.parse(captured.stdout);
   assert.equal(parsed.connector_id, "github");
   // stderr surfaces the warning.
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stderr, /warning: skipped_source — one binding had no snapshot/);
 });
 
@@ -576,7 +598,10 @@ test("ref connectors list: ignores malformed warnings entries", async () => {
   await runRefConnectors(["list", "--as-url", "https://ref.test", "--format", "json"], captured.io, fetch);
 
   // Only the well-formed entry surfaces.
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stderr, /warning: ok_warning/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.doesNotMatch(captured.stderr, /not-an-object/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.doesNotMatch(captured.stderr, /missing code field/);
 });

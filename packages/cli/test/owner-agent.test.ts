@@ -3,15 +3,15 @@
 
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
 import { runCli } from "../src/index.ts";
 import { runOwnerAgent } from "../src/owner-agent/command.ts";
+import { DEFAULT_OWNER_AGENT_DIR, resolveCredentialFile } from "../src/owner-agent/credential-store.ts";
 import { discoverOwnerAgentProfile, normalizeEntrypointUrl } from "../src/owner-agent/discovery.ts";
-import { resolveCredentialFile, DEFAULT_OWNER_AGENT_DIR } from "../src/owner-agent/credential-store.ts";
 import { OwnerAgentError } from "../src/owner-agent/errors.ts";
 
 const SECRET = "super-secret-owner-bearer-value";
@@ -61,6 +61,7 @@ function jsonResponse(status, body) {
 
 // A scriptable fetch keyed by `${METHOD} ${path}` substring match.
 function makeFetch(routes) {
+  // biome-ignore lint/suspicious/useAwait: mocks the fetch(...) => Promise<Response> contract; async is required to satisfy the type even though this mock body never awaits.
   return async (url, opts = {}) => {
     const method = (opts.method ?? "GET").toUpperCase();
     const u = typeof url === "string" ? url : url.toString();
@@ -281,7 +282,7 @@ test("onboard writes credential to 0600 file and never prints the bearer", async
     const code = await runOwnerAgent(["onboard", "https://ref.test"], captured.io, {
       fetch,
       home,
-      sleep: async () => {},
+      sleep: () => Promise.resolve(),
       now: () => 1_000_000,
     });
     assert.equal(code, 0);
@@ -292,12 +293,16 @@ test("onboard writes credential to 0600 file and never prints the bearer", async
     assert.doesNotMatch(captured.stdout, new RegExp(REG_TOKEN));
 
     // verification URL + code printed (non-secret)
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /\/device/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /WXYZ-1234/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /\/mcp rejects owner bearers/i);
 
     const target = resolveCredentialFile({ resource: "https://ref.test", home });
     assert.ok(existsSync(target));
+    // biome-ignore lint/suspicious/noBitwiseOperators: genuine POSIX file-mode bitmask, not a style mistake.
     assert.equal(statSync(target).mode & 0o777, 0o600);
 
     const record = JSON.parse(readFileSync(target, "utf8"));
@@ -324,7 +329,7 @@ test("onboard honors explicit --client-id without registering a new client", asy
     const code = await runOwnerAgent(["onboard", "https://ref.test", "--client-id", "client-9"], captured.io, {
       fetch,
       home,
-      sleep: async () => {},
+      sleep: () => Promise.resolve(),
       now: () => 1_000_000,
     });
     assert.equal(code, 0);
@@ -346,11 +351,12 @@ test("onboard writes to Daisy-style explicit credential-file path", async () => 
     const code = await runOwnerAgent(["onboard", "https://ref.test", "--credential-file", daisyPath], captured.io, {
       fetch,
       home,
-      sleep: async () => {},
+      sleep: () => Promise.resolve(),
       now: () => 1_000_000,
     });
     assert.equal(code, 0);
     assert.ok(existsSync(daisyPath));
+    // biome-ignore lint/suspicious/noBitwiseOperators: genuine POSIX file-mode bitmask, not a style mistake.
     assert.equal(statSync(daisyPath).mode & 0o777, 0o600);
     assert.match(captured.stdout, new RegExp(daisyPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   });
@@ -365,10 +371,11 @@ test("onboard surfaces access_denied as bounded error", async () => {
     const code = await runOwnerAgent(["onboard", "https://ref.test"], captured.io, {
       fetch,
       home,
-      sleep: async () => {},
+      sleep: () => Promise.resolve(),
       now: () => 1_000_000,
     });
     assert.notEqual(code, 0);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stderr, /denied/i);
     assert.ok(!existsSync(resolveCredentialFile({ resource: "https://ref.test", home })));
   });
@@ -381,10 +388,11 @@ test("onboard surfaces expired_token as bounded error", async () => {
     const code = await runOwnerAgent(["onboard", "https://ref.test"], captured.io, {
       fetch,
       home,
-      sleep: async () => {},
+      sleep: () => Promise.resolve(),
       now: () => 1_000_000,
     });
     assert.notEqual(code, 0);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stderr, /expired/i);
   });
 });
@@ -392,11 +400,13 @@ test("onboard surfaces expired_token as bounded error", async () => {
 test("onboard requires a valid entrypoint URL", async () => {
   const captured = capture();
   const code = await runOwnerAgent(["onboard"], captured.io, {
+    // biome-ignore lint/suspicious/useAwait: mocks the fetch(...) => Promise<Response> contract (or Response.text()/json()); async is required to satisfy the type even though this mock body never awaits.
     fetch: async () => {
       throw new Error("nope");
     },
   });
   assert.equal(code, 64);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stderr, /entrypoint/i);
 });
 
@@ -426,7 +436,7 @@ test("status introspects the stored credential without printing the bearer", asy
   await withTmpHome(async (home) => {
     await seedCredential(home);
     const captured = capture();
-    let introspectAuth = null;
+    let introspectAuth: string | null = null;
     const fetch = makeFetch([
       {
         method: "POST",
@@ -438,14 +448,16 @@ test("status introspects the stored credential without printing the bearer", asy
             pdpp_token_kind: "owner",
             sub: "owner_local",
             client_id: "client-9",
-            exp: 9999999999,
+            exp: 9_999_999_999,
           });
         },
       },
     ]);
     const code = await runOwnerAgent(["status", "--entrypoint", "https://ref.test"], captured.io, { fetch, home });
     assert.equal(code, 0);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /active: true/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /owner_local/);
     assert.doesNotMatch(captured.stdout, new RegExp(SECRET));
     assert.equal(introspectAuth, `Bearer ${SECRET}`);
@@ -459,6 +471,7 @@ test("status returns nonzero when token is inactive (revoked)", async () => {
     const fetch = makeFetch([{ method: "POST", match: "/introspect", body: { active: false } }]);
     const code = await runOwnerAgent(["status", "--entrypoint", "https://ref.test"], captured.io, { fetch, home });
     assert.equal(code, 1);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /active: false/);
   });
 });
@@ -467,12 +480,14 @@ test("status without a stored credential reports not_onboarded", async () => {
   await withTmpHome(async (home) => {
     const captured = capture();
     const code = await runOwnerAgent(["status"], captured.io, {
+      // biome-ignore lint/suspicious/useAwait: mocks the fetch(...) => Promise<Response> contract (or Response.text()/json()); async is required to satisfy the type even though this mock body never awaits.
       fetch: async () => {
         throw new Error("nope");
       },
       home,
     });
     assert.equal(code, 5);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stderr, /No owner-agent credential/i);
   });
 });
@@ -559,19 +574,28 @@ test("control lists capabilities and connections without printing the bearer", a
     const code = await runOwnerAgent(["control", "--entrypoint", "https://ref.test"], captured.io, { fetch, home });
     assert.equal(code, 0);
     // capability families surfaced with status
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /list_connections \[supported\] GET https:\/\/ref\.test\/v1\/owner\/connections/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /initiate_connection \[supported\]/);
     assert.match(
       captured.stdout,
+      // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
       /delete_connection \[supported\] DELETE https:\/\/ref\.test\/v1\/owner\/connections\/\{connection_id\}/
     );
     // mcp rejection surfaced
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /\/mcp owner bearer: rejected/i);
     // both connections + label state
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /cin_personal\s+connector=amazon/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /"the owner personal" \(owner_set\)/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /cin_shared\s+connector=amazon/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /label-needed/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /rename_connection/);
     // never the bearer
     assert.doesNotMatch(captured.stdout, new RegExp(SECRET));
@@ -586,7 +610,9 @@ test("control reports zero connections cleanly", async () => {
     const fetch = controlFetch({ connections: [] });
     const code = await runOwnerAgent(["control", "--entrypoint", "https://ref.test"], captured.io, { fetch, home });
     assert.equal(code, 0);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /Configured connections \(0\)/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /none yet/i);
   });
 });
@@ -600,6 +626,7 @@ test("control surfaces an unauthorized (revoked) credential as a bounded error",
     ]);
     const code = await runOwnerAgent(["control", "--entrypoint", "https://ref.test"], captured.io, { fetch, home });
     assert.equal(code, 4);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stderr, /not authorized/i);
     assert.doesNotMatch(captured.stderr, new RegExp(SECRET));
   });
@@ -609,12 +636,14 @@ test("control without a stored credential reports not_onboarded", async () => {
   await withTmpHome(async (home) => {
     const captured = capture();
     const code = await runOwnerAgent(["control"], captured.io, {
+      // biome-ignore lint/suspicious/useAwait: mocks the fetch(...) => Promise<Response> contract (or Response.text()/json()); async is required to satisfy the type even though this mock body never awaits.
       fetch: async () => {
         throw new Error("nope");
       },
       home,
     });
     assert.equal(code, 5);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stderr, /No owner-agent credential/i);
   });
 });
@@ -625,7 +654,7 @@ test("revoke deletes the dynamically registered client", async () => {
   await withTmpHome(async (home) => {
     await seedCredential(home);
     const captured = capture();
-    let deleteCookie = null;
+    let deleteCookie: string | null = null;
     const fetch = makeFetch([
       {
         method: "DELETE",
@@ -642,6 +671,7 @@ test("revoke deletes the dynamically registered client", async () => {
       { fetch, home }
     );
     assert.equal(code, 0);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /revoked/i);
     assert.equal(deleteCookie, "pdpp_owner_session=owner-session-value");
   });
@@ -652,12 +682,14 @@ test("revoke without an RFC 7592 handle reports revocation_unavailable", async (
     await seedCredential(home, { registration_client_uri: null });
     const captured = capture();
     const code = await runOwnerAgent(["revoke", "--entrypoint", "https://ref.test"], captured.io, {
+      // biome-ignore lint/suspicious/useAwait: mocks the fetch(...) => Promise<Response> contract (or Response.text()/json()); async is required to satisfy the type even though this mock body never awaits.
       fetch: async () => {
         throw new Error("nope");
       },
       home,
     });
     assert.notEqual(code, 0);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stderr, /no RFC 7592 registration handle/i);
   });
 });
@@ -667,12 +699,14 @@ test("revoke without an owner session reports owner_session_required", async () 
     await seedCredential(home);
     const captured = capture();
     const code = await runOwnerAgent(["revoke", "--entrypoint", "https://ref.test"], captured.io, {
+      // biome-ignore lint/suspicious/useAwait: mocks the fetch(...) => Promise<Response> contract (or Response.text()/json()); async is required to satisfy the type even though this mock body never awaits.
       fetch: async () => {
         throw new Error("nope");
       },
       home,
     });
     assert.equal(code, 5);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stderr, /owner session/i);
   });
 });
@@ -688,6 +722,7 @@ test("revoke treats 404 as already absent", async () => {
       { fetch, home }
     );
     assert.equal(code, 0);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /already absent/i);
   });
 });
@@ -845,9 +880,13 @@ test("connectors list discovers available setup options without mutating", async
     assert.equal(cap.auth, `Bearer ${SECRET}`);
     assert.equal(cap.cookie, null);
     assert.equal(cap.templateCalls, 1);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /Connector setup catalog/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /Amazon\s+connector=amazon\s+status=proof_gated\s+connections=1/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /Codex\s+connector=codex\s+status=supported\s+connections=0/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /explain: pdpp owner-agent connectors explain gmail/);
     assert.doesNotMatch(captured.stdout, new RegExp(SECRET));
   });
@@ -867,8 +906,11 @@ test("connectors search filters the shared setup catalog by provider name", asyn
       }
     );
     assert.equal(code, 0);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /matching "gmail"/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /Gmail\s+connector=gmail/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.doesNotMatch(captured.stdout, /Amazon\s+connector=amazon/);
   });
 });
@@ -887,11 +929,17 @@ test("connectors explain previews one connector without minting setup material",
       }
     );
     assert.equal(code, 0);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /Connector setup preview for Codex \(codex\)/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /status: supported/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /next step: enroll_local_collector/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /Start setup: pdpp owner-agent setup codex --display-name "<name>"/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /did not mint enrollment codes/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.doesNotMatch(captured.stdout, /lde_setup_code_value/);
     assert.doesNotMatch(captured.stdout, new RegExp(SECRET));
   });
@@ -937,11 +985,17 @@ test("setup requests a supported local-collector plan with the bearer as a heade
     assert.equal(cap.body.connector_id, "claude-code");
     assert.equal(cap.body.display_name, "the owner laptop");
     // formatted supported plan
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /status: supported/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /modality: local_collector/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /Next step: enroll_local_collector/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /enrollment code: lde_setup_code_value/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /enroll endpoint: https:\/\/ref\.test\/_ref\/device-exporters\/enroll/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /connection active: no/);
     // the owner bearer is never printed
     assert.doesNotMatch(captured.stdout, new RegExp(SECRET));
@@ -978,12 +1032,18 @@ test("setup formats a proof-gated static-secret connector honestly", async () =>
       home,
     });
     assert.equal(code, 0);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /status: proof-gated/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /Next step: capture_static_secret/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /capture endpoint: \/connect\/static-secret\/gmail/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.doesNotMatch(captured.stdout, /runbook:/);
     // The CLI surfaces the synchronous validation mode without any secret.
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /credential validation: synchronous/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.doesNotMatch(captured.stdout, /provider-secret-value/);
   });
 });
@@ -1016,10 +1076,15 @@ test("setup formats a manual/upload connector with an owner upload endpoint", as
       home,
     });
     assert.equal(code, 0);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /status: supported/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /setup modality: manual_or_upload/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /Next step: provide_import_file/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /upload endpoint: \/connect\/manual-upload\/google-maps/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.doesNotMatch(captured.stdout, /GOOGLE_MAPS_TIMELINE_DIR|import_dir|pdpp_owner_session/i);
   });
 });
@@ -1051,8 +1116,11 @@ test("setup formats an unsupported connector", async () => {
       home,
     });
     assert.equal(code, 0);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /status: unsupported/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /Next step: unsupported/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /no manifest with runtime binding requirements/);
   });
 });
@@ -1091,10 +1159,15 @@ test("setup formats a deployment-blocked connector", async () => {
       home,
     });
     assert.equal(code, 0);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /status: deployment-blocked/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /deployment readiness: needs_config/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /FUTURE_OAUTH_CLIENT_ID/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /FUTURE_OAUTH_CLIENT_SECRET \(secret\)/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /Next step: needs_deployment_config/);
   });
 });
@@ -1128,6 +1201,7 @@ test("setup surfaces an HTTP error from the intent route as a bounded error", as
       home,
     });
     assert.notEqual(code, 0);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stderr, /invalid_request/);
     assert.doesNotMatch(captured.stderr, new RegExp(SECRET));
   });
@@ -1143,6 +1217,7 @@ test("setup surfaces an unauthorized (revoked) credential as a bounded error", a
       home,
     });
     assert.equal(code, 4);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stderr, /not authorized/i);
     assert.doesNotMatch(captured.stderr, new RegExp(SECRET));
   });
@@ -1153,12 +1228,14 @@ test("setup without a connector-id reports a usage error", async () => {
     await seedCredential(home);
     const captured = capture();
     const code = await runOwnerAgent(["setup", "--entrypoint", "https://ref.test"], captured.io, {
+      // biome-ignore lint/suspicious/useAwait: mocks the fetch(...) => Promise<Response> contract (or Response.text()/json()); async is required to satisfy the type even though this mock body never awaits.
       fetch: async () => {
         throw new Error("nope");
       },
       home,
     });
     assert.equal(code, 64);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stderr, /Usage: pdpp owner-agent setup <connector-id>/);
   });
 });
@@ -1167,12 +1244,14 @@ test("setup without a stored credential reports not_onboarded", async () => {
   await withTmpHome(async (home) => {
     const captured = capture();
     const code = await runOwnerAgent(["setup", "claude-code"], captured.io, {
+      // biome-ignore lint/suspicious/useAwait: mocks the fetch(...) => Promise<Response> contract (or Response.text()/json()); async is required to satisfy the type even though this mock body never awaits.
       fetch: async () => {
         throw new Error("nope");
       },
       home,
     });
     assert.equal(code, 5);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stderr, /No owner-agent credential/i);
   });
 });
@@ -1183,10 +1262,15 @@ test("runCli routes owner-agent and help advertises the profile", async () => {
   const captured = capture();
   const code = await runCli(["owner-agent", "--help"], captured.io);
   assert.equal(code, 0);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stdout, /owner-agent onboard/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stdout, /owner-agent control/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stdout, /owner-agent connectors/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stdout, /owner-agent setup\s+<connector-id>/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stdout, /not the default/i);
 });
 
@@ -1194,6 +1278,8 @@ test("top-level help advertises owner-agent without recommending it as default",
   const captured = capture();
   const code = await runCli(["--help"], captured.io);
   assert.equal(code, 0);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stdout, /owner-agent onboard/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stdout, /not the default agent path/i);
 });

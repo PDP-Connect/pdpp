@@ -21,6 +21,7 @@ test("read aggregate rejects group-by and group-by-time together", () => {
         },
         "https://provider.test"
       ),
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     (error) => error instanceof PdppUsageError && /Use only one/.test(error.message)
   );
 });

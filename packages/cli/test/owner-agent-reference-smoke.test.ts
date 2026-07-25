@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { createServer } from "node:net";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -90,7 +90,7 @@ async function withTmpHome(fn) {
 async function fetchJson(url, opts = {}) {
   const resp = await fetch(url, opts);
   const text = await resp.text();
-  let body = null;
+  let body: unknown = null;
   try {
     body = text ? JSON.parse(text) : null;
   } catch {
@@ -109,7 +109,7 @@ function getRawSetCookieList(resp) {
 
 function findSetCookiePair(setCookies, name) {
   for (const header of setCookies) {
-    const firstPair = header.split(";")[0];
+    const [firstPair] = header.split(";");
     if (firstPair.startsWith(`${name}=`)) {
       return firstPair;
     }
@@ -118,6 +118,7 @@ function findSetCookiePair(setCookies, name) {
 }
 
 function extractCsrfFieldValue(html) {
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   const match = html.match(/<input type="hidden" name="_csrf" value="([^"]+)"\s*\/>/);
   return match ? match[1] : null;
 }
@@ -190,7 +191,7 @@ async function approveDeviceCode(asUrl, sessionCookie, userCode) {
 }
 
 function buildAutoApprovingFetch({ asUrl, sessionCookie }) {
-  let device = null;
+  let device: { user_code: string } | null = null;
   let approved = false;
 
   return async (url, opts = {}) => {
@@ -255,12 +256,13 @@ test("owner-agent CLI smoke discovers metadata, writes Daisy credential, reads R
         {
           fetch: buildAutoApprovingFetch({ asUrl, sessionCookie }),
           home,
-          sleep: async () => {},
+          sleep: () => Promise.resolve(),
           now: () => Date.parse("2026-05-31T00:00:00Z"),
         }
       );
       assert.equal(onboardCode, 0);
       assert.ok(existsSync(credentialPath));
+      // biome-ignore lint/suspicious/noBitwiseOperators: genuine POSIX file-mode bitmask, not a style mistake.
       assert.equal(statSync(credentialPath).mode & 0o777, 0o600);
 
       const credential = JSON.parse(readFileSync(credentialPath, "utf8"));
@@ -280,7 +282,9 @@ test("owner-agent CLI smoke discovers metadata, writes Daisy credential, reads R
       const status = capture();
       const statusCode = await runOwnerAgent(["status", "--credential-file", credentialPath], status.io, { fetch });
       assert.equal(statusCode, 0);
+      // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
       assert.match(status.stdout, /active: true/);
+      // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
       assert.match(status.stdout, /token kind: owner/);
       assert.doesNotMatch(status.stdout, new RegExp(credential.access_token));
 
@@ -290,10 +294,15 @@ test("owner-agent CLI smoke discovers metadata, writes Daisy credential, reads R
       const control = capture();
       const controlCode = await runOwnerAgent(["control", "--credential-file", credentialPath], control.io, { fetch });
       assert.equal(controlCode, 0);
+      // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
       assert.match(control.stdout, /Owner-agent control capabilities/);
+      // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
       assert.match(control.stdout, /list_connections \[supported\]/);
+      // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
       assert.match(control.stdout, /initiate_connection \[supported\]/);
+      // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
       assert.match(control.stdout, /\/mcp owner bearer: rejected/i);
+      // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
       assert.match(control.stdout, /Configured connections/);
       assert.doesNotMatch(control.stdout, new RegExp(credential.access_token));
       assert.doesNotMatch(control.stderr, new RegExp(credential.access_token));
@@ -323,6 +332,7 @@ test("owner-agent CLI smoke discovers metadata, writes Daisy credential, reads R
       });
       assert.equal(mcp.status, 403);
       assert.equal(mcp.body.error.code, "permission_error");
+      // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
       assert.match(mcp.body.error.message, /owner-agent REST onboarding/);
 
       const revoke = capture();
@@ -332,6 +342,7 @@ test("owner-agent CLI smoke discovers metadata, writes Daisy credential, reads R
         { fetch }
       );
       assert.equal(revokeCode, 0);
+      // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
       assert.match(revoke.stdout, /revoked/i);
 
       const revokedStatus = capture();
@@ -339,6 +350,7 @@ test("owner-agent CLI smoke discovers metadata, writes Daisy credential, reads R
         fetch,
       });
       assert.equal(revokedStatusCode, 1);
+      // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
       assert.match(revokedStatus.stdout, /active: false/);
     } finally {
       await closeServer(server);

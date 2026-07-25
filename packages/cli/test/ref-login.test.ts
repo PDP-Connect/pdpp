@@ -12,13 +12,13 @@ import { runCli } from "../src/index.ts";
 import { runRefLogin } from "../src/ref/commands/login.ts";
 import { runRefRun } from "../src/ref/commands/run.ts";
 import { PdppCliError, PdppUsageError } from "../src/ref/errors.ts";
+import { ownerSessionHeaders } from "../src/ref/fetch.ts";
 import {
   extractCookieFromSetCookie,
   getOwnerSessionPaths,
   readOwnerSession,
   writeOwnerSession,
 } from "../src/ref/session.ts";
-import { ownerSessionHeaders } from "../src/ref/fetch.ts";
 
 function capture() {
   let out = "";
@@ -55,40 +55,41 @@ async function withTmpCache(fn) {
 }
 
 function loginFetch({ status = 302, cookieValue = "abc123" } = {}) {
-  return async (url, opts = {}) => {
-    return {
-      status,
-      headers: {
-        getSetCookie: () => (cookieValue ? [`pdpp_owner_session=${cookieValue}; Path=/; HttpOnly`] : []),
-        get: () => null,
-      },
-      text: async () => "",
-      __debug: { url, opts },
-    };
-  };
+  return async (url, opts = {}) => ({
+    status,
+    headers: {
+      getSetCookie: () => (cookieValue ? [`pdpp_owner_session=${cookieValue}; Path=/; HttpOnly`] : []),
+      get: () => null,
+    },
+    text: async () => "",
+    __debug: { url, opts },
+  });
 }
 
 // ---- session helpers --------------------------------------------------------
 
 test("writeOwnerSession persists cookie with 0600 file mode and gitignore", async () => {
-  await withTmpCache(async (cacheRoot) => {
+  await withTmpCache((cacheRoot) => {
     const file = writeOwnerSession({
       referenceUrl: "https://ref.test",
       cookie: "pdpp_owner_session=abc",
       cacheRoot,
     });
     assert.ok(existsSync(file), "session file should be created");
+    // biome-ignore lint/suspicious/noBitwiseOperators: genuine POSIX file-mode bitmask, not a style mistake.
     assert.equal(statSync(file).mode & 0o777, 0o600);
 
     const gi = join(cacheRoot, ".gitignore");
     assert.ok(existsSync(gi));
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(readFileSync(gi, "utf8"), /\*/);
   });
 });
 
 test("readOwnerSession returns cached cookie; getOwnerSessionPaths derives origin", async () => {
-  await withTmpCache(async (cacheRoot) => {
+  await withTmpCache((cacheRoot) => {
     const { file } = getOwnerSessionPaths("https://ref.test:8443", { cacheRoot });
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(file, /https___ref\.test_8443\.json$/);
 
     writeOwnerSession({
@@ -112,7 +113,7 @@ test("extractCookieFromSetCookie reads named cookie from various shapes", () => 
 // ---- ownerSessionHeaders precedence -----------------------------------------
 
 test("ownerSessionHeaders precedence: --owner-session beats env beats cache", async () => {
-  await withTmpCache(async (cacheRoot) => {
+  await withTmpCache((cacheRoot) => {
     writeOwnerSession({
       referenceUrl: "https://ref.test",
       cookie: "pdpp_owner_session=from-cache",
@@ -160,8 +161,11 @@ test("ownerSessionHeaders precedence: --owner-session beats env beats cache", as
         {}
       );
     } finally {
-      if (origEnv === undefined) delete process.env.PDPP_OWNER_SESSION_COOKIE;
-      else process.env.PDPP_OWNER_SESSION_COOKIE = origEnv;
+      if (origEnv === undefined) {
+        delete process.env.PDPP_OWNER_SESSION_COOKIE;
+      } else {
+        process.env.PDPP_OWNER_SESSION_COOKIE = origEnv;
+      }
     }
   });
 });
@@ -172,6 +176,7 @@ test("ref login: requires <reference-url> positional", async () => {
   const { io } = capture();
   await assert.rejects(
     () => runRefLogin([], io, loginFetch()),
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     (err) => err instanceof PdppUsageError && /reference-url/.test(err.message)
   );
 });
@@ -183,10 +188,13 @@ test("ref login: requires password from stdin or env, never argv", async () => {
     const { io } = capture();
     await assert.rejects(
       () => runRefLogin(["https://ref.test"], io, loginFetch()),
+      // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
       (err) => err instanceof PdppUsageError && /password/i.test(err.message)
     );
   } finally {
-    if (orig !== undefined) process.env.PDPP_OWNER_PASSWORD = orig;
+    if (orig !== undefined) {
+      process.env.PDPP_OWNER_PASSWORD = orig;
+    }
   }
 });
 
@@ -204,21 +212,29 @@ test("ref login: success caches session, never prints cookie value", async () =>
       assert.equal(code, 0);
 
       // Cookie value must not appear in any output.
+      // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
       assert.doesNotMatch(captured.stdout, /secret-cookie-value/);
+      // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
       assert.doesNotMatch(captured.stdout, /hunter2/);
+      // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
       assert.doesNotMatch(captured.stderr, /secret-cookie-value/);
+      // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
       assert.doesNotMatch(captured.stderr, /hunter2/);
 
       // Session file persisted with secret perms.
       const { file } = getOwnerSessionPaths("https://ref.test", { cacheRoot });
       assert.ok(existsSync(file));
+      // biome-ignore lint/suspicious/noBitwiseOperators: genuine POSIX file-mode bitmask, not a style mistake.
       assert.equal(statSync(file).mode & 0o777, 0o600);
 
       const cached = readOwnerSession({ referenceUrl: "https://ref.test", cacheRoot });
       assert.equal(cached.cookie, "pdpp_owner_session=secret-cookie-value");
     } finally {
-      if (orig === undefined) delete process.env.PDPP_OWNER_PASSWORD;
-      else process.env.PDPP_OWNER_PASSWORD = orig;
+      if (orig === undefined) {
+        delete process.env.PDPP_OWNER_PASSWORD;
+      } else {
+        process.env.PDPP_OWNER_PASSWORD = orig;
+      }
     }
   });
 });
@@ -230,11 +246,15 @@ test("ref login: 401 yields bounded error with exit code 3", async () => {
     const { io } = capture();
     await assert.rejects(
       () => runRefLogin(["https://ref.test"], io, loginFetch({ status: 401, cookieValue: "" })),
+      // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
       (err) => err instanceof PdppCliError && err.exitCode === 3 && /incorrect password/i.test(err.message)
     );
   } finally {
-    if (orig === undefined) delete process.env.PDPP_OWNER_PASSWORD;
-    else process.env.PDPP_OWNER_PASSWORD = orig;
+    if (orig === undefined) {
+      delete process.env.PDPP_OWNER_PASSWORD;
+    } else {
+      process.env.PDPP_OWNER_PASSWORD = orig;
+    }
   }
 });
 
@@ -248,8 +268,11 @@ test("ref login: 404 yields bounded error with exit code 5", async () => {
       (err) => err instanceof PdppCliError && err.exitCode === 5
     );
   } finally {
-    if (orig === undefined) delete process.env.PDPP_OWNER_PASSWORD;
-    else process.env.PDPP_OWNER_PASSWORD = orig;
+    if (orig === undefined) {
+      delete process.env.PDPP_OWNER_PASSWORD;
+    } else {
+      process.env.PDPP_OWNER_PASSWORD = orig;
+    }
   }
 });
 
@@ -260,11 +283,15 @@ test("ref login: success but missing Set-Cookie yields PdppCliError", async () =
     const { io } = capture();
     await assert.rejects(
       () => runRefLogin(["https://ref.test"], io, loginFetch({ status: 302, cookieValue: "" })),
+      // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
       (err) => err instanceof PdppCliError && /no owner-session cookie/i.test(err.message)
     );
   } finally {
-    if (orig === undefined) delete process.env.PDPP_OWNER_PASSWORD;
-    else process.env.PDPP_OWNER_PASSWORD = orig;
+    if (orig === undefined) {
+      delete process.env.PDPP_OWNER_PASSWORD;
+    } else {
+      process.env.PDPP_OWNER_PASSWORD = orig;
+    }
   }
 });
 
@@ -278,7 +305,8 @@ test("ref run timeline uses cached session when flag and env are absent", async 
       cacheRoot,
     });
 
-    let capturedHeaders = null;
+    let capturedHeaders: Record<string, unknown> | null = null;
+    // biome-ignore lint/suspicious/useAwait: mocks the fetch(...) => Promise<Response> contract; async is required to satisfy the type even though this mock body never awaits.
     const fetch = async (_url, opts = {}) => {
       capturedHeaders = opts.headers || {};
       return {
@@ -296,7 +324,9 @@ test("ref run timeline uses cached session when flag and env are absent", async 
       await runRefRun(["timeline", "run-1", "--as-url", "https://ref.test", "--cache-root", cacheRoot], io, fetch);
       assert.equal(capturedHeaders.Cookie, "pdpp_owner_session=from-cache");
     } finally {
-      if (origEnv !== undefined) process.env.PDPP_OWNER_SESSION_COOKIE = origEnv;
+      if (origEnv !== undefined) {
+        process.env.PDPP_OWNER_SESSION_COOKIE = origEnv;
+      }
     }
   });
 });
@@ -309,7 +339,8 @@ test("ref run timeline: --owner-session flag overrides cached session", async ()
       cacheRoot,
     });
 
-    let capturedHeaders = null;
+    let capturedHeaders: Record<string, unknown> | null = null;
+    // biome-ignore lint/suspicious/useAwait: mocks the fetch(...) => Promise<Response> contract; async is required to satisfy the type even though this mock body never awaits.
     const fetch = async (_url, opts = {}) => {
       capturedHeaders = opts.headers || {};
       return {
@@ -342,13 +373,17 @@ test("runCli ref login routes through login command and persists session", async
       const captured = capture();
       const code = await runCli(["ref", "login", "https://ref.test", "--cache-root", cacheRoot], captured.io);
       assert.equal(code, 0);
+      // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
       assert.doesNotMatch(captured.stdout, /routed-cookie/);
       const cached = readOwnerSession({ referenceUrl: "https://ref.test", cacheRoot });
       assert.equal(cached.cookie, "pdpp_owner_session=routed-cookie");
     } finally {
       globalThis.fetch = origFetch;
-      if (origPw === undefined) delete process.env.PDPP_OWNER_PASSWORD;
-      else process.env.PDPP_OWNER_PASSWORD = origPw;
+      if (origPw === undefined) {
+        delete process.env.PDPP_OWNER_PASSWORD;
+      } else {
+        process.env.PDPP_OWNER_PASSWORD = origPw;
+      }
     }
   });
 });
@@ -357,5 +392,6 @@ test("runCli ref --help advertises login", async () => {
   const captured = capture();
   const code = await runCli(["ref", "--help"], captured.io);
   assert.equal(code, 0);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(captured.stdout, /ref login/);
 });

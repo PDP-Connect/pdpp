@@ -2,17 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { Readable } from "node:stream";
-import { test } from "node:test";
-
-import { runCli } from "../src/index.ts";
-import { runRefCall } from "../src/ref/commands/call.ts";
-import { inferAuthMode, resolveAuthMode, buildAuthHeaders, AUTH_COOKIE, AUTH_BEARER } from "../src/ref/auth.ts";
-import { PdppUsageError, PdppHttpError } from "../src/ref/errors.ts";
-import { writeOwnerSession } from "../src/ref/session.ts";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Readable } from "node:stream";
+import { test } from "node:test";
+import { runCli } from "../src/index.ts";
+import { AUTH_BEARER, AUTH_COOKIE, buildAuthHeaders, inferAuthMode, resolveAuthMode } from "../src/ref/auth.ts";
+import { runRefCall } from "../src/ref/commands/call.ts";
+import { PdppHttpError, PdppUsageError } from "../src/ref/errors.ts";
+import { writeOwnerSession } from "../src/ref/session.ts";
 
 function capture() {
   let out = "";
@@ -46,7 +45,8 @@ function stdinFrom(text) {
 // A fetch double that records the single request it received and returns a
 // canned response. `text()` returns the JSON-encoded body.
 function fakeFetch({ status = 200, statusText = "OK", body = {} } = {}) {
-  const calls = [];
+  const calls: { url: string; opts: Record<string, unknown> }[] = [];
+  // biome-ignore lint/suspicious/useAwait: mocks the fetch(...) => Promise<Response> contract (or Response.text()/json()); async is required to satisfy the type even though this mock body never awaits.
   const impl = async (url, opts = {}) => {
     calls.push({ url, opts });
     return {
@@ -105,7 +105,9 @@ test("resolveAuthMode rejects bearer pointed at /_ref/* with a corrective hint",
     () => resolveAuthMode("/_ref/runs/r1/cancel", "bearer"),
     (e) => {
       assert.ok(e instanceof PdppUsageError);
+      // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
       assert.match(e.message, /\/_ref\/\* uses the owner session cookie/);
+      // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
       assert.match(e.message, /cookie/);
       return true;
     }
@@ -117,6 +119,7 @@ test("resolveAuthMode rejects cookie pointed at /v1/owner/* with a corrective hi
     () => resolveAuthMode("/v1/owner/connections/c1/run", "cookie"),
     (e) => {
       assert.ok(e instanceof PdppUsageError);
+      // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
       assert.match(e.message, /\/v1\/owner\/\* uses the owner bearer/);
       return true;
     }
@@ -166,6 +169,7 @@ test("buildAuthHeaders cookie mode errors when no session is available", async (
       }),
       (e) => {
         assert.ok(e instanceof PdppUsageError);
+        // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
         assert.match(e.message, /pdpp ref login/);
         return true;
       }
@@ -206,6 +210,7 @@ test("buildAuthHeaders bearer mode errors when no token is available", async () 
     }),
     (e) => {
       assert.ok(e instanceof PdppUsageError);
+      // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
       assert.match(e.message, /PDPP_OWNER_TOKEN/);
       return true;
     }
@@ -238,10 +243,14 @@ test("ref call sends a JSON POST to /_ref/* with the cookie and no _csrf", async
     assert.equal(opts.headers["Content-Type"], undefined);
     assert.equal(opts.body, undefined);
     assert.equal(opts.headers.Authorization, undefined);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(cap.stdout, /dataset_summary_reconcile/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(cap.stderr, /POST \/_ref\/dataset\/summary\/reconcile → 200/);
     // The cookie value must never leak to stdout or stderr.
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.doesNotMatch(cap.stdout, /cookie-val/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.doesNotMatch(cap.stderr, /cookie-val/);
   });
 });
@@ -275,6 +284,7 @@ test("ref call sends a JSON body as application/json (CSRF-exempt) with no _csrf
     const { opts } = fetchImpl.calls[0];
     assert.equal(opts.headers["Content-Type"], "application/json");
     assert.equal(opts.body, JSON.stringify({ reason: "manual" }));
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.doesNotMatch(opts.body, /_csrf/);
   });
 });
@@ -291,11 +301,16 @@ test("ref call sends a bearer GET to /v1/owner/* and never sends a cookie", asyn
     assert.equal(url, "https://ref.test/v1/owner/control");
     assert.equal(opts.headers.Authorization, "Bearer bearer-abc");
     assert.equal(opts.headers.Cookie, undefined);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.doesNotMatch(cap.stdout, /bearer-abc/);
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.doesNotMatch(cap.stderr, /bearer-abc/);
   } finally {
-    if (prev === undefined) delete process.env.PDPP_OWNER_TOKEN;
-    else process.env.PDPP_OWNER_TOKEN = prev;
+    if (prev === undefined) {
+      delete process.env.PDPP_OWNER_TOKEN;
+    } else {
+      process.env.PDPP_OWNER_TOKEN = prev;
+    }
   }
 });
 
@@ -346,6 +361,7 @@ test("ref call --status-only returns a status-derived exit code without printing
     );
     assert.equal(code, 0);
     assert.equal(cap.stdout, "");
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(cap.stderr, /→ 202/);
   });
 });
@@ -389,13 +405,17 @@ test('runCli routes "ref call" to the call handler', async () => {
     try {
       const code = await runCli(["ref", "call", "GET", "/_ref/deployment", "--as-url", "https://ref.test"], cap.io);
       assert.equal(code, 0);
+      // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
       assert.match(cap.stdout, /deployment/);
     } finally {
       globalThis.fetch = realFetch;
     }
   } finally {
-    if (prev === undefined) delete process.env.PDPP_OWNER_SESSION_COOKIE;
-    else process.env.PDPP_OWNER_SESSION_COOKIE = prev;
+    if (prev === undefined) {
+      delete process.env.PDPP_OWNER_SESSION_COOKIE;
+    } else {
+      process.env.PDPP_OWNER_SESSION_COOKIE = prev;
+    }
   }
 });
 
@@ -403,7 +423,10 @@ test("ref --help advertises the call command and its auth model", async () => {
   const cap = capture();
   const code = await runCli(["ref", "--help"], cap.io);
   assert.equal(code, 0);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(cap.stdout, /ref call <method> <path>/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(cap.stdout, /\/_ref\/\* uses the owner session cookie/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.match(cap.stdout, /\/v1\/owner\/\* uses the owner bearer/);
 });
