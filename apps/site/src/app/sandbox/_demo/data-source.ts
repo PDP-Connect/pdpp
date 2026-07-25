@@ -208,7 +208,7 @@ function buildRefConnectorSummary(connectorId: string): RefConnectorSummary {
         outbox: "idle",
       },
       badges: { stale: false, syncing: false },
-      // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
       last_success_at: lastSuccessfulRun?.last_at ?? null,
       next_action: null,
       next_attempt_at: null,
@@ -352,8 +352,7 @@ function deriveRunConnector(runId: string): string | null {
 }
 
 function streamForEvent(event: DemoTimelineEvent): string | null {
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
-  const data = event.data ?? {};
+  const { data } = event;
   if (typeof (data as { stream?: unknown }).stream === "string") {
     return (data as { stream: string }).stream;
   }
@@ -871,7 +870,7 @@ export const sandboxDashboardDataSource: DashboardDataSource = {
       new_since_snapshot: 0,
       next_cursor: page.next_cursor ?? null,
       object: "list",
-      // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
       snapshot_at: merged[0]?.emitted_at ?? new Date(0).toISOString(),
     };
   },

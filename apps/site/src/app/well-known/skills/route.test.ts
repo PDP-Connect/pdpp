@@ -42,7 +42,7 @@ test("agent skill .well-known route serves the catalog with forwarded origin", a
   const skills = body.skills as Array<{ files: Array<{ url: string }> }>;
   assert.equal(skills.length, 2);
   assert.ok(
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
     skills[0]?.files.some((file) => file.url === "https://pdpp.dev/.well-known/skills/pdpp-data-access/SKILL.md")
   );
   assert.ok(

@@ -125,7 +125,11 @@ function normalizeConnectorId(connectorId: string | null): string | null {
  * row somehow arrives without the field (defensive; the contract requires it).
  */
 export function classifyChurnRow(row: RefRecordVersionStatsRow): ChurnRemediation {
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // version_disposition is non-optional in the current contract, but this
+  // guards a real legacy-server shape (see version-churn-summary.test.ts
+  // "falls back ... when the field is absent"), reached via an `as` cast
+  // that erases the type guarantee. Not dead code.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: see comment above.
   return row.version_disposition ?? "active_defect_or_unclassified";
 }
 
@@ -139,7 +143,11 @@ export function classifyChurnRow(row: RefRecordVersionStatsRow): ChurnRemediatio
  * contract requires it).
  */
 export function remediationForRow(row: RefRecordVersionStatsRow): RefRecordVersionRemediation {
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // version_remediation is non-optional in the current contract, but this
+  // guards the same legacy-server shape as classifyChurnRow above (see
+  // version-churn-summary.test.ts "falls back to none when the field is
+  // absent"). Not dead code.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: see comment above.
   return row.version_remediation ?? "none";
 }
 

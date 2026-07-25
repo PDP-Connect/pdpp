@@ -473,7 +473,7 @@ test("source issues show non-owner material verdicts without alarming as owner a
   assert.equal(data.attention.length, 0);
   assert.equal(data.sourceIssues.length, 1);
   assert.equal(data.sourceIssues[0]?.what, "Chase can't collect");
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.match(data.sourceIssues[0]?.why ?? "", CODE_FIX_RE);
 });
 
@@ -552,7 +552,7 @@ test("advisory owner actions surface Reddit refresh work in the home summary", (
   const data = buildStandingData(baseInputs({ advisoryOwnerActions }));
   assert.equal(data.advisoryOwnerActions.length, 1);
   assert.equal(data.advisoryOwnerActions[0]?.href, HREFS.connection("cin_reddit"));
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.match(data.advisoryOwnerActions[0]?.why ?? "", LATEST_SAVED_POSTS_RE);
   assert.notEqual(data.hero.tone, "calm");
 });
@@ -674,7 +674,7 @@ test("source actionability groups live-shaped rows with scoped counts", () => {
   assert.equal(data.hero.kicker, "3 things need you");
   assert.equal(data.sourceWorkSections[0]?.title, "Needs you");
   assert.equal(data.sourceWorkSections[0]?.countLabel, "3 sources");
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(data.sourceWorkSections[0]?.rows.length, 3);
   assert.equal(data.sourceWorkSections[1]?.title, "Available actions");
   assert.equal(data.sourceWorkSections[1]?.countLabel, "1 source");
@@ -1031,7 +1031,7 @@ test("source issues surface attention verdicts that have no owner action, even w
   assert.equal(sourceIssues[0]?.label, "Maintainer-only source");
   assert.equal(sourceIssues[0]?.routeId, "cin_maintainer");
   assert.equal(sourceIssues[0]?.status, "is degraded");
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.match(sourceIssues[0]?.what ?? "", MAINTAINER_ACTION_RE);
 });
 
@@ -1053,7 +1053,7 @@ test("source issues fall back to legacy degraded health when rendered verdict is
   assert.equal(sourceIssues[0]?.label, "USAA - Personal");
   assert.equal(sourceIssues[0]?.routeId, "cin_usaa");
   assert.equal(sourceIssues[0]?.status, "is degraded");
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.match(sourceIssues[0]?.what ?? "", INCOMPLETE_OR_GAP_RE);
 
   const data = buildStandingData(baseInputs({ sourceIssues }));
@@ -1105,11 +1105,9 @@ test("hero ALARMs on a stale projection even with no failures", () => {
   assert.equal(hero.tone, "alarm");
   assert.equal(hero.kicker, "Totals updating");
   assert.equal(hero.line.emphasis, "are still available");
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  assert.match(hero.sub ?? "", STALE_TOTALS_RE);
+  assert.match(hero.sub, STALE_TOTALS_RE);
   assert.equal(hero.cta?.label, "View status");
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  assert.doesNotMatch(hero.sub ?? "", BULK_WRITE_UNKNOWN_CONNECTION_RE);
+  assert.doesNotMatch(hero.sub, BULK_WRITE_UNKNOWN_CONNECTION_RE);
   assert.doesNotMatch(
     `${hero.kicker} ${hero.line.text} ${hero.line.emphasis} ${hero.line.tail} ${hero.sub}`,
     PROJECTION_COPY_RE
@@ -1129,13 +1127,10 @@ test("hero uses owner-safe copy for failed projection details", () => {
   assert.equal(hero.tone, "alarm");
   assert.equal(hero.kicker, "Totals update delayed");
   assert.equal(hero.line.emphasis, "are still available");
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  assert.match(hero.sub ?? "", STALE_TOTALS_RE);
+  assert.match(hero.sub, STALE_TOTALS_RE);
   assert.equal(hero.cta?.label, "View status");
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  assert.doesNotMatch(hero.sub ?? "", BULK_WRITE_UNKNOWN_CONNECTION_RE);
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  assert.doesNotMatch(hero.sub ?? "", SQL_FAILED_RE);
+  assert.doesNotMatch(hero.sub, BULK_WRITE_UNKNOWN_CONNECTION_RE);
+  assert.doesNotMatch(hero.sub, SQL_FAILED_RE);
   assert.doesNotMatch(
     `${hero.kicker} ${hero.line.text} ${hero.line.emphasis} ${hero.line.tail} ${hero.sub}`,
     PROJECTION_SQL_COPY_RE
@@ -1152,7 +1147,7 @@ test("hero ALARMs when dashboard inputs fail instead of claiming all-clear from 
   assert.equal(data.hero.cta?.href, HREFS.deployment);
   assert.equal(data.overviewIssues.length, 1);
   assert.equal(data.overviewIssues[0]?.what, "Overview could not check everything");
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.match(data.overviewIssues[0]?.why ?? "", REFRESH_PAGE_RE);
 });
 
@@ -1203,9 +1198,9 @@ test("bearer row carries the raw created_at for the shared IcTimestamp, not a pr
   assert.equal(data.bearers[0]?.issuedAt, "2026-06-01T00:00:00Z");
   // The `how` line no longer bakes in a relDay date string; the timestamp is
   // rendered separately by the component.
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.doesNotMatch(data.bearers[0]?.how ?? "", BEARER_HOW_HAS_ISSUED_RE);
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.doesNotMatch(data.bearers[0]?.how ?? "", BEARER_HOW_HAS_DATE_RE);
 });
 
@@ -1445,7 +1440,7 @@ test("buildStandingData wires bearers, relationships, lately, attention", () => 
   };
   const data = buildStandingData(baseInputs({ bearerClients: clients, grants: [grant], traces: [readTrace] }));
   assert.equal(data.bearers.length, 1);
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.match(data.bearers[0]?.how ?? "", BEARER_HOW_RE);
   assert.equal(data.relationships.length, 1);
   assert.equal(data.relationships[0]?.reads, "reads only your pay");
@@ -1453,7 +1448,7 @@ test("buildStandingData wires bearers, relationships, lately, attention", () => 
   assert.equal(data.relationships[0]?.actionHref, HREFS.grant("g1"));
   assert.equal(data.lately.length, 1);
   assert.equal(data.lately[0]?.deny, false);
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.match(data.lately[0]?.text.rest ?? "", LATELY_READ_RE);
   assert.equal(data.attention.length, 0);
 });
@@ -1484,9 +1479,9 @@ test("lately uses trace client metadata instead of raw client ids", () => {
   const data = buildStandingData(baseInputs({ traces: [trace] }));
 
   assert.equal(data.lately.length, 1);
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(data.lately[0]?.text.who, "Claude");
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.notEqual(data.lately[0]?.text.who, "cli_named");
 });
 
@@ -1514,9 +1509,9 @@ test("lately humanizes live denial reason codes instead of rendering raw diagnos
   const data = buildStandingData(baseInputs({ traces: [trace] }));
 
   assert.equal(data.lately.length, 1);
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(data.lately[0]?.text.rest, "tried to read — turned away, it was not tied to an active run.");
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.doesNotMatch(data.lately[0]?.text.rest ?? "", RAW_ORPHANED_RUN_RE);
 });
 
@@ -1544,9 +1539,9 @@ test("lately does not fall through to unknown snake-case denial reasons", () => 
   const data = buildStandingData(baseInputs({ traces: [trace] }));
 
   assert.equal(data.lately.length, 1);
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(data.lately[0]?.text.rest, "tried to read — turned away, the server rejected it.");
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.doesNotMatch(data.lately[0]?.text.rest ?? "", RAW_REASON_CODE_RE);
 });
 
@@ -1621,9 +1616,9 @@ test("lately does not bold raw technical client ids when metadata is missing", (
   const data = buildStandingData(baseInputs({ traces: [trace] }));
 
   assert.equal(data.lately.length, 1);
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(data.lately[0]?.text.who, "An app");
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.notEqual(data.lately[0]?.text.who, "cli_raw");
 });
 
@@ -1649,9 +1644,9 @@ test("lately does not render bare opaque client ids as names", () => {
   const data = buildStandingData(baseInputs({ traces: [trace] }));
 
   assert.equal(data.lately.length, 1);
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(data.lately[0]?.text.who, "Someone");
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.notEqual(data.lately[0]?.text.who, opaqueClientId);
 });
 
@@ -1696,13 +1691,13 @@ test("lately summarizes identical recent reads instead of repeating the same row
   const data = buildStandingData(baseInputs({ traces: [...repeated, different] }));
 
   assert.equal(data.lately.length, 2);
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(data.lately[0]?.text.who, "Longview CLI");
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(data.lately[0]?.text.rest, "read 3 records 5 times.");
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(data.lately[1]?.text.who, "controller");
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(data.lately[1]?.text.rest, "read 1 record.");
 });
 

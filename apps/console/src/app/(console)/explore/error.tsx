@@ -21,10 +21,8 @@ import { useEffect } from "react";
  * error boundaries are Client Components).
  */
 function isInterruptedLoad(error: Error): boolean {
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const name = error.name ?? "";
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const message = (error.message ?? "").toLowerCase();
+  const { name, message: rawMessage } = error;
+  const message = rawMessage.toLowerCase();
   return (
     name === "AbortError" ||
     message.includes("aborted") ||

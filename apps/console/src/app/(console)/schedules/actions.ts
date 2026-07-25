@@ -29,7 +29,9 @@ export async function upsertScheduleAction(
     };
     revalidatePath("/schedules");
     revalidatePath("/sources");
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+    // `body` is `as {...}` on an awaited network-backed call; the cast
+    // doesn't guarantee the runtime shape. Not dead code.
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: see comment above.
     return { ok: true, policy_warning: body?.policy_warning ?? null };
   } catch (err) {
     return { message: err instanceof Error ? err.message : String(err), ok: false };

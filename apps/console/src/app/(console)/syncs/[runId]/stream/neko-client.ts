@@ -858,7 +858,10 @@ function startClipboardWriteGuard(): void {
   const descriptor = Object.getOwnPropertyDescriptor(target, "writeText");
   const original = target.writeText;
   const guardedWriteText = function guardedWriteText(this: Clipboard, text: string): Promise<void> {
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+    // This replaces Clipboard.prototype.writeText, so `text` can be called
+    // with anything by code outside our type system (extensions, other
+    // scripts) — the `string` param type is not a runtime guarantee here.
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: see comment above.
     const value = String(text ?? "");
     const assessment = assessClipboardWrite(value);
     emitNekoDebug("neko.clipboard_write.attempt", {

@@ -195,7 +195,7 @@ function saveWorkspace(workspace: GrantRequestWorkspace): GrantRequestWorkspace 
 function upsertWorkspace(workspaceId: string | undefined, input: Partial<GrantRequestDraft>): GrantRequestWorkspace {
   const existing = workspaceId ? workspaceOrNull(workspaceId) : null;
   const draft = sanitizeDraft({
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
     ...(existing?.draft ?? {}),
     ...input,
   });

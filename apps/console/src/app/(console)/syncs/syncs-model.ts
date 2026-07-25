@@ -247,7 +247,7 @@ function isTerminalRunStatus(status: string): boolean {
 
 /** Stable connector key for a run, used to bucket runs under a connection. */
 function runConnectorKey(run: RunSummary): string | null {
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   return run.connector_id ?? run.source?.id ?? null;
 }
 
@@ -660,7 +660,10 @@ function toFailureCard(projection: SyncProjection): FailureCard {
  * builders (`browseStreamHref`, `exploreHrefFor`).
  */
 function toPendingSetupCard(connector: RefConnectorSummary): PendingSetupCard {
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // connection_id is non-optional in the current contract; connector_instance_id
+  // /connector_id are a real legacy-server fallback (see schedule-row.tsx's
+  // recordsHrefForSummary for the same documented pattern).
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: see comment above.
   const routeId = connector.connection_id ?? connector.connector_instance_id ?? connector.connector_id;
   return {
     connectionId: connector.connection_id,
@@ -672,7 +675,10 @@ function toPendingSetupCard(connector: RefConnectorSummary): PendingSetupCard {
 
 /** The shared needs-you work item for a draft connection, for the health band count. */
 function pendingSetupWorkItem(connector: RefConnectorSummary): SourceWorkItem {
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // connection_id is non-optional in the current contract; connector_instance_id
+  // /connector_id are a real legacy-server fallback (see schedule-row.tsx's
+  // recordsHrefForSummary for the same documented pattern).
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: see comment above.
   const routeId = connector.connection_id ?? connector.connector_instance_id ?? connector.connector_id;
   return {
     actionLabel: SETUP_IN_PROGRESS_CTA_LABEL,
@@ -704,12 +710,12 @@ function projectSyncProjection(input: {
   const failing = (renderedHealth ?? connectionHealth(summary)) === "failing";
   const connectionRuns = connectionRunHistory({ connector, runs });
   const { rows, lastFailed, lastRun } = buildSyncRows({ connectionRuns, connector, failing });
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   const lastAt = lastRun?.last_at ?? connector.last_run?.last_at ?? connector.last_successful_run?.last_at ?? null;
   const lastAtMs = lastAt ? Date.parse(lastAt) : 0;
   const eventCount = lastRun ? lastRun.event_count : null;
   const lastRunDelta = lastRun === null ? null : describeDelta({ eventCount, failed: lastFailed });
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   const lastRunDuration = describeDuration(lastRun?.first_at ?? null, lastRun?.last_at ?? null);
   const lastRunRhythm = deriveConnectionRhythm(connectionRuns);
 

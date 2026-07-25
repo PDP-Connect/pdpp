@@ -13,11 +13,11 @@ const CONNECTION_TARGET = /summary\.connection_id \?\? summary\.connector_instan
 const UPSERT_RECEIVES_CONNECTION =
   /upsertScheduleAction\(summary\.connector_id,[\s\S]*connectionId: summary\.connection_id \?\? summary\.connector_instance_id \?\? null/;
 const PAUSE_RECEIVES_CONNECTION =
-  /pauseScheduleAction\(\s*summary\.connector_id,\s*summary\.connection_id \?\? summary\.connector_instance_id \?\? null\s*\)/;
+  /pauseScheduleAction\([\s\S]*?summary\.connector_id,[\s\S]*?summary\.connection_id \?\? summary\.connector_instance_id \?\? null[\s\S]*?\)/;
 const RESUME_RECEIVES_CONNECTION =
-  /resumeScheduleAction\(\s*summary\.connector_id,\s*summary\.connection_id \?\? summary\.connector_instance_id \?\? null\s*\)/;
+  /resumeScheduleAction\([\s\S]*?summary\.connector_id,[\s\S]*?summary\.connection_id \?\? summary\.connector_instance_id \?\? null[\s\S]*?\)/;
 const DELETE_RECEIVES_CONNECTION =
-  /deleteScheduleAction\(\s*summary\.connector_id,\s*summary\.connection_id \?\? summary\.connector_instance_id \?\? null\s*\)/;
+  /deleteScheduleAction\([\s\S]*?summary\.connector_id,[\s\S]*?summary\.connection_id \?\? summary\.connector_instance_id \?\? null[\s\S]*?\)/;
 
 test("schedule-row mutates the concrete connection when one is present", async () => {
   const src = await readFile(ROW_FILE, "utf8");

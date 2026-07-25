@@ -105,11 +105,11 @@ test("0-in-window stream is hidden (no dead-end) UNLESS it is an active filter",
   });
   // messages (0 in window, not selected) must NOT appear — never a "0" dead-end.
   assert.equal(
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
     hidden[0]?.streams.find((s) => s.stream === "messages"),
     undefined
   );
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(hidden[0]?.streams.length, 1);
 
   // But a SELECTED messages stays visible even at 0 — an active filter is never hidden.
@@ -121,7 +121,7 @@ test("0-in-window stream is hidden (no dead-end) UNLESS it is an active filter",
     selectedConnectionIds: [],
     selectedStreams: ["messages"],
   });
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   const sel = withSelected[0]?.streams.find((s) => s.stream === "messages");
   assert.ok(sel, "a selected stream with 0 in-window rows is kept (no dropped filter)");
   assert.equal(sel?.loadedCount, 0);
@@ -136,7 +136,7 @@ test("0-in-window stream is hidden (no dead-end) UNLESS it is an active filter",
     selectedConnectionIds: [],
     selectedStreams: [],
   });
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   const ex = withExcluded[0]?.streams.find((s) => s.stream === "messages");
   assert.ok(ex);
   assert.equal(ex?.excluded, true);
@@ -191,7 +191,7 @@ test("the client predicate is honored: counts only loaded rows that pass (count=
     selectedStreams: [],
   });
   assert.equal(
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
     groups[0]?.streams.find((s) => s.stream === "messages")?.loadedCount,
     2,
     "the count reflects only rows the predicate keeps — the number a click reaches"
@@ -213,7 +213,7 @@ test("rows with a null connectionId never contribute to a per-source count", () 
     selectedStreams: [],
   });
   // Only the row with a concrete connectionId counts (1, not 2).
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(groups[0]?.streams.find((s) => s.stream === "messages")?.loadedCount, 1);
 });
 
@@ -272,7 +272,7 @@ test("filterSourceGroups matches source name (keep whole group) or stream names 
   const bySource = filterSourceGroups(groups, "imessage");
   assert.equal(bySource.length, 1);
   assert.equal(bySource[0]?.connectionId, "conn_imessage");
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(bySource[0]?.streams.length, 2);
 
   // Matching a STREAM name keeps only the groups/streams that match.
@@ -280,7 +280,7 @@ test("filterSourceGroups matches source name (keep whole group) or stream names 
   assert.equal(byStream.length, 1);
   assert.equal(byStream[0]?.connectionId, "conn_slack");
   assert.deepEqual(
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
     byStream[0]?.streams.map((s) => s.stream),
     ["channels"]
   );

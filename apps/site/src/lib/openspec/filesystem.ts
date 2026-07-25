@@ -15,8 +15,7 @@ export async function resolveRepoRoot(): Promise<string> {
   // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
   const root = path.parse(dir).root;
 
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
-  while (true) {
+  for (;;) {
     // biome-ignore lint/performance/noAwaitInLoops: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
     const hasWorkspace = await fileExists(path.join(dir, "pnpm-workspace.yaml"));
     const hasOpenSpec = await dirExists(path.join(dir, "openspec"));

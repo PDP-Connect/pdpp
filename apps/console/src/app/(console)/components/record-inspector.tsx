@@ -130,11 +130,11 @@ export function RecordInspector({ record, relationships, streamRecordsHref }: Re
   const totalDeclared = record.fields.length;
   const blob = blobAffordance(record);
   const blobMime = blob ? declaredBlobMime(body, blob.fieldName) : undefined;
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   const relatedLinks = relationships?.relatedLinks ?? [];
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   const parentBackLinks = relationships?.parentBackLinks ?? [];
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   const reverseChildListLinks = relationships?.reverseChildListLinks ?? [];
   const hasRelationships = relatedLinks.length > 0 || parentBackLinks.length > 0 || reverseChildListLinks.length > 0;
 

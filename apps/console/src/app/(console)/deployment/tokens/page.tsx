@@ -491,8 +491,7 @@ export default async function DeploymentTokensPage({ searchParams }: { searchPar
   const tokenDetailsByClient = new Map<string, OwnerClientToken[]>();
   try {
     const resp = await listOwnerIssuedClients();
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-    tokens = resp.data ?? [];
+    tokens = resp.data;
     // Only clients with more than one active token get a per-token drilldown;
     // a single-token client is fully described by its row.
     const multiTokenClients = tokens.filter((t) => t.active_token_count > 1);
@@ -500,8 +499,7 @@ export default async function DeploymentTokensPage({ searchParams }: { searchPar
       multiTokenClients.map(async (client) => {
         try {
           const detail = await listOwnerClientTokens(client.client_id);
-          // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-          tokenDetailsByClient.set(client.client_id, detail.data ?? []);
+          tokenDetailsByClient.set(client.client_id, detail.data);
         } catch {
           // A per-client drilldown failure must not break the whole page; the
           // row still renders its aggregate count without the expansion.
@@ -547,7 +545,7 @@ export default async function DeploymentTokensPage({ searchParams }: { searchPar
       <IssueCard flow={flow} />
 
       <TokensListSection
-        // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
         highlightClientId={flow?.clientId ?? null}
         tokenDetailsByClient={tokenDetailsByClient}
         tokens={tokens}

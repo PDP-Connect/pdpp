@@ -510,12 +510,11 @@ test("P2 stream door: populated when all hits share one connector+stream", async
   const result = await assembleExplorerData({ q: "rent" }, ds, "https://rs.test");
 
   assert.ok(result.streamDoor, "streamDoor should be populated for single-stream results");
-  assert.equal(result.streamDoor?.connectionId, "ynab-1");
-  assert.equal(result.streamDoor?.connectorId, "ynab");
+  assert.equal(result.streamDoor.connectionId, "ynab-1");
+  assert.equal(result.streamDoor.connectorId, "ynab");
   assert.equal(result.streamDoor?.stream, "transactions");
   // displayName format: "<connector display name> - <stream>"
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  assert.ok(result.streamDoor?.displayName.includes("transactions"), "displayName should include stream name");
+  assert.ok(result.streamDoor.displayName.includes("transactions"), "displayName should include stream name");
 });
 
 // ─── 9. No stream door: hits span multiple connectors ────────────────────────

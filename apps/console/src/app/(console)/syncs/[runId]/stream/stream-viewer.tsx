@@ -235,7 +235,10 @@ const DEFAULT_CLIPBOARD_HELPER_MODE: ClipboardHelperMode = "balanced";
 async function readStreamReachProbeCode(probe: Response): Promise<string | null> {
   try {
     const body = (await probe.json()) as { error?: { code?: unknown } };
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+    // `as` erases the real optionality of a parsed JSON body (a valid
+    // response can be `null`/non-object at runtime) from body's static
+    // type, so the guard on body stays even though tsc sees it as non-null.
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: see comment above.
     const code = body?.error?.code;
     return typeof code === "string" ? code : null;
   } catch {
@@ -1549,7 +1552,7 @@ export function StreamSurface({
     );
   }
 
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   const connectorName = connector?.displayName ?? "the connector";
 
   return (
@@ -5258,7 +5261,7 @@ function ClipboardSheet({
                 aria-label="Text copied from browser"
                 className="min-h-20 resize-y rounded-lg border border-border/80 bg-muted/30 p-3 text-foreground text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
                 readOnly
-                // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+                // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
                 value={remoteClipboard?.text ?? ""}
               />
             </section>
@@ -5811,7 +5814,7 @@ function PopupToast({ message }: { message: string }) {
  * closing because browsers block scripted tab closing for normal navigations.
  */
 export function ResolvedSurface({ connector, runId }: { connector: ConnectorContext | null; runId: string }) {
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   const subject = connector?.displayName ?? "The connector";
 
   return (

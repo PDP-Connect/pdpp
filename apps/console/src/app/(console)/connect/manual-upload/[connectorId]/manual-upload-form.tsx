@@ -132,7 +132,7 @@ function formatMediaCoverage(value: unknown): string | null {
 function formatBytes(bytes: number): string {
   const units = ["B", "KB", "MB", "GB"];
   let value = bytes;
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   let unit = units[0] ?? "B";
   for (const nextUnit of units) {
     unit = nextUnit;
@@ -235,7 +235,7 @@ function validationToPreview(preview: ManualUploadValidationPreviewWire): Upload
     preview: {
       dateRange: validation?.date_range ?? null,
       detectedFormat: validation?.detected_format ?? null,
-      // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
       duplicateConnectionId: preview.duplicate?.connection_id ?? null,
       estimatedAttachments: validation?.estimated_attachments ?? null,
       estimatedChats: validation?.estimated_chats ?? null,
@@ -247,8 +247,7 @@ function validationToPreview(preview: ManualUploadValidationPreviewWire): Upload
       mediaCoverage: validation?.media_coverage ?? null,
       nextStep: preview.next_step.kind,
       remediation: validation?.remediation ?? null,
-      // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-      sourceDisplayName: preview.display_name ?? null,
+      sourceDisplayName: preview.display_name,
       status: validation?.status ?? null,
       uploadedFileName: preview.uploaded_file_name,
       warnings: validation?.warnings ?? [],

@@ -204,7 +204,7 @@ function toRunSummaryForConnection(
 }
 
 function connectionRecentRuns(summary: RefConnectorSummary): RunSummary[] {
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   const reportRunId = summary.last_run?.run_id ?? null;
   const collectionReport = summary.collection_report ?? null;
   const byId = new Map<string, RunSummary>();
@@ -568,7 +568,7 @@ function ConnectorPageView({
     }
     return null;
   })();
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   const primaryActionSurface = connectionPrimaryAction?.surface?.kind ?? null;
   // The detail-page primary action is modality-aware for the same reason the
   // records row is (`derivePrimaryRowAction`): existing owner-runnable
@@ -994,7 +994,7 @@ function RenderedVerdictHeaderAction({
     // detail) chasing a button that can't act. Render it as non-clickable
     // guidance that points to the recovery commands in the diagnostics panel
     // below, the only place the owner can actually act.
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
     if (action.remediation?.target.kind === "local_device") {
       return (
         <span

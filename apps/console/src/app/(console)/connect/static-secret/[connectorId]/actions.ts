@@ -133,7 +133,7 @@ export async function replaceStaticSecretCredentialAction(formData: FormData) {
     });
     const runId = await runIdAfterCapture(connectionId, captured);
     revalidatePath("/sources");
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
     target = statusHref(connectionId, runId, captured.identity?.account_identity ?? null);
   } catch (err) {
     if (err instanceof StaticSecretValidationError) {
@@ -201,7 +201,7 @@ export async function createStaticSecretConnectionAction(formData: FormData) {
     // Land on the durable setup-status surface, not a transient form notice. The
     // status page reads the connection's projected setup_state and, for a
     // synchronous-probe connector, surfaces the echoed account identity.
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
     target = statusHref(draft.connection_id, runId, captured.identity?.account_identity ?? null);
   } catch (err) {
     if (err instanceof StaticSecretValidationError) {

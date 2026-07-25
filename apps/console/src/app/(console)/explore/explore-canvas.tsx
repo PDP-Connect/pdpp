@@ -2075,10 +2075,8 @@ function BurstRow({
   // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const rep = burst.entries[0];
   const loaded = burst.entries.length;
-  const streamLabel = `${
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-    rep?.connectionDisplayName ?? rep?.connectorId ?? ""
-  }${rep?.stream ? ` / ${rep.stream}` : ""}`;
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
+  const streamLabel = `${rep?.connectionDisplayName ?? rep?.connectorId ?? ""}${rep?.stream ? ` / ${rep.stream}` : ""}`;
   // SLVP preview-content-by-default (review-gated 2026-06-22): a burst is NEVER
   // a content-less count header. It always renders its first PREVIEW_COUNT rows
   // (`burst.preview`); the remainder is reached via an explicit "Show all M" action.

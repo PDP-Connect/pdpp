@@ -230,8 +230,7 @@ function EventTableRow({ event, index }: { event: SpineEvent; index: number }) {
               padding: "var(--space-2)",
             }}
           >
-            {/** biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification. */}
-            {JSON.stringify(redactSecrets(event.data || {}), null, 2)}
+            {JSON.stringify(redactSecrets(event.data), null, 2)}
           </pre>
         </details>
       </TableCell>

@@ -58,7 +58,10 @@ function recommendedIntervalLabel(policy: RefConnectorSummary["refresh_policy"])
  * legacy fallback used while a single-instance row still exists.
  */
 function recordsHrefForSummary(summary: RefConnectorSummary): string {
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // connection_id is non-optional in the current RefConnectorSummary contract,
+  // but connector_instance_id/connector_id are a real legacy-server fallback
+  // (single-instance rows predating connection_id).
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: see comment above.
   const routeId = summary.connection_id ?? summary.connector_instance_id ?? summary.connector_id;
   return `/sources/${encodeURIComponent(routeId)}`;
 }
@@ -110,7 +113,9 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
   const handleSave = useCallback(() => {
     startTransition(async () => {
       const res = await upsertScheduleAction(summary.connector_id, {
-        // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+        // connection_id is non-optional in the current contract; connector_instance_id
+        // is a real legacy-server fallback (see recordsHrefForSummary above).
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: see comment above.
         connectionId: summary.connection_id ?? summary.connector_instance_id ?? null,
         enabled: true,
         every,
@@ -132,7 +137,9 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
     startTransition(async () => {
       const res = await pauseScheduleAction(
         summary.connector_id,
-        // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+        // connection_id is non-optional in the current contract; connector_instance_id
+        // is a real legacy-server fallback (see recordsHrefForSummary above).
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: see comment above.
         summary.connection_id ?? summary.connector_instance_id ?? null
       );
       if (!res.ok) {
@@ -146,7 +153,9 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
     startTransition(async () => {
       const res = await resumeScheduleAction(
         summary.connector_id,
-        // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+        // connection_id is non-optional in the current contract; connector_instance_id
+        // is a real legacy-server fallback (see recordsHrefForSummary above).
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: see comment above.
         summary.connection_id ?? summary.connector_instance_id ?? null
       );
       if (!res.ok) {
@@ -160,7 +169,9 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
     startTransition(async () => {
       const res = await deleteScheduleAction(
         summary.connector_id,
-        // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+        // connection_id is non-optional in the current contract; connector_instance_id
+        // is a real legacy-server fallback (see recordsHrefForSummary above).
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: see comment above.
         summary.connection_id ?? summary.connector_instance_id ?? null
       );
       if (!res.ok) {
@@ -184,7 +195,10 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
   const connectorKey = formatConnectorKeyForDisplay(summary.connector_id);
   const recordsHref = recordsHrefForSummary(summary);
   const activeRunId = schedule?.active_run_id;
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // schedule is RefSchedule | null (remoteScheduleFor can return null); tsc
+  // confirms schedule.human_attention_needed errors without the guard when
+  // the fallback is removed. Biome's type-aware pass mis-resolves this one.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: see comment above.
   const needsHuman = schedule?.human_attention_needed ?? false;
   const recInterval = recommendedIntervalLabel(policy);
   const recMode = policy?.recommended_mode;

@@ -99,8 +99,11 @@ test("revoked transcript captures the 403 refusal example", () => {
   const revoked = buildTranscript(run(["request", "approve", "query", "revoke"]));
   const last = revoked.at(-1);
   const body = last?.body as { next_attempt?: { status?: number; error?: string } };
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
+  // `as` erases last?.body's real optionality from body's static type, so
+  // tsc/Biome see body as non-nullish — but at runtime body is still
+  // undefined whenever `last` is, so the guard stays.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: see comment above.
   assert.equal(body?.next_attempt?.status, 403);
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: see comment above.
   assert.equal(body?.next_attempt?.error, "grant_revoked");
 });

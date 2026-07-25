@@ -23,6 +23,5 @@ export function connectorInstanceIdForConnection(summary: RefConnectorSummary): 
 }
 
 export function sourceLabelForConnection(summary: RefConnectorSummary): string {
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  return summary.display_name?.trim() || summary.connector_display_name?.trim() || summary.connection_id;
+  return summary.display_name.trim() || summary.connector_display_name?.trim() || summary.connection_id;
 }

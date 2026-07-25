@@ -959,8 +959,7 @@ function getLatestProgress(events: SpineEvent[]): LatestProgress | null {
 }
 
 function isUserFacingProgressEvent(event: SpineEvent): boolean {
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const message = typeof event.data?.message === "string" ? event.data.message : "";
+  const message = typeof event.data.message === "string" ? event.data.message : "";
   return !(
     message.startsWith("tracing enabled;") ||
     message.startsWith("trace written to ") ||

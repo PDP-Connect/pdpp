@@ -129,7 +129,9 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "invalid_json" }, { status: 400 });
   }
 
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // `payload` is `unknown` from a network request body; valid JSON can be
+  // `null`, and the `as` cast doesn't change that at runtime. Not dead code.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: see comment above.
   const events = Array.isArray((payload as { events?: unknown })?.events)
     ? ((payload as { events: unknown[] }).events.slice(0, MAX_EVENTS) as unknown[])
     : [];

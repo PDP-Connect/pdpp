@@ -261,7 +261,7 @@ test("healthy connections produce no card and count their streams on schedule", 
   assert.equal(model.band.needsReview, 0);
   assert.equal(model.band.allClear, true);
   assert.equal(model.groups[0]?.health, "ok");
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(model.groups[0]?.streams.length, 3);
 });
 
@@ -1170,7 +1170,7 @@ test("syncs overview shows ALL streams with no truncation", () => {
     runs: [],
   });
 
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(model.groups[0]?.streams.length, 7, "all 7 streams render — no cap");
   assert.equal(model.groups[0]?.totalStreamCount, 7);
   assert.equal(model.totalStreamCount, 7);
@@ -1354,11 +1354,11 @@ test("all streams in a group are present with no truncation", () => {
     runs: [],
   });
 
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(model.groups[0]?.streams.length, 7, "all 7 stream rows are present");
   assert.equal(model.groups[0]?.totalStreamCount, 7);
   assert.equal(model.totalStreamCount, 7);
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   const streamNames = model.groups[0]?.streams.map((r) => r.stream);
   assert.deepEqual(streamNames, ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta"]);
 });
@@ -1584,7 +1584,7 @@ test("a stream with a real collected count keeps its per-stream truth when the c
 
   // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const group = model.groups[0];
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   const byStream = new Map((group?.streams ?? []).map((r) => [r.stream, r]));
 
   // The core assertion: a stream with its own collection_report entry shows

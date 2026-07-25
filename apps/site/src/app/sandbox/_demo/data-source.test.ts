@@ -94,16 +94,16 @@ test("a declared currency_minor_units field dispatches a money card via classify
 test("sandbox stream metadata includes withheld-field and blob fixtures for Explorer honesty", async () => {
   const visits = await ds.getStreamMetadata("northwind_health_demo", "clinical_visits");
   const visitCaps = visits.field_capabilities ?? {};
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   assert.equal(visitCaps.summary?.granted, false);
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   assert.equal(visitCaps.summary?.type, "string");
 
   const taxDocs = await ds.getStreamMetadata("acme_payroll_demo", "tax_documents");
   const taxCaps = taxDocs.field_capabilities ?? {};
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   assert.equal(taxCaps.blob_ref?.granted, true);
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   assert.equal(taxCaps.blob_ref?.type, "blob");
 });
 
@@ -113,7 +113,7 @@ test("sandbox queryRecords can return exact window metadata and blob_ref records
   assert.equal(page.meta?.window?.earliest_at, "2026-01-31T00:00:00.000Z");
   assert.equal(page.meta?.window?.latest_at, "2026-01-31T00:00:00.000Z");
   assert.equal(
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
     (page.data[0]?.data.blob_ref as { fetch_url?: string } | undefined)?.fetch_url,
     "/v1/blobs/blob_sb_taxdoc_2025_w2"
   );

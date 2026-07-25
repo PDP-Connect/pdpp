@@ -293,7 +293,7 @@ function RecoveryPanel({ model }: { model: RecoveryPanelViewModel }) {
 }
 
 function SuppressedEvidenceDiagnostics({ renderedVerdict }: { renderedVerdict: RefRenderedVerdict | null }) {
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   const suppressed = renderedVerdict?.detail.suppressed ?? [];
   if (suppressed.length === 0) {
     return null;
@@ -490,7 +490,7 @@ function ProjectedStateDiagnostics({
   ) : (
     <StatusBadge status="unknown" vocabulary={CONNECTION_HEALTH_VOCABULARY} />
   );
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   const badgeTitle = renderedVerdict?.forward_statement ?? "Verdict unavailable.";
   return (
     <div className="flex flex-col gap-2">
@@ -1046,7 +1046,7 @@ function OutboxStallRemediationPanel({
       data-testid="diagnostics-outbox-remediation"
     >
       <p className="pdpp-caption font-medium text-foreground" data-testid="diagnostics-outbox-remediation-label">
-        {/** biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification. */}
+        {/* biome-ignore lint/suspicious/noUnnecessaryConditions: verdictRemediation is RefActionRemediation | null; tsc rejects removing this guard. */}
         {verdictRemediation?.label ?? remediation.label}
       </p>
       {hostLabels.length > 0 ? (

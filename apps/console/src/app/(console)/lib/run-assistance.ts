@@ -193,8 +193,7 @@ function isStreamableBrowserSurfaceAssistance(assistance: CurrentRunAssistance):
 }
 
 function assistanceFromEvent(event: SpineEvent, id: string): CurrentRunAssistance {
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const data = event.data ?? {};
+  const { data } = event;
   return {
     attachments: parseAttachments(data.attachments),
     fields: parseFields(data.input_schema ?? data.schema),
@@ -210,8 +209,7 @@ function assistanceFromEvent(event: SpineEvent, id: string): CurrentRunAssistanc
 }
 
 function assistanceFromLegacyInteraction(event: SpineEvent, id: string): CurrentRunAssistance {
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const data = event.data ?? {};
+  const { data } = event;
   const kind = stringField(data.kind) ?? "interaction";
   const isManualAction = kind === "manual_action";
   return {
@@ -230,19 +228,15 @@ function assistanceFromLegacyInteraction(event: SpineEvent, id: string): Current
 
 function getEventAssistanceId(event: SpineEvent): string | null {
   return (
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-    stringField(event.data?.assistance_request_id) ??
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-    stringField(event.data?.assistance_id) ??
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-    stringField(event.data?.interaction_id) ??
+    stringField(event.data.assistance_request_id) ??
+    stringField(event.data.assistance_id) ??
+    stringField(event.data.interaction_id) ??
     stringField(event.interaction_id)
   );
 }
 
 function readBrowserSurfaceStatus(event: SpineEvent): string | null {
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const browserSurface = event.data?.browser_surface;
+  const browserSurface = event.data.browser_surface;
   if (browserSurface && typeof browserSurface === "object" && !Array.isArray(browserSurface)) {
     return stringField((browserSurface as Record<string, unknown>).browser_surface_status) ?? stringField(event.status);
   }
