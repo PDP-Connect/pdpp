@@ -452,6 +452,23 @@ export function createSqliteDeviceExporterStore() {
       ]);
     },
 
+    // Revoke every non-revoked credential for the device and install exactly one
+    // fresh credential, so a re-enroll (idempotent-response retry) yields a
+    // single current token and invalidates any previously issued token. See
+    // decouple-device-enrollment-from-ingest-writer-admission design D2.
+    rotateDeviceCredential(record: Row) {
+      exec(referenceQueries.deviceExportersRevokeCredentialsForDevice, [record.rotatedAt, record.deviceId]);
+      exec(referenceQueries.deviceExportersInsertCredential, [
+        record.credentialId,
+        record.deviceId,
+        record.tokenHash,
+        "active",
+        record.createdAt,
+        null,
+        null,
+      ]);
+    },
+
     findCredentialByTokenHash(tokenHash: string) {
       return mapCredential(getOne(referenceQueries.deviceExportersGetCredentialByTokenHash, [tokenHash]));
     },
@@ -782,6 +799,27 @@ export function createPostgresDeviceExporterStore() {
           record.revokedAt ?? null,
         ]
       );
+    },
+
+    // Revoke every non-revoked credential for the device and install exactly one
+    // fresh credential, so a re-enroll (idempotent-response retry) yields a
+    // single current token and invalidates any previously issued token. See
+    // decouple-device-enrollment-from-ingest-writer-admission design D2.
+    async rotateDeviceCredential(record: Row) {
+      // Revoke + insert in one transaction so exactly one active credential
+      // remains. Concurrent rotations serialize on the row locks the revoke
+      // takes, so the last committed rotation wins with a single active token.
+      await withPostgresTransaction(async (client: PostgresTransactionClient) => {
+        await client.query(
+          `UPDATE device_ingest_credentials SET status = 'revoked', revoked_at = $1 WHERE device_id = $2 AND status <> 'revoked'`,
+          [record.rotatedAt, record.deviceId]
+        );
+        await client.query(
+          `INSERT INTO device_ingest_credentials(credential_id, device_id, token_hash, status, created_at, last_used_at, revoked_at)
+           VALUES($1, $2, $3, 'active', $4, NULL, NULL)`,
+          [record.credentialId, record.deviceId, record.tokenHash, record.createdAt]
+        );
+      });
     },
 
     async findCredentialByTokenHash(tokenHash: string) {

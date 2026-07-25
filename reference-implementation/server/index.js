@@ -854,7 +854,15 @@ function listReferenceLocalConnectorCatalogManifests() {
 async function ensureReferenceConnectorCatalogEntry(connectorId, connectorDisplayName) {
   const localCollectorManifest = readReferenceLocalConnectorCatalogManifest(connectorId);
   if (localCollectorManifest) {
-    await registerConnector(localCollectorManifest);
+    // Persist the catalog row + advance generations, but SKIP retrieval-index
+    // backfill. Enroll is a control-plane op; the backfill enters the
+    // connector-instance writer-admission fence (withConnectorInstanceWrite →
+    // pg_try_advisory_lock) shared with bulk ingest, which starves enrollment.
+    // It is also a no-op for a fresh enroll (the new instance has no records to
+    // index); real retrieval-index maintenance happens on the ingest write path
+    // and on any manifest (re)registration. See
+    // decouple-device-enrollment-from-ingest-writer-admission design D1.
+    await registerConnector(localCollectorManifest, { backfillRetrievalIndexes: false });
     return;
   }
   const connectorKey = canonicalConnectorKey(connectorId) ?? connectorId;
@@ -4092,6 +4100,7 @@ export function buildAsApp(opts = {}) {
     handleError,
     getOwnerSubjectId,
     enforceCollectorProtocolVersion,
+    emitSpineEvent,
     acceptedCollectorProtocolVersions,
     readCollectorProtocolHeader,
     generateSpineId,

@@ -241,15 +241,17 @@ interface DeviceExporterStore {
     connectorId: string;
     localBindingId: string;
     displayName: string | null;
+    deviceId: string | null;
     status: string;
     expiresAt: string;
+    consumedAt: string | null;
   } | null>;
   getBatchOutcome(deviceId: string, batchId: string): Promise<BatchOutcomeRow | null>;
   getDevice(deviceId: string): Promise<DeviceRow | null>;
   getSourceInstance(deviceId: string, sourceInstanceId: string): Promise<SourceInstanceRow | null>;
   listBatchOutcomes(options: { limit: number }): Promise<BatchOutcomeRow[]>;
   listDevices(ownerSubjectId: string): Promise<DeviceRow[]>;
-  listSourceInstances(): Promise<SourceInstanceRow[]>;
+  listSourceInstances(options?: { deviceId?: string | null }): Promise<SourceInstanceRow[]>;
   markCredentialUsed(credentialId: string, at: string): Promise<void>;
   markDeviceHeartbeat(
     deviceId: string,
@@ -289,6 +291,16 @@ interface DeviceExporterStore {
   }): Promise<BatchOutcomeRow>;
   revokeDevice(deviceId: string, at: string): Promise<void>;
   revokeEnrollmentCode(id: string, at: string): Promise<void>;
+  // Revoke every non-revoked credential for the device and install exactly one
+  // fresh credential (idempotent re-enroll rotation). See
+  // decouple-device-enrollment-from-ingest-writer-admission design D2.
+  rotateDeviceCredential(params: {
+    credentialId: string;
+    deviceId: string;
+    tokenHash: string;
+    createdAt: string;
+    rotatedAt: string;
+  }): Promise<void>;
   upsertSourceInstance(params: {
     sourceInstanceId: string;
     deviceId: string;
@@ -364,6 +376,10 @@ export interface MountRefDeviceExportersContext {
 
   // Stores (created fresh per-request, matching existing pattern)
   deviceExporterStore: DeviceExporterStore;
+
+  // Audit-receipt emission (spine). Used to record idempotent re-enroll
+  // credential rotation. See decouple-device-enrollment-from-ingest-writer-admission design D2.
+  emitSpineEvent(event: Record<string, unknown>): Promise<unknown>;
 
   // Collector protocol enforcement (returns true if 409 was written)
   enforceCollectorProtocolVersion(req: unknown, res: unknown): boolean;
@@ -496,6 +512,225 @@ async function resolveEnrollmentSourceKind(
   const localManifest = ctx.readReferenceLocalConnectorCatalogManifest(connectorKey);
   const manifest = localManifest ?? (await ctx.getConnectorManifest(connectorKey));
   return resolveEnrolledSourceKind({ connectorId: connectorKey, manifest, requestedSourceKind });
+}
+
+interface ReEnrollableEnrollment {
+  connectorId: string;
+  consumedAt: string | null;
+  deviceId: string | null;
+  displayName: string | null;
+  enrollmentCodeId: string;
+  expiresAt: string;
+  localBindingId: string;
+  ownerSubjectId: string;
+  status: string;
+}
+
+// Idempotent re-enroll (design D2). A retry of an already-consumed, unexpired
+// enrollment code — the transport-failure recovery case — is honored ONLY when
+// it resolves to the same device and binding the code was consumed by. In that
+// case the device credential is atomically rotated (prior token invalidated, one
+// fresh token issued) and the existing device/source/connector-instance are
+// reused. Returns "handled" after writing a response, or "not_handled" so the
+// caller rejects a replay that is not a legitimate same-device/binding retry.
+async function handleIdempotentReEnroll(
+  ctx: MountRefDeviceExportersContext,
+  res: RouteResponse,
+  enrollment: ReEnrollableEnrollment,
+  now: Date
+): Promise<"handled" | "not_handled"> {
+  const boundDeviceId = enrollment.deviceId;
+  if (!boundDeviceId) {
+    // Consumed but never bound to a device: not a recoverable retry target.
+    return "not_handled";
+  }
+  const device = await ctx.deviceExporterStore.getDevice(boundDeviceId);
+  if (!device || device.status === "revoked" || device.revokedAt) {
+    // The device was revoked; a rotated credential would be meaningless.
+    return "not_handled";
+  }
+  const enrollConnectorKey = ctx.canonicalConnectorKey(enrollment.connectorId) ?? enrollment.connectorId;
+  const sourceInstances = await ctx.deviceExporterStore.listSourceInstances({ deviceId: boundDeviceId });
+  // Match the SAME binding the code was consumed for. connectorId is compared
+  // canonically so a legacy-alias code cannot cross to a different connector.
+  const sourceInstance = sourceInstances.find((source) => {
+    const sourceConnectorKey = ctx.canonicalConnectorKey(source.connectorId) ?? source.connectorId;
+    return (
+      source.localBindingId === enrollment.localBindingId &&
+      sourceConnectorKey === enrollConnectorKey &&
+      source.status !== "revoked" &&
+      source.connectorInstanceId
+    );
+  });
+  if (!sourceInstance?.connectorInstanceId) {
+    // No live source instance for this binding: cannot prove same-binding retry.
+    return "not_handled";
+  }
+
+  const credentialId = ctx.generateSpineId("dcred");
+  const deviceToken = ctx.generateReferenceSecret("ldt", 32);
+  await ctx.deviceExporterStore.rotateDeviceCredential({
+    credentialId,
+    deviceId: boundDeviceId,
+    tokenHash: ctx.hashDeviceSecret(deviceToken),
+    createdAt: now.toISOString(),
+    rotatedAt: now.toISOString(),
+  });
+
+  // Audit receipt: record that a re-enroll retry rotated the device credential.
+  await ctx.emitSpineEvent({
+    event_type: "device.enroll.credential_rotated",
+    trace_id: ctx.generateSpineId("trace"),
+    actor_type: "device_enrollment",
+    actor_id: boundDeviceId,
+    subject_type: "subject",
+    subject_id: enrollment.ownerSubjectId,
+    object_type: "device_exporter",
+    object_id: boundDeviceId,
+    status: "success",
+    data: {
+      device_id: boundDeviceId,
+      connector_id: enrollConnectorKey,
+      connector_instance_id: sourceInstance.connectorInstanceId,
+      source_instance_id: sourceInstance.sourceInstanceId,
+      local_binding_name: enrollment.localBindingId,
+      credential_id: credentialId,
+      reason: "idempotent_re_enroll",
+    },
+  });
+
+  res.status(201).json({
+    object: "device_exporter_enrollment",
+    device_id: boundDeviceId,
+    connector_instance_id: sourceInstance.connectorInstanceId,
+    source_instance_id: sourceInstance.sourceInstanceId,
+    device_token: deviceToken,
+    connector_id: enrollConnectorKey,
+    local_binding_name: enrollment.localBindingId,
+  });
+  return "handled";
+}
+
+// Map an enroll failure to a response. Transient connector-instance write
+// pressure is retryable backpressure, not a server fault: return a typed 503
+// with Retry-After instead of the misleading untyped 500 that
+// `connector_instance_busy` would otherwise become. After the D1 decoupling the
+// enroll path should not reach the writer fence at all; this is defense-in-depth.
+// See decouple-device-enrollment-from-ingest-writer-admission design D3.
+function respondEnrollError(ctx: MountRefDeviceExportersContext, res: RouteResponse, err: unknown): void {
+  if ((err as { code?: unknown } | null)?.code === "connector_instance_busy") {
+    res.setHeader("Retry-After", "2");
+    ctx.pdppError(
+      res,
+      503,
+      "connector_instance_busy",
+      "Enrollment is temporarily unavailable due to write pressure; retry shortly",
+      null,
+      { retryable: true, retry_after_seconds: 2 }
+    );
+    return;
+  }
+  ctx.handleError(res, err);
+}
+
+// First-time enrollment: materialize device, credential, connector instance,
+// and source instance, then consume the code as the terminal write. Extracted
+// from the enroll handler to keep that handler within the complexity budget;
+// the D2 idempotent-retry path is handled separately by handleIdempotentReEnroll.
+async function performFirstEnrollment(
+  ctx: MountRefDeviceExportersContext,
+  req: RouteRequest,
+  res: RouteResponse,
+  body: Record<string, unknown>,
+  enrollment: ReEnrollableEnrollment,
+  now: Date
+): Promise<void> {
+  const collectorProtocolVersion = ctx.readCollectorProtocolHeader(req.headers);
+  const deviceId = ctx.generateSpineId("dexp");
+  const credentialId = ctx.generateSpineId("dcred");
+  const sourceInstanceId = ctx.generateSpineId("dsrc");
+  const deviceToken = ctx.generateReferenceSecret("ldt", 32);
+  const displayName =
+    typeof body.device_label === "string" && (body.device_label as string).trim()
+      ? (body.device_label as string).trim()
+      : enrollment.displayName || enrollment.localBindingId;
+
+  await ctx.deviceExporterStore.createDevice({
+    deviceId,
+    ownerSubjectId: enrollment.ownerSubjectId,
+    displayName,
+    collectorProtocolVersion,
+    createdAt: now.toISOString(),
+    updatedAt: now.toISOString(),
+  });
+  await ctx.deviceExporterStore.createCredential({
+    credentialId,
+    deviceId,
+    tokenHash: ctx.hashDeviceSecret(deviceToken),
+    createdAt: now.toISOString(),
+  });
+  // Canonicalize connector id at the enroll boundary. See
+  // canonicalize-connector-keys design Decision 7.
+  const enrollConnectorKey = ctx.canonicalConnectorKey(enrollment.connectorId) ?? enrollment.connectorId;
+  // Derive the enrolled source kind from the connector manifest bindings
+  // rather than hardcoding `local_device`: a `filesystem` connector enrolls
+  // as `local_device`, a `browser` connector as `browser_collector`, and a
+  // connector with no resolvable binding is rejected. See
+  // add-browser-collector-enrollment-primitive design Decision 2.
+  const sourceKind = await resolveEnrollmentSourceKind(ctx, enrollConnectorKey);
+  await ctx.ensureReferenceConnectorCatalogEntry(enrollConnectorKey, enrollment.displayName || displayName);
+  const sourceBindingIdentity = deviceExporterSourceBindingIdentity(enrollment.localBindingId, sourceKind);
+  const connectorInstance = await ctx.createRequestConnectorInstanceStore().upsert({
+    ownerSubjectId: enrollment.ownerSubjectId,
+    connectorId: enrollConnectorKey,
+    displayName,
+    status: "active",
+    sourceKind,
+    sourceBindingKey: ctx.makeConnectorInstanceSourceBindingKey(sourceBindingIdentity),
+    sourceBinding: {
+      kind: sourceKind,
+      device_id: deviceId,
+      local_binding_name: enrollment.localBindingId,
+      source_instance_id: sourceInstanceId,
+    },
+    createdAt: now.toISOString(),
+    updatedAt: now.toISOString(),
+  });
+  await ctx.deviceExporterStore.upsertSourceInstance({
+    sourceInstanceId,
+    deviceId,
+    connectorId: enrollConnectorKey,
+    connectorInstanceId: connectorInstance.connectorInstanceId,
+    localBindingId: enrollment.localBindingId,
+    displayName: enrollment.displayName,
+    createdAt: now.toISOString(),
+    updatedAt: now.toISOString(),
+  });
+  const consumed = await ctx.deviceExporterStore.consumeEnrollmentCode(
+    enrollment.enrollmentCodeId,
+    deviceId,
+    now.toISOString()
+  );
+  if (!consumed) {
+    await ctx.deviceExporterStore.revokeDevice(deviceId, now.toISOString());
+    await ctx.createRequestConnectorInstanceStore().updateStatus(connectorInstance.connectorInstanceId, {
+      status: "revoked",
+      updatedAt: now.toISOString(),
+      revokedAt: now.toISOString(),
+    });
+    ctx.pdppError(res, 409, "invalid_request", "Enrollment code was consumed by another device", "enrollment_code");
+    return;
+  }
+
+  res.status(201).json({
+    object: "device_exporter_enrollment",
+    device_id: deviceId,
+    connector_instance_id: connectorInstance.connectorInstanceId,
+    source_instance_id: sourceInstanceId,
+    device_token: deviceToken,
+    connector_id: enrollConnectorKey,
+    local_binding_name: enrollment.localBindingId,
+  });
 }
 
 // Read `capabilities.refresh_policy.maximum_staleness_seconds` off a connector
@@ -1503,111 +1738,36 @@ export function mountRefDeviceExporterEnroll(app: AppLike, ctx: MountRefDeviceEx
         const enrollmentCode = requireNonEmptyString(body.enrollment_code, "enrollment_code");
         const enrollment = await ctx.deviceExporterStore.findEnrollmentByCodeHash(ctx.hashDeviceSecret(enrollmentCode));
         const now = new Date();
-        if (!enrollment || enrollment.status !== "pending") {
+        if (!enrollment || (enrollment.status !== "pending" && enrollment.status !== "consumed")) {
           ctx.pdppError(res, 400, "invalid_request", "Enrollment code is invalid or already used", "enrollment_code");
           return;
         }
+        // Expiry is enforced for BOTH first enrollment and idempotent retry: a
+        // consumed-but-expired code is no longer a valid retry target.
         if (Date.parse(enrollment.expiresAt) <= now.getTime()) {
-          await ctx.deviceExporterStore.revokeEnrollmentCode(enrollment.enrollmentCodeId, now.toISOString());
+          if (enrollment.status === "pending") {
+            await ctx.deviceExporterStore.revokeEnrollmentCode(enrollment.enrollmentCodeId, now.toISOString());
+          }
           ctx.pdppError(res, 410, "invalid_request", "Enrollment code has expired", "enrollment_code");
           return;
         }
 
-        const collectorProtocolVersion = ctx.readCollectorProtocolHeader(req.headers);
-
-        const deviceId = ctx.generateSpineId("dexp");
-        const credentialId = ctx.generateSpineId("dcred");
-        const sourceInstanceId = ctx.generateSpineId("dsrc");
-        const deviceToken = ctx.generateReferenceSecret("ldt", 32);
-        const displayName =
-          typeof body.device_label === "string" && (body.device_label as string).trim()
-            ? (body.device_label as string).trim()
-            : enrollment.displayName || enrollment.localBindingId;
-
-        await ctx.deviceExporterStore.createDevice({
-          deviceId,
-          ownerSubjectId: enrollment.ownerSubjectId,
-          displayName,
-          collectorProtocolVersion,
-          createdAt: now.toISOString(),
-          updatedAt: now.toISOString(),
-        });
-        await ctx.deviceExporterStore.createCredential({
-          credentialId,
-          deviceId,
-          tokenHash: ctx.hashDeviceSecret(deviceToken),
-          createdAt: now.toISOString(),
-        });
-        // Canonicalize connector id at the enroll boundary. See
-        // canonicalize-connector-keys design Decision 7.
-        const enrollConnectorKey = ctx.canonicalConnectorKey(enrollment.connectorId) ?? enrollment.connectorId;
-        // Derive the enrolled source kind from the connector manifest bindings
-        // rather than hardcoding `local_device`: a `filesystem` connector enrolls
-        // as `local_device`, a `browser` connector as `browser_collector`, and a
-        // connector with no resolvable binding is rejected. See
-        // add-browser-collector-enrollment-primitive design Decision 2.
-        const sourceKind = await resolveEnrollmentSourceKind(ctx, enrollConnectorKey);
-        await ctx.ensureReferenceConnectorCatalogEntry(enrollConnectorKey, enrollment.displayName || displayName);
-        const sourceBindingIdentity = deviceExporterSourceBindingIdentity(enrollment.localBindingId, sourceKind);
-        const connectorInstance = await ctx.createRequestConnectorInstanceStore().upsert({
-          ownerSubjectId: enrollment.ownerSubjectId,
-          connectorId: enrollConnectorKey,
-          displayName,
-          status: "active",
-          sourceKind,
-          sourceBindingKey: ctx.makeConnectorInstanceSourceBindingKey(sourceBindingIdentity),
-          sourceBinding: {
-            kind: sourceKind,
-            device_id: deviceId,
-            local_binding_name: enrollment.localBindingId,
-            source_instance_id: sourceInstanceId,
-          },
-          createdAt: now.toISOString(),
-          updatedAt: now.toISOString(),
-        });
-        await ctx.deviceExporterStore.upsertSourceInstance({
-          sourceInstanceId,
-          deviceId,
-          connectorId: enrollConnectorKey,
-          connectorInstanceId: connectorInstance.connectorInstanceId,
-          localBindingId: enrollment.localBindingId,
-          displayName: enrollment.displayName,
-          createdAt: now.toISOString(),
-          updatedAt: now.toISOString(),
-        });
-        const consumed = await ctx.deviceExporterStore.consumeEnrollmentCode(
-          enrollment.enrollmentCodeId,
-          deviceId,
-          now.toISOString()
-        );
-        if (!consumed) {
-          await ctx.deviceExporterStore.revokeDevice(deviceId, now.toISOString());
-          await ctx.createRequestConnectorInstanceStore().updateStatus(connectorInstance.connectorInstanceId, {
-            status: "revoked",
-            updatedAt: now.toISOString(),
-            revokedAt: now.toISOString(),
-          });
-          ctx.pdppError(
-            res,
-            409,
-            "invalid_request",
-            "Enrollment code was consumed by another device",
-            "enrollment_code"
-          );
-          return;
+        // Idempotent re-enroll (design D2): the server cannot know whether a
+        // committed enroll response reached the client, so a retry of the SAME
+        // unexpired code that is already bound to the SAME device/binding rotates
+        // the device credential rather than erroring — returning a fresh token,
+        // invalidating any prior token, and creating no second device/source
+        // instance. Any other consumed-code replay is rejected.
+        if (enrollment.status === "consumed") {
+          const retry = await handleIdempotentReEnroll(ctx, res, enrollment, now);
+          if (retry !== "not_handled") {
+            return;
+          }
         }
 
-        res.status(201).json({
-          object: "device_exporter_enrollment",
-          device_id: deviceId,
-          connector_instance_id: connectorInstance.connectorInstanceId,
-          source_instance_id: sourceInstanceId,
-          device_token: deviceToken,
-          connector_id: enrollConnectorKey,
-          local_binding_name: enrollment.localBindingId,
-        });
+        await performFirstEnrollment(ctx, req, res, body, enrollment, now);
       } catch (err) {
-        ctx.handleError(res, err);
+        respondEnrollError(ctx, res, err);
         return;
       }
     }

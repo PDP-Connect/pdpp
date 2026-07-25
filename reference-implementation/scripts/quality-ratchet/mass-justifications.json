@@ -28,5 +28,15 @@
     "allowed_mass": 29,
     "reason": "The SQLite and Postgres implementations must each make the same run-and-lease-owned compare-and-set transitions for claim, explicit attempt, recovery, re-deferral, release, and expired-lease reclaim. The branches preserve the distinction between an untouched issuance and a real provider attempt across durable backend dialects; collapsing them behind a shallow helper would hide the SQL ownership predicates that prevent re-serve races.",
     "date": "2026-07-22"
+  },
+  "server/routes/ref-device-exporters.ts": {
+    "allowed_mass": 158,
+    "reason": "decouple-device-enrollment-from-ingest-writer-admission adds the idempotent re-enroll path (handleIdempotentReEnroll) that recovers a one-time device credential lost to a transport failure: it must enforce four independent safeguards (unexpired code, same bound device, device-not-revoked, same binding) before atomically rotating the credential, emit an audit receipt, and reject every other consumed-code replay — plus a typed-503 backpressure mapping (respondEnrollError). The enroll handler itself was decomposed first (performFirstEnrollment, handleIdempotentReEnroll, respondEnrollError all extracted, each within the per-function complexity budget); the residual file-level mass is the four safeguard branches, which are load-bearing correctness for a live credential-loss fix, not incidental style.",
+    "date": "2026-07-24"
+  },
+  "server/stores/device-exporter-store.ts": {
+    "allowed_mass": 33,
+    "reason": "decouple-device-enrollment-from-ingest-writer-admission adds rotateDeviceCredential to both the SQLite and Postgres store backends (the store is a two-backend union, so a new durable primitive necessarily lands twice). Each revokes all non-revoked credentials for the device and inserts exactly one fresh credential; the Postgres variant wraps revoke+insert in withPostgresTransaction so concurrent rotations serialize on the revoke's row locks and exactly one active credential remains. This is the minimum surface for the credential-rotation guarantee and cannot be reduced without dropping one backend.",
+    "date": "2026-07-24"
   }
 }
