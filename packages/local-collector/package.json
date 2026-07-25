@@ -40,6 +40,9 @@
   "dependencies": {
     "zod": "^4.3.6"
   },
+  "devDependencies": {
+    "conventional-changelog-conventionalcommits": "^10.2.1"
+  },
   "keywords": [
     "pdpp",
     "personal-data",

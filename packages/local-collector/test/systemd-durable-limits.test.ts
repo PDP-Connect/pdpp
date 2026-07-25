@@ -1,9 +1,9 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
-import { test } from 'node:test';
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { test } from "node:test";
 
 // Service durability — the documented systemd unit is the artifact operators
 // copy onto a durable host. The collector itself is a `Type=oneshot` run that
@@ -20,7 +20,7 @@ import { test } from 'node:test';
 // openspec/specs/reference-implementation-architecture/spec.md
 // "Reference local collector scheduling SHALL remain host-supervisor-owned".
 
-const DOC_URL = new URL('../../../docs/reference/local-collector.md', import.meta.url);
+const DOC_URL = new URL("../../../docs/reference/local-collector.md", import.meta.url);
 
 /**
  * Extract the first fenced ```ini block in `docs/reference/local-collector.md` that
@@ -29,36 +29,34 @@ const DOC_URL = new URL('../../../docs/reference/local-collector.md', import.met
  * dependency) so the test asserts the exact published shape.
  */
 async function loadSystemdServiceBlock() {
-  const doc = await readFile(DOC_URL, 'utf8');
+  const doc = await readFile(DOC_URL, "utf8");
   const iniBlocks = [...doc.matchAll(/```ini\n([\s\S]*?)```/g)].map((m) => m[1]);
-  const serviceBlock = iniBlocks.find((block) => block.includes('[Service]'));
+  const serviceBlock = iniBlocks.find((block) => block.includes("[Service]"));
   if (!serviceBlock) {
-    throw new Error(
-      'docs/reference/local-collector.md no longer contains an ```ini``` block with a [Service] section'
-    );
+    throw new Error("docs/reference/local-collector.md no longer contains an ```ini``` block with a [Service] section");
   }
   return serviceBlock;
 }
 
 /** Parse `Key=Value` lines from the `[Service]` section into a map. */
 function parseServiceDirectives(serviceBlock) {
-  return parseSectionDirectives(serviceBlock, '[Service]');
+  return parseSectionDirectives(serviceBlock, "[Service]");
 }
 
 /** Parse `Key=Value` lines from a named INI section into a map. */
 function parseSectionDirectives(block, sectionName) {
   const directives = new Map();
   let inSection = false;
-  for (const rawLine of block.split('\n')) {
+  for (const rawLine of block.split("\n")) {
     const line = rawLine.trim();
-    if (line.startsWith('[') && line.endsWith(']')) {
+    if (line.startsWith("[") && line.endsWith("]")) {
       inSection = line === sectionName;
       continue;
     }
-    if (!inSection || !line || line.startsWith('#')) {
+    if (!(inSection && line) || line.startsWith("#")) {
       continue;
     }
-    const eq = line.indexOf('=');
+    const eq = line.indexOf("=");
     if (eq === -1) {
       continue;
     }
@@ -73,48 +71,40 @@ function parseSectionDirectives(block, sectionName) {
  * `[Service]` unit above.
  */
 async function loadSystemdTimerBlock() {
-  const doc = await readFile(DOC_URL, 'utf8');
+  const doc = await readFile(DOC_URL, "utf8");
   const iniBlocks = [...doc.matchAll(/```ini\n([\s\S]*?)```/g)].map((m) => m[1]);
-  const timerBlock = iniBlocks.find((block) => block.includes('[Timer]'));
+  const timerBlock = iniBlocks.find((block) => block.includes("[Timer]"));
   if (!timerBlock) {
-    throw new Error(
-      'docs/reference/local-collector.md no longer contains an ```ini``` block with a [Timer] section'
-    );
+    throw new Error("docs/reference/local-collector.md no longer contains an ```ini``` block with a [Timer] section");
   }
   return timerBlock;
 }
 
-test('documented systemd [Service] sets a hard memory cap', async () => {
+test("documented systemd [Service] sets a hard memory cap", async () => {
   const directives = parseServiceDirectives(await loadSystemdServiceBlock());
-  const memoryMax = directives.get('MemoryMax');
-  assert.ok(
-    memoryMax,
-    'systemd [Service] must set MemoryMax — an uncapped run can consume host memory without bound'
-  );
+  const memoryMax = directives.get("MemoryMax");
+  assert.ok(memoryMax, "systemd [Service] must set MemoryMax — an uncapped run can consume host memory without bound");
   // Must be a real byte ceiling (e.g. 2G/1536M), never `infinity`, which is the
   // same as no cap.
-  assert.match(
-    memoryMax,
-    /^\d+(\.\d+)?[KMGT]?$/,
-    `MemoryMax must be a finite byte size (e.g. 2G), got: ${memoryMax}`
-  );
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
+  assert.match(memoryMax, /^\d+(\.\d+)?[KMGT]?$/, `MemoryMax must be a finite byte size (e.g. 2G), got: ${memoryMax}`);
 });
 
-test('documented systemd [Service] forbids swap so the cgroup OOM-kills instead of thrashing the host', async () => {
+test("documented systemd [Service] forbids swap so the cgroup OOM-kills instead of thrashing the host", async () => {
   const directives = parseServiceDirectives(await loadSystemdServiceBlock());
   assert.equal(
-    directives.get('MemorySwapMax'),
-    '0',
-    'MemorySwapMax=0 is the load-bearing line: without it the cgroup spills to swap under pressure and thrashes the whole host instead of failing the one run'
+    directives.get("MemorySwapMax"),
+    "0",
+    "MemorySwapMax=0 is the load-bearing line: without it the cgroup spills to swap under pressure and thrashes the whole host instead of failing the one run"
   );
   assert.equal(
-    directives.get('OOMPolicy'),
-    'kill',
-    'OOMPolicy=kill makes the kernel OOM-kill only this run cgroup under memory pressure'
+    directives.get("OOMPolicy"),
+    "kill",
+    "OOMPolicy=kill makes the kernel OOM-kill only this run cgroup under memory pressure"
   );
 });
 
-test('documented systemd [Service] makes the collector a willing host-wide OOM victim, documented as deliberate', async () => {
+test("documented systemd [Service] makes the collector a willing host-wide OOM victim, documented as deliberate", async () => {
   // OOMScoreAdjust raises this run's host-wide OOM "badness" so an unrelated
   // host-wide memory spike sacrifices the durable collector before an
   // interactive app. This is SEPARATE from the cgroup cap (OOMPolicy=kill +
@@ -125,8 +115,11 @@ test('documented systemd [Service] makes the collector a willing host-wide OOM v
   const serviceBlock = await loadSystemdServiceBlock();
   const directives = parseServiceDirectives(serviceBlock);
 
-  const score = directives.get('OOMScoreAdjust');
-  assert.ok(score !== undefined, 'systemd [Service] must declare OOMScoreAdjust so victim selection is explicit, not default');
+  const score = directives.get("OOMScoreAdjust");
+  assert.ok(
+    score !== undefined,
+    "systemd [Service] must declare OOMScoreAdjust so victim selection is explicit, not default"
+  );
   const parsed = Number(score);
   assert.ok(
     Number.isInteger(parsed) && parsed > 0 && parsed <= 1000,
@@ -139,22 +132,24 @@ test('documented systemd [Service] makes the collector a willing host-wide OOM v
   // sacrifice into an apparent collector failure.
   assert.match(
     serviceBlock,
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     /OOMScoreAdjust[\s\S]*?host[\s-]?wide|host[\s-]?wide[\s\S]*?OOMScoreAdjust|#[^\n]*(?:host-wide|preferred[\s-]?victim)[\s\S]*?OOMScoreAdjust/i,
-    'the OOMScoreAdjust line must be accompanied by a comment explaining host-wide victim selection'
+    "the OOMScoreAdjust line must be accompanied by a comment explaining host-wide victim selection"
   );
 });
 
-test('documented systemd [Service] bounds oneshot start time and reaps the whole control group on stop', async () => {
+test("documented systemd [Service] bounds oneshot start time and reaps the whole control group on stop", async () => {
   const directives = parseServiceDirectives(await loadSystemdServiceBlock());
 
   assert.equal(
-    directives.has('RuntimeMaxSec'),
+    directives.has("RuntimeMaxSec"),
     false,
-    'RuntimeMaxSec is ignored for Type=oneshot services; use TimeoutStartSec for the collector run wall clock'
+    "RuntimeMaxSec is ignored for Type=oneshot services; use TimeoutStartSec for the collector run wall clock"
   );
 
-  const timeoutStart = directives.get('TimeoutStartSec');
+  const timeoutStart = directives.get("TimeoutStartSec");
   assert.ok(
+    // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     timeoutStart && /^\d+$/.test(timeoutStart) && Number(timeoutStart) > 0,
     `TimeoutStartSec must bound a Type=oneshot collector run to a finite wall clock, got: ${timeoutStart}`
   );
@@ -163,23 +158,23 @@ test('documented systemd [Service] bounds oneshot start time and reaps the whole
   // spawned is reaped with the service, closing the orphaned-child gap on the
   // supervised path.
   assert.equal(
-    directives.get('KillMode'),
-    'control-group',
-    'KillMode=control-group reaps the connector child with the service so nothing is orphaned on stop'
+    directives.get("KillMode"),
+    "control-group",
+    "KillMode=control-group reaps the connector child with the service so nothing is orphaned on stop"
   );
 });
 
-test('documented systemd [Service] pins the durable outbox off tmpfs', async () => {
+test("documented systemd [Service] pins the durable outbox off tmpfs", async () => {
   const directives = parseServiceDirectives(await loadSystemdServiceBlock());
   const queueEnv = [...directives.entries()].find(
-    ([key, value]) => key === 'Environment' && value.startsWith('PDPP_COLLECTOR_QUEUE=')
+    ([key, value]) => key === "Environment" && value.startsWith("PDPP_COLLECTOR_QUEUE=")
   );
   assert.ok(
     queueEnv,
-    'systemd [Service] must pin PDPP_COLLECTOR_QUEUE to a disk-backed path so undrained backlog survives reboot and a tmpfs /tmp never holds collector state'
+    "systemd [Service] must pin PDPP_COLLECTOR_QUEUE to a disk-backed path so undrained backlog survives reboot and a tmpfs /tmp never holds collector state"
   );
   assert.ok(
-    !queueEnv[1].includes('/tmp/'),
+    !queueEnv[1].includes("/tmp/"),
     `PDPP_COLLECTOR_QUEUE must not live under /tmp (tmpfs on many Linux hosts): ${queueEnv[1]}`
   );
 });
@@ -211,32 +206,32 @@ test('documented systemd [Service] pins the durable outbox off tmpfs', async () 
 // See docs/reference/local-collector.md §systemd, "Why OnBootSec=/
 // OnStartupSec=/OnUnitActiveSec= go dead after a manager restart".
 
-test('documented systemd [Timer] survives a user-manager restart (OnActiveSec + OnUnitInactiveSec, not OnBootSec/OnStartupSec/OnUnitActiveSec)', async () => {
+test("documented systemd [Timer] survives a user-manager restart (OnActiveSec + OnUnitInactiveSec, not OnBootSec/OnStartupSec/OnUnitActiveSec)", async () => {
   const timerBlock = await loadSystemdTimerBlock();
-  const directives = parseSectionDirectives(timerBlock, '[Timer]');
+  const directives = parseSectionDirectives(timerBlock, "[Timer]");
 
   assert.ok(
-    directives.has('OnActiveSec'),
-    'documented [Timer] must use OnActiveSec (timer-unit-activation-relative bootstrap) so enable / reload+restart / a user-manager restart all reschedule the initial run'
+    directives.has("OnActiveSec"),
+    "documented [Timer] must use OnActiveSec (timer-unit-activation-relative bootstrap) so enable / reload+restart / a user-manager restart all reschedule the initial run"
   );
   assert.ok(
-    directives.has('OnUnitInactiveSec'),
-    'documented [Timer] must use OnUnitInactiveSec (service-completion-relative recurrence) so recurring runs are not tied to stale in-memory activation bookkeeping'
+    directives.has("OnUnitInactiveSec"),
+    "documented [Timer] must use OnUnitInactiveSec (service-completion-relative recurrence) so recurring runs are not tied to stale in-memory activation bookkeeping"
   );
   assert.equal(
-    directives.has('OnBootSec'),
+    directives.has("OnBootSec"),
     false,
-    'OnBootSec is boot-relative and goes stale-in-the-past after a user-manager restart that does not reboot the machine — do not reintroduce it'
+    "OnBootSec is boot-relative and goes stale-in-the-past after a user-manager restart that does not reboot the machine — do not reintroduce it"
   );
   assert.equal(
-    directives.has('OnStartupSec'),
+    directives.has("OnStartupSec"),
     false,
-    'OnStartupSec was tried and failed live acceptance on a test laptop (Trigger: n/a after daemon-reload + timer restart) — do not reintroduce it'
+    "OnStartupSec was tried and failed live acceptance on a test laptop (Trigger: n/a after daemon-reload + timer restart) — do not reintroduce it"
   );
   assert.equal(
-    directives.has('OnUnitActiveSec'),
+    directives.has("OnUnitActiveSec"),
     false,
-    'OnUnitActiveSec depends on in-memory last-activation bookkeeping a restarted manager does not have — do not reintroduce it'
+    "OnUnitActiveSec depends on in-memory last-activation bookkeeping a restarted manager does not have — do not reintroduce it"
   );
 
   // Persistent= is deliberately absent: per systemd.timer(5) it "only has an
@@ -245,8 +240,8 @@ test('documented systemd [Timer] survives a user-manager restart (OnActiveSec + 
   // value here would either lock in an inert directive or, worse, imply it
   // provides powered-off catch-up for this timer, which it does not.
   assert.equal(
-    directives.has('OnCalendar'),
+    directives.has("OnCalendar"),
     false,
-    'this timer is documented as purely monotonic — if OnCalendar= is ever added, Persistent=true becomes meaningful and should be reconsidered together with it'
+    "this timer is documented as purely monotonic — if OnCalendar= is ever added, Persistent=true becomes meaningful and should be reconsidered together with it"
   );
 });

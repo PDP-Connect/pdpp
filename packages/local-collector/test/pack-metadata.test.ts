@@ -16,7 +16,7 @@ const stderrPattern = /stderr:\nprepare failed/;
 const stdoutPattern = /stdout:\nbuild detail/;
 
 test("npm pack metadata uses the JSON-only background-lifecycle contract", async () => {
-  let invocation;
+  let invocation: { args: string[]; command: string; options: { cwd: string; maxBuffer: number } } | undefined;
   const packInfo = await npmPackMetadata({
     cwd: "/candidate-package",
     dryRun: true,
