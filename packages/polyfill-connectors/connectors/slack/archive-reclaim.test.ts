@@ -12,7 +12,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -874,6 +874,228 @@ test("scoped-archive-reconcile resumes a scoped archive again once its lookback 
       newResumedAt && newResumedAt !== staleResumedAt,
       "resumed_at is bumped to this run's time after a real resume"
     );
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+// RI-owner LIVE REVISE, same incident: refreshScopedArchive's catch block
+// returned `resumed: true` on a FAILED ensureArchiveOnDisk call, so a failed
+// resume silently advanced scoped_archive_resumed_at and suppressed retries
+// for the full lookback window — hiding a recoverable gap for up to 7 days
+// with no typed evidence anywhere. This test drives the REAL (non-skip)
+// slackdump invocation path via a fake SLACKDUMP_BIN that fails only for the
+// scoped archive's path (succeeds for the base archive), so the failure is
+// genuine subprocess failure, not a test-harness shortcut.
+test("a failed scoped-archive resume does not advance the success cursor, emits a typed retryable gap, and leaves the archive owed for the next governor-allowed run", async () => {
+  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-reconcile-resume-fail-"));
+  const priorBin = process.env.SLACKDUMP_BIN;
+  try {
+    const workspace = "reconcile-resume-fail-ws";
+    const baseArchiveDir = join(homeDir, ".pdpp", "slackdump", workspace, "archive");
+    const scopedArchiveDir = join(
+      homeDir,
+      ".pdpp",
+      "slackdump",
+      workspace,
+      "archive-scoped",
+      scopedArchiveDigest(["C0MISSING"])
+    );
+    await mkdir(baseArchiveDir, { recursive: true });
+    await mkdir(scopedArchiveDir, { recursive: true });
+
+    const baseDb = new DatabaseSync(join(baseArchiveDir, "slackdump.sqlite"));
+    try {
+      seedArchiveSchema(baseDb);
+      insertChannel(baseDb, "C0PRESENT", "present");
+      insertMessage(baseDb, "C0PRESENT", "1714032849.123456", "still present");
+    } finally {
+      baseDb.close();
+    }
+    const scopedDb = new DatabaseSync(join(scopedArchiveDir, "slackdump.sqlite"));
+    try {
+      seedArchiveSchema(scopedDb);
+      insertChannel(scopedDb, "C0MISSING", "missing");
+      insertMessage(scopedDb, "C0MISSING", "1714032850.123456", "recovered from scoped archive");
+    } finally {
+      scopedDb.close();
+    }
+
+    // Fake slackdump binary: exits non-zero ONLY when its last argument
+    // (the archive/resume target path) is the scoped archive — the base
+    // archive's own invocation succeeds (both sqlites already exist on disk
+    // from the seeding above, so a no-op success is a valid "did nothing new
+    // but completed cleanly" outcome for the base archive).
+    const fakeSlackdumpPath = join(homeDir, "fake-slackdump.mjs");
+    await writeFile(
+      fakeSlackdumpPath,
+      `#!/usr/bin/env node
+const target = process.argv.at(-1) ?? "";
+if (target.includes("archive-scoped")) {
+  process.stderr.write("simulated: slackdump resume failed for scoped archive\\n");
+  process.exit(6);
+}
+process.exit(0);
+`,
+      "utf8"
+    );
+    await chmod(fakeSlackdumpPath, 0o755);
+    process.env.SLACKDUMP_BIN = fakeSlackdumpPath;
+
+    const priorResumedAt = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
+    const result = await runConnectorProtocolSubprocess({
+      cwd: PACKAGE_ROOT,
+      entrypoint: SLACK_ENTRYPOINT,
+      env: {
+        HOME: homeDir,
+        SLACK_COOKIE: "d=fake",
+        SLACK_TOKEN: "xoxc-fake",
+        SLACK_WORKSPACE: workspace,
+        SLACKDUMP_BIN: fakeSlackdumpPath,
+      },
+      start: {
+        type: "START",
+        scope: { streams: [{ name: "messages" }] },
+        state: {
+          messages: {
+            last_ts: "1714032800.000000",
+            channel_last_ts: { C0MISSING: "1714032800.000000", C0PRESENT: "1714032800.000000" },
+            observed_channel_ids: ["C0MISSING", "C0PRESENT"],
+            // Stale (past the lookback window) so this archive is due for
+            // resume this run — otherwise the throttle itself would skip the
+            // subprocess and there would be nothing to fail.
+            scoped_archive_resumed_at: { [scopedArchiveDir]: priorResumedAt },
+          },
+        },
+      },
+    });
+
+    const done = result.messages.findLast((m): m is Extract<EmittedMessage, { type: "DONE" }> => m.type === "DONE");
+    assert.equal(done?.status, "succeeded", "a failed optional scoped-archive resume is non-fatal to the run");
+
+    const lines = progressLines(result.messages);
+    assert.ok(
+      lines.some((l) => l.includes("scoped archive refresh failed") && l.includes("channel(s)")),
+      "reports the resume failure as progress evidence"
+    );
+    assert.ok(
+      lines.some((l) => l.includes("completed 1/1 repair unit(s) (failed, gap recorded)")),
+      "the completed cursor honestly reports this unit as failed, not resumed"
+    );
+
+    // The decisive fix: the STATE cursor must NOT advance on failure. If it
+    // did, the archive would be silently treated as caught-up for a full
+    // lookback window despite the resume having accomplished nothing.
+    const cursor = messagesState(result);
+    const resumedAtAfter = (cursor.scoped_archive_resumed_at as Record<string, string> | undefined)?.[scopedArchiveDir];
+    assert.equal(
+      resumedAtAfter,
+      priorResumedAt,
+      "a failed resume leaves scoped_archive_resumed_at UNCHANGED — success and failure must never be conflated"
+    );
+
+    // Typed, durable recovery evidence — not a connector-local suppression
+    // window — surfaces the failure so the existing gap/recovery-governor
+    // path paces the retry.
+    const gap = result.messages.find(
+      (m): m is Extract<EmittedMessage, { type: "DETAIL_GAP" }> =>
+        m.type === "DETAIL_GAP" && (m as { record_key?: unknown }).record_key === scopedArchiveDir
+    );
+    assert.ok(gap, "emits a DETAIL_GAP keyed by the archive path");
+    assert.equal(gap?.stream, "messages");
+    assert.equal(gap?.reason, "temporary_unavailable");
+    assert.equal(gap?.retryable, true);
+    assert.equal(gap?.status, "pending");
+    assert.equal((gap?.detail_locator as { kind?: unknown } | undefined)?.kind, "slack.scoped_archive_resume");
+    assert.ok(
+      !result.messages.some((m) => m.type === "DETAIL_GAP_RECOVERED"),
+      "does not emit DETAIL_GAP_RECOVERED for a resume that never succeeded"
+    );
+  } finally {
+    if (priorBin === undefined) {
+      delete process.env.SLACKDUMP_BIN;
+    } else {
+      process.env.SLACKDUMP_BIN = priorBin;
+    }
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("scoped-archive-reconcile emits DETAIL_GAP_RECOVERED when a previously-failed archive resumes successfully", async () => {
+  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-reconcile-recovered-"));
+  try {
+    const workspace = "reconcile-recovered-ws";
+    const baseArchiveDir = join(homeDir, ".pdpp", "slackdump", workspace, "archive");
+    const scopedArchiveDir = join(
+      homeDir,
+      ".pdpp",
+      "slackdump",
+      workspace,
+      "archive-scoped",
+      scopedArchiveDigest(["C0MISSING"])
+    );
+    await mkdir(baseArchiveDir, { recursive: true });
+    await mkdir(scopedArchiveDir, { recursive: true });
+
+    const baseDb = new DatabaseSync(join(baseArchiveDir, "slackdump.sqlite"));
+    try {
+      seedArchiveSchema(baseDb);
+      insertChannel(baseDb, "C0PRESENT", "present");
+      insertMessage(baseDb, "C0PRESENT", "1714032849.123456", "still present");
+    } finally {
+      baseDb.close();
+    }
+    const scopedDb = new DatabaseSync(join(scopedArchiveDir, "slackdump.sqlite"));
+    try {
+      seedArchiveSchema(scopedDb);
+      insertChannel(scopedDb, "C0MISSING", "missing");
+      insertMessage(scopedDb, "C0MISSING", "1714032850.123456", "recovered from scoped archive");
+    } finally {
+      scopedDb.close();
+    }
+
+    const staleResumedAt = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
+    const result = await runConnectorProtocolSubprocess({
+      cwd: PACKAGE_ROOT,
+      entrypoint: SLACK_ENTRYPOINT,
+      env: {
+        HOME: homeDir,
+        PDPP_SLACK_SKIP_SLACKDUMP: "1",
+        SLACK_COOKIE: "d=fake",
+        SLACK_TOKEN: "xoxc-fake",
+        SLACK_WORKSPACE: workspace,
+      },
+      start: {
+        type: "START",
+        scope: { streams: [{ name: "messages" }] },
+        state: {
+          messages: {
+            last_ts: "1714032800.000000",
+            channel_last_ts: { C0MISSING: "1714032800.000000", C0PRESENT: "1714032800.000000" },
+            observed_channel_ids: ["C0MISSING", "C0PRESENT"],
+            scoped_archive_resumed_at: { [scopedArchiveDir]: staleResumedAt },
+          },
+        },
+        // A prior run's failed attempt left this durable gap pending —
+        // supplied here exactly as the runtime would replay it on START.
+        detail_gaps: [
+          {
+            gap_id: "gap_prior_scoped_archive_resume",
+            record_key: scopedArchiveDir,
+            status: "pending",
+            stream: "messages",
+          },
+        ],
+      },
+    });
+
+    const recovered = result.messages.find(
+      (m): m is Extract<EmittedMessage, { type: "DETAIL_GAP_RECOVERED" }> => m.type === "DETAIL_GAP_RECOVERED"
+    );
+    assert.ok(recovered, "emits DETAIL_GAP_RECOVERED once the archive resumes successfully again");
+    assert.equal(recovered?.gap_id, "gap_prior_scoped_archive_resume");
+    assert.equal(recovered?.record_key, scopedArchiveDir);
+    assert.equal(recovered?.stream, "messages");
   } finally {
     await rm(homeDir, { recursive: true, force: true });
   }

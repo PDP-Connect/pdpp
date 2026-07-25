@@ -62,7 +62,10 @@ import { DatabaseSync } from "node:sqlite";
 import { readOptions } from "../../src/connector-options.ts";
 import {
   buildDetailCoverageMessage,
+  buildDetailGap,
   type CollectContext,
+  type DetailGapMessage,
+  type DetailGapStartEntry,
   type EmittedMessage,
   nowIso,
   type RecordData,
@@ -752,9 +755,12 @@ interface MessageSourceCacheReconciliation {
   // regardless of whether the repair helped this run's message pass.
   reclaimedRepairArchivePaths: string[];
   // Updated `scoped_archive_resumed_at` map (archive path -> ISO timestamp of
-  // the last actual `resume` invocation) to commit into STATE. Only entries
-  // for archives this run genuinely resumed advance; throttled-and-skipped
-  // archives keep their existing (possibly absent) timestamp.
+  // the last actual, SUCCESSFULLY COMPLETED `resume` invocation) to commit
+  // into STATE. Only an archive whose resume this run actually finished
+  // without error advances its timestamp; throttled-and-skipped archives
+  // keep their existing (possibly absent) timestamp UNCHANGED, and a failed
+  // attempt keeps its existing timestamp UNCHANGED too — a failure is owed
+  // work, not completed work, and must never be recorded as if it were.
   scopedArchiveResumedAt: Record<string, string>;
   scopedArchives: SelectedScopedArchive[];
 }
@@ -786,12 +792,59 @@ function scopedArchiveDueForResume(
   return elapsedMs >= lookbackMs;
 }
 
+// A failed resume must surface as durable, governor-paced recovery evidence
+// — not as a connector-local suppression window meant only for genuinely
+// completed work. `record_key` is the archive path itself: stable across
+// runs (so repeated failures upsert the SAME durable gap row, per the
+// runtime's `(stream, record_key)` conflict key, rather than spamming one
+// per run) and unique per scoped archive (the unit the resume subprocess
+// actually operates on). `reason: "temporary_unavailable"` mirrors Gmail's
+// attachment-hydration gap: the failure bucket mixes transient
+// network/subprocess errors with no exhaustion signal, so retrying next
+// eligible run is the honest, non-destructive default — it does NOT arm the
+// cross-run source-pressure cooldown (only `rate_limited`/`upstream_pressure`
+// do), so an unrelated recoverable stream's pacing is never affected by a
+// stuck scoped archive.
+function buildScopedArchiveResumeGap(archivePath: string, message: string): DetailGapMessage {
+  return buildDetailGap({
+    stream: "messages",
+    recordKey: archivePath,
+    reason: "temporary_unavailable",
+    locator: {
+      kind: "slack.scoped_archive_resume",
+      archive_path: archivePath,
+    },
+    error: { class: "scoped_archive_resume_failed", message },
+  });
+}
+
+// Emitted once a previously-gapped archive resumes successfully, so the
+// governor's durable gap row is closed rather than left `pending` forever
+// after the underlying problem has actually cleared. Matches by the same
+// `(stream, record_key)` identity the gap was opened with; `ctx.detailGaps`
+// (this connector instance's currently-pending gaps, supplied on START) is
+// the read side of that identity — no separate connector-local bookkeeping
+// needed.
+function findPendingScopedArchiveResumeGap(
+  detailGaps: readonly DetailGapStartEntry[],
+  archivePath: string
+): DetailGapStartEntry | undefined {
+  return detailGaps.find(
+    (gap) => gap.stream === "messages" && gap.status === "pending" && String(gap.record_key ?? "") === archivePath
+  );
+}
+
+// Distinct facts, never conflated: a throttled unit was never attempted; a
+// failed unit was attempted but did NOT durably complete; only "resumed"
+// means the subprocess actually finished without error. Only "resumed" may
+// ever advance `scoped_archive_resumed_at` — a failed attempt is real work
+// that did not pay off and must stay owed, not silently treated as done for
+// a full lookback window (that conflation was the live-REVISE defect this
+// type exists to make structurally impossible).
+type RefreshScopedArchiveOutcome = { kind: "failed"; message: string } | { kind: "resumed" } | { kind: "throttled" };
+
 interface RefreshScopedArchiveResult {
-  // True when `ensureArchiveOnDisk` actually ran a slackdump subprocess this
-  // call (archive or resume). False when throttled (already due-checked as
-  // not owed) or when the on-disk archive was read without invoking
-  // slackdump at all.
-  resumed: boolean;
+  outcome: RefreshScopedArchiveOutcome;
 }
 
 async function refreshScopedArchive(
@@ -806,7 +859,7 @@ async function refreshScopedArchive(
         `(last resumed within lookback=p${String(opts.LOOKBACK_DAYS)}d) — reading existing data, skipping subprocess`,
       { stream: "messages" }
     );
-    return { resumed: false };
+    return { outcome: { kind: "throttled" } };
   }
   const useResume = existsSync(archive.paths.archivePath);
   try {
@@ -830,12 +883,14 @@ async function refreshScopedArchive(
     progress(`Slack: scoped archive refresh failed for ${String(archive.channelIds.length)} channel(s): ${message}`, {
       stream: "messages",
     });
-    // The subprocess was attempted (that's the cost we're throttling), even
-    // though it failed — record the attempt so a persistently-failing scoped
-    // archive doesn't get retried every single run either.
-    return { resumed: true };
+    // Do NOT stamp scoped_archive_resumed_at on this path: the attempt did
+    // not durably complete, so this archive is still owed a resume. Retry
+    // pacing for the failure itself belongs to the existing DETAIL_GAP /
+    // recovery-governor path (see the caller), not a connector-local
+    // suppression window meant only for genuinely-completed work.
+    return { outcome: { kind: "failed", message } };
   }
-  return { resumed: true };
+  return { outcome: { kind: "resumed" } };
 }
 
 interface ScopedArchiveRepairResult {
@@ -897,10 +952,67 @@ async function repairMissingScopedArchive(
   };
 }
 
+/**
+ * Apply one scoped archive's refresh outcome: advance (or deliberately do
+ * NOT advance) `scoped_archive_resumed_at`, and emit the matching typed
+ * protocol evidence — DETAIL_GAP_RECOVERED closing out a prior failure on
+ * success, or a fresh DETAIL_GAP on failure. Returns the human-readable
+ * outcome label for the per-unit progress line. Extracted out of
+ * `reconcileMessageSourceCache`'s loop so each outcome branch reads as one
+ * flat case, not a nested conditional.
+ */
+async function applyScopedArchiveRefreshOutcome(
+  outcome: RefreshScopedArchiveOutcome,
+  ctx: {
+    archivePath: string;
+    detailGaps: readonly DetailGapStartEntry[];
+    emit: CollectContext["emit"];
+    nowIso: string;
+    scopedArchiveResumedAt: Record<string, string>;
+  }
+): Promise<string> {
+  const { archivePath, detailGaps, emit, nowIso, scopedArchiveResumedAt } = ctx;
+  if (outcome.kind === "throttled") {
+    return "throttled, not owed";
+  }
+  if (outcome.kind === "failed") {
+    // The attempt did not durably complete — this is owed work, not
+    // completed work. Never stamp scoped_archive_resumed_at here (that
+    // would silently suppress retries for a full lookback window despite
+    // nothing having actually succeeded). Instead, surface a typed,
+    // durable, governor-paced recovery fact: the SAME (stream, record_key)
+    // identity upserts on repeat failures rather than spamming a new row
+    // per run, and the runtime's own recovery/quarantine machinery — not
+    // connector-local suppression — owns how and when this gets retried.
+    await emit(buildScopedArchiveResumeGap(archivePath, outcome.message));
+    return "failed, gap recorded";
+  }
+  // outcome.kind === "resumed": only a genuinely completed resume may
+  // advance the throttle timestamp — this is the exact fact a failure must
+  // NOT produce.
+  scopedArchiveResumedAt[archivePath] = nowIso;
+  // Close out any durable gap this archive previously opened: the problem
+  // has cleared, so the governor's pending row must not sit open forever
+  // after a later success.
+  const pendingGap = findPendingScopedArchiveResumeGap(detailGaps, archivePath);
+  if (pendingGap) {
+    await emit({
+      type: "DETAIL_GAP_RECOVERED",
+      reference_only: true,
+      gap_id: pendingGap.gap_id,
+      record_key: archivePath,
+      stream: "messages",
+    });
+  }
+  return "resumed";
+}
+
 async function reconcileMessageSourceCache(deps: {
   archiveRuntime: ArchiveRuntimeDeps;
   baseArchivePaths: ArchivePaths;
   baseChannelIds: readonly string[];
+  detailGaps: readonly DetailGapStartEntry[];
+  emit: CollectContext["emit"];
   isUnscopedMessageBoundary: boolean;
   messageFamilyRequested: boolean;
   nowIso: string;
@@ -911,6 +1023,8 @@ async function reconcileMessageSourceCache(deps: {
     archiveRuntime,
     baseArchivePaths,
     baseChannelIds,
+    detailGaps,
+    emit,
     isUnscopedMessageBoundary,
     messageFamilyRequested,
     nowIso,
@@ -982,13 +1096,17 @@ async function reconcileMessageSourceCache(deps: {
       nowIso
     );
     const result = await refreshScopedArchive(archive, archiveRuntime, { dueForResume });
-    if (result.resumed) {
-      scopedArchiveResumedAt[archive.paths.archivePath] = nowIso;
-    }
+    const outcomeLabel = await applyScopedArchiveRefreshOutcome(result.outcome, {
+      archivePath: archive.paths.archivePath,
+      detailGaps,
+      emit,
+      nowIso,
+      scopedArchiveResumedAt,
+    });
     completedRepairUnits += 1;
     archiveRuntime.progress(
       `Slack: scoped-archive-reconcile completed ${String(completedRepairUnits)}/${String(repairUnitCount)} repair unit(s) ` +
-        `(${result.resumed ? "resumed" : "throttled, not owed"})`,
+        `(${outcomeLabel})`,
       { stream: "messages" }
     );
   }
@@ -2281,6 +2399,8 @@ if (isMainModule(import.meta.url)) {
           archiveRuntime: { childEnv, cookie, opts, progress, timeFrom, timeTo, token },
           baseArchivePaths,
           baseChannelIds,
+          detailGaps: ctx.detailGaps,
+          emit,
           isUnscopedMessageBoundary,
           messageFamilyRequested,
           nowIso: ctx.emittedAt,

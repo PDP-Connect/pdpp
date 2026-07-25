@@ -278,3 +278,95 @@ on the live host specifically) cannot be observed in one sitting — synthetic
 tests inject the elapsed-time boundary deterministically instead. Owner UAT
 across a real multi-day window is the only way to observe this on the live
 connection; recorded in `design.md`'s residual risks.
+
+## 9. RI-owner REVISE on task 8 (2026-07-25, same day): failed resume silently
+   counted as success, suppressing retries for a full lookback window with no
+   typed evidence — fixed here
+
+RI owner found the blocker task 8's own independent gate had labeled
+non-blocking: `refreshScopedArchive`'s `catch` block returned `resumed: true`
+on a genuinely FAILED `ensureArchiveOnDisk` call. Since `resumed: true` was
+the same signal a real success produced, a failure silently stamped
+`scoped_archive_resumed_at = now` — suppressing retries for a full
+`SLACK_LOOKBACK_DAYS` (default 7 days) with zero durable evidence that
+anything had gone wrong. This contradicted the field's own committed
+meaning ("last actual, successfully completed resume") and could hide a
+recoverable gap for up to a week.
+
+- [x] 9.1 **Concept-correct outcome typing.** `refreshScopedArchive`'s return
+  type changed from `{ resumed: boolean }` to a discriminated
+  `RefreshScopedArchiveOutcome = { kind: "resumed" } | { kind: "throttled" }
+  | { kind: "failed"; message: string }`. Only `"resumed"` may ever advance
+  `scoped_archive_resumed_at`; `"failed"` structurally cannot, by
+  construction — the caller (`applyScopedArchiveRefreshOutcome`, extracted
+  to keep `reconcileMessageSourceCache`'s cyclomatic complexity under the
+  repo's Biome ceiling) branches on `outcome.kind`, not a boolean that
+  conflated two different facts.
+- [x] 9.2 **Typed recovery evidence routed through the existing connector-
+  neutral gap/recovery-governor path, not a bespoke connector-local
+  suppression.** Researched the existing infrastructure
+  (`add-connector-neutral-recovery-governor` OpenSpec change,
+  `packages/polyfill-connectors/src/connector-runtime.ts`'s
+  `buildDetailGap`/`DetailGapMessage`, and Gmail's precedent
+  `buildAttachmentDetailGap`) before designing anything new. A `"failed"`
+  outcome now emits a `DETAIL_GAP` (`stream: "messages"`, `record_key:
+  <archivePath>`, `reason: "temporary_unavailable"`, `detail_locator.kind:
+  "slack.scoped_archive_resume"`) via the connector-runtime's own
+  `buildDetailGap` helper — the same durable, `(stream, record_key)`-keyed,
+  upsert-on-repeat, governor-paced mechanism Gmail/Amazon/HEB/ChatGPT already
+  use for recoverable detail-hydration failures. `reason:
+  "temporary_unavailable"` deliberately does NOT arm the cross-run
+  source-pressure cooldown (only `rate_limited`/`upstream_pressure` do) —
+  a stuck scoped archive must not throttle an unrelated recoverable stream's
+  pacing. On a later run where that archive's resume succeeds, the connector
+  reads `ctx.detailGaps` (pending gaps replayed on `START`, already part of
+  the existing protocol — no new plumbing) to find a matching pending gap
+  and emits `DETAIL_GAP_RECOVERED`, closing the durable row instead of
+  leaving it pending forever after the problem clears.
+- [x] 9.3 **No wall-clock timeout, no parallel retry taxonomy, as instructed.**
+  Considered and rejected explicitly (see `design.md` D6): a connector-local
+  N-day suppression for the failure case specifically would duplicate what
+  the existing recovery governor already owns; a wall-clock kill switch on
+  the resume subprocess itself was not needed since the throttle (task 8)
+  already bounds invocation frequency and `DETAIL_GAP`'s `reason` enum
+  already covers the failure classification space — no new enum/taxonomy
+  was introduced. `repairMissingScopedArchive`'s own (separate, already-
+  correct) failure path was deliberately left untouched — it already
+  withholds the timestamp on failure and was not the blocker found; extending
+  typed-gap parity there is out of scope for this pass.
+- [x] 9.4 **Deterministic mutation-grade regression**, recreating the exact
+  live-adjacent scenario via a fake `SLACKDUMP_BIN` script that fails only
+  for the scoped-archive path (the base archive succeeds), proving: (a) the
+  run still succeeds (a failed optional scoped-archive resume is non-fatal);
+  (b) `completed 1/1 repair unit(s) (failed, gap recorded)` is reported
+  honestly, not `(resumed)`; (c) `scoped_archive_resumed_at` for that archive
+  in the committed STATE is **byte-identical** to its value before the run —
+  proving the success cursor did not advance; (d) a `DETAIL_GAP` is emitted
+  with the exact expected `stream`/`record_key`/`reason`/`retryable`/
+  `status`/`detail_locator.kind`; (e) no `DETAIL_GAP_RECOVERED` is emitted
+  for a resume that never succeeded. A companion test seeds a prior pending
+  gap via `START.detail_gaps` (extended `runConnectorProtocolSubprocess`'s
+  test-harness type to support this, mirroring the real protocol field) and
+  proves a later successful resume emits the matching `DETAIL_GAP_RECOVERED`
+  with the correct `gap_id`. **Mutation-tested twice**: reverting the
+  `"failed"` branch to `{ kind: "resumed" }` (the exact original bug) fails
+  test (b)/(c) with `AssertionError: the completed cursor honestly reports
+  this unit as failed, not resumed`; suppressing the `DETAIL_GAP` emission
+  fails test (d) with `AssertionError: emits a DETAIL_GAP keyed by the
+  archive path`. Both confirmed live, then reverted.
+- [x] 9.5 Focused suite green: `archive-reclaim.test.ts` (17 tests, 2 new) +
+  `slackdump-runtime.test.ts` (14 tests) = 31 pass, 0 fail. `tsc --noEmit`
+  clean. `biome check` clean (fixed a cyclomatic-complexity violation on
+  `reconcileMessageSourceCache` and a nested-ternary lint via the
+  `applyScopedArchiveRefreshOutcome` extraction, then one formatting
+  auto-fix; re-verified clean after both). `git diff --check` clean.
+
+### Still not reproduced locally (task 9)
+
+Whether a real, live resume failure against `vana-org` (as opposed to the
+synthetic fake-binary failure this task's tests inject) produces a
+`DETAIL_GAP` the recovery governor's durable store actually persists and
+later drains — this exercises the runtime side of the protocol, which these
+connector-level tests do not run end-to-end against. Owner UAT is the only
+way to observe this on the live connection; recorded in `design.md`'s
+residual risks (D6).

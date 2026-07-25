@@ -23,7 +23,7 @@
  */
 
 import { spawn } from "node:child_process";
-import type { EmittedMessage, RecordData, ValidateRecord } from "./connector-runtime.ts";
+import type { DetailGapStartEntry, EmittedMessage, RecordData, ValidateRecord } from "./connector-runtime.ts";
 import { stringifyForJsonl } from "./safe-emit.ts";
 
 /** A record that passed (or bypassed) shape-check and would flow
@@ -78,6 +78,8 @@ export interface ConnectorSubprocessOptions {
   entrypoint: string;
   env?: NodeJS.ProcessEnv;
   start: {
+    /** Currently-pending detail gaps to replay on START, mirroring the real runtime's `detail_gaps` field. */
+    detail_gaps?: readonly DetailGapStartEntry[];
     scope: { streams: Array<{ name: string; resources?: string[]; time_range?: { since?: string; until?: string } }> };
     state?: Record<string, unknown>;
     type: "START";

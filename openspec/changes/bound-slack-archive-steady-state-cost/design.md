@@ -239,16 +239,16 @@ wall-clock kill switch on the connector's own patience.
 
 Added `scoped_archive_resumed_at: Record<archivePath, isoTimestamp>` to the
 `messages` STATE cursor, recording when each scoped archive last had `resume`
-actually invoked. `reconcileMessageSourceCache` now checks, per selected
-scoped archive, whether it is due (`scopedArchiveDueForResume`: no prior
-timestamp, or elapsed time since the prior timestamp ≥
+**successfully complete**. `reconcileMessageSourceCache` now checks, per
+selected scoped archive, whether it is due (`scopedArchiveDueForResume`: no
+prior timestamp, or elapsed time since the prior timestamp ≥
 `SLACK_LOOKBACK_DAYS`). If not due, `refreshScopedArchive` returns
 immediately — `ensureArchiveOnDisk` (and therefore the slackdump subprocess)
 is never invoked for that archive this run — and reports the decision as
-progress. If due, it resumes as before and the timestamp advances to this
-run's `emittedAt`. A repair attempt (`repairMissingScopedArchive`) also
-stamps a fresh timestamp on success, since it necessarily just resumed/
-archived that path.
+progress. If due, it attempts to resume; **only a genuinely completed resume
+advances the timestamp to this run's `emittedAt` — see D6, which closes the
+gap this description originally left (a failed attempt was, on first cut,
+also treated as advancing it).**
 
 This directly satisfies the requirement: an ordinary run where the only
 selected scoped archive is not yet due for resume now skips the expensive
@@ -276,6 +276,73 @@ archive — a due resume against a multi-GB scoped archive can still take
 tens of minutes, exactly as D4.2 already disclosed. The new guarantee is that
 this cost recurs **at most once per `SLACK_LOOKBACK_DAYS`** per scoped
 archive, not every run.
+
+### D6 — RI-owner REVISE on D5: a failed resume silently counted as success,
+suppressing retries for a full lookback window; routed to the existing
+typed gap/recovery-governor path instead (2026-07-25, same day)
+
+**Blocker found:** D5's `refreshScopedArchive` caught `ensureArchiveOnDisk`'s
+failure and returned `resumed: true` anyway (its own comment said "record
+the attempt" but the field's declared meaning — read by the caller as "this
+completed, advance the throttle" — said success). This meant a resume that
+threw for any reason (network failure, slackdump crash, malformed archive)
+was durably recorded as `scoped_archive_resumed_at = now`, exactly the same
+outcome as a real success — silently suppressing retries for a full
+`SLACK_LOOKBACK_DAYS` (default 7 days) despite nothing having actually
+completed. A recoverable gap could hide for up to a week with no evidence
+anywhere that anything had gone wrong.
+
+**Fix — concept-correct outcome typing, not a wall-clock timeout, not a
+parallel retry taxonomy.** `refreshScopedArchive` now returns a
+`RefreshScopedArchiveOutcome` discriminated union — `"resumed" |
+"throttled" | "failed"` — making "genuinely completed" and "attempted but
+did not complete" structurally distinct facts the caller cannot conflate.
+Only `"resumed"` may ever advance `scoped_archive_resumed_at`. A `"failed"`
+outcome leaves the timestamp exactly as it was — the archive remains due
+(or becomes due once its existing timestamp's window elapses) for the very
+next run, not suppressed for a week.
+
+A failed resume's retry pacing is not reinvented locally. It is routed
+through the connector-runtime protocol's existing typed recoverable-work
+vehicle: **`DETAIL_GAP`** (`packages/polyfill-connectors/src/connector-
+runtime.ts` `buildDetailGap`/`emitDetailGap`, the same mechanism Gmail uses
+for failed attachment hydration and Amazon/HEB/ChatGPT use for detail-hydration
+recovery). `record_key` is the scoped archive's path — stable across runs
+(so repeated failures upsert the SAME durable row per the runtime's
+`(connector_instance_id, stream, record_key)` conflict key, never spamming
+one row per run) and unique to the archive the resume subprocess actually
+operates on. `reason: "temporary_unavailable"` mirrors Gmail's attachment
+gap: the failure bucket mixes transient network/subprocess errors with no
+exhaustion signal, so it does **not** arm the cross-run source-pressure
+cooldown (only `rate_limited`/`upstream_pressure` do) — an unrelated
+recoverable stream's pacing is never affected by a stuck scoped archive.
+On a later run where that same archive's resume succeeds, the connector
+reads `ctx.detailGaps` (the currently-pending gaps replayed on `START`,
+already available to every connector via the existing protocol) to find any
+gap matching `(stream: "messages", record_key: archivePath)` and emits
+`DETAIL_GAP_RECOVERED` for it — closing the durable row instead of leaving
+it `pending` forever after the underlying problem has cleared.
+
+**Why not a connector-local suppression window for the failure case, and why
+not extend it to `repairMissingScopedArchive`'s own failure path too?** The
+recovery governor (`add-connector-neutral-recovery-governor`) already exists
+precisely to own retry pacing for durable recoverable work cross-run — a
+connector-local N-day suppression on top of it would be exactly the
+duplicate, untyped, ungoverned mechanism that governor was built to replace
+(its own proposal states a connector-local cap "SHALL NOT be the mechanism
+by which an owner drains a backlog"). `repairMissingScopedArchive`'s
+existing failure path was not touched in this pass: it already correctly
+withholds `archivePath`/`scoped_archive_resumed_at` on failure (verified
+by reading the code — that path was not part of the blocker found), and
+extending typed-gap emission there was judged out of scope for this specific
+fix to avoid unrelated surface-area growth; it remains a candidate for a
+future, separately-scoped pass if the RI owner wants full parity.
+
+**Mutation-tested twice:** reverting the `"failed"` branch to return
+`{ kind: "resumed" }` (the exact original bug) fails the new regression test
+with `the completed cursor honestly reports this unit as failed, not
+resumed`; suppressing the `DETAIL_GAP` emission fails it with `emits a
+DETAIL_GAP keyed by the archive path`. Both confirmed live, then reverted.
 
 ## Rejected alternatives
 
@@ -344,9 +411,13 @@ archive, not every run.
   lookback scope; D5 additionally bounds how often a given unit's `resume`
   subprocess actually runs (at most once per `SLACK_LOOKBACK_DAYS`) — an
   ordinary run whose only selected units are not yet due skips the subprocess
-  entirely. NOT bounded: the wall-clock duration of a single genuinely-due
-  resume against a large accumulated archive, which is real Slack-API-side
-  backlog catch-up and can still take tens of minutes when it does run.
+  entirely; D6 makes that bound honest under failure — only a genuinely
+  completed resume advances the throttle timestamp, a failed attempt leaves
+  the archive owed and surfaces a typed `DETAIL_GAP` instead of silently
+  suppressing retries. NOT bounded: the wall-clock duration of a single
+  genuinely-due resume against a large accumulated archive, which is real
+  Slack-API-side backlog catch-up and can still take tens of minutes when it
+  does run.
 - No dependence on private live payloads in tests — all tests seed synthetic
   in-memory SQLite archives (existing harness pattern).
 - Existing connection upgrades safely — no manifest-breaking change; new option
@@ -385,3 +456,20 @@ archive, not every run.
   (`archive-reclaim.test.ts`) prove the throttle/resume-again mechanism
   deterministically via injected `scoped_archive_resumed_at` timestamps, not
   the real multi-day elapsed-time behavior.
+- **D5's own gate found a real defect (D6).** RI-owner REVISE (2026-07-25,
+  same day) caught that D5's success/failure conflation would have silently
+  hidden a real resume failure for up to 7 days with zero durable evidence.
+  Fixed in D6, mutation-tested. This item is resolved by code + tests here,
+  not by further live observation for the specific conflation bug — the
+  residual live-UAT need is D6's own, below.
+- **D6 live UAT.** Confirm on the real workspace that a genuine resume
+  failure (if one ever occurs against the live `vana-org` archive) produces
+  a `DETAIL_GAP` visible in the connection's durable gap store (not merely a
+  progress line), that `scoped_archive_resumed_at` for that archive is
+  confirmed unchanged in the next run's committed STATE, and that a later
+  successful resume of the same archive produces a matching
+  `DETAIL_GAP_RECOVERED` closing the row. Cannot be verified here without
+  provoking (or waiting for) a real live resume failure — synthetic
+  subprocess tests prove the mechanism deterministically via a fake
+  `SLACKDUMP_BIN` that fails only for the scoped-archive path, not a live
+  failure.

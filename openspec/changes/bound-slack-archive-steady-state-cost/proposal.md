@@ -130,20 +130,32 @@ legacy `__uploads/` residue that states exactly what it sacrifices.
   (`resume`) SHALL be throttled to at most once per the connector's configured
   finite lookback window per archive — a retained scoped archive whose
   covering channel is permanently missing from the main scan MUST NOT have
-  its full accumulated content re-synced on every run once it has been
-  resumed within that window; an ordinary run where no selected unit is due
-  for resume SHALL skip the subprocess entirely for those units. This SHALL
-  be reported before/during/after the phase (selected unit count, how many
-  are due for resume vs. throttled, and the lookback window before any
-  subprocess runs; a completed/remaining cursor per unit noting whether it
-  was resumed or throttled; and an explicit zero-remaining at the end) so the
-  bound is a stated, checkable fact, not merely an elapsed wall-clock timing.
-  Reclaiming operator-visible archive residue SHALL be opt-in, gated on
-  durable commit, cover every archive path successfully created or read that
-  run (not only the main archive) regardless of whether its resume was
-  throttled that run, reported via a stderr-only channel outside the
-  connector protocol, and never remove data the runtime depends on for
-  resume.
+  its full accumulated content re-synced on every run once it has
+  **successfully completed** a resume within that window; an ordinary run
+  where no selected unit is due for resume SHALL skip the subprocess entirely
+  for those units. Successful completion and a failed attempt are DISTINCT,
+  non-conflatable facts: only a resume that actually completes without error
+  SHALL advance the archive's due-for-resume timestamp; a failed attempt
+  SHALL NOT be recorded as if it had succeeded, and SHALL leave the archive
+  owed for the very next run rather than silently suppressed for a full
+  lookback window. A failed attempt SHALL surface as durable, typed,
+  retryable recovery evidence through the connector-runtime's existing
+  detail-gap/recovery-governor path (the same mechanism other first-party
+  connectors already use for recoverable detail-hydration failures) — retry
+  pacing for the failure itself is owned there, not by a parallel
+  connector-local suppression window or a bespoke retry taxonomy. A later
+  run whose resume of the same archive succeeds SHALL close out any such
+  pending gap. This SHALL be reported before/during/after the phase (selected
+  unit count, how many are due for resume vs. throttled, and the lookback
+  window before any subprocess runs; a completed/remaining cursor per unit
+  noting whether it was resumed, throttled, or failed; and an explicit
+  zero-remaining at the end) so the bound is a stated, checkable fact, not
+  merely an elapsed wall-clock timing. Reclaiming operator-visible archive
+  residue SHALL be opt-in, gated on durable commit, cover every archive path
+  successfully created or read that run (not only the main archive)
+  regardless of whether its resume was throttled that run, reported via a
+  stderr-only channel outside the connector protocol, and never remove data
+  the runtime depends on for resume.
 
 ## Impact
 
