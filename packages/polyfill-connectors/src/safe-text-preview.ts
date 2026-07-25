@@ -97,7 +97,7 @@ export function stripForbiddenControlChars(text: string): string {
     return text;
   }
   let out = "";
-  for (let i = 0; i < text.length; i++) {
+  for (let i = 0; i < text.length; i += 1) {
     const codeUnit = text.charCodeAt(i);
     if (!isForbiddenCodePoint(codeUnit)) {
       out += text[i];
@@ -119,7 +119,7 @@ type ForbiddenCheckResult =
     };
 
 function checkStringForForbidden(value: string): ForbiddenCheckResult {
-  for (let i = 0; i < value.length; i++) {
+  for (let i = 0; i < value.length; i += 1) {
     const codeUnit = value.charCodeAt(i);
     if (isForbiddenCodePoint(codeUnit)) {
       return {
@@ -141,7 +141,7 @@ function decodeBuffer(buf: Buffer | Uint8Array): DecodeBufferResult {
   // Prefer Buffer.isUtf8 if available (Node 19+).
   // Use type assertion since this function is available in Node 19+ but not in older TS type definitions.
   const bufferWithUtf8 = Buffer as typeof Buffer & { isUtf8?: (buf: Buffer) => boolean };
-  const isUtf8 = bufferWithUtf8.isUtf8;
+  const { isUtf8 } = bufferWithUtf8;
   if (typeof isUtf8 === "function" && buf instanceof Buffer) {
     if (!isUtf8(buf)) {
       return { success: false, reason: "invalid UTF-8 sequence in buffer" };
@@ -175,7 +175,7 @@ function truncateString(text: string, maxChars: number): { result: string; wasTr
     const codeUnitAtTruncate = text.charCodeAt(truncateAt - 1);
     // If the last code unit we're keeping is a high surrogate, back off by 1.
     if (codeUnitAtTruncate >= 0xd8_00 && codeUnitAtTruncate <= 0xdb_ff) {
-      truncateAt--;
+      truncateAt -= 1;
     }
   }
 
@@ -236,7 +236,7 @@ export function safeTextPreview(value: unknown, maxChars: number = PDPP_PREVIEW_
         reason: decoded.reason || "invalid UTF-8",
       };
     }
-    text = decoded.text;
+    ({ text } = decoded);
   } else if (value instanceof Uint8Array) {
     originalLength = value.length;
     const decoded = decodeBuffer(value);
@@ -249,7 +249,7 @@ export function safeTextPreview(value: unknown, maxChars: number = PDPP_PREVIEW_
         reason: decoded.reason || "invalid UTF-8",
       };
     }
-    text = decoded.text;
+    ({ text } = decoded);
   } else {
     // Any other type (number, object, etc.) → empty.
     return {

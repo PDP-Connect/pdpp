@@ -495,7 +495,7 @@ async function emitRulesStream(
       }
       emitRecord("rules", buildRuleRecord({ ruleset, line, index: idx, path: p, mtime }));
       await waitForEmitDrain();
-      idx++;
+      idx += 1;
     }
   }
 }
@@ -632,7 +632,7 @@ function emitMessageRecord(
   ts: string | null,
   emitRecord: (stream: string, data: RecordData) => void
 ): void {
-  const sessionId = state.sessionId;
+  const { sessionId } = state;
   if (!sessionId) {
     return;
   }
@@ -653,7 +653,7 @@ function registerFunctionCall(
   ts: string | null,
   emitRecord: (stream: string, data: RecordData) => void
 ): void {
-  const sessionId = state.sessionId;
+  const { sessionId } = state;
   if (!sessionId) {
     return;
   }
@@ -684,7 +684,7 @@ function applyFunctionCallOutput(
   ts: string | null,
   emitRecord: (stream: string, data: RecordData) => void
 ): void {
-  const sessionId = state.sessionId;
+  const { sessionId } = state;
   if (!sessionId) {
     return;
   }
@@ -744,14 +744,14 @@ export interface ProcessResponseItemArgs {
  */
 export function processResponseItem({ deps, payload, state, ts }: ProcessResponseItemArgs): void {
   if (payload.type === "message") {
-    state.messageCount++;
+    state.messageCount += 1;
     if (deps.requested.has("messages")) {
       emitMessageRecord(state, payload, ts, deps.emitRecord);
     }
     return;
   }
   if (payload.type === "function_call") {
-    state.functionCallCount++;
+    state.functionCallCount += 1;
     if (deps.requested.has("function_calls")) {
       registerFunctionCall(state, payload, ts, deps.emitRecord);
     }
@@ -795,7 +795,7 @@ export function shouldDeferActiveRolloutFile(input: { mtimeMs: number; nowMs: nu
  * of dispatch, so the session aggregate covers the full file span.
  */
 export function processRolloutLine({ deps, obj, state }: ProcessRolloutLineArgs): void {
-  state.lineCount++;
+  state.lineCount += 1;
   if (state.lineCount % PROGRESS_EVERY === 0) {
     deps.progress(`Codex phase=emit pass=emit lines_parsed=${state.lineCount}`);
   }
@@ -904,10 +904,10 @@ export function shouldReemitThreadSession(
   }
   const priorUpdatedAt = priorFingerprint.updated_at ?? null;
   const currentUpdatedAt = thread.updated_at ?? null;
-  if (currentUpdatedAt == null) {
-    return priorUpdatedAt != null;
+  if (currentUpdatedAt === null) {
+    return priorUpdatedAt !== null;
   }
-  if (priorUpdatedAt == null) {
+  if (priorUpdatedAt === null) {
     return true;
   }
   return currentUpdatedAt > priorUpdatedAt;
@@ -1189,7 +1189,7 @@ async function buildFileCursorAfterParse(path: string, result: ParseRolloutFileR
   // record a size that disagrees with what we committed.
   let mtimeMs = 0;
   try {
-    mtimeMs = statSync(path).mtimeMs;
+    ({ mtimeMs } = statSync(path));
   } catch {
     mtimeMs = 0;
   }
@@ -1309,9 +1309,9 @@ async function scanRollouts(args: ScanRolloutsArgs): Promise<ScanRolloutsResult>
   let totalRollouts = 0;
   let parsedRollouts = 0;
   for await (const entry of walkRollouts(args.baseDir)) {
-    totalRollouts++;
+    totalRollouts += 1;
     if ((await processRolloutEntry(entry, args, totalRollouts)) === "parsed") {
-      parsedRollouts++;
+      parsedRollouts += 1;
     }
   }
   emit({
@@ -1585,7 +1585,7 @@ function emitStateCursors({
 
 function readPriorSessionsSourceMtimeMs(startMsg: StartMessage): number | null {
   const state = startMsg.state || {};
-  const sessions = state.sessions;
+  const { sessions } = state;
   const value =
     sessions && typeof sessions === "object" && !Array.isArray(sessions)
       ? (sessions as Record<string, unknown>).source_mtime_ms
@@ -1613,11 +1613,11 @@ function rawFingerprintMap(startMsg: unknown): Record<string, unknown> | null {
   if (!startMsg || typeof startMsg !== "object") {
     return null;
   }
-  const state = (startMsg as Record<string, unknown>).state;
+  const { state } = startMsg as Record<string, unknown>;
   if (!state || typeof state !== "object") {
     return null;
   }
-  const sessions = (state as Record<string, unknown>).sessions;
+  const { sessions } = state as Record<string, unknown>;
   if (!sessions || typeof sessions !== "object" || Array.isArray(sessions)) {
     return null;
   }
@@ -1784,7 +1784,7 @@ async function main(): Promise<void> {
   const nowIso = (): string => new Date().toISOString();
   const emittedAt = nowIso();
   const emitRecord = (s: string, d: RecordData): void => {
-    if (d.id == null) {
+    if (d.id === null || d.id === undefined) {
       return;
     }
     const resSet = resFilters.get(s);
@@ -1809,7 +1809,7 @@ async function main(): Promise<void> {
       data: d,
       emitted_at: emittedAt,
     });
-    total++;
+    total += 1;
   };
 
   const needRollouts = requested.has("sessions") || requested.has("messages") || requested.has("function_calls");

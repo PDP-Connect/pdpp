@@ -56,22 +56,22 @@ export interface CarryForwardCursor<T> {
   /** Record this id's fingerprint into the next-run map and the seen-set.
    *  Carry-forward and prune both depend on every observed id passing
    *  through here, even when the connector decides not to emit the record. */
-  note(id: string, value: T): void;
+  note: (id: string, value: T) => void;
   /** Prior cursor value for this id, if any. Connector change-detection
    *  rules and derived-field-preservation policies read this. The value is
    *  the prior run's serialized fingerprint, never the one `note` recorded
    *  this run. */
-  prior(id: string): T | undefined;
+  prior: (id: string) => T | undefined;
   /** Drop ids from the next map that were not `note`d this run. Idempotent.
    *  Only valid on full-scan streams: a partial scan has no business
    *  pruning ids it never looked at. If `note` was called zero times this
    *  run, every prior id is dropped — the correct outcome for a requested
    *  full-scan stream that returned zero records. */
-  pruneStale(): void;
+  pruneStale: () => void;
   /** Number of ids in the next map. */
-  size(): number;
+  size: () => number;
   /** Serializable next-run map for STATE. */
-  toState(): Record<string, T>;
+  toState: () => Record<string, T>;
 }
 
 /** Open a typed carry-forward cursor seeded from a pre-decoded prior map.
@@ -142,7 +142,7 @@ export interface FingerprintCursor {
    *  forward from the prior fingerprint when this run did not re-parse
    *  the source). The primitive does not encode policy — it just
    *  exposes the prior value. */
-  priorFingerprint(id: string): string | undefined;
+  priorFingerprint: (id: string) => string | undefined;
   /** Drop ids from the next map that were not observed this run.
    *  Idempotent. Must only be called on streams whose run is a full
    *  scan, because partial-scan streams have no business pruning ids
@@ -150,7 +150,7 @@ export interface FingerprintCursor {
    *  times this run, every prior id is dropped — that is the correct
    *  outcome for a requested full-scan stream that returned zero
    *  records. */
-  pruneStale(): void;
+  pruneStale: () => void;
   /** Returns `true` iff the record's fingerprint differs from the prior
    *  cursor value for this id (or no prior exists). Always records the
    *  computed fingerprint into the next map and the id into the seen
@@ -161,14 +161,14 @@ export interface FingerprintCursor {
    *  fingerprinted; this method returns `true` for them and does NOT
    *  touch the next map or the seen set. The caller decides whether to
    *  emit. */
-  shouldEmit(data: RecordData): boolean;
+  shouldEmit: (data: RecordData) => boolean;
   /** Number of ids currently in the next map. Useful for callers that
    *  want to skip writing an empty `fingerprints` field. */
-  size(): number;
+  size: () => number;
   /** Serializable cursor for STATE. The caller decides where to put
    *  this in the stream's cursor object (typically under a
    *  `fingerprints` key alongside other cursor fields). */
-  toState(): Record<string, string>;
+  toState: () => Record<string, string>;
 }
 
 /** Stable per-record fingerprint over the emitted record's fields. Keys
@@ -214,7 +214,7 @@ export function openFingerprintCursor(priorState: unknown, options: FingerprintC
   return {
     shouldEmit(data: RecordData): boolean {
       const rawId = data.id;
-      if (rawId == null) {
+      if (rawId === null || rawId === undefined) {
         return true;
       }
       const id = String(rawId);

@@ -75,7 +75,7 @@ async function runTweetsStream(ctx: TweetsContext): Promise<void> {
   let itemOrdinal = 0;
   try {
     for await (const raw of streamJsArchive(path)) {
-      itemOrdinal++;
+      itemOrdinal += 1;
       const tweet = unwrapTweetEntry(raw);
       const rec = buildTweetRecord(tweet);
       if (!rec) {
@@ -171,7 +171,7 @@ async function runDirectMessagesStream(ctx: DmsContext): Promise<void> {
   let conversationOrdinal = 0;
   try {
     for await (const rawConvo of streamJsArchive(path)) {
-      conversationOrdinal++;
+      conversationOrdinal += 1;
       await emitDmConversation(rawConvo, cursor, emitRecord);
       if (conversationOrdinal % 1000 === 0) {
         await emit({

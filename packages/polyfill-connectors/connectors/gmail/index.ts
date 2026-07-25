@@ -475,7 +475,7 @@ export function buildAttachmentDetailGap(attachment: AttachmentRecord): DetailGa
 }
 
 function normalizeAttachmentRecoveryKey(recordKey: string | number | null | undefined): string | null {
-  if (recordKey == null) {
+  if (recordKey === null || recordKey === undefined) {
     return null;
   }
   const key = String(recordKey).trim();
@@ -501,13 +501,13 @@ function attachmentDetailGapMatches(
   if (typedLocator.kind !== "gmail.attachment_detail") {
     return false;
   }
-  if (typedLocator.attachment_id != null && typedLocator.attachment_id !== attachment.id) {
+  if (typedLocator.attachment_id !== undefined && typedLocator.attachment_id !== attachment.id) {
     return false;
   }
-  if (typedLocator.message_id != null && typedLocator.message_id !== attachment.message_id) {
+  if (typedLocator.message_id !== undefined && typedLocator.message_id !== attachment.message_id) {
     return false;
   }
-  if (typedLocator.part_index != null && typedLocator.part_index !== attachment.part_index) {
+  if (typedLocator.part_index !== undefined && typedLocator.part_index !== attachment.part_index) {
     return false;
   }
   return true;
@@ -1358,8 +1358,8 @@ function servedAttachmentDetailGaps(
     const typedLocator = locator as Record<string, unknown>;
     return (
       typedLocator.kind === "gmail.attachment_detail" &&
-      typedLocator.message_id != null &&
-      typedLocator.part_index != null
+      typedLocator.message_id !== undefined &&
+      typedLocator.part_index !== undefined
     );
   });
 }
@@ -1377,12 +1377,13 @@ function normalizeGmailAttachmentRecoveryLocator(gap: DetailGapStartEntry): {
   if (typedLocator.kind !== "gmail.attachment_detail") {
     return null;
   }
-  const messageId = typedLocator.message_id == null ? "" : String(typedLocator.message_id).trim();
-  const partIndex = typedLocator.part_index == null ? "" : String(typedLocator.part_index).trim();
+  const messageId = typedLocator.message_id === undefined ? "" : String(typedLocator.message_id).trim();
+  const partIndex = typedLocator.part_index === undefined ? "" : String(typedLocator.part_index).trim();
   if (!(messageId && partIndex)) {
     return null;
   }
-  const attachmentId = typedLocator.attachment_id == null ? null : String(typedLocator.attachment_id).trim() || null;
+  const attachmentId =
+    typedLocator.attachment_id === undefined ? null : String(typedLocator.attachment_id).trim() || null;
   return { attachmentId, messageId, partIndex };
 }
 
@@ -1394,8 +1395,8 @@ async function fetchGmailMessageByMessageId(
   if (!uids || uids.length === 0) {
     return null;
   }
-  const uid = uids[0];
-  if (uid == null) {
+  const [uid] = uids;
+  if (uid === undefined) {
     return null;
   }
   const message = await client.fetchOne(String(uid), GMAIL_METADATA_FETCH_QUERY, { uid: true });
@@ -2030,7 +2031,7 @@ async function runDeltaPass(
   if (session.fullResync || session.priorModseq === undefined || session.priorModseq === null) {
     return;
   }
-  const priorModseq = session.priorModseq;
+  const { priorModseq } = session;
   const priorModseqBig = typeof priorModseq === "bigint" ? priorModseq : BigInt(priorModseq);
   await emit({
     type: "PROGRESS",
@@ -2194,7 +2195,7 @@ async function runAllMailPasses(
   state: Record<string, unknown>,
   deps: AllMailDeps
 ): Promise<void> {
-  const mailbox = client.mailbox;
+  const { mailbox } = client;
   if (!mailbox) {
     fail("mailbox not selected after lock");
     return;
@@ -2380,7 +2381,7 @@ function makeEmitRecord(
 ): EmitRecordFn {
   return async (stream: string, data: Record<string, unknown>, keyField: "id" | "name" = "id"): Promise<boolean> => {
     const keyCandidate = data[keyField] ?? data.name;
-    if (keyCandidate == null) {
+    if (keyCandidate === null || keyCandidate === undefined) {
       return false;
     }
     const canonical = String(keyCandidate);
@@ -2559,6 +2560,7 @@ if (isMainModule(import.meta.url)) {
       status: "failed",
       records_emitted: 0,
       error: { message: msg, retryable },
+      // biome-ignore lint/suspicious/noNestedPromises: best-effort DONE emit on the terminal error path; awaiting it here would delay process exit on shutdown
     }).catch((): undefined => undefined);
     flushAndExit(1);
   });

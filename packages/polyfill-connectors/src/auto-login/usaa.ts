@@ -187,7 +187,7 @@ async function isStillOnOtpChallenge(page: Page): Promise<boolean> {
 async function completeOtpChallenge({ context, page, sendInteraction }: EnsureUsaaSessionArgs): Promise<boolean> {
   await page.waitForSelector(OTP_INPUT_SELECTOR, { timeout: 20_000 });
 
-  for (let attempt = 1; attempt <= MAX_OTP_ATTEMPTS; attempt++) {
+  for (let attempt = 1; attempt <= MAX_OTP_ATTEMPTS; attempt += 1) {
     const code = await requestOtp(sendInteraction, attempt);
     const otpInput = page.locator(OTP_INPUT_SELECTOR).first();
     await otpInput.fill(code);
@@ -235,7 +235,9 @@ export async function ensureUsaaSession({
       if (await requestManualLoginRecovery({ context, page, sendInteraction })) {
         return true;
       }
-      throw new Error(`USAA login page navigation failed (${reason}); manual action did not establish a session`);
+      throw new Error(`USAA login page navigation failed (${reason}); manual action did not establish a session`, {
+        cause: err,
+      });
     }
     throw err;
   }
@@ -260,7 +262,7 @@ export async function ensureUsaaSession({
   await page.click("#next-button");
   try {
     await page.waitForSelector('input[name="password"]', { timeout: 25_000 });
-  } catch {
+  } catch (err) {
     const body = await page
       .locator("body")
       .innerText()
@@ -287,7 +289,9 @@ export async function ensureUsaaSession({
     if (await requestManualLoginRecovery({ context, page, sendInteraction }, manualLoginMessage)) {
       return true;
     }
-    throw new Error(`USAA login stalled after Next click (${diagnostic}); manual action did not establish a session`);
+    throw new Error(`USAA login stalled after Next click (${diagnostic}); manual action did not establish a session`, {
+      cause: err,
+    });
   }
   await page.fill('input[name="password"]', password);
   await page.waitForTimeout(500);

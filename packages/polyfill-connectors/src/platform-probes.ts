@@ -5,14 +5,14 @@ import type { BrowserContext, Page } from "playwright";
 
 /** Minimal structural type that detectCloudflareChallenge requires from a page. */
 export interface CloudflarePage {
-  locator(selector: string): { count(): Promise<number> };
-  title(): Promise<string>;
+  locator: (selector: string) => { count: () => Promise<number> };
+  title: () => Promise<string>;
 }
 
 /** Minimal structural type that detectCloudflareChallenge requires from a navigation response. */
 export interface CloudflareNavResponse {
-  headers(): Record<string, string>;
-  status(): number;
+  headers: () => Record<string, string>;
+  status: () => number;
 }
 
 const AMAZON_SIGNIN_URL = /\/ap\/signin/i;
@@ -117,14 +117,14 @@ export async function detectCloudflareChallenge(
     signals.push("cf_challenge_dom");
   }
 
-  const navResponse = opts.navResponse;
+  const { navResponse } = opts;
   if (navResponse) {
     const headers = navResponse.headers();
     if (headers["cf-mitigated"] === "challenge") {
       signals.push("cf_mitigated_header");
     }
     const server = headers.server ?? "";
-    if (navResponse.status() === 403 && (headers["cf-ray"] != null || CF_SERVER_RE.test(server))) {
+    if (navResponse.status() === 403 && (headers["cf-ray"] !== undefined || CF_SERVER_RE.test(server))) {
       signals.push("http_403_cf");
     }
   }

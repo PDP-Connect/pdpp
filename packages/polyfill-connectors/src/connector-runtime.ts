@@ -289,8 +289,8 @@ const TRACE_TIMESTAMP_UNSAFE = /[:.]/g;
 class TerminalError extends Error {
   readonly code?: string;
   readonly retryable: boolean;
-  constructor(message: string, retryable = false, code?: string) {
-    super(message);
+  constructor(message: string, retryable = false, code?: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = "TerminalError";
     this.retryable = retryable;
     if (code !== undefined) {
@@ -526,18 +526,18 @@ export function buildDetailGap(params: DetailGapParams): DetailGapMessage {
   if (error) {
     const sharedBlock = {
       class: error.class,
-      ...(error.httpStatus == null ? {} : { http_status: error.httpStatus }),
-      ...(error.networkPressure == null ? {} : { network_pressure: error.networkPressure }),
+      ...(error.httpStatus === undefined ? {} : { http_status: error.httpStatus }),
+      ...(error.networkPressure === undefined ? {} : { network_pressure: error.networkPressure }),
     };
     errorBlocks = {
       detail: sharedBlock,
-      last_error: error.message == null ? sharedBlock : { ...sharedBlock, message: error.message },
+      last_error: error.message === undefined ? sharedBlock : { ...sharedBlock, message: error.message },
     };
   }
   return {
     type: "DETAIL_GAP",
     stream,
-    ...(parentStream == null ? {} : { parent_stream: parentStream }),
+    ...(parentStream === undefined ? {} : { parent_stream: parentStream }),
     record_key: recordKey,
     status: "pending",
     reason,
@@ -650,11 +650,20 @@ export function runConnector(config: RunConnectorConfig): void {
   };
 
   let interactionCounter = 0;
-  const nextInteractionId = (): string => `int_${Date.now()}_${++interactionCounter}`;
+  const nextInteractionId = (): string => {
+    interactionCounter += 1;
+    return `int_${Date.now()}_${interactionCounter}`;
+  };
   let detailGapPageCounter = 0;
-  const nextDetailGapPageRequestId = (): string => `dgp_${Date.now()}_${++detailGapPageCounter}`;
+  const nextDetailGapPageRequestId = (): string => {
+    detailGapPageCounter += 1;
+    return `dgp_${Date.now()}_${detailGapPageCounter}`;
+  };
   let assistanceCounter = 0;
-  const nextAssistanceId = (): string => `asst_${Date.now()}_${++assistanceCounter}`;
+  const nextAssistanceId = (): string => {
+    assistanceCounter += 1;
+    return `asst_${Date.now()}_${assistanceCounter}`;
+  };
 
   const sendInteraction = (req: InteractionRequest): Promise<InteractionResponse> => {
     const request_id = req.request_id ?? nextInteractionId();
@@ -884,7 +893,8 @@ async function resolveCredentials(
     return await resolveAuth(auth, ctx);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    throw new TerminalError(message, false);
+    // biome-ignore lint/style/useErrorCause: TerminalError forwards cause to super() via its 4th constructor param — Biome only recognizes it as the native Error constructor's 2nd argument
+    throw new TerminalError(message, false, undefined, { cause: err });
   }
 }
 
@@ -908,7 +918,7 @@ function makeEmitRecord(deps: {
   }
 
   const emitRecord = (stream: string, data: RecordData, options: EmitRecordOptions = {}): Promise<void> => {
-    if (data.id == null) {
+    if (data.id === null || data.id === undefined) {
       return Promise.resolve();
     }
     const rs = resFilters.get(stream);
@@ -917,7 +927,7 @@ function makeEmitRecord(deps: {
     }
 
     if (isTombstone?.(stream, data)) {
-      counters.totalEmitted++;
+      counters.totalEmitted += 1;
       return emit({
         type: "RECORD",
         stream,
@@ -937,11 +947,11 @@ function makeEmitRecord(deps: {
     if (validateRecord) {
       const result = validateRecord(stream, data);
       if (!result.ok) {
-        counters.totalSkipped++;
+        counters.totalSkipped += 1;
         return emit(makeShapeCheckSkip(stream, data, result.issues));
       }
     }
-    counters.totalEmitted++;
+    counters.totalEmitted += 1;
     return emit({
       type: "RECORD",
       stream,
@@ -1175,7 +1185,7 @@ export async function closeBrowserContextPagesExcept(
       continue;
     }
     if (await closeBrowserPage(page, deadlineMs)) {
-      closed++;
+      closed += 1;
     }
   }
   return closed;
@@ -1292,7 +1302,7 @@ async function emitBrowserSurfaceDiagnostic(args: {
   let errorMessage: string | null = null;
   if (error instanceof Error) {
     errorMessage = error.message;
-  } else if (error != null) {
+  } else if (error !== null && error !== undefined) {
     errorMessage = String(error);
   }
   const payload = {
@@ -1395,7 +1405,7 @@ function startBrowserConnectionKeepalive(
   let disconnectEventCount = 0;
   const browserConnectedAtStart = browser.isConnected();
   const removeDisconnectedListener = attachBrowserDisconnectedDiagnostic(browser, () => {
-    disconnectEventCount++;
+    disconnectEventCount += 1;
     disconnectEventElapsedMs ??= Date.now() - startedAt;
     process.stderr.write(
       `[browser-keepalive] browser disconnected during interaction after ${disconnectEventElapsedMs}ms\n`
@@ -1411,19 +1421,19 @@ function startBrowserConnectionKeepalive(
     }
     if (!browser.isConnected()) {
       firstObservedDisconnectedElapsedMs ??= Date.now() - startedAt;
-      skippedDisconnected++;
+      skippedDisconnected += 1;
       return;
     }
     pingInFlight = true;
-    pingAttempts++;
+    pingAttempts += 1;
     try {
       const session = await sessionFor(browser);
       await session.send("Browser.getVersion");
-      pingSuccesses++;
+      pingSuccesses += 1;
       lastSuccessfulPingElapsedMs = Date.now() - startedAt;
     } catch (err) {
       sessionPromise = null;
-      pingFailures++;
+      pingFailures += 1;
       lastError = normalizeDiagnosticError(err);
       process.stderr.write(`[browser-keepalive] Browser.getVersion failed: ${lastError}\n`);
     } finally {
@@ -1620,17 +1630,20 @@ async function acquireBrowser(browser: BrowserConfig, name: string): Promise<Acq
       // Surface the stable code in the terminal-error message so the
       // controller's run-failed copy can render the deployment-config
       // error state rather than a generic browser failure.
-      throw new TerminalError(`[${err.code}] ${err.message}`, false, err.code);
+      // biome-ignore lint/style/useErrorCause: TerminalError forwards cause to super() via its 4th constructor param — Biome only recognizes it as the native Error constructor's 2nd argument
+      throw new TerminalError(`[${err.code}] ${err.message}`, false, err.code, { cause: err });
     }
     if (err instanceof CdpAttachSessionRaceExhaustedError) {
       // The narrow attach-session race (see browser-launch.ts) exhausted its
       // bounded retry budget. Carry the stable code so the reference
       // runtime's managed-surface lifecycle can decide the leased dynamic
       // surface itself needs recycling, without re-parsing this message.
-      throw new TerminalError(`could not open browser profile: ${err.message}`, true, err.code);
+      // biome-ignore lint/style/useErrorCause: TerminalError forwards cause to super() via its 4th constructor param — Biome only recognizes it as the native Error constructor's 2nd argument
+      throw new TerminalError(`could not open browser profile: ${err.message}`, true, err.code, { cause: err });
     }
     const message = err instanceof Error ? err.message : String(err);
-    throw new TerminalError(`could not open browser profile: ${message}`, false);
+    // biome-ignore lint/style/useErrorCause: TerminalError forwards cause to super() via its 4th constructor param — Biome only recognizes it as the native Error constructor's 2nd argument
+    throw new TerminalError(`could not open browser profile: ${message}`, false, undefined, { cause: err });
   }
 }
 
@@ -1771,12 +1784,12 @@ export function makeSessionEstablishWatchdog(args: {
     // An open interaction means the run is legitimately waiting on the owner;
     // pause the watchdog so a long CAPTCHA/OTP wait is not killed. Reset the
     // deadline on resolve so post-interaction work gets a fresh window.
-    openInteractions++;
+    openInteractions += 1;
     markProgress(null);
     try {
       return await send(req);
     } finally {
-      openInteractions--;
+      openInteractions -= 1;
       markProgress(null);
     }
   };
@@ -1923,7 +1936,8 @@ async function establishSession(
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const terminalError = buildSessionEstablishTerminalError(name, message, retryablePattern);
-      throw new TerminalError(terminalError.message, terminalError.retryable);
+      // biome-ignore lint/style/useErrorCause: TerminalError forwards cause to super() via its 4th constructor param — Biome only recognizes it as the native Error constructor's 2nd argument
+      throw new TerminalError(terminalError.message, terminalError.retryable, undefined, { cause: err });
     }
   }
 
@@ -1955,10 +1969,10 @@ async function establishSession(
 // ─── Playwright tracing helper ──────────────────────────────────────────
 
 interface Tracer {
-  checkpoint(label: string): Promise<void>;
-  markSucceeded(): void;
-  start(): Promise<void>;
-  stop(): Promise<void>;
+  checkpoint: (label: string) => Promise<void>;
+  markSucceeded: () => void;
+  start: () => Promise<void>;
+  stop: () => Promise<void>;
 }
 
 /**

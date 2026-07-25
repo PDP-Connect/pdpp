@@ -57,7 +57,7 @@ function isValidLatLon(latitude: number, longitude: number): boolean {
 
 function scaleE7(value: unknown): number | null {
   const n = asNumber(value);
-  return n == null ? null : n / GOOGLE_E7_DIVISOR;
+  return n === null ? null : n / GOOGLE_E7_DIVISOR;
 }
 
 function parseIso(value: unknown): string | null {
@@ -120,7 +120,7 @@ function parseLatLon(value: unknown): LatLon | null {
     scaleE7(obj.longitudeE7) ??
     scaleE7(obj.lngE7) ??
     scaleE7(obj.sourceE7Lng);
-  if (latitude == null || longitude == null || !isValidLatLon(latitude, longitude)) {
+  if (latitude === null || longitude === null || !isValidLatLon(latitude, longitude)) {
     return null;
   }
   return { latitude, longitude };
@@ -128,7 +128,7 @@ function parseLatLon(value: unknown): LatLon | null {
 
 function safeProbability(value: unknown): number | null {
   const n = asNumber(value);
-  return n == null || n < 0 || n > 1 ? null : n;
+  return n === null || n < 0 || n > 1 ? null : n;
 }
 
 function firstActivityType(value: unknown): string | null {
@@ -223,7 +223,7 @@ function parseLegacyRecords(json: Record<string, unknown>): ParseResult {
     const timestamp = parseTimestamp(loc.timestamp) ?? parseTimestampMs(loc.timestampMs);
     const latitude = scaleE7(loc.latitudeE7);
     const longitude = scaleE7(loc.longitudeE7);
-    if (!timestamp || latitude == null || longitude == null || !isValidLatLon(latitude, longitude)) {
+    if (!timestamp || latitude === null || longitude === null || !isValidLatLon(latitude, longitude)) {
       continue;
     }
     points.push(

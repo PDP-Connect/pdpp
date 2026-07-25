@@ -47,7 +47,7 @@ export class LocalDeviceQueue {
       throw new Error("cannot enqueue an empty local device batch");
     }
     const items = await this.#readItems();
-    if (items.some((item) => item.batch_id === input.batchId)) {
+    if (items.some((existing) => existing.batch_id === input.batchId)) {
       throw new Error(`local device batch already queued: ${input.batchId}`);
     }
     const now = this.#clock().toISOString();
@@ -69,7 +69,7 @@ export class LocalDeviceQueue {
   async dequeueReady(): Promise<LocalDeviceQueueItem | null> {
     const now = this.#clock().toISOString();
     const items = await this.#readItems();
-    const index = items.findIndex((item) => isReadyHeadOfSource(item, items, now));
+    const index = items.findIndex((candidate) => isReadyHeadOfSource(candidate, items, now));
     if (index < 0) {
       return null;
     }
@@ -119,7 +119,7 @@ export class LocalDeviceQueue {
     update: (item: LocalDeviceQueueItem, now: string) => LocalDeviceQueueItem
   ): Promise<void> {
     const items = await this.#readItems();
-    const index = items.findIndex((item) => item.batch_id === batchId);
+    const index = items.findIndex((candidate) => candidate.batch_id === batchId);
     const item = items[index];
     if (!item) {
       throw new Error(`local device batch not found: ${batchId}`);

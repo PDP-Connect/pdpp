@@ -405,7 +405,7 @@ export class LocalDeviceClient {
       // Surface the typed timeout regardless of how the runtime reports the
       // abort (DOMException "AbortError", or the abort reason passed through).
       if (controller?.signal.aborted) {
-        const reason = controller.signal.reason;
+        const { reason } = controller.signal;
         throw reason instanceof LocalDeviceRequestTimeoutError
           ? reason
           : new LocalDeviceRequestTimeoutError(this.#requestTimeoutMs);

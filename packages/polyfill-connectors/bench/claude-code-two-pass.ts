@@ -82,13 +82,13 @@ function makeCountingEmit(counters: {
   attachments: number;
 }): (stream: string, data: RecordData) => Promise<void> {
   return (stream: string, _data: RecordData): Promise<void> => {
-    counters.records++;
+    counters.records += 1;
     if (stream === "sessions") {
-      counters.sessions++;
+      counters.sessions += 1;
     } else if (stream === "messages") {
-      counters.messages++;
+      counters.messages += 1;
     } else if (stream === "attachments") {
-      counters.attachments++;
+      counters.attachments += 1;
     }
     return Promise.resolve();
   };
@@ -211,7 +211,7 @@ async function main(): Promise<void> {
   const pass1Times: number[] = [];
   const emitSessionsTimes: number[] = [];
   const pass2Times: number[] = [];
-  for (let i = 0; i < ITERATIONS; i++) {
+  for (let i = 0; i < ITERATIONS; i += 1) {
     const r = await runLegacyBaseline();
     process.stderr.write(
       `  iter ${i + 1} legacy baseline: ${r.elapsedMs.toFixed(0)}ms (records=${r.records}, sessions=${r.sessions}, messages=${r.messages}, attachments=${r.attachments})\n`
@@ -246,7 +246,7 @@ async function main(): Promise<void> {
 
   process.stdout.write("\n=== claude_code two-pass bench ===\n");
   process.stdout.write(`Corpus: ${baseDir}\n`);
-  const firstTwoPass = twoPassRuns[0];
+  const [firstTwoPass] = twoPassRuns;
   if (firstTwoPass) {
     process.stdout.write(
       `Records per run: ~${firstTwoPass.records.toLocaleString()} (sessions=${firstTwoPass.sessions}, messages=${firstTwoPass.messages}, attachments=${firstTwoPass.attachments})\n\n`

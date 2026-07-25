@@ -247,7 +247,8 @@ async function emitMessageRecordScopedByChannel(deps: {
   record: RecordData;
 }): Promise<void> {
   if (
-    deps.record.id == null ||
+    deps.record.id === null ||
+    deps.record.id === undefined ||
     typeof deps.record.channel_id !== "string" ||
     !deps.channelIds.has(deps.record.channel_id)
   ) {
@@ -361,9 +362,9 @@ export function slackdumpProgressChanged(
 function formatSlackdumpProgress(label: string, snapshot: SlackdumpProgressSnapshot): string {
   const facts = [
     `archive_bytes=${snapshot.archiveBytes}`,
-    snapshot.messages == null ? null : `messages=${snapshot.messages}`,
-    snapshot.channels == null ? null : `channels=${snapshot.channels}`,
-    snapshot.maxChunkId == null ? null : `max_chunk=${snapshot.maxChunkId}`,
+    snapshot.messages === null ? null : `messages=${snapshot.messages}`,
+    snapshot.channels === null ? null : `channels=${snapshot.channels}`,
+    snapshot.maxChunkId === null ? null : `max_chunk=${snapshot.maxChunkId}`,
   ].filter(Boolean);
   return `Slack slackdump ${label} progress: ${facts.join(" ")}`;
 }
@@ -417,7 +418,7 @@ export function runSlackdump(
               return;
             }
             progress(formatSlackdumpProgress(progressLabel, snapshot), {
-              ...(snapshot.messages == null ? {} : { count: snapshot.messages }),
+              ...(snapshot.messages === null ? {} : { count: snapshot.messages }),
               stream: "messages",
             }).catch(() => undefined);
           }, progressIntervalMs)
@@ -1059,7 +1060,7 @@ export async function emitMessagesPass(
   let maxMessageTs: string | null = null;
   for (const r of rows) {
     const parsed = parseMessageRow(r, nowIso());
-    const ts = parsed.ts;
+    const { ts } = parsed;
     // Track the max ts seen in this run for the post-loop STATE emit.
     // Slack ts is a fixed-shape "seconds.micros" string; string compare
     // matches numeric order because both halves are zero-padded by Slack.
@@ -1593,7 +1594,12 @@ function currentDmMpimChannelIds(db: DatabaseSync): string[] {
       ids.push(r.id);
     }
   }
-  return ids.sort();
+  return ids.sort((a, b) => {
+    if (a < b) {
+      return -1;
+    }
+    return a > b ? 1 : 0;
+  });
 }
 
 /**
@@ -1744,7 +1750,7 @@ async function ensureArchiveOnDisk(deps: EnsureArchiveDeps): Promise<void> {
     }
   } catch (e) {
     const m = e instanceof Error ? e.message : String(e);
-    throw new Error(`slackdump failed: ${m}`);
+    throw new Error(`slackdump failed: ${m}`, { cause: e });
   }
   if (!existsSync(sqlitePath)) {
     throw new Error(`slackdump output not found at ${sqlitePath}`);

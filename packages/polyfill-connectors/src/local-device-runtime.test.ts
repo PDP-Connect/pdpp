@@ -10,6 +10,7 @@ import type { IngestBatchRequest } from "./local-device-client.ts";
 import { LocalDeviceQueue } from "./local-device-queue.ts";
 import {
   AMAZON_CONNECTOR_ID,
+  // biome-ignore lint/suspicious/noDeprecatedImports: this test exists specifically to cover the deprecated back-compat shim while it's still supported
   buildCodexStartMessage,
   buildLocalDeviceStartMessage,
   CLAUDE_CODE_CONNECTOR_ID,

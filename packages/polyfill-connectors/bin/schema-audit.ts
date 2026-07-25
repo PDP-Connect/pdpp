@@ -102,7 +102,7 @@ for (const [connectorId, schemasMod] of Object.entries(CONNECTORS)) {
       try {
         data = JSON.parse(row.json);
       } catch {
-        fail++;
+        fail += 1;
         if (failSamples.length < 3) {
           failSamples.push({ key: row.key, reason: "invalid JSON" });
         }
@@ -110,10 +110,10 @@ for (const [connectorId, schemasMod] of Object.entries(CONNECTORS)) {
       }
       const res = validateRecord(stream, data);
       if (res.ok) {
-        pass++;
+        pass += 1;
         continue;
       }
-      fail++;
+      fail += 1;
       for (const i of res.issues) {
         const k = `${i.path}: ${i.message}`;
         issueCountByPath[k] = (issueCountByPath[k] || 0) + 1;

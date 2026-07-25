@@ -112,8 +112,8 @@ test("adaptive lane respects bounded Retry-After cooldown with fake sleep", asyn
     maxQueueSize: 10,
     minConcurrency: 1,
     minDelayMs: 100,
-    classifyOutcome: ({ result }) =>
-      result?.status === 429 ? { kind: "rate_limited", retryAfterMs: 20_000 } : { kind: "ok" },
+    classifyOutcome: ({ result: outcomeResult }) =>
+      outcomeResult?.status === 429 ? { kind: "rate_limited", retryAfterMs: 20_000 } : { kind: "ok" },
     emitTelemetry: (event) => {
       events.push(event);
     },
@@ -252,8 +252,8 @@ test("adaptive lane repeated rate limits keep backing off across attempts", asyn
     maxQueueSize: 10,
     minConcurrency: 1,
     minDelayMs: 1000,
-    classifyOutcome: ({ result }) =>
-      result?.status === 429 ? { kind: "rate_limited", retryAfterMs: 5000 } : { kind: "ok" },
+    classifyOutcome: ({ result: outcomeResult }) =>
+      outcomeResult?.status === 429 ? { kind: "rate_limited", retryAfterMs: 5000 } : { kind: "ok" },
     emitTelemetry: (event) => {
       events.push(event);
     },

@@ -188,7 +188,17 @@ test("two-pass invariant: unchanged thread aggregates emit on pass 1, zero on pa
   await emitChangedThreads(aggregates, cursor1, run1.emitRecord);
   cursor1.pruneStale();
   assert.equal(run1.emitted.length, 2, "first pass emits both threads");
-  assert.deepEqual(run1.emitted.map((e) => (e.data as { id: string }).id).sort(), ["T1", "T2"]);
+  assert.deepEqual(
+    run1.emitted
+      .map((e) => (e.data as { id: string }).id)
+      .sort((a, b) => {
+        if (a < b) {
+          return -1;
+        }
+        return a > b ? 1 : 0;
+      }),
+    ["T1", "T2"]
+  );
 
   // Pass 2: same aggregates, prior state from pass 1 → zero emits.
   const state = persistThreadsState(cursor1);
@@ -240,7 +250,9 @@ test("two-pass invariant: a real change to one thread re-emits only that thread 
   await emitChangedThreads([baseT1, changedT2], cursor2, run2.emitRecord);
   cursor2.pruneStale();
   assert.equal(run2.emitted.length, 1, "only the changed thread re-emits");
-  assert.equal((run2.emitted[0]?.data as { id: string }).id, "T2");
+  const [row] = run2.emitted;
+  assert.ok(row, "row was captured");
+  assert.equal((row.data as { id: string }).id, "T2");
 });
 
 test("two-pass invariant: thread present in pass 1 but absent in pass 2 is pruned from STATE", async () => {

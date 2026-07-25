@@ -763,8 +763,8 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
       policy,
       priorState,
     });
-    const done = streamResult.done;
-    const bufferedState = streamResult.bufferedState;
+    const { done } = streamResult;
+    const { bufferedState } = streamResult;
     const enqueueResult = {
       enqueuedBatches: streamResult.enqueuedBatches,
       recordsQueued: streamResult.recordsQueued,
@@ -1035,6 +1035,7 @@ async function readPriorStateOrBlock(input: {
       status: "blocked",
     });
     input.onBlocked?.();
+    // biome-ignore lint/style/useErrorCause: CollectorStateReadError's constructor already forwards `cause` to super() via its second parameter — Biome doesn't trace this indirection
     throw new CollectorStateReadError(
       `failed to read prior state for ${input.config.sourceInstanceId}: ${error instanceof Error ? error.message : String(error)}`,
       error
@@ -1085,7 +1086,7 @@ function coverageEntryFromRecord(
   if (message.stream !== COVERAGE_DIAGNOSTICS_STREAM) {
     return null;
   }
-  const data = message.data;
+  const { data } = message;
   const dataStore = isRecord(data) && typeof data.store === "string" && data.store ? data.store : null;
   const keyStore = typeof message.key === "string" && message.key ? message.key : null;
   const store = dataStore ?? keyStore;
@@ -1228,8 +1229,8 @@ async function streamConnectorIntoOutbox(
       sourceInstanceId: input.config.sourceInstanceId,
     });
     recordsQueued += envelopes.length;
-    enqueuedBatches++;
-    batchSeq++;
+    enqueuedBatches += 1;
+    batchSeq += 1;
     scanBudgetExceeded = maybeRecordScanBudgetGap({
       enqueuedBatches,
       input,
@@ -1306,7 +1307,7 @@ async function streamConnectorIntoOutbox(
     const lines = createInterface({ input: child.stdout, terminal: false });
     let lineNumber = 0;
     for await (const line of lines) {
-      lineNumber++;
+      lineNumber += 1;
       if (!line.trim()) {
         continue;
       }
@@ -1356,7 +1357,8 @@ async function streamConnectorIntoOutbox(
       input,
     });
     throw new Error(
-      `${input.config.connector.connector_id} connector failed to start or stream output: ${details || "unknown error"}`
+      `${input.config.connector.connector_id} connector failed to start or stream output: ${details || "unknown error"}`,
+      { cause: error }
     );
   }
   if (input.abortSignal && abortListener) {
@@ -1418,7 +1420,8 @@ function parseConnectorProtocolLine(line: string, lineNumber: number, connectorI
     const debugPath = writeConnectorProtocolDebugLine({ connectorId, error, line, lineNumber });
     const suffix = debugPath ? `; raw line saved to ${debugPath}` : "";
     throw new Error(
-      `${error instanceof Error ? error.message : String(error)} at connector protocol line ${lineNumber} (${line.length} chars)${suffix}`
+      `${error instanceof Error ? error.message : String(error)} at connector protocol line ${lineNumber} (${line.length} chars)${suffix}`,
+      { cause: error }
     );
   }
 }
@@ -1912,7 +1915,7 @@ export async function drainCollectorOutbox(input: DrainCollectorOutboxInput): Pr
     sentByKind,
   };
   const startedAt = Date.now();
-  for (let i = 0; i < input.policy.maxDrainIterations; i++) {
+  for (let i = 0; i < input.policy.maxDrainIterations; i += 1) {
     throwIfAborted(input.abortSignal);
     if (Date.now() - startedAt >= input.policy.maxDrainDurationMs) {
       result.durationBudgetExceeded = true;
@@ -1922,7 +1925,7 @@ export async function drainCollectorOutbox(input: DrainCollectorOutboxInput): Pr
     if (claimed.length === 0) {
       return result;
     }
-    result.iterations++;
+    result.iterations += 1;
     for (const item of claimed) {
       await drainClaimedOutboxItem(input, item, result, sentByKind);
     }
@@ -1978,7 +1981,7 @@ async function drainClaimedOutboxItem(
     });
     await sendOutboxItem(input.client, current);
     input.outbox.acknowledge({ holder: input.holderId, id: current.id, leaseEpoch: current.lease_epoch });
-    result.sent++;
+    result.sent += 1;
     sentByKind[current.kind] = (sentByKind[current.kind] ?? 0) + 1;
   } catch (error) {
     failOutboxItem(input, item, error, result);
@@ -2007,7 +2010,7 @@ function failOutboxItem(
         id: item.id,
         leaseEpoch: item.lease_epoch,
       });
-      result.deadLettered++;
+      result.deadLettered += 1;
       return;
     }
     input.outbox.failRetryable({
@@ -2017,10 +2020,10 @@ function failOutboxItem(
       leaseEpoch: item.lease_epoch,
       retryBackoffMs: input.policy.retryBackoffMs * (item.attempt_count + 1),
     });
-    result.failed++;
+    result.failed += 1;
   } catch (transitionError) {
     if (isLeaseNotCurrentError(transitionError)) {
-      result.failed++;
+      result.failed += 1;
       return;
     }
     throw transitionError;
@@ -2431,7 +2434,7 @@ export async function drainCollectorQueue(input: {
     try {
       await sendQueueItem(input.client, item);
       await input.queue.markSent(item.batch_id);
-      sent++;
+      sent += 1;
     } catch (error) {
       await input.queue.markRetry(item.batch_id, error instanceof Error ? error.message : String(error));
       return sent;
@@ -2471,7 +2474,7 @@ async function sendQueueItem(
   client: Pick<LocalDeviceClient, "ingestBatch">,
   item: LocalDeviceQueueItem
 ): Promise<void> {
-  const firstRecord = item.records[0];
+  const [firstRecord] = item.records;
   if (!firstRecord) {
     throw new Error(`collector batch has no records: ${item.batch_id}`);
   }
@@ -2533,7 +2536,7 @@ class BoundedStderrBuffer {
     this.#chunks.push(chunk);
     this.#size += chunk.length;
     while (this.#size > this.#limit && this.#chunks.length > 0) {
-      const head = this.#chunks[0];
+      const [head] = this.#chunks;
       if (!head) {
         break;
       }

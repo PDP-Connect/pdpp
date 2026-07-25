@@ -126,7 +126,7 @@ function main(): void {
     }
     printReport(r);
     if (!r.ok) {
-      totalDrift++;
+      totalDrift += 1;
     }
   }
   console.log(`\n${targets.length} connectors checked, ${totalDrift} with drift`);

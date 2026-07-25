@@ -47,7 +47,7 @@ function makeContext(cookieBatches: BrowserCookie[][]): BrowserContext {
   const fake: Pick<BrowserContext, "cookies"> = {
     cookies(..._urls: Parameters<BrowserContext["cookies"]>): ReturnType<BrowserContext["cookies"]> {
       const batch = cookieBatches[Math.min(calls, Math.max(cookieBatches.length - 1, 0))] ?? [];
-      calls++;
+      calls += 1;
       return Promise.resolve(batch);
     },
   };

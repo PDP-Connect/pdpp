@@ -215,7 +215,12 @@ test("emitDeferredStreams: only emits for streams the client actually requested"
   const skipStreams = messages
     .filter((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT")
     .map((m) => m.stream)
-    .sort();
+    .sort((a, b) => {
+      if (a < b) {
+        return -1;
+      }
+      return a > b ? 1 : 0;
+    });
   assert.deepEqual(skipStreams, ["bill_payments", "transfers"], "only the requested deferred streams emit SKIP");
 });
 
@@ -332,7 +337,7 @@ test("emitStatementRecords: a failed statement PDF surfaces a DETAIL_GAP + gap_k
 
   const gaps = statementGaps(messages);
   assert.equal(gaps.length, 1, "exactly one DETAIL_GAP for the missing PDF");
-  const gap = gaps[0];
+  const [gap] = gaps;
   assert.ok(gap && gap.type === "DETAIL_GAP");
   assert.equal(gap.record_key, "MISS");
   assert.equal(gap.status, "pending");

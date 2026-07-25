@@ -335,7 +335,6 @@ async function selectActivity(page: Page, optionLabel: string): Promise<void> {
 async function clickActivityControl(page: Page): Promise<void> {
   try {
     await page.locator(CHASE_QFX_ACTIVITY_SELECT_SELECTOR).first().click({ timeout: CLICK_TIMEOUT_MS });
-    return;
   } catch (selectorErr) {
     try {
       await page
@@ -344,13 +343,13 @@ async function clickActivityControl(page: Page): Promise<void> {
         })
         .first()
         .click({ timeout: CLICK_TIMEOUT_MS });
-      return;
     } catch (semanticErr) {
       throw new Error(
         `activity_control_unavailable: selector=${CHASE_QFX_ACTIVITY_SELECT_SELECTOR}: ${truncate(
           errMessage(selectorErr),
           ERROR_MESSAGE_SLICE
-        )}; combobox=${truncate(errMessage(semanticErr), ERROR_MESSAGE_SLICE)}`
+        )}; combobox=${truncate(errMessage(semanticErr), ERROR_MESSAGE_SLICE)}`,
+        { cause: semanticErr }
       );
     }
   }
@@ -375,7 +374,6 @@ async function selectFileType(page: Page, label: string): Promise<void> {
 async function clickFileTypeControl(page: Page): Promise<void> {
   try {
     await page.locator(CHASE_QFX_FILE_TYPE_SELECT_SELECTOR).first().click({ timeout: CLICK_TIMEOUT_MS });
-    return;
   } catch (selectorErr) {
     try {
       await page
@@ -384,13 +382,13 @@ async function clickFileTypeControl(page: Page): Promise<void> {
         })
         .first()
         .click({ timeout: CLICK_TIMEOUT_MS });
-      return;
     } catch (semanticErr) {
       throw new Error(
         `file_type_control_unavailable: selector=${CHASE_QFX_FILE_TYPE_SELECT_SELECTOR}: ${truncate(
           errMessage(selectorErr),
           ERROR_MESSAGE_SLICE
-        )}; combobox=${truncate(errMessage(semanticErr), ERROR_MESSAGE_SLICE)}`
+        )}; combobox=${truncate(errMessage(semanticErr), ERROR_MESSAGE_SLICE)}`,
+        { cause: semanticErr }
       );
     }
   }
@@ -1948,7 +1946,7 @@ export function buildServedAccountGapLookup(
       continue;
     }
     const locator = gap.detail_locator;
-    if (!locator || locator.kind !== "chase.account") {
+    if (locator?.kind !== "chase.account") {
       continue;
     }
     const accountId = locator.account_id;
@@ -2020,7 +2018,7 @@ export async function runTransactionsAndBalances(
   filteredAccounts: readonly ChaseAccount[]
 ): Promise<void> {
   const outcomes: AccountDetailOutcome[] = [];
-  for (let i = 0; i < filteredAccounts.length; i++) {
+  for (let i = 0; i < filteredAccounts.length; i += 1) {
     const account = filteredAccounts[i];
     if (!account) {
       continue;
@@ -2116,7 +2114,7 @@ export async function runCurrentActivity(
     return;
   }
 
-  const account = filteredAccounts[0];
+  const [account] = filteredAccounts;
   if (!account) {
     return;
   }
@@ -2284,7 +2282,7 @@ async function runStatements(
     });
 
     const outcomes: StatementDetailOutcome[] = [];
-    for (let i = 0; i < rows.length; i++) {
+    for (let i = 0; i < rows.length; i += 1) {
       const row = rows[i];
       if (!row) {
         continue;

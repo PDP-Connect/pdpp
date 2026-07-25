@@ -116,7 +116,8 @@ export async function savePlaywrightDownloadDetailed(
     throw new Error(
       `download.saveAs failed (${saveAsError}); createReadStream failed (${downloadErrorMessage(
         streamErr
-      )})${failure ? `; download.failure=${failure}` : ""}`
+      )})${failure ? `; download.failure=${failure}` : ""}`,
+      { cause: streamErr }
     );
   }
 }

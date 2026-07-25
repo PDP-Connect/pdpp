@@ -974,11 +974,11 @@ test("runCollectorConnector replays prior STATE into the connector's START.state
     assert.equal(result.sentBatches, 1);
 
     // Connector saw the replayed cursor.
-    const ingest = harness.ingestedBatches[0];
+    const [ingest] = harness.ingestedBatches;
     assert.equal(ingest?.records?.[0]?.data?.prior_cursor, "m-prior");
 
     // State was GET before ingest and PUT after.
-    const stateOps = harness.stateOps;
+    const { stateOps } = harness;
     assert.equal(stateOps[0]?.method, "GET");
     const lastOp = stateOps.at(-1);
     assert.equal(lastOp?.method, "PUT");
@@ -1897,7 +1897,8 @@ async function startCollectorHarness(options: CollectorHarnessOptions): Promise<
     }
     if (url.includes("/heartbeat")) {
       heartbeats.push(parsed as { status: string });
-      const heartbeatStatus = options.heartbeatStatuses?.[heartbeatIndex++] ?? options.heartbeatStatus;
+      const heartbeatStatus = options.heartbeatStatuses?.[heartbeatIndex] ?? options.heartbeatStatus;
+      heartbeatIndex += 1;
       if (heartbeatStatus && heartbeatStatus >= 400) {
         res.writeHead(heartbeatStatus, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: { code: "synthetic_heartbeat_failure" } }));
@@ -3206,7 +3207,7 @@ test("runCollectorConnector drains a prior pass's enqueued backlog before scanni
   const harness = await startTogglableHarness({
     ingestHandler: () => (ingestShouldFail ? "fail" : "ok"),
     onIngestSucceeded: () => {
-      ingestSucceededCount++;
+      ingestSucceededCount += 1;
     },
     priorState: {},
   });
@@ -3339,7 +3340,7 @@ test("runCollectorConnector skips spawn and reports blocked when queue depth cro
     const seedCount = maxQueueDepth + 1;
     const seedOutbox = new LocalDeviceOutbox({ path: queuePath });
     try {
-      for (let i = 0; i < seedCount; i++) {
+      for (let i = 0; i < seedCount; i += 1) {
         const records = transformRecordsToCollectorEnvelopes({
           batchId: `seed-batch-${i}`,
           batchSeq: i + 1,
@@ -3429,7 +3430,7 @@ test("drainCollectorOutbox stops between iterations when the duration budget is 
   const queuePath = await tempQueuePath();
   const outbox = new LocalDeviceOutbox({ path: queuePath });
   try {
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 5; i += 1) {
       const records = transformRecordsToCollectorEnvelopes({
         batchId: `slow-batch-${i}`,
         batchSeq: i + 1,
@@ -3511,7 +3512,7 @@ test("drainCollectorOutbox does not crash when batch-claimed work expires before
   const queuePath = await tempQueuePath();
   const outbox = new LocalDeviceOutbox({ clock: () => now, path: queuePath });
   try {
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 3; i += 1) {
       const records = transformRecordsToCollectorEnvelopes({
         batchId: `lease-batch-${i}`,
         batchSeq: i + 1,
@@ -3751,7 +3752,7 @@ test("runCollectorConnector enqueues a policy-budget gap row when queue depth bl
     const seedCount = maxQueueDepth + 1;
     const seedOutbox = new LocalDeviceOutbox({ path: queuePath });
     try {
-      for (let i = 0; i < seedCount; i++) {
+      for (let i = 0; i < seedCount; i += 1) {
         const records = transformRecordsToCollectorEnvelopes({
           batchId: `seed-batch-${i}`,
           batchSeq: i + 1,
@@ -3823,7 +3824,7 @@ test("runCollectorConnector enqueues a policy-budget gap row when queue depth bl
       const items = verify.list({ sourceInstanceId: "src-gap-policy" });
       const gaps = items.filter((i) => i.kind === "gap");
       assert.equal(gaps.length, 1, `expected exactly one gap row, got ${gaps.length}`);
-      const firstGap = gaps[0];
+      const [firstGap] = gaps;
       assert.ok(firstGap, "expected gap row");
       const payload = firstGap.payload as Record<string, unknown>;
       assert.equal(payload.reason, "policy_budget");
@@ -3946,7 +3947,7 @@ test("runCollectorConnector records a connector_child_failure gap when the child
       const batches = items.filter((i) => i.kind === "record_batch");
       assert.ok(batches.length >= 1, "partial record batches must reach the outbox");
       assert.equal(gaps.length, 1, `expected exactly one gap row, got ${gaps.length}`);
-      const firstGap = gaps[0];
+      const [firstGap] = gaps;
       assert.ok(firstGap, "expected gap row");
       const payload = firstGap.payload as Record<string, unknown>;
       assert.equal(payload.reason, "connector_child_failure");

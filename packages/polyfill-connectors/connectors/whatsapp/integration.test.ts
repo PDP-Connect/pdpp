@@ -121,9 +121,9 @@ async function runWhatsAppImport(
 
 function readRequestBody(req: IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = [];
-  return new Promise((resolve, reject) => {
+  return new Promise((done, reject) => {
     req.on("data", (chunk: Buffer) => chunks.push(chunk));
-    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("end", () => done(Buffer.concat(chunks)));
     req.on("error", reject);
   });
 }
@@ -144,15 +144,15 @@ async function withBlobServer<T>(
       });
   });
   try {
-    await new Promise<void>((resolve, reject) => {
+    await new Promise<void>((done, reject) => {
       server.once("error", reject);
-      server.listen(0, "127.0.0.1", () => resolve());
+      server.listen(0, "127.0.0.1", () => done());
     });
     const address = server.address() as AddressInfo;
     return await fn(`http://127.0.0.1:${address.port}`);
   } finally {
-    await new Promise<void>((resolve, reject) => {
-      server.close((err) => (err ? reject(err) : resolve()));
+    await new Promise<void>((done, reject) => {
+      server.close((err) => (err ? reject(err) : done()));
     });
   }
 }

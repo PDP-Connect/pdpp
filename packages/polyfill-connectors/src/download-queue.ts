@@ -35,9 +35,9 @@
 import type { Download, Page } from "playwright";
 
 export interface DownloadQueue {
-  detach(): void;
-  pendingCount(): number;
-  waitForNextDownload(opts?: { timeoutMs?: number }): Promise<Download>;
+  detach: () => void;
+  pendingCount: () => number;
+  waitForNextDownload: (opts?: { timeoutMs?: number }) => Promise<Download>;
 }
 
 /**

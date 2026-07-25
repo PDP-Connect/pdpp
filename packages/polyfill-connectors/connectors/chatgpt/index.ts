@@ -305,7 +305,7 @@ const CHATGPT_RATE_LIMIT_DENSITY_STOP_ENV = "PDPP_CHATGPT_DETAIL_RATE_LIMIT_STOP
  */
 export function resolveChatGptRateLimitDensityStop(env: NodeJS.ProcessEnv = process.env): number {
   const trimmed = env[CHATGPT_RATE_LIMIT_DENSITY_STOP_ENV]?.trim();
-  if (trimmed == null || trimmed === "") {
+  if (trimmed === undefined || trimmed === "") {
     return CHATGPT_RATE_LIMIT_DENSITY_STOP_DEFAULT;
   }
   const parsed = Number(trimmed);
@@ -495,7 +495,7 @@ const CHATGPT_CIRCUIT_WAIT_OUT_MIN_TICK_MS = 50;
  */
 export function resolveChatGptMaxDetailFetchesPerRun(env: NodeJS.ProcessEnv = process.env): number {
   const trimmed = env[CHATGPT_MAX_DETAIL_FETCHES_PER_RUN_ENV]?.trim();
-  if (trimmed == null || trimmed === "") {
+  if (trimmed === undefined || trimmed === "") {
     return Number.POSITIVE_INFINITY;
   }
   const parsed = Number(trimmed);
@@ -519,7 +519,7 @@ export function resolveChatGptMaxDetailFetchesPerRun(env: NodeJS.ProcessEnv = pr
  */
 export function resolveChatGptMaxRunWallClockMs(env: NodeJS.ProcessEnv = process.env): number {
   const trimmed = env[CHATGPT_MAX_RUN_WALL_CLOCK_MS_ENV]?.trim();
-  if (trimmed == null || trimmed === "") {
+  if (trimmed === undefined || trimmed === "") {
     return Number.POSITIVE_INFINITY;
   }
   const parsed = Number(trimmed);
@@ -546,7 +546,7 @@ export function resolveChatGptMaxRunWallClockMs(env: NodeJS.ProcessEnv = process
  */
 export function resolveChatGptMaxTailDeferralGapsPerRun(env: NodeJS.ProcessEnv = process.env): number {
   const trimmed = env[CHATGPT_MAX_TAIL_DEFERRAL_GAPS_PER_RUN_ENV]?.trim();
-  if (trimmed != null && trimmed !== "") {
+  if (trimmed !== undefined && trimmed !== "") {
     const parsed = Number(trimmed);
     if (Number.isInteger(parsed) && parsed >= 1) {
       return parsed;
@@ -563,7 +563,7 @@ export function resolveChatGptMaxTailDeferralGapsPerRun(env: NodeJS.ProcessEnv =
 
 function resolveChatGptRetryBudgetCapacity(env: NodeJS.ProcessEnv, maxRequests: number): number | null {
   const trimmed = env[CHATGPT_RETRY_BUDGET_CAPACITY_ENV]?.trim();
-  if (trimmed == null || trimmed === "") {
+  if (trimmed === undefined || trimmed === "") {
     // Default ON with capacity=100. A healthy account banks tokens up to this ceiling
     // (5 successes refill 1 token via refillPerSuccess=0.2) so it can sustain
     // CHATGPT_DEFAULT_RETRY_BUDGET_CAPACITY wait-outs before depletion — effectively
@@ -585,7 +585,7 @@ function resolveChatGptRetryBudgetCapacity(env: NodeJS.ProcessEnv, maxRequests: 
 
 function resolveChatGptRetryBudgetInitialTokens(env: NodeJS.ProcessEnv): number {
   const trimmed = env[CHATGPT_RETRY_BUDGET_INITIAL_TOKENS_ENV]?.trim();
-  if (trimmed == null || trimmed === "") {
+  if (trimmed === undefined || trimmed === "") {
     return CHATGPT_DEFAULT_RETRY_BUDGET_INITIAL_TOKENS;
   }
   const parsed = Number(trimmed);
@@ -599,7 +599,7 @@ function resolveChatGptCircuitBreakerEnabled(env: NodeJS.ProcessEnv): boolean {
 
 function resolvePositiveFiniteMs(env: NodeJS.ProcessEnv, key: string): number | null {
   const trimmed = env[key]?.trim();
-  if (trimmed == null || trimmed === "") {
+  if (trimmed === undefined || trimmed === "") {
     return null;
   }
   const parsed = Number(trimmed);
@@ -620,7 +620,7 @@ function resolvePositiveFiniteMs(env: NodeJS.ProcessEnv, key: string): number | 
  */
 function resolveChatGptPacingRecoveryGain(env: NodeJS.ProcessEnv): number | null {
   const trimmed = env[CHATGPT_PACING_RECOVERY_GAIN_ENV]?.trim();
-  if (trimmed == null || trimmed === "") {
+  if (trimmed === undefined || trimmed === "") {
     return null;
   }
   const parsed = Number(trimmed);
@@ -653,10 +653,10 @@ function chatGptWarmStartPacingFields(
   persistedPacing?: { intervalMs: number; recordedAtMs?: number } | number | null
 ): { restoredIntervalMs?: number; restoredAtMs?: number; maxWarmStartAgeMs?: number } {
   const persisted = typeof persistedPacing === "number" ? { intervalMs: persistedPacing } : (persistedPacing ?? null);
-  if (persisted == null || !Number.isFinite(persisted.intervalMs) || persisted.intervalMs <= 0) {
+  if (persisted === null || !Number.isFinite(persisted.intervalMs) || persisted.intervalMs <= 0) {
     return {};
   }
-  const recordedAtMs = persisted.recordedAtMs;
+  const { recordedAtMs } = persisted;
   if (typeof recordedAtMs !== "number" || !Number.isFinite(recordedAtMs)) {
     return { restoredIntervalMs: persisted.intervalMs };
   }
@@ -679,21 +679,21 @@ export function resolveChatGptProviderBudget(
 ): ProviderBudgetController | null {
   const pacingInitialOverride = env[CHATGPT_PACING_INITIAL_INTERVAL_MS_ENV]?.trim();
   const initialIntervalMs =
-    pacingInitialOverride == null || pacingInitialOverride === ""
+    pacingInitialOverride === undefined || pacingInitialOverride === ""
       ? CHATGPT_DEFAULT_PACING_INITIAL_INTERVAL_MS
       : resolvePositiveFiniteMs(env, CHATGPT_PACING_INITIAL_INTERVAL_MS_ENV);
   const maxRequests = resolveChatGptMaxDetailFetchesPerRun(env);
   const retryBudgetCapacity = resolveChatGptRetryBudgetCapacity(env, maxRequests);
-  const hasRetryBudget = retryBudgetCapacity != null;
+  const hasRetryBudget = retryBudgetCapacity !== null;
   const retryBudgetInitialTokens = resolveChatGptRetryBudgetInitialTokens(env);
   const hasCircuitBreaker = resolveChatGptCircuitBreakerEnabled(env);
-  if (initialIntervalMs == null && !hasRetryBudget && !hasCircuitBreaker) {
+  if (initialIntervalMs === null && !hasRetryBudget && !hasCircuitBreaker) {
     return null;
   }
   const minIntervalMs =
     resolvePositiveFiniteMs(env, CHATGPT_PACING_MIN_INTERVAL_MS_ENV) ?? CHATGPT_DEFAULT_PACING_MIN_INTERVAL_MS;
   const burstToleranceMs =
-    initialIntervalMs == null
+    initialIntervalMs === null
       ? null
       : (resolvePositiveFiniteMs(env, CHATGPT_PACING_BURST_TOLERANCE_MS_ENV) ?? 2 * initialIntervalMs);
   const recoveryGain = resolveChatGptPacingRecoveryGain(env);
@@ -712,15 +712,15 @@ export function resolveChatGptProviderBudget(
           },
         }
       : {}),
-    ...(initialIntervalMs == null
+    ...(initialIntervalMs === null
       ? {}
       : {
           pacing: {
-            ...(burstToleranceMs == null ? {} : { burstToleranceMs }),
+            ...(burstToleranceMs === null ? {} : { burstToleranceMs }),
             initialIntervalMs,
             minIntervalMs,
             maxIntervalMs,
-            ...(recoveryGain == null ? {} : { recoveryGain }),
+            ...(recoveryGain === null ? {} : { recoveryGain }),
             ...warmStart,
           },
         }),
@@ -832,9 +832,9 @@ export class ChatGptRunBudget {
     this.maxFetches = options.maxFetches ?? Number.POSITIVE_INFINITY;
     this.maxWallClockMs = options.maxWallClockMs ?? Number.POSITIVE_INFINITY;
     this.inner = new RunBudget({
-      ...(options.maxFetches == null ? {} : { maxRequests: options.maxFetches }),
-      ...(options.maxWallClockMs == null ? {} : { maxWallClockMs: options.maxWallClockMs }),
-      ...(options.now == null ? {} : { now: options.now }),
+      ...(options.maxFetches === undefined ? {} : { maxRequests: options.maxFetches }),
+      ...(options.maxWallClockMs === undefined ? {} : { maxWallClockMs: options.maxWallClockMs }),
+      ...(options.now === undefined ? {} : { now: options.now }),
     });
   }
 
@@ -991,7 +991,7 @@ export async function chatGptBackendFetchInBrowser({
       init.body = JSON.stringify(body);
     }
     const res = await fetch(`https://chatgpt.com/backend-api${path}`, init);
-    const status = res.status;
+    const { status } = res;
     const retryAfter = res.headers.get("retry-after") ?? undefined;
     let json: unknown = null;
     if (parseJson) {
@@ -1008,7 +1008,7 @@ export async function chatGptBackendFetchInBrowser({
     };
   } catch (err) {
     if (controller.signal.aborted) {
-      throw new Error(`chatgpt_backend_fetch_timeout after ${timeoutMs}ms`);
+      throw new Error(`chatgpt_backend_fetch_timeout after ${timeoutMs}ms`, { cause: err });
     }
     throw err;
   } finally {
@@ -1064,7 +1064,7 @@ export function shouldKeepRetryingChatGptDetail({
   response: { status: number };
   retryAfterMs: number | null;
 }): boolean {
-  const isBare429 = response.status === 429 && retryAfterMs == null;
+  const isBare429 = response.status === 429 && retryAfterMs === null;
   if (isBare429 && attempt >= CHATGPT_BARE_429_FAST_OPEN_ATTEMPTS) {
     return false;
   }
@@ -1122,14 +1122,14 @@ function classifyRetryExhaustedStatus(status: number | null): ChatGptRetryExhaus
   if (status === 429) {
     return "rate_limited";
   }
-  if (status === 408 || (status != null && status >= 500 && status < 600)) {
+  if (status === 408 || (status !== null && status >= 500 && status < 600)) {
     return "temporary_unavailable";
   }
   return "upstream_pressure";
 }
 
 function isChatGptRetryableStatus(status: number | undefined): boolean {
-  return status === 429 || status === 408 || (status != null && status >= 500 && status < 600);
+  return status === 429 || status === 408 || (status !== undefined && status >= 500 && status < 600);
 }
 
 function providerBudgetRetryTokensForProgress(value: number): number | "unbounded" | undefined {
@@ -1265,7 +1265,9 @@ function makeChatGptNetworkPressureDiagnostic({
     method,
     ...(attempts === undefined ? {} : { attempt: attempts, max_attempts: attempts }),
     ...(status === undefined ? {} : { status }),
-    ...(retryAfterMs == null ? {} : { retry_after_ms: retryAfterMs, safe_headers: { "retry-after-ms": retryAfterMs } }),
+    ...(retryAfterMs === null
+      ? {}
+      : { retry_after_ms: retryAfterMs, safe_headers: { "retry-after-ms": retryAfterMs } }),
   };
 }
 
@@ -1310,7 +1312,7 @@ async function reportChatGptRetryPressure({
   if (recordPacingThrottle && isChatGptRetryableStatus(response?.status)) {
     providerBudget?.recordThrottle({
       retryAfterAlreadySlept: true,
-      ...(retryAfterMs == null ? {} : { retryAfterMs }),
+      ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
     });
     await emitChatGptProviderBudgetTransitions({ emit, providerBudget });
   }
@@ -1319,9 +1321,9 @@ async function reportChatGptRetryPressure({
     absorbedByRequestWait: true,
     delayMs,
     kind: response?.status === 429 ? "rate_limited" : "transient_error",
-    ...(retryAfterMs == null ? {} : { retryAfterMs }),
+    ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
   });
-  if (laneContext == null && response?.status === 429) {
+  if (laneContext === undefined && response?.status === 429) {
     onUnlanedRateLimited?.();
   }
 }
@@ -1463,7 +1465,7 @@ export function createChatGptApi({
         }
         const status = response?.status ? `HTTP ${response.status}` : "network error";
         const policy =
-          retryAfterMs == null
+          retryAfterMs === undefined
             ? `jittered exponential backoff, capped at ${formatSleepDuration(CHATGPT_RATE_LIMIT_MAX_DELAY_MS)}`
             : `server Retry-After, capped at ${formatSleepDuration(CHATGPT_RATE_LIMIT_MAX_RETRY_AFTER_MS)}`;
         await emit?.({
@@ -1484,7 +1486,7 @@ export function createChatGptApi({
           return result;
         } catch (err) {
           const m = err instanceof Error ? err.message : String(err);
-          throw new Error(`apiFetch network error on ${method} ${path}: ${m}`);
+          throw new Error(`apiFetch network error on ${method} ${path}: ${m}`, { cause: err });
         }
       },
       shouldAbort: (result) => result.status === 401 || result.status === 403,
@@ -1619,11 +1621,11 @@ function formatProbeFailure(result: ChatGptSideEffectProbeResult): string {
 }
 
 function formatProbeValue(value: number | string | boolean | null): string {
-  return value == null ? "null" : String(value);
+  return value === null ? "null" : String(value);
 }
 
 function formatProbeIndex(value: number | null): string {
-  return value == null ? "missing" : String(value);
+  return value === null ? "missing" : String(value);
 }
 
 function probeValueChanged<T>(before: T, after1: T, after2: T): boolean {
@@ -1978,7 +1980,7 @@ export async function processConversationDetail(
   }
   // Emit conversation record first (parent-first), then messages.
   await emitConversation(c, detail.json as ConversationDetail);
-  const mapping = detail.json.mapping;
+  const { mapping } = detail.json;
   const currentNode = detail.json.current_node || c.current_node;
   const currentBranchIds = new Set(flattenTreeCurrentBranch(mapping, currentNode).map((x) => x.nodeId));
   let emittedMessageCount = 0;
@@ -2065,7 +2067,7 @@ export async function runCustomGptsStream(deps: StreamDeps): Promise<void> {
       }
     }
     cursor = (res.json?.cursor as string | null | undefined) ?? null;
-    pages++;
+    pages += 1;
     if (pages > GIZMO_MAX_PAGES) {
       break;
     }
@@ -2103,7 +2105,7 @@ export async function runSharedConversationsStream(
   let offset = 0;
   const limit = 100;
   let sawError = false;
-  while (true) {
+  for (;;) {
     const res = await deps.api.fetch(`/shared_conversations?offset=${offset}&limit=${limit}&order=created`);
     if (res.status === 404 || res.status === 403) {
       deps.emit({
@@ -2435,7 +2437,7 @@ async function classifyChatGptSerialPressure(
     let status: number;
     try {
       const res = await fetchChatGptPressureProbeStatus(deps, id);
-      status = res.status;
+      ({ status } = res);
     } catch (err) {
       rateLimited += rateLimitedCountForPreflightError(err);
       return { attempted, classification: "pressured", rateLimited };
@@ -2633,19 +2635,19 @@ function formatConversationDetailLaneProgress(event: AdaptiveLaneEvent): string 
     `queued=${event.queueSize}`,
     `concurrency=${event.concurrency}/${event.maxConcurrency}`,
   ];
-  if (event.attempt != null) {
+  if (event.attempt !== undefined) {
     parts.push(`attempt=${event.attempt}`);
   }
-  if (event.outcome != null) {
+  if (event.outcome !== undefined) {
     parts.push(`outcome=${event.outcome}`);
   }
-  if (event.delayMs != null) {
+  if (event.delayMs !== undefined) {
     parts.push(`delay_ms=${event.delayMs}`);
   }
-  if (event.retryAfterMs != null) {
+  if (event.retryAfterMs !== undefined) {
     parts.push(`retry_after_ms=${event.retryAfterMs}`);
   }
-  if (event.errorName != null) {
+  if (event.errorName !== undefined) {
     parts.push(`error=${event.errorName}`);
   }
   return parts.join(" ");
@@ -2667,7 +2669,7 @@ function safeConversationListItemHint(c: ConversationListItem): Record<string, s
 
 function conversationListItemFromGap(gap: CollectContext["detailGaps"][number]): ConversationListItem | null {
   const locator = gap.detail_locator;
-  if (!locator || locator.kind !== "chatgpt.conversation") {
+  if (locator?.kind !== "chatgpt.conversation") {
     return null;
   }
   const hint = locator.list_item;
@@ -2697,8 +2699,8 @@ function makeConversationDetailGap(
     },
     error: {
       class: error.class,
-      ...(error.httpStatus == null ? {} : { httpStatus: error.httpStatus }),
-      ...(networkPressure == null ? {} : { networkPressure }),
+      ...(error.httpStatus === null ? {} : { httpStatus: error.httpStatus }),
+      ...(networkPressure === undefined ? {} : { networkPressure }),
     },
   });
 }
@@ -2729,8 +2731,8 @@ function makeDeferredConversationDetailGap(
     },
     error: {
       class: "upstream_pressure_deferred",
-      ...(observedPressure.httpStatus == null ? {} : { httpStatus: observedPressure.httpStatus }),
-      ...(networkPressure == null ? {} : { networkPressure }),
+      ...(observedPressure.httpStatus === null ? {} : { httpStatus: observedPressure.httpStatus }),
+      ...(networkPressure === undefined ? {} : { networkPressure }),
     },
   });
 }
@@ -3057,7 +3059,7 @@ export async function runMessagesAndConversationsWithDetail(
   }
 
   async function prefetchConversationDetailBatches(): Promise<void> {
-    const fetchBatch = deps.api.fetchBatch;
+    const { fetchBatch } = deps.api;
     if (!fetchBatch || convosToSync.length === 0 || runBudget.shouldStop()) {
       return;
     }
@@ -3584,7 +3586,7 @@ async function recoverPendingConversationDetailGaps(
   while (page.length > 0) {
     const result = await recoverPendingConversationDetailGapPage(deps, page, emitConversation, pacing);
     recovered += result.recovered;
-    stoppedWithPending = result.stoppedWithPending;
+    ({ stoppedWithPending } = result);
 
     // Bound 3: single-pass mode — honor the page's own stop signal verbatim.
     if (!deps.requestDetailGapPage) {
@@ -3645,7 +3647,7 @@ async function expandBacklogConversationDetailGap(
   const listed = await listConversationsSinceCursor(deps, null);
   const olderWindow = listed.filter((c) => {
     const iso = c.update_time ? tsToIso(c.update_time) : null;
-    return iso != null && iso <= beforeUpdateTime;
+    return iso !== null && iso <= beforeUpdateTime;
   });
   if (!olderWindow.length) {
     // The backlog is fully drained: nothing older remains. Resolve the gap.
@@ -3722,7 +3724,7 @@ async function recoverPendingConversationDetailGapPage(
     // already represented and re-expanding here would double-list. Stop when any
     // per-key gap remains owed OR the recovery run capped (signalled by a fresh
     // backlog key), so the rewritten backlog is attacked next run.
-    stoppedWithPending = hydrated.size < recoveryItems.length || coverage.backlogGapKey != null;
+    stoppedWithPending = hydrated.size < recoveryItems.length || coverage.backlogGapKey !== undefined;
     if (stoppedWithPending) {
       return { recovered, stoppedWithPending };
     }
@@ -3732,7 +3734,7 @@ async function recoverPendingConversationDetailGapPage(
   // gap is present, expand exactly one: re-list the older window and drain its
   // next bounded chunk, then stop the run so the rewritten backlog waits for the
   // next run rather than being re-expanded in place.
-  const backlogGap = messagesGaps.find((gap) => backlogGapBeforeUpdateTime(gap) != null);
+  const backlogGap = messagesGaps.find((gap) => backlogGapBeforeUpdateTime(gap) !== null);
   if (backlogGap) {
     const beforeUpdateTime = backlogGapBeforeUpdateTime(backlogGap);
     if (beforeUpdateTime) {
@@ -3950,7 +3952,7 @@ function makeEmitRecord(
   baseEmitRecord: CollectContext["emitRecord"]
 ): (stream: string, data: RecordData) => Promise<void> {
   return (stream: string, data: RecordData): Promise<void> => {
-    if (data?.id != null) {
+    if (data?.id !== null && data?.id !== undefined) {
       try {
         JSON.stringify(data);
       } catch (err) {

@@ -98,7 +98,7 @@ export function validateWhatsAppChatExportArtifact(
     source_identity: null,
   };
 
-  if (options.maxFileBytes != null && bytes.byteLength > options.maxFileBytes) {
+  if (options.maxFileBytes !== null && options.maxFileBytes !== undefined && bytes.byteLength > options.maxFileBytes) {
     return { ...base, remediation: remediationFor("too_large"), status: "too_large" };
   }
 

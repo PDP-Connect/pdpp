@@ -475,8 +475,16 @@ test("collectPullRequests: full resync partitions by created-year and unions eve
   await collectPullRequests(ctx);
 
   // Every PR across all three windows is emitted exactly once (no dup, no loss).
-  const prIds = records.filter((r) => r.stream === "pull_requests").map((r) => r.data.id);
-  assert.deepEqual(prIds.sort(), ["1", "2", "3"]);
+  const prIds = records.filter((r) => r.stream === "pull_requests").map((r) => String(r.data.id));
+  assert.deepEqual(
+    prIds.sort((a, b) => {
+      if (a < b) {
+        return -1;
+      }
+      return a > b ? 1 : 0;
+    }),
+    ["1", "2", "3"]
+  );
   // Three distinct created: windows were queried, newest first.
   assert.equal(fetchHandle.searchPaths.length, 3);
   assert.match(decodeURIComponent(fetchHandle.searchPaths[0] ?? ""), /created:2026-01-01\.\.2026-12-31/);

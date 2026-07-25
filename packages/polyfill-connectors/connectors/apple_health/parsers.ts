@@ -30,7 +30,7 @@ export function parseAttrs(tag: string): AppleHealthAttrs {
   const re = new RegExp(APPLE_HEALTH_ATTR_RE.source, "g");
   let m: RegExpExecArray | null = re.exec(tag);
   while (m !== null) {
-    const key = m[1];
+    const [, key] = m;
     if (key) {
       attrs[key] = m[2];
     }
@@ -72,8 +72,8 @@ export function buildHealthRecord(attrs: AppleHealthAttrs): HealthRecordOut | nu
     return null;
   }
   const type = healthTypeShort(attrs.type) || attrs.type || "Unknown";
-  const value = attrs.value == null ? null : Number(attrs.value);
-  const finite = value != null && Number.isFinite(value);
+  const value = attrs.value === undefined ? null : Number(attrs.value);
+  const finite = value !== null && Number.isFinite(value);
   const id = hashId(`${type}|${attrs.sourceName || ""}|${startDate}|${attrs.value || ""}`);
   return {
     id,
@@ -81,7 +81,7 @@ export function buildHealthRecord(attrs: AppleHealthAttrs): HealthRecordOut | nu
     source_name: attrs.sourceName || null,
     source_version: attrs.sourceVersion || null,
     unit: attrs.unit || null,
-    value: finite && value != null ? value : null,
+    value: finite && value !== null ? value : null,
     value_raw: !finite && attrs.value ? attrs.value : null,
     start_date: startDate,
     end_date: isoDate(attrs.endDate),

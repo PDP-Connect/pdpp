@@ -551,7 +551,7 @@ function readRecoverableAmazonOrderDetailGap(
     return null;
   }
   const locator = gap.detail_locator;
-  if (!locator || locator.kind !== "amazon.order_detail") {
+  if (locator?.kind !== "amazon.order_detail") {
     return null;
   }
   const orderId = locator.order_id;
@@ -587,7 +587,7 @@ function resolveOrderDetail(page: Page, flags: RunFlags, orderId: string): Promi
       status: "deferred",
     });
   }
-  flags.detailAttempts++;
+  flags.detailAttempts += 1;
   return fetchOrderDetail(page, orderId);
 }
 
@@ -606,7 +606,7 @@ function recordDetailFailureFlags(flags: RunFlags, result: DetailFetchResult): v
     return;
   }
   if (result.status === "failed" && result.failureKind === "navigation_retry_exhausted") {
-    flags.temporaryDetailFailures++;
+    flags.temporaryDetailFailures += 1;
   }
   if (result.status === "failed" && result.failureKind === "session_repair_required") {
     flags.sessionRepairRequired = true;
@@ -647,7 +647,7 @@ async function recoverPendingOrderItemDetailGapPage(
     const locator = readRecoverableAmazonOrderDetailGap(gap);
     if (!locator) {
       if (gap.stream === "order_items" && gap.status === "pending") {
-        skipped++;
+        skipped += 1;
       }
       continue;
     }
@@ -663,7 +663,7 @@ async function recoverPendingOrderItemDetailGapPage(
         stream: "order_items",
         record_key: locator.recordKey,
       });
-      recovered++;
+      recovered += 1;
       continue;
     }
     recordDetailFailureFlags(flags, result);
@@ -671,7 +671,7 @@ async function recoverPendingOrderItemDetailGapPage(
       await captureFailedDetailOnce(deps.capture, page, flags, result);
     }
     await deps.emit(buildOrderDetailGap(locator.orderId, result.reason, result.failureKind, locator.orderDate));
-    reDeferred++;
+    reDeferred += 1;
   }
   return { recovered, reDeferred, skipped };
 }
@@ -991,7 +991,7 @@ export async function processListOrder(
   if (!deps.skipDetail) {
     const result = await resolveOrderDetail(page, flags, listOrder.orderId);
     if (result.status === "hydrated") {
-      detail = result.detail;
+      ({ detail } = result);
     } else {
       detailGapReason = result.reason;
       detailFailureKind = result.failureKind;
@@ -1097,10 +1097,10 @@ async function runYear(page: Page, deps: EmitDeps, flags: RunFlags, year: number
       );
       const processed = await processListOrder(page, deps, flags, o);
       if (!processed) {
-        unparseableDateCount++;
+        unparseableDateCount += 1;
       }
     }
-    pageCount++;
+    pageCount += 1;
     startIndex += START_INDEX_STEP;
     await politeDelay(POLITE_DELAY_MS);
   }

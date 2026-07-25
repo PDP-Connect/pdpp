@@ -116,7 +116,7 @@ async function ntn(
         const retryAfter = res.headers.get("retry-after");
         return {
           body: await res.text().catch((): string => ""),
-          ...(retryAfter == null ? {} : { headers: { "retry-after": retryAfter } }),
+          ...(retryAfter === null ? {} : { headers: { "retry-after": retryAfter } }),
           status: res.status,
         } as { body: string; status: number };
       },
@@ -178,7 +178,7 @@ async function searchAll(
   const results: NotionObject[] = [];
   let cursor: string | undefined;
   let pageIndex = 0;
-  while (true) {
+  for (;;) {
     const body: NotionSearchBody = {
       sort: { direction: "descending", timestamp: "last_edited_time" },
       page_size: PAGE_SIZE,
@@ -211,7 +211,7 @@ async function searchAll(
       break;
     }
     cursor = json.next_cursor;
-    pageIndex++;
+    pageIndex += 1;
     await politeDelay(POLITE_DELAY_MS);
   }
   return results;

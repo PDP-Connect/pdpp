@@ -376,16 +376,30 @@ test("scanProjectDirs: one top-level agent JSONL can emit summaries for each per
 
     const sessions = harness.emitted.filter((r) => r.stream === "sessions");
     assert.deepEqual(
-      sessions.map((r) => r.data.id).sort(),
-      [MIXED_AGENT_PARENT_SESSION_ID, MIXED_AGENT_USER_SESSION_ID].sort(),
+      sessions
+        .map((r) => String(r.data.id))
+        .sort((a, b) => {
+          if (a < b) {
+            return -1;
+          }
+          return a > b ? 1 : 0;
+        }),
+      [MIXED_AGENT_PARENT_SESSION_ID, MIXED_AGENT_USER_SESSION_ID].sort((a, b) => {
+        if (a < b) {
+          return -1;
+        }
+        return a > b ? 1 : 0;
+      }),
       "both per-line session ids get parent summaries"
     );
+    const byIdThenCount = (a: [string, number], b: [string, number]): number => a[0].localeCompare(b[0]) || a[1] - b[1];
+    const expectedIdCounts: [string, number][] = [
+      [MIXED_AGENT_PARENT_SESSION_ID, 1],
+      [MIXED_AGENT_USER_SESSION_ID, 1],
+    ];
     assert.deepEqual(
-      sessions.map((r) => [r.data.id, r.data.message_count]).sort(),
-      [
-        [MIXED_AGENT_PARENT_SESSION_ID, 1],
-        [MIXED_AGENT_USER_SESSION_ID, 1],
-      ].sort(),
+      sessions.map((r): [string, number] => [String(r.data.id), Number(r.data.message_count)]).sort(byIdThenCount),
+      expectedIdCounts.sort(byIdThenCount),
       "message_count is attributed to the matching line session"
     );
     const messages = harness.emitted.filter((r) => r.stream === "messages");

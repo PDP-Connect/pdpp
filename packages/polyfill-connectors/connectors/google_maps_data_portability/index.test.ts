@@ -125,7 +125,7 @@ test("Google Maps Data Portability connector initiates archive jobs for authoriz
     fakeClient.calls.map((call) => call.method),
     ["checkAccessType", "initiateArchive", "initiateArchive"]
   );
-  const firstInitiate = fakeClient.calls[1];
+  const [, firstInitiate] = fakeClient.calls;
   assert.ok(firstInitiate);
   assert.deepEqual(firstInitiate.input, {
     endTime: "2026-06-11T00:00:00Z",
@@ -133,7 +133,7 @@ test("Google Maps Data Portability connector initiates archive jobs for authoriz
     startTime: "2026-06-01T00:00:00Z",
   });
   assert.equal(records.length, 2);
-  const firstRecord = records[0];
+  const [firstRecord] = records;
   assert.ok(firstRecord);
   assert.equal(firstRecord.stream, "archive_jobs");
   assert.deepEqual(firstRecord.data, {
@@ -189,7 +189,7 @@ test("Google Maps Data Portability connector resumes an in-progress archive inst
     fakeClient.calls.map((call) => call.method),
     ["checkAccessType", "getArchiveState"]
   );
-  const firstRecord = records[0];
+  const [firstRecord] = records;
   assert.ok(firstRecord);
   assert.equal(firstRecord.data.archive_job_id, "job-existing");
 });

@@ -143,7 +143,7 @@ test("makeRecordingEmit: .events captures emit + emitRecord in call order", asyn
   assert.equal(h.events[1]?.kind, "message");
   assert.equal(h.events[2]?.kind, "record");
   assert.equal(h.events[3]?.kind, "message");
-  const ev3 = h.events[3];
+  const [, , , ev3] = h.events;
   if (ev3?.kind === "message" && ev3.message.type === "STATE") {
     assert.equal(ev3.message.stream, "orders");
   } else {

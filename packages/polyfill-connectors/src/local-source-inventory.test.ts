@@ -53,7 +53,7 @@ function coverageState(overrides: Record<string, unknown> = {}): Record<string, 
 }
 
 function coverageStores(): Record<string, unknown>[] {
-  const stores = coverageState().stores;
+  const { stores } = coverageState();
   assert.ok(Array.isArray(stores));
   return stores as Record<string, unknown>[];
 }
@@ -85,8 +85,8 @@ test("coverage STATE parser accepts the exact sanitized producer schema", () => 
 for (const [name, state] of [
   ["private top-level field", coverageState({ secret_path: "/private/home" })],
   ["future top-level version", coverageState({ version: 2 })],
-  ["missing top-level fetched_at", (({ fetched_at: _fetchedAt, ...state }) => state)(coverageState())],
-  ["missing top-level stores", (({ stores: _stores, ...state }) => state)(coverageState())],
+  ["missing top-level fetched_at", (({ fetched_at: _fetchedAt, ...rest }) => rest)(coverageState())],
+  ["missing top-level stores", (({ stores: _stores, ...rest }) => rest)(coverageState())],
   ["missing fetched_at", coverageState({ fetched_at: undefined })],
   ["malformed fetched_at", coverageState({ fetched_at: "not-a-timestamp" })],
   [

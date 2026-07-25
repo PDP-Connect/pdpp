@@ -376,7 +376,7 @@ test("createChatGptApi.fetchBatch posts capped conversation batch requests", asy
 
   const api = createChatGptApi({ capture: null, page: fakePage as Page });
   assert.ok(api.fetchBatch, "production ChatGPT API exposes fetchBatch");
-  const fetchBatch = api.fetchBatch;
+  const { fetchBatch } = api;
   const results = await fetchBatch(["c1", "c2"]);
 
   assert.equal(results.length, 2);
@@ -496,7 +496,7 @@ test("ChatGptRateLimitDensityTracker trips only once cumulative 429s reach the t
 
 test("ChatGptRateLimitDensityTracker with an Infinity threshold never trips (disabled)", () => {
   const tracker = new ChatGptRateLimitDensityTracker(Number.POSITIVE_INFINITY);
-  for (let i = 0; i < 1000; i++) {
+  for (let i = 0; i < 1000; i += 1) {
     tracker.recordRateLimited();
   }
   assert.equal(tracker.shouldStop(), false);
@@ -2899,17 +2899,18 @@ test("runMessagesAndConversationsWithDetail: a cap trip over a large tail writes
     Array.from({ length: 10 }, (_, i) => `convo-${26 + i}`)
   );
 
-  const backlog = backlogGaps[0];
-  assert.equal(backlog?.record_key, "__chatgpt_conversation_backlog__");
+  const [backlog] = backlogGaps;
+  assert.ok(backlog, "backlog gap was captured");
+  assert.equal(backlog.record_key, "__chatgpt_conversation_backlog__");
   // Watermark is a content-derived update_time ISO (NOT an offset). It equals the
   // NEWEST update_time of the un-materialized backlog (convo-36 — the first folded
   // conversation right after 25 hydrated + 10-chunk = 35 accounted). Recovery
   // re-lists `<= watermark`, an inclusive, stranding-proof boundary.
-  const watermark = (backlog?.detail_locator as { before_update_time?: unknown }).before_update_time;
+  const watermark = (backlog.detail_locator as { before_update_time?: unknown }).before_update_time;
   assert.equal(typeof watermark, "string", "the backlog gap carries an update_time watermark, not an offset");
   assert.equal(watermark, new Date((1_700_100_000 - 35) * 1000).toISOString());
   assert.equal(
-    (backlog?.detail_locator as { remaining?: unknown }).remaining,
+    (backlog.detail_locator as { remaining?: unknown }).remaining,
     190,
     "the backlog gap records how many older conversations remain"
   );
@@ -3006,7 +3007,8 @@ test("a follow-up run expands the backlog gap (older window) before any forward 
   let messagesCursor: string | null = null;
   let conversationsCursor: string | null = null;
 
-  while (safety++ < 12) {
+  while (safety < 12) {
+    safety += 1;
     const harness = makeRecordingEmit(validateRecord);
     const listCalls: string[] = [];
     const api: ChatGptApi = {
@@ -3617,6 +3619,7 @@ test("runConversationsAndMessagesStreams: 30/278 pressure exhaustion records a d
       update_time: 1_700_000_000 + index,
     })
   );
+  // biome-ignore lint/style/useDestructuring: destructuring a 30th-element index would need 28 leading commas — index access is more readable here
   const pressureItem = listItems[29];
   assert.ok(pressureItem, "fixture must include the 30th list item");
 
@@ -4542,7 +4545,7 @@ test("buildChatGptPacingStateFields: a throttle-inflated interval is CAPPED at c
 
   // A healthy (faster-than-cold) learned interval is still persisted verbatim.
   const healthy = resolveChatGptProviderBudget({});
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 3; i += 1) {
     healthy?.pacing?.recordSuccess();
   }
   const healthyInterval = healthy?.pacing?.currentIntervalMs ?? 0;

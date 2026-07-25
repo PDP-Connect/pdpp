@@ -167,7 +167,17 @@ test("claude_code markdown-backed streams skip unchanged files from state", asyn
   const firstRecords = first.messages.filter(
     (msg): msg is Extract<EmittedMessage, { type: "RECORD" }> => msg.type === "RECORD"
   );
-  assert.deepEqual(firstRecords.map((record) => record.stream).sort(), ["memory_notes", "skills", "slash_commands"]);
+  assert.deepEqual(
+    firstRecords
+      .map((record) => record.stream)
+      .sort((a, b) => {
+        if (a < b) {
+          return -1;
+        }
+        return a > b ? 1 : 0;
+      }),
+    ["memory_notes", "skills", "slash_commands"]
+  );
 
   const state = Object.fromEntries(
     first.messages

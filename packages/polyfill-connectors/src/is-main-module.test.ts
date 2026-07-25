@@ -10,7 +10,7 @@ import { pathToFileURL } from "node:url";
 import { isMainModule } from "./is-main-module.ts";
 
 test("isMainModule: returns true when importMetaUrl matches process.argv[1]", () => {
-  const entry = process.argv[1];
+  const [, entry] = process.argv;
   assert.ok(entry, "test assumes process.argv[1] is set");
   const matching = pathToFileURL(entry).href;
   assert.equal(isMainModule(matching), true);
@@ -28,7 +28,7 @@ test("isMainModule: returns true when process.argv[1] is an npm-style symlink", 
   writeFileSync(realEntry, "");
   symlinkSync(realEntry, symlinkEntry);
 
-  const saved = process.argv[1];
+  const [, saved] = process.argv;
   process.argv[1] = symlinkEntry;
   try {
     assert.equal(isMainModule(pathToFileURL(realEntry).href), true);
@@ -41,7 +41,7 @@ test("isMainModule: returns true when process.argv[1] is an npm-style symlink", 
 });
 
 test("isMainModule: returns false when process.argv[1] is missing", () => {
-  const saved = process.argv[1];
+  const [, saved] = process.argv;
   // process.argv is `string[]` but we're intentionally simulating the
   // pathological "no entry" case. Setting to empty string exercises the
   // `!entry` guard without mutating the length.

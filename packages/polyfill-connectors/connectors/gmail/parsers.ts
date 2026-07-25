@@ -18,7 +18,7 @@ const CONTROL_CHAR_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
 const GMAIL_PREFIX_RE = /^\[Gmail\]\/(.+)$/;
 const GMAIL_PREFIX_TEST_RE = /^\[Gmail\]\//;
 const WHITESPACE_RUN_RE = /\s+/g;
-const QP_SOFT_BREAK_RE = /=\r?\n/g;
+const QP_SOFT_BREAK_RE = /[=]\r?\n/g;
 const HEX_PAIR_RE = /[0-9A-Fa-f]{2}/;
 const SCRIPT_BLOCK_RE = /<script\b[^>]*>[\s\S]*?<\/script>/gi;
 const STYLE_BLOCK_RE = /<style\b[^>]*>[\s\S]*?<\/style>/gi;
@@ -40,7 +40,7 @@ const HEADER_FOLD_RE = /\r?\n[ \t]+/g;
 const REFERENCES_HEADER_RE = /^references:\s*(.*)$/im;
 const ANGLE_ID_RE = /<([^>]+)>/g;
 const QUOTED_REPLY_RE = /^\s*>/;
-const HEX_ESCAPE_RE = /=([0-9A-Fa-f]{2})/g;
+const HEX_ESCAPE_RE = /[=]([0-9A-Fa-f]{2})/g;
 const CR_OR_LF_RE = /[\r\n]/g;
 
 // ─── Constants ──────────────────────────────────────────────────────────
@@ -155,7 +155,7 @@ export function toLabelsArray(labels: Set<string> | string[] | undefined): strin
  *   clean JSONL line.
  */
 export function sanitizeForJsonl(v: unknown): unknown {
-  if (v == null) {
+  if (v === null || v === undefined) {
     return v;
   }
   if (typeof v === "string") {
@@ -177,7 +177,7 @@ export function sanitizeForJsonl(v: unknown): unknown {
 // ─── BODYSTRUCTURE walking ──────────────────────────────────────────────
 
 function isAttachmentLikeBodystructureLeaf(node: MessageStructureObject): boolean {
-  const disposition = node.disposition;
+  const { disposition } = node;
   const filename = node.dispositionParameters?.filename ?? node.parameters?.name ?? null;
   const contentId = node.id || null;
   const isTextLeaf = typeof node.type === "string" && node.type.startsWith("text/");
@@ -291,7 +291,7 @@ export function findFirstPartByType(
       return null;
     }
     if (Array.isArray(node.childNodes) && node.childNodes.length > 0) {
-      for (let i = 0; i < node.childNodes.length; i++) {
+      for (let i = 0; i < node.childNodes.length; i += 1) {
         const found = walk(node.childNodes[i], p ? `${p}.${i + 1}` : String(i + 1));
         if (found) {
           return found;
@@ -325,7 +325,7 @@ export function findLeafByPath(
       return null;
     }
     if (Array.isArray(node.childNodes) && node.childNodes.length > 0) {
-      for (let i = 0; i < node.childNodes.length; i++) {
+      for (let i = 0; i < node.childNodes.length; i += 1) {
         const found = walk(node.childNodes[i], p ? `${p}.${i + 1}` : String(i + 1));
         if (found) {
           return found;
@@ -452,7 +452,7 @@ export function parseReferencesHeader(rawHeaders: Buffer | string | null | undef
   if (!match?.[1]) {
     return [];
   }
-  const value = match[1];
+  const [, value] = match;
   const ids: string[] = [];
   let m: RegExpExecArray | null = ANGLE_ID_RE.exec(value);
   while (m !== null) {
@@ -671,7 +671,7 @@ export function classifyBodySource(bodyTextFull: string | null, bodyHtmlFull: st
 }
 
 function toCleanString(v: unknown): string | null {
-  if (v == null) {
+  if (v === null || v === undefined) {
     return null;
   }
   const s = typeof v === "string" ? v : String(v);
@@ -682,7 +682,7 @@ function toCleanString(v: unknown): string | null {
 }
 
 function truncateField(value: string | null, max: number): string | null {
-  if (value == null) {
+  if (value === null) {
     return toCleanString(value);
   }
   if (value.length > max) {

@@ -584,7 +584,7 @@ export class LocalDeviceOutbox {
     limit: number | null;
     params: readonly string[];
   }): string[] {
-    const limitSql = input.limit == null || input.errorClassPattern ? "" : " LIMIT ?";
+    const limitSql = input.limit === null || input.errorClassPattern ? "" : " LIMIT ?";
     const rows = this.#db
       .prepare(
         `SELECT id, last_error
@@ -592,7 +592,7 @@ export class LocalDeviceOutbox {
           WHERE ${input.clauses.join(" AND ")}
           ORDER BY rowid${limitSql}`
       )
-      .all(...(input.limit == null || input.errorClassPattern ? input.params : [...input.params, input.limit]));
+      .all(...(input.limit === null || input.errorClassPattern ? input.params : [...input.params, input.limit]));
     const ids: string[] = [];
     for (const row of rows) {
       if (!isRecord(row) || typeof row.id !== "string") {
@@ -944,7 +944,7 @@ export class LocalDeviceOutbox {
       if (!isRecord(rowLike)) {
         continue;
       }
-      const status = rowLike.status;
+      const { status } = rowLike;
       const total = numberFrom(rowLike.total);
       summary.total += total;
       if (status === "ready") {
@@ -1413,7 +1413,7 @@ function deadLetterWhere(input: LocalDeviceOutboxRequeueDeadLettersInput): { cla
 }
 
 function normalizeLimit(value: number | undefined): number | null {
-  if (value == null) {
+  if (value === undefined) {
     return null;
   }
   if (!Number.isSafeInteger(value) || value <= 0) {
@@ -1474,8 +1474,8 @@ function asOutboxRow(row: unknown): LocalDeviceOutboxRow {
   if (!isRecord(row)) {
     throw new Error("local outbox query returned a non-object row");
   }
-  const kind = row.kind;
-  const status = row.status;
+  const { kind } = row;
+  const { status } = row;
   if (typeof row.acknowledged_at !== "string" && row.acknowledged_at !== null) {
     throw new Error("local outbox row has invalid acknowledged_at");
   }

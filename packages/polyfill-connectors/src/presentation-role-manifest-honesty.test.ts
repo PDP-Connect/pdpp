@@ -31,7 +31,7 @@ const FIELD_ROLES = new Set(["primary-title", "secondary", "event-time", "actor"
 const STRING_ROLES = new Set(["primary-title", "secondary", "actor", "media"]);
 
 function schemaTypes(schema: JsonSchema): string[] {
-  const type = schema.type;
+  const { type } = schema;
   if (typeof type === "string") {
     return [type];
   }

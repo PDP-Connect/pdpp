@@ -167,8 +167,8 @@ async function consumeDownloadOrResponse({
   const downloadPromise = downloadQueue.waitForNextDownload({ timeoutMs: DOWNLOAD_TIMEOUT_MS });
   try {
     const result = await Promise.any([
-      responsePromise.then((response) => ({ kind: "response" as const, response })),
-      downloadPromise.then((download) => ({ download, kind: "download" as const })),
+      responsePromise.then((raceResponse) => ({ kind: "response" as const, response: raceResponse })),
+      downloadPromise.then((raceDownload) => ({ download: raceDownload, kind: "download" as const })),
     ]);
     if (result.kind === "response") {
       return {

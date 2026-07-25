@@ -91,16 +91,16 @@ interface ProgressExtra {
 
 async function redditFetch(page: Page, path: string): Promise<RedditFetchResult> {
   return (await page.evaluate(
-    async ({ path, userAgent }) => {
+    async ({ path: evalPath, userAgent }) => {
       try {
-        const res = await fetch(`https://old.reddit.com${path}`, {
+        const res = await fetch(`https://old.reddit.com${evalPath}`, {
           credentials: "include",
           headers: {
             accept: "application/json",
             "user-agent": userAgent,
           },
         });
-        const status = res.status;
+        const { status } = res;
         let json: unknown = null;
         try {
           json = await res.json();
@@ -151,7 +151,7 @@ export async function paginate(
   let after: string | null = null;
   const streamExtra = streamName ? { stream: streamName } : {};
 
-  for (let guard = 0; guard < MAX_PAGES; guard++) {
+  for (let guard = 0; guard < MAX_PAGES; guard += 1) {
     await progress?.("Fetching Reddit listing page", {
       ...streamExtra,
       phase: "fetch",

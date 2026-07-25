@@ -260,7 +260,7 @@ test("rowsToTransactions: maps a normal USAA CSV header layout", () => {
     fetchedAt: "2026-04-22T00:00:00Z",
   });
   assert.equal(txns.length, 2);
-  const first = txns[0];
+  const [first] = txns;
   assert.ok(first);
   assert.equal(first.account_id, "ACCT");
   assert.equal(first.account_name, "Checking");
@@ -356,7 +356,7 @@ test("parseModernCheckingEra: extracts transactions inside TRANSACTIONS ... ENDI
   const closing: StatementClosing = { closingMonth: 4, closingYear: 2026 };
   const txns = parseModernCheckingEra(MODERN_FIXTURE, { closing });
   assert.equal(txns.length, 3);
-  const first = txns[0];
+  const [first] = txns;
   assert.ok(first);
   assert.equal(first.iso, "2026-04-02");
   assert.equal(first.description, "COFFEE SHOP #45");

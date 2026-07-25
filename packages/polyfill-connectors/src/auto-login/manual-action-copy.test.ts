@@ -24,7 +24,7 @@ function stripNoise(source: string): string {
 function extractStringLiterals(source: string, pattern: RegExp): string[] {
   const values: string[] = [];
   for (const match of source.matchAll(pattern)) {
-    const value = match[2];
+    const [, , value] = match;
     if (typeof value === "string") {
       values.push(value);
     }

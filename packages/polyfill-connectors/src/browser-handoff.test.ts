@@ -171,7 +171,8 @@ function makeFakeFetch(responses: Response[]): { fetchImpl: typeof fetch; seen: 
     }
     const body = typeof init?.body === "string" ? init.body : null;
     seen.push({ body, headers, method, url });
-    const next = responses[cursor++];
+    const next = responses[cursor];
+    cursor += 1;
     if (next === undefined) {
       return Promise.reject(
         new Error(`fakeFetch: no response queued for request #${String(cursor)} (${method} ${url})`)
@@ -332,7 +333,7 @@ test("prepareManualAction PUTs the composed wsUrl + page metadata when env is fu
   assert.equal(result.registered, true);
   assert.match(result.interactionId, /^int_\d+_[0-9a-f]{8}$/);
   assert.equal(seen.length, 1);
-  const sent = seen[0];
+  const [sent] = seen;
   assert.ok(sent);
   assert.equal(sent.method, "PUT");
   assert.equal(sent.headers.authorization, "Bearer test_nonce");
@@ -369,8 +370,8 @@ test("prepareBrowserInteractionTarget can register an existing otp interaction i
     resolveStreamingRegistration: () =>
       Promise.resolve({
         runId: "run_test_123",
-        register: (args) => {
-          registeredArgs = args;
+        register: (registerArgs) => {
+          registeredArgs = registerArgs;
           return Promise.resolve(true);
         },
         unregister: () => Promise.resolve(true),
@@ -412,8 +413,8 @@ test("prepareManualAction registers managed n.eko descriptor with lease-scoped C
     resolveStreamingRegistration: () =>
       Promise.resolve({
         runId: "run_test_123",
-        register: (args) => {
-          registeredArgs = args;
+        register: (registerArgs) => {
+          registeredArgs = registerArgs;
           return Promise.resolve(true);
         },
         unregister: () => Promise.resolve(true),
@@ -582,7 +583,7 @@ test("manualAction calls sendInteraction with kind=manual_action and the generat
   );
 
   assert.equal(seenInteractions.length, 1);
-  const sent = seenInteractions[0];
+  const [sent] = seenInteractions;
   assert.ok(sent);
   assert.equal(sent.kind, "manual_action");
   assert.equal(sent.message, "Solve the captcha and continue.");

@@ -249,14 +249,14 @@ export function parseArgs(args: string[]): CliOptions {
     options.runId = process.env.PDPP_RUN_ID;
   }
 
-  for (let index = 0; index < rest.length; index++) {
+  for (let index = 0; index < rest.length; index += 1) {
     const arg = rest[index];
     if (!arg) {
       throw new Error("missing option");
     }
     const value = rest[index + 1];
     applyOption(options, arg, value);
-    index++;
+    index += 1;
   }
 
   return options;

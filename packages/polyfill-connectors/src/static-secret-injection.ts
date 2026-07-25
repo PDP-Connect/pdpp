@@ -252,6 +252,7 @@ function secretBundleFields(connectorId: string, secret: string): Record<string,
   try {
     parsed = JSON.parse(secret);
   } catch {
+    // biome-ignore lint/style/useErrorCause: intentional — JSON.parse's error can echo a snippet of the invalid input, which here is the raw secret
     throw new StaticSecretInjectionError(
       "recovered_secret_bundle_invalid",
       `Connector '${connectorId}' expects a sealed JSON credential bundle; recovered secret was not valid JSON.`

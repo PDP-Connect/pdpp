@@ -558,7 +558,7 @@ function sanitizeDiagnosticInfo(diag: DiagnosticInfo): DiagnosticInfo {
 }
 
 function summarizeArtifactDiagnostics(diag: DiagnosticInfo): string | null {
-  const artifact = diag.artifact;
+  const { artifact } = diag;
   if (!artifact) {
     return null;
   }
@@ -571,7 +571,7 @@ function summarizeArtifactDiagnostics(diag: DiagnosticInfo): string | null {
   if (artifact.cdpError) {
     parts.push(`cdpError=${artifact.cdpError.slice(0, ID_TEXT_SNIP)}`);
   }
-  const firstCandidate = artifact.candidates[0];
+  const [firstCandidate] = artifact.candidates;
   if (firstCandidate) {
     const firstParts = [
       firstCandidate.source,
@@ -897,7 +897,7 @@ async function extractAccounts(page: Page): Promise<DashboardAccount[]> {
       const amounts = [...text.matchAll(DOLLAR_RE)]
         .map((m) => (m[1] ? m[1] : null))
         .filter((v): v is string => Boolean(v));
-      const firstAmount = amounts[0];
+      const [firstAmount] = amounts;
       const balanceCents = firstAmount ? Math.round(Number(firstAmount.replace(COMMA_RE_LOCAL, "")) * 100) : null;
       out.push({
         account_id_raw: accountId,
@@ -1197,8 +1197,8 @@ type ExportSubmitOutcome =
  */
 class CsvArtifactError extends Error {
   readonly download: DownloadDiagnostics | null;
-  constructor(message: string, download: DownloadDiagnostics | null) {
-    super(message);
+  constructor(message: string, download: DownloadDiagnostics | null, options?: ErrorOptions) {
+    super(message, options);
     this.name = "CsvArtifactError";
     this.download = download;
   }
@@ -1280,12 +1280,12 @@ async function waitForCsvArtifact(
   const downloadPromise = downloadQueue.waitForNextDownload({ timeoutMs: DOWNLOAD_TIMEOUT_MS });
   const result = await Promise.any([
     responsePromise.then((response) => ({ kind: "response" as const, response })),
-    downloadPromise.then((download) => ({ download, kind: "download" as const })),
+    downloadPromise.then((downloadResult) => ({ download: downloadResult, kind: "download" as const })),
   ]);
   if (result.kind === "response") {
     return { buffer: result.response.body, suggestedFilename: result.response.suggestedFilename };
   }
-  const download = result.download;
+  const { download } = result;
   try {
     const { buffer, outcome } = await readPlaywrightDownloadBufferDetailed(download);
     if (buffer.length > 0) {
@@ -1321,7 +1321,8 @@ async function waitForCsvArtifact(
     if (response) {
       return { buffer: response.body, suggestedFilename: response.suggestedFilename };
     }
-    throw new CsvArtifactError(err instanceof Error ? err.message : String(err), downloadDiag);
+    // biome-ignore lint/style/useErrorCause: `cause` IS passed (third arg, CsvArtifactError's own signature) — Biome only recognizes it as the native Error constructor's second argument
+    throw new CsvArtifactError(err instanceof Error ? err.message : String(err), downloadDiag, { cause: err });
   }
 }
 
@@ -1336,14 +1337,15 @@ async function submitExportAndAwait(page: Page): Promise<ExportSubmitOutcome> {
     await submit.click().catch((): undefined => undefined);
 
     const dialogMessage = page.locator(EXPORT_DIALOG_MESSAGE_SELECTOR).first();
+    const readDialogOutcome = async (): Promise<ExportSubmitOutcome> => {
+      const message = ((await dialogMessage.textContent().catch((): string | null => null)) ?? "").trim();
+      return isNoDataExportMessage(message) ? { kind: "empty", message } : { kind: "dialog_error", message };
+    };
     const errorPromise = page
       .locator(EXPORT_DIALOG_MESSAGE_SELECTOR)
       .first()
       .waitFor({ state: "visible", timeout: DOWNLOAD_TIMEOUT_MS })
-      .then(async (): Promise<ExportSubmitOutcome> => {
-        const message = ((await dialogMessage.textContent().catch((): string | null => null)) ?? "").trim();
-        return isNoDataExportMessage(message) ? { kind: "empty", message } : { kind: "dialog_error", message };
-      })
+      .then(readDialogOutcome)
       .catch((): Promise<never> => new Promise((): void => undefined));
 
     return await Promise.race<ExportSubmitOutcome>([
@@ -1601,7 +1603,7 @@ async function tryExportLadder(
   const onDiagnostics = (info: DiagnosticInfo): void => {
     diagBox.current = info;
   };
-  for (let i = 0; i < candidateStarts.length; i++) {
+  for (let i = 0; i < candidateStarts.length; i += 1) {
     const sinceDate = candidateStarts[i];
     if (!sinceDate) {
       continue;
@@ -1990,7 +1992,7 @@ async function runTransactionsStream(
 
   const transactionAccounts = accounts.filter((a) => TRANSACTION_ACCOUNT_TYPE_RE.test(a.account_type));
   const outcomes: AccountTransactionOutcome[] = [];
-  for (let i = 0; i < transactionAccounts.length; i++) {
+  for (let i = 0; i < transactionAccounts.length; i += 1) {
     const a = transactionAccounts[i];
     if (!a) {
       continue;
@@ -2087,9 +2089,9 @@ function scrapeStatementsIndex(page: Page): Promise<DocRow[]> {
     }
     return [...t.querySelectorAll("tbody tr")].map((tr: El, rowIndex: number) => {
       const cells = [...tr.querySelectorAll("td")] as El[];
-      const c0 = cells[0];
-      const c1 = cells[1];
-      const c2 = cells[2];
+      const [c0] = cells;
+      const [, c1] = cells;
+      const [, , c2] = cells;
       return {
         rowIndex,
         title: (c0?.innerText || "").replace(WS_RE, " ").trim(),
@@ -2136,7 +2138,7 @@ async function hydratePdfsForIndex(deps: StatementsSubDeps, indexRows: readonly 
       },
     });
     for (const h of hydrated) {
-      successes++;
+      successes += 1;
       results.set(h.statement.rowIndex, {
         pdfPath: h.pdfPath,
         pdfSha256: h.pdfSha256,
@@ -2185,7 +2187,7 @@ async function processPdfStatementRow(
       period,
     });
     if (!txns.length) {
-      counters.unknownTemplates++;
+      counters.unknownTemplates += 1;
       await deps.emit({
         type: "SKIP_RESULT",
         stream: "transactions",
@@ -2209,9 +2211,9 @@ async function processPdfStatementRow(
       if (!fingerprintCursor || fingerprintCursor.shouldEmit({ ...t })) {
         await deps.emitRecord("transactions", { ...t });
       }
-      counters.pdfTxnCount++;
+      counters.pdfTxnCount += 1;
     }
-    counters.parsedStatements++;
+    counters.parsedStatements += 1;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     await deps.emit({
@@ -2326,9 +2328,9 @@ function scrapeInboxRows(page: Page): Promise<InboxRow[]> {
     }
     return [...t.querySelectorAll("tbody tr")].map((tr: El) => {
       const cells = [...tr.querySelectorAll("td")] as El[];
-      const c0 = cells[0];
-      const c1 = cells[1];
-      const c2 = cells[2];
+      const [c0] = cells;
+      const [, c1] = cells;
+      const [, , c2] = cells;
       return {
         status: (c0?.innerText || "").replace(WS_RE, " ").trim(),
         date_short: (c1?.innerText || "").replace(WS_RE, " ").trim(),

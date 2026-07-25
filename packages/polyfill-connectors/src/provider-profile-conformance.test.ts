@@ -80,7 +80,12 @@ function deriveGovernorUsingConnectors(): string[] {
       names.push(entry);
     }
   }
-  return names.sort();
+  return names.sort((a, b) => {
+    if (a < b) {
+      return -1;
+    }
+    return a > b ? 1 : 0;
+  });
 }
 
 // ─── 1. Compile-time: missing profile is a BUILD ERROR ───────────────────────
@@ -135,7 +140,7 @@ for (const name of GOVERNOR_USING_CONNECTORS) {
     const calls = [...source.matchAll(callPattern)];
     assert.ok(calls.length > 0, `${name} must construct the shared governor (it is a governor-using connector)`);
     for (const match of calls) {
-      const body = match[1];
+      const [, body] = match;
       assert.ok(body, `${name}: governor call body must be captured`);
       assert.match(
         body,

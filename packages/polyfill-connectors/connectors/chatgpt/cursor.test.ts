@@ -46,7 +46,7 @@ function makeDetail(convoId: string, messageCount: number): ChatGptFetchResult {
   const mapping: Record<string, ChatGptNode> = {};
   const rootId = `${convoId}-root`;
   const ids: string[] = [];
-  for (let i = 0; i < messageCount; i++) {
+  for (let i = 0; i < messageCount; i += 1) {
     ids.push(`${convoId}-m${i}`);
   }
 
@@ -56,7 +56,7 @@ function makeDetail(convoId: string, messageCount: number): ChatGptFetchResult {
     parent: null,
     children: ids.slice(0, 1),
   };
-  for (let i = 0; i < ids.length; i++) {
+  for (let i = 0; i < ids.length; i += 1) {
     const id = ids[i];
     if (!id) {
       continue;

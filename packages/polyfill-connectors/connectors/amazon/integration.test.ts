@@ -393,7 +393,7 @@ test("processListOrder: parseable order date returns true and emits the order", 
 test("runYear emits bounded per-year unparseable-date SKIP_RESULT evidence with no raw order ids", () => {
   const src = readFileSync(AMAZON_INDEX_PATH, "utf8");
   // The count is accumulated from processListOrder's boolean result.
-  assert.match(src, /unparseableDateCount\+\+/);
+  assert.match(src, /unparseableDateCount\s*\+=\s*1/);
   // One bounded per-year SKIP_RESULT summary, gated on count > 0, count + total only.
   assert.match(src, /type:\s*"SKIP_RESULT"[\s\S]*?stream:\s*"orders"[\s\S]*?reason:\s*"unparseable_order_date"/);
   assert.match(src, /dropped \$\{unparseableDateCount\} order row/);

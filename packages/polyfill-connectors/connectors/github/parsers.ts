@@ -157,7 +157,7 @@ export function repoRecord(r: GitHubRepo): Record<string, unknown> {
 }
 
 export function starredRecord(entry: GitHubStarredEntry): Record<string, unknown> | null {
-  const repo = entry.repo;
+  const { repo } = entry;
   if (!repo) {
     return null;
   }
@@ -181,12 +181,12 @@ export function issueRecord(it: GitHubIssue): Record<string, unknown> {
     state: it.state ?? null,
     state_reason: it.state_reason ?? null,
     user_login: it.user?.login ?? null,
-    user_id: it.user?.id == null ? null : String(it.user.id),
+    user_id: it.user?.id === undefined ? null : String(it.user.id),
     assignees: assigneeNames(it.assignees),
     labels: labelNames(it.labels),
     milestone_title: it.milestone?.title ?? null,
     repository_full_name: it.repository?.full_name ?? repoFullFromUrl(it.repository_url),
-    repository_id: it.repository?.id == null ? null : String(it.repository.id),
+    repository_id: it.repository?.id === undefined ? null : String(it.repository.id),
     html_url: it.html_url ?? null,
     comments: it.comments ?? null,
     reactions_total_count: it.reactions?.total_count ?? null,
@@ -208,7 +208,7 @@ function pullRequestCoreFields(it: GitHubIssue): Record<string, unknown> {
     state: it.state ?? null,
     state_reason: it.state_reason ?? null,
     user_login: it.user?.login ?? null,
-    user_id: it.user?.id == null ? null : String(it.user.id),
+    user_id: it.user?.id === undefined ? null : String(it.user.id),
     assignees: assigneeNames(it.assignees),
     labels: labelNames(it.labels),
     milestone_title: it.milestone?.title ?? null,
@@ -245,7 +245,7 @@ export function pullRequestRecord(
   return {
     ...pullRequestCoreFields(it),
     repository_full_name: repoFull,
-    repository_id: detail?.base?.repo?.id == null ? null : String(detail.base.repo.id),
+    repository_id: detail?.base?.repo?.id === undefined ? null : String(detail.base.repo.id),
     ...pullRequestDetailFields(it, detail),
   };
 }

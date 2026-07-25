@@ -30,7 +30,7 @@ export interface SendGovernor {
    * The single pre-flight wait. Resolves when the request may be transmitted.
    * This is the ONLY sanctioned `await`-before-send in a request path.
    */
-  acquire(): Promise<void>;
+  acquire: () => Promise<void>;
 }
 
 /**
@@ -47,7 +47,7 @@ export interface SendDelayHint {
    * admitted now. Pure of any sleep: the caller — the single governor — owns
    * the wait. Returns 0 when no delay is owed.
    */
-  nextDelayMs(): number;
+  nextDelayMs: () => number;
 }
 
 /**
