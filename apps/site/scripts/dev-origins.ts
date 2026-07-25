@@ -3,7 +3,12 @@
 
 import { hostname, networkInterfaces } from "node:os";
 
-function normalizeOriginHost(origin) {
+interface MinimalNetworkInterfaceInfo {
+  address: string;
+  family: "IPv4" | "IPv6";
+}
+
+function normalizeOriginHost(origin: string): string | null {
   const trimmed = origin.trim();
   if (!trimmed) {
     return null;
@@ -18,22 +23,25 @@ function normalizeOriginHost(origin) {
   }
 }
 
-export function parseAllowedDevOrigins(value) {
+export function parseAllowedDevOrigins(value: string | undefined): string[] {
   if (!value) {
     return [];
   }
-  return value.split(",").map(normalizeOriginHost).filter(Boolean);
+  return value
+    .split(",")
+    .map(normalizeOriginHost)
+    .filter((host): host is string => Boolean(host));
 }
 
-function parseIpv4(address) {
+function parseIpv4(address: string): [number, number, number, number] | null {
   const parts = address.split(".").map((part) => Number.parseInt(part, 10));
   if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
     return null;
   }
-  return parts;
+  return parts as [number, number, number, number];
 }
 
-export function isLocalDevIpv4(address) {
+export function isLocalDevIpv4(address: string): boolean {
   const parts = parseIpv4(address);
   if (!parts) {
     return false;
@@ -49,8 +57,10 @@ export function isLocalDevIpv4(address) {
   );
 }
 
-function localInterfaceHosts(interfaces = networkInterfaces()) {
-  const hosts = [];
+function localInterfaceHosts(
+  interfaces: Record<string, MinimalNetworkInterfaceInfo[] | undefined> = networkInterfaces()
+) {
+  const hosts: string[] = [];
   for (const entries of Object.values(interfaces)) {
     for (const entry of entries ?? []) {
       if (entry.family === "IPv4" && isLocalDevIpv4(entry.address)) {
@@ -65,6 +75,10 @@ export function collectAllowedDevOrigins({
   envValue = process.env.PDPP_WEB_ALLOWED_DEV_ORIGINS,
   interfaces = networkInterfaces(),
   hostName = hostname(),
+}: {
+  envValue?: string;
+  hostName?: string;
+  interfaces?: Record<string, MinimalNetworkInterfaceInfo[] | undefined>;
 } = {}) {
   const origins = new Set(parseAllowedDevOrigins(envValue));
   for (const address of localInterfaceHosts(interfaces)) {

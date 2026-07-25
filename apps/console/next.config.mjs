@@ -3,7 +3,7 @@
 
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { collectAllowedDevOrigins } from "./scripts/dev-origins.mjs";
+import { collectAllowedDevOrigins } from "./scripts/dev-origins.ts";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 

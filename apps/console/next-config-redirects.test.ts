@@ -5,9 +5,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import nextConfig from "./next.config.mjs";
 
-const redirects = await nextConfig.redirects();
+interface RedirectRule {
+  destination: string;
+  permanent?: boolean;
+  source: string;
+}
 
-function matchRule(rule, pathname) {
+function matchRule(rule: RedirectRule, pathname: string): string | null {
   const { source, destination } = rule;
 
   if (source.endsWith("/:rest*")) {
@@ -26,7 +30,7 @@ function matchRule(rule, pathname) {
   return pathname === source ? destination : null;
 }
 
-function resolve(pathname) {
+function resolve(redirects: RedirectRule[], pathname: string) {
   for (const rule of redirects) {
     const destination = matchRule(rule, pathname);
     if (destination !== null) {
@@ -36,6 +40,8 @@ function resolve(pathname) {
   return null;
 }
 
-test("configured redirects resolve correctly", () => {
-  assert.equal(resolve("/favicon.ico")?.destination, "/brand/pdpp-favicon.svg");
+test("configured redirects resolve correctly", async () => {
+  assert.ok(nextConfig.redirects, "next.config.mjs must declare redirects()");
+  const redirects = await nextConfig.redirects();
+  assert.equal(resolve(redirects, "/favicon.ico")?.destination, "/brand/pdpp-favicon.svg");
 });

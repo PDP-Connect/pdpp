@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 // biome-ignore lint/correctness/noUnresolvedImports: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
 import { createMDX } from "fumadocs-mdx/next";
-import { collectAllowedDevOrigins } from "./scripts/dev-origins.mjs";
+import { collectAllowedDevOrigins } from "./scripts/dev-origins.ts";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const withMDX = createMDX();

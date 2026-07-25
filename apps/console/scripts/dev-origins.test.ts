@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { collectAllowedDevOrigins, isLocalDevIpv4, parseAllowedDevOrigins } from "./dev-origins.mjs";
+import { collectAllowedDevOrigins, isLocalDevIpv4, parseAllowedDevOrigins } from "./dev-origins.ts";
 
 test("parseAllowedDevOrigins accepts hostnames, URLs, and wildcards", () => {
   assert.deepEqual(parseAllowedDevOrigins("https://pdpp.test:3000, *.pdpp.test, 192.168.0.2"), [
