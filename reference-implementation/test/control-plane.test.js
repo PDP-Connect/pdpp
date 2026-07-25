@@ -24,7 +24,7 @@ import { getDb } from '../server/db.js';
 import { emitSpineEvent } from '../lib/spine.ts';
 import { runConnector } from '../runtime/index.js';
 import { canonicalConnectorKey } from '../server/connector-key.js';
-import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
+import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');

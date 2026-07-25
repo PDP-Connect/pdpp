@@ -34,7 +34,7 @@ import { closeDb, initDb } from '../server/db.js';
 import { ingestRecord } from '../server/records.js';
 import { registerConnector } from '../server/auth.js';
 import { listGrantedConnectionsForStream } from '../server/connection-identity.js';
-import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
+import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.ts';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from '../server/owner-auth.ts';
 import { startServer } from '../server/index.js';
 

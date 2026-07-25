@@ -17,7 +17,7 @@ import test from 'node:test';
 import { getDb } from '../server/db.js';
 import { canonicalConnectorKey } from '../server/connector-key.js';
 import { startServer } from '../server/index.js';
-import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
+import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.ts';
 
 const INSTANCE_ID = 'cin_local_device_control_matrix';
 const OWNER_ID = 'owner_local';

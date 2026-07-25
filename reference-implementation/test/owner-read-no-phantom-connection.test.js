@@ -16,7 +16,7 @@ import test from 'node:test';
 
 import { issueOwnerToken, registerConnector } from '../server/auth.js';
 import { startServer } from '../server/index.js';
-import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
+import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.ts';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from '../server/owner-auth.ts';
 
 const CONNECTOR_ID = 'test-manual-artifact';

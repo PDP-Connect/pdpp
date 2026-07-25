@@ -57,7 +57,7 @@ import { closeDb, getDb, initDb } from '../server/db.js';
 import { reconcileConnectorSummaryEvidence } from '../server/connector-summary-evidence-engine.ts';
 import { getConnectorSummaryEvidence } from '../server/connector-summary-read-model.ts';
 import { getConnectorSummaryForRoute } from '../server/ref-control.ts';
-import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
+import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.ts';
 
 const NOW = '2026-07-17T00:00:00.000Z';
 

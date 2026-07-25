@@ -23,7 +23,7 @@ import Database from 'better-sqlite3';
 
 import { initDb, closeDb } from '../server/db.js';
 import { makeTemporaryDbPath } from './helpers/temp-dir.js';
-import { makeDefaultAccountConnectorInstanceId } from '../server/stores/connector-instance-store.js';
+import { makeDefaultAccountConnectorInstanceId } from '../server/stores/connector-instance-store.ts';
 
 function defaultAccountInstanceId(connectorId) {
   return makeDefaultAccountConnectorInstanceId('owner_local', connectorId);

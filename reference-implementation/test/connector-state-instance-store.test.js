@@ -10,7 +10,7 @@ import Database from 'better-sqlite3';
 
 import { closeDb, getDb, initDb } from '../server/db.js';
 import { createSqliteConnectorStateStore } from '../server/stores/connector-state-store.ts';
-import { makeDefaultAccountConnectorInstanceId } from '../server/stores/connector-instance-store.js';
+import { makeDefaultAccountConnectorInstanceId } from '../server/stores/connector-instance-store.ts';
 import { getSyncState, putSyncState } from '../server/records.js';
 
 test.afterEach(() => {

@@ -27,7 +27,7 @@ import { ingestRecord } from '../server/records.js';
 import { registerConnector } from '../server/auth.js';
 import { runLexicalSearch } from '../server/search.js';
 import { buildSemanticSearchPlanForGrant } from '../server/search-semantic.js';
-import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
+import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.ts';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from '../server/owner-auth.ts';
 
 const CONNECTOR_ID = 'search-fan-in';

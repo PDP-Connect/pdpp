@@ -22,8 +22,8 @@ import { fileURLToPath } from 'node:url';
 import { canonicalConnectorKeyFromManifest } from '../server/connector-key.js';
 import { getDb } from '../server/db.js';
 import { startServer } from '../server/index.js';
-import { createSqliteConnectorDetailGapStore } from '../server/stores/connector-detail-gap-store.js';
-import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
+import { createSqliteConnectorDetailGapStore } from '../server/stores/connector-detail-gap-store.ts';
+import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');

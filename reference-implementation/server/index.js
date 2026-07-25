@@ -83,7 +83,7 @@ import {
   createSqliteConnectorInstanceStore,
   makeConnectorInstanceSourceBindingKey,
   resolveOwnerConnectorInstanceNamespace,
-} from './stores/connector-instance-store.js';
+} from './stores/connector-instance-store.ts';
 import {
   createPostgresAcquisitionBatchStore,
   createSqliteAcquisitionBatchStore,
@@ -104,7 +104,7 @@ import { resolveProviderAuthRunEnv } from './stores/provider-auth-run-credential
 import { resolveStaticSecretRunEnv } from './stores/static-secret-run-credentials.js';
 import { postgresPersistContentAddressedBlob } from './postgres-records.js';
 import { createConsentStore } from './stores/consent-store.ts';
-import { createOwnerDeviceAuthStore } from './stores/owner-device-auth-store.js';
+import { createOwnerDeviceAuthStore } from './stores/owner-device-auth-store.ts';
 import {
   buildEventPayload,
   executeApplyGrantRevoke,
@@ -135,7 +135,7 @@ import {
 } from './records.js';
 import { DeviceBatchConflictError, createDeviceExporterStore, getDefaultDeviceExporterStore } from './stores/device-exporter-store.ts';
 import { withConnectorInstanceWrite } from './connector-instance-write-coordinator.ts';
-import { getDefaultConnectorDetailGapStore } from './stores/connector-detail-gap-store.js';
+import { getDefaultConnectorDetailGapStore } from './stores/connector-detail-gap-store.ts';
 import {
   createWebPushSubscriptionStore,
   fanoutEscalationWebPush,

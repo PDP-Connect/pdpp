@@ -41,7 +41,7 @@ import test from 'node:test';
 import { closeDb, getDb, initDb } from '../server/db.js';
 import { getConnectorDetail } from '../server/ref-control.ts';
 import { rebuildRetainedSize } from '../server/retained-size-read-model.js';
-import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
+import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.ts';
 
 const CONNECTOR_ID = 'https://test.pdpp.dev/connectors/detail-connection-resolution';
 const WORK_INSTANCE_ID = 'cin_test_detail_resolution_work';

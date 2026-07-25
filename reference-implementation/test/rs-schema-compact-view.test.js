@@ -34,7 +34,7 @@ import test from 'node:test';
 import { ingestRecord } from '../server/records.js';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from '../server/owner-auth.ts';
 import { startServer } from '../server/index.js';
-import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
+import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.ts';
 
 // Documented byte budgets for the compact REST schema view. These are the
 // regression guards: if a future change re-introduces verbatim-by-default on

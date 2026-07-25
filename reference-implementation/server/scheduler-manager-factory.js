@@ -15,7 +15,7 @@
 import { buildConnectionScopedRunEnvResolver } from './connection-scoped-run-env.js';
 import { getConnectorManifest } from './auth.js';
 import { canonicalConnectorKey } from './connector-key.js';
-import { getDefaultConnectorDetailGapStore } from './stores/connector-detail-gap-store.js';
+import { getDefaultConnectorDetailGapStore } from './stores/connector-detail-gap-store.ts';
 import {
   fanoutEscalationWebPush,
   fanoutPendingInteractionWebPush,

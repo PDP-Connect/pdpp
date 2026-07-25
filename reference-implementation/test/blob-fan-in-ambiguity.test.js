@@ -24,7 +24,7 @@ import assert from 'node:assert/strict';
 
 import { registerConnector } from '../server/auth.js';
 import { ingestRecord } from '../server/records.js';
-import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
+import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.ts';
 import { exec, referenceQueries } from '../lib/db.ts';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from '../server/owner-auth.ts';
 

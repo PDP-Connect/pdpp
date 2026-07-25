@@ -25,7 +25,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { closeDb, initDb } from '../server/db.js';
-import { createSqliteConnectorDetailGapStore } from '../server/stores/connector-detail-gap-store.js';
+import { createSqliteConnectorDetailGapStore } from '../server/stores/connector-detail-gap-store.ts';
 import {
   classifyRecoveryError,
   isNonTransientError,

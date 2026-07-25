@@ -9,7 +9,7 @@ import test from 'node:test';
 
 import { closeDb, getDb, initDb } from '../server/db.js';
 import { invalidateConnectorSummariesCache, listConnectorSummaries } from '../server/ref-control.ts';
-import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
+import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.ts';
 
 const OWNER_SUBJECT_ID = 'owner_local';
 const CONNECTORS = ['heb', 'reddit'];

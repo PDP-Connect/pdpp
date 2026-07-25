@@ -95,7 +95,7 @@ import {
   resolveStorageConnectorInstanceId,
 } from './storage-utils.ts';
 import { getDefaultConnectorStateStore } from './stores/connector-state-store.ts';
-import { makeDefaultAccountConnectorInstanceId } from './stores/connector-instance-store.js';
+import { makeDefaultAccountConnectorInstanceId } from './stores/connector-instance-store.ts';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
 import {
   applyDatasetSummaryRecordDelta,
@@ -120,7 +120,7 @@ import {
 import {
   createPostgresConnectorInstanceStore,
   createSqliteConnectorInstanceStore,
-} from './stores/connector-instance-store.js';
+} from './stores/connector-instance-store.ts';
 import {
   AmbiguousConnectionError,
   lookupConnectionDisplayName,

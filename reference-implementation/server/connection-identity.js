@@ -21,7 +21,7 @@ import {
 import {
   createPostgresConnectorInstanceStore,
   createSqliteConnectorInstanceStore,
-} from './stores/connector-instance-store.js';
+} from './stores/connector-instance-store.ts';
 
 /**
  * Look up the owner-facing display name for a pinned connector-instance

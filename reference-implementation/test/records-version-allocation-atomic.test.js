@@ -47,7 +47,7 @@ import assert from 'node:assert/strict';
 import { closeDb, getDb, initDb } from '../server/db.js';
 import { execReturningOne, referenceQueries } from '../lib/db.ts';
 import { deleteRecord, ingestRecord } from '../server/records.js';
-import { makeDefaultAccountConnectorInstanceId } from '../server/stores/connector-instance-store.js';
+import { makeDefaultAccountConnectorInstanceId } from '../server/stores/connector-instance-store.ts';
 
 const CONNECTOR_ID = 'https://test.pdpp.org/connectors/version-allocation';
 const CONNECTOR_INSTANCE_ID = 'cin_test_version_allocation';

@@ -29,7 +29,7 @@
 
 import test from 'node:test';
 
-import { makeDefaultAccountConnectorInstanceId } from '../server/stores/connector-instance-store.js';
+import { makeDefaultAccountConnectorInstanceId } from '../server/stores/connector-instance-store.ts';
 import {
   CONFORMANCE_CONNECTOR_ID,
   runAggregationRowsConformance,

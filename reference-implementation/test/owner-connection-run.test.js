@@ -42,7 +42,7 @@ import { fileURLToPath } from 'node:url';
 import { listSpineEventsPage } from '../lib/spine.ts';
 import { canonicalConnectorKey } from '../server/connector-key.js';
 import { startServer } from '../server/index.js';
-import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
+import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');

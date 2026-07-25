@@ -17,7 +17,7 @@ import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from '../server/owner-auth.ts';
 import {
   createSqliteConnectorInstanceStore,
   makeDefaultAccountConnectorInstanceId,
-} from '../server/stores/connector-instance-store.js';
+} from '../server/stores/connector-instance-store.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');

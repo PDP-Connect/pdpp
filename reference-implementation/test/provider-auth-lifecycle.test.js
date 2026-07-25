@@ -26,7 +26,7 @@ import test from 'node:test';
 
 import { listSpineEventsPage } from '../lib/spine.ts';
 import { startServer } from '../server/index.js';
-import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
+import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.ts';
 import { PROVIDER_AUTH_LIFECYCLE_PROVEN_CONNECTOR_KEYS } from '../server/connection-setup-plan.ts';
 
 const OWNER_SUBJECT_ID = 'owner_local';

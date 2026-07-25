@@ -4,7 +4,7 @@
 import { canonicalConnectorKey } from './connector-key.js';
 import { resolveRequestConnectionId } from './connection-id-request.js';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
-import { resolveOwnerConnectorInstanceNamespace } from './stores/connector-instance-store.js';
+import { resolveOwnerConnectorInstanceNamespace } from './stores/connector-instance-store.ts';
 import {
   createRequestConnectorInstanceStore,
   storageTargetForConnectorNamespace,

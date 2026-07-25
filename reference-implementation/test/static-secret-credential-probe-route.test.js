@@ -21,7 +21,7 @@ import { listSpineEventsPage } from '../lib/spine.ts';
 import { startServer } from '../server/index.js';
 import { CREDENTIAL_ENCRYPTION_KEY_ENV } from '../server/stores/credential-encryption.js';
 import { createSqliteConnectorInstanceCredentialStore } from '../server/stores/connector-instance-credential-store.js';
-import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
+import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.ts';
 
 const OWNER_PASSWORD = 'static-secret-probe-owner-password';
 const OWNER_SUBJECT_ID = 'owner_local';

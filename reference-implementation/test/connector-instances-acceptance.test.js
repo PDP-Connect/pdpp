@@ -14,7 +14,7 @@ import { closeDb, getDb, initDb } from '../server/db.js';
 import { getSyncState, ingestRecord, queryRecords } from '../server/records.js';
 import { createSqliteBlobStore } from '../server/stores/blob-store.ts';
 import { createSqliteBrowserSurfaceLeaseStore } from '../server/stores/browser-surface-lease-store.ts';
-import { createSqliteConnectorInstanceStore, makeDefaultAccountConnectorInstanceId } from '../server/stores/connector-instance-store.js';
+import { createSqliteConnectorInstanceStore, makeDefaultAccountConnectorInstanceId } from '../server/stores/connector-instance-store.ts';
 import { createSqliteConnectorStateStore } from '../server/stores/connector-state-store.ts';
 import { createSqliteDeviceExporterStore } from '../server/stores/device-exporter-store.ts';
 import { createSqliteSchedulerStore } from '../server/stores/scheduler-store.ts';

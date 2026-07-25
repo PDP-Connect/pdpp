@@ -28,7 +28,7 @@ import { resolveDefaultConnectorPath } from '../runtime/controller.ts';
 import { createTraceContext, emitSpineEvent } from '../lib/spine.ts';
 import { validateRequest, listOperations } from '@pdpp/reference-contract';
 import { canonicalConnectorKey } from '../server/connector-key.js';
-import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
+import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.ts';
 import { getDefaultConnectorAttentionStore } from '../server/stores/connector-attention-store.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));

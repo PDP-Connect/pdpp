@@ -61,7 +61,7 @@ import {
 import {
   createPostgresConnectorInstanceStore,
   makeDefaultAccountConnectorInstanceId,
-} from '../server/stores/connector-instance-store.js';
+} from '../server/stores/connector-instance-store.ts';
 import {
   shouldAutoReconcilePolyfillManifests,
   startServer,

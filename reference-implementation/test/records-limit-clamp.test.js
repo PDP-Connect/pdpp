@@ -31,7 +31,7 @@ import {
 } from '../server/records.js';
 import { registerConnector } from '../server/auth.js';
 import { resolveFanInBindings } from '../server/connection-identity.js';
-import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
+import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.ts';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from '../server/owner-auth.ts';
 import {
   CANONICAL_WARNING_CODES,

@@ -58,7 +58,7 @@ import {
   listConnectorSummaries,
   listPublicCatalogConnectorIds,
 } from '../server/ref-control.ts';
-import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
+import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.ts';
 import { canonicalConnectorKey } from '../server/connector-key.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));

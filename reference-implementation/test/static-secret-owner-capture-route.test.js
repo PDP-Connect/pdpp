@@ -13,7 +13,7 @@ import {
 import {
   createSqliteConnectorInstanceCredentialStore,
 } from '../server/stores/connector-instance-credential-store.js';
-import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
+import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.ts';
 
 const OWNER_PASSWORD = 'static-secret-capture-owner-password';
 const OWNER_SUBJECT_ID = 'owner_local';

@@ -3,10 +3,36 @@
 
 import { createHash } from 'node:crypto';
 
+// Type definitions for store interface
+interface DetailGap {
+  gap_id: string;
+  connector_id: string;
+  connector_instance_id: string;
+  grant_id: string | null;
+  source: unknown;
+  stream: string;
+  parent_stream: string | null;
+  record_key: string | null;
+  detail_locator: unknown;
+  list_cursor: unknown;
+  scope: unknown;
+  reason: string | null;
+  status: string;
+  attempt_count: number;
+  last_attempt_at: string | null;
+  next_attempt_after: string | null;
+  last_error: unknown;
+  discovered_run_id: string | null;
+  last_run_id: string | null;
+  recovered_run_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 import { execDynamicSqlAcknowledged, iterateDynamicSqlAcknowledged } from '../../lib/db.ts';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from '../owner-auth.ts';
 import { getStorageBackendKind, isPostgresStorageBackend, postgresQuery } from '../postgres-storage.js';
-import { makeDefaultAccountConnectorInstanceId } from './connector-instance-store.js';
+import { makeDefaultAccountConnectorInstanceId } from './connector-instance-store.ts';
 
 const VALID_STATUSES = new Set(['pending', 'in_progress', 'recovered', 'terminal']);
 const SECRET_KEY_PATTERN = /(authorization|bearer|cookie|token|secret|password|credential|request_body|body|payload|raw|private)/i;
@@ -20,15 +46,15 @@ const PENDING_GAP_MAX_AGE_BUCKETS = 8;
 const SAFE_ROUTE_TEMPLATE_KEY_PATTERN = /^(endpoint_route|route_template)$/i;
 const SAFE_ROUTE_TEMPLATE_PATTERN = /^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS) \/[A-Za-z0-9._~!$&'()*+,;=:@/%{}-]+$/;
 
-function nowIso() {
+function nowIso(): string {
   return new Date().toISOString();
 }
 
-function nonEmptyString(value) {
+function nonEmptyString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
-function hashIdentity(parts) {
+function hashIdentity(parts: unknown): string {
   return `gap_${createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, 32)}`;
 }
 
@@ -54,22 +80,22 @@ function hashIdentity(parts) {
  * locator-only JSON, storage-backend JSON text canonicalization remains the
  * uniqueness authority.
  */
-export function detailGapIdentityKey(recordKey, detailLocatorText) {
+export function detailGapIdentityKey(recordKey: unknown, detailLocatorText: unknown): string {
   const key = nonEmptyString(recordKey);
   if (key) return `key:${key}`;
   return `loc:${detailLocatorText == null ? '' : detailLocatorText}`;
 }
 
-function defaultConnectorInstanceId(connectorId) {
+function defaultConnectorInstanceId(connectorId: string): string {
   return makeDefaultAccountConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
 }
 
-function safeUrlSummary(value) {
+function safeUrlSummary(value: unknown): Record<string, string> | string {
   try {
-    const parsed = new URL(value);
+    const parsed = new URL(value as string);
     return {
       scheme: parsed.protocol.replace(/:$/, ''),
-      host: parsed.hostname,
+      host: parsed.hostname || '',
       path_hash: createHash('sha256').update(parsed.pathname || '/').digest('hex').slice(0, 16),
     };
   } catch {
@@ -77,30 +103,30 @@ function safeUrlSummary(value) {
   }
 }
 
-function isSafeRouteTemplate(value, keyName) {
-  return SAFE_ROUTE_TEMPLATE_KEY_PATTERN.test(keyName)
-    && SAFE_ROUTE_TEMPLATE_PATTERN.test(value)
-    && !value.includes('?')
-    && !value.includes('#')
-    && !value.includes('//');
+function isSafeRouteTemplate(value: unknown, keyName: unknown): boolean {
+  return SAFE_ROUTE_TEMPLATE_KEY_PATTERN.test(keyName as string)
+    && SAFE_ROUTE_TEMPLATE_PATTERN.test(value as string)
+    && !(value as string).includes('?')
+    && !(value as string).includes('#')
+    && !(value as string).includes('//');
 }
 
-function isSimpleMetadataValue(value) {
+function isSimpleMetadataValue(value: unknown): boolean {
   return value == null || typeof value === 'boolean' || typeof value === 'number';
 }
 
-function sanitizeStringMetadata(value, keyName) {
+function sanitizeStringMetadata(value: string, keyName: unknown): unknown {
   if (isSafeRouteTemplate(value, keyName)) return value;
-  if (/^https?:\/\//i.test(value) || URL_KEY_PATTERN.test(keyName)) return safeUrlSummary(value);
+  if (/^https?:\/\//i.test(value) || URL_KEY_PATTERN.test(keyName as string)) return safeUrlSummary(value);
   return value.length > MAX_STRING_LENGTH ? `${value.slice(0, MAX_STRING_LENGTH - 1)}…` : value;
 }
 
-function sanitizeArrayMetadata(value, depth, keyName) {
-  return value.slice(0, MAX_ARRAY_LENGTH).map((entry) => sanitizeDetailGapMetadata(entry, depth + 1, keyName));
+function sanitizeArrayMetadata(value: unknown[], depth: number, keyName: unknown): unknown[] {
+  return value.slice(0, MAX_ARRAY_LENGTH).map((entry) => sanitizeDetailGapMetadata(entry, depth + 1, keyName as string));
 }
 
-function sanitizeObjectMetadata(value, depth) {
-  const out = {};
+function sanitizeObjectMetadata(value: Record<string, unknown>, depth: number): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(value).slice(0, MAX_OBJECT_KEYS)) {
     if (SECRET_KEY_PATTERN.test(key)) {
       out[key] = '[redacted]';
@@ -111,23 +137,23 @@ function sanitizeObjectMetadata(value, depth) {
   return out;
 }
 
-export function sanitizeDetailGapMetadata(value, depth = 0, keyName = '') {
+export function sanitizeDetailGapMetadata(value: unknown, depth: number = 0, keyName: string = ''): unknown {
   if (isSimpleMetadataValue(value)) return value;
   if (typeof value === 'string') return sanitizeStringMetadata(value, keyName);
   if (depth >= MAX_DEPTH) return '[truncated]';
   if (Array.isArray(value)) return sanitizeArrayMetadata(value, depth, keyName);
   if (typeof value !== 'object') return null;
-  return sanitizeObjectMetadata(value, depth);
+  return sanitizeObjectMetadata(value as Record<string, unknown>, depth);
 }
 
-function encodeJson(value) {
+function encodeJson(value: unknown): string | null {
   return value == null ? null : JSON.stringify(value);
 }
 
-function parseJson(value) {
+function parseJson(value: unknown): unknown {
   if (value == null) return null;
   if (typeof value === 'object') return value;
-  return JSON.parse(value);
+  return JSON.parse(value as string);
 }
 
 function deriveGapIdentity(input) {
@@ -476,7 +502,7 @@ async function requeuePostgresQuarantinedRows(rows, scope) {
   return { matched: rows.length, requeued };
 }
 
-export function createSqliteConnectorDetailGapStore() {
+export function createSqliteConnectorDetailGapStore(): unknown {
   return {
     async upsertPendingGap(input) {
       const gap = normalizeGapInput(input);
@@ -777,7 +803,7 @@ export function createSqliteConnectorDetailGapStore() {
   };
 }
 
-export function createPostgresConnectorDetailGapStore() {
+export function createPostgresConnectorDetailGapStore(): unknown {
   return {
     async upsertPendingGap(input) {
       const gap = normalizeGapInput(input);
@@ -1009,14 +1035,14 @@ export function createPostgresConnectorDetailGapStore() {
   };
 }
 
-export function createConnectorDetailGapStore() {
+export function createConnectorDetailGapStore(): unknown {
   return isPostgresStorageBackend() ? createPostgresConnectorDetailGapStore() : createSqliteConnectorDetailGapStore();
 }
 
-let defaultStore = null;
-let defaultBackend = null;
+let defaultStore: unknown = null;
+let defaultBackend: string | null = null;
 
-export function getDefaultConnectorDetailGapStore() {
+export function getDefaultConnectorDetailGapStore(): unknown {
   const backend = getStorageBackendKind();
   if (!defaultStore || defaultBackend !== backend) {
     defaultStore = createConnectorDetailGapStore();

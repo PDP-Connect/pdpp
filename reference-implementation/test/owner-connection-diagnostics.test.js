@@ -42,8 +42,8 @@ import { fileURLToPath } from 'node:url';
 import { listSpineEventsPage } from '../lib/spine.ts';
 import { canonicalConnectorKey } from '../server/connector-key.js';
 import { startServer } from '../server/index.js';
-import { getDefaultConnectorDetailGapStore } from '../server/stores/connector-detail-gap-store.js';
-import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
+import { getDefaultConnectorDetailGapStore } from '../server/stores/connector-detail-gap-store.ts';
+import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');

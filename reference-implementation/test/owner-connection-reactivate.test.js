@@ -38,7 +38,7 @@ import { startServer } from '../server/index.js';
 import { ingestRecord } from '../server/records.js';
 import {
   createSqliteConnectorInstanceStore,
-} from '../server/stores/connector-instance-store.js';
+} from '../server/stores/connector-instance-store.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');

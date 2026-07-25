@@ -48,7 +48,7 @@ import {
   passesRequestFilters,
 } from './record-filters.js';
 import { sqliteCountIndexableTextValues } from './search-index-counts.ts';
-import { makeDefaultAccountConnectorInstanceId } from './stores/connector-instance-store.js';
+import { makeDefaultAccountConnectorInstanceId } from './stores/connector-instance-store.ts';
 import {
   listActiveOwnerBindingsForConnectors,
   resolveDisplayNamesForBindings,

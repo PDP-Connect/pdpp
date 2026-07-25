@@ -16,7 +16,7 @@
 
 import test from 'node:test';
 
-import { makeDefaultAccountConnectorInstanceId } from '../server/stores/connector-instance-store.js';
+import { makeDefaultAccountConnectorInstanceId } from '../server/stores/connector-instance-store.ts';
 import { CONFORMANCE_CONNECTOR_ID } from './helpers/aggregation-rows-conformance.js';
 import { runAggregationRowsConformance } from './helpers/aggregation-rows-conformance.js';
 import { createSqliteAggregationRowsDriver } from './helpers/sqlite-aggregation-rows-driver.js';

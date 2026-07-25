@@ -16,7 +16,7 @@ import {
 import { lexicalIndexBackfillForManifest } from '../server/search.js';
 import { withConnectorInstanceWrite } from '../server/connector-instance-write-coordinator.ts';
 import { closePostgresStorage, initPostgresStorage, postgresQuery } from '../server/postgres-storage.js';
-import { createPostgresConnectorInstanceStore, createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
+import { createPostgresConnectorInstanceStore, createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.ts';
 import { dedicatedPostgresTestUrl } from './helpers/dedicated-postgres-test-url.js';
 
 const DEDICATED_POSTGRES_URL = dedicatedPostgresTestUrl(process.env.PDPP_TEST_POSTGRES_URL);

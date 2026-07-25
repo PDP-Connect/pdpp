@@ -28,7 +28,7 @@ import { startServer } from '../server/index.js';
 import { getDb } from '../server/db.js';
 import { canonicalConnectorKey } from '../server/connector-key.js';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from '../server/owner-auth.ts';
-import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
+import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.ts';
 import { createTraceContext, emitSpineEvent } from '../lib/spine.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));

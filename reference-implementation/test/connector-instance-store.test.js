@@ -11,7 +11,7 @@ import {
   createSqliteConnectorInstanceStore,
   makeDefaultAccountConnectorInstanceId,
   resolveOwnerConnectorInstanceNamespace,
-} from '../server/stores/connector-instance-store.js';
+} from '../server/stores/connector-instance-store.ts';
 import {
   deleteConnectionRecordRowsSqlite,
   enumerateConnectionStreams,

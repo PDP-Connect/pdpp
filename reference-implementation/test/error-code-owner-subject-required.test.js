@@ -27,7 +27,7 @@ import test from 'node:test';
 import {
   ConnectorInstanceResolutionError,
   resolveOwnerConnectorInstanceNamespace,
-} from '../server/stores/connector-instance-store.js';
+} from '../server/stores/connector-instance-store.ts';
 
 const STORE_SENTINEL = { __brand: 'connector-instance-store-sentinel' };
 

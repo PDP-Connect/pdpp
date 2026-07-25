@@ -31,7 +31,7 @@ import { join } from 'node:path';
 import { closeDb, getDb, initDb } from '../server/db.js';
 import { registerConnector } from '../server/auth.js';
 import { createSqliteSchedulerStore } from '../server/stores/scheduler-store.ts';
-import { makeDefaultAccountConnectorInstanceId } from '../server/stores/connector-instance-store.js';
+import { makeDefaultAccountConnectorInstanceId } from '../server/stores/connector-instance-store.ts';
 
 const SEMANTIC_CONNECTOR = 'https://test.pdpp.org/connectors/semantic-surface';
 

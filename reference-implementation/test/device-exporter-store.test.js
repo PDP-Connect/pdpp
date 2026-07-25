@@ -13,7 +13,7 @@ import {
 import {
   createPostgresConnectorInstanceStore,
   createSqliteConnectorInstanceStore,
-} from '../server/stores/connector-instance-store.js';
+} from '../server/stores/connector-instance-store.ts';
 import { closePostgresStorage, initPostgresStorage, postgresQuery } from '../server/postgres-storage.js';
 
 const NOW = '2026-04-30T12:00:00.000Z';

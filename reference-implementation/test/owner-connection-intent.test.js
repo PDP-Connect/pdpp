@@ -44,7 +44,7 @@ import { classifyConnectorIntentModality } from '../server/connection-setup-plan
 import { canonicalConnectorKey } from '../server/connector-key.js';
 import { startServer } from '../server/index.js';
 import { listSpineEventsPage } from '../lib/spine.ts';
-import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
+import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.ts';
 
 const OWNER_SUBJECT_ID = 'owner_local';
 const PROTOCOL_HEADERS = { 'X-PDPP-Collector-Protocol': COLLECTOR_PROTOCOL_VERSION };

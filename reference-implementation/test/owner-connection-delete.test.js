@@ -58,7 +58,7 @@ import { ingestRecord } from '../server/records.js';
 import {
   createSqliteConnectorInstanceStore,
   makeDefaultAccountConnectorInstanceId,
-} from '../server/stores/connector-instance-store.js';
+} from '../server/stores/connector-instance-store.ts';
 import { createSqliteSchedulerStore } from '../server/stores/scheduler-store.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));

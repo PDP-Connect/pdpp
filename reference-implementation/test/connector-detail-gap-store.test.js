@@ -18,7 +18,7 @@ import {
   createPostgresConnectorDetailGapStore,
   createSqliteConnectorDetailGapStore,
   sanitizeDetailGapMetadata,
-} from '../server/stores/connector-detail-gap-store.js';
+} from '../server/stores/connector-detail-gap-store.ts';
 import { runConnector } from '../runtime/index.js';
 
 function withTempDb(fn) {

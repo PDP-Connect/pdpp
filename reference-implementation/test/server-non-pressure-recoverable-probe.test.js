@@ -22,7 +22,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { closeDb, initDb } from '../server/db.js';
-import { createSqliteConnectorDetailGapStore } from '../server/stores/connector-detail-gap-store.js';
+import { createSqliteConnectorDetailGapStore } from '../server/stores/connector-detail-gap-store.ts';
 import { SOURCE_PRESSURE_GAP_REASONS } from '../runtime/scheduler-source-pressure-cooldown.ts';
 
 // ─── helper: the handler logic extracted for testing ────────────────────────

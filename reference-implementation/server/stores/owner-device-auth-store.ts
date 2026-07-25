@@ -37,7 +37,7 @@ import {
  *
  * @returns {OwnerDeviceAuthStore}
  */
-export function createOwnerDeviceAuthStore() {
+export function createOwnerDeviceAuthStore(): unknown {
   return {
     /**
      * Initiate an owner device-authorization request and return the
@@ -48,7 +48,7 @@ export function createOwnerDeviceAuthStore() {
      * @param {object} [opts]  baseUrl, expiresIn, interval, scenarioId
      * @returns {Promise<object>}
      */
-    async initiate(clientId, opts) {
+    async initiate(clientId: string, opts: unknown): Promise<unknown> {
       return initiateOwnerDeviceAuthorization(clientId, opts);
     },
 
@@ -61,7 +61,7 @@ export function createOwnerDeviceAuthStore() {
      * @param {string} userCode
      * @returns {Promise<object | null>}
      */
-    async getByUserCode(userCode) {
+    async getByUserCode(userCode: string): Promise<unknown> {
       return getOwnerDeviceAuthorizationByUserCode(userCode);
     },
 
@@ -75,7 +75,7 @@ export function createOwnerDeviceAuthStore() {
      * @param {string} approvalId
      * @returns {Promise<object | null>}
      */
-    async getByApprovalId(approvalId) {
+    async getByApprovalId(approvalId: string): Promise<unknown> {
       return getOwnerDeviceAuthRowByApprovalId(approvalId);
     },
 
@@ -89,7 +89,7 @@ export function createOwnerDeviceAuthStore() {
      * @param {string} [subjectId]  defaults to 'owner_local'
      * @returns {Promise<{ access_token: string, token_type: 'Bearer', expires_in: number, subject_id: string }>}
      */
-    async approve(userCode, subjectId) {
+    async approve(userCode: string, subjectId?: string): Promise<unknown> {
       return approveOwnerDeviceAuthorization(userCode, subjectId);
     },
 
@@ -104,7 +104,7 @@ export function createOwnerDeviceAuthStore() {
      * @param {string} [subjectId]  defaults to 'owner_local'
      * @returns {Promise<void>}
      */
-    async deny(userCode, subjectId) {
+    async deny(userCode: string, subjectId?: string): Promise<void> {
       return denyOwnerDeviceAuthorization(userCode, subjectId);
     },
 
@@ -117,13 +117,13 @@ export function createOwnerDeviceAuthStore() {
      * @param {{ clientId: string, deviceCode: string }} input
      * @returns {Promise<{ access_token: string, token_type: 'Bearer', expires_in: number, trace_context: object | null }>}
      */
-    async exchangeDeviceCode({ clientId, deviceCode }) {
+    async exchangeDeviceCode({ clientId, deviceCode }: { clientId: string; deviceCode: string }): Promise<unknown> {
       return exchangeOwnerDeviceCode({ clientId, deviceCode });
     },
   };
 }
 
-export function createSqliteOwnerDeviceAuthStore() {
+export function createSqliteOwnerDeviceAuthStore(): unknown {
   return createOwnerDeviceAuthStore();
 }
 

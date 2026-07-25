@@ -23,7 +23,7 @@ import { startServer } from '../server/index.js';
 import {
   createSqliteConnectorInstanceStore,
   makeDefaultAccountConnectorInstanceId,
-} from '../server/stores/connector-instance-store.js';
+} from '../server/stores/connector-instance-store.ts';
 import { REVIEWED_COMPACTION_RESIDUE_REVIEWED_AT } from '../server/version-disposition.ts';
 
 const CONNECTOR_ID = 'https://test.pdpp.dev/connectors/version-churn';

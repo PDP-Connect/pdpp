@@ -13,7 +13,7 @@ import { createCimdDocument, issueToken, parsePendingConsentRequestUri, revokeCi
 import { getDb } from '../server/db.js';
 import { ingestRecord } from '../server/records.js';
 import { runConnector, loadSyncState } from '../runtime/index.js';
-import { makeDefaultAccountConnectorInstanceId } from '../server/stores/connector-instance-store.js';
+import { makeDefaultAccountConnectorInstanceId } from '../server/stores/connector-instance-store.ts';
 import { canonicalConnectorKey } from '../server/connector-key.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));

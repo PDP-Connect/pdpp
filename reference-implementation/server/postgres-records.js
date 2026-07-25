@@ -26,7 +26,7 @@ import {
   normalizeExpandRequest,
   normalizePrimaryKey,
 } from './record-expand-helpers.js';
-import { createPostgresConnectorInstanceStore } from './stores/connector-instance-store.js';
+import { createPostgresConnectorInstanceStore } from './stores/connector-instance-store.ts';
 import {
   buildLimitClampedWarning,
   clampRecordsPageLimit,

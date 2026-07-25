@@ -17,7 +17,7 @@ import {
 } from '../server/ref-control.ts';
 import { rebuildRetainedSize } from '../server/retained-size-read-model.js';
 import { readCommittedLocalCoverageDiagnostics } from '../server/records.js';
-import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
+import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.ts';
 import { getDefaultConnectorStateStore } from '../server/stores/connector-state-store.ts';
 import { createSqliteSchedulerStore } from '../server/stores/scheduler-store.ts';
 import { getDefaultDeviceExporterStore } from '../server/stores/device-exporter-store.ts';

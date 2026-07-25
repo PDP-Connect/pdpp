@@ -17,7 +17,7 @@ import {
   postgresQuery,
   withPostgresTransaction,
 } from './postgres-storage.js';
-import { makeDefaultAccountConnectorInstanceId } from './stores/connector-instance-store.js';
+import { makeDefaultAccountConnectorInstanceId } from './stores/connector-instance-store.ts';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
 import { sumCountRows } from './search-index-counts.ts';
 

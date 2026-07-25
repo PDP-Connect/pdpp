@@ -9,7 +9,7 @@ import {
   ConnectorInstanceResolutionError,
   createSqliteConnectorInstanceStore,
   resolveOwnerConnectorInstanceNamespace,
-} from '../server/stores/connector-instance-store.js';
+} from '../server/stores/connector-instance-store.ts';
 
 // Focused coverage for the `draft` connector-instance status that closes the
 // first-static-secret-connection deadlock without a phantom active row.

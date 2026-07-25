@@ -3,6 +3,21 @@
 
 import { createHash } from 'node:crypto';
 
+// Type definitions
+interface ConnectorInstance {
+  connectorInstanceId: string;
+  ownerSubjectId: string;
+  connectorId: string;
+  displayName: string;
+  status: string;
+  sourceKind: string;
+  sourceBindingKey: string;
+  sourceBinding: unknown;
+  createdAt?: string;
+  updatedAt?: string;
+  revokedAt?: string | null;
+}
+
 import { allowUnboundedReadAcknowledged, exec, getMany, getOne, referenceQueries, writeTransaction } from '../../lib/db.ts';
 import { getDb } from '../db.js';
 import { postgresQuery, withPostgresTransaction } from '../postgres-storage.js';
@@ -31,7 +46,9 @@ const DEFAULT_ACCOUNT_SOURCE_BINDING_KEY = 'default';
 const DEFAULT_ACCOUNT_SOURCE_BINDING = Object.freeze({ kind: 'default_account' });
 
 export class ConnectorInstanceResolutionError extends Error {
-  constructor(code, message, details = {}) {
+  code: string;
+
+  constructor(code: string, message: string, details: Record<string, unknown> = {}) {
     super(message);
     this.name = 'ConnectorInstanceResolutionError';
     this.code = code;
@@ -47,7 +64,9 @@ export class ConnectorInstanceResolutionError extends Error {
 // → 409). Distinct from ConnectorInstanceResolutionError so a delete-refusal is
 // never confused with a not-found/ownership outcome.
 export class ConnectorInstanceDeleteError extends Error {
-  constructor(code, message, details = {}) {
+  code: string;
+
+  constructor(code: string, message: string, details: Record<string, unknown> = {}) {
     super(message);
     this.name = 'ConnectorInstanceDeleteError';
     this.code = code;
@@ -112,22 +131,23 @@ function buildDeleteSummary(instance, { deletedRecordCount, deletedStreamCount, 
   };
 }
 
-function stableJson(value) {
+function stableJson(value: unknown): string {
   if (value == null) return '{}';
   if (Array.isArray(value)) {
     return `[${value.map(stableJson).join(',')}]`;
   }
   if (typeof value === 'object') {
-    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+    const obj = value as Record<string, unknown>;
+    return `{${Object.keys(obj).sort().map((key) => `${JSON.stringify(key)}:${stableJson(obj[key])}`).join(',')}}`;
   }
   return JSON.stringify(value);
 }
 
-function hashKey(value) {
+function hashKey(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
-export function makeConnectorInstanceSourceBindingKey(sourceBinding) {
+export function makeConnectorInstanceSourceBindingKey(sourceBinding: unknown): string {
   return hashKey(stableJson(sourceBinding ?? {}));
 }
 
@@ -135,7 +155,7 @@ function makeConnectorInstanceId({ ownerSubjectId, connectorId, sourceKind, sour
   return `cin_${hashKey(`${ownerSubjectId}\n${connectorId}\n${sourceKind}\n${sourceBindingKey}`).slice(0, 24)}`;
 }
 
-export function makeDefaultAccountConnectorInstanceId(ownerSubjectId, connectorId) {
+export function makeDefaultAccountConnectorInstanceId(ownerSubjectId: string, connectorId: string): string {
   return makeConnectorInstanceId({
     ownerSubjectId,
     connectorId,
@@ -358,7 +378,16 @@ export async function resolveOwnerConnectorInstanceNamespace({
   allowStatuses = ['active'],
   displayName = null,
   now = new Date().toISOString(),
-}) {
+}: {
+  ownerSubjectId: string;
+  connectorId?: string | null;
+  connectorInstanceId?: string | null;
+  connectorInstanceStore: unknown;
+  allowDefaultAccount?: boolean;
+  allowStatuses?: string[];
+  displayName?: string | null;
+  now?: string;
+}): Promise<unknown> {
   if (!ownerSubjectId) {
     throw new ConnectorInstanceResolutionError(
       'owner_subject_required',
@@ -402,7 +431,7 @@ export async function resolveOwnerConnectorInstanceNamespace({
   return materializeDefaultAccount(connectorInstanceStore, { ownerSubjectId, connectorId, displayName: displayName ?? connectorId, now });
 }
 
-export function createSqliteConnectorInstanceStore() {
+export function createSqliteConnectorInstanceStore(): unknown {
   const store = {
     upsert(record) {
       const normalized = normalizeRecord(record);
@@ -637,8 +666,8 @@ export function createSqliteConnectorInstanceStore() {
         // (no inner transaction of its own), so it is atomic with the schedule /
         // device / row deletes below.
         const recordCount = purge.deleteRecordRowsSqlite(connectorInstanceId);
-        getDb().prepare("DELETE FROM manifest_write_violations WHERE connector_instance_id = ?").run(connectorInstanceId);
-        getDb().prepare("DELETE FROM connector_summary_evidence WHERE connector_instance_id = ?").run(connectorInstanceId);
+        exec("DELETE FROM manifest_write_violations WHERE connector_instance_id = ?", [connectorInstanceId]);
+        exec("DELETE FROM connector_summary_evidence WHERE connector_instance_id = ?", [connectorInstanceId]);
         const schedule = exec(referenceQueries.controllerDeleteSchedule, [connectorInstanceId]);
         const device = exec(referenceQueries.deviceExportersClearSourceInstanceConnectorRef, [stamp, connectorInstanceId]);
         exec(referenceQueries.connectorInstancesDeleteById, [connectorInstanceId]);
@@ -709,7 +738,7 @@ function assertOwnerSetDisplayNameArgs({ connectorInstanceId, ownerSubjectId, di
   }
 }
 
-export function createPostgresConnectorInstanceStore() {
+export function createPostgresConnectorInstanceStore(): unknown {
   const store = {
     async upsert(record) {
       const normalized = normalizeRecord(record);

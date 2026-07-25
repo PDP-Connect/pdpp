@@ -14,7 +14,7 @@ import { closeDb } from '../server/db.js';
 import { canonicalConnectorKey } from '../server/connector-key.js';
 import { createScheduler } from '../runtime/scheduler.ts';
 import { getDefaultSchedulerStore } from '../server/stores/scheduler-store.ts';
-import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
+import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');

@@ -17,7 +17,7 @@ import {
   encodeHostedMcpStreamSelection,
 } from '../server/hosted-mcp-selection.js';
 import { startServer } from '../server/index.js';
-import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
+import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.ts';
 import {
   ingestRecord,
   queryRecordsAcrossBindings,

@@ -5,7 +5,7 @@ import { isPostgresStorageBackend } from './postgres-storage.js';
 import {
   createPostgresConnectorInstanceStore,
   createSqliteConnectorInstanceStore,
-} from './stores/connector-instance-store.js';
+} from './stores/connector-instance-store.ts';
 import {
   createPostgresAcquisitionBatchStore,
   createSqliteAcquisitionBatchStore,

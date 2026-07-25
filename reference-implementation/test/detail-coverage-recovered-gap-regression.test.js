@@ -34,7 +34,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runConnector } from '../runtime/index.js';
 import { startServer } from '../server/index.js';
-import { getDefaultConnectorDetailGapStore } from '../server/stores/connector-detail-gap-store.js';
+import { getDefaultConnectorDetailGapStore } from '../server/stores/connector-detail-gap-store.ts';
 import { listSpineEventsPage } from '../lib/spine.ts';
 
 async function closeServer(server) {
