@@ -18,8 +18,6 @@
  * without a browser harness.
  */
 
-// biome-ignore lint/suspicious/noImportCycles: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-import { formatTotalRecordsLabel, isTotalRecordsAuthoritative } from "../sources/sources-view-model.ts";
 import type {
   DeviceSourceInstance,
   RefCollectionRateSnapshot,
@@ -32,6 +30,7 @@ import type {
   RefSchedule,
 } from "./ref-client.ts";
 import type { ConnectorOverview, ConnectorRunRef } from "./rs-client.ts";
+import { formatTotalRecordsLabel, isTotalRecordsAuthoritative } from "./total-records-label.ts";
 
 export type EvidenceTone = "neutral" | "success" | "warning" | "danger";
 
@@ -1063,7 +1062,7 @@ export function deriveConnectionStatusDisplay(input: {
 }): ConnectionStatusDisplay {
   const { hasDurableProgress, health, localDeviceProgress } = input;
   const reason = health.reason_code ? ` · ${health.reason_code}` : "";
-  const dominant = formatDominantCondition(health)?.title ?? null;
+  const dominant = formatDominantCondition(health)?.title;
   switch (health.state) {
     case "healthy":
       if (!hasDurableProgress) {
@@ -1078,6 +1077,7 @@ export function deriveConnectionStatusDisplay(input: {
       return {
         label: "Needs attention",
         shape: "diamond",
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: dominant is string | undefined (formatDominantCondition(health)?.title); tsc rejects removing this guard.
         title: dominant ?? `Owner action required${reason}.`,
         tone: "warning",
       };
@@ -1093,6 +1093,7 @@ export function deriveConnectionStatusDisplay(input: {
       return {
         label: "Cooling off",
         shape: "diamond",
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: dominant is string | undefined (formatDominantCondition(health)?.title); tsc rejects removing this guard.
         title: dominant ?? coolingTitle,
         tone: "warning",
       };
@@ -1101,6 +1102,7 @@ export function deriveConnectionStatusDisplay(input: {
       return {
         label: "Blocked",
         shape: "triangle",
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: dominant is string | undefined (formatDominantCondition(health)?.title); tsc rejects removing this guard.
         title: dominant ?? `Cannot make progress${reason}.`,
         tone: "danger",
       };
@@ -1110,6 +1112,7 @@ export function deriveConnectionStatusDisplay(input: {
           label: "Resuming",
           shape: "diamond",
           title:
+            // biome-ignore lint/suspicious/noUnnecessaryConditions: dominant is string | undefined (formatDominantCondition(health)?.title); tsc rejects removing this guard.
             dominant ??
             `Some required detail is still outstanding, but it is recoverable — an ordinary run can fill it and the records already collected stay valid${reason}.`,
           tone: "warning",
@@ -1119,6 +1122,7 @@ export function deriveConnectionStatusDisplay(input: {
       return {
         label: partial ? "Partial" : "Degraded",
         shape: "diamond",
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: dominant is string | undefined (formatDominantCondition(health)?.title); tsc rejects removing this guard.
         title: dominant ?? `Useful data may exist, but coverage or freshness is incomplete${reason}.`,
         tone: "warning",
       };
@@ -1164,7 +1168,7 @@ function isSourcePressureCooldown(health: RefConnectionHealthSnapshot): boolean 
   // and a pending source-pressure backlog is a deferral, not a terminal stop —
   // the scheduler is spacing attempts, not giving up.
   const backlog = health.detail_gap_backlog;
-  const hasPendingBacklog = Boolean(backlog && ((backlog.pending ?? 0) > 0 || (backlog.pending_other ?? 0) > 0));
+  const hasPendingBacklog = Boolean(backlog && (backlog.pending > 0 || (backlog.pending_other ?? 0) > 0));
   return hasPendingBacklog && Boolean(health.next_attempt_at);
 }
 

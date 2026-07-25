@@ -34,7 +34,7 @@ const FAILURE_SECTION_ORDER_RE =
   /const FAILURE_SECTION_ORDER = \["needsOwner", "review", "systemIssue", "working", "notMeasured", "other"\]/;
 const FAILURE_CARD_SECTION_RE = /function FailureCardSection\(/;
 const FAILURE_CARD_SECTIONS_CALL_RE = /failureCardSections\(model\.failureCards\)/;
-const FAILURE_CARD_SOURCE_WORK_RE = /data-source-work=\{card\.work\?\.group \?\? "other"\}/;
+const FAILURE_CARD_SOURCE_WORK_RE = /card\.work\?\.group \?\? "other"[\s\S]{0,80}data-source-work=/;
 const SYNCS_OVERVIEW_LIST_RUNS_RE = /listRuns\(\{\s*limit:\s*SYNCS_OVERVIEW_RUN_LIMIT\s*\}\)/;
 
 test("run list peek query opens the full run detail route instead of inline details", async () => {

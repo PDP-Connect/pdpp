@@ -1,7 +1,6 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// biome-ignore lint/suspicious/noImportCycles: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
 import { deriveFailureSummary, type FailureSummary } from "./connection-evidence.ts";
 import type { FormattedNextAction } from "./next-action.ts";
 import type {
@@ -158,7 +157,7 @@ function connectionRouteId(connector: RefConnectorSummary): string {
 
 function connectorLabel(connector: RefConnectorSummary): string {
   return (
-    connector.display_name?.trim() ||
+    connector.display_name.trim() ||
     connector.connector_display_name?.trim() ||
     readableConnectorId(connector.connector_id)
   );
@@ -212,6 +211,7 @@ export function primaryOwnerActionRemediation(
 }
 
 export function hasPrimaryOwnerLocalDeviceRemediation(verdict: RefRenderedVerdict | null | undefined): boolean {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: primaryOwnerActionRemediation returns RefActionRemediation | null; tsc rejects removing this guard.
   return primaryOwnerActionRemediation(verdict)?.target.kind === "local_device";
 }
 
@@ -511,6 +511,7 @@ export function sourceWorkItemFromConnector(connector: RefConnectorSummary): Sou
   if (verdict.channel === "attention" && ownerAction) {
     return itemFromConnector(connector, "needsOwner", {
       actionLabel: ownerAction.cta,
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: ownerAction.remediation is optional (RefActionRemediation | undefined); tsc rejects removing this guard.
       deviceLocal: ownerAction.remediation?.target.kind === "local_device",
       statusLabel: "needs you",
       what: verdict.forward_statement,
@@ -520,6 +521,7 @@ export function sourceWorkItemFromConnector(connector: RefConnectorSummary): Sou
   if (ownerAction) {
     return itemFromConnector(connector, "review", {
       actionLabel: ownerAction.cta,
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: ownerAction.remediation is optional (RefActionRemediation | undefined); tsc rejects removing this guard.
       deviceLocal: ownerAction.remediation?.target.kind === "local_device",
       // The concrete CTA (`ownerAction.cta`, e.g. "Refresh now" / "Retry now")
       // carries the row copy; the statusLabel is a neutral fallback, never the

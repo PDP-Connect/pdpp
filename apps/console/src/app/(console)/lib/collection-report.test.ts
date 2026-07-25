@@ -290,7 +290,7 @@ test("the coverage chip and forward disposition reuse the connection-level vocab
 test("a recognized resumable disposition needs no owner action and never claims completeness", () => {
   const facts = formatStreamCollectionFacts(entry({ forward_disposition: "resumable" }));
   assert.equal(facts.disposition?.ownerActionNeeded, false);
-  assert.doesNotMatch(facts.disposition?.label ?? "", CLAIMS_COMPLETE_COPY);
+  assert.doesNotMatch(facts.disposition?.label, CLAIMS_COMPLETE_COPY);
 });
 
 test("an owner-initiated disposition flags that the owner must act", () => {
@@ -359,7 +359,7 @@ test("an empty / whitespace skip reason is treated as no skip note", () => {
 test("the counts line never names a connector or promises a hosted sync service", () => {
   for (const disposition of ["complete", "resumable", "awaiting_owner", "owner_refresh_due", "terminal"] as const) {
     const facts = formatStreamCollectionFacts(entry({ collected: 5, considered: 8, forward_disposition: disposition }));
-    const text = `${facts.countsLabel ?? ""} ${facts.countsTitle} ${facts.disposition?.label ?? ""} ${facts.disposition?.title ?? ""}`;
+    const text = `${facts.countsLabel} ${facts.countsTitle} ${facts.disposition?.label} ${facts.disposition?.title}`;
     assert.doesNotMatch(text, HOSTED_SERVICE_COPY, `disposition ${disposition} must not promise a hosted service`);
     assert.doesNotMatch(text, CONNECTOR_NAME_COPY, `disposition ${disposition} must stay connector-agnostic`);
   }

@@ -572,7 +572,7 @@ export interface RefAcquisitionCoverageSummary {
  * and `RefConnectorStreamRecord.count_state`. Every console renderer of a
  * `total_records`/per-stream `record_count` value should route through
  * `formatTotalRecordsLabel`/`isTotalRecordsAuthoritative` in
- * `sources-view-model.ts` (Sol fourth-verdict P1.3: "centralize state-aware
+ * `total-records-label.ts` (Sol fourth-verdict P1.3: "centralize state-aware
  * count formatting... every owner-console total_records consumer") rather
  * than re-deriving this literal union or its branching locally.
  */

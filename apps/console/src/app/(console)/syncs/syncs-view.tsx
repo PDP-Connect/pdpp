@@ -99,8 +99,10 @@ function HealthBandStrip({ band }: { band: SyncsViewModel["band"] }) {
 function FailureCardPanel({ card }: { card: FailureCard }) {
   const { summary } = card;
   const ownerActionLabel = summary.actionLabel ?? (summary.cta === "reconnect" ? "Reconnect" : "Open source");
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: card.work is SourceWorkItem | null; tsc rejects removing this guard.
+  const sourceWorkGroup = card.work?.group ?? "other";
   return (
-    <section className="rr-fix" data-cta={summary.cta} data-source-work={card.work?.group ?? "other"}>
+    <section className="rr-fix" data-cta={summary.cta} data-source-work={sourceWorkGroup}>
       <div className="rr-fix__body">
         <h3 className="rr-fix__title">
           {card.name} — {summary.triggerLabel}

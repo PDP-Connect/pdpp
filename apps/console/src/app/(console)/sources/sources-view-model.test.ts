@@ -681,7 +681,7 @@ test("toSourceInstanceView keeps collection-report-only streams visible", () => 
     ["messages"]
   );
   assert.equal(view.streams[0]?.collection?.countsLabel, "8 / 10 collected");
-  assert.match(view.streams[0]?.exploreHref ?? "", MESSAGES_STREAM_HREF_RE);
+  assert.match(view.streams[0]?.exploreHref, MESSAGES_STREAM_HREF_RE);
 });
 
 test("toSourceInstanceView drops blank stream names", () => {

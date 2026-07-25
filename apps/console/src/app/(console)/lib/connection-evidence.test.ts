@@ -53,7 +53,7 @@ test("formatForwardDisposition renders checking coverage as neutral, not resumab
   assert.equal(out?.label, "checking coverage");
   assert.equal(out?.tone, "neutral");
   assert.equal(out?.ownerActionNeeded, false);
-  assert.doesNotMatch(out?.title ?? "", /retry|resum/i);
+  assert.doesNotMatch(out?.title, /retry|resum/i);
 });
 
 test("formatForwardDisposition renders unmeasured coverage as resting missing evidence, not checking", () => {
@@ -61,7 +61,7 @@ test("formatForwardDisposition renders unmeasured coverage as resting missing ev
   assert.equal(out?.label, "not measured");
   assert.equal(out?.tone, "neutral");
   assert.equal(out?.ownerActionNeeded, false);
-  assert.match(out?.title ?? "", /not an active checking state/i);
+  assert.match(out?.title, /not an active checking state/i);
 });
 
 function backlog(overrides: Partial<RefDetailGapBacklog> = {}): RefDetailGapBacklog {
@@ -461,8 +461,8 @@ test("formatDominantCondition surfaces only false dominant evidence", () => {
     })
   );
   assert.equal(out?.tone, "danger");
-  assert.equal(out?.label.includes("rejected"), true);
-  assert.equal(out?.title.includes("Reconnect"), true);
+  assert.equal(out.label.includes("rejected"), true);
+  assert.equal(out.title.includes("Reconnect"), true);
 });
 
 test("formatLastDurableProgress refuses to substitute 0 when evidence failed", () => {
@@ -1255,7 +1255,7 @@ test("blocked guidance points the owner at the connection detail, danger tone", 
   });
   assert.ok(out);
   assert.equal(out?.tone, "danger");
-  assert.match(out?.label ?? "", OPEN_CONNECTION_RE);
+  assert.match(out?.label, OPEN_CONNECTION_RE);
 });
 
 test("blocked / needs_attention generic guidance is suppressed when a dominant condition already explains it", () => {
@@ -1283,7 +1283,7 @@ test("action-bearing guidance still fires even when a dominant condition is pres
     supportsOwnerSync: true,
   });
   assert.ok(out);
-  assert.match(out?.label ?? "", HOST_RE);
+  assert.match(out?.label, HOST_RE);
 });
 
 test("cooling_off guidance names the next attempt time when known", () => {
@@ -1295,7 +1295,7 @@ test("cooling_off guidance names the next attempt time when known", () => {
   });
   assert.ok(out);
   assert.equal(out?.tone, "warning");
-  assert.match(out?.detail ?? "", COOLING_OFF_NEXT_ATTEMPT_RE);
+  assert.match(out?.detail, COOLING_OFF_NEXT_ATTEMPT_RE);
 });
 
 test("cooling_off with no source-pressure reason still reads as failure backoff", () => {
@@ -1308,8 +1308,8 @@ test("cooling_off with no source-pressure reason still reads as failure backoff"
     supportsOwnerSync: true,
   });
   assert.ok(out);
-  assert.match(out?.detail ?? "", /failure/i);
-  assert.doesNotMatch(out?.detail ?? "", /source/i);
+  assert.match(out?.detail, /failure/i);
+  assert.doesNotMatch(out?.detail, /source/i);
 });
 
 test("source-pressure cooling_off reads as catching up, not a failure", () => {
@@ -1329,11 +1329,11 @@ test("source-pressure cooling_off reads as catching up, not a failure", () => {
   });
   assert.ok(out);
   assert.equal(out?.tone, "warning");
-  assert.match(out?.detail ?? "", COOLING_OFF_NEXT_ATTEMPT_RE);
-  assert.match(out?.detail ?? "", /throttl|source/i);
-  assert.match(out?.detail ?? "", /retain|catch/i);
-  assert.doesNotMatch(out?.detail ?? "", /failure/i);
-  assert.doesNotMatch(out?.label ?? "", /retry/i);
+  assert.match(out?.detail, COOLING_OFF_NEXT_ATTEMPT_RE);
+  assert.match(out?.detail, /throttl|source/i);
+  assert.match(out?.detail, /retain|catch/i);
+  assert.doesNotMatch(out?.detail, /failure/i);
+  assert.doesNotMatch(out?.label, /retry/i);
 });
 
 test("source-pressure cooling_off without a next attempt still reads as catching up", () => {
@@ -1344,8 +1344,8 @@ test("source-pressure cooling_off without a next attempt still reads as catching
     supportsOwnerSync: true,
   });
   assert.ok(out);
-  assert.match(out?.detail ?? "", /throttl|source/i);
-  assert.doesNotMatch(out?.detail ?? "", /failure/i);
+  assert.match(out?.detail, /throttl|source/i);
+  assert.doesNotMatch(out?.detail, /failure/i);
 });
 
 // ─── source-pressure detail-gap backlog cue ───────────────────────────────
@@ -1380,7 +1380,7 @@ test("source-pressure cooling_off attaches a backlog count plus the backlog's ow
   assert.equal(out?.backlogScale, "42 detail items to catch up · resumes after 2026-05-19T13:30:00Z");
   // The unkeepable "see how much is left to catch up" promise is gone from the
   // detail copy now that the count is carried by the cue.
-  assert.doesNotMatch(out?.detail ?? "", HOW_MUCH_IS_LEFT_RE);
+  assert.doesNotMatch(out?.detail, HOW_MUCH_IS_LEFT_RE);
 });
 
 test("the backlog resume floor is independent of the connection-level scheduler dispatch", () => {
@@ -1547,8 +1547,8 @@ test("degraded+partial coverage routes to a coverage review, not a sync", () => 
     supportsOwnerSync: true,
   });
   assert.ok(out);
-  assert.match(out?.label ?? "", COVERAGE_RE);
-  assert.doesNotMatch(out?.label ?? "", SYNC_NOW_RE);
+  assert.match(out?.label, COVERAGE_RE);
+  assert.doesNotMatch(out?.label, SYNC_NOW_RE);
 });
 
 test("degraded+retryable_gap with owner sync offers a non-alarming way to continue", () => {
@@ -1564,8 +1564,8 @@ test("degraded+retryable_gap with owner sync offers a non-alarming way to contin
   });
   assert.ok(out, "owner-syncable retryable_gap must offer a next step, not null");
   assert.equal(out?.label, "Continue the sync");
-  assert.match(out?.detail ?? "", /stay valid/i);
-  assert.doesNotMatch(out?.detail ?? "", /corrupt|failed/i);
+  assert.match(out?.detail, /stay valid/i);
+  assert.doesNotMatch(out?.detail, /corrupt|failed/i);
 });
 
 test("degraded+retryable_gap without owner sync points at the collector host", () => {
@@ -1581,8 +1581,8 @@ test("degraded+retryable_gap without owner sync points at the collector host", (
   });
   assert.ok(out, "push-mode retryable_gap must offer collector guidance, not null");
   assert.equal(out?.label, "Check the collector");
-  assert.match(out?.detail ?? "", /host/i);
-  assert.match(out?.detail ?? "", /stay valid/i);
+  assert.match(out?.detail, /host/i);
+  assert.match(out?.detail, /stay valid/i);
 });
 
 test("degraded+retryable_gap suppresses the CTA only when an automatic attempt is scheduled", () => {
@@ -1609,6 +1609,7 @@ test("stale freshness suggests Sync now only when owner sync is supported", () =
     }),
     supportsOwnerSync: true,
   });
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: deriveConnectionNextStep returns NextStepGuidance | null; tsc rejects removing this guard.
   assert.match(supported?.label ?? "", SYNC_NOW_RE);
 
   const pushMode = deriveConnectionNextStep({
@@ -1620,7 +1621,9 @@ test("stale freshness suggests Sync now only when owner sync is supported", () =
     }),
     supportsOwnerSync: false,
   });
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: deriveConnectionNextStep returns NextStepGuidance | null; tsc rejects removing this guard.
   assert.doesNotMatch(pushMode?.label ?? "", SYNC_NOW_RE);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: deriveConnectionNextStep returns NextStepGuidance | null; tsc rejects removing this guard.
   assert.match(pushMode?.label ?? "", COLLECTOR_RE);
 });
 
@@ -1636,7 +1639,7 @@ test("a stalled outbox always routes to the host, never a remote button", () => 
   });
   assert.ok(out);
   assert.equal(out?.tone, "danger");
-  assert.match(out?.label ?? "", HOST_RE);
+  assert.match(out?.label, HOST_RE);
 });
 
 test("an otherwise-healthy but stale connection still gets a nudge", () => {
@@ -1650,7 +1653,7 @@ test("an otherwise-healthy but stale connection still gets a nudge", () => {
     supportsOwnerSync: true,
   });
   assert.ok(out);
-  assert.match(out?.label ?? "", SYNC_NOW_RE);
+  assert.match(out?.label, SYNC_NOW_RE);
 });
 
 // ─── deriveConnectionNextStep: stalled-row count-backed scale ──────────────
@@ -1689,7 +1692,7 @@ test("stalled-row guidance carries a count-backed scale from outbox_counts", () 
   });
   assert.ok(out);
   assert.equal(out?.tone, "danger");
-  assert.match(out?.label ?? "", HOST_RE);
+  assert.match(out?.label, HOST_RE);
   assert.equal(out?.scale, "12 pending · 1 stale lease · 2 failed uploads");
 });
 

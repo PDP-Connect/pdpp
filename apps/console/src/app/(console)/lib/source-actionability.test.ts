@@ -147,6 +147,7 @@ test("source actionability treats device-local owner recovery as owner-required 
   assert.equal(actionability.failureSummary?.actionLabel, "See recovery steps");
   assert.equal(actionability.failureSummary?.cta, "connection_detail");
   assert.equal(hasPrimaryOwnerLocalDeviceRemediation(summary.rendered_verdict), true);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: primaryOwnerActionRemediation returns RefActionRemediation | null; tsc rejects removing this guard.
   assert.equal(primaryOwnerActionRemediation(summary.rendered_verdict)?.target.kind, "local_device");
 });
 

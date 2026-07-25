@@ -229,6 +229,7 @@ test("a blocked connection with a source-pressure backlog still gets the WAIT ca
     connectors: [connector({ connection_health: blockedButThrottled })],
     runs: [],
   });
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome does not honor that tsconfig flag here).
   assert.equal(model.failureCards[0]?.summary.cta, "wait");
 });
 
@@ -243,6 +244,7 @@ test("a genuine blocked connection (no backlog, no next attempt) DOES prompt rec
     runs: [],
   });
   const [card] = model.failureCards;
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome does not honor that tsconfig flag here).
   assert.equal(card?.summary.cta, "reconnect", "genuine credential failure keeps the reconnect CTA");
   assert.equal(model.band.needYourHand, 1, "a genuine block counts under need-your-hand");
 });
@@ -732,11 +734,13 @@ test("failure cards bind terminal gaps to rendered verdict copy, never retryable
   });
 
   const [card] = model.failureCards;
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome does not honor that tsconfig flag here).
   assert.equal(card?.summary.prose, "This connector needs a code fix before it can collect again.");
-  assert.equal(card?.summary.cta, "wait");
-  assert.equal(card?.summary.actionLabel, "Connector code needs a fix");
-  assert.equal(card?.summary.ownerActionRequired, false);
-  assert.doesNotMatch(card?.summary.prose ?? "", RESUME_FALSE_REASSURANCE_RE);
+  assert.equal(card.summary.cta, "wait");
+  assert.equal(card.summary.actionLabel, "Connector code needs a fix");
+  assert.equal(card.summary.ownerActionRequired, false);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome does not honor that tsconfig flag here).
+  assert.doesNotMatch(card?.summary.prose, RESUME_FALSE_REASSURANCE_RE);
   assert.equal(model.band.needYourHand, 0);
   assert.equal(model.band.needsReview, 1);
   assert.equal(model.band.allClear, false);
@@ -764,10 +768,11 @@ test("failure cards bind retryable gaps to the rendered Retry now action", () =>
   });
 
   const [card] = model.failureCards;
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome does not honor that tsconfig flag here).
   assert.equal(card?.summary.prose, "Retry now to give the recoverable gap another run.");
-  assert.equal(card?.summary.cta, "connection_detail");
-  assert.equal(card?.summary.actionLabel, "Retry now");
-  assert.equal(card?.summary.ownerActionRequired, false, "retry is an advisory accelerant, not attention");
+  assert.equal(card.summary.cta, "connection_detail");
+  assert.equal(card.summary.actionLabel, "Retry now");
+  assert.equal(card.summary.ownerActionRequired, false, "retry is an advisory accelerant, not attention");
   assert.equal(model.band.needYourHand, 0);
   assert.equal(model.band.needsReview, 1);
   assert.equal(model.band.allClear, false);
@@ -803,9 +808,10 @@ test("failure cards bind stale manual refresh to Refresh now without marking hea
   });
 
   const [card] = model.failureCards;
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome does not honor that tsconfig flag here).
   assert.equal(card?.summary.prose, "Run a refresh to bring this up to date.");
-  assert.equal(card?.summary.actionLabel, "Refresh now");
-  assert.equal(card?.summary.ownerActionRequired, false);
+  assert.equal(card.summary.actionLabel, "Refresh now");
+  assert.equal(card.summary.ownerActionRequired, false);
   assert.equal(card?.work?.group, "review");
   assert.equal(model.band.needYourHand, 0);
   assert.equal(model.band.needsReview, 1);
@@ -841,11 +847,13 @@ test("failure cards bind dead-letter backlog to collector action, not resume-nor
   });
 
   const [card] = model.failureCards;
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome does not honor that tsconfig flag here).
   assert.equal(card?.summary.prose, "Check the collector before this source can make progress.");
-  assert.equal(card?.summary.cta, "connection_detail");
-  assert.equal(card?.summary.actionLabel, "Check the collector");
-  assert.equal(card?.summary.ownerActionRequired, true);
-  assert.doesNotMatch(card?.summary.prose ?? "", RESUME_NORMALLY_RE);
+  assert.equal(card.summary.cta, "connection_detail");
+  assert.equal(card.summary.actionLabel, "Check the collector");
+  assert.equal(card.summary.ownerActionRequired, true);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome does not honor that tsconfig flag here).
+  assert.doesNotMatch(card?.summary.prose, RESUME_NORMALLY_RE);
   assert.equal(model.band.needYourHand, 1);
   assert.equal(model.band.needsReview, 1);
   assert.equal(model.band.allClear, false);
@@ -887,9 +895,10 @@ test("device-local recovery counts as need-your-hand while navigating to recover
   });
 
   const [card] = model.failureCards;
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome does not honor that tsconfig flag here).
   assert.equal(card?.summary.cta, "connection_detail");
-  assert.equal(card?.summary.actionLabel, "See recovery steps");
-  assert.equal(card?.summary.ownerActionRequired, true);
+  assert.equal(card.summary.actionLabel, "See recovery steps");
+  assert.equal(card.summary.ownerActionRequired, true);
   assert.equal(card?.work?.group, "needsOwner");
   assert.equal(model.band.needYourHand, 1);
   assert.equal(model.band.needsReview, 1);

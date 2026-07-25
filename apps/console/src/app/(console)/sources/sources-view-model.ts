@@ -32,7 +32,6 @@ import {
   canonicalConnectorKey,
   manualUploadSetupFromManifest,
 } from "pdpp-reference-implementation/connection-setup-plan";
-// biome-ignore lint/suspicious/noImportCycles: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
 import { formatStreamCollectionFacts, indexCollectionReportByStream } from "../lib/collection-report.ts";
 import { isActiveConnectorRunSummaryStatus } from "../lib/connector-run-summary-status.ts";
 import type { FormattedNextAction } from "../lib/next-action.ts";
@@ -51,8 +50,8 @@ import {
   type SourceOwnerActionCue,
   type SourcePrimaryVerdictAction,
   type SourceStatusFlag,
-  // biome-ignore lint/suspicious/noImportCycles: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
 } from "../lib/source-actionability.ts";
+import { formatTotalRecordsLabel, isTotalRecordsAuthoritative } from "../lib/total-records-label.ts";
 import { summarizeVersionChurn } from "../lib/version-churn-summary.ts";
 
 /**
@@ -219,50 +218,9 @@ function formatInterval(seconds: number): string {
   return `${seconds}s`;
 }
 
-/**
- * Single centralized predicate for "is this total_records value an
- * authoritative exact count?" (reconcile-active-summary-evidence design.md
- * "Health boundary", Sol fourth-verdict P1.3: "centralize state-aware count
- * formatting... route every owner-console total_records consumer through
- * it"). Every renderer of a `total_records`/`totalRecords` value — the
- * connector detail-page header, the reactivate-confirmation copy, the
- * SOURCE LIST account line, and the passport's "records" row — MUST check
- * this (directly or via `formatTotalRecordsLabel` below) before treating
- * the number as a proven exact count. `undefined` (a reference predating
- * this field) is treated as authoritative, preserving the exact prior
- * always-numeric rendering for every existing caller.
- */
-export function isTotalRecordsAuthoritative(totalRecordsState?: RefCountState): boolean {
-  return totalRecordsState === undefined || totalRecordsState === "known" || totalRecordsState === "known_zero";
-}
-
-/**
- * Centralized state-aware label for a `total_records` count value, shared
- * by every owner-console surface that renders it as prose (Sol fourth-
- * verdict P1.3). Non-authoritative states never render the number as a
- * confident count:
- *   - `"stale"`: the evidence exists but is not current — the carried-over
- *     number (including a carried-over ZERO — the exact case Sol
- *     reproduced on the primary source-list surface) renders as an
- *     explicitly unverified hint, never bare.
- *   - `"unobserved"`/`"unknown"`: no trustworthy value exists at all — the
- *     unit noun itself (not a number) is rendered as unavailable.
- *   - `"known"`/`"known_zero"`/omitted: the exact prior always-numeric
- *     rendering.
- */
-export function formatTotalRecordsLabel(
-  totalRecords: number,
-  totalRecordsState: RefCountState | undefined,
-  unit: string
-): string {
-  if (totalRecordsState === "stale") {
-    return `${totalRecords.toLocaleString()} ${unit} (unverified)`;
-  }
-  if (totalRecordsState === "unobserved" || totalRecordsState === "unknown") {
-    return `${unit} unavailable`;
-  }
-  return `${totalRecords.toLocaleString()} ${unit}`;
-}
+// isTotalRecordsAuthoritative / formatTotalRecordsLabel moved to
+// ../lib/total-records-label.ts (imported above) to break a real import
+// cycle with ../lib/connection-evidence.ts.
 
 /**
  * Connector detail-page header count. A failed/never-observed record
@@ -402,7 +360,11 @@ export function manualUploadHrefForSource(
   summary: Pick<RefConnectorSummary, "connection_id" | "connector_id" | "connector_instance_id">,
   manifests: readonly SourceManifestLike[] | undefined
 ): string | null {
-  const connectionId = summary.connection_id ?? summary.connector_instance_id ?? null;
+  // connection_id is non-optional in the current contract; connector_instance_id
+  // is a real legacy-server fallback (see schedule-row.tsx's
+  // recordsHrefForSummary for the same documented pattern).
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: see comment above.
+  const connectionId = summary.connection_id ?? summary.connector_instance_id;
   if (!(connectionId && manifests)) {
     return null;
   }
@@ -490,9 +452,13 @@ export function toSourceInstanceView(
   options: { fallbackDisambiguator?: string | null; manifests?: readonly SourceManifestLike[] } = {}
 ): SourceInstanceView {
   const connectorId = summary.connector_id;
-  const connectionId = summary.connection_id ?? null;
+  const connectionId = summary.connection_id;
   const connectorInstanceId = summary.connector_instance_id ?? null;
   const actionability = projectSourceActionability(summary);
+  // connectionId (summary.connection_id) is non-optional in the current
+  // contract; connectorInstanceId is a real legacy-server fallback (see
+  // schedule-row.tsx's recordsHrefForSummary for the same documented pattern).
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: see comment above.
   const routeId = connectionId ?? connectorInstanceId ?? actionability.routeId;
   const revoked = isRevokedConnector(summary);
   // Modality is persisted server authority. A missing heartbeat must not
@@ -587,6 +553,7 @@ export function toSourceInstanceView(
         ? summary.total_records.toLocaleString()
         : formatTotalRecordsLabel(summary.total_records, summary.total_records_state, "records"),
     },
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: normalizes first_at's `undefined` (from the optional chain) to `null`, which SourcePassportField's type requires; tsc rejects removing this.
     { k: "added", mono: true, value: summary.last_successful_run?.first_at ?? null },
   ];
 
