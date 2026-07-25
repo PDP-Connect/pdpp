@@ -473,6 +473,15 @@ CREATE TABLE IF NOT EXISTS device_source_instances (
   connector_id        TEXT NOT NULL,
   connector_instance_id TEXT,
   local_binding_id    TEXT NOT NULL,
+  -- Peer axis to connector_instances.source_kind ('local_device' |
+  -- 'browser_collector' for enrollment-derived rows). Part of the stable
+  -- enrollment binding-identity key alongside (device_id owner, connector_id,
+  -- local_binding_id) so distinct connector-instance kinds sharing an owner,
+  -- connector, and binding name can never adopt or collide with each other's
+  -- orphaned identity. Nullable for legacy rows written before this column
+  -- existed; those never participate in orphan adoption (see
+  -- find-orphaned-device-for-binding.sql).
+  source_kind         TEXT,
   display_name        TEXT,
   status              TEXT NOT NULL DEFAULT 'active',
   last_error_json     TEXT,
@@ -3889,6 +3898,7 @@ export function initDb(path = ':memory:', opts = {}) {
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_enrollment_codes', 'local_binding_id', "TEXT NOT NULL DEFAULT 'default'"));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_enrollment_codes', 'display_name', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_source_instances', 'connector_instance_id', 'TEXT'));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_source_instances', 'source_kind', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_source_instances', 'last_error_json', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_source_instances', 'last_heartbeat_at', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_source_instances', 'last_heartbeat_status', 'TEXT'));

@@ -314,6 +314,10 @@ test('D3: transient connector_instance_busy on the enroll path becomes a typed 5
     generateSpineId: (p) => `${p}_x`,
     generateReferenceSecret: (p) => `${p}_secret`,
     canonicalConnectorKey: (k) => k,
+    // D7: sourceKind is resolved BEFORE resolveOrCreateEnrollmentDevice is
+    // called, so the mock must resolve `codex` to `local_device` (a
+    // filesystem-bound manifest) for the flow to reach the write path at all.
+    readReferenceLocalConnectorCatalogManifest: () => ({ runtime_requirements: { bindings: { filesystem: {} } } }),
     // A pending, unexpired code so we pass validation and reach the write path.
     deviceExporterStore: {
       findEnrollmentByCodeHash: async () => ({

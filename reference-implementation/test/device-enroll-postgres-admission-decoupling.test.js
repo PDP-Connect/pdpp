@@ -28,6 +28,7 @@ import { startServer } from '../server/index.js';
 import { withConnectorInstanceWrite } from '../server/connector-instance-write-coordinator.ts';
 import { closePostgresStorage, postgresQuery } from '../server/postgres-storage.js';
 import { __setEnrollPhaseFaultHookForTest } from '../server/routes/ref-device-exporters.ts';
+import { createPostgresDeviceExporterStore } from '../server/stores/device-exporter-store.ts';
 import { dedicatedPostgresTestUrl } from './helpers/dedicated-postgres-test-url.js';
 import { withTemporaryPostgresDatabase } from './helpers/postgres-temp-database.js';
 
@@ -942,6 +943,170 @@ test('D6 isolation (Postgres): two distinct local bindings for the same connecto
 
         const devicesAfterRetry = await postgresQuery('SELECT device_id FROM device_exporters');
         assert.equal(devicesAfterRetry.rows.length, 3, 'X gained a new device, Y is unaffected: three devices total');
+      } finally {
+        await closeServer(server);
+        await closePostgresStorage().catch(() => undefined);
+        closeDb();
+      }
+    },
+  );
+});
+
+test('D7 (Postgres): local_device and browser_collector enrollments sharing owner+connector+binding never adopt or collide', {
+  skip: DEDICATED_POSTGRES_URL ? false : 'set PDPP_TEST_POSTGRES_URL to the dedicated loopback listener',
+}, async () => {
+  // Design D7 (fix-enroll-source-kind-identity-gap). resolveOrCreateEnrollmentDevice's
+  // lock key and orphan query are now qualified by sourceKind, not just
+  // (owner, connector, binding). This drives resolveOrCreateEnrollmentDevice
+  // directly (the store layer under test, not just the route) with the SAME
+  // ownerSubjectId + connectorId + localBindingId but two DISTINCT sourceKind
+  // values — exactly the scenario the pre-D7 gap could not distinguish — and
+  // proves neither an orphan nor a live device from one kind is ever adopted
+  // by, or blocks, the other kind's identity resolution.
+  await withTemporaryPostgresDatabase(
+    { connectionString: DEDICATED_POSTGRES_URL, databaseName: tempDbName(), closeConnections: closePostgresStorage },
+    async (url) => {
+      initDb(':memory:');
+      const server = await startServer({
+        quiet: true,
+        asPort: 0,
+        rsPort: 0,
+        dbPath: ':memory:',
+        storageBackend: 'postgres',
+        databaseUrl: url,
+      });
+      await server.startupBackfillDone?.catch(() => undefined);
+      try {
+        const store = createPostgresDeviceExporterStore();
+        const ownerSubjectId = 'owner_d7_cross_kind';
+        const connectorId = 'codex';
+        const localBindingId = 'shared-binding-name';
+        const now = new Date().toISOString();
+
+        // Both kinds start with NO orphan and NO live device: each resolves
+        // to its OWN fresh device despite sharing owner+connector+binding.
+        const localResolved = await store.resolveOrCreateEnrollmentDevice({
+          ownerSubjectId,
+          connectorId,
+          sourceKind: 'local_device',
+          localBindingId,
+          candidateDeviceId: 'dexp_d7_local_1',
+          candidateSourceInstanceId: 'dsrc_d7_local_1',
+          displayName: 'local device',
+          collectorProtocolVersion: null,
+          now,
+        });
+        const browserResolved = await store.resolveOrCreateEnrollmentDevice({
+          ownerSubjectId,
+          connectorId,
+          sourceKind: 'browser_collector',
+          localBindingId,
+          candidateDeviceId: 'dexp_d7_browser_1',
+          candidateSourceInstanceId: 'dsrc_d7_browser_1',
+          displayName: 'browser collector',
+          collectorProtocolVersion: null,
+          now,
+        });
+        assert.equal(localResolved.adopted, false);
+        assert.equal(browserResolved.adopted, false);
+        assert.notEqual(
+          localResolved.deviceId,
+          browserResolved.deviceId,
+          'local_device and browser_collector enrollments for the same owner+connector+binding must never share a device id',
+        );
+
+        // Fail both attempts before consume, so both are orphans under their
+        // OWN kind — mirroring D6's partial-write scenario, per kind.
+        await store.upsertSourceInstance({
+          sourceInstanceId: localResolved.sourceInstanceId,
+          deviceId: localResolved.deviceId,
+          connectorId,
+          connectorInstanceId: 'cin_d7_local_placeholder',
+          localBindingId,
+          sourceKind: 'local_device',
+          displayName: 'local device',
+          createdAt: now,
+          updatedAt: now,
+        });
+        await store.upsertSourceInstance({
+          sourceInstanceId: browserResolved.sourceInstanceId,
+          deviceId: browserResolved.deviceId,
+          connectorId,
+          connectorInstanceId: 'cin_d7_browser_placeholder',
+          localBindingId,
+          sourceKind: 'browser_collector',
+          displayName: 'browser collector',
+          createdAt: now,
+          updatedAt: now,
+        });
+
+        // A SECOND local_device attempt (e.g. a fresh code after the first
+        // expired) must adopt the LOCAL orphan only — never the browser
+        // orphan, even though both share owner+connector+binding and both
+        // are equally eligible by every predicate except sourceKind.
+        const localRetry = await store.resolveOrCreateEnrollmentDevice({
+          ownerSubjectId,
+          connectorId,
+          sourceKind: 'local_device',
+          localBindingId,
+          candidateDeviceId: 'dexp_d7_local_2',
+          candidateSourceInstanceId: 'dsrc_d7_local_2',
+          displayName: 'local device retry',
+          collectorProtocolVersion: null,
+          now,
+        });
+        assert.equal(localRetry.adopted, true, 'a second local_device attempt must adopt the local_device orphan');
+        assert.equal(localRetry.deviceId, localResolved.deviceId, 'must adopt the SAME-kind orphan, not create a third device');
+        assert.notEqual(localRetry.deviceId, browserResolved.deviceId, 'must never adopt the browser_collector orphan');
+
+        // Symmetric check for browser_collector.
+        const browserRetry = await store.resolveOrCreateEnrollmentDevice({
+          ownerSubjectId,
+          connectorId,
+          sourceKind: 'browser_collector',
+          localBindingId,
+          candidateDeviceId: 'dexp_d7_browser_2',
+          candidateSourceInstanceId: 'dsrc_d7_browser_2',
+          displayName: 'browser collector retry',
+          collectorProtocolVersion: null,
+          now,
+        });
+        assert.equal(browserRetry.adopted, true, 'a second browser_collector attempt must adopt the browser_collector orphan');
+        assert.equal(browserRetry.deviceId, browserResolved.deviceId, 'must adopt the SAME-kind orphan, not create a third device');
+        assert.notEqual(browserRetry.deviceId, localResolved.deviceId, 'must never adopt the local_device orphan');
+
+        // Exactly two independent devices exist for this owner+connector+binding
+        // — one per kind — never merged, never a third spurious device.
+        const devices = await postgresQuery(
+          'SELECT device_id FROM device_exporters WHERE owner_subject_id = $1 ORDER BY device_id',
+          [ownerSubjectId],
+        );
+        assert.equal(devices.rows.length, 2, 'exactly one device per source kind must exist, never merged or duplicated');
+
+        // Mutation-grade proof: querying WITHOUT the source_kind predicate
+        // (the pre-D7 shape) would see BOTH rows as one ambiguous orphan set
+        // for either kind, proving the predicate is load-bearing rather than
+        // incidental.
+        const withoutKindPredicate = await postgresQuery(
+          `SELECT dsi.device_id
+             FROM device_source_instances dsi
+             JOIN device_exporters de ON de.device_id = dsi.device_id
+            WHERE de.owner_subject_id = $1
+              AND dsi.connector_id = $2
+              AND dsi.local_binding_id = $3
+              AND dsi.status != 'revoked'
+              AND de.status != 'revoked'
+              AND NOT EXISTS (
+                SELECT 1 FROM device_enrollment_codes dec
+                WHERE dec.device_id = dsi.device_id AND dec.status = 'consumed'
+              )`,
+          [ownerSubjectId, connectorId, localBindingId],
+        );
+        assert.equal(
+          withoutKindPredicate.rows.length,
+          2,
+          'without the source_kind predicate the orphan set is ambiguous across kinds — proving the predicate is load-bearing',
+        );
       } finally {
         await closeServer(server);
         await closePostgresStorage().catch(() => undefined);

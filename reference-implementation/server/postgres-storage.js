@@ -1003,6 +1003,7 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
         connector_id TEXT NOT NULL,
         connector_instance_id TEXT,
         local_binding_id TEXT NOT NULL,
+        source_kind TEXT,
         display_name TEXT,
         status TEXT NOT NULL DEFAULT 'active',
         last_error_json JSONB,
@@ -3429,6 +3430,7 @@ async function migratePostgresDeviceExporterColumns(client) {
   await client.query(`
     ALTER TABLE device_source_instances
       ADD COLUMN IF NOT EXISTS connector_instance_id TEXT,
+      ADD COLUMN IF NOT EXISTS source_kind TEXT,
       ADD COLUMN IF NOT EXISTS last_error_json JSONB,
       ADD COLUMN IF NOT EXISTS last_heartbeat_at TEXT,
       ADD COLUMN IF NOT EXISTS last_heartbeat_status TEXT,

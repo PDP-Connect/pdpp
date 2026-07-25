@@ -308,26 +308,34 @@ interface DeviceExporterStore {
     manifestFingerprint: string;
     semanticCapabilityIdentity: string;
   }): Promise<BatchOutcomeRow>;
-  // Design D6 (fix-enroll-stable-binding-identity-key). Atomically resolves
-  // the device + placeholder source-instance identity a first-time enroll
-  // for this (owner, connector, binding) should use: adopts an existing
-  // ORPHANED device (identity created by a prior code's partial write that
-  // never had a code successfully consumed) if exactly one exists,
-  // otherwise creates `candidateDeviceId`/`candidateSourceInstanceId` as a
-  // fresh device + placeholder source-instance row (connector_instance_id
-  // NULL — the caller's own upsertSourceInstance fills it in afterward via
-  // its existing ON CONFLICT target). The placeholder source-instance row
-  // MUST be created inside the SAME lock as the device: the orphan lookup
+  // Design D6 (fix-enroll-stable-binding-identity-key), qualified by
+  // sourceKind per D7 (fix-enroll-source-kind-identity-gap). Atomically
+  // resolves the device + placeholder source-instance identity a
+  // first-time enroll for this (owner, connector, sourceKind, binding)
+  // should use: adopts an existing ORPHANED device (identity created by a
+  // prior code's partial write that never had a code successfully
+  // consumed, under the SAME sourceKind) if exactly one exists, otherwise
+  // creates `candidateDeviceId`/`candidateSourceInstanceId` as a fresh
+  // device + placeholder source-instance row (connector_instance_id NULL —
+  // the caller's own upsertSourceInstance fills it in afterward via its
+  // existing ON CONFLICT target). The placeholder source-instance row MUST
+  // be created inside the SAME lock as the device: the orphan lookup
   // requires a device_source_instances row to exist, so creating it outside
   // the lock would leave a window where a concurrent second attempt sees no
   // orphan and creates an independent second device for the same binding.
   // Serialized by a durable Postgres advisory-transaction lock keyed on the
-  // binding — see the Postgres implementation's doc comment for why this
-  // must not be a process-local lock. A device with at least one consumed
-  // code (a live, already-completed enrollment) is never adopted here.
+  // (owner, connector, sourceKind, binding) tuple — see the Postgres
+  // implementation's doc comment for why this must not be a process-local
+  // lock, and why sourceKind is part of the lock/orphan key (a local-device
+  // orphan must never be adopted by a browser-collector enrollment sharing
+  // the same owner/connector/binding, and vice versa). A device with at
+  // least one consumed code (a live, already-completed enrollment) is never
+  // adopted here. Callers MUST resolve sourceKind BEFORE calling this
+  // method — it is never derived internally.
   resolveOrCreateEnrollmentDevice(params: {
     ownerSubjectId: string;
     connectorId: string;
+    sourceKind: string;
     localBindingId: string;
     candidateDeviceId: string;
     candidateSourceInstanceId: string;
@@ -353,6 +361,7 @@ interface DeviceExporterStore {
     connectorId: string;
     connectorInstanceId: string;
     localBindingId: string;
+    sourceKind: string;
     displayName: string | null;
     createdAt: string;
     updatedAt: string;
@@ -762,9 +771,23 @@ async function performFirstEnrollment(
   // resolveOrCreateEnrollmentDevice creates.
   const enrollConnectorKey = ctx.canonicalConnectorKey(enrollment.connectorId) ?? enrollment.connectorId;
 
+  // Design D7 (fix-enroll-source-kind-identity-gap). sourceKind is derived
+  // from the connector manifest bindings BEFORE the identity decision — a
+  // `filesystem` connector enrolls as `local_device`, a `browser` connector
+  // as `browser_collector`, and a connector with no resolvable binding is
+  // rejected (see add-browser-collector-enrollment-primitive design
+  // Decision 2) — so it can be included in resolveOrCreateEnrollmentDevice's
+  // lock key and orphan-eligibility predicate. Resolving it AFTER identity
+  // resolution (the pre-D7 order) would let a local-device orphan be
+  // adopted by a browser-collector enrollment sharing the same
+  // owner/connector/binding, since the identity decision would have no way
+  // to distinguish them.
+  const sourceKind = await resolveEnrollmentSourceKind(ctx, enrollConnectorKey);
+
   const resolved = await ctx.deviceExporterStore.resolveOrCreateEnrollmentDevice({
     ownerSubjectId: enrollment.ownerSubjectId,
     connectorId: enrollConnectorKey,
+    sourceKind,
     localBindingId: enrollment.localBindingId,
     candidateDeviceId,
     candidateSourceInstanceId,
@@ -775,12 +798,6 @@ async function performFirstEnrollment(
   const deviceId = resolved.deviceId;
   const sourceInstanceId = resolved.sourceInstanceId;
 
-  // Derive the enrolled source kind from the connector manifest bindings
-  // rather than hardcoding `local_device`: a `filesystem` connector enrolls
-  // as `local_device`, a `browser` connector as `browser_collector`, and a
-  // connector with no resolvable binding is rejected. See
-  // add-browser-collector-enrollment-primitive design Decision 2.
-  const sourceKind = await resolveEnrollmentSourceKind(ctx, enrollConnectorKey);
   await ctx.ensureReferenceConnectorCatalogEntry(enrollConnectorKey, enrollment.displayName || displayName);
   const sourceBindingIdentity = deviceExporterSourceBindingIdentity(enrollment.localBindingId, sourceKind);
   const connectorInstance = await ctx.createRequestConnectorInstanceStore().upsert({
@@ -805,6 +822,7 @@ async function performFirstEnrollment(
     connectorId: enrollConnectorKey,
     connectorInstanceId: connectorInstance.connectorInstanceId,
     localBindingId: enrollment.localBindingId,
+    sourceKind,
     displayName: enrollment.displayName,
     createdAt: now.toISOString(),
     updatedAt: now.toISOString(),

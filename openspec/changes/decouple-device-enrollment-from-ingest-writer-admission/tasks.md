@@ -53,8 +53,22 @@
 - [x] 6.11 Fixed test-mock gaps surfaced by the D6 restructure: the D3 mock (`device-enroll-admission-idempotency.test.js`) updated to mock `resolveOrCreateEnrollmentDevice` instead of `getDevice`/`createDevice`.
 - [x] 6.12 Re-verify the full regression suite, including the pre-existing `device-exporter-routes.test.js` "re-enrolling..." test that a first D6 draft broke and which drove the design correction in 6.5.
 
-## 7. Gates
+## 7. Correct the P0 source-corruption defect and the P1 source-kind identity gap (D7, fix-enroll-source-kind-identity-gap)
 
-- [x] 7.1 `openspec validate --strict` passes.
-- [x] 7.2 Full device-exporter + coordinator test suites green; all oracles (D1-D6) green.
-- [x] 7.3 Lint/format (biome) clean on touched files; `tsc --noEmit` clean; complexity-mass ratchet passes (justifications updated for `ref-device-exporters.ts` and `device-exporter-store.ts`).
+- [x] 7.1 P0: replace the literal NUL byte in `device-exporter-store.ts`'s `advisoryEnrollmentBindingKey` hash-input string literal with the `\0` escape sequence. Verify byte-identical runtime string/hash behavior, zero remaining NUL/control bytes in the file, and textual (non-binary) Git/`file` classification.
+- [x] 7.2 Add an additive `source_kind` column to `device_source_instances` on both backends (`ADD COLUMN IF NOT EXISTS` on Postgres inside `migratePostgresDeviceExporterColumns`; `addColumnIfMissing` on SQLite), following the table's own established post-hoc-column migration pattern. No backfill: legacy rows read as `source_kind IS NULL`, which matches no orphan-eligibility predicate under exact equality.
+- [x] 7.3 Reorder `performFirstEnrollment` to resolve `sourceKind` via `resolveEnrollmentSourceKind` BEFORE calling `resolveOrCreateEnrollmentDevice`, and pass it through.
+- [x] 7.4 Extend `advisoryEnrollmentBindingKey` to take `sourceKind` as an explicit parameter and fold it into the lock-key hash input, so distinct source kinds serialize on distinct advisory-lock keys.
+- [x] 7.5 Extend `resolveOrCreateEnrollmentDevice`'s params (both backends) and the `DeviceExporterStore` interface to require `sourceKind`; qualify the Postgres inline orphan query and `find-orphaned-device-for-binding.sql` (SQLite) with an exact `source_kind = ?` predicate; write `source_kind` on the placeholder source-instance row insert.
+- [x] 7.6 Extend `upsertSourceInstance` (both backends, the interface, and `upsert-source-instance.sql`) to accept and persist `sourceKind`, including it in the `ON CONFLICT ... DO UPDATE` set.
+- [x] 7.7 Postgres mutation-grade adversarial oracle: drive `resolveOrCreateEnrollmentDevice` directly with the SAME owner+connector+binding but two DISTINCT source kinds; assert independent fresh-device resolution, same-kind-only orphan adoption, and exactly one device per kind. Removing the `source_kind` predicate makes the oracle fail deterministically (3/3 runs); the underlying orphan-set query independently confirms cross-kind ambiguity without the predicate.
+- [x] 7.8 Update the mock in `device-enroll-admission-idempotency.test.js`'s D3 test (`readReferenceLocalConnectorCatalogManifest`) so the sourceKind-resolves-first reorder still reaches the mocked `resolveOrCreateEnrollmentDevice` busy-error throw.
+- [x] 7.9 Update OpenSpec (`design.md` D7 section + Scope discipline + Test oracle; `spec.md` scenario qualifiers + new cross-kind-isolation scenario) to document the source-kind-qualified contract.
+- [x] 7.10 Update `mass-justifications.json` for `device-exporter-store.ts`'s complexity-mass increase from the added parameter/predicate.
+- [x] 7.11 Re-verify the full D1-D7 Postgres oracle suite, the SQLite D1-D5 idempotency suite, the browser/local source-kind derivation suite (`device-exporter-routes.test.js`, `connector-source-kind*.test.js`), and the store conformance suite (`device-exporter-store.test.js`, `device-exporter-postgres-proof.test.js`) unmodified and green.
+
+## 8. Gates
+
+- [x] 8.1 `openspec validate --strict` passes.
+- [x] 8.2 Full device-exporter + coordinator test suites green; all oracles (D1-D7) green.
+- [x] 8.3 Lint/format (biome) clean on touched files; `tsc --noEmit` clean; complexity-mass ratchet passes (justifications updated for `ref-device-exporters.ts` and `device-exporter-store.ts`).

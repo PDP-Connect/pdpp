@@ -45,9 +45,16 @@ expired before it could be retried) for the SAME physical collector
 identity — and obtain a usable credential, without duplicating device,
 source-instance, or connector-instance identity for that collector. Identity
 resolution for a pending code SHALL key on the collector's STABLE binding
-(owner, connector, local binding name) — never on the enrollment code's own
-id, which is fresh per code mint and therefore cannot serve as a durable
-identity anchor across multiple codes for the same collector.
+(owner, connector, source kind, local binding name) — never on the
+enrollment code's own id, which is fresh per code mint and therefore cannot
+serve as a durable identity anchor across multiple codes for the same
+collector. The source kind (`local_device` or `browser_collector`, derived
+from the connector's manifest bindings) SHALL be resolved BEFORE the
+identity decision and SHALL be part of the same stable key as the binding
+name, so identity resolution and adoption for one source kind can never
+observe, block on, or adopt orphaned or live identity belonging to a
+different source kind — even when the owner, connector, and local binding
+name are otherwise identical.
 
 #### Scenario: A device retries enrollment after the response is lost in transit
 
@@ -67,9 +74,10 @@ identity anchor across multiple codes for the same collector.
 
 - **WHEN** a prior enrollment attempt for a code durably created the device,
   connector instance, and source instance rows for a given (owner, connector,
-  local binding), then failed before the code was consumed; that code
-  subsequently expires WITHOUT being retried; and a FRESH enrollment code is
-  minted and exchanged for the SAME connector and local binding
+  source kind, local binding), then failed before the code was consumed; that
+  code subsequently expires WITHOUT being retried; and a FRESH enrollment
+  code is minted and exchanged for the SAME connector, SAME source kind, and
+  SAME local binding
 - **THEN** the reference SHALL resolve the fresh code's enrollment to the SAME
   device, connector instance, and source instance the prior attempt's partial
   write created — NOT create a second, independently-orphaned device — and
@@ -81,15 +89,31 @@ identity anchor across multiple codes for the same collector.
 - **AND** no operator action outside the enrollment API (e.g. direct database
   access) SHALL be required to complete this enrollment.
 
+#### Scenario: Orphaned identity is never adopted across a different source kind
+
+- **WHEN** a prior enrollment attempt durably created an orphaned device
+  (identity created, never consumed) for a given (owner, connector, local
+  binding) under one source kind — e.g. `local_device` — and a SEPARATE
+  enrollment (fresh or retried code) resolves to the SAME owner, connector,
+  and local binding name but a DIFFERENT source kind — e.g.
+  `browser_collector`
+- **THEN** the reference SHALL NOT adopt the other kind's orphaned identity
+- **AND** SHALL resolve its own identity independently — adopting an orphan
+  of its OWN kind if one exists, or minting a fresh device otherwise
+- **AND** the two source kinds SHALL end with independent device, connector
+  instance, and source instance identities, never merged, even though the
+  owner, connector, and local binding name are identical.
+
 #### Scenario: Genuinely concurrent enrollment attempts for the same pending code or binding converge on one identity
 
 - **WHEN** multiple enrollment attempts race for the same still-pending code,
   or for different codes minted for the same still-uncompleted (owner,
-  connector, binding), such that more than one attempt could observe "no
-  existing identity yet" before any commits
+  connector, source kind, binding), such that more than one attempt could
+  observe "no existing identity yet" before any commits
 - **THEN** the reference SHALL serialize the identity-resolution decision
   through a durable, database-backed mechanism (not a process-local lock,
-  which provides no guarantee across concurrent requests or processes)
+  which provides no guarantee across concurrent requests or processes) keyed
+  on the full (owner, connector, source kind, binding) tuple
 - **AND** every attempt SHALL converge on exactly one device, one connector
   instance, one source instance, and exactly one active credential —
   regardless of how many requests race or in what order they arrive.

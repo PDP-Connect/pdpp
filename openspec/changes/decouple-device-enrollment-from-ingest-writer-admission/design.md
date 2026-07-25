@@ -346,6 +346,90 @@ mapping. The binding-keyed identity + durable-lock fix above should make a
 unique-violation unreachable on this route in practice; this is the same
 class of defense-in-depth D3 already established.
 
+### D7 — Qualify the binding-identity key by sourceKind (fix-enroll-source-kind-identity-gap)
+
+**Independent-gate finding, not a live counterexample:** D6's stable-binding
+key — `(ownerSubjectId, connectorId, localBindingId)` — omits `sourceKind`.
+`connector_instances` (the pre-existing store D6's key was modeled on) is
+itself keyed on FOUR parts: `(owner_subject_id, connector_id, source_kind,
+source_binding_key)` (see `add-browser-collector-enrollment-primitive`
+Decision 1 — `local_device` and `browser_collector` are peers on the same
+binding axis, not a hierarchy). D6's key silently dropped the fourth part.
+Concretely: `resolveOrCreateEnrollmentDevice`'s advisory-lock hash material
+and its orphan-eligibility query joined only `device_source_instances` +
+`device_exporters` on owner/connector/binding; `sourceKind` was resolved in
+the ROUTE only *after* the identity decision (`performFirstEnrollment`
+called `resolveEnrollmentSourceKind` after
+`resolveOrCreateEnrollmentDevice`, not before). A `local_device` orphan
+(identity created by a partial write, never consumed) could therefore in
+principle be adopted by a later `browser_collector` enrollment sharing the
+same owner, connector, and binding name — merging two structurally distinct
+connector-instance kinds into one device identity. Unreachable today only
+because `sourceKind` is currently a pure function of `connectorId` (a given
+connector's manifest declares exactly one of `filesystem`/`browser`, never
+both — `resolveEnrolledSourceKind` in `connector-source-kind.ts`), so no
+single `connectorId` can drive both branches in the current connector
+catalog. The gap is real at the KEY-DESIGN level regardless: nothing in the
+identity/lock mechanism itself enforces the invariant, so a future connector
+whose manifest resolution changes, or a regression in
+`resolveEnrolledSourceKind`, would silently reopen it. Per explicit
+instruction, this is fixed as a systemic correction to the identity contract,
+not deferred as "unreachable in practice."
+
+**Fix: `sourceKind` becomes the fourth part of the identity key, resolved
+BEFORE the identity decision.** `performFirstEnrollment` now calls
+`resolveEnrollmentSourceKind` first, then passes the resolved `sourceKind`
+into `resolveOrCreateEnrollmentDevice`. That method's contract is now keyed
+on `(ownerSubjectId, connectorId, sourceKind, localBindingId)` end-to-end:
+
+- **Lock material:** `advisoryEnrollmentBindingKey` takes `sourceKind` as an
+  explicit parameter and folds it into the SHA-256 hash input
+  (`...v1:\0` + `owner\nconnector\nsourceKind\nbinding`), so a
+  `local_device` and a `browser_collector` enrollment sharing owner,
+  connector, and binding name serialize on DISTINCT advisory-lock keys —
+  each kind's identity decision is independent, never blocked by or racing
+  against the other's.
+- **Orphan eligibility:** a new `source_kind` column on
+  `device_source_instances` (both backends, additive migration —
+  `ADD COLUMN IF NOT EXISTS source_kind TEXT` on Postgres,
+  `addColumnIfMissing` on SQLite, following the exact established pattern
+  the table's other post-hoc columns already use) is written by
+  `resolveOrCreateEnrollmentDevice`'s placeholder-row insert and by
+  `upsertSourceInstance`. `find-orphaned-device-for-binding.sql` (and the
+  Postgres store's inline equivalent) now predicates `dsi.source_kind = ?`
+  alongside the existing owner/connector/binding predicates — an EXACT
+  match, never NULL-permissive. A legacy row written before this column
+  existed has `source_kind IS NULL`, which matches no candidate under exact
+  equality and is therefore never adopted by ANY kind — safe by
+  construction, not a special case: it simply falls through to minting a
+  fresh device, exactly like any other non-matching row.
+
+**Why a schema column, not a join-based derivation.** `connector_instances`
+already carries `source_kind`, and an orphan created after the
+connector-instance upsert step does have a matching `connector_instances`
+row — but `resolveOrCreateEnrollmentDevice` must also cover the
+placeholder-only orphan (a partial write that failed BEFORE the
+connector-instance upsert ever ran, `connector_instance_id IS NULL` on the
+`device_source_instances` row), which has no `connector_instances` row to
+join against at all. A join-based approach would silently fail to qualify
+exactly the orphan case D6 was built to handle. The additive column is the
+narrower, correct fix: it reuses the exact `ADD COLUMN IF NOT EXISTS` /
+`addColumnIfMissing` migration pattern this table's `connector_instance_id`,
+`last_error_json`, and four other post-hoc columns already established (see
+`migratePostgresDeviceExporterColumns` in `postgres-storage.js` and the
+matching block in `db.js`'s `applySqliteMigrations`), touches no other
+table, and requires no backfill (existing rows simply read as
+`source_kind IS NULL`, which is semantically correct — they predate the
+kind-tracking contract and are inert for orphan-adoption purposes, never
+falsely matched).
+
+**Scope kept minimal.** Only the two call sites the identity-decision race
+actually needs — `upsertSourceInstance` (write) and
+`find-orphaned-device-for-binding.sql` (read) — were changed to carry
+`source_kind`. `getSourceInstance`, `getSourceInstanceByBinding`,
+`listSourceInstances`, and the heartbeat queries are unrelated to the
+identity-decision race and were left untouched.
+
 ## Scope discipline
 
 The proven live cause is D1 (starvation). D2 fixes a separately-proven data-loss
@@ -357,12 +441,19 @@ D6 corrects it to the binding key `connector_instances` already uses, adds the
 durable Postgres advisory-lock serialization the naive lookup-then-create
 sequence needed, and restores the pre-existing "fresh device per completed-
 binding re-enroll, connector_instance stays stable" contract D5's blanket
-binding-keying would have broken. No cross-store request-transaction rewrite is
-introduced anywhere in this change (that would require threading a shared
-client through every device-exporter and connector-instance store method —
-large blast radius, not systemic-minimal); the locked `resolveOrCreateEnrollmentDevice`
-method is scoped to exactly the two tables (`device_exporters`,
-`device_source_instances`) whose identity-decision race needs it. The
+binding-keying would have broken. D7 completes D6's key to match
+`connector_instances`' own four-part identity (adding `sourceKind`, the one
+part D6 dropped) — an independent-gate finding rather than a live
+counterexample, fixed as a systemic key correction (additive column,
+lock-material parameter, query predicate) rather than deferred as
+"unreachable given today's connector catalog." No cross-store
+request-transaction rewrite is introduced anywhere in this change (that would
+require threading a shared client through every device-exporter and
+connector-instance store method — large blast radius, not
+systemic-minimal); the locked `resolveOrCreateEnrollmentDevice` method is
+scoped to exactly the two tables (`device_exporters`,
+`device_source_instances`) whose identity-decision race needs it, and D7's
+`source_kind` column addition touches only `device_source_instances`. The
 idempotent-response pattern (D2, extended by D6) achieves the same no-loss
 guarantee at the route boundary.
 
@@ -459,3 +550,24 @@ guarantee at the route boundary.
   stable-binding adoption oracle fail too (3 of 4 oracles catch it; only the
   single-writer-at-a-time D6 isolation oracle does not, as expected). All
   restored and re-verified green.
+- **Cross-kind isolation oracle (D7, Postgres, mutation-grade):** drives
+  `resolveOrCreateEnrollmentDevice` directly (the store method under test,
+  not just the route) with the SAME `ownerSubjectId` + `connectorId` +
+  `localBindingId` but two DISTINCT `sourceKind` values
+  (`local_device`/`browser_collector`) — exactly the scenario D6's
+  three-part key could not distinguish. Asserts: (1) with no orphan or live
+  device under either kind yet, each kind resolves to its OWN fresh device,
+  never sharing a `device_id`; (2) after failing both attempts before
+  consume (an orphan per kind), a SECOND attempt under a given kind adopts
+  ONLY that kind's own orphan, never the other kind's; (3) exactly two
+  independent devices exist for the shared owner+connector+binding — one per
+  kind, never merged, never a spurious third. **Mutation-grade, verified
+  deterministically:** reverting the Postgres orphan query's `source_kind`
+  predicate (and its lock-key parameter) back to the pre-D7 three-part shape
+  makes the oracle fail 3/3 runs (`browserResolved.adopted` is wrongly
+  `true` — the browser-collector attempt adopts the local-device orphan);
+  the same query run without the predicate independently confirms the
+  underlying orphan SET itself is ambiguous across kinds (2 rows match one
+  candidate slot), proving the predicate — not incidental query shape — is
+  what prevents the collision. Restored and re-verified green, alongside the
+  full D1–D6 Postgres suite unmodified.
