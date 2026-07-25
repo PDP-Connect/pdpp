@@ -4,9 +4,34 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { validateDetailGapsPageRequest } from '../runtime/detail-gap-paging.ts';
+import { createDetailGapPageReader, validateDetailGapsPageRequest } from '../runtime/detail-gap-paging.ts';
 
 const scopeByStream = new Map([['messages', {}], ['threads', {}]]);
+
+test('detail-gap page reader fails clearly when CAS leasing is unavailable', async () => {
+  const readDetailGapPage = createDetailGapPageReader({
+    connectorId: 'connector',
+    connectorInstanceId: 'instance',
+    detailGapStore: {
+      async listPendingGaps() {
+        return [{
+          detail_locator: 'locator',
+          gap_id: 'gap-1',
+          record_key: 'record',
+          status: 'pending',
+          stream: 'messages',
+        }];
+      },
+    },
+    grantId: 'grant',
+    runId: 'run',
+  });
+
+  await assert.rejects(
+    readDetailGapPage(),
+    { message: 'detail-gap store must support CAS recovery leases' },
+  );
+});
 
 test('BASELINE: validateDetailGapsPageRequest normalizes a valid page request', () => {
   assert.deepEqual(

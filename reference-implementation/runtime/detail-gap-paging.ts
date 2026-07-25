@@ -345,6 +345,9 @@ export function createDetailGapPageReader({
     // outcome before attempt_count changes. CAS claim prevents a stale page
     // from serving a row another run already owns, and a per-gap token makes
     // a swapped same-page gap/token pairing fail closed.
+    if (typeof detailGapStore.claimPendingGaps !== "function") {
+      throw new Error("detail-gap store must support CAS recovery leases");
+    }
     const pageId = ++pageSequence;
     const leaseExpiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
     const leasesByGapId = new Map<string, string>();
