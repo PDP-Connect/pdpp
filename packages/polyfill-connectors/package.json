@@ -25,7 +25,7 @@
     "./connectors/codex": "./connectors/codex/index.ts"
   },
   "scripts": {
-    "postinstall": "node ./scripts/install-patchright-browser.mjs",
+    "postinstall": "node ./scripts/install-patchright-browser.ts",
     "check": "ultracite check",
     "fix": "ultracite fix",
     "test": "node --test --import tsx --test-concurrency=2 --test-timeout=120000 \"bin/**/*.test.ts\" \"connectors/**/*.test.ts\" \"src/**/*.test.ts\"",
