@@ -22,9 +22,20 @@ if (accountingIndex !== -1 && !accountingPath) throw new Error('--accounting-aut
 const forwardedArgs = accountingIndex === -1
   ? rawForwardedArgs
   : rawForwardedArgs.filter((_, index) => index !== accountingIndex && index !== accountingIndex + 1);
-const effectiveArgs = forwardedArgs.includes('--test-force-exit')
-  ? forwardedArgs
-  : ['--test-force-exit', ...forwardedArgs];
+// --test-force-exit is deliberately NOT forwarded to child test processes.
+// Node's own test-runner harness stops delivering reporter events partway
+// through a run once it decides to force-exit — confirmed directly: a
+// reporter's `for await (const event of source)` loop completes normally
+// but short by up to ~20% of expected events, non-deterministically, even
+// though every test itself ran and passed. That silently truncates whatever
+// structured accounting a reporter is building (skip/pass/fail counts) on a
+// fully green file. Bounded termination for a genuinely hung file (a leaked
+// handle after every test has already finished) is instead enforced by this
+// runner's own watchdog in runNodeTest(), which lets a normal run exit on
+// its own (draining reporter output completely) and only signals a child
+// that fails to exit within PER_FILE_TIMEOUT_MS.
+const effectiveArgs = forwardedArgs;
+const PER_FILE_TIMEOUT_MS = Number.parseInt(process.env.PDPP_TEST_FILE_TIMEOUT_MS || '', 10) || 120_000;
 if (!effectiveArgs.some((arg) => arg === '--test-reporter' || arg.startsWith('--test-reporter='))) effectiveArgs.push(`--test-reporter=${fileURLToPath(new URL('../../scripts/test-accounting/node-reporter.mjs', import.meta.url))}`);
 const accountingAuthority = accountingPath ? JSON.parse(await readFile(accountingPath, 'utf8')) : undefined;
 if (accountingAuthority && (accountingAuthority.schema !== RUN_AUTHORITY_SCHEMA || new Date(accountingAuthority.expires_at) < new Date())) throw new Error('accounting authority is invalid or expired');
@@ -165,6 +176,21 @@ async function runNodeTest(filePath, extraArgs) {
       env: childEnv,
     });
     let output = '';
+    let timedOut = false;
+
+    // Watchdog: a normal run drains its reporter stream and exits on its
+    // own well within this window, so the timer never fires and never
+    // touches the child. It only acts on a file that is genuinely stuck
+    // (e.g. a leaked handle keeping the event loop alive after every test
+    // already finished) — the case --test-force-exit used to (mis)handle by
+    // truncating the reporter's event stream for every run, not just hung
+    // ones. SIGKILL (not SIGTERM) because a hang implies the process isn't
+    // responding to its own event loop, so a graceful signal isn't reliable.
+    const watchdog = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGKILL');
+    }, PER_FILE_TIMEOUT_MS);
+    watchdog.unref?.();
 
     child.stdout.on('data', (chunk) => {
       output += chunk.toString();
@@ -174,11 +200,17 @@ async function runNodeTest(filePath, extraArgs) {
     });
 
     child.on('error', (err) => {
+      clearTimeout(watchdog);
       if (allocation) allocation.release().finally(() => reject(err));
       else reject(err);
     });
     child.on('exit', (code, signal) => {
+      clearTimeout(watchdog);
       const finish = () => {
+        if (timedOut) {
+          reject(new Error(`Test process for ${filePath} timed out after ${PER_FILE_TIMEOUT_MS}ms and was killed`));
+          return;
+        }
         if (signal) {
           reject(new Error(`Test process for ${filePath} exited via signal ${signal}`));
           return;
