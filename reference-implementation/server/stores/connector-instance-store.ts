@@ -15,11 +15,129 @@ interface ConnectorInstance {
   sourceBinding: unknown;
   createdAt?: string;
   updatedAt?: string;
-  revokedAt?: string | null;
+  revokedAt: string | null;
+}
+
+// Raw SQLite/Postgres row shape for `connector_instances`, as selected by
+// every query in `server/queries/connector-instances/*.sql` and the inline
+// Postgres SELECTs below. `mapInstance` converts this to `ConnectorInstance`.
+interface ConnectorInstanceRow extends Record<string, unknown> {
+  connector_instance_id: string;
+  owner_subject_id: string;
+  connector_id: string;
+  display_name: string;
+  status: string;
+  source_kind: string;
+  source_binding_key: string;
+  source_binding_json: string | null;
+  created_at: string;
+  updated_at: string;
+  revoked_at: string | null;
+}
+
+// Raw row shape for `controller_active_runs`, as selected by
+// `server/queries/controller/list-active-runs.sql`.
+interface ActiveRunRow {
+  connector_instance_id: string;
+  connector_id: string;
+  run_id: string;
+  trace_id: string | null;
+  scenario_id: string | null;
+  started_at: string;
+  run_generation: number;
+}
+
+// Active-run summary returned by `getActiveRun`.
+interface ActiveRunSummary {
+  runId: string;
+  connectorId: string;
+  startedAt: string;
+}
+
+// Record shape accepted by `upsert` / `normalizeRecord`. Every field is
+// optional at the call site — `normalizeRecord` fills in the required
+// derived fields (id, status, sourceKind, sourceBindingKey/Json).
+interface ConnectorInstanceUpsertRecord {
+  connectorInstanceId?: string | undefined;
+  ownerSubjectId: string;
+  connectorId: string;
+  displayName?: string | undefined;
+  status?: string | undefined;
+  sourceKind?: string | undefined;
+  sourceBindingKey?: string | undefined;
+  sourceBinding?: unknown;
+  createdAt?: string | undefined;
+  updatedAt?: string | undefined;
+  revokedAt?: string | null | undefined;
+}
+
+// Normalized/validated shape produced by `normalizeRecord`, consumed by both
+// backend `upsert` implementations.
+interface NormalizedConnectorInstanceRecord {
+  connectorInstanceId: string;
+  ownerSubjectId: string;
+  connectorId: string;
+  displayName: string;
+  status: string;
+  sourceKind: string;
+  sourceBindingKey: string;
+  sourceBindingJson: string;
+  createdAt: string | undefined;
+  updatedAt: string | undefined;
+  revokedAt: string | null;
+}
+
+// Namespace shape returned by `resolveOwnerConnectorInstanceNamespace` and
+// its helpers.
+interface ConnectorInstanceNamespace {
+  ownerSubjectId: string;
+  connectorId: string;
+  connectorInstanceId: string;
+  displayName: string;
+  status: string;
+  sourceKind: string;
+  sourceBindingKey: string;
+  sourceBinding: unknown;
+  selector: 'connector_instance_id' | 'connector_id';
+  createdDefaultAccount: boolean;
+}
+
+// Minimal shape of the store methods used by the free functions in this
+// module (`resolveOwnerConnectorInstanceNamespace` and its helpers). Both the
+// SQLite and Postgres store objects satisfy this structurally.
+interface ConnectorInstanceStoreLike {
+  get(connectorInstanceId: string): ConnectorInstance | null | Promise<ConnectorInstance | null>;
+  resolveActiveByConnector(ownerSubjectId: string, connectorId: string): ConnectorInstance | Promise<ConnectorInstance>;
+  ensureDefaultAccountConnection(args: {
+    ownerSubjectId: string;
+    connectorId: string;
+    displayName?: string | null | undefined;
+    now?: string | undefined;
+  }): ConnectorInstance | Promise<ConnectorInstance>;
+}
+
+// Injected purge collaborator for `deleteConnection`. Wired by the host
+// (`server/index.js`) to `enumerateConnectionStreams`,
+// `deleteConnectionRecordRowsSqlite`, `deleteConnectionRecordRowsPostgres`,
+// and `teardownConnectionSearchProjection` in `server/records.js`. Injected
+// (rather than imported) to avoid a records.js <-> store import cycle.
+interface ConnectorInstanceDeletePurge {
+  enumerateStreams(storageTarget: { connector_id: string; connector_instance_id: string }): Promise<{
+    connectorId: string;
+    connectorInstanceId: string;
+    streams: string[];
+  }>;
+  deleteRecordRowsSqlite(connectorInstanceId: string): number;
+  deleteRecordRowsPostgres(client: unknown, connectorInstanceId: string): Promise<number>;
+  teardownProjection(args: {
+    connectorId: string;
+    connectorInstanceId: string;
+    streams: string[];
+    deletedRecordCount: number;
+  }): Promise<void>;
 }
 
 import { allowUnboundedReadAcknowledged, exec, getMany, getOne, referenceQueries, writeTransaction } from '../../lib/db.ts';
-import { getDb } from '../db.js';
 import { postgresQuery, withPostgresTransaction } from '../postgres-storage.js';
 import { withConnectorInstanceWrite } from '../connector-instance-write-coordinator.ts';
 
@@ -81,7 +199,10 @@ export class ConnectorInstanceDeleteError extends Error {
 // default-account binding whose deterministic id would re-materialize (I6,
 // Decision 1 fallback: typed-unsupported rather than a half-built tombstone).
 // Returns the resolved instance when the delete may proceed.
-function assertDeletableConnection(instance, { connectorInstanceId, ownerSubjectId, hasActiveRun }) {
+function assertDeletableConnection(
+  instance: ConnectorInstance | null,
+  { connectorInstanceId, ownerSubjectId, hasActiveRun }: { connectorInstanceId: string; ownerSubjectId: string; hasActiveRun: boolean },
+): ConnectorInstance {
   if (!instance || instance.ownerSubjectId !== ownerSubjectId) {
     // Absent OR foreign — both surface as not-found so existence is not leaked
     // across owners and a repeat delete of an already-deleted id is typed.
@@ -119,7 +240,15 @@ function assertDeletableConnection(instance, { connectorInstanceId, ownerSubject
 // Non-secret deletion summary returned by `deleteConnection` for the audit
 // event + route response. Carries only counts and stable identifiers — never
 // record contents or secrets.
-function buildDeleteSummary(instance, { deletedRecordCount, deletedStreamCount, scheduleDeleted, deviceRefsCleared }) {
+function buildDeleteSummary(
+  instance: ConnectorInstance,
+  { deletedRecordCount, deletedStreamCount, scheduleDeleted, deviceRefsCleared }: {
+    deletedRecordCount: number;
+    deletedStreamCount: number;
+    scheduleDeleted: boolean;
+    deviceRefsCleared: number;
+  },
+) {
   return {
     connection_id: instance.connectorInstanceId,
     connector_id: instance.connectorId,
@@ -147,11 +276,27 @@ function hashKey(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
+// Asserts a just-written row round-trips through a follow-up read within the
+// same store. Used after `upsert`/`get(justInsertedId)` pairs where a null
+// result would mean the write itself silently failed — a store-invariant
+// violation, not a normal not-found outcome.
+function assertRow<T>(value: T | null, message: string): T {
+  if (value == null) {
+    throw new Error(message);
+  }
+  return value;
+}
+
 export function makeConnectorInstanceSourceBindingKey(sourceBinding: unknown): string {
   return hashKey(stableJson(sourceBinding ?? {}));
 }
 
-function makeConnectorInstanceId({ ownerSubjectId, connectorId, sourceKind, sourceBindingKey }) {
+function makeConnectorInstanceId({ ownerSubjectId, connectorId, sourceKind, sourceBindingKey }: {
+  ownerSubjectId: string;
+  connectorId: string;
+  sourceKind: string;
+  sourceBindingKey: string;
+}) {
   return `cin_${hashKey(`${ownerSubjectId}\n${connectorId}\n${sourceKind}\n${sourceBindingKey}`).slice(0, 24)}`;
 }
 
@@ -167,13 +312,13 @@ export function makeDefaultAccountConnectorInstanceId(ownerSubjectId: string, co
 // Throws when `value` is not one of `validSet`, using the exact
 // `Invalid connector instance ${label} '${value}'.` message both callers
 // (sourceKind/status) already relied on.
-function assertOneOf(validSet, value, label) {
+function assertOneOf(validSet: Set<string>, value: string, label: string): void {
   if (!validSet.has(value)) {
     throw new Error(`Invalid connector instance ${label} '${value}'.`);
   }
 }
 
-function normalizeRecord(record) {
+function normalizeRecord(record: ConnectorInstanceUpsertRecord): NormalizedConnectorInstanceRecord {
   if (!record.ownerSubjectId) throw new Error('ownerSubjectId is required.');
   if (!record.connectorId) throw new Error('connectorId is required.');
   const sourceKind = record.sourceKind ?? 'manual';
@@ -202,7 +347,9 @@ function normalizeRecord(record) {
   };
 }
 
-function mapInstance(row) {
+function mapInstance(row: ConnectorInstanceRow | null): ConnectorInstance | null;
+function mapInstance(row: ConnectorInstanceRow): ConnectorInstance;
+function mapInstance(row: ConnectorInstanceRow | null): ConnectorInstance | null {
   if (!row) return null;
   return {
     connectorInstanceId: row.connector_instance_id,
@@ -221,7 +368,7 @@ function mapInstance(row) {
   };
 }
 
-function resolveSingleActive(rows, ownerSubjectId, connectorId) {
+function resolveSingleActive(rows: ConnectorInstance[], ownerSubjectId: string, connectorId: string): ConnectorInstance {
   if (rows.length === 0) {
     throw new ConnectorInstanceResolutionError(
       'connector_instance_not_found',
@@ -236,10 +383,14 @@ function resolveSingleActive(rows, ownerSubjectId, connectorId) {
       { ownerSubjectId, connectorId },
     );
   }
-  return rows[0];
+  // `rows.length` is exactly 1 here (the 0 and >1 cases both throw above).
+  return rows[0] as ConnectorInstance;
 }
 
-function namespaceFromInstance(instance, { selector, createdDefaultAccount = false } = {}) {
+function namespaceFromInstance(
+  instance: ConnectorInstance,
+  { selector, createdDefaultAccount = false }: { selector: 'connector_instance_id' | 'connector_id'; createdDefaultAccount?: boolean },
+): ConnectorInstanceNamespace {
   return {
     ownerSubjectId: instance.ownerSubjectId,
     connectorId: instance.connectorId,
@@ -267,7 +418,16 @@ const FALL_THROUGH_TO_CONNECTOR_ID = Symbol('fall-through-to-connector-id');
 // `FALL_THROUGH_TO_CONNECTOR_ID` when the instance is missing but doubles as
 // a legacy default-account connector_id hint (see Decision 3 note at the
 // caller). Throws connector_instance_not_found otherwise.
-function resolveByExplicitInstanceId(instance, { ownerSubjectId, connectorId, connectorInstanceId, allowStatuses, allowDefaultAccount }) {
+function resolveByExplicitInstanceId(
+  instance: ConnectorInstance | null,
+  { ownerSubjectId, connectorId, connectorInstanceId, allowStatuses, allowDefaultAccount }: {
+    ownerSubjectId: string;
+    connectorId: string | null;
+    connectorInstanceId: string;
+    allowStatuses: string[];
+    allowDefaultAccount: boolean;
+  },
+): ConnectorInstanceNamespace | typeof FALL_THROUGH_TO_CONNECTOR_ID {
   if (instance) {
     if (instance.ownerSubjectId !== ownerSubjectId) {
       throw new ConnectorInstanceResolutionError(
@@ -310,7 +470,11 @@ function resolveByExplicitInstanceId(instance, { ownerSubjectId, connectorId, co
 // Resolves the `connector_id` selector against the store's single-active
 // lookup and maps the hit to a namespace. Lets `connector_instance_not_found`
 // (and any other store error) propagate to the caller unchanged.
-async function resolveByConnectorId(store, ownerSubjectId, connectorId) {
+async function resolveByConnectorId(
+  store: ConnectorInstanceStoreLike,
+  ownerSubjectId: string,
+  connectorId: string,
+): Promise<ConnectorInstanceNamespace> {
   const instance = await store.resolveActiveByConnector(ownerSubjectId, connectorId);
   return namespaceFromInstance(instance, { selector: 'connector_id' });
 }
@@ -322,7 +486,10 @@ async function resolveByConnectorId(store, ownerSubjectId, connectorId) {
 // load-bearing half of the guard, see "Deferred: connection-revoke
 // durability" → Unit 1), and an unregistered connector's FK failure is
 // remapped to a clean not-found instead of bubbling the raw driver error.
-async function materializeDefaultAccount(store, { ownerSubjectId, connectorId, displayName, now }) {
+async function materializeDefaultAccount(
+  store: ConnectorInstanceStoreLike,
+  { ownerSubjectId, connectorId, displayName, now }: { ownerSubjectId: string; connectorId: string; displayName?: string | null; now: string },
+): Promise<ConnectorInstanceNamespace> {
   try {
     const instance = await store.ensureDefaultAccountConnection({ ownerSubjectId, connectorId, displayName, now });
     // The default-account materialization respects a deliberate revoke (it
@@ -351,7 +518,8 @@ async function materializeDefaultAccount(store, { ownerSubjectId, connectorId, d
     // this as a clean connector_instance_not_found so the caller can map
     // it to the right "unknown connector" 404 instead of bubbling SQLite's
     // 500.
-    if (err?.code === 'SQLITE_CONSTRAINT_FOREIGNKEY' || err?.code === '23503') {
+    const errCode = err && typeof err === 'object' && 'code' in err ? (err as { code: unknown }).code : undefined;
+    if (errCode === 'SQLITE_CONSTRAINT_FOREIGNKEY' || errCode === '23503') {
       throw new ConnectorInstanceResolutionError(
         'connector_instance_not_found',
         `Connector '${connectorId}' is not registered; no connector instance namespace available.`,
@@ -382,12 +550,12 @@ export async function resolveOwnerConnectorInstanceNamespace({
   ownerSubjectId: string;
   connectorId?: string | null;
   connectorInstanceId?: string | null;
-  connectorInstanceStore: unknown;
+  connectorInstanceStore: ConnectorInstanceStoreLike;
   allowDefaultAccount?: boolean;
   allowStatuses?: string[];
   displayName?: string | null;
   now?: string;
-}): Promise<unknown> {
+}): Promise<ConnectorInstanceNamespace> {
   if (!ownerSubjectId) {
     throw new ConnectorInstanceResolutionError(
       'owner_subject_required',
@@ -431,9 +599,9 @@ export async function resolveOwnerConnectorInstanceNamespace({
   return materializeDefaultAccount(connectorInstanceStore, { ownerSubjectId, connectorId, displayName: displayName ?? connectorId, now });
 }
 
-export function createSqliteConnectorInstanceStore(): unknown {
+export function createSqliteConnectorInstanceStore() {
   const store = {
-    upsert(record) {
+    upsert(record: ConnectorInstanceUpsertRecord): ConnectorInstance | null {
       const normalized = normalizeRecord(record);
       exec(referenceQueries.connectorInstancesInsert, [
         normalized.connectorInstanceId,
@@ -444,14 +612,19 @@ export function createSqliteConnectorInstanceStore(): unknown {
         normalized.sourceKind,
         normalized.sourceBindingKey,
         normalized.sourceBindingJson,
-        normalized.createdAt,
-        normalized.updatedAt,
+        normalized.createdAt ?? null,
+        normalized.updatedAt ?? null,
         normalized.revokedAt,
       ]);
       return this.get(normalized.connectorInstanceId);
     },
 
-    ensureDefaultAccountConnection({ ownerSubjectId, connectorId, displayName, now }) {
+    ensureDefaultAccountConnection({ ownerSubjectId, connectorId, displayName, now }: {
+      ownerSubjectId: string;
+      connectorId: string;
+      displayName?: string | null;
+      now?: string;
+    }): ConnectorInstance {
       // Durability guard: a deliberately-revoked default-account connection
       // MUST NOT be silently resurrected to active. Read the deterministically
       // keyed row first; if the owner revoked it, return it unchanged so the
@@ -469,21 +642,24 @@ export function createSqliteConnectorInstanceStore(): unknown {
       if (existing && existing.status === 'revoked') {
         return existing;
       }
-      return this.upsert({
-        connectorInstanceId: makeDefaultAccountConnectorInstanceId(ownerSubjectId, connectorId),
-        ownerSubjectId,
-        connectorId,
-        displayName: displayName ?? connectorId,
-        status: 'active',
-        sourceKind: 'account',
-        sourceBindingKey: DEFAULT_ACCOUNT_SOURCE_BINDING_KEY,
-        sourceBinding: { ...DEFAULT_ACCOUNT_SOURCE_BINDING },
-        createdAt: now,
-        updatedAt: now,
-      });
+      return assertRow(
+        this.upsert({
+          connectorInstanceId: makeDefaultAccountConnectorInstanceId(ownerSubjectId, connectorId),
+          ownerSubjectId,
+          connectorId,
+          displayName: displayName ?? connectorId,
+          status: 'active',
+          sourceKind: 'account',
+          sourceBindingKey: DEFAULT_ACCOUNT_SOURCE_BINDING_KEY,
+          sourceBinding: { ...DEFAULT_ACCOUNT_SOURCE_BINDING },
+          createdAt: now,
+          updatedAt: now,
+        }),
+        `Failed to materialize default-account connector instance for owner '${ownerSubjectId}' and connector '${connectorId}'.`,
+      );
     },
 
-    get(connectorInstanceId) {
+    get(connectorInstanceId: string): ConnectorInstance | null {
       return mapInstance(getOne(referenceQueries.connectorInstancesGetById, [connectorInstanceId]));
     },
 
@@ -496,8 +672,8 @@ export function createSqliteConnectorInstanceStore(): unknown {
     // its first sync, so the owner setup-status surface can show "first sync
     // running" without scanning connector-keyed run history. The enumeration is
     // bounded (one row per registered connector) and read-only.
-    getActiveRun(connectorInstanceId) {
-      const rows = allowUnboundedReadAcknowledged(referenceQueries.controllerListActiveRuns);
+    getActiveRun(connectorInstanceId: string): ActiveRunSummary | null {
+      const rows = allowUnboundedReadAcknowledged<ActiveRunRow>(referenceQueries.controllerListActiveRuns);
       const row = rows.find((run) => run.connector_instance_id === connectorInstanceId);
       if (!row) {
         return null;
@@ -505,9 +681,14 @@ export function createSqliteConnectorInstanceStore(): unknown {
       return { runId: row.run_id, connectorId: row.connector_id, startedAt: row.started_at };
     },
 
-    getByBinding({ ownerSubjectId, connectorId, sourceKind, sourceBindingKey }) {
+    getByBinding({ ownerSubjectId, connectorId, sourceKind, sourceBindingKey }: {
+      ownerSubjectId: string;
+      connectorId: string;
+      sourceKind: string;
+      sourceBindingKey: string;
+    }): ConnectorInstance | null {
       return mapInstance(
-        getOne(referenceQueries.connectorInstancesGetByBinding, [
+        getOne<ConnectorInstanceRow>(referenceQueries.connectorInstancesGetByBinding, [
           ownerSubjectId,
           connectorId,
           sourceKind,
@@ -516,7 +697,7 @@ export function createSqliteConnectorInstanceStore(): unknown {
       );
     },
 
-    listByOwner(ownerSubjectId, { limit = LIST_LIMIT } = {}) {
+    listByOwner(ownerSubjectId: string, { limit = LIST_LIMIT }: { limit?: number } = {}): ConnectorInstance[] {
       // Draft instances are invisible to this read; the
       // `connectorInstancesListByOwner` query excludes `status = 'draft'` in
       // SQL (so the LIMIT window counts only visible rows). The JS post-filter
@@ -529,7 +710,7 @@ export function createSqliteConnectorInstanceStore(): unknown {
       // visible (as an explicit setup-in-progress state) for connection
       // discoverability, so it reads `listByOwnerIncludingDrafts` instead. See
       // fix-pending-connection-discovery design.
-      return getMany(referenceQueries.connectorInstancesListByOwner, [ownerSubjectId], { limit })
+      return getMany<ConnectorInstanceRow>(referenceQueries.connectorInstancesListByOwner, [ownerSubjectId], { limit })
         .rows.map(mapInstance)
         .filter((instance) => !READ_SURFACE_HIDDEN_STATUSES.has(instance.status));
     },
@@ -543,14 +724,14 @@ export function createSqliteConnectorInstanceStore(): unknown {
     // of `listByOwner` should keep hiding drafts (see Decision 2 above); do
     // not redirect a new caller here without confirming it renders a draft as
     // a distinct pending state, not as an already-configured connection.
-    listByOwnerIncludingDrafts(ownerSubjectId, { limit = LIST_LIMIT } = {}) {
-      return getMany(referenceQueries.connectorInstancesListByOwnerIncludingDrafts, [ownerSubjectId], {
+    listByOwnerIncludingDrafts(ownerSubjectId: string, { limit = LIST_LIMIT }: { limit?: number } = {}): ConnectorInstance[] {
+      return getMany<ConnectorInstanceRow>(referenceQueries.connectorInstancesListByOwnerIncludingDrafts, [ownerSubjectId], {
         limit,
       }).rows.map(mapInstance);
     },
 
-    resolveActiveByConnector(ownerSubjectId, connectorId) {
-      const rows = getMany(
+    resolveActiveByConnector(ownerSubjectId: string, connectorId: string): ConnectorInstance {
+      const rows = getMany<ConnectorInstanceRow>(
         referenceQueries.connectorInstancesListActiveByOwnerConnector,
         [ownerSubjectId, connectorId],
         { limit: ACTIVE_RESOLUTION_LIMIT },
@@ -558,15 +739,19 @@ export function createSqliteConnectorInstanceStore(): unknown {
       return resolveSingleActive(rows, ownerSubjectId, connectorId);
     },
 
-    listActiveByConnector(ownerSubjectId, connectorId, { limit = ACTIVE_FANIN_LIMIT } = {}) {
-      return getMany(
+    listActiveByConnector(ownerSubjectId: string, connectorId: string, { limit = ACTIVE_FANIN_LIMIT }: { limit?: number } = {}): ConnectorInstance[] {
+      return getMany<ConnectorInstanceRow>(
         referenceQueries.connectorInstancesListActiveByOwnerConnector,
         [ownerSubjectId, connectorId],
         { limit },
       ).rows.map(mapInstance);
     },
 
-    updateStatus(connectorInstanceId, { status, updatedAt, revokedAt = null }) {
+    updateStatus(connectorInstanceId: string, { status, updatedAt, revokedAt = null }: {
+      status: string;
+      updatedAt: string;
+      revokedAt?: string | null;
+    }): ConnectorInstance | null {
       if (!VALID_STATUSES.has(status)) {
         throw new Error(`Invalid connector instance status '${status}'.`);
       }
@@ -579,7 +764,7 @@ export function createSqliteConnectorInstanceStore(): unknown {
     // concurrent first run — a second activation finds the row already active).
     // Never moves a paused/revoked row to active. See
     // add-static-secret-owner-session-connect-path design Decision 5.
-    activateDraft(connectorInstanceId, { now } = {}) {
+    activateDraft(connectorInstanceId: string, { now }: { now?: string } = {}): ConnectorInstance | null {
       const instance = this.get(connectorInstanceId);
       if (!instance || instance.status !== 'draft') {
         return instance;
@@ -591,7 +776,11 @@ export function createSqliteConnectorInstanceStore(): unknown {
       });
     },
 
-    setDisplayName(connectorInstanceId, { ownerSubjectId, displayName, updatedAt }) {
+    setDisplayName(connectorInstanceId: string, { ownerSubjectId, displayName, updatedAt }: {
+      ownerSubjectId: string;
+      displayName: string;
+      updatedAt?: string;
+    }): ConnectorInstance | null {
       assertOwnerSetDisplayNameArgs({ connectorInstanceId, ownerSubjectId, displayName });
       const result = exec(
         referenceQueries.connectorInstancesUpdateDisplayName,
@@ -613,8 +802,8 @@ export function createSqliteConnectorInstanceStore(): unknown {
     // still incomplete until their source_binding_json.kind changes.
     // The optional ownerSubjectId filter is applied client-side after the
     // bounded read to avoid dynamic SQL.
-    listDraftBrowserEnrollmentShells(ownerSubjectId = null) {
-      const rows = allowUnboundedReadAcknowledged(
+    listDraftBrowserEnrollmentShells(ownerSubjectId: string | null = null): ConnectorInstance[] {
+      const rows = allowUnboundedReadAcknowledged<ConnectorInstanceRow>(
         referenceQueries.connectorInstancesListDraftBrowserEnrollmentShells,
       );
       const instances = rows.map(mapInstance);
@@ -651,11 +840,15 @@ export function createSqliteConnectorInstanceStore(): unknown {
     // `purge` is injected (rather than imported) to avoid a records.js ↔ store
     // import cycle. It exposes `enumerateStreams`, `deleteRecordRowsSqlite`, and
     // `teardownProjection`; the host wires these to the `records.js` phases.
-    async deleteConnection(connectorInstanceId, { ownerSubjectId, now, purge }) {
-      const instance = this.get(connectorInstanceId);
-      const activeRuns = allowUnboundedReadAcknowledged(referenceQueries.controllerListActiveRuns);
+    async deleteConnection(connectorInstanceId: string, { ownerSubjectId, now, purge }: {
+      ownerSubjectId: string;
+      now?: string;
+      purge: ConnectorInstanceDeletePurge;
+    }) {
+      const instanceLookup = this.get(connectorInstanceId);
+      const activeRuns = allowUnboundedReadAcknowledged<ActiveRunRow>(referenceQueries.controllerListActiveRuns);
       const hasActiveRun = activeRuns.some((run) => run.connector_instance_id === connectorInstanceId);
-      assertDeletableConnection(instance, { connectorInstanceId, ownerSubjectId, hasActiveRun });
+      const instance = assertDeletableConnection(instanceLookup, { connectorInstanceId, ownerSubjectId, hasActiveRun });
 
       const storageTarget = { connector_id: instance.connectorId, connector_instance_id: connectorInstanceId };
       const { streams } = await purge.enumerateStreams(storageTarget);
@@ -704,7 +897,26 @@ export function createSqliteConnectorInstanceStore(): unknown {
   return store;
 }
 
-function assertOwnerSetDisplayNameArgs({ connectorInstanceId, ownerSubjectId, displayName }) {
+// Error shape used for the invalid_request throws below: a plain `Error`
+// annotated with the `code`/`param` fields the route layer's error mapper
+// reads (see `codeToStatus`/error-shaping in the route handlers).
+class InvalidRequestError extends Error {
+  code: string;
+  param: string;
+
+  constructor(message: string, param: string) {
+    super(message);
+    this.name = 'InvalidRequestError';
+    this.code = 'invalid_request';
+    this.param = param;
+  }
+}
+
+function assertOwnerSetDisplayNameArgs({ connectorInstanceId, ownerSubjectId, displayName }: {
+  connectorInstanceId: unknown;
+  ownerSubjectId: unknown;
+  displayName: unknown;
+}): void {
   if (typeof connectorInstanceId !== 'string' || !connectorInstanceId) {
     throw new ConnectorInstanceResolutionError(
       'connector_instance_selector_required',
@@ -718,29 +930,20 @@ function assertOwnerSetDisplayNameArgs({ connectorInstanceId, ownerSubjectId, di
     );
   }
   if (typeof displayName !== 'string') {
-    const err = new Error('display_name must be a string.');
-    err.code = 'invalid_request';
-    err.param = 'display_name';
-    throw err;
+    throw new InvalidRequestError('display_name must be a string.', 'display_name');
   }
   const trimmed = displayName.trim();
   if (!trimmed) {
-    const err = new Error('display_name must be a non-empty string.');
-    err.code = 'invalid_request';
-    err.param = 'display_name';
-    throw err;
+    throw new InvalidRequestError('display_name must be a non-empty string.', 'display_name');
   }
   if (trimmed.length > 200) {
-    const err = new Error('display_name must be at most 200 characters.');
-    err.code = 'invalid_request';
-    err.param = 'display_name';
-    throw err;
+    throw new InvalidRequestError('display_name must be at most 200 characters.', 'display_name');
   }
 }
 
-export function createPostgresConnectorInstanceStore(): unknown {
+export function createPostgresConnectorInstanceStore() {
   const store = {
-    async upsert(record) {
+    async upsert(record: ConnectorInstanceUpsertRecord): Promise<ConnectorInstance | null> {
       const normalized = normalizeRecord(record);
       await postgresQuery(
         `INSERT INTO connector_instances(connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at)
@@ -768,7 +971,12 @@ export function createPostgresConnectorInstanceStore(): unknown {
       return await this.get(normalized.connectorInstanceId);
     },
 
-    async ensureDefaultAccountConnection({ ownerSubjectId, connectorId, displayName, now }) {
+    async ensureDefaultAccountConnection({ ownerSubjectId, connectorId, displayName, now }: {
+      ownerSubjectId: string;
+      connectorId: string;
+      displayName?: string | null;
+      now?: string;
+    }): Promise<ConnectorInstance> {
       // Durability guard: a deliberately-revoked default-account connection
       // MUST NOT be silently resurrected to active. Read the deterministically
       // keyed row first; if the owner revoked it, return it unchanged so the
@@ -786,55 +994,65 @@ export function createPostgresConnectorInstanceStore(): unknown {
       if (existing && existing.status === 'revoked') {
         return existing;
       }
-      return await this.upsert({
-        connectorInstanceId: makeDefaultAccountConnectorInstanceId(ownerSubjectId, connectorId),
-        ownerSubjectId,
-        connectorId,
-        displayName: displayName ?? connectorId,
-        status: 'active',
-        sourceKind: 'account',
-        sourceBindingKey: DEFAULT_ACCOUNT_SOURCE_BINDING_KEY,
-        sourceBinding: { ...DEFAULT_ACCOUNT_SOURCE_BINDING },
-        createdAt: now,
-        updatedAt: now,
-      });
+      return assertRow(
+        await this.upsert({
+          connectorInstanceId: makeDefaultAccountConnectorInstanceId(ownerSubjectId, connectorId),
+          ownerSubjectId,
+          connectorId,
+          displayName: displayName ?? connectorId,
+          status: 'active',
+          sourceKind: 'account',
+          sourceBindingKey: DEFAULT_ACCOUNT_SOURCE_BINDING_KEY,
+          sourceBinding: { ...DEFAULT_ACCOUNT_SOURCE_BINDING },
+          createdAt: now,
+          updatedAt: now,
+        }),
+        `Failed to materialize default-account connector instance for owner '${ownerSubjectId}' and connector '${connectorId}'.`,
+      );
     },
 
-    async get(connectorInstanceId) {
+    async get(connectorInstanceId: string): Promise<ConnectorInstance | null> {
       const result = await postgresQuery(
         `SELECT connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
          FROM connector_instances WHERE connector_instance_id = $1`,
         [connectorInstanceId],
       );
-      return mapInstance(result.rows[0]);
+      const row: ConnectorInstanceRow | undefined = result.rows[0];
+      return row ? mapInstance(row) : null;
     },
 
     // Non-secret in-flight-run lookup for ONE connection (see the SQLite arm).
     // Direct keyed read on the Postgres `controller_active_runs` table.
-    async getActiveRun(connectorInstanceId) {
+    async getActiveRun(connectorInstanceId: string): Promise<ActiveRunSummary | null> {
       const result = await postgresQuery(
         `SELECT run_id, connector_id, started_at
          FROM controller_active_runs WHERE connector_instance_id = $1`,
         [connectorInstanceId],
       );
-      const row = result.rows[0];
+      const row: ActiveRunRow | undefined = result.rows[0];
       if (!row) {
         return null;
       }
       return { runId: row.run_id, connectorId: row.connector_id, startedAt: row.started_at };
     },
 
-    async getByBinding({ ownerSubjectId, connectorId, sourceKind, sourceBindingKey }) {
+    async getByBinding({ ownerSubjectId, connectorId, sourceKind, sourceBindingKey }: {
+      ownerSubjectId: string;
+      connectorId: string;
+      sourceKind: string;
+      sourceBindingKey: string;
+    }): Promise<ConnectorInstance | null> {
       const result = await postgresQuery(
         `SELECT connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
          FROM connector_instances
          WHERE owner_subject_id = $1 AND connector_id = $2 AND source_kind = $3 AND source_binding_key = $4`,
         [ownerSubjectId, connectorId, sourceKind, sourceBindingKey],
       );
-      return mapInstance(result.rows[0]);
+      const row: ConnectorInstanceRow | undefined = result.rows[0];
+      return row ? mapInstance(row) : null;
     },
 
-    async listByOwner(ownerSubjectId, { limit = LIST_LIMIT } = {}) {
+    async listByOwner(ownerSubjectId: string, { limit = LIST_LIMIT }: { limit?: number } = {}): Promise<ConnectorInstance[]> {
       // Draft instances are invisible to this read (see SQLite arm /
       // Decision 2). Filtered in SQL here so the LIMIT applies to visible
       // rows. The dashboard/Sources/Syncs summary path is the one deliberate
@@ -847,13 +1065,13 @@ export function createPostgresConnectorInstanceStore(): unknown {
          LIMIT $2`,
         [ownerSubjectId, limit],
       );
-      return result.rows.map(mapInstance);
+      return (result.rows as ConnectorInstanceRow[]).map(mapInstance);
     },
 
     // Same rows as `listByOwner`, but includes `draft` instances. See the
     // SQLite arm's `listByOwnerIncludingDrafts` for the scoping rule (dashboard
     // summary path only).
-    async listByOwnerIncludingDrafts(ownerSubjectId, { limit = LIST_LIMIT } = {}) {
+    async listByOwnerIncludingDrafts(ownerSubjectId: string, { limit = LIST_LIMIT }: { limit?: number } = {}): Promise<ConnectorInstance[]> {
       const result = await postgresQuery(
         `SELECT connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
          FROM connector_instances
@@ -862,10 +1080,10 @@ export function createPostgresConnectorInstanceStore(): unknown {
          LIMIT $2`,
         [ownerSubjectId, limit],
       );
-      return result.rows.map(mapInstance);
+      return (result.rows as ConnectorInstanceRow[]).map(mapInstance);
     },
 
-    async resolveActiveByConnector(ownerSubjectId, connectorId) {
+    async resolveActiveByConnector(ownerSubjectId: string, connectorId: string): Promise<ConnectorInstance> {
       const result = await postgresQuery(
         `SELECT connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
          FROM connector_instances
@@ -874,10 +1092,10 @@ export function createPostgresConnectorInstanceStore(): unknown {
          LIMIT $3`,
         [ownerSubjectId, connectorId, ACTIVE_RESOLUTION_LIMIT],
       );
-      return resolveSingleActive(result.rows.map(mapInstance), ownerSubjectId, connectorId);
+      return resolveSingleActive((result.rows as ConnectorInstanceRow[]).map(mapInstance), ownerSubjectId, connectorId);
     },
 
-    async listActiveByConnector(ownerSubjectId, connectorId, { limit = ACTIVE_FANIN_LIMIT } = {}) {
+    async listActiveByConnector(ownerSubjectId: string, connectorId: string, { limit = ACTIVE_FANIN_LIMIT }: { limit?: number } = {}): Promise<ConnectorInstance[]> {
       const result = await postgresQuery(
         `SELECT connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
          FROM connector_instances
@@ -886,10 +1104,14 @@ export function createPostgresConnectorInstanceStore(): unknown {
          LIMIT $3`,
         [ownerSubjectId, connectorId, limit],
       );
-      return result.rows.map(mapInstance);
+      return (result.rows as ConnectorInstanceRow[]).map(mapInstance);
     },
 
-    async updateStatus(connectorInstanceId, { status, updatedAt, revokedAt = null }) {
+    async updateStatus(connectorInstanceId: string, { status, updatedAt, revokedAt = null }: {
+      status: string;
+      updatedAt: string;
+      revokedAt?: string | null;
+    }): Promise<ConnectorInstance | null> {
       if (!VALID_STATUSES.has(status)) {
         throw new Error(`Invalid connector instance status '${status}'.`);
       }
@@ -904,7 +1126,7 @@ export function createPostgresConnectorInstanceStore(): unknown {
     // single conditional UPDATE keyed on `status = 'draft'` is the no-op /
     // concurrency guard: a row that is missing or not draft is untouched. See
     // add-static-secret-owner-session-connect-path design Decision 5.
-    async activateDraft(connectorInstanceId, { now } = {}) {
+    async activateDraft(connectorInstanceId: string, { now }: { now?: string } = {}): Promise<ConnectorInstance | null> {
       await postgresQuery(
         `UPDATE connector_instances
          SET status = 'active', updated_at = $1, revoked_at = NULL
@@ -914,7 +1136,11 @@ export function createPostgresConnectorInstanceStore(): unknown {
       return await this.get(connectorInstanceId);
     },
 
-    async setDisplayName(connectorInstanceId, { ownerSubjectId, displayName, updatedAt }) {
+    async setDisplayName(connectorInstanceId: string, { ownerSubjectId, displayName, updatedAt }: {
+      ownerSubjectId: string;
+      displayName: string;
+      updatedAt?: string;
+    }): Promise<ConnectorInstance | null> {
       assertOwnerSetDisplayNameArgs({ connectorInstanceId, ownerSubjectId, displayName });
       const result = await postgresQuery(
         `UPDATE connector_instances
@@ -936,7 +1162,7 @@ export function createPostgresConnectorInstanceStore(): unknown {
     // ownerSubjectId). Used by the TTL retirement sweep. Historical method
     // name says "Draft", but active shell rows are still incomplete until
     // their source_binding_json.kind changes.
-    async listDraftBrowserEnrollmentShells(ownerSubjectId = null) {
+    async listDraftBrowserEnrollmentShells(ownerSubjectId: string | null = null): Promise<ConnectorInstance[]> {
       const result = ownerSubjectId
         ? await postgresQuery(
             `SELECT connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
@@ -956,7 +1182,7 @@ export function createPostgresConnectorInstanceStore(): unknown {
              ORDER BY created_at ASC, connector_instance_id ASC
              LIMIT 256`,
           );
-      return result.rows.map(mapInstance);
+      return (result.rows as ConnectorInstanceRow[]).map(mapInstance);
     },
 
     // Postgres connection-scoped delete. Mirrors the SQLite arm exactly: resolve
@@ -966,20 +1192,26 @@ export function createPostgresConnectorInstanceStore(): unknown {
     // — the record purge binds against the SAME `client`, so the whole durable
     // cascade is one BEGIN/COMMIT (I8). Search-index teardown runs post-commit.
     // See the SQLite `deleteConnection` for the full ordering rationale.
-    async deleteConnection(connectorInstanceId, { ownerSubjectId, now, purge }) {
-      const instance = await this.get(connectorInstanceId);
+    async deleteConnection(connectorInstanceId: string, { ownerSubjectId, now, purge }: {
+      ownerSubjectId: string;
+      now?: string;
+      purge: ConnectorInstanceDeletePurge;
+    }) {
+      const instanceLookup = await this.get(connectorInstanceId);
       const activeRuns = await postgresQuery(
         `SELECT connector_instance_id FROM controller_active_runs WHERE connector_instance_id = $1`,
         [connectorInstanceId],
       );
       const hasActiveRun = activeRuns.rows.length > 0;
-      assertDeletableConnection(instance, { connectorInstanceId, ownerSubjectId, hasActiveRun });
+      const instance = assertDeletableConnection(instanceLookup, { connectorInstanceId, ownerSubjectId, hasActiveRun });
 
       const storageTarget = { connector_id: instance.connectorId, connector_instance_id: connectorInstanceId };
       const { streams } = await purge.enumerateStreams(storageTarget);
 
       const stamp = now ?? new Date().toISOString();
-      const { deletedRecordCount, scheduleDeleted, deviceRefsCleared } = await withPostgresTransaction(async (client) => {
+      const { deletedRecordCount, scheduleDeleted, deviceRefsCleared } = await withPostgresTransaction(async (client: {
+        query: (sql: string, params?: unknown[]) => Promise<{ rowCount?: number | null; rows: unknown[] }>;
+      }) => {
         // Record-family + blob + attention purge runs against the SAME client,
         // so it is atomic with the schedule / device / row deletes below.
         const recordCount = await purge.deleteRecordRowsPostgres(client, connectorInstanceId);

@@ -48,7 +48,10 @@ export function createOwnerDeviceAuthStore(): unknown {
      * @param {object} [opts]  baseUrl, expiresIn, interval, scenarioId
      * @returns {Promise<object>}
      */
-    async initiate(clientId: string, opts: unknown): Promise<unknown> {
+    async initiate(
+      clientId: string,
+      opts?: { baseUrl?: string; expiresIn?: number; interval?: number; scenarioId?: string },
+    ): Promise<unknown> {
       return initiateOwnerDeviceAuthorization(clientId, opts);
     },
 
