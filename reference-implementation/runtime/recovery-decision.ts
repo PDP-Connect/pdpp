@@ -114,7 +114,7 @@ export const NON_PRESSURE_RECOVERY_CLASSES: ReadonlySet<RecoveryClass> = new Set
 /**
  * The minimal projection of a `connector_detail_gaps` row this module needs.
  * Matches the snake_case shape `rowToGap` returns
- * (`server/stores/connector-detail-gap-store.js`), so a durable row can be
+ * (`server/stores/connector-detail-gap-store.ts`), so a durable row can be
  * passed straight through. Only the fields that drive a recovery decision are
  * required; the rest of the row (locators, payloads, secrets) is deliberately
  * absent so this pure decision can never leak them.

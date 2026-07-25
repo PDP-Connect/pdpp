@@ -27,7 +27,7 @@ import { closeDb, initDb } from '../../server/db.js';
 import { registerConnector } from '../../server/auth.js';
 import { getOne, referenceQueries } from '../../lib/db.ts';
 import { createSqliteConnectorStateStore } from '../../server/stores/connector-state-store.ts';
-import { makeDefaultAccountConnectorInstanceId } from '../../server/stores/connector-instance-store.js';
+import { makeDefaultAccountConnectorInstanceId } from '../../server/stores/connector-instance-store.ts';
 import { createSqliteSchedulerStore } from '../../server/stores/scheduler-store.ts';
 import { createController } from '../../runtime/controller.ts';
 

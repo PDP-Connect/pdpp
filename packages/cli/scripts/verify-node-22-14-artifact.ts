@@ -43,21 +43,25 @@ try {
     env: labelChildEnvironment(env, "pnpm build"),
     stdio: "inherit",
   });
-  const output = execFileSync(process.execPath, [resolve(packageRoot, "scripts/pack-install-run.ts")], {
-    cwd: packageRoot,
-    env: labelChildEnvironment(
-      {
-        ...env,
-        PDPP_ARTIFACT_EXPECTED_NODE_VERSION: NODE_22_14_VERSION,
-        PDPP_ARTIFACT_EXPECTED_NODE_EXEC_PATH: process.execPath,
-        PDPP_ARTIFACT_EXPECTED_GIT_HEAD_SHA: headSha,
-        PDPP_ARTIFACT_EXPECTED_CONTENT_SHA256: contentSha256,
-      },
-      "pack-install-run"
-    ),
-    encoding: "utf8" as const,
-    maxBuffer: 1024 * 1024,
-  });
+  const output = execFileSync(
+    process.execPath,
+    ["--import", "tsx", resolve(packageRoot, "scripts/pack-install-run.ts")],
+    {
+      cwd: packageRoot,
+      env: labelChildEnvironment(
+        {
+          ...env,
+          PDPP_ARTIFACT_EXPECTED_NODE_VERSION: NODE_22_14_VERSION,
+          PDPP_ARTIFACT_EXPECTED_NODE_EXEC_PATH: process.execPath,
+          PDPP_ARTIFACT_EXPECTED_GIT_HEAD_SHA: headSha,
+          PDPP_ARTIFACT_EXPECTED_CONTENT_SHA256: contentSha256,
+        },
+        "pack-install-run"
+      ),
+      encoding: "utf8" as const,
+      maxBuffer: 1024 * 1024,
+    }
+  );
   process.stdout.write(output);
 
   const receiptLine = output.split("\n").find((line) => line.startsWith("ARTIFACT_RECEIPT "));

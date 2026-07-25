@@ -6,7 +6,7 @@
  *
  * These are shared by db.js (SQLite bootstrap) and postgres-storage.js
  * (Postgres bootstrap) without either importing from the other. A third
- * module (`stores/connector-instance-store.js`) also uses these and
+ * module (`stores/connector-instance-store.ts`) also uses these and
  * re-exports the key-derivation helpers — it cannot import from db.js or
  * postgres-storage.js without creating a circular dependency, so the
  * canonical implementations live here.

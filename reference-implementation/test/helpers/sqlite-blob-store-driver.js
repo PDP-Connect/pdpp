@@ -27,7 +27,7 @@ import {
   transaction,
 } from '../../lib/db.ts';
 import { closeDb, initDb } from '../../server/db.js';
-import { makeDefaultAccountConnectorInstanceId } from '../../server/stores/connector-instance-store.js';
+import { makeDefaultAccountConnectorInstanceId } from '../../server/stores/connector-instance-store.ts';
 
 function getOneRow(sql, params) {
   for (const row of iterateDynamicSqlAcknowledged(sql, params)) {

@@ -145,7 +145,7 @@ import {
 } from "./stores/acquisition-batch-store.ts";
 import { getDefaultBrowserSurfaceLeaseStore } from "./stores/browser-surface-lease-store.ts";
 import { getDefaultConnectorAttentionStore } from "./stores/connector-attention-store.ts";
-import { getDefaultConnectorDetailGapStore } from "./stores/connector-detail-gap-store.js";
+import { getDefaultConnectorDetailGapStore } from "./stores/connector-detail-gap-store.ts";
 import {
   createPostgresConnectorInstanceCredentialStore,
   createSqliteConnectorInstanceCredentialStore,
@@ -153,7 +153,7 @@ import {
 import {
   createPostgresConnectorInstanceStore,
   createSqliteConnectorInstanceStore,
-} from "./stores/connector-instance-store.js";
+} from "./stores/connector-instance-store.ts";
 import { getDefaultDeviceExporterStore } from "./stores/device-exporter-store.ts";
 import {
   type ActiveRunRecord,

@@ -29,7 +29,7 @@ import {
 } from '../../lib/db.ts';
 import { closeDb, initDb } from '../../server/db.js';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from '../../server/owner-auth.ts';
-import { makeDefaultAccountConnectorInstanceId } from '../../server/stores/connector-instance-store.js';
+import { makeDefaultAccountConnectorInstanceId } from '../../server/stores/connector-instance-store.ts';
 
 function buildFtsUserTextQuery(q) {
   const terms = String(q || '')

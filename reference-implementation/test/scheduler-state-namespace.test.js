@@ -9,7 +9,7 @@ import test from "node:test";
 
 import { closeDb, initDb } from "../server/db.js";
 import { getSyncState, putSyncState } from "../server/records.js";
-import { makeDefaultAccountConnectorInstanceId } from "../server/stores/connector-instance-store.js";
+import { makeDefaultAccountConnectorInstanceId } from "../server/stores/connector-instance-store.ts";
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from "../server/owner-auth.ts";
 
 // Companion to controller-run-now-state-namespace.test.js for the scheduler half

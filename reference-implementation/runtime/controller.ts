@@ -44,7 +44,7 @@ import {
   getDefaultBrowserSurfaceReplacementReceiptStore,
 } from "../server/stores/browser-surface-replacement-ledger-store.ts";
 import { getDefaultConnectorAttentionStore } from "../server/stores/connector-attention-store.ts";
-import { getDefaultConnectorDetailGapStore } from "../server/stores/connector-detail-gap-store.js";
+import { getDefaultConnectorDetailGapStore } from "../server/stores/connector-detail-gap-store.ts";
 import {
   type ActiveRunRecord,
   getDefaultSchedulerStore,
@@ -1198,7 +1198,7 @@ export function __resetControllerPathResolverCachesForTests(): void {
 /**
  * One pending detail-gap row as the projection consumes it. Mirrors the subset
  * of `connector_detail_gaps` (see
- * `reference-implementation/server/stores/connector-detail-gap-store.js`) that
+ * `reference-implementation/server/stores/connector-detail-gap-store.ts`) that
  * the source-pressure cooldown needs. The store returns more fields; we read
  * only these.
  */

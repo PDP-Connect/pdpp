@@ -215,7 +215,7 @@ export function computeConnectionSourcePressureCooldown(
 /**
  * One pending pressure gap as the governor needs to see it. This is the
  * minimal projection of a `connector_detail_gaps` row (see
- * `reference-implementation/server/stores/connector-detail-gap-store.js`)
+ * `reference-implementation/server/stores/connector-detail-gap-store.ts`)
  * that drives the cooldown. The scheduler probe and the controller projection
  * both map durable rows onto this shape.
  */

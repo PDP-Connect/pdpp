@@ -15,7 +15,7 @@ import {
   hasGoogleDataPortabilityProviderAuthConfig,
 } from "../server/provider-auth/google-data-portability.ts";
 import { createSqliteConnectorInstanceCredentialStore } from "../server/stores/connector-instance-credential-store.js";
-import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.js";
+import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 import { resolveProviderAuthRunEnv } from "../server/stores/provider-auth-run-credentials.js";
 
 const READY_ENV = Object.freeze({

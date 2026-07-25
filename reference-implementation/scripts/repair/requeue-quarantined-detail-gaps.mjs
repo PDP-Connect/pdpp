@@ -34,7 +34,7 @@ import {
   initPostgresStorage,
   postgresQuery,
 } from '../../server/postgres-storage.js';
-import { createPostgresConnectorDetailGapStore } from '../../server/stores/connector-detail-gap-store.js';
+import { createPostgresConnectorDetailGapStore } from '../../server/stores/connector-detail-gap-store.ts';
 
 function parseArgs(argv) {
   const out = {

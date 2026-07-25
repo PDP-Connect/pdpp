@@ -239,6 +239,7 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly connectorInstanceCredentialsGetByInstance: ReadOneQuery;
   readonly connectorInstanceCredentialsRevokeByInstance: MutationQuery;
   readonly connectorInstanceCredentialsUpsert: MutationQuery;
+  readonly connectorInstancesDeleteById: MutationQuery;
   readonly connectorInstancesGetByBinding: ReadOneQuery;
   readonly connectorInstancesGetById: ReadOneQuery;
   readonly connectorInstancesInsert: MutationQuery;
@@ -267,6 +268,7 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly controllerUpsertActiveRun: MutationQuery;
   readonly controllerUpsertSchedulerLastRunTime: MutationQuery;
   readonly deviceExportersAdvanceProcessingPrefix: MutationQuery;
+  readonly deviceExportersClearSourceInstanceConnectorRef: MutationQuery;
   readonly deviceExportersCompleteProcessingBatch: MutationQuery;
   readonly deviceExportersConsumeEnrollmentCode: MutationQuery;
   readonly deviceExportersGetBatchOutcomeByBatch: ReadOneQuery;
@@ -764,6 +766,8 @@ export function loadReferenceQueries(queryDir = QUERIES_DIR): ReferenceQueryRegi
     // Records — deletion.
     "recordsDeleteCountRecordsByStream",
     "recordsDeleteCountRecordsByInstance",
+    "recordsDeleteDeleteManifestWriteViolationsByInstance",
+    "recordsDeleteDeleteConnectorSummaryEvidenceByInstance",
     "recordsDeleteDeleteRecordsByStream",
     "recordsDeleteDeleteRecordsByInstance",
     "recordsDeleteDeleteRecordChangesByStream",

@@ -29,7 +29,7 @@ import {
   postgresLexicalIndexUpsert,
   postgresLexicalSearch,
 } from '../../server/postgres-search.js';
-import { makeDefaultAccountConnectorInstanceId } from '../../server/stores/connector-instance-store.js';
+import { makeDefaultAccountConnectorInstanceId } from '../../server/stores/connector-instance-store.ts';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from '../../server/owner-auth.ts';
 
 // The production Postgres lexical search JOINs lexical_search_index against the

@@ -16,7 +16,7 @@ import { isClosedPipeWriteError } from './pipe-errors.ts';
 import { deriveTerminalReason } from './terminal-reason.ts';
 import { createStderrTailBuffer } from './stderr-tail.ts';
 import { redactStderrTail } from './stderr-redact.ts';
-import { getDefaultConnectorDetailGapStore } from '../server/stores/connector-detail-gap-store.js';
+import { getDefaultConnectorDetailGapStore } from '../server/stores/connector-detail-gap-store.ts';
 import { classifyRecoveryError, maybeQuarantineGap, maybeTerminateGap, resolveTerminalGapPolicy } from '../server/stores/terminal-gap-classifier.ts';
 import { DEFAULT_QUARANTINE_POLICY } from './recovery-quarantine.ts';
 import { classifyRecoveryGap } from './recovery-decision.ts';

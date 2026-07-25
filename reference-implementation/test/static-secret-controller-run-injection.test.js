@@ -11,7 +11,7 @@ import {
   createController,
 } from "../runtime/controller.ts";
 import { createSqliteConnectorInstanceCredentialStore } from "../server/stores/connector-instance-credential-store.js";
-import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.js";
+import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 import { resolveStaticSecretRunEnv } from "../server/stores/static-secret-run-credentials.js";
 
 // This suite proves the LAST connective leg of the static-secret primitive that

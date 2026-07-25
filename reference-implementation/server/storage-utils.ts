@@ -24,7 +24,7 @@
 
 import { canonicalConnectorKey } from "./connector-key.js";
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from "./owner-auth.ts";
-import { makeDefaultAccountConnectorInstanceId } from "./stores/connector-instance-store.js";
+import { makeDefaultAccountConnectorInstanceId } from "./stores/connector-instance-store.ts";
 
 /**
  * A storage target: a bare connector-id string, or an object carrying the

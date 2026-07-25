@@ -30,7 +30,7 @@ import { fileURLToPath } from 'node:url';
 import { closeDb, getDb, initDb, runWithSqliteBusyRetry } from '../../server/db.js';
 import { registerConnector, seedPreRegisteredClients } from '../../server/auth.js';
 import { createSqliteConsentStore } from '../../server/stores/consent-store.ts';
-import { createSqliteOwnerDeviceAuthStore } from '../../server/stores/owner-device-auth-store.js';
+import { createSqliteOwnerDeviceAuthStore } from '../../server/stores/owner-device-auth-store.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..', '..');
