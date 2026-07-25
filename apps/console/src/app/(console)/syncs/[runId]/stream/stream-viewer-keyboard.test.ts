@@ -86,7 +86,7 @@ const NEKO_ATTACH_CANONICAL_VIEWPORT_RE =
 const NEKO_BACKEND_READY_NATIVE_CANONICAL_RE =
   /payload\.backend === "neko"[\s\S]*toNekoNativeViewportInfo\(viewportInfoRef\.current\)[\s\S]*neko\.viewport\.native_canonical/;
 const NEKO_POST_CANONICAL_VIEWPORT_RE =
-  /const viewportInfo = viewportInfoFromPayload\(viewport\);\s*setCanonicalViewportInfo\(viewportInfo\)/;
+  /const (\w+) = viewportInfoFromPayload\(viewport\);\s*setCanonicalViewportInfo\(\1\)/;
 const NEKO_LOCAL_SURFACE_VIEWPORT_RE =
   /recordLocalSurfaceViewport[\s\S]*viewport\.surface\.local[\s\S]*localSurfaceViewportInfo=\{nekoLocalSurfaceViewportInfo\}/;
 const CDP_SURFACE_ADAPTER_IMPORT_RE =

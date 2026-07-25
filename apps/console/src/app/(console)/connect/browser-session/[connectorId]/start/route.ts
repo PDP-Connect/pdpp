@@ -113,12 +113,11 @@ export async function POST(request: Request, { params }: { params: Promise<Route
 
   try {
     if (existingConnectionId) {
-      // biome-ignore lint/suspicious/noShadow: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-      const params = new URLSearchParams({
+      const launchParams = new URLSearchParams({
         connection_id: existingConnectionId,
         draft: "0",
       });
-      return redirectTo(request, `${pagePath(connectorId)}/launch?${params.toString()}`);
+      return redirectTo(request, `${pagePath(connectorId)}/launch?${launchParams.toString()}`);
     }
 
     let displayName: string | null = null;
@@ -137,12 +136,11 @@ export async function POST(request: Request, { params }: { params: Promise<Route
     }
 
     const shell = await createBrowserEnrollmentShell(connectorId, { displayName });
-    // biome-ignore lint/suspicious/noShadow: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-    const params = new URLSearchParams({
+    const launchParams = new URLSearchParams({
       connection_id: shell.connection_id,
       draft: "1",
     });
-    return redirectTo(request, `${pagePath(connectorId)}/launch?${params.toString()}`);
+    return redirectTo(request, `${pagePath(connectorId)}/launch?${launchParams.toString()}`);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to start browser session";
     return redirectTo(request, errorPath(connectorId, message));

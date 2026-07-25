@@ -46,11 +46,10 @@ export function dayLabel(day: string, nowMs: number = Date.now()): string {
   if (Number.isNaN(ms)) {
     return "Undated";
   }
-  // biome-ignore lint/suspicious/noShadow: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const todayKey = new Date(nowMs).toISOString().slice(0, 10);
+  const todayKeyValue = todayKey(nowMs);
   const yesterdayKey = new Date(nowMs - MS_PER_DAY).toISOString().slice(0, 10);
   const tomorrowKey = new Date(nowMs + MS_PER_DAY).toISOString().slice(0, 10);
-  if (day === todayKey) {
+  if (day === todayKeyValue) {
     return "Today";
   }
   if (day === yesterdayKey) {

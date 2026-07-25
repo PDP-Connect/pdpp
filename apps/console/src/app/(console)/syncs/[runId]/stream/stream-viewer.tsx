@@ -2778,9 +2778,8 @@ function StreamStage({
         },
         post: () => {
           keyboardResizeStateRef.current = createMobileKeyboardResizeState();
-          // biome-ignore lint/suspicious/noShadow: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-          const viewportInfo = viewportInfoFromPayload(viewport);
-          setCanonicalViewportInfo(viewportInfo);
+          const postedViewportInfo = viewportInfoFromPayload(viewport);
+          setCanonicalViewportInfo(postedViewportInfo);
           logViewportDecision(decision.action, decision.reason);
           logDebug("viewport.post.start", debugPayload);
           const body = JSON.stringify(viewport);
@@ -3843,14 +3842,13 @@ function NekoSurface({
             },
             viewer: nextViewer,
           });
-          // biome-ignore lint/suspicious/noShadow: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-        } catch (error) {
+        } catch (mountError) {
           if (viewerRef.current === nextViewer) {
             viewerRef.current = null;
           }
           adapter = null;
           viewer = null;
-          throw error;
+          throw mountError;
         }
         logDebug("remote_surface_viewer_mounted", {
           lifecycleState: nextViewer.getLifecycleState(),
@@ -4247,12 +4245,11 @@ function NekoSurface({
       return !cancelled && layoutRequestRef.current === requestId;
     }
 
-    // biome-ignore lint/suspicious/noShadow: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-    function emitPlaygroundEvents(status: NekoStatusSnapshot) {
-      if (!status.playgroundEvents || status.playgroundEvents.length === 0) {
+    function emitPlaygroundEvents(polledStatus: NekoStatusSnapshot) {
+      if (!polledStatus.playgroundEvents || polledStatus.playgroundEvents.length === 0) {
         return;
       }
-      for (const entry of status.playgroundEvents) {
+      for (const entry of polledStatus.playgroundEvents) {
         if (claimPlaygroundEvent(playgroundSeenRef.current, entry) === "duplicate") {
           continue;
         }
@@ -4268,17 +4265,16 @@ function NekoSurface({
       }
     }
 
-    // biome-ignore lint/suspicious/noShadow: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-    function handlePolledStatus(status: NekoStatusSnapshot) {
-      emitPlaygroundEvents(status);
+    function handlePolledStatus(polledStatus: NekoStatusSnapshot) {
+      emitPlaygroundEvents(polledStatus);
       if (!isCurrentRequest()) {
         return "done";
       }
-      const { screen } = status;
+      const { screen } = polledStatus;
       if (!screen) {
         logDebug("neko.status.poll", {
-          page: status.page,
-          pageCdpAvailable: status.pageCdpAvailable,
+          page: polledStatus.page,
+          pageCdpAvailable: polledStatus.pageCdpAvailable,
           requestId,
           result: "missing-screen",
           viewport,
@@ -4288,16 +4284,16 @@ function NekoSurface({
 
       latestPolledScreen = screen;
       const fitsScreen = screenFitsViewport(screen, viewport);
-      const fitsPage = pageFitsViewport(status, viewport);
+      const fitsPage = pageFitsViewport(polledStatus, viewport);
       const fits = fitsScreen && fitsPage;
       logDebug("neko.status.poll", {
         fits,
         fitsPage,
         fitsScreen,
-        page: status.page,
-        pageCdpAvailable: status.pageCdpAvailable,
-        pageMetricsMismatch: status.pageMetricsMismatch,
-        pageMetricsMismatchAfterReapply: status.pageMetricsMismatchAfterReapply,
+        page: polledStatus.page,
+        pageCdpAvailable: polledStatus.pageCdpAvailable,
+        pageMetricsMismatch: polledStatus.pageMetricsMismatch,
+        pageMetricsMismatchAfterReapply: polledStatus.pageMetricsMismatchAfterReapply,
         requestId,
         result: fits ? "done" : "retry",
         screen,

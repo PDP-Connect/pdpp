@@ -132,8 +132,7 @@ test("runs list and timeline behave like grants", () => {
 
 test("traces list and timeline behave like grants", () => {
   const denied = buildTracesList({ status: "denied" });
-  // biome-ignore lint/suspicious/noShadow: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
-  assert.ok(denied.data.every((t) => t.status === "denied"));
+  assert.ok(denied.data.every((trace) => trace.status === "denied"));
   assert.equal(buildTraceTimeline("trace_does_not_exist"), null);
   const t = buildTraceTimeline("trace_sb_quill_paystmt");
   assert.ok(t);
