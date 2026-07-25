@@ -1630,13 +1630,6 @@ export const NO_AWAIT_IN_LOOPS_ALLOWLIST: readonly NoAwaitInLoopsAllowlistEntry[
   },
   {
     path: "src/collector-runner.ts",
-    line: 1984,
-    column: 7,
-    category: "shared_mutable_accumulator",
-    note: "drainClaimedOutboxItem(): loop body mutates a shared accumulator the next iteration reads",
-  },
-  {
-    path: "src/collector-runner.ts",
     line: 2484,
     column: 18,
     category: "shared_mutable_accumulator",
