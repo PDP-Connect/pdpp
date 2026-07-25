@@ -31,7 +31,14 @@
     "noEmit": true,
     "skipLibCheck": true,
     "types": ["node"],
-    "allowImportingTsExtensions": true
+    "allowImportingTsExtensions": true,
+    // scripts/test-accounting/inventory.test.ts imports
+    // reference-implementation/scripts/test-profile-env.js, an
+    // un-migrated JS file outside this migration's scope (reference-implementation
+    // is off-limits here). allowJs lets it resolve like RI's own
+    // tsconfig.json does for its own not-yet-migrated JS.
+    "allowJs": true,
+    "checkJs": false
   },
   "include": ["scripts/**/*.ts", "deploy/**/*.ts", "docs/explorer/uat/**/*.ts"],
   "exclude": ["node_modules"]

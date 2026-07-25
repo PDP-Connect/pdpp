@@ -1,13 +1,28 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-const RESULT_PREFIX = 'PDPP_TEST_ACCOUNTING_RESULT ';
-const EVENT_PREFIX = 'PDPP_TEST_ACCOUNTING_EVENT ';
+const RESULT_PREFIX = "PDPP_TEST_ACCOUNTING_RESULT ";
+const EVENT_PREFIX = "PDPP_TEST_ACCOUNTING_EVENT ";
 
-function fail(message) { throw new Error(`test accounting result: ${message}`); }
+function fail(message: string): never {
+  throw new Error(`test accounting result: ${message}`);
+}
+function compareStrings(a: string, b: string): number {
+  if (a < b) {
+    return -1;
+  }
+  if (a > b) {
+    return 1;
+  }
+  return 0;
+}
 
-export function accountingResultLine(result) { return `${RESULT_PREFIX}${JSON.stringify(result)}`; }
-export function accountingEventLine(event) { return `${EVENT_PREFIX}${JSON.stringify(event)}`; }
+export function accountingResultLine(result: unknown): string {
+  return `${RESULT_PREFIX}${JSON.stringify(result)}`;
+}
+export function accountingEventLine(event: unknown): string {
+  return `${EVENT_PREFIX}${JSON.stringify(event)}`;
+}
 
 // Node's boolean `skip: !X` tests carry no reason on the wire, only their name.
 // Most name their reason inline as `(skipped: ...)`, but a cohort of RI tests
@@ -79,64 +94,160 @@ export const POSTGRES_UNNAMED_SKIP_TEST_NAMES = new Set([
   "real disposable PostgreSQL: connector-wide reset discovers and clears a counter-only namespace on production connector invalidation (Sol third-verdict P2.2)",
 ]);
 const UNNAMED_SKIP_REASONS_BY_TEST_NAME = new Map([
-  ['live CDP smoke proves frame, click, and viewport resize against Chromium', 'set PDPP_TEST_LIVE_CDP=1 and PDPP_TEST_CDP_BIN or PDPP_TEST_CDP_WS_URL to run'],
-  ['live-shadow-comparison: production projection has no unexpected drift', 'set PDPP_LIVE_CONNECTOR_HEALTH_GATE=1 to run'],
-  ['parseOrdersListDom: local real fixture parses ≥5 orders with ids + dates', 'local Amazon raw-DOM fixture directory not present'],
-  ['parseOrderDetailDom: local real fixtures yield items and grand_total', 'local Amazon raw-DOM fixture directory not present'],
-  ['parseDashboardAccountsDom: local real capture parses ≥1 account', 'local Chase raw-DOM fixture directory not present'],
-  ['parseStatementsListDom: local real capture parses ≥1 statement row', 'local Chase raw-DOM fixture directory not present'],
-  ['parseCurrentActivityDom: local real capture — dashboard-accounts.html parses ≥1 MDS row', 'local Chase raw-DOM fixture directory not present'],
-  ['parseModernCheckingEra: local statement text parses ≥1 txn (smoke)', 'local USAA raw fixture directory not present'],
+  [
+    "live CDP smoke proves frame, click, and viewport resize against Chromium",
+    "set PDPP_TEST_LIVE_CDP=1 and PDPP_TEST_CDP_BIN or PDPP_TEST_CDP_WS_URL to run",
+  ],
+  [
+    "live-shadow-comparison: production projection has no unexpected drift",
+    "set PDPP_LIVE_CONNECTOR_HEALTH_GATE=1 to run",
+  ],
+  [
+    "parseOrdersListDom: local real fixture parses ≥5 orders with ids + dates",
+    "local Amazon raw-DOM fixture directory not present",
+  ],
+  [
+    "parseOrderDetailDom: local real fixtures yield items and grand_total",
+    "local Amazon raw-DOM fixture directory not present",
+  ],
+  [
+    "parseDashboardAccountsDom: local real capture parses ≥1 account",
+    "local Chase raw-DOM fixture directory not present",
+  ],
+  [
+    "parseStatementsListDom: local real capture parses ≥1 statement row",
+    "local Chase raw-DOM fixture directory not present",
+  ],
+  [
+    "parseCurrentActivityDom: local real capture — dashboard-accounts.html parses ≥1 MDS row",
+    "local Chase raw-DOM fixture directory not present",
+  ],
+  [
+    "parseModernCheckingEra: local statement text parses ≥1 txn (smoke)",
+    "local USAA raw fixture directory not present",
+  ],
 ]);
-function unnamedSkipReason(name) {
-  if (POSTGRES_UNNAMED_SKIP_TEST_NAMES.has(name)) return 'PDPP_TEST_POSTGRES_URL unset';
-  return UNNAMED_SKIP_REASONS_BY_TEST_NAME.get(name);
+function unnamedSkipReason(name: string | undefined): string | undefined {
+  if (name !== undefined && POSTGRES_UNNAMED_SKIP_TEST_NAMES.has(name)) {
+    return "PDPP_TEST_POSTGRES_URL unset";
+  }
+  return name === undefined ? undefined : UNNAMED_SKIP_REASONS_BY_TEST_NAME.get(name);
 }
 
-export function structuredNodeSummary(output) {
-  const events = output.split('\n').filter((line) => line.startsWith(EVENT_PREFIX)).map((line) => {
-    try { return JSON.parse(line.slice(EVENT_PREFIX.length)); } catch { fail('reporter emitted malformed structured event'); }
-  });
-  if (events.length === 0) fail('runner emitted no structured node events');
-  const skipReasons = {}; let assertions = 0; let passed = 0; let failed = 0; let skipped = 0;
+export interface StructuredSummary {
+  assertions: number;
+  failed: number;
+  passed: number;
+  skip_reasons: Record<string, number>;
+  skipped: number;
+}
+
+interface NodeTestEventDetails {
+  name?: string;
+  skip?: boolean | string;
+  type?: string;
+}
+interface NodeTestEvent {
+  details?: NodeTestEventDetails;
+  type: string;
+}
+
+const SKIP_REASON_SUFFIX_PATTERN = /\(skipped:\s*([^)]+)\)|:\s*skipped\s*\(([^)]+)\)/i;
+
+export function structuredNodeSummary(output: string): StructuredSummary {
+  const events: NodeTestEvent[] = output
+    .split("\n")
+    .filter((line) => line.startsWith(EVENT_PREFIX))
+    .map((line) => {
+      try {
+        return JSON.parse(line.slice(EVENT_PREFIX.length));
+      } catch {
+        return fail("reporter emitted malformed structured event");
+      }
+    });
+  if (events.length === 0) {
+    fail("runner emitted no structured node events");
+  }
+  const skipReasons: Record<string, number> = {};
+  let assertions = 0;
+  let passed = 0;
+  let failed = 0;
+  let skipped = 0;
   for (const event of events) {
-    if (!['test:pass', 'test:fail'].includes(event.type) || event.details?.type !== 'test') continue;
+    if (!["test:pass", "test:fail"].includes(event.type) || event.details?.type !== "test") {
+      continue;
+    }
     assertions += 1;
-    const skip = event.details.skip;
+    const { skip } = event.details;
     if (skip !== false && skip !== undefined && skip !== null) {
-      const reason = typeof skip === 'string' ? skip.trim() : event.details.name?.match(/\(skipped:\s*([^)]+)\)|:\s*skipped\s*\(([^)]+)\)/i)?.slice(1).find(Boolean)?.trim() || unnamedSkipReason(event.details.name);
-      if (!reason) fail(`unexplained skip: ${event.details.name ?? 'unnamed test'}`);
-      skipped += 1; skipReasons[reason] = (skipReasons[reason] ?? 0) + 1;
-    } else if (event.type === 'test:pass') passed += 1;
-    else failed += 1;
+      const reason =
+        typeof skip === "string"
+          ? skip.trim()
+          : (event.details.name?.match(SKIP_REASON_SUFFIX_PATTERN)?.slice(1).find(Boolean)?.trim() ??
+            unnamedSkipReason(event.details.name));
+      if (!reason) {
+        fail(`unexplained skip: ${event.details.name ?? "unnamed test"}`);
+      }
+      skipped += 1;
+      skipReasons[reason] = (skipReasons[reason] ?? 0) + 1;
+    } else if (event.type === "test:pass") {
+      passed += 1;
+    } else {
+      failed += 1;
+    }
   }
   return { assertions, passed, failed, skipped, skip_reasons: skipReasons };
 }
 
-export function structuredPythonSummary(output, status) {
-  const assertions = [...output.matchAll(/Ran (\d+) tests? in /g)].reduce((sum, match) => sum + Number.parseInt(match[1], 10), 0);
-  if (assertions === 0) fail('python runner emitted no test count');
-  const skipReasons = {};
+export function structuredPythonSummary(output: string, status: number): StructuredSummary {
+  const assertions = [...output.matchAll(/Ran (\d+) tests? in /g)].reduce(
+    (sum, match) => sum + Number.parseInt(match[1] ?? "0", 10),
+    0
+  );
+  if (assertions === 0) {
+    fail("python runner emitted no test count");
+  }
+  const skipReasons: Record<string, number> = {};
   for (const match of output.matchAll(/^.+\.\.\. skipped ['"](.+)['"]$/gm)) {
-    const reason = match[1].trim();
-    if (!reason) fail('python runner emitted an unexplained skip');
+    const reason = match[1]?.trim() ?? "";
+    if (!reason) {
+      fail("python runner emitted an unexplained skip");
+    }
     skipReasons[reason] = (skipReasons[reason] ?? 0) + 1;
   }
-  const reportedSkips = [...output.matchAll(/skipped=(\d+)/g)].reduce((sum, match) => sum + Number.parseInt(match[1], 10), 0);
-  if (reportedSkips !== Object.values(skipReasons).reduce((sum, count) => sum + count, 0)) fail('python runner omitted a skip reason');
-  const failed = [...output.matchAll(/(?:failures|errors|unexpected successes)=(\d+)/g)].reduce((sum, match) => sum + Number.parseInt(match[1], 10), 0);
-  if (status !== 0 && failed === 0) fail('python runner failed without structured failure count');
+  const reportedSkips = [...output.matchAll(/skipped=(\d+)/g)].reduce(
+    (sum, match) => sum + Number.parseInt(match[1] ?? "0", 10),
+    0
+  );
+  if (reportedSkips !== Object.values(skipReasons).reduce((sum, count) => sum + count, 0)) {
+    fail("python runner omitted a skip reason");
+  }
+  const failed = [...output.matchAll(/(?:failures|errors|unexpected successes)=(\d+)/g)].reduce(
+    (sum, match) => sum + Number.parseInt(match[1] ?? "0", 10),
+    0
+  );
+  if (status !== 0 && failed === 0) {
+    fail("python runner failed without structured failure count");
+  }
   const passed = assertions - failed - reportedSkips;
-  if (passed < 0) fail('python runner emitted inconsistent counts');
+  if (passed < 0) {
+    fail("python runner emitted inconsistent counts");
+  }
   return { assertions, passed, failed, skipped: reportedSkips, skip_reasons: skipReasons };
 }
 
-export function readStructuredChildResult(output) {
-  const lines = output.split('\n').filter((line) => line.startsWith(RESULT_PREFIX));
-  if (lines.length !== 1) fail('runner must emit exactly one structured result');
-  try { return JSON.parse(lines[0].slice(RESULT_PREFIX.length)); } catch { fail('runner emitted malformed structured result'); }
+export function readStructuredChildResult(output: string): unknown {
+  const lines = output.split("\n").filter((line) => line.startsWith(RESULT_PREFIX));
+  if (lines.length !== 1) {
+    fail("runner must emit exactly one structured result");
+  }
+  try {
+    return JSON.parse(lines[0]?.slice(RESULT_PREFIX.length) ?? "");
+  } catch {
+    fail("runner emitted malformed structured result");
+  }
 }
 
-export function repositoryPaths(directory, paths) {
-  return paths.map((path) => `${directory}/${path}`.replaceAll('\\', '/')).sort();
+export function repositoryPaths(directory: string, paths: string[]): string[] {
+  return paths.map((path) => `${directory}/${path}`.replaceAll("\\", "/")).sort(compareStrings);
 }
