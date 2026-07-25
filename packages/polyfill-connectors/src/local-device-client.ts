@@ -124,7 +124,17 @@ export interface TerminalCollectionRequest {
   connector_id: string;
   run_id: string;
   source_instance_id: string;
-  streams: readonly { stream: string }[];
+  streams: readonly TerminalCollectionFact[];
+}
+
+export interface TerminalCollectionFact {
+  checkpoint: string | null;
+  collected: number;
+  considered: number | null;
+  covered: number | null;
+  pending_detail_gaps: number;
+  skipped: { reason: string } | null;
+  stream: string;
 }
 
 export interface GetSourceInstanceStateRequest {

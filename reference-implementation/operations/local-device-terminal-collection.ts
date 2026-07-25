@@ -1,3 +1,5 @@
+import { readRuntimeCollectionFact } from "../server/runtime-collection-facts.ts";
+
 interface TerminalRequest {
   readonly body?: unknown;
   readonly deviceExporter?: { readonly deviceId: string };
@@ -22,7 +24,7 @@ interface TerminalContext {
 
 /**
  * Turns an explicit local collector terminal report into the existing
- * terminal-event/fold contract. The report carries only stream identity;
+ * terminal-event/fold contract. The report carries canonical coverage facts;
  * it never reads device records or infers a terminal boundary from batches.
  */
 export async function handleLocalDeviceTerminalCollection(input: {
@@ -54,8 +56,8 @@ export async function handleLocalDeviceTerminalCollection(input: {
       ctx.pdppError(res, 400, "invalid_request", "terminal collection connector or streams is invalid");
       return;
     }
-    const streams = [...new Set(body.streams.map((entry) => asObject(entry)?.stream).filter(isStreamName))].sort();
-    if (streams.length === 0) {
+    const streams = normalizeTerminalFacts(body.streams);
+    if (!streams) {
       ctx.pdppError(res, 400, "invalid_request", "terminal collection requires at least one observed stream", "streams");
       return;
     }
@@ -75,14 +77,7 @@ export async function handleLocalDeviceTerminalCollection(input: {
         collection_facts: {
           reference_only: true,
           schema_version: 1,
-          streams: streams.map((stream) => ({
-            stream,
-            checkpoint: "committed",
-            collected: null,
-            considered: null,
-            pending_detail_gaps: 0,
-            skipped: null,
-          })),
+          streams,
         },
       },
     });
@@ -92,14 +87,37 @@ export async function handleLocalDeviceTerminalCollection(input: {
   }
 }
 
-function isStreamName(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0;
-}
-
 function asObject(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 }
 
 function readRequiredString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
+}
+
+function normalizeTerminalFacts(rawFacts: readonly unknown[]): readonly Record<string, unknown>[] | null {
+  const byStream = new Map<string, Record<string, unknown>>();
+  for (const raw of rawFacts) {
+    const entry = asObject(raw);
+    // `readRuntimeCollectionFact` owns canonical shape normalization, but a
+    // device report must explicitly establish this count; accepting its
+    // omitted-field fallback would manufacture a zero-gap claim.
+    if (!entry || !Number.isSafeInteger(entry.pending_detail_gaps) || (entry.pending_detail_gaps as number) < 0) {
+      return null;
+    }
+    const fact = readRuntimeCollectionFact(entry);
+    if (!fact) {
+      return null;
+    }
+    byStream.set(fact.stream, {
+      stream: fact.stream,
+      checkpoint: fact.checkpoint,
+      collected: fact.collected,
+      considered: fact.considered,
+      covered: fact.covered,
+      pending_detail_gaps: fact.pending_detail_gaps,
+      skipped: fact.skipped,
+    });
+  }
+  return byStream.size > 0 ? [...byStream.values()].sort((left, right) => String(left.stream).localeCompare(String(right.stream))) : null;
 }

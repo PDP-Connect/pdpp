@@ -530,13 +530,28 @@ async function runTerminalCollectionEvidenceOracle(driver) {
   const request = batch(device, nextId('terminal-evidence'), [deviceRecord('terminal-evidence-msg', 'payload-sentinel-never-in-spine')]);
   assert.equal((await driver.ingest(device, request)).status, 201);
 
+  const omittedGapCount = await postJson(
+    `${driver.asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/source-instances/${encodeURIComponent(device.source_instance_id)}/terminal-collection`,
+    {
+      connector_id: 'codex',
+      run_id: nextId('local-terminal-invalid'),
+      source_instance_id: device.source_instance_id,
+      streams: [{ stream: 'messages' }],
+    },
+    authHeaders(device.device_token),
+  );
+  assert.equal(omittedGapCount.status, 400, 'missing pending-gap evidence must not normalize to zero');
+
   const report = await postJson(
     `${driver.asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/source-instances/${encodeURIComponent(device.source_instance_id)}/terminal-collection`,
     {
       connector_id: 'codex',
       run_id: nextId('local-terminal'),
       source_instance_id: device.source_instance_id,
-      streams: [{ stream: 'messages' }],
+      streams: [
+        { stream: 'messages', checkpoint: 'committed', collected: 0, considered: null, covered: null, pending_detail_gaps: 0, skipped: null },
+        { stream: 'rules', checkpoint: 'not_staged', collected: 0, considered: null, covered: null, pending_detail_gaps: 1, skipped: { reason: 'deferred' } },
+      ],
     },
     authHeaders(device.device_token),
   );
@@ -549,7 +564,10 @@ async function runTerminalCollectionEvidenceOracle(driver) {
   assert.equal(summary.terminal_facts_state, 'current');
   const facts = JSON.parse(summary.stream_latest_facts_json);
   assert.equal(facts.messages.fact.checkpoint, 'committed');
-  assert.equal(facts.rules, undefined, 'an omitted optional stream receives no invented terminal fact');
+  assert.equal(facts.messages.fact.pending_detail_gaps, 0, 'explicit complete evidence may establish zero pending gaps');
+  assert.equal(facts.rules.fact.pending_detail_gaps, 1, 'deferred evidence must retain its unresolved gap count');
+  assert.equal(facts.rules.fact.checkpoint, 'not_staged', 'deferred evidence must not become committed coverage');
+  assert.equal(facts.skills, undefined, 'an omitted optional stream receives no invented terminal fact');
 
   const spine = driver.kind === 'sqlite'
     ? getDb().prepare('SELECT data_json FROM spine_events WHERE connector_instance_id = ? AND event_type = ?').get(device.connector_instance_id, 'run.completed')

@@ -37,6 +37,7 @@ import {
   type HeartbeatLastError,
   type HeartbeatOutboxDiagnostics,
   LocalDeviceClient,
+  type TerminalCollectionFact,
 } from "./local-device-client.ts";
 import {
   buildLocalDeviceIngestBatchRequest,
@@ -843,13 +844,7 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
           connector_id: config.connector.connector_id,
           run_id: config.runId ?? randomUUID(),
           source_instance_id: config.sourceInstanceId,
-          streams: [
-            ...new Set(
-              [...streamResult.coverageByStore.values()].flatMap((entry) => (entry.stream ? [entry.stream] : []))
-            ),
-          ]
-            .sort()
-            .map((stream) => ({ stream })),
+          streams: buildTerminalCollectionFacts(streamResult.coverageByStore),
         });
       }
       const finalDeadLetterError = buildHeartbeatDeadLetterError(outbox, config.sourceInstanceId);
@@ -1161,6 +1156,80 @@ export function summarizeCollectorCompleteness(
     storeCount: coverageByStore.size,
     unaccountedStores,
   };
+}
+
+/**
+ * Translate the collector's existing per-store coverage diagnostics into the
+ * runtime's canonical collection-fact shape. Unresolved stores remain
+ * explicit non-zero-gap facts rather than becoming a transport-success proof.
+ */
+export function buildTerminalCollectionFacts(
+  coverageByStore: ReadonlyMap<string, { status: CollectorCoverageStatus; stream: string | null }>
+): readonly TerminalCollectionFact[] {
+  const statusesByStream = new Map<string, CollectorCoverageStatus[]>();
+  for (const entry of coverageByStore.values()) {
+    if (!entry.stream) {
+      continue;
+    }
+    const statuses = statusesByStream.get(entry.stream) ?? [];
+    statuses.push(entry.status);
+    statusesByStream.set(entry.stream, statuses);
+  }
+  return [...statusesByStream.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([stream, statuses]) => terminalCollectionFact(stream, statuses));
+}
+
+function terminalCollectionFact(stream: string, statuses: readonly CollectorCoverageStatus[]): TerminalCollectionFact {
+  const unresolved = statuses.filter((status) => status !== "collected");
+  if (unresolved.length === 0) {
+    return {
+      stream,
+      checkpoint: "committed",
+      collected: 0,
+      considered: null,
+      covered: null,
+      pending_detail_gaps: 0,
+      skipped: null,
+    };
+  }
+  const status = [...unresolved].sort(compareCoverageStatus)[0] as CollectorCoverageStatus;
+  return {
+    stream,
+    checkpoint: "not_staged",
+    collected: 0,
+    considered: null,
+    covered: null,
+    // Every unresolved diagnostic store is concrete evidence that this
+    // stream cannot truthfully claim a zero-gap terminal fact.
+    pending_detail_gaps: unresolved.length,
+    skipped: { reason: status },
+  };
+}
+
+function compareCoverageStatus(left: CollectorCoverageStatus, right: CollectorCoverageStatus): number {
+  return coverageStatusSeverity(right) - coverageStatusSeverity(left);
+}
+
+function coverageStatusSeverity(status: CollectorCoverageStatus): number {
+  switch (status) {
+    case "unaccounted":
+      return 6;
+    case "deferred":
+      return 5;
+    case "missing":
+      return 4;
+    case "unsupported":
+      return 3;
+    case "excluded":
+      return 2;
+    case "inventory_only":
+      return 1;
+    case "collected":
+      return 0;
+    default:
+      return 0;
+  }
 }
 
 /**

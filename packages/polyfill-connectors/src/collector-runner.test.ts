@@ -11,6 +11,7 @@ import { test } from "node:test";
 import { buildAgentVersion } from "./collector-build-info.ts";
 import {
   buildCollectorStartMessage,
+  buildTerminalCollectionFacts,
   COLLECTOR_STDERR_MAX_BYTES,
   CollectorStateReadError,
   drainCollectorOutbox,
@@ -41,6 +42,36 @@ test("buildCollectorStartMessage can request explicit stream backfills", () => {
     streamsToBackfill: ["attachments"],
     type: "START",
   });
+});
+
+test("buildTerminalCollectionFacts preserves incomplete diagnostics instead of inventing zero-gap coverage", () => {
+  const facts = buildTerminalCollectionFacts(
+    new Map([
+      ["messages-store", { stream: "messages", status: "collected" }],
+      ["rules-store", { stream: "rules", status: "deferred" }],
+      ["rules-shadow", { stream: "rules", status: "unaccounted" }],
+    ])
+  );
+  assert.deepEqual(facts, [
+    {
+      stream: "messages",
+      checkpoint: "committed",
+      collected: 0,
+      considered: null,
+      covered: null,
+      pending_detail_gaps: 0,
+      skipped: null,
+    },
+    {
+      stream: "rules",
+      checkpoint: "not_staged",
+      collected: 0,
+      considered: null,
+      covered: null,
+      pending_detail_gaps: 2,
+      skipped: { reason: "unaccounted" },
+    },
+  ]);
 });
 
 test("buildCollectorStartMessage can scope a stream to explicit resources", () => {
