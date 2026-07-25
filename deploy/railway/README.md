@@ -96,7 +96,7 @@ pushbutton prompts.
 Preflight the selected env locally before deploying:
 
 ```sh
-node scripts/check-railway-deploy-env.mjs --core deploy/railway/core.env.example
+node --import tsx scripts/check-railway-deploy-env.ts --core deploy/railway/core.env.example
 ```
 
 The committed example intentionally fails on the empty owner password. A real
@@ -197,5 +197,5 @@ backend on the operator's Railway account.
 ## Related
 
 - [`scripts/railway-mcp-query-smoke.mjs`](../../scripts/railway-mcp-query-smoke.mjs)
-- [`scripts/check-railway-deploy-env.mjs`](../../scripts/check-railway-deploy-env.mjs)
+- [`scripts/check-railway-deploy-env.ts`](../../scripts/check-railway-deploy-env.ts)
 - [`scripts/check-railway-ghcr-public.mjs`](../../scripts/check-railway-ghcr-public.mjs)

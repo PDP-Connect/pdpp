@@ -7,7 +7,7 @@
 // deploy/railway/README.md "First-live-test gate" steps 5 and 6).
 //
 // This is the executable proxy for the two live acceptance steps that the
-// offline env-contract check (scripts/check-railway-deploy-env.mjs) and the
+// offline env-contract check (scripts/check-railway-deploy-env.ts) and the
 // composed-origin smoke (scripts/docker-smoke.sh) do NOT cover:
 //
 //   - a small, hand-seeded record set lands WITHOUT running a browser connector;
@@ -18,7 +18,7 @@
 // same surface a real MCP client and a real owner would use. It does not import
 // the reference server, touch a database directly, or require any package
 // install: it runs on Node's built-in fetch with zero dependencies, exactly
-// like check-railway-deploy-env.mjs. The pure helpers below are exercised
+// like check-railway-deploy-env.ts. The pure helpers below are exercised
 // offline by railway-mcp-query-smoke.test.mjs; the live driver runs against a
 // real stack (local composed-origin via `pnpm docker:smoke`'s images, or a live
 // Railway origin) only when an --origin is given.
