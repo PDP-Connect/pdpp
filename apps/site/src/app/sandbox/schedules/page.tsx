@@ -28,7 +28,6 @@ export default async function SandboxSchedulesPage() {
             defaults.
           </div>
         }
-        // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
         renderRow={(summary) => <ScheduleReadRow key={summary.connector_id} summary={summary} />}
         summaries={summaries}
         unscheduledDescription="These connectors have no automatic schedule in the reference dataset."

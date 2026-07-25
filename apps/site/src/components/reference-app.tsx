@@ -255,7 +255,6 @@ function Stepper({
           <button
             className="flex items-center gap-2 rounded-md px-2 py-1 text-right transition-colors"
             key={id}
-            // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
             onClick={() => onNavigate(id)}
             style={{
               backgroundColor: isActive ? "var(--foreground)" : "transparent",
@@ -301,7 +300,6 @@ function DetailPanel({ spec, label, children }: { spec: string; label?: string; 
     <div className="mt-6 w-full" style={{ maxWidth: "52ch" }}>
       <button
         className="mb-2 flex items-center gap-1 text-muted-foreground text-xs"
-        // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
         onClick={() => setOpen((v) => !v)}
         type="button"
       >
@@ -1260,7 +1258,6 @@ function StickyHeader({
           <button
             className="shrink-0 rounded px-2 py-1.5 text-xs transition-colors"
             key={id}
-            // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
             onClick={() => navigateTo(id)}
             style={{
               backgroundColor: activeSection === id ? "var(--foreground)" : "transparent",
@@ -1309,7 +1306,6 @@ function AccessModeSelector({
         <button
           className="rounded px-2 py-1 font-mono text-xs transition-colors"
           key={mode}
-          // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
           onClick={() => setAccessMode(mode)}
           style={{
             backgroundColor: accessMode === mode ? "var(--foreground)" : "var(--muted)",
@@ -2121,7 +2117,6 @@ Authorization: Bearer <client_token>
               {/* Add pay statement button */}
               <button
                 className="self-start rounded-md px-3 py-1.5 text-xs transition-colors"
-                // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
                 onClick={() => protocol.addNewPayStatements(1)}
                 style={{ backgroundColor: "var(--muted)", color: "var(--muted-foreground)" }}
                 type="button"
@@ -2248,7 +2243,6 @@ Authorization: Bearer <owner_token>
                   <button
                     className="flex items-center justify-between py-2 text-left"
                     key={s.name}
-                    // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
                     onClick={() => protocol.selfExport(s.name)}
                     style={{ borderBottom: "1px solid var(--border)" }}
                     type="button"
@@ -2304,7 +2298,6 @@ Authorization: Bearer <owner_token>
                 <button
                   className="rounded px-2 py-1 text-xs transition-colors"
                   key={c.connectorId}
-                  // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
                   onClick={() => setMultiIdx(i)}
                   style={{
                     backgroundColor: i === multiIdx ? "var(--foreground)" : "var(--muted)",

@@ -875,9 +875,7 @@ function QueryInput(props: QueryInputProps) {
           aria-expanded={menuOpen && suggestions.length > 0}
           aria-label="Search or filter"
           className="rr-x-search"
-          // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
           onBlur={() => setMenuOpen(false)}
-          // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
           onChange={(e: ChangeEvent<HTMLInputElement>) => {
             props.onDraftChange(e.target.value);
             setMenuOpen(true);
@@ -885,7 +883,6 @@ function QueryInput(props: QueryInputProps) {
             // until the owner explicitly arrows into the menu (Enter-hijack fix, F3).
             setCursor(NO_HIGHLIGHT);
           }}
-          // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
           onFocus={() => setMenuOpen(true)}
           onKeyDown={onKeyDown}
           placeholder="Search or filter…"
@@ -896,7 +893,6 @@ function QueryInput(props: QueryInputProps) {
         <button
           aria-label="Show filter chips"
           className="rr-x-queryinput__chevron"
-          // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
           onClick={() => setMenuOpen((v) => !v)}
           type="button"
         >
@@ -906,7 +902,6 @@ function QueryInput(props: QueryInputProps) {
 
       {/* Inline "Jump to record" affordance — command-palette style, NOT a 2nd box. */}
       {jumpId ? (
-        // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
         <button className="rr-x-queryinput__jump" onClick={jump} onMouseDown={(e) => e.preventDefault()} type="button">
           ↵ Jump to record <span className="rr-x-queryinput__jump-id">{jumpId}</span>
         </button>
@@ -930,7 +925,6 @@ function QueryInput(props: QueryInputProps) {
                 aria-selected={i === cursor}
                 className={["rr-x-typeahead__btn", i === cursor ? "is-active" : ""].filter(Boolean).join(" ")}
                 id={`rr-x-typeahead-opt-${i}`}
-                // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
                 onMouseDown={(e) => {
                   e.preventDefault();
                   pickSuggestion(s);
@@ -1237,7 +1231,6 @@ function DateChip({
           aria-expanded={open}
           aria-haspopup="dialog"
           className="rr-x-datechip__trigger"
-          // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
           onClick={() => setOpen((v) => !v)}
           type="button"
         >
@@ -1265,7 +1258,6 @@ function DateChip({
                   aria-checked={selected}
                   className={["rr-x-datechip__preset", selected ? "is-on" : ""].filter(Boolean).join(" ")}
                   key={preset.key}
-                  // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
                   onClick={() => {
                     onPreset(preset.key);
                     setOpen(false);
@@ -1285,7 +1277,6 @@ function DateChip({
               instantly above. */}
           <form
             className="rr-x-datechip__custom"
-            // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
             onSubmit={(e) => {
               e.preventDefault();
               if (!(customEmpty || customInvalid)) {
@@ -1299,7 +1290,6 @@ function DateChip({
                 <span className="rr-x-datechip__field-label">From</span>
                 <input
                   className="rr-x-datechip__date"
-                  // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
                   onChange={(e) => setFrom(e.target.value)}
                   type="date"
                   value={from}
@@ -1311,7 +1301,6 @@ function DateChip({
                   className="rr-x-datechip__date"
                   // Guard To < From at the input where the browser supports it.
                   min={from || undefined}
-                  // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
                   onChange={(e) => setTo(e.target.value)}
                   type="date"
                   value={to}
@@ -1434,7 +1423,6 @@ function FeedControls({
               <button
                 aria-pressed={order === "newest"}
                 className={["rr-lens", order === "newest" ? "is-on" : ""].filter(Boolean).join(" ")}
-                // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
                 onClick={() => onSetOrder("newest")}
                 type="button"
               >
@@ -1443,7 +1431,6 @@ function FeedControls({
               <button
                 aria-pressed={order === "oldest"}
                 className={["rr-lens", order === "oldest" ? "is-on" : ""].filter(Boolean).join(" ")}
-                // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
                 onClick={() => onSetOrder("oldest")}
                 type="button"
               >
@@ -1534,7 +1521,6 @@ function SearchHeader({
         <div className="rr-x-search-sort">
           <button
             className={["rr-lens", data.searchSort === "recent" ? "" : "is-on"].filter(Boolean).join(" ")}
-            // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
             onClick={() => onSort("relevance")}
             type="button"
           >
@@ -1542,7 +1528,6 @@ function SearchHeader({
           </button>
           <button
             className={["rr-lens", data.searchSort === "recent" ? "is-on" : ""].filter(Boolean).join(" ")}
-            // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
             onClick={() => onSort("recent")}
             type="button"
           >
@@ -1695,9 +1680,7 @@ function ConnectionFacets({
           key={c.connectionId}
           label={c.displayName}
           on={selected.includes(c.connectionId)}
-          // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
           onToggle={() => onToggle(c.connectionId)}
-          // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
           onToggleExclude={() => onToggleExclude(c.connectionId)}
         />
       ))}
@@ -1751,14 +1734,11 @@ function SourceFacetGroup({
             label={s.stream}
             mono
             on={s.selected}
-            // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
             onToggle={() => onToggle(s.stream)}
-            // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
             onToggleExclude={() => onToggleExclude(s.stream)}
           />
         ))}
         {hiddenCount > 0 ? (
-          // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
           <button className="rr-x-source-group__more" onClick={() => setShowAll(true)} type="button">
             Show all {group.streams.length.toLocaleString()} streams
           </button>
@@ -1809,7 +1789,6 @@ function StreamFacets({
         <input
           aria-label="Search sources and streams"
           className="rr-x-facets__search"
-          // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
           onChange={(e) => setFilter(e.target.value)}
           placeholder="Search sources & streams…"
           type="text"
@@ -2027,7 +2006,6 @@ function FeedRow({
           data-feed-row
           data-selected={selected ? "true" : undefined}
           onClick={onSelect}
-          // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
           onKeyDown={(e) => {
             // The keyboard contract is a PURE decision (resolveRowKeyAction):
             // ↑/↓ move selection, Enter peeks, Cmd/Ctrl-Enter opens the full
@@ -2126,12 +2104,9 @@ function BurstRow({
             <FeedRow
               entry={entry}
               key={param}
-              // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
               onArrow={(direction) => onMoveSelection(param, direction)}
               onClearSelection={onClearSelection}
-              // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
               onOpenFull={() => onOpenRecord(entry)}
-              // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
               onSelect={() => onSelectRecord(entry)}
               recordsBasePath={recordsBasePath}
               selected={param === selectedPeekParam}
@@ -2503,7 +2478,6 @@ function FeedDays({
                     onMoveSelection={onMoveSelection}
                     onOpenRecord={onOpenRecord}
                     onSelectRecord={onSelectRecord}
-                    // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
                     onToggle={() => onToggleBurst(burst.key)}
                     recordsBasePath={recordsBasePath}
                     selectedPeekParam={selectedPeekParam}
@@ -2516,12 +2490,9 @@ function FeedDays({
                 <FeedRow
                   entry={entry}
                   key={param}
-                  // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
                   onArrow={(direction) => onMoveSelection(param, direction)}
                   onClearSelection={onClearSelection}
-                  // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
                   onOpenFull={() => onOpenRecord(entry)}
-                  // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
                   onSelect={() => onSelectRecord(entry)}
                   recordsBasePath={recordsBasePath}
                   selected={param === selectedPeekParam}
@@ -2605,7 +2576,6 @@ function UpcomingSection({
       <button
         aria-expanded={expanded}
         className="rr-x-upcoming__toggle"
-        // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
         onClick={() => setExpanded((v) => !v)}
         type="button"
       >
@@ -2623,7 +2593,6 @@ function UpcomingSection({
             dayGroups={visibleDays}
             expandedBursts={expandedBursts}
             lens={lens}
-            // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
             onClearAll={() => {
               // no-op: the Upcoming section never owns the empty/clear-filters state
             }}
@@ -2639,7 +2608,6 @@ function UpcomingSection({
               (mirrors the burst "Show all" toggle). Distinct from the server
               load-more below, which fetches MORE future records. */}
           {hiddenDayCount > 0 ? (
-            // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
             <button className="rr-x-burst__toggle" onClick={() => setShowAllDays((v) => !v)} type="button">
               <span className="rr-x-burst__action">
                 {showAllDays
@@ -2747,7 +2715,6 @@ function FeedBody({
           lens={data.lens}
           loadedCount={data.upcoming.length}
           onClearSelection={onClearSelection}
-          // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
           onLoadMore={() => onLoadMoreUpcoming(data.upcomingNextCursor)}
           onMoveSelection={onMoveSelection}
           onOpenRecord={onOpenRecord}
@@ -2822,7 +2789,6 @@ function FeedBody({
           aria-busy={isLoadMorePending(isPending, pendingKind) ? "true" : undefined}
           className="rr-x-loadmore"
           disabled={loadMoreDisabled(isPending)}
-          // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
           onClick={() => onLoadMore(loadMoreCursor)}
           type="button"
         >
@@ -2869,7 +2835,6 @@ function SaveViewAction({ onSave }: { onSave: (name: string) => void }) {
 
   if (!naming) {
     return (
-      // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
       <button className="rr-x-views-tab rr-x-views-tab--save" onClick={() => setNaming(true)} type="button">
         + Save view
       </button>
@@ -2882,9 +2847,7 @@ function SaveViewAction({ onSave }: { onSave: (name: string) => void }) {
         autoFocus
         className="rr-x-views-tab__input"
         onBlur={commit}
-        // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
         onChange={(e) => setDraftName(e.target.value)}
-        // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
         onKeyDown={(e) => {
           if (e.key === "Enter") {
             e.preventDefault();
@@ -2923,7 +2886,6 @@ function SavedViewTab({
     <button
       aria-selected={active}
       className={["rr-x-views-tab", active ? "is-active" : ""].filter(Boolean).join(" ")}
-      // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
       onClick={() => onNavigate(href)}
       role="tab"
       type="button"
@@ -3002,7 +2964,6 @@ function SavedViewTabs({
           href={v.href}
           key={v.id}
           name={v.name}
-          // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
           onDelete={() => persist(removeSavedView(views, v.id))}
           onNavigate={onNavigate}
         />
@@ -3780,7 +3741,6 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
         <div className="rr-x-rail__close">
           <button
             className="rr-lens"
-            // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
             onClick={() => {
               if (railRef.current) {
                 railRef.current.open = false;
@@ -3877,7 +3837,6 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
             arrived after the current snapshot anchor. Clicking refreshes to the
             live head (drops anchor + cursor). We do NOT auto-insert rows. */}
         {!data.fromSearch && data.newSinceAnchor !== null && data.newSinceAnchor > 0 ? (
-          // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
           <button className="rr-x-new-pill" onClick={() => navigate({ clearCursor: true })} type="button">
             {data.newSinceAnchor.toLocaleString()} new
           </button>
@@ -3920,7 +3879,6 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
           isPending={isPending}
           onClearAll={clearAll}
           onClearSelection={clearSelection}
-          // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
           onLoadMore={(cursor) => {
             // Recent merged-timeline lens ACCUMULATES: append the next_cursor to
             // the trail so prior pages stay visible (the "records above disappear"
@@ -3933,7 +3891,6 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
               navigate({ cursor: cursor ?? undefined }, "loadmore");
             }
           }}
-          // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
           onLoadMoreUpcoming={(cursor) => {
             // Walk the Upcoming (future) projection one page further: append the
             // upcoming_next_cursor to the `ucursors` trail so revealed future records

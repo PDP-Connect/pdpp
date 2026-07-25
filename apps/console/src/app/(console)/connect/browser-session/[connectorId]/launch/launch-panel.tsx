@@ -154,7 +154,6 @@ export function BrowserSessionLaunchPanel({
 
       {state.error ? (
         <div className="flex flex-wrap gap-2">
-          {/** biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification. */}
           <button className={buttonVariants({ size: "sm", variant: "default" })} onClick={start} type="button">
             Try again
           </button>

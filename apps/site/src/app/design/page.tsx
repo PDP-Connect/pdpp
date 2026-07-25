@@ -160,7 +160,6 @@ export default function DesignSystemPage() {
                 <button
                   className="cursor-pointer rounded-md px-2 py-0.5 text-left transition-colors"
                   key={id}
-                  // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
                   onClick={() => scrollTo(id)}
                   style={{
                     backgroundColor: active === id ? "var(--muted)" : "transparent",
@@ -222,7 +221,6 @@ function MobileNav({ active, scrollTo }: { active: string; scrollTo: (id: string
         <button
           className="shrink-0 px-3.5 py-3 font-medium text-sm transition-colors"
           key={id}
-          // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
           onClick={() => scrollTo(id)}
           style={{
             borderBottom: active === id ? "2px solid var(--foreground)" : "2px solid transparent",
@@ -1484,7 +1482,6 @@ function DurationDemo() {
               }}
             />
           </div>
-          {/** biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build. */}
           <Button className="w-14 shrink-0" onClick={() => play(name, ms)} size="xs" variant="outline">
             Play
           </Button>
@@ -1528,7 +1525,6 @@ function EasingDemo() {
               }}
             />
           </div>
-          {/** biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build. */}
           <Button className="w-14 shrink-0" onClick={() => play(name)} size="xs" variant="outline">
             Play
           </Button>
@@ -1575,7 +1571,6 @@ function StaggerDemo() {
         ))}
       </div>
       <div className="flex items-center gap-4">
-        {/** biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build. */}
         <Button onClick={play} size="xs" variant="outline">
           Play stagger
         </Button>
@@ -1969,7 +1964,6 @@ function ComponentsSection() {
             their personal server. Both human and protocol signals must be present and legible simultaneously.
           </p>
           <SpecimenSwitcher
-            // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
             render={(data) => <ConsentCard key={JSON.stringify(data.requester)} {...data} />}
             specimens={CONSENT_SPECIMENS}
           />
@@ -1983,7 +1977,6 @@ function ComponentsSection() {
             state. Protocol surface, all content is server-authoritative.
           </p>
           <SpecimenSwitcher
-            // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
             render={(data) => <GrantInspector key={data.grantId} {...data} onRevoke={noopRevoke} />}
             specimens={GRANT_SPECIMENS}
           />
@@ -1997,7 +1990,6 @@ function ComponentsSection() {
             and sync status. The foundation users see before any consent decision.
           </p>
           <SpecimenSwitcher
-            // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
             render={(data) => <StreamInventory key={data.connectorName} {...data} />}
             specimens={INVENTORY_SPECIMENS}
           />
@@ -2011,7 +2003,6 @@ function ComponentsSection() {
             parameters each supports, and any defined profiles.
           </p>
           <SpecimenSwitcher
-            // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
             render={(data) => <ConnectorCard key={data.connectorId} {...data} />}
             specimens={CONNECTOR_SPECIMENS}
           />
@@ -2025,7 +2016,6 @@ function ComponentsSection() {
             inspectors, log panels, and annotation surfaces.
           </p>
           <SpecimenSwitcher
-            // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
             render={(data) => <SpecCitationGroup key={data.citations.map((c) => c.section).join(",")} {...data} />}
             specimens={CITATION_SPECIMENS}
           />
@@ -3660,7 +3650,6 @@ function SpecimenSwitcher<T>({
           <button
             className="rounded px-2 py-1 text-xs transition-colors"
             key={s.label}
-            // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
             onClick={() => setActive(i)}
             style={{
               backgroundColor: i === active ? "var(--foreground)" : "var(--muted)",

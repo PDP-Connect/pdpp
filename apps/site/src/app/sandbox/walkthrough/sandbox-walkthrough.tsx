@@ -134,7 +134,6 @@ export function SandboxWalkthrough() {
         actions={actions}
         currentIndex={currentIndex}
         dispatch={dispatch}
-        // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
         onReset={() => dispatch({ type: "reset" })}
         state={state}
       />
@@ -428,7 +427,6 @@ function ActionRow({ actions, dispatch }: { actions: readonly ButtonSpec[]; disp
     <div className="space-y-2">
       <div className="flex flex-wrap gap-2">
         {actions.map((action) => (
-          // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
           <Button key={action.label} onClick={() => dispatch(action.action)} size="sm" variant={action.variant}>
             {action.label}
           </Button>

@@ -54,7 +54,6 @@ export function SegmentError({
       <h1 className="pdpp-heading text-foreground">{title}</h1>
       <p className="pdpp-body max-w-prose text-muted-foreground">{description}</p>
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        {/** biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification. */}
         <button className={buttonVariants({ size: "sm", variant: "default" })} onClick={() => reset()} type="button">
           Try again
         </button>

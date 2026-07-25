@@ -795,7 +795,6 @@ export function WebPushSettings({
               <button
                 className={buttonVariants({ size: "sm", variant: "default" })}
                 disabled={busy}
-                // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
                 onClick={enable}
                 type="button"
               >
@@ -806,7 +805,6 @@ export function WebPushSettings({
               aria-controls="web-push-setup"
               aria-expanded={showSetup}
               className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-muted/40"
-              // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
               onClick={() => setShowSetup((open) => !open)}
               type="button"
             >
@@ -823,13 +821,9 @@ export function WebPushSettings({
             diagnostics={diagnostics}
             endpoint={endpoint}
             lastSubscription={lastSubscription}
-            // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
             onDisable={disable}
-            // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
             onEnable={enable}
-            // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
             onTest={sendTest}
-            // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
             onToggleDetails={async () => {
               const next = !showDetails;
               setShowDetails(next);

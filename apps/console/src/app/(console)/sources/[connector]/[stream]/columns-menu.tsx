@@ -87,7 +87,6 @@ export function ColumnsMenu({
                 <div className="pdpp-caption flex items-center gap-2">
                   <button
                     className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-                    // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
                     onClick={() => apply("reset")}
                     type="button"
                   >
@@ -96,7 +95,6 @@ export function ColumnsMenu({
                   <span className="text-muted-foreground/40">·</span>
                   <button
                     className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-                    // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
                     onClick={() => apply("all")}
                     type="button"
                   >
@@ -114,7 +112,6 @@ export function ColumnsMenu({
                       <input
                         checked={checked}
                         className="h-3.5 w-3.5 accent-foreground"
-                        // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
                         onChange={() => toggle(column)}
                         type="checkbox"
                       />
@@ -128,7 +125,6 @@ export function ColumnsMenu({
               <Link
                 className="underline-offset-2 hover:underline"
                 href="?columns=*"
-                // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
                 onClick={() => setOpen(false)}
                 scroll={false}
               >

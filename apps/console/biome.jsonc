@@ -113,6 +113,44 @@
           }
         }
       }
+    },
+    {
+      // noJsxPropsBind policy waiver — NOT a blanket style exemption.
+      //
+      // This app has no React.memo, memoized child, or props-identity-
+      // sensitive consumer anywhere in src/ (verified: `grep -rl
+      // "React.memo|= memo(" src` is empty). Every onX handler this rule
+      // flags is a plain DOM event handler or a callback prop into an
+      // unmemoized function component; wrapping each in useCallback would
+      // not change render behavior or skip any re-render, since nothing
+      // downstream diffs the reference. That is the "unnecessary
+      // memoization" this project's engineering guidance asks agents to
+      // avoid introducing, so the rule is adjudicated as mismatched for
+      // this app's component shape rather than resolved 131 times with
+      // inert useCallback wrappers or per-line biome-ignore boilerplate.
+      //
+      // Handlers that DO feed a memoized child, a dependency array, or a
+      // list row needing referential stability must keep (or gain) a real
+      // useCallback — this override does not exempt those; none currently
+      // exist (see grep above), so none are carved out here.
+      //
+      // Exception ledger: openspec/changes/modernize-biome-policy-and-cleanup,
+      // section 1.3 ("adjudicate every active rule ... as defect, style,
+      // mismatch, or domain exception"). Owner: PDP-Connect app maintainers.
+      // Scope: apps/console/src/**/*.tsx only. Invariant: no React.memo or
+      // props-identity-sensitive consumer is introduced without first
+      // narrowing or removing this override for the affected file(s).
+      // Expiry: re-evaluate if this app adopts React.memo/memoized list
+      // rows/virtualization, or if Ultracite's rule gains a
+      // memoized-consumer-aware heuristic.
+      "includes": ["src/**/*.tsx"],
+      "linter": {
+        "rules": {
+          "performance": {
+            "noJsxPropsBind": "off"
+          }
+        }
+      }
     }
   ]
 }

@@ -133,7 +133,6 @@ export function SourcesView({
             <InstanceListItem
               instance={instance}
               key={instance.id}
-              // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
               onSelect={() => setSelectedId(instance.id)}
               selected={selected?.id === instance.id}
             />
@@ -158,7 +157,6 @@ export function SourcesView({
                 <InstanceListItem
                   instance={instance}
                   key={instance.id}
-                  // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
                   onSelect={() => setSelectedId(instance.id)}
                   selected={selected?.id === instance.id}
                 />
@@ -213,7 +211,6 @@ function DuplicateSourceGroupList({
         <InstanceListItem
           instance={instance}
           key={instance.id}
-          // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
           onSelect={() => onSelect(instance.id)}
           selected={selectedId === instance.id}
         />
@@ -552,7 +549,6 @@ function PassportActions({
         </Link>
 
         {interactive && revokeAction && instance.connectionId && !instance.revoked ? (
-          // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
           <IcButton onClick={() => setConfirmingRevoke((v) => !v)} size="sm" type="button" variant="destructive">
             Revoke
           </IcButton>
@@ -561,7 +557,6 @@ function PassportActions({
         {interactive && reactivateAction && instance.connectionId && instance.revoked ? (
           <IcButton
             data-testid="sources-reactivate-btn"
-            // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
             onClick={() => setConfirmingReactivate((v) => !v)}
             size="sm"
             type="button"
@@ -575,7 +570,6 @@ function PassportActions({
       {confirmingRevoke && revokeAction && instance.connectionId ? (
         <RevokeCeremony
           connectionId={instance.connectionId}
-          // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
           onCancel={() => setConfirmingRevoke(false)}
           revokeAction={revokeAction}
         />
@@ -585,7 +579,6 @@ function PassportActions({
         <ReactivateCeremony
           connectionId={instance.connectionId}
           instance={instance}
-          // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
           onCancel={() => setConfirmingReactivate(false)}
           reactivateAction={reactivateAction}
         />

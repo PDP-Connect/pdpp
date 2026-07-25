@@ -35,6 +35,16 @@ without its generator in the same contract tranche.
   keys and import organization by default because ordering can be observable.
 - Shared configs, manifests, lockfiles, runners, generators, Docker inputs, exports,
   and sensitive RI subsystems are integration-owned and serialized.
+- `performance/noJsxPropsBind` is adjudicated a tool mismatch for `apps/site` and
+  `apps/console`: both apps have zero `React.memo`/memoized-child/props-identity
+  consumers (verified by grep across `src/`), so every flagged handler is a plain
+  DOM/unmemoized-component prop where `useCallback` would be inert memoization.
+  Policy entry: rule off via a single documented `overrides` block scoped to
+  `src/**/*.tsx` in each app's `biome.jsonc`, replacing 131 per-line
+  `biome-ignore` suppressions. Any handler feeding a real memoized consumer keeps
+  (or gains) `useCallback`; none existed at adjudication time. Owner: PDP-Connect
+  app maintainers. Expiry: re-adjudicate if either app adopts `React.memo`/list
+  virtualization, or if Ultracite's rule becomes consumer-aware.
 
 ## Alternatives rejected
 
