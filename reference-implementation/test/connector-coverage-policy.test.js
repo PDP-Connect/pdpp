@@ -108,3 +108,45 @@ test('an undefined (not null) considered denominator still reads unknown, never 
     'unknown',
   );
 });
+
+test('raw local coverage statuses defer accepted absence to manifest policy and retain true gaps', () => {
+  const localFact = (coverage_statuses) => fact({
+    considered: null,
+    coverage_statuses,
+  });
+  const accepted = (coverage_policy) => ({
+    coverage_policy,
+    required: false,
+  });
+
+  assert.equal(
+    deriveStreamCoverageCondition(localFact(['collected']), { coverage_strategy: 'checkpoint_window' }),
+    'complete',
+  );
+  assert.equal(deriveStreamCoverageCondition(localFact(['inventory_only']), accepted('inventory_only')), 'inventory_only');
+  assert.equal(deriveStreamCoverageCondition(localFact(['deferred']), accepted('deferred')), 'deferred');
+  assert.equal(deriveStreamCoverageCondition(localFact(['unsupported']), accepted('unsupported')), 'unsupported');
+  assert.equal(
+    deriveStreamCoverageCondition(localFact(['excluded']), accepted('inventory_only')),
+    'inventory_only',
+    'excluded follows its declared policy rather than a local status mapping',
+  );
+  assert.equal(
+    deriveStreamCoverageCondition(localFact(['excluded']), { coverage_strategy: 'checkpoint_window' }),
+    'unknown',
+    'an undeclared excluded absence must not become complete',
+  );
+  assert.equal(
+    deriveStreamCoverageCondition(localFact(['missing']), { coverage_strategy: 'checkpoint_window' }),
+    'unknown',
+    'raw status alone is not a gap; the handoff must supply concrete pending-gap evidence',
+  );
+  assert.equal(
+    deriveStreamCoverageCondition(fact({ coverage_statuses: ['missing'], pending_detail_gaps: 1 }), { coverage_strategy: 'checkpoint_window' }),
+    'retryable_gap',
+  );
+  assert.equal(
+    deriveStreamCoverageCondition(fact({ coverage_statuses: ['unaccounted'], pending_detail_gaps: 1 }), { coverage_strategy: 'checkpoint_window' }),
+    'retryable_gap',
+  );
+});

@@ -24,8 +24,9 @@ interface TerminalContext {
 
 /**
  * Turns an explicit local collector terminal report into the existing
- * terminal-event/fold contract. The report carries canonical coverage facts;
- * it never reads device records or infers a terminal boundary from batches.
+ * terminal-event/fold contract. The report carries raw collector coverage
+ * statuses through the canonical fact normalizer; policy stays in the
+ * manifest-aware read-side coverage authority.
  */
 export async function handleLocalDeviceTerminalCollection(input: {
   ctx: TerminalContext;
@@ -99,13 +100,26 @@ function normalizeTerminalFacts(rawFacts: readonly unknown[]): readonly Record<s
   const byStream = new Map<string, Record<string, unknown>>();
   for (const raw of rawFacts) {
     const entry = asObject(raw);
-    // `readRuntimeCollectionFact` owns canonical shape normalization, but a
-    // device report must explicitly establish this count; accepting its
-    // omitted-field fallback would manufacture a zero-gap claim.
-    if (!entry || !Number.isSafeInteger(entry.pending_detail_gaps) || (entry.pending_detail_gaps as number) < 0) {
+    const coverageStatuses = entry && readCoverageStatuses(entry.coverage_statuses);
+    if (!entry || !coverageStatuses) {
       return null;
     }
-    const fact = readRuntimeCollectionFact(entry);
+    // A successful terminal report proves its coverage checkpoint reached the
+    // server, not that every source absence is a gap. Preserve the raw status
+    // set and let the canonical manifest-aware policy classify accepted
+    // absence. Only these existing collector statuses are true unresolved
+    // evidence at this boundary.
+    const pendingDetailGaps = coverageStatuses.filter((status) => status === "missing" || status === "unaccounted").length;
+    const fact = readRuntimeCollectionFact({
+      stream: entry.stream,
+      checkpoint: "committed",
+      collected: 0,
+      considered: null,
+      covered: null,
+      pending_detail_gaps: pendingDetailGaps,
+      skipped: null,
+      coverage_statuses: coverageStatuses,
+    });
     if (!fact) {
       return null;
     }
@@ -117,7 +131,15 @@ function normalizeTerminalFacts(rawFacts: readonly unknown[]): readonly Record<s
       covered: fact.covered,
       pending_detail_gaps: fact.pending_detail_gaps,
       skipped: fact.skipped,
+      coverage_statuses: fact.coverage_statuses,
     });
   }
   return byStream.size > 0 ? [...byStream.values()].sort((left, right) => String(left.stream).localeCompare(String(right.stream))) : null;
+}
+
+function readCoverageStatuses(value: unknown): readonly string[] | null {
+  if (!Array.isArray(value) || value.length === 0 || value.some((status) => typeof status !== "string" || !status)) {
+    return null;
+  }
+  return [...new Set(value)].sort();
 }

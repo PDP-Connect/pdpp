@@ -1159,9 +1159,9 @@ export function summarizeCollectorCompleteness(
 }
 
 /**
- * Translate the collector's existing per-store coverage diagnostics into the
- * runtime's canonical collection-fact shape. Unresolved stores remain
- * explicit non-zero-gap facts rather than becoming a transport-success proof.
+ * Preserve the collector's existing per-store coverage diagnostics at the
+ * terminal handoff. The server's manifest coverage-policy authority decides
+ * whether an observed absence is accepted; the runner must not invent policy.
  */
 export function buildTerminalCollectionFacts(
   coverageByStore: ReadonlyMap<string, { status: CollectorCoverageStatus; stream: string | null }>
@@ -1177,59 +1177,7 @@ export function buildTerminalCollectionFacts(
   }
   return [...statusesByStream.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
-    .map(([stream, statuses]) => terminalCollectionFact(stream, statuses));
-}
-
-function terminalCollectionFact(stream: string, statuses: readonly CollectorCoverageStatus[]): TerminalCollectionFact {
-  const unresolved = statuses.filter((status) => status !== "collected");
-  if (unresolved.length === 0) {
-    return {
-      stream,
-      checkpoint: "committed",
-      collected: 0,
-      considered: null,
-      covered: null,
-      pending_detail_gaps: 0,
-      skipped: null,
-    };
-  }
-  const status = [...unresolved].sort(compareCoverageStatus)[0] as CollectorCoverageStatus;
-  return {
-    stream,
-    checkpoint: "not_staged",
-    collected: 0,
-    considered: null,
-    covered: null,
-    // Every unresolved diagnostic store is concrete evidence that this
-    // stream cannot truthfully claim a zero-gap terminal fact.
-    pending_detail_gaps: unresolved.length,
-    skipped: { reason: status },
-  };
-}
-
-function compareCoverageStatus(left: CollectorCoverageStatus, right: CollectorCoverageStatus): number {
-  return coverageStatusSeverity(right) - coverageStatusSeverity(left);
-}
-
-function coverageStatusSeverity(status: CollectorCoverageStatus): number {
-  switch (status) {
-    case "unaccounted":
-      return 6;
-    case "deferred":
-      return 5;
-    case "missing":
-      return 4;
-    case "unsupported":
-      return 3;
-    case "excluded":
-      return 2;
-    case "inventory_only":
-      return 1;
-    case "collected":
-      return 0;
-    default:
-      return 0;
-  }
+    .map(([stream, statuses]) => ({ stream, coverage_statuses: [...statuses].sort() }));
 }
 
 /**

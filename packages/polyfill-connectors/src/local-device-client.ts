@@ -128,12 +128,7 @@ export interface TerminalCollectionRequest {
 }
 
 export interface TerminalCollectionFact {
-  checkpoint: string | null;
-  collected: number;
-  considered: number | null;
-  covered: number | null;
-  pending_detail_gaps: number;
-  skipped: { reason: string } | null;
+  coverage_statuses: readonly string[];
   stream: string;
 }
 

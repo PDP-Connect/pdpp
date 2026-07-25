@@ -322,6 +322,14 @@ export function deriveStreamCoverageCondition(
   if (fact.pending_detail_gaps > 0) {
     return "retryable_gap";
   }
+  // Local collectors preserve their observed status set instead of deciding
+  // whether absence is owed at the device boundary. A manifest-declared
+  // accepted policy is authoritative; without one, an observed non-collected
+  // status is honest unknown rather than a manufactured complete claim. This
+  // also leaves `excluded` to its declared manifest policy.
+  if (fact.coverage_statuses?.some((status) => status !== "collected")) {
+    return accepted ?? "unknown";
+  }
   const strategy = readCoverageEvidenceStrategy(manifestStream);
   return deriveGapFreeStreamCoverageCondition(fact, accepted, strategy);
 }

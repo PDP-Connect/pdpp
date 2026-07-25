@@ -420,6 +420,8 @@ export interface RuntimeCollectionFact {
   readonly checkpoint: string | null;
   readonly collected: number;
   readonly considered: number | null;
+  /** Raw local-collector coverage statuses; policy is derived on read. */
+  readonly coverage_statuses?: readonly string[];
   /**
    * Optional connector-declared `covered` count: the in-boundary items the run
    * accounted for (emitted + suppressed-because-unchanged), or `null` when the
@@ -428,7 +430,7 @@ export interface RuntimeCollectionFact {
    * suppressed every unchanged record reads `complete` rather than a false
    * `partial`. NEVER inferred from `collected`; a weighed-but-dropped item is in
    * neither count, so a real shortfall still reads `partial`.
-   */
+  */
   readonly covered: number | null;
   readonly pending_detail_gaps: number;
   readonly skipped: RuntimeCollectionFactSkip | null;

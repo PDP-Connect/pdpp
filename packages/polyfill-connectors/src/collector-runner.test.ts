@@ -44,7 +44,7 @@ test("buildCollectorStartMessage can request explicit stream backfills", () => {
   });
 });
 
-test("buildTerminalCollectionFacts preserves incomplete diagnostics instead of inventing zero-gap coverage", () => {
+test("buildTerminalCollectionFacts preserves raw coverage statuses without inventing a local policy", () => {
   const facts = buildTerminalCollectionFacts(
     new Map([
       ["messages-store", { stream: "messages", status: "collected" }],
@@ -53,24 +53,8 @@ test("buildTerminalCollectionFacts preserves incomplete diagnostics instead of i
     ])
   );
   assert.deepEqual(facts, [
-    {
-      stream: "messages",
-      checkpoint: "committed",
-      collected: 0,
-      considered: null,
-      covered: null,
-      pending_detail_gaps: 0,
-      skipped: null,
-    },
-    {
-      stream: "rules",
-      checkpoint: "not_staged",
-      collected: 0,
-      considered: null,
-      covered: null,
-      pending_detail_gaps: 2,
-      skipped: { reason: "unaccounted" },
-    },
+    { stream: "messages", coverage_statuses: ["collected"] },
+    { stream: "rules", coverage_statuses: ["deferred", "unaccounted"] },
   ]);
 });
 
