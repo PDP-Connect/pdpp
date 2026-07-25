@@ -78,7 +78,14 @@
 - [x] 8.7 Update OpenSpec (`design.md` D8 section + Scope discipline + Test oracle; `spec.md` requirement + two scenarios — legacy-key migration and unrelated-collision fail-closed) to document the corrected migration contract, replacing an earlier draft that incorrectly treated the collision as a random hash collision and salted a new id (which would have forked a duplicate row for one logical binding).
 - [x] 8.8 Add a `mass-justifications.json` entry for `connector-instance-store.js`'s complexity-mass increase from the migration-on-collision logic.
 
-## 9. Gates
+## 9. Make Postgres local-device startup migration re-entry-safe (D9, fix-enroll-post-restart-idempotency)
+
+- [x] 9.1 Diagnose the read-only live topology: the enrolled source points at the stable connector-instance row while an obsolete full-binding-key row has identical stored binding JSON, so the per-enrollment startup key falsely reports a conflict.
+- [x] 9.2 Make the Postgres migration use the stable local-device binding key and transactionally coalesce only an exactly equivalent stale full-key row into that canonical row; repoint known references with collision checks and reject unknown references, ambiguous candidates, mismatched binding data, or colliding owned state.
+- [x] 9.3 Add real temporary-Postgres restart/re-entry tests: exact duplicate topology boots twice with one canonical identity and preserved state; duplicate owned state fails closed and leaves both rows/state unchanged.
+- [x] 9.4 Update OpenSpec D9 with the bootstrap coalescence and fail-closed contract.
+
+## 10. Gates
 
 - [x] 9.1 `openspec validate --strict` passes.
 - [x] 9.2 Full device-exporter + coordinator test suites green; all oracles (D1-D8) green.

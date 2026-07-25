@@ -527,6 +527,38 @@ device-identity resolution D6/D7 already handle correctly; the pre-existing
 connector_instance" contract (`device-exporter-routes.test.js`) re-verified
 green and unmodified.
 
+### D9 — Postgres startup SHALL coalesce an equivalent stale/full-key row with its stable enrolled row (fix-enroll-post-restart-idempotency)
+
+The local-device startup migration ran on every Postgres boot but still derived
+its lookup key from `{kind, device_id, local_binding_name, source_instance_id}`.
+Current enrollment uses the stable `{kind, local_binding_name}` key. A valid
+enrollment can therefore leave a stable connector-instance row referenced by
+`device_source_instances` beside an older full-key row whose stored binding JSON
+is identical. Treating their different ids as a conflict makes restart fail;
+ignoring it leaves an identity fork.
+
+The migration now uses the stable key while retaining the full stored binding
+JSON (including device and source ids), finds an obsolete full-key row only when
+its stored binding JSON exactly matches the source row's full binding, and
+coalesces it transactionally into the stable row. Every known owned reference is
+repointed only after a per-table collision check; unknown reference tables with
+legacy data, multiple equivalent candidates, mismatched binding data, or two
+rows claiming the same owned key fail closed and roll back. The stale row is
+deleted only after all safe repoints complete. Thus restart is re-entry-safe,
+preserves state, and never chooses between non-equivalent data.
+
+**Table semantics are explicit.** `connector_summary_evidence`, lexical index
+rows/meta, and semantic index rows/meta/backfill progress are rebuildable
+projections: when both ids hold one, the legacy projection is discarded and the
+canonical record/manifest/evidence reconciliation rebuilds canonical truth.
+Every other migration reference remains authoritative or operator/audit state:
+checkpoints, records/history/version facts, blobs/bindings, detail gaps,
+manifest violations, attention, schedules/runs, and device-source identity are
+repointed only when their unique ownership does not collide; otherwise the
+whole coalescence rolls back. Unknown reference tables with legacy data also
+block deletion. This deliberately trades a rebuildable-cache refresh for no
+manual DB surgery, never for authoritative data loss.
+
 ## Scope discipline
 
 The proven live cause is D1 (starvation). D2 fixes a separately-proven data-loss
@@ -559,7 +591,11 @@ systemic-minimal); the locked `resolveOrCreateEnrollmentDevice` method is
 scoped to exactly the two tables (`device_exporters`,
 `device_source_instances`) whose identity-decision race needs it, D7's
 `source_kind` column addition touches only `device_source_instances`, and
-D8's legacy-key migration touches only `connector_instances`' own `upsert()`.
+D8's lazy key migration touches only `connector_instances`' own `upsert()`.
+D9 is the narrow Postgres bootstrap counterpart for the already-materialized
+old/new duplicate topology; it reuses the existing reference-rewrite collision
+rules rather than changing enrollment identity resolution or relaxing a
+constraint.
 The idempotent-response pattern (D2, extended by D6) achieves the same
 no-loss guarantee at the route boundary.
 

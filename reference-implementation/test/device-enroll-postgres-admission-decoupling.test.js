@@ -21,6 +21,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
+import pg from 'pg';
 
 import { COLLECTOR_PROTOCOL_VERSION } from '../server/collector-protocol.ts';
 import { closeDb, initDb } from '../server/db.js';
@@ -35,6 +36,7 @@ import { withTemporaryPostgresDatabase } from './helpers/postgres-temp-database.
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 const DEDICATED_POSTGRES_URL = dedicatedPostgresTestUrl(POSTGRES_URL);
 const PROTOCOL_HEADERS = { 'X-PDPP-Collector-Protocol': COLLECTOR_PROTOCOL_VERSION };
+const { Pool } = pg;
 
 let dbCounter = 0;
 function tempDbName() {
@@ -1295,6 +1297,183 @@ test('D8 (Postgres): retrying against a legacy completed binding whose connector
           { Authorization: `Bearer ${lastAttempt.body.device_token}`, ...PROTOCOL_HEADERS },
         );
         assert.equal(heartbeat.status, 200, JSON.stringify(heartbeat.body));
+      } finally {
+        await closeServer(server);
+        await closePostgresStorage().catch(() => undefined);
+        closeDb();
+      }
+    },
+  );
+});
+
+test('D9 (Postgres): restart coalesces an exact post-enrollment legacy/stable duplicate without losing its state', {
+  skip: DEDICATED_POSTGRES_URL ? false : 'set PDPP_TEST_POSTGRES_URL to the dedicated loopback listener',
+}, async () => {
+  await withTemporaryPostgresDatabase(
+    { connectionString: DEDICATED_POSTGRES_URL, databaseName: tempDbName(), closeConnections: closePostgresStorage },
+    async (url) => {
+      initDb(':memory:');
+      let server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:', storageBackend: 'postgres', databaseUrl: url });
+      await server.startupBackfillDone?.catch(() => undefined);
+      const now = new Date().toISOString();
+      const ownerSubjectId = 'owner_local';
+      const deviceId = 'dexp_3fab667e951ed1d7';
+      const sourceInstanceId = 'dsrc_83b8eae8f40c5b86';
+      const canonicalId = 'cin_da9889ea09f0132af33c2f4e';
+      const legacyId = 'cin_ed74ea9b5c76cb51d2665a63';
+      const fullBinding = {
+        kind: 'local_device',
+        device_id: deviceId,
+        local_binding_name: 'vivid-fish',
+        source_instance_id: sourceInstanceId,
+      };
+      const stableBindingKey = createHash('sha256')
+        .update('{"kind":"local_device","local_binding_name":"vivid-fish"}')
+        .digest('hex');
+      const legacyBindingKey = createHash('sha256').update(JSON.stringify(fullBinding)).digest('hex');
+      try {
+        // This is the live post-enrollment shape: the exact source row points
+        // to the stable row, while the obsolete full-binding-key row remains.
+        await postgresQuery(`INSERT INTO connectors(connector_id, manifest) VALUES('codex', '{"connector_id":"codex","streams":[]}'::jsonb) ON CONFLICT DO NOTHING`);
+        await postgresQuery(
+          `INSERT INTO device_exporters(device_id, owner_subject_id, display_name, status, created_at, updated_at)
+           VALUES($1, $2, 'vivid-fish', 'active', $3, $3)`,
+          [deviceId, ownerSubjectId, now],
+        );
+        for (const [id, key] of [[canonicalId, stableBindingKey], [legacyId, legacyBindingKey]]) {
+          await postgresQuery(
+            `INSERT INTO connector_instances(connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at)
+             VALUES($1, $2, 'codex', 'vivid-fish', 'active', 'local_device', $3, $4::jsonb, $5, $5)`,
+            [id, ownerSubjectId, key, JSON.stringify(fullBinding), now],
+          );
+        }
+        await postgresQuery(
+          `INSERT INTO device_source_instances(source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, source_kind, display_name, status, created_at, updated_at)
+           VALUES($1, $2, 'codex', $3, 'vivid-fish', 'local_device', 'vivid-fish', 'active', $4, $4)`,
+          [sourceInstanceId, deviceId, canonicalId, now],
+        );
+        await postgresQuery(
+          `INSERT INTO connector_state(connector_id, connector_instance_id, stream, state_json, updated_at)
+           VALUES('codex', $1, 'messages', '{"cursor":"preserved"}'::jsonb, $2)`,
+          [legacyId, now],
+        );
+        // Exact live projection topology: both identities have derived
+        // summary evidence, and their lexical metadata overlaps. These are
+        // rebuildable caches, not competing authoritative state.
+        for (const id of [canonicalId, legacyId]) {
+          await postgresQuery(
+            `INSERT INTO connector_summary_evidence(connector_instance_id, connector_id, manifest_generation)
+             VALUES($1, 'codex', 1)`,
+            [id],
+          );
+        }
+        for (const [id, streamCount] of [[canonicalId, 7], [legacyId, 6]]) {
+          for (let stream = 1; stream <= streamCount; stream++) {
+            await postgresQuery(
+              `INSERT INTO lexical_search_meta(connector_id, connector_instance_id, stream, fields_fingerprint, updated_at)
+               VALUES('codex', $1, $2, $3, $4)`,
+              [id, `stream_${stream}`, `fingerprint_${id}_${stream}`, now],
+            );
+          }
+        }
+
+        await closeServer(server);
+        await closePostgresStorage();
+        closeDb();
+        server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:', storageBackend: 'postgres', databaseUrl: url });
+        await server.startupBackfillDone?.catch(() => undefined);
+
+        const instances = await postgresQuery(
+          `SELECT connector_instance_id, source_binding_key, source_binding_json FROM connector_instances WHERE owner_subject_id = $1 AND connector_id = 'codex' ORDER BY connector_instance_id`,
+          [ownerSubjectId],
+        );
+        assert.equal(instances.rows.length, 1);
+        assert.equal(instances.rows[0]?.connector_instance_id, canonicalId);
+        assert.equal(instances.rows[0]?.source_binding_key, stableBindingKey);
+        assert.deepEqual(instances.rows[0]?.source_binding_json, fullBinding, 'stable keying must not erase full enrolled binding metadata');
+        const source = await postgresQuery('SELECT connector_instance_id FROM device_source_instances WHERE source_instance_id = $1', [sourceInstanceId]);
+        assert.equal(source.rows[0]?.connector_instance_id, canonicalId, 'source must retain the enrolled canonical identity');
+        const state = await postgresQuery('SELECT connector_instance_id, state_json FROM connector_state');
+        assert.equal(state.rows[0]?.connector_instance_id, canonicalId, 'legacy-owned state must be repointed, never dropped');
+        const summary = await postgresQuery('SELECT connector_instance_id FROM connector_summary_evidence');
+        assert.deepEqual(summary.rows, [{ connector_instance_id: canonicalId }], 'canonical summary evidence must win over the rebuildable legacy projection');
+        const lexicalMeta = await postgresQuery(
+          `SELECT connector_instance_id, count(*)::int AS count
+             FROM lexical_search_meta
+            WHERE connector_instance_id = ANY($1::text[])
+            GROUP BY connector_instance_id`,
+          [[canonicalId, legacyId]],
+        );
+        assert.deepEqual(lexicalMeta.rows, [{ connector_instance_id: canonicalId, count: 6 }], 'canonical lexical metadata must be rebuilt from the manifest while the stale legacy projection is removed');
+
+        // A second independent boot is the idempotence oracle. The old
+        // migration rewrote the binding every boot; this must now be a no-op.
+        await closeServer(server);
+        await closePostgresStorage();
+        closeDb();
+        server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:', storageBackend: 'postgres', databaseUrl: url });
+        await server.startupBackfillDone?.catch(() => undefined);
+        const afterReentry = await postgresQuery('SELECT connector_instance_id, source_binding_json FROM connector_instances WHERE owner_subject_id = $1 AND connector_id = $2', [ownerSubjectId, 'codex']);
+        assert.deepEqual(afterReentry.rows, [{ connector_instance_id: canonicalId, source_binding_json: fullBinding }], 're-entry must retain full enrolled binding metadata');
+      } finally {
+        await closeServer(server);
+        await closePostgresStorage().catch(() => undefined);
+        closeDb();
+      }
+    },
+  );
+});
+
+test('D9 (Postgres): restart rejects colliding duplicate-owned state without changing either identity', {
+  skip: DEDICATED_POSTGRES_URL ? false : 'set PDPP_TEST_POSTGRES_URL to the dedicated loopback listener',
+}, async () => {
+  await withTemporaryPostgresDatabase(
+    { connectionString: DEDICATED_POSTGRES_URL, databaseName: tempDbName(), closeConnections: closePostgresStorage },
+    async (url) => {
+      initDb(':memory:');
+      let server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:', storageBackend: 'postgres', databaseUrl: url });
+      await server.startupBackfillDone?.catch(() => undefined);
+      const now = new Date().toISOString();
+      const deviceId = 'dexp_d9_collision';
+      const sourceInstanceId = 'dsrc_d9_collision';
+      const canonicalId = 'cin_d9_canonical';
+      const legacyId = 'cin_d9_legacy';
+      const fullBinding = { kind: 'local_device', device_id: deviceId, local_binding_name: 'collision', source_instance_id: sourceInstanceId };
+      const stableBindingKey = createHash('sha256').update('{"kind":"local_device","local_binding_name":"collision"}').digest('hex');
+      const legacyBindingKey = createHash('sha256').update(JSON.stringify(fullBinding)).digest('hex');
+      try {
+        await postgresQuery(`INSERT INTO connectors(connector_id, manifest) VALUES('codex', '{"connector_id":"codex","streams":[]}'::jsonb) ON CONFLICT DO NOTHING`);
+        await postgresQuery(`INSERT INTO device_exporters(device_id, owner_subject_id, display_name, status, created_at, updated_at) VALUES($1, 'owner_local', 'collision', 'active', $2, $2)`, [deviceId, now]);
+        for (const [id, key] of [[canonicalId, stableBindingKey], [legacyId, legacyBindingKey]]) {
+          await postgresQuery(
+            `INSERT INTO connector_instances(connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at)
+             VALUES($1, 'owner_local', 'codex', 'collision', 'active', 'local_device', $2, $3::jsonb, $4, $4)`,
+            [id, key, JSON.stringify(fullBinding), now],
+          );
+        }
+        await postgresQuery(`INSERT INTO device_source_instances(source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, source_kind, display_name, status, created_at, updated_at) VALUES($1, $2, 'codex', $3, 'collision', 'local_device', 'collision', 'active', $4, $4)`, [sourceInstanceId, deviceId, canonicalId, now]);
+        for (const id of [canonicalId, legacyId]) {
+          await postgresQuery(`INSERT INTO connector_state(connector_id, connector_instance_id, stream, state_json, updated_at) VALUES('codex', $1, 'messages', '{"cursor":"different-owner-state"}'::jsonb, $2)`, [id, now]);
+        }
+
+        await closeServer(server);
+        await closePostgresStorage();
+        closeDb();
+        await assert.rejects(
+          startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:', storageBackend: 'postgres', databaseUrl: url }),
+          /Cannot coalesce local-device connector instance .*colliding owned state/,
+        );
+        await closePostgresStorage().catch(() => undefined);
+
+        const verificationPool = new Pool({ connectionString: url });
+        try {
+          const identities = await verificationPool.query('SELECT connector_instance_id FROM connector_instances WHERE connector_id = $1 ORDER BY connector_instance_id', ['codex']);
+          assert.deepEqual(identities.rows, [{ connector_instance_id: canonicalId }, { connector_instance_id: legacyId }], 'failed coalescence must rollback both identities');
+          const state = await verificationPool.query('SELECT connector_instance_id FROM connector_state ORDER BY connector_instance_id');
+          assert.deepEqual(state.rows, [{ connector_instance_id: canonicalId }, { connector_instance_id: legacyId }], 'failed coalescence must preserve both owned-state rows');
+        } finally {
+          await verificationPool.end();
+        }
       } finally {
         await closeServer(server);
         await closePostgresStorage().catch(() => undefined);

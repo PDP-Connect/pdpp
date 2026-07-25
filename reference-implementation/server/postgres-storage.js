@@ -2798,6 +2798,103 @@ function legacyLocalDeviceConnectorId(connectorId, sourceInstanceId) {
   return `${localDeviceConnectorId(connectorId)}:${encodeURIComponent(sourceInstanceId)}`;
 }
 
+async function mergeEquivalentPostgresConnectorInstances(client, legacyId, canonicalId) {
+  if (legacyId === canonicalId) return;
+
+  const existingTables = [];
+  for (const table of PG_LEGACY_REWRITE_INSTANCE_REFERENCE_TABLES) {
+    if (await hasPostgresColumn(client, table, 'connector_instance_id')) {
+      existingTables.push(table);
+    }
+  }
+
+  // A connector-instance id can be referenced by tables introduced after this
+  // migration. Do not delete the legacy row unless every such reference is
+  // either handled below or proven absent. This makes an unknown schema/data
+  // combination fail closed instead of silently dropping an identity.
+  const references = await client.query(
+    `SELECT table_name
+       FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND column_name = 'connector_instance_id'
+        AND table_name <> 'connector_instances'`,
+  );
+  for (const { table_name: table } of references.rows) {
+    if (existingTables.includes(table)) continue;
+    const present = await client.query(
+      `SELECT 1 FROM ${pgIdentifier(table)} WHERE connector_instance_id = $1 LIMIT 1`,
+      [legacyId],
+    );
+    if (present.rowCount > 0) {
+      throw new Error(
+        `Cannot coalesce local-device connector instance ${legacyId} → ${canonicalId}: unhandled reference in ${table}; manual reconciliation required.`,
+      );
+    }
+  }
+
+  for (const table of existingTables) {
+    // These rows are derived from canonical records/manifests (or from the
+    // canonical summary authorities), never an authority themselves. Keeping
+    // the canonical row and dropping the legacy projection avoids a fake
+    // uniqueness conflict while ensuring no stale legacy identity survives.
+    // The normal index/evidence reconciliation rebuilds any omitted value.
+    if (PG_REBUILDABLE_INSTANCE_REFERENCE_TABLES.has(table)) {
+      await client.query(`DELETE FROM ${table} WHERE connector_instance_id = $1`, [legacyId]);
+      continue;
+    }
+    const uniqueCols = pgUniqueColumnsForLegacyRewrite(table);
+    if (uniqueCols === null) {
+      await client.query(
+        `UPDATE ${table} SET connector_instance_id = $1 WHERE connector_instance_id = $2`,
+        [canonicalId, legacyId],
+      );
+      continue;
+    }
+    if (uniqueCols.length === 0) {
+      const both = await client.query(
+        `SELECT
+           EXISTS(SELECT 1 FROM ${table} WHERE connector_instance_id = $1) AS legacy_present,
+           EXISTS(SELECT 1 FROM ${table} WHERE connector_instance_id = $2) AS canonical_present`,
+        [legacyId, canonicalId],
+      );
+      if (both.rows[0].legacy_present && both.rows[0].canonical_present) {
+        throw new Error(
+          `Cannot coalesce local-device connector instance ${legacyId} → ${canonicalId}: both ids hold a row in ${table}; manual reconciliation required.`,
+        );
+      }
+      if (both.rows[0].legacy_present) {
+        await client.query(
+          `UPDATE ${table} SET connector_instance_id = $1 WHERE connector_instance_id = $2`,
+          [canonicalId, legacyId],
+        );
+      }
+      continue;
+    }
+    const keys = await client.query(
+      `SELECT ${uniqueCols.join(', ')} FROM ${table} WHERE connector_instance_id = $1`,
+      [legacyId],
+    );
+    for (const key of keys.rows) {
+      const params = [canonicalId, ...uniqueCols.map((column) => key[column])];
+      const where = uniqueCols.map((column, index) => `${column} IS NOT DISTINCT FROM $${index + 2}`).join(' AND ');
+      const conflict = await client.query(
+        `SELECT 1 FROM ${table} WHERE connector_instance_id = $1 AND ${where} LIMIT 1`,
+        params,
+      );
+      if (conflict.rowCount > 0) {
+        throw new Error(
+          `Cannot coalesce local-device connector instance ${legacyId} → ${canonicalId}: ${table} has colliding owned state; manual reconciliation required.`,
+        );
+      }
+    }
+    await client.query(
+      `UPDATE ${table} SET connector_instance_id = $1 WHERE connector_instance_id = $2`,
+      [canonicalId, legacyId],
+    );
+  }
+  await client.query(`DELETE FROM connector_instances WHERE connector_instance_id = $1`, [legacyId]);
+}
+
 async function migratePostgresLocalDeviceConnectorInstances(client) {
   const rows = await client.query(`
     SELECT
@@ -2824,13 +2921,21 @@ async function migratePostgresLocalDeviceConnectorInstances(client) {
   await client.query('BEGIN');
   try {
     for (const row of rows.rows) {
+      // The live enrollment path keys this binding by its stable collector
+      // name. device_id/source_instance_id are per-enrollment facts, so using
+      // them here makes a completed enrollment look like a conflicting second
+      // connector instance on every later boot.
+      const sourceBindingIdentity = {
+        kind: 'local_device',
+        local_binding_name: row.local_binding_id,
+      };
       const sourceBinding = {
         kind: 'local_device',
         device_id: row.device_id,
         local_binding_name: row.local_binding_id,
         source_instance_id: row.source_instance_id,
       };
-      const sourceBindingKey = makeConnectorInstanceSourceBindingKey(sourceBinding);
+      const sourceBindingKey = makeConnectorInstanceSourceBindingKey(sourceBindingIdentity);
       // Relocate legacy `local-device:<id>:<source>` rows to the bare canonical
       // connector key, mirroring the SQLite migration and the live ingest/read
       // paths. Connection isolation is carried by connector_instance_id. See
@@ -2875,6 +2980,30 @@ async function migratePostgresLocalDeviceConnectorInstances(client) {
       );
       const existingBindingInstanceId = existingBinding.rows[0]?.connector_instance_id || null;
       const legacyInstanceId = legacyIds.rows[0]?.connector_instance_id || null;
+      const legacyBinding = await client.query(
+        `SELECT connector_instance_id
+           FROM connector_instances
+          WHERE owner_subject_id = $1
+            AND connector_id = $2
+            AND source_kind = 'local_device'
+            AND source_binding_key <> $3
+            AND source_binding_json = $4::jsonb
+          LIMIT 2`,
+        [row.owner_subject_id, connectorKey, sourceBindingKey, JSON.stringify(sourceBinding)],
+      );
+      if (legacyBinding.rows.length > 1) {
+        throw new Error(`Conflicting local-device connector instance migration for ${oldConnectorId}`);
+      }
+      const legacyBindingInstanceId = legacyBinding.rows[0]?.connector_instance_id || null;
+      if (legacyBindingInstanceId && existingBindingInstanceId && legacyBindingInstanceId !== existingBindingInstanceId) {
+        if (row.connector_instance_id && row.connector_instance_id !== legacyBindingInstanceId && row.connector_instance_id !== existingBindingInstanceId) {
+          throw new Error(`Conflicting local-device connector instance migration for ${oldConnectorId}`);
+        }
+        await mergeEquivalentPostgresConnectorInstances(client, legacyBindingInstanceId, existingBindingInstanceId);
+        if (row.connector_instance_id === legacyBindingInstanceId) {
+          row.connector_instance_id = existingBindingInstanceId;
+        }
+      }
       if (row.connector_instance_id && existingBindingInstanceId && existingBindingInstanceId !== row.connector_instance_id) {
         throw new Error(`Conflicting local-device connector instance migration for ${oldConnectorId}`);
       }
@@ -2999,6 +3128,21 @@ const PG_LEGACY_REWRITE_INSTANCE_REFERENCE_TABLES = [
   'scheduler_last_run_times',
   'device_source_instances',
 ];
+
+// Derived projections are deliberately not merged value-by-value when both
+// identities hold rows: their source-of-truth is canonical storage, and a
+// value-level merge would preserve stale legacy indexes/evidence. All other
+// tables remain authoritative or operator/audit state and fail closed on a
+// uniqueness collision in mergeEquivalentPostgresConnectorInstances.
+const PG_REBUILDABLE_INSTANCE_REFERENCE_TABLES = new Set([
+  'lexical_search_index',
+  'lexical_search_meta',
+  'semantic_search_rowid',
+  'semantic_search_blob',
+  'semantic_search_meta',
+  'semantic_search_backfill_progress',
+  'connector_summary_evidence',
+]);
 
 function pgUniqueColumnsForLegacyRewrite(table) {
   switch (table) {

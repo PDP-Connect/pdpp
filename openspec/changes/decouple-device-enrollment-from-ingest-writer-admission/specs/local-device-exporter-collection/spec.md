@@ -245,3 +245,37 @@ fail closed.
   unrelated row
 - **AND** the reference SHALL surface the resulting typed retryable error
   rather than silently succeeding against the wrong connector instance.
+
+### Requirement: Postgres startup SHALL coalesce an equivalent stale local-device binding row without loss or an identity fork
+
+Postgres startup SHALL use the current stable local-device binding identity
+(`kind` and `local_binding_name`), not per-enrollment device or source ids.
+It SHALL retain the full stored binding metadata, including device and source
+ids; the stable key and stored metadata serve distinct purposes.
+When a stable enrolled connector-instance row and an obsolete full-key row are
+proven equivalent by the same owner, connector, source kind, and exact stored
+full binding data, startup SHALL transactionally repoint the obsolete row's
+non-conflicting owned state to the stable row and remove the obsolete row. If
+equivalence or non-conflicting ownership cannot be proven, startup SHALL fail
+closed and leave all rows unchanged.
+
+#### Scenario: A valid enrolled source has both its stable row and an equivalent obsolete full-key row
+
+- **WHEN** startup encounters a local-device source pointing at the stable
+  connector-instance row and an older row has the same full stored binding data
+  under a stale key
+- **THEN** startup SHALL complete and preserve the source's stable connector
+  instance id
+- **AND** SHALL preserve and repoint the obsolete row's non-conflicting owned
+  state to that stable id
+- **AND** SHALL remove the obsolete row so exactly one connector instance
+  remains for the logical binding
+- **AND** a subsequent startup SHALL be a no-op for that binding.
+
+#### Scenario: Equivalent duplicate rows carry colliding owned state
+
+- **WHEN** the stable and obsolete rows each own state with the same uniqueness
+  key such that repointing would overwrite or merge data
+- **THEN** startup SHALL fail closed
+- **AND** SHALL roll back the coalescence, retaining both identities and both
+  owned-state rows unchanged.
