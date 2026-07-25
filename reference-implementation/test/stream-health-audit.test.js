@@ -3,7 +3,7 @@
 
 /**
  * Unit tests for the pure stream-health machine audit
- * (scripts/stream-health-audit/audit.mjs) and its live auth preflight.
+ * (scripts/stream-health-audit/audit.ts) and its live auth preflight.
  *
  * The audit now runs in settled/full mode over ConnectorSummary-shaped
  * fixtures:
@@ -27,8 +27,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { auditStreamHealth } from "../../scripts/stream-health-audit/audit.mjs";
-import { runLiveStreamHealthAudit } from "../../scripts/stream-health-audit/live.mjs";
+import { auditStreamHealth } from "../../scripts/stream-health-audit/audit.ts";
+import { runLiveStreamHealthAudit } from "../../scripts/stream-health-audit/live.ts";
 
 function healthyVerdict(label = "Healthy", tone = "green") {
   return { pill: { label, tone } };

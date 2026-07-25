@@ -13,7 +13,7 @@
  * file's trailing test:pass/test:fail/test:complete events. The reporter's
  * `for await` loop is then cut short mid-stream, non-deterministically
  * dropping a variable number of trailing events even though every test in
- * the file actually ran and passed. `structuredNodeSummary` (receipt.mjs)
+ * the file actually ran and passed. `structuredNodeSummary` (receipt.ts)
  * stays internally consistent on the truncated stream (assertions still
  * equals passed+failed+skipped), so this does not crash — it silently
  * undercounts, which is what let it slip past every non-repeated run.
@@ -38,10 +38,10 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-import { structuredNodeSummary } from '../../scripts/test-accounting/receipt.mjs';
+import { structuredNodeSummary } from '../../scripts/test-accounting/receipt.ts';
 
 const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
-const REPORTER_PATH = fileURLToPath(new URL('../../scripts/test-accounting/node-reporter.mjs', import.meta.url));
+const REPORTER_PATH = fileURLToPath(new URL('../../scripts/test-accounting/node-reporter.ts', import.meta.url));
 const TARGET_TEST_FILE = 'reference-implementation/test/compact-record-history.test.js';
 const RUN_COUNT = 6;
 
@@ -63,7 +63,7 @@ async function runNodeTestOnce(extraArgs) {
   return await new Promise((resolve, reject) => {
     const child = spawn(
       process.execPath,
-      ['--test', ...extraArgs, `--test-reporter=${REPORTER_PATH}`, TARGET_TEST_FILE],
+      ['--import', 'tsx', '--test', ...extraArgs, `--test-reporter=${REPORTER_PATH}`, TARGET_TEST_FILE],
       { cwd: REPO_ROOT, env: childTestEnv(), stdio: ['ignore', 'pipe', 'pipe'] },
     );
     let output = '';

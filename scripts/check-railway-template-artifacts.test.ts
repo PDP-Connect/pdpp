@@ -20,7 +20,7 @@ const FROM_ANY_AS_CONSOLE_PATTERN = /FROM .* AS console/;
 const PNPM_FILTER_CONSOLE_BUILD_PATTERN = /pnpm --filter pdpp-console build/;
 const ENV_PORT_PATTERN = /ENV[\s\S]*?\n\s+PORT=/;
 const FROM_BASE_AS_RAILWAY_CORE_PATTERN = /FROM base AS railway-core/;
-const CMD_CORE_SUPERVISOR_PATTERN = /CMD \["node", "\/app\/deploy\/railway\/core-supervisor\.mjs"\]/;
+const CMD_CORE_SUPERVISOR_PATTERN = /CMD \["node", "--import", "tsx", "\/app\/deploy\/railway\/core-supervisor\.ts"\]/;
 const EXPOSE_3000_PATTERN = /\nEXPOSE 3000\n/;
 const LOOPBACK_7662_PATTERN = /127\.0\.0\.1:7662/;
 const LOOPBACK_7663_PATTERN = /127\.0\.0\.1:7663/;
@@ -28,7 +28,7 @@ const APP_REFERENCE_INDEX_PATTERN = /\/app\/reference-implementation\/server\/in
 const CONSOLE_SERVER_JS_PATTERN = /\/console\/apps\/console\/server\.js/;
 const REFERENCE_ORIGIN_LOCALHOST_PATTERN = /PDPP_REFERENCE_ORIGIN=http:\/\/localhost:3000/;
 const DB_PATH_SQLITE_PATTERN = /PDPP_DB_PATH=\/var\/lib\/pdpp\/pdpp\.sqlite/;
-const CORE_FIRST_BOOT_IMPORT_PATTERN = /from '\.\/core-first-boot\.mjs'/;
+const CORE_FIRST_BOOT_IMPORT_PATTERN = /from "\.\/core-first-boot\.ts"/;
 const PREPARE_FIRST_BOOT_CALL_PATTERN = /prepareFirstBoot\(\)/;
 const FIRST_BOOT_ENV_SPREAD_PATTERN = /\.\.\.firstBoot\.env/g;
 const FIRST_BOOT_BANNER_LINES_PATTERN = /firstBoot\.bannerLines/;
@@ -102,7 +102,7 @@ test("manual split-service reference Dockerfile remains a final-stage service im
 
 test("Railway core image runs console plus loopback reference AS/RS", () => {
   const dockerfile = read("Dockerfile");
-  const supervisor = read("deploy/railway/core-supervisor.mjs");
+  const supervisor = read("deploy/railway/core-supervisor.ts");
 
   assert.match(dockerfile, FROM_BASE_AS_RAILWAY_CORE_PATTERN);
   assert.match(dockerfile, CMD_CORE_SUPERVISOR_PATTERN);
@@ -115,7 +115,7 @@ test("Railway core image runs console plus loopback reference AS/RS", () => {
 
 test("Core image carries the Docker quickstart defaults and first-boot bootstrap", () => {
   const dockerfile = read("Dockerfile");
-  const supervisor = read("deploy/railway/core-supervisor.mjs");
+  const supervisor = read("deploy/railway/core-supervisor.ts");
 
   // Standalone `docker run -p 3000:3000 -v pdpp_data:/var/lib/pdpp` must work
   // with no -e flags: localhost origin default + SQLite on the mountable data
