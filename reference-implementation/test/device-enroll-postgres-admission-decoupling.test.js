@@ -1115,3 +1115,191 @@ test('D7 (Postgres): local_device and browser_collector enrollments sharing owne
     },
   );
 });
+
+test('D8 (Postgres): retrying against a legacy completed binding whose connector_instance_id predates the deterministic id formula recovers by migrating the legacy row in place, with no manual cleanup', {
+  skip: DEDICATED_POSTGRES_URL ? false : 'set PDPP_TEST_POSTGRES_URL to the dedicated loopback listener',
+}, async () => {
+  // Design D8 (fix-enroll-connector-instance-pk-collision). Live counterexample:
+  // a legacy, already-completed connector_instances row for (owner, codex,
+  // vivid-fish) computed its source_binding_key from the OLDER, larger
+  // sourceBinding shape (kind + device_id + local_binding_name +
+  // source_instance_id) that predates deviceExporterSourceBindingIdentity's
+  // stable {kind, local_binding_name}-only shape. This is the SAME logical
+  // binding as any fresh enrollment for (owner_local, codex, vivid-fish) —
+  // only its key derivation is stale. A partial-write orphan for the same
+  // binding (source_kind local_device, connector_instance_id NULL, from a
+  // first attempt that failed before consume) exists alongside it. Every
+  // retry of a fresh pending code for this binding hit `INSERT ...
+  // ON CONFLICT(owner, connector, source_kind, source_binding_key) DO
+  // UPDATE` — but the legacy row's OWN (stale) source_binding_key never
+  // matches today's stable key, so the ON CONFLICT target never matches the
+  // legacy row and Postgres attempts a fresh INSERT — which collides on the
+  // PRIMARY KEY (connector_instance_id) against that SAME legacy row,
+  // because today's deterministic id formula computes the SAME id the
+  // legacy row already holds. This surfaced as a raw 23505 mapped to a
+  // permanent 503 enrollment_identity_conflict on every retry, with no
+  // operator remediation available through the API. The fix recognizes the
+  // colliding row is provably the SAME logical binding and migrates its key
+  // in place, in a single connector_instance_id, rather than forking a
+  // second row or touching an unrelated one.
+  await withTemporaryPostgresDatabase(
+    { connectionString: DEDICATED_POSTGRES_URL, databaseName: tempDbName(), closeConnections: closePostgresStorage },
+    async (url) => {
+      initDb(':memory:');
+      const server = await startServer({
+        quiet: true,
+        asPort: 0,
+        rsPort: 0,
+        dbPath: ':memory:',
+        storageBackend: 'postgres',
+        databaseUrl: url,
+      });
+      await server.startupBackfillDone?.catch(() => undefined);
+      const asUrl = `http://localhost:${server.asPort}`;
+      try {
+        const ownerSubjectId = 'owner_local';
+        const legacyDeviceId = 'dexp_b07c56a6e71de9ae';
+        const legacySourceInstanceId = 'dsrc_fbff3caefba6c972';
+        // The exact live id: today's makeConnectorInstanceId formula
+        // deterministically computes this SAME id for (owner_local, codex,
+        // local_device, {kind:'local_device', local_binding_name:'vivid-fish'})
+        // — reproducing the real coincidental PK collision, not a synthetic
+        // stand-in id chosen to force a failure.
+        const legacyConnectorInstanceId = 'cin_da9889ea09f0132af33c2f4e';
+        // The legacy source_binding_key: a hash of the OLDER, larger binding
+        // shape {kind, device_id, local_binding_name, source_instance_id} —
+        // distinct from today's {kind, local_binding_name}-only key, which is
+        // exactly why the ON CONFLICT target cannot find this row.
+        const legacySourceBindingKey = '6432f1862f0447383db425ceb4aef3b65fadb1c3c86645bd262629742581984d';
+        const now = new Date().toISOString();
+
+        await postgresQuery(
+          `INSERT INTO device_exporters(device_id, owner_subject_id, display_name, status, agent_version, collector_protocol_version, last_heartbeat_at, last_error_json, created_at, updated_at, revoked_at)
+           VALUES($1, $2, 'vivid-fish', 'active', NULL, NULL, NULL, NULL, $3, $3, NULL)`,
+          [legacyDeviceId, ownerSubjectId, now],
+        );
+        await postgresQuery(
+          `INSERT INTO connectors(connector_id, manifest) VALUES('codex', '{"connector_id":"codex","streams":[]}'::jsonb) ON CONFLICT DO NOTHING`,
+        );
+        await postgresQuery(
+          `INSERT INTO connector_instances(connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at)
+           VALUES($1, $2, 'codex', 'vivid-fish', 'active', 'local_device', $3, $4::jsonb, $5, $5, NULL)`,
+          [
+            legacyConnectorInstanceId,
+            ownerSubjectId,
+            legacySourceBindingKey,
+            JSON.stringify({
+              kind: 'local_device',
+              device_id: legacyDeviceId,
+              local_binding_name: 'vivid-fish',
+              source_instance_id: legacySourceInstanceId,
+            }),
+            now,
+          ],
+        );
+        await postgresQuery(
+          `INSERT INTO device_source_instances(source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, source_kind, display_name, status, last_error_json, created_at, updated_at, revoked_at)
+           VALUES($1, $2, 'codex', $3, 'vivid-fish', NULL, 'vivid-fish', 'active', NULL, $4, $4, NULL)`,
+          [legacySourceInstanceId, legacyDeviceId, legacyConnectorInstanceId, now],
+        );
+        await postgresQuery(
+          `INSERT INTO device_enrollment_codes(enrollment_code_id, code_hash, owner_subject_id, connector_id, local_binding_id, display_name, device_id, status, created_at, expires_at, consumed_at, revoked_at)
+           VALUES('denroll_legacy_completed', 'hash_legacy_completed', $1, 'codex', 'vivid-fish', NULL, $2, 'consumed', $3, $3, $3, NULL)`,
+          [ownerSubjectId, legacyDeviceId, now],
+        );
+
+        // The partial-write orphan: a first attempt for a LATER code that
+        // durably created a device + source-instance row for this binding
+        // (source_kind local_device, connector_instance_id still NULL —
+        // the crash happened before the connector-instance upsert step)
+        // but never consumed its code.
+        const orphanDeviceId = 'dexp_3fab667e951ed1d7';
+        const orphanSourceId = 'dsrc_83b8eae8f40c5b86';
+        await postgresQuery(
+          `INSERT INTO device_exporters(device_id, owner_subject_id, display_name, status, agent_version, collector_protocol_version, last_heartbeat_at, last_error_json, created_at, updated_at, revoked_at)
+           VALUES($1, $2, 'vivid-fish', 'active', NULL, NULL, NULL, NULL, $3, $3, NULL)`,
+          [orphanDeviceId, ownerSubjectId, now],
+        );
+        await postgresQuery(
+          `INSERT INTO device_source_instances(source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, source_kind, display_name, status, last_error_json, created_at, updated_at, revoked_at)
+           VALUES($1, $2, 'codex', NULL, 'vivid-fish', 'local_device', 'vivid-fish', 'active', NULL, $3, $3, NULL)`,
+          [orphanSourceId, orphanDeviceId, now],
+        );
+
+        // A fresh pending code for the SAME binding — the exact live
+        // remediation path (the only one available once an earlier code
+        // expires) — must recover with no manual DB cleanup.
+        const freshCode = await mintCode(asUrl, 'vivid-fish', 'codex');
+
+        // Mutation-grade: the pre-D8 code hits this 23505 on EVERY retry,
+        // deterministically — assert across three consecutive attempts, not
+        // just the first, since the live symptom was "every retry fails
+        // identically."
+        let lastAttempt;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          lastAttempt = await exchangeCode(asUrl, freshCode);
+          assert.equal(
+            lastAttempt.status,
+            201,
+            `attempt ${attempt} must succeed with no manual cleanup, got ${lastAttempt.status}: ${JSON.stringify(lastAttempt.body)}`,
+          );
+          // Idempotent: every attempt converges on the SAME resolved
+          // identity, not a new row per retry.
+          assert.equal(lastAttempt.body.device_id, orphanDeviceId, 'must adopt the orphan device, not mint a new one');
+          // The legacy row's own connector_instance_id is REUSED — this is
+          // the SAME logical binding, migrated in place, never a second row.
+          assert.equal(
+            lastAttempt.body.connector_instance_id,
+            legacyConnectorInstanceId,
+            'the fresh enroll must migrate the legacy row in place and reuse its connector_instance_id, not fork a second connector instance',
+          );
+        }
+
+        // The legacy row survives under the SAME id, now migrated to the
+        // current stable source_binding_key/source_binding_json shape.
+        const migratedRow = await postgresQuery(
+          `SELECT connector_instance_id, source_binding_key, source_binding_json, status FROM connector_instances WHERE connector_instance_id = $1`,
+          [legacyConnectorInstanceId],
+        );
+        assert.equal(migratedRow.rows.length, 1, 'the legacy connector instance row must survive under its own id');
+        assert.notEqual(
+          migratedRow.rows[0].source_binding_key,
+          legacySourceBindingKey,
+          'the stale legacy key must be migrated to the current stable key, not left as-is',
+        );
+        const migratedBinding =
+          typeof migratedRow.rows[0].source_binding_json === 'string'
+            ? JSON.parse(migratedRow.rows[0].source_binding_json)
+            : migratedRow.rows[0].source_binding_json;
+        assert.equal(migratedBinding.kind, 'local_device');
+        assert.equal(migratedBinding.local_binding_name, 'vivid-fish');
+        assert.equal(migratedRow.rows[0].status, 'active');
+
+        // Exactly ONE connector instance exists for this owner+connector+
+        // binding — the legacy row, migrated — never a spurious second row
+        // forked alongside it.
+        const allInstances = await postgresQuery(
+          `SELECT connector_instance_id FROM connector_instances WHERE owner_subject_id = $1 AND connector_id = 'codex' AND status = 'active'`,
+          [ownerSubjectId],
+        );
+        assert.equal(
+          allInstances.rows.length,
+          1,
+          'exactly one connector instance must exist for this binding — the legacy row, migrated in place, never a duplicate',
+        );
+
+        // The resolved token actually authenticates.
+        const heartbeat = await postJson(
+          `${asUrl}/_ref/device-exporters/${encodeURIComponent(lastAttempt.body.device_id)}/heartbeat`,
+          {},
+          { Authorization: `Bearer ${lastAttempt.body.device_token}`, ...PROTOCOL_HEADERS },
+        );
+        assert.equal(heartbeat.status, 200, JSON.stringify(heartbeat.body));
+      } finally {
+        await closeServer(server);
+        await closePostgresStorage().catch(() => undefined);
+        closeDb();
+      }
+    },
+  );
+});

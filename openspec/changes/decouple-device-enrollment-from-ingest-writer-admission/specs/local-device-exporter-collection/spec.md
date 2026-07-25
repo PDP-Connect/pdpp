@@ -192,3 +192,56 @@ untyped server error.
 - **THEN** the reference SHALL return an HTTP 503 typed as retryable with a
   retry-after signal
 - **AND** SHALL NOT return an untyped HTTP 500 that reads as a server fault.
+
+### Requirement: A connector instance's deterministic id colliding with a legacy row for the SAME binding SHALL be resolved by migrating that row's key in place
+
+`connector_instances.connector_instance_id` is normally derived
+deterministically from the binding's own identity
+(owner/connector/source_kind/source_binding_key), so a retried write for the
+SAME logical binding, under the SAME key derivation, always targets the same
+row and is absorbed by that binding's own uniqueness constraint. A
+pre-existing row whose `source_binding_key` was computed under an OLDER key
+derivation — one that predates the current stable binding-identity shape —
+will not be matched by that uniqueness constraint under today's key, even
+though it is the SAME logical binding (same owner, connector, source kind,
+and local binding name, verifiable from the row's own stored binding data).
+Its id can coincidentally equal what today's formula computes for that same
+binding under its current key, producing a primary-key collision distinct
+from, and not caught by, the binding's own uniqueness constraint. The
+reference SHALL detect this exact condition and migrate the colliding row's
+key to the current shape in place — reusing its existing
+`connector_instance_id`, never forking a second row for the same logical
+binding — WITHOUT weakening the primary key or the binding's own uniqueness
+constraint. The reference SHALL NOT adopt, merge into, or otherwise mutate a
+colliding row that is not provably the same logical binding; that case SHALL
+fail closed.
+
+#### Scenario: A fresh enroll's deterministic connector-instance id collides with a legacy row for the SAME logical binding, keyed under a stale derivation
+
+- **WHEN** a device enrolls (or re-enrolls) for a binding, and the
+  deterministically-computed `connector_instance_id` for that binding under
+  its CURRENT stable key happens to equal the primary key of a pre-existing
+  `connector_instances` row whose OWN stored binding data (owner, connector,
+  source kind, local binding name) matches this same binding, but whose
+  `source_binding_key` was computed under an older, stale key derivation
+- **THEN** the enrollment SHALL succeed, migrating the colliding row's
+  `source_binding_key` (and binding data) to the current stable shape in
+  place
+- **AND** the enrollment SHALL resolve to that SAME, pre-existing
+  `connector_instance_id` — SHALL NOT create a second row for this binding
+- **AND** no operator action outside the enrollment API (e.g. direct database
+  access or a cleanup script) SHALL be required
+- **AND** retrying the SAME enrollment code afterward SHALL converge on the
+  SAME resolved connector instance, not create an additional row.
+
+#### Scenario: A connector-instance id collision against a row that is NOT the same logical binding fails closed
+
+- **WHEN** a device enrolls for a binding whose deterministically-computed
+  `connector_instance_id` happens to equal the primary key of a
+  pre-existing `connector_instances` row whose OWN stored binding data
+  (owner, connector, source kind, or local binding name) does NOT match this
+  binding
+- **THEN** the reference SHALL NOT adopt, merge into, or migrate that
+  unrelated row
+- **AND** the reference SHALL surface the resulting typed retryable error
+  rather than silently succeeding against the wrong connector instance.

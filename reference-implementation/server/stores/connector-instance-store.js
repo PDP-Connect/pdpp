@@ -4,7 +4,6 @@
 import { createHash } from 'node:crypto';
 
 import { allowUnboundedReadAcknowledged, exec, getMany, getOne, referenceQueries, writeTransaction } from '../../lib/db.ts';
-import { getDb } from '../db.js';
 import { postgresQuery, withPostgresTransaction } from '../postgres-storage.js';
 import { withConnectorInstanceWrite } from '../connector-instance-write-coordinator.ts';
 
@@ -133,6 +132,50 @@ export function makeConnectorInstanceSourceBindingKey(sourceBinding) {
 
 function makeConnectorInstanceId({ ownerSubjectId, connectorId, sourceKind, sourceBindingKey }) {
   return `cin_${hashKey(`${ownerSubjectId}\n${connectorId}\n${sourceKind}\n${sourceBindingKey}`).slice(0, 24)}`;
+}
+
+// Design D8 (fix-enroll-connector-instance-pk-collision). A legacy
+// deployment computed source_binding_key from the FULL sourceBinding object
+// (including device_id/source_instance_id, which are per-enrollment, not
+// per-binding) before deviceExporterSourceBindingIdentity narrowed it to the
+// stable {kind, local_binding_name} shape. A legacy row's key therefore
+// never matches today's ON CONFLICT(owner, connector, source_kind,
+// source_binding_key) target for the SAME logical binding, so a retried
+// upsert falls through to INSERT -- whose deterministic id can coincide with
+// that legacy row's PRIMARY KEY (the legacy row's own id predates
+// makeConnectorInstanceId and was assigned some other way). Extracts the
+// local_binding_name this store instance already agrees is stable
+// (record.sourceBinding.local_binding_name) so the caller can decide,
+// without re-deriving any hashing logic, whether a PK-colliding row is
+// provably the SAME logical binding (only its key derivation is stale) or a
+// genuinely unrelated row that must never be touched.
+function extractLocalBindingName(sourceBinding) {
+  const value = sourceBinding?.local_binding_name;
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+// True only when `existingRow` is PROVABLY the same logical binding as
+// `normalized` under a legacy key derivation -- same owner, connector, and
+// source_kind, and the local_binding_name embedded in the existing row's own
+// stored source_binding_json matches the binding being upserted now. Never
+// matches on id alone (a coincidental PK collision against an unrelated
+// binding must fail closed, not be treated as a match).
+function isSameLogicalBindingUnderLegacyKey(existingRow, normalized, currentLocalBindingName) {
+  if (!existingRow || currentLocalBindingName == null) {
+    return false;
+  }
+  if (
+    existingRow.owner_subject_id !== normalized.ownerSubjectId ||
+    existingRow.connector_id !== normalized.connectorId ||
+    existingRow.source_kind !== normalized.sourceKind
+  ) {
+    return false;
+  }
+  const existingBinding =
+    typeof existingRow.source_binding_json === 'string'
+      ? JSON.parse(existingRow.source_binding_json)
+      : existingRow.source_binding_json;
+  return extractLocalBindingName(existingBinding) === currentLocalBindingName;
 }
 
 export function makeDefaultAccountConnectorInstanceId(ownerSubjectId, connectorId) {
@@ -404,22 +447,56 @@ export async function resolveOwnerConnectorInstanceNamespace({
 
 export function createSqliteConnectorInstanceStore() {
   const store = {
+    // Design D8 (fix-enroll-connector-instance-pk-collision). See the
+    // Postgres implementation's doc comment for the full rationale: a legacy
+    // row's source_binding_key (computed under the older, larger sourceBinding
+    // shape) never matches the named ON CONFLICT target for the SAME logical
+    // binding under today's stable {kind, local_binding_name} key, so the
+    // INSERT is attempted and can collide on the PRIMARY KEY with that
+    // legacy row -- the SAME logical binding, just keyed under a stale
+    // derivation. better-sqlite3 raises SQLITE_CONSTRAINT_PRIMARYKEY
+    // (distinct from the named ON CONFLICT target's own
+    // SQLITE_CONSTRAINT_UNIQUE) for exactly this case. On that error, look
+    // up the colliding row and migrate it in place ONLY if it is PROVABLY
+    // the same logical binding (see isSameLogicalBindingUnderLegacyKey);
+    // otherwise fail closed by re-throwing.
     upsert(record) {
       const normalized = normalizeRecord(record);
-      exec(referenceQueries.connectorInstancesInsert, [
-        normalized.connectorInstanceId,
-        normalized.ownerSubjectId,
-        normalized.connectorId,
-        normalized.displayName,
-        normalized.status,
-        normalized.sourceKind,
-        normalized.sourceBindingKey,
-        normalized.sourceBindingJson,
-        normalized.createdAt,
-        normalized.updatedAt,
-        normalized.revokedAt,
-      ]);
-      return this.get(normalized.connectorInstanceId);
+      const currentLocalBindingName = extractLocalBindingName(record.sourceBinding);
+      try {
+        exec(referenceQueries.connectorInstancesInsert, [
+          normalized.connectorInstanceId,
+          normalized.ownerSubjectId,
+          normalized.connectorId,
+          normalized.displayName,
+          normalized.status,
+          normalized.sourceKind,
+          normalized.sourceBindingKey,
+          normalized.sourceBindingJson,
+          normalized.createdAt,
+          normalized.updatedAt,
+          normalized.revokedAt,
+        ]);
+        return this.get(normalized.connectorInstanceId);
+      } catch (err) {
+        if (err?.code !== 'SQLITE_CONSTRAINT_PRIMARYKEY') {
+          throw err;
+        }
+        const collidingRow = getOne(referenceQueries.connectorInstancesGetById, [normalized.connectorInstanceId]);
+        if (!isSameLogicalBindingUnderLegacyKey(collidingRow, normalized, currentLocalBindingName)) {
+          throw err;
+        }
+        exec(referenceQueries.connectorInstancesMigrateLegacyBindingKey, [
+          normalized.displayName,
+          normalized.status,
+          normalized.sourceBindingKey,
+          normalized.sourceBindingJson,
+          normalized.updatedAt,
+          normalized.revokedAt,
+          collidingRow.connector_instance_id,
+        ]);
+        return this.get(collidingRow.connector_instance_id);
+      }
     },
 
     ensureDefaultAccountConnection({ ownerSubjectId, connectorId, displayName, now }) {
@@ -637,8 +714,8 @@ export function createSqliteConnectorInstanceStore() {
         // (no inner transaction of its own), so it is atomic with the schedule /
         // device / row deletes below.
         const recordCount = purge.deleteRecordRowsSqlite(connectorInstanceId);
-        getDb().prepare("DELETE FROM manifest_write_violations WHERE connector_instance_id = ?").run(connectorInstanceId);
-        getDb().prepare("DELETE FROM connector_summary_evidence WHERE connector_instance_id = ?").run(connectorInstanceId);
+        exec(referenceQueries.connectorInstancesDeleteManifestWriteViolationsByConnectorInstance, [connectorInstanceId]);
+        exec(referenceQueries.connectorInstancesDeleteSummaryEvidenceByConnectorInstance, [connectorInstanceId]);
         const schedule = exec(referenceQueries.controllerDeleteSchedule, [connectorInstanceId]);
         const device = exec(referenceQueries.deviceExportersClearSourceInstanceConnectorRef, [stamp, connectorInstanceId]);
         exec(referenceQueries.connectorInstancesDeleteById, [connectorInstanceId]);
@@ -711,32 +788,101 @@ function assertOwnerSetDisplayNameArgs({ connectorInstanceId, ownerSubjectId, di
 
 export function createPostgresConnectorInstanceStore() {
   const store = {
+    // Design D8 (fix-enroll-connector-instance-pk-collision). connectorInstanceId
+    // is normally deterministic (makeConnectorInstanceId, hashed from owner +
+    // connector + sourceKind + sourceBindingKey) so a retried upsert for the
+    // SAME logical binding always targets the SAME row, and the ON CONFLICT
+    // target above (the binding's own unique key) absorbs every same-binding
+    // race by design -- it can never itself raise 23505.
+    //
+    // A live counterexample proved a residual gap: a pre-D6/D7 deployment
+    // computed source_binding_key from the FULL sourceBinding object
+    // (including per-enrollment device_id/source_instance_id), before
+    // deviceExporterSourceBindingIdentity narrowed it to the stable
+    // {kind, local_binding_name} shape. That legacy row's key therefore never
+    // matches the ON CONFLICT target above for the SAME logical binding --
+    // Postgres attempts the INSERT -- whose deterministic id (computed from
+    // TODAY's key) happens to equal that legacy row's own PRIMARY KEY (the
+    // legacy row's id predates makeConnectorInstanceId and was assigned by
+    // an older mechanism). This is a legacy key-normalization gap, not a
+    // cryptographic collision: the colliding row genuinely IS this binding's
+    // pre-existing connector instance, just keyed under a stale derivation.
+    //
+    // On a PRIMARY KEY conflict, look up the colliding row and check whether
+    // it is PROVABLY the same logical binding under the legacy key shape
+    // (same owner/connector/source_kind, and the local_binding_name embedded
+    // in its own stored source_binding_json matches this binding's). Only
+    // then migrate it in place -- UPDATE its source_binding_key/
+    // source_binding_json to the current stable shape and return that SAME
+    // connector_instance_id, preserving one logical connector instance and
+    // every reference to it. A collision against any row that is NOT
+    // provably this same binding (different owner/connector/kind, or a
+    // mismatched/unrecoverable local_binding_name) FAILS CLOSED by
+    // re-throwing the raw 23505 -- never adopted, never silently retried
+    // under a different id, since that would either corrupt an unrelated
+    // connector instance or fork a duplicate for this one.
     async upsert(record) {
       const normalized = normalizeRecord(record);
-      await postgresQuery(
-        `INSERT INTO connector_instances(connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at)
-         VALUES($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)
-         ON CONFLICT(owner_subject_id, connector_id, source_kind, source_binding_key) DO UPDATE SET
-           display_name = excluded.display_name,
-           status = excluded.status,
-           source_binding_json = excluded.source_binding_json,
-           updated_at = excluded.updated_at,
-           revoked_at = excluded.revoked_at`,
-        [
-          normalized.connectorInstanceId,
-          normalized.ownerSubjectId,
-          normalized.connectorId,
-          normalized.displayName,
-          normalized.status,
-          normalized.sourceKind,
-          normalized.sourceBindingKey,
-          normalized.sourceBindingJson,
-          normalized.createdAt,
-          normalized.updatedAt,
-          normalized.revokedAt,
-        ],
-      );
-      return await this.get(normalized.connectorInstanceId);
+      const currentLocalBindingName = extractLocalBindingName(record.sourceBinding);
+      try {
+        await postgresQuery(
+          `INSERT INTO connector_instances(connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at)
+           VALUES($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)
+           ON CONFLICT(owner_subject_id, connector_id, source_kind, source_binding_key) DO UPDATE SET
+             display_name = excluded.display_name,
+             status = excluded.status,
+             source_binding_json = excluded.source_binding_json,
+             updated_at = excluded.updated_at,
+             revoked_at = excluded.revoked_at`,
+          [
+            normalized.connectorInstanceId,
+            normalized.ownerSubjectId,
+            normalized.connectorId,
+            normalized.displayName,
+            normalized.status,
+            normalized.sourceKind,
+            normalized.sourceBindingKey,
+            normalized.sourceBindingJson,
+            normalized.createdAt,
+            normalized.updatedAt,
+            normalized.revokedAt,
+          ],
+        );
+        return await this.get(normalized.connectorInstanceId);
+      } catch (err) {
+        if (err?.code !== '23505') {
+          throw err;
+        }
+        const colliding = await postgresQuery(
+          `SELECT connector_instance_id, owner_subject_id, connector_id, source_kind, source_binding_json
+             FROM connector_instances WHERE connector_instance_id = $1`,
+          [normalized.connectorInstanceId],
+        );
+        const collidingRow = colliding.rows[0];
+        if (!isSameLogicalBindingUnderLegacyKey(collidingRow, normalized, currentLocalBindingName)) {
+          throw err;
+        }
+        await postgresQuery(
+          `UPDATE connector_instances SET
+             display_name = $1,
+             status = $2,
+             source_binding_key = $3,
+             source_binding_json = $4::jsonb,
+             updated_at = $5,
+             revoked_at = $6
+           WHERE connector_instance_id = $7`,
+          [
+            normalized.displayName,
+            normalized.status,
+            normalized.sourceBindingKey,
+            normalized.sourceBindingJson,
+            normalized.updatedAt,
+            normalized.revokedAt,
+            collidingRow.connector_instance_id,
+          ],
+        );
+        return await this.get(collidingRow.connector_instance_id);
+      }
     },
 
     async ensureDefaultAccountConnection({ ownerSubjectId, connectorId, displayName, now }) {

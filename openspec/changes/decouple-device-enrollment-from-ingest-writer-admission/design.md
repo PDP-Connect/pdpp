@@ -430,6 +430,103 @@ actually needs — `upsertSourceInstance` (write) and
 `listSourceInstances`, and the heartbeat queries are unrelated to the
 identity-decision race and were left untouched.
 
+### D8 — connector_instances upsert cannot migrate a legacy same-binding row keyed under a stale source_binding_key derivation (fix-enroll-connector-instance-pk-collision)
+
+**Live counterexample, discovered after watched deploy of D1-D7:** a fresh
+pending code for `(owner_local, codex, vivid-fish)` returned `503
+enrollment_identity_conflict` (a raw Postgres `23505`) on **every** retry,
+with no operator remediation available through the API. Root cause traced by
+direct inspection of the live `pdpp` database (read-only) and confirmed by a
+byte-exact reproduction:
+
+- `connector_instances`'s identity is `UNIQUE(owner_subject_id, connector_id,
+  source_kind, source_binding_key)`, with `connector_instance_id` as a
+  SEPARATE `PRIMARY KEY`. `makeConnectorInstanceId` derives that PK
+  deterministically by hashing `owner + connector + sourceKind +
+  sourceBindingKey` — so a retried `upsert()` for the SAME logical binding,
+  under the SAME key derivation, always targets the same row, and the named
+  `ON CONFLICT` target absorbs every same-binding write race by construction.
+- The live `vivid-fish` binding had a pre-existing, already-completed
+  `connector_instances` row (`cin_da9889ea09f0132af33c2f4e`) whose
+  `source_binding_key` was computed under an OLDER, larger binding shape —
+  `{kind, device_id, local_binding_name, source_instance_id}` — that predates
+  `deviceExporterSourceBindingIdentity`'s smaller, device-independent
+  `{kind, local_binding_name}` shape. This is a **legacy key-normalization
+  gap**, not two independent bindings: the row's `source_binding_json`
+  itself confirms `owner_subject_id=owner_local`, `connector_id=codex`,
+  `source_kind=local_device`, `local_binding_name=vivid-fish` — the EXACT
+  same logical binding a fresh enroll for `vivid-fish` resolves to today.
+  Because the key INPUT differs (old shape vs. new shape), the named
+  `ON CONFLICT` target on a fresh `upsert()` call for this binding does
+  **not** match this row under its stale key — Postgres therefore attempts a
+  plain `INSERT`.
+- That `INSERT`'s own `connector_instance_id` — computed by today's
+  `makeConnectorInstanceId` from the CURRENT binding-identity key — happens
+  to equal the legacy row's own PRIMARY KEY (the legacy row's id predates
+  `makeConnectorInstanceId` and was assigned by an older mechanism, before
+  ids were derived from `source_binding_key` at all). The `INSERT` therefore
+  collides on the `PRIMARY KEY` — a constraint the named `ON CONFLICT` target
+  does not cover — surfacing as `23505` on every retry, deterministically,
+  since neither side of the collision ever changes without intervention.
+
+**Reproduced deterministically** (not by construction from priors — by
+reading the live `pdpp-postgres-1` database read-only, confirming the exact
+row shapes, then recreating them byte-for-byte against a throwaway Postgres
+container and driving the real enroll route): every retry against the
+recreated state returns `503 enrollment_identity_conflict`, matching the
+live symptom exactly.
+
+**Fix: on a PRIMARY KEY collision, migrate the colliding row in place — but
+ONLY when it is PROVABLY the same logical binding.** `upsert()` (both
+backends) catches the PK-specific error — Postgres's raw `23505` on this
+exact `INSERT`; SQLite's distinct `SQLITE_CONSTRAINT_PRIMARYKEY`, which
+better-sqlite3 raises separately from the named-target's own
+`SQLITE_CONSTRAINT_UNIQUE` — looks up the colliding row, and checks
+`isSameLogicalBindingUnderLegacyKey`: same `owner_subject_id`,
+`connector_id`, and `source_kind` columns, AND the `local_binding_name`
+embedded in the colliding row's OWN stored `source_binding_json` matches the
+binding currently being upserted. Only when this is proven does `upsert()`
+`UPDATE` that row's `source_binding_key`/`source_binding_json` to the
+current stable shape and return its SAME `connector_instance_id` — a
+key-normalization migration, executed lazily on first collision rather than
+a bulk backfill, keeping the row's identity, references, and history
+completely intact. A collision against any row that does NOT pass this
+check (different owner/connector/kind, or a `local_binding_name` mismatch —
+i.e. a genuinely unrelated binding) re-throws the raw `23505` unmodified,
+fail-closed — the existing `respondEnrollError` mapping (D3/D5) still
+surfaces it as a typed retryable `503`, never silently adopted or merged.
+
+**Explicitly rejected: a generic salted-retry id.** An earlier draft of this
+fix treated every `23505` on this `INSERT` as evidence of a coincidental
+hash collision against an unrelated row and retried under a fresh, salted
+id — this was WRONG. The colliding row here is not unrelated: its own
+`source_binding_json` proves it IS this binding, only keyed under a stale
+derivation. Salting would have forked a second, permanently-duplicate
+`connector_instances` row for one logical binding, silently orphaning the
+original's history and violating the "one logical connector instance"
+invariant this entire change exists to protect — a worse defect than the one
+being fixed. **Explicitly rejected: weakening the `PRIMARY KEY` or the named
+`ON CONFLICT` target.** Per explicit instruction, neither constraint may be
+weakened; the fix works entirely within the existing schema, migrating the
+stale key onto the existing row rather than loosening any uniqueness
+guarantee. **Explicitly rejected: a cleanup script.** The fix recovers
+through the ordinary enrollment API path with no operator action, matching
+the live remediation path (retry the same code) exactly — no manual
+database intervention or bulk backfill of legacy rows is introduced or
+required; each legacy row migrates lazily, in place, the first time its
+binding is next upserted.
+
+**Preserved:** exactly ONE `connector_instance_id` per logical binding —
+the legacy row survives under its own id, migrated to the current key, never
+duplicated into a second row; `resolveOrCreateEnrollmentDevice`'s
+source-kind-qualified orphan adoption (D7) and its durable advisory-lock
+serialization (D6) are unmodified — D8 is scoped entirely to the
+connector-instance key-normalization edge case, a layer below the
+device-identity resolution D6/D7 already handle correctly; the pre-existing
+"re-enrolling the same connector + local_binding_name resumes one stable
+connector_instance" contract (`device-exporter-routes.test.js`) re-verified
+green and unmodified.
+
 ## Scope discipline
 
 The proven live cause is D1 (starvation). D2 fixes a separately-proven data-loss
@@ -446,16 +543,25 @@ binding-keying would have broken. D7 completes D6's key to match
 part D6 dropped) — an independent-gate finding rather than a live
 counterexample, fixed as a systemic key correction (additive column,
 lock-material parameter, query predicate) rather than deferred as
-"unreachable given today's connector catalog." No cross-store
-request-transaction rewrite is introduced anywhere in this change (that would
-require threading a shared client through every device-exporter and
-connector-instance store method — large blast radius, not
+"unreachable given today's connector catalog." D8 is a live counterexample
+one layer below D6/D7's device-identity resolution: a legacy
+`connector_instances` row for the SAME logical binding, keyed under a stale
+pre-D6/D7 `source_binding_key` derivation, can collide on the PRIMARY KEY
+with today's deterministic id for that binding — fixed by migrating the
+colliding row's key in place, in the `upsert()` call site that can hit this
+collision, ONLY when the collision is proven to be this same binding (never
+by touching the identity-resolution mechanism D6/D7 already got right, and
+never by adopting a genuinely unrelated colliding row). No
+cross-store request-transaction rewrite is introduced anywhere in this change
+(that would require threading a shared client through every device-exporter
+and connector-instance store method — large blast radius, not
 systemic-minimal); the locked `resolveOrCreateEnrollmentDevice` method is
 scoped to exactly the two tables (`device_exporters`,
-`device_source_instances`) whose identity-decision race needs it, and D7's
-`source_kind` column addition touches only `device_source_instances`. The
-idempotent-response pattern (D2, extended by D6) achieves the same no-loss
-guarantee at the route boundary.
+`device_source_instances`) whose identity-decision race needs it, D7's
+`source_kind` column addition touches only `device_source_instances`, and
+D8's legacy-key migration touches only `connector_instances`' own `upsert()`.
+The idempotent-response pattern (D2, extended by D6) achieves the same
+no-loss guarantee at the route boundary.
 
 ## Test oracle
 
@@ -571,3 +677,28 @@ guarantee at the route boundary.
   candidate slot), proving the predicate — not incidental query shape — is
   what prevents the collision. Restored and re-verified green, alongside the
   full D1–D6 Postgres suite unmodified.
+- **Legacy-key-migration recovery oracle (D8, Postgres, live-class, mutation-grade):**
+  recreates the exact live database state byte-for-byte: a legacy, already-
+  completed `connector_instances` row for `(owner_local, codex, vivid-fish)`
+  whose `source_binding_key` predates the current binding-identity key shape
+  and whose id happens to equal what today's deterministic formula computes
+  for this SAME binding, plus a partial-write orphan (`source_kind=
+  local_device`, `connector_instance_id NULL`) for the same binding. Mints a
+  fresh code for the binding and exchanges it three consecutive times.
+  Asserts: every attempt returns `201` (not the live `503`); every attempt
+  converges on the SAME resolved device/connector-instance/source-instance
+  identity (idempotent, not a new row per retry); the LEGACY row's OWN
+  `connector_instance_id` is reused (not a second, forked row); its
+  `source_binding_key`/`source_binding_json` are migrated to the current
+  stable shape in place; exactly ONE active connector instance exists for
+  this binding (never a duplicate); the resolved token authenticates a real
+  heartbeat call. A companion SQLite unit test
+  (`connector-instance-store.test.js`) additionally proves the fail-closed
+  path: a PK collision against a row whose own `source_binding_json` encodes
+  a DIFFERENT `local_binding_name` is never adopted or migrated — the raw
+  `SQLITE_CONSTRAINT_PRIMARYKEY` re-throws unmodified. **Mutation-grade,
+  verified deterministically:** reverting the legacy-key-migration logic
+  (Postgres backend) makes the Postgres oracle fail 3/3 runs with the EXACT
+  live symptom — `503 enrollment_identity_conflict` on the very first
+  attempt. Restored and re-verified green, alongside the full D1–D7 Postgres
+  suite unmodified.

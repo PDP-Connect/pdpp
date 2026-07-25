@@ -409,6 +409,98 @@ test('SQLite ConnectorInstanceStore supports default account connections and amb
   }
 });
 
+test('SQLite ConnectorInstanceStore.upsert migrates a legacy same-binding row in place on a primary-key collision (D8, fix-enroll-connector-instance-pk-collision)', async () => {
+  // A legacy row (source_binding_key computed under the older, larger
+  // sourceBinding shape) can predate makeConnectorInstanceId and coincide,
+  // on the PRIMARY KEY alone, with what today's deterministic formula
+  // computes for the SAME logical binding under its current stable key.
+  // upsert() must recognize this is provably the same binding (same owner,
+  // connector, source_kind, and local_binding_name embedded in the legacy
+  // row's own source_binding_json) and migrate the key in place, not fork a
+  // second row.
+  initDb();
+  try {
+    await seedSqliteConnector('codex');
+    const store = createSqliteConnectorInstanceStore();
+    const legacyConnectorInstanceId = 'cin_legacy_fixed_id';
+    const legacySourceBindingKey = 'legacy-key-embedding-device-and-source-instance';
+
+    getDb()
+      .prepare(
+        `INSERT INTO connector_instances(connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at)
+         VALUES(?, ?, 'codex', 'vivid-fish', 'active', 'local_device', ?, ?, ?, ?, NULL)`,
+      )
+      .run(
+        legacyConnectorInstanceId,
+        'owner_1',
+        legacySourceBindingKey,
+        JSON.stringify({
+          kind: 'local_device',
+          device_id: 'dexp_legacy',
+          local_binding_name: 'vivid-fish',
+          source_instance_id: 'dsrc_legacy',
+        }),
+        NOW,
+        NOW,
+      );
+
+    // A fresh upsert for the SAME logical binding, under the current stable
+    // key shape, whose deterministic id happens to equal the legacy row's
+    // PRIMARY KEY (forced here via an explicit connectorInstanceId, standing
+    // in for makeConnectorInstanceId computing the same value live).
+    const resolved = await store.upsert({
+      connectorInstanceId: legacyConnectorInstanceId,
+      ownerSubjectId: 'owner_1',
+      connectorId: 'codex',
+      displayName: 'vivid-fish',
+      status: 'active',
+      sourceKind: 'local_device',
+      sourceBindingKey: 'stable-key-kind-and-binding-name-only',
+      sourceBinding: { kind: 'local_device', local_binding_name: 'vivid-fish' },
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+
+    assert.equal(resolved.connectorInstanceId, legacyConnectorInstanceId, 'must reuse the legacy row\'s own id, not fork a new one');
+    assert.equal(resolved.sourceBindingKey, 'stable-key-kind-and-binding-name-only', 'the stale key must be migrated to the current stable key');
+    assert.deepEqual(resolved.sourceBinding, { kind: 'local_device', local_binding_name: 'vivid-fish' });
+
+    const rows = getDb().prepare(`SELECT connector_instance_id FROM connector_instances WHERE owner_subject_id = 'owner_1' AND connector_id = 'codex'`).all();
+    assert.equal(rows.length, 1, 'exactly one row must exist for this binding — migrated in place, never duplicated');
+
+    // A PK collision against a row that is NOT the same logical binding
+    // (different local_binding_name in the legacy row's own JSON) must fail
+    // closed, never silently adopted.
+    const unrelatedId = 'cin_unrelated_fixed_id';
+    getDb()
+      .prepare(
+        `INSERT INTO connector_instances(connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at)
+         VALUES(?, 'owner_1', 'codex', 'other-binding', 'active', 'local_device', 'unrelated-key', ?, ?, ?, NULL)`,
+      )
+      .run(unrelatedId, JSON.stringify({ kind: 'local_device', local_binding_name: 'a-totally-different-binding' }), NOW, NOW);
+
+    assert.throws(
+      () =>
+        store.upsert({
+          connectorInstanceId: unrelatedId,
+          ownerSubjectId: 'owner_1',
+          connectorId: 'codex',
+          displayName: 'vivid-fish-2',
+          status: 'active',
+          sourceKind: 'local_device',
+          sourceBindingKey: 'a-second-stable-key',
+          sourceBinding: { kind: 'local_device', local_binding_name: 'vivid-fish-2' },
+          createdAt: NOW,
+          updatedAt: NOW,
+        }),
+      (err) => err?.code === 'SQLITE_CONSTRAINT_PRIMARYKEY',
+      'a PK collision against an unrelated binding must fail closed, never be silently adopted',
+    );
+  } finally {
+    closeDb();
+  }
+});
+
 // ─── deleteConnection store primitive (add-owner-connection-delete-contract) ──
 
 function seedDeletableInstance(store, { connectorInstanceId, connectorId, sourceKind = 'account', sourceBindingKey }) {

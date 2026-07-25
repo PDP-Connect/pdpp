@@ -239,6 +239,8 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly connectorInstanceCredentialsGetByInstance: ReadOneQuery;
   readonly connectorInstanceCredentialsRevokeByInstance: MutationQuery;
   readonly connectorInstanceCredentialsUpsert: MutationQuery;
+  readonly connectorInstancesDeleteManifestWriteViolationsByConnectorInstance: MutationQuery;
+  readonly connectorInstancesDeleteSummaryEvidenceByConnectorInstance: MutationQuery;
   readonly connectorInstancesGetByBinding: ReadOneQuery;
   readonly connectorInstancesGetById: ReadOneQuery;
   readonly connectorInstancesInsert: MutationQuery;
@@ -246,6 +248,7 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly connectorInstancesListByOwner: ReadManyQuery;
   readonly connectorInstancesListByOwnerIncludingDrafts: ReadManyQuery;
   readonly connectorInstancesListDraftBrowserEnrollmentShells: SmallEnumerationQuery;
+  readonly connectorInstancesMigrateLegacyBindingKey: MutationQuery;
   readonly connectorInstancesUpdateDisplayName: MutationQuery;
   readonly connectorInstancesUpdateStatus: MutationQuery;
   readonly controllerDeleteActiveRun: MutationQuery;
