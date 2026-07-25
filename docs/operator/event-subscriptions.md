@@ -89,7 +89,7 @@ the lifecycle owner.
 
 ## Verifying delivery with a local test receiver
 
-The repository ships `scripts/event-subscription-test-receiver.mjs`: a tiny
+The repository ships `scripts/event-subscription-test-receiver.ts`: a tiny
 Node HTTP server that verifies the Standard Webhooks signature and prints
 each event envelope to stdout. Use it to sanity-check that a fresh reference
 deployment can sign and deliver events before you point a real client at it.
@@ -99,7 +99,7 @@ deployment can sign and deliver events before you point a real client at it.
 ```sh
 # 1. Start the receiver. It listens on http://localhost:8765 by default
 #    and prints the callback URL you should give the client.
-node scripts/event-subscription-test-receiver.mjs
+node --import tsx scripts/event-subscription-test-receiver.ts
 
 # 2. From a client that holds a scoped client bearer (for example the MCP
 #    adapter under `pdpp connect`) or from a trusted owner agent that holds a
@@ -133,7 +133,7 @@ after the receiver has already started, prefer a local secret file over
 secret_file="${TMPDIR:-/tmp}/pdpp-webhook-secret"
 : > "$secret_file"
 chmod 600 "$secret_file"
-node scripts/event-subscription-test-receiver.mjs \
+node --import tsx scripts/event-subscription-test-receiver.ts \
   --host 0.0.0.0 \
   --port 8765 \
   --secret-file "$secret_file"
@@ -181,7 +181,7 @@ If the TLS proxy runs on another host, bind the receiver on an interface that
 proxy can reach:
 
 ```sh
-WEBHOOK_SECRET_FILE="$secret_file" node scripts/event-subscription-test-receiver.mjs --host 0.0.0.0 --port 8765
+WEBHOOK_SECRET_FILE="$secret_file" node --import tsx scripts/event-subscription-test-receiver.ts --host 0.0.0.0 --port 8765
 ```
 
 ## CLI surface

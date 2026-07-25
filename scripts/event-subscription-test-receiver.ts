@@ -14,7 +14,7 @@
  *
  * Usage:
  *
- *   node scripts/event-subscription-test-receiver.mjs [--port N] [--host HOST]
+ *   node scripts/event-subscription-test-receiver.ts [--port N] [--host HOST]
  *       [--secret whsec_…] [--secret-file PATH] [--insecure]
  *
  * The receiver does not register the subscription for you. Create the
@@ -38,36 +38,52 @@
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import process from "node:process";
 
 const DEFAULT_PORT = 8765;
 const DEFAULT_HOST = "127.0.0.1";
 const SIGNATURE_TOLERANCE_SECONDS = 5 * 60;
+const SIGNATURE_TOKEN_SPLIT_PATTERN = /\s+/;
 
-function parseArgs(argv) {
-  const out = {
+interface Args {
+  host: string;
+  insecure: boolean;
+  port: number;
+  secret: string | null;
+  secretFile: string | null;
+}
+
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: exhaustive flag-by-flag CLI arg parser, carried over unchanged from the .mjs source.
+function parseArgs(argv: string[]): Args {
+  const out: Args = {
     host: DEFAULT_HOST,
     port: DEFAULT_PORT,
     secret: process.env.WEBHOOK_SECRET ?? null,
     secretFile: process.env.WEBHOOK_SECRET_FILE ?? null,
     insecure: false,
   };
-  for (let i = 2; i < argv.length; i += 1) {
+  let i = 2;
+  while (i < argv.length) {
     const arg = argv[i];
     if (arg === "--port") {
-      out.port = Number.parseInt(argv[++i] ?? "", 10);
-      if (!Number.isInteger(out.port) || out.port <= 0 || out.port > 65535) {
+      i += 1;
+      out.port = Number.parseInt(argv[i] ?? "", 10);
+      if (!Number.isInteger(out.port) || out.port <= 0 || out.port > 65_535) {
         die(`invalid --port value: ${argv[i]}`);
       }
     } else if (arg === "--host") {
-      out.host = argv[++i] ?? "";
+      i += 1;
+      out.host = argv[i] ?? "";
       if (out.host.trim() === "") {
         die("invalid --host value: empty");
       }
     } else if (arg === "--secret") {
-      out.secret = argv[++i] ?? null;
+      i += 1;
+      out.secret = argv[i] ?? null;
     } else if (arg === "--secret-file") {
-      out.secretFile = argv[++i] ?? null;
+      i += 1;
+      out.secretFile = argv[i] ?? null;
       if (!out.secretFile) {
         die("invalid --secret-file value: empty");
       }
@@ -79,6 +95,7 @@ function parseArgs(argv) {
     } else {
       die(`unknown argument: ${arg}`);
     }
+    i += 1;
   }
   if (out.secret && out.secretFile) {
     die("use either --secret/WEBHOOK_SECRET or --secret-file/WEBHOOK_SECRET_FILE, not both");
@@ -86,13 +103,13 @@ function parseArgs(argv) {
   return out;
 }
 
-function printUsage() {
+function printUsage(): void {
   process.stdout.write(
     [
       "Local test receiver for PDPP client event subscriptions.",
       "",
       "Usage:",
-      "  node scripts/event-subscription-test-receiver.mjs [--port N] [--host HOST] [--secret whsec_…] [--secret-file PATH] [--insecure]",
+      "  node scripts/event-subscription-test-receiver.ts [--port N] [--host HOST] [--secret whsec_…] [--secret-file PATH] [--insecure]",
       "",
       "Flags:",
       "  --port N        Listen port (default 8765).",
@@ -105,29 +122,35 @@ function printUsage() {
       "                  is returned after the receiver has already started.",
       "  --insecure      Skip signature verification. For one-off envelope inspection only.",
       "",
-    ].join("\n"),
+    ].join("\n")
   );
 }
 
-function die(msg) {
+function die(msg: string): never {
   process.stderr.write(`error: ${msg}\n`);
   printUsage();
   process.exit(2);
 }
 
-function decodeWebhookSecret(secret) {
+function decodeWebhookSecret(secret: string): Buffer {
   if (secret.startsWith("whsec_")) {
     return Buffer.from(secret.slice("whsec_".length), "base64");
   }
   return Buffer.from(secret, "utf8");
 }
 
-function expectedSignature(secret, eventId, timestamp, body) {
+function expectedSignature(secret: string, eventId: string, timestampValue: number, body: string): string {
   const key = decodeWebhookSecret(secret);
-  return createHmac("sha256", key).update(`${eventId}.${timestamp}.${body}`).digest("base64");
+  return createHmac("sha256", key).update(`${eventId}.${timestampValue}.${body}`).digest("base64");
 }
 
-function verify(secret, eventId, timestampHeader, body, signatureHeader) {
+function verify(
+  secret: string,
+  eventId: string,
+  timestampHeader: string,
+  body: string,
+  signatureHeader: string
+): { ok: boolean; reason?: string } {
   const ts = Number.parseInt(timestampHeader, 10);
   if (!Number.isFinite(ts)) {
     return { ok: false, reason: "missing or non-numeric webhook-timestamp" };
@@ -138,78 +161,85 @@ function verify(secret, eventId, timestampHeader, body, signatureHeader) {
   }
   const expected = expectedSignature(secret, eventId, ts, body);
   const expectedBuf = Buffer.from(expected);
-  const tokens = signatureHeader.split(/\s+/).filter(Boolean);
+  const tokens = signatureHeader.split(SIGNATURE_TOKEN_SPLIT_PATTERN).filter(Boolean);
   for (const token of tokens) {
     const idx = token.indexOf(",");
-    if (idx < 0) continue;
-    if (token.slice(0, idx) !== "v1") continue;
+    if (idx < 0) {
+      continue;
+    }
+    if (token.slice(0, idx) !== "v1") {
+      continue;
+    }
     const candidateBuf = Buffer.from(token.slice(idx + 1));
-    if (
-      candidateBuf.length === expectedBuf.length &&
-      timingSafeEqual(candidateBuf, expectedBuf)
-    ) {
+    if (candidateBuf.length === expectedBuf.length && timingSafeEqual(candidateBuf, expectedBuf)) {
       return { ok: true };
     }
   }
   return { ok: false, reason: "no v1 token matched expected signature" };
 }
 
-function readBody(req) {
+function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
-    const chunks = [];
+    const chunks: Buffer[] = [];
     req.on("data", (chunk) => chunks.push(chunk));
     req.on("error", reject);
     req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
   });
 }
 
-function timestamp() {
+function timestamp(): string {
   return new Date().toISOString();
 }
 
-function handleVerifyEvent(envelope) {
-  const challenge = envelope?.data?.challenge;
+interface VerifyEnvelope {
+  data?: { challenge?: unknown };
+}
+
+function handleVerifyEvent(envelope: VerifyEnvelope): string | null {
+  const challenge = envelope.data?.challenge;
   if (typeof challenge !== "string") {
     return null;
   }
   return JSON.stringify({ challenge });
 }
 
-function readSecretFile(path) {
+function readSecretFile(path: string): string | null {
   try {
     const value = readFileSync(path, "utf8").trim();
     return value || null;
   } catch (err) {
-    if (err?.code === "ENOENT") {
+    const asNodeError = err as { code?: string; message?: string };
+    if (asNodeError.code === "ENOENT") {
       return null;
     }
-    process.stderr.write(`[${timestamp()}] could not read secret file ${path}: ${err?.message ?? err}\n`);
+    process.stderr.write(`[${timestamp()}] could not read secret file ${path}: ${asNodeError.message ?? err}\n`);
     return null;
   }
 }
 
-function resolveSecret(args) {
+function resolveSecret(args: Args): string | null {
   if (args.secretFile) {
     return readSecretFile(args.secretFile);
   }
   return args.secret;
 }
 
-async function main() {
+function main(): void {
   const args = parseArgs(process.argv);
   const initialSecret = resolveSecret(args);
-  if (!args.insecure && !initialSecret) {
+  if (!(args.insecure || initialSecret)) {
     process.stderr.write(
       [
         "warning: no secret configured.",
         "  Set WEBHOOK_SECRET, pass --secret <whsec_…>, or write the value into --secret-file before delivery.",
         "  Until then, the receiver will reject every signed delivery as `no_secret_configured`.",
         "",
-      ].join("\n"),
+      ].join("\n")
     );
   }
 
-  const server = createServer(async (req, res) => {
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: exhaustive per-route request handler (health, signature verification, verify-event echo), carried over unchanged from the .mjs source.
+  const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     if (req.method === "GET" && (req.url === "/" || req.url === "/health")) {
       const healthSecret = resolveSecret(args);
       res.writeHead(200, { "content-type": "application/json" });
@@ -225,10 +255,16 @@ async function main() {
     const ts = req.headers["webhook-timestamp"];
     const sig = req.headers["webhook-signature"];
     const body = await readBody(req);
-    const headerProblems = [];
-    if (typeof eventId !== "string") headerProblems.push("webhook-id missing");
-    if (typeof ts !== "string") headerProblems.push("webhook-timestamp missing");
-    if (typeof sig !== "string") headerProblems.push("webhook-signature missing");
+    const headerProblems: string[] = [];
+    if (typeof eventId !== "string") {
+      headerProblems.push("webhook-id missing");
+    }
+    if (typeof ts !== "string") {
+      headerProblems.push("webhook-timestamp missing");
+    }
+    if (typeof sig !== "string") {
+      headerProblems.push("webhook-signature missing");
+    }
     if (headerProblems.length > 0) {
       process.stderr.write(`[${timestamp()}] rejecting delivery: ${headerProblems.join("; ")}\n`);
       res.writeHead(400, { "content-type": "text/plain" });
@@ -236,7 +272,7 @@ async function main() {
       return;
     }
 
-    if (!args.insecure) {
+    if (!(args.insecure || typeof eventId !== "string" || typeof ts !== "string" || typeof sig !== "string")) {
       const secret = resolveSecret(args);
       if (!secret) {
         process.stderr.write(`[${timestamp()}] rejecting delivery webhook-id=${eventId}: no_secret_configured\n`);
@@ -253,7 +289,7 @@ async function main() {
       }
     }
 
-    let envelope = null;
+    let envelope: VerifyEnvelope & { type?: string };
     try {
       envelope = JSON.parse(body);
     } catch (err) {
@@ -287,24 +323,30 @@ async function main() {
 
   server.listen(args.port, args.host, () => {
     const callbackHost = args.host === "0.0.0.0" || args.host === "::" ? "<this-host>" : args.host;
+    let secretStatus: string;
+    if (args.insecure) {
+      secretStatus = "(--insecure; verification skipped)";
+    } else if (initialSecret) {
+      secretStatus = "configured";
+    } else if (args.secretFile) {
+      secretStatus = `waiting for ${args.secretFile}`;
+    } else {
+      secretStatus = "NOT SET — pass --secret, --secret-file, or WEBHOOK_SECRET";
+    }
     process.stdout.write(
       [
         `PDPP event-subscription test receiver listening on http://${callbackHost}:${args.port}/webhook`,
         `  bind:     ${args.host}:${args.port}`,
         `  health:   http://${callbackHost}:${args.port}/health`,
-        `  secret:   ${args.insecure ? "(--insecure; verification skipped)" : initialSecret ? "configured" : args.secretFile ? `waiting for ${args.secretFile}` : "NOT SET — pass --secret, --secret-file, or WEBHOOK_SECRET"}`,
+        `  secret:   ${secretStatus}`,
         "",
-        "Create a subscription with callback_url=http://" +
-          callbackHost +
-          ":" +
-          args.port +
-          "/webhook from your client to drive the verification handshake.",
+        `Create a subscription with callback_url=http://${callbackHost}:${args.port}/webhook from your client to drive the verification handshake.`,
         "",
-      ].join("\n"),
+      ].join("\n")
     );
   });
 
-  for (const signal of ["SIGINT", "SIGTERM"]) {
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.on(signal, () => {
       process.stdout.write(`\n[${timestamp()}] ${signal} received; closing receiver\n`);
       server.close(() => process.exit(0));
@@ -312,7 +354,10 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  process.stderr.write(`fatal: ${err?.stack ?? err}\n`);
+try {
+  main();
+} catch (err) {
+  const asError = err as { stack?: string } | undefined;
+  process.stderr.write(`fatal: ${asError?.stack ?? err}\n`);
   process.exit(1);
-});
+}

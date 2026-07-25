@@ -323,7 +323,7 @@ delivery with the bundled local receiver:
 
 ```sh
 # From the repo root, in a separate terminal:
-node scripts/event-subscription-test-receiver.mjs
+node --import tsx scripts/event-subscription-test-receiver.ts
 ```
 
 Then follow [`docs/operator/event-subscriptions.md`](event-subscriptions.md)

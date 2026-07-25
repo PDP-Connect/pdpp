@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Smoke test for scripts/event-subscription-test-receiver.mjs.
+ * Smoke test for scripts/event-subscription-test-receiver.ts.
  *
  * Exercises three paths against the real receiver process:
  *   1. /health responds 200 JSON.
@@ -10,71 +10,83 @@
  *      200 echo with `{challenge: …}` matching the data.challenge value.
  *   3. A signed delivery with the wrong secret receives 401.
  *
- * Run: node --test scripts/event-subscription-test-receiver.test.mjs
+ * Run: node --test --import tsx scripts/event-subscription-test-receiver.test.ts
  */
 
-import { spawn } from "node:child_process";
+import assert from "node:assert/strict";
+import { type ChildProcess, spawn } from "node:child_process";
 import { createHmac } from "node:crypto";
 import { once } from "node:events";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import process from "node:process";
 import { test } from "node:test";
-import assert from "node:assert/strict";
+import { fileURLToPath } from "node:url";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
-const RECEIVER = `${HERE}event-subscription-test-receiver.mjs`;
+const RECEIVER = `${HERE}event-subscription-test-receiver.ts`;
 const SECRET = "whsec_dGVzdC1zZWNyZXQtZm9yLXJlY2VpdmVyLXNwZWMtMTIzNDU="; // base64 of a test key
 
-function decode(secret) {
+function decode(secret: string): Buffer {
   return Buffer.from(secret.slice("whsec_".length), "base64");
 }
 
-function sign(secret, eventId, timestamp, body) {
+function sign(secret: string, eventId: string, timestamp: number, body: string): string {
   const key = decode(secret);
   return `v1,${createHmac("sha256", key).update(`${eventId}.${timestamp}.${body}`).digest("base64")}`;
 }
 
-async function pickFreePort() {
-  const { default: net } = await import("node:net");
+async function pickFreePort(): Promise<number> {
   return await new Promise((resolve, reject) => {
     const srv = net.createServer();
     srv.once("error", reject);
     srv.listen(0, "127.0.0.1", () => {
-      const { port } = srv.address();
+      const address = srv.address();
+      const port = typeof address === "object" && address ? address.port : 0;
       srv.close(() => resolve(port));
     });
   });
 }
 
-async function startReceiver(port, secret, { host, extraArgs = [] } = {}) {
-  const args = [RECEIVER, "--port", String(port)];
-  if (secret) args.push("--secret", secret);
+async function startReceiver(
+  port: number,
+  secret: string | null,
+  { host, extraArgs = [] }: { extraArgs?: string[]; host?: string } = {}
+): Promise<ChildProcess> {
+  const args = ["--import", "tsx", RECEIVER, "--port", String(port)];
+  if (secret) {
+    args.push("--secret", secret);
+  }
   args.push(...extraArgs);
-  if (host) args.push("--host", host);
+  if (host) {
+    args.push("--host", host);
+  }
   const proc = spawn("node", args, {
     env: { ...process.env },
     stdio: ["ignore", "pipe", "pipe"],
   });
   // Wait for the "listening on …" line so callers know the port is open.
-  await new Promise((resolve, reject) => {
-    const onData = (chunk) => {
+  await new Promise<void>((resolve, reject) => {
+    const onData = (chunk: Buffer) => {
       const text = chunk.toString("utf8");
       if (text.includes("listening on")) {
-        proc.stdout.off("data", onData);
+        proc.stdout?.off("data", onData);
         resolve();
       }
     };
-    proc.stdout.on("data", onData);
+    proc.stdout?.on("data", onData);
     proc.once("error", reject);
     proc.once("exit", (code) => reject(new Error(`receiver exited early code=${code}`)));
   });
   return proc;
 }
 
-async function stopReceiver(proc) {
-  if (!proc || proc.exitCode !== null) return;
+async function stopReceiver(proc: ChildProcess | undefined): Promise<void> {
+  if (!proc || proc.exitCode !== null) {
+    return;
+  }
   proc.kill("SIGTERM");
   await once(proc, "exit");
 }
