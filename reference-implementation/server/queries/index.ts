@@ -249,6 +249,9 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly connectorInstancesUpdateDisplayName: MutationQuery;
   readonly connectorInstancesUpdateStatus: MutationQuery;
   readonly controllerDeleteActiveRun: MutationQuery;
+  // Records — deletion (manifest_write_violations and connector_summary_evidence).
+  readonly recordsDeleteDeleteConnectorSummaryEvidenceByInstance: MutationQuery;
+  readonly recordsDeleteDeleteManifestWriteViolationsByInstance: MutationQuery;
   readonly controllerDeleteSchedule: MutationQuery;
   readonly controllerGetLatestSchedulerRunHistoryForConnection: ReadOneQuery;
   readonly controllerGetScheduleByConnector: ReadOneQuery;

@@ -666,8 +666,8 @@ export function createSqliteConnectorInstanceStore(): unknown {
         // (no inner transaction of its own), so it is atomic with the schedule /
         // device / row deletes below.
         const recordCount = purge.deleteRecordRowsSqlite(connectorInstanceId);
-        exec("DELETE FROM manifest_write_violations WHERE connector_instance_id = ?", [connectorInstanceId]);
-        exec("DELETE FROM connector_summary_evidence WHERE connector_instance_id = ?", [connectorInstanceId]);
+        exec(referenceQueries.recordsDeleteDeleteManifestWriteViolationsByInstance, [connectorInstanceId]);
+        exec(referenceQueries.recordsDeleteDeleteConnectorSummaryEvidenceByInstance, [connectorInstanceId]);
         const schedule = exec(referenceQueries.controllerDeleteSchedule, [connectorInstanceId]);
         const device = exec(referenceQueries.deviceExportersClearSourceInstanceConnectorRef, [stamp, connectorInstanceId]);
         exec(referenceQueries.connectorInstancesDeleteById, [connectorInstanceId]);

@@ -20,7 +20,7 @@ import { execDynamicSqlAcknowledged, iterateDynamicSqlAcknowledged } from "../..
 import type { AttentionLifecycle, AttentionRecord, NotificationState } from "../../runtime/attention.ts";
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from "../owner-auth.ts";
 import { getStorageBackendKind, isPostgresStorageBackend, postgresQuery } from "../postgres-storage.js";
-import { makeDefaultAccountConnectorInstanceId } from "./connector-instance-store.js";
+import { makeDefaultAccountConnectorInstanceId } from "./connector-instance-store.ts";
 
 const OPEN_LIFECYCLES = ["open", "acknowledged", "in_progress"];
 const VALID_LIFECYCLES = new Set([
