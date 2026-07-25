@@ -46,7 +46,7 @@ pre-commit:
         fi
 
     - name: spec:check
-      glob: "{spec-*.md,apps/site/content/docs/spec-*.md,apps/site/content/docs/README.md,scripts/spec-check.mjs}"
+      glob: "{spec-*.md,apps/site/content/docs/spec-*.md,apps/site/content/docs/README.md,scripts/spec-check.ts}"
       run: pnpm spec:check
 
     # Bounded-statement wrapper enforcement.
@@ -130,4 +130,4 @@ pre-push:
     # error can never block a push. Archiving is owner-only (see CONTRIBUTING),
     # so failing the push here would be wrong.
     - name: openspec:archive-rot-warning
-      run: node scripts/openspec-archive-check.mjs || true
+      run: node --import tsx scripts/openspec-archive-check.ts || true

@@ -1,0 +1,45 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "moduleDetection": "force",
+    // DOM is needed for docs/explorer/uat/harness/capture.ts's
+    // page.evaluate(...) callback body, which runs inside a browser
+    // context (document, querySelectorAll) — same as
+    // packages/polyfill-connectors's tsconfig.json.
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+    "forceConsistentCasingInFileNames": true,
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitReturns": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "allowUnreachableCode": false,
+    "allowUnusedLabels": false,
+    "useUnknownInCatchVariables": true,
+
+    "noEmit": true,
+    "skipLibCheck": true,
+    "types": ["node"],
+    "allowImportingTsExtensions": true,
+    // scripts/test-accounting/inventory.test.ts imports
+    // reference-implementation/scripts/test-profile-env.js, an
+    // un-migrated JS file outside this migration's scope (reference-implementation
+    // is off-limits here). allowJs lets it resolve like RI's own
+    // tsconfig.json does for its own not-yet-migrated JS.
+    "allowJs": true,
+    "checkJs": false
+  },
+  "include": ["scripts/**/*.ts", "deploy/**/*.ts", "docs/explorer/uat/**/*.ts"],
+  "exclude": ["node_modules"]
+}

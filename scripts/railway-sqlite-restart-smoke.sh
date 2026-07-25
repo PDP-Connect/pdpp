@@ -12,7 +12,7 @@ set -euo pipefail
 # login and the stored records survive; re-run the query" acceptance step, on
 # the SQLite-on-a-mounted-volume storage option (Option B). It complements
 # `pnpm docker:smoke` (composed-origin metadata + owner-gating) and
-# `scripts/railway-mcp-query-smoke.mjs` (seed + scoped MCP query) by proving the
+# `scripts/railway-mcp-query-smoke.ts` (seed + scoped MCP query) by proving the
 # one property neither of those covers: data written before a container
 # REPLACEMENT is still present after it, because it lives on the volume rather
 # than the container's writable layer.
@@ -23,7 +23,7 @@ set -euo pipefail
 #      PDPP_DB_PATH=/root/.pdpp/pdpp.sqlite). The compose default
 #      /var/lib/pdpp/pdpp.sqlite is intentionally NOT on a mounted volume — the
 #      same trap the runbook and env-check warn about — so we override it here.
-#   2. Seed a deterministic record set via railway-mcp-query-smoke.mjs and prove
+#   2. Seed a deterministic record set via railway-mcp-query-smoke.ts and prove
 #      the scoped MCP query returns it (pre-restart baseline).
 #   3. Force-recreate the reference CONTAINER (not just restart the process):
 #      `docker compose up -d --force-recreate --no-deps reference`. The named
@@ -38,7 +38,7 @@ set -euo pipefail
 # Requires Docker + a built (or pullable) reference/console image, exactly like
 # scripts/docker-smoke.sh. It is the live-gate proxy, not a CI unit test; the
 # pass/fail decision logic it relies on is unit-tested offline in
-# scripts/railway-mcp-query-smoke.test.mjs.
+# scripts/railway-mcp-query-smoke.test.ts.
 #
 # Usage:
 #   bash scripts/railway-sqlite-restart-smoke.sh
@@ -104,7 +104,7 @@ wait_for() {
 seed_and_query() {
   # Seed (the pre-restart baseline) and assert the scoped MCP query returns the
   # seeded records.
-  node "$SCRIPT_DIR/railway-mcp-query-smoke.mjs" \
+  node --import tsx "$SCRIPT_DIR/railway-mcp-query-smoke.ts" \
     --origin "$ORIGIN" \
     --owner-password "$OWNER_PASSWORD"
 }
@@ -113,7 +113,7 @@ query_only() {
   # Re-query WITHOUT re-seeding — the authoritative durability proof. If the
   # records were on the replaced container's writable layer instead of the
   # volume, --no-seed would find nothing and fail.
-  node "$SCRIPT_DIR/railway-mcp-query-smoke.mjs" \
+  node --import tsx "$SCRIPT_DIR/railway-mcp-query-smoke.ts" \
     --origin "$ORIGIN" \
     --owner-password "$OWNER_PASSWORD" \
     --no-seed

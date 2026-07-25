@@ -9,8 +9,8 @@ import { spawn } from 'node:child_process';
 import pg from 'pg';
 import { buildScrubbedTestEnv } from './test-env.js';
 import { storageProfileEnvironment } from './test-profile-env.js';
-import { accountingResultLine, repositoryPaths, structuredNodeSummary } from '../../scripts/test-accounting/receipt.mjs';
-import { RUN_AUTHORITY_SCHEMA } from '../../scripts/test-accounting/inventory.mjs';
+import { accountingResultLine, repositoryPaths, structuredNodeSummary } from '../../scripts/test-accounting/receipt.ts';
+import { RUN_AUTHORITY_SCHEMA } from '../../scripts/test-accounting/inventory.ts';
 import {
   dedicatedPostgresTestUrl,
   isDedicatedPostgresTestDatabaseName,
@@ -40,7 +40,8 @@ const forwardedArgs = accountingIndex === -1
 // that fails to exit within PER_FILE_TIMEOUT_MS.
 const effectiveArgs = forwardedArgs;
 const PER_FILE_TIMEOUT_MS = Number.parseInt(process.env.PDPP_TEST_FILE_TIMEOUT_MS || '', 10) || 120_000;
-if (!effectiveArgs.some((arg) => arg === '--test-reporter' || arg.startsWith('--test-reporter='))) effectiveArgs.push(`--test-reporter=${fileURLToPath(new URL('../../scripts/test-accounting/node-reporter.mjs', import.meta.url))}`);
+if (!effectiveArgs.some((arg) => arg === '--test-reporter' || arg.startsWith('--test-reporter='))) effectiveArgs.push(`--test-reporter=${fileURLToPath(new URL('../../scripts/test-accounting/node-reporter.ts', import.meta.url))}`);
+if (!effectiveArgs.some((arg) => arg === '--import' || arg.startsWith('--import='))) effectiveArgs.unshift('--import', 'tsx');
 const accountingAuthority = accountingPath ? JSON.parse(await readFile(accountingPath, 'utf8')) : undefined;
 if (accountingAuthority && (accountingAuthority.schema !== RUN_AUTHORITY_SCHEMA || new Date(accountingAuthority.expires_at) < new Date())) throw new Error('accounting authority is invalid or expired');
 if (accountingAuthority && (accountingAuthority.suite !== 'ri-default' || accountingAuthority.profile !== process.env.PDPP_TEST_PROFILE)) throw new Error('accounting authority does not bind the selected RI profile');

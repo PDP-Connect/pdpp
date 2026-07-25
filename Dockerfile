@@ -52,7 +52,7 @@ COPY packages/pdpp-brand/package.json packages/pdpp-brand/package.json
 COPY packages/pdpp-brand-react/package.json packages/pdpp-brand-react/package.json
 COPY packages/mcp-server/package.json packages/mcp-server/package.json
 COPY packages/polyfill-connectors/package.json packages/polyfill-connectors/package.json
-COPY packages/polyfill-connectors/scripts/install-patchright-browser.mjs packages/polyfill-connectors/scripts/install-patchright-browser.mjs
+COPY packages/polyfill-connectors/scripts/install-patchright-browser.ts packages/polyfill-connectors/scripts/install-patchright-browser.ts
 COPY packages/reference-contract/package.json packages/reference-contract/package.json
 COPY reference-implementation/package.json reference-implementation/package.json
 
@@ -175,7 +175,7 @@ CMD ["node", "apps/console/server.js"]
 # deploy: PDPP_REFERENCE_ORIGIN defaults to the published localhost port, and
 # PDPP_DB_PATH defaults onto /var/lib/pdpp so `-v pdpp_data:/var/lib/pdpp`
 # makes the SQLite database (and first-boot credentials, see
-# deploy/railway/core-first-boot.mjs) durable. With a database URL present the
+# deploy/railway/core-first-boot.ts) durable. With a database URL present the
 # runtime selects Postgres and the SQLite default is ignored.
 FROM base AS railway-core
 
@@ -214,7 +214,7 @@ COPY --from=console-builder /app/apps/console/public /console/apps/console/publi
 
 EXPOSE 3000
 
-CMD ["node", "/app/deploy/railway/core-supervisor.mjs"]
+CMD ["node", "--import", "tsx", "/app/deploy/railway/core-supervisor.ts"]
 
 # Generic managed-platform Core alias. It uses the same one-public-service
 # supervisor as the Railway target: console on $PORT, AS/RS on loopback.

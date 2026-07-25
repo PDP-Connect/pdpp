@@ -30,7 +30,7 @@ import {
   expectedLocalCoverageStoreDescriptors,
   expectedLocalCoverageStores,
 } from '../../packages/polyfill-connectors/src/local-source-inventory.ts';
-import { auditStreamHealth } from '../../scripts/stream-health-audit/audit.mjs';
+import { auditStreamHealth } from '../../scripts/stream-health-audit/audit.ts';
 
 // Mirrors the live 2026-06-03 evidence: a local collector source instance that
 // is healthy and fully drained (pending=0, dead_letter=0, stale_leases=0) yet
