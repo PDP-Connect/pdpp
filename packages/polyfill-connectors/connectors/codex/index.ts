@@ -1517,15 +1517,14 @@ async function assertRequestedCodexSources(dirs: CodexDirs, requested: Map<strin
       missing.push(`CODEX_SESSIONS_DIR=${dirs.baseDir} or CODEX_STATE_DB=${dirs.stateDbPath}`);
     }
   }
-  if (requested.has("rules") && !(await isReadableDirectory(dirs.rulesDir))) {
-    missing.push(`CODEX_RULES_DIR=${dirs.rulesDir}`);
-  }
-  if (requested.has("prompts") && !(await isReadableDirectory(dirs.promptsDir))) {
-    missing.push(`CODEX_PROMPTS_DIR=${dirs.promptsDir}`);
-  }
-  if (requested.has("skills") && !(await isReadableDirectory(dirs.skillsDir))) {
-    missing.push(`CODEX_SKILLS_DIR=${dirs.skillsDir}`);
-  }
+  // rules/prompts/skills are optional, user-authored directories that Codex
+  // itself never creates until the user writes one — coverage_diagnostics
+  // already reports each as "missing" (not an error) when absent, and
+  // emitRulesStream/emitPromptsStream/emitSkillsStream already no-op safely
+  // on a missing directory. Requiring them here was fatal-on-every-fresh-
+  // install: any host without a manually-created empty rules/prompts dir
+  // failed its very first run. Only sources with no graceful empty-result
+  // path (sessions) stay a hard precondition.
   if (missing.length > 0) {
     throw new Error(`requested Codex local source path(s) are missing or unreadable: ${missing.join(", ")}`);
   }

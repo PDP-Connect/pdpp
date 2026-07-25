@@ -9,7 +9,7 @@ import { test } from "node:test";
 import type { EmittedMessage } from "../../src/connector-runtime.ts";
 import { runConnectorProtocolSubprocess } from "../../src/test-harness.ts";
 
-test("codex connector fails instead of succeeding when requested local sources are missing", async () => {
+test("codex connector fails instead of succeeding when a hard-required local source is missing", async () => {
   const codexHome = await mkdtemp(join(tmpdir(), "pdpp-codex-missing-"));
   const result = await runConnectorProcess({
     env: { CODEX_HOME: codexHome },
@@ -24,7 +24,33 @@ test("codex connector fails instead of succeeding when requested local sources a
   assert.equal(done?.status, "failed");
   assert.match(done?.error?.message ?? "", /requested Codex local source path\(s\) are missing or unreadable/);
   assert.match(done?.error?.message ?? "", /CODEX_SESSIONS_DIR=/);
-  assert.match(done?.error?.message ?? "", /CODEX_RULES_DIR=/);
+  // rules is optional and user-authored (Codex never creates the directory
+  // until the user writes a rule) — it must NOT appear in the fatal list,
+  // matching emitRulesStream's own graceful no-op on a missing directory.
+  assert.doesNotMatch(done?.error?.message ?? "", /CODEX_RULES_DIR=/);
+});
+
+test("codex connector succeeds when only optional rules/prompts/skills sources are missing", async () => {
+  // A fresh Codex install has sessions but has never had the user author a
+  // rule, prompt, or skill — those three directories genuinely do not exist
+  // yet. This must NOT be fatal: coverage_diagnostics already reports each
+  // as "missing", and the corresponding emit*Stream helpers already no-op
+  // safely. Every fresh install previously failed its first run on exactly
+  // this condition.
+  const codexHome = await mkdtemp(join(tmpdir(), "pdpp-codex-optional-missing-"));
+  await mkdir(join(codexHome, "sessions"), { recursive: true });
+
+  const result = await runConnectorProcess({
+    env: { CODEX_HOME: codexHome },
+    start: {
+      scope: { streams: [{ name: "sessions" }, { name: "rules" }, { name: "prompts" }, { name: "skills" }] },
+      type: "START",
+    },
+  });
+
+  assert.equal(result.exitCode, 0);
+  const done = result.messages.findLast((msg): msg is Extract<EmittedMessage, { type: "DONE" }> => msg.type === "DONE");
+  assert.equal(done?.status, "succeeded");
 });
 
 test("codex emits coverage diagnostics for a missing source home before failing", async () => {

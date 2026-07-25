@@ -3969,6 +3969,106 @@ test("runCollectorConnector records a connector_child_failure gap when the child
   }
 });
 
+test("runCollectorConnector surfaces the connector's own terminal DONE error message into the durable connector_child_failure gap, sanitized", async () => {
+  // A connector that detects its own precondition failure (e.g. a missing
+  // source directory) reports it via a terminal DONE{status:"failed",
+  // error:{message}} on stdout, then exits non-zero — it never writes to
+  // stderr. Before this fix, throwIfConnectorExitedUncleanly ran BEFORE the
+  // terminalDone check and only ever looked at stderr, so this diagnosis was
+  // silently discarded and replaced with a useless "unknown error" — both in
+  // the thrown exception AND in the durable connector_child_failure gap row
+  // an operator would otherwise inspect after the fact. Asserting only the
+  // thrown exception is not sufficient proof: the gap row is written by a
+  // separate call (recordConnectorChildFailureGap) that could regress
+  // independently of the thrown message. This test drives the queue itself.
+  //
+  // The DONE message also carries a secret-shaped token
+  // ("token=super-secret-marker-value") to prove the connector's own
+  // message is sanitized the same way the pre-existing stderr path already
+  // is (sanitizeCollectorGapDetails) before it reaches durable storage —
+  // this is real connector-authored diagnostic text, not payload/record
+  // content, but it must still never carry raw secret-shaped substrings
+  // into the queue.
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    const queuePath = await tempQueuePath();
+    const fixture = await writeFixtureConnector({
+      script: `
+        let buf = "";
+        await new Promise((r) => process.stdin.on("data", (c) => {
+          buf += c;
+          if (buf.includes("\\n")) r();
+        }));
+        process.stdout.write(JSON.stringify({
+          type: "DONE",
+          status: "failed",
+          records_emitted: 0,
+          error: { message: "requested source path(s) are missing or unreadable: CODEX_RULES_DIR=/nonexistent token=super-secret-marker-value", retryable: false },
+        }) + "\\n");
+        process.exit(1);
+      `,
+    });
+
+    await assert.rejects(
+      () =>
+        runCollectorConnector({
+          baseUrl: harness.url,
+          connector: {
+            args: [fixture],
+            command: "node",
+            connector_id: "fixture-done-error-message",
+            runtime_requirements: { bindings: {} },
+            streams: ["messages"],
+          },
+          batchSize: 1,
+          deviceId: "device-1",
+          deviceToken: "device-token",
+          queuePath,
+          runId: "run-done-error-1",
+          sourceInstanceId: "src-done-error",
+        }),
+      (error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        assert.match(message, /requested source path\(s\) are missing or unreadable/);
+        assert.match(message, /CODEX_RULES_DIR=/);
+        assert.doesNotMatch(message, /unknown error/);
+        assert.equal(message.includes("super-secret-marker-value"), false);
+        return true;
+      }
+    );
+
+    // The durable gap metadata is the actual operator-facing evidence — the
+    // thrown exception alone is not proof the connector's diagnosis reached
+    // storage. Inspect the queued connector_child_failure gap row directly.
+    const verify = new LocalDeviceOutbox({ path: queuePath });
+    try {
+      const items = verify.list({ sourceInstanceId: "src-done-error" });
+      const gaps = items.filter((i) => i.kind === "gap");
+      assert.equal(gaps.length, 1, `expected exactly one gap row, got ${gaps.length}`);
+      const firstGap = gaps[0];
+      assert.ok(firstGap, "expected gap row");
+      const payload = firstGap.payload as Record<string, unknown>;
+      assert.equal(payload.reason, "connector_child_failure");
+      assert.equal(payload.retryable, true);
+      assert.equal(payload.firstSeenRunId, "run-done-error-1");
+      const details = String(payload.details ?? "");
+      // The connector's own structured diagnosis reached the durable gap —
+      // not a generic "unknown error" / empty-stderr placeholder.
+      assert.match(details, /requested source path\(s\) are missing or unreadable/);
+      assert.match(details, /CODEX_RULES_DIR=/);
+      assert.doesNotMatch(details, /unknown error/);
+      // Sanitized exactly like the pre-existing stderr-derived path: the
+      // secret-shaped marker is redacted, never stored raw.
+      assert.equal(details.includes("super-secret-marker-value"), false);
+      assert.match(details, /\[REDACTED]/);
+    } finally {
+      verify.close();
+    }
+  } finally {
+    await harness.close();
+  }
+});
+
 test("drainCollectorOutbox delivers gap rows via ackLocalCollectorGap and acknowledges them", async () => {
   // The drain must deliver gap rows to the device-exporter
   // acknowledgement route, then mark the local row succeeded so the

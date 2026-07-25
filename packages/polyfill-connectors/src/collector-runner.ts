@@ -1368,6 +1368,10 @@ async function streamConnectorIntoOutbox(
       ? input.abortSignal.reason
       : new DOMException("Aborted", "AbortError");
   }
+  // `done` is assigned by the nested protocol callback; TypeScript's local
+  // flow analysis cannot observe that closure write, so retain its declared
+  // protocol union at this boundary.
+  const terminalDone = done as Extract<EmittedMessage, { type: "DONE" }> | null;
   throwIfConnectorExitedUncleanly({
     enqueuedBatches,
     exitCode,
@@ -1375,6 +1379,7 @@ async function streamConnectorIntoOutbox(
     input,
     scanBudgetExceeded,
     stderr,
+    terminalDone,
   });
 
   // A zero exit only proves that the process stopped cleanly. It does not
@@ -1382,10 +1387,6 @@ async function streamConnectorIntoOutbox(
   // become a server checkpoint unless the connector explicitly terminally
   // succeeded; failed or missing DONE keeps the prior proof invalidated by a
   // durable recovery gap.
-  // `done` is assigned by the nested protocol callback; TypeScript's local
-  // flow analysis cannot observe that closure write, so retain its declared
-  // protocol union at this boundary.
-  const terminalDone = done as Extract<EmittedMessage, { type: "DONE" }> | null;
   if (!scanBudgetExceeded && terminalDone?.status !== "succeeded") {
     flushPendingBatch();
     const details = terminalDone
@@ -1464,12 +1465,22 @@ function throwIfConnectorExitedUncleanly(input: {
   input: StreamConnectorIntoOutboxInput;
   scanBudgetExceeded: boolean;
   stderr: BoundedStderrBuffer;
+  terminalDone: Extract<EmittedMessage, { type: "DONE" }> | null;
 }): void {
   if (input.exitCode === 0 || input.scanBudgetExceeded) {
     return;
   }
   input.flushPendingBatch();
-  const details = sanitizeCollectorGapDetails(`exit ${input.exitCode}: ${input.stderr.toString().trim()}`);
+  // The connector protocol lets a child report its own failure reason via a
+  // terminal DONE{status:"failed", error:{message}} on stdout before it
+  // exits non-zero. That message is the connector's own diagnosis (e.g. a
+  // missing source directory) and is far more useful than an empty stderr
+  // buffer — prefer it when present instead of the generic exit-code/stderr
+  // fallback, which previously discarded it unconditionally.
+  const doneMessage = input.terminalDone?.status === "failed" ? input.terminalDone.error?.message : undefined;
+  const details = sanitizeCollectorGapDetails(
+    doneMessage ? doneMessage : `exit ${input.exitCode}: ${input.stderr.toString().trim()}`
+  );
   recordConnectorChildFailureGap({
     details,
     enqueuedBatches: input.enqueuedBatches,
