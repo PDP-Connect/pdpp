@@ -5,7 +5,7 @@ import { readdir } from "node:fs/promises";
 import path from "node:path";
 
 export const TEST_EXTENSIONS = new Set([".cjs", ".cts", ".js", ".mjs", ".mts", ".ts"]);
-const RUNNABLE_TEST_EXTENSIONS = new Set([".cjs", ".js", ".mjs"]);
+const RUNNABLE_TEST_EXTENSIONS = new Set([".cjs", ".js", ".mjs", ".ts"]);
 const testFilePattern = new RegExp(`\\.test(?:${[...TEST_EXTENSIONS].sort().join("|")})$`);
 
 export async function discoverTestFiles(packageRoot: string): Promise<string[]> {
