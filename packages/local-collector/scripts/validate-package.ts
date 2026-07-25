@@ -5,10 +5,28 @@ import assert from "node:assert/strict";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { npmPackMetadata } from "./pack-metadata.mjs";
+import { npmPackMetadata } from "./pack-metadata.ts";
+
+interface Manifest {
+  bin?: Record<string, string>;
+  dependencies?: Record<string, string>;
+  exports?: Record<string, unknown>;
+  main?: string;
+  optionalDependencies?: Record<string, string>;
+  peerDependencies?: Record<string, string>;
+  types?: string;
+}
+
+interface PackedFileInfo {
+  path: string;
+}
+
+interface PackMetadata {
+  files: PackedFileInfo[];
+}
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const packageJson = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8"));
+const packageJson = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8")) as Manifest;
 
 for (const [sectionName, deps] of Object.entries({
   dependencies: packageJson.dependencies,
@@ -31,8 +49,8 @@ const requiredFiles = new Set([
   "dist/polyfill-connectors/connectors/codex/index.js",
 ]);
 
-const packInfo = await npmPackMetadata({ cwd: packageRoot, dryRun: true });
-const packedFiles = packInfo.files.map((file) => file.path).sort();
+const packInfo = (await npmPackMetadata({ cwd: packageRoot })) as PackMetadata;
+const packedFiles = packInfo.files.map((file) => file.path).sort((a, b) => a.localeCompare(b));
 const packedFileSet = new Set(packedFiles);
 
 assertPublishedEntrypoints(packageJson, packedFileSet);
@@ -59,16 +77,17 @@ const forbidden = [
   /(?:from\s+|import\s*\(|require\s*\()\s*["']pdf-parse["']/,
   /(?:from\s+|import\s*\(|require\s*\()\s*["']better-sqlite3["']/,
   /(?:from\s+|import\s*\(|require\s*\()\s*["']linkedom["']/,
-  // The pnpm workspace protocol only ever appears as a quoted dependency
-  // specifier ("workspace:*"); a bare /workspace:/ also matches legitimate
-  // identifiers like the slack_workspace credential field.
   /["']workspace:/,
 ];
-for (const file of packedFiles) {
-  if (!(file.endsWith(".js") || file.endsWith(".d.ts") || file === "package.json")) {
-    continue;
-  }
-  const text = await readFile(path.join(packageRoot, file), "utf8");
+const forbiddenChecks = await Promise.all(
+  packedFiles
+    .filter((file) => file.endsWith(".js") || file.endsWith(".d.ts") || file === "package.json")
+    .map(async (file) => ({
+      file,
+      text: await readFile(path.join(packageRoot, file), "utf8"),
+    }))
+);
+for (const { file, text } of forbiddenChecks) {
   for (const pattern of forbidden) {
     assert.equal(pattern.test(text), false, `${file} contains forbidden pattern ${pattern}`);
   }
@@ -80,28 +99,34 @@ for (const file of packedFiles) {
  * root import, declaration, or bin can otherwise point at an omitted file and
  * still leave `npm pack` green.
  */
-function assertPublishedEntrypoints(manifest, packedFileSet) {
+function assertPublishedEntrypoints(manifest: Manifest, packedFileSet: Set<string>): void {
   assert.equal(typeof manifest.main, "string", "package.json.main must be a string");
   assert.equal(typeof manifest.types, "string", "package.json.types must be a string");
   assert.ok(manifest.exports && typeof manifest.exports === "object", "package.json.exports must be an object");
-  assert.ok(manifest.exports["."], "package root export is intentional and must be declared");
+  assert.ok(
+    (manifest.exports as Record<string, unknown>)["."],
+    "package root export is intentional and must be declared"
+  );
+
+  const exportsRoot = manifest.exports as Record<string, unknown>;
+  const rootExport = exportsRoot["."] as Record<string, unknown>;
   assert.equal(
-    manifest.exports["."].import,
+    rootExport.import,
     manifest.main,
     "package root import must resolve to the declared programmatic main entrypoint"
   );
   assert.equal(
-    manifest.exports["."].types,
+    rootExport.types,
     manifest.types,
     "package root types must resolve to the declared programmatic declaration"
   );
 
   const targets = [
-    ["main", manifest.main],
-    ["types", manifest.types],
+    ["main", manifest.main || ""],
+    ["types", manifest.types || ""],
     ...collectExportTargets(manifest.exports),
     ...Object.entries(manifest.bin ?? {}).map(([name, target]) => [`bin.${name}`, target]),
-  ];
+  ] as Array<[string, string]>;
   for (const [label, target] of targets) {
     assert.equal(typeof target, "string", `${label} must resolve to a string target`);
     const packedPath = target.startsWith("./") ? target.slice(2) : target;
@@ -116,12 +141,14 @@ function assertPublishedEntrypoints(manifest, packedFileSet) {
   }
 }
 
-function collectExportTargets(exportsField, label = "exports") {
+function collectExportTargets(exportsField: unknown, label = "exports"): Array<[string, string]> {
   if (typeof exportsField === "string") {
     return [[label, exportsField]];
   }
   assert.ok(exportsField && typeof exportsField === "object", `${label} must be a string or condition object`);
-  return Object.entries(exportsField).flatMap(([key, value]) => collectExportTargets(value, `${label}.${key}`));
+  return Object.entries(exportsField as Record<string, unknown>).flatMap(([key, value]) =>
+    collectExportTargets(value, `${label}.${key}`)
+  );
 }
 
 /**
@@ -130,14 +157,19 @@ function collectExportTargets(exportsField, label = "exports") {
  * published artifact. Only literal relative specifiers are package-owned and
  * therefore resolvable without executing arbitrary connector behavior.
  */
-async function assertLiteralRelativeImportsResolve(packedFiles, packedFileSet) {
-  for (const packedFile of packedFiles) {
-    if (!(packedFile.endsWith(".js") || packedFile.endsWith(".d.ts"))) {
-      continue;
-    }
-    const sourcePath = path.join(packageRoot, packedFile);
-    const source = await readFile(sourcePath, "utf8");
+async function assertLiteralRelativeImportsResolve(packedFiles: string[], packedFileSet: Set<string>): Promise<void> {
+  const fileChecks = await Promise.all(
+    packedFiles
+      .filter((f) => f.endsWith(".js") || f.endsWith(".d.ts"))
+      .map(async (packedFile) => ({
+        packedFile,
+        source: await readFile(path.join(packageRoot, packedFile), "utf8"),
+      }))
+  );
+
+  for (const { packedFile, source } of fileChecks) {
     for (const specifier of literalRelativeSpecifiers(source)) {
+      const sourcePath = path.join(packageRoot, packedFile);
       const targetPath = fileURLToPath(new URL(specifier, pathToFileURL(sourcePath)));
       const packedTarget = path.relative(packageRoot, targetPath).split(path.sep).join("/");
       assert.equal(
@@ -155,8 +187,8 @@ async function assertLiteralRelativeImportsResolve(packedFiles, packedFileSet) {
   }
 }
 
-function literalRelativeSpecifiers(source) {
-  const specifiers = new Set();
+function literalRelativeSpecifiers(source: string): Set<string> {
+  const specifiers = new Set<string>();
   const staticImport = /\b(?:import|export)\s+(?:[^"'\n]*?\s+from\s+)?["'](\.{1,2}\/[^"']+)["']/g;
   const dynamicImport = /\bimport\s*\(\s*["'](\.{1,2}\/[^"']+)["']\s*\)/g;
   for (const pattern of [staticImport, dynamicImport]) {

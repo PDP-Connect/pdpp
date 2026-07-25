@@ -205,7 +205,7 @@ test('local collector CLI resolves the installed package manifest version', asyn
 test('local collector package no longer ships the temporary legacy JSON queue migration bridge', async () => {
   const files = [
     '../tsconfig.build.json',
-    '../scripts/postbuild.mjs',
+    '../scripts/postbuild.ts',
     '../src/runner.ts',
     '../../polyfill-connectors/src/runner/index.ts',
   ];

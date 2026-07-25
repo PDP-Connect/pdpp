@@ -29,12 +29,12 @@
     "README.md"
   ],
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.build.json && node scripts/postbuild.mjs",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json && tsx scripts/postbuild.ts",
     "prepare": "pnpm build",
     "prepack": "pnpm build",
-    "test": "node --test --import tsx \"test/*.test.js\"",
-    "pack-install-run": "node --import tsx scripts/pack-install-run.mjs",
-    "validate:package": "node scripts/validate-package.mjs",
+    "test": "tsx scripts/run-tests.ts",
+    "pack-install-run": "node --import tsx scripts/pack-install-run.ts",
+    "validate:package": "tsx scripts/validate-package.ts",
     "verify": "pnpm test && pnpm validate:package"
   },
   "dependencies": {

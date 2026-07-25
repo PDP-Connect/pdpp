@@ -4,12 +4,12 @@
 
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
-import { npmPackMetadata } from "./pack-metadata.mjs";
+import { npmPackMetadata } from "./pack-metadata.ts";
 
 const execFileAsync = promisify(execFile);
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
@@ -19,18 +19,58 @@ const cliPackageRoot = path.join(repoRoot, "packages/cli");
 const referenceServerEntry = path.join(repoRoot, "reference-implementation/server/index.js");
 const referenceDbModule = path.join(repoRoot, "reference-implementation/server/db.js");
 const forbiddenPackages = ["playwright", "patchright", "imapflow", "pdf-parse", "better-sqlite3", "linkedom"];
-const browserArtifactPatterns = [
-  /chromium/i,
-  /chrome-linux/i,
-  /ms-playwright/i,
-  /patchright/i,
-];
+const browserArtifactPatterns = [/chromium/i, /chrome-linux/i, /ms-playwright/i, /patchright/i];
 
-function log(message) {
+interface RunOptions {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  maxBuffer?: number;
+}
+
+interface RunWithInputOptions extends RunOptions {
+  stdio?: string[];
+}
+
+interface PostJsonResponse {
+  body: unknown;
+  status: number;
+}
+
+interface EnrollmentData {
+  connector_instance_id: string;
+  device_id: string;
+  device_token: string;
+  source_instance_id: string;
+}
+
+interface RunOutput {
+  done?: { status: string };
+  recordsQueued?: number;
+  sentBatches?: number;
+}
+
+interface ServerInstance {
+  asPort: number;
+  asServer?: {
+    closeAllConnections?: () => void;
+    close?: (cb: () => void) => void;
+  };
+  rsPort: number;
+  rsServer?: {
+    closeAllConnections?: () => void;
+    close?: (cb: () => void) => void;
+  };
+}
+
+function log(message: string): void {
   process.stdout.write(`${message}\n`);
 }
 
-async function run(command, args, options = {}) {
+async function run(
+  command: string,
+  args: string[],
+  options: RunOptions = {}
+): Promise<{ stdout: string; stderr: string }> {
   try {
     return await execFileAsync(command, args, {
       maxBuffer: 10 * 1024 * 1024,
@@ -38,19 +78,24 @@ async function run(command, args, options = {}) {
     });
   } catch (error) {
     if (error && typeof error === "object") {
-      error.message += `\nCommand failed: ${command} ${args.join(" ")}`;
-      if ("stdout" in error && error.stdout) {
-        error.message += `\nstdout:\n${error.stdout}`;
+      (error as any).message += `\nCommand failed: ${command} ${args.join(" ")}`;
+      if ("stdout" in error && (error as any).stdout) {
+        (error as any).message += `\nstdout:\n${(error as any).stdout}`;
       }
-      if ("stderr" in error && error.stderr) {
-        error.message += `\nstderr:\n${error.stderr}`;
+      if ("stderr" in error && (error as any).stderr) {
+        (error as any).message += `\nstderr:\n${(error as any).stderr}`;
       }
     }
     throw error;
   }
 }
 
-function runWithInput(command, args, input, options = {}) {
+function runWithInput(
+  command: string,
+  args: string[],
+  input: string,
+  options: RunWithInputOptions = {}
+): Promise<{ stderr: string; stdout: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { ...options, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
@@ -69,42 +114,40 @@ function runWithInput(command, args, input, options = {}) {
         resolve({ stderr, stdout });
         return;
       }
-      const error = new Error(`Command failed: ${command} ${args.join(" ")} (code ${code ?? "null"}${signal ? `, ${signal}` : ""})`);
-      error.stderr = stderr;
-      error.stdout = stdout;
+      const error = new Error(
+        `Command failed: ${command} ${args.join(" ")} (code ${code ?? "null"}${signal ? `, ${signal}` : ""})`
+      );
+      (error as any).stderr = stderr;
+      (error as any).stdout = stdout;
       reject(error);
     });
     child.stdin.end(input);
   });
 }
 
-async function packPackage(cwd) {
+async function packPackage(cwd: string): Promise<string> {
   const packInfo = await npmPackMetadata({ cwd });
   return path.join(cwd, packInfo.filename);
 }
 
-async function pathExists(candidate) {
+async function pathExists(candidate: string): Promise<boolean> {
   try {
     await stat(candidate);
     return true;
   } catch (error) {
-    if (error?.code === "ENOENT") {
+    if ((error as any)?.code === "ENOENT") {
       return false;
     }
     throw error;
   }
 }
 
-async function assertPackageAbsent(projectDir, packageName) {
+async function assertPackageAbsent(projectDir: string, packageName: string): Promise<void> {
   const candidate = path.join(projectDir, "node_modules", ...packageName.split("/"));
-  assert.equal(
-    await pathExists(candidate),
-    false,
-    `unexpected package installed in temp consumer: ${packageName}`
-  );
+  assert.equal(await pathExists(candidate), false, `unexpected package installed in temp consumer: ${packageName}`);
 }
 
-async function assertNoBrowserArtifacts(rootDir) {
+async function assertNoBrowserArtifacts(rootDir: string): Promise<void> {
   const entries = await readdir(rootDir, { recursive: true, withFileTypes: true });
   for (const entry of entries) {
     const name = entry.name;
@@ -114,7 +157,7 @@ async function assertNoBrowserArtifacts(rootDir) {
   }
 }
 
-async function main() {
+async function main(): Promise<void> {
   const packageJson = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8"));
   assert.equal(packageJson.scripts?.postinstall, undefined, "@pdpp/local-collector must not define postinstall");
 
@@ -167,8 +210,14 @@ async function main() {
     if (await pathExists(path.join(cliPackageRoot, "package.json"))) {
       log("Installing packed @pdpp/cli alongside the collector and checking shim advertise output...");
       const cliTarball = await packPackage(cliPackageRoot);
-      await run("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", cliTarball], { cwd: projectDir, env });
-      const shimAdvertise = await run("npx", ["--no-install", "pdpp", "collector", "advertise"], { cwd: projectDir, env });
+      await run("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", cliTarball], {
+        cwd: projectDir,
+        env,
+      });
+      const shimAdvertise = await run("npx", ["--no-install", "pdpp", "collector", "advertise"], {
+        cwd: projectDir,
+        env,
+      });
       assert.deepEqual(JSON.parse(shimAdvertise.stdout), advertised);
       await rm(cliTarball, { force: true });
     } else {
@@ -176,7 +225,11 @@ async function main() {
     }
 
     if (await pathExists(referenceServerEntry)) {
-      await runFixtureBackedEnrollRunSmoke({ projectDir, env, advertisedProtocolVersion: advertised.collector_protocol_version });
+      await runFixtureBackedEnrollRunSmoke({
+        projectDir,
+        env,
+        advertisedProtocolVersion: advertised.collector_protocol_version,
+      });
       await runProtocolMismatchSmoke({ projectDir, env });
     } else {
       log("SKIP fixture-backed enroll/run smoke: reference-implementation/server/index.js not present.");
@@ -190,7 +243,7 @@ async function main() {
   }
 }
 
-async function assertInstalledEntrypoints(projectDir, env) {
+async function assertInstalledEntrypoints(projectDir: string, env: NodeJS.ProcessEnv): Promise<void> {
   const probePath = path.join(projectDir, "assert-installed-entrypoints.mjs");
   const probe = `import assert from "node:assert/strict";
 import { stat } from "node:fs/promises";
@@ -214,7 +267,7 @@ assert.ok((await stat(bin)).mode & 0o111, "installed pdpp-local-collector bin mu
   }
 }
 
-async function assertInstalledBrowserBranchFailsClosed(projectDir, env) {
+async function assertInstalledBrowserBranchFailsClosed(projectDir: string, env: NodeJS.ProcessEnv): Promise<void> {
   const probePath = path.join(projectDir, "assert-browser-branch.mjs");
   const runtimePath = path.join(
     projectDir,
@@ -238,7 +291,7 @@ runConnector({
 });
 `;
   await writeFile(probePath, probe);
-  let failure = null;
+  let failure: Error | null = null;
   try {
     await runWithInput(
       process.execPath,
@@ -247,15 +300,27 @@ runConnector({
       { cwd: projectDir, env }
     );
   } catch (error) {
-    failure = error;
+    failure = error as Error;
   } finally {
     await rm(probePath, { force: true });
   }
   assert.ok(failure, "installed browser-shaped runtime probe must fail closed");
-  const output = `${failure.stdout ?? ""}\n${failure.stderr ?? ""}\n${failure.message ?? ""}`;
-  assert.match(output, /browser_runtime_unavailable/, `browser branch must report its typed capability code: ${output}`);
-  assert.match(output, /filesystem-class connectors only/, `browser branch must explain the published boundary: ${output}`);
-  assert.doesNotMatch(output, /ERR_MODULE_NOT_FOUND/, `browser branch must not fail through a missing emitted module: ${output}`);
+  const output = `${(failure as any).stdout ?? ""}\n${(failure as any).stderr ?? ""}\n${failure.message ?? ""}`;
+  assert.match(
+    output,
+    /browser_runtime_unavailable/,
+    `browser branch must report its typed capability code: ${output}`
+  );
+  assert.match(
+    output,
+    /filesystem-class connectors only/,
+    `browser branch must explain the published boundary: ${output}`
+  );
+  assert.doesNotMatch(
+    output,
+    /ERR_MODULE_NOT_FOUND/,
+    `browser branch must not fail through a missing emitted module: ${output}`
+  );
 }
 
 /**
@@ -267,17 +332,25 @@ runConnector({
  * server, and asserts records persisted at ingest. No real owner token,
  * no remote deployment, no live Codex home is required.
  */
-async function runFixtureBackedEnrollRunSmoke({ projectDir, env, advertisedProtocolVersion }) {
+async function runFixtureBackedEnrollRunSmoke({
+  projectDir,
+  env,
+  advertisedProtocolVersion,
+}: {
+  projectDir: string;
+  env: NodeJS.ProcessEnv;
+  advertisedProtocolVersion: string;
+}): Promise<void> {
   log("Booting in-process reference server for fixture-backed enroll/run smoke...");
   const { startServer } = await import(`file://${referenceServerEntry}`);
   const { getDb } = await import(`file://${referenceDbModule}`);
-  const server = await startServer({
+  const server = (await (startServer as any)({
     asPort: 0,
     dbPath: ":memory:",
     ownerAuthPassword: "",
     quiet: true,
     rsPort: 0,
-  });
+  })) as ServerInstance;
   const baseUrl = `http://127.0.0.1:${server.asPort}`;
   const codexHome = await prepareCodexFixture();
   try {
@@ -286,31 +359,30 @@ async function runFixtureBackedEnrollRunSmoke({ projectDir, env, advertisedProto
       connector_id: "codex",
       local_binding_name: "pack-install-run-laptop",
     });
-    assert.equal(codeResp.status, 201, `enrollment-codes returned ${codeResp.status}: ${JSON.stringify(codeResp.body)}`);
-    const enrollmentCode = codeResp.body.enrollment_code;
-    assert.ok(typeof enrollmentCode === "string" && enrollmentCode.length > 0, "enrollment_code must be a non-empty string");
+    assert.equal(
+      codeResp.status,
+      201,
+      `enrollment-codes returned ${codeResp.status}: ${JSON.stringify(codeResp.body)}`
+    );
+    const enrollmentCode = (codeResp.body as any).enrollment_code;
+    assert.ok(
+      typeof enrollmentCode === "string" && enrollmentCode.length > 0,
+      "enrollment_code must be a non-empty string"
+    );
 
     log("Running installed pdpp-local-collector enroll against the in-process reference server...");
     const enroll = await run(
       "npx",
-      [
-        "--no-install",
-        "pdpp-local-collector",
-        "enroll",
-        "--base-url",
-        baseUrl,
-        "--code",
-        enrollmentCode,
-      ],
+      ["--no-install", "pdpp-local-collector", "enroll", "--base-url", baseUrl, "--code", enrollmentCode],
       { cwd: projectDir, env }
     );
-    const enrollment = JSON.parse(enroll.stdout);
+    const enrollment = JSON.parse(enroll.stdout) as EnrollmentData;
     assert.match(enrollment.device_id, /^dexp_/);
     assert.equal(typeof enrollment.device_token, "string");
     assert.match(enrollment.connector_instance_id, /^cin_/);
     assert.equal(typeof enrollment.source_instance_id, "string");
 
-    const devicesAfterEnroll = getDb()
+    const devicesAfterEnroll = (getDb() as any)
       .prepare("SELECT collector_protocol_version FROM device_exporters WHERE device_id = ?")
       .get(enrollment.device_id);
     assert.ok(devicesAfterEnroll, "enrolled device row not visible to test process");
@@ -322,13 +394,6 @@ async function runFixtureBackedEnrollRunSmoke({ projectDir, env, advertisedProto
 
     log("Running installed pdpp-local-collector run --connector codex against the in-process reference server...");
     const queuePath = path.join(projectDir, "pack-install-run-outbox.json");
-    // The fixture only populates the filesystem-only `prompts` and `rules`
-    // sub-stores under CODEX_HOME; the default codex stream set also
-    // requests sessions / messages / function_calls / skills which would
-    // require a real state_5.sqlite + rollout JSONL on disk. Narrow the
-    // stream set so the connector preflight is satisfied by what the
-    // fixture actually provides — the goal here is "records hit ingest at
-    // all", not exhaustive stream coverage.
     const runResult = await run(
       "npx",
       [
@@ -355,16 +420,19 @@ async function runFixtureBackedEnrollRunSmoke({ projectDir, env, advertisedProto
         env: { ...env, CODEX_HOME: codexHome },
       }
     );
-    const runOutput = JSON.parse(runResult.stdout);
-    assert.equal(runOutput.done?.status, "succeeded", `codex connector did not report DONE.status=succeeded: ${runResult.stdout}`);
+    const runOutput = JSON.parse(runResult.stdout) as RunOutput;
+    assert.equal(
+      runOutput.done?.status,
+      "succeeded",
+      `codex connector did not report DONE.status=succeeded: ${runResult.stdout}`
+    );
     assert.ok((runOutput.recordsQueued ?? 0) > 0, `codex connector did not queue any records: ${runResult.stdout}`);
-    assert.ok((runOutput.sentBatches ?? 0) > 0, `codex connector did not send any batches to the reference server: ${runResult.stdout}`);
+    assert.ok(
+      (runOutput.sentBatches ?? 0) > 0,
+      `codex connector did not send any batches to the reference server: ${runResult.stdout}`
+    );
 
-    // Records land under the bare canonical connector key (`codex`), NOT a
-    // `local-device:codex` storage prefix — connection isolation is carried by
-    // connector_instance_id. See reference-implementation/server/db.js and the
-    // canonicalize-connector-keys design (Decision 7).
-    const persisted = getDb()
+    const persisted = (getDb() as any)
       .prepare(
         `SELECT COUNT(*) as n
            FROM records
@@ -392,18 +460,24 @@ async function runFixtureBackedEnrollRunSmoke({ projectDir, env, advertisedProto
  * surfaces the typed `409 collector_protocol_mismatch` error before any
  * device row is created.
  */
-async function runProtocolMismatchSmoke({ projectDir, env }) {
+async function runProtocolMismatchSmoke({
+  projectDir,
+  env,
+}: {
+  projectDir: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<void> {
   log("Booting in-process reference server pinned to an older protocol for the 409 mismatch smoke...");
   const { startServer } = await import(`file://${referenceServerEntry}`);
   const { getDb } = await import(`file://${referenceDbModule}`);
-  const server = await startServer({
+  const server = (await (startServer as any)({
     acceptedCollectorProtocolVersions: ["0"],
     asPort: 0,
     dbPath: ":memory:",
     ownerAuthPassword: "",
     quiet: true,
     rsPort: 0,
-  });
+  })) as ServerInstance;
   const baseUrl = `http://127.0.0.1:${server.asPort}`;
   try {
     log("Creating enrollment code on the pinned server...");
@@ -411,30 +485,26 @@ async function runProtocolMismatchSmoke({ projectDir, env }) {
       connector_id: "codex",
       local_binding_name: "pack-install-run-pinned",
     });
-    assert.equal(codeResp.status, 201, `pinned enrollment-codes returned ${codeResp.status}: ${JSON.stringify(codeResp.body)}`);
-    const enrollmentCode = codeResp.body.enrollment_code;
+    assert.equal(
+      codeResp.status,
+      201,
+      `pinned enrollment-codes returned ${codeResp.status}: ${JSON.stringify(codeResp.body)}`
+    );
+    const enrollmentCode = (codeResp.body as any).enrollment_code;
 
     log("Calling pdpp-local-collector enroll against the pinned server (expecting 409)...");
-    let failure = null;
+    let failure: Error | null = null;
     try {
       await run(
         "npx",
-        [
-          "--no-install",
-          "pdpp-local-collector",
-          "enroll",
-          "--base-url",
-          baseUrl,
-          "--code",
-          enrollmentCode,
-        ],
+        ["--no-install", "pdpp-local-collector", "enroll", "--base-url", baseUrl, "--code", enrollmentCode],
         { cwd: projectDir, env }
       );
     } catch (error) {
-      failure = error;
+      failure = error as Error;
     }
     assert.ok(failure, "pdpp-local-collector enroll should fail when the server pins an incompatible protocol");
-    const combined = `${failure.stdout ?? ""}\n${failure.stderr ?? ""}\n${failure.message ?? ""}`;
+    const combined = `${(failure as any).stdout ?? ""}\n${(failure as any).stderr ?? ""}\n${failure.message ?? ""}`;
     assert.match(combined, /409/, `runner error should mention HTTP status 409; got: ${combined}`);
     assert.match(
       combined,
@@ -442,7 +512,7 @@ async function runProtocolMismatchSmoke({ projectDir, env }) {
       `runner error should surface the typed collector_protocol_mismatch code; got: ${combined}`
     );
 
-    const devicesAfter = getDb().prepare("SELECT COUNT(*) as n FROM device_exporters").get();
+    const devicesAfter = (getDb() as any).prepare("SELECT COUNT(*) as n FROM device_exporters").get();
     assert.equal(devicesAfter.n, 0, "rejected enroll must not have leaked a device row into the pinned server");
 
     log("collector_protocol_mismatch smoke PASS: enrollment refused before any device row was created.");
@@ -451,22 +521,22 @@ async function runProtocolMismatchSmoke({ projectDir, env }) {
   }
 }
 
-async function postJson(url, body, headers = {}) {
+async function postJson(url: string, body: unknown, headers: Record<string, string> = {}): Promise<PostJsonResponse> {
   const resp = await fetch(url, {
     body: JSON.stringify(body),
     headers: { Accept: "application/json", "Content-Type": "application/json", ...headers },
     method: "POST",
   });
-  let parsed = null;
+  let parsed: unknown = null;
   try {
     parsed = await resp.json();
   } catch {}
   return { body: parsed, status: resp.status };
 }
 
-async function closeServer(server) {
-  const closeOne = (srv) =>
-    new Promise((resolve) => {
+async function closeServer(server: ServerInstance): Promise<void> {
+  const closeOne = (srv: any) =>
+    new Promise<void>((resolve) => {
       let settled = false;
       const timer = setTimeout(() => {
         if (!settled) {
@@ -494,7 +564,7 @@ async function closeServer(server) {
  * stays in the realm of free-form personal files; the connector emits a
  * `prompts` record from any markdown file under `<CODEX_HOME>/prompts/`.
  */
-async function prepareCodexFixture() {
+async function prepareCodexFixture(): Promise<string> {
   const codexHome = await mkdtemp(path.join(tmpdir(), "pdpp-local-collector-codex-fixture-"));
   const promptsDir = path.join(codexHome, "prompts");
   const rulesDir = path.join(codexHome, "rules");
@@ -504,10 +574,7 @@ async function prepareCodexFixture() {
     path.join(promptsDir, "hello.md"),
     "---\nname: hello\ndescription: greet the operator\n---\n\nHello from the pack-install-run fixture.\n"
   );
-  await writeFile(
-    path.join(rulesDir, "trust.rules"),
-    "# trust registry\nallow shell pwd\n"
-  );
+  await writeFile(path.join(rulesDir, "trust.rules"), "# trust registry\nallow shell pwd\n");
   return codexHome;
 }
 

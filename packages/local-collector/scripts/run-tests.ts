@@ -5,11 +5,12 @@ import { spawn } from "node:child_process";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const testRoot = path.join(packageRoot, "test");
 const testFilePattern = /\.test\.(?:[cm]?[jt]s)$/;
 
-async function discoverTests(dir) {
+async function discoverTests(dir: string): Promise<string[]> {
   const entries = await readdir(dir, { withFileTypes: true });
   const files = await Promise.all(
     entries.map(async (entry) => {
@@ -28,7 +29,7 @@ if (tests.length === 0) {
   throw new Error(`No test files matched ${testFilePattern} under ${testRoot}`);
 }
 
-await new Promise((resolve, reject) => {
+await new Promise<void>((resolve, reject) => {
   const child = spawn(process.execPath, ["--test", "--import", "tsx", ...tests], {
     cwd: packageRoot,
     stdio: "inherit",

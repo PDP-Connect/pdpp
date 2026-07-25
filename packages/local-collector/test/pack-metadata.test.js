@@ -6,7 +6,9 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { npmPackMetadata } from "../scripts/pack-metadata.mjs";
+
+// Import the TypeScript file directly - tsx will handle the transpilation
+const { npmPackMetadata } = await import("../scripts/pack-metadata.ts");
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const commandFailurePattern = /Command failed: npm pack --json --foreground-scripts=false/;
@@ -59,5 +61,5 @@ test("package validation builds once through npm pack prepare", async () => {
 
   assert.equal(packageJson.scripts.prepare, "pnpm build");
   assert.equal(packageJson.scripts.prepack, undefined);
-  assert.equal(packageJson.scripts["validate:package"], "node scripts/validate-package.mjs");
+  assert.equal(packageJson.scripts["validate:package"], "tsx scripts/validate-package.ts");
 });

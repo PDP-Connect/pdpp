@@ -9,6 +9,10 @@ import { fileURLToPath } from "node:url";
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const distRoot = path.join(packageRoot, "dist");
 
+const shortShaPattern = /^[0-9a-f]{7,40}$/;
+const testFilePattern = /(^|\/).+\.test\.js$/;
+const tsImportPattern = /((?:\.\.?\/)[^"']+)\.ts(["'])/g;
+
 const declarationKeep = new Set(
   [
     "local-collector/src/errors.d.ts",
@@ -48,7 +52,7 @@ await stampBuildInfo();
  * fabricating one or crashing the build. Redaction-safe: only a version string,
  * a short SHA, and an ISO timestamp are written — never a path, branch, or token.
  */
-async function stampBuildInfo() {
+async function stampBuildInfo(): Promise<void> {
   const compiled = path.join(distRoot, "polyfill-connectors", "src", "collector-build-info.js");
   const version = await resolvePackageVersion();
   const revision = resolveBuildRevision();
@@ -78,7 +82,7 @@ function resolveBuildTimestamp() {
 }
 
 /** Resolve the published collector package version from its own manifest. */
-async function resolvePackageVersion() {
+async function resolvePackageVersion(): Promise<string> {
   try {
     const manifest = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8"));
     return typeof manifest.version === "string" && manifest.version ? manifest.version : "0.0.0";
@@ -93,9 +97,9 @@ async function resolvePackageVersion() {
  * the honest `source` sentinel. The value is validated to a hex short-SHA or the
  * sentinel so a malformed override can never inject a path or arbitrary text.
  */
-function resolveBuildRevision() {
+function resolveBuildRevision(): string {
   const fromEnv = process.env.PDPP_BUILD_REVISION;
-  if (typeof fromEnv === "string" && /^[0-9a-f]{7,40}$/.test(fromEnv.trim())) {
+  if (typeof fromEnv === "string" && shortShaPattern.test(fromEnv.trim())) {
     return fromEnv.trim();
   }
   try {
@@ -104,7 +108,7 @@ function resolveBuildRevision() {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();
-    if (/^[0-9a-f]{7,40}$/.test(sha)) {
+    if (shortShaPattern.test(sha)) {
       return sha;
     }
   } catch {
@@ -113,16 +117,21 @@ function resolveBuildRevision() {
   return "source";
 }
 
-async function rewriteDeclarations(dir) {
-  for (const entry of await readdir(dir, { withFileTypes: true })) {
+async function rewriteDeclarations(dir: string): Promise<void> {
+  const entries = await readdir(dir, { withFileTypes: true });
+  const dirs: string[] = [];
+  const deletes: Promise<void>[] = [];
+  const updates: Promise<void>[] = [];
+
+  for (const entry of entries) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      await rewriteDeclarations(full);
+      dirs.push(full);
       continue;
     }
     const rel = path.relative(distRoot, full);
     if (
-      /(^|\/).+\.test\.js$/.test(rel) ||
+      testFilePattern.test(rel) ||
       [
         "polyfill-connectors/src/pilot-fixture-test-helper.js",
         "polyfill-connectors/src/profile-lock.js",
@@ -130,19 +139,20 @@ async function rewriteDeclarations(dir) {
         "polyfill-connectors/src/test-harness.js",
       ].includes(path.normalize(rel))
     ) {
-      await rm(full, { force: true });
+      deletes.push(rm(full, { force: true }));
       continue;
     }
     if (!entry.name.endsWith(".d.ts")) {
       continue;
     }
     if (!declarationKeep.has(path.normalize(rel))) {
-      await rm(full, { force: true });
+      deletes.push(rm(full, { force: true }));
       continue;
     }
-    const text = await readFile(full, "utf8");
-    await writeFile(full, text.replace(/((?:\.\.?\/)[^"']+)\.ts(["'])/g, "$1.js$2"));
+    updates.push(readFile(full, "utf8").then((text) => writeFile(full, text.replace(tsImportPattern, "$1.js$2"))));
   }
+
+  await Promise.all([...deletes, ...updates, ...dirs.map((d) => rewriteDeclarations(d))]);
 }
 
 /**
@@ -153,7 +163,7 @@ async function rewriteDeclarations(dir) {
  * unsupported browser request into ERR_MODULE_NOT_FOUND instead of the typed,
  * actionable capability failure promised by the package boundary.
  */
-async function replaceBrowserLauncherWithPublishedGuard() {
+async function replaceBrowserLauncherWithPublishedGuard(): Promise<void> {
   const target = path.join(distRoot, "polyfill-connectors", "src", "browser-launch.js");
   const body = `const BROWSER_RUNTIME_UNAVAILABLE_CODE = "browser_runtime_unavailable";
 class HeadedBrowserUnavailableError extends Error {
