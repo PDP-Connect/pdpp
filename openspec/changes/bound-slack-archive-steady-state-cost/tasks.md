@@ -188,3 +188,93 @@ window; not something a synthetic test can assert a specific millisecond
 figure for. Owner UAT (below) is the only way to observe the real number, and
 the claim this closure makes is deliberately scoped to the bound, not that
 number.
+
+## 8. Live REVISE after deploy `aa038775d` (2026-07-25): repair-unit count
+   bound (task 7.2) was correct but insufficient — a retained unit's `resume`
+   still ran unbounded, forever — fixed here
+
+Live evidence, `run_1784962644222`: run succeeded (no `connector_protocol_
+violation` — task 6.1's fix held), but `scoped-archive-reconcile` still took
+3,291,850ms (54m52s) with the selection message reading `selected 1 repair
+unit(s) (1 existing scoped archive refresh(es) + 0 new-repair attempt(s) for
+0 uncovered channel(s)), each bounded to lookback=p7d` — the task 7.2 bound
+was reported accurately, and was still not enough. The single unit
+(`archive-scoped/62fd13bace2a/`, ~4.9GB / ~1.95M messages / ~137k `CHANNEL`
+rows) showed continuous `messages`/`channels`/`max_chunk` growth for the
+entire run via the connector's own per-minute progress snapshots — genuine,
+ongoing Slack-side activity, not a stalled/inaccessible channel.
+
+- [x] 8.1 **Root cause (two compounding facts, both verified against source):**
+  (a) `SLACK_MEMBER_ONLY=true` (default) permanently excludes a channel from
+  the main archive's scan once no longer a member — `baseMissingChannelIds`
+  for such a channel is a structural, non-resolving condition, not a
+  transient blip; the scoped-archive mechanism's own history
+  (`c18662d83`/`41a47885d`, "historical holes") shows it was designed for
+  rare one-time backfills, not permanent per-run maintenance. (b) Verified
+  against slackdump v4.4.2 source (`cmd/slackdump/internal/resume/
+  resume.go:298`, `internal/chunk/backend/dbase/source.go:369-405`):
+  `resume <path>`'s channel scope is always re-derived from every channel
+  **already recorded in that archive's DB**, never filtered to the specific
+  channel(s) the connector's `positionalChannels` targets in a `resume` call
+  (only `archive` respects that arg — `buildArchiveArgs` pushes it;
+  `resume`'s built args never do). So a scoped archive whose on-disk channel
+  set ever drifted wider than its one intended target channel gets that
+  ENTIRE recorded set re-synced on every future `resume`, cost scaling with
+  accumulated archive size — the same defect class D1/task-1 fixed for the
+  main archive, reintroduced here for scoped archives.
+- [x] 8.2 **Fix — lifecycle/owed-work throttle (not a wall-clock timeout):**
+  `resume -lookback pNd` cannot discover data older than `now - N days`
+  regardless of invocation frequency, so invoking it more often than once per
+  lookback period cannot recover anything a less-frequent invocation would
+  miss (the backlog is caught in one call once due). Added
+  `scoped_archive_resumed_at: Record<archivePath, isoTimestamp>` to the
+  `messages` STATE cursor (`types.ts`). `reconcileMessageSourceCache` checks,
+  per selected scoped archive, `scopedArchiveDueForResume` (no prior
+  timestamp, or elapsed ≥ `SLACK_LOOKBACK_DAYS`); if not due,
+  `refreshScopedArchive` returns immediately — `ensureArchiveOnDisk` (and the
+  slackdump subprocess) is never invoked for that archive this run. If due,
+  it resumes as before and the timestamp advances to this run's `emittedAt`.
+  A successful repair attempt also stamps a fresh timestamp (it necessarily
+  just resumed/archived that path). Progress reporting extended: `selected N
+  repair unit(s) (... X due for resume + Y throttled (not yet due) ...)`
+  up front, `completed C/N repair unit(s) (resumed | throttled, not owed)`
+  per unit.
+- [x] 8.3 **Retirement/reclaim determination (required by the brief):**
+  determined the bloated scoped archive's `slackdump.sqlite` CANNOT be safely
+  deleted/retired — it remains the only durable resume state for a
+  permanently-missing channel; deleting it forces a costlier from-scratch
+  `archive` invocation next time, the same unsafe-DB-deletion class already
+  rejected for the main archive (see `design.md` rejected alternatives). Its
+  `__uploads/` residue was already safely reclaimable via task 7.1's fix
+  (throttling changes only whether `resume` runs, not whether the archive is
+  selected/read, so it stays in `scopedArchives` and therefore in
+  `reclaimPlan`) — no additional reclaim code change was needed.
+- [x] 8.4 Deterministic mutation-grade regression added to
+  `archive-reclaim.test.ts`: `scoped-archive-reconcile throttles a scoped
+  archive's resume to at most once per lookback window` (seeds
+  `scoped_archive_resumed_at` = now, asserts the resume subprocess path
+  — `ensureArchiveOnDisk`'s own "reading existing archive at ..." line — is
+  never reached for that archive, and the throttled timestamp is carried
+  forward unchanged) and `scoped-archive-reconcile resumes a scoped archive
+  again once its lookback throttle window has elapsed` (seeds a
+  `scoped_archive_resumed_at` 8 days in the past, asserts the resume DOES
+  fire and the timestamp advances). **Mutation-tested twice**: disabling the
+  throttle check entirely fails the first test
+  (`AssertionError: explicitly reports the throttle decision for this
+  archive`); forcing `scopedArchiveDueForResume` to always return `false`
+  fails the second test (`AssertionError: reports the archive as due for
+  resume once the throttle window has elapsed`). Both confirmed live, then
+  reverted.
+- [x] 8.5 Focused suite green: `archive-reclaim.test.ts` (15 tests, 2 new) +
+  `slackdump-runtime.test.ts` (14 tests) = 29 pass, 0 fail. `tsc --noEmit`
+  clean. `biome check` clean (one formatting auto-fix applied, re-verified
+  clean after). `git diff --check` clean.
+
+### Still not reproduced locally (task 8)
+
+The throttle's real multi-day elapse behavior (does a run 8 days after the
+last resume genuinely re-fire, catching the accumulated backlog with no gap,
+on the live host specifically) cannot be observed in one sitting — synthetic
+tests inject the elapsed-time boundary deterministically instead. Owner UAT
+across a real multi-day window is the only way to observe this on the live
+connection; recorded in `design.md`'s residual risks.

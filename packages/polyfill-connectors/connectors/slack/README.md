@@ -82,6 +82,24 @@ reprocess an unbounded set. The *wall-clock duration* of an individual unit is
 NOT bounded by this — it is genuine Slack-API backlog catch-up within the fixed
 lookback window, subject to Slack's own rate limits.
 
+**A retained scoped archive's `resume` is throttled to at most once per
+lookback window, not invoked every run.** `slackdump resume <path>` always
+re-syncs every channel already recorded in that archive's own DB (its scope
+comes from the archive's own history, not from the connector's target channel
+list — this is different from `archive`, which does respect the requested
+channel IDs). A channel that is permanently missing from the main archive
+(e.g. no longer a member, with `SLACK_MEMBER_ONLY=true`) keeps its covering
+scoped archive selected on every run forever; without a throttle, that means
+a full re-sync of the archive's ENTIRE accumulated content every run,
+regardless of how recently it was last resumed. Since `-lookback pNd` cannot
+discover data older than `now - N days` no matter how often it's invoked, a
+resume is only genuinely useful once per lookback window — the connector
+tracks `scoped_archive_resumed_at` per archive path in STATE and skips the
+subprocess entirely (never even calling `ensureArchiveOnDisk`) when the
+archive was already resumed within the window, resuming again exactly once
+the window elapses. No coverage is lost, only deferred to at most
+`SLACK_LOOKBACK_DAYS`.
+
 ### Reclaiming `__uploads/` (`SLACK_RECLAIM_UPLOADS=1`) — opt-in, one-way
 
 If a past run downloaded files (`SLACK_SKIP_FILES=false`), `__uploads/` can hold

@@ -182,6 +182,101 @@ guarantee is narrower and precise: the *number of repair units and their
 lookback scope* are finite, known before execution, and observable — not that
 any specific elapsed-time figure is capped.
 
+### D5 — Live-closure follow-up: D4.2's per-unit lookback bound is necessary
+but not sufficient — a retained scoped archive still resumed every run
+forever (2026-07-25, live UAT of D4)
+
+Live deploy (`aa038775d`, run `run_1784962644222`) proved D4.2's claim
+incomplete. Ground truth: the run succeeded (D4.1's protocol fix held), and
+`scoped-archive-reconcile` reported `selected 1 repair unit(s) (1 existing
+scoped archive refresh(es) + 0 new-repair attempt(s) for 0 uncovered
+channel(s)), each bounded to lookback=p7d` — the bound D4.2 promised was
+correctly stated. But that single "bounded" unit still took 3,291,850ms
+(54m52s), because it was a `resume` against a scoped archive
+(`archive-scoped/62fd13bace2a/`) that had accumulated ~4.9GB / ~1.95M
+messages / ~137k `CHANNEL` rows, and `messages`/`channels`/`max_chunk` grew
+continuously throughout the entire run (confirmed via the connector's own
+per-minute progress snapshots) — genuine, ongoing Slack-side traffic, not a
+stalled or inaccessible channel.
+
+**Root cause.** D4.2's bound counted *repair units*, correctly, but treated
+"this archive is selected because it covers a currently-missing channel" as
+sufficient reason to invoke `resume` against it — every run, forever — with
+no check for whether a resume could discover anything the *previous* run's
+resume hadn't already found. Two facts made this a permanent, not transient,
+cost:
+
+1. `SLACK_MEMBER_ONLY=true` (default) permanently excludes a channel from the
+   unscoped base archive's own scan once the bot/user is no longer a member —
+   so `baseMissingChannelIds` for that channel is not a temporary blip; it is
+   a structural, non-resolving condition for the life of the connection.
+   `reconcileMessageSourceCache`'s own doc comment already calls this
+   mechanism a fix for "historical holes" (see `c18662d83`/`41a47885d`), i.e.
+   rare, one-time backfills — not a per-run, permanent maintenance operation.
+2. Verified against slackdump v4.4.2 source
+   (`cmd/slackdump/internal/resume/resume.go:298`, `internal/chunk/backend/
+   dbase/source.go:369-405`): `resume <path>`'s channel/entity scope is
+   *always* re-derived from every channel **already recorded in that
+   archive's own DB** (`src.Latest(ctx)`), never filtered by the specific
+   channel ID(s) the connector's `positionalChannels` targets in a `resume`
+   call (unlike `archive`, which does respect them — `buildArchiveArgs`
+   pushes `positionalChannels`, `resume`'s built args never do). So once a
+   scoped archive's on-disk channel set drifts wider than the one channel it
+   was created to isolate (however that happened historically), every future
+   `resume` against that path re-syncs the ENTIRE recorded set, with cost
+   scaling with the archive's total accumulated size — exactly the class of
+   bug D1 fixed for the main archive, reintroduced here for scoped archives.
+
+**Fix — lifecycle/owed-work throttle, not a wall-clock timeout.**
+`slackdump resume -lookback pNd` cannot discover a message older than
+`now - N days` no matter how often it is invoked — the window is fixed by the
+flag, not by call frequency. So invoking it more often than once per lookback
+period cannot recover data a less-frequent invocation would miss; whatever
+backlog accumulated during the throttled interval is caught in a single call
+once the throttle elapses. This is a direct, provable consequence of
+slackdump's own `-lookback` semantics — not a heuristic guess, and not a
+wall-clock kill switch on the connector's own patience.
+
+Added `scoped_archive_resumed_at: Record<archivePath, isoTimestamp>` to the
+`messages` STATE cursor, recording when each scoped archive last had `resume`
+actually invoked. `reconcileMessageSourceCache` now checks, per selected
+scoped archive, whether it is due (`scopedArchiveDueForResume`: no prior
+timestamp, or elapsed time since the prior timestamp ≥
+`SLACK_LOOKBACK_DAYS`). If not due, `refreshScopedArchive` returns
+immediately — `ensureArchiveOnDisk` (and therefore the slackdump subprocess)
+is never invoked for that archive this run — and reports the decision as
+progress. If due, it resumes as before and the timestamp advances to this
+run's `emittedAt`. A repair attempt (`repairMissingScopedArchive`) also
+stamps a fresh timestamp on success, since it necessarily just resumed/
+archived that path.
+
+This directly satisfies the requirement: an ordinary run where the only
+selected scoped archive is not yet due for resume now skips the expensive
+subprocess entirely (bounded to a cheap existence check + one progress line),
+while a scoped archive whose throttle window has genuinely elapsed still
+resumes exactly as before — no coverage is lost, only deferred to at most
+`SLACK_LOOKBACK_DAYS`, within the same window the connector already commits
+to for backlog visibility.
+
+**Is it safe to retire (delete) the bloated scoped archive's on-disk state
+and reclaim its bytes?** Determined: **no, not the `slackdump.sqlite`.** It is
+still this connector's only durable resume state for a channel structurally
+excluded from the base scan (per fact 1 above); deleting it would force a
+future repair to fall back to a from-scratch `archive` invocation, an even
+more expensive operation than a single throttled `resume`, and the same
+class of unsafe deletion D3/D4 already reject for the main archive's SQLite.
+Its `__uploads/` residue, however, **is** already safely reclaimable — it
+remains in `scopedArchives` (throttling changes only whether `resume` runs,
+not whether the archive is selected/read), so it was already covered by
+D4.1's reclaim-plan fix; no additional reclaim change was needed here.
+
+**What this does NOT claim:** the throttle bounds *call frequency*, not the
+absolute cost of a single genuinely-due resume against a large accumulated
+archive — a due resume against a multi-GB scoped archive can still take
+tens of minutes, exactly as D4.2 already disclosed. The new guarantee is that
+this cost recurs **at most once per `SLACK_LOOKBACK_DAYS`** per scoped
+archive, not every run.
+
 ## Rejected alternatives
 
 - **Drain `slackdump.sqlite` (or old rows) after PDPP accepts records.**
@@ -216,6 +311,19 @@ any specific elapsed-time figure is capped.
   data (verified at v4.4.2). `tools cleanup` = crashed-session debris only;
   `tools dedupe` = redundant lookback copies only.
 
+- **Delete/retire a bloated scoped archive's `slackdump.sqlite` and rebuild it
+  narrowly.** Rejected (D5). It is still the connector's only durable resume
+  state for a channel structurally excluded from the base scan; deleting it
+  forces a from-scratch `archive` invocation next time that channel needs
+  healing — strictly more expensive than a single throttled `resume`, and the
+  same class of unsafe DB deletion already rejected above for the main
+  archive. A wall-clock or call-count kill switch on the resume subprocess
+  itself was also considered and rejected in favor of the lookback-throttle:
+  a timeout would abort mid-fetch with no guarantee of a clean stopping
+  point and no principled way to pick a threshold, whereas throttling by
+  `SLACK_LOOKBACK_DAYS` is provably lossless (see D5) and reuses a bound the
+  connector already commits to.
+
 ## Invariant coverage
 
 - No historical PDPP record loss — nothing deletes PDPP data; D1 is
@@ -232,10 +340,13 @@ any specific elapsed-time figure is capped.
   `resume`, which would skip via DB dedup).
 - Bounded steady-state disk + run time — D1 bounds the message-read query to
   new data; D3 + default `SKIP_FILES=true` bounds disk to the SQLite; D4
-  bounds `scoped-archive-reconcile`'s repair-unit count and per-unit lookback
-  scope (known and reported before any subprocess runs) — NOT the wall-clock
-  duration of an individual unit, which is genuine Slack-API-side backlog
-  catch-up within that bounded lookback window and can vary run to run.
+  bounds `scoped-archive-reconcile`'s repair-unit *count* and per-unit
+  lookback scope; D5 additionally bounds how often a given unit's `resume`
+  subprocess actually runs (at most once per `SLACK_LOOKBACK_DAYS`) — an
+  ordinary run whose only selected units are not yet due skips the subprocess
+  entirely. NOT bounded: the wall-clock duration of a single genuinely-due
+  resume against a large accumulated archive, which is real Slack-API-side
+  backlog catch-up and can still take tens of minutes when it does run.
 - No dependence on private live payloads in tests — all tests seed synthetic
   in-memory SQLite archives (existing harness pattern).
 - Existing connection upgrades safely — no manifest-breaking change; new option
@@ -252,12 +363,25 @@ any specific elapsed-time figure is capped.
 - **One-time reclaim decision.** Whether to run `SLACK_RECLAIM_UPLOADS=1` once
   on the live host to reclaim the 29 GB is an operator judgment (accepts the
   documented byte loss). Not performed by this change.
-- **D4 live UAT.** Confirm on the real workspace that
-  `scoped-archive-reconcile`'s `selected N repair unit(s) ... lookback=p<N>d`
-  / `completed C/N` / `finished: C/N ... 0 remaining` progress lines appear
-  whenever channel healing runs, and that `SLACK_RECLAIM_UPLOADS=1` now
-  reclaims every archive path reported (base + scoped + any empty-repair
-  archive) rather than failing `connector_protocol_violation`. Cannot be
-  verified here without the live archive/credentials — synthetic subprocess
-  tests cover the mechanism (`archive-reclaim.test.ts`) but not the real
-  Slack-API-side duration of a live repair unit.
+- **D4 live UAT — DONE, and it found a real gap (D5).** Deploy `aa038775d`,
+  run `run_1784962644222` (2026-07-25) confirmed D4.1 (protocol safety, no
+  `connector_protocol_violation`) but disproved D4.2's implicit assumption
+  that repair-unit-count bounding alone was sufficient: a single "bounded"
+  unit still took 54m52s every run, forever, because nothing throttled how
+  often that specific unit's `resume` was invoked. Fixed in D5. This item is
+  resolved by D5's fix, not by further observation — the residual UAT need is
+  now D5's own, below.
+- **D5 live UAT.** Confirm on the real workspace, over multiple scheduled
+  runs spanning more than `SLACK_LOOKBACK_DAYS`, that: (a) the first run after
+  this deploy still resumes `archive-scoped/62fd13bace2a/` (or whichever
+  archive covers the permanently-missing channel) since it has no prior
+  `scoped_archive_resumed_at` entry yet; (b) subsequent runs within the
+  lookback window report `... due for resume` = 0 and `not due for resume
+  yet` in progress evidence, with `scoped-archive-reconcile`
+  completing in seconds, not tens of minutes; (c) once the lookback window
+  elapses, a resume fires again and finds the accumulated backlog with no
+  gap. Cannot be verified here without the live host/credentials and without
+  waiting out a real multi-day window — synthetic subprocess tests
+  (`archive-reclaim.test.ts`) prove the throttle/resume-again mechanism
+  deterministically via injected `scoped_archive_resumed_at` timestamps, not
+  the real multi-day elapsed-time behavior.

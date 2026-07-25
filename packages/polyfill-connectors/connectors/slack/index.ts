@@ -751,11 +751,63 @@ interface MessageSourceCacheReconciliation {
   // must cover this set too — the archive's __uploads/ residue exists
   // regardless of whether the repair helped this run's message pass.
   reclaimedRepairArchivePaths: string[];
+  // Updated `scoped_archive_resumed_at` map (archive path -> ISO timestamp of
+  // the last actual `resume` invocation) to commit into STATE. Only entries
+  // for archives this run genuinely resumed advance; throttled-and-skipped
+  // archives keep their existing (possibly absent) timestamp.
+  scopedArchiveResumedAt: Record<string, string>;
   scopedArchives: SelectedScopedArchive[];
 }
 
-async function refreshScopedArchive(archive: SelectedScopedArchive, deps: ArchiveRuntimeDeps): Promise<void> {
+// `resume -lookback pNd` cannot discover a message older than `now - N days`
+// no matter how often it runs — the window is fixed by the flag, not by
+// invocation frequency. So re-invoking it more often than once per lookback
+// period cannot recover any data a less-frequent invocation would miss; the
+// deferred backlog inside the window is caught in a single call once the
+// throttle elapses. This is what makes throttling lossless rather than a
+// heuristic guess: it is a direct consequence of slackdump's own documented
+// `-lookback` semantics, not a wall-clock timeout on the connector's own
+// patience.
+function scopedArchiveDueForResume(
+  lastResumedAtIso: string | undefined,
+  lookbackDays: number,
+  nowIso: string
+): boolean {
+  if (!lastResumedAtIso) {
+    return true;
+  }
+  const last = Date.parse(lastResumedAtIso);
+  const now = Date.parse(nowIso);
+  if (!(Number.isFinite(last) && Number.isFinite(now))) {
+    return true;
+  }
+  const elapsedMs = now - last;
+  const lookbackMs = lookbackDays * 24 * 60 * 60 * 1000;
+  return elapsedMs >= lookbackMs;
+}
+
+interface RefreshScopedArchiveResult {
+  // True when `ensureArchiveOnDisk` actually ran a slackdump subprocess this
+  // call (archive or resume). False when throttled (already due-checked as
+  // not owed) or when the on-disk archive was read without invoking
+  // slackdump at all.
+  resumed: boolean;
+}
+
+async function refreshScopedArchive(
+  archive: SelectedScopedArchive,
+  deps: ArchiveRuntimeDeps,
+  options: { dueForResume: boolean }
+): Promise<RefreshScopedArchiveResult> {
   const { childEnv, cookie, opts, progress, timeFrom, timeTo, token } = deps;
+  if (!options.dueForResume) {
+    progress(
+      `Slack: scoped archive at ${archive.paths.archivePath} not due for resume yet ` +
+        `(last resumed within lookback=p${String(opts.LOOKBACK_DAYS)}d) — reading existing data, skipping subprocess`,
+      { stream: "messages" }
+    );
+    return { resumed: false };
+  }
   const useResume = existsSync(archive.paths.archivePath);
   try {
     await ensureArchiveOnDisk({
@@ -778,7 +830,12 @@ async function refreshScopedArchive(archive: SelectedScopedArchive, deps: Archiv
     progress(`Slack: scoped archive refresh failed for ${String(archive.channelIds.length)} channel(s): ${message}`, {
       stream: "messages",
     });
+    // The subprocess was attempted (that's the cost we're throttling), even
+    // though it failed — record the attempt so a persistently-failing scoped
+    // archive doesn't get retried every single run either.
+    return { resumed: true };
   }
+  return { resumed: true };
 }
 
 interface ScopedArchiveRepairResult {
@@ -846,7 +903,9 @@ async function reconcileMessageSourceCache(deps: {
   baseChannelIds: readonly string[];
   isUnscopedMessageBoundary: boolean;
   messageFamilyRequested: boolean;
+  nowIso: string;
   priorObservedChannelIds: readonly string[];
+  priorScopedArchiveResumedAt: Record<string, string>;
 }): Promise<MessageSourceCacheReconciliation> {
   const {
     archiveRuntime,
@@ -854,7 +913,9 @@ async function reconcileMessageSourceCache(deps: {
     baseChannelIds,
     isUnscopedMessageBoundary,
     messageFamilyRequested,
+    nowIso,
     priorObservedChannelIds,
+    priorScopedArchiveResumedAt,
   } = deps;
   if (!(messageFamilyRequested && isUnscopedMessageBoundary)) {
     return {
@@ -862,6 +923,7 @@ async function reconcileMessageSourceCache(deps: {
       missingChannelIds: [],
       scopedArchives: [],
       reclaimedRepairArchivePaths: [],
+      scopedArchiveResumedAt: priorScopedArchiveResumedAt,
     };
   }
 
@@ -897,21 +959,36 @@ async function reconcileMessageSourceCache(deps: {
   );
   const willAttemptRepair = uncoveredAfterSelection.length > 0;
   const repairUnitCount = scopedArchives.length + (willAttemptRepair ? 1 : 0);
-  const lookbackWindow = `p${archiveRuntime.opts.LOOKBACK_DAYS}d`;
+  const lookbackDays = archiveRuntime.opts.LOOKBACK_DAYS;
+  const lookbackWindow = `p${lookbackDays}d`;
+  const dueForResumeCount = scopedArchives.filter((archive) =>
+    scopedArchiveDueForResume(priorScopedArchiveResumedAt[archive.paths.archivePath], lookbackDays, nowIso)
+  ).length;
   archiveRuntime.progress(
     `Slack: scoped-archive-reconcile selected ${String(repairUnitCount)} repair unit(s) ` +
-      `(${String(scopedArchives.length)} existing scoped archive refresh(es) + ` +
+      `(${String(scopedArchives.length)} existing scoped archive(s), ${String(dueForResumeCount)} due for resume + ` +
+      `${String(scopedArchives.length - dueForResumeCount)} throttled (not yet due) + ` +
       `${String(willAttemptRepair ? 1 : 0)} new-repair attempt(s) for ` +
       `${String(uncoveredAfterSelection.length)} uncovered channel(s)), ` +
       `each bounded to lookback=${lookbackWindow}`,
     { stream: "messages" }
   );
   let completedRepairUnits = 0;
+  const scopedArchiveResumedAt = { ...priorScopedArchiveResumedAt };
   for (const archive of scopedArchives) {
-    await refreshScopedArchive(archive, archiveRuntime);
+    const dueForResume = scopedArchiveDueForResume(
+      scopedArchiveResumedAt[archive.paths.archivePath],
+      lookbackDays,
+      nowIso
+    );
+    const result = await refreshScopedArchive(archive, archiveRuntime, { dueForResume });
+    if (result.resumed) {
+      scopedArchiveResumedAt[archive.paths.archivePath] = nowIso;
+    }
     completedRepairUnits += 1;
     archiveRuntime.progress(
-      `Slack: scoped-archive-reconcile completed ${String(completedRepairUnits)}/${String(repairUnitCount)} repair unit(s)`,
+      `Slack: scoped-archive-reconcile completed ${String(completedRepairUnits)}/${String(repairUnitCount)} repair unit(s) ` +
+        `(${result.resumed ? "resumed" : "throttled, not owed"})`,
       { stream: "messages" }
     );
   }
@@ -923,6 +1000,9 @@ async function reconcileMessageSourceCache(deps: {
 
   if (missingChannelIds.length > 0) {
     const repair = await repairMissingScopedArchive(baseArchivePaths, missingChannelIds, archiveRuntime);
+    if (repair.archivePath) {
+      scopedArchiveResumedAt[repair.archivePath] = nowIso;
+    }
     completedRepairUnits += 1;
     archiveRuntime.progress(
       `Slack: scoped-archive-reconcile completed ${String(completedRepairUnits)}/${String(repairUnitCount)} repair unit(s)`,
@@ -949,7 +1029,7 @@ async function reconcileMessageSourceCache(deps: {
     { stream: "messages" }
   );
 
-  return { currentChannelIds, missingChannelIds, scopedArchives, reclaimedRepairArchivePaths };
+  return { currentChannelIds, missingChannelIds, scopedArchives, reclaimedRepairArchivePaths, scopedArchiveResumedAt };
 }
 
 function messageFamilyRequestedOnly(requested: CollectContext["requested"]): CollectContext["requested"] {
@@ -1779,6 +1859,7 @@ interface StateEmitDeps {
   fingerprintCursors: Map<string, FingerprintCursor>;
   observedChannelIds: readonly string[];
   requested: CollectContext["requested"];
+  scopedArchiveResumedAt: Record<string, string>;
 }
 
 /**
@@ -1808,6 +1889,7 @@ function emitStateCheckpoints(deps: StateEmitDeps): void {
       channel_last_ts: deps.channelLastTs,
       observed_channel_ids: [...deps.observedChannelIds].sort(),
       archive_dir: deps.archivePath,
+      scoped_archive_resumed_at: deps.scopedArchiveResumedAt,
       fetched_at: nowIso(),
     },
   });
@@ -2183,13 +2265,17 @@ if (isMainModule(import.meta.url)) {
       const messagesState = state.messages as MessagesState | undefined;
       const priorChannelLastTs = normalizeStringRecord(messagesState?.channel_last_ts);
       const priorObservedChannelIds = readPriorObservedChannelIds(messagesState);
+      const priorScopedArchiveResumedAt = normalizeStringRecord(messagesState?.scoped_archive_resumed_at);
       const baseChannelIds = currentArchiveChannelIds(db);
       // Each missing-channel partition drives its own slackdump `resume`
       // subprocess (real Slack API backlog catch-up per channel, gated by
       // Slack's own rate limits) — cost that was previously invisible: it
       // runs between the `slackdump-subprocess` and `read-and-emit` phases
       // but was not itself timed, so it silently inflated total run wall-
-      // clock outside every reported phase.
+      // clock outside every reported phase. Each scoped archive is further
+      // throttled to at most one actual resume per SLACK_LOOKBACK_DAYS (see
+      // scopedArchiveDueForResume) so a permanently-missing-but-actively-
+      // growing channel's archive doesn't get a full resync every run.
       const reconciledSourceCache = await timedPhase(progress, "scoped-archive-reconcile", () =>
         reconcileMessageSourceCache({
           archiveRuntime: { childEnv, cookie, opts, progress, timeFrom, timeTo, token },
@@ -2197,7 +2283,9 @@ if (isMainModule(import.meta.url)) {
           baseChannelIds,
           isUnscopedMessageBoundary,
           messageFamilyRequested,
+          nowIso: ctx.emittedAt,
           priorObservedChannelIds,
+          priorScopedArchiveResumedAt,
         })
       );
 
@@ -2271,6 +2359,7 @@ if (isMainModule(import.meta.url)) {
         fingerprintCursors,
         observedChannelIds,
         requested,
+        scopedArchiveResumedAt: reconciledSourceCache.scopedArchiveResumedAt,
       });
 
       // End-of-run size snapshot: makes the steady-state disk bound and any

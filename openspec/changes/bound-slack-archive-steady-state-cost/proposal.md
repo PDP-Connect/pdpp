@@ -121,20 +121,29 @@ legacy `__uploads/` residue that states exactly what it sacrifices.
   **main-archive** read cost SHALL scale with new/changed data, not with total
   archive size, and SHALL surface per-phase timing so the bound is measurable.
   Scoped source-cache reconciliation (healing a channel absent from the main
-  archive) is a distinct, separately-bounded mechanism: its cost SHALL scale
-  with the once-per-run-snapshotted, finite prior-observed/scoped-archive
-  work-unit set (computed once from already-fixed inputs, never re-queried or
-  re-selected mid-run) plus at most one additional repair attempt, each unit
-  bounded to the connector's configured finite lookback window — NOT with new
-  data alone, and NOT unboundedly. This SHALL be reported before/during/after
-  the phase (selected unit count and lookback window before any subprocess
-  runs, a completed/remaining cursor per unit, and an explicit zero-remaining
-  at the end) so the bound is a stated, checkable fact, not merely an elapsed
-  wall-clock timing. Reclaiming operator-visible archive residue SHALL be
-  opt-in, gated on durable commit, cover every archive path successfully
-  created or read that run (not only the main archive), reported via a
-  stderr-only channel outside the connector protocol, and never remove data
-  the runtime depends on for resume.
+  archive) is a distinct, separately-bounded mechanism: its *selected
+  repair-unit count* SHALL scale with the once-per-run-snapshotted, finite
+  prior-observed/scoped-archive work-unit set (computed once from already-
+  fixed inputs, never re-queried or re-selected mid-run) plus at most one
+  additional repair attempt — NOT with new data alone, and NOT unboundedly.
+  Independent of unit count, a selected unit's actual subprocess invocation
+  (`resume`) SHALL be throttled to at most once per the connector's configured
+  finite lookback window per archive — a retained scoped archive whose
+  covering channel is permanently missing from the main scan MUST NOT have
+  its full accumulated content re-synced on every run once it has been
+  resumed within that window; an ordinary run where no selected unit is due
+  for resume SHALL skip the subprocess entirely for those units. This SHALL
+  be reported before/during/after the phase (selected unit count, how many
+  are due for resume vs. throttled, and the lookback window before any
+  subprocess runs; a completed/remaining cursor per unit noting whether it
+  was resumed or throttled; and an explicit zero-remaining at the end) so the
+  bound is a stated, checkable fact, not merely an elapsed wall-clock timing.
+  Reclaiming operator-visible archive residue SHALL be opt-in, gated on
+  durable commit, cover every archive path successfully created or read that
+  run (not only the main archive) regardless of whether its resume was
+  throttled that run, reported via a stderr-only channel outside the
+  connector protocol, and never remove data the runtime depends on for
+  resume.
 
 ## Impact
 

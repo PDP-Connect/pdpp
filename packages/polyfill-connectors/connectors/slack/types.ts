@@ -176,6 +176,22 @@ export interface MessagesState {
   channel_last_ts?: Record<string, string>;
   last_ts?: string | null;
   observed_channel_ids?: string[];
+  /**
+   * Last time (ISO timestamp) a scoped archive at this path had `slackdump
+   * resume` actually invoked against it, keyed by archive path. Lets
+   * reconcileMessageSourceCache throttle a scoped archive's own resume calls
+   * to at most once per SLACK_LOOKBACK_DAYS: since `resume -lookback pNd`
+   * cannot discover anything older than `now - N days` regardless of how
+   * often it runs, invoking it more often than every N days cannot recover
+   * data a less-frequent invocation would miss — the deferred backlog is
+   * caught in one call once the throttle window elapses. Without this, a
+   * scoped archive whose covering channel is permanently and actively
+   * missing from the main archive (e.g. member-only exclusion after leaving
+   * a still-active channel) gets a full `resume` re-sync of its ENTIRE
+   * recorded channel set on every run forever, with cost scaling with the
+   * archive's total accumulated size, not with genuinely new/owed data.
+   */
+  scoped_archive_resumed_at?: Record<string, string>;
 }
 
 export interface ChannelCanvasMeta {

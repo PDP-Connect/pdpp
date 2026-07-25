@@ -99,6 +99,17 @@ async function seedArchive(homeDir: string, workspace: string, withUploads: bool
   return archiveDir;
 }
 
+function messagesState(result: { messages: EmittedMessage[] }): Record<string, unknown> {
+  const state = result.messages.findLast(
+    (message): message is Extract<EmittedMessage, { type: "STATE" }> =>
+      message.type === "STATE" && message.stream === "messages"
+  );
+  assert.ok(state, "expected messages STATE");
+  assert.equal(typeof state.cursor, "object");
+  assert.notEqual(state.cursor, null);
+  return state.cursor as Record<string, unknown>;
+}
+
 test("reclaimUploads removes only __uploads/, leaves sqlite + sidecars, reports bytes", async () => {
   const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-reclaim-unit-"));
   try {
@@ -599,7 +610,9 @@ test("scoped-archive-reconcile phase timing is reported when source-cache healin
     // remaining. One scoped archive covers C0MISSING here, so no repair
     // attempt is needed: exactly 1 repair unit selected, 1 completed.
     assert.ok(
-      lines.some((l) => /selected 1 repair unit\(s\)/.test(l) && l.includes("1 existing scoped archive refresh(es)")),
+      lines.some(
+        (l) => /selected 1 repair unit\(s\)/.test(l) && l.includes("1 existing scoped archive(s), 1 due for resume")
+      ),
       "declares the exact repair-unit count before any subprocess runs"
     );
     assert.ok(
@@ -668,6 +681,198 @@ test("scoped-archive-reconcile declares 0 selected repair units and does no work
     assert.ok(
       lines.some((l) => l.includes("finished: 0/0 repair unit(s) completed, 0 remaining")),
       "finishes immediately with 0/0, proving no unbounded work was attempted"
+    );
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+// Reproduces the live incident (run_1784962644222, 2026-07-25): a scoped
+// archive covering exactly one permanently-missing channel (0 uncovered
+// channels — fully covered by an EXISTING scoped archive every run) still got
+// a full `slackdump resume` re-sync every single connector run, taking
+// ~55 minutes against a large (4.9GB / 1.95M message) accumulated archive,
+// forever — because "this archive is selected to cover a missing channel"
+// was treated as sufficient reason to resume it, with no check for whether a
+// resume could possibly discover anything new since the last one.
+test("scoped-archive-reconcile throttles a scoped archive's resume to at most once per lookback window", async () => {
+  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-reconcile-throttle-"));
+  try {
+    const workspace = "reconcile-throttle-ws";
+    const baseArchiveDir = join(homeDir, ".pdpp", "slackdump", workspace, "archive");
+    const scopedArchiveDir = join(
+      homeDir,
+      ".pdpp",
+      "slackdump",
+      workspace,
+      "archive-scoped",
+      scopedArchiveDigest(["C0MISSING"])
+    );
+    await mkdir(baseArchiveDir, { recursive: true });
+    await mkdir(scopedArchiveDir, { recursive: true });
+
+    const baseDb = new DatabaseSync(join(baseArchiveDir, "slackdump.sqlite"));
+    try {
+      seedArchiveSchema(baseDb);
+      insertChannel(baseDb, "C0PRESENT", "present");
+      insertMessage(baseDb, "C0PRESENT", "1714032849.123456", "still present");
+    } finally {
+      baseDb.close();
+    }
+    const scopedDb = new DatabaseSync(join(scopedArchiveDir, "slackdump.sqlite"));
+    try {
+      seedArchiveSchema(scopedDb);
+      insertChannel(scopedDb, "C0MISSING", "missing");
+      insertMessage(scopedDb, "C0MISSING", "1714032850.123456", "recovered from scoped archive");
+    } finally {
+      scopedDb.close();
+    }
+
+    const recentlyResumedAt = new Date().toISOString();
+    const result = await runConnectorProtocolSubprocess({
+      cwd: PACKAGE_ROOT,
+      entrypoint: SLACK_ENTRYPOINT,
+      env: {
+        HOME: homeDir,
+        PDPP_SLACK_SKIP_SLACKDUMP: "1",
+        SLACK_COOKIE: "d=fake",
+        SLACK_TOKEN: "xoxc-fake",
+        SLACK_WORKSPACE: workspace,
+      },
+      start: {
+        type: "START",
+        scope: { streams: [{ name: "messages" }] },
+        state: {
+          messages: {
+            last_ts: "1714032800.000000",
+            channel_last_ts: { C0MISSING: "1714032800.000000", C0PRESENT: "1714032800.000000" },
+            observed_channel_ids: ["C0MISSING", "C0PRESENT"],
+            // Already resumed moments ago — well within the default p7d
+            // lookback. A fresh resume this run cannot discover anything a
+            // resume next week (once genuinely due again) wouldn't also
+            // catch, since -lookback bounds how far back either call can see.
+            scoped_archive_resumed_at: { [scopedArchiveDir]: recentlyResumedAt },
+          },
+        },
+      },
+    });
+
+    const done = result.messages.findLast((m): m is Extract<EmittedMessage, { type: "DONE" }> => m.type === "DONE");
+    assert.equal(done?.status, "succeeded", "run still succeeds when a scoped archive is throttled");
+    const lines = progressLines(result.messages);
+    assert.ok(
+      lines.some(
+        (l) => /selected 1 repair unit\(s\)/.test(l) && l.includes("1 existing scoped archive(s), 0 due for resume")
+      ),
+      "reports the archive as selected but NOT due for resume"
+    );
+    assert.ok(
+      lines.some((l) => l.includes("not due for resume yet") && l.includes(scopedArchiveDir)),
+      "explicitly reports the throttle decision for this archive"
+    );
+    // The decisive proof: ensureArchiveOnDisk's own "Skipping slackdump
+    // refresh (PDPP_SLACK_SKIP_SLACKDUMP=1); reading existing archive at
+    // <path>" line — which only fires when ensureArchiveOnDisk is actually
+    // invoked — must NOT appear for the scoped archive path, because the
+    // throttle short-circuits BEFORE ensureArchiveOnDisk is ever called.
+    assert.ok(
+      !lines.some((l) => l.includes("reading existing archive at") && l.includes(scopedArchiveDir)),
+      "the scoped archive's resume subprocess path is never invoked when throttled (not merely fast — genuinely skipped)"
+    );
+    assert.ok(
+      lines.some((l) => l.includes("completed 1/1 repair unit(s) (throttled, not owed)")),
+      "the completed cursor reports this unit as throttled, not resumed"
+    );
+    const cursor = messagesState(result);
+    assert.equal(
+      (cursor.scoped_archive_resumed_at as Record<string, string> | undefined)?.[scopedArchiveDir],
+      recentlyResumedAt,
+      "a throttled archive's resumed_at timestamp is carried forward unchanged, not bumped to now"
+    );
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("scoped-archive-reconcile resumes a scoped archive again once its lookback throttle window has elapsed", async () => {
+  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-reconcile-due-"));
+  try {
+    const workspace = "reconcile-due-ws";
+    const baseArchiveDir = join(homeDir, ".pdpp", "slackdump", workspace, "archive");
+    const scopedArchiveDir = join(
+      homeDir,
+      ".pdpp",
+      "slackdump",
+      workspace,
+      "archive-scoped",
+      scopedArchiveDigest(["C0MISSING"])
+    );
+    await mkdir(baseArchiveDir, { recursive: true });
+    await mkdir(scopedArchiveDir, { recursive: true });
+
+    const baseDb = new DatabaseSync(join(baseArchiveDir, "slackdump.sqlite"));
+    try {
+      seedArchiveSchema(baseDb);
+      insertChannel(baseDb, "C0PRESENT", "present");
+      insertMessage(baseDb, "C0PRESENT", "1714032849.123456", "still present");
+    } finally {
+      baseDb.close();
+    }
+    const scopedDb = new DatabaseSync(join(scopedArchiveDir, "slackdump.sqlite"));
+    try {
+      seedArchiveSchema(scopedDb);
+      insertChannel(scopedDb, "C0MISSING", "missing");
+      insertMessage(scopedDb, "C0MISSING", "1714032850.123456", "recovered from scoped archive");
+    } finally {
+      scopedDb.close();
+    }
+
+    // 8 days ago: past the default SLACK_LOOKBACK_DAYS=7 throttle window.
+    const staleResumedAt = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
+    const result = await runConnectorProtocolSubprocess({
+      cwd: PACKAGE_ROOT,
+      entrypoint: SLACK_ENTRYPOINT,
+      env: {
+        HOME: homeDir,
+        PDPP_SLACK_SKIP_SLACKDUMP: "1",
+        SLACK_COOKIE: "d=fake",
+        SLACK_TOKEN: "xoxc-fake",
+        SLACK_WORKSPACE: workspace,
+      },
+      start: {
+        type: "START",
+        scope: { streams: [{ name: "messages" }] },
+        state: {
+          messages: {
+            last_ts: "1714032800.000000",
+            channel_last_ts: { C0MISSING: "1714032800.000000", C0PRESENT: "1714032800.000000" },
+            observed_channel_ids: ["C0MISSING", "C0PRESENT"],
+            scoped_archive_resumed_at: { [scopedArchiveDir]: staleResumedAt },
+          },
+        },
+      },
+    });
+
+    const lines = progressLines(result.messages);
+    assert.ok(
+      lines.some(
+        (l) => /selected 1 repair unit\(s\)/.test(l) && l.includes("1 existing scoped archive(s), 1 due for resume")
+      ),
+      "reports the archive as due for resume once the throttle window has elapsed"
+    );
+    assert.ok(
+      lines.some((l) => l.includes("reading existing archive at") && l.includes(scopedArchiveDir)),
+      "ensureArchiveOnDisk IS invoked for a genuinely due scoped archive — real remaining gaps still resume"
+    );
+    assert.ok(
+      lines.some((l) => l.includes("completed 1/1 repair unit(s) (resumed)")),
+      "the completed cursor reports this unit as actually resumed"
+    );
+    const cursor = messagesState(result);
+    const newResumedAt = (cursor.scoped_archive_resumed_at as Record<string, string> | undefined)?.[scopedArchiveDir];
+    assert.ok(
+      newResumedAt && newResumedAt !== staleResumedAt,
+      "resumed_at is bumped to this run's time after a real resume"
     );
   } finally {
     await rm(homeDir, { recursive: true, force: true });
