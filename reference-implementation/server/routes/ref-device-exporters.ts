@@ -92,6 +92,25 @@ async function maybeDeviceIngestPhaseFault(point: string, inputIndex?: number): 
   await deviceIngestPhaseFaultHook?.(point, inputIndex);
 }
 
+let enrollPhaseFaultHook: ((point: string) => void | Promise<void>) | null = null;
+
+/**
+ * Deterministic, test-only interruption seam for the first-time enrollment
+ * write sequence. Production never installs this hook. Lets the D5 partial-
+ * write oracle (fix-enroll-pending-code-partial-write-idempotency) fail a
+ * real first attempt AFTER identity creation (device, connector instance,
+ * source instance) but BEFORE the code is consumed — the exact durable
+ * partial state a live writer-pressure failure or transport drop leaves —
+ * without faking storage errors.
+ */
+export function __setEnrollPhaseFaultHookForTest(hook: ((point: string) => void | Promise<void>) | null): void {
+  enrollPhaseFaultHook = typeof hook === "function" ? hook : null;
+}
+
+async function maybeEnrollPhaseFault(point: string): Promise<void> {
+  await enrollPhaseFaultHook?.(point);
+}
+
 // ─── Minimal substrate shapes ────────────────────────────────────────────────
 
 interface DeviceRow {
@@ -496,6 +515,26 @@ function deviceExporterSourceBindingIdentity(
   return { kind, local_binding_name: localBindingName };
 }
 
+// Deterministic device/source-instance identity for an enrollment code (design
+// D5, fix-enroll-pending-code-partial-write-idempotency). `enrollmentCodeId` is
+// minted once when the code is created and is stable across every exchange
+// attempt for that code — the same anchor `connector_instances` already uses
+// (owner/connector/binding) but scoped to THIS enrollment, so retrying the
+// same pending code always recomputes the SAME device_id and source_instance_id
+// instead of generating fresh random ones. This makes every write in
+// performFirstEnrollment naturally convergent under ON CONFLICT: a first
+// attempt that reaches identity creation and then fails before consume (write
+// pressure, transport drop, process restart) leaves rows a retry can find and
+// resume from by id, rather than colliding on the connector_instances row
+// while leaking an orphaned device.
+function deriveEnrollmentDeviceId(enrollmentCodeId: string): string {
+  return `dexp_${createHash("sha256").update(`device\n${enrollmentCodeId}`).digest("hex").slice(0, 24)}`;
+}
+
+function deriveEnrollmentSourceInstanceId(enrollmentCodeId: string): string {
+  return `dsrc_${createHash("sha256").update(`source\n${enrollmentCodeId}`).digest("hex").slice(0, 24)}`;
+}
+
 // Resolve the manifest for a connector being enrolled, then derive the enrolled
 // source kind from its bindings. Resolves the local-collector catalog first (so
 // claude-code/codex classify before any registered manifest exists), then falls
@@ -526,22 +565,27 @@ interface ReEnrollableEnrollment {
   status: string;
 }
 
-// Idempotent re-enroll (design D2). A retry of an already-consumed, unexpired
-// enrollment code — the transport-failure recovery case — is honored ONLY when
-// it resolves to the same device and binding the code was consumed by. In that
-// case the device credential is atomically rotated (prior token invalidated, one
-// fresh token issued) and the existing device/source/connector-instance are
+// Idempotent re-enroll (design D2, extended by D5). A retry of an enrollment
+// code that already has a live device/binding — whether the code is
+// `consumed` (the original transport-failure recovery case: boundDeviceId
+// comes from `enrollment.deviceId`) or still `pending` with an already-created
+// device row from a first attempt that failed after identity creation but
+// before consume (D5: boundDeviceId comes from the code's deterministic
+// device id) — is honored ONLY when it resolves to the same device and
+// binding. In that case the device credential is atomically rotated (prior
+// token invalidated, one fresh token issued), the enrollment code is consumed
+// if it is not already, and the existing device/source/connector-instance are
 // reused. Returns "handled" after writing a response, or "not_handled" so the
 // caller rejects a replay that is not a legitimate same-device/binding retry.
 async function handleIdempotentReEnroll(
   ctx: MountRefDeviceExportersContext,
   res: RouteResponse,
   enrollment: ReEnrollableEnrollment,
+  boundDeviceId: string | null,
   now: Date
 ): Promise<"handled" | "not_handled"> {
-  const boundDeviceId = enrollment.deviceId;
   if (!boundDeviceId) {
-    // Consumed but never bound to a device: not a recoverable retry target.
+    // No device bound yet for this code: not a recoverable retry target.
     return "not_handled";
   }
   const device = await ctx.deviceExporterStore.getDevice(boundDeviceId);
@@ -576,6 +620,15 @@ async function handleIdempotentReEnroll(
     createdAt: now.toISOString(),
     rotatedAt: now.toISOString(),
   });
+
+  // D5: a still-pending code reaching this path means a prior attempt created
+  // identity but failed before consume — consume it now, bound to the SAME
+  // deterministic device this retry resolved to. `WHERE status = 'pending'`
+  // makes this a no-op if a concurrent retry already consumed it (exactly-once
+  // consume is preserved regardless of how many retries race here).
+  if (enrollment.status === "pending") {
+    await ctx.deviceExporterStore.consumeEnrollmentCode(enrollment.enrollmentCodeId, boundDeviceId, now.toISOString());
+  }
 
   // Audit receipt: record that a re-enroll retry rotated the device credential.
   await ctx.emitSpineEvent({
@@ -630,13 +683,42 @@ function respondEnrollError(ctx: MountRefDeviceExportersContext, res: RouteRespo
     );
     return;
   }
+  // Defense-in-depth (design D5, fix-enroll-pending-code-partial-write-idempotency):
+  // the deterministic-identity + idempotent-resume path above should make a
+  // raw Postgres unique-violation unreachable on this route, but if an
+  // untried collision surfaces here it must not read as an owner-facing
+  // server fault. Postgres's raw pg driver error code for unique_violation is
+  // "23505" regardless of which constraint fired.
+  if ((err as { code?: unknown } | null)?.code === "23505") {
+    res.setHeader("Retry-After", "1");
+    ctx.pdppError(
+      res,
+      503,
+      "enrollment_identity_conflict",
+      "Enrollment hit a concurrent identity write; retry the same code",
+      null,
+      { retryable: true, retry_after_seconds: 1 }
+    );
+    return;
+  }
   ctx.handleError(res, err);
 }
 
 // First-time enrollment: materialize device, credential, connector instance,
 // and source instance, then consume the code as the terminal write. Extracted
 // from the enroll handler to keep that handler within the complexity budget;
-// the D2 idempotent-retry path is handled separately by handleIdempotentReEnroll.
+// the D2/D5 idempotent-retry path is handled separately by
+// handleIdempotentReEnroll.
+//
+// Identity (design D5, fix-enroll-pending-code-partial-write-idempotency):
+// device_id and source_instance_id are derived deterministically from
+// enrollment.enrollmentCodeId (stable for the life of the code) rather than
+// generated fresh per call. This makes every write below convergent under
+// ON CONFLICT: a retry of the same pending code — whether because a prior
+// attempt failed after identity creation but before consume, or because two
+// requests genuinely race — resolves to the SAME device/source/connector
+// instance rows instead of leaking an orphaned identity and colliding on the
+// connector_instances row's independently-deterministic id.
 async function performFirstEnrollment(
   ctx: MountRefDeviceExportersContext,
   req: RouteRequest,
@@ -646,10 +728,8 @@ async function performFirstEnrollment(
   now: Date
 ): Promise<void> {
   const collectorProtocolVersion = ctx.readCollectorProtocolHeader(req.headers);
-  const deviceId = ctx.generateSpineId("dexp");
-  const credentialId = ctx.generateSpineId("dcred");
-  const sourceInstanceId = ctx.generateSpineId("dsrc");
-  const deviceToken = ctx.generateReferenceSecret("ldt", 32);
+  const deviceId = deriveEnrollmentDeviceId(enrollment.enrollmentCodeId);
+  const sourceInstanceId = deriveEnrollmentSourceInstanceId(enrollment.enrollmentCodeId);
   const displayName =
     typeof body.device_label === "string" && (body.device_label as string).trim()
       ? (body.device_label as string).trim()
@@ -662,12 +742,6 @@ async function performFirstEnrollment(
     collectorProtocolVersion,
     createdAt: now.toISOString(),
     updatedAt: now.toISOString(),
-  });
-  await ctx.deviceExporterStore.createCredential({
-    credentialId,
-    deviceId,
-    tokenHash: ctx.hashDeviceSecret(deviceToken),
-    createdAt: now.toISOString(),
   });
   // Canonicalize connector id at the enroll boundary. See
   // canonicalize-connector-keys design Decision 7.
@@ -706,18 +780,47 @@ async function performFirstEnrollment(
     createdAt: now.toISOString(),
     updatedAt: now.toISOString(),
   });
+
+  // Test-only interruption point: identity (device, connector instance,
+  // source instance) is now fully durable; the code is still pending. This is
+  // the exact partial state a live writer-pressure failure or transport drop
+  // leaves before consume. Production never installs this hook.
+  await maybeEnrollPhaseFault("after_identity_before_consume");
+
+  // Credential is rotated, not plain-inserted: device_id is deterministic, so
+  // two genuinely concurrent first attempts for the same pending code could
+  // otherwise both INSERT a distinct active credential for the same device.
+  // rotateDeviceCredential's revoke-all-then-insert-one is wrapped in a
+  // transaction that serializes on the revoke's row locks, so exactly one
+  // active credential survives regardless of how many attempts race here —
+  // the same guarantee D2 already gives a retried CONSUMED code.
+  const credentialId = ctx.generateSpineId("dcred");
+  const deviceToken = ctx.generateReferenceSecret("ldt", 32);
+  await ctx.deviceExporterStore.rotateDeviceCredential({
+    credentialId,
+    deviceId,
+    tokenHash: ctx.hashDeviceSecret(deviceToken),
+    createdAt: now.toISOString(),
+    rotatedAt: now.toISOString(),
+  });
   const consumed = await ctx.deviceExporterStore.consumeEnrollmentCode(
     enrollment.enrollmentCodeId,
     deviceId,
     now.toISOString()
   );
   if (!consumed) {
-    await ctx.deviceExporterStore.revokeDevice(deviceId, now.toISOString());
-    await ctx.createRequestConnectorInstanceStore().updateStatus(connectorInstance.connectorInstanceId, {
-      status: "revoked",
-      updatedAt: now.toISOString(),
-      revokedAt: now.toISOString(),
-    });
+    // A concurrent attempt for the SAME code already consumed it. Because
+    // device_id/source_instance_id/connector_instance_id are all derived from
+    // this same enrollmentCodeId, that concurrent attempt resolved to the
+    // IDENTICAL identity this attempt just (re)wrote — there is no orphaned
+    // device to revoke, only a lost credential-issuance race. Resolve it the
+    // same way a genuine retry would: rotate again (this attempt's token was
+    // never returned to any client, so invalidating it here is free) and
+    // return 201 with a token this response actually delivers.
+    const retry = await handleIdempotentReEnroll(ctx, res, enrollment, deviceId, now);
+    if (retry === "handled") {
+      return;
+    }
     ctx.pdppError(res, 409, "invalid_request", "Enrollment code was consumed by another device", "enrollment_code");
     return;
   }
@@ -1723,6 +1826,36 @@ export function mountRefDeviceExporterEnrollmentCodes(app: AppLike, ctx: MountRe
   );
 }
 
+// Resolve the device id an idempotent-resume retry should bind to, or null
+// when this request is not a legitimate resume target (design D2, extended
+// by D5). Two retry shapes both resolve to the SAME deterministic device id
+// for this code (deriveEnrollmentDeviceId), so both route through the same
+// rotate-and-reuse path instead of re-running identity creation:
+//   - consumed: the original transport-failure case — the response was lost
+//     after the code was marked consumed.
+//   - pending, but the deterministic device row already exists (D5): a prior
+//     attempt reached identity creation (device, connector instance, source
+//     instance) and then failed BEFORE consume (write pressure, transport
+//     drop, process restart). Without this check, re-running
+//     performFirstEnrollment would generate a fresh random device/source-
+//     instance id, leak the orphaned first attempt's rows, and collide on
+//     the connector_instances row's deterministic id (23505) since that id
+//     depends only on owner/connector/binding, not on the per-attempt
+//     device id.
+// Any other consumed-code replay, or a pending code with no existing device
+// row, is not a legitimate resume target — returns null.
+async function resolveEnrollResumeDeviceId(
+  ctx: MountRefDeviceExportersContext,
+  enrollment: ReEnrollableEnrollment
+): Promise<string | null> {
+  if (enrollment.status === "consumed") {
+    return enrollment.deviceId;
+  }
+  const deterministicDeviceId = deriveEnrollmentDeviceId(enrollment.enrollmentCodeId);
+  const existing = await ctx.deviceExporterStore.getDevice(deterministicDeviceId);
+  return existing ? deterministicDeviceId : null;
+}
+
 // POST /_ref/device-exporters/enroll
 // Public (no owner session); exchanges enrollment code for device credentials.
 export function mountRefDeviceExporterEnroll(app: AppLike, ctx: MountRefDeviceExportersContext): void {
@@ -1752,14 +1885,9 @@ export function mountRefDeviceExporterEnroll(app: AppLike, ctx: MountRefDeviceEx
           return;
         }
 
-        // Idempotent re-enroll (design D2): the server cannot know whether a
-        // committed enroll response reached the client, so a retry of the SAME
-        // unexpired code that is already bound to the SAME device/binding rotates
-        // the device credential rather than erroring — returning a fresh token,
-        // invalidating any prior token, and creating no second device/source
-        // instance. Any other consumed-code replay is rejected.
-        if (enrollment.status === "consumed") {
-          const retry = await handleIdempotentReEnroll(ctx, res, enrollment, now);
+        const resumeDeviceId = await resolveEnrollResumeDeviceId(ctx, enrollment);
+        if (resumeDeviceId) {
+          const retry = await handleIdempotentReEnroll(ctx, res, enrollment, resumeDeviceId, now);
           if (retry !== "not_handled") {
             return;
           }

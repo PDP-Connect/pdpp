@@ -23,8 +23,23 @@
 - [x] 4.3 Re-verify D2 (idempotent re-enroll) and D3 (typed 503) oracles unmodified and green.
 - [x] 4.4 Re-verify the `polyfill-manifest-reconcile-bounded-work-postgres` "zero records-table queries" oracle stays green (confirms `backfillRetrievalIndexes: false` callers other than enroll are unaffected).
 
-## 5. Gates
+## 5. Close the D2 gap: pending-code partial-write idempotency (D5)
 
-- [x] 5.1 `openspec validate --strict` passes.
-- [x] 5.2 Full device-exporter + coordinator test suites green; all oracles (D1-D4) green.
-- [x] 5.3 Lint/format (biome) clean on touched files; `tsc --noEmit` clean.
+- [x] 5.1 Derive `deviceId`/`sourceInstanceId` deterministically from `enrollment.enrollmentCodeId` (`deriveEnrollmentDeviceId`/`deriveEnrollmentSourceInstanceId`, same SHA-256-prefix pattern as `makeConnectorInstanceId`) instead of `generateSpineId(...)` random values, in `performFirstEnrollment`.
+- [x] 5.2 `createDevice`: `ON CONFLICT(device_id) DO NOTHING` on both SQLite (`insert-device.sql`) and Postgres backends, so a retry/concurrent duplicate first attempt converges on one row.
+- [x] 5.3 `performFirstEnrollment` issues the credential via `rotateDeviceCredential` (not a plain `createCredential` insert) so concurrent/retried first attempts for the same deterministic device converge on exactly one active credential.
+- [x] 5.4 Extract `resolveEnrollResumeDeviceId`: returns `enrollment.deviceId` for a `consumed` code (D2), or the deterministic device id for a `pending` code ONLY if that device row already exists (D5), else `null`. Route both cases through `handleIdempotentReEnroll`.
+- [x] 5.5 Extend `handleIdempotentReEnroll` to accept an explicit `boundDeviceId` parameter (not just read from `enrollment.deviceId`) and to consume the enrollment code when it is still `pending` (idempotent via `WHERE status = 'pending'`).
+- [x] 5.6 `performFirstEnrollment`'s `!consumed` fallback (a concurrent request won the consume race) no longer revokes the shared deterministic device; it resolves through `handleIdempotentReEnroll` instead.
+- [x] 5.7 Map raw Postgres `23505` to a typed retryable `503` (`enrollment_identity_conflict`) in `respondEnrollError`, defense-in-depth alongside the existing `connector_instance_busy` mapping.
+- [x] 5.8 Add a test-only fault-injection seam (`__setEnrollPhaseFaultHookForTest`, mirrors the file's existing `deviceIngestPhaseFaultHook`) firing after `upsertSourceInstance` and before consume; production never installs it.
+- [x] 5.9 Postgres mutation-grade oracle: inject the fault to leave identity-created-but-not-consumed state, retry the same pending code, assert `201` + convergence on one device/connector-instance/source-instance/active-credential + exactly-once consume + the returned token actually authenticates. Verified two ways: reverting the deterministic-identity derivation alone fails this oracle (3/3) while D1/D4 still pass; reverting the credential-rotation change alone fails the companion concurrency oracle (3/3).
+- [x] 5.10 Adversarial oracle: a pending code with no existing device row still enrolls normally (not misrouted into resume).
+- [x] 5.11 Concurrency oracles on both backends (SQLite in-process, Postgres with genuinely independent connections): N concurrent first attempts for the same pending code converge on one device/connector-instance/source-instance and exactly one active credential.
+- [x] 5.12 Re-verify D1-D4 oracles, the SQLite D2/D3 idempotency suite, and the `polyfill-manifest-reconcile-bounded-work-postgres` invariant unmodified and green.
+
+## 6. Gates
+
+- [x] 6.1 `openspec validate --strict` passes.
+- [x] 6.2 Full device-exporter + coordinator test suites green; all oracles (D1-D5) green.
+- [x] 6.3 Lint/format (biome) clean on touched files; `tsc --noEmit` clean; complexity-mass ratchet passes (justification updated for `ref-device-exporters.ts`).

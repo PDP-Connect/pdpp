@@ -327,7 +327,10 @@ test('D3: transient connector_instance_busy on the enroll path becomes a typed 5
         expiresAt: '2999-01-01T00:00:00.000Z',
         consumedAt: null,
       }),
-      // First write throws the admission error, simulating writer pressure.
+      // No prior attempt for this code: the D5 resume check finds nothing and
+      // performFirstEnrollment runs, where its first write throws the
+      // admission error, simulating writer pressure.
+      getDevice: async () => null,
       createDevice: async () => { throw busyError; },
     },
     pdppError: (_res, status, code, _msg, _param, extras) => {
@@ -368,5 +371,39 @@ test('D2 adversarial: concurrent retries yield exactly one working token, no dup
     assert.ok(workingCount <= tokens.length, 'no impossible over-count');
     // The very first token must be dead once any rotation happened.
     assert.equal((await heartbeat(asUrl, first.body.device_id, first.body.device_token)).status, 401);
+  });
+});
+
+// D5 (fix-enroll-pending-code-partial-write-idempotency): concurrent FIRST
+// attempts — no prior successful enroll exists yet — against the same PENDING
+// code. Before D5, device_id/source_instance_id were random per attempt, so
+// concurrent first attempts would race to create TWO distinct devices/source
+// instances while only one could ever win consumeEnrollmentCode's
+// WHERE status = 'pending' — the loser then revoked its own (uniquely
+// identified) device, an orphaned-but-mostly-cleaned-up state. D5 makes
+// device_id/source_instance_id deterministic per code, so concurrent first
+// attempts resolve to the SAME identity and must converge exactly like the
+// concurrent-CONSUMED-retry case above: one device, one active credential.
+test('D5: concurrent FIRST attempts for the same still-pending code converge on one device, one active token', async () => {
+  await withServer(async ({ asUrl }) => {
+    const code = await mintCode(asUrl, 'codex-concurrent-first-attempt');
+
+    // No attempt has succeeded yet — all three race as "first" attempts.
+    const attempts = await Promise.all([enroll(asUrl, code), enroll(asUrl, code), enroll(asUrl, code)]);
+    for (const a of attempts) {
+      assert.equal(a.status, 201, `every concurrent first attempt must succeed, got ${a.status}`);
+    }
+    const deviceIds = new Set(attempts.map((a) => a.body.device_id));
+    assert.equal(deviceIds.size, 1, 'concurrent first attempts must converge on exactly one device');
+    const connectorInstanceIds = new Set(attempts.map((a) => a.body.connector_instance_id));
+    assert.equal(connectorInstanceIds.size, 1, 'concurrent first attempts must converge on exactly one connector instance');
+    const sourceInstanceIds = new Set(attempts.map((a) => a.body.source_instance_id));
+    assert.equal(sourceInstanceIds.size, 1, 'concurrent first attempts must converge on exactly one source instance');
+
+    const deviceId = attempts[0].body.device_id;
+    const tokens = attempts.map((a) => a.body.device_token);
+    const results = await Promise.all(tokens.map((t) => heartbeat(asUrl, deviceId, t)));
+    const workingCount = results.filter((r) => r.status === 200).length;
+    assert.equal(workingCount, 1, 'exactly one of the concurrently-issued tokens must be the current active credential');
   });
 });
