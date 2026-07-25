@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 export class CollectorUsageError extends Error {
-  constructor(message, { exitCode = 64 } = {}) {
+  exitCode: number;
+
+  constructor(message: string, { exitCode = 64 }: { exitCode?: number } = {}) {
     super(message);
-    this.name = 'CollectorUsageError';
+    this.name = "CollectorUsageError";
     this.exitCode = exitCode;
   }
 }

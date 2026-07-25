@@ -1,5 +1,6 @@
 {
   "compilerOptions": {
+    "allowImportingTsExtensions": true,
     "allowJs": true,
     "checkJs": false,
     "declaration": true,
@@ -9,12 +10,11 @@
     "moduleResolution": "NodeNext",
     "noEmit": false,
     "outDir": "dist",
+    "rewriteRelativeImportExtensions": true,
     "rootDir": ".",
     "sourceMap": false,
-    "target": "ES2024"
+    "target": "ES2024",
+    "types": ["node"]
   },
-  "include": [
-    "bin/**/*.js",
-    "src/**/*.js"
-  ]
+  "include": ["bin/**/*.js", "src/**/*.ts", "src/package-info.js"]
 }

@@ -7,9 +7,12 @@
 // failures to terminal status without parsing free-form messages. Messages
 // MUST NOT contain bearer material.
 export class OwnerAgentError extends Error {
-  constructor(code, message, exitCode = 69) {
+  code: string;
+  exitCode: number;
+
+  constructor(code: string, message: string, exitCode = 69) {
     super(message);
-    this.name = 'OwnerAgentError';
+    this.name = "OwnerAgentError";
     this.code = code;
     this.exitCode = exitCode;
   }
