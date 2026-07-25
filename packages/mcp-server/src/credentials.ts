@@ -28,6 +28,19 @@ interface LoadScopedCredentialOptions {
   cacheRoot?: string;
 }
 
+// exactOptionalPropertyTypes forbids `{ cacheRoot: undefined }`: readStoredCredential's
+// options type declares `cacheRoot?: string`, not `cacheRoot?: string | undefined`, so
+// the key must be omitted entirely when absent rather than forwarded as an explicit
+// `undefined` value. Exported as its own pure function so absent-vs-present forwarding
+// is directly testable without mocking the `@pdpp/cli` import.
+export function readStoredCredentialOptionsFor(options: LoadScopedCredentialOptions): { cacheRoot?: string } {
+  const readStoredCredentialOptions: { cacheRoot?: string } = {};
+  if (options.cacheRoot !== undefined) {
+    readStoredCredentialOptions.cacheRoot = options.cacheRoot;
+  }
+  return readStoredCredentialOptions;
+}
+
 // The stored credential's decoded JSON shape, narrowed to the fields this
 // adapter reads. `@pdpp/cli` (readStoredCredential) has no published type
 // declarations, so this interface is authored here rather than imported.
@@ -77,7 +90,10 @@ export async function loadScopedCredential(
 
   let result: StoredCredentialResult;
   try {
-    result = (await readStoredCredential(providerUrl, { cacheRoot: options.cacheRoot })) as StoredCredentialResult;
+    result = (await readStoredCredential(
+      providerUrl,
+      readStoredCredentialOptionsFor(options)
+    )) as StoredCredentialResult;
   } catch (error) {
     const cliError = error as CliConnectError;
     // cause IS threaded on every throw below, as the 4th positional arg into

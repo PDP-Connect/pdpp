@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { CredentialError, loadScopedCredential } from "../src/credentials.ts";
+import { CredentialError, loadScopedCredential, readStoredCredentialOptionsFor } from "../src/credentials.ts";
 
 async function makeCacheRoot() {
   return await mkdtemp(join(tmpdir(), "pdpp-mcp-cred-"));
@@ -21,6 +21,25 @@ async function writeCacheEntry(cacheRoot: string, providerUrl: string, payload: 
   await writeFile(path, JSON.stringify(payload), { mode: 0o600 });
   return path;
 }
+
+test("readStoredCredentialOptionsFor omits cacheRoot entirely when absent, forwards it when present", () => {
+  // Discriminates absent-vs-present forwarding by key presence, not value:
+  // `readStoredCredential`'s options type declares `cacheRoot?: string`
+  // under exactOptionalPropertyTypes, so a present key with value `undefined`
+  // is a real, rejected shape distinct from an omitted key — an
+  // `assert.equal(result.cacheRoot, undefined)` check alone would not catch
+  // a regression back to `{ cacheRoot: options.cacheRoot }`. Only exercised
+  // with inputs the function's own (unweakened) type signature accepts;
+  // tsc is the authority on the upstream exactOptionalPropertyTypes mismatch
+  // this helper exists to satisfy, not a runtime probe with a bypassed type.
+  const withoutCacheRoot = readStoredCredentialOptionsFor({});
+  assert.equal("cacheRoot" in withoutCacheRoot, false, "cacheRoot key must be omitted, not set to undefined");
+  assert.deepEqual(Object.keys(withoutCacheRoot), []);
+
+  const withCacheRoot = readStoredCredentialOptionsFor({ cacheRoot: "/tmp/custom-root" });
+  assert.equal("cacheRoot" in withCacheRoot, true, "a present cacheRoot must be forwarded");
+  assert.equal(withCacheRoot.cacheRoot, "/tmp/custom-root");
+});
 
 test("loads scoped credential from cache", async () => {
   const cacheRoot = await makeCacheRoot();
