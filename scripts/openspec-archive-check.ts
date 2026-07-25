@@ -28,18 +28,19 @@
 // audit), and `--json` for a machine-readable shape.
 //
 // Usage:
-//   node scripts/openspec-archive-check.mjs
-//   node scripts/openspec-archive-check.mjs --json
-//   node scripts/openspec-archive-check.mjs --strict
-//   node scripts/openspec-archive-check.mjs --ref origin/main
+//   node scripts/openspec-archive-check.ts
+//   node scripts/openspec-archive-check.ts --json
+//   node scripts/openspec-archive-check.ts --strict
+//   node scripts/openspec-archive-check.ts --ref origin/main
 //
 // The code-exists probe reads paths from the target git ref so it is stable in
 // CI (where the working tree is the branch under test). If the ref is absent
 // (shallow clone, fresh repo) it falls back to the working tree and says so.
 
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
+import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 const here = fileURLToPath(import.meta.url);
@@ -73,10 +74,11 @@ const POST_MERGE_SECTION_PATTERNS = [
 // Publish-*readiness* metadata authoring is implementation work; only the
 // owner-gated "Publish Gate" gate itself is post-merge. Keep the impl ones in.
 const POST_MERGE_SECTION_EXCEPTIONS = [/publish-?readiness/i];
+const SECTION_HEADER_PREFIX_PATTERN = /^#+\s*/;
 
 /** True when a section header is a post-merge / owner gate, not impl work. */
-export function isPostMergeSection(header) {
-  const text = header.replace(/^#+\s*/, "").trim();
+export function isPostMergeSection(header: string): boolean {
+  const text = header.replace(SECTION_HEADER_PREFIX_PATTERN, "").trim();
   if (POST_MERGE_SECTION_EXCEPTIONS.some((re) => re.test(text))) {
     return false;
   }
@@ -87,15 +89,24 @@ const CHECKED = /^\s*- \[x\]/i;
 const UNCHECKED = /^\s*- \[ \]/;
 const SECTION = /^##\s+.+/;
 
+interface TaskTally {
+  done: number;
+  total: number;
+}
+
+export interface TaskTallyResult {
+  gate: TaskTally;
+  hasTasks: boolean;
+  impl: TaskTally;
+}
+
 /**
  * Parse tasks.md into checkbox tallies, split by whether the enclosing section
  * is implementation or a post-merge gate.
- *
- * @returns {{ impl: {done:number,total:number}, gate: {done:number,total:number}, hasTasks: boolean }}
  */
-export function tallyTasks(body) {
-  const impl = { done: 0, total: 0 };
-  const gate = { done: 0, total: 0 };
+export function tallyTasks(body: string): TaskTallyResult {
+  const impl: TaskTally = { done: 0, total: 0 };
+  const gate: TaskTally = { done: 0, total: 0 };
   // Lines before the first `## ` header count as implementation (there is no
   // gate context yet). In practice tasks.md always opens with a section.
   let inGate = false;
@@ -126,6 +137,8 @@ export function tallyTasks(body) {
 // Backtick-quoted path with at least one `/` and a code/spec extension.
 const PATH_REF = /`([a-zA-Z0-9_@][a-zA-Z0-9_./@-]*\/[a-zA-Z0-9_./@-]+\.(?:ts|tsx|js|jsx|mjs|cjs))`/g;
 
+type ReadFileFn = (path: string, encoding: "utf8") => string;
+
 /**
  * Collect distinct multi-segment code paths referenced anywhere in a change.
  *
@@ -133,19 +146,22 @@ const PATH_REF = /`([a-zA-Z0-9_@][a-zA-Z0-9_./@-]*\/[a-zA-Z0-9_./@-]+\.(?:ts|tsx
  * `readFileSync` does) so we can skip absent artifacts without a separate
  * existence probe (which would not see an injected in-memory file system).
  */
-export function extractReferencedPaths(changeDir, readFile = readFileSync) {
-  const refs = new Set();
+export function extractReferencedPaths(changeDir: string, readFile: ReadFileFn = readFileSync): string[] {
+  const refs = new Set<string>();
   const files = ["proposal.md", "design.md", "tasks.md"];
   for (const file of files) {
     const p = join(changeDir, file);
-    let body;
+    let body: string;
     try {
       body = readFile(p, "utf8");
     } catch {
       continue; // artifact absent
     }
     for (const match of body.matchAll(PATH_REF)) {
-      refs.add(match[1]);
+      const [, pathRef] = match;
+      if (pathRef) {
+        refs.add(pathRef);
+      }
     }
   }
   return [...refs].sort();
@@ -166,12 +182,17 @@ const PACKAGE_ROOTS = [
   "scripts",
 ];
 
+interface ExistsOnRef {
+  existsRepoRel: (relPath: string) => boolean;
+  usedRef: string;
+}
+
 /** Build a lookup that answers "does this repo-relative path exist on ref?". */
-function makeExistsOnRef(ref) {
+function makeExistsOnRef(ref: string): ExistsOnRef {
   // Prefer the git tree of `ref` so CI (working tree == branch under test) and
   // local checkouts agree on "landed on main". Fall back to the working tree
   // when the ref is unavailable.
-  let treePaths = null;
+  let treePaths: Set<string> | null = null;
   let usedRef = ref;
   if (ref) {
     try {
@@ -189,7 +210,7 @@ function makeExistsOnRef(ref) {
     usedRef = "(working tree)";
   }
 
-  const existsRepoRel = (relPath) => {
+  const existsRepoRel = (relPath: string): boolean => {
     if (treePaths) {
       return treePaths.has(relPath);
     }
@@ -204,8 +225,8 @@ function makeExistsOnRef(ref) {
  * For each referenced path, find whether it resolves under any known package
  * root on the target ref. Returns the matched repo-relative paths.
  */
-export function resolveReferencedPaths(referenced, existsRepoRel) {
-  const found = [];
+export function resolveReferencedPaths(referenced: string[], existsRepoRel: (relPath: string) => boolean): string[] {
+  const found: string[] = [];
   for (const ref of referenced) {
     for (const root of PACKAGE_ROOTS) {
       const candidate = root ? `${root}/${ref}` : ref;
@@ -222,14 +243,28 @@ export function resolveReferencedPaths(referenced, existsRepoRel) {
 // Classification per change.
 // ---------------------------------------------------------------------------
 
-/**
- * @returns one record describing a change and whether it is archive-due.
- */
-export function classifyChange(changeName, { existsRepoRel, readFile = readFileSync } = {}) {
+export interface ChangeClassification {
+  archiveDue: boolean;
+  codeExists: boolean;
+  implComplete: boolean;
+  landedPaths: string[];
+  name: string;
+  reasons: string[];
+  referencedPaths: string[];
+  tasks: TaskTallyResult;
+}
+
+export function classifyChange(
+  changeName: string,
+  {
+    existsRepoRel,
+    readFile = readFileSync,
+  }: { existsRepoRel?: (relPath: string) => boolean; readFile?: ReadFileFn } = {}
+): ChangeClassification {
   const changeDir = join(changesDir, changeName);
   const tasksFile = join(changeDir, "tasks.md");
 
-  let tasks;
+  let tasks: TaskTallyResult;
   try {
     tasks = tallyTasks(readFile(tasksFile, "utf8"));
   } catch {
@@ -237,8 +272,7 @@ export function classifyChange(changeName, { existsRepoRel, readFile = readFileS
   }
 
   const referenced = extractReferencedPaths(changeDir, readFile);
-  const codeLanded =
-    typeof existsRepoRel === "function" ? resolveReferencedPaths(referenced, existsRepoRel) : [];
+  const codeLanded = typeof existsRepoRel === "function" ? resolveReferencedPaths(referenced, existsRepoRel) : [];
 
   // Signal 1: every implementation checkbox is done (and there is at least one).
   const implComplete = tasks.impl.total > 0 && tasks.impl.done === tasks.impl.total;
@@ -246,7 +280,7 @@ export function classifyChange(changeName, { existsRepoRel, readFile = readFileS
   // Signal 2: the change references concrete code that now exists on the ref.
   const codeExists = codeLanded.length > 0;
 
-  const reasons = [];
+  const reasons: string[] = [];
   if (implComplete) {
     reasons.push(`all ${tasks.impl.total} implementation task(s) done`);
   }
@@ -268,7 +302,7 @@ export function classifyChange(changeName, { existsRepoRel, readFile = readFileS
   };
 }
 
-export function listActiveChanges(dir = changesDir) {
+export function listActiveChanges(dir: string = changesDir): string[] {
   if (!existsSync(dir)) {
     return [];
   }
@@ -282,26 +316,35 @@ export function listActiveChanges(dir = changesDir) {
 // CLI.
 // ---------------------------------------------------------------------------
 
-function parseArgs(argv) {
-  const args = { json: false, strict: false, ref: "main" };
-  for (let i = 0; i < argv.length; i++) {
+interface ParsedArgs {
+  json: boolean;
+  ref: string;
+  strict: boolean;
+}
+
+function parseArgs(argv: string[]): ParsedArgs {
+  const args: ParsedArgs = { json: false, strict: false, ref: "main" };
+  let i = 0;
+  while (i < argv.length) {
     const a = argv[i];
     if (a === "--json") {
       args.json = true;
     } else if (a === "--strict") {
       args.strict = true;
     } else if (a === "--ref") {
-      args.ref = argv[++i] ?? args.ref;
-    } else if (a.startsWith("--ref=")) {
+      i += 1;
+      args.ref = argv[i] ?? args.ref;
+    } else if (a?.startsWith("--ref=")) {
       args.ref = a.slice("--ref=".length);
     } else if (a === "--working-tree") {
       args.ref = "";
     }
+    i += 1;
   }
   return args;
 }
 
-export function runCli(argv, { log = console.log } = {}) {
+export function runCli(argv: string[], { log = console.log }: { log?: (message: string) => void } = {}): number {
   const args = parseArgs(argv);
   const { usedRef, existsRepoRel } = makeExistsOnRef(args.ref);
 
@@ -348,8 +391,8 @@ export function runCli(argv, { log = console.log } = {}) {
   return args.strict ? archiveDue.length : 0;
 }
 
-function isMain() {
-  return process.argv[1] && resolve(process.argv[1]) === here;
+function isMain(): boolean {
+  return Boolean(process.argv[1]) && resolve(process.argv[1] ?? "") === here;
 }
 
 if (isMain()) {

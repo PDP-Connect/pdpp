@@ -13,7 +13,7 @@
 //      asserts the output is well-formed and self-consistent, so a structural
 //      regression (e.g. every change suddenly flagged, or none) fails here.
 //
-// Run: node --test scripts/openspec-archive-check.test.mjs
+// Run: node --test --import tsx scripts/openspec-archive-check.test.ts
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -26,7 +26,20 @@ import {
   resolveReferencedPaths,
   runCli,
   tallyTasks,
-} from "./openspec-archive-check.mjs";
+} from "./openspec-archive-check.ts";
+
+const IMPLEMENTATION_TASK_PATTERN = /implementation task/;
+const ARCHIVE_DUE_CHECK_PATTERN = /OpenSpec archive-due check/;
+
+function compareStrings(a: string, b: string): number {
+  if (a < b) {
+    return -1;
+  }
+  if (a > b) {
+    return 1;
+  }
+  return 0;
+}
 
 // ---------------------------------------------------------------------------
 // Section classification.
@@ -97,15 +110,11 @@ test("implComplete ignores open owner-gate boxes", () => {
   });
   assert.equal(rec.implComplete, true);
   assert.equal(rec.archiveDue, true);
-  assert.match(rec.reasons.join(" "), /implementation task/);
+  assert.match(rec.reasons.join(" "), IMPLEMENTATION_TASK_PATTERN);
 });
 
 test("a genuinely in-flight change is NOT archive-due", () => {
-  const body = [
-    "## 1. Build",
-    "- [x] 1.1 done",
-    "- [ ] 1.2 still open impl work",
-  ].join("\n");
+  const body = ["## 1. Build", "- [x] 1.1 done", "- [ ] 1.2 still open impl work"].join("\n");
   const rec = classifyChange("synthetic", {
     readFile: () => body,
     existsRepoRel: () => false, // no code landed
@@ -123,25 +132,22 @@ test("extractReferencedPaths keeps multi-segment code paths, drops bare names", 
   // Inject a readFile that serves proposal.md and throws (file-absent) for the
   // rest, exactly as readFileSync would. This exercises the real extractor,
   // including its missing-artifact tolerance.
-  const bodies = {
+  const bodies: Record<string, string> = {
     "proposal.md": [
       "references `server/postgres-search.js` and `index.js`",
       "also `reference-implementation/lib/spine.ts`",
       "not a path: `SomeType` or `foo` or `a.b`",
     ].join("\n"),
   };
-  const readFile = (p) => {
-    const key = p.split("/").pop();
+  const readFile = (p: string): string => {
+    const key = p.split("/").pop() ?? "";
     if (key in bodies) {
-      return bodies[key];
+      return bodies[key] ?? "";
     }
     throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
   };
   const got = extractReferencedPaths("/synthetic/change", readFile);
-  assert.deepEqual(got, [
-    "reference-implementation/lib/spine.ts",
-    "server/postgres-search.js",
-  ]);
+  assert.deepEqual(got, ["reference-implementation/lib/spine.ts", "server/postgres-search.js"]);
   // bare `index.js`, `SomeType`, `foo`, `a.b` are excluded.
 });
 
@@ -150,7 +156,7 @@ test("resolveReferencedPaths probes package roots and matches on ref", () => {
     "reference-implementation/server/postgres-search.js",
     "reference-implementation/lib/spine.ts",
   ]);
-  const existsRepoRel = (p) => onRef.has(p);
+  const existsRepoRel = (p: string) => onRef.has(p);
   // `postgres-search.js` named bare-of-package-root resolves under
   // reference-implementation/server via the package-root probe path only when
   // the ref-relative path matches. Here we feed already-server-relative names.
@@ -158,7 +164,7 @@ test("resolveReferencedPaths probes package roots and matches on ref", () => {
     ["server/postgres-search.js", "lib/spine.ts", "server/does-not-exist.js"],
     existsRepoRel
   );
-  assert.deepEqual(found.sort(), [
+  assert.deepEqual(found.sort(compareStrings), [
     "reference-implementation/lib/spine.ts",
     "reference-implementation/server/postgres-search.js",
   ]);
@@ -166,10 +172,7 @@ test("resolveReferencedPaths probes package roots and matches on ref", () => {
 
 test("codeExists signal fires from landed referenced paths alone", () => {
   const rec = classifyChange("synthetic", {
-    readFile: (p) =>
-      p.endsWith("proposal.md")
-        ? "ports `server/records.js`"
-        : "## 1. Build\n- [ ] 1.1 open", // impl not complete
+    readFile: (p) => (p.endsWith("proposal.md") ? "ports `server/records.js`" : "## 1. Build\n- [ ] 1.1 open"), // impl not complete
     existsRepoRel: (p) => p === "reference-implementation/server/records.js",
   });
   assert.equal(rec.implComplete, false);
@@ -186,7 +189,7 @@ test("real openspec tree: check is well-formed and discriminates", () => {
   assert.ok(active.length > 0, "expected active changes in the repo");
   assert.ok(!active.includes("archive"), "archive/ must be excluded");
 
-  const lines = [];
+  const lines: string[] = [];
   const exitCount = runCli(["--json"], { log: (s) => lines.push(s) });
   const payload = JSON.parse(lines.join("\n"));
 
@@ -194,10 +197,7 @@ test("real openspec tree: check is well-formed and discriminates", () => {
   // The check must DISCRIMINATE: not everything archive-due, not nothing. If
   // this ever flips to all-or-none, the signal has broken.
   assert.ok(payload.archiveDue.length >= 0);
-  assert.ok(
-    payload.archiveDue.length <= payload.records.length,
-    "cannot flag more than exist"
-  );
+  assert.ok(payload.archiveDue.length <= payload.records.length, "cannot flag more than exist");
   // exitCount tracks archive-due count for --strict callers.
   assert.equal(exitCount, payload.archiveDue.length);
 
@@ -211,9 +211,9 @@ test("real openspec tree: check is well-formed and discriminates", () => {
 });
 
 test("runCli default (non-strict) reporting returns archive-due count without throwing", () => {
-  const lines = [];
+  const lines: string[] = [];
   const count = runCli([], { log: (s) => lines.push(s) });
   assert.equal(typeof count, "number");
   const text = lines.join("\n");
-  assert.match(text, /OpenSpec archive-due check/);
+  assert.match(text, ARCHIVE_DUE_CHECK_PATTERN);
 });

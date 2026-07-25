@@ -8,7 +8,7 @@ on:
       - "apps/site/content/docs/spec-*.md"
       - "apps/site/content/docs/README.md"
       - "package.json"
-      - "scripts/spec-check.mjs"
+      - "scripts/spec-check.ts"
       - "spec-*.md"
   pull_request:
     paths:
@@ -16,7 +16,7 @@ on:
       - "apps/site/content/docs/spec-*.md"
       - "apps/site/content/docs/README.md"
       - "package.json"
-      - "scripts/spec-check.mjs"
+      - "scripts/spec-check.ts"
       - "spec-*.md"
   workflow_dispatch: {}
 
