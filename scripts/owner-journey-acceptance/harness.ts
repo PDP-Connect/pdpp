@@ -3,9 +3,9 @@
 
 // Owner-journey acceptance harness orchestrator.
 //
-// Binds the pure scanner core (scan.mjs) to the declarative surface manifest
-// (surface-manifest.mjs) and the filesystem. Both the CLI entry
-// (`scripts/check-owner-journey-acceptance.mjs`) and the node:test suite import
+// Binds the pure scanner core (scan.ts) to the declarative surface manifest
+// (surface-manifest.ts) and the filesystem. Both the CLI entry
+// (`scripts/check-owner-journey-acceptance.ts`) and the node:test suite import
 // `runLocalAcceptance` from here.
 //
 // The orchestrator owns file reads and the published-command-surface derivation;
@@ -17,16 +17,19 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  type CommandFreshnessRenderedCommand,
   checkCommandFreshness,
   checkDashboardRouteShellContract,
   checkHelpLinkTargets,
   checkPostSubmitDurability,
   checkSharedShellNavContract,
+  type DashboardRouteFile,
   deriveSubcommandSurface,
   extractRenderedCommands,
+  type Finding,
   scanForbiddenStrings,
   scanRenderedHelperReachability,
-} from "./scan.mjs";
+} from "./scan.ts";
 import {
   ADVANCED_OWNER_UI_FILES,
   COMMAND_SOURCE_FILES,
@@ -35,29 +38,42 @@ import {
   FORBIDDEN_STRING_RULES,
   FULL_SCREEN_DASHBOARD_ROUTE_EXCEPTIONS,
   HELP_LINK_RULE,
-  NORMAL_OWNER_UI_FILES,
   NORMAL_OWNER_ROUTE_SCAN_ROOTS,
+  NORMAL_OWNER_UI_FILES,
   POST_SUBMIT_RULE,
   PUBLISHED_PACKAGES,
   SHARED_SHELL_FILE,
   SHELL_NAV_REQUIRED_ITEMS,
-} from "./surface-manifest.mjs";
+} from "./surface-manifest.ts";
+
+const PAGE_LOADING_TSX_PATTERN = /\/(?:page|loading)\.tsx$/;
+
+function compareStrings(a: string, b: string): number {
+  if (a < b) {
+    return -1;
+  }
+  if (a > b) {
+    return 1;
+  }
+  return 0;
+}
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 /** Repo root: scripts/owner-journey-acceptance/ -> ../../ */
 export const REPO_ROOT = path.resolve(HERE, "..", "..");
 
-async function readRepoFile(repoRelativePath) {
+function readRepoFile(repoRelativePath: string): Promise<string> {
   return readFile(path.join(REPO_ROOT, repoRelativePath), "utf8");
 }
 
-async function walkRepoFiles(repoRelativeDir) {
+async function walkRepoFiles(repoRelativeDir: string): Promise<string[]> {
   const absoluteDir = path.join(REPO_ROOT, repoRelativeDir);
   const entries = await readdir(absoluteDir, { withFileTypes: true });
-  const files = [];
+  const files: string[] = [];
   for (const entry of entries) {
     const rel = path.join(repoRelativeDir, entry.name);
     if (entry.isDirectory()) {
+      // biome-ignore lint/performance/noAwaitInLoops: recursive directory walk — sequential recursion keeps this a plain depth-first walk rather than an unbounded-fanout Promise.all over an unknown tree depth.
       files.push(...(await walkRepoFiles(rel)));
     } else if (entry.isFile()) {
       files.push(rel);
@@ -66,28 +82,30 @@ async function walkRepoFiles(repoRelativeDir) {
   return files;
 }
 
-async function readRouteSources(repoRelativeRoot) {
+async function readRouteSources(repoRelativeRoot: string): Promise<DashboardRouteFile[]> {
   const files = await walkRepoFiles(repoRelativeRoot);
-  const routeFiles = files
-    .filter((file) => /\/(?:page|loading)\.tsx$/.test(file))
-    .sort();
-  const sources = [];
+  const routeFiles = files.filter((file) => PAGE_LOADING_TSX_PATTERN.test(file)).sort(compareStrings);
+  const sources: DashboardRouteFile[] = [];
   for (const file of routeFiles) {
+    // biome-ignore lint/performance/noAwaitInLoops: file reads are ordered so the returned sources array stays in the same deterministic order as routeFiles.
     sources.push({ path: file, src: await readRepoFile(file) });
   }
   return sources;
 }
 
-async function readDashboardRouteSources() {
+function readDashboardRouteSources(): Promise<DashboardRouteFile[]> {
   return readRouteSources(DASHBOARD_ROUTE_ROOT);
 }
 
-async function discoverNormalOwnerRouteFiles(explicitFiles) {
+async function discoverNormalOwnerRouteFiles(explicitFiles: readonly string[]): Promise<string[]> {
   const explicit = new Set(explicitFiles);
-  const discovered = [];
+  const discovered: string[] = [];
   for (const root of NORMAL_OWNER_ROUTE_SCAN_ROOTS) {
-    for (const file of await walkRepoFiles(root)) {
-      if (/\/(?:page|loading)\.tsx$/.test(file) && !explicit.has(file)) {
+    const rootFiles =
+      // biome-ignore lint/performance/noAwaitInLoops: each scan root's directory walk is independent, but sequential iteration keeps route discovery deterministic and attributable per root.
+      await walkRepoFiles(root);
+    for (const file of rootFiles) {
+      if (PAGE_LOADING_TSX_PATTERN.test(file) && !explicit.has(file)) {
         discovered.push(file);
       }
     }
@@ -98,34 +116,40 @@ async function discoverNormalOwnerRouteFiles(explicitFiles) {
 /**
  * Derive { packageName -> Set<subcommand> } from the manifest's declared
  * dispatch sources. Grounds command-freshness in real package source.
- *
- * @returns {Promise<Record<string, Set<string>>>}
  */
-export async function derivePublishedCommandSurface() {
-  const surfaceByPackage = {};
+export async function derivePublishedCommandSurface(): Promise<Record<string, Set<string>>> {
+  const surfaceByPackage: Record<string, Set<string>> = {};
   for (const [pkgName, meta] of Object.entries(PUBLISHED_PACKAGES)) {
+    // biome-ignore lint/performance/noAwaitInLoops: a small, fixed package list — sequential reads keep a failure attributable to one package's dispatch file.
     const src = await readRepoFile(meta.commandDispatchFile);
     surfaceByPackage[pkgName] = deriveSubcommandSurface(src);
   }
   return surfaceByPackage;
 }
 
+export interface RunLocalAcceptanceOptions {
+  advancedFiles?: readonly string[];
+  commandSourceFiles?: readonly string[];
+  normalFiles?: readonly string[];
+}
+
+export interface RunLocalAcceptanceResult {
+  findings: Finding[];
+  ok: boolean;
+  publishedSurface: Record<string, string[]>;
+  renderedCommands: CommandFreshnessRenderedCommand[];
+  scannedFiles: {
+    advanced: string[];
+    commandSource: string[];
+    discoveredNormalRoutes: string[];
+    normal: string[];
+  };
+}
+
 /**
  * Run the full local-source acceptance scan.
- *
- * @param {object} [opts]
- * @param {ReadonlyArray<string>} [opts.normalFiles]
- * @param {ReadonlyArray<string>} [opts.advancedFiles]
- * @param {ReadonlyArray<string>} [opts.commandSourceFiles]
- * @returns {Promise<{
- *   findings: Array,
- *   renderedCommands: Array,
- *   publishedSurface: Record<string, string[]>,
- *   scannedFiles: { normal: string[], advanced: string[], commandSource: string[], discoveredNormalRoutes: string[] },
- *   ok: boolean,
- * }>}
  */
-export async function runLocalAcceptance(opts = {}) {
+export async function runLocalAcceptance(opts: RunLocalAcceptanceOptions = {}): Promise<RunLocalAcceptanceResult> {
   const normalFiles = opts.normalFiles ?? NORMAL_OWNER_UI_FILES;
   const advancedFiles = opts.advancedFiles ?? ADVANCED_OWNER_UI_FILES;
   const commandSourceFiles = opts.commandSourceFiles ?? COMMAND_SOURCE_FILES;
@@ -135,17 +159,15 @@ export async function runLocalAcceptance(opts = {}) {
   const allNormalFiles = [...normalFiles, ...discoveredNormalRouteFiles];
 
   const surfaceByPackage = await derivePublishedCommandSurface();
-  const findings = [];
-  const renderedCommands = [];
+  const findings: Finding[] = [];
+  const renderedCommands: CommandFreshnessRenderedCommand[] = [];
 
   // Rendered-page tiers: forbidden-string scan + indirect-leak reachability +
   // any command literals embedded directly in the page.
-  const scanRenderedTier = async (file, tier) => {
+  const scanRenderedTier = async (file: string, tier: string) => {
     const src = await readRepoFile(file);
     findings.push(...scanForbiddenStrings({ path: file, src, tier, rules: FORBIDDEN_STRING_RULES }));
-    findings.push(
-      ...scanRenderedHelperReachability({ path: file, src, forbiddenHelpers: FORBIDDEN_RENDERED_HELPERS })
-    );
+    findings.push(...scanRenderedHelperReachability({ path: file, src, forbiddenHelpers: FORBIDDEN_RENDERED_HELPERS }));
     const cmds = extractRenderedCommands(src).map((c) => ({ ...c, path: file }));
     const fresh = checkCommandFreshness({ commands: cmds, surfaceByPackage, publishedPackages: PUBLISHED_PACKAGES });
     findings.push(...fresh.findings);
@@ -153,9 +175,11 @@ export async function runLocalAcceptance(opts = {}) {
   };
 
   for (const file of allNormalFiles) {
+    // biome-ignore lint/performance/noAwaitInLoops: findings accumulate in file order so the report reads deterministically; this is a file-scan tool, not a hot path.
     await scanRenderedTier(file, "normal");
   }
   for (const file of advancedFiles) {
+    // biome-ignore lint/performance/noAwaitInLoops: same deterministic-ordering rationale as the normal-tier loop above.
     await scanRenderedTier(file, "advanced");
   }
 
@@ -164,6 +188,7 @@ export async function runLocalAcceptance(opts = {}) {
   // published subcommand. The reachability guard above is what stops a page from
   // wiring a developer-only helper into rendered output.
   for (const file of commandSourceFiles) {
+    // biome-ignore lint/performance/noAwaitInLoops: findings accumulate in file order for a deterministic report.
     const src = await readRepoFile(file);
     const cmds = extractRenderedCommands(src).map((c) => ({ ...c, path: file }));
     const fresh = checkCommandFreshness({ commands: cmds, surfaceByPackage, publishedPackages: PUBLISHED_PACKAGES });
@@ -173,6 +198,7 @@ export async function runLocalAcceptance(opts = {}) {
 
   // Help-link new-tab check (scoped to declared static-secret files).
   for (const file of HELP_LINK_RULE.files) {
+    // biome-ignore lint/performance/noAwaitInLoops: findings accumulate in file order for a deterministic report.
     const src = await readRepoFile(file);
     findings.push(...checkHelpLinkTargets({ path: file, src }));
   }
@@ -203,9 +229,7 @@ export async function runLocalAcceptance(opts = {}) {
     );
   }
 
-  const publishedSurface = Object.fromEntries(
-    Object.entries(surfaceByPackage).map(([k, v]) => [k, [...v].sort()])
-  );
+  const publishedSurface = Object.fromEntries(Object.entries(surfaceByPackage).map(([k, v]) => [k, [...v].sort()]));
 
   return {
     findings,

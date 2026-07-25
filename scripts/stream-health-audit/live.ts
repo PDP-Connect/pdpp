@@ -43,8 +43,8 @@
 //     manifest (`required: true` + accepted-absence `coverage_policy`).
 //
 // Auth is acquired through the shared `resolveOwnerAuthForLive` helper in
-// scripts/lib/owner-session.mjs — the same owner-session acquisition path
-// scripts/owner-journey-acceptance/live.mjs uses. Recognized environment
+// scripts/lib/owner-session.ts — the same owner-session acquisition path
+// scripts/owner-journey-acceptance/live.ts uses. Recognized environment
 // variables (first match wins):
 //   PDPP_ACCEPTANCE_ORIGIN or --origin   the instance origin
 //   PDPP_OWNER_SESSION_COOKIE            full Cookie header for an owner session
@@ -54,21 +54,34 @@
 // before any HTTP call instead of being claimed as supported — it is never
 // sent as an Authorization header to a cookie-gated /_ref route.
 
-import { auditStreamHealth } from "./audit.mjs";
-import { resolveOwnerAuthForLive } from "../lib/owner-session.mjs";
+import { type FetchImpl, resolveOwnerAuthForLive } from "../lib/owner-session.ts";
+import { auditStreamHealth, type StreamHealthAuditResult } from "./audit.ts";
+
+const REGEX_PATTERN = /\/+$/;
+
+interface OwnerAuthForStreamHealth {
+  error: string | null;
+  header: Record<string, string>;
+  mode: "bearer" | "cookie" | "none" | "password-session";
+  supported: boolean;
+}
 
 /**
  * Resolve owner auth from the environment without exposing its value.
  * Cookie takes precedence over password; a bare PDPP_OWNER_TOKEN is reported
  * as unsupported rather than sent as a bearer header to a cookie-only route.
  *
- * @param {object} args
- * @param {string} args.base        origin, no trailing slash
- * @param {NodeJS.ProcessEnv} [args.env]
- * @param {Function} [args.fetchImpl]
- * @returns {Promise<{ header: Record<string,string>, mode: "cookie"|"password-session"|"bearer"|"none", supported: boolean, error: string|null }>}
+ * @param args.base        origin, no trailing slash
  */
-export async function resolveOwnerAuthForStreamHealth({ base, env = process.env, fetchImpl = fetch }) {
+export async function resolveOwnerAuthForStreamHealth({
+  base,
+  env = process.env,
+  fetchImpl = fetch as unknown as FetchImpl,
+}: {
+  base: string;
+  env?: NodeJS.ProcessEnv;
+  fetchImpl?: FetchImpl;
+}): Promise<OwnerAuthForStreamHealth> {
   const cookie = env.PDPP_OWNER_SESSION_COOKIE?.trim();
   if (cookie) {
     return { header: { cookie }, mode: "cookie", supported: true, error: null };
@@ -77,7 +90,7 @@ export async function resolveOwnerAuthForStreamHealth({ base, env = process.env,
   const password = env.PDPP_OWNER_PASSWORD?.trim();
   if (password) {
     const result = await resolveOwnerAuthForLive({ base, env, fetchImpl });
-    return { ...result, supported: !result.error };
+    return { ...result, header: result.header as Record<string, string>, supported: !result.error };
   }
 
   const token = env.PDPP_OWNER_TOKEN?.trim();
@@ -88,44 +101,69 @@ export async function resolveOwnerAuthForStreamHealth({ base, env = process.env,
   return { header: {}, mode: "none", supported: false, error: null };
 }
 
-function asArrayList(raw) {
+function asArrayList(raw: unknown): unknown[] {
   if (Array.isArray(raw)) {
     return raw;
   }
-  if (raw && typeof raw === "object" && Array.isArray(raw.data)) {
-    return raw.data;
+  if (raw && typeof raw === "object" && Array.isArray((raw as Record<string, unknown>).data)) {
+    return (raw as Record<string, unknown>).data as unknown[];
   }
   return [];
+}
+
+interface LiveStreamHealthAuditResult {
+  authCapability: string;
+  authMode: string;
+  connectionCount: number;
+  error: string | null;
+  failures: StreamHealthAuditResult["failures"];
+  fetched: boolean;
+  inconclusive: StreamHealthAuditResult["inconclusive"];
+  ok: boolean;
+  origin: string;
+  status: StreamHealthAuditResult["status"];
 }
 
 /**
  * Fetch `/_ref/connectors` from a live origin and run the pure audit over
  * the result.
  *
- * @param {object} args
- * @param {string} args.origin   e.g. https://pdpp.example.com
- * @param {object} [args.env]    defaults to process.env
- * @param {Function} [args.fetchImpl] injectable for tests; defaults to global fetch
- * @returns {Promise<{ origin: string, authMode: string, authCapability: string,
- *   fetched: boolean, error: string|null, connectionCount: number,
- *   ok: boolean, status: "pass"|"fail"|"inconclusive", failures: Array,
- *   inconclusive: Array }>}
+ * @param args.origin   e.g. https://pdpp.example.com
+ * @param [args.env]    defaults to process.env
+ * @param [args.fetchImpl] injectable for tests; defaults to global fetch
  */
-export async function runLiveStreamHealthAudit({ origin, env = process.env, fetchImpl = fetch }) {
-  const base = origin.replace(/\/+$/, "");
-  const { header, mode, supported, error: authError } = await resolveOwnerAuthForStreamHealth({
+export async function runLiveStreamHealthAudit({
+  origin,
+  env = process.env,
+  fetchImpl = fetch as unknown as FetchImpl,
+}: {
+  env?: NodeJS.ProcessEnv;
+  fetchImpl?: FetchImpl;
+  origin: string;
+}): Promise<LiveStreamHealthAuditResult> {
+  const base = origin.replace(REGEX_PATTERN, "");
+  const {
+    header,
+    mode,
+    supported,
+    error: authError,
+  } = await resolveOwnerAuthForStreamHealth({
     base,
     env,
     fetchImpl,
   });
 
   if (!supported) {
-    const error =
-      mode === "bearer"
-        ? "PDPP_OWNER_TOKEN is not supported for /_ref/connectors; set PDPP_OWNER_SESSION_COOKIE or PDPP_OWNER_PASSWORD instead."
-        : mode === "password-session"
-          ? `Owner login via PDPP_OWNER_PASSWORD failed: ${authError}`
-          : "No owner session supplied. Set PDPP_OWNER_SESSION_COOKIE or PDPP_OWNER_PASSWORD to audit /_ref/connectors.";
+    let error: string;
+    if (mode === "bearer") {
+      error =
+        "PDPP_OWNER_TOKEN is not supported for /_ref/connectors; set PDPP_OWNER_SESSION_COOKIE or PDPP_OWNER_PASSWORD instead.";
+    } else if (mode === "password-session") {
+      error = `Owner login via PDPP_OWNER_PASSWORD failed: ${authError}`;
+    } else {
+      error =
+        "No owner session supplied. Set PDPP_OWNER_SESSION_COOKIE or PDPP_OWNER_PASSWORD to audit /_ref/connectors.";
+    }
     return {
       origin: base,
       authMode: mode,

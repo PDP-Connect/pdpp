@@ -13,15 +13,53 @@
 // owner session cookie or bearer through to the fetch and reports only whether
 // auth was supplied, never its value.
 
-import { FORBIDDEN_STRING_RULES } from "./surface-manifest.mjs";
-import { lineOf, scanForbiddenStrings } from "./scan.mjs";
-import { loginWithOwnerPassword } from "../lib/owner-session.mjs";
+import { loginWithOwnerPassword, type OwnerAuthResult } from "../lib/owner-session.ts";
+import { type Finding, lineOf, scanForbiddenStrings } from "./scan.ts";
+import { FORBIDDEN_STRING_RULES } from "./surface-manifest.ts";
+
+const BARIA_HIDDEN_TRUE_PATTERN = /\baria-hidden=(["'])true\1/i;
+const REFRESH_NOW_RUN_PATTERN =
+  /\b(Refresh now|Run a refresh|Recover|Retry|Reconnect|Reauthorize|Review|Set schedule|Sync now)\b/i;
+const BREFRESH_PATTERN = /\brefresh\b/i;
+const BCLIENT_CLI_PATTERN = /\bclient\s+cli_[a-z0-9]+\b/i;
+const BCLIENT_HTTPS_PATTERN = /\bclient\s+https?:\/\/[^\s]+/i;
+const BGRANTS_ARE_WITHIN_THEIR_PATTERN = /\bGrants are within their limits\b/i;
+const BBACKUPS_ARE_PATTERN = /\bbackups are on\b/i;
+const SOURCE_ISSUES_REVIEW_HERE_PATTERN =
+  /No source issues to review here|Nothing needs you\.[^.]*sources are syncing\.|everything'?s syncing/i;
+const BSTART_SESSION_PATTERN = /\bStart session\b/i;
+const CONNECT_BROWSER_SESSION_AMAZON_PATTERN = /\/connect\/browser-session\/amazon\/start/;
+const BSCHEDULES_PATTERN = /\bSchedules\b/i;
+const BSCHEDULED_CONNECTIONS_BNO_SCHEDULED_PATTERN = /\bScheduled connections\b|\bNo scheduled connections yet\b/i;
+const BSCHEDULED_BUNSCHEDULED_PATTERN = /\bscheduled\b.*\bunscheduled\b/i;
+const BEXPLORE_PATTERN = /\bExplore\b/i;
+const SEARCH_NAMES_FIELDS_AND_PATTERN =
+  /Search names, fields, and values|Search records|text across every searchable stream|\boperators\b.*\bcon:/i;
+const BFILTERS_PATTERN = /\bFilters\b/i;
+const BNEWEST_BOLDEST_PATTERN = /\bnewest\b.*\boldest\b/i;
+const BSOURCES_PATTERN = /\bSources\b/i;
+const TURNED_AWAY_PATTERN = /turned away,\s+([a-z][a-z0-9_]*)\b/i;
+const BDEAD_LETTER_PATTERN = /\bdead-letter(?:ed)?\b/i;
+const FAILURES_OPEN_RUNS_PATTERN = /\b0 failures\s*·\s*Open runs\b/i;
+const BWITH_GAPS_PATTERN = /\bwith gaps\b/i;
+const BPARTIAL_PATTERN = /\bpartial\b/i;
+const TRAILING_SLASHES_PATTERN = /\/+$/;
+
+interface FetchResponseLike {
+  headers: { get?: (name: string) => string | null; getSetCookie?: () => string[] };
+  status: number;
+  text: () => Promise<string>;
+}
+/** Narrower than the DOM `fetch` type so tests can inject lightweight response mocks structurally. */
+type FetchImpl = (url: string | URL, init?: RequestInit) => Promise<FetchResponseLike>;
+/** Loosely-shaped connector summary from `/_ref/connectors` — read via optional chaining throughout, never assumed complete. */
+type Connector = Record<string, unknown>;
 
 /**
  * Owner setup surfaces to probe on a live origin. Path + tier; the forbidden
  * rules for that tier are applied to the served HTML.
  */
-export const LIVE_SURFACES = [
+export const LIVE_SURFACES: readonly { path: string; tier: string }[] = [
   { path: "/", tier: "normal" },
   { path: "/connect", tier: "normal" },
   { path: "/connect/browser-session/amazon", tier: "normal" },
@@ -44,9 +82,11 @@ export const LIVE_SURFACES = [
  *   PDPP_OWNER_SESSION_COOKIE — full Cookie header value for an owner session.
  *   PDPP_OWNER_TOKEN          — owner bearer token.
  *
- * @returns {{ header: Record<string,string>, mode: "cookie"|"bearer"|"none" }}
  */
-export function resolveOwnerAuthFromEnv(env = process.env) {
+export function resolveOwnerAuthFromEnv(env: NodeJS.ProcessEnv = process.env): {
+  header: Record<string, string>;
+  mode: "cookie" | "bearer" | "none";
+} {
   const cookie = env.PDPP_OWNER_SESSION_COOKIE?.trim();
   if (cookie) {
     return { header: { cookie }, mode: "cookie" };
@@ -58,10 +98,22 @@ export function resolveOwnerAuthFromEnv(env = process.env) {
   return { header: {}, mode: "none" };
 }
 
-async function resolveOwnerAuthForLive({ base, env, fetchImpl }) {
+type OwnerAuthForLive =
+  | OwnerAuthResult<"password-session">
+  | { error: null; header: Record<string, string>; mode: "bearer" | "cookie" | "none" };
+
+function resolveOwnerAuthForLive({
+  base,
+  env,
+  fetchImpl,
+}: {
+  base: string;
+  env: NodeJS.ProcessEnv;
+  fetchImpl: FetchImpl;
+}): Promise<OwnerAuthForLive> {
   const cookie = env.PDPP_OWNER_SESSION_COOKIE?.trim();
   if (cookie) {
-    return { header: { cookie }, mode: "cookie", error: null };
+    return Promise.resolve({ header: { cookie }, mode: "cookie", error: null });
   }
 
   const password = env.PDPP_OWNER_PASSWORD?.trim();
@@ -74,13 +126,13 @@ async function resolveOwnerAuthForLive({ base, env, fetchImpl }) {
   // older/local references that did.
   const token = env.PDPP_OWNER_TOKEN?.trim();
   if (token) {
-    return { header: { authorization: `Bearer ${token}` }, mode: "bearer", error: null };
+    return Promise.resolve({ header: { authorization: `Bearer ${token}` }, mode: "bearer", error: null });
   }
 
-  return { header: {}, mode: "none", error: null };
+  return Promise.resolve({ header: {}, mode: "none", error: null });
 }
 
-function htmlToText(html) {
+function htmlToText(html: string): string {
   return String(html)
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
     .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
@@ -93,18 +145,16 @@ function htmlToText(html) {
     .trim();
 }
 
-function htmlToProseText(html) {
-  return htmlToText(
-    String(html).replace(/<(pre|code|kbd|samp)\b[^>]*>[\s\S]*?<\/\1>/gi, " ")
-  );
+function htmlToProseText(html: string): string {
+  return htmlToText(String(html).replace(/<(pre|code|kbd|samp)\b[^>]*>[\s\S]*?<\/\1>/gi, " "));
 }
 
-function visibleMonogramInitials(html) {
-  const out = [];
+function visibleMonogramInitials(html: string): string[] {
+  const out: string[] = [];
   const re = /<span\b([^>]*\bclass=(["'])[^"']*\bpdpp-monogram\b[^"']*\2[^>]*)>([\s\S]*?)<\/span>/gi;
   for (const match of String(html).matchAll(re)) {
     const attrs = match[1] ?? "";
-    if (/\baria-hidden=(["'])true\1/i.test(attrs)) {
+    if (BARIA_HIDDEN_TRUE_PATTERN.test(attrs)) {
       continue;
     }
     const initials = htmlToText(match[3] ?? "");
@@ -115,89 +165,95 @@ function visibleMonogramInitials(html) {
   return out;
 }
 
-function asArrayList(raw) {
+function asArrayList(raw: unknown): Connector[] {
   if (Array.isArray(raw)) {
-    return raw;
+    return raw as Connector[];
   }
-  if (raw && typeof raw === "object" && Array.isArray(raw.data)) {
-    return raw.data;
+  if (raw && typeof raw === "object" && Array.isArray((raw as Record<string, unknown>).data)) {
+    return (raw as Record<string, unknown>).data as Connector[];
   }
   return [];
 }
 
-function ownerSatisfiableAction(verdict) {
-  const actions = Array.isArray(verdict?.required_actions) ? verdict.required_actions : [];
-  return actions.some((action) => action?.audience === "owner" && action?.satisfied_when?.kind !== "none");
+function ownerSatisfiableAction(verdict: Connector | null): boolean {
+  const actions = Array.isArray(verdict?.required_actions) ? (verdict?.required_actions as Connector[]) : [];
+  return actions.some(
+    (action) => action?.audience === "owner" && (action?.satisfied_when as Connector | undefined)?.kind !== "none"
+  );
 }
 
-function ownerSatisfiableActions(verdict) {
-  const actions = Array.isArray(verdict?.required_actions) ? verdict.required_actions : [];
-  return actions.filter((action) => action?.audience === "owner" && action?.satisfied_when?.kind !== "none");
+function ownerSatisfiableActions(verdict: Connector | null): Connector[] {
+  const actions = Array.isArray(verdict?.required_actions) ? (verdict?.required_actions as Connector[]) : [];
+  return actions.filter(
+    (action) => action?.audience === "owner" && (action?.satisfied_when as Connector | undefined)?.kind !== "none"
+  );
 }
 
-function compactStrings(values) {
+function compactStrings(values: readonly unknown[]): string[] {
   return Array.from(
     new Set(
       values
-        .filter((value) => typeof value === "string")
+        .filter((value): value is string => typeof value === "string")
         .map((value) => value.trim())
         .filter((value) => value.length > 0)
     )
   );
 }
 
-function nextStepTextCandidates(action) {
+function nextStepTextCandidates(action: Connector): string[] {
+  const remediation = action.remediation as Connector | undefined;
   return compactStrings([
-    action?.cta,
-    action?.remediation?.label,
-    action?.remediation?.summary,
-    ...(Array.isArray(action?.remediation?.commands)
-      ? action.remediation.commands.map((command) => command?.label)
+    action.cta,
+    remediation?.label,
+    remediation?.summary,
+    ...(Array.isArray(remediation?.commands)
+      ? (remediation.commands as Connector[]).map((command) => command?.label)
       : []),
   ]);
 }
 
-function owesOwnerNextStepFromRaw(connector) {
-  if (connector?.revoked_at) {
+function owesOwnerNextStepFromRaw(connector: Connector): boolean {
+  if (connector.revoked_at) {
     return false;
   }
-  const health = connector?.connection_health;
+  const health = connector.connection_health as Connector | undefined;
   if (health?.reason_code === "stale_manual_refresh") {
     return true;
   }
-  if (health?.axes?.outbox === "stalled") {
+  if ((health?.axes as Connector | undefined)?.outbox === "stalled") {
     return true;
   }
-  if (connector?.schedule?.human_attention_needed === true) {
+  if ((connector.schedule as Connector | undefined)?.human_attention_needed === true) {
     return true;
   }
   return false;
 }
 
-function detailHasOwnerActionVerb(text) {
-  return /\b(Refresh now|Run a refresh|Recover|Retry|Reconnect|Reauthorize|Review|Set schedule|Sync now)\b/i.test(text);
+function detailHasOwnerActionVerb(text: string): boolean {
+  return REFRESH_NOW_RUN_PATTERN.test(text);
 }
 
-function renderedVerdict(connector) {
-  const verdict = connector?.rendered_verdict;
-  return verdict && typeof verdict === "object" ? verdict : null;
+function renderedVerdict(connector: Connector): Connector | null {
+  const verdict = connector.rendered_verdict;
+  return verdict && typeof verdict === "object" ? (verdict as Connector) : null;
 }
 
-function connectorLabel(connector) {
-  return (
-    connector?.display_name ||
-    connector?.connector_display_name ||
-    connector?.connector_id ||
-    connector?.connection_id ||
-    "A source"
+function connectorLabel(connector: Connector): string {
+  return String(
+    connector.display_name ||
+      connector.connector_display_name ||
+      connector.connector_id ||
+      connector.connection_id ||
+      "A source"
   );
 }
 
-function sourceCountPhrase(connector) {
-  const records = Number(connector?.total_records);
-  const rawStreamCount = connector?.stream_count ?? (Array.isArray(connector?.streams) ? connector.streams.length : null);
+function sourceCountPhrase(connector: Connector): string | null {
+  const records = Number(connector.total_records);
+  const rawStreamCount =
+    connector.stream_count ?? (Array.isArray(connector.streams) ? (connector.streams as unknown[]).length : null);
   const streams = Number(rawStreamCount);
-  if (!Number.isFinite(records) || !Number.isFinite(streams)) {
+  if (!(Number.isFinite(records) && Number.isFinite(streams))) {
     return null;
   }
   const recordCount = Math.max(0, Math.floor(records));
@@ -207,13 +263,13 @@ function sourceCountPhrase(connector) {
   }`;
 }
 
-function connectorRouteId(connector) {
-  const id = connector?.connector_instance_id ?? connector?.connection_id ?? null;
+function connectorRouteId(connector: Connector): string | null {
+  const id = connector.connector_instance_id ?? connector.connection_id ?? null;
   return typeof id === "string" && id.trim() ? id.trim() : null;
 }
 
-function isMaterialSourceIssue(connector) {
-  if (connector?.revoked_at) {
+function isMaterialSourceIssue(connector: Connector): boolean {
+  if (connector.revoked_at) {
     return false;
   }
   const verdict = renderedVerdict(connector);
@@ -223,7 +279,7 @@ function isMaterialSourceIssue(connector) {
   if (verdict.channel === "attention" && ownerSatisfiableAction(verdict)) {
     return false;
   }
-  const pill = verdict.pill && typeof verdict.pill === "object" ? verdict.pill : {};
+  const pill = (verdict.pill && typeof verdict.pill === "object" ? verdict.pill : {}) as Connector;
   return (
     pill.tone === "red" ||
     pill.label === "Can't collect" ||
@@ -233,47 +289,47 @@ function isMaterialSourceIssue(connector) {
   );
 }
 
-function isHealthyRefreshAdvisory(connector) {
-  if (connector?.revoked_at) {
+function isHealthyRefreshAdvisory(connector: Connector): boolean {
+  if (connector.revoked_at) {
     return false;
   }
   const verdict = renderedVerdict(connector);
-  if (!verdict || verdict.channel !== "advisory") {
+  if (verdict?.channel !== "advisory") {
     return false;
   }
-  const pill = verdict.pill && typeof verdict.pill === "object" ? verdict.pill : {};
+  const pill = (verdict.pill && typeof verdict.pill === "object" ? verdict.pill : {}) as Connector;
   if (pill.tone !== "green" && pill.label !== "Healthy") {
     return false;
   }
   const actionText = Array.isArray(verdict.required_actions)
-    ? verdict.required_actions.map((action) => `${action?.kind ?? ""} ${action?.cta ?? ""}`).join(" ")
+    ? (verdict.required_actions as Connector[]).map((action) => `${action?.kind ?? ""} ${action?.cta ?? ""}`).join(" ")
     : "";
-  return /\brefresh\b/i.test(`${verdict.forward_statement ?? ""} ${actionText}`);
+  return BREFRESH_PATTERN.test(`${verdict.forward_statement ?? ""} ${actionText}`);
 }
 
-function isRawMaterialSourceIssue(connector) {
-  if (connector?.revoked_at) {
+function isRawMaterialSourceIssue(connector: Connector): boolean {
+  if (connector.revoked_at) {
     return false;
   }
-  const health = connector?.connection_health;
+  const health = connector.connection_health as Connector | undefined;
   const state = String(health?.state ?? "").toLowerCase();
   if (state === "degraded" || state === "blocked") {
     return true;
   }
-  const coverage = String(health?.axes?.coverage ?? "").toLowerCase();
+  const coverage = String((health?.axes as Connector | undefined)?.coverage ?? "").toLowerCase();
   if (coverage === "terminal_gap" || coverage === "retryable_gap" || coverage === "partial") {
     return true;
   }
-  const outbox = String(health?.axes?.outbox ?? "").toLowerCase();
+  const outbox = String((health?.axes as Connector | undefined)?.outbox ?? "").toLowerCase();
   if (outbox === "stalled") {
     return true;
   }
-  const runStatus = String(connector?.last_run?.status ?? "").toLowerCase();
+  const runStatus = String((connector.last_run as Connector | undefined)?.status ?? "").toLowerCase();
   return runStatus === "failed" || runStatus === "rejected";
 }
 
-function shouldProbeSourceDetailRecoveryCopy(connector) {
-  if (connector?.revoked_at) {
+function shouldProbeSourceDetailRecoveryCopy(connector: Connector): boolean {
+  if (connector.revoked_at) {
     return false;
   }
   const verdict = renderedVerdict(connector);
@@ -285,11 +341,11 @@ function shouldProbeSourceDetailRecoveryCopy(connector) {
 
 const SUCCESS_RUN_STATUSES = new Set(["succeeded", "success", "completed"]);
 
-function collectionReportHasOpenGaps(report) {
+function collectionReportHasOpenGaps(report: unknown): boolean {
   if (!Array.isArray(report)) {
     return false;
   }
-  return report.some((entry) => {
+  return (report as Connector[]).some((entry) => {
     if (entry?.coverage_condition !== "complete") {
       return true;
     }
@@ -300,22 +356,23 @@ function collectionReportHasOpenGaps(report) {
   });
 }
 
-function shouldProbeSourceDetailRunGapHonesty(connector) {
-  if (connector?.revoked_at) {
+function shouldProbeSourceDetailRunGapHonesty(connector: Connector): boolean {
+  if (connector.revoked_at) {
     return false;
   }
-  const lastRunStatus = String(connector?.last_run?.status ?? "").toLowerCase();
-  return SUCCESS_RUN_STATUSES.has(lastRunStatus) && collectionReportHasOpenGaps(connector?.collection_report);
+  const lastRunStatus = String((connector.last_run as Connector | undefined)?.status ?? "").toLowerCase();
+  return SUCCESS_RUN_STATUSES.has(lastRunStatus) && collectionReportHasOpenGaps(connector.collection_report);
 }
 
-function runLiveGrantCaptionChecks({ htmlByPath }) {
-  const findings = [];
-  const checks = [];
+function runLiveGrantCaptionChecks({ htmlByPath }: { htmlByPath: Map<string, string> }): {
+  checks: { detail: string; id: string; status: string }[];
+  findings: Finding[];
+} {
+  const findings: Finding[] = [];
+  const checks: { detail: string; id: string; status: string }[] = [];
   const grantsText = htmlToText(htmlByPath.get("/grants") ?? "");
   const rawClientCaption =
-    grantsText.match(/\bclient\s+cli_[a-z0-9]+\b/i)?.[0] ??
-    grantsText.match(/\bclient\s+https?:\/\/[^\s]+/i)?.[0] ??
-    null;
+    grantsText.match(BCLIENT_CLI_PATTERN)?.[0] ?? grantsText.match(BCLIENT_HTTPS_PATTERN)?.[0] ?? null;
 
   if (rawClientCaption) {
     findings.push({
@@ -338,13 +395,23 @@ function runLiveGrantCaptionChecks({ htmlByPath }) {
   return { findings, checks };
 }
 
-async function fetchJsonOrFinding({ base, header, fetchImpl, path }) {
+async function fetchJsonOrFinding({
+  base,
+  header,
+  fetchImpl,
+  path,
+}: {
+  base: string;
+  fetchImpl: FetchImpl;
+  header: Record<string, string>;
+  path: string;
+}): Promise<{ data: unknown; finding: Finding | null }> {
   try {
     const res = await fetchImpl(`${base}${path}`, {
       headers: { accept: "application/json", ...header },
       redirect: "manual",
     });
-    const status = res.status;
+    const { status } = res;
     const body = await res.text();
     if (status < 200 || status >= 300) {
       return {
@@ -377,9 +444,20 @@ async function fetchJsonOrFinding({ base, header, fetchImpl, path }) {
   }
 }
 
-async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
-  const findings = [];
-  const checks = [];
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: this is the live semantic-probe orchestrator running ~10 independent trust-claim checks against the rendered dashboard — carried over unchanged from the .mjs source.
+async function runLiveSemanticChecks({
+  base,
+  header,
+  fetchImpl,
+  htmlByPath,
+}: {
+  base: string;
+  fetchImpl: FetchImpl;
+  header: Record<string, string>;
+  htmlByPath: Map<string, string>;
+}): Promise<{ checks: { detail: string; id: string; status: string }[]; findings: Finding[] }> {
+  const findings: Finding[] = [];
+  const checks: { detail: string; id: string; status: string }[] = [];
 
   const connectorsResult = await fetchJsonOrFinding({
     base,
@@ -408,13 +486,16 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
   }));
   const rawSourceIssues = connectors.filter(isRawMaterialSourceIssue).map((connector) => ({
     label: connectorLabel(connector),
-    reason: connector?.connection_health?.reason_code ?? connector?.last_run?.failure_reason ?? "raw source issue",
+    reason:
+      (connector?.connection_health as Connector | undefined)?.reason_code ??
+      (connector?.last_run as Connector | undefined)?.failure_reason ??
+      "raw source issue",
   }));
   const dashboardText = htmlToText(htmlByPath.get("/") ?? "");
   const dashboardVisibleMonograms = visibleMonogramInitials(htmlByPath.get("/") ?? "");
   const unsupportedAllClearClaim =
-    dashboardText.match(/\bGrants are within their limits\b/i)?.[0] ??
-    dashboardText.match(/\bbackups are on\b/i)?.[0] ??
+    dashboardText.match(BGRANTS_ARE_WITHIN_THEIR_PATTERN)?.[0] ??
+    dashboardText.match(BBACKUPS_ARE_PATTERN)?.[0] ??
     null;
   if (unsupportedAllClearClaim) {
     findings.push({
@@ -440,7 +521,7 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
   }
 
   if (sourceIssues.length > 0 || rawSourceIssues.length > 0) {
-    const allClearRe = /No source issues to review here|Nothing needs you\.[^.]*sources are syncing\.|everything'?s syncing/i;
+    const allClearRe = SOURCE_ISSUES_REVIEW_HERE_PATTERN;
     if (allClearRe.test(dashboardText)) {
       findings.push({
         ruleId: "dashboard-source-issue-all-clear",
@@ -455,9 +536,12 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
   }
 
   const overstatedHealthyAdvisories = healthyRefreshAdvisories.filter((issue) => {
-    const renderedAsBroken = dashboardText.includes(`${issue.label} is degraded`) || dashboardText.includes(`${issue.label} can't collect`);
+    const renderedAsBroken =
+      dashboardText.includes(`${issue.label} is degraded`) || dashboardText.includes(`${issue.label} can't collect`);
     const renderedWithRefreshStatement =
-      issue.forwardStatement.length > 0 && dashboardText.includes(issue.label) && dashboardText.includes(issue.forwardStatement);
+      issue.forwardStatement.length > 0 &&
+      dashboardText.includes(issue.label) &&
+      dashboardText.includes(issue.forwardStatement);
     return renderedAsBroken || renderedWithRefreshStatement;
   });
   if (overstatedHealthyAdvisories.length > 0) {
@@ -466,7 +550,10 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
       class: "dashboard-trust-claim",
       path: "live:/",
       line: 0,
-      excerpt: overstatedHealthyAdvisories.map((issue) => issue.label).slice(0, 5).join(", "),
+      excerpt: overstatedHealthyAdvisories
+        .map((issue) => issue.label)
+        .slice(0, 5)
+        .join(", "),
       rationale:
         "A healthy source with a refresh-available advisory must not appear in the dashboard issue list as degraded or broken. The source detail may offer Refresh now, but the dashboard must not manufacture urgency.",
     });
@@ -480,7 +567,10 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
         class: "dashboard-trust-claim",
         path: "live:/",
         line: 0,
-        excerpt: sourceIssues.map((issue) => issue.label).slice(0, 5).join(", "),
+        excerpt: sourceIssues
+          .map((issue) => issue.label)
+          .slice(0, 5)
+          .join(", "),
         rationale:
           "The dashboard reference data contains material source issues, but none of their source labels appear on the rendered dashboard. The owner needs a visible issue row, not a silent calm state.",
       });
@@ -532,8 +622,7 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
   const browserSessionHtml = htmlByPath.get(browserSessionPath) ?? "";
   const browserSessionText = htmlToText(browserSessionHtml);
   const exposesDirectNewBrowserSource =
-    /\bStart session\b/i.test(browserSessionText) &&
-    /\/connect\/browser-session\/amazon\/start/.test(browserSessionHtml);
+    BSTART_SESSION_PATTERN.test(browserSessionText) && CONNECT_BROWSER_SESSION_AMAZON_PATTERN.test(browserSessionHtml);
   if (exposesDirectNewBrowserSource) {
     findings.push({
       ruleId: "browser-session-direct-new-source",
@@ -559,9 +648,9 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
       path: "/schedules",
       title: "Schedules",
       required: [
-        { label: "Schedules title", pattern: /\bSchedules\b/i },
-        { label: "schedule section", pattern: /\bScheduled connections\b|\bNo scheduled connections yet\b/i },
-        { label: "scheduled/unscheduled counts", pattern: /\bscheduled\b.*\bunscheduled\b/i },
+        { label: "Schedules title", pattern: BSCHEDULES_PATTERN },
+        { label: "schedule section", pattern: BSCHEDULED_CONNECTIONS_BNO_SCHEDULED_PATTERN },
+        { label: "scheduled/unscheduled counts", pattern: BSCHEDULED_BUNSCHEDULED_PATTERN },
       ],
     },
     {
@@ -569,10 +658,13 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
       path: "/explore",
       title: "Explore",
       required: [
-        { label: "Explore title", pattern: /\bExplore\b/i },
-        { label: "record query controls", pattern: /Search names, fields, and values|Search records|text across every searchable stream|\boperators\b.*\bcon:/i },
-        { label: "record filters", pattern: /\bFilters\b/i },
-        { label: "record sort controls", pattern: /\bnewest\b.*\boldest\b/i },
+        { label: "Explore title", pattern: BEXPLORE_PATTERN },
+        {
+          label: "record query controls",
+          pattern: SEARCH_NAMES_FIELDS_AND_PATTERN,
+        },
+        { label: "record filters", pattern: BFILTERS_PATTERN },
+        { label: "record sort controls", pattern: BNEWEST_BOLDEST_PATTERN },
       ],
     },
   ];
@@ -586,24 +678,24 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
         path: `live:${expectation.path}`,
         line: 0,
         excerpt: missing.map((item) => item.label).join(", "),
-        rationale:
-          `${expectation.title} must render its core owner controls on the live surface. A shell-only, login, or error-boundary page cannot prove the owner can use this journey.`,
+        rationale: `${expectation.title} must render its core owner controls on the live surface. A shell-only, login, or error-boundary page cannot prove the owner can use this journey.`,
       });
     }
     checks.push({
       id: expectation.id,
       status: missing.length > 0 ? "fail" : "pass",
-      detail: missing.length > 0
-        ? `missing ${missing.map((item) => item.label).join(", ")}`
-        : `${expectation.title} rendered core owner controls`,
+      detail:
+        missing.length > 0
+          ? `missing ${missing.map((item) => item.label).join(", ")}`
+          : `${expectation.title} rendered core owner controls`,
     });
   }
 
   const recordsText = htmlToText(htmlByPath.get("/sources") ?? "");
-  const recordsCountFindings = [];
+  const recordsCountFindings: Finding[] = [];
   let checkedSourceCounts = 0;
   for (const connector of connectors) {
-    if (connector?.revoked_at) {
+    if (connector.revoked_at) {
       continue;
     }
     const label = connectorLabel(connector);
@@ -629,7 +721,7 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
       findings.push(finding);
     }
   }
-  if (connectors.length > 0 && checkedSourceCounts === 0 && /\bSources\b/i.test(recordsText)) {
+  if (connectors.length > 0 && checkedSourceCounts === 0 && BSOURCES_PATTERN.test(recordsText)) {
     const finding = {
       ruleId: "records-source-counts-missing",
       class: "dashboard-data-claim",
@@ -651,7 +743,7 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
         : `${checkedSourceCounts} rendered source count claim(s) matched /_ref/connectors`,
   });
 
-  const nextActionFindings = [];
+  const nextActionFindings: Finding[] = [];
   const nextActionConnectors = connectors
     .filter((connector) => !connector?.revoked_at)
     .map((connector) => {
@@ -675,7 +767,7 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
       const dashboardHasAction = ["See what to do", "See recovery steps", ...entry.textCandidates].some((candidate) =>
         dashboardText.includes(candidate)
       );
-      if (!dashboardHasSource || !dashboardHasAction) {
+      if (!(dashboardHasSource && dashboardHasAction)) {
         const finding = {
           ruleId: "dashboard-next-action-missing",
           class: "source-next-action",
@@ -690,13 +782,14 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
       }
     }
 
-    const path = `/sources/${encodeURIComponent(entry.routeId)}`;
+    const path = `/sources/${encodeURIComponent(entry.routeId ?? "")}`;
     try {
+      // biome-ignore lint/performance/noAwaitInLoops: sequential live HTTP probe against a real origin — avoids hammering the server and keeps findings deterministically ordered.
       const res = await fetchImpl(`${base}${path}`, {
         headers: { accept: "text/html", ...header },
         redirect: "manual",
       });
-      const status = res.status;
+      const { status } = res;
       const html = await res.text();
       if (status < 200 || status >= 300) {
         const finding = {
@@ -752,13 +845,14 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
     .filter((entry) => entry.routeId);
 
   for (const entry of rawNextStepConnectors) {
-    const path = `/sources/${encodeURIComponent(entry.routeId)}`;
+    const path = `/sources/${encodeURIComponent(entry.routeId ?? "")}`;
     try {
+      // biome-ignore lint/performance/noAwaitInLoops: sequential live HTTP probe against a real origin — avoids hammering the server and keeps findings deterministically ordered.
       const res = await fetchImpl(`${base}${path}`, {
         headers: { accept: "text/html", ...header },
         redirect: "manual",
       });
-      const status = res.status;
+      const { status } = res;
       const html = await res.text();
       if (status < 200 || status >= 300) {
         const finding = {
@@ -823,8 +917,7 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
     "unauthorized",
     "unknown",
   ]);
-  const rawDenialReasonCandidate =
-    dashboardText.match(/turned away,\s+([a-z][a-z0-9_]*)\b/i)?.[1]?.toLowerCase() ?? null;
+  const rawDenialReasonCandidate = dashboardText.match(TURNED_AWAY_PATTERN)?.[1]?.toLowerCase() ?? null;
   const rawDenialReason =
     rawDenialReasonCandidate &&
     (rawDenialReasonCandidate.includes("_") || singleTokenDenialCodes.has(rawDenialReasonCandidate))
@@ -855,15 +948,16 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
         .filter((id) => typeof id === "string" && id.length > 0)
     )
   ).slice(0, 12);
-  const rawRecoveryTermFindings = [];
+  const rawRecoveryTermFindings: Finding[] = [];
   for (const routeId of recoveryRouteIds) {
     try {
-      const path = `/sources/${encodeURIComponent(routeId)}`;
+      const path = `/sources/${encodeURIComponent(routeId ?? "")}`;
+      // biome-ignore lint/performance/noAwaitInLoops: sequential live HTTP probe against a real origin — avoids hammering the server and keeps findings deterministically ordered.
       const res = await fetchImpl(`${base}${path}`, {
         headers: { accept: "text/html", ...header },
         redirect: "manual",
       });
-      const status = res.status;
+      const { status } = res;
       const html = await res.text();
       if (status < 200 || status >= 300) {
         findings.push({
@@ -878,7 +972,7 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
         continue;
       }
       const detailText = htmlToProseText(html);
-      const rawRecoveryTerm = detailText.match(/\bdead-letter(?:ed)?\b/i)?.[0] ?? null;
+      const rawRecoveryTerm = detailText.match(BDEAD_LETTER_PATTERN)?.[0] ?? null;
       if (rawRecoveryTerm) {
         const finding = {
           ruleId: "source-detail-raw-recovery-jargon",
@@ -904,15 +998,18 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
       });
     }
   }
+  let recoveryDetail: string;
+  if (recoveryRouteIds.length === 0) {
+    recoveryDetail = "no source recovery detail routes to probe";
+  } else if (rawRecoveryTermFindings.length > 0) {
+    recoveryDetail = `${rawRecoveryTermFindings.length} detail page(s) render raw recovery jargon`;
+  } else {
+    recoveryDetail = `${recoveryRouteIds.length} source recovery detail route(s) render human recovery copy`;
+  }
   checks.push({
     id: "source-detail-recovery-copy-humanized",
     status: rawRecoveryTermFindings.length > 0 ? "fail" : "pass",
-    detail:
-      recoveryRouteIds.length === 0
-        ? "no source recovery detail routes to probe"
-        : rawRecoveryTermFindings.length > 0
-          ? `${rawRecoveryTermFindings.length} detail page(s) render raw recovery jargon`
-          : `${recoveryRouteIds.length} source recovery detail route(s) render human recovery copy`,
+    detail: recoveryDetail,
   });
 
   const runGapRouteIds = Array.from(
@@ -923,15 +1020,16 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
         .filter((id) => typeof id === "string" && id.length > 0)
     )
   ).slice(0, 12);
-  const runGapFindings = [];
+  const runGapFindings: Finding[] = [];
   for (const routeId of runGapRouteIds) {
     try {
-      const path = `/sources/${encodeURIComponent(routeId)}`;
+      const path = `/sources/${encodeURIComponent(routeId ?? "")}`;
+      // biome-ignore lint/performance/noAwaitInLoops: sequential live HTTP probe against a real origin — avoids hammering the server and keeps findings deterministically ordered.
       const res = await fetchImpl(`${base}${path}`, {
         headers: { accept: "text/html", ...header },
         redirect: "manual",
       });
-      const status = res.status;
+      const { status } = res;
       const html = await res.text();
       if (status < 200 || status >= 300) {
         findings.push({
@@ -946,8 +1044,8 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
         continue;
       }
       const detailText = htmlToText(html);
-      const cleanSuccessClaim = detailText.match(/\b0 failures\s*·\s*Open runs\b/i)?.[0] ?? null;
-      const rendersGapStatus = /\bwith gaps\b/i.test(detailText) || /\bpartial\b/i.test(detailText);
+      const cleanSuccessClaim = detailText.match(FAILURES_OPEN_RUNS_PATTERN)?.[0] ?? null;
+      const rendersGapStatus = BWITH_GAPS_PATTERN.test(detailText) || BPARTIAL_PATTERN.test(detailText);
       if (cleanSuccessClaim || !rendersGapStatus) {
         const finding = {
           ruleId: "source-detail-clean-success-with-open-gaps",
@@ -973,35 +1071,69 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
       });
     }
   }
+  let runGapDetail: string;
+  if (runGapRouteIds.length === 0) {
+    runGapDetail = "no successful source runs with unresolved gaps to probe";
+  } else if (runGapFindings.length > 0) {
+    runGapDetail = `${runGapFindings.length} detail page(s) render clean success despite open gaps`;
+  } else {
+    runGapDetail = `${runGapRouteIds.length} source detail route(s) render partial/with-gaps status`;
+  }
   checks.push({
     id: "source-detail-run-gap-honesty",
     status: runGapFindings.length > 0 ? "fail" : "pass",
-    detail:
-      runGapRouteIds.length === 0
-        ? "no successful source runs with unresolved gaps to probe"
-        : runGapFindings.length > 0
-          ? `${runGapFindings.length} detail page(s) render clean success despite open gaps`
-          : `${runGapRouteIds.length} source detail route(s) render partial/with-gaps status`,
+    detail: runGapDetail,
   });
   return { findings, checks };
+}
+
+interface LiveSurfaceResult {
+  bytes?: number;
+  error?: string;
+  findingCount?: number;
+  path: string;
+  reachedOwnerSurface: boolean;
+  status: number | null;
+  tier: string;
 }
 
 /**
  * Fetch and scan the live owner surfaces. Network and auth failures are captured
  * as surface-level errors, not thrown, so the harness can still emit a report.
  *
- * @param {object} args
- * @param {string} args.origin   e.g. https://pdpp.example.com (no trailing slash required)
- * @param {object} [args.env]    defaults to process.env
- * @param {Function} [args.fetchImpl] injectable for tests; defaults to global fetch
- * @returns {Promise<{ origin:string, authMode:string, surfaces:Array, findings:Array, ok:boolean }>}
+ * @param args.origin   e.g. https://pdpp.example.com (no trailing slash required)
+ * @param [args.env]    defaults to process.env
+ * @param [args.fetchImpl] injectable for tests; defaults to global fetch
  */
-export async function runLiveAcceptance({ origin, env = process.env, fetchImpl = fetch }) {
-  const base = origin.replace(/\/+$/, "");
-  const { header, mode, error: authError } = await resolveOwnerAuthForLive({ base, env, fetchImpl });
-  const findings = [];
-  const surfaces = [];
-  const htmlByPath = new Map();
+export async function runLiveAcceptance({
+  origin,
+  env = process.env,
+  fetchImpl = fetch,
+}: {
+  env?: NodeJS.ProcessEnv;
+  fetchImpl?: FetchImpl;
+  origin: string;
+}): Promise<{
+  authMode: string;
+  findings: Finding[];
+  ok: boolean;
+  origin: string;
+  semanticChecks: { detail: string; id: string; status: string }[];
+  surfaces: LiveSurfaceResult[];
+}> {
+  const base = origin.replace(TRAILING_SLASHES_PATTERN, "");
+  const {
+    header,
+    mode,
+    error: authError,
+  } = (await resolveOwnerAuthForLive({ base, env, fetchImpl })) as {
+    error: string | null;
+    header: Record<string, string>;
+    mode: string;
+  };
+  const findings: Finding[] = [];
+  const surfaces: LiveSurfaceResult[] = [];
+  const htmlByPath = new Map<string, string>();
 
   if (authError) {
     findings.push({
@@ -1018,11 +1150,12 @@ export async function runLiveAcceptance({ origin, env = process.env, fetchImpl =
   for (const surface of LIVE_SURFACES) {
     const url = `${base}${surface.path}`;
     try {
+      // biome-ignore lint/performance/noAwaitInLoops: sequential live HTTP probe against a real origin — avoids hammering the server and keeps findings deterministically ordered.
       const res = await fetchImpl(url, {
         headers: { accept: "text/html", ...header },
         redirect: "manual",
       });
-      const status = res.status;
+      const { status } = res;
       const html = await res.text();
       // A login redirect / 401 means the probe could not see the owner surface;
       // record it as inconclusive rather than a pass.

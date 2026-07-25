@@ -149,7 +149,7 @@ export const FORBIDDEN_RENDERED_HELPERS = [
  *   class     — the acceptance failure class it defends.
  *   tiers     — which surface tiers it applies to.
  *   pattern   — RegExp tested against rendered string/template content
- *               (comments are stripped before matching; see scan.mjs).
+ *               (comments are stripped before matching; see scan.ts).
  *   rationale — why this is forbidden in owner UI.
  *
  * Patterns are intentionally conservative: they target the literal owner-facing
@@ -226,7 +226,7 @@ export const FORBIDDEN_STRING_RULES = [
     tiers: ["normal"],
     // A raw ConnectorSetupSupportState / disposition enum value rendered inside
     // a JSX text node (between > and <) or as a quoted owner-facing label.
-    // Matching is deliberately scoped to rendered-text contexts in scan.mjs so
+    // Matching is deliberately scoped to rendered-text contexts in scan.ts so
     // a `case "proof_gated":` branch or a `disposition === "..."` comparison
     // does not trip it; only the value appearing as displayed text does.
     pattern:
@@ -280,7 +280,7 @@ export const POST_SUBMIT_RULE = {
  * Published-command surface. Every `npx`/`pdpp`/`pdpp-local-collector` command
  * rendered in owner UI must resolve to one of these published packages and one
  * of its declared subcommands. The subcommand sets are derived from the local
- * package sources (see scan.mjs `derivePublishedCommandSurface`) so the harness
+ * package sources (see scan.ts `derivePublishedCommandSurface`) so the harness
  * fails the moment the UI advertises a command the package does not ship.
  *
  * `verificationMode` records how an owner could verify the command from a clean

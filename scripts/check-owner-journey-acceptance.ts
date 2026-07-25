@@ -10,10 +10,10 @@
 // violation, so it can gate CI or a manual owner acceptance run.
 //
 // Usage:
-//   node scripts/check-owner-journey-acceptance.mjs
-//   node scripts/check-owner-journey-acceptance.mjs --origin https://pdpp.example.com
-//   node scripts/check-owner-journey-acceptance.mjs --json
-//   node scripts/check-owner-journey-acceptance.mjs --no-report   # skip file write
+//   node scripts/check-owner-journey-acceptance.ts
+//   node scripts/check-owner-journey-acceptance.ts --origin https://pdpp.example.com
+//   node scripts/check-owner-journey-acceptance.ts --json
+//   node scripts/check-owner-journey-acceptance.ts --no-report   # skip file write
 //
 // Live owner auth (never printed) is read from the environment:
 //   PDPP_OWNER_SESSION_COOKIE   full Cookie header for an owner session, or
@@ -25,15 +25,23 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-import { checkCleanShellFreshness } from "./owner-journey-acceptance/clean-shell.mjs";
-import { runLocalAcceptance, REPO_ROOT } from "./owner-journey-acceptance/harness.mjs";
-import { runLiveAcceptance } from "./owner-journey-acceptance/live.mjs";
-import { renderReport } from "./owner-journey-acceptance/report.mjs";
-import { PUBLISHED_PACKAGES } from "./owner-journey-acceptance/surface-manifest.mjs";
+import { checkCleanShellFreshness } from "./owner-journey-acceptance/clean-shell.ts";
+import { REPO_ROOT, runLocalAcceptance } from "./owner-journey-acceptance/harness.ts";
+import { runLiveAcceptance } from "./owner-journey-acceptance/live.ts";
+import { renderReport } from "./owner-journey-acceptance/report.ts";
+import { PUBLISHED_PACKAGES } from "./owner-journey-acceptance/surface-manifest.ts";
 
-function parseArgs(argv) {
-  const args = { json: false, report: true, origin: null, cleanShell: false };
-  for (let i = 0; i < argv.length; i++) {
+interface Args {
+  cleanShell: boolean;
+  json: boolean;
+  origin: string | null;
+  report: boolean;
+}
+
+function parseArgs(argv: string[]): Args {
+  const args: Args = { json: false, report: true, origin: null, cleanShell: false };
+  let i = 0;
+  while (i < argv.length) {
     const a = argv[i];
     if (a === "--json") {
       args.json = true;
@@ -42,27 +50,30 @@ function parseArgs(argv) {
     } else if (a === "--clean-shell") {
       args.cleanShell = true;
     } else if (a === "--origin") {
-      args.origin = argv[++i] ?? null;
-    } else if (a.startsWith("--origin=")) {
+      i += 1;
+      args.origin = argv[i] ?? null;
+    } else if (a?.startsWith("--origin=")) {
       args.origin = a.slice("--origin=".length);
     }
+    i += 1;
   }
   return args;
 }
 
 /** ISO-8601 timestamp safe for a filename (no colons). */
-function fileStamp(iso) {
+function fileStamp(iso: string): string {
   return iso.replace(/[:.]/g, "-");
 }
 
-async function main() {
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: CLI entry orchestrating args, local+live scans, clean-shell probe, report write, and json/text output — carried over unchanged from the .mjs source.
+async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const origin = args.origin ?? process.env.PDPP_ACCEPTANCE_ORIGIN ?? null;
   // Timestamp is taken here (CLI edge), not in the pure modules.
   const timestamp = new Date().toISOString();
 
   const local = await runLocalAcceptance();
-  let live = null;
+  let live: Awaited<ReturnType<typeof runLiveAcceptance>> | null = null;
   if (origin) {
     live = await runLiveAcceptance({ origin });
   }
@@ -70,10 +81,13 @@ async function main() {
   // Opt-in clean-shell freshness: actually resolve the published packages and
   // confirm rendered subcommands exist in their `--help`. Network + install, so
   // it only runs with --clean-shell. Findings fold into the local result.
-  let cleanShell = null;
+  let cleanShell: Awaited<ReturnType<typeof checkCleanShellFreshness>> | null = null;
   if (args.cleanShell) {
     cleanShell = await checkCleanShellFreshness({
-      renderedCommands: local.renderedCommands,
+      renderedCommands: local.renderedCommands.map((cmd) => ({
+        ...(cmd.packageName ? { packageName: cmd.packageName } : {}),
+        ...(cmd.subcommand ? { subcommand: cmd.subcommand } : {}),
+      })),
       publishedPackages: PUBLISHED_PACKAGES,
     });
     local.findings.push(...cleanShell.findings);
@@ -83,7 +97,7 @@ async function main() {
   const markdown = renderReport({ local, live, cleanShell, timestamp });
   const overallOk = local.ok && (live ? live.ok : true);
 
-  let reportPath = null;
+  let reportPath: string | null = null;
   if (args.report) {
     const dir = path.join(REPO_ROOT, "tmp", "workstreams");
     await mkdir(dir, { recursive: true });

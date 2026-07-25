@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
@@ -16,8 +17,8 @@
 // evidence".
 //
 // Usage:
-//   node scripts/check-stream-health-audit.mjs --origin https://pdpp.example.com
-//   node scripts/check-stream-health-audit.mjs --json
+//   node scripts/check-stream-health-audit.ts --origin https://pdpp.example.com
+//   node scripts/check-stream-health-audit.ts --json
 //
 // This CLI only runs the live probe — it requires an origin (via --origin
 // or PDPP_ACCEPTANCE_ORIGIN). The seeded local audit lives in the unit
@@ -30,7 +31,7 @@
 //   PDPP_OWNER_SESSION_COOKIE   full Cookie header for an already-established
 //                               owner session — used as-is, no network call.
 //   PDPP_OWNER_PASSWORD         owner password; the audit logs in via
-//                               /owner/login (scripts/lib/owner-session.mjs)
+//                               /owner/login (scripts/lib/owner-session.ts)
 //                               and uses the session cookie it issues.
 //   PDPP_OWNER_TOKEN            owner bearer token (unsupported here — never
 //                               sent as Authorization to this cookie-only
@@ -41,31 +42,39 @@
 // names, and evidence classes (strategy_declaration_missing,
 // runtime_evidence_missing, accepted_absence_on_required,
 // declared_stream_count_unavailable, active_bounded_work — see
-// scripts/stream-health-audit/live.mjs for what each suggests
+// scripts/stream-health-audit/live.ts for what each suggests
 // investigating).
 
+import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import path from "node:path";
+import type { StreamHealthConnectionResult } from "./stream-health-audit/audit.ts";
+import { runLiveStreamHealthAudit } from "./stream-health-audit/live.ts";
 
-import { runLiveStreamHealthAudit } from "./stream-health-audit/live.mjs";
+interface Args {
+  json: boolean;
+  origin: string | null;
+}
 
-function parseArgs(argv) {
-  const args = { json: false, origin: null };
-  for (let i = 0; i < argv.length; i++) {
+function parseArgs(argv: string[]): Args {
+  const args: Args = { json: false, origin: null };
+  let i = 0;
+  while (i < argv.length) {
     const a = argv[i];
     if (a === "--json") {
       args.json = true;
     } else if (a === "--origin") {
-      args.origin = argv[++i] ?? null;
-    } else if (a.startsWith("--origin=")) {
+      i += 1;
+      args.origin = argv[i] ?? null;
+    } else if (a?.startsWith("--origin=")) {
       args.origin = a.slice("--origin=".length);
     }
+    i += 1;
   }
   return args;
 }
 
-function renderIssueTable(rows) {
+function renderIssueTable(rows: readonly StreamHealthConnectionResult[]): string {
   const lines = ["connection\tstream\tevidence_class"];
   for (const item of rows) {
     const label = item.connection_label ?? item.connection_id ?? "<unknown>";
@@ -76,7 +85,7 @@ function renderIssueTable(rows) {
   return lines.join("\n");
 }
 
-async function main() {
+async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const origin = args.origin ?? process.env.PDPP_ACCEPTANCE_ORIGIN ?? null;
 

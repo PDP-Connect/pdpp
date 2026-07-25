@@ -20,7 +20,7 @@ const recognizedExtensions = new Set([
 
 const authoredExamples = [
   "packages/reference-contract/src/validate.ts",
-  "packages/reference-contract/test/validate-response.test.js",
+  "packages/reference-contract/test/validate-response.test.ts",
   "packages/polyfill-connectors/src/connector-runtime.ts",
   "packages/polyfill-connectors/connectors/apple_health/__fixtures__/record-step-count.ts",
   "reference-implementation/test/fixtures/device-ingest-failstop-server.mjs",

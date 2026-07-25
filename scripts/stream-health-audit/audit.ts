@@ -42,6 +42,9 @@
 //   - declared-stream count absence fails only when the canonical
 //     record-snapshot evidence is current, otherwise it stays inconclusive.
 
+/** Loosely-shaped ConnectorSummary/CollectionReportEntry — read via optional chaining, never assumed complete. */
+type Connection = Record<string, unknown>;
+
 const ACTIVE_PILL_LABELS = new Set(["Checking", "Syncing"]);
 
 // Accepted-absence coverage conditions. On a NON-required stream these are
@@ -54,14 +57,14 @@ const ACTIVE_PILL_LABELS = new Set(["Checking", "Syncing"]);
 const ACCEPTED_ABSENCE_CONDITIONS = new Set(["deferred", "inventory_only", "unavailable", "unsupported"]);
 
 /**
- * @param {unknown} entry a CollectionReportEntry-shaped object
- * @returns {boolean} whether this stream is required (default true when the
+ * @param entry a CollectionReportEntry-shaped object
+ * @returns whether this stream is required (default true when the
  *   `required` field is absent — fail closed rather than silently exempting
  *   older collection reports).
  */
-function isRequiredEntry(entry) {
+function isRequiredEntry(entry: unknown): boolean {
   if (entry && typeof entry === "object" && "required" in entry) {
-    return entry.required !== false;
+    return (entry as Connection).required !== false;
   }
   return true;
 }
@@ -72,9 +75,9 @@ function isRequiredEntry(entry) {
  * because either axis alone can carry the resting-unmeasured signal
  * depending on which layer normalized the entry.
  */
-function restsUnmeasured(entry) {
-  const coverage = entry?.coverage_condition;
-  const disposition = entry?.forward_disposition;
+function restsUnmeasured(entry: Connection): boolean {
+  const coverage = entry.coverage_condition;
+  const disposition = entry.forward_disposition;
   return coverage === "unknown" || disposition === "unmeasured";
 }
 
@@ -86,45 +89,45 @@ function restsUnmeasured(entry) {
 // the settled-failure bar would fail every fresh connection on the very
 // first read after creation. Both signals are checked because either can be
 // the more current one depending on which layer served the entry.
-function isSettledConnection(connection) {
-  const status = connection?.status;
-  if (status === "revoked" || connection?.revoked_at != null) {
+function isSettledConnection(connection: Connection): boolean {
+  const { status } = connection;
+  if (status === "revoked" || connection.revoked_at !== null) {
     return false;
   }
   if (status === "draft") {
     return false;
   }
-  if (connection?.owner_state?.resolver === "setup_in_progress") {
+  if ((connection.owner_state as Connection | undefined)?.resolver === "setup_in_progress") {
     return false;
   }
   return true;
 }
 
-function hasActiveBoundedWork(connection) {
-  const ownerState = connection?.owner_state;
-  const health = connection?.connection_health;
-  const pillLabel = connection?.rendered_verdict?.pill?.label;
+function hasActiveBoundedWork(connection: Connection): boolean {
+  const ownerState = connection.owner_state as Connection | undefined;
+  const health = connection.connection_health as Connection | undefined;
+  const pillLabel = ((connection.rendered_verdict as Connection | undefined)?.pill as Connection | undefined)?.label;
   return (
     ownerState?.resolver === "collecting" ||
-    health?.badges?.syncing === true ||
+    (health?.badges as Connection | undefined)?.syncing === true ||
     pillLabel === "Checking" ||
     pillLabel === "Syncing" ||
-    ACTIVE_PILL_LABELS.has(pillLabel)
+    ACTIVE_PILL_LABELS.has(pillLabel as string)
   );
 }
 
-function recordSnapshotIsCurrent(connection) {
-  return connection?.record_snapshot?.state === "current";
+function recordSnapshotIsCurrent(connection: Connection): boolean {
+  return (connection.record_snapshot as Connection | undefined)?.state === "current";
 }
 
-function declaredStreamNames(connection) {
-  const declared = Array.isArray(connection?.streams) ? connection.streams : [];
-  return declared.filter((stream) => typeof stream === "string" && stream.length > 0);
+function declaredStreamNames(connection: Connection): string[] {
+  const declared = Array.isArray(connection.streams) ? (connection.streams as unknown[]) : [];
+  return declared.filter((stream): stream is string => typeof stream === "string" && stream.length > 0);
 }
 
-function reportStreamNames(report) {
-  const declared = new Set();
-  const names = [];
+function reportStreamNames(report: readonly Connection[]): string[] {
+  const declared = new Set<string>();
+  const names: string[] = [];
   for (const entry of Array.isArray(report) ? report : []) {
     if (!entry || typeof entry !== "object") {
       continue;
@@ -139,9 +142,9 @@ function reportStreamNames(report) {
   return names;
 }
 
-function streamRecordsByName(connection) {
-  const records = new Map();
-  for (const entry of Array.isArray(connection?.stream_records) ? connection.stream_records : []) {
+function streamRecordsByName(connection: Connection): Map<string, Connection> {
+  const records = new Map<string, Connection>();
+  for (const entry of Array.isArray(connection.stream_records) ? (connection.stream_records as Connection[]) : []) {
     if (!entry || typeof entry !== "object") {
       continue;
     }
@@ -154,19 +157,20 @@ function streamRecordsByName(connection) {
   return records;
 }
 
-function connectionLabel(connection) {
-  return (
-    connection?.display_name ||
-    connection?.connector_display_name ||
-    connection?.connection_id ||
-    connection?.connector_instance_id ||
-    connection?.connector_id ||
-    "<unknown connection>"
+function connectionLabel(connection: Connection): string {
+  return String(
+    connection.display_name ||
+      connection.connector_display_name ||
+      connection.connection_id ||
+      connection.connector_instance_id ||
+      connection.connector_id ||
+      "<unknown connection>"
   );
 }
 
-function connectionId(connection) {
-  return connection?.connection_id ?? connection?.connector_instance_id ?? connection?.connector_id ?? null;
+function connectionId(connection: Connection): string | null {
+  const id = connection.connection_id ?? connection.connector_instance_id ?? connection.connector_id ?? null;
+  return typeof id === "string" ? id : null;
 }
 
 /**
@@ -188,18 +192,20 @@ function connectionId(connection) {
  *     accepted-absence coverage condition — the contradictory-manifest
  *     combination the projection refuses to paint green.
  */
-function evidenceClassForUnmeasured(entry) {
-  if (entry?.coverage_strategy == null) {
+type StreamCoverageClass = "accepted_absence_on_required" | "runtime_evidence_missing" | "strategy_declaration_missing";
+
+function evidenceClassForUnmeasured(entry: Connection): StreamCoverageClass {
+  if (entry.coverage_strategy === null) {
     return "strategy_declaration_missing";
   }
   return "runtime_evidence_missing";
 }
 
-function streamCoverageClass(entry) {
+function streamCoverageClass(entry: Connection): StreamCoverageClass | null {
   if (restsUnmeasured(entry)) {
     return evidenceClassForUnmeasured(entry);
   }
-  if (ACCEPTED_ABSENCE_CONDITIONS.has(entry?.coverage_condition)) {
+  if (ACCEPTED_ABSENCE_CONDITIONS.has(entry.coverage_condition as string)) {
     return "accepted_absence_on_required";
   }
   return null;
@@ -218,34 +224,38 @@ function streamCoverageClass(entry) {
  * Active bounded work is still reported as inconclusive, but it does not
  * hide masked failures.
  *
- * @param {readonly unknown[]} connections
- * @returns {{ ok: boolean, status: "pass" | "fail" | "inconclusive", failures: Array<{
- *   connection_id: string|null,
- *   connection_label: string,
- *   streams: Array<{ stream: string,
- *     class: "strategy_declaration_missing"|"runtime_evidence_missing"|"accepted_absence_on_required" }>,
- * }>, inconclusive: Array<{
- *   connection_id: string|null,
- *   connection_label: string,
- *   streams: Array<{ stream: string, class: "active_bounded_work"|"declared_stream_count_unavailable" }>,
- * }> }}
+ * @param connections
  */
-export function auditStreamHealth(connections) {
-  const failures = [];
-  const inconclusive = [];
+export interface StreamHealthConnectionResult {
+  connection_id: string | null;
+  connection_label: string;
+  streams: { class: string; stream: string }[];
+}
 
-  for (const connection of Array.isArray(connections) ? connections : []) {
+export interface StreamHealthAuditResult {
+  failures: StreamHealthConnectionResult[];
+  inconclusive: StreamHealthConnectionResult[];
+  ok: boolean;
+  status: "fail" | "inconclusive" | "pass";
+}
+
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the machine audit's per-connection/per-stream classification logic is deliberately exhaustive (settled/active/masked/unsettled) — carried over unchanged from the .mjs source.
+export function auditStreamHealth(connections: readonly unknown[]): StreamHealthAuditResult {
+  const failures: StreamHealthConnectionResult[] = [];
+  const inconclusive: StreamHealthConnectionResult[] = [];
+
+  for (const connection of (Array.isArray(connections) ? connections : []) as Connection[]) {
     if (!isSettledConnection(connection)) {
       continue;
     }
 
-    const report = Array.isArray(connection?.collection_report) ? connection.collection_report : [];
-    const maskedStreams = [];
-    const maskedStreamClasses = new Set();
-    const unsettledStreams = [];
-    const unsettledStreamClasses = new Set();
+    const report = (Array.isArray(connection.collection_report) ? connection.collection_report : []) as Connection[];
+    const maskedStreams: { class: string; stream: string }[] = [];
+    const maskedStreamClasses = new Set<string>();
+    const unsettledStreams: { class: string; stream: string }[] = [];
+    const unsettledStreamClasses = new Set<string>();
 
-    function pushMasked(stream, streamClass) {
+    function pushMasked(stream: string, streamClass: string): void {
       const key = `${stream}\n${streamClass}`;
       if (maskedStreamClasses.has(key)) {
         return;
@@ -254,7 +264,7 @@ export function auditStreamHealth(connections) {
       maskedStreams.push({ stream, class: streamClass });
     }
 
-    function pushUnsettled(stream, streamClass) {
+    function pushUnsettled(stream: string, streamClass: string): void {
       const key = `${stream}\n${streamClass}`;
       if (unsettledStreamClasses.has(key)) {
         return;
@@ -274,10 +284,10 @@ export function auditStreamHealth(connections) {
     for (const stream of auditedStreams) {
       const reportEntry = report.find((entry) => entry?.stream === stream);
       if (!reportEntry) {
-        if (!recordSnapshotCurrent) {
-          pushUnsettled(stream, "declared_stream_count_unavailable");
-        } else {
+        if (recordSnapshotCurrent) {
           pushMasked(stream, "runtime_evidence_missing");
+        } else {
+          pushUnsettled(stream, "declared_stream_count_unavailable");
         }
         continue;
       }
@@ -325,6 +335,13 @@ export function auditStreamHealth(connections) {
     }
   }
 
-  const status = failures.length > 0 ? "fail" : inconclusive.length > 0 ? "inconclusive" : "pass";
+  let status: "fail" | "inconclusive" | "pass";
+  if (failures.length > 0) {
+    status = "fail";
+  } else if (inconclusive.length > 0) {
+    status = "inconclusive";
+  } else {
+    status = "pass";
+  }
   return { ok: status === "pass", status, failures, inconclusive };
 }

@@ -8,16 +8,69 @@
 // `tmp/workstreams/owner-journey-acceptance-<ts>.md`. No secrets are ever
 // included — only the auth *mode* (cookie / bearer / none), never a value.
 
+interface LocalResult {
+  findings: readonly {
+    class: string;
+    excerpt?: string;
+    line?: number;
+    path: string;
+    rationale: string;
+    ruleId: string;
+  }[];
+  ok: boolean;
+  publishedSurface: Record<string, readonly string[]>;
+  renderedCommands: readonly {
+    head: string;
+    packageName: string | null;
+    subcommand: string | null;
+    verificationMode?: string;
+    verified: string;
+  }[];
+  scannedFiles: {
+    advanced: readonly string[];
+    commandSource: readonly string[];
+    normal: readonly string[];
+  };
+}
+
+interface LiveResult {
+  authMode: string;
+  findings: readonly { class: string; line?: number; path: string; rationale: string; ruleId: string }[];
+  ok: boolean;
+  origin: string;
+  semanticChecks?: readonly { detail?: string; id: string; status: string }[];
+  surfaces: readonly {
+    error?: string;
+    findingCount?: number;
+    path: string;
+    reachedOwnerSurface: boolean;
+    status: number | null;
+  }[];
+}
+
+interface CleanShellResult {
+  probes: readonly { error: string | null; ok: boolean; package: string; specifier: string }[];
+}
+
 /**
- * @param {object} args
- * @param {object} args.local  result of runLocalAcceptance
- * @param {object|null} args.live result of runLiveAcceptance (or null if not run)
- * @param {object|null} [args.cleanShell] result of checkCleanShellFreshness (or null)
- * @param {string} args.timestamp ISO-8601 string (supplied by caller)
- * @returns {string} markdown
+ * @param args.local  result of runLocalAcceptance
+ * @param args.live result of runLiveAcceptance (or null if not run)
+ * @param args.cleanShell result of checkCleanShellFreshness (or null)
+ * @param args.timestamp ISO-8601 string (supplied by caller)
  */
-export function renderReport({ local, live, cleanShell = null, timestamp }) {
-  const lines = [];
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: sequential markdown-section rendering for local/live/clean-shell results — carried over unchanged from the .mjs source.
+export function renderReport({
+  local,
+  live,
+  cleanShell = null,
+  timestamp,
+}: {
+  cleanShell?: CleanShellResult | null;
+  live: LiveResult | null;
+  local: LocalResult;
+  timestamp: string;
+}): string {
+  const lines: string[] = [];
   const overallOk = local.ok && (live ? live.ok : true);
 
   lines.push("# Owner Journey Acceptance Run");
@@ -27,7 +80,7 @@ export function renderReport({ local, live, cleanShell = null, timestamp }) {
   lines.push(`Mode: local-source${live ? ` + live (${live.origin})` : ""}`);
   lines.push("");
   lines.push(
-    "This report is produced by `scripts/check-owner-journey-acceptance.mjs`. It " +
+    "This report is produced by `scripts/check-owner-journey-acceptance.ts`. It " +
       "scans the normal owner setup surfaces for the failure classes that broke the " +
       "owner setup walkthrough: developer-only paths, unpublished CLI commands, raw " +
       "setup-planner labels, same-tab credential help links, and transient-only " +
@@ -147,9 +200,9 @@ export function renderReport({ local, live, cleanShell = null, timestamp }) {
 }
 
 /** Collapse duplicate (package, subcommand) command rows for a compact table. */
-function dedupeCommands(commands) {
-  const seen = new Set();
-  const out = [];
+function dedupeCommands(commands: LocalResult["renderedCommands"]): LocalResult["renderedCommands"] {
+  const seen = new Set<string>();
+  const out: LocalResult["renderedCommands"][number][] = [];
   for (const c of commands) {
     const key = `${c.packageName ?? c.head}::${c.subcommand ?? ""}::${c.verified}`;
     if (seen.has(key)) {
@@ -161,6 +214,8 @@ function dedupeCommands(commands) {
   return out;
 }
 
-function escapeCell(text) {
-  return String(text ?? "").replace(/\|/g, "\\|").replace(/\n/g, " ");
+function escapeCell(text: string | null | undefined): string {
+  return String(text ?? "")
+    .replace(/\|/g, "\\|")
+    .replace(/\n/g, " ");
 }

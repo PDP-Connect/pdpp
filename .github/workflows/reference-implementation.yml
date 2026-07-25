@@ -74,14 +74,14 @@ jobs:
               openspec/changes/complete-mcp-slvp-surface/*|openspec/changes/complete-mcp-slvp-surface/**|\
               docs/research/mcp-slvp-*.md|\
               reference-implementation/*|reference-implementation/**|\
-              scripts/check-console-health-surfaces.mjs|\
-              scripts/check-console-health-surfaces.test.mjs|\
-              scripts/check-owner-journey-acceptance.mjs|\
-              scripts/check-owner-journey-acceptance.test.mjs|\
+              scripts/check-console-health-surfaces.ts|\
+              scripts/check-console-health-surfaces.test.ts|\
+              scripts/check-owner-journey-acceptance.ts|\
+              scripts/check-owner-journey-acceptance.test.ts|\
               scripts/owner-journey-acceptance/*|scripts/owner-journey-acceptance/**|\
               scripts/stream-evidence-inventory.mjs|\
               scripts/stream-health-audit/*|scripts/stream-health-audit/**|\
-              scripts/check-stream-health-audit.mjs|\
+              scripts/check-stream-health-audit.ts|\
               docs/reference/stream-evidence-inventory.md|\
               .releaserc.yaml|\
               scripts/check-package-release-policy.mjs|\

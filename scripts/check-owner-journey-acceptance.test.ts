@@ -14,11 +14,14 @@
 //      live pages (and the Phase 0 + shell.tsx fixes) so a regression that
 //      reintroduces a developer-only path or an unpublished command fails CI.
 //
-// Run: node --test scripts/check-owner-journey-acceptance.test.mjs
+// Run: node --test scripts/check-owner-journey-acceptance.test.ts
 
 import assert from "node:assert/strict";
 import test from "node:test";
-
+import { checkCleanShellFreshness } from "./owner-journey-acceptance/clean-shell.ts";
+import { derivePublishedCommandSurface, runLocalAcceptance } from "./owner-journey-acceptance/harness.ts";
+import { resolveOwnerAuthFromEnv, runLiveAcceptance } from "./owner-journey-acceptance/live.ts";
+import { renderReport } from "./owner-journey-acceptance/report.ts";
 import {
   checkCommandFreshness,
   checkDashboardRouteShellContract,
@@ -28,32 +31,29 @@ import {
   deriveSpecifierVars,
   deriveSubcommandSurface,
   extractRenderedCommands,
+  type Finding,
   parseCommand,
   scanForbiddenStrings,
   scanRenderedHelperReachability,
   stripComments,
-} from "./owner-journey-acceptance/scan.mjs";
+} from "./owner-journey-acceptance/scan.ts";
 import {
   FORBIDDEN_RENDERED_HELPERS,
   FORBIDDEN_STRING_RULES,
   POST_SUBMIT_RULE,
   PUBLISHED_PACKAGES,
-} from "./owner-journey-acceptance/surface-manifest.mjs";
-import { derivePublishedCommandSurface, runLocalAcceptance } from "./owner-journey-acceptance/harness.mjs";
-import { renderReport } from "./owner-journey-acceptance/report.mjs";
-import { resolveOwnerAuthFromEnv, runLiveAcceptance } from "./owner-journey-acceptance/live.mjs";
-import { checkCleanShellFreshness } from "./owner-journey-acceptance/clean-shell.mjs";
+} from "./owner-journey-acceptance/surface-manifest.ts";
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
-function scanNormal(src) {
+function scanNormal(src: string): Finding[] {
   return scanForbiddenStrings({ path: "fixture.tsx", src, tier: "normal", rules: FORBIDDEN_STRING_RULES });
 }
-function classes(findings) {
+function classes(findings: readonly Finding[]): Set<string> {
   return new Set(findings.map((f) => f.class));
 }
 
-function defaultLiveOwnerPageHtml(url) {
+function defaultLiveOwnerPageHtml(url: string | URL): string {
   const href = String(url);
   if (href.endsWith("/schedules")) {
     return "<main><h1>Schedules</h1><p>0 scheduled · 3 unscheduled</p><section>Scheduled connections (0)</section><section>No scheduled connections yet</section></main>";
@@ -73,8 +73,8 @@ test("catches monorepo package path in normal owner UI", () => {
 
 test("catches `pnpm --dir` in normal owner UI", () => {
   const src = `const cmd = "pnpm --dir packages/polyfill-connectors exec tsx bin/x.ts run";`;
-  const found = scanNormal(src);
-  assert.ok(found.some((f) => f.ruleId === "pnpm-dir"));
+  const findings = scanNormal(src);
+  assert.ok(findings.some((f) => f.ruleId === "pnpm-dir"));
 });
 
 test("catches `PDPP monorepo checkout` phrasing", () => {
@@ -106,16 +106,16 @@ test("catches raw setup-planner labels rendered as owner status", () => {
 
 test("catches raw support-state enum value rendered as text", () => {
   // Rendered text form `>proof_gated<` must trip the rule.
-  const rendered = `<span>proof_gated</span>`;
+  const rendered = "<span>proof_gated</span>";
   assert.ok(found(rendered, "raw-support-state-token"));
 });
 
 test("does NOT flag a setup-planner enum used in a switch/comparison (not rendered text)", () => {
   const src = `switch (entry.disposition) { case "browser_bound_runbook": return label; }
     if (entry.supportState === "proof_gated") { return x; }`;
-  const found = scanNormal(src);
+  const findings = scanNormal(src);
   assert.equal(
-    found.filter((f) => f.ruleId === "raw-support-state-token").length,
+    findings.filter((f) => f.ruleId === "raw-support-state-token").length,
     0,
     "enum in code logic must not trip the rendered-text rule"
   );
@@ -124,15 +124,15 @@ test("does NOT flag a setup-planner enum used in a switch/comparison (not render
 test("does NOT flag a monorepo path that appears only in a code comment", () => {
   const src = `// The old proof command ran under packages/polyfill-connectors with pnpm --dir.
     export function X() { return <div>Browser setup is pending.</div>; }`;
-  const found = scanNormal(src);
-  assert.equal(found.length, 0, "comments are not owner-facing copy");
+  const findings = scanNormal(src);
+  assert.equal(findings.length, 0, "comments are not owner-facing copy");
 });
 
 test("does NOT flag a monorepo path that appears only in an import specifier", () => {
   const src = `import { x } from "../../../../packages/cli/src/package-info.js";
     export function X() { return <div>ok</div>; }`;
-  const found = scanNormal(src);
-  assert.equal(found.length, 0, "module specifiers are not owner-facing copy");
+  const findings = scanNormal(src);
+  assert.equal(findings.length, 0, "module specifiers are not owner-facing copy");
 });
 
 test("clean owner UI fixture passes the forbidden-string scan", () => {
@@ -151,22 +151,42 @@ test("derives subcommand surface from `command === 'x'` dispatch", () => {
 });
 
 test("derives subcommand surface from a pipe-alternation usage line, ignoring placeholder args", () => {
-  const src = `usage: pdpp-local-collector <enroll|run|status|doctor> --base-url <url>`;
+  const src = "usage: pdpp-local-collector <enroll|run|status|doctor> --base-url <url>";
   const surface = deriveSubcommandSurface(src);
   assert.ok(surface.has("enroll") && surface.has("doctor"));
   assert.ok(!surface.has("url"), "single <url> placeholder is not a subcommand");
 });
 
 test("flags an unpublished CLI command rendered in owner UI", () => {
-  const commands = [{ head: "npx", packageName: "@pdpp/cli", subcommand: "owner-agent-explain", path: "p", line: 1, raw: "..." }];
+  const commands = [
+    {
+      head: "npx",
+      packageName: "@pdpp/cli",
+      subcommand: "owner-agent-explain",
+      path: "p",
+      line: 1,
+      raw: "...",
+      packageSpecifier: null,
+    },
+  ];
   const surfaceByPackage = { "@pdpp/cli": new Set(["connect", "token"]) };
   const { findings } = checkCommandFreshness({ commands, surfaceByPackage, publishedPackages: PUBLISHED_PACKAGES });
   assert.equal(findings.length, 1);
-  assert.equal(findings[0].class, "unpublished-command");
+  assert.equal(findings[0]?.class, "unpublished-command");
 });
 
 test("passes a published CLI command rendered in owner UI", () => {
-  const commands = [{ head: "npx", packageName: "@pdpp/cli", subcommand: "connect", path: "p", line: 1, raw: "..." }];
+  const commands = [
+    {
+      head: "npx",
+      packageName: "@pdpp/cli",
+      subcommand: "connect",
+      path: "p",
+      line: 1,
+      raw: "...",
+      packageSpecifier: null,
+    },
+  ];
   const surfaceByPackage = { "@pdpp/cli": new Set(["connect", "token"]) };
   const { findings, rendered } = checkCommandFreshness({
     commands,
@@ -174,8 +194,8 @@ test("passes a published CLI command rendered in owner UI", () => {
     publishedPackages: PUBLISHED_PACKAGES,
   });
   assert.equal(findings.length, 0);
-  assert.equal(rendered[0].verified, "published-subcommand");
-  assert.ok(rendered[0].verificationMode, "every rendered package command carries a verification mode");
+  assert.equal(rendered[0]?.verified, "published-subcommand");
+  assert.ok(rendered[0]?.verificationMode, "every rendered package command carries a verification mode");
 });
 
 test("resolves package-specifier variables in array-form command builders", () => {
@@ -187,16 +207,16 @@ test("resolves package-specifier variables in array-form command builders", () =
   const cmds = extractRenderedCommands(src);
   const enroll = cmds.find((c) => c.subcommand === "enroll");
   assert.ok(enroll, "array-form npx command must be extracted");
-  assert.equal(enroll.packageName, "@pdpp/local-collector");
+  assert.equal(enroll?.packageName, "@pdpp/local-collector");
 });
 
 // ── 3. Failure-class units: help links + reachability + post-submit ──────────
 
 test("flags a same-tab static-secret help link", () => {
-  const src = `<a href={field.help_url}>Open provider setup page</a>`;
+  const src = "<a href={field.help_url}>Open provider setup page</a>";
   const findings = checkHelpLinkTargets({ path: "p", src });
   assert.equal(findings.length, 1);
-  assert.equal(findings[0].class, "help-link-same-tab");
+  assert.equal(findings[0]?.class, "help-link-same-tab");
 });
 
 test("passes a help link that opens in a new tab with safe rel", () => {
@@ -209,16 +229,16 @@ test("reachability guard flags a rendered page wiring a monorepo-command helper"
     export function Card(){ return <code>{pdppBrowserCollectorRunCommand({baseUrl, connectorId})}</code>; }`;
   const findings = scanRenderedHelperReachability({ path: "p", src, forbiddenHelpers: FORBIDDEN_RENDERED_HELPERS });
   assert.equal(findings.length, 1);
-  assert.equal(findings[0].class, "developer-only-path");
+  assert.equal(findings[0]?.class, "developer-only-path");
 });
 
 test("post-submit durability flags a transient-only flow and passes a durable one", () => {
   const transient = `const notice = "Submitted. Check connections later.";`;
   const missing = checkPostSubmitDurability({ path: "p", src: transient, rule: POST_SUBMIT_RULE });
   assert.equal(missing.length, 1);
-  assert.equal(missing[0].class, "transient-notice-only");
+  assert.equal(missing[0]?.class, "transient-notice-only");
 
-  const durable = `const c = draft.connection_id; const r = statusHref({ connectionId: c }); redirect(r);`;
+  const durable = "const c = draft.connection_id; const r = statusHref({ connectionId: c }); redirect(r);";
   assert.deepEqual(checkPostSubmitDurability({ path: "p", src: durable, rule: POST_SUBMIT_RULE }), []);
 });
 
@@ -247,7 +267,7 @@ test("dashboard route shell contract catches legacy or unshelled owner routes", 
       },
       {
         path: "apps/console/src/app/(console)/grants/page.tsx",
-        src: `export default function Page(){ return <main>raw page</main>; }`,
+        src: "export default function Page(){ return <main>raw page</main>; }",
       },
       {
         path: "apps/console/src/app/(console)/sources/deployment/page.tsx",
@@ -271,6 +291,7 @@ test("stripComments removes comments but preserves string/template content", () 
   const src = `const a = "keep //this"; // drop this\n/* drop */ const b = \`keep \${x}\`;`;
   const out = stripComments(src);
   assert.ok(out.includes('"keep //this"'));
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting the literal `${x}` substring survives stripComments verbatim (source uses a template literal, not interpolation).
   assert.ok(out.includes("keep ${x}"));
   assert.ok(!out.includes("drop this"));
   assert.ok(!out.includes("/* drop */"));
@@ -332,15 +353,20 @@ test("owner route discovery scans browser-session, upload, and full nav owner su
 test("real published surface contains the subcommands rendered in owner UI", async () => {
   const surface = await derivePublishedCommandSurface();
   // The owner UI renders these today; they must exist in the published packages.
-  assert.ok(surface["@pdpp/cli"].has("connect"), "@pdpp/cli must publish `connect`");
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: noUncheckedIndexedAccess makes this index type `Set<string> | undefined`; tsc rejects the non-optional access Biome suggests.
+  assert.ok(surface["@pdpp/cli"]?.has("connect"), "@pdpp/cli must publish `connect`");
   for (const sub of ["enroll", "run", "status", "doctor", "retry-dead-letters"]) {
-    assert.ok(surface["@pdpp/local-collector"].has(sub), `@pdpp/local-collector must publish \`${sub}\``);
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: noUncheckedIndexedAccess makes this index type `Set<string> | undefined`; tsc rejects the non-optional access Biome suggests.
+    assert.ok(surface["@pdpp/local-collector"]?.has(sub), `@pdpp/local-collector must publish \`${sub}\``);
   }
 });
 
 test("every rendered PDPP-package command resolves to a published subcommand", async () => {
   const { renderedCommands } = await runLocalAcceptance();
-  const pdppCmds = renderedCommands.filter((c) => c.packageName && PUBLISHED_PACKAGES[c.packageName] && c.subcommand);
+  const publishedPackageNames = new Set(Object.keys(PUBLISHED_PACKAGES));
+  const pdppCmds = renderedCommands.filter(
+    (c) => c.packageName && publishedPackageNames.has(c.packageName) && c.subcommand
+  );
   assert.ok(pdppCmds.length >= 4, "expected several PDPP package commands rendered");
   for (const c of pdppCmds) {
     assert.equal(c.verified, "published-subcommand", `${c.packageName} ${c.subcommand} should be published`);
@@ -352,7 +378,15 @@ test("every rendered PDPP-package command resolves to a published subcommand", a
 test("report renders findings and never includes auth values", () => {
   const local = {
     ok: false,
-    findings: [{ class: "developer-only-path", ruleId: "monorepo-package-path", path: "x.tsx", line: 3, rationale: "no monorepo" }],
+    findings: [
+      {
+        class: "developer-only-path",
+        ruleId: "monorepo-package-path",
+        path: "x.tsx",
+        line: 3,
+        rationale: "no monorepo",
+      },
+    ],
     renderedCommands: [],
     publishedSurface: { "@pdpp/cli": ["connect"] },
     scannedFiles: { normal: ["a"], advanced: [], commandSource: [] },
@@ -376,12 +410,17 @@ test("owner auth resolves from env by mode without exposing the value", () => {
 });
 
 test("live probe scans served HTML and fails closed on login redirects", async () => {
-  const fetchImpl = async (url) => {
-    if (url.endsWith("/connect")) {
-      return { status: 200, text: async () => `<pre>packages/polyfill-connectors/x</pre>` };
+  // biome-ignore lint/suspicious/useAwait: fetchImpl must satisfy the async FetchImpl contract even though this mock resolves synchronously; the caller awaits it like real fetch.
+  const fetchImpl = async (url: string | URL) => {
+    if (String(url).endsWith("/connect")) {
+      return {
+        status: 200,
+        headers: { get: () => null },
+        text: () => Promise.resolve("<pre>packages/polyfill-connectors/x</pre>"),
+      };
     }
     // simulate a login redirect for the others
-    return { status: 302, text: async () => "" };
+    return { status: 302, headers: { get: () => null }, text: () => Promise.resolve("") };
   };
   const result = await runLiveAcceptance({ origin: "https://example.com/", env: {}, fetchImpl });
   assert.equal(result.authMode, "none");
@@ -390,28 +429,34 @@ test("live probe scans served HTML and fails closed on login redirects", async (
   assert.ok(result.findings.some((f) => f.class === "developer-only-path"));
   assert.ok(result.findings.some((f) => f.ruleId === "live-owner-surface-not-reached"));
   const connect = result.surfaces.find((s) => s.path === "/connect");
-  assert.equal(connect.reachedOwnerSurface, true);
+  assert.equal(connect?.reachedOwnerSurface, true);
   const records = result.surfaces.find((s) => s.path === "/sources");
-  assert.equal(records.reachedOwnerSurface, false);
+  assert.equal(records?.reachedOwnerSurface, false);
 });
 
 test("live probe can create an owner session from PDPP_OWNER_PASSWORD and scan authenticated renders", async () => {
-  const calls = [];
-  const cookieHeaders = [];
-  const response = (status, body, setCookie = null) => ({
+  const calls: { init: RequestInit; url: string | URL }[] = [];
+  const cookieHeaders: string[] = [];
+  const response = (
+    status: number,
+    body: string,
+    setCookie: string | null = null
+  ): { headers: { get: (name: string) => string | null }; status: number; text: () => Promise<string> } => ({
     status,
     headers: {
-      get(name) {
+      get(name: string) {
         if (name.toLowerCase() === "set-cookie") {
           return setCookie;
         }
         return null;
       },
     },
-    text: async () => body,
+    text: () => Promise.resolve(body),
   });
-  const fetchImpl = async (url, init = {}) => {
+  // biome-ignore lint/suspicious/useAwait: fetchImpl must satisfy the async FetchImpl contract even though this mock resolves synchronously; the caller awaits it like real fetch.
+  const fetchImpl = async (url: string | URL, init: RequestInit = {}) => {
     calls.push({ url, init });
+    const headers = init.headers as Record<string, string> | undefined;
     if (String(url).includes("/owner/login") && init.method !== "POST") {
       return response(
         200,
@@ -421,14 +466,16 @@ test("live probe can create an owner session from PDPP_OWNER_PASSWORD and scan a
     }
     if (String(url).endsWith("/owner/login") && init.method === "POST") {
       assert.ok(String(init.body).includes("password=secret"), "login body carries the password only to fetch");
-      assert.equal(init.headers.cookie, "pdpp_owner_csrf=csrf-cookie");
+      assert.equal(headers?.cookie, "pdpp_owner_csrf=csrf-cookie");
       return response(302, "", "pdpp_owner_session=session-cookie; Path=/; HttpOnly");
     }
     if (String(url).includes("/_ref/connectors")) {
-      cookieHeaders.push(init.headers?.cookie ?? "");
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: headers is Record<string, string> | undefined (init.headers cast); Biome's type-aware pass narrows this differently than tsc, which still allows undefined here.
+      cookieHeaders.push(headers?.cookie ?? "");
       return response(200, JSON.stringify({ object: "list", data: [] }));
     }
-    cookieHeaders.push(init.headers?.cookie ?? "");
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: headers is Record<string, string> | undefined (init.headers cast); Biome's type-aware pass narrows this differently than tsc, which still allows undefined here.
+    cookieHeaders.push(headers?.cookie ?? "");
     return response(200, defaultLiveOwnerPageHtml(url));
   };
 
@@ -441,21 +488,31 @@ test("live probe can create an owner session from PDPP_OWNER_PASSWORD and scan a
   assert.equal(result.authMode, "password-session");
   assert.equal(result.ok, true);
   assert.equal(result.findings.length, 0);
-  assert.equal(result.surfaces.every((surface) => surface.reachedOwnerSurface), true);
+  assert.equal(
+    result.surfaces.every((surface) => surface.reachedOwnerSurface),
+    true
+  );
   assert.ok(cookieHeaders.length >= 4);
   assert.ok(cookieHeaders.every((value) => value === "pdpp_owner_session=session-cookie"));
   assert.ok(!JSON.stringify(result).includes("secret"), "result must not expose the owner password");
   assert.ok(!JSON.stringify(result).includes("session-cookie"), "result must not expose the owner session cookie");
-  assert.equal(calls.some((call) => String(call.url).endsWith("/owner/login") && call.init.method === "POST"), true);
+  assert.equal(
+    calls.some((call) => String(call.url).endsWith("/owner/login") && call.init.method === "POST"),
+    true
+  );
 });
 
 test("live semantic probe rejects dashboard all-clear when connector summaries contain source issues", async () => {
-  const response = (status, body) => ({
+  const response = (
+    status: number,
+    body: string
+  ): { headers: { get: () => null }; status: number; text: () => Promise<string> } => ({
     status,
     headers: { get: () => null },
-    text: async () => body,
+    text: () => Promise.resolve(body),
   });
-  const fetchImpl = async (url) => {
+  // biome-ignore lint/suspicious/useAwait: fetchImpl must satisfy the async FetchImpl contract even though this mock resolves synchronously; the caller awaits it like real fetch.
+  const fetchImpl = async (url: string | URL) => {
     const href = String(url);
     if (href.includes("/_ref/connectors")) {
       return response(
@@ -497,16 +554,20 @@ test("live semantic probe rejects dashboard all-clear when connector summaries c
 
   assert.equal(result.ok, false);
   assert.ok(result.findings.some((f) => f.ruleId === "dashboard-source-issue-all-clear"));
-  assert.equal(result.semanticChecks?.[0]?.status, "fail");
+  assert.equal(result.semanticChecks[0]?.status, "fail");
 });
 
 test("live semantic probe passes when material source issues are represented on the dashboard", async () => {
-  const response = (status, body) => ({
+  const response = (
+    status: number,
+    body: string
+  ): { headers: { get: () => null }; status: number; text: () => Promise<string> } => ({
     status,
     headers: { get: () => null },
-    text: async () => body,
+    text: () => Promise.resolve(body),
   });
-  const fetchImpl = async (url) => {
+  // biome-ignore lint/suspicious/useAwait: fetchImpl must satisfy the async FetchImpl contract even though this mock resolves synchronously; the caller awaits it like real fetch.
+  const fetchImpl = async (url: string | URL) => {
     const href = String(url);
     if (href.includes("/_ref/connectors")) {
       return response(
@@ -547,16 +608,20 @@ test("live semantic probe passes when material source issues are represented on 
   });
 
   assert.equal(result.ok, true);
-  assert.equal(result.semanticChecks?.[0]?.status, "pass");
+  assert.equal(result.semanticChecks[0]?.status, "pass");
 });
 
 test("live semantic probe does not treat healthy refresh advisories as source issues", async () => {
-  const response = (status, body) => ({
+  const response = (
+    status: number,
+    body: string
+  ): { headers: { get: () => null }; status: number; text: () => Promise<string> } => ({
     status,
     headers: { get: () => null },
-    text: async () => body,
+    text: () => Promise.resolve(body),
   });
-  const fetchImpl = async (url) => {
+  // biome-ignore lint/suspicious/useAwait: fetchImpl must satisfy the async FetchImpl contract even though this mock resolves synchronously; the caller awaits it like real fetch.
+  const fetchImpl = async (url: string | URL) => {
     const href = String(url);
     if (href.includes("/_ref/connectors")) {
       return response(
@@ -591,7 +656,10 @@ test("live semantic probe does not treat healthy refresh advisories as source is
       );
     }
     if (href.endsWith("/sources/cin_reddit")) {
-      return response(200, "<main><section>Run a refresh to bring this up to date.</section><button>Refresh now</button></main>");
+      return response(
+        200,
+        "<main><section>Run a refresh to bring this up to date.</section><button>Refresh now</button></main>"
+      );
     }
     if (href.endsWith("/")) {
       return response(
@@ -609,16 +677,20 @@ test("live semantic probe does not treat healthy refresh advisories as source is
   });
 
   assert.equal(result.ok, true);
-  assert.equal(result.semanticChecks?.[0]?.status, "pass");
+  assert.equal(result.semanticChecks[0]?.status, "pass");
 });
 
 test("live semantic probe rejects unsupported dashboard all-clear claims", async () => {
-  const response = (status, body) => ({
+  const response = (
+    status: number,
+    body: string
+  ): { headers: { get: () => null }; status: number; text: () => Promise<string> } => ({
     status,
     headers: { get: () => null },
-    text: async () => body,
+    text: () => Promise.resolve(body),
   });
-  const fetchImpl = async (url) => {
+  // biome-ignore lint/suspicious/useAwait: fetchImpl must satisfy the async FetchImpl contract even though this mock resolves synchronously; the caller awaits it like real fetch.
+  const fetchImpl = async (url: string | URL) => {
     const href = String(url);
     if (href.includes("/_ref/connectors")) {
       return response(200, JSON.stringify({ object: "list", data: [] }));
@@ -640,16 +712,20 @@ test("live semantic probe rejects unsupported dashboard all-clear claims", async
 
   assert.equal(result.ok, false);
   assert.ok(result.findings.some((f) => f.ruleId === "dashboard-unsupported-all-clear-claim"));
-  assert.equal(result.semanticChecks?.find((check) => check.id === "dashboard-source-issue-all-clear")?.status, "fail");
+  assert.equal(result.semanticChecks.find((check) => check.id === "dashboard-source-issue-all-clear")?.status, "fail");
 });
 
 test("live semantic probe rejects healthy refresh advisories rendered as degraded issues", async () => {
-  const response = (status, body) => ({
+  const response = (
+    status: number,
+    body: string
+  ): { headers: { get: () => null }; status: number; text: () => Promise<string> } => ({
     status,
     headers: { get: () => null },
-    text: async () => body,
+    text: () => Promise.resolve(body),
   });
-  const fetchImpl = async (url) => {
+  // biome-ignore lint/suspicious/useAwait: fetchImpl must satisfy the async FetchImpl contract even though this mock resolves synchronously; the caller awaits it like real fetch.
+  const fetchImpl = async (url: string | URL) => {
     const href = String(url);
     if (href.includes("/_ref/connectors")) {
       return response(
@@ -684,7 +760,10 @@ test("live semantic probe rejects healthy refresh advisories rendered as degrade
       );
     }
     if (href.endsWith("/sources/cin_reddit")) {
-      return response(200, "<main><section>Run a refresh to bring this up to date.</section><button>Refresh now</button></main>");
+      return response(
+        200,
+        "<main><section>Run a refresh to bring this up to date.</section><button>Refresh now</button></main>"
+      );
     }
     if (href.endsWith("/")) {
       return response(
@@ -703,16 +782,20 @@ test("live semantic probe rejects healthy refresh advisories rendered as degrade
 
   assert.equal(result.ok, false);
   assert.ok(result.findings.some((f) => f.ruleId === "dashboard-healthy-advisory-overstated"));
-  assert.equal(result.semanticChecks?.[0]?.status, "fail");
+  assert.equal(result.semanticChecks[0]?.status, "fail");
 });
 
 test("live semantic probe rejects raw broken source facts hidden by a calm verdict", async () => {
-  const response = (status, body) => ({
+  const response = (
+    status: number,
+    body: string
+  ): { headers: { get: () => null }; status: number; text: () => Promise<string> } => ({
     status,
     headers: { get: () => null },
-    text: async () => body,
+    text: () => Promise.resolve(body),
   });
-  const fetchImpl = async (url) => {
+  // biome-ignore lint/suspicious/useAwait: fetchImpl must satisfy the async FetchImpl contract even though this mock resolves synchronously; the caller awaits it like real fetch.
+  const fetchImpl = async (url: string | URL) => {
     const href = String(url);
     if (href.includes("/_ref/connectors")) {
       return response(
@@ -757,16 +840,20 @@ test("live semantic probe rejects raw broken source facts hidden by a calm verdi
 
   assert.equal(result.ok, false);
   assert.ok(result.findings.some((f) => f.ruleId === "dashboard-raw-source-issue-missing"));
-  assert.equal(result.semanticChecks?.[0]?.status, "fail");
+  assert.equal(result.semanticChecks[0]?.status, "fail");
 });
 
 test("live semantic probe accepts raw broken source facts represented on the dashboard", async () => {
-  const response = (status, body) => ({
+  const response = (
+    status: number,
+    body: string
+  ): { headers: { get: () => null }; status: number; text: () => Promise<string> } => ({
     status,
     headers: { get: () => null },
-    text: async () => body,
+    text: () => Promise.resolve(body),
   });
-  const fetchImpl = async (url) => {
+  // biome-ignore lint/suspicious/useAwait: fetchImpl must satisfy the async FetchImpl contract even though this mock resolves synchronously; the caller awaits it like real fetch.
+  const fetchImpl = async (url: string | URL) => {
     const href = String(url);
     if (href.includes("/_ref/connectors")) {
       return response(
@@ -807,16 +894,20 @@ test("live semantic probe accepts raw broken source facts represented on the das
   });
 
   assert.equal(result.ok, true);
-  assert.equal(result.semanticChecks?.[0]?.status, "pass");
+  assert.equal(result.semanticChecks[0]?.status, "pass");
 });
 
 test("live semantic probe rejects dashboard monograms that pollute client labels", async () => {
-  const response = (status, body) => ({
+  const response = (
+    status: number,
+    body: string
+  ): { headers: { get: () => null }; status: number; text: () => Promise<string> } => ({
     status,
     headers: { get: () => null },
-    text: async () => body,
+    text: () => Promise.resolve(body),
   });
-  const fetchImpl = async (url) => {
+  // biome-ignore lint/suspicious/useAwait: fetchImpl must satisfy the async FetchImpl contract even though this mock resolves synchronously; the caller awaits it like real fetch.
+  const fetchImpl = async (url: string | URL) => {
     const href = String(url);
     if (href.includes("/_ref/connectors")) {
       return response(200, JSON.stringify({ object: "list", data: [] }));
@@ -838,19 +929,20 @@ test("live semantic probe rejects dashboard monograms that pollute client labels
 
   assert.equal(result.ok, false);
   assert.ok(result.findings.some((f) => f.ruleId === "dashboard-monogram-not-decorative"));
-  assert.equal(
-    result.semanticChecks?.find((check) => check.id === "dashboard-decorative-monograms")?.status,
-    "fail"
-  );
+  assert.equal(result.semanticChecks.find((check) => check.id === "dashboard-decorative-monograms")?.status, "fail");
 });
 
 test("live semantic probe accepts decorative dashboard monograms", async () => {
-  const response = (status, body) => ({
+  const response = (
+    status: number,
+    body: string
+  ): { headers: { get: () => null }; status: number; text: () => Promise<string> } => ({
     status,
     headers: { get: () => null },
-    text: async () => body,
+    text: () => Promise.resolve(body),
   });
-  const fetchImpl = async (url) => {
+  // biome-ignore lint/suspicious/useAwait: fetchImpl must satisfy the async FetchImpl contract even though this mock resolves synchronously; the caller awaits it like real fetch.
+  const fetchImpl = async (url: string | URL) => {
     const href = String(url);
     if (href.includes("/_ref/connectors")) {
       return response(200, JSON.stringify({ object: "list", data: [] }));
@@ -871,19 +963,20 @@ test("live semantic probe accepts decorative dashboard monograms", async () => {
   });
 
   assert.equal(result.ok, true);
-  assert.equal(
-    result.semanticChecks?.find((check) => check.id === "dashboard-decorative-monograms")?.status,
-    "pass"
-  );
+  assert.equal(result.semanticChecks.find((check) => check.id === "dashboard-decorative-monograms")?.status, "pass");
 });
 
 test("live semantic probe rejects visible source count claims that diverge from connector summaries", async () => {
-  const response = (status, body) => ({
+  const response = (
+    status: number,
+    body: string
+  ): { headers: { get: () => null }; status: number; text: () => Promise<string> } => ({
     status,
     headers: { get: () => null },
-    text: async () => body,
+    text: () => Promise.resolve(body),
   });
-  const fetchImpl = async (url) => {
+  // biome-ignore lint/suspicious/useAwait: fetchImpl must satisfy the async FetchImpl contract even though this mock resolves synchronously; the caller awaits it like real fetch.
+  const fetchImpl = async (url: string | URL) => {
     const href = String(url);
     if (href.includes("/_ref/connectors")) {
       return response(
@@ -922,19 +1015,20 @@ test("live semantic probe rejects visible source count claims that diverge from 
 
   assert.equal(result.ok, false);
   assert.ok(result.findings.some((f) => f.ruleId === "records-source-count-mismatch"));
-  assert.equal(
-    result.semanticChecks?.find((check) => check.id === "records-counts-match-reality")?.status,
-    "fail"
-  );
+  assert.equal(result.semanticChecks.find((check) => check.id === "records-counts-match-reality")?.status, "fail");
 });
 
 test("live semantic probe accepts visible source count claims that match connector summaries", async () => {
-  const response = (status, body) => ({
+  const response = (
+    status: number,
+    body: string
+  ): { headers: { get: () => null }; status: number; text: () => Promise<string> } => ({
     status,
     headers: { get: () => null },
-    text: async () => body,
+    text: () => Promise.resolve(body),
   });
-  const fetchImpl = async (url) => {
+  // biome-ignore lint/suspicious/useAwait: fetchImpl must satisfy the async FetchImpl contract even though this mock resolves synchronously; the caller awaits it like real fetch.
+  const fetchImpl = async (url: string | URL) => {
     const href = String(url);
     if (href.includes("/_ref/connectors")) {
       return response(
@@ -972,19 +1066,20 @@ test("live semantic probe accepts visible source count claims that match connect
   });
 
   assert.equal(result.ok, true);
-  assert.equal(
-    result.semanticChecks?.find((check) => check.id === "records-counts-match-reality")?.status,
-    "pass"
-  );
+  assert.equal(result.semanticChecks.find((check) => check.id === "records-counts-match-reality")?.status, "pass");
 });
 
 test("live semantic probe rejects direct browser-session new-source controls", async () => {
-  const response = (status, body) => ({
+  const response = (
+    status: number,
+    body: string
+  ): { headers: { get: () => null }; status: number; text: () => Promise<string> } => ({
     status,
     headers: { get: () => null },
-    text: async () => body,
+    text: () => Promise.resolve(body),
   });
-  const fetchImpl = async (url) => {
+  // biome-ignore lint/suspicious/useAwait: fetchImpl must satisfy the async FetchImpl contract even though this mock resolves synchronously; the caller awaits it like real fetch.
+  const fetchImpl = async (url: string | URL) => {
     const href = String(url);
     if (href.includes("/_ref/connectors")) {
       return response(
@@ -1012,19 +1107,20 @@ test("live semantic probe rejects direct browser-session new-source controls", a
 
   assert.equal(result.ok, false);
   assert.ok(result.findings.some((f) => f.ruleId === "browser-session-direct-new-source"));
-  assert.equal(
-    result.semanticChecks?.find((check) => check.id === "browser-session-direct-new-source")?.status,
-    "fail"
-  );
+  assert.equal(result.semanticChecks.find((check) => check.id === "browser-session-direct-new-source")?.status, "fail");
 });
 
 test("live semantic probe accepts repair-only browser-session guidance", async () => {
-  const response = (status, body) => ({
+  const response = (
+    status: number,
+    body: string
+  ): { headers: { get: () => null }; status: number; text: () => Promise<string> } => ({
     status,
     headers: { get: () => null },
-    text: async () => body,
+    text: () => Promise.resolve(body),
   });
-  const fetchImpl = async (url) => {
+  // biome-ignore lint/suspicious/useAwait: fetchImpl must satisfy the async FetchImpl contract even though this mock resolves synchronously; the caller awaits it like real fetch.
+  const fetchImpl = async (url: string | URL) => {
     const href = String(url);
     if (href.includes("/_ref/connectors")) {
       return response(
@@ -1051,19 +1147,20 @@ test("live semantic probe accepts repair-only browser-session guidance", async (
   });
 
   assert.equal(result.ok, true);
-  assert.equal(
-    result.semanticChecks?.find((check) => check.id === "browser-session-direct-new-source")?.status,
-    "pass"
-  );
+  assert.equal(result.semanticChecks.find((check) => check.id === "browser-session-direct-new-source")?.status, "pass");
 });
 
 test("live semantic probe rejects shell-only Schedules and Explore pages", async () => {
-  const response = (status, body) => ({
+  const response = (
+    status: number,
+    body: string
+  ): { headers: { get: () => null }; status: number; text: () => Promise<string> } => ({
     status,
     headers: { get: () => null },
-    text: async () => body,
+    text: () => Promise.resolve(body),
   });
-  const fetchImpl = async (url) => {
+  // biome-ignore lint/suspicious/useAwait: fetchImpl must satisfy the async FetchImpl contract even though this mock resolves synchronously; the caller awaits it like real fetch.
+  const fetchImpl = async (url: string | URL) => {
     const href = String(url);
     if (href.includes("/_ref/connectors")) {
       return response(200, JSON.stringify({ object: "list", data: [] }));
@@ -1083,23 +1180,21 @@ test("live semantic probe rejects shell-only Schedules and Explore pages", async
   assert.equal(result.ok, false);
   assert.ok(result.findings.some((f) => f.ruleId === "schedules-content-rendered"));
   assert.ok(result.findings.some((f) => f.ruleId === "explore-content-rendered"));
-  assert.equal(
-    result.semanticChecks?.find((check) => check.id === "schedules-content-rendered")?.status,
-    "fail"
-  );
-  assert.equal(
-    result.semanticChecks?.find((check) => check.id === "explore-content-rendered")?.status,
-    "fail"
-  );
+  assert.equal(result.semanticChecks.find((check) => check.id === "schedules-content-rendered")?.status, "fail");
+  assert.equal(result.semanticChecks.find((check) => check.id === "explore-content-rendered")?.status, "fail");
 });
 
 test("live semantic probe rejects owner actions that are absent from the exact source route", async () => {
-  const response = (status, body) => ({
+  const response = (
+    status: number,
+    body: string
+  ): { headers: { get: () => null }; status: number; text: () => Promise<string> } => ({
     status,
     headers: { get: () => null },
-    text: async () => body,
+    text: () => Promise.resolve(body),
   });
-  const fetchImpl = async (url) => {
+  // biome-ignore lint/suspicious/useAwait: fetchImpl must satisfy the async FetchImpl contract even though this mock resolves synchronously; the caller awaits it like real fetch.
+  const fetchImpl = async (url: string | URL) => {
     const href = String(url);
     if (href.includes("/_ref/connectors")) {
       return response(
@@ -1134,10 +1229,7 @@ test("live semantic probe rejects owner actions that are absent from the exact s
       );
     }
     if (href.endsWith("/")) {
-      return response(
-        200,
-        "<main><section>laptop Claude Code needs you. See what to do.</section></main>"
-      );
+      return response(200, "<main><section>laptop Claude Code needs you. See what to do.</section></main>");
     }
     if (href.endsWith("/sources/cin_local")) {
       return response(200, "<main><section>Diagnostics are loading.</section></main>");
@@ -1153,19 +1245,20 @@ test("live semantic probe rejects owner actions that are absent from the exact s
 
   assert.equal(result.ok, false);
   assert.ok(result.findings.some((f) => f.ruleId === "source-next-action-copy-missing"));
-  assert.equal(
-    result.semanticChecks?.find((check) => check.id === "whats-next-actionable")?.status,
-    "fail"
-  );
+  assert.equal(result.semanticChecks.find((check) => check.id === "whats-next-actionable")?.status, "fail");
 });
 
 test("live semantic probe accepts owner actions visible on dashboard and exact source route", async () => {
-  const response = (status, body) => ({
+  const response = (
+    status: number,
+    body: string
+  ): { headers: { get: () => null }; status: number; text: () => Promise<string> } => ({
     status,
     headers: { get: () => null },
-    text: async () => body,
+    text: () => Promise.resolve(body),
   });
-  const fetchImpl = async (url) => {
+  // biome-ignore lint/suspicious/useAwait: fetchImpl must satisfy the async FetchImpl contract even though this mock resolves synchronously; the caller awaits it like real fetch.
+  const fetchImpl = async (url: string | URL) => {
     const href = String(url);
     if (href.includes("/_ref/connectors")) {
       return response(
@@ -1206,10 +1299,7 @@ test("live semantic probe accepts owner actions visible on dashboard and exact s
       );
     }
     if (href.endsWith("/")) {
-      return response(
-        200,
-        "<main><section>laptop Claude Code needs you. See what to do.</section></main>"
-      );
+      return response(200, "<main><section>laptop Claude Code needs you. See what to do.</section></main>");
     }
     if (href.endsWith("/sources/cin_local")) {
       return response(
@@ -1227,19 +1317,20 @@ test("live semantic probe accepts owner actions visible on dashboard and exact s
   });
 
   assert.equal(result.ok, true);
-  assert.equal(
-    result.semanticChecks?.find((check) => check.id === "whats-next-actionable")?.status,
-    "pass"
-  );
+  assert.equal(result.semanticChecks.find((check) => check.id === "whats-next-actionable")?.status, "pass");
 });
 
 test("live semantic probe rejects raw stale manual sources without a visible next action", async () => {
-  const response = (status, body) => ({
+  const response = (
+    status: number,
+    body: string
+  ): { headers: { get: () => null }; status: number; text: () => Promise<string> } => ({
     status,
     headers: { get: () => null },
-    text: async () => body,
+    text: () => Promise.resolve(body),
   });
-  const fetchImpl = async (url) => {
+  // biome-ignore lint/suspicious/useAwait: fetchImpl must satisfy the async FetchImpl contract even though this mock resolves synchronously; the caller awaits it like real fetch.
+  const fetchImpl = async (url: string | URL) => {
     const href = String(url);
     if (href.includes("/_ref/connectors")) {
       return response(
@@ -1280,19 +1371,20 @@ test("live semantic probe rejects raw stale manual sources without a visible nex
 
   assert.equal(result.ok, false);
   assert.ok(result.findings.some((f) => f.ruleId === "raw-next-action-affordance-missing"));
-  assert.equal(
-    result.semanticChecks?.find((check) => check.id === "whats-next-actionable")?.status,
-    "fail"
-  );
+  assert.equal(result.semanticChecks.find((check) => check.id === "whats-next-actionable")?.status, "fail");
 });
 
 test("live semantic probe accepts raw stale manual sources with a visible refresh action", async () => {
-  const response = (status, body) => ({
+  const response = (
+    status: number,
+    body: string
+  ): { headers: { get: () => null }; status: number; text: () => Promise<string> } => ({
     status,
     headers: { get: () => null },
-    text: async () => body,
+    text: () => Promise.resolve(body),
   });
-  const fetchImpl = async (url) => {
+  // biome-ignore lint/suspicious/useAwait: fetchImpl must satisfy the async FetchImpl contract even though this mock resolves synchronously; the caller awaits it like real fetch.
+  const fetchImpl = async (url: string | URL) => {
     const href = String(url);
     if (href.includes("/_ref/connectors")) {
       return response(
@@ -1326,7 +1418,10 @@ test("live semantic probe accepts raw stale manual sources with a visible refres
       );
     }
     if (href.endsWith("/sources/cin_usaa")) {
-      return response(200, "<main><section>Run a refresh to bring this up to date.</section><button>Refresh now</button></main>");
+      return response(
+        200,
+        "<main><section>Run a refresh to bring this up to date.</section><button>Refresh now</button></main>"
+      );
     }
     if (href.endsWith("/")) {
       return response(200, "<main><section>USAA - Personal refresh available.</section></main>");
@@ -1341,19 +1436,20 @@ test("live semantic probe accepts raw stale manual sources with a visible refres
   });
 
   assert.equal(result.ok, true);
-  assert.equal(
-    result.semanticChecks?.find((check) => check.id === "whats-next-actionable")?.status,
-    "pass"
-  );
+  assert.equal(result.semanticChecks.find((check) => check.id === "whats-next-actionable")?.status, "pass");
 });
 
 test("live semantic probe rejects raw denial reason codes on dashboard", async () => {
-  const response = (status, body) => ({
+  const response = (
+    status: number,
+    body: string
+  ): { headers: { get: () => null }; status: number; text: () => Promise<string> } => ({
     status,
     headers: { get: () => null },
-    text: async () => body,
+    text: () => Promise.resolve(body),
   });
-  const fetchImpl = async (url) => {
+  // biome-ignore lint/suspicious/useAwait: fetchImpl must satisfy the async FetchImpl contract even though this mock resolves synchronously; the caller awaits it like real fetch.
+  const fetchImpl = async (url: string | URL) => {
     const href = String(url);
     if (href.includes("/_ref/connectors")) {
       return response(200, JSON.stringify({ object: "list", data: [] }));
@@ -1373,18 +1469,22 @@ test("live semantic probe rejects raw denial reason codes on dashboard", async (
   assert.equal(result.ok, false);
   assert.ok(result.findings.some((f) => f.ruleId === "dashboard-raw-denial-reason"));
   assert.equal(
-    result.semanticChecks?.find((check) => check.id === "dashboard-denial-reasons-humanized")?.status,
+    result.semanticChecks.find((check) => check.id === "dashboard-denial-reasons-humanized")?.status,
     "fail"
   );
 });
 
 test("live semantic probe rejects single-token raw denial codes on dashboard", async () => {
-  const response = (status, body) => ({
+  const response = (
+    status: number,
+    body: string
+  ): { headers: { get: () => null }; status: number; text: () => Promise<string> } => ({
     status,
     headers: { get: () => null },
-    text: async () => body,
+    text: () => Promise.resolve(body),
   });
-  const fetchImpl = async (url) => {
+  // biome-ignore lint/suspicious/useAwait: fetchImpl must satisfy the async FetchImpl contract even though this mock resolves synchronously; the caller awaits it like real fetch.
+  const fetchImpl = async (url: string | URL) => {
     const href = String(url);
     if (href.includes("/_ref/connectors")) {
       return response(200, JSON.stringify({ object: "list", data: [] }));
@@ -1404,18 +1504,22 @@ test("live semantic probe rejects single-token raw denial codes on dashboard", a
   assert.equal(result.ok, false);
   assert.ok(result.findings.some((f) => f.ruleId === "dashboard-raw-denial-reason"));
   assert.equal(
-    result.semanticChecks?.find((check) => check.id === "dashboard-denial-reasons-humanized")?.status,
+    result.semanticChecks.find((check) => check.id === "dashboard-denial-reasons-humanized")?.status,
     "fail"
   );
 });
 
 test("live semantic probe accepts humanized dashboard denial reasons", async () => {
-  const response = (status, body) => ({
+  const response = (
+    status: number,
+    body: string
+  ): { headers: { get: () => null }; status: number; text: () => Promise<string> } => ({
     status,
     headers: { get: () => null },
-    text: async () => body,
+    text: () => Promise.resolve(body),
   });
-  const fetchImpl = async (url) => {
+  // biome-ignore lint/suspicious/useAwait: fetchImpl must satisfy the async FetchImpl contract even though this mock resolves synchronously; the caller awaits it like real fetch.
+  const fetchImpl = async (url: string | URL) => {
     const href = String(url);
     if (href.includes("/_ref/connectors")) {
       return response(200, JSON.stringify({ object: "list", data: [] }));
@@ -1437,18 +1541,22 @@ test("live semantic probe accepts humanized dashboard denial reasons", async () 
 
   assert.equal(result.ok, true);
   assert.equal(
-    result.semanticChecks?.find((check) => check.id === "dashboard-denial-reasons-humanized")?.status,
+    result.semanticChecks.find((check) => check.id === "dashboard-denial-reasons-humanized")?.status,
     "pass"
   );
 });
 
 test("live semantic probe rejects dead-letter jargon on source recovery detail pages", async () => {
-  const response = (status, body) => ({
+  const response = (
+    status: number,
+    body: string
+  ): { headers: { get: () => null }; status: number; text: () => Promise<string> } => ({
     status,
     headers: { get: () => null },
-    text: async () => body,
+    text: () => Promise.resolve(body),
   });
-  const fetchImpl = async (url) => {
+  // biome-ignore lint/suspicious/useAwait: fetchImpl must satisfy the async FetchImpl contract even though this mock resolves synchronously; the caller awaits it like real fetch.
+  const fetchImpl = async (url: string | URL) => {
     const href = String(url);
     if (href.includes("/_ref/connectors")) {
       return response(
@@ -1488,18 +1596,22 @@ test("live semantic probe rejects dead-letter jargon on source recovery detail p
   assert.equal(result.ok, false);
   assert.ok(result.findings.some((f) => f.ruleId === "source-detail-raw-recovery-jargon"));
   assert.equal(
-    result.semanticChecks?.find((check) => check.id === "source-detail-recovery-copy-humanized")?.status,
+    result.semanticChecks.find((check) => check.id === "source-detail-recovery-copy-humanized")?.status,
     "fail"
   );
 });
 
 test("live semantic probe accepts failed-upload owner copy on source recovery detail pages", async () => {
-  const response = (status, body) => ({
+  const response = (
+    status: number,
+    body: string
+  ): { headers: { get: () => null }; status: number; text: () => Promise<string> } => ({
     status,
     headers: { get: () => null },
-    text: async () => body,
+    text: () => Promise.resolve(body),
   });
-  const fetchImpl = async (url) => {
+  // biome-ignore lint/suspicious/useAwait: fetchImpl must satisfy the async FetchImpl contract even though this mock resolves synchronously; the caller awaits it like real fetch.
+  const fetchImpl = async (url: string | URL) => {
     const href = String(url);
     if (href.includes("/_ref/connectors")) {
       return response(
@@ -1541,18 +1653,22 @@ test("live semantic probe accepts failed-upload owner copy on source recovery de
 
   assert.equal(result.ok, true);
   assert.equal(
-    result.semanticChecks?.find((check) => check.id === "source-detail-recovery-copy-humanized")?.status,
+    result.semanticChecks.find((check) => check.id === "source-detail-recovery-copy-humanized")?.status,
     "pass"
   );
 });
 
 test("live semantic probe rejects clean-success source detail copy when collection gaps remain", async () => {
-  const response = (status, body) => ({
+  const response = (
+    status: number,
+    body: string
+  ): { headers: { get: () => null }; status: number; text: () => Promise<string> } => ({
     status,
     headers: { get: () => null },
-    text: async () => body,
+    text: () => Promise.resolve(body),
   });
-  const fetchImpl = async (url) => {
+  // biome-ignore lint/suspicious/useAwait: fetchImpl must satisfy the async FetchImpl contract even though this mock resolves synchronously; the caller awaits it like real fetch.
+  const fetchImpl = async (url: string | URL) => {
     const href = String(url);
     if (href.includes("/_ref/connectors")) {
       return response(
@@ -1603,19 +1719,20 @@ test("live semantic probe rejects clean-success source detail copy when collecti
 
   assert.equal(result.ok, false);
   assert.ok(result.findings.some((f) => f.ruleId === "source-detail-clean-success-with-open-gaps"));
-  assert.equal(
-    result.semanticChecks?.find((check) => check.id === "source-detail-run-gap-honesty")?.status,
-    "fail"
-  );
+  assert.equal(result.semanticChecks.find((check) => check.id === "source-detail-run-gap-honesty")?.status, "fail");
 });
 
 test("live semantic probe accepts partial source detail copy when collection gaps remain", async () => {
-  const response = (status, body) => ({
+  const response = (
+    status: number,
+    body: string
+  ): { headers: { get: () => null }; status: number; text: () => Promise<string> } => ({
     status,
     headers: { get: () => null },
-    text: async () => body,
+    text: () => Promise.resolve(body),
   });
-  const fetchImpl = async (url) => {
+  // biome-ignore lint/suspicious/useAwait: fetchImpl must satisfy the async FetchImpl contract even though this mock resolves synchronously; the caller awaits it like real fetch.
+  const fetchImpl = async (url: string | URL) => {
     const href = String(url);
     if (href.includes("/_ref/connectors")) {
       return response(
@@ -1665,19 +1782,20 @@ test("live semantic probe accepts partial source detail copy when collection gap
   });
 
   assert.equal(result.ok, true);
-  assert.equal(
-    result.semanticChecks?.find((check) => check.id === "source-detail-run-gap-honesty")?.status,
-    "pass"
-  );
+  assert.equal(result.semanticChecks.find((check) => check.id === "source-detail-run-gap-honesty")?.status, "pass");
 });
 
 test("live semantic probe rejects raw technical client ids as visible grant captions", async () => {
-  const response = (status, body) => ({
+  const response = (
+    status: number,
+    body: string
+  ): { headers: { get: () => null }; status: number; text: () => Promise<string> } => ({
     status,
     headers: { get: () => null },
-    text: async () => body,
+    text: () => Promise.resolve(body),
   });
-  const fetchImpl = async (url) => {
+  // biome-ignore lint/suspicious/useAwait: fetchImpl must satisfy the async FetchImpl contract even though this mock resolves synchronously; the caller awaits it like real fetch.
+  const fetchImpl = async (url: string | URL) => {
     const href = String(url);
     if (href.includes("/_ref/connectors")) {
       return response(200, JSON.stringify({ object: "list", data: [] }));
@@ -1696,16 +1814,20 @@ test("live semantic probe rejects raw technical client ids as visible grant capt
 
   assert.equal(result.ok, false);
   assert.ok(result.findings.some((f) => f.ruleId === "grants-raw-client-caption"));
-  assert.equal(result.semanticChecks?.find((check) => check.id === "grants-client-caption-humanized")?.status, "fail");
+  assert.equal(result.semanticChecks.find((check) => check.id === "grants-client-caption-humanized")?.status, "fail");
 });
 
 test("live semantic probe rejects raw URL client ids as visible grant captions", async () => {
-  const response = (status, body) => ({
+  const response = (
+    status: number,
+    body: string
+  ): { headers: { get: () => null }; status: number; text: () => Promise<string> } => ({
     status,
     headers: { get: () => null },
-    text: async () => body,
+    text: () => Promise.resolve(body),
   });
-  const fetchImpl = async (url) => {
+  // biome-ignore lint/suspicious/useAwait: fetchImpl must satisfy the async FetchImpl contract even though this mock resolves synchronously; the caller awaits it like real fetch.
+  const fetchImpl = async (url: string | URL) => {
     const href = String(url);
     if (href.includes("/_ref/connectors")) {
       return response(200, JSON.stringify({ object: "list", data: [] }));
@@ -1713,7 +1835,7 @@ test("live semantic probe rejects raw URL client ids as visible grant captions",
     if (href.endsWith("/grants")) {
       return response(
         200,
-        '<main><article>github active client https://chatgpt.com/oauth/client.json?token_endpoint_auth_method=none</article></main>'
+        "<main><article>github active client https://chatgpt.com/oauth/client.json?token_endpoint_auth_method=none</article></main>"
       );
     }
     return response(200, defaultLiveOwnerPageHtml(url));
@@ -1727,7 +1849,7 @@ test("live semantic probe rejects raw URL client ids as visible grant captions",
 
   assert.equal(result.ok, false);
   assert.ok(result.findings.some((f) => f.ruleId === "grants-raw-client-caption"));
-  assert.equal(result.semanticChecks?.find((check) => check.id === "grants-client-caption-humanized")?.status, "fail");
+  assert.equal(result.semanticChecks.find((check) => check.id === "grants-client-caption-humanized")?.status, "fail");
 });
 
 // ── 7. Clean-shell freshness (opt-in, injected probe — no real network) ──────
@@ -1745,7 +1867,7 @@ test("clean-shell probe flags a rendered subcommand missing from published --hel
     probe,
   });
   assert.equal(findings.length, 1);
-  assert.equal(findings[0].ruleId, "clean-shell-missing-subcommand");
+  assert.equal(findings[0]?.ruleId, "clean-shell-missing-subcommand");
   assert.ok(findings[0].excerpt.includes("owner-agent-explain"));
 });
 
@@ -1769,8 +1891,8 @@ test("clean-shell probe records a resolution failure as a finding", async () => 
     probe,
   });
   assert.equal(findings.length, 1);
-  assert.equal(findings[0].ruleId, "clean-shell-probe-failed");
-  assert.equal(probes[0].ok, false);
+  assert.equal(findings[0]?.ruleId, "clean-shell-probe-failed");
+  assert.equal(probes[0]?.ok, false);
 });
 
 test("does not treat the shared pdpp build label as a CLI command", () => {
@@ -1778,6 +1900,6 @@ test("does not treat the shared pdpp build label as a CLI command", () => {
 });
 
 // Helper used by several forbidden-string tests above.
-function found(src, ruleId) {
+function found(src: string, ruleId: string): boolean {
   return scanNormal(src).some((f) => f.ruleId === ruleId);
 }
