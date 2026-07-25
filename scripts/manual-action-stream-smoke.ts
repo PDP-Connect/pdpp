@@ -2,44 +2,221 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { createRequire } from "node:module";
 import { mkdir } from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
+
+// patchright is a polyfill-connectors dependency, not a root dependency; its
+// types are not resolvable from this file's module graph (same reasoning as
+// docs/explorer/uat/harness/capture.ts), so the browser surface below is
+// narrowed to the handful of methods this smoke actually calls.
+interface PatchrightBoundingBox {
+  height: number;
+  width: number;
+  x: number;
+  y: number;
+}
+interface PatchrightViewportSize {
+  height: number;
+  width: number;
+}
+interface PatchrightLocator {
+  boundingBox: () => Promise<PatchrightBoundingBox | null>;
+  click: () => Promise<void>;
+  evaluate: <T, Arg>(fn: (node: HTMLElement, arg: Arg) => T, arg: Arg) => Promise<T>;
+  fill: (value: string) => Promise<void>;
+  first: () => PatchrightLocator;
+  screenshot: () => Promise<Buffer>;
+  waitFor: (options: { state: string; timeout: number }) => Promise<void>;
+}
+interface PatchrightKeyboard {
+  press: (key: string) => Promise<void>;
+  type: (text: string, options?: { delay: number }) => Promise<void>;
+}
+interface PatchrightMouse {
+  click: (x: number, y: number) => Promise<void>;
+  move: (x: number, y: number) => Promise<void>;
+  wheel: (deltaX: number, deltaY: number) => Promise<void>;
+}
+interface PatchrightTouchscreen {
+  tap: (x: number, y: number) => Promise<void>;
+}
+interface PatchrightRequestFailure {
+  errorText: string;
+}
+interface PatchrightRequest {
+  failure: () => PatchrightRequestFailure | null;
+  method: () => string;
+  postData: () => string | null;
+  resourceType: () => string;
+  url: () => string;
+}
+interface PatchrightResponse {
+  request: () => PatchrightRequest;
+  status: () => number;
+  text: () => Promise<string>;
+}
+interface PatchrightConsoleMessage {
+  text: () => string;
+  type: () => string;
+}
+type PatchrightPageEventArg<Name extends string> = Name extends "request" | "requestfailed"
+  ? PatchrightRequest
+  : Name extends "response"
+    ? PatchrightResponse
+    : Name extends "console"
+      ? PatchrightConsoleMessage
+      : never;
+interface PatchrightPage {
+  addInitScript: (fn: () => void) => Promise<void>;
+  evaluate: <T, Arg = undefined>(fn: (arg: Arg) => T | Promise<T>, arg?: Arg) => Promise<T>;
+  getByRole: (role: string, options: { name: RegExp | string }) => PatchrightLocator;
+  goto: (url: string, options: { timeout: number; waitUntil: string }) => Promise<unknown>;
+  keyboard: PatchrightKeyboard;
+  locator: (selector: string) => PatchrightLocator;
+  mouse: PatchrightMouse;
+  on: <Name extends "console" | "request" | "requestfailed" | "response">(
+    event: Name,
+    listener: (arg: PatchrightPageEventArg<Name>) => void
+  ) => void;
+  screenshot: (options?: { clip?: PatchrightBoundingBox; fullPage?: boolean; path?: string }) => Promise<Buffer>;
+  setViewportSize: (size: PatchrightViewportSize) => Promise<void>;
+  touchscreen: PatchrightTouchscreen;
+  url: () => string;
+  viewportSize: () => PatchrightViewportSize;
+  waitForTimeout: (ms: number) => Promise<void>;
+  waitForURL: (url: RegExp | string, options: { timeout: number }) => Promise<void>;
+}
+interface PatchrightBrowser {
+  close: () => Promise<void>;
+  newPage: (options: {
+    deviceScaleFactor: number;
+    hasTouch: boolean;
+    isMobile: boolean;
+    viewport: PatchrightViewportSize;
+  }) => Promise<PatchrightPage>;
+}
+interface PatchrightModule {
+  chromium: {
+    launch: (options: { executablePath?: string; headless: boolean }) => Promise<PatchrightBrowser>;
+  };
+}
+
+interface DebugEvent {
+  __smokeSequence: number;
+  payload?: Record<string, unknown>;
+  receivedAt?: string;
+  type?: string;
+  viewerId?: string;
+  [key: string]: unknown;
+}
+
+interface RequestFailureEvidence {
+  failure: string;
+  method: string;
+  resourceType: string;
+  url: string;
+}
+interface HttpFailureEvidence {
+  method: string;
+  resourceType: string;
+  status: number;
+  url: string;
+}
+interface ConsoleErrorEvidence {
+  text: string;
+  type: string;
+}
+interface RequestEvidence {
+  consoleErrors: ConsoleErrorEvidence[];
+  eventStreamErrors: unknown[];
+  failedRequests: RequestFailureEvidence[];
+  httpFailures: HttpFailureEvidence[];
+  nekoHttpFailures: HttpFailureEvidence[];
+}
+
+interface StreamPixelStats {
+  bright: number;
+  brightRatio: number;
+  nearBlack: number;
+  nearBlackRatio: number;
+  sampled: boolean;
+  total: number;
+}
+
+interface StreamFailureSignature {
+  hasErrorAffordance: boolean;
+  hasFirstFrameSignal: boolean;
+  hasRasterMedia: boolean;
+}
+
+interface RemotePoint {
+  x: number;
+  y: number;
+}
+interface RemoteViewport {
+  height: number;
+  width: number;
+}
+interface RemoteControlTarget {
+  controlId: string;
+  remotePoint: RemotePoint;
+  remoteViewport: RemoteViewport;
+  sourceType: string;
+}
+
+interface VisualChangeDiff {
+  changedPixels: number;
+  changedRatio: number;
+  height: number;
+  meanRgbDelta: number;
+  width: number;
+}
 
 const repoRoot = path.resolve(new URL("..", import.meta.url).pathname);
 const require = createRequire(import.meta.url);
 
 const DEFAULT_TIMEOUT_MS = 90_000;
-const DEBUG_EVENT_BUFFER_MAX = 2_000;
+const DEBUG_EVENT_BUFFER_MAX = 2000;
 const STREAM_FRAME_SELECTOR = '[aria-label="Connector browser stream"]';
 const EVIDENCE_DIR = path.join(repoRoot, "tmp", "stream-smoke");
 const STRICT_SMOKE_TOKEN = "pdpp-smoke";
 const MOBILE_SMOKE = "1";
+const OWNER_LOGIN_URL_PATTERN = /\/owner\/login(?:\?|$)/;
+const STREAM_PLAYGROUND_URL_PATTERN = /\/stream-playground/;
+const SIGN_IN_BUTTON_NAME_PATTERN = /sign in/i;
+const OPEN_BROWSER_BUTTON_NAME_PATTERN = /open browser/i;
+const TAP_TO_TYPE_BUTTON_NAME_PATTERN = /tap to type/i;
+const EVENT_STREAM_ERROR_LINE_PATTERN = /^event: error\ndata: (.+)$/m;
 
-function env(name) {
+function env(name: string): string | null {
   const value = process.env[name];
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
-function publicUrlFromEnv() {
+function publicUrlFromEnv(): string | null {
   return env("PDPP_STREAM_SMOKE_URL") || env("PDPP_PUBLIC_URL") || env("PDPP_REFERENCE_ORIGIN");
 }
 
-function mobileSmokeEnabled() {
+function mobileSmokeEnabled(): boolean {
   return env("PDPP_STREAM_SMOKE_MOBILE") === MOBILE_SMOKE;
 }
 
-function appendEvidence(list, entry) {
-  if (list.length < 50) list.push(entry);
+function appendEvidence<T>(list: T[], entry: T): void {
+  if (list.length < 50) {
+    list.push(entry);
+  }
 }
 
-function redactRequestUrl(value) {
+function redactRequestUrl(value: string | URL): string {
   try {
-    const url = new URL(value);
+    const url = new URL(value.toString());
     for (const name of ["token", "access_token", "id_token", "code"]) {
-      if (url.searchParams.has(name)) url.searchParams.set(name, "[redacted]");
+      if (url.searchParams.has(name)) {
+        url.searchParams.set(name, "[redacted]");
+      }
     }
     return url.toString();
   } catch {
@@ -47,26 +224,26 @@ function redactRequestUrl(value) {
   }
 }
 
-function browserExecutablePath() {
+function browserExecutablePath(): string | null {
   return env("PDPP_STREAM_SMOKE_BROWSER_EXECUTABLE_PATH");
 }
 
-function smokeUrl(origin) {
+function smokeUrl(origin: string): string {
   const url = new URL("/stream-playground", origin);
   url.searchParams.set("backend", env("PDPP_STREAM_SMOKE_BACKEND") || "neko");
   url.searchParams.set("stream_debug", "1");
   return url.toString();
 }
 
-function skip(message) {
+function skip(message: string): void {
   process.stdout.write(`SKIP manual-action stream smoke: ${message}\n`);
 }
 
-function fail(message) {
+function fail(message: string): never {
   throw new Error(`FAIL manual-action stream smoke: ${message}`);
 }
 
-export function isKnownBlackFrameFailure(pixels, signature) {
+export function isKnownBlackFrameFailure(pixels: StreamPixelStats, signature: StreamFailureSignature): boolean {
   const uniformlyBlack = pixels.sampled && pixels.nearBlackRatio >= 0.995 && pixels.brightRatio <= 0.002;
   // A remote page may legitimately be dark. The regression is the absence of
   // the first decoded frame in combination with a uniformly black stream
@@ -75,25 +252,36 @@ export function isKnownBlackFrameFailure(pixels, signature) {
   return uniformlyBlack && signature.hasErrorAffordance && !signature.hasFirstFrameSignal;
 }
 
-function parseDebugEventsFromPostData(postData) {
-  if (!postData) return [];
+function parseDebugEventsFromPostData(postData: string | null): DebugEvent[] {
+  if (!postData) {
+    return [];
+  }
   try {
-    const parsed = JSON.parse(postData);
-    return Array.isArray(parsed?.events) ? parsed.events : [];
+    const parsed = JSON.parse(postData) as { events?: unknown };
+    return Array.isArray(parsed.events) ? (parsed.events as DebugEvent[]) : [];
   } catch {
     return [];
   }
 }
 
-function eventType(event) {
-  return typeof event?.type === "string" ? event.type : typeof event?.name === "string" ? event.name : "";
+function eventType(event: DebugEvent | null): string {
+  if (!event) {
+    return "";
+  }
+  if (typeof event.type === "string") {
+    return event.type;
+  }
+  return typeof event.name === "string" ? (event.name as string) : "";
 }
 
-function eventPayload(event) {
+function eventPayload(event: DebugEvent | null): Record<string, unknown> {
   return event?.payload && typeof event.payload === "object" ? event.payload : {};
 }
 
-function hasEvent(events, predicate) {
+function hasEvent(
+  events: DebugEvent[],
+  predicate: (event: DebugEvent, payload: Record<string, unknown>, type: string) => boolean
+): boolean {
   return events.some((event) => {
     try {
       return predicate(event, eventPayload(event), eventType(event));
@@ -103,116 +291,129 @@ function hasEvent(events, predicate) {
   });
 }
 
-function hasEventAfter(events, sequence, predicate) {
-  return hasEvent(events, (event, payload, type) => {
-    return Number(event?.__smokeSequence) > sequence && predicate(event, payload, type);
-  });
+function hasEventAfter(
+  events: DebugEvent[],
+  sequence: number,
+  predicate: (event: DebugEvent, payload: Record<string, unknown>, type: string) => boolean
+): boolean {
+  return hasEvent(
+    events,
+    (event, payload, type) => event.__smokeSequence > sequence && predicate(event, payload, type)
+  );
 }
 
-function eventSummary(event) {
+function eventSummary(event: DebugEvent) {
   const payload = eventPayload(event);
   return {
     type: eventType(event),
-    viewerId: typeof event?.viewerId === "string" ? event.viewerId : null,
-    receivedAt: typeof event?.receivedAt === "string" ? event.receivedAt : null,
+    viewerId: typeof event.viewerId === "string" ? event.viewerId : null,
+    receivedAt: typeof event.receivedAt === "string" ? event.receivedAt : null,
     payload: summarizePayload(payload),
   };
 }
 
-function summarizePayload(payload) {
-  const out = {};
-  for (const [key, value] of Object.entries(payload || {})) {
-    if (
-      [
-        "type",
-        "status",
-        "count",
-        "clientX",
-        "clientY",
-        "pageX",
-        "pageY",
-        "innerWidth",
-        "innerHeight",
-        "devicePixelRatio",
-        "scrollX",
-        "scrollY",
-        "pageId",
-        "seq",
-        "backend",
-        "runId",
-        "interactionId",
-        "smokeTokenPresent",
-        "valueLength",
-        "target",
-        "elementAtPoint",
-        "activeElement",
-        "calibration",
-        "controls",
-        "beacons",
-        "visualViewport",
-        "error",
-        "eventType",
-        "insideMedia",
-        "insideOverlay",
-        "insideWrapper",
-        "mapped",
-        "mappingBasis",
-        "pageCdpAvailable",
-        "reason",
-        "reasons",
-        "result",
-        "screen",
-        "strictSafe",
-        "viewport",
-      ].includes(key)
-    ) {
+const SUMMARIZABLE_PAYLOAD_KEYS = new Set([
+  "type",
+  "status",
+  "count",
+  "clientX",
+  "clientY",
+  "pageX",
+  "pageY",
+  "innerWidth",
+  "innerHeight",
+  "devicePixelRatio",
+  "scrollX",
+  "scrollY",
+  "pageId",
+  "seq",
+  "backend",
+  "runId",
+  "interactionId",
+  "smokeTokenPresent",
+  "valueLength",
+  "target",
+  "elementAtPoint",
+  "activeElement",
+  "calibration",
+  "controls",
+  "beacons",
+  "visualViewport",
+  "error",
+  "eventType",
+  "insideMedia",
+  "insideOverlay",
+  "insideWrapper",
+  "mapped",
+  "mappingBasis",
+  "pageCdpAvailable",
+  "reason",
+  "reasons",
+  "result",
+  "screen",
+  "strictSafe",
+  "viewport",
+]);
+
+function summarizePayload(payload: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(payload)) {
+    if (SUMMARIZABLE_PAYLOAD_KEYS.has(key)) {
       out[key] = value;
     }
   }
   return out;
 }
 
-function latestEvent(events, predicate) {
+function latestEvent(
+  events: DebugEvent[],
+  predicate: (event: DebugEvent, payload: Record<string, unknown>, type: string) => boolean
+): DebugEvent | null {
   for (let i = events.length - 1; i >= 0; i -= 1) {
     const event = events[i];
-    if (predicate(event, eventPayload(event), eventType(event))) return event;
+    if (event && predicate(event, eventPayload(event), eventType(event))) {
+      return event;
+    }
   }
   return null;
 }
 
-function latestRemoteLayoutEvent(events) {
+function latestRemoteLayoutEvent(events: DebugEvent[]): DebugEvent | null {
   return latestEvent(
     events,
     (_event, payload, type) =>
       (type === "playground.ready" || type === "playground.calibration_init") &&
-      payload.controls &&
+      Boolean(payload.controls) &&
       typeof payload.controls === "object"
   );
 }
 
-function latestNekoPageCdpAvailability(events) {
+function latestNekoPageCdpAvailability(events: DebugEvent[]): boolean | null {
   const event = latestEvent(
     events,
     (_event, payload, type) => type === "neko.status.poll" && typeof payload.pageCdpAvailable === "boolean"
   );
-  return event ? eventPayload(event).pageCdpAvailable : null;
+  return event ? (eventPayload(event).pageCdpAvailable as boolean) : null;
 }
 
-function latestNekoStatusViewport(events) {
-  const event = latestEvent(events, (_event, payload, type) => type === "neko.status.poll" && payload.viewport);
-  const viewport = event ? eventPayload(event).viewport : null;
+function latestNekoStatusViewport(events: DebugEvent[]): RemoteViewport | null {
+  const event = latestEvent(
+    events,
+    (_event, payload, type) => type === "neko.status.poll" && Boolean(payload.viewport)
+  );
+  const viewport = event ? (eventPayload(event).viewport as { height?: unknown; width?: unknown } | null) : null;
   const width = Number(viewport?.width);
   const height = Number(viewport?.height);
   return Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0 ? { width, height } : null;
 }
 
-function hasHealthyNekoPointerMapping(events) {
+function hasHealthyNekoPointerMapping(events: DebugEvent[]): boolean {
   return hasEvent(
     events,
     (_event, payload, type) =>
       type === "neko.pointer_mapping" &&
       (payload.eventType === "pointerdown" || payload.eventType === "mousedown") &&
-      payload.mapped &&
+      Boolean(payload.mapped) &&
       typeof payload.mapped === "object" &&
       payload.insideOverlay === true &&
       !hasEvent(
@@ -225,16 +426,19 @@ function hasHealthyNekoPointerMapping(events) {
   );
 }
 
-function resolveRemoteControlTarget(events, controlId) {
+function resolveRemoteControlTarget(events: DebugEvent[], controlId: string): RemoteControlTarget | null {
   const layoutEvent = latestRemoteLayoutEvent(events);
   const payload = layoutEvent ? eventPayload(layoutEvent) : null;
-  const control = payload?.controls?.[controlId];
+  const controls = payload?.controls as Record<string, { centre?: RemotePoint }> | undefined;
+  const control = controls?.[controlId];
   const centre = control?.centre;
-  const remoteWidth = Number(payload?.visualViewport?.width || payload?.innerWidth);
-  const remoteHeight = Number(payload?.visualViewport?.height || payload?.innerHeight);
+  const visualViewport = payload?.visualViewport as { height?: unknown; width?: unknown } | undefined;
+  const remoteWidth = Number(visualViewport?.width ?? payload?.innerWidth);
+  const remoteHeight = Number(visualViewport?.height ?? payload?.innerHeight);
   if (
-    Number.isFinite(centre?.x) &&
-    Number.isFinite(centre?.y) &&
+    centre &&
+    Number.isFinite(centre.x) &&
+    Number.isFinite(centre.y) &&
     Number.isFinite(remoteWidth) &&
     remoteWidth > 0 &&
     Number.isFinite(remoteHeight) &&
@@ -250,7 +454,7 @@ function resolveRemoteControlTarget(events, controlId) {
   return null;
 }
 
-function containedStreamRect(imageBox, viewport) {
+function containedStreamRect(imageBox: PatchrightBoundingBox, viewport: RemoteViewport): PatchrightBoundingBox {
   const aspectRatio = viewport.width / viewport.height;
   const boxRatio = imageBox.width / imageBox.height;
   if (!(Number.isFinite(aspectRatio) && Number.isFinite(boxRatio)) || imageBox.width <= 0 || imageBox.height <= 0) {
@@ -274,7 +478,11 @@ function containedStreamRect(imageBox, viewport) {
   };
 }
 
-function mapRemoteRectToLocalClip(contentRect, remoteRect, remoteViewport) {
+function mapRemoteRectToLocalClip(
+  contentRect: PatchrightBoundingBox,
+  remoteRect: PatchrightBoundingBox,
+  remoteViewport: RemoteViewport
+): PatchrightBoundingBox {
   const x = contentRect.x + (contentRect.width * remoteRect.x) / remoteViewport.width;
   const y = contentRect.y + (contentRect.height * remoteRect.y) / remoteViewport.height;
   const width = (contentRect.width * remoteRect.width) / remoteViewport.width;
@@ -287,7 +495,10 @@ function mapRemoteRectToLocalClip(contentRect, remoteRect, remoteViewport) {
   };
 }
 
-function strictVisualInputTarget(remoteViewport) {
+function strictVisualInputTarget(remoteViewport: RemoteViewport): {
+  clickPoint: RemotePoint;
+  cropRect: PatchrightBoundingBox;
+} {
   if (remoteViewport.width > remoteViewport.height && remoteViewport.height <= 672) {
     // The debug playground switches to a two-column landscape layout. The
     // input occupies the second row of the right column.
@@ -312,7 +523,10 @@ function strictVisualInputTarget(remoteViewport) {
   };
 }
 
-function normalizeClipToViewport(clip, viewportSize) {
+function normalizeClipToViewport(
+  clip: PatchrightBoundingBox,
+  viewportSize: PatchrightViewportSize | null
+): PatchrightBoundingBox {
   const maxWidth = viewportSize?.width || clip.x + clip.width;
   const maxHeight = viewportSize?.height || clip.y + clip.height;
   const x = Math.max(0, Math.min(Math.floor(clip.x), Math.max(0, maxWidth - 1)));
@@ -325,23 +539,30 @@ function normalizeClipToViewport(clip, viewportSize) {
   };
 }
 
-async function captureStreamRemoteRect(page, remoteRect, remoteViewport) {
+async function captureStreamRemoteRect(
+  page: PatchrightPage,
+  remoteRect: PatchrightBoundingBox,
+  remoteViewport: RemoteViewport
+): Promise<{ clip: PatchrightBoundingBox; png: Buffer }> {
   const contentRect = await streamContentRect(page, remoteViewport);
-  const clip = normalizeClipToViewport(mapRemoteRectToLocalClip(contentRect, remoteRect, remoteViewport), page.viewportSize());
+  const clip = normalizeClipToViewport(
+    mapRemoteRectToLocalClip(contentRect, remoteRect, remoteViewport),
+    page.viewportSize()
+  );
   return {
     clip,
     png: await page.screenshot({ clip }),
   };
 }
 
-async function comparePngVisualChange(page, beforePng, afterPng) {
+function comparePngVisualChange(page: PatchrightPage, beforePng: Buffer, afterPng: Buffer): Promise<VisualChangeDiff> {
   return page.evaluate(
     async ({ beforeDataUrl, afterDataUrl }) => {
-      async function decode(dataUrl) {
+      async function decode(dataUrl: string): Promise<HTMLImageElement> {
         const img = new Image();
         img.decoding = "sync";
-        await new Promise((resolve, reject) => {
-          img.onload = resolve;
+        await new Promise<void>((resolve, reject) => {
+          img.onload = () => resolve();
           img.onerror = () => reject(new Error("failed to decode smoke screenshot"));
           img.src = dataUrl;
         });
@@ -355,7 +576,9 @@ async function comparePngVisualChange(page, beforePng, afterPng) {
       canvas.width = width;
       canvas.height = height;
       const context = canvas.getContext("2d", { willReadFrequently: true });
-      if (!context) throw new Error("2d canvas unavailable for smoke screenshot diff");
+      if (!context) {
+        throw new Error("2d canvas unavailable for smoke screenshot diff");
+      }
       context.drawImage(before, 0, 0, width, height);
       const a = context.getImageData(0, 0, width, height).data;
       context.clearRect(0, 0, width, height);
@@ -365,9 +588,17 @@ async function comparePngVisualChange(page, beforePng, afterPng) {
       let totalDelta = 0;
       const pixels = width * height;
       for (let i = 0; i < a.length; i += 4) {
-        const delta = Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]);
+        const aRed = a[i] ?? 0;
+        const aGreen = a[i + 1] ?? 0;
+        const aBlue = a[i + 2] ?? 0;
+        const bRed = b[i] ?? 0;
+        const bGreen = b[i + 1] ?? 0;
+        const bBlue = b[i + 2] ?? 0;
+        const delta = Math.abs(aRed - bRed) + Math.abs(aGreen - bGreen) + Math.abs(aBlue - bBlue);
         totalDelta += delta;
-        if (delta >= 36) changedPixels += 1;
+        if (delta >= 36) {
+          changedPixels += 1;
+        }
       }
       return {
         width,
@@ -384,44 +615,58 @@ async function comparePngVisualChange(page, beforePng, afterPng) {
   );
 }
 
-async function streamFrameReport(page) {
+async function streamFrameReport(page: PatchrightPage) {
   const frame = page.locator(STREAM_FRAME_SELECTOR).first();
   const box = await frame.boundingBox().catch(() => null);
   const attrs = await frame
-    .evaluate((node) => ({
-      loading: node.getAttribute("data-pdpp-stream-loading"),
-      debug: node.getAttribute("data-pdpp-stream-debug"),
-      width: node.clientWidth,
-      height: node.clientHeight,
-    }))
-    .catch((error) => ({ error: error.message }));
+    .evaluate<{ debug: string | null; height: number; loading: string | null; width: number }, undefined>(
+      (node) => ({
+        loading: node.getAttribute("data-pdpp-stream-loading"),
+        debug: node.getAttribute("data-pdpp-stream-debug"),
+        width: node.clientWidth,
+        height: node.clientHeight,
+      }),
+      undefined
+    )
+    .catch((error: unknown) => ({ error: error instanceof Error ? error.message : String(error) }));
   return { box, attrs };
 }
 
-async function streamFramePixelStats(page) {
+async function streamFramePixelStats(page: PatchrightPage): Promise<StreamPixelStats> {
   const frame = page.locator(STREAM_FRAME_SELECTOR).first();
-  const mediaPixels = await frame.evaluate((node) => {
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: direct mechanical port of the pre-existing pixel-sampling probe body, unchanged from the .mjs source
+  const mediaPixels = await frame.evaluate<StreamPixelStats, undefined>((node) => {
     const media = node.querySelector("video, canvas");
-    if (!media) return { sampled: false };
+    if (!media) {
+      return { sampled: false, bright: 0, brightRatio: 0, nearBlack: 0, nearBlackRatio: 0, total: 0 };
+    }
     const canvas = document.createElement("canvas");
-    const sourceWidth = media instanceof HTMLVideoElement ? media.videoWidth : media.width;
-    const sourceHeight = media instanceof HTMLVideoElement ? media.videoHeight : media.height;
-    if (!(sourceWidth > 0 && sourceHeight > 0)) return { sampled: false };
+    const sourceWidth = media instanceof HTMLVideoElement ? media.videoWidth : (media as HTMLCanvasElement).width;
+    const sourceHeight = media instanceof HTMLVideoElement ? media.videoHeight : (media as HTMLCanvasElement).height;
+    if (!(sourceWidth > 0 && sourceHeight > 0)) {
+      return { sampled: false, bright: 0, brightRatio: 0, nearBlack: 0, nearBlackRatio: 0, total: 0 };
+    }
     const scale = Math.min(1, 240 / Math.max(sourceWidth, sourceHeight));
     canvas.width = Math.max(1, Math.floor(sourceWidth * scale));
     canvas.height = Math.max(1, Math.floor(sourceHeight * scale));
     const context = canvas.getContext("2d", { willReadFrequently: true });
-    if (!context) throw new Error("stream pixel probe could not create a 2d context");
-    context.drawImage(media, 0, 0, canvas.width, canvas.height);
+    if (!context) {
+      throw new Error("stream pixel probe could not create a 2d context");
+    }
+    context.drawImage(media as CanvasImageSource, 0, 0, canvas.width, canvas.height);
     const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
     let nearBlack = 0;
     let bright = 0;
     for (let index = 0; index < pixels.length; index += 4) {
-      const red = pixels[index];
-      const green = pixels[index + 1];
-      const blue = pixels[index + 2];
-      if (red <= 12 && green <= 12 && blue <= 12) nearBlack += 1;
-      if (red >= 48 || green >= 48 || blue >= 48) bright += 1;
+      const red = pixels[index] ?? 0;
+      const green = pixels[index + 1] ?? 0;
+      const blue = pixels[index + 2] ?? 0;
+      if (red <= 12 && green <= 12 && blue <= 12) {
+        nearBlack += 1;
+      }
+      if (red >= 48 || green >= 48 || blue >= 48) {
+        bright += 1;
+      }
     }
     const total = pixels.length / 4;
     return {
@@ -432,33 +677,39 @@ async function streamFramePixelStats(page) {
       sampled: true,
       total,
     };
-  });
-  if (mediaPixels.sampled) return mediaPixels;
+  }, undefined);
+  if (mediaPixels.sampled) {
+    return mediaPixels;
+  }
 
   // The known failure can tear the media node down entirely while leaving the
   // stream rectangle black. Sample its exposed rectangle itself, not arbitrary
   // page pixels. PDPP instruction/error controls are painted over that same
   // rectangle, so exclude their intersections rather than diluting a black
   // stream with readable UI copy.
-  const excludedRects = await frame.evaluate((node) => {
-    const frameRect = node.getBoundingClientRect();
-    return [...document.querySelectorAll("[data-pdpp-stream-ui]")]
-      .map((element) => element.getBoundingClientRect())
-      .map((rect) => ({
-        bottom: Math.min(frameRect.bottom, rect.bottom) - frameRect.top,
-        left: Math.max(frameRect.left, rect.left) - frameRect.left,
-        right: Math.min(frameRect.right, rect.right) - frameRect.left,
-        top: Math.max(frameRect.top, rect.top) - frameRect.top,
-      }))
-      .filter((rect) => rect.right > rect.left && rect.bottom > rect.top);
-  });
+  const excludedRects = await frame.evaluate<{ bottom: number; left: number; right: number; top: number }[], undefined>(
+    (node) => {
+      const frameRect = node.getBoundingClientRect();
+      return [...document.querySelectorAll("[data-pdpp-stream-ui]")]
+        .map((element) => element.getBoundingClientRect())
+        .map((rect) => ({
+          bottom: Math.min(frameRect.bottom, rect.bottom) - frameRect.top,
+          left: Math.max(frameRect.left, rect.left) - frameRect.left,
+          right: Math.min(frameRect.right, rect.right) - frameRect.left,
+          top: Math.max(frameRect.top, rect.top) - frameRect.top,
+        }))
+        .filter((rect) => rect.right > rect.left && rect.bottom > rect.top);
+    },
+    undefined
+  );
   const png = await frame.screenshot();
   return page.evaluate(
-    async ({ dataUrl, excludedRects }) => {
+    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: direct mechanical port of the pre-existing pixel-sampling probe body, unchanged from the .mjs source
+    async ({ dataUrl, excludedRects: rects }) => {
       const image = new Image();
       image.decoding = "sync";
-      await new Promise((resolve, reject) => {
-        image.onload = resolve;
+      await new Promise<void>((resolve, reject) => {
+        image.onload = () => resolve();
         image.onerror = () => reject(new Error("failed to decode stream-frame screenshot"));
         image.src = dataUrl;
       });
@@ -467,7 +718,9 @@ async function streamFramePixelStats(page) {
       canvas.width = Math.max(1, Math.floor(image.naturalWidth * scale));
       canvas.height = Math.max(1, Math.floor(image.naturalHeight * scale));
       const context = canvas.getContext("2d", { willReadFrequently: true });
-      if (!context) throw new Error("stream-frame screenshot pixel probe could not create a 2d context");
+      if (!context) {
+        throw new Error("stream-frame screenshot pixel probe could not create a 2d context");
+      }
       context.drawImage(image, 0, 0, canvas.width, canvas.height);
       const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
       let nearBlack = 0;
@@ -489,14 +742,18 @@ async function streamFramePixelStats(page) {
         if (x < presentation.left || x >= presentation.right || y < presentation.top || y >= presentation.bottom) {
           continue;
         }
-        if (excludedRects.some((rect) => x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom)) {
+        if (rects.some((rect) => x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom)) {
           continue;
         }
-        const red = pixels[index];
-        const green = pixels[index + 1];
-        const blue = pixels[index + 2];
-        if (red <= 12 && green <= 12 && blue <= 12) nearBlack += 1;
-        if (red >= 48 || green >= 48 || blue >= 48) bright += 1;
+        const red = pixels[index] ?? 0;
+        const green = pixels[index + 1] ?? 0;
+        const blue = pixels[index + 2] ?? 0;
+        if (red <= 12 && green <= 12 && blue <= 12) {
+          nearBlack += 1;
+        }
+        if (red >= 48 || green >= 48 || blue >= 48) {
+          bright += 1;
+        }
         total += 1;
       }
       return {
@@ -512,17 +769,27 @@ async function streamFramePixelStats(page) {
   );
 }
 
-async function streamFailureSignature(page) {
+function streamFailureSignature(page: PatchrightPage): Promise<StreamFailureSignature> {
   const frame = page.locator(STREAM_FRAME_SELECTOR).first();
-  return frame.evaluate((node) => {
+  return frame.evaluate<StreamFailureSignature, undefined>((node) => {
     const media = node.querySelector("video, canvas");
     const video = media instanceof HTMLVideoElement ? media : null;
+    // These regexes run inside a page.evaluate callback, which Playwright
+    // serializes and executes in the browser page context — they cannot
+    // reference module-level constants from this file's outer scope.
     const inlineError = [...node.querySelectorAll("[data-pdpp-stream-ui]")].some((element) =>
-      /n\.eko WebRTC stream did not attach|secure browser viewport could not be applied/i.test(element.textContent || "")
+      // biome-ignore lint/performance/useTopLevelRegex: browser-context callback body, see comment above
+      /n\.eko WebRTC stream did not attach|secure browser viewport could not be applied/i.test(
+        element.textContent || ""
+      )
     );
-    const retryAffordance = [...node.querySelectorAll("button")].some((button) => /retry secure browser/i.test(button.textContent || ""));
+    const retryAffordance = [...node.querySelectorAll("button")].some((button) =>
+      // biome-ignore lint/performance/useTopLevelRegex: browser-context callback body, see comment above
+      /retry secure browser/i.test(button.textContent || "")
+    );
     const bodyText = document.body?.innerText || "";
     const reachFailure =
+      // biome-ignore lint/performance/useTopLevelRegex: browser-context callback body, see comment above
       /couldn['’]t reach the browser stream|browser stream failed to start|browser stream isn['’]t available|n\.eko browser window did not settle/i.test(
         bodyText
       );
@@ -532,14 +799,18 @@ async function streamFailureSignature(page) {
       // the distinguishing signal that keeps dark content from looking like a
       // black-frame failure.
       hasFirstFrameSignal: Boolean(
-        video && video.videoWidth > 0 && video.videoHeight > 0 && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.currentTime > 0
+        video &&
+          video.videoWidth > 0 &&
+          video.videoHeight > 0 &&
+          video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+          video.currentTime > 0
       ),
       hasRasterMedia: Boolean(media),
     };
-  });
+  }, undefined);
 }
 
-async function assertKnownBlackFrameFailureAbsent(page) {
+async function assertKnownBlackFrameFailureAbsent(page: PatchrightPage) {
   const pixels = await streamFramePixelStats(page);
   const signature = await streamFailureSignature(page);
   // This is deliberately narrower than "the stream has dark pixels." The
@@ -552,19 +823,21 @@ async function assertKnownBlackFrameFailureAbsent(page) {
   return { pixels, signature };
 }
 
-async function streamContentRect(page, remoteViewport) {
+async function streamContentRect(page: PatchrightPage, remoteViewport: RemoteViewport): Promise<PatchrightBoundingBox> {
   const frame = page.locator(STREAM_FRAME_SELECTOR).first();
   const box = await frame.boundingBox();
   if (!box) {
     fail("stream frame is not measurable");
   }
   const mediaBox = await frame
-    .evaluate((node) => {
+    .evaluate<PatchrightBoundingBox | null, undefined>((node) => {
       const media = node.querySelector("video, img");
-      if (!media) return null;
+      if (!media) {
+        return null;
+      }
       const rect = media.getBoundingClientRect();
       return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
-    })
+    }, undefined)
     .catch(() => null);
   if (mediaBox) {
     return containedStreamRect(mediaBox, remoteViewport);
@@ -572,11 +845,10 @@ async function streamContentRect(page, remoteViewport) {
   return box;
 }
 
-async function assertMobileViewportFits(page, phase) {
+async function assertMobileViewportFits(page: PatchrightPage, phase: string) {
   const metrics = await page.evaluate(() => {
     const visualWidth = window.visualViewport?.width ?? window.innerWidth;
-    const documentElement = document.documentElement;
-    const body = document.body;
+    const { documentElement, body } = document;
     const frame = document.querySelector('[aria-label="Connector browser stream"]');
     const frameRect = frame?.getBoundingClientRect() ?? null;
     return {
@@ -601,10 +873,9 @@ async function assertMobileViewportFits(page, phase) {
   return metrics;
 }
 
-async function assertDocumentHorizontallyFits(page, phase) {
+async function assertDocumentHorizontallyFits(page: PatchrightPage, phase: string) {
   const metrics = await page.evaluate(() => {
-    const documentElement = document.documentElement;
-    const body = document.body;
+    const { documentElement, body } = document;
     return {
       bodyScrollWidth: body?.scrollWidth ?? 0,
       documentClientWidth: documentElement.clientWidth,
@@ -647,12 +918,12 @@ function readScrollerState() {
   return { computedOverflowY: getComputedStyle(scroller).overflowY, scrollTop: scroller.scrollTop };
 }
 
-function setScrollerTop(scrollTop) {
+function setScrollerTop(scrollTop: number) {
   const scroller = document.scrollingElement || document.documentElement;
   scroller.scrollTop = scrollTop;
 }
 
-async function documentScrollability(page) {
+async function documentScrollability(page: PatchrightPage) {
   const before = await page.evaluate(readScrollerState);
   const viewport = page.viewportSize();
   await page.mouse.move(Math.floor(viewport.width / 2), Math.floor(viewport.height / 2));
@@ -672,7 +943,7 @@ async function documentScrollability(page) {
  * dimensions (the dialog covers it, but nothing stops it driving a real page
  * scrollbar unless the scrolling element itself is locked).
  */
-async function assertDocumentScrollLockedWhileStreamDialogOpen(page) {
+async function assertDocumentScrollLockedWhileStreamDialogOpen(page: PatchrightPage) {
   const state = await documentScrollability(page);
   if (!NON_SCROLLABLE_OVERFLOW_POLICIES.has(state.computedOverflowY) || state.scrollMoved) {
     fail(`document is scrollable while the stream dialog is open: ${JSON.stringify(state)}`);
@@ -687,7 +958,7 @@ async function assertDocumentScrollLockedWhileStreamDialogOpen(page) {
  * only oracle above could not distinguish). Always removes the probe and
  * resets scroll position, even on failure.
  */
-async function assertOrdinaryScrollRestoredAfterClose(page) {
+async function assertOrdinaryScrollRestoredAfterClose(page: PatchrightPage) {
   await page.evaluate((markerId) => {
     const probe = document.createElement("div");
     probe.id = markerId;
@@ -711,7 +982,7 @@ async function assertOrdinaryScrollRestoredAfterClose(page) {
 const CORNER_TOGGLE_SELECTOR = ".pdpp-stream-control-row button[aria-expanded]";
 const CLOSE_BUTTON_SELECTOR = '.pdpp-stream-control-row button[aria-label*="End"][aria-label*="browser session"]';
 
-async function cornerControlsSnapshot(page) {
+function cornerControlsSnapshot(page: PatchrightPage) {
   return page.evaluate(
     ({ toggleSelector, closeSelector }) => ({
       dialogPresent: Boolean(document.querySelector(".pdpp-stream-dialog")),
@@ -730,7 +1001,7 @@ async function cornerControlsSnapshot(page) {
  * closes normally. Escape is dispatched with focus moved OUTSIDE the row
  * (onto the dialog popup itself) to prove the handler is not focus-scoped.
  */
-async function assertCornerControlsDisclosure(page) {
+async function assertCornerControlsDisclosure(page: PatchrightPage) {
   const steady = await cornerControlsSnapshot(page);
   if (steady.toggleExpanded !== "false") {
     fail(`corner controls did not start collapsed: ${JSON.stringify(steady)}`);
@@ -744,13 +1015,15 @@ async function assertCornerControlsDisclosure(page) {
 
   // Move focus to the dialog popup itself, away from the row, before Escape
   // — the disclosure must still intercept it.
-  await page.locator(".pdpp-stream-dialog").evaluate((node) => node.focus());
+  await page.locator(".pdpp-stream-dialog").evaluate<void, undefined>((node) => node.focus(), undefined);
 
   await page.keyboard.press("Escape");
   await new Promise((resolve) => setTimeout(resolve, 200));
   const afterFirstEscape = await cornerControlsSnapshot(page);
   if (!afterFirstEscape.dialogPresent) {
-    fail("stream dialog closed/tore down on the FIRST Escape while actions were expanded — the disclosure must consume that Escape, not the dialog");
+    fail(
+      "stream dialog closed/tore down on the FIRST Escape while actions were expanded — the disclosure must consume that Escape, not the dialog"
+    );
   }
   if (afterFirstEscape.toggleExpanded !== "false") {
     fail(`first Escape did not collapse the disclosure: ${JSON.stringify(afterFirstEscape)}`);
@@ -764,22 +1037,29 @@ async function assertCornerControlsDisclosure(page) {
   }
 }
 
-async function proxyKeyboardFocused(page) {
+function proxyKeyboardFocused(page: PatchrightPage): Promise<boolean> {
   return page.evaluate(() => {
     const textarea = document.querySelector('[data-pdpp-soft-keyboard="neko"]');
     return Boolean(textarea && document.activeElement === textarea);
   });
 }
 
-async function captureFailureEvidence(page, debugEvents, requestEvidence, message) {
+async function captureFailureEvidence(
+  page: PatchrightPage,
+  debugEvents: DebugEvent[],
+  requestEvidence: RequestEvidence,
+  message: string
+) {
   await mkdir(EVIDENCE_DIR, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const screenshotPath = path.join(EVIDENCE_DIR, `manual-action-stream-smoke-${stamp}.png`);
   const frame = await streamFrameReport(page);
-  const framePixels = await streamFramePixelStats(page).catch((error) => ({ error: error.message }));
+  const framePixels = await streamFramePixelStats(page).catch((error: unknown) => ({
+    error: error instanceof Error ? error.message : String(error),
+  }));
   await page.screenshot({ path: screenshotPath, fullPage: true }).catch(() => undefined);
   const recent = debugEvents.slice(-30).map(eventSummary);
-  const relevantTypes = [
+  const relevantTypes = new Set([
     "debug.enabled",
     "neko.client.start",
     "neko.media.displayable",
@@ -797,11 +1077,11 @@ async function captureFailureEvidence(page, debugEvents, requestEvidence, messag
     "playground.counter_click",
     "playground.focusin",
     "playground.input",
-  ];
+  ]);
   const relevant = debugEvents
     .filter((event) => {
       const type = eventType(event);
-      return relevantTypes.includes(type) || type.startsWith("surface.neko.") || type.startsWith("neko.touch");
+      return relevantTypes.has(type) || type.startsWith("surface.neko.") || type.startsWith("neko.touch");
     })
     .slice(-40)
     .map(eventSummary);
@@ -813,7 +1093,9 @@ async function captureFailureEvidence(page, debugEvents, requestEvidence, messag
         screenshotPath,
         streamFrame: frame,
         streamFramePixels: framePixels,
-        remotePlaygroundReady: Boolean(latestEvent(debugEvents, (_event, _payload, type) => type === "playground.ready")),
+        remotePlaygroundReady: Boolean(
+          latestEvent(debugEvents, (_event, _payload, type) => type === "playground.ready")
+        ),
         remoteLayoutSource: eventType(latestRemoteLayoutEvent(debugEvents)),
         requestEvidence,
         debugEventCount: debugEvents.length,
@@ -826,15 +1108,24 @@ async function captureFailureEvidence(page, debugEvents, requestEvidence, messag
   );
 }
 
-async function waitFor(predicate, message, { timeoutMs = DEFAULT_TIMEOUT_MS, intervalMs = 250 } = {}) {
+async function waitFor<T>(
+  predicate: () => Promise<T> | T,
+  message: string,
+  { timeoutMs = DEFAULT_TIMEOUT_MS, intervalMs = 250 }: { intervalMs?: number; timeoutMs?: number } = {}
+): Promise<T> {
   const deadline = Date.now() + timeoutMs;
-  let lastError = null;
+  let lastError: Error | null = null;
   while (Date.now() < deadline) {
     try {
+      // Sequential polling is intentional: each iteration must observe the
+      // page's state after the previous iteration's wait, not run concurrently.
+      // biome-ignore lint/performance/noAwaitInLoops: intentional sequential polling
       const value = await predicate();
-      if (value) return value;
+      if (value) {
+        return value;
+      }
     } catch (error) {
-      lastError = error;
+      lastError = error instanceof Error ? error : new Error(String(error));
     }
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
@@ -844,8 +1135,8 @@ async function waitFor(predicate, message, { timeoutMs = DEFAULT_TIMEOUT_MS, int
   fail(message);
 }
 
-async function importPatchright() {
-  let resolved;
+async function importPatchright(): Promise<PatchrightModule> {
+  let resolved: string;
   try {
     resolved = require.resolve("patchright", {
       paths: [path.join(repoRoot, "reference-implementation")],
@@ -854,11 +1145,19 @@ async function importPatchright() {
     skip("Patchright is not installed. Run pnpm install before requiring the smoke.");
     process.exit(0);
   }
-  const imported = await import(pathToFileURL(resolved).href);
-  return imported.chromium ? imported : imported.default;
+  // The import target is resolved at runtime from a path outside this
+  // migration's module graph (patchright is not a root dependency), so its
+  // real shape (named export vs. a `default` wrapper, depending on how the
+  // resolved entry point was built) is genuinely ambiguous here — narrowing
+  // it to `Partial<PatchrightModule & { default: PatchrightModule }>` keeps
+  // that ambiguity honest instead of asserting a shape this file cannot verify.
+  const imported = (await import(pathToFileURL(resolved).href)) as Partial<PatchrightModule> & {
+    default?: PatchrightModule;
+  };
+  return imported.chromium ? (imported as PatchrightModule) : (imported.default as PatchrightModule);
 }
 
-async function deploymentReachable(origin) {
+async function deploymentReachable(origin: string): Promise<boolean> {
   try {
     const response = await fetch(origin, { redirect: "manual", signal: AbortSignal.timeout(5000) });
     return response.status >= 200 && response.status < 500;
@@ -867,9 +1166,9 @@ async function deploymentReachable(origin) {
   }
 }
 
-async function ensureOwnerSession(page) {
+async function ensureOwnerSession(page: PatchrightPage) {
   const password = env("PDPP_STREAM_SMOKE_OWNER_PASSWORD") || env("PDPP_OWNER_PASSWORD");
-  if (!/\/owner\/login(?:\?|$)/.test(page.url())) {
+  if (!OWNER_LOGIN_URL_PATTERN.test(page.url())) {
     return;
   }
   if (!password) {
@@ -878,12 +1177,17 @@ async function ensureOwnerSession(page) {
   }
   await page.locator('input[name="password"]').fill(password);
   await Promise.all([
-    page.waitForURL(/\/stream-playground/, { timeout: DEFAULT_TIMEOUT_MS }),
-    page.getByRole("button", { name: /sign in/i }).click(),
+    page.waitForURL(STREAM_PLAYGROUND_URL_PATTERN, { timeout: DEFAULT_TIMEOUT_MS }),
+    page.getByRole("button", { name: SIGN_IN_BUTTON_NAME_PATTERN }).click(),
   ]);
 }
 
-async function clickInsideStream(page, remotePoint, remoteViewport, { mobile = false } = {}) {
+async function clickInsideStream(
+  page: PatchrightPage,
+  remotePoint: RemotePoint,
+  remoteViewport: RemoteViewport,
+  { mobile = false }: { mobile?: boolean } = {}
+) {
   const rect = await streamContentRect(page, remoteViewport);
   const x = Math.round(rect.x + (rect.width * remotePoint.x) / remoteViewport.width);
   const y = Math.round(rect.y + (rect.height * remotePoint.y) / remoteViewport.height);
@@ -894,7 +1198,11 @@ async function clickInsideStream(page, remotePoint, remoteViewport, { mobile = f
   await page.mouse.click(x, y);
 }
 
-async function tapLocalButton(page, locator, { mobile = false } = {}) {
+async function tapLocalButton(
+  page: PatchrightPage,
+  locator: PatchrightLocator,
+  { mobile = false }: { mobile?: boolean } = {}
+) {
   if (!mobile) {
     await locator.click();
     return;
@@ -906,7 +1214,12 @@ async function tapLocalButton(page, locator, { mobile = false } = {}) {
   await page.touchscreen.tap(Math.round(box.x + box.width / 2), Math.round(box.y + box.height / 2));
 }
 
-async function clickRemoteControl(page, debugEvents, controlId, { mobile = false } = {}) {
+async function clickRemoteControl(
+  page: PatchrightPage,
+  debugEvents: DebugEvent[],
+  controlId: string,
+  { mobile = false }: { mobile?: boolean } = {}
+): Promise<RemoteControlTarget> {
   const target = resolveRemoteControlTarget(debugEvents, controlId);
   if (!target) {
     fail(`remote playground did not publish a measurable ${controlId} target`);
@@ -915,7 +1228,11 @@ async function clickRemoteControl(page, debugEvents, controlId, { mobile = false
   return target;
 }
 
-async function clickStrictVisualCounterTarget(page, debugEvents, { mobile = false } = {}) {
+async function clickStrictVisualCounterTarget(
+  page: PatchrightPage,
+  debugEvents: DebugEvent[],
+  { mobile = false }: { mobile?: boolean } = {}
+) {
   const remoteViewport = latestNekoStatusViewport(debugEvents);
   if (remoteViewport) {
     await clickInsideStream(
@@ -945,7 +1262,11 @@ async function clickStrictVisualCounterTarget(page, debugEvents, { mobile = fals
   return { remoteViewport: null, strictSafe: true };
 }
 
-async function proveStrictVisualTyping(page, debugEvents, { mobile = false } = {}) {
+async function proveStrictVisualTyping(
+  page: PatchrightPage,
+  debugEvents: DebugEvent[],
+  { mobile = false }: { mobile?: boolean } = {}
+) {
   const remoteViewport = latestNekoStatusViewport(debugEvents);
   if (!remoteViewport) {
     fail("strict-mode smoke cannot prove typing visually without a remote viewport");
@@ -977,10 +1298,13 @@ async function proveStrictVisualTyping(page, debugEvents, { mobile = false } = {
   };
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: direct mechanical port of the pre-existing end-to-end smoke sequence, unchanged from the .mjs source
 async function run() {
   const origin = publicUrlFromEnv();
   if (!origin) {
-    skip("set PDPP_STREAM_SMOKE_URL, PDPP_PUBLIC_URL, or PDPP_REFERENCE_ORIGIN to the running Docker/public web origin.");
+    skip(
+      "set PDPP_STREAM_SMOKE_URL, PDPP_PUBLIC_URL, or PDPP_REFERENCE_ORIGIN to the running Docker/public web origin."
+    );
     return;
   }
   if (!(await deploymentReachable(origin))) {
@@ -989,8 +1313,14 @@ async function run() {
   }
 
   const { chromium } = await importPatchright();
-  const debugEvents = [];
-  const requestEvidence = { consoleErrors: [], eventStreamErrors: [], failedRequests: [], httpFailures: [], nekoHttpFailures: [] };
+  const debugEvents: DebugEvent[] = [];
+  const requestEvidence: RequestEvidence = {
+    consoleErrors: [],
+    eventStreamErrors: [],
+    failedRequests: [],
+    httpFailures: [],
+    nekoHttpFailures: [],
+  };
   let debugEventSequence = 0;
   const mobile = mobileSmokeEnabled();
   const executablePath = browserExecutablePath();
@@ -1007,18 +1337,19 @@ async function run() {
 
   await page.addInitScript(() => {
     const NativeEventSource = window.EventSource;
-    function TracedEventSource(url, configuration) {
+    function TracedEventSource(this: EventSource, url: string | URL, configuration?: EventSourceInit) {
       const source = new NativeEventSource(url, configuration);
       if (String(url).includes("/_ref/run-interaction-streams/")) {
         source.addEventListener("error", (event) => {
-          const data = typeof event.data === "string" ? event.data : "";
+          const data =
+            "data" in event && typeof (event as MessageEvent).data === "string" ? (event as MessageEvent).data : "";
           console.error(`[manual-action-stream-smoke EventSource error] ${data}`);
         });
       }
       return source;
     }
     TracedEventSource.prototype = NativeEventSource.prototype;
-    window.EventSource = TracedEventSource;
+    (window as unknown as { EventSource: unknown }).EventSource = TracedEventSource;
   });
 
   page.on("request", (request) => {
@@ -1026,7 +1357,8 @@ async function run() {
       const url = new URL(request.url());
       if (url.pathname === "/api/stream-debug") {
         for (const event of parseDebugEventsFromPostData(request.postData())) {
-          debugEvents.push({ ...(event || {}), __smokeSequence: ++debugEventSequence });
+          debugEventSequence += 1;
+          debugEvents.push({ ...event, __smokeSequence: debugEventSequence });
         }
         if (debugEvents.length > DEBUG_EVENT_BUFFER_MAX) {
           debugEvents.splice(0, debugEvents.length - DEBUG_EVENT_BUFFER_MAX);
@@ -1043,7 +1375,12 @@ async function run() {
       const url = new URL(request.url());
       const status = response.status();
       if (status >= 400) {
-        const failure = { method: request.method(), resourceType: request.resourceType(), status, url: redactRequestUrl(url) };
+        const failure = {
+          method: request.method(),
+          resourceType: request.resourceType(),
+          status,
+          url: redactRequestUrl(url),
+        };
         appendEvidence(requestEvidence.httpFailures, failure);
         if (url.pathname === "/neko" || url.pathname.startsWith("/neko/")) {
           appendEvidence(requestEvidence.nekoHttpFailures, failure);
@@ -1053,12 +1390,18 @@ async function run() {
         response
           .text()
           .then((body) => {
-            const errorMatch = body.match(/^event: error\ndata: (.+)$/m);
-            if (!errorMatch) return;
+            const errorMatch = body.match(EVENT_STREAM_ERROR_LINE_PATTERN);
+            if (!errorMatch) {
+              return;
+            }
+            const [, errorMatchGroup] = errorMatch;
+            if (!errorMatchGroup) {
+              return;
+            }
             try {
-              appendEvidence(requestEvidence.eventStreamErrors, JSON.parse(errorMatch[1]));
+              appendEvidence(requestEvidence.eventStreamErrors, JSON.parse(errorMatchGroup));
             } catch {
-              appendEvidence(requestEvidence.eventStreamErrors, { raw: errorMatch[1] });
+              appendEvidence(requestEvidence.eventStreamErrors, { raw: errorMatchGroup });
             }
           })
           .catch(() => undefined);
@@ -1094,7 +1437,7 @@ async function run() {
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT_MS });
     await ensureOwnerSession(page);
 
-    await page.getByRole("button", { name: /open browser/i }).click();
+    await page.getByRole("button", { name: OPEN_BROWSER_BUTTON_NAME_PATTERN }).click();
     const streamFrame = page.locator(STREAM_FRAME_SELECTOR).first();
     await streamFrame.waitFor({ state: "visible", timeout: DEFAULT_TIMEOUT_MS });
 
@@ -1104,8 +1447,9 @@ async function run() {
 
     await waitFor(
       async () =>
-        !(await streamFrame.evaluate((node) => Boolean(node.getAttribute("data-pdpp-stream-loading"))).catch(() => true)) ||
-        hasEvent(debugEvents, (_event, _payload, type) => type === "neko.media.displayable"),
+        !(await streamFrame
+          .evaluate<boolean, undefined>((node) => Boolean(node.getAttribute("data-pdpp-stream-loading")), undefined)
+          .catch(() => true)) || hasEvent(debugEvents, (_event, _payload, type) => type === "neko.media.displayable"),
       "stream never became displayable"
     );
 
@@ -1143,7 +1487,8 @@ async function run() {
         "strict-mode smoke did not observe healthy n.eko pointer mapping"
       );
       await waitFor(
-        () => hasEvent(debugEvents, (_event, _payload, type) => type === "adapter_mounted" || type === "neko.client.start"),
+        () =>
+          hasEvent(debugEvents, (_event, _payload, type) => type === "adapter_mounted" || type === "neko.client.start"),
         "strict-mode smoke did not observe n.eko adapter/client startup"
       );
       if (mobile) {
@@ -1214,7 +1559,7 @@ async function run() {
           )
         ) {
           const affordanceActionSequence = debugEventSequence;
-          await tapLocalButton(page, page.getByRole("button", { name: /tap to type/i }), { mobile });
+          await tapLocalButton(page, page.getByRole("button", { name: TAP_TO_TYPE_BUTTON_NAME_PATTERN }), { mobile });
           await waitFor(
             () =>
               hasEventAfter(
@@ -1251,8 +1596,14 @@ async function run() {
             debugEvents,
             (_event, _payload, type) => type.startsWith("surface.neko.") || type.startsWith("neko.touch")
           ) &&
-          hasEvent(debugEvents, (_event, payload, type) => type === "playground.click" || type === "playground.input") &&
-          hasEvent(debugEvents, (_event, payload, type) => type === "stream.input.post.result" || type === "neko.client.start"),
+          hasEvent(
+            debugEvents,
+            (_event, _payload, type) => type === "playground.click" || type === "playground.input"
+          ) &&
+          hasEvent(
+            debugEvents,
+            (_event, _payload, type) => type === "stream.input.post.result" || type === "neko.client.start"
+          ),
         "telemetry did not capture both local input path and remote playground events"
       );
     }
@@ -1279,7 +1630,9 @@ async function run() {
     process.stdout.write(
       `PASS manual-action stream smoke ${JSON.stringify({
         mobile,
-        mobileBoundary: mobile ? "Chromium touch emulation and proxy focus/typing; OS keyboard visibility not proven" : null,
+        mobileBoundary: mobile
+          ? "Chromium touch emulation and proxy focus/typing; OS keyboard visibility not proven"
+          : null,
         url,
       })}\n`
     );
@@ -1289,8 +1642,10 @@ async function run() {
       debugEvents,
       requestEvidence,
       error instanceof Error ? error.message : String(error)
-    ).catch((captureError) => {
-      process.stderr.write(`failed to capture smoke evidence: ${captureError.message}\n`);
+    ).catch((captureError: unknown) => {
+      process.stderr.write(
+        `failed to capture smoke evidence: ${captureError instanceof Error ? captureError.message : String(captureError)}\n`
+      );
     });
     throw error;
   } finally {
@@ -1299,8 +1654,8 @@ async function run() {
 }
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
-  run().catch((error) => {
-    process.stderr.write(`${error.stack || error.message}\n`);
+  run().catch((error: unknown) => {
+    process.stderr.write(`${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`);
     process.exit(1);
   });
 }
