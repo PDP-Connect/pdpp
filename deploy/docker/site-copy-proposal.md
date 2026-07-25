@@ -101,7 +101,7 @@ closed by default:
   not technologies. No env-var names appear above the fold except inside the
   copy-paste block itself.
 - The Docker one-liner carries zero `-e` flags. The first-boot bootstrap in
-  the image (deploy/railway/core-first-boot.mjs) generates and persists the
+  the image (deploy/railway/core-first-boot.ts) generates and persists the
   owner password and prints the dashboard URL, so the command requires no
   secret handling, no `openssl`, no shell substitution.
 - `docker logs -f pdpp` is part of the quickstart copy on purpose: the banner

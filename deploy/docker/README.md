@@ -146,7 +146,7 @@ docker compose down --volumes                          # production (deletes dat
   Core target this image was proven on.
 - [`deploy/flyio/README.md`](../flyio/README.md) — the Fly.io `fly launch`
   path for the same image.
-- [`deploy/railway/core-first-boot.mjs`](../railway/core-first-boot.mjs) — the
+- [`deploy/railway/core-first-boot.ts`](../railway/core-first-boot.ts) — the
   first-boot owner-credential bootstrap, tested by
   `pnpm docker:first-boot:test`.
 - [`../../docker-compose.yml`](../../docker-compose.yml) — the
