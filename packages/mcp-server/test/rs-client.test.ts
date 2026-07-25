@@ -6,6 +6,9 @@ import { test } from "node:test";
 
 import { type QueryParams, RsClient } from "../src/rs-client.ts";
 
+const ENCODE_NESTED_QUERY_SHAPES_EXPLICITLY = /encode nested query shapes explicitly/;
+const INSUFFICIENT_SCOPE = /insufficient_scope/;
+
 function jsonResponse(status: number, body: unknown, headers: Record<string, string> = {}) {
   return new Response(JSON.stringify(body), {
     status,
@@ -20,8 +23,9 @@ interface RecordedCall {
 
 test("attaches bearer token and forwards query params", async () => {
   const calls: RecordedCall[] = [];
-  const fetch = async (url: string | Request | URL, init?: RequestInit) => {
-    calls.push({ url, init });
+  // biome-ignore lint/suspicious/useAwait: async required to satisfy the Promise<Response>-returning fetch/getJson contract this fixture implements; a synchronous return type is not assignable to the caller's injected dependency.
+  const fetch = async (requestUrl: string | Request | URL, init?: RequestInit) => {
+    calls.push({ url: requestUrl, init });
     return jsonResponse(200, { ok: true });
   };
 
@@ -36,7 +40,7 @@ test("attaches bearer token and forwards query params", async () => {
   });
 
   assert.equal(calls.length, 1);
-  const call = calls[0];
+  const [call] = calls;
   assert.ok(call, "fetch must be called");
   const url = new URL(call.url as string);
   assert.equal(url.host, "provider.test");
@@ -50,6 +54,7 @@ test("attaches bearer token and forwards query params", async () => {
 
 test("rejects object-valued query params instead of JSON-stringifying them", async () => {
   let called = false;
+  // biome-ignore lint/suspicious/useAwait: async required to satisfy the Promise<Response>-returning fetch/getJson contract this fixture implements; a synchronous return type is not assignable to the caller's injected dependency.
   const fetch = async () => {
     called = true;
     return jsonResponse(200, { ok: true });
@@ -69,7 +74,7 @@ test("rejects object-valued query params instead of JSON-stringifying them", asy
       rs.getJson("/v1/streams/orders/records", {
         query: { filter: { amount: { gte: 100 } } } as unknown as QueryParams,
       }),
-    /encode nested query shapes explicitly/
+    ENCODE_NESTED_QUERY_SHAPES_EXPLICITLY
   );
   assert.equal(called, false);
 });
@@ -110,7 +115,7 @@ test("synthesizes envelope for plain-text errors", async () => {
   }
   assert.equal(result.error.type, "rs_error");
   assert.equal(result.error.code, "http_403");
-  assert.match(result.error.message ?? "", /insufficient_scope/);
+  assert.match(result.error.message ?? "", INSUFFICIENT_SCOPE);
 });
 
 test("getRaw returns a Buffer for binary payloads", async () => {

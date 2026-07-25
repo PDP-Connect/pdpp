@@ -17,6 +17,18 @@ import { createPdppMcpServer } from "../src/server.ts";
 // This suite pins the MCP-layer fix: MCP accepts a JSON-native typed filter
 // object, encodes it into `filter[field]=value` / `filter[field][op]=value`,
 // and rejects every string filter before it can reach REST.
+const FILTER = /^filter\[([^\]]+)\](?:\[([^\]]+)\])?$/;
+const GTE = /gte/;
+const VALIDATION_OBJECT_STRING_INVALID = /validation|object|string|invalid/i;
+const VALIDATION_UNRECOGNIZED_BETWEEN_INVALID = /validation|unrecognized|between|invalid/i;
+const COUNT = /count/;
+const MESSAGES = /messages/;
+const B_B = /\b7\b/;
+const GROUP_BY = /group_by=/;
+const U = /U123/;
+const B_B_2 = /\b4\b/;
+const RESULT_HIT = /1|result|hit/i;
+const ID_MESSAGES_M = /id=messages:m1/;
 
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -33,7 +45,7 @@ type DecodedFilterValue = Record<string, string> | string;
 function decodeFilterParams(searchParams: URLSearchParams): Record<string, DecodedFilterValue> {
   const filter: Record<string, DecodedFilterValue> = {};
   for (const [key, value] of searchParams.entries()) {
-    const match = /^filter\[([^\]]+)\](?:\[([^\]]+)\])?$/.exec(key);
+    const match = FILTER.exec(key);
     if (!match) {
       continue;
     }
@@ -62,6 +74,7 @@ interface FetchCall {
 
 function recordingFetch() {
   const calls: FetchCall[] = [];
+  // biome-ignore lint/suspicious/useAwait: async required to satisfy the Promise<Response>-returning fetch/getJson contract this fixture implements; a synchronous return type is not assignable to the caller's injected dependency.
   const fetch = async (urlInput: string | Request | URL, init: RequestInit = {}) => {
     const url = new URL(urlInput.toString());
     const filter = decodeFilterParams(url.searchParams);
@@ -147,7 +160,7 @@ test("tools/list advertises filter as a typed object record on query_records, ag
     assert.equal(filterSchema.oneOf, undefined, `${name}.filter must not be a top-level object/string union`);
     assert.match(
       JSON.stringify(filterSchema.additionalProperties),
-      /gte/,
+      GTE,
       `${name}.filter record values must include range operator objects`
     );
   }
@@ -207,12 +220,13 @@ test("query_records rejects string filters at MCP validation and never reaches R
   const { client, server } = await connectClient(fetch);
 
   for (const filter of ["filter[user_id]=U123", "user_id=U123", "amount>100", '{"user_id":"U123"}', ""]) {
+    // biome-ignore lint/performance/noAwaitInLoops: calls share one already-connected client/fake-RS across cases and must run in order to keep the stateful fixture's call recording and assertions deterministic; Promise.all would race the shared state.
     const result = await client.callTool({
       name: "query_records",
       arguments: { stream: "messages", filter },
     });
     assert.equal(result.isError, true, `string filter ${JSON.stringify(filter)} must be rejected`);
-    assert.match(resultText(result), /validation|object|string|invalid/i);
+    assert.match(resultText(result), VALIDATION_OBJECT_STRING_INVALID);
   }
   assert.equal(calls.length, 0, "string filters must be rejected before any REST request");
 
@@ -229,14 +243,14 @@ test("aggregate and search reject string filters at MCP validation and never rea
     arguments: { stream: "messages", metric: "count", filter: "filter[user_id]=U123" },
   });
   assert.equal(aggregate.isError, true);
-  assert.match(resultText(aggregate), /validation|object|string|invalid/i);
+  assert.match(resultText(aggregate), VALIDATION_OBJECT_STRING_INVALID);
 
   const search = await client.callTool({
     name: "search",
     arguments: { q: "hi", filter: "filter[user_id]=U123" },
   });
   assert.equal(search.isError, true);
-  assert.match(resultText(search), /validation|object|string|invalid/i);
+  assert.match(resultText(search), VALIDATION_OBJECT_STRING_INVALID);
   assert.equal(calls.length, 0, "string filters must be rejected before any REST request");
 
   await client.close();
@@ -248,6 +262,7 @@ test("query_records rejects empty/no-op filter shapes instead of silently droppi
   const { client, server } = await connectClient(fetch);
 
   for (const filter of ["", "   ", {}, { "filter[user_id]": "U123" }]) {
+    // biome-ignore lint/performance/noAwaitInLoops: calls share one already-connected client/fake-RS across cases and must run in order to keep the stateful fixture's call recording and assertions deterministic; Promise.all would race the shared state.
     const result = await client.callTool({
       name: "query_records",
       arguments: { stream: "messages", filter },
@@ -281,7 +296,7 @@ test("query_records rejects an unsupported range operator with an actionable err
   // forward of an unsupported operator.
   assert.match(
     resultText(result),
-    /validation|unrecognized|between|invalid/i,
+    VALIDATION_UNRECOGNIZED_BETWEEN_INVALID,
     "must surface an input-validation rejection"
   );
 
@@ -320,9 +335,9 @@ test("aggregate text content includes the metric, stream, and numeric result (no
   });
   assert.equal(result.isError, undefined);
   const text = resultText(result);
-  assert.match(text, /count/, "text must name the metric");
-  assert.match(text, /messages/, "text must name the stream");
-  assert.match(text, /\b7\b/, "text must include the numeric aggregate result");
+  assert.match(text, COUNT, "text must name the metric");
+  assert.match(text, MESSAGES, "text must name the stream");
+  assert.match(text, B_B, "text must include the numeric aggregate result");
   // Compact, not a full JSON dump.
   assert.ok(text.length < 400, `aggregate text must stay compact, got ${text.length} chars`);
   // Canonical envelope still validates and carries the value.
@@ -343,9 +358,9 @@ test("aggregate grouped result previews buckets with counts in text", async () =
   });
   assert.equal(result.isError, undefined);
   const text = resultText(result);
-  assert.match(text, /group_by=/, "text must name the grouping dimension");
-  assert.match(text, /U123/, "text must preview a bucket key");
-  assert.match(text, /\b4\b/, "text must preview a bucket count");
+  assert.match(text, GROUP_BY, "text must name the grouping dimension");
+  assert.match(text, U, "text must preview a bucket key");
+  assert.match(text, B_B_2, "text must preview a bucket count");
   const structuredContent = result.structuredContent as { data: { groups: unknown[] } };
   assert.equal(structuredContent.data.groups.length, 2);
 
@@ -380,8 +395,8 @@ test("search surfaces readable hit handles in content text", async () => {
   const result = await client.callTool({ name: "search", arguments: { q: "hi" } });
   assert.equal(result.isError, undefined);
   const text = resultText(result);
-  assert.match(text, /1|result|hit/i, "search text must surface a usable result summary");
-  assert.match(text, /id=messages:m1/, "search text must include a fetchable result id");
+  assert.match(text, RESULT_HIT, "search text must surface a usable result summary");
+  assert.match(text, ID_MESSAGES_M, "search text must include a fetchable result id");
   const structuredContent = result.structuredContent as { results: unknown[] };
   assert.equal(structuredContent.results.length, 1, "flattened results must be populated");
 

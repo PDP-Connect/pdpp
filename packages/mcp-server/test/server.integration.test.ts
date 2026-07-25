@@ -10,6 +10,59 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createPdppMcpServer, handleStreamableHttpRequest } from "../src/server.ts";
 import { __internal } from "../src/tools.ts";
 
+const PDPP_SCHEMA_CONNECTORS_STREAMS = /PDPP schema: connectors=1 streams=1/;
+const STREAM_NAME_CONVERSATIONS = /stream name="conversations"/;
+const CONNECTOR_KEY_CLAUDE_CODE = /connector_key="claude-code"/;
+const DISPLAY_NAME_CLAUDE_CODE = /display_name="Claude Code"/;
+const CONNECTIONS_CONNECTION_ID_CONN_WORK = /connections=\{connection_id:conn_work,display_name:Work_Claude\}/;
+const CALL_SCHEMA_STREAM_CONNECTION_ID = /call schema\(stream, connection_id\?\) for per-field capability flags/;
+const ID_T_STRING_EQ = /id\[t=string,eq\]/;
+const T_STRING = /t=string/;
+const EQ = /(^|,)eq(,|$)/;
+const R_GTE_LT = /r=gte\|lt/;
+const FIELD_CAPABILITY_LEGEND = /field_capability_legend/;
+const CREATED_AT_T_TIMESTAMP_R = /created_at\[t=timestamp,r=gte\|lt,a=group_by_time\]/;
+const SENDER_T_STRING_EQ_A = /sender\[t=string,eq,a=count_distinct\|group_by\]/;
+const AGGREGATIONS_COUNT_DISTINCT_SENDER_GROUP =
+  /aggregations=count_distinct=sender;group_by=sender;group_by_time=created_at/;
+const SEE_STRUCTUREDCONTENT_DATA = /See structuredContent\.data/;
+const RECORDS_FROM_STREAM_ORDERS_RECORD = /records from stream "orders": 2 record\(s\)/;
+const HAS_MORE_TRUE = /has_more=true/;
+const NEXT_CURSOR_CURSOR_ORDERS_PAGE = /next_cursor="cursor_orders_page_2"/;
+const NEXT_CHANGES_SINCE_CHANGES_ORDERS = /next_changes_since="changes_orders_next"/;
+const COUNT_EXACT = /count=exact:42/;
+const RECORD_ID_O_AMOUNT = /record\[0\] \{"id":"o1","amount":12\}/;
+const RECORD_ID_O_AMOUNT_2 = /record\[1\] \{"id":"o2","amount":99\}/;
+const PDPP_RECORD = /pdpp:\/\/record\//;
+const BINARY_FIELD = /binary_field/;
+const BINARY_ONLY = /binary-only/;
+const QUJDQUJDQUJDQUJD = /QUJDQUJDQUJDQUJD/;
+const UNSUPPORTED_EXTRA_UNRECOGNIZED_KEY = /unsupported_extra|Unrecognized key/;
+const PDPP_FIELD_WINDOW = /pdpp:\/\/field-window\//;
+const PASTA_ORDER = /Pasta order /;
+const SEARCH_HIT = /search: 1 hit/i;
+const NEXT_CURSOR_SEARCH_CURSOR_PAGE = /next_cursor="search_cursor_page_2"/;
+const ID_CONN_ORDERS_ORDERS_O = /id=conn_orders\/orders:o2/;
+const CONNECTION_ID = /connection_id=/;
+const PASTA_ORDER_2 = /Pasta order/;
+const STRUCTUREDCONTENT = /structuredContent/;
+const EVIDENCE_EXCERPTS = /Evidence excerpts:/;
+const FIELD_PATH_TEXT_SNIPPET_PASTA = /field_path=text snippet="Pasta order for \$99\."/;
+const READ_READ_RECORD_FIELD = /read=read_record_field/;
+const JEREMY_AND_I_HAD_A = /Jeremy and I had a call with Redactable yesterday/;
+const ID_S = /id=([^\s]+)/;
+const RECORD_CONN_ORDERS_ORDERS_O = /record=conn_orders\/orders:o2/;
+const NEXT_CURSOR = /next_cursor=12/;
+const EXCLUSIVE = /exclusive/;
+const CURSOR = /cursor/;
+const PDPP_RECORD_A_ZA_Z = /^pdpp:\/\/record\/[A-Za-z0-9_-]+$/;
+const O = /[:/]o2$/;
+const NEXT_READ_RECORD_FIELD_ARGS = /next read_record_field args=/;
+const ID_CONN_ORDERS_ORDERS_O_2 = /"id":"conn_orders\/orders:o2"/;
+const FIELD_PATH_TEXT = /"field_path":"text"/;
+const MALFORMED_RESOURCE_HANDLE = /malformed|Resource handle/;
+const INVALID_CHARACTERS = /invalid characters/;
+
 interface FetchCall {
   auth: string | undefined;
   method: string;
@@ -63,7 +116,7 @@ interface ContentLadder {
 
 function resourceText(content: unknown): string {
   assert.ok(content && typeof content === "object", "expected at least one resource content entry");
-  const text = (content as Record<string, unknown>).text;
+  const { text } = content as Record<string, unknown>;
   assert.equal(typeof text, "string", "expected a text resource content entry");
   return text as string;
 }
@@ -183,6 +236,7 @@ function makeFakeRs() {
 
   const calls: FetchCall[] = [];
 
+  // biome-ignore lint/suspicious/useAwait: async required to satisfy the Promise<Response>-returning fetch/getJson contract this fixture implements; a synchronous return type is not assignable to the caller's injected dependency.
   const fetch = async (urlInput: string | Request | URL, init: RequestInit = {}) => {
     const url = new URL(urlInput.toString());
     const auth = (init.headers as Record<string, string> | undefined)?.Authorization;
@@ -440,6 +494,7 @@ function makeDiscoveryFakeRs() {
     ],
   };
 
+  // biome-ignore lint/suspicious/useAwait: async required to satisfy the Promise<Response>-returning fetch/getJson contract this fixture implements; a synchronous return type is not assignable to the caller's injected dependency.
   const fetch = async (urlInput: string | Request | URL) => {
     const url = new URL(urlInput.toString());
     if (url.pathname === "/v1/schema") {
@@ -466,7 +521,7 @@ function schemaBodyForQuery(schema: Record<string, unknown>, url: URL): unknown 
     const streams = schema.streams.filter((entry) => schemaStreamName(entry) === streamName);
     return { ...schema, streams, stream_count: streams.length };
   }
-  const data = schema.data;
+  const { data } = schema;
   if (data && typeof data === "object" && Array.isArray((data as Record<string, unknown>).streams)) {
     const dataRecord = data as Record<string, unknown>;
     const streams = (dataRecord.streams as unknown[]).filter((entry) => schemaStreamName(entry) === streamName);
@@ -548,7 +603,7 @@ test("schema detail=full requires stream to avoid global schema blowups", async 
     .filter((call) => new URL(call.url).pathname === "/v1/schema")
     .map((call) => new URL(call.url));
   assert.equal(schemaCalls.length, 2, "global full and scoped full should each forward once to RS");
-  const secondSchemaCall = schemaCalls[1];
+  const [, secondSchemaCall] = schemaCalls;
   assert.ok(secondSchemaCall, "scoped full call must be recorded");
   assert.equal(secondSchemaCall.searchParams.has("view"), false, "full fetch must not request compact view");
   assert.equal(secondSchemaCall.searchParams.get("detail"), "full");
@@ -581,9 +636,9 @@ test("discovery tools include parseable stream and schema facts in text content"
   };
   // Default detail is compact index-only: stream/source identity survives, but
   // per-field capability detail waits for schema(stream).
-  const compactConnector = schemaStructuredContent.data.connectors[0];
+  const [compactConnector] = schemaStructuredContent.data.connectors;
   assert.ok(compactConnector, "schema must include at least one connector");
-  const compactStream = compactConnector.streams[0];
+  const [compactStream] = compactConnector.streams;
   assert.ok(compactStream, "connector must include at least one stream");
   assert.equal(compactStream.field_capabilities, undefined, "global schema is an index, not field detail");
   assert.deepEqual(
@@ -598,41 +653,40 @@ test("discovery tools include parseable stream and schema facts in text content"
   );
   assert.equal(schemaStructuredContent.data.detail, "compact");
   const schemaText = firstText(schemaResult);
-  assert.match(schemaText, /PDPP schema: connectors=1 streams=1/);
-  assert.match(schemaText, /stream name="conversations"/);
-  assert.match(schemaText, /connector_key="claude-code"/);
-  assert.match(schemaText, /display_name="Claude Code"/);
-  assert.match(schemaText, /connections=\{connection_id:conn_work,display_name:Work_Claude\}/);
-  assert.match(schemaText, /call schema\(stream, connection_id\?\) for per-field capability flags/);
-  assert.doesNotMatch(schemaText, /id\[t=string,eq\]/);
+  assert.match(schemaText, PDPP_SCHEMA_CONNECTORS_STREAMS);
+  assert.match(schemaText, STREAM_NAME_CONVERSATIONS);
+  assert.match(schemaText, CONNECTOR_KEY_CLAUDE_CODE);
+  assert.match(schemaText, DISPLAY_NAME_CLAUDE_CODE);
+  assert.match(schemaText, CONNECTIONS_CONNECTION_ID_CONN_WORK);
+  assert.match(schemaText, CALL_SCHEMA_STREAM_CONNECTION_ID);
+  assert.doesNotMatch(schemaText, ID_T_STRING_EQ);
 
   const scopedSchema = await client.callTool({ name: "schema", arguments: { stream: "conversations" } });
   const scopedSchemaStructuredContent = scopedSchema.structuredContent as {
     data: { connectors: DiscoverySchemaConnector[] };
   };
-  const scopedConnector = scopedSchemaStructuredContent.data.connectors[0];
+  const [scopedConnector] = scopedSchemaStructuredContent.data.connectors;
   assert.ok(scopedConnector, "scoped schema must include at least one connector");
-  const scopedStream = scopedConnector.streams[0];
+  const [scopedStream] = scopedConnector.streams;
   assert.ok(scopedStream, "scoped connector must include at least one stream");
   assert.equal(typeof scopedStream.field_capabilities?.id, "string", "scoped schema field is a terse flag string");
-  assert.match(scopedStream.field_capabilities?.id ?? "", /t=string/, "scoped flag string keeps declared field type");
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: tsc disagrees — assert.match requires a string argument and field_capabilities?.id/.created_at is string | undefined here; dropping ?? "" fails tsc (TS2769).
+  assert.match(scopedStream.field_capabilities?.id ?? "", T_STRING, "scoped flag string keeps declared field type");
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: tsc disagrees — assert.match requires a string argument and field_capabilities?.id/.created_at is string | undefined here; dropping ?? "" fails tsc (TS2769).
+  assert.match(scopedStream.field_capabilities?.id ?? "", EQ, "scoped flag string keeps usable capability flags");
   assert.match(
-    scopedStream.field_capabilities?.id ?? "",
-    /(^|,)eq(,|$)/,
-    "scoped flag string keeps usable capability flags"
-  );
-  assert.match(
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: tsc disagrees — assert.match requires a string argument and field_capabilities?.id/.created_at is string | undefined here; dropping ?? "" fails tsc (TS2769).
     scopedStream.field_capabilities?.created_at ?? "",
-    /r=gte\|lt/,
+    R_GTE_LT,
     "scoped flag string keeps usable range operators"
   );
   const scopedText = firstText(scopedSchema);
-  assert.match(scopedText, /field_capability_legend/);
-  assert.match(scopedText, /id\[t=string,eq\]/);
-  assert.match(scopedText, /created_at\[t=timestamp,r=gte\|lt,a=group_by_time\]/);
-  assert.match(scopedText, /sender\[t=string,eq,a=count_distinct\|group_by\]/);
-  assert.match(scopedText, /aggregations=count_distinct=sender;group_by=sender;group_by_time=created_at/);
-  assert.doesNotMatch(schemaText, /See structuredContent\.data/);
+  assert.match(scopedText, FIELD_CAPABILITY_LEGEND);
+  assert.match(scopedText, ID_T_STRING_EQ);
+  assert.match(scopedText, CREATED_AT_T_TIMESTAMP_R);
+  assert.match(scopedText, SENDER_T_STRING_EQ_A);
+  assert.match(scopedText, AGGREGATIONS_COUNT_DISTINCT_SENDER_GROUP);
+  assert.doesNotMatch(schemaText, SEE_STRUCTUREDCONTENT_DATA);
 
   await client.close();
   await server.close();
@@ -654,13 +708,13 @@ test("query_records forwards supported query params", async () => {
     { id: "o2", amount: 99 },
   ]);
   const text = firstText(result);
-  assert.match(text, /records from stream "orders": 2 record\(s\)/);
-  assert.match(text, /has_more=true/);
-  assert.match(text, /next_cursor="cursor_orders_page_2"/);
-  assert.match(text, /next_changes_since="changes_orders_next"/);
-  assert.match(text, /count=exact:42/);
-  assert.match(text, /record\[0\] \{"id":"o1","amount":12\}/);
-  assert.match(text, /record\[1\] \{"id":"o2","amount":99\}/);
+  assert.match(text, RECORDS_FROM_STREAM_ORDERS_RECORD);
+  assert.match(text, HAS_MORE_TRUE);
+  assert.match(text, NEXT_CURSOR_CURSOR_ORDERS_PAGE);
+  assert.match(text, NEXT_CHANGES_SINCE_CHANGES_ORDERS);
+  assert.match(text, COUNT_EXACT);
+  assert.match(text, RECORD_ID_O_AMOUNT);
+  assert.match(text, RECORD_ID_O_AMOUNT_2);
   const scoped = await client.callTool({
     name: "query_records",
     arguments: { stream: "orders", connection_id: "conn_orders", limit: 2 },
@@ -671,7 +725,7 @@ test("query_records forwards supported query params", async () => {
   assert.ok(scopedLadderRecord, "content ladder must include at least one record");
   assert.equal(scopedLadderRecord.id, "conn_orders/orders:o1");
   assert.equal(scopedLadderRecord.record_uri, undefined);
-  assert.doesNotMatch(JSON.stringify(scopedLadder), /pdpp:\/\/record\//);
+  assert.doesNotMatch(JSON.stringify(scopedLadder), PDPP_RECORD);
 
   const call = calls.find((entry) => entry.url.includes("/v1/streams/orders/records"));
   assert.ok(call, "query_records call must be recorded");
@@ -694,9 +748,9 @@ test("query_records keeps binary fields metadata-only in text previews and conte
 
   assert.equal(result.isError, undefined);
   const text = firstText(result);
-  assert.match(text, /binary_field/);
-  assert.match(text, /binary-only/);
-  assert.doesNotMatch(text, /QUJDQUJDQUJDQUJD/);
+  assert.match(text, BINARY_FIELD);
+  assert.match(text, BINARY_ONLY);
+  assert.doesNotMatch(text, QUJDQUJDQUJDQUJD);
   const ladderRecord = contentLadder(result).records?.[0];
   assert.ok(ladderRecord, "content ladder must include at least one record");
   assert.equal(ladderRecord.id, "conn_media/media:img1");
@@ -742,6 +796,7 @@ test("query_records rejects empty or pre-encoded expand_limit objects before hit
   const { client, server } = await connectClient(fetch);
 
   for (const expand_limit of [{}, { "expand_limit[line_items]": 3 }]) {
+    // biome-ignore lint/performance/noAwaitInLoops: calls share one already-connected client/fake-RS across cases and must run in order to keep the stateful fixture's call recording and assertions deterministic; Promise.all would race the shared state.
     const result = await client.callTool({
       name: "query_records",
       arguments: { stream: "orders", expand: ["line_items"], expand_limit },
@@ -774,7 +829,7 @@ test("query_records rejects unsupported MCP arguments before hitting RS", async 
     calls.some((entry) => entry.url.includes("/v1/streams/orders/records")),
     false
   );
-  assert.match(firstText(result), /unsupported_extra|Unrecognized key/);
+  assert.match(firstText(result), UNSUPPORTED_EXTRA_UNRECOGNIZED_KEY);
 
   await client.close();
   await server.close();
@@ -881,30 +936,30 @@ test("search tool forwards q and returns hits", async () => {
     ladderRecord.field_windows?.some((field) => field.resource_uri),
     false
   );
-  assert.doesNotMatch(JSON.stringify(structuredContent.results), /pdpp:\/\/record\//);
-  assert.doesNotMatch(JSON.stringify(ladder), /pdpp:\/\/record\//);
-  assert.doesNotMatch(JSON.stringify(structuredContent.results), /pdpp:\/\/field-window\//);
-  assert.doesNotMatch(JSON.stringify(ladder), /pdpp:\/\/field-window\//);
-  assert.match(structuredContent.results[0]?.evidence_excerpts?.[0]?.preview_text ?? "", /Pasta order /);
-  assert.match(ladderRecord.evidence_excerpts?.[0]?.preview_text ?? "", /Pasta order /);
-  assert.match(ladderRecord.field_windows?.[0]?.preview_text ?? "", /Pasta order /);
+  assert.doesNotMatch(JSON.stringify(structuredContent.results), PDPP_RECORD);
+  assert.doesNotMatch(JSON.stringify(ladder), PDPP_RECORD);
+  assert.doesNotMatch(JSON.stringify(structuredContent.results), PDPP_FIELD_WINDOW);
+  assert.doesNotMatch(JSON.stringify(ladder), PDPP_FIELD_WINDOW);
+  assert.match(structuredContent.results[0]?.evidence_excerpts?.[0]?.preview_text ?? "", PASTA_ORDER);
+  assert.match(ladderRecord.evidence_excerpts?.[0]?.preview_text ?? "", PASTA_ORDER);
+  assert.match(ladderRecord.field_windows?.[0]?.preview_text ?? "", PASTA_ORDER);
   // Prose content is a concise, agent-visible preview, not a JSON dump.
   const text = firstText(result);
-  assert.match(text, /search: 1 hit/i);
-  assert.match(text, /has_more=true/);
-  assert.match(text, /next_cursor="search_cursor_page_2"/);
-  assert.match(text, /id=conn_orders\/orders:o2/);
+  assert.match(text, SEARCH_HIT);
+  assert.match(text, HAS_MORE_TRUE);
+  assert.match(text, NEXT_CURSOR_SEARCH_CURSOR_PAGE);
+  assert.match(text, ID_CONN_ORDERS_ORDERS_O);
   // The connection is embedded in the id, so the preview must not spend
   // budget repeating it as a second model-carried handle.
-  assert.doesNotMatch(text, /connection_id=/);
-  assert.match(text, /Pasta order/);
-  assert.match(text, /structuredContent/);
+  assert.doesNotMatch(text, CONNECTION_ID);
+  assert.match(text, PASTA_ORDER_2);
+  assert.match(text, STRUCTUREDCONTENT);
   // B1 regression guard: the matched evidence excerpt is VISIBLE in prose
   // content (not only in structuredContent), built from the server's
   // `evidence_excerpts` shape, and carries a model-callable read continuation.
-  assert.match(text, /Evidence excerpts:/);
-  assert.match(text, /field_path=text snippet="Pasta order for \$99\."/);
-  assert.match(text, /read=read_record_field/);
+  assert.match(text, EVIDENCE_EXCERPTS);
+  assert.match(text, FIELD_PATH_TEXT_SNIPPET_PASTA);
+  assert.match(text, READ_READ_RECORD_FIELD);
 
   await client.close();
   await server.close();
@@ -982,7 +1037,7 @@ test("fetch tool returns ChatGPT-compatible document shape", async () => {
   assert.ok(ladder, "fetch must expose a content ladder");
   assert.equal(ladder.record_uri, undefined);
   assert.equal(ladder.id, "conn_orders/orders:o2");
-  assert.doesNotMatch(JSON.stringify(ladder), /pdpp:\/\/record\//);
+  assert.doesNotMatch(JSON.stringify(ladder), PDPP_RECORD);
   const mirroredMetadata = mirrored.metadata as { connection_id?: string; display_name?: string } | undefined;
   assert.equal(mirroredMetadata?.connection_id, "conn_orders");
   assert.equal(mirroredMetadata?.display_name, "Merchant orders");
@@ -1022,14 +1077,14 @@ test("fetch content text mirrors document JSON for hosts that hide structured ou
   assert.ok(ladder, "fetch must expose a content ladder");
   assert.equal(ladder.record_uri, undefined);
   assert.equal(ladder.id, "conn_chatgpt/conversations:c1");
-  assert.doesNotMatch(JSON.stringify(ladder), /pdpp:\/\/record\//);
+  assert.doesNotMatch(JSON.stringify(ladder), PDPP_RECORD);
   const textMetadata = text.metadata as
     | { connection_id?: string; connector_key?: string; display_name?: string }
     | undefined;
   assert.equal(textMetadata?.connection_id, "conn_chatgpt");
   assert.equal(textMetadata?.connector_key, "chatgpt");
   assert.equal(textMetadata?.display_name, "ChatGPT - user@example.com");
-  assert.match(text.text as string, /Jeremy and I had a call with Redactable yesterday/);
+  assert.match(text.text as string, JEREMY_AND_I_HAD_A);
 
   await client.close();
   await server.close();
@@ -1062,7 +1117,7 @@ test("search to fetch journey is executable from model-visible text alone", asyn
     arguments: { q: "pasta" },
   });
   const searchText = firstText(searchResult);
-  const id = /id=([^\s]+)/.exec(searchText)?.[1];
+  const id = ID_S.exec(searchText)?.[1];
 
   assert.equal(id, "conn_orders/orders:o2");
 
@@ -1098,8 +1153,8 @@ test("read_record_field reads bounded windows and advertises adjacent cursors", 
 
   assert.equal(result.isError, undefined);
   const text = firstText(result);
-  assert.match(text, /record=conn_orders\/orders:o2/);
-  assert.match(text, /next_cursor=12/);
+  assert.match(text, RECORD_CONN_ORDERS_ORDERS_O);
+  assert.match(text, NEXT_CURSOR);
   interface FieldWindowStructuredContent {
     field?: { path?: string };
     record?: { id?: string };
@@ -1187,7 +1242,7 @@ test("read_record_field rejects mixed identity before calling RS", async () => {
   });
 
   assert.equal(result.isError, true);
-  assert.match(firstText(result), /exclusive/);
+  assert.match(firstText(result), EXCLUSIVE);
   assert.equal(calls.length, before, "invalid identity should not reach the RS");
   await server.close();
 });
@@ -1202,7 +1257,7 @@ test("read_record_field rejects q plus offset before calling RS", async () => {
   });
 
   assert.equal(result.isError, true);
-  assert.match(firstText(result), /exclusive/);
+  assert.match(firstText(result), EXCLUSIVE);
   assert.equal(calls.length, before, "invalid selector should not reach the RS");
   await server.close();
 });
@@ -1217,7 +1272,7 @@ test("read_record_field rejects stale or malformed cursors before calling RS", a
   });
 
   assert.equal(result.isError, true);
-  assert.match(firstText(result), /cursor/);
+  assert.match(firstText(result), CURSOR);
   assert.equal(calls.length, before, "bad cursor should not reach the RS");
   await server.close();
 });
@@ -1246,7 +1301,7 @@ test("record resource uri is readable through resources/read for capable clients
 
   assert.equal(resource.contents.length, 1);
   assert.equal(resource.contents[0]?.mimeType, "application/json");
-  assert.match(resourceText(resource.contents[0]), /Pasta order/);
+  assert.match(resourceText(resource.contents[0]), PASTA_ORDER_2);
 
   const resourceCall = calls.slice(before).find((call) => call.url.includes("/v1/streams/orders/records/o2"));
   assert.ok(resourceCall, "record resource read must call record detail route");
@@ -1267,9 +1322,9 @@ test("canonical base64url pdpp://record URI is accepted by read_record_field, fe
     stream: "orders",
     record_id: "o2",
   });
-  assert.match(recordUri, /^pdpp:\/\/record\/[A-Za-z0-9_-]+$/);
+  assert.match(recordUri, PDPP_RECORD_A_ZA_Z);
   // Proves it is opaque base64url, not the colon/slash grammar.
-  assert.doesNotMatch(recordUri, /[:/]o2$/);
+  assert.doesNotMatch(recordUri, O);
 
   const { fetch, calls } = makeFakeRs();
   const { client, server } = await connectClient(fetch);
@@ -1280,7 +1335,7 @@ test("canonical base64url pdpp://record URI is accepted by read_record_field, fe
     arguments: { id: recordUri, field_path: "text" },
   });
   assert.equal(fieldResult.isError ?? false, false);
-  assert.match(firstText(fieldResult), /Pasta order/);
+  assert.match(firstText(fieldResult), PASTA_ORDER_2);
   const fieldCall = calls.find((call) => call.url.includes("/v1/streams/orders/records/o2/field-window"));
   assert.ok(fieldCall, "read_record_field must resolve the base64url URI to the field-window route");
   assert.equal(new URL(fieldCall.url).searchParams.get("connection_id"), "conn_orders");
@@ -1291,12 +1346,12 @@ test("canonical base64url pdpp://record URI is accepted by read_record_field, fe
     arguments: { id: recordUri },
   });
   assert.equal(fetchResult.isError ?? false, false);
-  assert.match(firstText(fetchResult), /Pasta order/);
+  assert.match(firstText(fetchResult), PASTA_ORDER_2);
 
   // resources/read takes the canonical URI directly.
   const resource = await client.readResource({ uri: recordUri });
   assert.equal(resource.contents.length, 1);
-  assert.match(resourceText(resource.contents[0]), /Pasta order/);
+  assert.match(resourceText(resource.contents[0]), PASTA_ORDER_2);
 
   await server.close();
 });
@@ -1341,9 +1396,9 @@ test("read_record_field omits dead field-window resources and exposes tool conti
     "field-window resource URIs are not model-visible unless generic resource reads are proven reliable"
   );
   assert.equal((result._meta as Record<string, unknown> | undefined)?.resource, undefined);
-  assert.match(visible, /next read_record_field args=/);
-  assert.match(visible, /"id":"conn_orders\/orders:o2"/);
-  assert.match(visible, /"field_path":"text"/);
+  assert.match(visible, NEXT_READ_RECORD_FIELD_ARGS);
+  assert.match(visible, ID_CONN_ORDERS_ORDERS_O_2);
+  assert.match(visible, FIELD_PATH_TEXT);
   assert.equal(
     calls.some((call) => call.url.includes("/v1/streams/orders/records/o2/field-window")),
     true,
@@ -1356,7 +1411,7 @@ test("field-window resource rejects malformed handles", async () => {
 
   await assert.rejects(
     client.readResource({ uri: "pdpp://field-window/not-base64url-json" }),
-    /malformed|Resource handle/
+    MALFORMED_RESOURCE_HANDLE
   );
   await server.close();
 });
@@ -1393,7 +1448,7 @@ test("fetch tool rejects path-traversal result ids before hitting RS", async () 
 
   assert.equal(result.isError, true);
   const errorContent = result.structuredContent as { error?: { message?: string } };
-  assert.match(errorContent.error?.message ?? "", /invalid characters/);
+  assert.match(errorContent.error?.message ?? "", INVALID_CHARACTERS);
   assert.equal(
     calls.some((entry) => entry.url.includes("/v1/streams/orders/records")),
     false
@@ -1470,17 +1525,15 @@ test("tool output never contains the bearer token", async () => {
   const { client, server } = await connectClient(fetch);
 
   const tools = ["schema", "query_records", "aggregate", "search", "fetch"];
+  const argsByTool: Record<string, Record<string, unknown>> = {
+    query_records: { stream: "orders" },
+    aggregate: { stream: "orders", metric: "count" },
+    search: { q: "orders" },
+    fetch: { id: "orders:o1" },
+  };
   for (const name of tools) {
-    const args =
-      name === "query_records"
-        ? { stream: "orders" }
-        : name === "aggregate"
-          ? { stream: "orders", metric: "count" }
-          : name === "search"
-            ? { q: "orders" }
-            : name === "fetch"
-              ? { id: "orders:o1" }
-              : {};
+    const args = argsByTool[name] ?? {};
+    // biome-ignore lint/performance/noAwaitInLoops: calls share one already-connected client/fake-RS across cases and must run in order to keep the stateful fixture's call recording and assertions deterministic; Promise.all would race the shared state.
     const result = await client.callTool({ name, arguments: args });
     const serialized = JSON.stringify(result);
     assert.ok(!serialized.includes("scoped-token"), `${name} result must not echo bearer token`);
@@ -1532,9 +1585,13 @@ test("Streamable HTTP helper handles initialize and tools/list statelessly", asy
   assert.equal(tools.status, 200);
   assert.equal(tools.headers.get("x-pdpp-mcp-profile"), null);
   const listed = (await tools.json()) as ToolsListResponse;
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: tsc disagrees — listed.result is genuinely optional (JSON-RPC only includes it on success); dropping ?. fails tsc (TS18048).
+  // biome-ignore lint/suspicious/useArraySortCompare: tool names are ASCII identifiers, so default lexicographic string sort is correct and stable here.
   const names = listed.result?.tools.map((tool) => tool.name).sort();
   assert.deepEqual(names, ["aggregate", "fetch", "query_records", "read_record_field", "schema", "search"]);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: tsc disagrees — listed.result is genuinely optional (JSON-RPC only includes it on success); dropping ?. fails tsc (TS18048).
   assert.ok(listed.result?.tools.some((tool) => tool.name === "fetch"));
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: tsc disagrees — listed.result is genuinely optional (JSON-RPC only includes it on success); dropping ?. fails tsc (TS18048).
   assert.ok(listed.result?.tools.some((tool) => tool.name === "search"));
 });
 

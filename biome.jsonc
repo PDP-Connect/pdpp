@@ -162,6 +162,63 @@
           }
         }
       }
+    },
+    {
+      // @pdpp/mcp-server test suite (2026-07-25 REVISE 4). Every test file
+      // below imports `@modelcontextprotocol/sdk/client/index.js` and/or
+      // `@modelcontextprotocol/sdk/inMemory.js` — the identical confirmed
+      // Biome-resolver false positive documented above for src/server.ts and
+      // src/index.ts (same SDK, same subpath-exports gap in Biome's resolver,
+      // not tsc's or Node's). Verified per file that noUnresolvedImports is
+      // the SDK subpath import and not some other unresolved specifier before
+      // adding it here. schema-token-budget.test.ts also carries a second,
+      // independent noUnresolvedImports finding for `import "tsx"` (see the
+      // separate tsx-scoped override below); this block covers the SDK cause.
+      "includes": [
+        "packages/mcp-server/test/aggregate-tool.test.ts",
+        "packages/mcp-server/test/canonical-mirror.test.ts",
+        "packages/mcp-server/test/connection-id-forwarding.test.ts",
+        "packages/mcp-server/test/expand-gate.test.ts",
+        "packages/mcp-server/test/fetch-id-form-contract.test.ts",
+        "packages/mcp-server/test/hostile-client-read-evidence.test.ts",
+        "packages/mcp-server/test/read-record-field-selector-contract.test.ts",
+        "packages/mcp-server/test/record-payload-token-budget.test.ts",
+        "packages/mcp-server/test/schema-token-budget.test.ts",
+        "packages/mcp-server/test/self-contained-result-id.test.ts",
+        "packages/mcp-server/test/server.integration.test.ts",
+        "packages/mcp-server/test/tool-footprint.test.ts",
+        "packages/mcp-server/test/typed-filter.test.ts"
+      ],
+      "linter": {
+        "rules": {
+          "correctness": {
+            "noUnresolvedImports": "off"
+          }
+        }
+      }
+    },
+    {
+      // @pdpp/mcp-server test suite (2026-07-25 REVISE 4). Both files use the
+      // `import "tsx";` side-effect import (registers tsx as this process's
+      // own dynamic-import loader, load-bearing for a later `await
+      // import(".../compact-view.ts")` call; predates this migration). Biome
+      // cannot resolve tsx's package.json exports map for a bare specifier
+      // with no subpath ("found directory without index"); both `tsc
+      // --noEmit` and `node --input-type=module -e
+      // "console.log(import.meta.resolve('tsx'))"` resolve it correctly to
+      // node_modules/.pnpm/tsx@.../dist/loader.mjs. Confirmed false positive,
+      // same resolver-gap class as the SDK override above, not real debt.
+      "includes": [
+        "packages/mcp-server/test/hosted-schema-token-budget.test.ts",
+        "packages/mcp-server/test/schema-token-budget.test.ts"
+      ],
+      "linter": {
+        "rules": {
+          "correctness": {
+            "noUnresolvedImports": "off"
+          }
+        }
+      }
     }
   ]
 }

@@ -41,6 +41,7 @@ interface SchemaStreamRow {
 // the function's real parameter type for test convenience.
 function makeSchemaRs(streamRows: SchemaStreamRow[]): RsClient {
   return {
+    // biome-ignore lint/suspicious/useAwait: async required to satisfy the Promise<Response>-returning fetch/getJson contract this fixture implements; a synchronous return type is not assignable to the caller's injected dependency.
     getJson: async (path: string, opts: { query?: { stream?: string } } = {}) => {
       if (path === "/v1/schema") {
         const requestedStream = opts.query?.stream;
@@ -113,6 +114,7 @@ test("assertExpandCapabilities: passes silently when stream is unknown in schema
 test("assertExpandCapabilities: forwards connection_id to schema request", async () => {
   const seen: Array<{ path: string; query: { connection_id?: string } | undefined }> = [];
   const rs = {
+    // biome-ignore lint/suspicious/useAwait: async required to satisfy the Promise<Response>-returning fetch/getJson contract this fixture implements; a synchronous return type is not assignable to the caller's injected dependency.
     getJson: async (path: string, opts: { query?: { connection_id?: string } } = {}) => {
       seen.push({ path, query: opts.query });
       return {
@@ -141,6 +143,7 @@ interface IntegrationRsOptions {
 
 function makeIntegrationRs({ streamName, hasExpandCaps, recordsBody }: IntegrationRsOptions) {
   const calls: string[] = [];
+  // biome-ignore lint/suspicious/useAwait: async required to satisfy the Promise<Response>-returning fetch/getJson contract this fixture implements; a synchronous return type is not assignable to the caller's injected dependency.
   const fetch = async (urlInput: string | Request | URL) => {
     const url = new URL(urlInput.toString());
     calls.push(url.pathname + url.search);

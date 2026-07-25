@@ -9,6 +9,15 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import { createPdppMcpServer } from "../src/server.ts";
 
+const ID_IS_EXCLUSIVE_WITH_EXPLICIT = /`id` is exclusive with explicit `connection_id`, `stream`, and `record_id`/;
+const MUST_INCLUDE_CONNECTION_ID = /must include connection_id/;
+const REQUIRES_EITHER_ID_FIELD_PATH =
+  /requires either `id` \+ `field_path` or `connection_id` \+ `stream` \+ `record_id`/;
+const CURSOR_IS_EXCLUSIVE_WITH_OFFSET = /`cursor` is exclusive with `offset_chars`/;
+const Q_IS_EXCLUSIVE_WITH_CURSOR = /`q` is exclusive with `cursor` and `offset_chars`/;
+const BEFORE_CHARS_AND_AFTER_CHARS = /`before_chars` and `after_chars` require `q`/;
+const FIELD_WINDOW_CURSOR_MUST_BE = /field-window cursor must be a non-negative integer offset/;
+
 interface FetchCall {
   method: string;
   url: string;
@@ -16,6 +25,7 @@ interface FetchCall {
 
 function makeFieldWindowFetch() {
   const calls: FetchCall[] = [];
+  // biome-ignore lint/suspicious/useAwait: async required to satisfy the Promise<Response>-returning fetch/getJson contract this fixture implements; a synchronous return type is not assignable to the caller's injected dependency.
   const fetch = async (urlInput: string | Request | URL, init: RequestInit = {}) => {
     const url = new URL(urlInput.toString());
     calls.push({ url: url.toString(), method: init.method ?? "GET" });
@@ -95,42 +105,43 @@ test("read_record_field rejects invalid MCP-layer selectors before calling RS", 
         record_id: "o1",
         field_path: "text",
       },
-      message: /`id` is exclusive with explicit `connection_id`, `stream`, and `record_id`/,
+      message: ID_IS_EXCLUSIVE_WITH_EXPLICIT,
     },
     {
       name: "legacy id without connection_id",
       arguments: { id: "orders:o1", field_path: "text" },
-      message: /must include connection_id/,
+      message: MUST_INCLUDE_CONNECTION_ID,
     },
     {
       name: "neither id nor full triple",
       arguments: { connection_id: "conn_orders", stream: "orders", field_path: "text" },
-      message: /requires either `id` \+ `field_path` or `connection_id` \+ `stream` \+ `record_id`/,
+      message: REQUIRES_EITHER_ID_FIELD_PATH,
     },
     {
       name: "cursor plus offset_chars",
       arguments: { id: "conn_orders/orders:o1", field_path: "text", cursor: "12", offset_chars: 12 },
-      message: /`cursor` is exclusive with `offset_chars`/,
+      message: CURSOR_IS_EXCLUSIVE_WITH_OFFSET,
     },
     {
       name: "q plus offset_chars",
       arguments: { id: "conn_orders/orders:o1", field_path: "text", q: "needle", offset_chars: 12 },
-      message: /`q` is exclusive with `cursor` and `offset_chars`/,
+      message: Q_IS_EXCLUSIVE_WITH_CURSOR,
     },
     {
       name: "before_chars without q",
       arguments: { id: "conn_orders/orders:o1", field_path: "text", before_chars: 8 },
-      message: /`before_chars` and `after_chars` require `q`/,
+      message: BEFORE_CHARS_AND_AFTER_CHARS,
     },
     {
       name: "non-integer cursor",
       arguments: { id: "conn_orders/orders:o1", field_path: "text", cursor: "abc" },
-      message: /field-window cursor must be a non-negative integer offset/,
+      message: FIELD_WINDOW_CURSOR_MUST_BE,
     },
   ];
 
   for (const contractCase of cases) {
     const { fetch, calls } = makeFieldWindowFetch();
+    // biome-ignore lint/performance/noAwaitInLoops: each iteration owns an isolated MCP client/session that must fully connect, call, and close before the next case starts; Promise.all would run concurrent InMemoryTransport pairs and break per-case isolation.
     const { client, server } = await connectClient(fetch);
     try {
       const result = await client.callTool({ name: "read_record_field", arguments: contractCase.arguments });
@@ -154,7 +165,7 @@ test("read_record_field accepts a valid self-contained id selector and forwards 
 
     assert.equal(result.isError, undefined);
     assert.equal(calls.length, 1);
-    const call = calls[0];
+    const [call] = calls;
     assert.ok(call, "field-window fetch must be recorded");
     const routeUrl = new URL(call.url);
     assert.equal(routeUrl.pathname, "/v1/streams/orders/records/o1/field-window");

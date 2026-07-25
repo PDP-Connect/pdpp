@@ -9,6 +9,13 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import { createPdppMcpServer } from "../src/server.ts";
 
+const V_SCHEMA = /\/v1\/schema/;
+const XOR_EXACTLY_ONE = /XOR|exactly one/i;
+const QUERY_RECORDS = /query_records/;
+const NEVER_RECORD_BODIES = /never record bodies/i;
+const TIME_ZONE_UTC = /time_zone="UTC"/;
+const TIME_ZONE_AMERICA_NEW_YORK = /time_zone="America\/New_York"/;
+
 interface FetchCall {
   method: string;
   url: string;
@@ -58,6 +65,7 @@ function recordingFetch() {
     "filter",
     "connection_id",
   ]);
+  // biome-ignore lint/suspicious/useAwait: async required to satisfy the Promise<Response>-returning fetch/getJson contract this fixture implements; a synchronous return type is not assignable to the caller's injected dependency.
   const fetch = async (urlInput: string | Request | URL, init: RequestInit = {}) => {
     const url = new URL(urlInput.toString());
     calls.push({ url: url.toString(), method: init.method ?? "GET" });
@@ -154,10 +162,10 @@ test("aggregate tool exposes the metric and granularity enums and grouping args"
     "year",
   ]);
   assert.ok(aggregate.outputSchema, "aggregate must declare an outputSchema");
-  assert.match(aggregate.description ?? "", /\/v1\/schema/, "description must reference /v1/schema");
+  assert.match(aggregate.description ?? "", V_SCHEMA, "description must reference /v1/schema");
   assert.match(
     aggregate.description ?? "",
-    /XOR|exactly one/i,
+    XOR_EXACTLY_ONE,
     "description must document the single grouping dimension rule"
   );
 
@@ -181,12 +189,12 @@ test("aggregate description teaches the token-efficient path (prefer over paging
 
   assert.match(
     aggregate.description ?? "",
-    /query_records/,
+    QUERY_RECORDS,
     "description must contrast aggregate with paging query_records"
   );
   assert.match(
     aggregate.description ?? "",
-    /never record bodies/i,
+    NEVER_RECORD_BODIES,
     "description must state aggregate returns buckets, not record bodies"
   );
 
@@ -211,7 +219,7 @@ test("aggregate forwards a group_by_time request and mirrors the RS body into st
   assert.equal(structuredContent.data.approximate, false);
   assert.match(
     textContent(result),
-    /time_zone="UTC"/,
+    TIME_ZONE_UTC,
     "group_by_time prose must echo the applied time zone for model-visible verification"
   );
 
@@ -249,7 +257,7 @@ test("aggregate forwards count_distinct and time_zone verbatim", async () => {
   assert.ok(
     urls.some((u) => u.searchParams.get("metric") === "count_distinct" && u.searchParams.get("field") === "sender")
   );
-  assert.match(textContent(timeZoneResult), /time_zone="America\/New_York"/);
+  assert.match(textContent(timeZoneResult), TIME_ZONE_AMERICA_NEW_YORK);
 
   await client.close();
   await server.close();

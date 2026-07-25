@@ -19,6 +19,7 @@ interface FetchCall {
 
 function makeRecordingFetch() {
   const calls: FetchCall[] = [];
+  // biome-ignore lint/suspicious/useAwait: async required to satisfy the Promise<Response>-returning fetch/getJson contract this fixture implements; a synchronous return type is not assignable to the caller's injected dependency.
   const fetch = async (urlInput: string | Request | URL, init: RequestInit = {}) => {
     const url = new URL(urlInput.toString());
     calls.push({
@@ -97,6 +98,7 @@ test("fetch id forms dispatch to the expected RS path and connection query", asy
 
   for (const testCase of cases) {
     const { fetch, calls } = makeRecordingFetch();
+    // biome-ignore lint/performance/noAwaitInLoops: each iteration owns an isolated MCP client/session that must fully connect, call, and close before the next case starts; Promise.all would run concurrent InMemoryTransport pairs and break per-case isolation.
     const { client, server } = await connectClient(fetch);
 
     const result = await client.callTool({ name: "fetch", arguments: testCase.arguments });

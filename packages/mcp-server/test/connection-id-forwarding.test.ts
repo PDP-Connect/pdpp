@@ -21,6 +21,7 @@ interface FetchCall {
 
 function makeRecordingFetch() {
   const calls: FetchCall[] = [];
+  // biome-ignore lint/suspicious/useAwait: async required to satisfy the Promise<Response>-returning fetch/getJson contract this fixture implements; a synchronous return type is not assignable to the caller's injected dependency.
   const fetch = async (urlInput: string | Request | URL, init: RequestInit = {}) => {
     const url = new URL(urlInput.toString());
     calls.push({ url: url.toString(), method: init.method ?? "GET" });

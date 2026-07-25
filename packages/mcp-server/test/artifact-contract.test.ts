@@ -23,6 +23,14 @@ import {
 import { assertInstalledPackageMatchesTarball, resolveReceiptOutputPath } from "../scripts/pack-install-run.ts";
 import { assertManifestTargets, assertPackedFiles, type PackageManifest } from "../scripts/package-contract.ts";
 
+const SYMLINK = /symlink/;
+const STALE_OR_REPLAYED_RECEIPT = /stale or replayed receipt/;
+const STALE_OR_REPLAYED_EVIDENCE = /stale or replayed evidence/;
+const SOURCE_CLOSURE_REJECTS_SYMLINK = /source closure rejects symlink/;
+const CLEAN_TRACKED_AND_UNTRACKED = /clean tracked and untracked/;
+const CLEAN_WORKING_TREE = /clean working tree/;
+const OUTSIDE_THE_WORKING_TREE = /outside the working tree/;
+
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 const MISSING_TARGET = /is missing/;
 const SOURCE_TARGET = /must point into \.\/dist\//;
@@ -153,13 +161,13 @@ test("receipt output rejects dangling leaf and parent symlinks before any write"
   const target = join(root, "target.json");
   const danglingLeaf = join(root, "dangling-receipt.json");
   symlinkSync(target, danglingLeaf);
-  assert.throws(() => resolveReceiptOutputPath(danglingLeaf), /symlink/);
+  assert.throws(() => resolveReceiptOutputPath(danglingLeaf), SYMLINK);
   assert.equal(existsSync(target), false);
 
   const outside = mkdtempSync(join(tmpdir(), "pdpp-mcp-receipt-outside-"));
   const parentLink = join(root, "linked-parent");
   symlinkSync(outside, parentLink);
-  assert.throws(() => resolveReceiptOutputPath(join(parentLink, "receipt.json")), /symlink/);
+  assert.throws(() => resolveReceiptOutputPath(join(parentLink, "receipt.json")), SYMLINK);
 });
 
 test("receipt validation recomputes persisted sibling provenance", () => {
@@ -174,7 +182,7 @@ test("receipt validation recomputes persisted sibling provenance", () => {
       "@pdpp/cli": { ...cliCandidate, headGitSha: "forged-or-replayed-head" },
     },
   };
-  assert.throws(() => assertArtifactReceipt(forged, { candidates: value.candidates }), /stale or replayed receipt/);
+  assert.throws(() => assertArtifactReceipt(forged, { candidates: value.candidates }), STALE_OR_REPLAYED_RECEIPT);
 });
 
 test("checker reproduction rejects stale sibling evidence before consumer installation", () => {
@@ -202,15 +210,15 @@ test("checker reproduction rejects stale sibling evidence before consumer instal
   assert.doesNotThrow(() => assertSiblingCandidateEvidence(evidence, expected));
   assert.throws(
     () => assertSiblingCandidateEvidence({ ...evidence, headGitSha: "stale-head" }, expected),
-    /stale or replayed evidence/
+    STALE_OR_REPLAYED_EVIDENCE
   );
   assert.throws(
     () => assertSiblingCandidateEvidence({ ...evidence, sourceTarballSha256: "stale-source-tarball" }, expected),
-    /stale or replayed evidence/
+    STALE_OR_REPLAYED_EVIDENCE
   );
   assert.throws(
     () => assertSiblingCandidateEvidence({ ...evidence, tarballSha256: "arbitrary-supplied-bytes" }, expected),
-    /stale or replayed evidence/
+    STALE_OR_REPLAYED_EVIDENCE
   );
 });
 
@@ -219,22 +227,22 @@ test("source closure fails closed on symlinks and receipt emission needs a clean
   writeFileSync(join(root, "source.js"), "export const source = true;\n");
   writeFileSync(join(root, "outside.js"), "export const outside = true;\n");
   symlinkSync(join(root, "outside.js"), join(root, "linked.js"));
-  assert.throws(() => packageClosureSha256(root), /source closure rejects symlink/);
+  assert.throws(() => packageClosureSha256(root), SOURCE_CLOSURE_REJECTS_SYMLINK);
   assert.doesNotThrow(() => assertCleanWorkingTreeStatus(""));
   assert.throws(
     () => assertCleanWorkingTreeStatus(" M packages/mcp-server/src/index.js\n"),
-    /clean tracked and untracked/
+    CLEAN_TRACKED_AND_UNTRACKED
   );
-  assert.throws(() => assertCleanWorkingTreeStatus("?? replayed-receipt.json\n"), /clean tracked and untracked/);
+  assert.throws(() => assertCleanWorkingTreeStatus("?? replayed-receipt.json\n"), CLEAN_TRACKED_AND_UNTRACKED);
 });
 
 test("receipt attests to a clean tree and cannot be emitted into it", () => {
   assert.doesNotThrow(() => assertArtifactReceipt(receipt()));
-  assert.throws(() => assertArtifactReceipt({ ...receipt(), workingTreeClean: false }), /clean working tree/);
+  assert.throws(() => assertArtifactReceipt({ ...receipt(), workingTreeClean: false }), CLEAN_WORKING_TREE);
   assert.doesNotThrow(() => assertReceiptPathOutsideWorktree("/evidence/receipt.json", "/worktree"));
   assert.throws(
     () => assertReceiptPathOutsideWorktree("/worktree/receipt.json", "/worktree"),
-    /outside the working tree/
+    OUTSIDE_THE_WORKING_TREE
   );
 });
 

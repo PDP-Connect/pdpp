@@ -9,6 +9,16 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import { createPdppMcpServer } from "../src/server.ts";
 
+const FIRST_FETCH_ID_CIN_AAA = /first_fetch_id=cin_aaa\/orders:o1/;
+const ID_CIN_AAA_ORDERS_O = /id=cin_aaa\/orders:o1/;
+const ID_CIN_BBB_ORDERS_O = /id=cin_bbb\/orders:o9/;
+const CONNECTION_ID = /connection_id=/;
+const FIRST_FETCH_ID_S = /first_fetch_id=([^\s]+)/;
+const FIRST_FETCH_ID = /first_fetch_id=/;
+const CIN_AAA = /cin_aaa/;
+const CIN_BBB = /cin_bbb/;
+const ID_MESSAGES_M = /id=messages:m1/;
+
 interface FetchCall {
   method: string;
   url: string;
@@ -55,6 +65,7 @@ const AMBIGUOUS_RECORD_ERROR = {
 // connections, and record fetches WITHOUT `connection_id` are ambiguous.
 function makeMultiSourceFetch() {
   const calls: FetchCall[] = [];
+  // biome-ignore lint/suspicious/useAwait: async required to satisfy the Promise<Response>-returning fetch/getJson contract this fixture implements; a synchronous return type is not assignable to the caller's injected dependency.
   const fetch = async (urlInput: string | Request | URL, init: RequestInit = {}) => {
     const url = new URL(urlInput.toString());
     calls.push({ url: url.toString(), method: init.method ?? "GET" });
@@ -165,16 +176,16 @@ test("multi-source search returns self-contained ids in structured results and c
 
   // Model-visible text carries the complete handles, untruncated.
   const text = firstText(result);
-  assert.match(text, /first_fetch_id=cin_aaa\/orders:o1/);
-  assert.match(text, /id=cin_aaa\/orders:o1/);
-  assert.match(text, /id=cin_bbb\/orders:o9/);
+  assert.match(text, FIRST_FETCH_ID_CIN_AAA);
+  assert.match(text, ID_CIN_AAA_ORDERS_O);
+  assert.match(text, ID_CIN_BBB_ORDERS_O);
   assert.ok(
     text.indexOf("first_fetch_id=cin_aaa/orders:o1") < text.indexOf("source_mix="),
     "first fetch handle must appear before verbose source metadata for clipped host previews"
   );
   // The connection is embedded in the id; it is not repeated as a second
   // model-carried field the host could bury.
-  assert.doesNotMatch(text, /connection_id=/);
+  assert.doesNotMatch(text, CONNECTION_ID);
 
   await client.close();
   await server.close();
@@ -188,7 +199,7 @@ test("search to fetch journey completes from content[] text alone with ONE handl
 
   // Consume ONLY what the model can see: content[] text.
   const searchText = firstText(searchResult);
-  const id = /first_fetch_id=([^\s]+)/.exec(searchText)?.[1];
+  const id = FIRST_FETCH_ID_S.exec(searchText)?.[1];
   assert.equal(id, "cin_aaa/orders:o1");
 
   // ONE opaque handle, no connection_id argument — the exact call shape the
@@ -210,7 +221,7 @@ test("search to fetch journey completes from content[] text alone with ONE handl
   // the ambiguous_connection branch never fired.
   const recordCalls = calls.filter((entry) => entry.url.includes("/v1/streams/orders/records/o1"));
   assert.equal(recordCalls.length, 1);
-  const recordCall = recordCalls[0];
+  const [recordCall] = recordCalls;
   assert.ok(recordCall, "record fetch must be recorded");
   assert.equal(new URL(recordCall.url).searchParams.get("connection_id"), "cin_aaa");
 
@@ -226,7 +237,7 @@ test("zero-hit search does not invent a first fetch handle", async () => {
   assert.equal(result.isError, undefined);
   const structuredContent = result.structuredContent as { results: unknown[] };
   assert.deepEqual(structuredContent.results, []);
-  assert.doesNotMatch(firstText(result), /first_fetch_id=/);
+  assert.doesNotMatch(firstText(result), FIRST_FETCH_ID);
 
   await client.close();
   await server.close();
@@ -287,8 +298,8 @@ test("conflicting embedded and explicit connection ids are rejected with a typed
   assert.equal(result.isError, true);
   const structuredContent = result.structuredContent as { error?: { code?: string; message?: string } };
   assert.equal(structuredContent.error?.code, "conflicting_connection_id");
-  assert.match(structuredContent.error?.message ?? "", /cin_aaa/);
-  assert.match(structuredContent.error?.message ?? "", /cin_bbb/);
+  assert.match(structuredContent.error?.message ?? "", CIN_AAA);
+  assert.match(structuredContent.error?.message ?? "", CIN_BBB);
   assert.equal(
     calls.some((entry) => entry.url.includes("/v1/streams/")),
     false,
@@ -311,6 +322,7 @@ test("self-contained ids reject path traversal and malformed segments before any
     "cin_aaa/orders",
     "cin_aaa/extra/orders:o1",
   ]) {
+    // biome-ignore lint/performance/noAwaitInLoops: calls share one already-connected client/fake-RS across cases and must run in order to keep the stateful fixture's call recording and assertions deterministic; Promise.all would race the shared state.
     const result = await client.callTool({ name: "fetch", arguments: { id } });
     assert.equal(result.isError, true, `id ${JSON.stringify(id)} must be rejected`);
   }
@@ -326,6 +338,7 @@ test("self-contained ids reject path traversal and malformed segments before any
 
 test("hits without a connection keep plain stream:record_id ids", async () => {
   const calls: string[] = [];
+  // biome-ignore lint/suspicious/useAwait: async required to satisfy the Promise<Response>-returning fetch/getJson contract this fixture implements; a synchronous return type is not assignable to the caller's injected dependency.
   const singleSourceFetch = async (urlInput: string | Request | URL) => {
     const url = new URL(urlInput.toString());
     calls.push(url.toString());
@@ -342,7 +355,7 @@ test("hits without a connection keep plain stream:record_id ids", async () => {
   const result = await client.callTool({ name: "search", arguments: { q: "hi" } });
   const structuredContent = result.structuredContent as { results: Array<{ id?: string }> };
   assert.equal(structuredContent.results[0]?.id, "messages:m1");
-  assert.match(firstText(result), /id=messages:m1/);
+  assert.match(firstText(result), ID_MESSAGES_M);
 
   await client.close();
   await server.close();

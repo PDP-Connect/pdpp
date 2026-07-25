@@ -37,6 +37,9 @@
     "@pdpp/read-core": ">=0.18.11 <1.0.0",
     "zod": "^3.25.76"
   },
+  "devDependencies": {
+    "tsx": "^4.21.0"
+  },
   "keywords": [
     "pdpp",
     "personal-data",

@@ -1,5 +1,11 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
+const BOUNDED_CANDIDATE_WINDOW = /bounded candidate window/i;
+const MORE_MATCHES_MAY_EXIST = /more matches may exist/i;
+const CANDIDATE_WINDOW_LIMIT = /candidate_window_limit=200/;
+const TRUNCATED_SOURCE_COUNT = /truncated_source_count=1/;
+const EXHAUSTIVE_B_DO_NOT = /exhaustive\b(?!.*do not)/i;
+const DO_NOT_TREAT_THIS_PAGE = /do not treat this page as exhaustive/i;
 
 /**
  * MCP search adapter: recall-metadata mirroring.
@@ -47,13 +53,13 @@ interface SearchStructuredData {
 }
 
 function structuredData(result: { structuredContent?: Record<string, unknown> }): SearchStructuredData {
-  const structuredContent = result.structuredContent;
+  const { structuredContent } = result;
   assert.ok(structuredContent, "search tool result must carry structuredContent");
   return structuredContent.data as SearchStructuredData;
 }
 
 function firstText(result: { content: readonly { text?: string; type?: string }[] }): string {
-  const first = result.content[0];
+  const [first] = result.content;
   assert.equal(first?.type, "text", "first content block must be text");
   return first?.text ?? "";
 }
@@ -124,7 +130,7 @@ test("MCP mirrors complete recall into structuredContent.data and omits a recall
   assert.equal(structuredData(result).meta?.count, 1);
   // No bounded-window warning for a complete search.
   const text = firstText(result);
-  assert.ok(!/bounded candidate window/i.test(text), "complete recall must not warn");
+  assert.ok(!BOUNDED_CANDIDATE_WINDOW.test(text), "complete recall must not warn");
 });
 
 test("MCP mirrors candidate_window recall and warns in text without inferring from has_more", () => {
@@ -141,12 +147,12 @@ test("MCP mirrors candidate_window recall and warns in text without inferring fr
   // Text summary indicates the bounded candidate window even though has_more is
   // false — proving the adapter reads meta.recall, not has_more / hit count.
   const text = firstText(result);
-  assert.ok(/bounded candidate window/i.test(text), `text must warn on candidate_window recall; got: ${text}`);
-  assert.ok(/more matches may exist/i.test(text));
-  assert.ok(/candidate_window_limit=200/.test(text));
-  assert.ok(/truncated_source_count=1/.test(text));
+  assert.ok(BOUNDED_CANDIDATE_WINDOW.test(text), `text must warn on candidate_window recall; got: ${text}`);
+  assert.ok(MORE_MATCHES_MAY_EXIST.test(text));
+  assert.ok(CANDIDATE_WINDOW_LIMIT.test(text));
+  assert.ok(TRUNCATED_SOURCE_COUNT.test(text));
   // The adapter must not call a bounded-window page exhaustive.
-  assert.ok(!/exhaustive\b(?!.*do not)/i.test(text) || /do not treat this page as exhaustive/i.test(text));
+  assert.ok(!EXHAUSTIVE_B_DO_NOT.test(text) || DO_NOT_TREAT_THIS_PAGE.test(text));
 });
 
 test("MCP search with no meta does not fabricate recall facts", () => {
@@ -154,6 +160,6 @@ test("MCP search with no meta does not fabricate recall facts", () => {
   const result = toSearchToolResult(rsResponse(body), PROVIDER_URL);
   // No meta in → no meta out (and certainly no invented recall warning).
   const text = firstText(result);
-  assert.ok(!/bounded candidate window/i.test(text));
+  assert.ok(!BOUNDED_CANDIDATE_WINDOW.test(text));
   assert.equal(structuredData(result).meta, undefined);
 });

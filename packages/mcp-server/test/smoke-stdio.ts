@@ -96,6 +96,7 @@ async function waitFor(predicate: () => boolean, timeoutMs: number) {
     if (Date.now() - start > timeoutMs) {
       return;
     }
+    // biome-ignore lint/performance/noAwaitInLoops: this is a sequential poll-with-delay loop (wait for a predicate, sleeping between checks), not fan-out work; Promise.all does not apply.
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 }
@@ -104,8 +105,8 @@ const lines = stdoutBuf.split("\n").filter((line) => line.length > 0);
 const parsed = lines.map((line, index) => {
   try {
     return JSON.parse(line);
-  } catch {
-    throw new Error(`stdout line ${index} is not valid JSON: ${JSON.stringify(line)}`);
+  } catch (error) {
+    throw new Error(`stdout line ${index} is not valid JSON: ${JSON.stringify(line)}`, { cause: error });
   }
 });
 

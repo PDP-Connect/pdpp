@@ -25,6 +25,20 @@ import {
   PDPP_MCP_TOOL_NAMES,
 } from "../src/server.ts";
 
+const FILTER = /filter/i;
+const TYPED = /typed/i;
+const LIMIT_PAGE_NARROW_CURSOR = /limit|page|narrow|cursor/i;
+const READ_RECORD_FIELD = /read_record_field/;
+const PROJECTED_RECORDS = /projected records/;
+const BOUNDED_FIELD_WINDOWS = /bounded field windows/;
+const READ_THE_RETURNED_PDPP_RECORD =
+  /read the returned `pdpp:\/\/record\/\.\.\.` and `pdpp:\/\/field-window\/\.\.\.` resource URIs/;
+const READ_RECORD_FIELD_IS_THE = /read_record_field` is the model-callable bounded-read path/;
+const SUPPORTS_S_PDPP_READ_TOOLS = /supports\s+PDPP read tools and event-subscription management/i;
+const EVENT_SUBSCRIPTION_MANAGEMENT_STAYS_IN =
+  /event-subscription management stays in\s+the operator console and REST\/control-plane docs/i;
+const PDPP_RECORD = /pdpp:\/\/record/;
+
 const NORMAL_SURFACE_BYTE_BUDGET = 24 * 1024;
 
 function propertyDescription(properties: { [x: string]: unknown } | undefined, name: string): string {
@@ -122,18 +136,15 @@ test("instructions first 512 chars mention schema-first, connection_id, typed fi
   const first512 = PDPP_MCP_INSTRUCTIONS.slice(0, 512);
   assert.ok(first512.includes("schema"), "first 512 chars must mention schema-first discovery");
   assert.ok(first512.includes("connection_id"), "first 512 chars must mention connection_id");
-  assert.ok(/filter/i.test(first512) || /typed/i.test(first512), "first 512 chars must mention typed filters");
-  assert.ok(/limit|page|narrow|cursor/i.test(first512), "first 512 chars must mention paging/narrowing");
+  assert.ok(FILTER.test(first512) || TYPED.test(first512), "first 512 chars must mention typed filters");
+  assert.ok(LIMIT_PAGE_NARROW_CURSOR.test(first512), "first 512 chars must mention paging/narrowing");
 });
 
 test("instructions keep resource reads optional for ordinary evidence", () => {
-  assert.match(PDPP_MCP_INSTRUCTIONS, /read_record_field/);
-  assert.match(PDPP_MCP_INSTRUCTIONS, /projected records/);
-  assert.match(PDPP_MCP_INSTRUCTIONS, /bounded field windows/);
-  assert.doesNotMatch(
-    PDPP_MCP_INSTRUCTIONS,
-    /read the returned `pdpp:\/\/record\/\.\.\.` and `pdpp:\/\/field-window\/\.\.\.` resource URIs/
-  );
+  assert.match(PDPP_MCP_INSTRUCTIONS, READ_RECORD_FIELD);
+  assert.match(PDPP_MCP_INSTRUCTIONS, PROJECTED_RECORDS);
+  assert.match(PDPP_MCP_INSTRUCTIONS, BOUNDED_FIELD_WINDOWS);
+  assert.doesNotMatch(PDPP_MCP_INSTRUCTIONS, READ_THE_RETURNED_PDPP_RECORD);
 });
 
 test("setup docs enumerate the normal MCP read surface without event-management overclaim", () => {
@@ -146,20 +157,13 @@ test("setup docs enumerate the normal MCP read surface without event-management 
   for (const toolName of PDPP_MCP_TOOL_NAMES) {
     assert.match(hostedSetup, new RegExp(`\\\`${toolName}\\\``), `hosted setup must mention ${toolName}`);
   }
-  assert.match(
-    hostedSetup,
-    /read_record_field` is the model-callable bounded-read path/,
-    "hosted setup must teach the bounded-read continuation path"
-  );
+  assert.match(hostedSetup, READ_RECORD_FIELD_IS_THE, "hosted setup must teach the bounded-read continuation path");
   assert.doesNotMatch(
     selfhostQuickstart,
-    /supports\s+PDPP read tools and event-subscription management/i,
+    SUPPORTS_S_PDPP_READ_TOOLS,
     "normal /mcp docs must not claim support for event-subscription management as part of the read surface"
   );
-  assert.match(
-    selfhostQuickstart,
-    /event-subscription management stays in\s+the operator console and REST\/control-plane docs/i
-  );
+  assert.match(selfhostQuickstart, EVENT_SUBSCRIPTION_MANAGEMENT_STAYS_IN);
 });
 
 test("tools/list exposes exact profile-free normal read surface", async () => {
@@ -199,8 +203,11 @@ test("hosted tools/list exposes read-only annotations for every normal tool", as
   assert.equal(rpc.error, undefined, `tools/list returned JSON-RPC error: ${JSON.stringify(rpc.error)}`);
 
   assert.ok(rpc.result, "tools/list must return a result");
-  const tools = rpc.result.tools;
-  assert.deepEqual(tools.map((tool) => tool.name).sort(), [...PDPP_MCP_TOOL_NAMES].sort());
+  const { tools } = rpc.result;
+  assert.deepEqual(
+    tools.map((tool) => tool.name).sort((a, b) => a.localeCompare(b)),
+    [...PDPP_MCP_TOOL_NAMES].sort((a, b) => a.localeCompare(b))
+  );
   for (const tool of tools) {
     assert.equal(tool.annotations?.readOnlyHint, true, `${tool.name} readOnlyHint`);
     assert.equal(tool.annotations?.destructiveHint, false, `${tool.name} destructiveHint`);
@@ -216,9 +223,9 @@ test("record handle tool schemas teach pdpp record uri continuation", async () =
     const fetchTool = result.tools.find((tool) => tool.name === "fetch");
     const readFieldTool = result.tools.find((tool) => tool.name === "read_record_field");
 
-    assert.match(propertyDescription(fetchTool?.inputSchema.properties, "id"), /pdpp:\/\/record/);
-    assert.match(readFieldTool?.description ?? "", /pdpp:\/\/record/);
-    assert.match(propertyDescription(readFieldTool?.inputSchema.properties, "id"), /pdpp:\/\/record/);
+    assert.match(propertyDescription(fetchTool?.inputSchema.properties, "id"), PDPP_RECORD);
+    assert.match(readFieldTool?.description ?? "", PDPP_RECORD);
+    assert.match(propertyDescription(readFieldTool?.inputSchema.properties, "id"), PDPP_RECORD);
   } finally {
     await client.close();
     server.close();

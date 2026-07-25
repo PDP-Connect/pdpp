@@ -16,6 +16,25 @@ import { createPdppMcpServer } from "../src/server.ts";
 // 5.2 outputSchema declared so SDK validates the structuredContent envelope
 // 5.3 content[] is a concise summary, not a JSON contract dump
 // 5.4 unsupported args that REST would reject are not silently dropped
+const V_SCHEMA = /\/v1\/schema/;
+const CONNECTION_ID = /connection_id/;
+const CONNECTOR_KEY = /connector_key/;
+const HTTPS_REGISTRY_PDPP_ORG = /https:\/\/registry\.pdpp\.org/;
+const BEGINNING = /beginning/;
+const NEXT_CHANGES_SINCE = /next_changes_since/;
+const DO_NOT_PASS_AN_ISO = /Do not pass an ISO timestamp/;
+const AVAILABLE_CONNECTIONS_CONNECTOR_KEY_CONNECTION = /available_connections.*connector_key.*connection_id/s;
+const RECORD = /record\[0\]/;
+const VALIDATION_TOO_BIG_LESS_THAN = /validation|too_big|less than or equal to 100/i;
+const CAPPED_AT = /capped at 100/;
+const CURSOR = /cursor/;
+const B_B = /\b200\b/;
+const RECORD_ID_BIG = /record\[0\] \{"id":"big-1"/;
+const RECORD_ID_M = /record\[0\] \{"id":"m0"/;
+const RECORD_PREVIEW_TRUNCATED_TRUE = /record_preview_truncated=true/;
+const RECORDS_FROM_STREAM_NESTED_RECORD = /records from stream "nested": 2 record\(s\)/;
+const RECORD_ID_N = /record\[0\] \{"id":"n1"\}/;
+const RECORD_ID_N_2 = /record\[1\] \{"id":"n2"\}/;
 
 interface FetchCall {
   method: string;
@@ -41,6 +60,7 @@ function schemaProperty(properties: { [x: string]: unknown } | undefined, name: 
 
 function recordingFetch() {
   const calls: FetchCall[] = [];
+  // biome-ignore lint/suspicious/useAwait: async required to satisfy the Promise<Response>-returning fetch/getJson contract this fixture implements; a synchronous return type is not assignable to the caller's injected dependency.
   const fetch = async (urlInput: string | Request | URL, init: RequestInit = {}) => {
     const url = new URL(urlInput.toString());
     calls.push({ url: url.toString(), method: init.method ?? "GET" });
@@ -193,7 +213,7 @@ test("5.1 description points callers to /v1/schema as the capability source", as
     assert.ok(tool, `${name} tool must be registered`);
     assert.match(
       tool.description ?? "",
-      /\/v1\/schema/,
+      V_SCHEMA,
       `${name}.description must reference /v1/schema as the canonical capability source`
     );
   }
@@ -211,11 +231,11 @@ test("5.1 descriptions prefer connection_id and connector_key source identity", 
   for (const name of ["schema", "query_records", "aggregate", "search", "fetch"]) {
     const tool = byName.get(name);
     assert.ok(tool, `${name} tool must be registered`);
-    assert.match(tool.description ?? "", /connection_id/, `${name} must prefer connection_id for source selection`);
-    assert.match(tool.description ?? "", /connector_key/, `${name} must describe canonical connector_key metadata`);
+    assert.match(tool.description ?? "", CONNECTION_ID, `${name} must prefer connection_id for source selection`);
+    assert.match(tool.description ?? "", CONNECTOR_KEY, `${name} must describe canonical connector_key metadata`);
     assert.doesNotMatch(
       tool.description ?? "",
-      /https:\/\/registry\.pdpp\.org/,
+      HTTPS_REGISTRY_PDPP_ORG,
       `${name} must not advertise registry URLs as connector identity`
     );
   }
@@ -225,22 +245,22 @@ test("5.1 descriptions prefer connection_id and connector_key source identity", 
   const queryInput = queryRecordsTool.inputSchema.properties;
   assert.match(
     schemaProperty(queryInput, "changes_since").description as string,
-    /beginning/,
+    BEGINNING,
     "changes_since description must teach the cold-start sentinel"
   );
   assert.match(
     schemaProperty(queryInput, "changes_since").description as string,
-    /next_changes_since/,
+    NEXT_CHANGES_SINCE,
     "changes_since description must teach the opaque follow-up bookmark"
   );
   assert.match(
     schemaProperty(queryInput, "changes_since").description as string,
-    /Do not pass an ISO timestamp/,
+    DO_NOT_PASS_AN_ISO,
     "changes_since must explicitly warn that timestamp input is invalid"
   );
   assert.match(
     schemaProperty(queryInput, "connection_id").description as string,
-    /available_connections.*connector_key.*connection_id/s,
+    AVAILABLE_CONNECTIONS_CONNECTOR_KEY_CONNECTION,
     "connection_id schema guidance must point clients from typed errors to connector_key-tagged candidates"
   );
   assert.equal(
@@ -300,7 +320,7 @@ test("5.3 content[] is a bounded readable preview, not a JSON dump", async () =>
   // structuredContent, while still avoiding the legacy multi-line dump of the
   // entire canonical RS envelope.
   assert.ok(!text.includes("\n  "), "content[] must not include multi-line JSON indentation");
-  assert.match(text, /record\[0\]/, "summary must include a bounded record preview");
+  assert.match(text, RECORD, "summary must include a bounded record preview");
   assert.ok(text.length < 1800, `summary should stay bounded (got ${text.length} chars)`);
 
   await client.close();
@@ -350,7 +370,7 @@ test("5.4 MCP forwards canonical args verbatim — `sort` reaches RS rather than
   assert.equal(result.isError, undefined);
   const recordCalls = calls.filter((c) => c.url.includes("/v1/streams/orders/records"));
   assert.equal(recordCalls.length, 1, "MCP must forward sort to RS, not short-circuit");
-  const recordCall = recordCalls[0];
+  const [recordCall] = recordCalls;
   assert.ok(recordCall, "record fetch must be recorded");
   const url = new URL(recordCall.url);
   assert.equal(url.searchParams.get("sort"), "-emitted_at");
@@ -369,7 +389,7 @@ test("5.4 MCP forwards `count` verbatim without expecting stale RS rejection", a
   });
   assert.equal(result.isError, undefined);
   const recordCalls = calls.filter((c) => c.url.includes("/v1/streams/orders/records"));
-  const recordCall = recordCalls[0];
+  const [recordCall] = recordCalls;
   assert.ok(recordCall, "record fetch must be recorded");
   const url = new URL(recordCall.url);
   assert.equal(url.searchParams.get("count"), "estimated");
@@ -394,7 +414,7 @@ test("5.4 MCP forwards `view` verbatim — a query-time projection the RS applie
   assert.notEqual(result.isError, true);
   const recordCalls = calls.filter((c) => c.url.includes("/v1/streams/orders/records"));
   assert.equal(recordCalls.length, 1, "MCP must forward view to RS, not strip it");
-  const recordCall = recordCalls[0];
+  const [recordCall] = recordCalls;
   assert.ok(recordCall, "record fetch must be recorded");
   const url = new URL(recordCall.url);
   assert.equal(url.searchParams.get("view"), "basic");
@@ -478,7 +498,7 @@ test("5.4 search rejects an over-max `limit` at input validation rather than for
   const overMaxText = resultText(overMax);
   assert.match(
     overMaxText,
-    /validation|too_big|less than or equal to 100/i,
+    VALIDATION_TOO_BIG_LESS_THAN,
     "the error must be an input-validation rejection of the over-max limit"
   );
   // It must NOT have reached any search endpoint — the cap is enforced before forwarding.
@@ -509,13 +529,13 @@ test("search description teaches the 100 cap and safe paging so agents stay toke
   const tools = await client.listTools();
   const searchTool = tools.tools.find((t) => t.name === "search");
   assert.ok(searchTool, "search tool must be exposed");
-  assert.match(searchTool.description ?? "", /capped at 100/, "description must state the limit cap (100)");
+  assert.match(searchTool.description ?? "", CAPPED_AT, "description must state the limit cap (100)");
   assert.match(
     searchTool.description ?? "",
-    /cursor/,
+    CURSOR,
     "description must teach paging with the returned cursor instead of asking for a larger page"
   );
-  assert.doesNotMatch(searchTool.description ?? "", /\b200\b/, "description must not advertise the stale 200 cap");
+  assert.doesNotMatch(searchTool.description ?? "", B_B, "description must not advertise the stale 200 cap");
 
   await client.close();
   await server.close();
@@ -557,7 +577,7 @@ test("7.5 oversized records stay bounded yet still surface readable payload", as
   const structuredContent = result.structuredContent as { data: { data: Array<{ body?: string }> } };
   assert.equal(structuredContent.data.data[0]?.body?.length, 5000);
   assert.ok(text.length < 1800, `preview must stay bounded (got ${text.length})`);
-  assert.match(text, /record\[0\] \{"id":"big-1"/);
+  assert.match(text, RECORD_ID_BIG);
   assert.ok(text.includes("yyyy"), "truncated preview must still carry record payload");
   assert.ok(text.endsWith("…"), "oversized record must be truncated with an ellipsis");
 
@@ -576,8 +596,8 @@ test("7.5 multiple oversized records emit a bounded early-break marker", async (
   assert.equal(result.isError, undefined);
   const text = firstText(result);
   assert.ok(text.length < 1800, `preview must stay bounded (got ${text.length})`);
-  assert.match(text, /record\[0\] \{"id":"m0"/);
-  assert.match(text, /record_preview_truncated=true/);
+  assert.match(text, RECORD_ID_M);
+  assert.match(text, RECORD_PREVIEW_TRUNCATED_TRUE);
 
   await client.close();
   await server.close();
@@ -593,9 +613,9 @@ test("7.5 nested data.records envelope is previewed", async () => {
   });
   assert.equal(result.isError, undefined);
   const text = firstText(result);
-  assert.match(text, /records from stream "nested": 2 record\(s\)/);
-  assert.match(text, /record\[0\] \{"id":"n1"\}/);
-  assert.match(text, /record\[1\] \{"id":"n2"\}/);
+  assert.match(text, RECORDS_FROM_STREAM_NESTED_RECORD);
+  assert.match(text, RECORD_ID_N);
+  assert.match(text, RECORD_ID_N_2);
 
   await client.close();
   await server.close();

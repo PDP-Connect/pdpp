@@ -7,6 +7,31 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createPdppMcpServer } from "../src/server.ts";
 
+const HYPERLANE = /Hyperlane/;
+const EVIDENCE_EXCERPTS = /Evidence excerpts:/;
+const CCR = /<<ccr:/;
+const FIELD_PATH_TEXT = /field_path=text/;
+const READ_RECORD_FIELD = /read_record_field/;
+const OFFSET_CHARS = /offset_chars=37/;
+const CIN_SLACK_MESSAGES_M = /cin_slack\/messages:m1/;
+const PDPP_FIELD_WINDOW = /pdpp:\/\/field-window\//;
+const CIN_SLACK_MESSAGES_M_META = /cin_slack\/messages:m-meta/;
+const MESSAGE_BODY = /message body/i;
+const FETCH = /fetch/;
+const HYPERLANE_BRIDGE_VALIDATOR_STAYED_AS = /Hyperlane Bridge \+ Validator stayed as fallback support/;
+const COMPLETE_TRUE = /complete=true/;
+const COMPLETE_FALSE = /complete=false/;
+const NEXT_CURSOR = /next_cursor=1256/;
+const PREVIOUS_CURSOR = /previous_cursor=744/;
+const NEXT_OFFSET_CHARS = /next_offset_chars=1256/;
+const PREVIOUS_OFFSET_CHARS = /previous_offset_chars=744/;
+const READ_READ_RECORD_FIELD = /read=read_record_field/;
+const ID_CIN_SLACK_MESSAGES_M = /id=cin_slack\/messages:m1/;
+const PDPP_RECORD = /pdpp:\/\/record\//;
+const HYPERLANE_OR_LAYERZERO = /Hyperlane or LayerZero/;
+const LAYER_ZERO_FOR_SURE = /Layer Zero for sure/;
+const BLOB_A_ZA_Z = /blob_9[A-Za-z0-9+/=]{40}/;
+
 function jsonResponse(body: unknown, init: ResponseInit = {}) {
   return new Response(JSON.stringify(body), {
     status: 200,
@@ -79,6 +104,7 @@ function hostileSearchFixture() {
   const calls: FetchCall[] = [];
   const messageText = "LayerZero was the primary bridge path. Hyperlane Bridge + Validator stayed as fallback support.";
   const searchWindowText = `${"Transfer timing depends on signed contracts and validator handoff. ".repeat(3)}Hyperlane Bridge + Validator stayed as fallback support.`;
+  // biome-ignore lint/suspicious/useAwait: async required to satisfy the Promise<Response>-returning fetch/getJson contract this fixture implements; a synchronous return type is not assignable to the caller's injected dependency.
   const fetch = async (urlInput: string | Request | URL, init: RequestInit = {}) => {
     const url = new URL(urlInput.toString());
     calls.push({ method: init.method ?? "GET", url: url.toString() });
@@ -252,6 +278,7 @@ function hostileSearchFixture() {
 
 function hostileContinuationFixture() {
   const calls: FetchCall[] = [];
+  // biome-ignore lint/suspicious/useAwait: async required to satisfy the Promise<Response>-returning fetch/getJson contract this fixture implements; a synchronous return type is not assignable to the caller's injected dependency.
   const fetch = async (urlInput: string | Request | URL, init: RequestInit = {}) => {
     const url = new URL(urlInput.toString());
     calls.push({ method: init.method ?? "GET", url: url.toString() });
@@ -309,25 +336,25 @@ test("hostile content-only search exposes proven matched text and tool continuat
   await Promise.allSettled([client.close(), server.close()]);
 
   assert.equal(result.isError, undefined);
-  assert.match(visible, /Hyperlane/);
-  assert.match(visible, /Evidence excerpts:/);
+  assert.match(visible, HYPERLANE);
+  assert.match(visible, EVIDENCE_EXCERPTS);
   assert.ok(
     visible.indexOf("Evidence excerpts:") < visible.indexOf("Top results:"),
     "evidence must precede generic result wrappers"
   );
-  assert.doesNotMatch(visible, /<<ccr:/);
-  assert.match(visible, /field_path=text/);
-  assert.match(visible, /read_record_field/);
-  assert.match(visible, /offset_chars=37/);
-  assert.match(visible, /cin_slack\/messages:m1/);
+  assert.doesNotMatch(visible, CCR);
+  assert.match(visible, FIELD_PATH_TEXT);
+  assert.match(visible, READ_RECORD_FIELD);
+  assert.match(visible, OFFSET_CHARS);
+  assert.match(visible, CIN_SLACK_MESSAGES_M);
   const structuredContent = searchStructuredContent(result);
-  assert.match(structuredContent.results?.[0]?.evidence_excerpts?.[0]?.preview_text ?? "", /Hyperlane/);
+  assert.match(structuredContent.results?.[0]?.evidence_excerpts?.[0]?.preview_text ?? "", HYPERLANE);
   const ladderRecord = structuredContent.content_ladder?.records?.[0];
   assert.ok(ladderRecord, "content_ladder must include at least one record");
-  assert.match(ladderRecord.evidence_excerpts?.[0]?.preview_text ?? "", /Hyperlane/);
+  assert.match(ladderRecord.evidence_excerpts?.[0]?.preview_text ?? "", HYPERLANE);
   const textFieldWindow = ladderRecord.field_windows?.find((field) => field.field_path === "text");
   assert.ok(textFieldWindow, "ladder record must include a text field window");
-  assert.match(textFieldWindow.preview_text ?? "", /Hyperlane/);
+  assert.match(textFieldWindow.preview_text ?? "", HYPERLANE);
   const readArgs = textFieldWindow.read?.args;
   assert.ok(readArgs, "text field window must carry read args");
   assert.equal(readArgs.id, "cin_slack/messages:m1");
@@ -341,8 +368,8 @@ test("hostile content-only search exposes proven matched text and tool continuat
     false,
     "search evidence must not depend on hosted-client resource/file materialization"
   );
-  assert.doesNotMatch(JSON.stringify(structuredContent.results), /pdpp:\/\/field-window\//);
-  assert.doesNotMatch(JSON.stringify(structuredContent.content_ladder), /pdpp:\/\/field-window\//);
+  assert.doesNotMatch(JSON.stringify(structuredContent.results), PDPP_FIELD_WINDOW);
+  assert.doesNotMatch(JSON.stringify(structuredContent.content_ladder), PDPP_FIELD_WINDOW);
 });
 
 test("metadata-only search hit does not invent a body match", async () => {
@@ -362,10 +389,10 @@ test("metadata-only search hit does not invent a body match", async () => {
   await Promise.allSettled([client.close(), server.close()]);
 
   assert.equal(result.isError, undefined);
-  assert.match(visible, /cin_slack\/messages:m-meta/);
-  assert.doesNotMatch(visible, /field_path=text/);
-  assert.doesNotMatch(visible, /message body/i);
-  assert.match(visible, /fetch/);
+  assert.match(visible, CIN_SLACK_MESSAGES_M_META);
+  assert.doesNotMatch(visible, FIELD_PATH_TEXT);
+  assert.doesNotMatch(visible, MESSAGE_BODY);
+  assert.match(visible, FETCH);
   const structuredContent = searchStructuredContent(result);
   assert.equal(structuredContent.results?.[0]?.evidence_excerpts, undefined);
   const ladderRecord = structuredContent.content_ladder?.records?.[0];
@@ -394,8 +421,8 @@ test("read_record_field is an inline small-text fallback, not a resource-only pa
   await Promise.allSettled([client.close(), server.close()]);
 
   assert.equal(result.isError, undefined);
-  assert.match(visible, /Hyperlane Bridge \+ Validator stayed as fallback support/);
-  assert.match(visible, /complete=true/);
+  assert.match(visible, HYPERLANE_BRIDGE_VALIDATOR_STAYED_AS);
+  assert.match(visible, COMPLETE_TRUE);
   assert.equal(
     contentParts(result).some((part) => part.type === "text" && part.text?.includes("Hyperlane Bridge + Validator")),
     true,
@@ -427,11 +454,11 @@ test("read_record_field incomplete windows expose exact visible continuation cal
   await Promise.allSettled([client.close(), server.close()]);
 
   assert.equal(result.isError, undefined);
-  assert.match(visible, /complete=false/);
-  assert.match(visible, /next_cursor=1256/);
-  assert.match(visible, /previous_cursor=744/);
-  assert.match(visible, /next_offset_chars=1256/);
-  assert.match(visible, /previous_offset_chars=744/);
+  assert.match(visible, COMPLETE_FALSE);
+  assert.match(visible, NEXT_CURSOR);
+  assert.match(visible, PREVIOUS_CURSOR);
+  assert.match(visible, NEXT_OFFSET_CHARS);
+  assert.match(visible, PREVIOUS_OFFSET_CHARS);
   assert.equal(
     visible.includes(
       'next read_record_field args={"id":"cin_slack/messages:m-large","field_path":"text","offset_chars":1256,"limit_chars":256}'
@@ -473,7 +500,7 @@ test("read_record_field accepts visible record_uri handles", async () => {
   await Promise.allSettled([client.close(), server.close()]);
 
   assert.equal(result.isError, undefined);
-  assert.match(visible, /Hyperlane Bridge \+ Validator stayed as fallback support/);
+  assert.match(visible, HYPERLANE_BRIDGE_VALIDATOR_STAYED_AS);
   assert.equal(
     calls.some(
       (call) =>
@@ -494,6 +521,7 @@ test("read_record_field accepts visible record_uri handles", async () => {
 function realEnvelopeSearchFixture() {
   const calls: FetchCall[] = [];
   const messageText = "Are we going to bridging using Hyperlane or LayerZero? Layer Zero for sure.";
+  // biome-ignore lint/suspicious/useAwait: async required to satisfy the Promise<Response>-returning fetch/getJson contract this fixture implements; a synchronous return type is not assignable to the caller's injected dependency.
   const fetch = async (urlInput: string | Request | URL, init: RequestInit = {}) => {
     const url = new URL(urlInput.toString());
     calls.push({ method: init.method ?? "GET", url: url.toString() });
@@ -563,10 +591,10 @@ test("REST evidence_excerpts read descriptors synthesize callable read args", as
   await Promise.allSettled([client.close(), server.close()]);
 
   assert.equal(search.isError, undefined);
-  assert.match(visible, /Evidence excerpts:/);
-  assert.match(visible, /Hyperlane/);
-  assert.match(visible, /read=read_record_field/);
-  assert.match(visible, /id=cin_slack\/messages:m1/);
+  assert.match(visible, EVIDENCE_EXCERPTS);
+  assert.match(visible, HYPERLANE);
+  assert.match(visible, READ_READ_RECORD_FIELD);
+  assert.match(visible, ID_CIN_SLACK_MESSAGES_M);
 });
 
 test("search-visible record_uri is normalized to a self-contained callable tool id", async () => {
@@ -577,8 +605,8 @@ test("search-visible record_uri is normalized to a self-contained callable tool 
   const visible = textContent(search);
 
   assert.equal(search.isError, undefined);
-  assert.match(visible, /Evidence excerpts:/);
-  assert.match(visible, /Hyperlane Bridge \+ Validator stayed as fallback support/);
+  assert.match(visible, EVIDENCE_EXCERPTS);
+  assert.match(visible, HYPERLANE_BRIDGE_VALIDATOR_STAYED_AS);
   assert.equal(
     visible.includes("id=cin_slack/messages:m1"),
     true,
@@ -586,7 +614,7 @@ test("search-visible record_uri is normalized to a self-contained callable tool 
   );
   assert.doesNotMatch(
     visible,
-    /pdpp:\/\/record\//,
+    PDPP_RECORD,
     "ordinary search text must not expose a raw resource URI as the primary handle"
   );
   const searchStructured = searchStructuredContent(search);
@@ -595,9 +623,9 @@ test("search-visible record_uri is normalized to a self-contained callable tool 
     searchStructured.results?.[0]?.url,
     "https://provider.test/v1/streams/messages/records/m1?connection_id=cin_slack"
   );
-  assert.doesNotMatch(JSON.stringify(searchStructured.results), /pdpp:\/\/record\//);
-  assert.doesNotMatch(JSON.stringify(searchStructured.content_ladder), /pdpp:\/\/record\//);
-  assert.match(visible, /read=read_record_field/);
+  assert.doesNotMatch(JSON.stringify(searchStructured.results), PDPP_RECORD);
+  assert.doesNotMatch(JSON.stringify(searchStructured.content_ladder), PDPP_RECORD);
+  assert.match(visible, READ_READ_RECORD_FIELD);
 
   const read = await client.callTool({
     name: "read_record_field",
@@ -612,7 +640,7 @@ test("search-visible record_uri is normalized to a self-contained callable tool 
   await Promise.allSettled([client.close(), server.close()]);
 
   assert.equal(read.isError, undefined);
-  assert.match(textContent(read), /Hyperlane Bridge \+ Validator stayed as fallback support/);
+  assert.match(textContent(read), HYPERLANE_BRIDGE_VALIDATOR_STAYED_AS);
   assert.equal(
     calls.some(
       (call) =>
@@ -634,12 +662,12 @@ test("content-only client sees matched text from the real RS evidence_excerpts e
 
   // A content-only client (reads only content[]) must see the proven matched
   // text and a tool continuation — not just metadata. This is the live B1 path.
-  assert.match(visible, /Evidence excerpts:/);
-  assert.match(visible, /Hyperlane or LayerZero/);
-  assert.match(visible, /read=read_record_field/);
+  assert.match(visible, EVIDENCE_EXCERPTS);
+  assert.match(visible, HYPERLANE_OR_LAYERZERO);
+  assert.match(visible, READ_READ_RECORD_FIELD);
   // The visible excerpt carries the self-contained fetch id derived from the
   // source record key, not a wrapper-only search hit id.
-  assert.match(visible, /id=cin_slack\/messages:m1/);
+  assert.match(visible, ID_CIN_SLACK_MESSAGES_M);
 });
 
 test("resource-less client reaches bounded evidence through tool args alone", async () => {
@@ -657,7 +685,7 @@ test("resource-less client reaches bounded evidence through tool args alone", as
   const search = await client.callTool({ name: "search", arguments: { q: "Hyperlane" } });
   const searchVisible = textContent(search);
   // The visible continuation names read_record_field with the self-contained id.
-  assert.match(searchVisible, /read=read_record_field/);
+  assert.match(searchVisible, READ_READ_RECORD_FIELD);
 
   // The resource-less client follows it with a plain tool call (no resources/read).
   const read = await client.callTool({
@@ -668,7 +696,7 @@ test("resource-less client reaches bounded evidence through tool args alone", as
   await Promise.allSettled([client.close(), server.close()]);
 
   assert.equal(read.isError, undefined);
-  assert.match(readVisible, /Layer Zero for sure/);
+  assert.match(readVisible, LAYER_ZERO_FOR_SURE);
   // No resources/read was needed; only model-callable tools were used.
   assert.equal(
     calls.some((call) => call.url.includes("/field-window")),
@@ -693,7 +721,7 @@ test("file-materializing host: small text evidence stays inline, never a resourc
   assert.equal(read.isError, undefined);
   const inlineText = contentParts(read).find((part) => part.type === "text");
   assert.ok(inlineText, "small field evidence must include inline text content");
-  assert.match(inlineText.text ?? "", /Layer Zero for sure/);
+  assert.match(inlineText.text ?? "", LAYER_ZERO_FOR_SURE);
   assert.equal(
     contentParts(read).some((part) => part.type === "resource_link" || part.type === "resource"),
     false,
@@ -721,6 +749,7 @@ function largeDataRecordFixture() {
       profile: { name: "Ada", tags: Array.from({ length: 60 }, (_, i) => `tag-${i}`) },
     },
   };
+  // biome-ignore lint/suspicious/useAwait: async required to satisfy the Promise<Response>-returning fetch/getJson contract this fixture implements; a synchronous return type is not assignable to the caller's injected dependency.
   const fetch = async (urlInput: string | Request | URL, init: RequestInit = {}) => {
     const url = new URL(urlInput.toString());
     calls.push({ method: init.method ?? "GET", url: url.toString() });
@@ -770,7 +799,7 @@ test("large/binary/JSON fields escalate deliberately: bounded previews, no accid
   assert.ok(binary, "blob field must be surfaced as binary metadata");
   assert.equal(binary.text_like, false);
   assert.equal(binary.preview_status, "binary-only");
-  assert.doesNotMatch(visible, /blob_9[A-Za-z0-9+/=]{40}/); // no raw blob payload dumped
+  assert.doesNotMatch(visible, BLOB_A_ZA_Z); // no raw blob payload dumped
 
   // JSON object field: bounded preview + deliberate fetch projection continuation.
   const json = ladder.json_fields?.find((f) => f.field_path === "profile");

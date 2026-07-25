@@ -7,6 +7,8 @@ import "tsx";
 
 import { handleStreamableHttpRequest } from "../src/server.ts";
 
+const REQUIRES_STREAM = /requires `stream`/;
+
 interface CompactViewModule {
   projectSchemaCompactView: (data: unknown, opts: unknown) => unknown;
   projectSchemaStreamScope: (data: unknown, opts: unknown) => unknown;
@@ -59,7 +61,7 @@ function makeLargeSchemaFetch({ connectorCount = 4, streamsPerConnector = 6, fie
       connector_key: connectorKey,
       source: { kind: "connector", id: connectorKey, display_name: `Connector ${c}` },
       stream_count: streamsPerConnector,
-      streams: Array.from({ length: streamsPerConnector }, (_, s) => ({
+      streams: Array.from({ length: streamsPerConnector }, (_streamHole, s) => ({
         object: "stream_metadata",
         name: `stream_${c}_${s}`,
         connection_id: `conn_${c}`,
@@ -67,7 +69,7 @@ function makeLargeSchemaFetch({ connectorCount = 4, streamsPerConnector = 6, fie
         display_name: `Connection ${c}`,
         granted_connections: [{ connection_id: `conn_${c}`, display_name: `Connection ${c}` }],
         field_capabilities: Object.fromEntries(
-          Array.from({ length: fieldsPerStream }, (_, f) => [
+          Array.from({ length: fieldsPerStream }, (_fieldHole, f) => [
             `field_${f}`,
             {
               type: "string",
@@ -75,7 +77,7 @@ function makeLargeSchemaFetch({ connectorCount = 4, streamsPerConnector = 6, fie
               schema: {
                 type: "string",
                 description: "x".repeat(FIELD_SCHEMA_BLOB_PADDING),
-                examples: Array.from({ length: 4 }, (_, e) => `example-${f}-${e}`.repeat(8)),
+                examples: Array.from({ length: 4 }, (_exampleHole, e) => `example-${f}-${e}`.repeat(8)),
               },
               exact_filter: { declared: true, usable: true },
               range_filter: { declared: false, usable: false },
@@ -102,6 +104,7 @@ function makeLargeSchemaFetch({ connectorCount = 4, streamsPerConnector = 6, fie
     },
   };
 
+  // biome-ignore lint/suspicious/useAwait: async required to satisfy the Promise<Response>-returning fetch/getJson contract this fixture implements; a synchronous return type is not assignable to the caller's injected dependency.
   const fetch = async (urlInput: string | Request | URL, init: RequestInit = {}) => {
     const url = new URL(urlInput.toString());
     const auth = (init.headers as Record<string, string> | undefined)?.Authorization;
@@ -317,7 +320,7 @@ test("hosted Streamable HTTP forwards global schema detail=full to canonical RS 
   assert.equal(result.isError, true, "hosted global full schema call must be an error result");
   assert.equal(result.structuredContent?.error?.code, "invalid_request");
   assert.equal(result.structuredContent?.error?.param, "detail");
-  assert.match(result.content?.[0]?.text ?? "", /requires `stream`/);
+  assert.match(result.content?.[0]?.text ?? "", REQUIRES_STREAM);
 });
 
 test("hosted Streamable HTTP per-stream schema scopes the document over the wire", async () => {
@@ -330,7 +333,7 @@ test("hosted Streamable HTTP per-stream schema scopes the document over the wire
   assert.equal(connectors.length, 1, "hosted per-stream scope must keep only the contributing connector");
   const streams = connectors[0]?.streams ?? [];
   assert.equal(streams.length, 1, "hosted per-stream scope must keep only the requested stream");
-  const stream = streams[0];
+  const [stream] = streams;
   assert.ok(stream, "per-stream scope must include the requested stream");
   assert.equal(stream.name, "stream_1_2");
   assert.equal(

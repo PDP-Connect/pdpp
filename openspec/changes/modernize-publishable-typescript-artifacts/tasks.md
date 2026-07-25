@@ -18,14 +18,20 @@
       prove its package contract and its installed CLI-shim interaction.
 - [x] 2.4 Emit and prove MCP: exports, bin, installed help, stdio smoke, and
       resolution of candidate CLI/read-core rather than registry artifacts.
-      Evidence: `packages/mcp-server/scripts/package-contract.mjs` verifies
+      Evidence: `packages/mcp-server/scripts/package-contract.ts` verifies
       emitted-only declared targets and packed contents;
-      `packages/mcp-server/scripts/pack-install-run.mjs` requires a clean
+      `packages/mcp-server/scripts/pack-install-run.ts` requires a clean
       tracked/untracked tree, rebuilds CLI/read-core candidates from the current
       reviewed head, binds each installed candidate to base/head/source-closure,
-      source-tarball, and release-candidate tarball hashes before offline install,
-      hashes each installed tree against its tarball, imports each declared export,
-      executes the bin, and performs `initialize` plus `tools/call(schema)`.
+      source-tarball, and release-candidate tarball hashes before a two-step
+      install (offline for the zero-external-dependency CLI/read-core
+      candidates, online for MCP's own real external registry dependencies,
+      with `pnpm-workspace.yaml` overrides still pinning the local candidates
+      regardless of network mode), hashes each installed tree against its
+      tarball, imports each declared export, executes the bin, and performs
+      `initialize` plus `tools/call(schema)`. All five build/artifact scripts
+      (`build.ts`, `package-contract.ts`, `artifact-receipt.ts`,
+      `installed-stdio-probe.ts`, `pack-install-run.ts`) are TypeScript.
       The shared matrix still owns its cross-package runtime/version receipts.
 
 ## 3. Together-install and runtime matrix
@@ -60,6 +66,13 @@
 - [ ] 4.3 After a production closure passes, migrate its tests by runner boundary
       under dual-extension discovery and prove the executed set is unchanged
       except for recorded renames.
+      `@pdpp/mcp-server` complete (2026-07-25): all 23 `test/*.test.js` files
+      and `test/smoke-stdio.mjs` renamed to `.ts` (`git mv`, history
+      preserved); `package.json`'s `test`/`test:read-surface` glob updated
+      from `"test/*.test.js"` to `"test/*.test.ts"` and `test/smoke-stdio.mjs`
+      to `test/smoke-stdio.ts`; executed suite count unchanged at 189/189
+      passing tests before and after. Other packages in this task remain
+      pending.
 
 ## Acceptance checks
 

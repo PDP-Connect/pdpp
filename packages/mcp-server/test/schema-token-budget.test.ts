@@ -10,6 +10,33 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import { createPdppMcpServer } from "../src/server.ts";
 
+const STREAM_INDEX_CONNECTOR_KEY_CONNECTOR = /stream_index connector_key="connector-3"/;
+const STREAM_COUNT_STREAMS_STREAM_STREAM = /stream_count=20 streams=stream_3_0\|stream_3_1/;
+const STREAM = /stream_3_19/;
+const MORE_STREAMS = /more_streams=30/;
+const T_STRING = /t=string/;
+const ROLE_PRIMARY_TITLE = /role=primary-title/;
+const STREAM_NAME_MESSAGES_CONNECTOR_KEY = /stream name="messages" connector_key="connector-0".*fields=/s;
+const STREAM_NAME_MESSAGES_CONNECTOR_KEY_2 = /stream name="messages" connector_key="connector-1".*fields=/s;
+const FIELD_T_STRING_ROLE_PRIMARY = /field_0\[t=string,role=primary-title,eq,lex,sem,a=count_distinct\]/;
+const AGGREGATIONS_COUNT_DISTINCT_FIELD_FIELD = /aggregations=count_distinct=field_0\|field_1\|field_2\|field_3/;
+const CONNECTION_ID = /connection_id/;
+const REQUIRES_STREAM = /requires `stream`/;
+const COMPACT = /compact/i;
+const SCHEMA_S_S_SCHEMA_STREAM =
+  /schema\s*->\s*schema\(stream\)\s*->\s*schema\(stream,\s*connection_id\)\s*->\s*query_records/;
+const DETAIL_FULL = /detail: "full"/;
+const ALLOWED_ONLY_WITH_STREAM = /allowed only with `stream`/;
+const AT_MOST_RECORDS = /at most 25 records/;
+const CAPPED_AT = /capped at 100/;
+const LIMIT_CLAMPED = /limit_clamped/;
+const PREVIEWS_UP_TO_THE_FIRST = /previews up to the first 5 records/;
+const STRUCTUREDCONTENT_DATA = /structuredContent\.data/;
+const IF_THE_PROJECTION_EXCLUDES_EVERY = /if the projection excludes every text-like field/i;
+const COMPACT_JSON_FOR_THE_PROJECTED = /compact JSON for the projected record/i;
+const VALIDATION_TOO_BIG_LESS_THAN = /validation|too_big|less than or equal to 100/i;
+const INVALID_SCHEMA_DETAIL = /Invalid schema detail/;
+
 interface CompactViewModule {
   projectSchemaCompactView: (data: unknown, opts?: unknown) => unknown;
   projectSchemaStreamScope: (data: unknown, opts?: unknown) => unknown;
@@ -145,7 +172,7 @@ function makeLargeSchemaFetch({ connectorCount = 4, streamsPerConnector = 6, fie
       connector_key: connectorKey,
       source: { kind: "connector", id: connectorKey, display_name: `Connector ${c}` },
       stream_count: streamsPerConnector,
-      streams: Array.from({ length: streamsPerConnector }, (_, s) => ({
+      streams: Array.from({ length: streamsPerConnector }, (_streamHole, s) => ({
         object: "stream_metadata",
         name: `stream_${c}_${s}`,
         connection_id: `conn_${c}`,
@@ -153,7 +180,7 @@ function makeLargeSchemaFetch({ connectorCount = 4, streamsPerConnector = 6, fie
         display_name: `Connection ${c}`,
         granted_connections: [{ connection_id: `conn_${c}`, display_name: `Connection ${c}` }],
         field_capabilities: Object.fromEntries(
-          Array.from({ length: fieldsPerStream }, (_, f) => [
+          Array.from({ length: fieldsPerStream }, (_fieldHole, f) => [
             `field_${f}`,
             {
               type: "string",
@@ -165,7 +192,7 @@ function makeLargeSchemaFetch({ connectorCount = 4, streamsPerConnector = 6, fie
               schema: {
                 type: "string",
                 description: "x".repeat(FIELD_SCHEMA_BLOB_PADDING),
-                examples: Array.from({ length: 4 }, (_, e) => `example-${f}-${e}`.repeat(8)),
+                examples: Array.from({ length: 4 }, (_exampleHole, e) => `example-${f}-${e}`.repeat(8)),
               },
               exact_filter: { declared: true, usable: true },
               range_filter: { declared: false, usable: false },
@@ -192,6 +219,7 @@ function makeLargeSchemaFetch({ connectorCount = 4, streamsPerConnector = 6, fie
     },
   };
 
+  // biome-ignore lint/suspicious/useAwait: async required to satisfy the Promise<Response>-returning fetch/getJson contract this fixture implements; a synchronous return type is not assignable to the caller's injected dependency.
   const fetch = async (urlInput: string | Request | URL) => {
     const url = new URL(urlInput.toString());
     if (url.pathname === "/v1/schema") {
@@ -279,7 +307,7 @@ function byteLength(value: unknown) {
   return Buffer.byteLength(JSON.stringify(value), "utf8");
 }
 
-test("the fixture is large enough to model the ~2 MB verbatim-schema problem", async () => {
+test("the fixture is large enough to model the ~2 MB verbatim-schema problem", () => {
   const { schemaBody } = makeLargeSchemaFetch();
   const verbatimBytes = byteLength(schemaBody);
   // Sanity: the verbatim body must be large, so the budget assertions below
@@ -323,9 +351,9 @@ test("default schema is an index: drops field capability detail but keeps connec
 
   const result = await client.callTool({ name: "schema", arguments: {} });
   const structuredContent = schemaStructuredContent(result);
-  const connector = structuredContent.data.connectors[0];
+  const [connector] = structuredContent.data.connectors;
   assert.ok(connector, "schema must include at least one connector");
-  const stream = connector.streams[0];
+  const [stream] = connector.streams;
   assert.ok(stream, "connector must include at least one stream");
 
   assert.equal(
@@ -370,6 +398,7 @@ test("MCP compact schema drops duplicate top-level streams when connectors are p
   schemaBodyWithStreams.data.streams = schemaBodyWithStreams.data.connectors.flatMap((connector) =>
     connector.streams.map((stream) => ({ ...stream, source: { connector_key: connector.connector_key } }))
   );
+  // biome-ignore lint/suspicious/useAwait: async required to satisfy the Promise<Response>-returning fetch contract this inline fixture implements; a synchronous return type is not assignable to typeof fetch.
   const { client, server } = await connectClient(async (urlInput: string | Request | URL) => {
     const url = new URL(urlInput.toString());
     if (url.pathname === "/v1/schema") {
@@ -410,10 +439,10 @@ test("global schema text indexes every stream name even when detailed rows are c
   const result = await client.callTool({ name: "schema", arguments: {} });
   const text = firstText(result);
 
-  assert.match(text, /stream_index connector_key="connector-3"/);
-  assert.match(text, /stream_count=20 streams=stream_3_0\|stream_3_1/);
-  assert.match(text, /stream_3_19/, "a stream hidden beyond the detailed row cap must still be model-visible");
-  assert.match(text, /more_streams=30/, "detailed stream rows remain bounded");
+  assert.match(text, STREAM_INDEX_CONNECTOR_KEY_CONNECTOR);
+  assert.match(text, STREAM_COUNT_STREAMS_STREAM_STREAM);
+  assert.match(text, STREAM, "a stream hidden beyond the detailed row cap must still be model-visible");
+  assert.match(text, MORE_STREAMS, "detailed stream rows remain bounded");
   assert.ok(
     Buffer.byteLength(text, "utf8") < 18_000,
     `indexed global schema text should stay bounded (got ${Buffer.byteLength(text, "utf8")} bytes)`
@@ -426,6 +455,7 @@ test("global schema text indexes every stream name even when detailed rows are c
 test("default schema requests the REST compact view when the RS supports it", async () => {
   const { schemaBody } = makeLargeSchemaFetch();
   const requested: string[] = [];
+  // biome-ignore lint/suspicious/useAwait: async required to satisfy the Promise<Response>-returning fetch/getJson contract this fixture implements; a synchronous return type is not assignable to the caller's injected dependency.
   const fetch = async (urlInput: string | Request | URL) => {
     const url = new URL(urlInput.toString());
     requested.push(`${url.pathname}${url.search}`);
@@ -506,18 +536,18 @@ test("per-stream schema is usable and compact (the discovery middle step)", asyn
 
   // Exactly one connector with exactly the one requested stream survives.
   const structuredContent = schemaStructuredContent(result);
-  const connectors = structuredContent.data.connectors;
+  const { connectors } = structuredContent.data;
   assert.equal(connectors.length, 1, "per-stream scope must keep only the contributing connector");
-  const connector = connectors[0];
+  const [connector] = connectors;
   assert.ok(connector, "schema must include at least one connector");
   assert.equal(connector.streams.length, 1, "per-stream scope must keep only the requested stream");
-  const stream = connector.streams[0];
+  const [stream] = connector.streams;
   assert.ok(stream, "connector must include at least one stream");
   assert.equal(stream.name, "stream_1_2");
   assert.equal(structuredContent.data.stream_count, 1);
   // Still usable: capability flags survive on the scoped stream.
-  assert.match(stream.field_capabilities?.field_0 as unknown as string, /t=string/);
-  assert.match(stream.field_capabilities?.field_0 as unknown as string, /role=primary-title/);
+  assert.match(stream.field_capabilities?.field_0 as unknown as string, T_STRING);
+  assert.match(stream.field_capabilities?.field_0 as unknown as string, ROLE_PRIMARY_TITLE);
 
   await client.close();
   await server.close();
@@ -526,7 +556,7 @@ test("per-stream schema is usable and compact (the discovery middle step)", asyn
 test("stream-scoped schema text includes field detail across connectors sharing one stream name", async () => {
   const { fetch, schemaBody } = makeLargeSchemaFetch({ connectorCount: 2, streamsPerConnector: 1, fieldsPerStream: 4 });
   for (const connector of schemaBody.data.connectors) {
-    const firstStream = connector.streams[0];
+    const [firstStream] = connector.streams;
     assert.ok(firstStream, "fixture connector must include at least one stream");
     firstStream.name = "messages";
   }
@@ -535,10 +565,10 @@ test("stream-scoped schema text includes field detail across connectors sharing 
   const result = await client.callTool({ name: "schema", arguments: { stream: "messages" } });
   const text = firstText(result);
 
-  assert.match(text, /stream name="messages" connector_key="connector-0".*fields=/s);
-  assert.match(text, /stream name="messages" connector_key="connector-1".*fields=/s);
-  assert.match(text, /field_0\[t=string,role=primary-title,eq,lex,sem,a=count_distinct\]/);
-  assert.match(text, /aggregations=count_distinct=field_0\|field_1\|field_2\|field_3/);
+  assert.match(text, STREAM_NAME_MESSAGES_CONNECTOR_KEY);
+  assert.match(text, STREAM_NAME_MESSAGES_CONNECTOR_KEY_2);
+  assert.match(text, FIELD_T_STRING_ROLE_PRIMARY);
+  assert.match(text, AGGREGATIONS_COUNT_DISTINCT_FIELD_FIELD);
 
   await client.close();
   await server.close();
@@ -547,7 +577,7 @@ test("stream-scoped schema text includes field detail across connectors sharing 
 test("shared-stream detail=full requires connection_id instead of returning a multi-source schema dump", async () => {
   const { fetch, schemaBody } = makeLargeSchemaFetch({ connectorCount: 2, streamsPerConnector: 1, fieldsPerStream: 4 });
   for (const connector of schemaBody.data.connectors) {
-    const firstStream = connector.streams[0];
+    const [firstStream] = connector.streams;
     assert.ok(firstStream, "fixture connector must include at least one stream");
     firstStream.name = "messages";
   }
@@ -563,7 +593,7 @@ test("shared-stream detail=full requires connection_id instead of returning a mu
   assert.equal(errorContent.error?.code, "ambiguous_schema_detail");
   assert.equal(errorContent.error?.retry_with, "connection_id");
   assert.equal(errorContent.error?.available_connections?.length, 2);
-  assert.match(firstText(result), /connection_id/);
+  assert.match(firstText(result), CONNECTION_ID);
 
   await client.close();
   await server.close();
@@ -572,13 +602,16 @@ test("shared-stream detail=full requires connection_id instead of returning a mu
 test("shared-stream detail=full with connection_id returns one source only", async () => {
   const { fetch, schemaBody } = makeLargeSchemaFetch({ connectorCount: 2, streamsPerConnector: 1, fieldsPerStream: 4 });
   for (const connector of schemaBody.data.connectors) {
-    const firstStream = connector.streams[0];
+    const [firstStream] = connector.streams;
     assert.ok(firstStream, "fixture connector must include at least one stream");
     firstStream.name = "messages";
   }
   const schemaBodyWithStreams = schemaBody as unknown as { data: { connectors: SchemaConnector[]; streams?: unknown } };
-  schemaBodyWithStreams.data.streams = schemaBodyWithStreams.data.connectors.flatMap((connector) =>
-    connector.streams.map((stream) => ({ ...stream, source: { connector_key: connector.connector_key } }))
+  schemaBodyWithStreams.data.streams = schemaBodyWithStreams.data.connectors.flatMap((sourceConnector) =>
+    sourceConnector.streams.map((sourceStream) => ({
+      ...sourceStream,
+      source: { connector_key: sourceConnector.connector_key },
+    }))
   );
   const { client, server } = await connectClient(fetch);
 
@@ -590,20 +623,21 @@ test("shared-stream detail=full with connection_id returns one source only", asy
   assert.equal(result.isError, undefined);
   const structuredContent = schemaStructuredContent(result);
   assert.equal(structuredContent.data.data, undefined, "detail=full must not carry a second nested schema envelope");
-  const connectors = structuredContent.data.connectors;
+  const { connectors } = structuredContent.data;
   assert.equal(connectors.length, 1);
   assert.equal(
     structuredContent.data.streams,
     undefined,
     "detail=full must not duplicate the selected stream in both data.streams and data.connectors[].streams"
   );
-  const connector = connectors[0];
+  const [connector] = connectors;
   assert.ok(connector, "schema must include the requested connector");
   assert.equal(connector.connector_key, "connector-1");
   assert.equal(connector.streams.length, 1);
-  const stream = connector.streams[0];
+  const [stream] = connector.streams;
   assert.ok(stream, "connector must include the requested stream");
   assert.equal(stream.name, "messages");
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: tsc disagrees — field_capabilities is genuinely optional here until this assert.ok call itself narrows it for subsequent lines; removing the chain fails tsc (TS18048).
   assert.ok(stream.field_capabilities?.field_0?.schema, "detail=full keeps raw JSON Schema");
 
   await client.close();
@@ -620,10 +654,11 @@ test("per-stream + detail=full returns the exhaustive single-stream JSON Schema"
   });
   assert.equal(result.isError, undefined);
 
-  const connector = schemaStructuredContent(result).data.connectors[0];
+  const [connector] = schemaStructuredContent(result).data.connectors;
   assert.ok(connector, "schema must include the requested connector");
-  const stream = connector.streams[0];
+  const [stream] = connector.streams;
   assert.ok(stream, "connector must include the requested stream");
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: tsc disagrees — field_capabilities is genuinely optional here until this assert.ok call itself narrows it for subsequent lines; removing the chain fails tsc (TS18048).
   assert.ok(stream.field_capabilities?.field_0?.schema, "detail=full must retain per-field JSON Schema");
   assert.equal(
     stream.field_capabilities.field_0.schema.description?.length,
@@ -644,7 +679,7 @@ test("global detail=full forwards to canonical RS rejection instead of MCP-local
   const errorContent = schemaErrorContent(result);
   assert.equal(errorContent.error?.code, "invalid_request");
   assert.equal(errorContent.error?.param, "detail");
-  assert.match(firstText(result), /requires `stream`/);
+  assert.match(firstText(result), REQUIRES_STREAM);
 
   await client.close();
   await server.close();
@@ -658,16 +693,16 @@ test("schema tool description teaches the compact discovery path", async () => {
   const schemaTool = tools.tools.find((t) => t.name === "schema");
   assert.ok(schemaTool, "schema tool must be exposed");
 
-  assert.match(schemaTool.description ?? "", /compact/i, "description must mention the compact default");
+  assert.match(schemaTool.description ?? "", COMPACT, "description must mention the compact default");
   assert.match(
     schemaTool.description ?? "",
-    /schema\s*->\s*schema\(stream\)\s*->\s*schema\(stream,\s*connection_id\)\s*->\s*query_records/,
+    SCHEMA_S_S_SCHEMA_STREAM,
     "description must teach the scoped schema discovery path"
   );
-  assert.match(schemaTool.description ?? "", /detail: "full"/, "description must document the full opt-in");
+  assert.match(schemaTool.description ?? "", DETAIL_FULL, "description must document the full opt-in");
   assert.match(
     schemaTool.description ?? "",
-    /allowed only with `stream`/,
+    ALLOWED_ONLY_WITH_STREAM,
     "description must prevent global full schema calls"
   );
 
@@ -700,21 +735,21 @@ test("query_records description documents the bounded default page and readable 
   const queryTool = tools.tools.find((t) => t.name === "query_records");
   assert.ok(queryTool, "query_records tool must be exposed");
 
-  assert.match(queryTool.description ?? "", /at most 25 records/, "description must state the default page size (25)");
-  assert.match(queryTool.description ?? "", /capped at 100/, "description must state the limit cap (100)");
+  assert.match(queryTool.description ?? "", AT_MOST_RECORDS, "description must state the default page size (25)");
+  assert.match(queryTool.description ?? "", CAPPED_AT, "description must state the limit cap (100)");
   assert.match(
     queryTool.description ?? "",
-    /limit_clamped/,
+    LIMIT_CLAMPED,
     "description must name the REST limit_clamped warning so the behavior is never silent"
   );
   assert.match(
     queryTool.description ?? "",
-    /previews up to the first 5 records/,
+    PREVIEWS_UP_TO_THE_FIRST,
     "description must state the bounded readable record preview"
   );
   assert.match(
     queryTool.description ?? "",
-    /structuredContent\.data/,
+    STRUCTUREDCONTENT_DATA,
     "description must point at the machine envelope in structuredContent.data"
   );
 
@@ -732,12 +767,12 @@ test("fetch description documents projected text fallback", async () => {
 
   assert.match(
     fetchTool.description ?? "",
-    /if the projection excludes every text-like field/i,
+    IF_THE_PROJECTION_EXCLUDES_EVERY,
     "description must explain that fetch(fields) can project away the document body"
   );
   assert.match(
     fetchTool.description ?? "",
-    /compact JSON for the projected record/i,
+    COMPACT_JSON_FOR_THE_PROJECTED,
     "description must explain what appears in text when no text-like field remains"
   );
 
@@ -774,7 +809,7 @@ test("query_records input schema caps `limit` at 100 and rejects an over-max val
   const overMaxText = overMaxContent.map((c) => c.text ?? "").join("\n");
   assert.match(
     overMaxText,
-    /validation|too_big|less than or equal to 100/i,
+    VALIDATION_TOO_BIG_LESS_THAN,
     "the error must be an input-validation rejection of the over-max limit"
   );
 
@@ -833,7 +868,7 @@ test("resolveSchemaDetail defaults to compact, passes valid grades, and rejects 
   assert.equal(resolveSchemaDetail("compact"), "compact");
   assert.equal(resolveSchemaDetail("full"), "full", "full is preserved, not coerced");
   // Anything outside the enum must throw, not silently coerce to compact.
-  assert.throws(() => resolveSchemaDetail("summary"), /Invalid schema detail/);
-  assert.throws(() => resolveSchemaDetail("FULL"), /Invalid schema detail/);
-  assert.throws(() => resolveSchemaDetail(""), /Invalid schema detail/);
+  assert.throws(() => resolveSchemaDetail("summary"), INVALID_SCHEMA_DETAIL);
+  assert.throws(() => resolveSchemaDetail("FULL"), INVALID_SCHEMA_DETAIL);
+  assert.throws(() => resolveSchemaDetail(""), INVALID_SCHEMA_DETAIL);
 });

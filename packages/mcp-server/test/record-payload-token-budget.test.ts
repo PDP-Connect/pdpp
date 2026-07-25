@@ -36,6 +36,16 @@ import { createPdppMcpServer } from "../src/server.ts";
 
 // Bound the prose preview every read tool emits. The record preview hard cap is
 // 1792 chars + a small footer; 1800 is the same ceiling 7.4/7.5 assert.
+const SUBJECT_C_NOISY = /Subject 0|C-noisy|1710000000/;
+const ID_CONN_MAIL_M = /id=conn_1\/mail:m0/;
+const CONNECTION_ID = /connection_id=/;
+const SUBJECT = /Subject 0/;
+const MAIL_MAIL = /Mail \/ mail/;
+const PDPP_RECORD = /pdpp:\/\/record\//;
+const ID_WITHTEXT = /"id": "withtext"/;
+const X = /x{100}/;
+const QUERY_RECORDS_FETCH_FIELDS = /query_records|fetch\(fields\)/;
+
 const PROSE_BYTE_BUDGET = 1800;
 // Bound the `fetch.text` JSON-stringify fallback (no declared text field). The
 // source constant is 1024 chars; 1200 bytes leaves headroom for multibyte and
@@ -121,6 +131,7 @@ function projectRecordBody(body: Record<string, unknown>, url: URL): unknown {
 // an adapter-local projection path.
 function makeFatFetch() {
   const big = (n: number) => "x".repeat(n);
+  // biome-ignore lint/suspicious/useAwait: async required to satisfy the Promise<Response>-returning fetch/getJson contract this fixture implements; a synchronous return type is not assignable to the caller's injected dependency.
   return async (urlInput: string | Request | URL) => {
     const url = new URL(urlInput.toString());
     // query_records: 500 records each ~1.5 KB of body.
@@ -230,7 +241,7 @@ test("query_records(fields) returns a strict projected envelope with only operat
   );
   const structuredContent = result.structuredContent as { data: { data: Record<string, unknown>[] } };
   assert.equal(structuredContent.data.data.length, 500);
-  const firstRecord = structuredContent.data.data[0];
+  const [firstRecord] = structuredContent.data.data;
   assert.equal(firstRecord?.subject, undefined);
   assert.equal(firstRecord?.text, undefined);
   assert.equal(firstRecord?.channel_id, undefined);
@@ -241,7 +252,7 @@ test("query_records(fields) returns a strict projected envelope with only operat
     id: "m0",
     connection_id: "conn_1",
   });
-  assert.doesNotMatch(firstText(result), /Subject 0|C-noisy|1710000000/);
+  assert.doesNotMatch(firstText(result), SUBJECT_C_NOISY);
 
   await client.close();
   await server.close();
@@ -263,11 +274,11 @@ test("search prose stays bounded and result hits are not duplicated in structure
     proseBytes < PROSE_BYTE_BUDGET,
     `search prose must stay under ${PROSE_BYTE_BUDGET} bytes (got ${proseBytes})`
   );
-  assert.match(firstText(result), /id=conn_1\/mail:m0/);
+  assert.match(firstText(result), ID_CONN_MAIL_M);
   // The connection is embedded in the self-contained id; the prose budget is
   // not spent repeating it as a separate handle.
-  assert.doesNotMatch(firstText(result), /connection_id=/);
-  assert.match(firstText(result), /Subject 0/);
+  assert.doesNotMatch(firstText(result), CONNECTION_ID);
+  assert.match(firstText(result), SUBJECT);
   const structuredContent = result.structuredContent as {
     data: { data?: unknown; hits?: unknown; result_count?: number; results?: unknown; results_ref?: string };
     results: Array<{ id?: string; title?: string; url?: string }>;
@@ -288,6 +299,7 @@ test("search prose stays bounded and result hits are not duplicated in structure
 });
 
 test("search hit title does not fall back to the snippet", async () => {
+  // biome-ignore lint/suspicious/useAwait: async required to satisfy the Promise<Response>-returning fetch contract this inline fixture implements; a synchronous return type is not assignable to typeof fetch.
   const { client, server } = await connectClient(async (urlInput: string | Request | URL) => {
     const url = new URL(urlInput.toString());
     if (url.pathname === "/v1/search") {
@@ -320,7 +332,7 @@ test("search hit title does not fall back to the snippet", async () => {
   assert.ok(hit, "search must return at least one result");
   assert.equal(hit.snippet, "<mark>budget</mark> status update");
   assert.notEqual(hit.title, hit.snippet);
-  assert.match(hit.title ?? "", /Mail \/ mail/);
+  assert.match(hit.title ?? "", MAIL_MAIL);
 
   await client.close();
   await server.close();
@@ -352,7 +364,7 @@ test("fetch returns a declared text field verbatim (no truncation of real docume
   assert.ok(contentLadder, "fetch must expose a content ladder");
   assert.equal(contentLadder.record_uri, undefined);
   assert.equal(contentLadder.id, "conn_1/mail:withtext");
-  assert.doesNotMatch(JSON.stringify(contentLadder), /pdpp:\/\/record\//);
+  assert.doesNotMatch(JSON.stringify(contentLadder), PDPP_RECORD);
   assert.equal(mirrored.text.length, 50_000);
   assert.equal(mirrored.id, "mail:withtext");
 
@@ -379,8 +391,8 @@ test("fetch(fields) projects before rendering the document and preserves source 
   assert.equal(structuredContent.metadata?.connection_id, "conn_1");
   assert.equal(structuredContent.text.includes('"id": "withtext"'), true);
   assert.equal(structuredContent.text.includes('"text"'), false);
-  assert.match(structuredContent.text, /"id": "withtext"/);
-  assert.doesNotMatch(structuredContent.text, /x{100}/);
+  assert.match(structuredContent.text, ID_WITHTEXT);
+  assert.doesNotMatch(structuredContent.text, X);
   assert.ok(
     byteLength(structuredContent) < 2500,
     `projected fetch must not carry the full document body (got ${byteLength(structuredContent)} bytes)`
@@ -415,7 +427,7 @@ test("fetch text JSON-stringify fallback is bounded and points at structured rea
     `fetch text fallback must stay under ${FETCH_TEXT_FALLBACK_BYTE_BUDGET} bytes (got ${textBytes})`
   );
   // It stays honest: it points the agent at structured read tools.
-  assert.match(structuredContent.text, /query_records|fetch\(fields\)/);
+  assert.match(structuredContent.text, QUERY_RECORDS_FETCH_FIELDS);
   assert.equal(structuredContent.data, undefined);
   assert.equal(structuredContent.metadata?.line_items, undefined);
   assert.equal(structuredContent.id, "orders:notext");
@@ -427,7 +439,7 @@ test("fetch text JSON-stringify fallback is bounded and points at structured rea
 // Regression guard proving the fallback bound is non-vacuous: the verbatim
 // JSON-stringify of the no-text record is far larger than the budget, so the
 // truncation is genuinely doing work.
-test("the no-text record JSON-stringify is far larger than the fallback budget (guard is non-vacuous)", async () => {
+test("the no-text record JSON-stringify is far larger than the fallback budget (guard is non-vacuous)", () => {
   const record = {
     id: "notext",
     stream: "orders",
