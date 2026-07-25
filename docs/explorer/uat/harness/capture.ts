@@ -21,15 +21,31 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-// patchright is Playwright's API-compatible fork (a polyfill-connectors dep);
-// no @types are shipped and the path is resolved at runtime relative to repo
-// root, so this is a dynamic, intentionally-untyped import. harness lives at
-// docs/explorer/uat/harness/ → repo root is four levels up.
-const { chromium } = await import(
-  new URL(
-    "../../../../packages/polyfill-connectors/node_modules/patchright/index.mjs",
-    import.meta.url
-  )
+// patchright is Playwright's API-compatible fork (a polyfill-connectors dep,
+// not a root dependency); its types are not resolvable from this file's
+// module graph, so the browser surface below is narrowed to the handful of
+// methods this harness actually calls rather than imported cross-package.
+interface PatchrightPage {
+  close: () => Promise<void>;
+  evaluate: <T>(fn: () => T) => Promise<T>;
+  goto: (url: string, options: { waitUntil: string; timeout: number }) => Promise<unknown>;
+  screenshot: (options: { path: string; fullPage: boolean }) => Promise<unknown>;
+  waitForFunction: (fn: (arg: string) => boolean, arg: string, options: { timeout: number }) => Promise<unknown>;
+  waitForTimeout: (ms: number) => Promise<void>;
+}
+interface PatchrightBrowser {
+  close: () => Promise<void>;
+  newPage: (options: { viewport: { width: number; height: number } }) => Promise<PatchrightPage>;
+}
+interface PatchrightModule {
+  chromium: { launch: (options: { headless: boolean }) => Promise<PatchrightBrowser> };
+}
+
+// Resolved at runtime relative to repo root (harness lives at
+// docs/explorer/uat/harness/ → repo root is four levels up), since patchright
+// is not a root dependency.
+const { chromium }: PatchrightModule = await import(
+  new URL("../../../../packages/polyfill-connectors/node_modules/patchright/index.mjs", import.meta.url).href
 );
 
 const DASH_URL = process.env.DASH_URL || "http://localhost:3300/explore";
@@ -43,25 +59,38 @@ mkdirSync(OUT_DIR, { recursive: true });
 const DASH_MONEY_TEXT = "PURCHASE - PORTLAND OR"; // chase transactions money-card summary (memo)
 const DASH_MESSAGE_TEXT = "Your April statement is ready"; // gmail messages subject
 
+interface ProbeResult {
+  generic: number;
+  message: number;
+  messageAuthors: string[];
+  money: number;
+  moneyAmounts: string[];
+  totalCards: number;
+}
+
 // DOM probe run in the page: count rendered typed cards by their kind hairline,
 // and confirm a money amount + a message author actually rendered.
-const PROBE = () => {
+function PROBE(): ProbeResult {
   const cards = Array.from(document.querySelectorAll("div.relative.overflow-hidden.rounded-lg.border"));
   let money = 0;
   let message = 0;
   let generic = 0;
-  const moneyAmounts = [];
-  const messageAuthors = [];
+  const moneyAmounts: string[] = [];
+  const messageAuthors: string[] = [];
   for (const card of cards) {
     const cls = card.className || "";
     if (cls.includes("before:bg-primary")) {
       money += 1;
       const amt = card.querySelector("span.font-mono.tabular-nums");
-      if (amt) moneyAmounts.push(amt.textContent.trim());
+      if (amt?.textContent) {
+        moneyAmounts.push(amt.textContent.trim());
+      }
     } else if (cls.includes("var(--human)")) {
       message += 1;
       const author = card.querySelector("span.font-medium");
-      if (author) messageAuthors.push(author.textContent.trim());
+      if (author?.textContent) {
+        messageAuthors.push(author.textContent.trim());
+      }
     } else if (cls.includes("before:bg-border")) {
       generic += 1;
     }
@@ -74,19 +103,35 @@ const PROBE = () => {
     moneyAmounts: moneyAmounts.slice(0, 8),
     messageAuthors: messageAuthors.slice(0, 8),
   };
-};
+}
 
-async function waitForText(page, text, timeout = 45_000) {
+async function waitForText(page: PatchrightPage, text: string, timeout = 45_000) {
   await page.waitForFunction(
-    (t) => document.body && document.body.innerText.toLowerCase().includes(t.toLowerCase()),
+    (t) => Boolean(document.body) && document.body.innerText.toLowerCase().includes(t.toLowerCase()),
     text,
     { timeout }
   );
 }
 
-async function capture(browser, { name, url, waitText, extraWaitText, probe }) {
+interface CaptureOptions {
+  extraWaitText?: string;
+  name: string;
+  probe?: () => ProbeResult;
+  url: string;
+  waitText: string | null;
+}
+interface CaptureResult {
+  error?: string;
+  name: string;
+  ok: boolean;
+  probe?: ProbeResult;
+  screenshot?: string;
+  url: string;
+}
+
+async function capture(browser: PatchrightBrowser, { name, url, waitText, extraWaitText, probe }: CaptureOptions) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 1600 } });
-  const result = { name, url, ok: false };
+  const result: CaptureResult = { name, url, ok: false };
   try {
     await page.goto(url, { waitUntil: "networkidle", timeout: 60_000 });
     if (waitText) {
@@ -105,16 +150,20 @@ async function capture(browser, { name, url, waitText, extraWaitText, probe }) {
     }
     result.ok = true;
     console.log(`[capture] ${name}: OK -> ${shot}`);
-    if (result.probe) console.log(`[capture] ${name} probe:`, JSON.stringify(result.probe));
+    if (result.probe) {
+      console.log(`[capture] ${name} probe:`, JSON.stringify(result.probe));
+    }
   } catch (err) {
-    result.error = err.message;
+    result.error = err instanceof Error ? err.message : String(err);
     // Best-effort screenshot of whatever state we reached for diagnosis.
     try {
       const shot = join(OUT_DIR, `${name}.error.png`);
       await page.screenshot({ path: shot, fullPage: true });
       result.screenshot = shot;
-    } catch {}
-    console.error(`[capture] ${name}: FAILED — ${err.message}`);
+    } catch {
+      // best-effort only; the primary error is already recorded above.
+    }
+    console.error(`[capture] ${name}: FAILED — ${result.error}`);
   } finally {
     await page.close();
   }
@@ -123,7 +172,7 @@ async function capture(browser, { name, url, waitText, extraWaitText, probe }) {
 
 async function main() {
   const browser = await chromium.launch({ headless: true });
-  const results = [];
+  const results: CaptureResult[] = [];
   try {
     results.push(
       await capture(browser, {
@@ -152,6 +201,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("[capture] FATAL:", err.message);
+  console.error("[capture] FATAL:", err instanceof Error ? err.message : String(err));
   process.exit(1);
 });

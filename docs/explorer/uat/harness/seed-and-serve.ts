@@ -16,7 +16,7 @@
  * It then stays alive so the Next.js dashboard (pointed at 7662/7663, owner gate
  * also disabled) can render `/explore` against this exact data.
  *
- * Run: node docs/explorer/uat/harness/seed-and-serve.mjs
+ * Run: node --import tsx docs/explorer/uat/harness/seed-and-serve.ts
  * Env: PDPP_DB_PATH (optional; defaults to a temp file beside this script).
  */
 
@@ -24,12 +24,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import {
-  CHASE_CONNECTOR_ID,
-  CHASE_TRANSACTIONS,
-  GMAIL_CONNECTOR_ID,
-  GMAIL_MESSAGES,
-} from "./fixtures.mjs";
+import { CHASE_CONNECTOR_ID, CHASE_TRANSACTIONS, GMAIL_CONNECTOR_ID, GMAIL_MESSAGES } from "./fixtures.ts";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 // harness lives at docs/explorer/uat/harness/ — repo root is four levels up.
@@ -46,37 +41,58 @@ const DB_PATH = process.env.PDPP_DB_PATH || join(ROOT, "tmp/explorer-uat-harness
 
 const CLIENT_ID = "pdpp-polyfill-owner-bootstrap"; // same client the dashboard uses
 
-function loadManifest(name) {
+interface Manifest {
+  connector_key: string;
+  [field: string]: unknown;
+}
+interface DeviceAuthorization {
+  device_code: string;
+  user_code: string;
+}
+interface TokenResponse {
+  access_token: string;
+}
+interface FieldCapability {
+  type?: string;
+}
+type FieldCapabilities = Record<string, FieldCapability | undefined>;
+interface IngestResult {
+  records_accepted: number;
+}
+interface RecordsResponse {
+  data: unknown[];
+}
+
+function loadManifest(name: string): Manifest {
   return JSON.parse(readFileSync(join(MANIFESTS_DIR, name), "utf8"));
 }
 
-async function jsonFetch(url, opts = {}) {
+async function jsonFetch<Body>(url: string, opts: RequestInit = {}): Promise<{ status: number; body: Body }> {
   const resp = await fetch(url, opts);
   const text = await resp.text();
-  let body = null;
-  try {
-    body = text ? JSON.parse(text) : null;
-  } catch {
-    body = text;
-  }
+  const body = (text ? JSON.parse(text) : null) as Body;
   return { status: resp.status, body };
 }
 
 /** Mint an owner token via the JSON device flow (owner gate disabled → auto-approve, default subject). */
-async function mintOwnerToken() {
-  const { status: ds, body: device } = await jsonFetch(`${AS_URL}/oauth/device_authorization`, {
+async function mintOwnerToken(): Promise<string> {
+  const { status: ds, body: device } = await jsonFetch<DeviceAuthorization>(`${AS_URL}/oauth/device_authorization`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ client_id: CLIENT_ID }),
   });
-  if (ds !== 200) throw new Error(`device_authorization failed (${ds}): ${JSON.stringify(device)}`);
+  if (ds !== 200) {
+    throw new Error(`device_authorization failed (${ds}): ${JSON.stringify(device)}`);
+  }
   const { status: as } = await jsonFetch(`${AS_URL}/device/approve`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ user_code: device.user_code }),
   });
-  if (as !== 200) throw new Error(`device/approve failed (${as})`);
-  const { status: ts, body: tok } = await jsonFetch(`${AS_URL}/oauth/token`, {
+  if (as !== 200) {
+    throw new Error(`device/approve failed (${as})`);
+  }
+  const { status: ts, body: tok } = await jsonFetch<TokenResponse>(`${AS_URL}/oauth/token`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -85,11 +101,13 @@ async function mintOwnerToken() {
       client_id: CLIENT_ID,
     }),
   });
-  if (ts !== 200) throw new Error(`token failed (${ts}): ${JSON.stringify(tok)}`);
+  if (ts !== 200) {
+    throw new Error(`token failed (${ts}): ${JSON.stringify(tok)}`);
+  }
   return tok.access_token;
 }
 
-async function registerManifest(manifest) {
+async function registerManifest(manifest: Manifest): Promise<void> {
   const resp = await fetch(`${AS_URL}/connectors`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -100,11 +118,15 @@ async function registerManifest(manifest) {
   }
 }
 
-async function ingest(token, connectorId, stream, records, timeField) {
-  const lines = records
-    .map((r) => JSON.stringify({ key: r.id, data: r, emitted_at: r[timeField] }))
-    .join("\n");
-  const { status, body } = await jsonFetch(
+async function ingest(
+  token: string,
+  connectorId: string,
+  stream: string,
+  records: Record<string, unknown>[],
+  timeField: string
+): Promise<IngestResult> {
+  const lines = records.map((r) => JSON.stringify({ key: r.id, data: r, emitted_at: r[timeField] })).join("\n");
+  const { status, body } = await jsonFetch<IngestResult>(
     `${RS_URL}/v1/ingest/${encodeURIComponent(stream)}?connector_id=${encodeURIComponent(connectorId)}`,
     {
       method: "POST",
@@ -112,30 +134,43 @@ async function ingest(token, connectorId, stream, records, timeField) {
       body: lines,
     }
   );
-  if (status !== 200) throw new Error(`ingest ${stream} failed (${status}): ${JSON.stringify(body)}`);
+  if (status !== 200) {
+    throw new Error(`ingest ${stream} failed (${status}): ${JSON.stringify(body)}`);
+  }
   return body;
 }
 
-async function readFieldCapabilities(token, connectorId, stream) {
-  const { status, body } = await jsonFetch(
+async function readFieldCapabilities(token: string, connectorId: string, stream: string): Promise<FieldCapabilities> {
+  const { status, body } = await jsonFetch<{ field_capabilities?: FieldCapabilities }>(
     `${RS_URL}/v1/streams/${encodeURIComponent(stream)}?connector_id=${encodeURIComponent(connectorId)}`,
     { headers: { Authorization: `Bearer ${token}` } }
   );
-  if (status !== 200) throw new Error(`GET /v1/streams/${stream} failed (${status})`);
+  if (status !== 200) {
+    throw new Error(`GET /v1/streams/${stream} failed (${status})`);
+  }
   return body.field_capabilities || {};
 }
 
-async function readRecords(token, connectorId, stream, limit = 5) {
-  const { status, body } = await jsonFetch(
+async function readRecords(token: string, connectorId: string, stream: string, limit = 5): Promise<unknown[]> {
+  const { status, body } = await jsonFetch<RecordsResponse>(
     `${RS_URL}/v1/streams/${encodeURIComponent(stream)}/records?connector_id=${encodeURIComponent(connectorId)}&limit=${limit}`,
     { headers: { Authorization: `Bearer ${token}` } }
   );
-  if (status !== 200) throw new Error(`GET records ${stream} failed (${status})`);
+  if (status !== 200) {
+    throw new Error(`GET records ${stream} failed (${status})`);
+  }
   return body.data || [];
 }
 
-function assert(cond, msg) {
-  if (!cond) throw new Error(`ASSERT FAILED: ${msg}`);
+function assert(cond: unknown, msg: string): void {
+  if (!cond) {
+    throw new Error(`ASSERT FAILED: ${msg}`);
+  }
+}
+
+interface ReferenceServer {
+  asServer: { close: (cb: () => void) => void; closeAllConnections?: () => void };
+  rsServer: { close: (cb: () => void) => void; closeAllConnections?: () => void };
 }
 
 async function main() {
@@ -145,8 +180,14 @@ async function main() {
   // Owner gate disabled: do NOT set PDPP_OWNER_PASSWORD. Device flow auto-approves.
   delete process.env.PDPP_OWNER_PASSWORD;
 
-  const { startServer } = await import(
-    new URL("../../../../reference-implementation/server/index.js", import.meta.url)
+  interface StartServerOptions {
+    asPort: number;
+    dbPath: string;
+    quiet: boolean;
+    rsPort: number;
+  }
+  const { startServer }: { startServer: (options: StartServerOptions) => Promise<ReferenceServer> } = await import(
+    new URL("../../../../reference-implementation/server/index.js", import.meta.url).href
   );
   const server = await startServer({
     quiet: true,
@@ -196,15 +237,23 @@ async function main() {
   console.log("[uat] (process stays alive; SIGINT/SIGTERM to stop)");
 
   // Stay alive for the dashboard + browser capture.
-  const keepalive = setInterval(() => {}, 1 << 30);
+  const keepalive = setInterval(() => {
+    // no-op: setInterval just needs to hold the event loop open.
+  }, 2 ** 30);
   const shutdown = () => {
     clearInterval(keepalive);
     try {
       server.asServer.closeAllConnections?.();
       server.rsServer.closeAllConnections?.();
-    } catch {}
-    server.asServer.close(() => {});
-    server.rsServer.close(() => {});
+    } catch {
+      // best-effort connection drain before close below.
+    }
+    server.asServer.close(() => {
+      // no-op: process.exit below does not wait on this callback.
+    });
+    server.rsServer.close(() => {
+      // no-op: process.exit below does not wait on this callback.
+    });
     process.exit(0);
   };
   process.on("SIGINT", shutdown);
@@ -212,6 +261,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("[uat] FATAL:", err.message);
+  console.error("[uat] FATAL:", err instanceof Error ? err.message : String(err));
   process.exit(1);
 });
