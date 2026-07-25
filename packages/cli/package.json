@@ -25,13 +25,13 @@
     "README.md"
   ],
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.build.json && node scripts/postbuild.mjs",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json && node --import tsx scripts/postbuild.ts",
     "prepare": "pnpm build",
     "prepack": "pnpm build",
-    "test": "node --test --import tsx \"test/*.test.js\"",
-    "validate:package": "pnpm build && node scripts/validate-package.mjs",
-    "pack-install-run": "pnpm build && node scripts/pack-install-run.mjs",
-    "pack-install-run:node-22.14": "node scripts/verify-node-22-14-artifact.mjs",
+    "test": "pnpm build && node --import tsx scripts/run-tests.ts",
+    "validate:package": "pnpm build && node --import tsx scripts/validate-package.ts",
+    "pack-install-run": "pnpm build && node --import tsx scripts/pack-install-run.ts",
+    "pack-install-run:node-22.14": "node --import tsx scripts/verify-node-22-14-artifact.ts",
     "verify": "pnpm test && pnpm validate:package && pnpm pack-install-run",
     "pack:dry-run": "pnpm build && npm pack --dry-run --ignore-scripts"
   },

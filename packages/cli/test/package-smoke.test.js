@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { getFileMode, getPdppCacheLayout, writePdppSecretFile } from '../src/cache-layout.js';
-import { assertManifestTargets, assertPackedFiles, parseNpmPackOutput } from '../scripts/package-contract.mjs';
+import { assertManifestTargets, assertPackedFiles, parseNpmPackOutput } from '../scripts/package-contract.ts';
 
 const packageRoot = fileURLToPath(new URL('..', import.meta.url));
 const npmEnv = {

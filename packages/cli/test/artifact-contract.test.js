@@ -12,9 +12,9 @@ import {
   assertArtifactReceipt,
   bindNodeEnvironment,
   gitHeadSha,
-} from '../scripts/artifact-receipt.mjs';
-import { discoverTestFiles, needsTsx } from '../scripts/discover-tests.mjs';
-import { assertManifestTargets } from '../scripts/package-contract.mjs';
+} from '../scripts/artifact-receipt.ts';
+import { discoverTestFiles, needsTsx } from '../scripts/discover-tests.ts';
+import { assertManifestTargets } from '../scripts/package-contract.ts';
 
 const packageRoot = fileURLToPath(new URL('..', import.meta.url));
 
