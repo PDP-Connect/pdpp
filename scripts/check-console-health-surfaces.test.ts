@@ -9,14 +9,14 @@ import {
   checkRepository,
   findLegacyConnectorRowImports,
   scanActiveOwnerSurface,
-} from "./check-console-health-surfaces.mjs";
+} from "./check-console-health-surfaces.ts";
 
 const ACTIVE = "apps/console/src/app/(console)/sources/sources-view-model.ts";
 
 test("active owner-surface scan catches raw state and legacy next-action fallbacks", () => {
   const findings = scanActiveOwnerSurface(
     ACTIVE,
-    `const status = health.state; const next = formatNextAction(summary.next_action);`
+    "const status = health.state; const next = formatNextAction(summary.next_action);"
   );
   assert.deepEqual(
     findings.map((f) => f.ruleId),
@@ -27,7 +27,7 @@ test("active owner-surface scan catches raw state and legacy next-action fallbac
 test("active owner-surface scan catches mechanistic detail fields", () => {
   const findings = scanActiveOwnerSurface(
     "apps/console/src/app/(console)/sources/sources-view.tsx",
-    `return <span>{detail_gap_backlog?.pending} {connectionHealth.collection_rate}</span>;`
+    "return <span>{detail_gap_backlog?.pending} {connectionHealth.collection_rate}</span>;"
   );
   assert.deepEqual(
     findings.map((f) => f.ruleId),
@@ -38,7 +38,7 @@ test("active owner-surface scan catches mechanistic detail fields", () => {
 test("diagnostics and tests are outside the owner attention scan", () => {
   const diagnostics = scanActiveOwnerSurface(
     "apps/console/src/app/(console)/sources/[connector]/connection-diagnostics.tsx",
-    `const state = connectionHealth.state; const retry = connectionHealth.next_attempt_at;`
+    "const state = connectionHealth.state; const retry = connectionHealth.next_attempt_at;"
   );
   assert.deepEqual(diagnostics, []);
 });
@@ -51,7 +51,7 @@ test("legacy connector row cannot be reactivated by a new owner surface import",
     ])
   );
   assert.equal(findings.length, 1);
-  assert.equal(findings[0].ruleId, "legacy-connector-row-reactivated");
+  assert.equal(findings[0]?.ruleId, "legacy-connector-row-reactivated");
 });
 
 test("current repository owner surfaces pass the rendered-verdict gate", () => {

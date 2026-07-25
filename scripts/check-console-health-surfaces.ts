@@ -8,7 +8,7 @@
 // owner attention surfaces must consume the rendered verdict; diagnostics may
 // still show raw evidence under an explicit inspection layer.
 
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -24,7 +24,13 @@ const ACTIVE_OWNER_SURFACE_PATHS = new Set([
 
 const LEGACY_RAW_HEALTH_PATHS = new Set(["apps/console/src/app/(console)/sources/connector-row.tsx"]);
 
-const RULES = [
+interface Rule {
+  id: string;
+  message: string;
+  pattern: RegExp;
+}
+
+const RULES: Rule[] = [
   {
     id: "raw-health-state",
     pattern: /\b(?:health|connectionHealth)\.state\b/,
@@ -32,7 +38,8 @@ const RULES = [
   },
   {
     id: "legacy-next-action",
-    pattern: /\b(?:formatNextAction\(|summary\.next_action|connection_health\?\.next_action|connectionHealth\?\.next_action)/,
+    pattern:
+      /\b(?:formatNextAction\(|summary\.next_action|connection_health\?\.next_action|connectionHealth\?\.next_action)/,
     message: "owner surface must derive CTAs from rendered_verdict.required_actions",
   },
   {
@@ -52,17 +59,25 @@ const RULES = [
   },
 ];
 
-function lineForOffset(src, offset) {
+interface Finding {
+  line: number;
+  message: string;
+  path: string;
+  ruleId: string;
+}
+
+function lineForOffset(src: string, offset: number): number {
   return src.slice(0, offset).split("\n").length;
 }
 
-export function scanActiveOwnerSurface(relPath, src) {
-  const findings = [];
+export function scanActiveOwnerSurface(relPath: string, src: string): Finding[] {
+  const findings: Finding[] = [];
   if (!ACTIVE_OWNER_SURFACE_PATHS.has(relPath)) {
     return findings;
   }
   for (const rule of RULES) {
     const match = rule.pattern.exec(src);
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: RegExp.exec() returns RegExpExecArray | null; this null-checks a genuinely possibly-null match, it is not a redundant condition.
     if (match) {
       findings.push({
         path: relPath,
@@ -75,7 +90,12 @@ export function scanActiveOwnerSurface(relPath, src) {
   return findings;
 }
 
-function walk(dir, out = []) {
+const TS_TSX_EXTENSION_PATTERN = /\.(?:ts|tsx)$/;
+const TEST_TS_TSX_EXTENSION_PATTERN = /\.test\.(?:ts|tsx)$/;
+const CONNECTOR_ROW_IMPORT_PATTERN = /from ["'][^"']*connector-row(?:\.tsx)?["']|<ConnectorRow\b/;
+const CONNECTOR_ROW_SEARCH_PATTERN = /connector-row|<ConnectorRow\b/;
+
+function walk(dir: string, out: string[] = []): string[] {
   for (const name of readdirSync(dir)) {
     if (name === "node_modules" || name === ".next") {
       continue;
@@ -84,23 +104,23 @@ function walk(dir, out = []) {
     const stat = statSync(full);
     if (stat.isDirectory()) {
       walk(full, out);
-    } else if (/\.(?:ts|tsx)$/.test(name)) {
+    } else if (TS_TSX_EXTENSION_PATTERN.test(name)) {
       out.push(full);
     }
   }
   return out;
 }
 
-export function findLegacyConnectorRowImports(files) {
-  const findings = [];
+export function findLegacyConnectorRowImports(files: Map<string, string>): Finding[] {
+  const findings: Finding[] = [];
   for (const [relPath, src] of files) {
-    if (LEGACY_RAW_HEALTH_PATHS.has(relPath) || /\.test\.(?:ts|tsx)$/.test(relPath)) {
+    if (LEGACY_RAW_HEALTH_PATHS.has(relPath) || TEST_TS_TSX_EXTENSION_PATTERN.test(relPath)) {
       continue;
     }
-    if (/from ["'][^"']*connector-row(?:\.tsx)?["']|<ConnectorRow\b/.test(src)) {
+    if (CONNECTOR_ROW_IMPORT_PATTERN.test(src)) {
       findings.push({
         path: relPath,
-        line: lineForOffset(src, src.search(/connector-row|<ConnectorRow\b/)),
+        line: lineForOffset(src, src.search(CONNECTOR_ROW_SEARCH_PATTERN)),
         ruleId: "legacy-connector-row-reactivated",
         message: "connector-row.tsx is a legacy raw-health surface; do not reintroduce it",
       });
@@ -109,7 +129,7 @@ export function findLegacyConnectorRowImports(files) {
   return findings;
 }
 
-export function checkRepository(root = REPO_ROOT) {
+export function checkRepository(root: string = REPO_ROOT): Finding[] {
   const sourceRoot = path.join(root, "apps", "console", "src", "app");
   const files = new Map(
     walk(sourceRoot).map((fullPath) => {
@@ -117,7 +137,7 @@ export function checkRepository(root = REPO_ROOT) {
       return [relPath, readFileSync(fullPath, "utf8")];
     })
   );
-  const findings = [];
+  const findings: Finding[] = [];
   for (const [relPath, src] of files) {
     findings.push(...scanActiveOwnerSurface(relPath, src));
   }
@@ -125,7 +145,7 @@ export function checkRepository(root = REPO_ROOT) {
   return findings;
 }
 
-function parseArgs(argv) {
+function parseArgs(argv: string[]): { json: boolean } {
   return { json: argv.includes("--json") };
 }
 
