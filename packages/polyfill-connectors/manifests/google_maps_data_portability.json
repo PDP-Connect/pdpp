@@ -59,9 +59,7 @@
         "https://www.googleapis.com/auth/dataportability.mymaps.maps"
       ]
     },
-    "human_interaction": [
-      "manual_action"
-    ],
+    "human_interaction": ["manual_action"],
     "refresh_policy": {
       "recommended_mode": "manual",
       "interaction_posture": "manual_action_likely",
@@ -105,37 +103,22 @@
             "x_pdpp_role": "primary-title"
           },
           "archive_job_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "access_type": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "state": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "secondary"
           },
           "start_time": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time",
             "x_pdpp_role": "event-time"
           },
           "export_time": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time"
           },
           "download_url_count": {
@@ -143,21 +126,12 @@
           },
           "source": {
             "type": "string",
-            "enum": [
-              "google_data_portability_api"
-            ]
+            "enum": ["google_data_portability_api"]
           }
         },
-        "required": [
-          "id",
-          "resource_group",
-          "download_url_count",
-          "source"
-        ]
+        "required": ["id", "resource_group", "download_url_count", "source"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "export_time",
       "consent_time_field": "export_time",
       "selection": {
@@ -167,25 +141,12 @@
       "incremental": true,
       "query": {
         "range_filters": {
-          "export_time": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "start_time": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "export_time": ["gte", "gt", "lte", "lt"],
+          "start_time": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by": [
-            "state",
-            "access_type"
-          ]
+          "group_by": ["state", "access_type"]
         }
       },
       "coverage_strategy": "checkpoint_window",

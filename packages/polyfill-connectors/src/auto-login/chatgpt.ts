@@ -525,7 +525,7 @@ async function pollSessionReadiness({
   readonly waitingCheckpointDetailPrefix?: string;
   readonly waitingCheckpointPrefix: string;
 }): Promise<boolean> {
-  for (let attempt = 0; attempt < attempts; attempt++) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     await checkpoint?.(waitingCheckpointPrefix);
     await page.waitForTimeout(intervalMs);
     if ((attempt + 1) % 12 === 0) {
@@ -868,7 +868,7 @@ async function submitPasswordAndHandleSecondFactor({
 }
 
 async function waitForSubmittedLogin(page: Page): Promise<boolean> {
-  for (let attempt = 0; attempt < 18; attempt++) {
+  for (let attempt = 0; attempt < 18; attempt += 1) {
     await page.waitForTimeout(5000);
     if (await isChatGptSessionActive(page)) {
       return true;

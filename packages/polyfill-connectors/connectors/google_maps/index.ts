@@ -65,7 +65,7 @@ async function discoverTimelineFiles(importDir: string): Promise<string[]> {
       return;
     }
     for (const entry of entries) {
-      visited++;
+      visited += 1;
       if (visited > MAX_DISCOVERY_ENTRIES) {
         return;
       }
@@ -106,7 +106,7 @@ async function loadExports(ctx: CollectContext, importDir: string): Promise<Pars
   const results: ParseResult[] = [];
   let fileOrdinal = 0;
   for (const file of files) {
-    fileOrdinal++;
+    fileOrdinal += 1;
     await ctx.progress(`Google Maps phase=parse pass=parse source_file=${fileOrdinal}/${files.length}`);
     const json = await readJson(file);
     if (!json) {
@@ -141,7 +141,7 @@ async function emitPoints(
       continue;
     }
     await ctx.emitRecord("timeline_points", { ...point });
-    emitted++;
+    emitted += 1;
     if (!latest || point.timestamp > latest) {
       latest = point.timestamp;
     }
@@ -177,7 +177,7 @@ async function emitSegments(
       continue;
     }
     await ctx.emitRecord("timeline_segments", { ...segment });
-    emitted++;
+    emitted += 1;
     if (!latest || segment.start_time > latest) {
       latest = segment.start_time;
     }

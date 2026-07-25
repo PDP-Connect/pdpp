@@ -103,20 +103,21 @@ async function run(): Promise<void> {
       const manifest = readManifest(name);
       await registerManifest(asUrl, manifest);
       console.log(`  ✓ ${name.padEnd(12)} ${String((manifest as { connector_id?: string }).connector_id ?? "")}`);
-      ok++;
+      ok += 1;
     } catch (err) {
       const m = err instanceof Error ? err.message : String(err);
       console.log(`  ✗ ${name.padEnd(12)} ${m.slice(0, 120)}`);
-      fail++;
+      fail += 1;
     }
   }
   console.log(`\n${ok}/${CONNECTORS.length} manifests registered.`);
 
   if (server) {
-    server.asServer.closeAllConnections?.();
-    server.rsServer.closeAllConnections?.();
-    await new Promise<void>((r) => server?.asServer.close(() => r()));
-    await new Promise<void>((r) => server?.rsServer.close(() => r()));
+    const activeServer = server;
+    activeServer.asServer.closeAllConnections?.();
+    activeServer.rsServer.closeAllConnections?.();
+    await new Promise<void>((r) => activeServer.asServer.close(() => r()));
+    await new Promise<void>((r) => activeServer.rsServer.close(() => r()));
   }
   process.exit(fail > 0 ? 1 : 0);
 }

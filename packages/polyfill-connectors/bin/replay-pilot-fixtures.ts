@@ -71,17 +71,17 @@ async function replayConnector(connector: string): Promise<Record<string, Stream
       try {
         data = JSON.parse(line) as Record<string, unknown>;
       } catch {
-        result.total++;
-        result.failed++;
+        result.total += 1;
+        result.failed += 1;
         result.failures.push({ id: null, issues: [{ path: "", message: "invalid JSONL line" }] });
         continue;
       }
-      result.total++;
+      result.total += 1;
       const v = validator(stream, data);
       if (v.ok) {
-        result.passed++;
+        result.passed += 1;
       } else {
-        result.failed++;
+        result.failed += 1;
         result.failures.push({ id: data.id ?? null, issues: v.issues ?? [] });
       }
     }
@@ -135,7 +135,7 @@ async function main(): Promise<void> {
       continue;
     }
     if (printConnectorReport(name, r) > 0) {
-      totalDrift++;
+      totalDrift += 1;
     }
   }
   console.log(`\n${targets.length} connectors checked, ${totalDrift} with fixture drift`);

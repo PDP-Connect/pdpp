@@ -481,7 +481,6 @@ async function emitRulesStream(
       continue;
     }
     const p = join(rulesDir, f);
-    // biome-ignore lint/performance/noAwaitInLoops: each file must be stat+read sequentially (bounded, small directory) before its lines can be split and emitted in order.
     const loaded = await statAndRead(p);
     if (!loaded) {
       continue;
@@ -495,7 +494,6 @@ async function emitRulesStream(
         continue;
       }
       emitRecord("rules", buildRuleRecord({ ruleset, line, index: idx, path: p, mtime }));
-      // biome-ignore lint/performance/noAwaitInLoops: waitForEmitDrain enforces stdout backpressure between emits; parallelizing would let unbounded record writes queue in memory.
       await waitForEmitDrain();
       idx += 1;
     }
@@ -515,7 +513,6 @@ async function emitPromptsStream(
       continue;
     }
     const p = join(promptsDir, f);
-    // biome-ignore lint/performance/noAwaitInLoops: each file must be stat+read sequentially (bounded, small directory) before its record can be built and emitted.
     const loaded = await statAndRead(p);
     if (!loaded) {
       continue;
@@ -556,7 +553,6 @@ async function emitSkillsStream(
       continue;
     }
     const dirPath = join(skillsDir, ent.name);
-    // biome-ignore lint/performance/noAwaitInLoops: each entry must be checked sequentially (bounded, small directory) before its SKILL.md can be loaded and emitted.
     if (!(await isDirectoryPath(dirPath))) {
       continue;
     }
@@ -621,12 +617,9 @@ export function makeRolloutParseState(seed?: RolloutParseSeed): RolloutParseStat
     sessionMeta: null,
     firstTimestamp: seed?.firstTimestamp ?? null,
     lastTimestamp: seed?.lastTimestamp ?? null,
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: false positive — `seed` is an optional parameter (RolloutParseSeed | undefined); when omitted, seed?.messageCount really is undefined and the ?? 0 fallback is load-bearing (verified at runtime).
     messageCount: seed?.messageCount ?? 0,
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: false positive — same optional-`seed` case as messageCount above.
     functionCallCount: seed?.functionCallCount ?? 0,
     pendingCalls: new Map(),
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: false positive — same optional-`seed` case as messageCount above.
     lineCount: seed?.lineCount ?? 0,
   };
 }
@@ -931,9 +924,7 @@ function makeThreadFingerprint(
   // while the count field oscillates.
   return {
     updated_at: thread.updated_at ?? null,
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: false positive — `agg`/`priorFingerprint` are `T | undefined` parameters; when both are undefined the chain really does fall through to null (verified at runtime).
     message_count: agg?.messageCount ?? priorFingerprint?.message_count ?? null,
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: false positive — same `T | undefined` case as message_count above.
     function_call_count: agg?.functionCallCount ?? priorFingerprint?.function_call_count ?? null,
   };
 }
@@ -1688,7 +1679,6 @@ async function emitCoverageDiagnostics(input: {
   }
   for (const record of input.inventory.coverage) {
     input.emitRecord("coverage_diagnostics", record);
-    // biome-ignore lint/performance/noAwaitInLoops: waitForEmitDrain enforces stdout backpressure between emits; parallelizing would let unbounded record writes queue in memory.
     await waitForEmitDrain();
   }
 }
@@ -1709,7 +1699,6 @@ async function emitGatedInventoryStream(input: {
   for (const record of input.records) {
     if (cursor.shouldEmit(record)) {
       input.emitRecord(input.stream, record);
-      // biome-ignore lint/performance/noAwaitInLoops: waitForEmitDrain enforces stdout backpressure between emits; parallelizing would let unbounded record writes queue in memory.
       await waitForEmitDrain();
     }
   }
@@ -1772,7 +1761,6 @@ async function emitLocalInventoryStreams(input: {
     if (!input.requested.has(stream)) {
       continue;
     }
-    // biome-ignore lint/performance/noAwaitInLoops: each gated inventory stream is resolved and emitted one at a time, in CODEX_GATED_INVENTORY_STREAMS order, before the next stream's records are enumerated.
     const records = await resolveGatedInventoryRecords(stream, input.codexHome, input.inventory);
     await emitGatedInventoryStream({
       emitRecord: input.emitRecord,

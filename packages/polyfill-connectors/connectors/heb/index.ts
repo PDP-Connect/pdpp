@@ -526,7 +526,7 @@ export async function resolveOrderDetail(
       const recovered = await attemptManualSessionRepair(page, repairDeps, flags);
       if (recovered) {
         flags.sessionRepairRequired = false;
-        flags.detailAttempts++;
+        flags.detailAttempts += 1;
         const retryResult = await fetchOrderDetail(page, orderId, repairDeps);
         if (retryResult.status === "failed" && retryResult.failureKind === "session_repair_required") {
           // A second challenge right after a successful re-probe — latch for
@@ -552,7 +552,7 @@ export async function resolveOrderDetail(
       status: "deferred",
     });
   }
-  flags.detailAttempts++;
+  flags.detailAttempts += 1;
   return fetchOrderDetail(page, orderId, repairDeps);
 }
 
@@ -568,7 +568,7 @@ function readRecoverableHebOrderDetailGap(
     return null;
   }
   const locator = gap.detail_locator;
-  if (!locator || locator.kind !== "heb.order_detail") {
+  if (locator?.kind !== "heb.order_detail") {
     return null;
   }
   const orderId = locator.order_id;
@@ -603,7 +603,7 @@ async function recoverPendingOrderItemDetailGapPage(
     const locator = readRecoverableHebOrderDetailGap(gap);
     if (!locator) {
       if (gap.stream === "order_items" && gap.status === "pending") {
-        skipped++;
+        skipped += 1;
       }
       continue;
     }
@@ -623,7 +623,7 @@ async function recoverPendingOrderItemDetailGapPage(
         await deps.emit(
           buildHebDetailGap(locator.orderId, "temporary_unavailable", "parse_missing", locator.orderDate)
         );
-        reDeferred++;
+        reDeferred += 1;
         continue;
       }
       for (const [itemIndex, item] of result.detail.items.entries()) {
@@ -639,14 +639,14 @@ async function recoverPendingOrderItemDetailGapPage(
         stream: "order_items",
         record_key: locator.recordKey,
       });
-      recovered++;
+      recovered += 1;
       continue;
     }
     if (result.status === "failed" && result.failureKind === "session_repair_required") {
       flags.sessionRepairRequired = true;
     }
     await deps.emit(buildHebDetailGap(locator.orderId, result.reason, result.failureKind, locator.orderDate));
-    reDeferred++;
+    reDeferred += 1;
   }
   return { recovered, reDeferred, skipped };
 }
@@ -830,7 +830,7 @@ export async function runForwardScan(
       break;
     }
 
-    pageNum++;
+    pageNum += 1;
     if (pageNum > maxPage) {
       break;
     }

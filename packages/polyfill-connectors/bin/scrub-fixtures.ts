@@ -79,7 +79,7 @@ async function listRunIds(rawRoot: string, runIdArg: string | undefined): Promis
 function parseArgs(argv: readonly string[]): CliArgs | null {
   const positional: string[] = [];
   let llmRedactionsDir: string | null = null;
-  for (let i = 0; i < argv.length; i++) {
+  for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--llm-redactions-dir") {
       const value = argv[i + 1];
@@ -87,7 +87,7 @@ function parseArgs(argv: readonly string[]): CliArgs | null {
         return null;
       }
       llmRedactionsDir = resolve(process.cwd(), value);
-      i++;
+      i += 1;
       continue;
     }
     if (arg?.startsWith("--")) {

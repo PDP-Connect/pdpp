@@ -595,7 +595,17 @@ test("slack connector heals a missing prior channel from an existing scoped arch
       (message): message is Extract<EmittedMessage, { type: "RECORD" }> =>
         message.type === "RECORD" && message.stream === "messages"
     );
-    assert.deepEqual(records.map((record) => record.data.channel_id).sort(), ["C0MISSING", "C0PRESENT"]);
+    assert.deepEqual(
+      records
+        .map((record) => String(record.data.channel_id))
+        .sort((a, b) => {
+          if (a < b) {
+            return -1;
+          }
+          return a > b ? 1 : 0;
+        }),
+      ["C0MISSING", "C0PRESENT"]
+    );
     const cursor = messagesState(result);
     assert.deepEqual(cursor.observed_channel_ids, ["C0MISSING", "C0PRESENT"]);
     assert.deepEqual(cursor.channel_last_ts, {
@@ -702,7 +712,17 @@ test("slack connector uses per-channel message cursors with legacy global fallba
     const records = result.messages.filter(
       (message): message is Extract<EmittedMessage, { type: "RECORD" }> => message.type === "RECORD"
     );
-    assert.deepEqual(records.map((record) => record.key).sort(), ["C1:1714031500.000000", "C2:1714032500.000000"]);
+    assert.deepEqual(
+      records
+        .map((record) => String(record.key))
+        .sort((a, b) => {
+          if (a < b) {
+            return -1;
+          }
+          return a > b ? 1 : 0;
+        }),
+      ["C1:1714031500.000000", "C2:1714032500.000000"]
+    );
 
     const cursor = messagesState(result);
     assert.equal(cursor.last_ts, "1714032500.000000");
@@ -840,10 +860,17 @@ test("slack connector emits scoped archive rows even when they are older than th
     const records = result.messages.filter(
       (message): message is Extract<EmittedMessage, { type: "RECORD" }> => message.type === "RECORD"
     );
-    assert.deepEqual(records.map((record) => record.key).sort(), [
-      `${scopedChannelId}:1714031000.000000`,
-      `${scopedChannelId}:1714033500.000000`,
-    ]);
+    assert.deepEqual(
+      records
+        .map((record) => String(record.key))
+        .sort((a, b) => {
+          if (a < b) {
+            return -1;
+          }
+          return a > b ? 1 : 0;
+        }),
+      [`${scopedChannelId}:1714031000.000000`, `${scopedChannelId}:1714033500.000000`]
+    );
     const cursor = messagesState(result);
     assert.equal(cursor.last_ts, "1714033500.000000");
     assert.deepEqual(cursor.channel_last_ts, { [scopedChannelId]: "1714033500.000000" });

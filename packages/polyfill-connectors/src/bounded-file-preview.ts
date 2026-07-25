@@ -62,8 +62,8 @@ function trailingIncompleteUtf8Bytes(buf: Buffer): number {
     if (byte === undefined || (byte & 0b1100_0000) !== 0b1000_0000) {
       break;
     }
-    continuation++;
-    i--;
+    continuation += 1;
+    i -= 1;
     if (continuation > 3) {
       // More continuation bytes than any lead byte can introduce; the data is
       // not valid UTF-8 here, so don't trim — let the decoder classify it.

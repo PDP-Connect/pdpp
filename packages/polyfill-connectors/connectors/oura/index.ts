@@ -99,7 +99,7 @@ interface OuraRawResponse {
 async function oura<T>(endpoint: string, token: string, params: OuraParams): Promise<OuraListResponse<T>> {
   const url = new URL(`${API}/${endpoint}`);
   for (const [k, v] of Object.entries(params)) {
-    if (v != null) {
+    if (v !== undefined) {
       url.searchParams.set(k, v);
     }
   }
@@ -113,14 +113,14 @@ async function oura<T>(endpoint: string, token: string, params: OuraParams): Pro
       const retryAfter = res.headers.get("retry-after");
       return {
         body: await res.text(),
-        ...(retryAfter == null ? {} : { retryAfter }),
+        ...(retryAfter === null ? {} : { retryAfter }),
         status: res.status,
       };
     },
-    (raw) => ({
-      status: raw.status,
-      headers: { "retry-after": raw.retryAfter },
-      value: raw,
+    (rawResponse) => ({
+      status: rawResponse.status,
+      headers: { "retry-after": rawResponse.retryAfter },
+      value: rawResponse,
     })
   );
   const raw = result.value;
@@ -137,7 +137,8 @@ async function fetchAll<T>(endpoint: string, token: string, startDate: string | 
   const all: T[] = [];
   let nextToken: string | undefined;
   let guard = MAX_PAGES;
-  while (guard-- > 0) {
+  while (guard > 0) {
+    guard -= 1;
     const params: OuraParams = {};
     if (startDate) {
       params.start_date = startDate;

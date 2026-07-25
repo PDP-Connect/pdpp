@@ -21,11 +21,15 @@
 
 import { acquireBrowserForConnector } from "../src/browser-launch.ts";
 import {
-  type RegisterArgs,
   resolveStreamingRegistrationFromEnv,
+  type StreamingTargetRegisterArgs,
   type StreamingTargetRegistrationHooks,
   type UnregisterArgs,
 } from "../src/streaming-target-registration.ts";
+
+function describeWsUrl(args: StreamingTargetRegisterArgs): string {
+  return args.backend === "neko" ? `neko:${JSON.stringify(args.descriptor)}` : args.wsUrl;
+}
 
 async function main(): Promise<void> {
   const stubOnly = process.argv.includes("--stub-only");
@@ -42,9 +46,9 @@ async function main(): Promise<void> {
   if (stubOnly) {
     registration = {
       runId: `stub_run_${String(Date.now())}`,
-      register: (args: RegisterArgs): Promise<boolean> => {
+      register: (args: StreamingTargetRegisterArgs): Promise<boolean> => {
         process.stderr.write(
-          `[stub] register called: runId=${args.runId} interactionId=${args.interactionId} wsUrl=${args.wsUrl}\n`
+          `[stub] register called: runId=${args.runId} interactionId=${args.interactionId} wsUrl=${describeWsUrl(args)}\n`
         );
         return Promise.resolve(true);
       },
@@ -64,9 +68,9 @@ async function main(): Promise<void> {
     const innerUnregister = real.unregister;
     registration = {
       runId: real.runId,
-      register: async (args: RegisterArgs): Promise<boolean> => {
+      register: async (args: StreamingTargetRegisterArgs): Promise<boolean> => {
         process.stderr.write(
-          `[stub] register attempting: runId=${args.runId} interactionId=${args.interactionId} wsUrl=${args.wsUrl}\n`
+          `[stub] register attempting: runId=${args.runId} interactionId=${args.interactionId} wsUrl=${describeWsUrl(args)}\n`
         );
         const ok = await innerRegister(args);
         process.stderr.write(`[stub] register result: ok=${String(ok)}\n`);

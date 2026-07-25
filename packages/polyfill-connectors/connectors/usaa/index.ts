@@ -284,7 +284,6 @@ export async function emitAccountsStream(
     if (emitEntity) {
       const rec = buildAccountRecord(a, emittedAt);
       if (!fingerprintCursor || fingerprintCursor.shouldEmit(rec)) {
-        // biome-ignore lint/performance/noAwaitInLoops: each account emits in list order; the runtime's stdout backpressure must settle per-record before the next account is processed
         await deps.emitRecord("accounts", rec);
       }
       // Emitted or suppressed-unchanged: either way the account was accounted
@@ -415,7 +414,6 @@ export async function emitDeferredStreams(emit: EmitFn, requested: RequestedScop
         reason: "selectors_pending",
         message: `${s} stream scaffolded in design-notes; click-chain or SPA-component wiring deferred.`,
       };
-      // biome-ignore lint/performance/noAwaitInLoops: each deferred-stream SKIP_RESULT emits in declared order via the runtime's backpressure-gated emit
       await emit(msg);
     }
   }
@@ -720,7 +718,6 @@ export async function emitStatementRecords(
     // churn). When no cursor is supplied (legacy callers/tests) the
     // record always emits.
     if (!fingerprintCursor || fingerprintCursor.shouldEmit(rec)) {
-      // biome-ignore lint/performance/noAwaitInLoops: each statement emits in list order; the runtime's stdout backpressure must settle per-record before the next statement is processed
       await deps.emitRecord("statements", rec);
     }
   }
@@ -786,7 +783,6 @@ export async function emitStatementCoverage(
 ): Promise<void> {
   const result = computeStatementCoverage(coverageRows);
   for (const gap of result.gaps) {
-    // biome-ignore lint/performance/noAwaitInLoops: each gap emits in order via the runtime's backpressure-gated emit
     await deps.emit(gap);
   }
   await emitDetailCoverage(deps, result.coverage);
@@ -1002,7 +998,6 @@ function noExportAffordanceDiagnostic(diag: DiagnosticInfo | null, managedSurfac
     navigationMarkerCount: observation?.navigation_marker_count,
     parserCount: 0,
     readCount: 1,
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: false positive — observation is undefined when diag is null/lacks no_export_observation; the "unknown" fallback is reachable
     route: observation?.route ?? "unknown",
     targetCount: observation?.target_count,
     transactionMarkerCount: observation?.transaction_marker_count,
@@ -1068,7 +1063,6 @@ async function locateExportPage(
     }
     seen.add(url);
     try {
-      // biome-ignore lint/performance/noAwaitInLoops: navigation candidates share one Playwright page; each candidate must resolve before the next is attempted
       await page.goto(url, {
         waitUntil: "domcontentloaded",
         timeout: ACCOUNT_NAV_TIMEOUT_MS,
@@ -1236,7 +1230,6 @@ function isAnalyticsBeacon(headers: Record<string, string>, url: string): boolea
   if (ANALYTICS_HOST_RE.test(url)) {
     return true;
   }
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: false positive — noUncheckedIndexedAccess types this index access as string | undefined
   const contentType = headers["content-type"]?.toLowerCase() ?? "";
   return ANALYTICS_CONTENT_TYPE_RE.test(contentType);
 }
@@ -1348,15 +1341,15 @@ async function submitExportAndAwait(page: Page): Promise<ExportSubmitOutcome> {
     await submit.click().catch((): undefined => undefined);
 
     const dialogMessage = page.locator(EXPORT_DIALOG_MESSAGE_SELECTOR).first();
+    const readDialogOutcome = async (): Promise<ExportSubmitOutcome> => {
+      const message = ((await dialogMessage.textContent().catch((): string | null => null)) ?? "").trim();
+      return isNoDataExportMessage(message) ? { kind: "empty", message } : { kind: "dialog_error", message };
+    };
     const errorPromise = page
       .locator(EXPORT_DIALOG_MESSAGE_SELECTOR)
       .first()
       .waitFor({ state: "visible", timeout: DOWNLOAD_TIMEOUT_MS })
-      .then(async (): Promise<ExportSubmitOutcome> => {
-        // biome-ignore lint/suspicious/noNestedPromises: this races against waitForCsvArtifact via Promise.race below; restructuring the inline .catch fallback risks changing the dialog-error timing/error semantics of that race.
-        const message = ((await dialogMessage.textContent().catch((): string | null => null)) ?? "").trim();
-        return isNoDataExportMessage(message) ? { kind: "empty", message } : { kind: "dialog_error", message };
-      })
+      .then(readDialogOutcome)
       .catch((): Promise<never> => new Promise((): void => undefined));
 
     return await Promise.race<ExportSubmitOutcome>([
@@ -1618,7 +1611,6 @@ async function tryExportLadder(
     if (!sinceDate) {
       continue;
     }
-    // biome-ignore lint/performance/noAwaitInLoops: the export ladder retries with progressively narrower windows only after the prior attempt on the same shared page has settled
     const outcome = await runSingleLadderAttempt({
       deps,
       context,
@@ -1736,7 +1728,6 @@ export async function emitCsvTransactions(
     // `pruneStale()`d — pruning ids the run did not look at would drop
     // their fingerprints and re-churn them on the next overlapping window.
     if (!fingerprintCursor || fingerprintCursor.shouldEmit(t)) {
-      // biome-ignore lint/performance/noAwaitInLoops: each transaction emits in list order; the runtime's stdout backpressure must settle per-record before the next transaction is processed
       await deps.emitRecord("transactions", t);
     }
     if (!latest || t.date > latest) {
@@ -1870,7 +1861,6 @@ export async function recoverServedAccountTransactionGaps(
     if (!gapId) {
       continue;
     }
-    // biome-ignore lint/performance/noAwaitInLoops: each recovered gap emits in order via the runtime's backpressure-gated emit
     await deps.emit({
       type: "DETAIL_GAP_RECOVERED",
       reference_only: true,
@@ -2079,7 +2069,6 @@ async function runTransactionsStream(
       continue;
     }
     if (streamState.sessionDeadMidRun) {
-      // biome-ignore lint/performance/noAwaitInLoops: emitted once before the loop exits via break; not a per-iteration concurrency concern
       await deps.emit({
         type: "PROGRESS",
         stream: "transactions",
@@ -2290,7 +2279,6 @@ async function processPdfStatementRow(
       // modulo `fetched_at`. Re-parsing the same statement PDFs every run
       // was appending a fresh version per transaction.
       if (!fingerprintCursor || fingerprintCursor.shouldEmit({ ...t })) {
-        // biome-ignore lint/performance/noAwaitInLoops: each PDF-parsed transaction emits in list order; the runtime's stdout backpressure must settle per-record before the next transaction is processed
         await deps.emitRecord("transactions", { ...t });
       }
       counters.pdfTxnCount += 1;
@@ -2325,7 +2313,6 @@ async function emitPdfStatementTransactions(
     if (!ok) {
       continue;
     }
-    // biome-ignore lint/performance/noAwaitInLoops: PDF rows share mutable `counters` accumulated across the scan and must be processed in index order
     await processPdfStatementRow(deps, row, ok, accountById, counters, fingerprintCursor);
   }
   await deps.emit({
@@ -2456,7 +2443,6 @@ async function runInboxStream(deps: EmitDeps, page: Page, state: Record<string, 
         continue;
       }
       if (fingerprintCursor.shouldEmit(record)) {
-        // biome-ignore lint/performance/noAwaitInLoops: each inbox message emits in list order; the runtime's stdout backpressure must settle per-record before the next message is processed
         await deps.emitRecord("inbox_messages", record);
       }
     }
@@ -2556,7 +2542,6 @@ async function runCreditCardBillingStream(
     });
     const cards = accounts.filter((a) => CREDIT_CARD_TYPE_RE.test(a.account_type));
     for (const a of cards) {
-      // biome-ignore lint/performance/noAwaitInLoops: credit-card candidates share one Playwright page; each navigation must resolve before the next card is attempted
       await page
         .goto(`https://www.usaa.com${a.account_url}`, {
           waitUntil: "domcontentloaded",

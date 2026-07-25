@@ -111,7 +111,7 @@ async function sp<T>(
         const retryAfter = res.headers.get("retry-after");
         return {
           body: await res.text().catch((): string => ""),
-          ...(retryAfter == null ? {} : { headers: { "retry-after": retryAfter } }),
+          ...(retryAfter === null ? {} : { headers: { "retry-after": retryAfter } }),
           status: res.status,
         } as { body: string; status: number };
       },
@@ -143,7 +143,8 @@ async function paginate<T>(
   let next: string | null = path;
   let guard = MAX_PAGES;
   let pageIndex = 0;
-  while (next && guard-- > 0) {
+  while (next && guard > 0) {
+    guard -= 1;
     const pageExtra = {
       stream,
       phase: "fetch",
@@ -167,7 +168,7 @@ async function paginate<T>(
       cursor_present: Boolean(json.next),
     });
     next = json.next ? json.next.replace(API, "") : null;
-    pageIndex++;
+    pageIndex += 1;
   }
   return all;
 }
@@ -247,7 +248,7 @@ async function collectTopArtists(
   await progress("Fetching top artists", { stream: "top_artists", phase: "start" });
   const ranges = ["short_term", "medium_term", "long_term"] as const;
   let totalSeen = 0;
-  for (let i = 0; i < ranges.length; i++) {
+  for (let i = 0; i < ranges.length; i += 1) {
     const range = ranges[i];
     const pageExtra = {
       stream: "top_artists",

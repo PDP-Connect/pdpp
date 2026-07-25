@@ -289,7 +289,7 @@ test("processRolloutLine: paired function_calls drain immediately — pendingCal
 
   const CALLS = 5000;
   let maxPending = 0;
-  for (let i = 0; i < CALLS; i++) {
+  for (let i = 0; i < CALLS; i += 1) {
     // Each call is immediately followed by its output, the healthy interleave.
     processRolloutLine({ obj: functionCallLine(`c${i}`, "shell", "x".repeat(64)), state, deps, file: "r.jsonl" });
     processRolloutLine({ obj: functionCallOutputLine(`c${i}`, "y".repeat(64)), state, deps, file: "r.jsonl" });
@@ -335,7 +335,7 @@ test("processRolloutLine: offset-zero replay caps unmatched function_calls", () 
   processRolloutLine({ obj: sessionMetaLine("sess-unmatched"), state, deps, file: "rollout-replay.jsonl" });
 
   const calls = 1100;
-  for (let i = 0; i < calls; i++) {
+  for (let i = 0; i < calls; i += 1) {
     const callId = `call_${String(i).padStart(24, "0")}`;
     processRolloutLine({
       obj: functionCallLine(callId, "shell", `echo ${i}`),
@@ -361,7 +361,7 @@ test("processRolloutLine: an output for an evicted pending call lands as output-
   const state = makeRolloutParseState();
   processRolloutLine({ obj: sessionMetaLine("sess-evicted-output"), state, deps, file: "rollout-replay.jsonl" });
 
-  for (let i = 0; i < 1025; i++) {
+  for (let i = 0; i < 1025; i += 1) {
     processRolloutLine({
       obj: functionCallLine(`call_${i}`, "shell", `echo ${i}`),
       state,
@@ -544,8 +544,17 @@ test("emitSessionsFromMaps: thread-only and rollout-only sessions both emit; dis
   const aggs = new Map<string, RolloutAggregate>([["sess-rollout", makeAggregate()]]);
   emitSessionsFromMaps({ threadsMap, rolloutAggregates: aggs, emitRecord: deps.emitRecord });
 
-  const ids = emitted.filter((r) => r.stream === "sessions").map((r) => r.data.id);
-  assert.deepEqual(ids.sort(), ["sess-rollout", "sess-thread"], "both sources contribute one record each");
+  const ids = emitted.filter((r) => r.stream === "sessions").map((r) => String(r.data.id));
+  assert.deepEqual(
+    ids.sort((a, b) => {
+      if (a < b) {
+        return -1;
+      }
+      return a > b ? 1 : 0;
+    }),
+    ["sess-rollout", "sess-thread"],
+    "both sources contribute one record each"
+  );
 });
 
 // ─── Invariant 9: lossy-overwrite repair + churn reduction via fingerprints ──

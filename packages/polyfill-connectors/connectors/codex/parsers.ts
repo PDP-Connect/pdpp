@@ -28,7 +28,7 @@ export function textPreview(s: unknown, max = PDPP_PREVIEW_MAX_CHARS): string | 
 // ─── Rollout payload text extraction ────────────────────────────────────
 
 export function extractMessageText(payload: RolloutPayload): string | null {
-  if (!(payload?.content && Array.isArray(payload.content))) {
+  if (!(payload.content && Array.isArray(payload.content))) {
     return null;
   }
   const parts = payload.content.map((p) => p?.text).filter(Boolean);
@@ -70,7 +70,7 @@ function parseFrontmatterLine(line: string, meta: Record<string, string>): void 
   if (!kv) {
     return;
   }
-  const key = kv[1];
+  const [, key] = kv;
   if (!key) {
     return;
   }

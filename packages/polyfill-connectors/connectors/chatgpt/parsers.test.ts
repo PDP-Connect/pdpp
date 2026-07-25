@@ -317,7 +317,7 @@ test("extractMessage: returns null for synthetic root (no message)", () => {
 
 test("extractMessage: builds a RECORD with content + children + current-branch flag", () => {
   const { mapping } = readFixtureJson<ConversationFixture>("conversation-mapping.json");
-  const a1 = mapping.a1;
+  const { a1 } = mapping;
   assert.ok(a1, "fixture must expose a1");
   const rec = extractMessage("a1", a1, "conv1", true);
   assert.ok(rec);

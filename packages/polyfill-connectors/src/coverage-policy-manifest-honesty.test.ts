@@ -92,7 +92,7 @@ test("connector manifest streams: accepted-coverage policy must not combine with
         continue;
       }
       // `required` defaults to true when absent — so absent is the same as required: true.
-      const required = stream.required;
+      const { required } = stream;
       if (required !== false) {
         violations.push(
           `${connectorKey}.${String(stream.name)}: coverage_policy="${policy}" with required=${String(required ?? "absent (defaults true)")} ` +
@@ -324,21 +324,45 @@ test("connector manifest streams: required must be declared explicitly (ratchet 
   }
 
   assert.deepEqual(
-    newOmissions.sort(),
+    newOmissions.sort((a, b) => {
+      if (a < b) {
+        return -1;
+      }
+      return a > b ? 1 : 0;
+    }),
     [],
     "New manifest stream(s) omit `required` — declare it explicitly (true or false) rather than relying on " +
       "the implicit required:true default. This is the exact authoring gap that let commit 7cc177eec silently " +
-      `make stars/user_groups/reminders/dm_read_states load-bearing: ${JSON.stringify(newOmissions.sort())}`
+      `make stars/user_groups/reminders/dm_read_states load-bearing: ${JSON.stringify(
+        newOmissions.sort((a, b) => {
+          if (a < b) {
+            return -1;
+          }
+          return a > b ? 1 : 0;
+        })
+      )}`
   );
 
   assert.deepEqual(
-    editedGrandfatheredStreams.sort(),
+    editedGrandfatheredStreams.sort((a, b) => {
+      if (a < b) {
+        return -1;
+      }
+      return a > b ? 1 : 0;
+    }),
     [],
     "Existing manifest stream(s) that are grandfathered onto KNOWN_MISSING_REQUIRED (still omitting `required`) " +
       "were semantically edited (schema, semantics, cursor/incremental strategy, coverage_policy, etc. — " +
       "description/display prose changes are exempt). An edit to a stream's real behavior invalidates its " +
       "grandfathered status: either declare `required` explicitly on it now, or if the edit is truly benign, " +
       "update its fingerprint in KNOWN_MISSING_REQUIRED as a deliberate, reviewable allowlist change. " +
-      `Streams: ${JSON.stringify(editedGrandfatheredStreams.sort())}`
+      `Streams: ${JSON.stringify(
+        editedGrandfatheredStreams.sort((a, b) => {
+          if (a < b) {
+            return -1;
+          }
+          return a > b ? 1 : 0;
+        })
+      )}`
   );
 });

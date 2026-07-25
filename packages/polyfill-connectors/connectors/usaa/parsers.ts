@@ -89,12 +89,12 @@ export function fileUrlForPath(p: string): string {
   return pathToFileURL(p).toString();
 }
 
-export function safeAccountSlug(accountId: string | null | undefined, fallback: string | null | undefined): string {
-  if (accountId && SLUG_SAFE_RE.test(accountId)) {
-    return accountId;
+export function safeAccountSlug(rawAccountId: string | null | undefined, fallback: string | null | undefined): string {
+  if (rawAccountId && SLUG_SAFE_RE.test(rawAccountId)) {
+    return rawAccountId;
   }
-  if (accountId) {
-    return createHash("sha256").update(accountId).digest("hex").slice(0, 16);
+  if (rawAccountId) {
+    return createHash("sha256").update(rawAccountId).digest("hex").slice(0, 16);
   }
   if (fallback && SLUG_SAFE_RE.test(fallback)) {
     return fallback;
@@ -241,12 +241,12 @@ export function parseCsv(text: string): string[][] {
   let cur: string[] = [];
   let field = "";
   let inQuote = false;
-  for (let i = 0; i < text.length; i++) {
+  for (let i = 0; i < text.length; i += 1) {
     const c = text[i];
     if (inQuote) {
       if (c === '"' && text[i + 1] === '"') {
         field += '"';
-        i++;
+        i += 1;
       } else if (c === '"') {
         inQuote = false;
       } else {
@@ -308,7 +308,7 @@ interface RowToTxnArgs {
 function csvRowToTransaction({
   row,
   idx,
-  accountId,
+  accountId: rowAccountId,
   accountName,
   fetchedAt,
   tupleOrdinal,
@@ -328,12 +328,12 @@ function csvRowToTransaction({
   const ord = tupleOrdinal.get(tupleKey) || 0;
   tupleOrdinal.set(tupleKey, ord + 1);
   const checkMatch = original.match(CHECK_NUMBER_RE);
-  const id = hashId(`${accountId}|${tupleKey}|#${ord}`);
+  const id = hashId(`${rowAccountId}|${tupleKey}|#${ord}`);
   const categoryRaw = idx.idxCat >= 0 ? (row[idx.idxCat] ?? "").trim() || null : null;
   const balanceRaw = idx.idxBal >= 0 ? (row[idx.idxBal] ?? null) : null;
   return {
     id,
-    account_id: accountId,
+    account_id: rowAccountId,
     account_name: accountName,
     date,
     description,
@@ -350,7 +350,11 @@ function csvRowToTransaction({
 
 export function rowsToTransactions(
   rows: string[][],
-  { accountId, accountName, fetchedAt }: { accountId: string; accountName: string | null; fetchedAt: string }
+  {
+    accountId: rowsAccountId,
+    accountName,
+    fetchedAt,
+  }: { accountId: string; accountName: string | null; fetchedAt: string }
 ): TransactionRecord[] {
   if (rows.length < 2) {
     return [];
@@ -359,7 +363,7 @@ export function rowsToTransactions(
   const idx = csvHeaderIndices(header);
   const out: TransactionRecord[] = [];
   const tupleOrdinal = new Map<string, number>();
-  for (let i = 1; i < rows.length; i++) {
+  for (let i = 1; i < rows.length; i += 1) {
     const row = rows[i];
     if (!row) {
       continue;
@@ -367,7 +371,7 @@ export function rowsToTransactions(
     const rec = csvRowToTransaction({
       row,
       idx,
-      accountId,
+      accountId: rowsAccountId,
       accountName,
       fetchedAt,
       tupleOrdinal,
@@ -413,7 +417,7 @@ function parseModernTxnLine(
   const description = descRaw.replace(WS_RUN_2PLUS_RE, " ").trim();
   const amount = currencyToCentsFromStatement(amountRaw);
   const balance = balanceRaw ? currencyToCentsFromStatement(balanceRaw) : null;
-  if (amount == null) {
+  if (amount === null) {
     return null;
   }
   const tupleKey = `${iso}|${amount}|${description}`;
@@ -474,7 +478,7 @@ function parseCreditTxnLine(
   }
   const description = descRaw.replace(WS_RUN_2PLUS_RE, " ").trim();
   const amount = currencyToCentsFromStatement(amountRaw);
-  if (amount == null) {
+  if (amount === null) {
     return null;
   }
   const tupleKey = `${iso}|${amount}|${description}`;

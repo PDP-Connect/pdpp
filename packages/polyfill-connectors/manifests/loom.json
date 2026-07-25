@@ -16,9 +16,7 @@
     }
   },
   "capabilities": {
-    "human_interaction": [
-      "manual_action"
-    ],
+    "human_interaction": ["manual_action"],
     "refresh_policy": {
       "recommended_mode": "manual",
       "minimum_interval_seconds": 3600,
@@ -49,59 +47,34 @@
             "type": "string"
           },
           "title": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "description": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "secondary"
           },
           "duration_seconds": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "view_count": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "created_at": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time",
             "x_pdpp_role": "event-time"
           },
           "share_url": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "has_transcript": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           }
         },
-        "required": [
-          "id"
-        ]
+        "required": ["id"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "created_at",
       "consent_time_field": "created_at",
       "selection": {
@@ -111,28 +84,15 @@
       "incremental": true,
       "query": {
         "search": {
-          "lexical_fields": [
-            "title",
-            "description"
-          ],
-          "semantic_fields": [
-            "title",
-            "description"
-          ]
+          "lexical_fields": ["title", "description"],
+          "semantic_fields": ["title", "description"]
         },
         "range_filters": {
-          "created_at": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "created_at": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "created_at"
-          ]
+          "group_by_time": ["created_at"]
         }
       },
       "coverage_strategy": "checkpoint_window",
@@ -156,21 +116,13 @@
             "type": "string"
           },
           "text": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           }
         },
-        "required": [
-          "id",
-          "video_id"
-        ]
+        "required": ["id", "video_id"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "selection": {
         "fields": true,
         "resources": true
@@ -186,12 +138,8 @@
       ],
       "query": {
         "search": {
-          "lexical_fields": [
-            "text"
-          ],
-          "semantic_fields": [
-            "text"
-          ]
+          "lexical_fields": ["text"],
+          "semantic_fields": ["text"]
         }
       },
       "coverage_strategy": "parent_detail_accounting",

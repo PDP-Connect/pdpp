@@ -119,11 +119,11 @@ export type LocatorProbe =
     };
 
 interface LocatorProbeLocator {
-  ariaSnapshot(options?: Parameters<ReturnType<Page["locator"]>["ariaSnapshot"]>[0]): Promise<string>;
-  count(): Promise<number>;
-  first(): LocatorProbeLocator;
-  isEnabled(options?: Parameters<ReturnType<Page["locator"]>["isEnabled"]>[0]): Promise<boolean>;
-  isVisible(): Promise<boolean>;
+  ariaSnapshot: (options?: Parameters<ReturnType<Page["locator"]>["ariaSnapshot"]>[0]) => Promise<string>;
+  count: () => Promise<number>;
+  first: () => LocatorProbeLocator;
+  isEnabled: (options?: Parameters<ReturnType<Page["locator"]>["isEnabled"]>[0]) => Promise<boolean>;
+  isVisible: () => Promise<boolean>;
 }
 
 export type LocatorProbePage = Pick<Page, "title" | "url"> & {
@@ -161,9 +161,9 @@ interface LocatorProbeResult {
 /** Handle returned by createCaptureSession when capture is enabled. */
 export interface CaptureSession {
   readonly baseDir: string;
-  captureDom(page: Page, label: string): Promise<void>;
-  captureHttp(label: string, body: unknown, meta?: HttpCaptureMeta): void;
-  captureLocatorProbe?(page: LocatorProbePage, label: string, probes: readonly LocatorProbe[]): Promise<void>;
+  captureDom: (page: Page, label: string) => Promise<void>;
+  captureHttp: (label: string, body: unknown, meta?: HttpCaptureMeta) => void;
+  captureLocatorProbe?: (page: LocatorProbePage, label: string, probes: readonly LocatorProbe[]) => Promise<void>;
   /**
    * Apply post-run retention policy:
    *   - PDPP_CAPTURE_FIXTURES mode: no-op (always retain).
@@ -171,7 +171,7 @@ export interface CaptureSession {
    *     delete the raw run directory. Otherwise retain.
    * Safe to call multiple times; the second call is a no-op.
    */
-  finalize(): void;
+  finalize: () => void;
   /** True when this session retains raw fixtures on success. */
   readonly keepOnSuccess: boolean;
   /**
@@ -179,10 +179,10 @@ export interface CaptureSession {
    * the failure-only retention policy. With `keepOnSuccess=true` (the
    * always-retain default), calling this has no effect.
    */
-  markSucceeded(): void;
-  recordRecord(msg: { stream: string; data: RecordData }): void;
+  markSucceeded: () => void;
+  recordRecord: (msg: { stream: string; data: RecordData }) => void;
   readonly runId: string;
-  setTraceCheckpointHook?(hook: ((label: string) => Promise<void>) | null): void;
+  setTraceCheckpointHook?: (hook: ((label: string) => Promise<void>) | null) => void;
 }
 
 function requireProbeMethod<K extends keyof LocatorProbePage>(

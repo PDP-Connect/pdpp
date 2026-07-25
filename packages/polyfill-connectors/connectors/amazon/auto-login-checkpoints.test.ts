@@ -154,7 +154,7 @@ test("ensureAmazonSession invokes the checkpoint hook at each auth phase (non-2F
   }
   // Verify relative ordering of the required phases.
   const positions = expectedOrder.map((l) => checkpoints.indexOf(l));
-  for (let i = 1; i < positions.length; i++) {
+  for (let i = 1; i < positions.length; i += 1) {
     assert.ok(
       (positions[i] ?? -1) > (positions[i - 1] ?? -1),
       `checkpoint ${expectedOrder[i]} should come after ${expectedOrder[i - 1]}`

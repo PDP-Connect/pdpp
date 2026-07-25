@@ -43,10 +43,7 @@
             "type": "string"
           },
           "text": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "created_at": {
@@ -55,56 +52,30 @@
             "x_pdpp_role": "event-time"
           },
           "favorite_count": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "retweet_count": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "in_reply_to_status_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "in_reply_to_screen_name": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "lang": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "media_count": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "url_count": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           }
         },
-        "required": [
-          "id",
-          "created_at"
-        ]
+        "required": ["id", "created_at"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "created_at",
       "consent_time_field": "created_at",
       "selection": {
@@ -114,29 +85,16 @@
       "incremental": true,
       "query": {
         "search": {
-          "lexical_fields": [
-            "text"
-          ],
-          "semantic_fields": [
-            "text"
-          ]
+          "lexical_fields": ["text"],
+          "semantic_fields": ["text"]
         },
         "range_filters": {
-          "created_at": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "created_at": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "created_at"
-          ],
-          "group_by": [
-            "lang"
-          ]
+          "group_by_time": ["created_at"],
+          "group_by": ["lang"]
         }
       },
       "coverage_strategy": "snapshot_import_receipt",
@@ -157,22 +115,13 @@
             "type": "string"
           },
           "conversation_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "sender_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "recipient_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "created_at": {
             "type": "string",
@@ -180,21 +129,13 @@
             "x_pdpp_role": "event-time"
           },
           "text": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           }
         },
-        "required": [
-          "id",
-          "created_at"
-        ]
+        "required": ["id", "created_at"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "created_at",
       "consent_time_field": "created_at",
       "selection": {
@@ -204,26 +145,15 @@
       "incremental": true,
       "query": {
         "search": {
-          "lexical_fields": [
-            "text"
-          ],
-          "semantic_fields": [
-            "text"
-          ]
+          "lexical_fields": ["text"],
+          "semantic_fields": ["text"]
         },
         "range_filters": {
-          "created_at": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "created_at": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "created_at"
-          ]
+          "group_by_time": ["created_at"]
         }
       },
       "coverage_strategy": "snapshot_import_receipt",

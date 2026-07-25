@@ -151,13 +151,11 @@ async function sourceUnavailableLoginActions(page: Page): Promise<SourceUnavaila
   ];
   const candidates: SourceUnavailableLoginAction[] = [];
   for (const action of semanticActions) {
-    // biome-ignore lint/performance/noAwaitInLoops: candidate order (buttons before links, then DOM order within each) is load-bearing for the caller's first-visible selection
     const count = await action.count().catch((): number => 0);
     for (let index = 0; index < count; index += 1) {
       const locator = action.nth(index);
       candidates.push({
         locator,
-        // biome-ignore lint/performance/noAwaitInLoops: visibility must be resolved per-candidate in the same stable order the caller selects from
         visible: await locator.isVisible().catch((): boolean => false),
       });
     }
@@ -302,7 +300,6 @@ async function completeOtpChallenge({ context, page, sendInteraction }: EnsureUs
   await page.waitForSelector(OTP_INPUT_SELECTOR, { timeout: 20_000 });
 
   for (let attempt = 1; attempt <= MAX_OTP_ATTEMPTS; attempt += 1) {
-    // biome-ignore lint/performance/noAwaitInLoops: each OTP attempt depends on the outcome of the prior submission; retries are inherently sequential
     const code = await requestOtp(sendInteraction, attempt);
     const otpInput = page.locator(OTP_INPUT_SELECTOR).first();
     await otpInput.fill(code);

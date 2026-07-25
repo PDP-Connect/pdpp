@@ -387,7 +387,6 @@ export async function emitSessionsFromAccumulators({
     return;
   }
   for (const session of sessionAccumulators.values()) {
-    // biome-ignore lint/performance/noAwaitInLoops: emit order must match accumulator insertion order (documented invariant above); Promise.all would reorder the emitted record stream
     await emitRecord("sessions", { ...session });
   }
 }
@@ -499,7 +498,6 @@ async function walkToolResults(args: WalkToolResultsArgs): Promise<void> {
     for (const ent of items) {
       const full = join(dir, ent.name);
       if (ent.isDirectory()) {
-        // biome-ignore lint/performance/noAwaitInLoops: recursive directory walk with bounded fs concurrency by design; parallelizing would fan out unboundedly across a potentially large tool-results tree
         await walk(full);
         continue;
       }
@@ -539,7 +537,6 @@ async function readFilesRecursively(
       const relPath = prefix ? `${prefix}/${ent.name}` : ent.name;
       const fullPath = join(dir, ent.name);
       if (ent.isDirectory()) {
-        // biome-ignore lint/performance/noAwaitInLoops: recursive directory walk accumulates into a single shared `out` array in a stable sorted order; concurrent recursion would race on push order and fan out unboundedly
         await walk(fullPath, relPath);
         continue;
       }
@@ -675,7 +672,6 @@ async function emitSkills({ claudeHome, requested, emitRecord, fileMtimes, newMt
       continue;
     }
     try {
-      // biome-ignore lint/performance/noAwaitInLoops: emit order per skill must follow directory iteration order; mtime cursors (fileMtimes/newMtimes) are updated sequentially per entry
       raw = await readBoundedUtf8(skillPath);
     } catch {
       continue;
@@ -755,7 +751,6 @@ async function emitSlashCommands({
       }
       const full = join(dir, ent.name);
       if (ent.isDirectory()) {
-        // biome-ignore lint/performance/noAwaitInLoops: recursive directory walk for slash commands, mirrors the skills walker above; sequential mtime-cursor updates and ordered emits are intentional
         await walk(full, prefix ? `${prefix}/${ent.name}` : ent.name);
         continue;
       }
@@ -807,7 +802,6 @@ async function emitProjectMemoryNotes({
       continue;
     }
     try {
-      // biome-ignore lint/performance/noAwaitInLoops: mtime cursor (fileMtimes/newMtimes) is updated sequentially per file, and emits must follow the stable sorted file order from readFilesRecursively
       raw = await readBoundedUtf8(fullPath);
     } catch {
       continue;
@@ -888,7 +882,6 @@ async function processTopLevelJsonl(
 ): Promise<void> {
   const topJsonl = entries.filter((e) => e.isFile() && e.name.endsWith(".jsonl")).map((e) => e.name);
   for (const f of topJsonl) {
-    // biome-ignore lint/performance/noAwaitInLoops: each JSONL file shares mutable cursor/mtime state on `args` accumulated across the scan and must be processed in order
     await processJsonlFile({
       args,
       forcedSessionId: null,
@@ -920,7 +913,6 @@ async function processSessionDir(
     const subagentsDir = join(sessionDir, "subagents");
     const subFiles = await readSubagentFiles(subagentsDir);
     for (const f of subFiles) {
-      // biome-ignore lint/performance/noAwaitInLoops: each subagent JSONL file shares mutable cursor/mtime state on `args` accumulated across the scan and must be processed in order
       await processJsonlFile({
         args,
         forcedSessionId: sessionId,
@@ -967,7 +959,6 @@ async function scanProjectDir(projectDir: string, args: ScanProjectDirsArgs): Pr
 
   const sessionDirs = entries.filter((e) => e.isDirectory() && SESSION_DIR_PREFIX_RE.test(e.name));
   for (const sessEnt of sessionDirs) {
-    // biome-ignore lint/performance/noAwaitInLoops: each session dir shares mutable cursor/mtime state on `args` accumulated across the scan and must be processed in order
     await processSessionDir(sessEnt, projectPath, projectDir, args);
   }
 }
@@ -1002,7 +993,6 @@ export async function scanProjectDirs(args: ScanProjectDirsArgs): Promise<void> 
     message: `Claude Code phase=index pass=index total_project_dirs=${totalProjectDirs}`,
   });
   for (const projectDir of projectDirs) {
-    // biome-ignore lint/performance/noAwaitInLoops: each project dir shares mutable cursor/mtime state on `args` accumulated across the scan and must be processed in order
     await scanProjectDir(projectDir, args);
   }
 }
@@ -1245,7 +1235,6 @@ async function discoverClaudeJsonlSources(
     const projectPath = join(baseDir, projectDir);
     let entries: Dirent[];
     try {
-      // biome-ignore lint/performance/noAwaitInLoops: sources accumulate in stable directory-scan order across project dirs; readdir failures per-dir must not block later dirs
       entries = await readdir(projectPath, { withFileTypes: true });
     } catch {
       continue;
@@ -1367,7 +1356,6 @@ async function emitChangedSessions(input: {
   }
   for (const [id, aggregate] of input.next) {
     if (!input.prior[id] || canonicalJson(input.prior[id]) !== canonicalJson(aggregate)) {
-      // biome-ignore lint/performance/noAwaitInLoops: each session emits in map-iteration order via the runtime's backpressure-gated emitRecord
       await input.emitRecord("sessions", { ...aggregate });
     }
   }
@@ -1428,7 +1416,6 @@ async function emitCoverageDiagnostics(input: {
     return;
   }
   for (const record of input.inventory.coverage) {
-    // biome-ignore lint/performance/noAwaitInLoops: each coverage record emits in list order via the runtime's backpressure-gated emitRecord
     await input.emitRecord("coverage_diagnostics", record);
   }
 }
@@ -1462,7 +1449,6 @@ async function emitGatedInventoryStream(input: {
   const cursor = openInventoryFingerprintCursor(input.priorState);
   for (const record of input.records) {
     if (cursor.shouldEmit(record)) {
-      // biome-ignore lint/performance/noAwaitInLoops: each record emits in list order; the fingerprint cursor's shouldEmit/pruneStale contract requires sequential processing
       await input.emitRecord(input.stream, record);
     }
   }
@@ -1489,7 +1475,6 @@ async function emitLocalInventoryStreams(input: {
     if (stream === "file_history" || !input.requested.has(stream)) {
       continue;
     }
-    // biome-ignore lint/performance/noAwaitInLoops: each stream owns its own fingerprint cursor and STATE write; streams must settle one at a time to keep cursor writes isolated
     await emitGatedInventoryStream({
       emit: input.emit,
       emitRecord: input.emitRecord,
@@ -1730,7 +1715,6 @@ if (isMainModule(import.meta.url)) {
           );
           const changedLegacySessionIds = new Set<string>();
           for (const source of sources) {
-            // biome-ignore lint/performance/noAwaitInLoops: each source scan mutates shared sessionAccumulators/rebuildAll state that the next iteration reads
             const scanned = await scanSessionSource({
               cursor: rebuildAll ? undefined : priorSessionCursors[source.path],
               projectDir: source.projectDir,
@@ -1754,7 +1738,6 @@ if (isMainModule(import.meta.url)) {
             sessionAccumulators = new Map();
             nextSessionCursors = {};
             for (const source of sources) {
-              // biome-ignore lint/performance/noAwaitInLoops: each source scan mutates shared sessionAccumulators state that the next iteration reads
               const scanned = await scanSessionSource({
                 cursor: undefined,
                 projectDir: source.projectDir,
@@ -1840,7 +1823,6 @@ if (isMainModule(import.meta.url)) {
         if (requested.has("messages") || requested.has("attachments")) {
           for (const source of sources) {
             const candidateLegacyBaseline = messageUsesLegacyJsonlMtimes && messageLegacyJsonlMtimes.has(source.path);
-            // biome-ignore lint/performance/noAwaitInLoops: each source's cursor/telemetry state is read from and written back to shared per-path maps that the next iteration depends on
             let cursor = await scanChildSource({
               cursor: priorChildCursors[source.path],
               emitRecord,

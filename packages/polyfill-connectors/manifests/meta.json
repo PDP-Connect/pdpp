@@ -16,9 +16,7 @@
     }
   },
   "capabilities": {
-    "human_interaction": [
-      "manual_action"
-    ],
+    "human_interaction": ["manual_action"],
     "refresh_policy": {
       "recommended_mode": "manual",
       "minimum_interval_seconds": 3600,
@@ -53,52 +51,29 @@
             "x_pdpp_role": "actor"
           },
           "full_name": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "bio": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "secondary"
           },
           "follower_count": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "following_count": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "post_count": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "is_verified": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           }
         },
-        "required": [
-          "id",
-          "username"
-        ]
+        "required": ["id", "username"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "selection": {
         "fields": true,
         "resources": true
@@ -106,14 +81,8 @@
       "incremental": false,
       "query": {
         "search": {
-          "lexical_fields": [
-            "username",
-            "full_name",
-            "bio"
-          ],
-          "semantic_fields": [
-            "bio"
-          ]
+          "lexical_fields": ["username", "full_name", "bio"],
+          "semantic_fields": ["bio"]
         }
       },
       "coverage_strategy": "singleton_presence",
@@ -134,52 +103,30 @@
             "type": "string"
           },
           "caption": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "media_type": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "like_count": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "comment_count": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "location_name": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "taken_at": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time",
             "x_pdpp_role": "event-time"
           }
         },
-        "required": [
-          "id"
-        ]
+        "required": ["id"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "taken_at",
       "consent_time_field": "taken_at",
       "selection": {
@@ -189,12 +136,8 @@
       "incremental": true,
       "query": {
         "search": {
-          "lexical_fields": [
-            "caption"
-          ],
-          "semantic_fields": [
-            "caption"
-          ]
+          "lexical_fields": ["caption"],
+          "semantic_fields": ["caption"]
         }
       },
       "coverage_strategy": "checkpoint_window",

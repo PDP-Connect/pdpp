@@ -91,7 +91,7 @@ export function parseSchemaStreams(source: string): SchemaStreams {
   if (!block?.[1]) {
     return { registered: [] };
   }
-  const body = block[1];
+  const [, body] = block;
   const registered: string[] = [];
   // Reset regex state — global flag.
   SCHEMAS_KEY_RE.lastIndex = 0;

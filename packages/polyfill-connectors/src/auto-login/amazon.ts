@@ -63,7 +63,7 @@ async function fillWhenVisible(
   const start = Date.now();
   while (Date.now() - start < timeout) {
     const n = await locator.count().catch((): number => 0);
-    for (let i = 0; i < n; i++) {
+    for (let i = 0; i < n; i += 1) {
       const el = locator.nth(i);
       if (await el.isVisible().catch((): boolean => false)) {
         await el.fill(value);
@@ -182,7 +182,7 @@ async function fillOrHandleChallenge({
     if (await requestManualLoginForChallenge({ ...(capture ? { capture } : {}), page, reason, sendInteraction })) {
       return "recovered";
     }
-    throw new Error("amazon_login_unexpected_ui");
+    throw new Error("amazon_login_unexpected_ui", { cause: error });
   }
 }
 

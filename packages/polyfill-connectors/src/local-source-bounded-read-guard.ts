@@ -136,11 +136,11 @@ function declaresFilesystemBinding(manifest: unknown): boolean {
   if (typeof runtimeRequirements !== "object" || runtimeRequirements === null) {
     return false;
   }
-  const bindings = (runtimeRequirements as { bindings?: unknown }).bindings;
+  const { bindings } = runtimeRequirements as { bindings?: unknown };
   if (typeof bindings !== "object" || bindings === null) {
     return false;
   }
-  const filesystem = (bindings as { filesystem?: unknown }).filesystem;
+  const { filesystem } = bindings as { filesystem?: unknown };
   return (
     typeof filesystem === "object" && filesystem !== null && (filesystem as { required?: unknown }).required === true
   );
@@ -156,18 +156,18 @@ function stripComments(lines: readonly string[]): string[] {
   let inBlock = false;
   return lines.map((line) => {
     let out = "";
-    for (let i = 0; i < line.length; i++) {
+    for (let i = 0; i < line.length; i += 1) {
       const pair = line.slice(i, i + 2);
       if (inBlock) {
         if (pair === "*/") {
           inBlock = false;
-          i++;
+          i += 1;
         }
         continue;
       }
       if (pair === "/*") {
         inBlock = true;
-        i++;
+        i += 1;
         continue;
       }
       if (pair === "//") {

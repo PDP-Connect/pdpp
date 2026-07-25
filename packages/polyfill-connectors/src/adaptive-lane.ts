@@ -105,15 +105,15 @@ export interface AdaptiveLaneOptions<T> {
 }
 
 export interface AdaptiveLane<T> {
-  cancel(reason?: string): void;
+  cancel: (reason?: string) => void;
   readonly name: string;
-  run(task: (context: AdaptiveLaneRunContext) => T | Promise<T>, options?: AdaptiveLaneRunOptions): Promise<T>;
-  runAll<I>(
+  run: (task: (context: AdaptiveLaneRunContext) => T | Promise<T>, options?: AdaptiveLaneRunOptions) => Promise<T>;
+  runAll: <I>(
     items: readonly I[],
     task: (item: I, context: AdaptiveLaneRunContext) => T | Promise<T>,
     options?: AdaptiveLaneRunOptions
-  ): Promise<T[]>;
-  snapshot(): AdaptiveLaneSnapshot;
+  ) => Promise<T[]>;
+  snapshot: () => AdaptiveLaneSnapshot;
 }
 
 export class AdaptiveLaneQueueFullError extends Error {
@@ -240,8 +240,8 @@ export function createAdaptiveLane<T>(options: AdaptiveLaneOptions<T>): Adaptive
     minDelayMs = options.minDelayMs,
     maxDelayMs = options.maxDelayMs
   ): number => {
-    const retryAfterMs = outcome.retryAfterMs;
-    if (retryAfterMs != null) {
+    const { retryAfterMs } = outcome;
+    if (retryAfterMs !== undefined) {
       return clampInt(retryAfterMs, minDelayMs, maxDelayMs);
     }
     const span = Math.max(0, maxDelayMs - minDelayMs);
@@ -274,7 +274,7 @@ export function createAdaptiveLane<T>(options: AdaptiveLaneOptions<T>): Adaptive
       kind: pressure.kind === "rate_limited" ? "rate_limited" : "retryable",
       reason: pressure.kind,
     };
-    if (pressure.retryAfterMs != null) {
+    if (pressure.retryAfterMs !== undefined) {
       outcome.retryAfterMs = pressure.retryAfterMs;
     }
     return outcome;
@@ -289,7 +289,7 @@ export function createAdaptiveLane<T>(options: AdaptiveLaneOptions<T>): Adaptive
     const outcome = pressureOutcome(pressure);
     await decreaseConcurrency(outcome.kind);
     const delayMs =
-      pressure.delayMs == null
+      pressure.delayMs === undefined
         ? boundedDelay(outcome, pressureMinDelayMs, pressureMaxDelayMs)
         : boundedExplicitDelay(pressure.delayMs);
     // When the reporting task already slept `delayMs` inside its own retry loop
@@ -355,7 +355,7 @@ export function createAdaptiveLane<T>(options: AdaptiveLaneOptions<T>): Adaptive
   ): Promise<T> => {
     const context = runContext(attempt, signal);
     const attemptPromise = runContextStorage.run(context, () => Promise.resolve(task(context)));
-    if (options.attemptTimeoutMs == null) {
+    if (options.attemptTimeoutMs === undefined) {
       return attemptPromise;
     }
     return Promise.race([
@@ -378,16 +378,16 @@ export function createAdaptiveLane<T>(options: AdaptiveLaneOptions<T>): Adaptive
       outcome: event.outcome.kind,
       type: event.type,
     };
-    if (event.delayMs != null) {
+    if (event.delayMs !== undefined) {
       base.delayMs = event.delayMs;
     }
     if (event.error !== undefined) {
       base.errorName = errorName(event.error);
     }
-    if (event.outcome.reason != null) {
+    if (event.outcome.reason !== undefined) {
       base.reason = event.outcome.reason;
     }
-    if (event.outcome.retryAfterMs != null) {
+    if (event.outcome.retryAfterMs !== undefined) {
       base.retryAfterMs = event.outcome.retryAfterMs;
     }
     return base;
@@ -423,7 +423,7 @@ export function createAdaptiveLane<T>(options: AdaptiveLaneOptions<T>): Adaptive
     task: (context: AdaptiveLaneRunContext) => T | Promise<T>,
     signal?: AbortSignal
   ): Promise<T> => {
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       try {
         const result = await runAttempt(task, attempt, signal);
         const outcome = normalizeOutcome(options.classifyOutcome({ result }));
@@ -483,7 +483,7 @@ export function createAdaptiveLane<T>(options: AdaptiveLaneOptions<T>): Adaptive
     task: (context: AdaptiveLaneRunContext) => T | Promise<T>,
     runOptions: AdaptiveLaneRunOptions = {}
   ): Promise<T> => {
-    const signal = runOptions.signal;
+    const { signal } = runOptions;
     ensureNotCancelled(signal);
     if (options.maxQueueSize >= 0 && queue.size + queue.pending >= options.maxQueueSize) {
       const error = new AdaptiveLaneQueueFullError(options.name, options.maxQueueSize);

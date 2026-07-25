@@ -31,7 +31,7 @@ export interface HttpRetryKeepRetryingInput<T extends HttpRetryResponse> {
  * gets retry-storm protection without re-implementing it.
  */
 export interface HttpRetryBudget {
-  consume(): boolean;
+  consume: () => boolean;
 }
 
 export interface HttpRetryOptions<T extends HttpRetryResponse> {
@@ -240,7 +240,7 @@ export async function retryHttp<T extends HttpRetryResponse>(options: HttpRetryO
 
   let lastFailure: unknown = null;
 
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     await beforeAttempt?.();
     let response: T;
     try {
@@ -280,11 +280,11 @@ export async function retryHttp<T extends HttpRetryResponse>(options: HttpRetryO
     }
 
     const delayMs =
-      retryAfterMs == null
+      retryAfterMs === null
         ? jitteredExponentialDelayMs({ attempt, baseDelayMs, maxDelayMs, random })
         : Math.min(maxRetryAfterMs, retryAfterMs);
     const retryAttempt: HttpRetryAttempt<T> = { attempt, delayMs, maxAttempts, response };
-    if (retryAfterMs != null) {
+    if (retryAfterMs !== null) {
       retryAttempt.retryAfterMs = retryAfterMs;
     }
     await onRetry?.(retryAttempt);

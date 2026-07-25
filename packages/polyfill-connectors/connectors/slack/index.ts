@@ -1151,7 +1151,6 @@ async function reconcileMessageSourceCache(deps: {
       lookbackDays,
       nowIsoValue
     );
-    // biome-ignore lint/performance/noAwaitInLoops: repair units share the mutable completedRepairUnits/scopedArchiveResumedAt accumulators and must settle one at a time for the progress count to be accurate
     const result = await refreshScopedArchive(archive, archiveRuntime, { dueForResume });
     const outcomeLabel = await applyScopedArchiveRefreshOutcome(result.outcome, {
       archivePath: archive.paths.archivePath,
@@ -1250,7 +1249,6 @@ async function mergeScopedMessageArchivePasses(deps: {
     try {
       merged = mergeMessagesPassResults(
         merged,
-        // biome-ignore lint/performance/noAwaitInLoops: `merged` accumulates across scoped archives in order; concurrent runs would race on the shared merge accumulator
         await runRequestedStreams(
           { ...deps.streamDeps, db: scopedDb, requested },
           deps.state,
@@ -1482,18 +1480,15 @@ export async function emitMessagesPass(
     maxMessageTs = selectMaxSlackTs(maxMessageTs, ts);
     recordChannelMaxTs(channelMaxTs, r.CHANNEL_ID, ts);
     if (wantMessages) {
-      // biome-ignore lint/performance/noAwaitInLoops: each message emits in row order via the runtime's backpressure-gated emitRecord
       await deps.emitRecord("messages", buildMessageRecord(parsed));
     }
     if (wantReactions) {
       for (const rec of buildReactionRecords(parsed)) {
-        // biome-ignore lint/performance/noAwaitInLoops: each reaction emits in order via the runtime's backpressure-gated emitRecord
         await deps.emitRecord("reactions", rec);
       }
     }
     if (wantMsgAttachments) {
       for (const rec of buildMessageAttachmentRecords(parsed)) {
-        // biome-ignore lint/performance/noAwaitInLoops: each attachment emits in order via the runtime's backpressure-gated emitRecord
         await deps.emitRecord("message_attachments", rec);
       }
     }
@@ -1689,7 +1684,6 @@ async function runFingerprintedFullSync<Row>(
   for (const r of rows) {
     // Every row that reaches the emit helper is covered (emitted or
     // suppressed-unchanged); `emitWithFingerprint` never drops an enumerated row.
-    // biome-ignore lint/performance/noAwaitInLoops: each row shares one fingerprint cursor and increments the shared `covered` counter, so rows must settle in order
     await emitWithFingerprint(deps, stream, buildRecord(r));
     covered += 1;
   }
@@ -1727,7 +1721,6 @@ export async function runChannelsStream(deps: StreamDeps): Promise<void> {
       // Every enumerated channel row is accounted for (emitted or
       // suppressed-unchanged), so it counts toward the `covered` numerator.
       const entityRec = buildChannelRecord(r);
-      // biome-ignore lint/performance/noAwaitInLoops: each channel shares one fingerprint cursor and increments the shared channelsCovered counter, so rows must settle in order
       await emitWithFingerprint(deps, "channels", entityRec);
       channelsCovered += 1;
     }
@@ -1960,7 +1953,6 @@ export async function runCanvasesStream(deps: StreamDeps): Promise<void> {
   );
   const channelCanvasIndex = buildChannelCanvasIndex(chanRows);
   for (const r of canvasRows) {
-    // biome-ignore lint/performance/noAwaitInLoops: each canvas emits in list order via the runtime's backpressure-gated emitRecord
     await deps.emitRecord("canvases", buildCanvasRecord(r, channelCanvasIndex));
   }
   // `canvases` is the one Slack stream where `considered` is objectively
@@ -1985,7 +1977,6 @@ export async function runCanvasesStream(deps: StreamDeps): Promise<void> {
 export async function runStarsStream(deps: StreamDeps, token: string, cookie: string): Promise<void> {
   const items = await fetchAllStars(token, cookie);
   for (const item of items) {
-    // biome-ignore lint/performance/noAwaitInLoops: each starred item emits in list order via the runtime's backpressure-gated emitRecord
     await deps.emitRecord("stars", buildStarRecord(item));
   }
   await declareListConsidered(deps, "stars", items.length);
@@ -1994,7 +1985,6 @@ export async function runStarsStream(deps: StreamDeps, token: string, cookie: st
 export async function runUserGroupsStream(deps: StreamDeps, token: string, cookie: string): Promise<void> {
   const groups = await fetchAllUserGroups(token, cookie);
   for (const g of groups) {
-    // biome-ignore lint/performance/noAwaitInLoops: each user group emits in list order via the runtime's backpressure-gated emitRecord
     await deps.emitRecord("user_groups", buildUserGroupRecord(g));
   }
   await declareListConsidered(deps, "user_groups", groups.length);
@@ -2003,7 +1993,6 @@ export async function runUserGroupsStream(deps: StreamDeps, token: string, cooki
 export async function runRemindersStream(deps: StreamDeps, token: string, cookie: string): Promise<void> {
   const reminders = await fetchAllReminders(token, cookie);
   for (const r of reminders) {
-    // biome-ignore lint/performance/noAwaitInLoops: each reminder emits in list order via the runtime's backpressure-gated emitRecord
     await deps.emitRecord("reminders", buildReminderRecord(r));
   }
   await declareListConsidered(deps, "reminders", reminders.length);
@@ -2045,7 +2034,6 @@ export async function runDmReadStatesStream(deps: StreamDeps, token: string, coo
   const dmChannelIds = currentDmMpimChannelIds(deps.db);
   const states = await fetchDmReadStates(token, cookie, dmChannelIds);
   for (const state of states) {
-    // biome-ignore lint/performance/noAwaitInLoops: each DM read-state emits in list order via the runtime's backpressure-gated emitRecord
     await deps.emitRecord("dm_read_states", buildDmReadStateRecord(state, deps.emittedAt));
   }
   await declareListConsidered(deps, "dm_read_states", states.length);
@@ -2395,7 +2383,6 @@ if (isMainModule(import.meta.url)) {
         return;
       }
       for (const archivePath of reclaimPlan) {
-        // biome-ignore lint/performance/noAwaitInLoops: one-way, irreversible file deletion after a durable commit; reclaiming archives one at a time keeps each log line attributable and avoids concurrent fs churn on the same disk
         const reclaimedBytes = await reclaimUploads(archivePath);
         log(
           `Slack reclaim: removed __uploads/ at ${archivePath} after durable commit, reclaimed ${reclaimedBytes}B ` +

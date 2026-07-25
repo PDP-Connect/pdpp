@@ -42,7 +42,7 @@ export class RunBudget {
 
   /** Wall-clock elapsed since first tripReason() call, in ms. */
   elapsedMs(): number {
-    if (this.startedAt == null) {
+    if (this.startedAt === null) {
       return 0;
     }
     return Math.max(0, this.now() - this.startedAt);
@@ -62,7 +62,7 @@ export class RunBudget {
     if (this.maxWallClockMs === Number.POSITIVE_INFINITY) {
       return Number.POSITIVE_INFINITY;
     }
-    if (this.startedAt == null) {
+    if (this.startedAt === null) {
       this.startedAt = this.now();
     }
     return Math.max(0, this.maxWallClockMs - this.elapsedMs());
@@ -74,7 +74,7 @@ export class RunBudget {
    * Request cap takes priority when both caps trip simultaneously.
    */
   tripReason(): RunBudgetTrip | null {
-    if (this.startedAt == null) {
+    if (this.startedAt === null) {
       this.startedAt = this.now();
     }
     if (this.requestCount >= this.maxRequests) {

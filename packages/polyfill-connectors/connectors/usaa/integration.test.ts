@@ -46,6 +46,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import type { BrowserContext, Page } from "playwright";
 import type { EmittedMessage, StreamScope } from "../../src/connector-runtime.ts";
+import type { CaptureSession } from "../../src/fixture-capture.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import {
   buildIndexRows,
@@ -599,7 +600,6 @@ test("driveExport records account, challenge, and unrelated routes through the a
     },
   ]) {
     const diagnostics: DiagnosticInfo[] = [];
-    // biome-ignore lint/performance/noAwaitInLoops: table-driven cases assert independently per iteration; each drives its own page stub and diagnostics sink
     const outcome = await driveExport(makeNoExportPage(finalUrl, counts), "https://www.usaa.com/my/checking", {
       onDiagnostics: (info) => diagnostics.push(info),
       settleDelayMs: 0,
@@ -691,10 +691,13 @@ test("driveExport captures the dialog-not-open checkpoint before pressing Escape
         callOrder.push(`capture:${label}`);
         return Promise.resolve();
       },
-      captureHttp: () => undefined,
-      markSucceeded: () => undefined,
-      finalize: () => Promise.resolve(),
-    } as unknown as NonNullable<Parameters<typeof driveExport>[2]["capture"]>,
+      captureHttp: (): void => undefined,
+      finalize: (): void => undefined,
+      keepOnSuccess: true,
+      markSucceeded: (): void => undefined,
+      recordRecord: (): void => undefined,
+      runId: "test-dialog-not-open",
+    } satisfies CaptureSession,
     captureLabel: "usaa-export",
     settleDelayMs: 0,
     sinceDate: "2026-01-01",

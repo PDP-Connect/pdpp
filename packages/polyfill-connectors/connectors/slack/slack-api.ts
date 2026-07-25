@@ -109,12 +109,12 @@ async function slackApiPost<T extends { error?: string; ok: boolean }>(
         return {
           body: await res.text().catch((): string => ""),
           status: res.status,
-          ...(retryAfter == null ? {} : { retryAfter }),
+          ...(retryAfter === null ? {} : { retryAfter }),
         };
       },
       (resp) => ({
         status: resp.status,
-        ...(resp.retryAfter == null ? {} : { headers: { "retry-after": resp.retryAfter } }),
+        ...(resp.retryAfter === undefined ? {} : { headers: { "retry-after": resp.retryAfter } }),
         value: resp,
       })
     );
@@ -152,12 +152,12 @@ async function slackApiGet<T extends { error?: string; ok: boolean }>(
         return {
           body: await res.text().catch((): string => ""),
           status: res.status,
-          ...(retryAfter == null ? {} : { retryAfter }),
+          ...(retryAfter === null ? {} : { retryAfter }),
         };
       },
       (resp) => ({
         status: resp.status,
-        ...(resp.retryAfter == null ? {} : { headers: { "retry-after": resp.retryAfter } }),
+        ...(resp.retryAfter === undefined ? {} : { headers: { "retry-after": resp.retryAfter } }),
         value: resp,
       })
     );
@@ -178,8 +178,8 @@ function parseSlackApiResponse<T extends { error?: string; ok: boolean }>(raw: S
   let parsed: T;
   try {
     parsed = JSON.parse(raw.body) as T;
-  } catch {
-    throw new Error(`slack_api_invalid_json: ${raw.body.slice(0, 200)}`);
+  } catch (err) {
+    throw new Error(`slack_api_invalid_json: ${raw.body.slice(0, 200)}`, { cause: err });
   }
   if (!parsed.ok) {
     if (parsed.error === "invalid_auth" || parsed.error === "not_authed" || parsed.error === "token_revoked") {

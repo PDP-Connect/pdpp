@@ -367,7 +367,6 @@ test("processListOrder: unparseable order date returns false (dropped) and emits
 test("processListOrder: empty/null order date is also a drop", async () => {
   const { deps, emitted } = makeRecordingDeps({ skipDetail: true });
   for (const raw of [null, ""]) {
-    // biome-ignore lint/performance/noAwaitInLoops: deps is shared mutable recording state; concurrent calls would race on emitted/coverage bookkeeping
     const dropped = await processListOrder(
       NEVER_CALLED_PAGE,
       deps,

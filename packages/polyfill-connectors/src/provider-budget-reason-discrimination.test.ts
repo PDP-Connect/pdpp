@@ -64,7 +64,7 @@ test("DISCRIMINATION: every controller stop carries a budget-exhaustion (non-pre
   });
   // Drain the retry budget, then the next consume returns a `retry_budget` stop.
   let stop: { ok: true } | { ok: false; reason: ProviderBudgetDeferReason } = { ok: true };
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < 10; i += 1) {
     stop = retryController.consumeRetry();
     if (!stop.ok) {
       break;

@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ProviderPacing } from "./provider-pacing.js";
+import { ProviderPacing } from "./provider-pacing.ts";
 
 function makeSpy(): { sleep: (ms: number) => Promise<void>; calls: number[] } {
   const calls: number[] = [];
@@ -126,7 +126,7 @@ test("ProviderPacing: throttle from initial never goes below initialIntervalMs",
   pacing.recordSuccess(); // 1500
   pacing.recordSuccess(); // 1400
   // Many successes back down toward initial
-  for (let i = 0; i < 20; i++) {
+  for (let i = 0; i < 20; i += 1) {
     pacing.recordSuccess();
   }
   assert.ok(pacing.currentIntervalMs >= 0, "interval stayed non-negative");
@@ -1108,7 +1108,7 @@ test("ProviderPacing Fix2: repeated throttles are clamped at maxIntervalMs", () 
     sleep: () => Promise.resolve(),
   });
   // Throttle many times — must never exceed maxIntervalMs
-  for (let i = 0; i < 20; i++) {
+  for (let i = 0; i < 20; i += 1) {
     pacing.recordThrottle();
     assert.ok(
       pacing.currentIntervalMs <= maxIntervalMs,

@@ -73,7 +73,7 @@ export function validateGoogleMapsTimelineArtifact(
 ): GoogleMapsTimelineValidation {
   const bytes = typeof input === "string" ? Buffer.from(input, "utf8") : Buffer.from(input);
   const fileSha256 = createHash("sha256").update(bytes).digest("hex");
-  if (options.maxFileBytes != null && bytes.byteLength > options.maxFileBytes) {
+  if (options.maxFileBytes !== null && options.maxFileBytes !== undefined && bytes.byteLength > options.maxFileBytes) {
     return {
       date_range: { end: null, start: null },
       detected_format: "unsupported",

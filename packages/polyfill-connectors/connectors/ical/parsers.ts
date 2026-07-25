@@ -214,7 +214,7 @@ export function buildEventRecord(event: IcsEvent, calendarName: string): IcsEven
     end: event.end ?? null,
     all_day: !!event.all_day,
     organizer_email: event.organizer_email ?? null,
-    attendees: event.attendees ?? [],
+    attendees: event.attendees,
     status: event.status ?? null,
     rrule: event.rrule ?? null,
     uid: event.uid,

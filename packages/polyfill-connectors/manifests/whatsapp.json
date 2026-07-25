@@ -42,10 +42,7 @@
           "detail": "Zip exports can include media files. When the import run has blob-upload support, PDPP keeps those files as WhatsApp attachment records with blob references."
         }
       ],
-      "accepted_file_extensions": [
-        ".txt",
-        ".zip"
-      ],
+      "accepted_file_extensions": [".txt", ".zip"],
       "import_dir_env_var": "WHATSAPP_EXPORT_DIR",
       "help_url": "https://faq.whatsapp.com/1180414079177245",
       "help_text": "WhatsApp does not expose personal messages through an account API or OAuth grant. This source imports owner-provided chat export files.",
@@ -104,30 +101,19 @@
             "type": "integer"
           },
           "first_message_date": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time",
             "x_pdpp_role": "event-time"
           },
           "last_message_date": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time",
             "x_pdpp_role": "event-time"
           }
         },
-        "required": [
-          "id",
-          "title"
-        ]
+        "required": ["id", "title"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "last_message_date",
       "consent_time_field": "first_message_date",
       "selection": {
@@ -137,26 +123,15 @@
       "incremental": false,
       "query": {
         "search": {
-          "lexical_fields": [
-            "title"
-          ],
-          "semantic_fields": [
-            "title"
-          ]
+          "lexical_fields": ["title"],
+          "semantic_fields": ["title"]
         },
         "range_filters": {
-          "first_message_date": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "first_message_date": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "first_message_date"
-          ]
+          "group_by_time": ["first_message_date"]
         }
       },
       "coverage_strategy": "snapshot_import_receipt",
@@ -180,17 +155,11 @@
             "type": "string"
           },
           "author": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "actor"
           },
           "content": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "has_attachment": {
@@ -202,15 +171,9 @@
             "x_pdpp_role": "event-time"
           }
         },
-        "required": [
-          "id",
-          "chat_id",
-          "sent_at"
-        ]
+        "required": ["id", "chat_id", "sent_at"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "sent_at",
       "consent_time_field": "sent_at",
       "selection": {
@@ -228,27 +191,15 @@
       ],
       "query": {
         "search": {
-          "lexical_fields": [
-            "author",
-            "content"
-          ],
-          "semantic_fields": [
-            "content"
-          ]
+          "lexical_fields": ["author", "content"],
+          "semantic_fields": ["content"]
         },
         "range_filters": {
-          "sent_at": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "sent_at": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "sent_at"
-          ]
+          "group_by_time": ["sent_at"]
         }
       },
       "coverage_strategy": "snapshot_import_receipt",
@@ -272,10 +223,7 @@
             "type": "string"
           },
           "message_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "filename": {
             "type": "string",
@@ -292,23 +240,13 @@
           },
           "hydration_status": {
             "type": "string",
-            "enum": [
-              "deferred",
-              "failed",
-              "hydrated"
-            ]
+            "enum": ["deferred", "failed", "hydrated"]
           },
           "hydration_error": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "blob_ref": {
-            "type": [
-              "object",
-              "null"
-            ],
+            "type": ["object", "null"],
             "properties": {
               "blob_id": {
                 "type": "string"
@@ -323,12 +261,7 @@
                 "type": "integer"
               }
             },
-            "required": [
-              "blob_id",
-              "mime_type",
-              "sha256",
-              "size_bytes"
-            ]
+            "required": ["blob_id", "mime_type", "sha256", "size_bytes"]
           }
         },
         "required": [
@@ -341,9 +274,7 @@
           "hydration_status"
         ]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "selection": {
         "fields": true,
         "resources": true

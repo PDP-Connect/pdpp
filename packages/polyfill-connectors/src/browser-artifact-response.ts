@@ -38,10 +38,10 @@ export interface BodyResponseDiagnostics {
 }
 
 export interface BodyResponseQueue {
-  detach(): void;
-  diagnostics(): BodyResponseDiagnostics;
+  detach: () => void;
+  diagnostics: () => BodyResponseDiagnostics;
   ready: Promise<void>;
-  waitForNextResponse(opts?: { timeoutMs?: number }): Promise<CapturedBodyResponse>;
+  waitForNextResponse: (opts?: { timeoutMs?: number }) => Promise<CapturedBodyResponse>;
 }
 
 export interface BodyResponseQueueOptions {
@@ -261,7 +261,6 @@ export function attachBodyResponseQueue(page: Page, options: BodyResponseQueueOp
           status: response.status(),
           url,
         });
-        return;
       });
   };
 
@@ -341,7 +340,6 @@ export function attachBodyResponseQueue(page: Page, options: BodyResponseQueueOp
           status: candidate.status,
           url: candidate.url,
         });
-        return;
       });
   };
   const onCdpLoadingFailed = (event: { errorText?: string; requestId?: string }): void => {
@@ -370,6 +368,7 @@ export function attachBodyResponseQueue(page: Page, options: BodyResponseQueueOp
     .newCDPSession(page)
     .then(async (session) => {
       if (detached) {
+        // biome-ignore lint/suspicious/noNestedPromises: the closure over detached/cdpSession/handlers below would need many params if extracted; inline is clearer here
         await session.detach().catch((): undefined => undefined);
         return;
       }
@@ -383,7 +382,6 @@ export function attachBodyResponseQueue(page: Page, options: BodyResponseQueueOp
     })
     .catch((err): undefined => {
       diagnostics.cdpError = truncate(errorMessage(err), truncateMessageLength);
-      return;
     });
 
   return {

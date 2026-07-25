@@ -26,7 +26,7 @@ export function toIsoOrNull(raw: string | undefined): string | null {
 }
 
 export function toIntOrNull(raw: string | number | undefined): number | null {
-  if (raw == null || raw === "") {
+  if (raw === null || raw === undefined || raw === "") {
     return null;
   }
   const n = Number.parseInt(String(raw), 10);

@@ -26,7 +26,7 @@ import type {
 
 // ─── Module-scoped regexes (Biome useTopLevelRegex) ─────────────────────
 
-export const WORKSPACE_LIST_ARROW = /=>/;
+export const WORKSPACE_LIST_ARROW = /[=]>/;
 const SLACK_TIME_FRAC = /\..+$/;
 const SLACK_TIME_Z = /Z$/;
 
@@ -133,8 +133,8 @@ function channelPropertiesFlags(d: SlackDataBlob): Record<string, unknown> {
   return {
     has_canvas: canvas ? !canvas.is_empty : null,
     canvas_file_id: canvas?.file_id || null,
-    posting_restricted: d.properties?.posting_restricted_to?.type != null,
-    threads_restricted: d.properties?.threads_restricted_to?.type != null,
+    posting_restricted: d.properties?.posting_restricted_to?.type !== undefined,
+    threads_restricted: d.properties?.threads_restricted_to?.type !== undefined,
   };
 }
 
@@ -315,7 +315,7 @@ function messageContentCounts(parsed: ParsedMessage): Record<string, unknown> {
     attachment_count: attachments.length || null,
     has_blocks: Array.isArray(d.blocks) && d.blocks.length > 0,
     reaction_count: countReactions(d.reactions),
-    is_pinned: pinnedTo != null && pinnedTo.length > 0,
+    is_pinned: pinnedTo !== null && pinnedTo.length > 0,
     pinned_to: pinnedTo,
   };
 }
@@ -342,7 +342,7 @@ export function buildMessageRecord(parsed: ParsedMessage): RecordData {
 
 /** Flatten a parsed message's reactions into one record per (emoji, user). */
 export function buildReactionRecords(parsed: ParsedMessage): RecordData[] {
-  const reactions = parsed.blob.reactions;
+  const { reactions } = parsed.blob;
   if (!Array.isArray(reactions)) {
     return [];
   }
@@ -369,7 +369,7 @@ export function buildReactionRecords(parsed: ParsedMessage): RecordData[] {
 /** Flatten a parsed message's attachments into one record per index. */
 export function buildMessageAttachmentRecords(parsed: ParsedMessage): RecordData[] {
   const out: RecordData[] = [];
-  for (let i = 0; i < parsed.attachments.length; i++) {
+  for (let i = 0; i < parsed.attachments.length; i += 1) {
     const a = (parsed.attachments[i] || {}) as Record<string, unknown>;
     out.push({
       id: `${parsed.messageId}:att:${i}`,
@@ -451,7 +451,7 @@ export function buildCanvasRecord(
     id: r.id,
     file_id: r.id,
     channel_id: r.channel_id || chanMeta?.channel_id || null,
-    message_id: r.message_id == null ? null : String(r.message_id),
+    message_id: r.message_id === null ? null : String(r.message_id),
     title: d.title ?? null,
     name: r.filename ?? d.name ?? null,
     author_id: d.user || null,

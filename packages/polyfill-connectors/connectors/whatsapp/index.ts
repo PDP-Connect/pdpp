@@ -41,7 +41,7 @@ type EmitEvent = (event: EmittedMessage) => Promise<void>;
 type EmitProgress = (message: string, extra?: ProgressExtra) => Promise<void>;
 type FingerprintCursor = ReturnType<typeof openFingerprintCursor>;
 interface RequestedStreams {
-  has(stream: string): boolean;
+  has: (stream: string) => boolean;
 }
 interface WhatsAppCursors {
   attachments: FingerprintCursor;
@@ -179,7 +179,7 @@ async function emitMessageRecords(
   exportTotal: number
 ): Promise<{ emitted: number; processed: number }> {
   let emitted = 0;
-  for (let i = 0; i < parsed.messages.length; i++) {
+  for (let i = 0; i < parsed.messages.length; i += 1) {
     const m = parsed.messages[i];
     if (!m) {
       continue;
@@ -275,7 +275,7 @@ async function emitAttachmentRecords(
   exportTotal: number
 ): Promise<{ emitted: number; processed: number }> {
   let emitted = 0;
-  for (let index = 0; index < parsed.attachments.length; index++) {
+  for (let index = 0; index < parsed.attachments.length; index += 1) {
     const attachment = parsed.attachments[index];
     if (!attachment) {
       continue;
@@ -343,8 +343,10 @@ function openWhatsAppCursors(state: Record<string, unknown>): WhatsAppCursors {
 async function discoverImportFilesOrThrow(importDir: string): Promise<string[]> {
   try {
     return await discoverExportFiles(importDir);
-  } catch {
-    throw new Error(`import_dir_not_found: ${importDir} (set WHATSAPP_EXPORT_DIR or create the directory)`);
+  } catch (err) {
+    throw new Error(`import_dir_not_found: ${importDir} (set WHATSAPP_EXPORT_DIR or create the directory)`, {
+      cause: err,
+    });
   }
 }
 
@@ -468,7 +470,7 @@ runConnector({
     let totalAttachments = 0;
     let totalMessages = 0;
     let totalRecords = 0;
-    for (let index = 0; index < files.length; index++) {
+    for (let index = 0; index < files.length; index += 1) {
       const f = files[index];
       if (!f) {
         continue;

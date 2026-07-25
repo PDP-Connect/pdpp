@@ -89,7 +89,7 @@ function readManifest(file: string): ConnectorManifest {
 
 function nonNullTypes(schema: JsonSchema | undefined): string[] {
   const raw = schema?.type;
-  if (raw == null) {
+  if (raw === undefined) {
     return [];
   }
   const list = Array.isArray(raw) ? raw : [raw];

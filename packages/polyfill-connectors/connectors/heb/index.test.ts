@@ -161,7 +161,7 @@ function makePageStub(opts: {
       get(_target, prop): unknown {
         if (prop === "goto") {
           return (navUrl: string): Promise<null> => {
-            gotoCalls++;
+            gotoCalls += 1;
             opts.goto?.(navUrl);
             if (opts.throwsNTimes && gotoCalls <= opts.throwsNTimes) {
               return Promise.reject(new Error("net::ERR_CONNECTION_TIMED_OUT"));
@@ -371,7 +371,7 @@ test("fetchOrderDetail: a non-retryable navigation error (e.g. page closed) is n
       get(_target, prop): unknown {
         if (prop === "goto") {
           return (): Promise<null> => {
-            gotoCalls++;
+            gotoCalls += 1;
             return Promise.reject(new Error("page closed"));
           };
         }
@@ -837,7 +837,7 @@ test("runForwardScan: a genuine single-page result (maxPage: 1, affirmatively as
       get(_target, prop): unknown {
         if (prop === "goto") {
           return (): Promise<null> => {
-            gotoCount++;
+            gotoCount += 1;
             return Promise.resolve(null);
           };
         }

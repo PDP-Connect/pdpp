@@ -77,7 +77,7 @@ async function collectLocationHistory(
   });
   let itemOrdinal = 0;
   for (const loc of json.locations) {
-    itemOrdinal++;
+    itemOrdinal += 1;
     const tsUnixMs = locationTimestampMs(loc);
     if (!tsUnixMs) {
       continue;
@@ -128,7 +128,7 @@ async function collectYoutubeWatchHistory(
   });
   let itemOrdinal = 0;
   for (const e of json) {
-    itemOrdinal++;
+    itemOrdinal += 1;
     const record = buildWatchHistoryRecord(e);
     if (!record) {
       continue;
@@ -178,7 +178,7 @@ async function collectSearchHistory(
   });
   let itemOrdinal = 0;
   for (const e of json) {
-    itemOrdinal++;
+    itemOrdinal += 1;
     const record = buildSearchRecord(e);
     if (!record) {
       continue;

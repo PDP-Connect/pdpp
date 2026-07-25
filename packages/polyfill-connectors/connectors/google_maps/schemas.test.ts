@@ -17,7 +17,7 @@ test("timeline_points schema accepts a parser-built legacy point", () => {
       },
     ],
   });
-  const point = result.points[0];
+  const [point] = result.points;
   assert.ok(point);
   const parsed = timelinePointSchema.safeParse(point);
   assert.ok(parsed.success, JSON.stringify(parsed.error?.issues));
@@ -39,7 +39,7 @@ test("timeline_segments schema accepts a parser-built visit", () => {
       },
     ],
   });
-  const segment = result.segments[0];
+  const [segment] = result.segments;
   assert.ok(segment);
   const parsed = timelineSegmentSchema.safeParse(segment);
   assert.ok(parsed.success, JSON.stringify(parsed.error?.issues));
@@ -72,7 +72,7 @@ test("validateRecord routes known streams and passes unknown streams through", (
       },
     ],
   });
-  const point = result.points[0];
+  const [point] = result.points;
   assert.ok(point);
   assert.equal(validateRecord("timeline_points", { ...point }).ok, true);
   assert.equal(validateRecord("unknown_stream", { x: 1 }).ok, true);

@@ -101,7 +101,7 @@ function restoreGithubPacing(state: Record<string, unknown>): void {
     name: "github",
     maxAttempts: 1,
     profile: githubPacingProfile(),
-    ...(restoredIntervalMs == null ? {} : { restoredIntervalMs }),
+    ...(restoredIntervalMs === null ? {} : { restoredIntervalMs }),
   });
 }
 
@@ -151,7 +151,7 @@ async function gh<T>(
           // GitHub signals quota exhaustion as 403 + x-ratelimit-remaining: 0
           // (not 429). Surface it to the governor as the rate-limit terminal.
           rateLimited: res.status === 403 && res.headers.get("x-ratelimit-remaining") === "0",
-          ...(retryAfter == null ? {} : { retryAfter }),
+          ...(retryAfter === null ? {} : { retryAfter }),
           status: res.status,
         };
       },
@@ -159,7 +159,7 @@ async function gh<T>(
         // Map GitHub's 403-quota-exhausted onto 429 so the governor's
         // Retry-After honor and `github_rate_limited` terminal apply uniformly.
         status: resp.rateLimited ? 429 : resp.status,
-        ...(resp.retryAfter == null ? {} : { headers: { "retry-after": resp.retryAfter } }),
+        ...(resp.retryAfter === undefined ? {} : { headers: { "retry-after": resp.retryAfter } }),
         value: resp,
       })
     );
@@ -332,9 +332,9 @@ export async function collectRepositories(ctx: StreamCtx): Promise<void> {
     });
     const result = await emitRepositoriesPage(ctx, page.data, priorPushed, latestPushed);
     latestPushed = result.latest;
-    stop = result.stop;
+    ({ stop } = result);
     path = page.nextUrl;
-    pageIndex++;
+    pageIndex += 1;
   }
   // The run enumerated `totalSeen` repositories from the source within its
   // boundary (full pages until the cursor stop). Declare that as `considered`;
@@ -372,7 +372,7 @@ async function emitStarredPage(
       // Entry has no `repo` object (e.g. repo deleted/made private since the
       // star). starredRecord() returns null; we cannot build a record. Count
       // it so a run that silently drops such entries does not look complete.
-      dropped++;
+      dropped += 1;
       continue;
     }
     await ctx.emitRecord("starred", rec);
@@ -421,10 +421,10 @@ export async function collectStarred(ctx: StreamCtx): Promise<void> {
     });
     const result = await emitStarredPage(ctx, page.data, priorStarred, latestStarred);
     latestStarred = result.latest;
-    stop = result.stop;
+    ({ stop } = result);
     droppedTotal += result.dropped;
     path = page.nextUrl;
-    pageIndex++;
+    pageIndex += 1;
   }
   // Stream-level skip evidence: a run that silently drops malformed/unavailable
   // starred entries must not look complete. One bounded summary per run (count
@@ -504,7 +504,7 @@ export async function collectIssues(ctx: StreamCtx): Promise<void> {
     });
     latestUpdated = await emitIssuesPage(ctx, page.data, until, latestUpdated);
     path = page.nextUrl;
-    pageIndex++;
+    pageIndex += 1;
   }
   // `totalSeen` is every issue the run enumerated in its `[since, until]`
   // boundary; `until`-filtered items are considered-but-not-collected, so
@@ -561,7 +561,7 @@ async function fetchPullDetail(
   number: number | undefined,
   token: string
 ): Promise<PullDetailResult> {
-  if (!(repoFull && number != null)) {
+  if (!(repoFull && number !== undefined)) {
     return { detail: null, detailFailed: false };
   }
   try {
@@ -610,7 +610,7 @@ export function prCreatedWindows(currentYear: number, floorYear: number): Array<
   const top = Math.max(currentYear, floorYear);
   const bottom = Math.min(currentYear, floorYear);
   const windows: Array<{ from: string; to: string }> = [];
-  for (let year = top; year >= bottom; year--) {
+  for (let year = top; year >= bottom; year -= 1) {
     windows.push({ from: `${String(year)}-01-01`, to: `${String(year)}-12-31` });
   }
   return windows;
@@ -681,10 +681,10 @@ async function emitPullRequestPage(
       continue;
     }
     const item = await emitPullRequestItem(ctx, it, latest);
-    latest = item.latest;
-    emitted++;
+    ({ latest } = item);
+    emitted += 1;
     if (item.detailFailed) {
-      detailFailed++;
+      detailFailed += 1;
     }
   }
   return { detailFailed, emitted, latest, stop: false };
@@ -735,8 +735,8 @@ async function drainPrSearchWindow(
     }
     const items = page.data.items || [];
     const result = await emitPullRequestPage(ctx, items, sinceParam, until, latest);
-    latest = result.latest;
-    stop = result.stop;
+    ({ latest } = result);
+    ({ stop } = result);
     detailFailed += result.detailFailed;
     emitted += result.emitted;
     fetchedCount += items.length;
@@ -751,7 +751,7 @@ async function drainPrSearchWindow(
       ...(page.data.total_count === undefined ? {} : { total: page.data.total_count }),
     });
     path = page.nextUrl;
-    pageIndex++;
+    pageIndex += 1;
   }
   return {
     capTruncated: reportedTotal > PR_SEARCH_RESULT_CAP,
@@ -796,7 +796,7 @@ export async function collectPullRequests(ctx: StreamCtx): Promise<void> {
     fetchedTotal += result.fetched;
     maxReportedTotal = Math.max(maxReportedTotal, result.reportedTotal);
     if (result.capTruncated) {
-      capTruncatedWindows++;
+      capTruncatedWindows += 1;
     }
     pageIndex = result.pageIndexEnd;
   }
@@ -925,7 +925,7 @@ export async function collectGists(ctx: StreamCtx): Promise<void> {
     });
     latestUpdated = await emitGistsPage(ctx, page.data, until, latestUpdated);
     path = page.nextUrl;
-    pageIndex++;
+    pageIndex += 1;
   }
   // Every gist enumerated in the run's boundary; `until`-filtered gists are
   // considered-but-not-collected (see `collectIssues` for the same reasoning).

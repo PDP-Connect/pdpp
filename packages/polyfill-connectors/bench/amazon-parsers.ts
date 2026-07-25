@@ -43,11 +43,11 @@ function pickLiveDir(): string | null {
 
 function bench(label: string, fn: () => unknown, iters: number): number {
   // Warm up
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 3; i += 1) {
     fn();
   }
   const t0 = performance.now();
-  for (let i = 0; i < iters; i++) {
+  for (let i = 0; i < iters; i += 1) {
     fn();
   }
   const elapsed = performance.now() - t0;

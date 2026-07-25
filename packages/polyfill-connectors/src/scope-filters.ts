@@ -102,7 +102,7 @@ export function makeEmitGate(
 
   const gate = ((stream: string, data: EmitGateRecord, keyField = "id"): boolean => {
     const key = data[keyField];
-    if (key == null) {
+    if (key === null || key === undefined) {
       return false;
     }
     const canonical = Array.isArray(key) ? JSON.stringify(key.map(String)) : String(key);
@@ -148,7 +148,7 @@ export function emitTombstones({ emit, stream, priorIds, currentIds, emittedAt }
         emitted_at: emittedAt,
         op: "delete",
       });
-      count++;
+      count += 1;
     }
   }
   return count;

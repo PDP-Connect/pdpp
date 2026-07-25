@@ -73,7 +73,7 @@ export const NEVER_HYDRATED: StatementHydration = {
  *  entry whose `pdf_path` is null was itself an index-only emit — there is
  *  nothing to carry forward, so the statement stays index-only. */
 export function isHydrated(h: StatementHydration | undefined): h is StatementHydration {
-  return Boolean(h && h.pdf_path != null && h.pdf_sha256 != null && h.document_url != null);
+  return Boolean(h && h.pdf_path !== null && h.pdf_sha256 !== null && h.document_url !== null);
 }
 
 export interface StatementHydrationCursor {
@@ -82,22 +82,22 @@ export interface StatementHydrationCursor {
    *  with the freshly hydrated pointers on success, and (after carry-forward)
    *  with the resolved pointers on failure — so the next run's prior map is
    *  complete and the prune step has the right inputs. */
-  note(id: string, value: StatementHydration): void;
+  note: (id: string, value: StatementHydration) => void;
   /** Drop ids not `note`d this run. Idempotent. Only valid on full-scan
    *  streams (both statement streams are full scans of the documents index),
    *  so a statement no longer listed stops being carried forever. Call in
    *  lockstep with the fingerprint cursor's `pruneStale()`. */
-  pruneStale(): void;
+  pruneStale: () => void;
   /** The pointers to emit for a statement that failed hydration this run:
    *  the prior hydrated pointers if the statement was previously hydrated,
    *  otherwise the all-null index-only triple. Pure: does not mutate the
    *  cursor (call `note` separately with the resolved value). */
-  resolveOnFailure(id: string): StatementHydration;
+  resolveOnFailure: (id: string) => StatementHydration;
   /** Number of ids in the next map. */
-  size(): number;
+  size: () => number;
   /** Serializable next-run map for the `hydration` key of the statements
    *  STATE cursor. */
-  toState(): Record<string, StatementHydration>;
+  toState: () => Record<string, StatementHydration>;
 }
 
 /** Open a statement hydration carry-forward cursor seeded from the prior

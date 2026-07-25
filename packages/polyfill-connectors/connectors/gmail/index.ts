@@ -570,7 +570,6 @@ async function emitAttachmentRecords(
   }
   const recoveredAttachmentGapIds = deps.recoveredAttachmentGapIds ?? new Set<string>();
   for (const a of attachments) {
-    // biome-ignore lint/performance/noAwaitInLoops: hydration must stay sequential — coverage accounting below records each outcome before the next attempt starts
     const hydration = await deps.hydrateAttachment(msg, a);
     const hydrated = hydration.record;
     // Record the outcome BEFORE emitting so the coverage denominator counts
@@ -596,7 +595,6 @@ async function emitAttachmentRecords(
     const recoveredGaps = findRecoveredAttachmentDetailGaps(deps.detailGaps, hydrated, recoveredAttachmentGapIds);
     for (const gap of recoveredGaps) {
       recoveredAttachmentGapIds.add(gap.gap_id);
-      // biome-ignore lint/performance/noAwaitInLoops: must emit sequentially — recoveredAttachmentGapIds is mutated per-iteration and shared across the outer loop
       await deps.emitProtocol({
         type: "DETAIL_GAP_RECOVERED",
         reference_only: true,
@@ -619,7 +617,6 @@ async function emitAttachmentDetailGaps(coverage: AttachmentDetailCoverage | und
     return;
   }
   for (const attachment of coverage.failedRecords) {
-    // biome-ignore lint/performance/noAwaitInLoops: must emit sequentially after the coverage report and before the messages STATE commit (see doc comment above)
     await emit(buildAttachmentDetailGap(attachment));
   }
 }
@@ -743,7 +740,6 @@ export async function emitMessagesPass(deps: PerMessageDeps, metas: readonly Fet
   let count = 0;
   for (const msg of metas) {
     try {
-      // biome-ignore lint/performance/noAwaitInLoops: must stay sequential — the per-message try/catch isolates one bad message, and the count-modulo progress report below depends on processing order
       const processed = await processMessage(deps, msg);
       if (!processed) {
         continue;
@@ -953,7 +949,6 @@ async function emitLabelsStream(
     };
     // Fingerprint by the label `name` (the record key for this stream).
     if (cursor.shouldEmit({ id: name, ...record })) {
-      // biome-ignore lint/performance/noAwaitInLoops: must emit sequentially — shared fingerprint cursor state is read/written per-iteration and pruned once the loop completes
       await emitRecord("labels", record, "name");
     }
   }
@@ -1580,7 +1575,6 @@ async function settleServedAttachmentRecoveryAttempt(
     const recoveredGaps = findRecoveredAttachmentDetailGaps(deps.detailGaps, hydrated, state.recoveredAttachmentGapIds);
     for (const recoveredGap of recoveredGaps) {
       state.recoveredAttachmentGapIds.add(recoveredGap.gap_id);
-      // biome-ignore lint/performance/noAwaitInLoops: must emit sequentially — shared recovery state (recoveredAttachmentGapIds, recovered count) is mutated per-iteration
       await deps.emitProtocol({
         type: "DETAIL_GAP_RECOVERED",
         reference_only: true,
@@ -1781,7 +1775,6 @@ export async function recoverServedAttachmentGaps(
   };
 
   for (const [index, gap] of servedGaps.entries()) {
-    // biome-ignore lint/performance/noAwaitInLoops: must stay sequential — a "byte_budget" stop must halt remaining iterations, and the shared byteBudget/recoveryState accumulate across attempts
     const stop = await processServedAttachmentRecoveryGap(client, gap, recoveryAttemptDeps, recoveryState, byteBudget);
     if (stop) {
       if (stop === "byte_budget") {
@@ -2391,7 +2384,6 @@ export async function emitChangedThreads(
     if (!cursor.shouldEmit(record)) {
       continue;
     }
-    // biome-ignore lint/performance/noAwaitInLoops: must emit sequentially — shared fingerprint cursor state is read/written per-iteration
     await emitRecord("threads", record);
   }
 }

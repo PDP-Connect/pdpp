@@ -213,15 +213,15 @@ export interface ProcessJsonlLineArgs {
  *   - No uuid → no record (uuid is the emitted record id).
  */
 export async function processJsonlLine({ deps, obj, obs }: ProcessJsonlLineArgs): Promise<void> {
-  const sessionId = obs.sessionId;
+  const { sessionId } = obs;
   if (!sessionId) {
     return;
   }
-  const uuid = obj.uuid;
-  const type = obj.type;
+  const { uuid } = obj;
+  const { type } = obj;
 
   if (isMessageType(type)) {
-    obs.messageCount++;
+    obs.messageCount += 1;
     if (deps.requested.has("messages") && uuid) {
       await deps.emitRecord("messages", buildMessageRecord(obj, sessionId, uuid));
     }
@@ -391,7 +391,7 @@ function updateSessionAccumulator(
   projectDir: string,
   obs: JsonlObservations
 ): void {
-  const sessionId = obs.sessionId;
+  const { sessionId } = obs;
   if (!sessionId) {
     return;
   }
@@ -424,7 +424,7 @@ async function parseJsonlFile(args: ParseJsonlFileArgs): Promise<string | null> 
   let lineCount = 0;
 
   for await (const obj of iterJsonlLines(path)) {
-    lineCount++;
+    lineCount += 1;
     if (lineCount % LINE_PROGRESS_INTERVAL === 0) {
       await emit({
         type: "PROGRESS",

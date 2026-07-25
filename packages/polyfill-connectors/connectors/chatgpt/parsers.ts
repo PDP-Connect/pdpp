@@ -28,7 +28,7 @@ import type {
  * Normalize both to ISO-8601; swallow malformed inputs.
  */
 export function tsToIso(v: unknown): string | null {
-  if (v == null) {
+  if (v === null || v === undefined) {
     return null;
   }
   try {
@@ -429,7 +429,7 @@ export function extractMessage(
 // ─── Memories ───────────────────────────────────────────────────────────
 
 export function buildMemoryRecord(m: RawMemoryEntry): RecordData | null {
-  if (m.id == null) {
+  if (m.id === undefined) {
     return null;
   }
   return {

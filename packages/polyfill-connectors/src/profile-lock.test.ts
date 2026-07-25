@@ -39,7 +39,15 @@ test("removeChromiumSingletonResidue: removes all three when present", async () 
   const dir = tempProfileDir();
   writeFakeSingletonFiles(dir);
   const removed = await removeChromiumSingletonResidue(dir);
-  assert.deepEqual(removed.sort(), ["SingletonCookie", "SingletonLock", "SingletonSocket"]);
+  assert.deepEqual(
+    removed.sort((a, b) => {
+      if (a < b) {
+        return -1;
+      }
+      return a > b ? 1 : 0;
+    }),
+    ["SingletonCookie", "SingletonLock", "SingletonSocket"]
+  );
   assert.equal(fs.existsSync(path.join(dir, "SingletonLock")), false);
   assert.equal(fs.existsSync(path.join(dir, "SingletonCookie")), false);
   assert.equal(fs.existsSync(path.join(dir, "SingletonSocket")), false);

@@ -92,7 +92,7 @@ async function fetchActivitiesPage(
         const retryAfter = res.headers.get("retry-after");
         return {
           body: await res.text().catch((): string => ""),
-          ...(retryAfter == null ? {} : { headers: { "retry-after": retryAfter } }),
+          ...(retryAfter === null ? {} : { headers: { "retry-after": retryAfter } }),
           status: res.status,
         } as { body: string; status: number };
       },
@@ -194,7 +194,7 @@ runConnector({
       if (acts.length < PAGE_SIZE) {
         break;
       }
-      page++;
+      page += 1;
     }
     await emit({
       type: "STATE",

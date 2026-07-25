@@ -99,10 +99,10 @@ export interface SchedulerSummary {
 }
 
 export interface PolyfillSchedulerHandle {
-  notifySummary(): Promise<SchedulerSummary>;
+  notifySummary: () => Promise<SchedulerSummary>;
   scheduler: Scheduler;
   stop: () => void;
-  summarize(): Promise<SchedulerSummary>;
+  summarize: () => Promise<SchedulerSummary>;
 }
 
 type SummaryNotifier = (summary: SchedulerSummary) => Promise<unknown>;

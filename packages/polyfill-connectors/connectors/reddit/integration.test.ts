@@ -79,8 +79,8 @@ function listing(children: RedditChild[], after: string | null = null): RedditLi
   return { data: { children, after } };
 }
 
-function okResult(listing: RedditListing): RedditFetchResult {
-  return { status: 200, json: listing };
+function okResult(redditListing: RedditListing): RedditFetchResult {
+  return { status: 200, json: redditListing };
 }
 
 /** Build a RedditListingFetch that serves pre-scripted responses keyed

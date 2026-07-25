@@ -1230,7 +1230,6 @@ export async function closeBrowserContextPagesExcept(
     if (page === keepPage || page.isClosed()) {
       continue;
     }
-    // biome-ignore lint/performance/noAwaitInLoops: sequential close is intentional here, not a perf accident — each page close already has its own bounded deadline (withDeadline), and closing pages concurrently would change teardown ordering/timing semantics this function's callers may depend on
     if (await closeBrowserPage(page, deadlineMs)) {
       closed += 1;
     }

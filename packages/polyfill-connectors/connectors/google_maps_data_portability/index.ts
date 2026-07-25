@@ -34,9 +34,11 @@ interface DataPortabilityState {
 }
 
 interface DataPortabilityClientLike {
-  checkAccessType(): Promise<AccessTypeResult>;
-  getArchiveState(archiveJobId: string): ReturnType<GoogleDataPortabilityClient["getArchiveState"]>;
-  initiateArchive(input: Parameters<GoogleDataPortabilityClient["initiateArchive"]>[0]): Promise<InitiateArchiveResult>;
+  checkAccessType: () => Promise<AccessTypeResult>;
+  getArchiveState: (archiveJobId: string) => ReturnType<GoogleDataPortabilityClient["getArchiveState"]>;
+  initiateArchive: (
+    input: Parameters<GoogleDataPortabilityClient["initiateArchive"]>[0]
+  ) => Promise<InitiateArchiveResult>;
 }
 
 interface ArchiveJobRecord extends RecordData {
@@ -205,16 +207,16 @@ async function collectResourceGroup({
       resources: [resourceGroup],
       ...timeRange,
     });
-    archiveJobId = initiated.archiveJobId;
+    ({ archiveJobId } = initiated);
     stateName = "IN_PROGRESS";
   }
 
   if (archiveJobId && pollExisting) {
     const archiveState = await client.getArchiveState(archiveJobId);
     stateName = archiveState.state;
-    startTime = archiveState.startTime;
-    exportTime = archiveState.exportTime;
-    urls = archiveState.urls;
+    ({ startTime } = archiveState);
+    ({ exportTime } = archiveState);
+    ({ urls } = archiveState);
   }
 
   return {

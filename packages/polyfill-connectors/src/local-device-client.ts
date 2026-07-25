@@ -221,7 +221,6 @@ export class LocalDeviceHttpError extends Error {
     this.name = "LocalDeviceHttpError";
     this.status = status;
     this.body = body;
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: parsed is null when the body is empty/non-JSON/lacks error.code; the fallback is reachable
     this.code = parsed?.code ?? null;
     this.param = parsed?.param ?? null;
     this.envelopeMessage = parsed?.message ?? null;

@@ -90,7 +90,7 @@ async function emitMessageRows({
   let latestApple = since;
   let itemOrdinal = 0;
   for (const r of rows) {
-    itemOrdinal++;
+    itemOrdinal += 1;
     await emitRecord("messages", {
       id: r.guid || String(r.id),
       chat_id: r.chat_id ? String(r.chat_id) : null,
@@ -147,7 +147,7 @@ runConnector({
       latestApple = await emitMessageRows({ emitRecord, progress, rows, since });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      throw new Error(`imessage_db_query_failed: ${msg}`);
+      throw new Error(`imessage_db_query_failed: ${msg}`, { cause: err });
     }
 
     await emit({

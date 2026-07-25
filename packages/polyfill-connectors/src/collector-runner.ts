@@ -1036,7 +1036,6 @@ async function readPriorStateOrBlock(input: {
   try {
     throwIfAborted(input.config.abortSignal);
     const projection = await input.client.getSourceInstanceState({ sourceInstanceId: input.config.sourceInstanceId });
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: `state` is typed non-nullable, but the value crosses an unvalidated network-response boundary (#request casts the JSON body to the declared type); this guard stays defensive against a malformed/absent field at runtime.
     return projection.state && typeof projection.state === "object"
       ? Object.freeze({ ...projection.state })
       : Object.freeze({});
@@ -1675,7 +1674,6 @@ async function recoverResolvedLocalCollectorGaps(input: {
       continue;
     }
     try {
-      // biome-ignore lint/performance/noAwaitInLoops: each gap is recovered one at a time against the reference server so a failure on one item is independently caught and deferred without aborting or reordering the rest; Promise.all would fan the recovery calls out concurrently and change the server-visible request pattern.
       await input.client.recoverLocalCollectorGap({
         connector_id: payload.connectorId,
         reason: payload.reason,
@@ -1983,7 +1981,6 @@ export async function drainCollectorOutbox(input: DrainCollectorOutboxInput): Pr
     }
     result.iterations += 1;
     for (const item of claimed) {
-      // biome-ignore lint/performance/noAwaitInLoops: claimed items are drained one at a time under per-item outbox leases, with retry/dead-letter bookkeeping and a shared duration budget checked between iterations; Promise.all would drain leases concurrently and break the sequential budget/backoff accounting.
       await drainClaimedOutboxItem(input, item, result, sentByKind);
     }
   }
@@ -2484,7 +2481,6 @@ export async function drainCollectorQueue(input: {
   let sent = 0;
   for (;;) {
     throwIfAborted(input.abortSignal);
-    // biome-ignore lint/performance/noAwaitInLoops: this is a sequential dequeue-send-ack loop over one shared durable queue (dequeueReady claims the next item, send/ack/retry mutate it before the next claim); Promise.all does not apply to a single-consumer queue drain.
     const item = await input.queue.dequeueReady();
     if (!item) {
       return sent;

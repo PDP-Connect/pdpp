@@ -346,7 +346,7 @@ test("gistRecord: maps files and counts", () => {
 
 test("gistRecord: truncates at 10 files", () => {
   const files: Record<string, { filename: string; size: number }> = {};
-  for (let i = 0; i < 15; i++) {
+  for (let i = 0; i < 15; i += 1) {
     files[`f${i}.txt`] = { filename: `f${i}.txt`, size: i };
   }
   const r = gistRecord({ id: "x", public: true, files });

@@ -572,7 +572,6 @@ test("emitTransactionsForAccount: prior cursor is preserved when new tx dates ar
     },
   });
   await emitTransactionsForAccount(deps, makeAccount(), "all", [makeTx({ date: "2026-03-01", fitid: "OLD" })]);
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: false positive — noUncheckedIndexedAccess types this index access as possibly undefined
   assert.equal(deps.maxSeenByAccount.INTACC123?.max_seen_date, "2026-05-01", "older tx must not regress the cursor");
 });
 
@@ -593,7 +592,6 @@ test("emitNoActivityProgress: reports checked/no-activity without advancing curs
   await emitNoActivityProgress(deps, makeAccount(), "date_range");
 
   assert.equal(emitted.length, 0, "no transaction records emit for a Chase no-activity confirmation");
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: false positive — noUncheckedIndexedAccess types this index access as possibly undefined
   assert.equal(deps.maxSeenByAccount.INTACC123?.max_seen_date, "2026-04-10", "no-activity must not advance max_seen");
   assert.equal(
     messages.filter((m) => m.type === "SKIP_RESULT").length,

@@ -693,11 +693,9 @@ async function recoverPendingOrderItemDetailGapPage(
       }
       continue;
     }
-    // biome-ignore lint/performance/noAwaitInLoops: each gap is recovered one at a time against the same shared Playwright `page`; Promise.all would drive concurrent detail-page navigations on one page.
     const result = await resolveOrderDetail(page, flags, locator.orderId);
     if (result.status === "hydrated") {
       for (const item of result.detail.items) {
-        // biome-ignore lint/performance/noAwaitInLoops: items belong to one recovered order and are emitted in source order over the connector's sequential protocol stream; Promise.all would reorder the emitted records.
         await deps.emitRecord("order_items", buildOrderItemRecord(locator.orderId, locator.orderDate, item));
       }
       await deps.emit({
@@ -733,7 +731,6 @@ export async function recoverPendingOrderItemDetailGaps(
   let recovered = 0;
   let gaps = deps.detailGaps;
   while (gaps.length > 0) {
-    // biome-ignore lint/performance/noAwaitInLoops: each gap page is recovered against the same shared Playwright `page`, and whether to request the next gap page depends on this page's outcome; Promise.all does not apply to this paginated, data-dependent walk.
     const result = await recoverPendingOrderItemDetailGapPage(page, deps, flags, gaps);
     recovered += result.recovered;
     if (!deps.requestDetailGapPage) {
@@ -871,7 +868,6 @@ export async function emitOrderAndItems(
   }
   if (deps.wantsItems) {
     for (const merged of mergeOrderItems(listOrder, detail)) {
-      // biome-ignore lint/performance/noAwaitInLoops: items belong to one order and are emitted in source order over the connector's sequential protocol stream; Promise.all would reorder the emitted records.
       await deps.emitRecord("order_items", buildOrderItemRecord(listOrder.orderId, orderDate, merged));
     }
   }
@@ -890,7 +886,6 @@ async function extractAndShapeCheckOrders(page: Page, emit: EmitFn): Promise<Lis
     if (parsed.success) {
       orders.push(parsed.data as ListPageOrder);
     } else {
-      // biome-ignore lint/performance/noAwaitInLoops: SKIP_RESULT events must be emitted in source order over the connector's sequential protocol stream; Promise.all would reorder the diagnostics.
       await emit({
         type: "SKIP_RESULT",
         stream: "orders",
@@ -1261,7 +1256,6 @@ async function runYear(page: Page, deps: EmitDeps, flags: RunFlags, year: number
   let yearOrderCount = 0;
   let unparseableDateCount = 0;
   while (pageCount < PAGE_LIMIT) {
-    // biome-ignore lint/performance/noAwaitInLoops: each iteration drives the same shared Playwright `page` through a real list-page navigation, with a polite delay between pages; Promise.all would run concurrent navigations on one page and break the scrape.
     await deps.progress(`Amazon year ${year}: scanning page ${pageCount + 1}`, { stream: "orders" });
     const orders = await scrapeListPage(page, deps.capture, year, startIndex, deps.emit);
     if (orders.length === 0) {
@@ -1273,7 +1267,6 @@ async function runYear(page: Page, deps: EmitDeps, flags: RunFlags, year: number
       stream: "orders",
     });
     for (const [index, o] of orders.entries()) {
-      // biome-ignore lint/performance/noAwaitInLoops: each order is processed one at a time against the same shared Playwright `page` (detail navigation may occur inside processListOrder); Promise.all would drive concurrent navigations on one page.
       await deps.progress(
         `Amazon year ${year}: processing order ${index + 1}/${orders.length} on page ${pageCount + 1}`,
         { stream: "orders" }
@@ -1461,7 +1454,6 @@ if (isMainModule(import.meta.url)) {
         const currentYear = new Date().getFullYear();
         const { planned, skipped } = planIncrementalYears(discoveredYears, yearsState, currentYear);
         for (const { year, reason } of skipped) {
-          // biome-ignore lint/performance/noAwaitInLoops: sequential progress-log emission over a small, order-significant list; not a parallelizable batch and there is no shared work to fan out.
           await progress(`Skipping year ${year} (incremental: ${reason})`);
         }
         years = planned;
@@ -1506,7 +1498,6 @@ if (isMainModule(import.meta.url)) {
         const prior = yearsState[String(year)];
         // Year-freezing: skip if already frozen
         if (prior?.frozen) {
-          // biome-ignore lint/performance/noAwaitInLoops: years are walked in order against one shared Playwright `page` (runYear below navigates it); Promise.all would drive concurrent navigations on one page.
           await progress(`Skipping year ${year} (frozen)`);
           continue;
         }

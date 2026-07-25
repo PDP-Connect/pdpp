@@ -128,7 +128,7 @@ test("parseOrdersListDom: scrubbed real-shape fixture extracts full orders", () 
   const html = readFileSync(join(SCRUBBED_FIXTURE_DIR, "orders-list-2026.html"), "utf8");
   const orders = parseOrdersListDom(html);
   assert.equal(orders.length, 1);
-  const o = orders[0];
+  const [o] = orders;
   assert.ok(o);
   assert.equal(o.orderId, "113-7654321-4567890");
   assert.equal(o.orderDateRaw, "April 18, 2026");
@@ -182,7 +182,7 @@ test("parseOrderDetailDom: synthetic-minimal fixture parses full OrderDetail", (
   assert.equal(d.digital_order, false);
   assert.equal(d.status_detail, null);
   assert.equal(d.items.length, 1);
-  const item = d.items[0];
+  const [item] = d.items;
   assert.ok(item);
   assert.equal(item.asin, "B01ABCDEFG");
   assert.equal(item.name, "Synthetic Widget Model A");

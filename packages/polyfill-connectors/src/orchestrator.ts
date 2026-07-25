@@ -331,7 +331,7 @@ export async function queryStream(
     url.searchParams.set("connector_id", connectorId);
   }
   for (const [k, v] of Object.entries(filters)) {
-    if (v != null) {
+    if (v !== undefined) {
       url.searchParams.set(k, String(v));
     }
   }

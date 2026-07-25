@@ -45,7 +45,7 @@ function parseArgs(argv: string[]): Args {
   // Sequential because `--into <value>` consumes the next arg — a for..of loop
   // would need a side channel to skip, so biome-ignore useForOf here is honest.
   // biome-ignore lint/style/useForOf: loop mutates `i` to consume `--into`'s value arg
-  for (let i = 0; i < argv.length; i++) {
+  for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (!a) {
       continue;
@@ -55,7 +55,8 @@ function parseArgs(argv: string[]): Args {
     } else if (a === "--delete-source") {
       out.deleteSource = true;
     } else if (a === "--into") {
-      const v = argv[++i];
+      i += 1;
+      const v = argv[i];
       if (v) {
         out.target = resolve(v);
       }

@@ -146,13 +146,13 @@ async function replayConnector(db: Database.Database, slug: string): Promise<Con
       s = { total: 0, passed: 0, failed: 0, failure_messages: {}, examples: [] };
       report.streams[row.stream] = s;
     }
-    s.total++;
+    s.total += 1;
     const result = validate(row.stream, data);
     if (result.ok) {
-      s.passed++;
+      s.passed += 1;
       continue;
     }
-    s.failed++;
+    s.failed += 1;
     for (const issue of result.issues) {
       const key = `${issue.path}: ${issue.message}`;
       s.failure_messages[key] = (s.failure_messages[key] ?? 0) + 1;

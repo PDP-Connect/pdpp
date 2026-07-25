@@ -447,7 +447,6 @@ function isLikelyQfxResponseBody(body: Buffer, headers: Record<string, string>):
   if (body.length === 0) {
     return false;
   }
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: tsc disagrees — noUncheckedIndexedAccess types Record<string, string> index access as string | undefined; dropping ?./?? fails tsc (TS2532).
   const contentType = headers["content-type"]?.toLowerCase() ?? "";
   if (contentType.includes("text/html") || contentType.includes("application/json")) {
     return false;
@@ -457,7 +456,6 @@ function isLikelyQfxResponseBody(body: Buffer, headers: Record<string, string>):
 }
 
 export function isLikelyChaseQfxResponse(headers: Record<string, string>, url = ""): boolean {
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: tsc disagrees — noUncheckedIndexedAccess types Record<string, string> index access as string | undefined; dropping ?? fails tsc (TS2345/TS2532 depending on usage).
   const hint = `${headers["content-disposition"] ?? ""} ${headers["content-type"] ?? ""} ${url}`;
   return DOWNLOAD_RESPONSE_HINT_RE.test(hint) || CHASE_DOWNLOAD_ROUTE_RE.test(url);
 }
@@ -1153,7 +1151,6 @@ async function parseQfxFile(path: string): Promise<unknown> {
   // bare parse). types/ofx-js.d.ts shims the module as `unknown`; we
   // narrow structurally at runtime (see hasParse below) instead of
   // claiming a fixed module shape.
-  // biome-ignore lint/correctness/noUnresolvedImports: Biome 2.5.5 cannot resolve ofx-js (its package.json has no browser-style "exports" map, only a bare "main"); Node's own resolver and tsc (via types/ofx-js.d.ts) both resolve this declared dependency.
   const mod: unknown = await import("ofx-js");
   const modObj = isOfxRecord(mod) ? mod : {};
   const defaultExport = modObj.default;
@@ -1290,7 +1287,6 @@ export async function emitAccountsStream(
       fetched_at: deps.emittedAt,
     };
     if (!fingerprintCursor || fingerprintCursor.shouldEmit(record)) {
-      // biome-ignore lint/performance/noAwaitInLoops: records are emitted in source order over the connector's sequential protocol stream, and fingerprintCursor is stateful across iterations; Promise.all would reorder emission and race the shared cursor.
       await deps.emitRecord("accounts", record);
     }
     if (fingerprintCursor) {
@@ -1481,7 +1477,6 @@ export async function emitTransactionsForAccount(
     // run did not look at would drop their fingerprints and re-churn them
     // on the next overlapping window.
     if (!fingerprintCursor || fingerprintCursor.shouldEmit(record)) {
-      // biome-ignore lint/performance/noAwaitInLoops: records are emitted in source order over the connector's sequential protocol stream, and fingerprintCursor is stateful across iterations; Promise.all would reorder emission and race the shared cursor.
       await deps.emitRecord("transactions", record);
     }
     if (!maxDate || t.date > maxDate) {
@@ -1536,7 +1531,6 @@ export async function emitCurrentActivityForAccount(
     // the overview stopped showing would drop their fingerprints and
     // re-churn a row that scrolls back into the recent window.
     if (!fingerprintCursor || fingerprintCursor.shouldEmit(record)) {
-      // biome-ignore lint/performance/noAwaitInLoops: records are emitted in source order over the connector's sequential protocol stream, and fingerprintCursor is stateful across iterations; Promise.all would reorder emission and race the shared cursor.
       await deps.emitRecord("current_activity", record);
     }
   }
@@ -1821,9 +1815,7 @@ function accountProgressDiagnostic(accountProgress?: { index: number; total: num
   account_total: number | null;
 } {
   return {
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: tsc disagrees — accountProgress?.index/.total is number | undefined (accountProgress is an optional param), and the declared return type is number | null; dropping ?? null fails tsc (TS2322).
     account_index: accountProgress?.index ?? null,
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: tsc disagrees — see account_index above; same optional-param/return-type mismatch.
     account_total: accountProgress?.total ?? null,
   };
 }
@@ -2099,7 +2091,6 @@ export async function recoverServedAccountGaps(
     if (!gapId) {
       continue;
     }
-    // biome-ignore lint/performance/noAwaitInLoops: DETAIL_GAP_RECOVERED events must be emitted in source order over the connector's sequential protocol stream, ahead of the coverage summary that follows this loop; Promise.all would reorder emission relative to that summary.
     await deps.emit({
       type: "DETAIL_GAP_RECOVERED",
       reference_only: true,
@@ -2132,7 +2123,6 @@ export async function runTransactionsAndBalances(
     if (!account) {
       continue;
     }
-    // biome-ignore lint/performance/noAwaitInLoops: each account is downloaded one at a time against the same shared Playwright `page`; Promise.all would drive concurrent navigations on one page.
     const outcome = await processAccountDownload(deps, page, account, {
       index: i + 1,
       total: filteredAccounts.length,
@@ -2404,7 +2394,6 @@ async function runStatements(
         count: i + 1,
         total: rows.length,
       } as const;
-      // biome-ignore lint/performance/noAwaitInLoops: each statement row is processed one at a time against the same shared Playwright `page` (processStatementRow below navigates it); Promise.all would drive concurrent navigations on one page.
       await deps.emit(progressMsg);
       const outcome = await processStatementRow(
         deps,

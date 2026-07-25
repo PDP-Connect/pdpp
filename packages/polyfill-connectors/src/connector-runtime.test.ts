@@ -79,7 +79,7 @@ function makePageSelectionContext(existingPages: Page[] = []): {
   return {
     context: {
       newPage: () => {
-        calls++;
+        calls += 1;
         return Promise.resolve(newPage);
       },
       pages: () => existingPages,
@@ -94,7 +94,7 @@ function makeClosablePage(closed = false): { closeCalls: number; page: Page } {
   let closeCalls = 0;
   const fake: Pick<Page, "close" | "isClosed"> = {
     close: () => {
-      closeCalls++;
+      closeCalls += 1;
       isClosed = true;
       return Promise.resolve();
     },
@@ -139,7 +139,7 @@ test("closeBrowserPage ignores remote target cleanup errors", async () => {
   let closeCalls = 0;
   const page = {
     close: () => {
-      closeCalls++;
+      closeCalls += 1;
       return Promise.reject(new Error("Target page has been closed"));
     },
     isClosed: () => false,
@@ -153,7 +153,7 @@ test("closeBrowserPage abandons a wedged remote target close after the deadline"
   let closeCalls = 0;
   const page = {
     close: () => {
-      closeCalls++;
+      closeCalls += 1;
       return new Promise<never>(() => undefined);
     },
     isClosed: () => false,
@@ -346,12 +346,12 @@ test("makeBrowserInteractionKeepalive sends browser-level CDP pings while intera
     newBrowserCDPSession: () =>
       Promise.resolve({
         detach: () => {
-          detachCalls++;
+          detachCalls += 1;
           return Promise.resolve();
         },
         send: (method: string) => {
           assert.equal(method, "Browser.getVersion");
-          pingCalls++;
+          pingCalls += 1;
           return Promise.resolve({});
         },
       }),
@@ -391,11 +391,11 @@ test("makeBrowserInteractionKeepalive stops after interaction errors", async () 
       newBrowserCDPSession: () =>
         Promise.resolve({
           detach: () => {
-            detachCalls++;
+            detachCalls += 1;
             return Promise.resolve();
           },
           send: () => {
-            pingCalls++;
+            pingCalls += 1;
             return Promise.resolve({});
           },
         }),
@@ -421,7 +421,7 @@ test("makeBrowserInteractionKeepalive skips pings when browser is already discon
     context: makeKeepaliveContext({
       isConnected: () => false,
       newBrowserCDPSession: () => {
-        newSessionCalls++;
+        newSessionCalls += 1;
         return Promise.resolve({
           detach: () => Promise.resolve(),
           send: () => Promise.resolve({}),
@@ -450,7 +450,7 @@ test("makeBrowserInteractionKeepalive ignores CDP ping errors without failing in
         Promise.resolve({
           detach: () => Promise.resolve(),
           send: () => {
-            pingCalls++;
+            pingCalls += 1;
             return Promise.reject(new Error("cdp_unavailable"));
           },
         }),
@@ -537,19 +537,19 @@ test("makeBrowserInteractionKeepalive records browser disconnect timing in diagn
     newBrowserCDPSession: () =>
       Promise.resolve({
         detach: () => {
-          detachCalls++;
+          detachCalls += 1;
           return Promise.resolve();
         },
         send: () => Promise.resolve({}),
       }),
-    off: (_event, listener) => {
-      if (disconnectedListener === listener) {
+    off: (_event, offListener) => {
+      if (disconnectedListener === offListener) {
         disconnectedListener = undefined;
       }
       return browser;
     },
-    on: (_event, listener) => {
-      disconnectedListener = listener;
+    on: (_event, onListener) => {
+      disconnectedListener = onListener;
       return browser;
     },
   };
@@ -915,8 +915,8 @@ test("buildDetailCoverageMessage copies input arrays", () => {
 test("emitDetailCoverage forwards exactly one built message to ctx.emit", async () => {
   const emitted: EmittedMessage[] = [];
   const ctx = {
-    emit: (msg: EmittedMessage): Promise<void> => {
-      emitted.push(msg);
+    emit: (emittedMsg: EmittedMessage): Promise<void> => {
+      emitted.push(emittedMsg);
       return Promise.resolve();
     },
   };
@@ -928,7 +928,7 @@ test("emitDetailCoverage forwards exactly one built message to ctx.emit", async 
     gapKeys: ["b"],
   });
   assert.equal(emitted.length, 1);
-  const msg = emitted[0];
+  const [msg] = emitted;
   assert.ok(msg, "exactly one message must be emitted");
   assert.equal(msg.type, "DETAIL_COVERAGE");
   assert.deepEqual(
@@ -1012,8 +1012,8 @@ test("buildDetailGap omits empty optional error fields", () => {
 test("emitDetailGap forwards exactly one built message to ctx.emit", async () => {
   const emitted: EmittedMessage[] = [];
   const ctx = {
-    emit: (msg: EmittedMessage): Promise<void> => {
-      emitted.push(msg);
+    emit: (emittedMsg: EmittedMessage): Promise<void> => {
+      emitted.push(emittedMsg);
       return Promise.resolve();
     },
   };
@@ -1026,7 +1026,7 @@ test("emitDetailGap forwards exactly one built message to ctx.emit", async () =>
   };
   await emitDetailGap(ctx, params);
   assert.equal(emitted.length, 1);
-  const msg = emitted[0];
+  const [msg] = emitted;
   assert.ok(msg, "exactly one message must be emitted");
   assert.equal(msg.type, "DETAIL_GAP");
   assert.deepEqual(msg, buildDetailGap(params), "emitDetailGap must emit precisely what buildDetailGap builds");
@@ -1107,8 +1107,8 @@ test("buildDetailGap puts error.message on last_error only (detail has no messag
 test("emitDetailGap forwards a gap with optional parent_stream and list_cursor verbatim", async () => {
   const emitted: EmittedMessage[] = [];
   const ctx = {
-    emit: (msg: EmittedMessage): Promise<void> => {
-      emitted.push(msg);
+    emit: (emittedMsg: EmittedMessage): Promise<void> => {
+      emitted.push(emittedMsg);
       return Promise.resolve();
     },
   };
@@ -1126,7 +1126,7 @@ test("emitDetailGap forwards a gap with optional parent_stream and list_cursor v
   };
   await emitDetailGap(ctx, params);
   assert.equal(emitted.length, 1);
-  const msg = emitted[0];
+  const [msg] = emitted;
   assert.ok(msg, "exactly one message must be emitted");
   assert.deepEqual(
     msg,

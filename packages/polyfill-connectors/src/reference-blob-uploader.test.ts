@@ -36,7 +36,6 @@ function requestBody(init: RequestInit | undefined): ReadableStream<Uint8Array> 
 
 async function consumeBody(init: RequestInit): Promise<void> {
   const reader = requestBody(init).getReader();
-  // biome-ignore lint/performance/noAwaitInLoops: draining a ReadableStream is inherently sequential — each read() depends on the prior chunk being consumed
   while (!(await reader.read()).done) {
     // Consume the upload stream so its local digest settles.
   }
@@ -101,7 +100,6 @@ test("makeReferenceBlobUploader: classifies transport and HTTP response families
       ownerToken: "test-token",
       rsUrl: "https://pdpp.example.test",
     });
-    // biome-ignore lint/performance/noAwaitInLoops: table-driven cases assert independently per iteration
     await assert.rejects(
       () => upload(baseArgs),
       (err) => {

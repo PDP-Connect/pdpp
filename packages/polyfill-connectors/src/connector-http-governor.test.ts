@@ -275,7 +275,7 @@ test("adaptive default: sustained success ACCELERATES the profiled governor towa
   const before = g.snapshot()?.intervalMs ?? 0;
   // Several consecutive successes: each recordSuccess() additive-decreases the
   // interval (raises throughput) — accelerate-under-success.
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < 5; i += 1) {
     await g.request(() => ({ status: 200, body: null }), classify);
   }
   const after = g.snapshot()?.intervalMs ?? 0;
@@ -298,7 +298,7 @@ test("adaptive default: a throttle BACKS OFF the profiled governor and the back-
     },
   });
   // Accelerate first so back-off has somewhere to climb back FROM.
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 3; i += 1) {
     await g.request(() => ({ status: 200, body: null }), classify);
   }
   const accelerated = g.snapshot()?.intervalMs ?? 0;
@@ -344,7 +344,7 @@ test("warm-start seam: round-trip — a run persists its learned interval; the n
       /* no-op */
     },
   });
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 4; i += 1) {
     await g1.request(() => ({ status: 200, body: null }), classify);
   }
   const learned = g1.snapshot()?.intervalMs ?? 0;

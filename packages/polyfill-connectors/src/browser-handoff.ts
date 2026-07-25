@@ -353,6 +353,7 @@ async function resolveCdpWsUrlForManualAction(args: {
     process.stderr.write(
       `[browser-handoff] could not resolve CDP page-target wsUrl for interaction ${args.interactionId}: ${message}; continuing without streaming.\n`
     );
+    // biome-ignore lint/complexity/noUselessReturn: required for noImplicitReturns — the try branch returns explicitly, so this catch branch must too or tsc's TS7030 fires
     return;
   }
 }

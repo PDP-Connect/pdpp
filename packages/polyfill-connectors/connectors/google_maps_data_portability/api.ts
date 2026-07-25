@@ -75,7 +75,7 @@ function cleanBaseUrl(value: string | undefined): string {
 }
 
 function assertAccessToken(value: string): string {
-  if (!value?.trim()) {
+  if (!value.trim()) {
     throw new Error("google_data_portability_access_token_missing");
   }
   return value.trim();

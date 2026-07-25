@@ -30,7 +30,7 @@ import { realpathSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 export function isMainModule(importMetaUrl: string): boolean {
-  const entry = process.argv[1];
+  const [, entry] = process.argv;
   if (!entry) {
     return false;
   }
