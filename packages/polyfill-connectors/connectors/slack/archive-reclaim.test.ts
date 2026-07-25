@@ -12,7 +12,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -132,6 +132,126 @@ test("reclaimUploads removes only __uploads/, leaves sqlite + sidecars, reports 
   }
 });
 
+test("base archive resume is throttled on the 90-minute follow-up without invoking slackdump", async () => {
+  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-base-throttle-immediate-"));
+  try {
+    const workspace = "base-throttle-immediate-ws";
+    const archiveDir = await seedArchive(homeDir, workspace, false);
+    const fakeSlackdump = await writeCountingSlackdump(homeDir);
+    const resumedAt = new Date(Date.now() - 90 * 60 * 1000).toISOString();
+    const result = await runConnectorProtocolSubprocess({
+      cwd: PACKAGE_ROOT,
+      entrypoint: SLACK_ENTRYPOINT,
+      env: {
+        HOME: homeDir,
+        SLACK_COOKIE: "d=fake",
+        SLACK_TOKEN: "xoxc-fake",
+        SLACK_WORKSPACE: workspace,
+        SLACKDUMP_BIN: fakeSlackdump.path,
+        TEST_SLACKDUMP_CALL_LOG: fakeSlackdump.callLog,
+      },
+      start: {
+        type: "START",
+        scope: { streams: [{ name: "messages" }] },
+        state: baseArchiveState(archiveDir, resumedAt),
+      },
+    });
+
+    assert.ok(
+      progressLines(result.messages).some(
+        (line) => line.includes("base archive at") && line.includes("not due for resume yet")
+      )
+    );
+    assert.ok(!existsSync(fakeSlackdump.callLog), "the follow-up launched zero slackdump resume subprocesses");
+    assert.equal(
+      (messagesState(result).base_archive_resumed_at as Record<string, string> | undefined)?.[archiveDir],
+      resumedAt,
+      "the successful base-resume fact is carried forward unchanged while throttled"
+    );
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("a failed base archive resume remains owed and retries successfully on the next run", async () => {
+  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-base-throttle-retry-"));
+  try {
+    const workspace = "base-throttle-retry-ws";
+    const archiveDir = await seedArchive(homeDir, workspace, false);
+    const fakeSlackdump = await writeCountingSlackdump(homeDir, true);
+    const options = {
+      cwd: PACKAGE_ROOT,
+      entrypoint: SLACK_ENTRYPOINT,
+      env: {
+        HOME: homeDir,
+        SLACK_COOKIE: "d=fake",
+        SLACK_TOKEN: "xoxc-fake",
+        SLACK_WORKSPACE: workspace,
+        SLACKDUMP_BIN: fakeSlackdump.path,
+        TEST_SLACKDUMP_CALL_LOG: fakeSlackdump.callLog,
+      },
+      start: {
+        type: "START" as const,
+        scope: { streams: [{ name: "messages" }] },
+        state: baseArchiveState(archiveDir),
+      },
+    };
+    const failed = await runConnectorProtocolSubprocess({ ...options, allowFailedDone: true });
+    assert.equal(failed.messages.findLast((message) => message.type === "DONE")?.status, "failed");
+    assert.ok(!failed.messages.some((message) => message.type === "STATE"), "a failed run commits no success cursor");
+
+    const recovered = await runConnectorProtocolSubprocess(options);
+    const calls = (await readFile(fakeSlackdump.callLog, "utf8")).trim().split("\n");
+    assert.equal(calls.length, 2, "the next run retried the failed base resume instead of suppressing it");
+    assert.ok(
+      calls.every((call) => call.startsWith("resume ")),
+      "both attempts were base resume invocations"
+    );
+    assert.ok(
+      (messagesState(recovered).base_archive_resumed_at as Record<string, string> | undefined)?.[archiveDir],
+      "only the successful retry writes the base archive success cursor"
+    );
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("base archive resume runs again after the seven-day lookback expires", async () => {
+  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-base-throttle-expiry-"));
+  try {
+    const workspace = "base-throttle-expiry-ws";
+    const archiveDir = await seedArchive(homeDir, workspace, false);
+    const fakeSlackdump = await writeCountingSlackdump(homeDir);
+    const staleResumedAt = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
+    const result = await runConnectorProtocolSubprocess({
+      cwd: PACKAGE_ROOT,
+      entrypoint: SLACK_ENTRYPOINT,
+      env: {
+        HOME: homeDir,
+        SLACK_COOKIE: "d=fake",
+        SLACK_TOKEN: "xoxc-fake",
+        SLACK_WORKSPACE: workspace,
+        SLACKDUMP_BIN: fakeSlackdump.path,
+        TEST_SLACKDUMP_CALL_LOG: fakeSlackdump.callLog,
+      },
+      start: {
+        type: "START",
+        scope: { streams: [{ name: "messages" }] },
+        state: baseArchiveState(archiveDir, staleResumedAt),
+      },
+    });
+
+    assert.match(await readFile(fakeSlackdump.callLog, "utf8"), /^resume /, "an expired base cursor resumes again");
+    assert.notEqual(
+      (messagesState(result).base_archive_resumed_at as Record<string, string> | undefined)?.[archiveDir],
+      staleResumedAt,
+      "a successful due resume advances the base archive success cursor"
+    );
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("reclaimUploads is a no-op returning 0 when __uploads/ is absent", async () => {
   const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-reclaim-absent-"));
   try {
@@ -148,6 +268,37 @@ function progressLines(messages: EmittedMessage[]): string[] {
   return messages
     .filter((m): m is Extract<EmittedMessage, { type: "PROGRESS" }> => m.type === "PROGRESS")
     .map((m) => (m as { message?: string }).message ?? "");
+}
+
+async function writeCountingSlackdump(homeDir: string, failFirst = false): Promise<{ callLog: string; path: string }> {
+  const path = join(homeDir, "fake-slackdump.mjs");
+  const callLog = join(homeDir, "slackdump-calls.log");
+  const failedMarker = join(homeDir, "slackdump-first-failure.marker");
+  await writeFile(
+    path,
+    `#!/usr/bin/env node
+import { existsSync, writeFileSync } from "node:fs";
+const isResume = process.argv[2] === "resume";
+if (isResume) writeFileSync(process.env.TEST_SLACKDUMP_CALL_LOG, process.argv.slice(2).join(" ") + "\\n", { flag: "a" });
+if (isResume && ${String(failFirst)} && !existsSync(${JSON.stringify(failedMarker)})) {
+  writeFileSync(${JSON.stringify(failedMarker)}, "failed");
+  process.exit(6);
+}
+process.exit(0);
+`,
+    "utf8"
+  );
+  await chmod(path, 0o755);
+  return { callLog, path };
+}
+
+function baseArchiveState(archivePath: string, baseArchiveResumedAt?: string): Record<string, unknown> {
+  return {
+    messages: {
+      archive_dir: archivePath,
+      ...(baseArchiveResumedAt ? { base_archive_resumed_at: { [archivePath]: baseArchiveResumedAt } } : {}),
+    },
+  };
 }
 
 test("connector emits phase-timing and archive-size PROGRESS every run", async () => {

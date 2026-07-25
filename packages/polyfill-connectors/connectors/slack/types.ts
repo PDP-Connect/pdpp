@@ -173,6 +173,8 @@ export interface SlackdumpRunResult {
 
 export interface MessagesState {
   archive_dir?: string;
+  /** Last successful base-archive resume, keyed by its stable archive path. */
+  base_archive_resumed_at?: Record<string, string>;
   channel_last_ts?: Record<string, string>;
   last_ts?: string | null;
   observed_channel_ids?: string[];

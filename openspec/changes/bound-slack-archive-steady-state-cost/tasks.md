@@ -229,7 +229,7 @@ ongoing Slack-side activity, not a stalled/inaccessible channel.
   miss (the backlog is caught in one call once due). Added
   `scoped_archive_resumed_at: Record<archivePath, isoTimestamp>` to the
   `messages` STATE cursor (`types.ts`). `reconcileMessageSourceCache` checks,
-  per selected scoped archive, `scopedArchiveDueForResume` (no prior
+  per selected scoped archive, `archiveDueForResume` (no prior
   timestamp, or elapsed ≥ `SLACK_LOOKBACK_DAYS`); if not due,
   `refreshScopedArchive` returns immediately — `ensureArchiveOnDisk` (and the
   slackdump subprocess) is never invoked for that archive this run. If due,
@@ -261,7 +261,7 @@ ongoing Slack-side activity, not a stalled/inaccessible channel.
   fire and the timestamp advances). **Mutation-tested twice**: disabling the
   throttle check entirely fails the first test
   (`AssertionError: explicitly reports the throttle decision for this
-  archive`); forcing `scopedArchiveDueForResume` to always return `false`
+  archive`); forcing `archiveDueForResume` to always return `false`
   fails the second test (`AssertionError: reports the archive as due for
   resume once the throttle window has elapsed`). Both confirmed live, then
   reverted.
@@ -370,3 +370,19 @@ later drains — this exercises the runtime side of the protocol, which these
 connector-level tests do not run end-to-end against. Owner UAT is the only
 way to observe this on the live connection; recorded in `design.md`'s
 residual risks (D6).
+
+## 10. Base archive success/throttle follow-up (2026-07-25)
+
+- [x] 10.1 Added `messages.base_archive_resumed_at`, keyed by the unscoped
+  base archive path and deliberately separate from
+  `scoped_archive_resumed_at`.
+- [x] 10.2 Skip an existing unscoped base archive's `slackdump resume` within
+  `SLACK_LOOKBACK_DAYS`; preserve first archive creation and scoped/repair
+  paths. Advance the base cursor only after resume succeeds and the run reaches
+  its normal STATE commit path.
+- [x] 10.3 Mutation-grade subprocess tests prove the immediate 90-minute
+  follow-up has zero resume invocations, a failed resume is retried on the next
+  run, and a cursor older than seven days resumes again.
+- [x] 10.4 Focused Slack protocol/reclaim tests and typecheck pass; final
+  package, OpenSpec, lint, diff, and privacy gates are recorded with landing
+  evidence.

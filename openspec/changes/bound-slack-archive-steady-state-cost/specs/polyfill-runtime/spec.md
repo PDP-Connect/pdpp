@@ -47,6 +47,40 @@ that stream
 **AND** this is correct because there is no cursor to push, and the resulting
 emitted set is the connector's declared full coverage for that stream.
 
+### Requirement: A base archive resume SHALL be success-throttled independently of scoped archives
+
+For an archive-backed connector whose normal unscoped archive may be refreshed
+with `resume -lookback pNd`, the connector SHALL persist a durable successful
+resume fact keyed by that base archive's stable identity. A base archive SHALL
+NOT share this fact with any scoped archive. When the base archive has
+successfully resumed within the configured lookback window, an ordinary
+unscoped scheduled run SHALL read the existing archive without launching a
+second resume subprocess.
+
+Only a resume that completes successfully and reaches the run's normal STATE
+commit path SHALL advance the fact. A failed resume SHALL leave it unchanged
+and retryable. First archive creation and explicitly scoped repair behavior
+SHALL remain available.
+
+#### Scenario: immediate scheduled follow-up skips the base resume
+
+**WHEN** the unscoped base archive successfully resumed 90 minutes ago
+**AND** its configured lookback is seven days
+**THEN** the scheduled collection SHALL read the existing base archive
+**AND** SHALL NOT invoke `slackdump resume`
+**AND** SHALL retain the prior successful base-resume fact unchanged.
+
+#### Scenario: failure and expiry leave base work due
+
+**WHEN** a due base resume fails
+**THEN** the connector SHALL NOT advance its successful base-resume fact
+**AND** the next run SHALL retry it.
+
+**WHEN** a base archive's successful-resume fact is older than its configured
+lookback window
+**THEN** the connector SHALL invoke resume again and record a new fact only
+after success and normal STATE commit.
+
 ### Requirement: Reclaiming persistent archive residue SHALL be opt-in, commit-gated, and SHALL NOT remove resume-critical data
 
 A connector MAY offer to reclaim operator-visible residue in its persistent

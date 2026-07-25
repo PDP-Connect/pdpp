@@ -70,6 +70,15 @@ legacy `__uploads/` residue that states exactly what it sacrifices.
   re-scan") from a guess into a measured value on every run, and makes the
   steady-state-cost invariant checkable.
 
+- **Base-archive resume throttle.** The unscoped `/archive` has the same
+  `resume -lookback pNd` frequency property as scoped repair archives, but it
+  is a distinct slackdump database and must not share their cursor. Persist a
+  successful base-resume timestamp keyed by the base archive path; an ordinary
+  scheduled run within the lookback reads the existing archive without
+  launching `slackdump resume`. Only a completed resume that reaches the
+  normal STATE commit path advances this fact; failures remain immediately
+  retryable, and first archive creation is unchanged.
+
 - **Opt-in `__uploads/` reclaim escape hatch (NOT automatic, NOT a drain).**
   A new `SLACK_RECLAIM_UPLOADS` option (default off). When explicitly enabled,
   after the run's records are durably committed (guarded on the runtime EOF ack

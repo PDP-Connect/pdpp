@@ -240,7 +240,7 @@ wall-clock kill switch on the connector's own patience.
 Added `scoped_archive_resumed_at: Record<archivePath, isoTimestamp>` to the
 `messages` STATE cursor, recording when each scoped archive last had `resume`
 **successfully complete**. `reconcileMessageSourceCache` now checks, per
-selected scoped archive, whether it is due (`scopedArchiveDueForResume`: no
+selected scoped archive, whether it is due (`archiveDueForResume`: no
 prior timestamp, or elapsed time since the prior timestamp ≥
 `SLACK_LOOKBACK_DAYS`). If not due, `refreshScopedArchive` returns
 immediately — `ensureArchiveOnDisk` (and therefore the slackdump subprocess)
@@ -424,6 +424,27 @@ DETAIL_GAP keyed by the archive path`. Both confirmed live, then reverted.
   defaults preserve today's behavior; the incremental query falls back to full
   aggregation whenever no cursor exists (i.e. first run after upgrade behaves
   exactly as today).
+
+### D7 — Base archive resumes need the same success throttle without sharing scoped state (2026-07-25)
+
+The base `/archive` path is the normal scheduled collection path, not a scoped
+repair unit. `pickResumeTarget` chooses it before source-cache reconciliation,
+so `scoped_archive_resumed_at` cannot suppress its `resume -lookback p7d`.
+When a committed `archive_dir` or discovered on-disk archive exists, that
+meant every 90-minute scheduled run re-ran the expensive base resume.
+
+The connector now persists `base_archive_resumed_at: Record<archivePath,
+isoTimestamp>` independently from `scoped_archive_resumed_at`. Its key is the
+resolved base archive path — the stable identity of the slackdump database the
+subprocess targets. An unscoped existing archive is due when the field is
+absent, invalid, or at least `SLACK_LOOKBACK_DAYS` old. Otherwise collection
+opens and reads its existing SQLite archive without invoking slackdump.
+
+The success fact is assigned only after `ensureArchiveOnDisk` completes, then
+travels through the ordinary messages STATE checkpoint. A failed resume throws
+before assignment; a later failure prevents STATE commit. Thus failures remain
+retryable and neither scoped nor base state can suppress the other. First-run
+`archive` creation and explicitly scoped archive/repair behavior are unchanged.
 
 ## Residual risks (owner-only)
 
