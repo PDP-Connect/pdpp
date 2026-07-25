@@ -6,18 +6,24 @@ import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-const binPath = fileURLToPath(new URL('../bin/pdpp-mcp-server.js', import.meta.url));
+const binPath = fileURLToPath(new URL('../bin/pdpp-mcp-server.ts', import.meta.url));
+
+// The bin is TypeScript source pre-build; spawning it directly with plain
+// `node` cannot execute a `.ts` entrypoint, so the child process needs the
+// same `tsx` loader the test runner itself uses (`node --test --import tsx`).
+function spawnBin(args, options = {}) {
+  return spawnSync(process.execPath, ['--import', 'tsx', binPath, ...args], { encoding: 'utf8', ...options });
+}
 
 test('bin help writes to stderr, leaving stdout clean for the MCP protocol stream', () => {
-  const result = spawnSync(process.execPath, [binPath, '--help'], { encoding: 'utf8' });
+  const result = spawnBin(['--help']);
   assert.equal(result.status, 0);
   assert.equal(result.stdout, '', 'stdout must remain empty so MCP framing is not corrupted');
   assert.match(result.stderr, /pdpp-mcp-server/);
 });
 
 test('bin exits with usage code when provider URL is missing', () => {
-  const result = spawnSync(process.execPath, [binPath], {
-    encoding: 'utf8',
+  const result = spawnBin([], {
     env: { ...process.env, PDPP_PROVIDER_URL: '', PDPP_OWNER_TOKEN: '', PDPP_OWNER_SESSION_COOKIE: '' },
   });
   assert.equal(result.status, 64);
@@ -26,8 +32,7 @@ test('bin exits with usage code when provider URL is missing', () => {
 });
 
 test('bin refuses to start when PDPP_OWNER_TOKEN is set in env', () => {
-  const result = spawnSync(process.execPath, [binPath, '--provider-url', 'https://example.com'], {
-    encoding: 'utf8',
+  const result = spawnBin(['--provider-url', 'https://example.com'], {
     env: { ...process.env, PDPP_OWNER_TOKEN: 'sekrit', PDPP_OWNER_SESSION_COOKIE: '' },
   });
   assert.equal(result.status, 77);

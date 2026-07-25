@@ -63,7 +63,11 @@ export function assertManifestTargets(manifest, root) {
   }
   assert.ok(exportTargets.length > 0, "package must expose at least one export");
   for (const { label, target } of exportTargets) {
-    assert.equal(target.endsWith(".js"), true, `${label} must point to emitted JavaScript: ${target}`);
+    assert.equal(
+      target.endsWith(".js") || target.endsWith(".d.ts"),
+      true,
+      `${label} must point to emitted JavaScript or declarations: ${target}`
+    );
     assertInsideDist(root, target, label);
   }
 

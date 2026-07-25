@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:http';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const binPath = join(__dirname, '..', 'bin', 'pdpp-mcp-server.js');
+const binPath = join(__dirname, '..', 'bin', 'pdpp-mcp-server.ts');
 
 const cacheRoot = await mkdtemp(join(tmpdir(), 'pdpp-mcp-smoke-'));
 
@@ -39,9 +39,16 @@ await writeFile(
   JSON.stringify({ credential: { access_token: 'smoke-token' } })
 );
 
-const proc = spawn(process.execPath, [binPath, '--provider-url', providerUrl, '--cache-root', cacheRoot], {
-  env: { ...process.env, PDPP_OWNER_TOKEN: '', PDPP_OWNER_SESSION_COOKIE: '' },
-});
+// Spawning `.ts` source directly requires the `tsx` loader in the child
+// process (this script itself only gets one from `node --test --import tsx`
+// when run as a suite member, not automatically in a spawned child).
+const proc = spawn(
+  process.execPath,
+  ['--import', 'tsx', binPath, '--provider-url', providerUrl, '--cache-root', cacheRoot],
+  {
+    env: { ...process.env, PDPP_OWNER_TOKEN: '', PDPP_OWNER_SESSION_COOKIE: '' },
+  }
+);
 
 let stdoutBuf = '';
 let stderrBuf = '';

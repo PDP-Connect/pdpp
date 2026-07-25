@@ -133,6 +133,35 @@
           }
         }
       }
+    },
+    {
+      // @pdpp/mcp-server TypeScript migration (2026-07-25). Two rules are
+      // confirmed Biome-resolver false positives here, not real debt:
+      //
+      // - noUnresolvedImports: fires on `@modelcontextprotocol/sdk/server/*.js`
+      //   subpath imports. Both `tsc` and `node --input-type=module -e
+      //   "import.meta.resolve(...)"` resolve these correctly through the
+      //   SDK's package.json `exports` map; Biome's resolver does not walk
+      //   pnpm's nested node_modules layout for scoped-package subpath
+      //   exports. No other package in the workspace imports this SDK yet,
+      //   so this is the first time the gap has surfaced.
+      // - noBarrelFile: `server.ts`/`index.ts` each have exactly one
+      //   deliberate `export { X } from './y.js'` line re-exporting a
+      //   downstream module's public symbol at the package's public
+      //   boundary (not a full barrel re-export of a directory) — the same
+      //   pattern the MCP SDK and this package's own public API already
+      //   rely on for `@pdpp/mcp-server` and `@pdpp/mcp-server/server`.
+      "includes": ["packages/mcp-server/src/server.ts", "packages/mcp-server/src/index.ts"],
+      "linter": {
+        "rules": {
+          "correctness": {
+            "noUnresolvedImports": "off"
+          },
+          "performance": {
+            "noBarrelFile": "off"
+          }
+        }
+      }
     }
   ]
 }
