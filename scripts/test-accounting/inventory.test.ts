@@ -42,6 +42,8 @@ const SKIPPED_SKIPPED_PATTERN = /\(skipped:\s*([^)]+)\)|:\s*skipped\s*\(([^)]+)\
 const UNACCOUNTED_EXECUTABLE_TESTS_ALPHA_TEST_PATTERN = /unaccounted executable tests.*alpha\.test\.ts/;
 const UNACCOUNTED_EXECUTABLE_TESTS_PATTERN = /unaccounted executable tests/;
 const SELECTS_NO_EXECUTABLE_TESTS_PATTERN = /selects no executable tests/;
+const MATCHES_NON_EXECUTABLE_CLASSIFIED_FILE_PATTERN = /matches a non-executable-classified file/;
+const INCLUDE_LIST_MATCHES_NO_TRACKED_FILE_PATTERN = /include list matches no tracked file/;
 const INVALID_SCHEMAS_PROVENANCE_PATTERN = /invalid schemas|provenance/;
 const REPLAYED_PATTERN = /replayed/;
 const EXPIRED_PATTERN = /expired/;
@@ -271,7 +273,7 @@ test("fails closed when an include glob matches a file that classifies as helper
         }),
         misclassified
       ),
-    /matches a non-executable-classified file/
+    MATCHES_NON_EXECUTABLE_CLASSIFIED_FILE_PATTERN
   );
 });
 test("fails closed when a suite's entire include list matches no tracked file", () => {
@@ -293,7 +295,7 @@ test("fails closed when a suite's entire include list matches no tracked file", 
         }),
         files
       ),
-    /include list matches no tracked file/
+    INCLUDE_LIST_MATCHES_NO_TRACKED_FILE_PATTERN
   );
 });
 test("does not fail closed when one glob in a multi-extension include list matches nothing, as long as the suite itself is not empty", () => {
@@ -343,7 +345,7 @@ test("fails closed for unrecognized executable tests and empty suites", () => {
         }),
         files
       ),
-    /include list matches no tracked file/
+    INCLUDE_LIST_MATCHES_NO_TRACKED_FILE_PATTERN
   );
 });
 test("rejects invented receipt and transcript without a verifier-issued authority", async () => {
