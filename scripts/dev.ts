@@ -10,12 +10,12 @@ const MAX_PORT_SCAN = 100;
 try {
   process.loadEnvFile(".env.local");
 } catch (err) {
-  if (err?.code !== "ENOENT") {
+  if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") {
     throw err;
   }
 }
 
-function isPortAvailable(port) {
+function isPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolve) => {
     const server = net.createServer();
     server.once("error", () => resolve(false));
@@ -26,7 +26,7 @@ function isPortAvailable(port) {
   });
 }
 
-async function chooseWebPort() {
+async function chooseWebPort(): Promise<number> {
   const configured = process.env.PDPP_WEB_PORT;
   if (configured) {
     const parsed = Number(configured);
@@ -38,6 +38,7 @@ async function chooseWebPort() {
 
   for (let offset = 0; offset < MAX_PORT_SCAN; offset += 1) {
     const port = DEFAULT_WEB_PORT + offset;
+    // biome-ignore lint/performance/noAwaitInLoops: intentionally sequential — probes ports in ascending order and returns the first available one, not independent work to parallelize.
     if (await isPortAvailable(port)) {
       return port;
     }
@@ -46,7 +47,7 @@ async function chooseWebPort() {
   throw new Error(`No available web port found in ${DEFAULT_WEB_PORT}-${DEFAULT_WEB_PORT + MAX_PORT_SCAN - 1}`);
 }
 
-let webPort;
+let webPort: number;
 try {
   webPort = await chooseWebPort();
 } catch (err) {
@@ -78,7 +79,7 @@ const child = spawn(
   {
     env,
     stdio: "inherit",
-  },
+  }
 );
 
 child.once("error", (err) => {
@@ -86,13 +87,13 @@ child.once("error", (err) => {
   process.exit(1);
 });
 
-for (const signal of ["SIGINT", "SIGTERM"]) {
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, () => {
     child.kill(signal);
   });
 }
 
-const SIGNAL_EXIT_CODES = {
+const SIGNAL_EXIT_CODES: Record<string, number> = {
   SIGINT: 130,
   SIGTERM: 143,
 };

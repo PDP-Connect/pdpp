@@ -12,7 +12,7 @@
 // Default mode prints a compact summary to stdout. Use --json to emit a
 // machine-readable shape for tooling.
 
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -22,7 +22,18 @@ const changesDir = join(repoRoot, "openspec", "changes");
 
 const wantJson = process.argv.includes("--json");
 
-function classify(changeName) {
+type Status = "no-tasks-file" | "no-tasks" | "zero-progress" | "complete" | "in-flight";
+interface Record_ {
+  done: number;
+  name: string;
+  status: Status;
+  total: number;
+}
+
+const DONE_TASK_PATTERN = /^\s*- \[x\]/i;
+const OPEN_TASK_PATTERN = /^\s*- \[ \]/;
+
+function classify(changeName: string): Record_ {
   const tasksFile = join(changesDir, changeName, "tasks.md");
   if (!existsSync(tasksFile)) {
     return { name: changeName, done: 0, total: 0, status: "no-tasks-file" };
@@ -31,14 +42,14 @@ function classify(changeName) {
   let done = 0;
   let total = 0;
   for (const line of body.split("\n")) {
-    if (/^\s*- \[x\]/i.test(line)) {
+    if (DONE_TASK_PATTERN.test(line)) {
       done += 1;
       total += 1;
-    } else if (/^\s*- \[ \]/.test(line)) {
+    } else if (OPEN_TASK_PATTERN.test(line)) {
       total += 1;
     }
   }
-  let status;
+  let status: Status;
   if (total === 0) {
     status = "no-tasks";
   } else if (done === 0) {
@@ -51,7 +62,7 @@ function classify(changeName) {
   return { name: changeName, done, total, status };
 }
 
-function listActiveChanges() {
+function listActiveChanges(): string[] {
   if (!existsSync(changesDir)) {
     return [];
   }
@@ -63,7 +74,7 @@ function listActiveChanges() {
 
 const records = listActiveChanges().map(classify);
 
-const byStatus = {
+const byStatus: Record<Status, Record_[]> = {
   "in-flight": [],
   "zero-progress": [],
   complete: [],
@@ -90,7 +101,7 @@ if (wantJson) {
   process.exit(0);
 }
 
-function formatBucket(label, items, { showRatio = true } = {}) {
+function formatBucket(label: string, items: Record_[], { showRatio = true }: { showRatio?: boolean } = {}) {
   console.log(`\n## ${label} (${items.length})`);
   if (items.length === 0) {
     console.log("OK: none");
@@ -112,10 +123,7 @@ console.log(`Active changes: ${records.length} (archive bucket not scanned)`);
 
 formatBucket("In-flight (some tasks done, some open)", byStatus["in-flight"]);
 formatBucket("Zero-progress (proposed, no tasks done yet)", byStatus["zero-progress"]);
-formatBucket(
-  "Complete (all tasks done — awaiting owner archive sweep)",
-  byStatus.complete
-);
+formatBucket("Complete (all tasks done — awaiting owner archive sweep)", byStatus.complete);
 
 if (byStatus["no-tasks"].length > 0 || byStatus["no-tasks-file"].length > 0) {
   formatBucket("Without task tracking", [...byStatus["no-tasks"], ...byStatus["no-tasks-file"]], {
