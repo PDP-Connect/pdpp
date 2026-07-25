@@ -688,7 +688,19 @@ export async function verifyReceipts(
   if (!(authorityDirectory && existsSync(authorityDirectory))) {
     fail("verifier-issued authority directory is required");
   }
-  const { plans } = planFor(manifest, files, []);
+  // Plans are only computed for the suites these receipts actually claim
+  // (plus any suite named in requiredKeys, so a missing-receipt check below
+  // can still report it by id). Planning every manifest suite here would
+  // reject a suite-scoped run over an unrelated suite's stale, empty-matching
+  // include glob, even though that suite was never selected or run.
+  const receiptSuiteIds = new Set(receipts.map((receipt) => receipt.suite));
+  for (const key of requiredKeys ?? []) {
+    const [suiteId] = key.split("/");
+    if (suiteId) {
+      receiptSuiteIds.add(suiteId);
+    }
+  }
+  const { plans } = planFor(manifest, files, [...receiptSuiteIds]);
   const suites = new Map(manifest.suites.map((suite) => [suite.id, suite]));
   const seen = new Set<string>();
   const manifestHash = fileDigest(root, "test-accounting.manifest.json");

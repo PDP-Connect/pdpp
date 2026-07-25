@@ -654,3 +654,58 @@ test("the authority spawns an issued child and consumes its only valid Git-priva
   execFileSync("git", ["commit", "-qm", "base"], { cwd: root });
   assert.deepEqual((await runAuthority({ root, suites: ["node"] })).result.verified, ["node/default"]);
 });
+test("a suite-scoped authority run does not fail closed on an unrelated suite's stale, empty-matching include glob", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pdpp-authority-scoped-"));
+  await mkdir(join(root, "test"));
+  await writeFile(join(root, "test", "a.test.js"), "export const selected = true;\n");
+  await writeFile(
+    join(root, "child.mjs"),
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: this is a fixture — a single-quoted string containing real JS source text (its own backtick template literal) written out to a file, not a forgotten template literal here.
+    'import { readFileSync } from "node:fs"; const path = process.argv[process.argv.indexOf("--authority") + 1]; const issued = JSON.parse(readFileSync(path, "utf8")); console.log(`PDPP_TEST_ACCOUNTING_RESULT ${JSON.stringify({ run_id: issued.run_id, nonce: issued.nonce, suite: issued.suite, profile: issued.profile, files: issued.files, counts: { assertions: 1, passed: 1, failed: 0, skipped: 0, skip_reasons: {}, planned_files: 1, completed_files: 1 } })}`);\n'
+  );
+  execFileSync("git", ["init", "-q"], { cwd: root });
+  execFileSync("git", ["config", "user.email", "fixture@example.test"], { cwd: root });
+  execFileSync("git", ["config", "user.name", "fixture"], { cwd: root });
+  const initialManifest: Manifest = {
+    schema: "pdpp.test-accounting/v3",
+    inventory_base_sha: "0000000000000000000000000000000000000000",
+    suites: [
+      {
+        id: "node",
+        cwd: ".",
+        loader: "node-test",
+        authority_argument: "--authority",
+        command: [process.execPath, "child.mjs"],
+        profiles: [{ id: "default", required: true, skip_reasons: {} }],
+        include: ["test/*.test.js"],
+      },
+      {
+        // Stands in for the real mcp-server suite's stale .test.js/.mjs
+        // include globs after its tests were renamed to .test.ts/.ts: the
+        // suite is declared but its include glob now matches zero tracked
+        // files. A suite-scoped run of "node" alone must not fail closed
+        // because of this unrelated, unselected suite's empty selection.
+        id: "stale-unrelated",
+        cwd: ".",
+        loader: "node-test",
+        authority_argument: "--authority",
+        command: [process.execPath, "child.mjs"],
+        profiles: [{ id: "default", required: true, skip_reasons: {} }],
+        include: ["test/*.test.renamed-away-suffix"],
+      },
+    ],
+    exclusions: [],
+  };
+  await writeFile(join(root, "test-accounting.manifest.json"), `${JSON.stringify(initialManifest)}\n`);
+  execFileSync("git", ["add", "."], { cwd: root });
+  execFileSync("git", ["commit", "-qm", "fixture"], { cwd: root });
+  initialManifest.inventory_base_sha = execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: root,
+    encoding: "utf8",
+  }).trim();
+  await writeFile(join(root, "test-accounting.manifest.json"), `${JSON.stringify(initialManifest)}\n`);
+  execFileSync("git", ["add", "test-accounting.manifest.json"], { cwd: root });
+  execFileSync("git", ["commit", "-qm", "base"], { cwd: root });
+  assert.deepEqual((await runAuthority({ root, suites: ["node"] })).result.verified, ["node/default"]);
+  await assert.rejects(runAuthority({ root, suites: ["stale-unrelated"] }), SELECTS_NO_EXECUTABLE_TESTS_PATTERN);
+});
