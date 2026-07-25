@@ -18,43 +18,53 @@
 // otherwise surface as a confusing 401/404 — the "401 = wrong auth, 404 = wrong
 // path" trap from the live route map.
 
-import { PdppUsageError } from './errors.js';
-import { ownerSessionHeaders } from './fetch.js';
+import { PdppUsageError } from "./errors.ts";
+import { ownerSessionHeaders } from "./fetch.ts";
 
-export const AUTH_COOKIE = 'cookie';
-export const AUTH_BEARER = 'bearer';
+export const AUTH_COOKIE = "cookie";
+export const AUTH_BEARER = "bearer";
+
+const HTTP_URL_PREFIX_RE = /^https?:\/\//i;
+const TRAILING_CR_RE = /\r$/;
+const TRAILING_CRLF_RE = /\r?\n$/;
 
 // Infer the auth mode a path expects from its prefix. Returns 'cookie',
 // 'bearer', or null when the prefix is not an owner surface we recognize.
-export function inferAuthMode(path) {
+export function inferAuthMode(path: string): typeof AUTH_COOKIE | typeof AUTH_BEARER | null {
   const p = normalizePath(path);
-  if (p.startsWith('/v1/owner/') || p === '/v1/owner') {
+  if (p.startsWith("/v1/owner/") || p === "/v1/owner") {
     return AUTH_BEARER;
   }
-  if (p.startsWith('/_ref/') || p === '/_ref') {
+  if (p.startsWith("/_ref/") || p === "/_ref") {
     return AUTH_COOKIE;
   }
   return null;
 }
 
-function normalizePath(path) {
-  if (typeof path !== 'string' || !path) {
-    return '';
+function normalizePath(path: string): string {
+  if (typeof path !== "string" || !path) {
+    return "";
   }
   // Strip a query/hash and a leading origin if the caller passed a full URL.
   let p = path;
   try {
-    if (/^https?:\/\//i.test(p)) {
+    if (HTTP_URL_PREFIX_RE.test(p)) {
       p = new URL(p).pathname;
     }
   } catch {
     // fall through; treat as a path
   }
-  const q = p.indexOf('?');
-  if (q !== -1) p = p.slice(0, q);
-  const h = p.indexOf('#');
-  if (h !== -1) p = p.slice(0, h);
-  if (!p.startsWith('/')) p = `/${p}`;
+  const q = p.indexOf("?");
+  if (q !== -1) {
+    p = p.slice(0, q);
+  }
+  const h = p.indexOf("#");
+  if (h !== -1) {
+    p = p.slice(0, h);
+  }
+  if (!p.startsWith("/")) {
+    p = `/${p}`;
+  }
   return p;
 }
 
@@ -62,10 +72,10 @@ function normalizePath(path) {
 // present and valid, otherwise the path-inferred mode. Throws a usage error
 // when an override conflicts with the path's surface, or when neither an
 // override nor a recognized prefix is available.
-export function resolveAuthMode(path, override) {
+export function resolveAuthMode(path: string, override: string | boolean | undefined | null): string {
   const inferred = inferAuthMode(path);
 
-  if (override !== undefined && override !== null && override !== '') {
+  if (override !== undefined && override !== null && override !== "") {
     const chosen = String(override).toLowerCase();
     if (chosen !== AUTH_COOKIE && chosen !== AUTH_BEARER) {
       throw new PdppUsageError(`Invalid --auth value: ${override}. Use "cookie" or "bearer".`);
@@ -79,23 +89,35 @@ export function resolveAuthMode(path, override) {
   if (!inferred) {
     throw new PdppUsageError(
       `Cannot infer owner auth mode for path "${path}". ` +
-        'Owner routes are /_ref/* (cookie) or /v1/owner/* (bearer). ' +
-        'Pass --auth cookie|bearer to call a non-standard path explicitly.'
+        "Owner routes are /_ref/* (cookie) or /v1/owner/* (bearer). " +
+        "Pass --auth cookie|bearer to call a non-standard path explicitly."
     );
   }
   return inferred;
 }
 
-function mismatchMessage(path, inferred, chosen) {
-  const surface = inferred === AUTH_COOKIE ? '/_ref/*' : '/v1/owner/*';
-  const correct = inferred === AUTH_COOKIE ? 'cookie' : 'bearer';
+function mismatchMessage(path: string, inferred: string, chosen: string): string {
+  const surface = inferred === AUTH_COOKIE ? "/_ref/*" : "/v1/owner/*";
+  const correct = inferred === AUTH_COOKIE ? "cookie" : "bearer";
   return (
     `Auth mismatch: ${path} is a ${surface} route and uses ${correct} auth, ` +
     `but --auth ${chosen} was given. ` +
-    '/_ref/* uses the owner session cookie; /v1/owner/* uses the owner bearer. ' +
-    'Pointing the wrong auth at a route returns a confusing 401/404. ' +
+    "/_ref/* uses the owner session cookie; /v1/owner/* uses the owner bearer. " +
+    "Pointing the wrong auth at a route returns a confusing 401/404. " +
     `Drop --auth (it is inferred) or use --auth ${correct}.`
   );
+}
+
+export interface BuildAuthHeadersIo {
+  stdin?: NodeJS.ReadableStream;
+}
+
+export interface BuildAuthHeadersArgs {
+  env?: NodeJS.ProcessEnv;
+  flags: Record<string, string | boolean>;
+  io?: BuildAuthHeadersIo;
+  mode: string;
+  referenceUrl?: string;
 }
 
 // Build the request headers for the chosen auth mode. For cookie auth, resolves
@@ -104,17 +126,24 @@ function mismatchMessage(path, inferred, chosen) {
 // never accepts it on argv. Throws a usage error when the required secret is
 // absent. The returned object includes only the auth header; content-type is
 // added by the caller for bodies.
-export async function buildAuthHeaders({ mode, referenceUrl, flags, io, env = process.env }) {
+export async function buildAuthHeaders({
+  mode,
+  referenceUrl,
+  flags,
+  io,
+  env = process.env,
+}: BuildAuthHeadersArgs): Promise<Record<string, string>> {
   if (mode === AUTH_COOKIE) {
+    const ownerSession = flags["owner-session"];
     const headers = ownerSessionHeaders({
-      ownerSession: flags['owner-session'] || '',
+      ownerSession: typeof ownerSession === "string" ? ownerSession : "",
       referenceUrl,
-      cacheRoot: flags['cache-root'],
+      cacheRoot: typeof flags["cache-root"] === "string" ? flags["cache-root"] : undefined,
     });
     if (!headers.Cookie) {
       throw new PdppUsageError(
-        'No owner session available. Run `pdpp ref login <reference-url>` first, ' +
-          'pass --owner-session <cookie>, or set PDPP_OWNER_SESSION_COOKIE.'
+        "No owner session available. Run `pdpp ref login <reference-url>` first, " +
+          "pass --owner-session <cookie>, or set PDPP_OWNER_SESSION_COOKIE."
       );
     }
     return headers;
@@ -124,9 +153,9 @@ export async function buildAuthHeaders({ mode, referenceUrl, flags, io, env = pr
     const token = await resolveOwnerToken(flags, io, env);
     if (!token) {
       throw new PdppUsageError(
-        'No owner bearer available for a /v1/owner/* call. ' +
-          'Pipe it via `--owner-token-stdin` or set PDPP_OWNER_TOKEN. ' +
-          'The token is never accepted on the command line.'
+        "No owner bearer available for a /v1/owner/* call. " +
+          "Pipe it via `--owner-token-stdin` or set PDPP_OWNER_TOKEN. " +
+          "The token is never accepted on the command line."
       );
     }
     return { Authorization: `Bearer ${token}` };
@@ -135,48 +164,52 @@ export async function buildAuthHeaders({ mode, referenceUrl, flags, io, env = pr
   throw new PdppUsageError(`Unknown auth mode: ${mode}`);
 }
 
-async function resolveOwnerToken(flags, io, env) {
-  if (flags['owner-token-stdin']) {
-    return readFirstLine((io && io.stdin) || process.stdin);
+function resolveOwnerToken(
+  flags: Record<string, string | boolean>,
+  io: BuildAuthHeadersIo | undefined,
+  env: NodeJS.ProcessEnv
+): Promise<string | null> {
+  if (flags["owner-token-stdin"]) {
+    return readFirstLine(io?.stdin ?? process.stdin);
   }
   const fromEnv = env.PDPP_OWNER_TOKEN;
-  if (typeof fromEnv === 'string' && fromEnv.length > 0) {
-    return fromEnv.trim();
+  if (typeof fromEnv === "string" && fromEnv.length > 0) {
+    return Promise.resolve(fromEnv.trim());
   }
-  return null;
+  return Promise.resolve(null);
 }
 
-function readFirstLine(stream) {
-  return new Promise((resolve, reject) => {
-    if (!stream || typeof stream.on !== 'function') {
-      resolve('');
+function readFirstLine(stream: NodeJS.ReadableStream | undefined): Promise<string> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    if (!stream || typeof stream.on !== "function") {
+      resolvePromise("");
       return;
     }
-    let buf = '';
-    stream.setEncoding?.('utf8');
-    const onData = (chunk) => {
+    let buf = "";
+    stream.setEncoding?.("utf8");
+    const onData = (chunk: string) => {
       buf += chunk;
-      const nl = buf.indexOf('\n');
+      const nl = buf.indexOf("\n");
       if (nl !== -1) {
         cleanup();
-        resolve(buf.slice(0, nl).replace(/\r$/, ''));
+        resolvePromise(buf.slice(0, nl).replace(TRAILING_CR_RE, ""));
       }
     };
     const onEnd = () => {
       cleanup();
-      resolve(buf.replace(/\r?\n$/, ''));
+      resolvePromise(buf.replace(TRAILING_CRLF_RE, ""));
     };
-    const onError = (e) => {
+    const onError = (e: Error) => {
       cleanup();
-      reject(e);
+      rejectPromise(e);
     };
     function cleanup() {
-      stream.off?.('data', onData);
-      stream.off?.('end', onEnd);
-      stream.off?.('error', onError);
+      stream?.off?.("data", onData);
+      stream?.off?.("end", onEnd);
+      stream?.off?.("error", onError);
     }
-    stream.on('data', onData);
-    stream.on('end', onEnd);
-    stream.on('error', onError);
+    stream.on("data", onData);
+    stream.on("end", onEnd);
+    stream.on("error", onError);
   });
 }
