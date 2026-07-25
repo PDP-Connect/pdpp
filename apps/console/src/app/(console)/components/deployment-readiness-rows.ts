@@ -322,8 +322,7 @@ export function diskHeadroomRow(inputs: ServerInputs): ReadinessRow {
       status: "info",
     };
   }
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const first = inputs.diskHeadroom[0];
+  const [first] = inputs.diskHeadroom;
   // Guarded by the length check above; TypeScript sees index access as possibly
   // undefined when noUncheckedIndexedAccess is set.
   if (!first) {

@@ -57,10 +57,8 @@ export function formatLastError(error: Record<string, unknown> | null | undefine
   if (!error) {
     return "none";
   }
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const message = error.message;
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const code = error.code;
+  const { message } = error;
+  const { code } = error;
   if (typeof message === "string" && message.trim()) {
     return message;
   }

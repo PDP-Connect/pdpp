@@ -334,10 +334,8 @@ test("diskHeadroomRows returns one row per entry", () => {
     ],
   });
   assert.equal(rows.length, 2);
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const dataRow = rows[0];
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const postgresRow = rows[1];
+  const [dataRow] = rows;
+  const [_, postgresRow] = rows;
   assert.ok(dataRow);
   assert.ok(postgresRow);
   assert.match(dataRow.check, /data/);

@@ -149,8 +149,7 @@ function transitionPointerMove(
   state: MobileKeyboardFocusState,
   event: Extract<MobileKeyboardFocusEvent, { type: "pointermove" }>
 ): MobileKeyboardFocusTransition {
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const gesture = state.gesture;
+  const { gesture } = state;
   if (gesture?.phase !== "active" || gesture.pointerId !== event.pointerId) {
     return { effect: "none", state };
   }
@@ -189,8 +188,7 @@ function transitionPointerUp(
   state: MobileKeyboardFocusState,
   event: Extract<MobileKeyboardFocusEvent, { type: "pointerup" }>
 ): MobileKeyboardFocusTransition {
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const gesture = state.gesture;
+  const { gesture } = state;
   if (gesture?.phase !== "active" || gesture.pointerId !== event.pointerId || gesture.moved) {
     return gesture?.pointerId === event.pointerId && gesture.moved ? clearGesture(state) : { effect: "none", state };
   }
@@ -215,8 +213,7 @@ function transitionRemoteFocus(
   state: MobileKeyboardFocusState,
   event: Extract<MobileKeyboardFocusEvent, { type: "remote-focus" }>
 ): MobileKeyboardFocusTransition {
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const gesture = state.gesture;
+  const { gesture } = state;
   const canMatchLateConfirmation =
     gesture?.phase === "awaiting-confirmation" &&
     !isGestureExpired(gesture, event.atMs) &&

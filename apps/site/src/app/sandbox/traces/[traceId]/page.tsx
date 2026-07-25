@@ -16,8 +16,7 @@ export default async function SandboxTraceDetailPage({ params }: { params: Promi
   if (!envelope) {
     notFound();
   }
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
-  const first = envelope.events[0];
+  const [first] = envelope.events;
   return (
     <DashboardShell active="traces" mode="mock-owner">
       <TimelineDetailView

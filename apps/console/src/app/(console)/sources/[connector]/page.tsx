@@ -1181,8 +1181,7 @@ function acquisitionMediaCoverageLabel(mediaCoverage: unknown): string | null {
   if (!mediaCoverage || typeof mediaCoverage !== "object") {
     return null;
   }
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const status = (mediaCoverage as { status?: unknown }).status;
+  const { status } = mediaCoverage as { status?: unknown };
   return typeof status === "string" && status.length > 0 ? `media ${status.replaceAll("_", " ")}` : null;
 }
 

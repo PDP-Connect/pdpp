@@ -124,8 +124,7 @@ function normalizeTimeline(raw: unknown): TimelineEnvelope {
   };
   let events: SpineEvent[] = [];
   if (Array.isArray(r.events)) {
-    // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-    events = r.events;
+    ({ events } = r);
   } else if (Array.isArray(r.data)) {
     events = r.data;
   }

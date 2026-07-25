@@ -332,8 +332,7 @@ export function summarizeVersionChurn(rows: readonly RefRecordVersionStatsRow[])
   /** Per-disposition counts, for the view's section framing. */
   dispositions: ChurnDispositionCounts;
 } | null {
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const strongest = rows[0];
+  const [strongest] = rows;
   if (!strongest) {
     return null;
   }

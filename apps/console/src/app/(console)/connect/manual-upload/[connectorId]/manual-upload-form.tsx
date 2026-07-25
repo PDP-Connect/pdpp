@@ -124,8 +124,7 @@ function formatMediaCoverage(value: unknown): string | null {
   if (!value || typeof value !== "object") {
     return null;
   }
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const status = (value as { status?: unknown }).status;
+  const { status } = value as { status?: unknown };
   return typeof status === "string" && status.length > 0 ? status.replaceAll("_", " ") : null;
 }
 
@@ -228,8 +227,7 @@ function ProgressCard({ progress }: { progress: NonNullable<UploadState["progres
 }
 
 function validationToPreview(preview: ManualUploadValidationPreviewWire): UploadState {
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const validation = preview.validation;
+  const { validation } = preview;
   return {
     ok: true,
     preview: {
@@ -461,8 +459,7 @@ interface PreparedSubmission {
 }
 
 function submitIntent(event: FormEvent<HTMLFormElement>): PreparedSubmission["intent"] {
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const submitter = (event.nativeEvent as SubmitEvent).submitter;
+  const { submitter } = event.nativeEvent as SubmitEvent;
   return submitter instanceof HTMLButtonElement && submitter.value === "preview" ? "preview" : "import";
 }
 
@@ -579,8 +576,7 @@ async function importManualUploads(
   target: UploadTarget,
   setState: SetUploadState
 ): Promise<string> {
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  let connectionId = target.connectionId;
+  let { connectionId } = target;
   let lastConnectionId: string | null = target.connectionId;
   let shouldRun = false;
   for (let index = 0; index < files.length; index += 1) {

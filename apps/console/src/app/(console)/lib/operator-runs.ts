@@ -284,8 +284,7 @@ function isUnavailableErrorBody(body: unknown): boolean {
   if (!body || typeof body !== "object") {
     return false;
   }
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const error = (body as { error?: unknown }).error;
+  const { error } = body as { error?: unknown };
   if (!error || typeof error !== "object") {
     return false;
   }

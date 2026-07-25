@@ -20,8 +20,7 @@ test("requires consecutive matching screen, media, inbound frames, and decoded p
   });
   assert.equal(baseline.status, "settling");
   assert.deepEqual(baseline.reasons, ["frames_not_progressing"]);
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  state = baseline.state;
+  ({ state } = baseline);
 
   const first = assessNekoMediaSettle({
     sample: {
@@ -34,8 +33,7 @@ test("requires consecutive matching screen, media, inbound frames, and decoded p
   });
   assert.equal(first.status, "settling");
   assert.equal(first.state.consecutiveReadySamples, 1);
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  state = first.state;
+  ({ state } = first);
 
   const second = assessNekoMediaSettle({
     sample: {
@@ -83,12 +81,7 @@ test("marks repeated mismatches as degraded after the sample budget", () => {
       },
       state,
     });
-    // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-    state = result.state;
-    // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-    status = result.status;
-    // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-    reasons = result.reasons;
+    ({ state, status, reasons } = result);
   }
 
   assert.equal(status, "degraded");
@@ -111,8 +104,7 @@ test("keeps desktop fallback media degraded instead of treating it as settled", 
     },
     state,
   });
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  state = result.state;
+  ({ state } = result);
   result = assessNekoMediaSettle({
     maxSettlingSamples: 3,
     sample: {
@@ -123,8 +115,7 @@ test("keeps desktop fallback media degraded instead of treating it as settled", 
     },
     state,
   });
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  state = result.state;
+  ({ state } = result);
   result = assessNekoMediaSettle({
     maxSettlingSamples: 3,
     sample: {
@@ -146,8 +137,7 @@ test("keeps desktop fallback media degraded instead of treating it as settled", 
 
 test("treats screen and media that cover the requested viewport as eligible for settle", () => {
   let state = createNekoMediaSettleState();
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  state = assessNekoMediaSettle({
+  ({ state } = assessNekoMediaSettle({
     sample: {
       inbound: { frameHeight: 848, framesDecoded: 1, frameWidth: 392 },
       media: { height: 848, width: 392 },
@@ -155,10 +145,9 @@ test("treats screen and media that cover the requested viewport as eligible for 
       screen: { height: 848, width: 392 },
     },
     state,
-  }).state;
+  }));
 
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  state = assessNekoMediaSettle({
+  ({ state } = assessNekoMediaSettle({
     sample: {
       inbound: { frameHeight: 848, framesDecoded: 2, frameWidth: 392 },
       media: { height: 848, width: 392 },
@@ -166,7 +155,7 @@ test("treats screen and media that cover the requested viewport as eligible for 
       screen: { height: 848, width: 392 },
     },
     state,
-  }).state;
+  }));
 
   const result = assessNekoMediaSettle({
     sample: {
@@ -194,8 +183,7 @@ test("settles on painted media when inbound stats are missing or stale", () => {
   });
   assert.equal(first.status, "settling");
   assert.deepEqual(first.reasons, []);
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  state = first.state;
+  ({ state } = first);
 
   const second = assessNekoMediaSettle({
     sample: {
@@ -229,8 +217,7 @@ test("accepts exact-ish landscape media and rejects visibly cropped fallbacks", 
     "screen_not_covering_requested_viewport",
     "media_not_covering_requested_viewport",
   ]);
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  state = cropped.state;
+  ({ state } = cropped);
 
   const fitted = assessNekoMediaSettle({
     sample: {
@@ -287,11 +274,10 @@ test("does not block settling for one normal negotiation freeze", () => {
     { frameHeight: 844, framesDecoded: 1, frameWidth: 390, freezeCount: 0 },
     { frameHeight: 844, framesDecoded: 2, frameWidth: 390, freezeCount: 1 },
   ]) {
-    // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-    state = assessNekoMediaSettle({
+    ({ state } = assessNekoMediaSettle({
       sample: { inbound, media: requested, requested, screen: requested },
       state,
-    }).state;
+    }));
   }
 
   const result = assessNekoMediaSettle({

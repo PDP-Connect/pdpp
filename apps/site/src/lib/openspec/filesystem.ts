@@ -12,8 +12,7 @@ export async function resolveRepoRoot(): Promise<string> {
   }
 
   let dir = process.cwd();
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
-  const root = path.parse(dir).root;
+  const { root } = path.parse(dir);
 
   for (;;) {
     // biome-ignore lint/performance/noAwaitInLoops: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.

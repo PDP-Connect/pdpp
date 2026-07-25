@@ -535,11 +535,9 @@ export function toSourceInstanceView(
   } else {
     accountLine = formatSourceListFacts(summary, sourceStreamNames.length);
   }
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const primaryVerdictAction = actionability.primaryVerdictAction;
+  const { primaryVerdictAction } = actionability;
   const nextAction = primaryVerdictAction?.ownerRunnable ? null : actionability.nextAction;
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const ownerActionCue = actionability.ownerActionCue;
+  const { ownerActionCue } = actionability;
   const status = actionability.renderedStatus;
 
   const streams: SourceStreamManifestRow[] = sourceStreamNames.map((name) => {

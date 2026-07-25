@@ -129,8 +129,7 @@ test("DIRECTION 1 transaction -> account: detail-page chain yields the parent ac
 
   assert.equal(parentBackLinkFromMeta, null, "Chase has no parent expand metadata, so the metadata source is null");
   assert.equal(allParentBackLinks.length, 1, "exactly one transaction -> account back-link must render");
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const link = allParentBackLinks[0];
+  const [link] = allParentBackLinks;
   assert.equal(link?.parentStream, "accounts");
   assert.equal(link?.childParentKeyField, "account_id");
   assert.equal(
@@ -176,12 +175,7 @@ test("ROUND-TRIP: the account key is the shared join value both directions use",
   const connectorStreams = connectorManifest.streams ?? [];
   const txStream = connectorStreams.find((s) => s.name === "transactions");
 
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const up = childHasOneBackLinksFromManifest(
-    txStream,
-    { account_id: ACCOUNT_KEY },
-    { connectionId: CONNECTION_ID }
-  )[0];
+  const [up] = childHasOneBackLinksFromManifest(txStream, { account_id: ACCOUNT_KEY }, { connectionId: CONNECTION_ID });
   const down = reverseChildListLinksFromManifest(connectorStreams, {
     connectionId: CONNECTION_ID,
     parentRecordKey: ACCOUNT_KEY,

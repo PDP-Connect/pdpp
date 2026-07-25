@@ -23,8 +23,7 @@ test("dateChipLabel: sliding presets read by their rolling name (end = now)", ()
 
 test("dateChipLabel: growing (since-only, not a preset) → Since <month day>", () => {
   // An anchored start that is not one of the rolling presets is still growing to now.
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const since = resolveCustomRange("2026-06-12", "", DAY_TZ).since;
+  const { since } = resolveCustomRange("2026-06-12", "", DAY_TZ);
   assert.equal(dateChipLabel(since, "", NOW_MS), "Since Jun 12");
 });
 

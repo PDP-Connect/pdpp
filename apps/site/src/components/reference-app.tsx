@@ -681,8 +681,7 @@ function IntrospectionField({ label, value, accent }: { label: string; value: st
 }
 
 function TokenIntrospection({ introspection }: { introspection: ClientIntrospection }) {
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
-  const active = introspection.active;
+  const { active } = introspection;
   const verdictColor = active ? "var(--success)" : "var(--destructive)";
   const verdictWash = active ? "var(--success-wash)" : "var(--status-danger-bg)";
   return (

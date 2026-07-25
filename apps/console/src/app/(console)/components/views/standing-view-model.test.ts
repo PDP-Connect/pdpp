@@ -853,8 +853,7 @@ test("dashboard cross-surface: an inactive queued recovery row is passive progre
 
   const allRows = data.sourceWorkSections.flatMap((section) => section.rows);
   assert.equal(allRows.length, 1);
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const row = allRows[0];
+  const [row] = allRows;
   assert.ok(row);
   assert.doesNotMatch(row.what, DASHBOARD_CHECKING_RE);
   assert.match(`${row.what} ${row.why ?? ""}`, DASHBOARD_PASSIVE_RECOVERY_RE);
@@ -1675,8 +1674,7 @@ test("lately summarizes identical recent reads instead of repeating the same row
       trace_id: `trc_longview_${i}`,
     })
   );
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const baseRepeated = repeated[0];
+  const [baseRepeated] = repeated;
   assert.ok(baseRepeated);
   const different: TraceSummary = {
     ...baseRepeated,

@@ -130,16 +130,14 @@ export function createStreamSurfaceMeasureCoordinator(
   return {
     attachSurface(node: unknown, surfaceKey: string): void {
       const result = drainSurfaceMeasureOnAttach(state, node, surfaceKey);
-      // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-      state = result.state;
+      ({ state } = result);
       if (result.measureSource) {
         measure(`${result.measureSource}+surface-attached`);
       }
     },
     requestBackendReady(surfaceKey: string): void {
       const result = requestSurfaceMeasure(state, "neko-backend-ready", surfaceKey);
-      // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-      state = result.state;
+      ({ state } = result);
       if (result.measureSourceNow) {
         measure(`${result.measureSourceNow}+reconnect-current-surface`);
       }

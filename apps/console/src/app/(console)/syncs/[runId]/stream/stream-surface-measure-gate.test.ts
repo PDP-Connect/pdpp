@@ -32,8 +32,7 @@ test("pure gate: a fresh state defers the first request for any key (nothing att
 });
 
 test("pure gate: an attach for a DIFFERENT key never drains a pending request queued for another key", () => {
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const state = requestSurfaceMeasure(createSurfaceMeasureGateState(), "neko-backend-ready", SESSION_B).state;
+  const { state } = requestSurfaceMeasure(createSurfaceMeasureGateState(), "neko-backend-ready", SESSION_B);
 
   const wrongKeyAttach = drainSurfaceMeasureOnAttach(state, { tag: "node" }, SESSION_A);
   assert.equal(wrongKeyAttach.measureSource, null);
@@ -45,10 +44,8 @@ test("pure gate: an attach for a DIFFERENT key never drains a pending request qu
 
 test("pure gate: a superseding request for a new key discards the prior one fail-closed", () => {
   let state = createSurfaceMeasureGateState();
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  state = requestSurfaceMeasure(state, "neko-backend-ready", SESSION_A).state;
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  state = requestSurfaceMeasure(state, "neko-backend-ready", SESSION_B).state;
+  ({ state } = requestSurfaceMeasure(state, "neko-backend-ready", SESSION_A));
+  ({ state } = requestSurfaceMeasure(state, "neko-backend-ready", SESSION_B));
 
   const staleAttach = drainSurfaceMeasureOnAttach(state, { tag: "node" }, SESSION_A);
   assert.equal(staleAttach.measureSource, null);

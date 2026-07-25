@@ -620,8 +620,7 @@ function buildFilterChips(args: {
     // raw shapes: "stream:messages", "-con:abc", "has:link", "before:2026-01-01", or a
     // bare word (free-text search). A leading "-" is the exclude operator. A bare word
     // (no colon) is a free-text search term → property "search".
-    // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-    const raw = tk.raw;
+    const { raw } = tk;
     const negated = raw.startsWith("-");
     const body = negated ? raw.slice(1) : raw;
     const colon = body.indexOf(":");
@@ -810,8 +809,7 @@ function QueryInput(props: QueryInputProps) {
         return;
       }
       // At this point kind is "has-image" | "has-link" | "date" — all handled by suggestionToken.
-      // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-      const kind = s.kind;
+      const { kind } = s;
       if (kind === "has-image" || kind === "has-link" || kind === "date") {
         props.onDraftChange(appendOperatorToken(props.draft, suggestionToken(kind)));
       }
@@ -1497,8 +1495,7 @@ function SearchHeader({
   query: string;
   recordsBasePath: string;
 }) {
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const descriptor = data.descriptor;
+  const { descriptor } = data;
   // Exhaustive recall is provable only when the descriptor itself pages to the
   // end (keyword_pageable / complete_chronological). A relevance_bounded set is
   // a ranked SAMPLE — never label its escape "all matching records".
@@ -2072,8 +2069,7 @@ function BurstRow({
   recordsBasePath: string;
   selectedPeekParam: string | null;
 }) {
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const rep = burst.entries[0];
+  const [rep] = burst.entries;
   const loaded = burst.entries.length;
   // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   const streamLabel = `${rep?.connectionDisplayName ?? rep?.connectorId ?? ""}${rep?.stream ? ` / ${rep.stream}` : ""}`;
@@ -3113,10 +3109,8 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
   );
   const selectedConnectionIds = optimisticSelection.connectionIds;
   const selectedStreams = optimisticSelection.streams;
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const excludeConnectionIds = optimisticSelection.excludeConnectionIds;
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const excludeStreams = optimisticSelection.excludeStreams;
+  const { excludeConnectionIds } = optimisticSelection;
+  const { excludeStreams } = optimisticSelection;
 
   const parsed = useMemo(() => parseQuery(draft), [draft]);
   const committedParsed = useMemo(() => parseQuery(data.query), [data.query]);

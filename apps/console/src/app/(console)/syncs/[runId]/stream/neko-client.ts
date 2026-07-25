@@ -842,8 +842,7 @@ function scheduleRemoteCopyFallback(): void {
 
 function startClipboardWriteGuard(): void {
   stopClipboardWriteGuard();
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const clipboard = navigator.clipboard;
+  const { clipboard } = navigator;
   if (!clipboard || typeof clipboard.writeText !== "function") {
     emitNekoDebug("neko.clipboard_write.guard", {
       available: false,
@@ -1683,8 +1682,7 @@ function clickNekoAtPoint(
   // `playground.event` (matched by approximate timestamp) to verify
   // the click landed on the expected target.
   const snapshot = readNekoPointerMapping(clientX, clientY);
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const interactionSeq = options.interactionSeq;
+  const { interactionSeq } = options;
   const path = options.path ?? "fallback";
   return runWhenNekoControlReady("tap", () => {
     const control = nekoInstance?.control;
@@ -1753,8 +1751,7 @@ function startMobileTouchScrollBridge(neko: NekoInstance, dispatchInput?: NekoTo
   stopMobileTouchScrollBridge();
   const streamRoot = wrapperEl;
   const listenerTarget = typeof document === "undefined" ? null : document;
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const control = neko.control;
+  const { control } = neko;
   if (!(streamRoot && listenerTarget && control?.scroll && control.move && control.buttonDown && control.buttonUp)) {
     emitNekoDebug("neko.touch_scroll_bridge.skip", {
       hasControl: Boolean(control),

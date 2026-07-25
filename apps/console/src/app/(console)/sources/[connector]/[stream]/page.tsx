@@ -133,8 +133,7 @@ function readExactFilters(searchParams: Record<string, string | string[] | undef
     if (!match) {
       continue;
     }
-    // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-    const field = match[1];
+    const [_, field] = match;
     const raw = Array.isArray(value) ? value[0] : value;
     if (field && typeof raw === "string" && raw.length > 0) {
       filters[field] = raw;
@@ -387,8 +386,7 @@ export default async function StreamPage({
   // blob field decorated with a usable fetch_url). No new fetch, no field-name guess.
   const recordIdentityFor = (record: StreamRecord) => {
     const data = record.data ?? {};
-    // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-    const kind = classifyRecordKind(streamName, data, declaredFieldTypes, undefined, declaredRoles).kind;
+    const { kind } = classifyRecordKind(streamName, data, declaredFieldTypes, undefined, declaredRoles);
     const preview = buildRecordPreview(kind, data, declaredFieldTypes, declaredRoles);
     const hasImage = buildBlobAffordance(data, fieldCapabilities)?.state === "available";
     return { hasImage, preview };

@@ -220,8 +220,7 @@ function DuplicateSourceGroupList({
 }
 
 function DuplicateSourcesAdvisory({ reviews }: { reviews: readonly DuplicateSourceReview[] }) {
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const primary = reviews[0];
+  const [primary] = reviews;
   if (!primary) {
     return null;
   }
@@ -485,8 +484,7 @@ function PassportActions({
   const [toast, setToast] = useState<ToastState>({ kind: "none" });
   const [confirmingRevoke, setConfirmingRevoke] = useState(false);
   const [confirmingReactivate, setConfirmingReactivate] = useState(false);
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const manualUploadHref = instance.manualUploadHref;
+  const { manualUploadHref } = instance;
   const nonOwnerVerdictAction =
     instance.primaryVerdictAction !== null && !instance.primaryVerdictAction.ownerRunnable
       ? instance.primaryVerdictAction
@@ -833,8 +831,7 @@ function StreamManifest({ instance }: { instance: SourceInstanceView }) {
 }
 
 function StreamManifestRow({ stream }: { stream: SourceInstanceView["streams"][number] }) {
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const collection = stream.collection;
+  const { collection } = stream;
   return (
     <Link className="pdpp-table__row rr-s-stream-row" href={stream.exploreHref} style={{ display: "grid" }}>
       <TableCell>
@@ -875,8 +872,7 @@ function StreamManifestRow({ stream }: { stream: SourceInstanceView["streams"][n
 }
 
 function StreamRecordCount({ stream }: { stream: SourceInstanceView["streams"][number] }) {
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const collection = stream.collection;
+  const { collection } = stream;
   if (stream.recordCount !== null) {
     return (
       <>

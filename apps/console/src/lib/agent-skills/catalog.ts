@@ -125,8 +125,7 @@ async function resolveRepoRoot(): Promise<string> {
   }
 
   let dir = process.cwd();
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const root = path.parse(dir).root;
+  const { root } = path.parse(dir);
   for (;;) {
     // biome-ignore lint/performance/noAwaitInLoops: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
     const hasWorkspace = await pathExists(path.join(dir, "pnpm-workspace.yaml"), "file");

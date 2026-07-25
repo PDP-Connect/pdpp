@@ -664,8 +664,7 @@ function nekoMediaSettleSampleHasDisplayableFrame(sample: NekoMediaSettleSample)
   if (!(positiveViewportSize(sample.media) && positiveViewportSize(sample.screen))) {
     return false;
   }
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const inbound = sample.inbound;
+  const { inbound } = sample;
   const inboundHasFrame =
     !inbound ||
     (Number(inbound.frameWidth) > 0 && Number(inbound.frameHeight) > 0) ||
@@ -1402,8 +1401,7 @@ function readViewportObservation(): ViewportObservation | null {
   if (typeof window === "undefined") {
     return null;
   }
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const visualViewport = window.visualViewport;
+  const { visualViewport } = window;
   const orientation = typeof screen === "undefined" ? null : screen.orientation;
   return {
     editableFocused: hasLocalTextInputFocus(),
@@ -1446,8 +1444,7 @@ function hasLocalTextInputFocus(): boolean {
 }
 
 function streamEventData(event: Event): string {
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const data = (event as MessageEvent).data;
+  const { data } = event as MessageEvent;
   return typeof data === "string" ? data : "";
 }
 
@@ -1973,8 +1970,7 @@ function StreamStage({
     if (typeof navigator === "undefined") {
       return;
     }
-    // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-    const virtualKeyboard = (navigator as NavigatorWithVirtualKeyboard).virtualKeyboard;
+    const { virtualKeyboard } = navigator as NavigatorWithVirtualKeyboard;
     if (!(virtualKeyboard && "overlaysContent" in virtualKeyboard)) {
       logDebug("viewport.virtual_keyboard_overlay", {
         supported: false,
@@ -3169,8 +3165,7 @@ function StreamStage({
     const windowResizeListener = () => scheduleSource("window.resize");
     const visualViewportResizeListener = () => scheduleSource("visualViewport.resize");
     const visualViewportScrollListener = () => scheduleSource("visualViewport.scroll");
-    // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-    const visualViewport = window.visualViewport;
+    const { visualViewport } = window;
     const screenOrientation = typeof screen !== "undefined" && "orientation" in screen ? screen.orientation : undefined;
     const screenOrientationListener = () => scheduleOrientationSource("screen.orientation.change");
     window.addEventListener("orientationchange", orientationListener);
@@ -4080,8 +4075,7 @@ function NekoSurface({
       if (isCoarsePointer() || event.button !== 0) {
         return;
       }
-      // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-      const target = event.target;
+      const { target } = event;
       if (!(target instanceof Node && mountNode.contains(target))) {
         return;
       }
@@ -4280,8 +4274,7 @@ function NekoSurface({
       if (!isCurrentRequest()) {
         return "done";
       }
-      // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-      const screen = status.screen;
+      const { screen } = status;
       if (!screen) {
         logDebug("neko.status.poll", {
           page: status.page,
@@ -4471,8 +4464,7 @@ function NekoSurface({
     if (!clientConfig?.statusPath) {
       return;
     }
-    // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-    const statusPath = clientConfig.statusPath;
+    const { statusPath } = clientConfig;
     let cancelled = false;
     let pollTimer: ReturnType<typeof setTimeout> | null = null;
 

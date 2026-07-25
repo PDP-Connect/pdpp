@@ -194,8 +194,7 @@ function buildRefConnectorSummary(connectorId: string): RefConnectorSummary {
   const connector = getDemoConnectors().find((c) => c.connector_id === connectorId);
   const streams = streamsForConnector(connectorId);
   const runIds = connectorRecentRunIds(connectorId);
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
-  const lastRunId = runIds[0];
+  const [lastRunId] = runIds;
   const lastSuccessId = getDemoRuns().find((r) => r.connector_id === connectorId && r.status === "succeeded")?.run_id;
   const lastRun = refConnectorRunSummary(lastRunId);
   const lastSuccessfulRun = refConnectorRunSummary(lastSuccessId);

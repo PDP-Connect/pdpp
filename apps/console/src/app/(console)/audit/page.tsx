@@ -511,8 +511,7 @@ interface PeekPanelProps {
 }
 
 function TracesPeekPanel({ traceId, envelope, cliCommand, listParams }: PeekPanelProps) {
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const firstEvent = envelope.events[0];
+  const [firstEvent] = envelope.events;
   const closeHref = listHref(listParams, { peek: undefined });
   const detailHref = `/audit/${encodeURIComponent(traceId)}`;
 

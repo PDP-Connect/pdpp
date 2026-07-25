@@ -1032,8 +1032,7 @@ function toSourceWorkSections(
 
 /** DECIDE — a request is waiting on the owner. */
 function buildDecideHero(pending: PendingApproval[], hrefs: StandingHrefs): StandingHero {
-  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  const first = pending[0];
+  const [first] = pending;
   const more = pending.length - 1;
   const who = first ? clientLabel(first.client_id ?? null, first.approval_id) : "An app";
   const reads = first ? approvalReads(first) : "parts of your data";
