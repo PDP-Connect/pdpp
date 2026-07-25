@@ -1,47 +1,47 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import assert from "node:assert/strict";
+import { test } from "node:test";
 
-import { buildReadRequest } from '../src/read/commands.js';
-import { PdppUsageError } from '../src/ref/errors.js';
+import { buildReadRequest } from "../src/read/commands.ts";
+import { PdppUsageError } from "../src/ref/errors.ts";
 
-test('read aggregate rejects group-by and group-by-time together', () => {
+test("read aggregate rejects group-by and group-by-time together", () => {
   assert.throws(
     () =>
       buildReadRequest(
-        'aggregate',
-        ['messages'],
+        "aggregate",
+        ["messages"],
         {
-          metric: 'count',
-          'group-by': 'author',
-          'group-by-time': 'sent_at',
-          granularity: 'day',
+          metric: "count",
+          "group-by": "author",
+          "group-by-time": "sent_at",
+          granularity: "day",
         },
-        'https://provider.test',
+        "https://provider.test"
       ),
-    (error) => error instanceof PdppUsageError && /Use only one/.test(error.message),
+    (error) => error instanceof PdppUsageError && /Use only one/.test(error.message)
   );
 });
 
-test('read aggregate builds group-by-time query shape', () => {
+test("read aggregate builds group-by-time query shape", () => {
   const request = buildReadRequest(
-    'aggregate',
-    ['messages'],
+    "aggregate",
+    ["messages"],
     {
-      metric: 'count',
-      'group-by-time': 'sent_at',
-      granularity: 'day',
+      metric: "count",
+      "group-by-time": "sent_at",
+      granularity: "day",
     },
-    'https://provider.test',
+    "https://provider.test"
   );
   const url = new URL(request.url);
 
-  assert.equal(request.method, 'GET');
-  assert.equal(url.pathname, '/v1/streams/messages/aggregate');
-  assert.equal(url.searchParams.get('metric'), 'count');
-  assert.equal(url.searchParams.get('group_by_time'), 'sent_at');
-  assert.equal(url.searchParams.get('granularity'), 'day');
-  assert.equal(url.searchParams.has('group_by'), false);
+  assert.equal(request.method, "GET");
+  assert.equal(url.pathname, "/v1/streams/messages/aggregate");
+  assert.equal(url.searchParams.get("metric"), "count");
+  assert.equal(url.searchParams.get("group_by_time"), "sent_at");
+  assert.equal(url.searchParams.get("granularity"), "day");
+  assert.equal(url.searchParams.has("group_by"), false);
 });
