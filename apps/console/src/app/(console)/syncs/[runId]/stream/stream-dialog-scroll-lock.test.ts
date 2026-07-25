@@ -13,7 +13,7 @@ const GLOBALS_CSS_FILE = `${HERE}../../../../globals.css`;
  * Static structure guard only. The behavioral contract (both axes locked
  * while the stream dialog is open at landscape dimensions; ordinary document
  * scrolling restored after close) is proved by
- * `scripts/manual-action-stream-smoke.mjs`'s
+ * `scripts/manual-action-stream-smoke.ts`'s
  * `assertDocumentScrollLockedWhileStreamDialogOpen` /
  * `assertOrdinaryScrollRestoredAfterClose` against a real Base UI dialog —
  * this file only guards that the CSS rule the behavior depends on exists and

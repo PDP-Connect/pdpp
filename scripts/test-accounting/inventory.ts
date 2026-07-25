@@ -8,7 +8,7 @@ import { mkdir, open, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 export const EXECUTABLE_TEST_SUFFIX = /\.(?:test|spec)\.(?:js|mjs|cjs|ts|tsx|py|sh)$/;
-export const EXECUTABLE_SMOKES = new Set(["packages/mcp-server/test/smoke-stdio.mjs"]);
+export const EXECUTABLE_SMOKES = new Set(["packages/mcp-server/test/smoke-stdio.ts"]);
 export const MANIFEST_SCHEMA = "pdpp.test-accounting/v3";
 export const RECEIPT_SCHEMA = "pdpp.test-receipt/v3";
 export const RUN_AUTHORITY_SCHEMA = "pdpp.test-run-authority/v1";
@@ -476,6 +476,24 @@ function validateExclusions(manifest: Manifest, tracked: Set<string>): void {
     }
   }
 }
+export function validateIncludeGlobsClassifyExecutable(manifest: Manifest, files: string[]): void {
+  for (const suite of manifest.suites) {
+    if (zeroTestSuite(suite)) {
+      continue;
+    }
+    const suiteMatches = files.filter((path) => suite.include.some((glob) => matchesGlob(path, glob)));
+    if (suiteMatches.length === 0) {
+      fail(`${suite.id} include list matches no tracked file: ${suite.include.join(", ")}`);
+    }
+    for (const glob of suite.include) {
+      for (const path of files.filter((entry) => matchesGlob(entry, glob))) {
+        if (classifyTrackedPath(path).kind !== "executable") {
+          fail(`${suite.id} include glob matches a non-executable-classified file: ${path} (glob: ${glob})`);
+        }
+      }
+    }
+  }
+}
 export function planFor(manifest: Manifest, files: string[], suiteIds: string[] = []) {
   const suites = selectedSuites(manifest, suiteIds);
   const executable = files.filter((path) => classifyTrackedPath(path).kind === "executable");
@@ -531,6 +549,7 @@ export function checkInventory(
   options: { failOnUnknown?: boolean; failOnEmpty?: boolean } = {}
 ) {
   validateExclusions(manifest, new Set(files));
+  validateIncludeGlobsClassifyExecutable(manifest, files);
   const { executable, owners, plans, suites } = planFor(manifest, files, suiteIds);
   for (const path of executable) {
     const ownership = (owners.has(path) ? 1 : 0) + exclusionsFor(manifest, path).length;

@@ -13,7 +13,7 @@ const STREAM_VIEWER_FILE = `${HERE}stream-viewer.tsx`;
  * Static structure guard only. The behavioral contract (steady state hides
  * secondary actions, first Escape collapses without closing the dialog,
  * second Escape closes normally, outside-pointer/focus collapse) is proved
- * by `scripts/manual-action-stream-smoke.mjs`'s `assertCornerControlsDisclosure`
+ * by `scripts/manual-action-stream-smoke.ts`'s `assertCornerControlsDisclosure`
  * against a real Base UI dialog — this file only guards that the pieces that
  * behavior depends on still exist in source.
  */

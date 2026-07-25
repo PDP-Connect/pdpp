@@ -166,4 +166,4 @@ plugins:
       labels: false
       releasedLabels: false
   - - "@semantic-release/exec"
-    - publishCmd: "node scripts/semantic-release-github-output.mjs publish ${nextRelease.version} ${nextRelease.gitTag}"
+    - publishCmd: "node --import tsx scripts/semantic-release-github-output.ts publish ${nextRelease.version} ${nextRelease.gitTag}"

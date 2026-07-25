@@ -33,7 +33,7 @@ const PREPARE_FIRST_BOOT_CALL_PATTERN = /prepareFirstBoot\(\)/;
 const FIRST_BOOT_ENV_SPREAD_PATTERN = /\.\.\.firstBoot\.env/g;
 const FIRST_BOOT_BANNER_LINES_PATTERN = /firstBoot\.bannerLines/;
 const RAILWAY_TEMPLATE_URL_PATTERN = /https:\/\/railway\.com\/new\/template\/pdpp-core-template-source/;
-const GHCR_VANA_COM_RAILWAY_CORE_PATTERN = /ghcr\.io\/vana-com\/pdpp\/railway-core/;
+const GHCR_PDP_CONNECT_RAILWAY_CORE_PATTERN = /ghcr\.io\/pdp-connect\/pdpp\/railway-core/;
 const ONE_PUBLIC_CORE_APP_SERVICE_PATTERN = /one public Core app service/i;
 const SETTINGS_BUILD_DOCKER_TARGET_STAGE_PATTERN = /Settings\s*->\s*Build\s*->\s*Docker\s*->\s*Target Stage/i;
 const RAILWAY_BUTTON_SVG_PATTERN = /https:\/\/railway\.com\/button\.svg/;
@@ -140,7 +140,7 @@ test("Railway runbook and template handoff use the one-service core button shape
   const handoff = read("deploy/railway/template.md");
 
   assert.match(readme, RAILWAY_TEMPLATE_URL_PATTERN);
-  assert.match(readme, GHCR_VANA_COM_RAILWAY_CORE_PATTERN);
+  assert.match(readme, GHCR_PDP_CONNECT_RAILWAY_CORE_PATTERN);
   assert.match(readme, ONE_PUBLIC_CORE_APP_SERVICE_PATTERN);
   assert.doesNotMatch(readme, SETTINGS_BUILD_DOCKER_TARGET_STAGE_PATTERN);
 
@@ -162,7 +162,7 @@ test("Railway runbook and template handoff use the one-service core button shape
 test("Railway handoff documents the public railway-core image-source template shape", () => {
   const handoff = read("deploy/railway/template.md");
 
-  assert.match(handoff, GHCR_VANA_COM_RAILWAY_CORE_PATTERN);
+  assert.match(handoff, GHCR_PDP_CONNECT_RAILWAY_CORE_PATTERN);
   assert.match(handoff, ONE_APPLICATION_SERVICE_POSTGRES_PLUGIN_PATTERN);
 
   // A concrete version tag must be pinned; latest/moving tags are disallowed.
@@ -173,7 +173,7 @@ test("Railway handoff documents the public railway-core image-source template sh
 test("Railway runbook documents the public railway-core image-source mapping", () => {
   const readme = read("deploy/railway/README.md");
 
-  assert.match(readme, GHCR_VANA_COM_RAILWAY_CORE_PATTERN);
+  assert.match(readme, GHCR_PDP_CONNECT_RAILWAY_CORE_PATTERN);
   assert.match(readme, CONSOLE_RAILWAY_PORT_PATTERN);
   assert.match(readme, LOOPBACK_7662_PATTERN);
   assert.match(readme, LOOPBACK_7663_PATTERN);

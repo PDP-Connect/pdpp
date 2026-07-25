@@ -233,7 +233,7 @@ test("classifies suffix tests separately from helpers and fixtures under test di
   assert.equal(classifyTrackedPath("test/fixture.json").kind, "helper-or-fixture");
   assert.equal(classifyTrackedPath("test/alpha.test.js").kind, "executable");
   assert.equal(classifyTrackedPath("src/component.test.tsx").kind, "executable");
-  assert.equal(classifyTrackedPath("packages/mcp-server/test/smoke-stdio.mjs").kind, "executable");
+  assert.equal(classifyTrackedPath("packages/mcp-server/test/smoke-stdio.ts").kind, "executable");
 });
 test("normalizes runner-local receipt paths to Git-root-relative paths", () => {
   assert.deepEqual(repositoryPaths("reference-implementation", ["test/b.test.js", "server/a.test.js"]), [
@@ -244,6 +244,80 @@ test("normalizes runner-local receipt paths to Git-root-relative paths", () => {
 test("fails closed when a renamed TypeScript test is not planned or excluded", () => {
   const renamed = files.map((path) => (path === "test/alpha.test.js" ? "test/alpha.test.ts" : path));
   assert.throws(() => checkInventory(manifest(), renamed), UNACCOUNTED_EXECUTABLE_TESTS_ALPHA_TEST_PATTERN);
+});
+test("fails closed when an include glob matches a file that classifies as helper-or-fixture, not executable", () => {
+  // Reproduces the exact defect shape found in the mcp-server smoke-stdio migration: a suite's
+  // include glob still matches a real tracked file, so the suite is not empty and passes the
+  // "selects no executable tests" guard, but the matched file itself misclassifies as
+  // helper-or-fixture (e.g. a smoke probe with no .test./.spec. suffix), so it is silently
+  // never planned. `checkInventory`'s "no unaccounted executable tests" check cannot catch this
+  // because the file is never classified executable in the first place.
+  const misclassified = [...files, "test/smoke-probe.mjs"];
+  assert.throws(
+    () =>
+      checkInventory(
+        manifest({
+          suites: [
+            {
+              id: "node",
+              cwd: ".",
+              loader: "node-test",
+              authority_argument: "--authority",
+              command: ["node", "runner.mjs"],
+              profiles: [{ id: "default", required: true, skip_reasons: {} }],
+              include: ["test/*.test.js", "test/*.test.mjs", "test/smoke-probe.mjs"],
+            },
+          ],
+        }),
+        misclassified
+      ),
+    /matches a non-executable-classified file/
+  );
+});
+test("fails closed when a suite's entire include list matches no tracked file", () => {
+  assert.throws(
+    () =>
+      checkInventory(
+        manifest({
+          suites: [
+            {
+              id: "node",
+              cwd: ".",
+              loader: "node-test",
+              authority_argument: "--authority",
+              command: ["node", "runner.mjs"],
+              profiles: [{ id: "default", required: true, skip_reasons: {} }],
+              include: ["nowhere/*.test.js"],
+            },
+          ],
+        }),
+        files
+      ),
+    /include list matches no tracked file/
+  );
+});
+test("does not fail closed when one glob in a multi-extension include list matches nothing, as long as the suite itself is not empty", () => {
+  // ri-default's real manifest entry deliberately lists .js/.mjs/.ts variants for the
+  // not-yet-fully-migrated RI test tranche; a glob matching zero files today is expected
+  // future-proofing, not a defect, as long as the suite as a whole still selects files.
+  assert.doesNotThrow(() =>
+    checkInventory(
+      manifest({
+        suites: [
+          {
+            id: "node",
+            cwd: ".",
+            loader: "node-test",
+            authority_argument: "--authority",
+            command: ["node", "runner.mjs"],
+            profiles: [{ id: "default", required: true, skip_reasons: {} }],
+            include: ["test/*.test.js", "test/*.test.mjs", "test/*.test.ts"],
+          },
+        ],
+      }),
+      files
+    )
+  );
 });
 test("fails closed for unrecognized executable tests and empty suites", () => {
   assert.throws(
@@ -269,7 +343,7 @@ test("fails closed for unrecognized executable tests and empty suites", () => {
         }),
         files
       ),
-    SELECTS_NO_EXECUTABLE_TESTS_PATTERN
+    /include list matches no tracked file/
   );
 });
 test("rejects invented receipt and transcript without a verifier-issued authority", async () => {

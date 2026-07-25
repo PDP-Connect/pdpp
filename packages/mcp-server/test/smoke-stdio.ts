@@ -6,7 +6,7 @@
 // an MCP initialize + tools/list, asserts stdout contains only newline-delimited JSON.
 //
 // Usage:
-//   node packages/mcp-server/test/smoke-stdio.mjs > tmp/workstreams/mcp-stdio-smoke.json
+//   node --import tsx packages/mcp-server/test/smoke-stdio.ts > tmp/workstreams/mcp-stdio-smoke.json
 import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
