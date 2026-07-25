@@ -7,21 +7,21 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { assertRunnableTestFiles, discoverTestFiles } from '../scripts/discover-tests.mjs';
-import { assertNpmBinding } from '../scripts/npm-runtime.mjs';
-import { assertExactRuntime, exactNodeVersion } from '../scripts/verify-node-22.14.mjs';
-import { assertManifestTargets, assertPackedFiles } from '../scripts/validate-package.mjs';
+import { assertRunnableTestFiles, discoverTestFiles } from '../scripts/discover-tests.ts';
+import { assertNpmBinding } from '../scripts/npm-runtime.ts';
+import { assertExactRuntime, exactNodeVersion } from '../scripts/verify-node-22.14.ts';
+import { assertManifestTargets, assertPackedFiles } from '../scripts/validate-package.ts';
 
 test('build delegates dist emission to TypeScript rather than copying source', async () => {
-  const buildScript = await readFile(new URL('../scripts/build.mjs', import.meta.url), 'utf8');
-  assert.match(buildScript, /'pnpm', \['exec', 'tsc', '--project', 'tsconfig\.build\.json'\]/);
+  const buildScript = await readFile(new URL('../scripts/build.ts', import.meta.url), 'utf8');
+  assert.match(buildScript, /"pnpm", \["exec", "tsc", "--project", "tsconfig\.build\.json"\]/);
   assert.doesNotMatch(buildScript, /--noEmit|copyFile/);
 });
 
 test('the exact Node floor is an explicit matrix artifact gate', async () => {
   const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
-  const matrixScript = await readFile(new URL('../scripts/verify-node-22.14.mjs', import.meta.url), 'utf8');
-  assert.equal(manifest.scripts['verify:node-22.14'], 'pnpm build && node scripts/verify-node-22.14.mjs');
+  const matrixScript = await readFile(new URL('../scripts/verify-node-22.14.ts', import.meta.url), 'utf8');
+  assert.equal(manifest.scripts['verify:node-22.14'], 'pnpm build && node --experimental-strip-types scripts/verify-node-22.14.ts');
   assert.equal(manifest.main, undefined);
   assert.match(matrixScript, /process\.execPath/);
   assert.doesNotMatch(matrixScript, /node@22\.14\.0|npx|latest|lts\//);
