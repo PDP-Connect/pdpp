@@ -73,14 +73,22 @@ legacy `__uploads/` residue that states exactly what it sacrifices.
 - **Opt-in `__uploads/` reclaim escape hatch (NOT automatic, NOT a drain).**
   A new `SLACK_RECLAIM_UPLOADS` option (default off). When explicitly enabled,
   after the run's records are durably committed (guarded on the runtime EOF ack
-  the connector already waits for at exit), the connector removes the
-  `__uploads/` directory for the workspace archive and reports the reclaimed
-  byte count via `progress`/`DETAIL_COVERAGE`. It is loudly documented as a
-  one-way operation that PDPP cannot undo and that disables slackdump's
-  re-download of those files. It never touches `slackdump.sqlite` (the resume
-  state). With the default `SLACK_SKIP_FILES=true`, `__uploads/` does not
-  regrow, so steady-state disk is the SQLite alone. This is the smallest safe
-  reclaim; it is off by default precisely because it is lossy.
+  the connector already waits for at exit), the connector removes `__uploads/`
+  for the deduplicated union of the base/positional archive plus every scoped
+  archive this run successfully touched — every `archive-scoped/<digest>/`
+  directory `reconcileMessageSourceCache` refreshed, repaired, or read via a
+  repair attempt, including one that recovered no matching channel — not only
+  the base workspace archive. Evidence is reported via a **stderr-only `log`**
+  passed to `onDurableCommit`, never through `progress`/`emit`/`DETAIL_COVERAGE`:
+  by the time this hook runs, the runtime has already consumed the run's `DONE`
+  and torn down its message loop, so any further stdout protocol message would
+  fail the already-succeeded run as `connector_protocol_violation`. It is
+  loudly documented as a one-way operation that PDPP cannot undo and that
+  disables slackdump's re-download of those files. It never touches any
+  archive's `slackdump.sqlite` (the resume state). With the default
+  `SLACK_SKIP_FILES=true`, `__uploads/` does not regrow, so steady-state disk
+  is the SQLite alone. This is the smallest safe reclaim; it is off by default
+  precisely because it is lossy.
 
 - **Docs.** `connectors/slack/README.md` gains a "Disk and run-time" section
   documenting the two-problem reality, the incremental read, the observability,
@@ -110,10 +118,23 @@ legacy `__uploads/` residue that states exactly what it sacrifices.
 ## Capabilities
 
 - Modified: `polyfill-runtime` — an archive-backed connector's steady-state
-  per-run read cost SHALL scale with new/changed data, not with total archive
-  size, and SHALL surface per-phase timing so the bound is measurable;
-  reclaiming operator-visible archive residue SHALL be opt-in, gated on durable
-  commit, and never remove data the runtime depends on for resume.
+  **main-archive** read cost SHALL scale with new/changed data, not with total
+  archive size, and SHALL surface per-phase timing so the bound is measurable.
+  Scoped source-cache reconciliation (healing a channel absent from the main
+  archive) is a distinct, separately-bounded mechanism: its cost SHALL scale
+  with the once-per-run-snapshotted, finite prior-observed/scoped-archive
+  work-unit set (computed once from already-fixed inputs, never re-queried or
+  re-selected mid-run) plus at most one additional repair attempt, each unit
+  bounded to the connector's configured finite lookback window — NOT with new
+  data alone, and NOT unboundedly. This SHALL be reported before/during/after
+  the phase (selected unit count and lookback window before any subprocess
+  runs, a completed/remaining cursor per unit, and an explicit zero-remaining
+  at the end) so the bound is a stated, checkable fact, not merely an elapsed
+  wall-clock timing. Reclaiming operator-visible archive residue SHALL be
+  opt-in, gated on durable commit, cover every archive path successfully
+  created or read that run (not only the main archive), reported via a
+  stderr-only channel outside the connector protocol, and never remove data
+  the runtime depends on for resume.
 
 ## Impact
 
