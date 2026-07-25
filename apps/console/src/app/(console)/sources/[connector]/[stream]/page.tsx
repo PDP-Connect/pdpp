@@ -230,22 +230,24 @@ export default async function StreamPage({
       // The manifest is used only to prune parent metadata reads. Link semantics
       // come from the parent streams' live `expand_capabilities`, never from
       // payload-shaped guesses or fabricated manifest fields.
-      manifestsPromise.then((resolvedManifests) => {
+      (async () => {
+        const resolvedManifests = await manifestsPromise;
         const manifest = findManifestForConnectorId(resolvedManifests, connectorId);
         return Promise.all(
           candidateParentStreamsForChild(manifest?.streams, streamName).map(async (parentStream) => {
-            const metadata = await getStreamMetadata(connectorId, parentStream, {
-              connectionId,
-              connectorInstanceId,
-              // biome-ignore lint/suspicious/noNestedPromises: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-            }).catch(() => null);
+            let metadata: Awaited<ReturnType<typeof getStreamMetadata>> | null;
+            try {
+              metadata = await getStreamMetadata(connectorId, parentStream, { connectionId, connectorInstanceId });
+            } catch {
+              metadata = null;
+            }
             return {
               expandCapabilities: Array.isArray(metadata?.expand_capabilities) ? metadata.expand_capabilities : [],
               parentStream,
             };
           })
         );
-      }),
+      })(),
     ]);
     page = pageResult;
     declaredFieldTypes = deriveDeclaredFieldTypes(streamMetadata);

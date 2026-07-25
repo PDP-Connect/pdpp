@@ -86,7 +86,10 @@ function streamRecordCount(streamKey: string): number {
 }
 
 function latestRecordTimeForStream(streamKey: string): string | null {
-  // biome-ignore lint/suspicious/useArraySortCompare: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
+  // record_time is always an ISO 8601 string; default lexicographic sort is
+  // already chronological order for this format, so an explicit compare
+  // function would be a no-op restatement of the default.
+  // biome-ignore lint/suspicious/useArraySortCompare: see comment above.
   const sorted = [...streamRecords(streamKey)]
     .map((r) => r.record_time)
     .sort()

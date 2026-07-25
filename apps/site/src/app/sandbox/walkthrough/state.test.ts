@@ -45,9 +45,9 @@ test("deny returns to initial state but keeps refusal evidence", () => {
 
   const transcript = buildTranscript(denied);
   const denial = transcript.find((entry) => entry.id === "denied");
-  assert.equal(denial?.available, true);
-  // biome-ignore lint/correctness/noUnsafeOptionalChaining: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
-  assert.equal((denial?.body as { error?: string }).error, "owner_denied");
+  assert.ok(denial, "transcript must include a denied entry");
+  assert.equal(denial.available, true);
+  assert.equal((denial.body as { error?: string }).error, "owner_denied");
 });
 
 test("reset returns to initial regardless of phase", () => {

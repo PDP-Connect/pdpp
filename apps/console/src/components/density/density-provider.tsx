@@ -52,7 +52,7 @@ function persistDensity(next: Density): void {
   document.cookie = buildDensityCookie(next, secure);
 }
 
-export function DensityProvider({ children, initialDensity }: { children: ReactNode; initialDensity?: Density }) {
+function DensityProvider({ children, initialDensity }: { children: ReactNode; initialDensity?: Density }) {
   const [density, setDensityState] = useState<Density>(() => initialDensity ?? readStoredDensity());
 
   useEffect(() => {
@@ -79,5 +79,4 @@ export function useDensity(): DensityContextValue {
   return context;
 }
 
-// biome-ignore lint/complexity/noRedundantDefaultExport: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
 export default DensityProvider;

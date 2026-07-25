@@ -117,6 +117,42 @@ function detectSupport(config: WebPushConfig) {
   return null;
 }
 
+/**
+ * Effect-mount subscription probe: registers the service worker, updates it
+ * (best-effort), and surfaces the existing push subscription if one exists.
+ * `isCancelled` is checked after every await so a fast unmount (config
+ * change, navigation) never dispatches into a stale effect.
+ */
+async function detectExistingSubscription(dispatch: (action: DeviceAction) => void, isCancelled: () => boolean) {
+  try {
+    const registration = await navigator.serviceWorker.getRegistration("/");
+    if (isCancelled()) {
+      return;
+    }
+    dispatch({ swState: registration ? "registered" : "absent", type: "swState" });
+    try {
+      await registration?.update();
+    } catch {
+      // Update check failing is not fatal to inspecting the existing subscription.
+    }
+    const existing = await registration?.pushManager.getSubscription();
+    if (isCancelled()) {
+      return;
+    }
+    if (existing) {
+      dispatch({ endpoint: existing.endpoint, status: "Web Push is enabled for this browser.", type: "subscribed" });
+    }
+  } catch {
+    if (!isCancelled()) {
+      dispatch({
+        status: "Could not inspect this browser's Web Push subscription.",
+        swState: "unknown",
+        type: "swState",
+      });
+    }
+  }
+}
+
 function diagnosticMarker(state: DiagnosticState) {
   if (state === "ok") {
     return "[ok]";
@@ -590,36 +626,7 @@ export function WebPushSettings({
       return;
     }
     let cancelled = false;
-    navigator.serviceWorker
-      .getRegistration("/")
-      .then(async (registration) => {
-        if (cancelled) {
-          return;
-        }
-        dispatch({ swState: registration ? "registered" : "absent", type: "swState" });
-        // biome-ignore lint/suspicious/noNestedPromises: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-        await registration?.update().catch(() => undefined);
-        const existing = await registration?.pushManager.getSubscription();
-        if (cancelled) {
-          return;
-        }
-        if (existing) {
-          dispatch({
-            endpoint: existing.endpoint,
-            status: "Web Push is enabled for this browser.",
-            type: "subscribed",
-          });
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          dispatch({
-            status: "Could not inspect this browser's Web Push subscription.",
-            swState: "unknown",
-            type: "swState",
-          });
-        }
-      });
+    detectExistingSubscription(dispatch, () => cancelled);
     return () => {
       cancelled = true;
     };

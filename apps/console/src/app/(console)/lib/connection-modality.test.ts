@@ -126,7 +126,9 @@ test("BROWSER_BOUND_CONNECTORS exactly matches the canonical keys of browser-bin
       browserBoundFromManifests.push(canonicalKeyFromManifestId(manifest.connector_id));
     }
   }
-  // biome-ignore lint/suspicious/useArraySortCompare: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+  // Both arrays hold plain connector-key strings for a set-equality check;
+  // default lexicographic sort is unambiguous for arbitrary string keys.
+  // biome-ignore lint/suspicious/useArraySortCompare: see comment above.
   assert.deepEqual([...BROWSER_BOUND_CONNECTORS].sort(), browserBoundFromManifests.sort());
 });
 

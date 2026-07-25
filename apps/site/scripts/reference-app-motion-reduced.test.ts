@@ -43,8 +43,7 @@ const HARDCODED_COLOR_LITERAL_RE = /oklch\(|rgba?\(|#[0-9a-fA-F]{3,8}\b/;
 const REDUCED_MOTION_ZEROES_DURATION_BASE_RE =
   /@media \(prefers-reduced-motion: reduce\)[\s\S]*?--duration-base:\s*0\.01ms/;
 
-// biome-ignore lint/suspicious/useAwait: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
-async function readComponent() {
+function readComponent() {
   return readFile(fileURLToPath(COMPONENT_PATH), "utf8");
 }
 
