@@ -127,13 +127,13 @@ test('Railway handoff wires the runnable GHCR public-image probe into the publis
   // The Source accessibility gate points at the committed probe, not only the
   // copy-paste heredoc, and the probe gates the live publish step.
   assert.match(handoff, /pnpm railway:ghcr-public/);
-  assert.match(handoff, /scripts\/check-railway-ghcr-public\.test\.mjs/);
+  assert.match(handoff, /scripts\/check-railway-ghcr-public\.test\.ts/);
   // The probe is a real package script, not just prose.
   const pkg = readJson('package.json');
-  assert.equal(pkg.scripts['railway:ghcr-public'], 'node scripts/check-railway-ghcr-public.mjs');
+  assert.equal(pkg.scripts['railway:ghcr-public'], 'node --import tsx scripts/check-railway-ghcr-public.ts');
   assert.equal(
     pkg.scripts['railway:ghcr-public:test'],
-    'node --test scripts/check-railway-ghcr-public.test.mjs',
+    'node --test --import tsx scripts/check-railway-ghcr-public.test.ts',
   );
 });
 

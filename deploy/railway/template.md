@@ -59,7 +59,7 @@ The probe exits `0` only when `ghcr.io/pdp-connect/pdpp/railway-core:<version-ta
 is anonymously pullable.
 
 The probe's pass/fail logic is unit-tested offline by
-`scripts/check-railway-ghcr-public.test.mjs`.
+`scripts/check-railway-ghcr-public.test.ts`.
 
 ## Variables
 

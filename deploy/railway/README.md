@@ -198,4 +198,4 @@ backend on the operator's Railway account.
 
 - [`scripts/railway-mcp-query-smoke.mjs`](../../scripts/railway-mcp-query-smoke.mjs)
 - [`scripts/check-railway-deploy-env.ts`](../../scripts/check-railway-deploy-env.ts)
-- [`scripts/check-railway-ghcr-public.mjs`](../../scripts/check-railway-ghcr-public.mjs)
+- [`scripts/check-railway-ghcr-public.ts`](../../scripts/check-railway-ghcr-public.ts)
