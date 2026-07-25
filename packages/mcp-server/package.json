@@ -21,13 +21,13 @@
     "README.md"
   ],
   "scripts": {
-    "build": "node scripts/build.mjs",
+    "build": "node --import tsx scripts/build.ts",
     "prepare": "pnpm build",
     "prepack": "pnpm build",
-    "test": "node --test --import tsx \"test/*.test.js\" test/smoke-stdio.mjs",
-    "test:read-surface": "node --test --import tsx \"test/*.test.js\" test/smoke-stdio.mjs",
-    "validate:package": "pnpm build && node scripts/package-contract.mjs",
-    "verify:artifact": "pnpm build && node scripts/pack-install-run.mjs",
+    "test": "node --test --import tsx \"test/*.test.ts\" test/smoke-stdio.ts",
+    "test:read-surface": "node --test --import tsx \"test/*.test.ts\" test/smoke-stdio.ts",
+    "validate:package": "pnpm build && node --import tsx scripts/package-contract.ts",
+    "verify:artifact": "pnpm build && node --import tsx scripts/pack-install-run.ts",
     "verify": "pnpm test && pnpm validate:package",
     "pack:dry-run": "pnpm build && npm pack --dry-run --ignore-scripts"
   },

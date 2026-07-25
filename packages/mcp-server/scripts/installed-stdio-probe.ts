@@ -8,7 +8,31 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-function waitFor(predicate, timeoutMs) {
+interface RunInstalledStdioProbeOptions {
+  binPath: string;
+  consumerRoot: string;
+  nodePath?: string;
+}
+
+interface InstalledStdioProbeResult {
+  stderr: string[];
+  toolContract: string;
+  toolResultVersion: unknown;
+}
+
+interface JsonRpcMessage {
+  id?: number;
+  jsonrpc: string;
+  method?: string;
+  params?: Record<string, unknown>;
+  result?: {
+    isError?: boolean;
+    serverInfo?: { name?: string };
+    structuredContent?: { data?: { version?: unknown } };
+  };
+}
+
+function waitFor(predicate: () => boolean, timeoutMs: number): Promise<void> {
   return new Promise((resolve, reject) => {
     const started = Date.now();
     const timer = setInterval(() => {
@@ -23,10 +47,14 @@ function waitFor(predicate, timeoutMs) {
   });
 }
 
-export async function runInstalledStdioProbe({ consumerRoot, binPath, nodePath = process.execPath }) {
+export async function runInstalledStdioProbe({
+  consumerRoot,
+  binPath,
+  nodePath = process.execPath,
+}: RunInstalledStdioProbeOptions): Promise<InstalledStdioProbeResult> {
   const cacheRoot = await mkdtemp(join(tmpdir(), "pdpp-mcp-artifact-"));
   const rs = createServer((request, response) => {
-    if (new URL(request.url, "http://127.0.0.1").pathname === "/v1/schema") {
+    if (new URL(request.url ?? "/", "http://127.0.0.1").pathname === "/v1/schema") {
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify({ version: "artifact-proof", streams: ["orders"] }));
       return;
@@ -35,8 +63,10 @@ export async function runInstalledStdioProbe({ consumerRoot, binPath, nodePath =
     response.end(JSON.stringify({ error: { code: "not_found" } }));
   });
 
-  await new Promise((resolve) => rs.listen(0, "127.0.0.1", resolve));
-  const providerUrl = `http://127.0.0.1:${rs.address().port}`;
+  await new Promise<void>((resolve) => rs.listen(0, "127.0.0.1", resolve));
+  const address = rs.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+  const providerUrl = `http://127.0.0.1:${port}`;
   const host = new URL(providerUrl).host.replace(/[^a-zA-Z0-9.-]/g, "_");
   await mkdir(join(cacheRoot, "clients"), { recursive: true });
   await writeFile(
@@ -50,15 +80,15 @@ export async function runInstalledStdioProbe({ consumerRoot, binPath, nodePath =
   });
   let stdout = "";
   let stderr = "";
-  proc.stdout.on("data", (chunk) => {
+  proc.stdout?.on("data", (chunk: Buffer) => {
     stdout += chunk.toString("utf8");
   });
-  proc.stderr.on("data", (chunk) => {
+  proc.stderr?.on("data", (chunk: Buffer) => {
     stderr += chunk.toString("utf8");
   });
 
-  function send(message) {
-    proc.stdin.write(`${JSON.stringify(message)}\n`);
+  function send(message: JsonRpcMessage): void {
+    proc.stdin?.write(`${JSON.stringify(message)}\n`);
   }
 
   try {
@@ -77,10 +107,10 @@ export async function runInstalledStdioProbe({ consumerRoot, binPath, nodePath =
     send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "schema", arguments: {} } });
     await waitFor(() => stdout.includes('"id":2'), 3000);
 
-    const messages = stdout
+    const messages: JsonRpcMessage[] = stdout
       .split("\n")
       .filter(Boolean)
-      .map((line) => JSON.parse(line));
+      .map((line) => JSON.parse(line) as JsonRpcMessage);
     const initialize = messages.find((message) => message.id === 1);
     const schema = messages.find((message) => message.id === 2);
     assert.equal(initialize?.result?.serverInfo?.name, "pdpp-mcp-server", "installed server must complete initialize");
@@ -93,7 +123,7 @@ export async function runInstalledStdioProbe({ consumerRoot, binPath, nodePath =
     return {
       stderr: stderr.split("\n").filter(Boolean).slice(0, 2),
       toolContract: "schema",
-      toolResultVersion: schema.result.structuredContent.data.version,
+      toolResultVersion: schema?.result?.structuredContent?.data?.version,
     };
   } finally {
     proc.kill("SIGTERM");

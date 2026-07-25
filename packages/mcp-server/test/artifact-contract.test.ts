@@ -11,17 +11,17 @@ import { fileURLToPath } from "node:url";
 
 import {
   ARTIFACT_RECEIPT_SCHEMA,
-  SIBLING_CANDIDATE_SCHEMA,
+  type ArtifactReceipt,
   assertArtifactReceipt,
   assertCleanWorkingTreeStatus,
   assertReceiptPathOutsideWorktree,
   assertSiblingCandidateEvidence,
   fileSha256,
   packageClosureSha256,
-} from "../scripts/artifact-receipt.mjs";
-import { assertInstalledPackageMatchesTarball } from "../scripts/pack-install-run.mjs";
-import { resolveReceiptOutputPath } from "../scripts/pack-install-run.mjs";
-import { assertManifestTargets, assertPackedFiles } from "../scripts/package-contract.mjs";
+  SIBLING_CANDIDATE_SCHEMA,
+} from "../scripts/artifact-receipt.ts";
+import { assertInstalledPackageMatchesTarball, resolveReceiptOutputPath } from "../scripts/pack-install-run.ts";
+import { assertManifestTargets, assertPackedFiles, type PackageManifest } from "../scripts/package-contract.ts";
 
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 const MISSING_TARGET = /is missing/;
@@ -30,7 +30,7 @@ const SOURCE_FILE = /source file leaked/;
 const SOURCE_FALLBACK = /resolved from source instead of the offline consumer/;
 const REPLAYED_RECEIPT = /stale or replayed receipt/;
 
-function manifest(overrides = {}) {
+function manifest(overrides: Partial<PackageManifest> = {}): PackageManifest {
   return {
     name: "@pdpp/mcp-server",
     bin: { "pdpp-mcp-server": "./dist/bin/pdpp-mcp-server.js" },
@@ -52,7 +52,7 @@ function emittedFixture() {
   return root;
 }
 
-function receipt() {
+function receipt(): ArtifactReceipt {
   return {
     schema: ARTIFACT_RECEIPT_SCHEMA,
     baseGitSha: "base",
@@ -70,6 +70,7 @@ function receipt() {
         packageName,
         {
           schema: SIBLING_CANDIDATE_SCHEMA,
+          packageName,
           baseGitSha: "base",
           headGitSha: "head",
           sourceClosureSha256: "source",
@@ -164,17 +165,16 @@ test("receipt output rejects dangling leaf and parent symlinks before any write"
 test("receipt validation recomputes persisted sibling provenance", () => {
   const value = receipt();
   assert.doesNotThrow(() => assertArtifactReceipt(value, { candidates: value.candidates }));
-  const forged = {
+  const cliCandidate = value.candidates["@pdpp/cli"];
+  assert.ok(cliCandidate, "fixture must declare an @pdpp/cli candidate");
+  const forged: ArtifactReceipt = {
     ...value,
     candidates: {
       ...value.candidates,
-      "@pdpp/cli": { ...value.candidates["@pdpp/cli"], headGitSha: "forged-or-replayed-head" },
+      "@pdpp/cli": { ...cliCandidate, headGitSha: "forged-or-replayed-head" },
     },
   };
-  assert.throws(
-    () => assertArtifactReceipt(forged, { candidates: value.candidates }),
-    /stale or replayed receipt/
-  );
+  assert.throws(() => assertArtifactReceipt(forged, { candidates: value.candidates }), /stale or replayed receipt/);
 });
 
 test("checker reproduction rejects stale sibling evidence before consumer installation", () => {
@@ -221,7 +221,10 @@ test("source closure fails closed on symlinks and receipt emission needs a clean
   symlinkSync(join(root, "outside.js"), join(root, "linked.js"));
   assert.throws(() => packageClosureSha256(root), /source closure rejects symlink/);
   assert.doesNotThrow(() => assertCleanWorkingTreeStatus(""));
-  assert.throws(() => assertCleanWorkingTreeStatus(" M packages/mcp-server/src/index.js\n"), /clean tracked and untracked/);
+  assert.throws(
+    () => assertCleanWorkingTreeStatus(" M packages/mcp-server/src/index.js\n"),
+    /clean tracked and untracked/
+  );
   assert.throws(() => assertCleanWorkingTreeStatus("?? replayed-receipt.json\n"), /clean tracked and untracked/);
 });
 
@@ -229,7 +232,10 @@ test("receipt attests to a clean tree and cannot be emitted into it", () => {
   assert.doesNotThrow(() => assertArtifactReceipt(receipt()));
   assert.throws(() => assertArtifactReceipt({ ...receipt(), workingTreeClean: false }), /clean working tree/);
   assert.doesNotThrow(() => assertReceiptPathOutsideWorktree("/evidence/receipt.json", "/worktree"));
-  assert.throws(() => assertReceiptPathOutsideWorktree("/worktree/receipt.json", "/worktree"), /outside the working tree/);
+  assert.throws(
+    () => assertReceiptPathOutsideWorktree("/worktree/receipt.json", "/worktree"),
+    /outside the working tree/
+  );
 });
 
 test("checked-in package contract points only at emitted files", () => {

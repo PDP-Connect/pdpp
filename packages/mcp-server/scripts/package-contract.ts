@@ -12,7 +12,29 @@ const EXECUTABLE_PERMISSION = /[1357]/;
 const TEST_ARTIFACT_PATH = /(^|\/)\.?.+\.test\.(?:js|mjs|cjs|ts|mts|cts)$/;
 const NPM_PACK_JSON = /(\[\s*\{[\s\S]*\])\s*$/;
 
-function assertInsideDist(root, target, label) {
+// Loosely typed on purpose: this describes the runtime shape of an untrusted
+// `package.json` read from disk, which assertManifestTargets/assertPackedFiles
+// validate rather than assume — an `as PackageManifest` cast at the read site
+// doesn't guarantee any of these fields actually have the declared shape.
+export interface PackageManifest {
+  bin: unknown;
+  dependencies?: Record<string, string>;
+  exports: unknown;
+  files: string[];
+  name: string;
+}
+
+interface ExportTarget {
+  label: string;
+  target: string;
+}
+
+interface NpmPackEntry {
+  filename: string;
+  files: Array<{ path: string }>;
+}
+
+function assertInsideDist(root: string, target: string, label: string): string {
   assert.equal(typeof target, "string", `${label} must be a string target`);
   assert.equal(target.startsWith("./dist/"), true, `${label} must point into ./dist/: ${target}`);
 
@@ -29,36 +51,42 @@ function assertInsideDist(root, target, label) {
   return targetPath;
 }
 
-export function collectExportTargets(value, label, targets) {
+export function collectExportTargets(value: unknown, label: string, targets: ExportTarget[]): void {
   if (typeof value === "string") {
     targets.push({ label, target: value });
     return;
   }
   assert.equal(value !== null && typeof value === "object" && !Array.isArray(value), true, `${label} is invalid`);
-  for (const [condition, target] of Object.entries(value)) {
+  for (const [condition, target] of Object.entries(value as Record<string, unknown>)) {
     collectExportTargets(target, `${label}.${condition}`, targets);
   }
 }
 
-export function declaredExportSpecifiers(manifest) {
-  const specifiers = [];
-  for (const subpath of Object.keys(manifest.exports ?? {})) {
+function assertPlainObject(value: unknown, label: string): Record<string, unknown> {
+  assert.equal(value !== null && typeof value === "object" && !Array.isArray(value), true, label);
+  return value as Record<string, unknown>;
+}
+
+export function declaredExportSpecifiers(manifest: PackageManifest): string[] {
+  const specifiers: string[] = [];
+  const exportsMap = assertPlainObject(manifest.exports, "package must declare exports");
+  for (const subpath of Object.keys(exportsMap)) {
     specifiers.push(subpath === "." ? manifest.name : `${manifest.name}/${subpath.slice(2)}`);
   }
   return specifiers;
 }
 
-export function assertManifestTargets(manifest, root) {
-  assert.equal(manifest?.name, "@pdpp/mcp-server", "package manifest must identify @pdpp/mcp-server");
+export function assertManifestTargets(manifest: PackageManifest, root: string): void {
+  assert.equal(manifest.name, "@pdpp/mcp-server", "package manifest must identify @pdpp/mcp-server");
   assert.equal(Array.isArray(manifest.files), true, "package manifest must have a files allowlist");
   assert.equal(manifest.files.includes("dist/"), true, "package files must include dist/");
   for (const forbidden of ["src/", "bin/", "test/", "scripts/"]) {
     assert.equal(manifest.files.includes(forbidden), false, `package files must not publish ${forbidden}`);
   }
 
-  const exportTargets = [];
-  assert.equal(manifest.exports !== null && typeof manifest.exports === "object", true, "package must declare exports");
-  for (const [subpath, value] of Object.entries(manifest.exports)) {
+  const exportTargets: ExportTarget[] = [];
+  const exportsMap = assertPlainObject(manifest.exports, "package must declare exports");
+  for (const [subpath, value] of Object.entries(exportsMap)) {
     collectExportTargets(value, `exports[${JSON.stringify(subpath)}]`, exportTargets);
   }
   assert.ok(exportTargets.length > 0, "package must expose at least one export");
@@ -71,8 +99,8 @@ export function assertManifestTargets(manifest, root) {
     assertInsideDist(root, target, label);
   }
 
-  assert.equal(manifest.bin !== null && typeof manifest.bin === "object", true, "package must declare a bin map");
-  for (const [name, target] of Object.entries(manifest.bin)) {
+  const binMap = assertPlainObject(manifest.bin, "package must declare a bin map") as Record<string, string>;
+  for (const [name, target] of Object.entries(binMap)) {
     const targetPath = assertInsideDist(root, target, `bin.${name}`);
     assert.equal(target.endsWith(".js"), true, `bin.${name} must point to emitted JavaScript: ${target}`);
     assert.match(
@@ -97,7 +125,7 @@ export function assertManifestTargets(manifest, root) {
   }
 }
 
-export function assertPackedFiles(manifest, packedFiles) {
+export function assertPackedFiles(manifest: PackageManifest, packedFiles: string[]): void {
   const files = new Set(packedFiles);
   for (const file of files) {
     assert.equal(file.startsWith("src/"), false, `source file leaked into package: ${file}`);
@@ -108,30 +136,33 @@ export function assertPackedFiles(manifest, packedFiles) {
     assert.equal(file.endsWith(".ts") && !file.endsWith(".d.ts"), false, `raw TypeScript leaked into package: ${file}`);
   }
 
-  const exportTargets = [];
-  for (const [subpath, value] of Object.entries(manifest.exports)) {
+  const exportTargets: ExportTarget[] = [];
+  const exportsMap = assertPlainObject(manifest.exports, "package must declare exports");
+  for (const [subpath, value] of Object.entries(exportsMap)) {
     collectExportTargets(value, `exports[${JSON.stringify(subpath)}]`, exportTargets);
   }
   for (const { target } of exportTargets) {
     assert.equal(files.has(target.slice(2)), true, `packed export target is missing: ${target}`);
   }
-  for (const [name, target] of Object.entries(manifest.bin)) {
+  const binMap = assertPlainObject(manifest.bin, "package must declare a bin map") as Record<string, string>;
+  for (const [name, target] of Object.entries(binMap)) {
     assert.equal(files.has(target.slice(2)), true, `packed bin target is missing: ${name} -> ${target}`);
   }
 }
 
-export function parseNpmPackOutput(output) {
+export function parseNpmPackOutput(output: string): NpmPackEntry[] {
   const match = output.match(NPM_PACK_JSON);
   assert.ok(match, "npm pack did not produce a trailing JSON payload");
-  return JSON.parse(match[1]);
+  return JSON.parse(match[1] as string) as NpmPackEntry[];
 }
 
-export function packAndInspect(root, manifest) {
+export function packAndInspect(root: string, manifest: PackageManifest): NpmPackEntry {
   const output = execFileSync("npm", ["pack", "--json", "--ignore-scripts"], {
     cwd: root,
     encoding: "utf8",
   });
   const [pack] = parseNpmPackOutput(output);
+  assert.ok(pack, "npm pack produced no entries");
   assertPackedFiles(
     manifest,
     pack.files.map((file) => file.path)
@@ -140,7 +171,7 @@ export function packAndInspect(root, manifest) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const manifest = JSON.parse(readFileSync(resolve(packageRoot, "package.json"), "utf8"));
+  const manifest = JSON.parse(readFileSync(resolve(packageRoot, "package.json"), "utf8")) as PackageManifest;
   assertManifestTargets(manifest, packageRoot);
   const pack = packAndInspect(packageRoot, manifest);
   try {

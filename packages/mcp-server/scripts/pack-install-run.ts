@@ -21,81 +21,90 @@ import { fileURLToPath } from "node:url";
 
 import {
   ARTIFACT_RECEIPT_SCHEMA,
-  SIBLING_CANDIDATE_SCHEMA,
+  type ArtifactReceipt,
   assertArtifactReceipt,
   assertCleanWorkingTree,
-  assertReceiptPathOutsideWorktree,
   assertReceiptFresh,
+  assertReceiptPathOutsideWorktree,
   assertSiblingCandidateEvidence,
-  currentSourceIdentity,
   currentReceiptIdentity,
+  currentSourceIdentity,
   fileSha256,
   gitSha,
   readNpmVersion,
   readPnpmVersion,
-} from "./artifact-receipt.mjs";
-import { runInstalledStdioProbe } from "./installed-stdio-probe.mjs";
-import { declaredExportSpecifiers, parseNpmPackOutput } from "./package-contract.mjs";
+  SIBLING_CANDIDATE_SCHEMA,
+  type SiblingCandidateEvidence,
+} from "./artifact-receipt.ts";
+import { runInstalledStdioProbe } from "./installed-stdio-probe.ts";
+import { declaredExportSpecifiers, type PackageManifest, parseNpmPackOutput } from "./package-contract.ts";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const manifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
+const manifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8")) as PackageManifest;
 const pnpmExecutable = join(dirname(process.execPath), "pnpm");
 const EMITTED_MCP_RESOLUTION = /node_modules\/@pdpp\/mcp-server\/dist\//;
 const MCP_BIN_HELP = /pdpp-mcp-server/;
 const PACKAGE_RELATIVE_PATH = /^\.\//;
-const siblingSources = {
+const LOWER_BOUNDED_VERSION_RANGE = /^>=([0-9]+\.[0-9]+\.[0-9]+)/;
+const siblingSources: Record<string, string> = {
   "@pdpp/cli": resolve(packageRoot, "..", "cli"),
   "@pdpp/read-core": resolve(packageRoot, "..", "read-core"),
 };
 
-function parseArgs(argv) {
+interface ParsedArgs {
+  receipt?: string;
+}
+
+function parseArgs(argv: string[]): ParsedArgs {
   const args = argv[0] === "--" ? argv.slice(1) : argv;
-  const options = {};
+  const options: ParsedArgs = {};
   for (let index = 0; index < args.length; index += 2) {
     const name = args[index];
     const value = args[index + 1];
     if (!(name === "--receipt" && value)) {
-      throw new Error("Usage: pack-install-run.mjs [--receipt <path>]");
+      throw new Error("Usage: pack-install-run.ts [--receipt <path>]");
     }
-    options[name.slice(2)] = resolve(value);
+    options.receipt = resolve(value);
   }
   return options;
 }
 
-function assertNoSymlinkPath(path) {
+function assertNoSymlinkPath(path: string): void {
   const absolutePath = resolve(path);
-  const root = parse(absolutePath).root;
+  const { root } = parse(absolutePath);
   let current = root;
   for (const component of absolutePath.slice(root.length).split(sep).filter(Boolean)) {
     current = join(current, component);
     try {
       assert.equal(lstatSync(current).isSymbolicLink(), false, "receipt output path must not traverse a symlink");
     } catch (error) {
-      if (error?.code === "ENOENT") return;
+      if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
+        return;
+      }
       throw error;
     }
   }
 }
 
-export function resolveReceiptOutputPath(path) {
+export function resolveReceiptOutputPath(path: string): string {
   const absolutePath = resolve(path);
   assertNoSymlinkPath(absolutePath);
   return join(realpathSync(dirname(absolutePath)), basename(absolutePath));
 }
 
-function run(command, args, options = {}) {
+function run(command: string, args: string[], options: Parameters<typeof execFileSync>[2] = {}): string {
   return execFileSync(command, args, {
     encoding: "utf8",
     maxBuffer: 10 * 1024 * 1024,
     ...options,
-  });
+  }) as string;
 }
 
-function tarballManifest(tarball) {
-  return JSON.parse(run("tar", ["-xOf", tarball, "package/package.json"]));
+function tarballManifest(tarball: string): { name: string } {
+  return JSON.parse(run("tar", ["-xOf", tarball, "package/package.json"])) as { name: string };
 }
 
-function tarballFileHashes(tarball) {
+function tarballFileHashes(tarball: string): Map<string, string> {
   const entries = run("tar", ["-tzf", tarball])
     .split("\n")
     .filter((entry) => entry.startsWith("package/") && !entry.endsWith("/"))
@@ -104,15 +113,15 @@ function tarballFileHashes(tarball) {
   return new Map(entries.map((entry) => [entry, fileSha256FromTar(tarball, `package/${entry}`)]));
 }
 
-function fileSha256FromTar(tarball, entry) {
+function fileSha256FromTar(tarball: string, entry: string): string {
   return createHash("sha256")
     .update(execFileSync("tar", ["-xOf", tarball, entry]))
     .digest("hex");
 }
 
-function directoryFileHashes(root) {
-  const hashes = new Map();
-  function visit(directory) {
+function directoryFileHashes(root: string): Map<string, string> {
+  const hashes = new Map<string, string>();
+  function visit(directory: string): void {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       if (entry.name === "node_modules") {
         continue;
@@ -130,7 +139,17 @@ function directoryFileHashes(root) {
   return hashes;
 }
 
-export function assertInstalledPackageMatchesTarball({ consumerRoot, packageName, tarball }) {
+interface AssertInstalledPackageMatchesTarballOptions {
+  consumerRoot: string;
+  packageName: string;
+  tarball: string;
+}
+
+export function assertInstalledPackageMatchesTarball({
+  consumerRoot,
+  packageName,
+  tarball,
+}: AssertInstalledPackageMatchesTarballOptions): string {
   const installedRoot = join(consumerRoot, "node_modules", ...packageName.split("/"));
   assert.equal(existsSync(installedRoot), true, `candidate ${packageName} is not installed`);
   const resolvedRoot = realpathSync(installedRoot);
@@ -146,27 +165,40 @@ export function assertInstalledPackageMatchesTarball({ consumerRoot, packageName
   return resolvedRoot;
 }
 
-function assertCandidateTarball(tarball, expectedName) {
+function assertCandidateTarball(tarball: string, expectedName: string): void {
   assert.equal(existsSync(tarball), true, `candidate tarball is missing: ${tarball}`);
   assert.equal(tarballManifest(tarball).name, expectedName, `candidate tarball must be ${expectedName}`);
 }
 
-function candidateVersion(packageName) {
-  const range = manifest.dependencies[packageName];
-  const match = /^>=([0-9]+\.[0-9]+\.[0-9]+)/.exec(range ?? "");
+function candidateVersion(packageName: string): string {
+  const range = manifest.dependencies?.[packageName];
+  const match = LOWER_BOUNDED_VERSION_RANGE.exec(range ?? "");
   assert.ok(match, `MCP dependency ${packageName} must declare a lower-bounded release version`);
-  return match[1];
+  return (match as RegExpExecArray)[1] as string;
 }
 
-function packPackage(root, outputRoot) {
+function packPackage(root: string, outputRoot: string): string {
   const [packed] = parseNpmPackOutput(
     run("npm", ["pack", "--json", "--ignore-scripts", "--pack-destination", outputRoot], { cwd: root })
   );
+  assert.ok(packed, `npm pack produced no entries for ${root}`);
   return join(outputRoot, packed.filename);
 }
 
-function buildCurrentSiblingCandidate({ packageName, candidateRoot }) {
-  const sourceRoot = siblingSources[packageName];
+interface SiblingCandidate {
+  evidence: SiblingCandidateEvidence;
+  sourceTarball: string;
+  tarball: string;
+}
+
+function buildCurrentSiblingCandidate({
+  packageName,
+  candidateRoot,
+}: {
+  candidateRoot: string;
+  packageName: string;
+}): SiblingCandidate {
+  const sourceRoot = siblingSources[packageName] as string;
   const sourcePackRoot = join(candidateRoot, "source-pack");
   const stagedRoot = join(candidateRoot, "staged");
   const releasePackRoot = join(candidateRoot, "release-pack");
@@ -183,13 +215,13 @@ function buildCurrentSiblingCandidate({ packageName, candidateRoot }) {
 
   const stagedPackageRoot = join(stagedRoot, "package");
   const stagedManifestPath = join(stagedPackageRoot, "package.json");
-  const stagedManifest = JSON.parse(readFileSync(stagedManifestPath, "utf8"));
+  const stagedManifest = JSON.parse(readFileSync(stagedManifestPath, "utf8")) as { version: string };
   stagedManifest.version = candidateVersion(packageName);
   writeFileSync(stagedManifestPath, `${JSON.stringify(stagedManifest, null, 2)}\n`);
   const tarball = packPackage(stagedPackageRoot, releasePackRoot);
   assertCandidateTarball(tarball, packageName);
 
-  const evidence = {
+  const evidence: SiblingCandidateEvidence = {
     schema: SIBLING_CANDIDATE_SCHEMA,
     packageName,
     ...sourceIdentity,
@@ -206,8 +238,8 @@ function buildCurrentSiblingCandidate({ packageName, candidateRoot }) {
   return { evidence, sourceTarball, tarball };
 }
 
-function assertCurrentSiblingCandidate(candidate, packageName) {
-  const sourceRoot = siblingSources[packageName];
+function assertCurrentSiblingCandidate(candidate: SiblingCandidate, packageName: string): void {
+  const sourceRoot = siblingSources[packageName] as string;
   assertCleanWorkingTree(sourceRoot);
   assertSiblingCandidateEvidence(candidate.evidence, {
     packageName,
@@ -217,14 +249,14 @@ function assertCurrentSiblingCandidate(candidate, packageName) {
   });
 }
 
-function importAllExports(consumerRoot) {
+function importAllExports(consumerRoot: string): string[] {
   const exportSpecifiers = declaredExportSpecifiers(manifest);
   const source = `await Promise.all(${JSON.stringify(exportSpecifiers)}.map((specifier) => import(specifier)));`;
   run(process.execPath, ["--input-type=module", "--eval", source], { cwd: consumerRoot });
   return exportSpecifiers;
 }
 
-function resolveSpecifier(consumerRoot, specifier) {
+function resolveSpecifier(consumerRoot: string, specifier: string): string {
   return run(
     process.execPath,
     ["--input-type=module", "--eval", `console.log(import.meta.resolve(${JSON.stringify(specifier)}));`],
@@ -232,11 +264,12 @@ function resolveSpecifier(consumerRoot, specifier) {
   ).trim();
 }
 
-export async function main() {
+export async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
+  let receiptOutputPath: string | undefined;
   if (options.receipt) {
-    options.receipt = resolveReceiptOutputPath(options.receipt);
-    assertReceiptPathOutsideWorktree(options.receipt, gitSha(packageRoot, ["rev-parse", "--show-toplevel"]));
+    receiptOutputPath = resolveReceiptOutputPath(options.receipt);
+    assertReceiptPathOutsideWorktree(receiptOutputPath, gitSha(packageRoot, ["rev-parse", "--show-toplevel"]));
   }
   assertCleanWorkingTree(packageRoot);
   const tempRoot = mkdtempSync(join(tmpdir(), "pdpp-mcp-consumer-"));
@@ -259,12 +292,14 @@ export async function main() {
     const [pack] = parseNpmPackOutput(
       run("npm", ["pack", "--json", "--ignore-scripts", "--pack-destination", packRoot], { cwd: packageRoot })
     );
+    assert.ok(pack, "npm pack produced no entries for the MCP package");
     const mcpTarball = join(packRoot, pack.filename);
     const cliTarball = cliCandidate.tarball;
     const readCoreTarball = readCoreCandidate.tarball;
 
     run("npm", ["init", "--yes"], { cwd: consumerRoot });
-    const consumerName = JSON.parse(readFileSync(join(consumerRoot, "package.json"), "utf8")).name;
+    const consumerName = (JSON.parse(readFileSync(join(consumerRoot, "package.json"), "utf8")) as { name: string })
+      .name;
     writeFileSync(
       join(consumerRoot, "pnpm-workspace.yaml"),
       `packages:\n  - .\noverrides:\n  "@pdpp/cli": "file:${cliTarball}"\n  "@pdpp/read-core": "file:${readCoreTarball}"\n`
@@ -305,10 +340,10 @@ export async function main() {
     });
     const [dependencyTree] = JSON.parse(
       run(pnpmExecutable, ["list", "--json", "--depth", "-1"], { cwd: consumerRoot, env: installEnv })
-    );
+    ) as Array<{ name?: string }>;
     assert.equal(dependencyTree?.name, consumerName, "consumer dependency tree is missing");
 
-    const installedRoots = {
+    const installedRoots: Record<string, string> = {
       "@pdpp/cli": assertInstalledPackageMatchesTarball({
         consumerRoot,
         packageName: "@pdpp/cli",
@@ -340,25 +375,32 @@ export async function main() {
     assert.equal(helpResult.status, 0, `installed MCP bin failed: ${helpResult.stderr}`);
     const help = helpResult.stderr;
     assert.match(help, MCP_BIN_HELP, "installed MCP bin must execute without a download");
+    const binTarget = (manifest.bin as Record<string, string>)["pdpp-mcp-server"] as string;
     const stdio = await runInstalledStdioProbe({
       consumerRoot,
-      binPath: join(installedRoots[manifest.name], manifest.bin["pdpp-mcp-server"].replace(PACKAGE_RELATIVE_PATH, "")),
+      binPath: join(installedRoots[manifest.name] as string, binTarget.replace(PACKAGE_RELATIVE_PATH, "")),
     });
 
     assertCleanWorkingTree(packageRoot);
-    const receipt = {
+    const receipt: ArtifactReceipt = {
       schema: ARTIFACT_RECEIPT_SCHEMA,
       ...currentReceiptIdentity(packageRoot, mcpTarball),
       workingTreeClean: true,
       node: { version: process.version, execPath: process.execPath },
       packageManager: { npmVersion: readNpmVersion(), pnpmVersion: readPnpmVersion(pnpmExecutable) },
-      tarballFiles: pack.files.map((file) => file.path).sort(),
+      tarballFiles: pack.files.map((file) => file.path).sort((a, b) => a.localeCompare(b)),
       exports: Object.entries(resolved).map(([specifier, path]) => ({ specifier, path })),
       bins: [{ name: "pdpp-mcp-server", command: "npx --no-install pdpp-mcp-server --help", output: help.trim() }],
       candidates: {
-        "@pdpp/cli": { ...cliCandidate.evidence, installedRoot: installedRoots["@pdpp/cli"] },
-        "@pdpp/read-core": { ...readCoreCandidate.evidence, installedRoot: installedRoots["@pdpp/read-core"] },
-        [manifest.name]: { sha256: fileSha256(mcpTarball), installedRoot: installedRoots[manifest.name] },
+        "@pdpp/cli": { ...cliCandidate.evidence, installedRoot: installedRoots["@pdpp/cli"] as string },
+        "@pdpp/read-core": {
+          ...readCoreCandidate.evidence,
+          installedRoot: installedRoots["@pdpp/read-core"] as string,
+        },
+        [manifest.name]: {
+          sha256: fileSha256(mcpTarball),
+          installedRoot: installedRoots[manifest.name] as string,
+        } as unknown as SiblingCandidateEvidence & { installedRoot: string },
       },
       dependencyTree,
       commands: [
@@ -375,16 +417,15 @@ export async function main() {
         "MCP initialize + tools/call schema",
       ],
       stdio,
-    };
+    } as unknown as ArtifactReceipt;
     assertReceiptFresh(receipt, packageRoot, mcpTarball, {
       "@pdpp/cli": cliCandidate.evidence,
       "@pdpp/read-core": readCoreCandidate.evidence,
     });
     assertArtifactReceipt(receipt);
-    if (options.receipt) {
-      const outputPath = resolveReceiptOutputPath(options.receipt);
-      assertReceiptPathOutsideWorktree(outputPath, gitSha(packageRoot, ["rev-parse", "--show-toplevel"]));
-      writeFileSync(outputPath, `${JSON.stringify(receipt, null, 2)}\n`, { flag: "wx" });
+    if (receiptOutputPath) {
+      assertReceiptPathOutsideWorktree(receiptOutputPath, gitSha(packageRoot, ["rev-parse", "--show-toplevel"]));
+      writeFileSync(receiptOutputPath, `${JSON.stringify(receipt, null, 2)}\n`, { flag: "wx" });
     }
     process.stdout.write(`ARTIFACT_RECEIPT ${JSON.stringify(receipt)}\n`);
   } finally {
