@@ -27,12 +27,14 @@ import {
   assertReceiptFresh,
   assertReceiptPathOutsideWorktree,
   assertSiblingCandidateEvidence,
+  type CandidateEvidence,
   currentReceiptIdentity,
   currentSourceIdentity,
   fileSha256,
   gitSha,
   readNpmVersion,
   readPnpmVersion,
+  SELF_PACKAGE_NAME,
   SIBLING_CANDIDATE_SCHEMA,
   type SiblingCandidateEvidence,
 } from "./artifact-receipt.ts";
@@ -41,6 +43,10 @@ import { declaredExportSpecifiers, type PackageManifest, parseNpmPackOutput } fr
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const manifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8")) as PackageManifest;
+// assertArtifactReceipt looks up the self-candidate under the fixed
+// SELF_PACKAGE_NAME constant; this receipt is written under the manifest's
+// own name, so a mismatch here would silently fail that lookup.
+assert.equal(manifest.name, SELF_PACKAGE_NAME, "package.json name must match artifact-receipt.ts's SELF_PACKAGE_NAME");
 const pnpmExecutable = join(dirname(process.execPath), "pnpm");
 const EMITTED_MCP_RESOLUTION = /node_modules\/@pdpp\/mcp-server\/dist\//;
 const MCP_BIN_HELP = /pdpp-mcp-server/;
@@ -400,7 +406,7 @@ export async function main(): Promise<void> {
         [manifest.name]: {
           sha256: fileSha256(mcpTarball),
           installedRoot: installedRoots[manifest.name] as string,
-        } as unknown as SiblingCandidateEvidence & { installedRoot: string },
+        } satisfies CandidateEvidence,
       },
       dependencyTree,
       commands: [
@@ -417,7 +423,7 @@ export async function main(): Promise<void> {
         "MCP initialize + tools/call schema",
       ],
       stdio,
-    } as unknown as ArtifactReceipt;
+    };
     assertReceiptFresh(receipt, packageRoot, mcpTarball, {
       "@pdpp/cli": cliCandidate.evidence,
       "@pdpp/read-core": readCoreCandidate.evidence,

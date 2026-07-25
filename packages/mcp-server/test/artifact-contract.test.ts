@@ -18,7 +18,9 @@ import {
   assertSiblingCandidateEvidence,
   fileSha256,
   packageClosureSha256,
+  SELF_PACKAGE_NAME,
   SIBLING_CANDIDATE_SCHEMA,
+  type SiblingCandidateEvidence,
 } from "../scripts/artifact-receipt.ts";
 import { assertInstalledPackageMatchesTarball, resolveReceiptOutputPath } from "../scripts/pack-install-run.ts";
 import { assertManifestTargets, assertPackedFiles, type PackageManifest } from "../scripts/package-contract.ts";
@@ -30,6 +32,12 @@ const SOURCE_CLOSURE_REJECTS_SYMLINK = /source closure rejects symlink/;
 const CLEAN_TRACKED_AND_UNTRACKED = /clean tracked and untracked/;
 const CLEAN_WORKING_TREE = /clean working tree/;
 const OUTSIDE_THE_WORKING_TREE = /outside the working tree/;
+const SELF_CANDIDATE_SHAPE = new RegExp(
+  `${SELF_PACKAGE_NAME.replace(/[/]/g, "\\/")} candidate must carry a self-candidate sha256`
+);
+const SELF_CANDIDATE_MISSING = new RegExp(
+  `receipt must bind ${SELF_PACKAGE_NAME.replace(/[/]/g, "\\/")} candidate provenance`
+);
 
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 const MISSING_TARGET = /is missing/;
@@ -73,20 +81,26 @@ function receipt(): ArtifactReceipt {
     exports: [],
     bins: [],
     commands: [],
-    candidates: Object.fromEntries(
-      ["@pdpp/cli", "@pdpp/read-core"].map((packageName) => [
-        packageName,
-        {
-          schema: SIBLING_CANDIDATE_SCHEMA,
+    dependencyTree: { name: "consumer", version: "1.0.0" },
+    tarballFiles: ["package.json", "dist/src/index.js"],
+    stdio: { toolContract: "schema", toolResultVersion: "artifact-proof" },
+    candidates: {
+      ...Object.fromEntries(
+        ["@pdpp/cli", "@pdpp/read-core"].map((packageName) => [
           packageName,
-          baseGitSha: "base",
-          headGitSha: "head",
-          sourceClosureSha256: "source",
-          sourceTarballSha256: "source-tarball",
-          tarballSha256: "candidate-tarball",
-        },
-      ])
-    ),
+          {
+            schema: SIBLING_CANDIDATE_SCHEMA,
+            packageName,
+            baseGitSha: "base",
+            headGitSha: "head",
+            sourceClosureSha256: "source",
+            sourceTarballSha256: "source-tarball",
+            tarballSha256: "candidate-tarball",
+          },
+        ])
+      ),
+      [SELF_PACKAGE_NAME]: { sha256: "mcp-tarball-sha" },
+    },
   };
 }
 
@@ -170,9 +184,20 @@ test("receipt output rejects dangling leaf and parent symlinks before any write"
   assert.throws(() => resolveReceiptOutputPath(join(parentLink, "receipt.json")), SYMLINK);
 });
 
+function siblingCandidates(value: ArtifactReceipt): Record<string, SiblingCandidateEvidence> {
+  const cliCandidate = value.candidates["@pdpp/cli"];
+  const readCoreCandidate = value.candidates["@pdpp/read-core"];
+  assert.ok(cliCandidate && !("sha256" in cliCandidate), "fixture must declare a sibling-shaped @pdpp/cli candidate");
+  assert.ok(
+    readCoreCandidate && !("sha256" in readCoreCandidate),
+    "fixture must declare a sibling-shaped @pdpp/read-core candidate"
+  );
+  return { "@pdpp/cli": cliCandidate, "@pdpp/read-core": readCoreCandidate };
+}
+
 test("receipt validation recomputes persisted sibling provenance", () => {
   const value = receipt();
-  assert.doesNotThrow(() => assertArtifactReceipt(value, { candidates: value.candidates }));
+  assert.doesNotThrow(() => assertArtifactReceipt(value, { candidates: siblingCandidates(value) }));
   const cliCandidate = value.candidates["@pdpp/cli"];
   assert.ok(cliCandidate, "fixture must declare an @pdpp/cli candidate");
   const forged: ArtifactReceipt = {
@@ -182,7 +207,41 @@ test("receipt validation recomputes persisted sibling provenance", () => {
       "@pdpp/cli": { ...cliCandidate, headGitSha: "forged-or-replayed-head" },
     },
   };
-  assert.throws(() => assertArtifactReceipt(forged, { candidates: value.candidates }), STALE_OR_REPLAYED_RECEIPT);
+  assert.throws(
+    () => assertArtifactReceipt(forged, { candidates: siblingCandidates(value) }),
+    STALE_OR_REPLAYED_RECEIPT
+  );
+});
+
+test("receipt validation rejects a malformed mcp-server self-candidate", () => {
+  const value = receipt();
+
+  // Missing entirely.
+  const { [SELF_PACKAGE_NAME]: _dropped, ...candidatesWithoutSelf } = value.candidates;
+  assert.throws(() => assertArtifactReceipt({ ...value, candidates: candidatesWithoutSelf }), SELF_CANDIDATE_MISSING);
+
+  // Sibling-shaped instead of self-candidate-shaped (the exact mutation the
+  // pre-fix double-cast in pack-install-run.ts would have silently allowed
+  // through both tsc and this runtime check).
+  const siblingShapedSelf: ArtifactReceipt = {
+    ...value,
+    candidates: {
+      ...value.candidates,
+      [SELF_PACKAGE_NAME]: {
+        schema: SIBLING_CANDIDATE_SCHEMA,
+        packageName: SELF_PACKAGE_NAME,
+        baseGitSha: "base",
+        headGitSha: "head",
+        sourceClosureSha256: "source",
+        sourceTarballSha256: "source-tarball",
+        tarballSha256: "candidate-tarball",
+      },
+    },
+  };
+  assert.throws(() => assertArtifactReceipt(siblingShapedSelf), SELF_CANDIDATE_SHAPE);
+
+  // Correctly shaped self-candidate must pass.
+  assert.doesNotThrow(() => assertArtifactReceipt(value));
 });
 
 test("checker reproduction rejects stale sibling evidence before consumer installation", () => {
