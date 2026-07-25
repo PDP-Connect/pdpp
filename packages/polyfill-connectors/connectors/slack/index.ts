@@ -745,6 +745,12 @@ interface ArchiveRuntimeDeps {
 interface MessageSourceCacheReconciliation {
   currentChannelIds: string[];
   missingChannelIds: string[];
+  // Every scoped-archive path this run created or read via
+  // repairMissingScopedArchive, INCLUDING a successful repair that recovered
+  // no matching channel (and so is absent from `scopedArchives`). Reclaim
+  // must cover this set too — the archive's __uploads/ residue exists
+  // regardless of whether the repair helped this run's message pass.
+  reclaimedRepairArchivePaths: string[];
   scopedArchives: SelectedScopedArchive[];
 }
 
@@ -775,11 +781,23 @@ async function refreshScopedArchive(archive: SelectedScopedArchive, deps: Archiv
   }
 }
 
+interface ScopedArchiveRepairResult {
+  // Set whenever ensureArchiveOnDisk succeeded and this run therefore created
+  // or read bytes at repairPaths.archivePath — independent of whether the
+  // repair recovered a matching channel. A reclaim plan built only from
+  // `selected` would silently exclude a successful-but-empty repair archive
+  // (see `selected: null` below), stranding its __uploads/ residue forever.
+  archivePath: string | null;
+  // Non-null only when the repair recovered at least one of the requested
+  // missing channel IDs — the shape the message-family merge pass needs.
+  selected: SelectedScopedArchive | null;
+}
+
 async function repairMissingScopedArchive(
   baseArchivePaths: ArchivePaths,
   missingChannelIds: readonly string[],
   deps: ArchiveRuntimeDeps
-): Promise<SelectedScopedArchive | null> {
+): Promise<ScopedArchiveRepairResult> {
   const { childEnv, cookie, opts, progress, timeFrom, timeTo, token } = deps;
   const repairPaths = resolveScopedArchivePaths(baseArchivePaths, missingChannelIds);
   const useResume = existsSync(repairPaths.archivePath);
@@ -807,13 +825,19 @@ async function repairMissingScopedArchive(
         stream: "messages",
       }
     );
-    return null;
+    // ensureArchiveOnDisk threw: nothing durable was created/read this run
+    // (or a pre-existing archive from a prior run is left as-is, already
+    // covered by its own prior reclaim registration) — correctly excluded.
+    return { archivePath: null, selected: null };
   }
 
   const repairedChannelIds = readArchiveChannelIds(repairPaths.sqlitePath).filter((id) =>
     missingChannelIds.includes(id)
   );
-  return repairedChannelIds.length > 0 ? { channelIds: repairedChannelIds, paths: repairPaths } : null;
+  return {
+    archivePath: repairPaths.archivePath,
+    selected: repairedChannelIds.length > 0 ? { channelIds: repairedChannelIds, paths: repairPaths } : null,
+  };
 }
 
 async function reconcileMessageSourceCache(deps: {
@@ -833,7 +857,12 @@ async function reconcileMessageSourceCache(deps: {
     priorObservedChannelIds,
   } = deps;
   if (!(messageFamilyRequested && isUnscopedMessageBoundary)) {
-    return { currentChannelIds: [...baseChannelIds], missingChannelIds: [], scopedArchives: [] };
+    return {
+      currentChannelIds: [...baseChannelIds],
+      missingChannelIds: [],
+      scopedArchives: [],
+      reclaimedRepairArchivePaths: [],
+    };
   }
 
   // Source-cache auto-reconciliation: if an unscoped run proves that a
@@ -842,27 +871,85 @@ async function reconcileMessageSourceCache(deps: {
   // that archive in this run's message pass. Existing scoped archives count as
   // part of the source cache, so the normal hourly run can heal cache topology
   // without asking the owner to reconnect credentials.
+  //
+  // Finite by construction, not by a wall-clock cap: `baseMissingChannelIds`
+  // and `selectScopedArchivesForChannels`'s result are both computed ONCE,
+  // up front, from this run's already-fixed `priorObservedChannelIds` (a
+  // committed STATE array) and `baseChannelIds` (this run's own archive scan)
+  // — a plain array difference, not a query that can grow mid-run. The loop
+  // below iterates that fixed list exactly once per entry (no re-selection,
+  // no re-scan), and the optional single repair attempt after it runs at most
+  // once more. The repair-unit count is therefore known before any subprocess
+  // runs, and each unit's own Slack-API-side scope is bounded by
+  // `SLACK_LOOKBACK_DAYS` (passed to slackdump as `-lookback p<N>d`) — the
+  // actual finite bound on backlog a single `resume` call can touch. Reported
+  // as progress before/after each unit so this bound is a legible number in
+  // run evidence, not just elapsed time.
   const baseMissingChannelIds = missingPreviouslyObservedChannelIds(priorObservedChannelIds, baseChannelIds);
   const scopedArchives = selectScopedArchivesForChannels(baseArchivePaths, baseMissingChannelIds);
+  // Channels selectScopedArchivesForChannels could NOT cover from an existing
+  // scoped archive: exactly the set that determines (before any subprocess
+  // runs) whether the single repair attempt below will fire. Computed the
+  // same way selectScopedArchivesForChannels computes its own `remaining`, so
+  // this count is exact, not a heuristic.
+  const uncoveredAfterSelection = baseMissingChannelIds.filter(
+    (id) => !scopedArchives.some((archive) => archive.channelIds.includes(id))
+  );
+  const willAttemptRepair = uncoveredAfterSelection.length > 0;
+  const repairUnitCount = scopedArchives.length + (willAttemptRepair ? 1 : 0);
+  const lookbackWindow = `p${archiveRuntime.opts.LOOKBACK_DAYS}d`;
+  archiveRuntime.progress(
+    `Slack: scoped-archive-reconcile selected ${String(repairUnitCount)} repair unit(s) ` +
+      `(${String(scopedArchives.length)} existing scoped archive refresh(es) + ` +
+      `${String(willAttemptRepair ? 1 : 0)} new-repair attempt(s) for ` +
+      `${String(uncoveredAfterSelection.length)} uncovered channel(s)), ` +
+      `each bounded to lookback=${lookbackWindow}`,
+    { stream: "messages" }
+  );
+  let completedRepairUnits = 0;
   for (const archive of scopedArchives) {
     await refreshScopedArchive(archive, archiveRuntime);
+    completedRepairUnits += 1;
+    archiveRuntime.progress(
+      `Slack: scoped-archive-reconcile completed ${String(completedRepairUnits)}/${String(repairUnitCount)} repair unit(s)`,
+      { stream: "messages" }
+    );
   }
 
   let scopedChannelIds = unionStrings(...scopedArchives.map((archive) => archive.channelIds));
   let currentChannelIds = unionStrings(baseChannelIds, scopedChannelIds);
   let missingChannelIds = missingPreviouslyObservedChannelIds(priorObservedChannelIds, currentChannelIds);
+  const reclaimedRepairArchivePaths: string[] = [];
 
   if (missingChannelIds.length > 0) {
-    const repaired = await repairMissingScopedArchive(baseArchivePaths, missingChannelIds, archiveRuntime);
-    if (repaired) {
-      scopedArchives.push(repaired);
-      scopedChannelIds = unionStrings(scopedChannelIds, repaired.channelIds);
+    const repair = await repairMissingScopedArchive(baseArchivePaths, missingChannelIds, archiveRuntime);
+    completedRepairUnits += 1;
+    archiveRuntime.progress(
+      `Slack: scoped-archive-reconcile completed ${String(completedRepairUnits)}/${String(repairUnitCount)} repair unit(s)`,
+      { stream: "messages" }
+    );
+    // A successful repair (ensureArchiveOnDisk did not throw) created/read
+    // durable bytes at repair.archivePath regardless of whether a matching
+    // channel was recovered — that archive's __uploads/ must still be
+    // reclaimable. `repair.selected` (only set when a channel was recovered)
+    // additionally folds into this run's message pass.
+    if (repair.archivePath) {
+      reclaimedRepairArchivePaths.push(repair.archivePath);
+    }
+    if (repair.selected) {
+      scopedArchives.push(repair.selected);
+      scopedChannelIds = unionStrings(scopedChannelIds, repair.selected.channelIds);
       currentChannelIds = unionStrings(baseChannelIds, scopedChannelIds);
       missingChannelIds = missingPreviouslyObservedChannelIds(priorObservedChannelIds, currentChannelIds);
     }
   }
 
-  return { currentChannelIds, missingChannelIds, scopedArchives };
+  archiveRuntime.progress(
+    `Slack: scoped-archive-reconcile finished: ${String(completedRepairUnits)}/${String(repairUnitCount)} repair unit(s) completed, 0 remaining`,
+    { stream: "messages" }
+  );
+
+  return { currentChannelIds, missingChannelIds, scopedArchives, reclaimedRepairArchivePaths };
 }
 
 function messageFamilyRequestedOnly(requested: CollectContext["requested"]): CollectContext["requested"] {
@@ -2119,14 +2206,24 @@ if (isMainModule(import.meta.url)) {
       }
 
       // Register the opt-in __uploads reclaim once every archive this run
-      // actually read is known: the base/scoped archive plus any scoped
-      // archives reconcileMessageSourceCache refreshed or repaired. Without
-      // the latter, reclaim silently covered only the base archive while
-      // scoped-archive __uploads/ residue accumulated forever. The actual
+      // actually read is known: the base/scoped archive, every scoped archive
+      // reconcileMessageSourceCache refreshed or repaired AND folded into the
+      // message pass, plus any repair attempt that successfully created/read
+      // an archive but recovered no matching channel (reclaimedRepairArchivePaths
+      // — deduped against scopedArchives since a successful, channel-matching
+      // repair appears in both). Without the last set, a successful-but-empty
+      // repair's __uploads/ residue would be silently excluded forever even
+      // though this run genuinely created/read that archive. The actual
       // deletion happens in onDurableCommit (post durable-ingest ack), never
       // here — so nothing is deleted ahead of a commit receipt.
       reclaimPlan = opts.RECLAIM_UPLOADS
-        ? [archivePath, ...reconciledSourceCache.scopedArchives.map((archive) => archive.paths.archivePath)]
+        ? [
+            ...new Set([
+              archivePath,
+              ...reconciledSourceCache.scopedArchives.map((archive) => archive.paths.archivePath),
+              ...reconciledSourceCache.reclaimedRepairArchivePaths,
+            ]),
+          ]
         : null;
 
       let messageResult = await timedPhase(progress, "read-and-emit", () =>

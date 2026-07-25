@@ -66,20 +66,37 @@ every run. Every run reports per-phase timing and an archive size snapshot via
 `PROGRESS` (`slackdump-subprocess`, `archive-open`, `read-and-emit`, and
 `sqlite=…B uploads=…B`) so this bound is measurable and regressions are visible.
 
+**Scoped-archive reconciliation (channel healing) is finite by construction,
+not by a wall-clock cap.** If an unscoped run finds a previously-observed
+channel missing from the main archive, it heals the gap by refreshing/repairing
+isolated `archive-scoped/<digest>/` archives — at most one refresh per existing
+scoped archive already covering a missing channel, plus at most one additional
+repair attempt for whatever remains uncovered. That repair-unit count is known
+before any subprocess runs (a plain array-difference over this run's own state,
+not a query that can grow mid-run), and each unit's own Slack-API-side scope is
+separately bounded by `SLACK_LOOKBACK_DAYS` (`-lookback p<N>d`, default `p7d`).
+The `scoped-archive-reconcile` phase reports the selected unit count and
+lookback window before starting, a completed/remaining cursor per unit, and an
+explicit `0 remaining` at the end — so a single run can neither rediscover nor
+reprocess an unbounded set. The *wall-clock duration* of an individual unit is
+NOT bounded by this — it is genuine Slack-API backlog catch-up within the fixed
+lookback window, subject to Slack's own rate limits.
+
 ### Reclaiming `__uploads/` (`SLACK_RECLAIM_UPLOADS=1`) — opt-in, one-way
 
 If a past run downloaded files (`SLACK_SKIP_FILES=false`), `__uploads/` can hold
 tens of GB of bytes the connector does not ingest. Set `SLACK_RECLAIM_UPLOADS=1`
 to remove `__uploads/` **after** the run's records are durably accepted (the
 reclaim runs on the runtime's durable-commit ack, never before, and never on a
-failed run). It reclaims **every archive this run actually read** — the base
-archive plus any scoped archive `reconcileMessageSourceCache` refreshed or
-repaired while healing a previously-observed channel — not only the base
-archive. It removes only each archive's `__uploads/` — never `slackdump.sqlite`
-or its `-wal`/`-shm` sidecars — and reports the reclaimed byte count as **stderr**
-evidence (`[onDurableCommit] ...`), not a `PROGRESS` line: by the time this hook
-runs, the runtime has already consumed the run's `DONE` and would reject any
-further stdout JSONL as a protocol violation.
+failed run). It reclaims **every archive this run actually created or read** —
+the base archive, any scoped archive folded into this run's message pass, and
+any repair attempt that successfully created/read an archive even when it
+recovered no matching channel — not only the base archive and not only archives
+that turned out useful. It removes only each archive's `__uploads/` — never
+`slackdump.sqlite` or its `-wal`/`-shm` sidecars — and reports the reclaimed
+byte count as **stderr** evidence (`[onDurableCommit] ...`), not a `PROGRESS`
+line: by the time this hook runs, the runtime has already consumed the run's
+`DONE` and would reject any further stdout JSONL as a protocol violation.
 
 This is **one-way and unrecoverable**:
 

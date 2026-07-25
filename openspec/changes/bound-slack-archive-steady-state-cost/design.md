@@ -120,6 +120,68 @@ do **not** make reclaim automatic even under `SKIP_FILES=true`, because an
 operator may have intentionally set `SKIP_FILES=false` to retain bytes locally,
 and a connector must not silently destroy operator data.
 
+### D4 — Live-closure follow-up: reclaim must cover every archive read, and
+`scoped-archive-reconcile` must state an actual finite bound, not just elapsed
+time (2026-07-25)
+
+Live UAT surfaced two gaps D2/D3 did not cover, closed here without expanding
+D1–D3's scope.
+
+**D4.1 — Reclaim coverage.** `reconcileMessageSourceCache` (source-cache
+healing for a channel that disappeared from the main archive but was
+previously observed) can create/read a *scoped* archive
+(`archive-scoped/<digest>/`) distinct from the base archive D3 already
+covered — including a repair attempt that succeeds (the archive genuinely
+exists on disk, `__uploads/` and all) but recovers zero matching channels. The
+reclaim plan must include every archive path this run actually created or
+read, not only the base archive and not only archives that turned out to
+contain a useful channel. `repairMissingScopedArchive` now reports its
+archive path unconditionally on success, independent of whether it recovered
+a channel; the reclaim plan is the deduplicated union of the base archive,
+every scoped archive folded into the message pass, and every repair archive
+path touched this run.
+
+**D4.2 — What "bounded" actually means for `scoped-archive-reconcile`.**
+Wrapping the phase in a wall-clock timer (D2's `timedPhase`) makes its
+*duration* visible but is not itself a bound — it says nothing about how much
+work the phase *could* do. The real bound was already present in the existing
+design, just not stated or observable:
+
+- The set of channels this run will try to heal
+  (`baseMissingChannelIds` = `priorObservedChannelIds` minus this run's own
+  `baseChannelIds`) is computed once, up front, from two already-fixed inputs
+  — a committed STATE array and this run's own archive scan. It cannot grow
+  mid-run; there is no re-query of Slack for "more missing channels" within a
+  single `collect()` call.
+- `selectScopedArchivesForChannels` greedily covers that fixed set with
+  existing scoped archives (one `resume` per selected archive, iterated
+  exactly once, no re-selection). Whatever channels remain uncovered trigger
+  **at most one** additional repair attempt (`repairMissingScopedArchive`),
+  never a loop.
+- So the number of Slack-API-touching subprocess calls this phase can make —
+  the "repair-unit count" — is knowable and finite *before any subprocess
+  runs*, from data already in memory.
+- Each unit's own Slack-side scope is independently bounded by
+  `SLACK_LOOKBACK_DAYS` (`-lookback p<N>d`, default `p7d`, already existing
+  before this closure) — slackdump's `resume` will not walk further back than
+  that window per channel.
+
+The fix is making this existing, already-finite structure legible: report the
+repair-unit count and the lookback window before any subprocess starts, a
+completed/remaining cursor as each unit finishes, and an explicit
+`0 remaining` at the end. No wall-clock deadline or arbitrary kill switch was
+added — none is needed, since the work-unit count and per-unit lookback are
+already authoritative bounds; a deadline would only add an unmotivated
+failure mode on top of a bound that already exists.
+
+**What this does NOT claim:** the wall-clock duration of a single repair unit
+(the ~58 minutes observed live) is not itself bounded by this fix — it is
+genuine Slack-API-side backlog catch-up within the fixed `p7d` window, subject
+to Slack's own rate limits, and can legitimately vary run to run. The
+guarantee is narrower and precise: the *number of repair units and their
+lookback scope* are finite, known before execution, and observable — not that
+any specific elapsed-time figure is capped.
+
 ## Rejected alternatives
 
 - **Drain `slackdump.sqlite` (or old rows) after PDPP accepts records.**
@@ -168,8 +230,12 @@ and a connector must not silently destroy operator data.
   off by default; if `__uploads/` is reclaimed and bytes are later needed, the
   documented recovery is a fresh `archive` run with `SKIP_FILES=false` (not
   `resume`, which would skip via DB dedup).
-- Bounded steady-state disk + run time — D1 bounds run time to new data; D3 +
-  default `SKIP_FILES=true` bounds disk to the SQLite.
+- Bounded steady-state disk + run time — D1 bounds the message-read query to
+  new data; D3 + default `SKIP_FILES=true` bounds disk to the SQLite; D4
+  bounds `scoped-archive-reconcile`'s repair-unit count and per-unit lookback
+  scope (known and reported before any subprocess runs) — NOT the wall-clock
+  duration of an individual unit, which is genuine Slack-API-side backlog
+  catch-up within that bounded lookback window and can vary run to run.
 - No dependence on private live payloads in tests — all tests seed synthetic
   in-memory SQLite archives (existing harness pattern).
 - Existing connection upgrades safely — no manifest-breaking change; new option
@@ -186,3 +252,12 @@ and a connector must not silently destroy operator data.
 - **One-time reclaim decision.** Whether to run `SLACK_RECLAIM_UPLOADS=1` once
   on the live host to reclaim the 29 GB is an operator judgment (accepts the
   documented byte loss). Not performed by this change.
+- **D4 live UAT.** Confirm on the real workspace that
+  `scoped-archive-reconcile`'s `selected N repair unit(s) ... lookback=p<N>d`
+  / `completed C/N` / `finished: C/N ... 0 remaining` progress lines appear
+  whenever channel healing runs, and that `SLACK_RECLAIM_UPLOADS=1` now
+  reclaims every archive path reported (base + scoped + any empty-repair
+  archive) rather than failing `connector_protocol_violation`. Cannot be
+  verified here without the live archive/credentials — synthetic subprocess
+  tests cover the mechanism (`archive-reclaim.test.ts`) but not the real
+  Slack-API-side duration of a live repair unit.

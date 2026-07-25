@@ -359,6 +359,171 @@ test("SLACK_RECLAIM_UPLOADS=1 reclaims __uploads/ in every archive the run actua
   }
 });
 
+test("SLACK_RECLAIM_UPLOADS=1 reclaims a repair archive that was successfully created/read but recovered no matching channel", async () => {
+  // repairMissingScopedArchive can succeed (ensureArchiveOnDisk does not
+  // throw — the archive genuinely exists on disk) while readArchiveChannelIds
+  // finds no row matching the requested missing channel. Before this fix,
+  // that path returned null from repairMissingScopedArchive and the archive
+  // was silently excluded from reclaimPlan even though this run created/read
+  // real bytes (including __uploads/) at that path. C0MISSING has NO existing
+  // scoped archive covering it, so selectScopedArchivesForChannels returns []
+  // and the repair attempt is forced; the pre-seeded repair-target archive
+  // only contains an unrelated channel, so the repair "succeeds" but recovers
+  // nothing.
+  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-reclaim-empty-repair-"));
+  try {
+    const workspace = "reclaim-empty-repair-ws";
+    const baseArchiveDir = join(homeDir, ".pdpp", "slackdump", workspace, "archive");
+    const repairArchiveDir = join(
+      homeDir,
+      ".pdpp",
+      "slackdump",
+      workspace,
+      "archive-scoped",
+      scopedArchiveDigest(["C0MISSING"])
+    );
+    await mkdir(baseArchiveDir, { recursive: true });
+    await mkdir(repairArchiveDir, { recursive: true });
+
+    const baseDb = new DatabaseSync(join(baseArchiveDir, "slackdump.sqlite"));
+    try {
+      seedArchiveSchema(baseDb);
+      insertChannel(baseDb, "C0PRESENT", "present");
+      insertMessage(baseDb, "C0PRESENT", "1714032849.123456", "still present");
+    } finally {
+      baseDb.close();
+    }
+    // Repair target exists (so ensureArchiveOnDisk succeeds under
+    // PDPP_SLACK_SKIP_SLACKDUMP=1) but has no row for C0MISSING — an
+    // unrelated channel only, modeling a repair that genuinely ran and read
+    // real bytes but did not recover the channel it was attempting to heal.
+    const repairDb = new DatabaseSync(join(repairArchiveDir, "slackdump.sqlite"));
+    try {
+      seedArchiveSchema(repairDb);
+      insertChannel(repairDb, "C_UNRELATED", "unrelated");
+    } finally {
+      repairDb.close();
+    }
+    await seedUploads(baseArchiveDir, "F_BASE", 4096);
+    await seedUploads(repairArchiveDir, "F_REPAIR_EMPTY", 1024);
+
+    const result = await runConnectorProtocolSubprocess({
+      cwd: PACKAGE_ROOT,
+      entrypoint: SLACK_ENTRYPOINT,
+      env: {
+        HOME: homeDir,
+        PDPP_SLACK_SKIP_SLACKDUMP: "1",
+        SLACK_COOKIE: "d=fake",
+        SLACK_RECLAIM_UPLOADS: "1",
+        SLACK_TOKEN: "xoxc-fake",
+        SLACK_WORKSPACE: workspace,
+      },
+      start: {
+        type: "START",
+        scope: { streams: [{ name: "messages" }] },
+        state: {
+          messages: {
+            last_ts: "1714032800.000000",
+            channel_last_ts: { C0MISSING: "1714032800.000000", C0PRESENT: "1714032800.000000" },
+            observed_channel_ids: ["C0MISSING", "C0PRESENT"],
+          },
+        },
+      },
+    });
+
+    const done = result.messages.findLast((m): m is Extract<EmittedMessage, { type: "DONE" }> => m.type === "DONE");
+    assert.equal(done?.status, "succeeded", "run succeeded even though the repair recovered no channel");
+    // The missing-channel diagnostic still fires (repair genuinely failed to
+    // heal C0MISSING) — this test is about reclaim coverage, not suppressing
+    // that honest signal.
+    assert.ok(
+      result.messages.some((m) => m.type === "SKIP_RESULT" && m.reason === "source_partition_missing"),
+      "C0MISSING is still reported missing (repair did not recover it)"
+    );
+    assert.ok(!existsSync(join(baseArchiveDir, "__uploads")), "base archive __uploads/ reclaimed");
+    assert.ok(
+      !existsSync(join(repairArchiveDir, "__uploads")),
+      "empty-repair archive __uploads/ ALSO reclaimed, despite recovering no matching channel"
+    );
+    assert.ok(existsSync(join(baseArchiveDir, "slackdump.sqlite")), "base sqlite untouched");
+    assert.ok(existsSync(join(repairArchiveDir, "slackdump.sqlite")), "empty-repair sqlite untouched");
+    assert.ok(
+      result.stderr.includes(repairArchiveDir) && result.stderr.includes("reclaimed 1024B"),
+      "reports the empty-repair archive's reclaimed bytes"
+    );
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("SLACK_RECLAIM_UPLOADS=1 does NOT reclaim a repair archive when the repair attempt itself fails before durable", async () => {
+  // Preserves the failed-before-durable invariant for the empty-repair path
+  // specifically: if ensureArchiveOnDisk throws (no archive at the repair
+  // target and PDPP_SLACK_SKIP_SLACKDUMP=1), repairMissingScopedArchive
+  // returns archivePath: null and nothing is added to the reclaim plan for
+  // that path — there is nothing durable to reclaim, and the overall run
+  // still succeeds (the repair failure is caught and reported as a
+  // progress line, not a fatal error) since C0MISSING was already
+  // optional-diagnostic, not required.
+  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-reclaim-repair-fail-"));
+  try {
+    const workspace = "reclaim-repair-fail-ws";
+    const baseArchiveDir = join(homeDir, ".pdpp", "slackdump", workspace, "archive");
+    await mkdir(baseArchiveDir, { recursive: true });
+    const baseDb = new DatabaseSync(join(baseArchiveDir, "slackdump.sqlite"));
+    try {
+      seedArchiveSchema(baseDb);
+      insertChannel(baseDb, "C0PRESENT", "present");
+      insertMessage(baseDb, "C0PRESENT", "1714032849.123456", "still present");
+    } finally {
+      baseDb.close();
+    }
+    await seedUploads(baseArchiveDir, "F_BASE", 4096);
+    // Deliberately do NOT create archive-scoped/<digest(["C0MISSING"])>/ — with
+    // PDPP_SLACK_SKIP_SLACKDUMP=1 and no archive on disk, ensureArchiveOnDisk
+    // throws for the repair attempt.
+
+    const result = await runConnectorProtocolSubprocess({
+      cwd: PACKAGE_ROOT,
+      entrypoint: SLACK_ENTRYPOINT,
+      env: {
+        HOME: homeDir,
+        PDPP_SLACK_SKIP_SLACKDUMP: "1",
+        SLACK_COOKIE: "d=fake",
+        SLACK_RECLAIM_UPLOADS: "1",
+        SLACK_TOKEN: "xoxc-fake",
+        SLACK_WORKSPACE: workspace,
+      },
+      start: {
+        type: "START",
+        scope: { streams: [{ name: "messages" }] },
+        state: {
+          messages: {
+            last_ts: "1714032800.000000",
+            channel_last_ts: { C0MISSING: "1714032800.000000", C0PRESENT: "1714032800.000000" },
+            observed_channel_ids: ["C0MISSING", "C0PRESENT"],
+          },
+        },
+      },
+    });
+
+    const done = result.messages.findLast((m): m is Extract<EmittedMessage, { type: "DONE" }> => m.type === "DONE");
+    assert.equal(done?.status, "succeeded", "run still succeeds; the failed repair attempt is non-fatal");
+    assert.ok(!existsSync(join(baseArchiveDir, "__uploads")), "base archive __uploads/ still reclaimed");
+    const repairArchiveDir = join(
+      homeDir,
+      ".pdpp",
+      "slackdump",
+      workspace,
+      "archive-scoped",
+      scopedArchiveDigest(["C0MISSING"])
+    );
+    assert.ok(!existsSync(repairArchiveDir), "failed repair attempt created no archive directory to reclaim");
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("scoped-archive-reconcile phase timing is reported when source-cache healing runs", async () => {
   // Before this fix, reconcileMessageSourceCache's own slackdump subprocess
   // calls (one per healed scoped archive) ran between the
@@ -424,6 +589,85 @@ test("scoped-archive-reconcile phase timing is reported when source-cache healin
     assert.ok(
       lines.some((l) => l.includes("phase timing: scoped-archive-reconcile")),
       "reports scoped-archive-reconcile phase timing when healing runs"
+    );
+    // Elapsed-time phase timing alone is not a semantic bound — it says how
+    // long the phase took, not how much work it could possibly do. The
+    // following assert the actual finite bound: the repair-unit count is
+    // stated BEFORE any subprocess runs (so it is a real upper bound on this
+    // run's reconciliation work, not a post-hoc tally), a completed/remaining
+    // cursor advances per unit, and the phase declares itself finished with 0
+    // remaining. One scoped archive covers C0MISSING here, so no repair
+    // attempt is needed: exactly 1 repair unit selected, 1 completed.
+    assert.ok(
+      lines.some((l) => /selected 1 repair unit\(s\)/.test(l) && l.includes("1 existing scoped archive refresh(es)")),
+      "declares the exact repair-unit count before any subprocess runs"
+    );
+    assert.ok(
+      lines.some((l) => l.includes("lookback=p7d")),
+      "declares the per-unit finite lookback bound (SLACK_LOOKBACK_DAYS, default 7)"
+    );
+    assert.ok(
+      lines.some((l) => l.includes("completed 1/1 repair unit(s)")),
+      "reports a completed/remaining cursor advancing per repair unit"
+    );
+    assert.ok(
+      lines.some((l) => l.includes("finished: 1/1 repair unit(s) completed, 0 remaining")),
+      "declares the phase finished with 0 remaining — a single run cannot leave an open-ended backlog"
+    );
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("scoped-archive-reconcile declares 0 selected repair units and does no work when there is nothing to heal", async () => {
+  // The bound must also be honest in the common case: no missing channel
+  // means 0 repair units selected and 0 subprocess calls, not a phase that
+  // silently runs "just in case".
+  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-reconcile-none-"));
+  try {
+    const workspace = "reconcile-none-ws";
+    const baseArchiveDir = join(homeDir, ".pdpp", "slackdump", workspace, "archive");
+    await mkdir(baseArchiveDir, { recursive: true });
+    const baseDb = new DatabaseSync(join(baseArchiveDir, "slackdump.sqlite"));
+    try {
+      seedArchiveSchema(baseDb);
+      insertChannel(baseDb, "C1", "present");
+      insertMessage(baseDb, "C1", "1714032849.123456", "hi");
+    } finally {
+      baseDb.close();
+    }
+
+    const result = await runConnectorProtocolSubprocess({
+      cwd: PACKAGE_ROOT,
+      entrypoint: SLACK_ENTRYPOINT,
+      env: {
+        HOME: homeDir,
+        PDPP_SLACK_SKIP_SLACKDUMP: "1",
+        SLACK_COOKIE: "d=fake",
+        SLACK_TOKEN: "xoxc-fake",
+        SLACK_WORKSPACE: workspace,
+      },
+      start: {
+        type: "START",
+        scope: { streams: [{ name: "messages" }] },
+        state: {
+          messages: {
+            last_ts: "1714032800.000000",
+            channel_last_ts: { C1: "1714032800.000000" },
+            observed_channel_ids: ["C1"],
+          },
+        },
+      },
+    });
+
+    const lines = progressLines(result.messages);
+    assert.ok(
+      lines.some((l) => /selected 0 repair unit\(s\)/.test(l)),
+      "declares 0 repair units selected when no channel is missing"
+    );
+    assert.ok(
+      lines.some((l) => l.includes("finished: 0/0 repair unit(s) completed, 0 remaining")),
+      "finishes immediately with 0/0, proving no unbounded work was attempted"
     );
   } finally {
     await rm(homeDir, { recursive: true, force: true });
