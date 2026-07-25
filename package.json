@@ -45,7 +45,7 @@
     "stream:parity:calibrate": "node --import tsx scripts/stream-playground-parity-calibration.ts",
     "agent-skill:check": "node --import tsx scripts/sync-agent-skill.ts --check",
     "agent-skill:sync": "node --import tsx scripts/sync-agent-skill.ts --write",
-    "agent-skill:boundary-check": "node --test scripts/agent-skill-boundary.test.mjs",
+    "agent-skill:boundary-check": "node --test --import tsx scripts/agent-skill-boundary.test.ts",
     "biome:selection": "node --import tsx scripts/check-biome-file-selection.ts",
     "spec:check": "node --import tsx scripts/spec-check.ts",
     "openspec:archive-check": "node --import tsx scripts/openspec-archive-check.ts",
