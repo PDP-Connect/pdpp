@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { buildRecordContentLadder } from '../src/index.js';
+import { buildRecordContentLadder } from '../src/index.ts';
 
 test('buildRecordContentLadder omits operational fields from evidence projections', () => {
   const ladder = buildRecordContentLadder({

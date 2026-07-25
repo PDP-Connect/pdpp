@@ -13,7 +13,7 @@ import {
   extractRecordRows,
   stableInlineJson,
   summarizeRecordEvidence,
-} from '../src/index.js';
+} from '../src/index.ts';
 
 test('summarizeRecordEvidence is bounded and exposes continuation facts', () => {
   const text = summarizeRecordEvidence(

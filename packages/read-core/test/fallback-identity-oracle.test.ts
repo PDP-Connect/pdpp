@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { buildRecordContentLadder } from '../src/index.js';
+import { buildRecordContentLadder } from '../src/index.ts';
 
 test('buildRecordContentLadder preserves fallback identity for projected records', () => {
   const ladder = buildRecordContentLadder(
