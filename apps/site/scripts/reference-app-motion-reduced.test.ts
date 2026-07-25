@@ -31,6 +31,18 @@ import { fileURLToPath } from "node:url";
 const COMPONENT_PATH = new URL("../src/components/reference-app.tsx", import.meta.url);
 const BRAND_BASE_PATH = new URL("../../../packages/pdpp-brand/base.css", import.meta.url);
 
+const MATCH_MEDIA_REDUCED_MOTION_RE = /matchMedia\(\s*["']\(prefers-reduced-motion: reduce\)["']\s*\)/;
+const REDUCED_JUMPS_TO_RESULT_RE = /prefersReduced\.current[\s\S]*?setPhase\(\s*["']result["']\s*\)/;
+const REDUCED_DURATION_ZEROES_RE = /reduced\s*\?\s*0\s*:\s*PROJECTION_DURATION_MS/;
+const REDUCED_STAGGER_ZEROES_RE = /reduced\s*\?\s*0\s*:\s*PROJECTION_STAGGER_MS/;
+const PROJECTION_DURATION_CONST_RE = /const PROJECTION_DURATION_MS\s*=\s*(\d+)/;
+const PROJECTION_EASE_CONST_RE = /const PROJECTION_EASE\s*=\s*["']var\(--ease-enter\)["']/;
+const SPRING_OR_BOUNCE_CURVE_RE = /ease-spring|cubic-bezier\([^)]*1\.\d/;
+const PROTOCOL_ACCENT_TOKEN_RE = /var\(--authorship-protocol-accent\)/;
+const HARDCODED_COLOR_LITERAL_RE = /oklch\(|rgba?\(|#[0-9a-fA-F]{3,8}\b/;
+const REDUCED_MOTION_ZEROES_DURATION_BASE_RE =
+  /@media \(prefers-reduced-motion: reduce\)[\s\S]*?--duration-base:\s*0\.01ms/;
+
 // biome-ignore lint/suspicious/useAwait: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
 async function readComponent() {
   return readFile(fileURLToPath(COMPONENT_PATH), "utf8");
@@ -44,8 +56,7 @@ test("field-projection set-piece detects prefers-reduced-motion", async () => {
   const projectionSrc = src.slice(projectionStart, projectionStart + 4000);
   assert.match(
     projectionSrc,
-    // biome-ignore lint/performance/useTopLevelRegex: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
-    /matchMedia\(\s*["']\(prefers-reduced-motion: reduce\)["']\s*\)/,
+    MATCH_MEDIA_REDUCED_MOTION_RE,
     "FieldProjection must query (prefers-reduced-motion: reduce)"
   );
 });
@@ -59,8 +70,7 @@ test("reduced motion renders the static final state, no choreography", async () 
   // the projected "result" phase.
   assert.match(
     projectionSrc,
-    // biome-ignore lint/performance/useTopLevelRegex: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
-    /prefersReduced\.current[\s\S]*?setPhase\(\s*["']result["']\s*\)/,
+    REDUCED_JUMPS_TO_RESULT_RE,
     "reduced-motion path must jump straight to the final projected (result) state"
   );
 
@@ -68,45 +78,28 @@ test("reduced motion renders the static final state, no choreography", async () 
   // an instant cut rather than a tween.
   assert.match(
     projectionSrc,
-    // biome-ignore lint/performance/useTopLevelRegex: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
-    /reduced\s*\?\s*0\s*:\s*PROJECTION_DURATION_MS/,
+    REDUCED_DURATION_ZEROES_RE,
     "reduced-motion duration must collapse to 0ms (static final state)"
   );
-  assert.match(
-    projectionSrc,
-    // biome-ignore lint/performance/useTopLevelRegex: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
-    /reduced\s*\?\s*0\s*:\s*PROJECTION_STAGGER_MS/,
-    "reduced-motion stagger must collapse to 0ms"
-  );
+  assert.match(projectionSrc, REDUCED_STAGGER_ZEROES_RE, "reduced-motion stagger must collapse to 0ms");
 });
 
 test("set-piece timing stays within the restrained 150–250ms ease-out vocabulary", async () => {
   const src = await readComponent();
 
   // The set-piece duration constant must sit inside the decision-5 envelope.
-  // biome-ignore lint/performance/useTopLevelRegex: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
-  const durMatch = src.match(/const PROJECTION_DURATION_MS\s*=\s*(\d+)/);
+  const durMatch = src.match(PROJECTION_DURATION_CONST_RE);
   assert.ok(durMatch, "PROJECTION_DURATION_MS constant must be declared");
   const dur = Number(durMatch[1]);
   assert.ok(dur >= 150 && dur <= 250, `set-piece duration ${dur}ms must be within 150–250ms`);
 
   // Ease-out, no spring/bounce: the set-piece uses the ease-enter (ease-out)
   // token, never a spring curve.
-  assert.match(
-    src,
-    // biome-ignore lint/performance/useTopLevelRegex: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
-    /const PROJECTION_EASE\s*=\s*["']var\(--ease-enter\)["']/,
-    "set-piece must use the ease-out (--ease-enter) token"
-  );
+  assert.match(src, PROJECTION_EASE_CONST_RE, "set-piece must use the ease-out (--ease-enter) token");
   const projectionStart = src.indexOf("function FieldProjection");
   const projectionEnd = src.indexOf("function IncrementalSync");
   const projectionSrc = src.slice(projectionStart, projectionEnd);
-  assert.doesNotMatch(
-    projectionSrc,
-    // biome-ignore lint/performance/useTopLevelRegex: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
-    /ease-spring|cubic-bezier\([^)]*1\.\d/,
-    "set-piece must not use a spring/bounce curve"
-  );
+  assert.doesNotMatch(projectionSrc, SPRING_OR_BOUNCE_CURVE_RE, "set-piece must not use a spring/bounce curve");
 });
 
 test("grant filter reads as a protocol fact via authorship tokens, no literals", async () => {
@@ -117,27 +110,16 @@ test("grant filter reads as a protocol fact via authorship tokens, no literals",
 
   assert.match(
     projectionSrc,
-    // biome-ignore lint/performance/useTopLevelRegex: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
-    /var\(--authorship-protocol-accent\)/,
+    PROTOCOL_ACCENT_TOKEN_RE,
     "the grant filter line must use the protocol authorship accent token"
   );
   // No raw oklch/rgba/hex colour literals anywhere in the set-piece.
-  assert.doesNotMatch(
-    projectionSrc,
-    // biome-ignore lint/performance/useTopLevelRegex: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
-    /oklch\(|rgba?\(|#[0-9a-fA-F]{3,8}\b/,
-    "set-piece must not hardcode colour literals"
-  );
+  assert.doesNotMatch(projectionSrc, HARDCODED_COLOR_LITERAL_RE, "set-piece must not hardcode colour literals");
 });
 
 test("brand base.css zeroes durations under prefers-reduced-motion", async () => {
   const src = await readFile(fileURLToPath(BRAND_BASE_PATH), "utf8");
   // The reduced-motion media query must collapse --duration-base (which the
   // --motion-projection token and the set-piece both build on).
-  assert.match(
-    src,
-    // biome-ignore lint/performance/useTopLevelRegex: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
-    /@media \(prefers-reduced-motion: reduce\)[\s\S]*?--duration-base:\s*0\.01ms/,
-    "base.css must zero --duration-base under reduced motion"
-  );
+  assert.match(src, REDUCED_MOTION_ZEROES_DURATION_BASE_RE, "base.css must zero --duration-base under reduced motion");
 });

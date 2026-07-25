@@ -20,17 +20,16 @@ import { fileURLToPath } from "node:url";
 
 const PAGE_PATH = new URL("../src/app/reference/page.tsx", import.meta.url);
 
+// Match JSX attribute patterns like value="http://localhost:..." or
+// href="http://localhost:..." but not string-fallback defaults in code like
+// ?? "localhost:3002" (which is legitimate for local dev).
+const JSX_HARDCODED_LOCALHOST_RE = /(?:value|href|src)="https?:\/\/localhost(?::\d+)?[^"]*"/;
+
 test("reference page has no hardcoded localhost URL as a JSX attribute value", async () => {
   const src = await readFile(fileURLToPath(PAGE_PATH), "utf8");
 
-  // Match JSX attribute patterns like value="http://localhost:..." or
-  // href="http://localhost:..." but not string-fallback defaults in code like
-  // ?? "localhost:3002" (which is legitimate for local dev).
-  // biome-ignore lint/performance/useTopLevelRegex: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
-  const jsxLiteralPattern = /(?:value|href|src)="https?:\/\/localhost(?::\d+)?[^"]*"/;
-
   assert.ok(
-    !jsxLiteralPattern.test(src),
+    !JSX_HARDCODED_LOCALHOST_RE.test(src),
     "reference/page.tsx must not contain a hardcoded localhost URL as a JSX attribute value (use providerUrl from getRequestOrigin() instead)"
   );
 });

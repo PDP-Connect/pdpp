@@ -11,6 +11,8 @@ interface RedirectRule {
   source: string;
 }
 
+const TRAILING_SLASH_RE = /\/$/;
+
 function matchRule(rule: RedirectRule, pathname: string): string | null {
   const { source, destination } = rule;
 
@@ -21,8 +23,7 @@ function matchRule(rule: RedirectRule, pathname: string): string | null {
     }
     if (pathname.startsWith(`${prefix}/`)) {
       const rest = pathname.slice(prefix.length + 1);
-      // biome-ignore lint/performance/useTopLevelRegex: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-      return destination.replace(":rest*", rest).replace(/\/$/, "") || "/";
+      return destination.replace(":rest*", rest).replace(TRAILING_SLASH_RE, "") || "/";
     }
     return null;
   }
