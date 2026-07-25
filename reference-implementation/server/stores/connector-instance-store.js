@@ -280,6 +280,21 @@ function assertIdentityNotTombstoned(tombstone, normalized) {
   );
 }
 
+// Test-only, opt-in delay between the Postgres upsert's tombstone check and
+// its INSERT — the exact window a delete/upsert TOCTOU race must widen to be
+// deterministically reproducible rather than a timing-luck flake. A complete
+// no-op unless PDPP_TEST_UPSERT_TOMBSTONE_CHECK_DELAY_MS is set to a positive
+// integer (never set in production). See
+// test/connector-instance-delete-upsert-two-process-race.test.js.
+async function testOnlyUpsertTombstoneCheckDelay() {
+  const raw = process.env.PDPP_TEST_UPSERT_TOMBSTONE_CHECK_DELAY_MS;
+  const ms = raw ? Number.parseInt(raw, 10) : 0;
+  if (!Number.isFinite(ms) || ms <= 0) {
+    return;
+  }
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function resolveSingleActive(rows, ownerSubjectId, connectorId) {
   if (rows.length === 0) {
     throw new ConnectorInstanceResolutionError(
@@ -828,6 +843,16 @@ export function createSqliteConnectorInstanceStore() {
     withConnectorInstanceWrite(connectorInstanceId, () =>
       deleteConnectionUncoordinated.call(store, connectorInstanceId, options),
     );
+  // `upsert` is NOT wrapped in write coordination here: better-sqlite3 is
+  // synchronous and single-connection per process, so there is no genuine
+  // multi-process race to close on this backend (unlike Postgres — see the
+  // Postgres arm's `upsert` wrap and its rationale). Wrapping this
+  // synchronous method in the async coordinator would silently change its
+  // sync-\>async calling contract for every existing caller. The tombstone
+  // guard inside `upsert` itself (see `assertIdentityNotTombstoned` above)
+  // is already sufficient here: a single-process, single-connection SQLite
+  // handle can never interleave the tombstone check and the INSERT with a
+  // concurrent delete on a DIFFERENT connection.
   return store;
 }
 
@@ -918,6 +943,10 @@ export function createPostgresConnectorInstanceStore() {
           normalized,
         );
       }
+      // Test-only, opt-in — widens the tombstone-check-to-INSERT window so a
+      // genuine two-process race is deterministically reproducible. No-op in
+      // production.
+      await testOnlyUpsertTombstoneCheckDelay();
       try {
         await postgresQuery(
           `INSERT INTO connector_instances(connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at)
@@ -1258,6 +1287,26 @@ export function createPostgresConnectorInstanceStore() {
   store.deleteConnection = (connectorInstanceId, options) =>
     withConnectorInstanceWrite(connectorInstanceId, () =>
       deleteConnectionUncoordinated.call(store, connectorInstanceId, options),
+    );
+  // Close the delete/upsert TOCTOU: without this, a concurrent delete and
+  // upsert for the SAME identity could interleave between the tombstone
+  // check and the INSERT (the tombstone commits after upsert already read
+  // "no tombstone"), resurrecting the connection despite the guard above.
+  // Coordinated on the SAME deterministic connector_instance_id
+  // `deleteConnection` uses, so a delete and an upsert for the same
+  // identity always serialize through the one per-identity gate.
+  // `withConnectorInstanceWrite`'s Postgres path acquires a REAL
+  // `pg_try_advisory_lock` (postgresCoordinationEnabled() /
+  // acquirePostgresAdvisoryLock in connector-instance-write-coordinator.ts)
+  // -- exclusion enforced by the Postgres server across connections and
+  // processes, not merely the coordinator's in-process mutex. Proven by a
+  // genuine two-OS-process discriminator, not just concurrent async calls
+  // in one process: test/connector-instance-delete-upsert-two-process-race.test.js.
+  // See openspec/changes/fix-owner-delete-resurrection.
+  const upsertUncoordinated = store.upsert;
+  store.upsert = (record) =>
+    withConnectorInstanceWrite(normalizeRecord(record).connectorInstanceId, () =>
+      upsertUncoordinated.call(store, record),
     );
   return store;
 }

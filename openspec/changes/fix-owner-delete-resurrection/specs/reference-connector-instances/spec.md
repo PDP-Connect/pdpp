@@ -50,6 +50,22 @@ Connection delete SHALL execute as a single all-or-nothing transaction, SHALL re
 - **THEN** the tombstone SHALL still be present and SHALL still block silent resurrection
 - **AND** no boot-time reconciliation, manifest registration, or scheduled sweep SHALL consult, clear, or bypass the tombstone
 
+#### Scenario: The startup local-device migration sweep does not resurrect a deleted connection on a bare restart
+
+- **GIVEN** a device-collected connection was owner-deleted through the normal delete cascade — its `connector_instances` row removed, a tombstone recorded, and its `device_source_instances` back-reference row left intact except for `connector_instance_id` being cleared (the delete cascade's documented behavior: `connector_id`, `local_binding_id`, `device_id`, and `source_instance_id` remain populated, matching what a real enrolled device leaves behind)
+- **WHEN** the reference process restarts — a bare process restart with NO re-enrollment, NO HTTP call, and NO owner action of any kind — and its boot sequence runs the unconditional local-device connector-instance reconciliation sweep (`migrateLocalDeviceConnectorInstances` on SQLite, `migratePostgresLocalDeviceConnectorInstances` on Postgres) that scans `device_source_instances` and re-upserts a `connector_instances` row for every matching device-source row it finds
+- **THEN** the sweep SHALL consult the tombstone table for the row's computed identity BEFORE materializing a new `connector_instances` row on the no-existing-row path
+- **AND** the sweep SHALL skip (not resurrect, not throw — this is unattended background reconciliation, not an owner-facing request) any row whose identity is tombstoned
+- **AND** this SHALL hold across repeated restarts, not merely the first one after the delete
+
+#### Scenario: A concurrent delete and upsert for the same identity never produce a resurrected row (Postgres)
+
+- **GIVEN** a device-collected connection exists and is targeted by two genuinely concurrent operations on separate Postgres connections/processes: an owner delete of the connection, and an upsert for the SAME identity (e.g. a racing startup-migration sweep or device re-enrollment)
+- **WHEN** the two operations race such that, absent coordination, the upsert's tombstone check could observe "no tombstone yet" before the delete's tombstone write commits, and the upsert's INSERT could land after the delete's row removal commits
+- **THEN** the reference SHALL serialize the two operations through a single per-identity coordination mechanism enforced across connections and processes (a real Postgres advisory lock, not an in-process-only mechanism)
+- **AND** the final durable state SHALL NEVER be a live active row for the deleted identity, regardless of which operation the OS/database schedules first
+- **AND** this guarantee SHALL be demonstrated by a genuine two-OS-process test, not merely two concurrent async calls within one process
+
 #### Scenario: A distinct new binding is unaffected by an unrelated tombstone
 
 - **WHEN** the owner deletes one device-collected connection (binding key A) and later enrolls a genuinely new binding (binding key B, e.g. a different `local_binding_name`) for the same owner and connector

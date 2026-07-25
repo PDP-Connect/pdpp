@@ -23,6 +23,10 @@ import Database from 'better-sqlite3';
 import { createHash } from 'node:crypto';
 import * as sqliteVec from 'sqlite-vec';
 import { canonicalConnectorKey } from './connector-key.js';
+import {
+  makeConnectorInstanceId as canonicalConnectorInstanceId,
+  makeConnectorInstanceSourceBindingKey as canonicalSourceBindingKey,
+} from './connector-instance-utils.ts';
 
 const DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 30_000;
 const LEGACY_SYNC_STATE_OWNER_SUBJECT_ID = 'owner_local';
@@ -1965,14 +1969,6 @@ function hashKey(value) {
   return createHash('sha256').update(value).digest('hex');
 }
 
-function sourceBindingKey(sourceBinding) {
-  return hashKey(stableJson(sourceBinding ?? {}));
-}
-
-function connectorInstanceId(ownerSubjectId, connectorId, sourceKind, bindingKey) {
-  return `cin_${hashKey(`${ownerSubjectId}\n${connectorId}\n${sourceKind}\n${bindingKey}`).slice(0, 24)}`;
-}
-
 function localDeviceConnectorId(connectorId) {
   return `local-device:${encodeURIComponent(connectorId)}`;
 }
@@ -2210,6 +2206,24 @@ function migrateLocalDeviceConnectorInstances(raw, opts = {}) {
           AND source_binding_key = ?
         LIMIT 1`
     );
+    // Durability guard: this sweep runs on EVERY boot (not a one-time
+    // upgrade — the top-of-function gate only checks that today's columns
+    // exist), re-upserting a connector_instances row for every
+    // device_source_instances row it finds. Owner delete clears
+    // device_source_instances.connector_instance_id but leaves connector_id/
+    // local_binding_id populated, so without this check a plain process
+    // restart alone -- no re-enrollment, no HTTP call -- would silently
+    // resurrect a deleted connection the next time this sweep runs. See
+    // openspec/changes/fix-owner-delete-resurrection.
+    const getTombstoneByBinding = raw.prepare(
+      `SELECT connector_instance_id
+         FROM connector_instance_tombstones
+        WHERE owner_subject_id = ?
+          AND connector_id = ?
+          AND source_kind = 'local_device'
+          AND source_binding_key = ?
+        LIMIT 1`
+    );
     const upsertInstance = raw.prepare(
       `INSERT INTO connector_instances(
          connector_instance_id, owner_subject_id, connector_id, display_name, status,
@@ -2245,7 +2259,17 @@ function migrateLocalDeviceConnectorInstances(raw, opts = {}) {
         local_binding_name: row.local_binding_id,
         source_instance_id: row.source_instance_id,
       };
-      const bindingKey = sourceBindingKey(sourceBinding);
+      // The live enrollment path (ref-device-exporters.ts) keys this binding
+      // by {kind, local_binding_name} only -- device_id/source_instance_id
+      // are per-enrollment facts, not part of the binding's identity (a
+      // device reinstall re-pairs the SAME logical binding). Using the
+      // canonical shared derivation (the same one `upsert`/the tombstone
+      // table use) here, rather than hashing the full sourceBinding
+      // (including device_id/source_instance_id), is required for the
+      // tombstone check below to find the SAME identity delete recorded --
+      // and matches the Postgres counterpart of this migration, which
+      // already used the canonical shape.
+      const bindingKey = canonicalSourceBindingKey({ kind: 'local_device', local_binding_name: row.local_binding_id });
       // Relocate legacy `local-device:<id>:<source>` rows to the bare canonical
       // connector key — the same key the live ingest/read paths use — rather
       // than to a still-prefixed `local-device:<id>` form. Connection isolation
@@ -2291,10 +2315,32 @@ function migrateLocalDeviceConnectorInstances(raw, opts = {}) {
           `Cannot migrate local-device source_instance_id '${row.source_instance_id}': existing binding uses connector_instance_id '${existingBindingInstanceId}' but legacy rows use '${legacyInstanceId}'.`
         );
       }
+      // No live row anywhere references this identity (no current, existing-
+      // binding, or legacy-table instance id) -- this is the bare-INSERT
+      // path that a resurrection would take. Check the tombstone BEFORE
+      // computing/using a freshly derived id: an owner-deleted identity
+      // must never be silently re-materialized by this sweep, on this or
+      // any future boot. Mirrors the guard in the store's own `upsert`.
+      if (!currentInstanceId && !existingBindingInstanceId && !legacyInstanceId) {
+        const tombstone = getTombstoneByBinding.get(row.owner_subject_id, connectorKey, bindingKey);
+        if (tombstone) {
+          if (typeof opts.onSchemaMigration === 'function') {
+            opts.onSchemaMigration({
+              name: 'local_device_connector_instances',
+              skippedTombstonedRow: {
+                deviceId: row.device_id,
+                sourceInstanceId: row.source_instance_id,
+                connectorId: connectorKey,
+              },
+            });
+          }
+          continue;
+        }
+      }
       const resolvedInstanceId = currentInstanceId
         || existingBindingInstanceId
         || legacyInstanceId
-        || connectorInstanceId(row.owner_subject_id, connectorKey, 'local_device', bindingKey);
+        || canonicalConnectorInstanceId(row.owner_subject_id, connectorKey, 'local_device', bindingKey);
       const createdAt = row.created_at || now;
       const updatedAt = row.updated_at || now;
       const displayName = row.display_name || row.local_binding_id || row.connector_id;

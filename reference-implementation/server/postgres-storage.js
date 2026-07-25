@@ -3027,6 +3027,33 @@ async function migratePostgresLocalDeviceConnectorInstances(client) {
         throw new Error(`Conflicting legacy local-device rows for ${oldConnectorId}`);
       }
 
+      // Durability guard: this sweep runs on EVERY boot, re-upserting a
+      // connector_instances row for every device_source_instances row it
+      // finds. Owner delete clears connector_instance_id on the
+      // device_source_instances row but leaves connector_id/local_binding_id
+      // populated, so without this check a plain process restart alone --
+      // no re-enrollment, no HTTP call -- would silently resurrect a
+      // deleted connection the next time this sweep runs. Only relevant on
+      // the bare-INSERT path (no live row anywhere references this
+      // identity); mirrors the guard in the store's own `upsert` and the
+      // SQLite counterpart of this migration. See
+      // openspec/changes/fix-owner-delete-resurrection.
+      if (!row.connector_instance_id && !existingBindingInstanceId && !legacyInstanceId) {
+        const tombstone = await client.query(
+          `SELECT connector_instance_id
+             FROM connector_instance_tombstones
+            WHERE owner_subject_id = $1
+              AND connector_id = $2
+              AND source_kind = 'local_device'
+              AND source_binding_key = $3
+            LIMIT 1`,
+          [row.owner_subject_id, connectorKey, sourceBindingKey],
+        );
+        if (tombstone.rows.length > 0) {
+          continue;
+        }
+      }
+
       const connectorInstanceId = row.connector_instance_id
         || existingBindingInstanceId
         || legacyInstanceId
