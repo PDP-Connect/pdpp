@@ -4318,8 +4318,13 @@ function NekoSurface({
           requestId,
           viewport,
         });
-        // biome-ignore lint/performance/noAwaitInLoops: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-        // biome-ignore lint/suspicious/noShadow: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+        // Retry polling: each attempt must observe the outcome of the prior
+        // attempt (handlePolledStatus/canRetry below) before deciding whether
+        // to poll again, so the attempts cannot run concurrently. Local
+        // `status` intentionally shadows an outer status identifier used
+        // elsewhere in this component, scoping it to the poll loop.
+        // biome-ignore lint/performance/noAwaitInLoops: see comment above.
+        // biome-ignore lint/suspicious/noShadow: see comment above.
         const status = await fetchNekoStatusBestEffort(resolvedStatusPath);
         if (handlePolledStatus(status) === "done") {
           return;

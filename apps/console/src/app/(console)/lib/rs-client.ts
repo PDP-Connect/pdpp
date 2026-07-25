@@ -199,7 +199,10 @@ async function manifestsDir(): Promise<string | null> {
   }
   for (const candidate of MANIFESTS_DIR_CANDIDATES) {
     try {
-      // biome-ignore lint/performance/noAwaitInLoops: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+      // First-match wins (returns on the first existing candidate), so
+      // checking every candidate up front with Promise.all would do
+      // unnecessary I/O on candidates after the first hit.
+      // biome-ignore lint/performance/noAwaitInLoops: see comment above.
       const entries = await readdir(candidate);
       if (entries.length > 0) {
         resolvedManifestsDir = candidate;
@@ -758,22 +761,18 @@ export async function listConnectorManifests(): Promise<ConnectorManifest[]> {
     return [];
   }
   const files = await readdir(dir);
-  const manifests: ConnectorManifest[] = [];
-  for (const file of files) {
-    if (!file.endsWith(".json")) {
-      continue;
-    }
-    try {
-      // biome-ignore lint/performance/noAwaitInLoops: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-      const raw = await readFile(join(dir, file), "utf8");
-      const m = JSON.parse(raw) as ConnectorManifest;
-      if (m.connector_id) {
-        manifests.push(m);
+  const jsonFiles = files.filter((file) => file.endsWith(".json"));
+  const parsed = await Promise.all(
+    jsonFiles.map(async (file) => {
+      try {
+        const raw = await readFile(join(dir, file), "utf8");
+        return JSON.parse(raw) as ConnectorManifest;
+      } catch {
+        return null;
       }
-    } catch {
-      // skip malformed
-    }
-  }
+    })
+  );
+  const manifests = parsed.filter((m): m is ConnectorManifest => Boolean(m?.connector_id));
   manifests.sort((a, b) => a.connector_id.localeCompare(b.connector_id));
   return manifests;
 }
@@ -1162,7 +1161,10 @@ async function paginateSampleRecords(
   let cursor: string | undefined;
   while (records.length < sampleLimit) {
     const remaining = sampleLimit - records.length;
-    // biome-ignore lint/performance/noAwaitInLoops: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+    // Cursor pagination: each page's cursor comes from the previous page's
+    // response (page.next_cursor below), so pages cannot be fetched in
+    // parallel — the next request isn't known until this one returns.
+    // biome-ignore lint/performance/noAwaitInLoops: see comment above.
     const page = await queryRecords(connectorId, streamName, {
       connectionId: opts.connectionId,
       connectorInstanceId: opts.connectorInstanceId,

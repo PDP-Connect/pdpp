@@ -36,7 +36,10 @@ async function recoverStartedBrowserRun(
 ): Promise<string | null> {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     if (attempt > 0) {
-      // biome-ignore lint/performance/noAwaitInLoops: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+      // Backoff delay between retries of the same recovery request; the
+      // whole point is to wait between sequential attempts, not run them
+      // concurrently.
+      // biome-ignore lint/performance/noAwaitInLoops: see comment above.
       await delay(400);
     }
     try {

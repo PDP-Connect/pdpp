@@ -54,19 +54,14 @@ async function loadCommittedManifests(): Promise<CatalogManifestLike[]> {
   const repoRoot = new URL("../../../../../../", import.meta.url);
   const manifestsDir = new URL("packages/polyfill-connectors/manifests/", repoRoot);
   const files = await readdir(fileURLToPath(manifestsDir));
-  const manifests: CatalogManifestLike[] = [];
-  for (const file of files) {
-    if (!file.endsWith(".json")) {
-      continue;
-    }
-    // biome-ignore lint/performance/noAwaitInLoops: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-    const raw = await readFile(fileURLToPath(new URL(file, manifestsDir)), "utf8");
-    const m = JSON.parse(raw) as CatalogManifestLike;
-    if (m.connector_id) {
-      manifests.push(m);
-    }
-  }
-  return manifests;
+  const jsonFiles = files.filter((file) => file.endsWith(".json"));
+  const parsed = await Promise.all(
+    jsonFiles.map(async (file) => {
+      const raw = await readFile(fileURLToPath(new URL(file, manifestsDir)), "utf8");
+      return JSON.parse(raw) as CatalogManifestLike;
+    })
+  );
+  return parsed.filter((m) => m.connector_id);
 }
 
 test("catalogModalityFromManifest mirrors the filesystem>browser>network precedence", () => {

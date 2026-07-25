@@ -127,7 +127,10 @@ async function resolveRepoRoot(): Promise<string> {
   let dir = process.cwd();
   const { root } = path.parse(dir);
   for (;;) {
-    // biome-ignore lint/performance/noAwaitInLoops: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+    // Each iteration walks up one directory from the previous iteration's
+    // result (dir = parent(dir)); the checks can't run in parallel because
+    // the next directory to check isn't known until this one is checked.
+    // biome-ignore lint/performance/noAwaitInLoops: see comment above.
     const hasWorkspace = await pathExists(path.join(dir, "pnpm-workspace.yaml"), "file");
     const hasOpenSpec = await pathExists(path.join(dir, "openspec"), "dir");
     if (hasWorkspace && hasOpenSpec) {

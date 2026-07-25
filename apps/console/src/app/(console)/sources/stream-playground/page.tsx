@@ -11,8 +11,8 @@ export default async function StreamPlaygroundAliasPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const params = new URLSearchParams();
-  // biome-ignore lint/performance/noAwaitInLoops: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-  for (const [key, rawValue] of Object.entries(await searchParams)) {
+  const resolvedSearchParams = await searchParams;
+  for (const [key, rawValue] of Object.entries(resolvedSearchParams)) {
     const values = Array.isArray(rawValue) ? rawValue : [rawValue];
     for (const value of values) {
       if (typeof value === "string") {

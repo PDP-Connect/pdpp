@@ -64,9 +64,9 @@ test("every high-value sources/runs surface ships a route-level loading.tsx", ()
 });
 
 test("each loading.tsx renders inside the shared DashboardShell for stable chrome", async () => {
-  for (const rel of LOADING_FILES) {
-    // biome-ignore lint/performance/noAwaitInLoops: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
-    const src = await readFile(`${DASHBOARD}${rel}`, "utf8");
+  const sources = await Promise.all(LOADING_FILES.map((rel) => readFile(`${DASHBOARD}${rel}`, "utf8")));
+  for (const [index, rel] of LOADING_FILES.entries()) {
+    const src = sources[index] as string;
     assert.match(src, DASHBOARD_SHELL_RE, `${rel} must reuse DashboardShell`);
     assert.match(src, SHARED_SKELETON_IMPORT_RE, `${rel} must use the shared skeleton`);
   }

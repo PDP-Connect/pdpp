@@ -392,7 +392,10 @@ async function pollArtifactStatus(
   }
 ): Promise<ManualUploadArtifactWire> {
   for (let attempt = 0; attempt < 180; attempt += 1) {
-    // biome-ignore lint/performance/noAwaitInLoops: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+    // Status polling: each attempt reads the artifact's current processing
+    // status, which only advances between requests, so parallel attempts
+    // would just poll the same in-flight state repeatedly.
+    // biome-ignore lint/performance/noAwaitInLoops: see comment above.
     const res = await fetch(`/_ref/manual-upload/artifacts/${encodeURIComponent(artifactId)}`, {
       credentials: "same-origin",
       headers: { Accept: "application/json" },
@@ -581,7 +584,10 @@ async function importManualUploads(
   let shouldRun = false;
   for (let index = 0; index < files.length; index += 1) {
     const file = files[index] as File;
-    // biome-ignore lint/performance/noAwaitInLoops: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
+    // Sequential by necessity: the connectionId resolved from staging file N
+    // (below) is passed into staging file N+1, so files can't upload in
+    // parallel without racing which upload creates the connection.
+    // biome-ignore lint/performance/noAwaitInLoops: see comment above.
     const artifact = await stageManualUploadFile(setup, file, {
       connectionId,
       displayName: target.displayName,

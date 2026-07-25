@@ -139,10 +139,11 @@ test("primary /sandbox dashboard pages render DashboardShell in mock-owner mode"
   assert.match(overviewContent, DASHBOARD_SHELL_IMPORT_RE, "overview-content must import DashboardShell");
   assert.match(overviewContent, MOCK_OWNER_MODE_RE, "overview-content must render DashboardShell in mock-owner mode");
 
-  for (const rel of PRIMARY_DASHBOARD_PAGES) {
-    const full = join(SANDBOX_DIR, rel);
-    // biome-ignore lint/performance/noAwaitInLoops: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
-    const src = await readFile(full, "utf8");
+  const primaryPageSources = await Promise.all(
+    PRIMARY_DASHBOARD_PAGES.map((rel) => readFile(join(SANDBOX_DIR, rel), "utf8"))
+  );
+  for (const [index, rel] of PRIMARY_DASHBOARD_PAGES.entries()) {
+    const src = primaryPageSources[index] as string;
     const delegatesToOverviewContent =
       SANDBOX_OVERVIEW_CONTENT_IMPORT_RE.test(src) && SANDBOX_OVERVIEW_CONTENT_RENDER_RE.test(src);
     if (delegatesToOverviewContent) {
@@ -165,11 +166,11 @@ test("primary /sandbox dashboard pages render DashboardShell in mock-owner mode"
 
 test("primary /sandbox dashboard pages do NOT use the educational sandbox shell", async () => {
   const offenders: string[] = [];
-  for (const rel of PRIMARY_DASHBOARD_PAGES) {
-    const full = join(SANDBOX_DIR, rel);
-    // biome-ignore lint/performance/noAwaitInLoops: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
-    const src = await readFile(full, "utf8");
-    if (SANDBOX_SHELL_IMPORT_RE.test(src)) {
+  const shellCheckSources = await Promise.all(
+    PRIMARY_DASHBOARD_PAGES.map((rel) => readFile(join(SANDBOX_DIR, rel), "utf8"))
+  );
+  for (const [index, rel] of PRIMARY_DASHBOARD_PAGES.entries()) {
+    if (SANDBOX_SHELL_IMPORT_RE.test(shellCheckSources[index] as string)) {
       offenders.push(rel);
     }
   }
@@ -182,10 +183,11 @@ test("primary /sandbox dashboard pages do NOT use the educational sandbox shell"
 
 test("retired sandbox records pages redirect into the single Explore canvas", async () => {
   const offenders: string[] = [];
-  for (const rel of RETIRED_SANDBOX_RECORDS_PAGES) {
-    const full = join(SANDBOX_DIR, rel);
-    // biome-ignore lint/performance/noAwaitInLoops: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
-    const src = await readFile(full, "utf8");
+  const retiredPageSources = await Promise.all(
+    RETIRED_SANDBOX_RECORDS_PAGES.map((rel) => readFile(join(SANDBOX_DIR, rel), "utf8"))
+  );
+  for (const [index, rel] of RETIRED_SANDBOX_RECORDS_PAGES.entries()) {
+    const src = retiredPageSources[index] as string;
     if (!REDIRECT_IMPORT_RE.test(src)) {
       offenders.push(`${rel}: missing redirect import`);
     }
@@ -208,11 +210,11 @@ test("retired sandbox records pages redirect into the single Explore canvas", as
 
 test("educational pages do NOT render DashboardShell (they are docs surfaces)", async () => {
   const offenders: string[] = [];
-  for (const rel of EDUCATIONAL_PAGES) {
-    const full = join(SANDBOX_DIR, rel);
-    // biome-ignore lint/performance/noAwaitInLoops: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
-    const src = await readFile(full, "utf8");
-    if (DASHBOARD_SHELL_IMPORT_RE.test(src)) {
+  const educationalPageSources = await Promise.all(
+    EDUCATIONAL_PAGES.map((rel) => readFile(join(SANDBOX_DIR, rel), "utf8"))
+  );
+  for (const [index, rel] of EDUCATIONAL_PAGES.entries()) {
+    if (DASHBOARD_SHELL_IMPORT_RE.test(educationalPageSources[index] as string)) {
       offenders.push(rel);
     }
   }
@@ -229,10 +231,20 @@ test("/sandbox layout does not render global site chrome around mock-owner dashb
 });
 
 test("query-driven sandbox pages are dynamic so server pages receive search params", async () => {
-  for (const rel of ["explore/page.tsx", "search/page.tsx", "grants/page.tsx", "runs/page.tsx", "traces/page.tsx"]) {
-    // biome-ignore lint/performance/noAwaitInLoops: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
-    const src = await readFile(join(SANDBOX_DIR, rel), "utf8");
-    assert.match(src, FORCE_DYNAMIC_RE, `${rel} must be force-dynamic because it reads searchParams`);
+  const queryDrivenPages = [
+    "explore/page.tsx",
+    "search/page.tsx",
+    "grants/page.tsx",
+    "runs/page.tsx",
+    "traces/page.tsx",
+  ];
+  const sources = await Promise.all(queryDrivenPages.map((rel) => readFile(join(SANDBOX_DIR, rel), "utf8")));
+  for (const [index, rel] of queryDrivenPages.entries()) {
+    assert.match(
+      sources[index] as string,
+      FORCE_DYNAMIC_RE,
+      `${rel} must be force-dynamic because it reads searchParams`
+    );
   }
 });
 
@@ -255,29 +267,20 @@ test("sandboxRoutes overview is `/sandbox`", async () => {
 });
 
 test("operator route files are absent from the public site's shared shell folder", async () => {
-  const present: string[] = [];
-  for (const rel of FORMER_OPERATOR_ROUTE_FILES) {
-    try {
-      // biome-ignore lint/performance/noAwaitInLoops: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
-      await readFile(join(DASHBOARD_DIR, rel), "utf8");
-      present.push(rel);
-    } catch {
-      // Expected: apps/site retains shared components, not operator route files.
-    }
-  }
+  const results = await Promise.allSettled(
+    FORMER_OPERATOR_ROUTE_FILES.map((rel) => readFile(join(DASHBOARD_DIR, rel), "utf8"))
+  );
+  // Expected: apps/site retains shared components, not operator route files —
+  // a rejected read means the file is (correctly) absent.
+  const present = FORMER_OPERATOR_ROUTE_FILES.filter((_rel, index) => results[index]?.status === "fulfilled");
   assert.deepEqual(present, [], `public site must not retain operator route files:\n${present.join("\n")}`);
 });
 
 test("/sandbox keeps the core dashboard-shaped routes", async () => {
-  const missing: string[] = [];
-  for (const rel of SANDBOX_PARITY_PAGES) {
-    try {
-      // biome-ignore lint/performance/noAwaitInLoops: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
-      await readFile(join(SANDBOX_DIR, rel), "utf8");
-    } catch {
-      missing.push(`/sandbox/${rel}`);
-    }
-  }
+  const results = await Promise.allSettled(SANDBOX_PARITY_PAGES.map((rel) => readFile(join(SANDBOX_DIR, rel), "utf8")));
+  const missing = SANDBOX_PARITY_PAGES.filter((_rel, index) => results[index]?.status === "rejected").map(
+    (rel) => `/sandbox/${rel}`
+  );
   assert.deepEqual(
     missing,
     [],
@@ -292,11 +295,11 @@ test("DashboardShell mounts the unified CommandPalette in mock-owner mode with t
 
 test("sandbox pages do not import dashboardRoutes (would link out of the sandbox)", async () => {
   const offenders: string[] = [];
-  for (const rel of ALL_SANDBOX_PAGES) {
-    const full = join(SANDBOX_DIR, rel);
-    // biome-ignore lint/performance/noAwaitInLoops: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
-    const src = await readFile(full, "utf8");
-    if (DASHBOARD_ROUTES_IMPORT_RE.test(src)) {
+  const allSandboxPageSources = await Promise.all(
+    ALL_SANDBOX_PAGES.map((rel) => readFile(join(SANDBOX_DIR, rel), "utf8"))
+  );
+  for (const [index, rel] of ALL_SANDBOX_PAGES.entries()) {
+    if (DASHBOARD_ROUTES_IMPORT_RE.test(allSandboxPageSources[index] as string)) {
       offenders.push(rel);
     }
   }
