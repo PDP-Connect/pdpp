@@ -27,7 +27,7 @@
     "//docker-deploy": "Docker self-host deploy gate (deploy/docker/README.md). first-boot:test pins the standalone Core image's first-boot owner-credential bootstrap (generate, persist on the data volume, banner once, env always wins).",
     "docker:first-boot:test": "node --test --import tsx scripts/docker-core-first-boot.test.ts",
     "//railway": "Railway Core deploy gate (deploy/railway/README.md). template:test checks pushbutton template artifacts; ghcr-public probes the live anonymous-pull gate that blocks publishing the button (ghcr-public:test is its offline logic); env-check is the offline preflight; mcp-query-smoke seeds records + proves the scoped MCP query; sqlite-restart-smoke proves SQLite-on-volume durability across a container replacement.",
-    "railway:template:test": "node --test scripts/check-railway-template-artifacts.test.mjs",
+    "railway:template:test": "node --test --import tsx scripts/check-railway-template-artifacts.test.ts",
     "railway:ghcr-public": "node --import tsx scripts/check-railway-ghcr-public.ts",
     "railway:ghcr-public:test": "node --test --import tsx scripts/check-railway-ghcr-public.test.ts",
     "railway:env-check": "node --import tsx scripts/check-railway-deploy-env.ts",
