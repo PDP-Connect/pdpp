@@ -29,6 +29,7 @@ import { createHash } from "node:crypto";
 import { mapWithConcurrency } from "../concurrency.ts";
 import { type DeviceAttemptContext, fingerprintDeviceAttemptManifest } from "../device-ingest-attempt-context.ts";
 import { deriveReferenceFreshness } from "../freshness.ts";
+import { handleLocalDeviceTerminalCollection } from "../../operations/local-device-terminal-collection.ts";
 import { assertRecordIdentity, normalizePrimaryKey } from "../record-expand-helpers.js";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 import {
@@ -2564,6 +2565,27 @@ export function mountRefDeviceExporterSourceInstanceStatePut(app: AppLike, ctx: 
         return;
       }
     }
+  );
+  mountRefDeviceExporterTerminalCollection(app, ctx);
+}
+
+// POST /_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/terminal-collection
+// A collector reports this only after successful DONE, full batch drain, and
+// coverage-checkpoint acknowledgement. It is intentionally not synthesized
+// from accepted batches or heartbeats: neither proves which streams ran.
+export function mountRefDeviceExporterTerminalCollection(app: AppLike, ctx: MountRefDeviceExportersContext): void {
+  app.post(
+    "/_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/terminal-collection",
+    ctx.requireDeviceExporterCredential,
+    async (req: RouteRequest, res: RouteResponse) =>
+      await handleLocalDeviceTerminalCollection({
+        ctx,
+        req,
+        res,
+        resolveAuthorizedSource: async (deviceId, sourceInstanceId) =>
+          await resolveAuthorizedDeviceSource(ctx, req, res, deviceId, sourceInstanceId, { notFoundStatus: 404 }),
+        sameConnectorType: (left, right) => sameConnectorType(ctx, left, right),
+      })
   );
 }
 

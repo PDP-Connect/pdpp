@@ -829,6 +829,29 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
     const recordsPending = pendingOutboxWorkCount(finalSummary);
 
     if (!checkpointResult.statePutFailed) {
+      // This is the only point at which a local run may claim terminal
+      // per-stream evidence: its child succeeded, all record work drained,
+      // and the coverage checkpoint was acknowledged. Batches/heartbeats by
+      // themselves deliberately never establish this boundary.
+      if (
+        done?.status === "succeeded" &&
+        !streamResult.scanBudgetExceeded &&
+        Object.hasOwn(checkpointResult.flushedState ?? {}, COVERAGE_DIAGNOSTICS_STREAM) &&
+        streamResult.coverageByStore
+      ) {
+        await client.reportTerminalCollection({
+          connector_id: config.connector.connector_id,
+          run_id: config.runId ?? randomUUID(),
+          source_instance_id: config.sourceInstanceId,
+          streams: [
+            ...new Set(
+              [...streamResult.coverageByStore.values()].flatMap((entry) => (entry.stream ? [entry.stream] : []))
+            ),
+          ]
+            .sort()
+            .map((stream) => ({ stream })),
+        });
+      }
       const finalDeadLetterError = buildHeartbeatDeadLetterError(outbox, config.sourceInstanceId);
       await client.heartbeat({
         agent_version: COLLECTOR_AGENT_VERSION,
@@ -1059,7 +1082,7 @@ interface StreamConnectorIntoOutboxResult {
    * RECORDs seen this pass, or `null` when none were observed. Last write
    * wins per store so a re-emitted store keeps its final status.
    */
-  coverageByStore: Map<string, CollectorCoverageStatus> | null;
+  coverageByStore: Map<string, { status: CollectorCoverageStatus; stream: string | null }> | null;
   done: Extract<EmittedMessage, { type: "DONE" }> | null;
   enqueuedBatches: number;
   recordsQueued: number;
@@ -1081,7 +1104,7 @@ const COVERAGE_DIAGNOSTICS_STREAM = "coverage_diagnostics";
  */
 function coverageEntryFromRecord(
   message: Extract<EmittedMessage, { type: "RECORD" }>
-): { status: CollectorCoverageStatus; store: string } | null {
+): { status: CollectorCoverageStatus; store: string; stream: string | null } | null {
   if (message.stream !== COVERAGE_DIAGNOSTICS_STREAM) {
     return null;
   }
@@ -1099,7 +1122,11 @@ function coverageEntryFromRecord(
   const status = (COLLECTOR_COVERAGE_STATUSES as readonly string[]).includes(rawStatus)
     ? (rawStatus as CollectorCoverageStatus)
     : "unaccounted";
-  return { status, store };
+  return {
+    status,
+    store,
+    stream: isRecord(data) && typeof data.stream === "string" && data.stream ? data.stream : null,
+  };
 }
 
 /**
@@ -1109,7 +1136,7 @@ function coverageEntryFromRecord(
  * absence rather than "complete".
  */
 export function summarizeCollectorCompleteness(
-  coverageByStore: Map<string, CollectorCoverageStatus> | null
+  coverageByStore: Map<string, { status: CollectorCoverageStatus; stream: string | null }> | null
 ): CollectorCompletenessSummary | null {
   if (!coverageByStore || coverageByStore.size === 0) {
     return null;
@@ -1120,7 +1147,7 @@ export function summarizeCollectorCompleteness(
   const unaccountedStores: string[] = [];
   const byStore: Record<string, CollectorCoverageStatus> = {};
   for (const store of [...coverageByStore.keys()].sort()) {
-    const status = coverageByStore.get(store) as CollectorCoverageStatus;
+    const status = coverageByStore.get(store)?.status as CollectorCoverageStatus;
     byStore[store] = status;
     countsByStatus[status] += 1;
     if (status === "unaccounted") {
@@ -1186,7 +1213,7 @@ async function streamConnectorIntoOutbox(
   // Accumulate coverage diagnostics as we see them so completeness can be
   // summarized without re-reading the durable outbox. Stays null until the
   // first coverage record so an absent diagnostic reads as absent.
-  let coverageByStore: Map<string, CollectorCoverageStatus> | null = null;
+  let coverageByStore: Map<string, { status: CollectorCoverageStatus; stream: string | null }> | null = null;
 
   const flushPendingBatch = (): void => {
     if (pendingRecords.length === 0) {
@@ -1242,8 +1269,8 @@ async function streamConnectorIntoOutbox(
     if (!entry) {
       return;
     }
-    coverageByStore ??= new Map<string, CollectorCoverageStatus>();
-    coverageByStore.set(entry.store, entry.status);
+    coverageByStore ??= new Map<string, { status: CollectorCoverageStatus; stream: string | null }>();
+    coverageByStore.set(entry.store, { status: entry.status, stream: entry.stream });
   };
 
   const handleMessage = (message: EmittedMessage): void => {

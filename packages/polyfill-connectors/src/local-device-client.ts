@@ -8,6 +8,8 @@ export const LOCAL_DEVICE_ENDPOINTS = {
   exchangeEnrollment: "/_ref/device-exporters/enroll",
   heartbeat: (deviceId: string) => `/_ref/device-exporters/${encodeURIComponent(deviceId)}/heartbeat`,
   ingestBatch: (deviceId: string) => `/_ref/device-exporters/${encodeURIComponent(deviceId)}/ingest-batches`,
+  terminalCollection: (deviceId: string, sourceInstanceId: string) =>
+    `/_ref/device-exporters/${encodeURIComponent(deviceId)}/source-instances/${encodeURIComponent(sourceInstanceId)}/terminal-collection`,
   localCollectorGap: (deviceId: string, sourceInstanceId: string) =>
     `/_ref/device-exporters/${encodeURIComponent(deviceId)}/source-instances/${encodeURIComponent(sourceInstanceId)}/local-collector-gaps`,
   localCollectorGapRecovered: (deviceId: string, sourceInstanceId: string) =>
@@ -116,6 +118,14 @@ export interface HeartbeatRequest {
 }
 
 export type IngestBatchRequest = LocalDeviceIngestBatchRequest;
+
+/** Safe, terminal per-stream evidence. Deliberately excludes paths, payloads, and reasons. */
+export interface TerminalCollectionRequest {
+  connector_id: string;
+  run_id: string;
+  source_instance_id: string;
+  streams: readonly { stream: string }[];
+}
 
 export interface GetSourceInstanceStateRequest {
   sourceInstanceId: string;
@@ -311,6 +321,13 @@ export class LocalDeviceClient {
       body: request,
       method: "POST",
     });
+  }
+
+  reportTerminalCollection(request: TerminalCollectionRequest): Promise<{ ok: true }> {
+    return this.#request(
+      LOCAL_DEVICE_ENDPOINTS.terminalCollection(this.#requireDeviceId(), request.source_instance_id),
+      { authenticate: true, body: request, method: "POST" }
+    );
   }
 
   getSourceInstanceState(request: GetSourceInstanceStateRequest): Promise<SourceInstanceStateResponse> {
