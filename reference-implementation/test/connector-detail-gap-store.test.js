@@ -14,6 +14,7 @@ import {
   initPostgresStorage,
   postgresQuery,
 } from '../server/postgres-storage.js';
+import { DEFAULT_QUARANTINE_POLICY } from '../runtime/recovery-quarantine.ts';
 import {
   createPostgresConnectorDetailGapStore,
   createSqliteConnectorDetailGapStore,
@@ -32,6 +33,10 @@ function withTempDb(fn) {
       rmSync(dir, { recursive: true, force: true });
     }
   };
+}
+
+async function forcePendingForTest(store, gapIds) {
+  for (const gapId of gapIds) await store.markGapStatus(gapId, 'pending');
 }
 
 function createConnector(messages, { exitCode = 0 } = {}) {
@@ -66,6 +71,30 @@ rl.on('line', (line) => {
   for (const message of ${JSON.stringify(messages)}) {
     process.stdout.write(JSON.stringify(message) + '\\n');
   }
+  rl.close();
+  process.stdout.write('', () => process.exit(0));
+});
+`, 'utf8');
+  return { connectorPath, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+function createLeaseSwapConnector(outputPath) {
+  const dir = mkdtempSync(join(tmpdir(), 'pdpp-detail-gap-lease-swap-'));
+  const connectorPath = join(dir, 'connector.mjs');
+  writeFileSync(connectorPath, `
+import { createInterface } from 'node:readline';
+import { writeFileSync } from 'node:fs';
+const rl = createInterface({ input: process.stdin });
+rl.on('line', (line) => {
+  const start = JSON.parse(line);
+  if (start.type !== 'START') return;
+  writeFileSync(${JSON.stringify(outputPath)}, JSON.stringify(start), 'utf8');
+  const [first, second] = start.detail_gaps;
+  process.stdout.write(JSON.stringify({
+    type: 'DETAIL_GAP_ATTEMPTED', reference_only: true,
+    gap_id: first.gap_id, lease_id: second.lease_id, stream: first.stream,
+  }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 0 }) + '\\n');
   rl.close();
   process.stdout.write('', () => process.exit(0));
 });
@@ -127,6 +156,33 @@ rl.on('line', (line) => {
     }
     requestNext();
   }
+});
+`, 'utf8');
+  return { connectorPath, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+function createPrefixRecoveryConnector() {
+  const dir = mkdtempSync(join(tmpdir(), 'pdpp-detail-gap-prefix-recovery-'));
+  const connectorPath = join(dir, 'connector.mjs');
+  writeFileSync(connectorPath, `
+import { createInterface } from 'node:readline';
+const rl = createInterface({ input: process.stdin });
+rl.on('line', (line) => {
+  const msg = JSON.parse(line);
+  if (msg.type !== 'START') return;
+  const [first] = msg.detail_gaps || [];
+  if (first) {
+    process.stdout.write(JSON.stringify({
+      type: 'DETAIL_GAP_RECOVERED',
+      reference_only: true,
+      gap_id: first.gap_id,
+      stream: first.stream,
+      record_key: first.record_key,
+    }) + '\\n');
+  }
+  process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 0 }) + '\\n');
+  rl.close();
+  process.stdout.write('', () => process.exit(0));
 });
 `, 'utf8');
   return { connectorPath, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
@@ -285,7 +341,7 @@ async function assertConnectorEmittedDetailGapRoundTrip({
       ...runtimeArgs,
       connectorPath: capturer.connectorPath,
     });
-    assert.equal(run2.status, 'succeeded');
+    assert.equal(run2.status, 'succeeded', `terminal=${run2.terminal_reason}`);
   } finally {
     capturer.cleanup();
   }
@@ -482,7 +538,7 @@ test('listPendingGaps prefers lower-attempt work so one hot row cannot starve fr
 
   for (let attempt = 0; attempt < 24; attempt++) {
     await store.markGapStatus(hot.gap_id, 'in_progress', { runId: `run_hot_${attempt}` });
-    await store.resetServedInProgressGaps([hot.gap_id]);
+    await forcePendingForTest(store, [hot.gap_id]);
   }
 
   const cold = await store.upsertPendingGap({
@@ -538,7 +594,7 @@ test('listPendingGaps ages older eligible work ahead of fresh arrivals after the
     now: '2026-07-14T11:58:00.000Z',
   });
   await store.markGapStatus(hot.gap_id, 'in_progress', { now: '2026-07-14T11:58:30.000Z', runId: 'run_hot_aged' });
-  await store.resetServedInProgressGaps([hot.gap_id]);
+  await forcePendingForTest(store, [hot.gap_id]);
 
   const pending = await store.listPendingGaps({
     connectorId: 'chatgpt',
@@ -608,7 +664,7 @@ async function simulateOneStarvedRun(store, { connectorId, grantId, stream, page
   for (const gap of page) {
     await store.markGapStatus(gap.gap_id, 'in_progress', { runId, now: runIso });
   }
-  await store.resetServedInProgressGaps(page.map((gap) => gap.gap_id));
+  await forcePendingForTest(store, page.map((gap) => gap.gap_id));
   return page;
 }
 
@@ -741,7 +797,7 @@ test('fair-progress: a backlog within one page is unaffected by the aging-bucket
   // exceeds the total backlog size.
   for (let i = 0; i < 3; i++) {
     await store.markGapStatus(gaps[0].gap_id, 'in_progress', { runId: `r${i}`, now: baseIso });
-    await store.resetServedInProgressGaps([gaps[0].gap_id]);
+    await forcePendingForTest(store, [gaps[0].gap_id]);
   }
 
   const page = await store.listPendingGaps({ connectorId, grantId, streams: [stream], limit: 100, now: baseIso });
@@ -749,6 +805,80 @@ test('fair-progress: a backlog within one page is unaffected by the aging-bucket
     page.map((gap) => gap.gap_id).sort(),
     gaps.map((gap) => gap.gap_id).sort(),
     'a backlog smaller than the page limit still returns every eligible row',
+  );
+}));
+
+test('fair-progress: a row past the quarantine threshold is not starved forever behind a large backlog (attempt-count rank clamp)', withTempDb(async () => {
+  // The raw ORDER BY `attempt_count - age_bonus` (age bonus capped at
+  // PENDING_GAP_MAX_AGE_BUCKETS=8) gives a row past the quarantine threshold
+  // a rank of `attempt_count-8` forever — worse than a CONTINUOUSLY-arriving
+  // fresh row, which never accumulates enough age to reach its own floor
+  // before the next, even-fresher arrival outranks it. Such a row can never
+  // reach `maybeQuarantineGap` (only evaluated on selection+re-defer), so it
+  // is stuck pending permanently. This proves the store-level fix: clamping
+  // the attempt_count term at the quarantine threshold caps the poison row's
+  // worst-case rank at `threshold - maxAgeBonus`, matching a row that is
+  // exactly AT the threshold — which the existing (untouched)
+  // "ages older eligible work ahead of fresh arrivals" behavior already
+  // guarantees eventually wins selection.
+  const store = createSqliteConnectorDetailGapStore();
+  const connectorId = 'gmail';
+  const grantId = 'grant_1';
+  const stream = 'attachments';
+  const baseIso = '2026-07-01T00:00:00.000Z';
+  const threshold = DEFAULT_QUARANTINE_POLICY.maxNoProgressAttempts;
+
+  // Seed the poison row already WAY past the quarantine threshold (as if it
+  // had been served many times before this fix existed), aged well past the
+  // rotation window so its age-bonus term is already fully saturated —
+  // i.e. its rank is at its best-case floor and can get no better.
+  let poison = await store.upsertPendingGap({
+    connectorId, grantId, stream, recordKey: 'poison', detailLocator: { id: 'poison' },
+    reason: 'temporary_unavailable', now: baseIso,
+  });
+  for (let i = 0; i < threshold + 20; i++) {
+    await store.markGapStatus(poison.gap_id, 'in_progress', { runId: `seed_${i}`, now: baseIso });
+    poison = await store.upsertPendingGap({
+      connectorId, grantId, stream, recordKey: 'poison', detailLocator: { id: 'poison' },
+      reason: 'temporary_unavailable', lastRunId: `seed_${i}`, now: baseIso,
+    });
+  }
+  assert.ok(
+    poison.attempt_count > threshold,
+    'poison row attempt_count must exceed the quarantine threshold going into the assertion',
+  );
+  // Fully saturate the age bonus (past the rotation-window cap; matches the
+  // store's PENDING_GAP_MAX_AGE_BUCKETS = 8) before any fresh row has had a
+  // chance to age at all.
+  const maxAgeBuckets = 8;
+  const selectionIso = isoAfter(baseIso, maxAgeBuckets + 1);
+
+  // One never-yet-attempted row created JUST before the selection instant —
+  // it has NOT had time to accumulate any age bonus of its own, so its rank
+  // is exactly its raw attempt_count (0). Selection is capped at 1 result,
+  // isolating a direct two-row rank comparison: with the clamp, the poison
+  // row's floor rank (threshold - maxAgeBonus) still loses the tie-break
+  // ordering purely on `attempt_count` vs the fresh row's 0 — UNLESS the
+  // fresh row itself is old enough to also be judged solely on identical
+  // floor rank, in which case last_attempt_at ordering (poison is older)
+  // favors poison. Without the clamp, poison's rank is
+  // (threshold+20)-maxAgeBonus, categorically worse than the fresh row's 0
+  // rank regardless of any tie-break, so it is NEVER selected while the
+  // fresh row remains pending.
+  const fresh = await store.upsertPendingGap({
+    connectorId, grantId, stream, recordKey: 'fresh', detailLocator: { id: 'fresh' },
+    reason: 'temporary_unavailable', now: selectionIso,
+  });
+
+  const page = await store.listPendingGaps({
+    connectorId, grantId, streams: [stream], limit: 1, now: selectionIso,
+  });
+
+  assert.deepEqual(
+    page.map((gap) => gap.gap_id),
+    [poison.gap_id],
+    'a row past the quarantine threshold, once fully aged, must rank at or ahead of a genuinely fresh arrival ' +
+      `(fresh gap ${fresh.gap_id} must not permanently outrank it) — otherwise it is starved forever and can never reach quarantine`,
   );
 }));
 
@@ -1107,7 +1237,7 @@ test('runtime includes pending detail gaps in START as reference-only safe rows'
       list_item: { id: 'conv_1', title: 'Safe title' },
     },
   };
-  const markedInProgress = [];
+  const claimedLeases = [];
   const detailGapStore = {
     async listPendingGaps(input) {
       assert.equal(input.connectorId, 'chatgpt');
@@ -1115,15 +1245,15 @@ test('runtime includes pending detail gaps in START as reference-only safe rows'
       assert.deepEqual(input.streams, ['messages']);
       return [pendingGap];
     },
-    async markGapStatus(gapId, status, options) {
-      markedInProgress.push({ gapId, status, options });
-      return { ...pendingGap, status };
+    async claimPendingGaps(gapIds, options) {
+      claimedLeases.push({ gapIds, options });
+      return gapIds;
     },
     async upsertPendingGap() {
       throw new Error('unused');
     },
     async reclaimStrandedInProgressGaps() {},
-    async resetServedInProgressGaps() {},
+    async releaseLeasedGaps() { return { released: 1, lost: 0, attemptedUnsettled: 0 }; },
   };
   const { connectorPath, cleanup } = createStartCaptureConnector(startPath);
 
@@ -1140,14 +1270,50 @@ test('runtime includes pending detail gaps in START as reference-only safe rows'
     });
     assert.equal(result.status, 'succeeded');
     const start = JSON.parse(readFileSync(startPath, 'utf8'));
-    assert.deepEqual(start.detail_gaps, [{ ...pendingGap, reference_only: true }]);
-    assert.equal(markedInProgress.length, 1, 'served gap is marked in_progress before connector gets it');
-    assert.equal(markedInProgress[0].gapId, pendingGap.gap_id);
-    assert.equal(markedInProgress[0].status, 'in_progress');
-    assert.equal(markedInProgress[0].options.runId, result.run_id);
+    assert.equal(start.detail_gaps.length, 1);
+    assert.deepEqual({ ...start.detail_gaps[0], lease_id: undefined }, { ...pendingGap, reference_only: true, lease_id: undefined });
+    assert.equal(claimedLeases.length, 1, 'served gap is claimed by a run-owned lease before connector gets it');
+    assert.deepEqual(claimedLeases[0].gapIds, [pendingGap.gap_id]);
+    assert.equal(claimedLeases[0].options.runId, result.run_id);
   } finally {
     cleanup();
   }
+}));
+
+test('each same-page gap has its own lease token and a swapped pairing fails closed', withTempDb(async (dir) => {
+  const store = createSqliteConnectorDetailGapStore();
+  for (const recordKey of ['attachment_lease_swap_a', 'attachment_lease_swap_b']) {
+    await store.upsertPendingGap({
+      connectorId: 'gmail', grantId: 'grant_lease_swap', stream: 'attachments', recordKey,
+      detailLocator: { kind: 'gmail.attachment_detail', message_id: recordKey, part_index: '1' },
+      reason: 'temporary_unavailable',
+    });
+  }
+  const startPath = join(dir, 'lease-swap-start.json');
+  const { connectorPath, cleanup } = createLeaseSwapConnector(startPath);
+  try {
+    await assert.rejects(
+      () => runConnector({
+        connectorPath,
+        connectorId: 'gmail',
+        grantId: 'grant_lease_swap',
+        ownerToken: 'owner',
+        manifest: { streams: [{ name: 'attachments' }] },
+        persistState: false,
+        detailGapStore: store,
+        onProgress: () => {},
+      }),
+      /without the current run-owned lease/,
+    );
+  } finally {
+    cleanup();
+  }
+  const start = JSON.parse(readFileSync(startPath, 'utf8'));
+  assert.equal(start.detail_gaps.length, 2);
+  assert.notEqual(start.detail_gaps[0].lease_id, start.detail_gaps[1].lease_id, 'lease_id is unique per served gap');
+  const pending = await store.listPendingGaps({ connectorId: 'gmail', grantId: 'grant_lease_swap', streams: ['attachments'] });
+  assert.equal(pending.length, 2, 'failed swapped settlement releases both unattempted leases');
+  assert.equal(pending.every((gap) => gap.attempt_count === 0), true);
 }));
 
 test('runtime loads pending detail gaps only for the requested connector instance', withTempDb(async (dir) => {
@@ -1243,6 +1409,44 @@ test('runtime drains more than 100 pending detail gaps in one run through paged 
     'durable pending backlog is drained',
   );
   assert.ok(pageResponses.some((page) => page.count === 0), 'runtime eventually returns an empty page');
+}));
+
+test('successful partial recovery releases unattempted page leases without inflating their quarantine budget', withTempDb(async () => {
+  const store = createSqliteConnectorDetailGapStore();
+  const first = await store.upsertPendingGap({
+    connectorId: 'gmail', grantId: 'grant_1', stream: 'attachments', recordKey: 'attachment_first',
+    detailLocator: { kind: 'gmail.attachment_detail', message_id: 'message_first', part_index: '1' },
+    reason: 'temporary_unavailable',
+  });
+  const second = await store.upsertPendingGap({
+    connectorId: 'gmail', grantId: 'grant_1', stream: 'attachments', recordKey: 'attachment_second',
+    detailLocator: { kind: 'gmail.attachment_detail', message_id: 'message_second', part_index: '1' },
+    reason: 'temporary_unavailable',
+  });
+  const connector = createPrefixRecoveryConnector();
+
+  try {
+    const result = await runConnector({
+      connectorPath: connector.connectorPath,
+      connectorId: 'gmail',
+      grantId: 'grant_1',
+      ownerToken: 'owner',
+      manifest: { streams: [{ name: 'attachments' }] },
+      persistState: false,
+      detailGapStore: store,
+      onProgress: () => {},
+    });
+    assert.equal(result.status, 'succeeded');
+  } finally {
+    connector.cleanup();
+  }
+
+  const recovered = await store.getGapById(first.gap_id);
+  const unattempted = await store.getGapById(second.gap_id);
+  assert.equal(recovered.status, 'recovered');
+  assert.equal(unattempted.status, 'pending');
+  assert.equal(unattempted.attempt_count, 0, 'a cleanly unreported lease is not a recovery attempt');
+  assert.equal(unattempted.last_attempt_at, null, 'the row keeps no false last-attempt evidence');
 }));
 
 test('DETAIL_GAPS_PAGE_RESPONSE carries connector-neutral recovery admission evidence without gating the served set', withTempDb(async (dir) => {
@@ -1347,12 +1551,11 @@ test('runtime pages large detail-gap payloads by byte budget while still drainin
 
 // ─── Attempt-persistence acceptance tests ────────────────────────────────────
 //
-// These tests prove the cross-run adaptive recovery contract: a pending gap
-// served to a connector for recovery increments attempt_count before any
-// provider requests are made, so the scheduler-source-pressure cooldown governor
-// sees persistence > 0 on subsequent runs and applies a more conservative wait.
+// These tests prove the cross-run adaptive recovery contract: serving creates
+// a crash-honest lease before provider work, while a clean successful connector
+// releases a lease it never reported as an actual recovery outcome.
 
-test('serving a pending gap in START increments attempt_count to 1 via in_progress mark', withTempDb(async (dir) => {
+test('a successful connector releases a START gap it never attempts', withTempDb(async (dir) => {
   const store = createSqliteConnectorDetailGapStore();
   const startPath = join(dir, 'attempt-start.json');
 
@@ -1382,10 +1585,10 @@ test('serving a pending gap in START increments attempt_count to 1 via in_progre
     cleanup();
   }
 
-  // Gap was served in START → must now be in_progress with attempt_count=1.
-  // listPendingGaps excludes in_progress, so we query via markGapStatus round-trip.
-  const afterRun = await store.markGapStatus(seeded.gap_id, 'pending');
-  assert.equal(afterRun.attempt_count, 1, 'serving gap in START marks it in_progress and increments attempt_count');
+  const afterRun = await store.getGapById(seeded.gap_id);
+  assert.equal(afterRun.status, 'pending');
+  assert.equal(afterRun.attempt_count, 0, 'successful cleanup releases an unreported START lease');
+  assert.equal(afterRun.last_attempt_at, null, 'successful cleanup clears false attempt evidence');
 }));
 
 test('recovered gap preserves incremented attempt_count after DETAIL_GAP_RECOVERED', withTempDb(async () => {
@@ -1461,7 +1664,7 @@ test('runtime does not quarantine Amazon planned run-cap re-deferrals carried as
 
   for (let i = 0; i < 7; i++) {
     await store.markGapStatus(seeded.gap_id, 'in_progress', { runId: `prior_run_${i}` });
-    await store.resetServedInProgressGaps([seeded.gap_id]);
+    await forcePendingForTest(store, [seeded.gap_id]);
   }
 
   const { connectorPath, cleanup } = createConnector([
@@ -1521,7 +1724,7 @@ test('runtime quarantines Amazon-shaped repeated no-progress re-deferrals at the
 
   for (let i = 0; i < 7; i++) {
     await store.markGapStatus(seeded.gap_id, 'in_progress', { runId: `prior_run_${i}` });
-    await store.resetServedInProgressGaps([seeded.gap_id]);
+    await forcePendingForTest(store, [seeded.gap_id]);
   }
 
   const { connectorPath, cleanup } = createConnector([
@@ -1587,7 +1790,7 @@ test('store deliberately requeues quarantined terminal gaps with a fresh no-prog
   });
   for (let i = 0; i < 8; i++) {
     await store.markGapStatus(seeded.gap_id, 'in_progress', { runId: `prior_run_${i}` });
-    await store.resetServedInProgressGaps([seeded.gap_id]);
+    await forcePendingForTest(store, [seeded.gap_id]);
   }
   await store.markGapStatus(seeded.gap_id, 'terminal', {
     reason: 'quarantined',
@@ -1663,9 +1866,8 @@ test('store requeue path does not revive non-quarantined terminal gaps', withTem
 // reset back to pending if the connector exits without recovering or re-deferring
 // them, so they remain retryable. Recovered gaps are never reset.
 
-test('gap served but not recovered is reset to pending after connector exits without recovery', withTempDb(async (dir) => {
+test('an untouched lease from a failed connector returns pending without inventing an attempt', withTempDb(async () => {
   const store = createSqliteConnectorDetailGapStore();
-  const startPath = join(dir, 'lease-exit-start.json');
 
   const seeded = await store.upsertPendingGap({
     connectorId: 'chatgpt',
@@ -1677,11 +1879,11 @@ test('gap served but not recovered is reset to pending after connector exits wit
   });
   assert.equal(seeded.attempt_count, 0);
 
-  // Run a connector that receives the gap (increments attempt_count to 1) but
-  // exits without emitting DETAIL_GAP_RECOVERED or re-deferring via DETAIL_GAP.
-  const { connectorPath, cleanup } = createStartCaptureConnector(startPath);
+  // This connector never emits DETAIL_GAP_ATTEMPTED, so its failed envelope is
+  // not itself evidence of provider work.
+  const { connectorPath, cleanup } = createConnector([], { exitCode: 1 });
   try {
-    await runConnector({
+    const result = await runConnector({
       connectorPath,
       connectorId: 'chatgpt',
       grantId: 'grant_1',
@@ -1691,16 +1893,159 @@ test('gap served but not recovered is reset to pending after connector exits wit
       detailGapStore: store,
       onProgress: () => {},
     });
+    assert.equal(result.status, 'failed');
   } finally {
     cleanup();
   }
 
   // Gap must be back to pending so it can be retried.
   const pending = await store.listPendingGaps({ connectorId: 'chatgpt', grantId: 'grant_1', streams: ['messages'] });
-  assert.equal(pending.length, 1, 'gap is retryable (pending) after connector exits without recovery');
+  assert.equal(pending.length, 1, 'gap is retryable (pending) after connector failure');
   assert.equal(pending[0].gap_id, seeded.gap_id);
-  // attempt_count must still reflect the attempt that was made.
-  assert.equal(pending[0].attempt_count, 1, 'attempt_count is preserved at 1 after reset to pending');
+  assert.equal(pending[0].attempt_count, 0, 'an untouched failed lease does not invent an attempt');
+}));
+
+test('lease CAS preserves prior attempt evidence and stale cleanup cannot release a re-served row', withTempDb(async () => {
+  const store = createSqliteConnectorDetailGapStore();
+  const seeded = await store.upsertPendingGap({
+    connectorId: 'gmail', grantId: 'grant_1', stream: 'attachments', recordKey: 'attachment_lease_cas',
+    detailLocator: { kind: 'gmail.attachment_detail', message_id: 'message_lease_cas', part_index: '1' },
+    reason: 'temporary_unavailable',
+  });
+  await store.markGapStatus(seeded.gap_id, 'in_progress', { runId: 'prior_real_attempt', now: '2026-07-02T00:00:00.000Z' });
+  await forcePendingForTest(store, [seeded.gap_id]);
+
+  await store.claimPendingGaps([seeded.gap_id], {
+    runId: 'run_a', leaseId: 'lease_a', leaseExpiresAt: '2020-01-01T00:00:00.000Z',
+  });
+  await store.reclaimStrandedInProgressGaps({ connectorId: 'gmail', grantId: 'grant_1' });
+  await store.claimPendingGaps([seeded.gap_id], {
+    runId: 'run_b', leaseId: 'lease_b', leaseExpiresAt: '2030-01-01T00:00:00.000Z',
+  });
+
+  const stale = await store.releaseLeasedGaps([{ gapId: seeded.gap_id, runId: 'run_a', leaseId: 'lease_a' }]);
+  assert.deepEqual(stale, { released: 0, lost: 1, attemptedUnsettled: 0 });
+  const stillOwned = await store.getGapById(seeded.gap_id);
+  assert.equal(stillOwned.status, 'in_progress');
+  assert.equal(stillOwned.lease_id, 'lease_b');
+
+  const released = await store.releaseLeasedGaps([{ gapId: seeded.gap_id, runId: 'run_b', leaseId: 'lease_b' }]);
+  assert.deepEqual(released, { released: 1, lost: 0, attemptedUnsettled: 0 });
+  const after = await store.getGapById(seeded.gap_id);
+  assert.equal(after.status, 'pending');
+  assert.equal(after.attempt_count, 1);
+  assert.equal(after.last_attempt_at, '2026-07-02T00:00:00.000Z', 'untouched issuance never erases prior real-attempt recency');
+}));
+
+test('an explicit attempt survives failed, cancelled, and crashed lease release', withTempDb(async () => {
+  const store = createSqliteConnectorDetailGapStore();
+  const seeded = await store.upsertPendingGap({
+    connectorId: 'gmail', grantId: 'grant_1', stream: 'attachments', recordKey: 'attachment_attempted',
+    detailLocator: { kind: 'gmail.attachment_detail', message_id: 'message_attempted', part_index: '1' },
+    reason: 'temporary_unavailable',
+  });
+  for (const terminalPath of ['failed', 'cancelled', 'crashed']) {
+    const runId = `run_${terminalPath}`;
+    const leaseId = `lease_${terminalPath}`;
+    await store.claimPendingGaps([seeded.gap_id], { runId, leaseId, leaseExpiresAt: '2030-01-01T00:00:00.000Z' });
+    await store.markLeasedGapAttempt({ gapId: seeded.gap_id, runId, leaseId });
+    await store.releaseLeasedGaps([{ gapId: seeded.gap_id, runId, leaseId }]);
+  }
+  const after = await store.getGapById(seeded.gap_id);
+  assert.equal(after.status, 'pending');
+  assert.equal(after.attempt_count, 3, 'each explicit provider attempt is retained independent of terminal envelope');
+  assert.ok(after.last_attempt_at);
+}));
+
+test('successful run resolution waits for durable outstanding-lease release', withTempDb(async (dir) => {
+  const store = createSqliteConnectorDetailGapStore();
+  await store.upsertPendingGap({
+    connectorId: 'gmail', grantId: 'grant_1', stream: 'attachments', recordKey: 'attachment_wait',
+    detailLocator: { kind: 'gmail.attachment_detail', message_id: 'message_wait', part_index: '1' },
+    reason: 'temporary_unavailable',
+  });
+  let releaseStoreWrite;
+  const releaseGate = new Promise((resolve) => { releaseStoreWrite = resolve; });
+  const delayedStore = {
+    ...store,
+    async releaseLeasedGaps(leases) {
+      await releaseGate;
+      return store.releaseLeasedGaps(leases);
+    },
+  };
+  const startPath = join(dir, 'await-release-start.json');
+  const { connectorPath, cleanup } = createStartCaptureConnector(startPath);
+  let settled = false;
+  try {
+    const resultPromise = runConnector({
+      connectorPath,
+      connectorId: 'gmail',
+      grantId: 'grant_1',
+      ownerToken: 'owner',
+      manifest: { streams: [{ name: 'attachments' }] },
+      persistState: false,
+      detailGapStore: delayedStore,
+      onProgress: () => {},
+    }).then((result) => { settled = true; return result; });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(settled, false, 'DONE must not resolve before lease release is durable');
+    releaseStoreWrite();
+    assert.equal((await resultPromise).status, 'succeeded');
+  } finally {
+    cleanup();
+  }
+}));
+
+test('failed, cancelled, and crashed run completion waits for durable outstanding-lease release', withTempDb(async () => {
+  for (const scenario of [
+    {
+      name: 'failed',
+      messages: [{ type: 'DONE', status: 'failed', records_emitted: 0, error: { message: 'synthetic failure', retryable: true } }],
+      expectedStatus: 'failed',
+    },
+    {
+      name: 'cancelled',
+      messages: [{ type: 'DONE', status: 'cancelled', records_emitted: 0, error: { message: 'synthetic cancellation', retryable: false } }],
+      expectedStatus: 'cancelled',
+    },
+    { name: 'crashed', messages: [], expectedStatus: 'failed' },
+  ]) {
+    const store = createSqliteConnectorDetailGapStore();
+    await store.upsertPendingGap({
+      connectorId: 'gmail', grantId: `grant_${scenario.name}`, stream: 'attachments', recordKey: `attachment_wait_${scenario.name}`,
+      detailLocator: { kind: 'gmail.attachment_detail', message_id: `message_wait_${scenario.name}`, part_index: '1' },
+      reason: 'temporary_unavailable',
+    });
+    let releaseStoreWrite;
+    const releaseGate = new Promise((resolve) => { releaseStoreWrite = resolve; });
+    const delayedStore = {
+      ...store,
+      async releaseLeasedGaps(leases) {
+        await releaseGate;
+        return store.releaseLeasedGaps(leases);
+      },
+    };
+    const { connectorPath, cleanup } = createConnector(scenario.messages, { exitCode: 1 });
+    let settled = false;
+    try {
+      const resultPromise = runConnector({
+        connectorPath,
+        connectorId: 'gmail',
+        grantId: `grant_${scenario.name}`,
+        ownerToken: 'owner',
+        manifest: { streams: [{ name: 'attachments' }] },
+        persistState: false,
+        detailGapStore: delayedStore,
+        onProgress: () => {},
+      }).finally(() => { settled = true; });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      assert.equal(settled, false, `${scenario.name} must not complete before lease release is durable`);
+      releaseStoreWrite();
+      assert.equal((await resultPromise).status, scenario.expectedStatus);
+    } finally {
+      cleanup();
+    }
+  }
 }));
 
 test('recovered gap is not reset to pending by run cleanup', withTempDb(async () => {
@@ -1761,8 +2106,13 @@ test('prior-run in_progress gap is reclaimed to pending before a new run serves 
     reason: 'upstream_pressure',
   });
 
-  // Simulate a prior crashed run: mark gap in_progress with a prior run id.
-  await store.markGapStatus(seeded.gap_id, 'in_progress', { runId: 'run_prior_crashed' });
+  // Simulate a prior crashed run: its lease is explicitly expired. A different
+  // live run id alone must never make a lease reclaimable.
+  await store.claimPendingGaps([seeded.gap_id], {
+    runId: 'run_prior_crashed',
+    leaseId: 'lease_prior_crashed',
+    leaseExpiresAt: '2020-01-01T00:00:00.000Z',
+  });
 
   // Gap is now in_progress and invisible to listPendingGaps.
   const beforeReclaim = await store.listPendingGaps({ connectorId: 'chatgpt', grantId: 'grant_1', streams: ['messages'] });
@@ -1791,6 +2141,64 @@ test('prior-run in_progress gap is reclaimed to pending before a new run serves 
   assert.equal(start.detail_gaps[0].gap_id, seeded.gap_id, 'reclaimed gap has same identity');
 }));
 
+test('SQLite bootstrap upgrades a legacy lease-less in_progress gap without erasing real attempt evidence', withTempDb(async (dir) => {
+  const databasePath = join(dir, 'pdpp.sqlite');
+  const raw = getDb();
+  raw.exec(`
+    DROP TABLE connector_detail_gaps;
+    CREATE TABLE connector_detail_gaps (
+      gap_id TEXT PRIMARY KEY,
+      connector_id TEXT NOT NULL,
+      connector_instance_id TEXT NOT NULL,
+      grant_id TEXT,
+      source_json TEXT NOT NULL,
+      stream TEXT NOT NULL,
+      parent_stream TEXT,
+      record_key TEXT,
+      detail_locator_json TEXT,
+      list_cursor_json TEXT,
+      scope_json TEXT,
+      reason TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      last_attempt_at TEXT,
+      next_attempt_after TEXT,
+      last_error_json TEXT,
+      discovered_run_id TEXT,
+      last_run_id TEXT,
+      recovered_run_id TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      CHECK (status IN ('pending', 'in_progress', 'recovered', 'terminal'))
+    );
+  `);
+  raw.prepare(`
+    INSERT INTO connector_detail_gaps(
+      gap_id, connector_id, connector_instance_id, grant_id, source_json, stream,
+      status, attempt_count, last_attempt_at, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, '{}', ?, 'in_progress', 7, ?, ?, ?)
+  `).run(
+    'gap_legacy_lease_less', 'gmail', 'cin_gmail_legacy', 'grant_legacy', 'attachments',
+    '2026-07-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z',
+  );
+  closeDb();
+
+  initDb(databasePath);
+  const after = getDb().prepare(`
+    SELECT status, attempt_count, last_attempt_at, lease_run_id, lease_id, lease_attempted, lease_expires_at
+    FROM connector_detail_gaps WHERE gap_id = 'gap_legacy_lease_less'
+  `).get();
+  assert.deepEqual(after, {
+    status: 'pending',
+    attempt_count: 7,
+    last_attempt_at: '2026-07-01T00:00:00.000Z',
+    lease_run_id: null,
+    lease_id: null,
+    lease_attempted: 0,
+    lease_expires_at: null,
+  });
+}));
+
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 
 if (!POSTGRES_URL) {
@@ -1804,6 +2212,9 @@ if (!POSTGRES_URL) {
     skip: true,
   }, () => {});
   test('fair-progress: a multi-page backlog eventually serves every eligible row across successive runs (Postgres) (skipped: PDPP_TEST_POSTGRES_URL unset)', {
+    skip: true,
+  }, () => {});
+  test('fair-progress: a row past the quarantine threshold is not starved forever behind a large backlog (Postgres) (skipped: PDPP_TEST_POSTGRES_URL unset)', {
     skip: true,
   }, () => {});
 } else {
@@ -1827,6 +2238,98 @@ if (!POSTGRES_URL) {
           [connectorId],
         );
       } catch {}
+      await closePostgresStorage();
+      closeDb();
+    }
+  });
+  test('Postgres recovery leases preserve prior evidence and reject stale release after re-serve', async () => {
+    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const connectorId = `gmail_pg_lease_${suffix}`;
+    const connectorInstanceId = `cin_gmail_pg_lease_${suffix}`;
+    initDb(':memory:');
+    await initPostgresStorage({ backend: 'postgres', databaseUrl: POSTGRES_URL });
+    try {
+      const store = createPostgresConnectorDetailGapStore();
+      const gap = await store.upsertPendingGap({
+        connectorId, connectorInstanceId, grantId: 'grant_pg_lease', stream: 'attachments', recordKey: 'attachment_pg_lease',
+        detailLocator: { kind: 'gmail.attachment_detail', message_id: 'message_pg_lease', part_index: '1' },
+        reason: 'temporary_unavailable',
+      });
+      await store.markGapStatus(gap.gap_id, 'in_progress', { runId: 'prior', now: '2026-07-02T00:00:00.000Z' });
+      await forcePendingForTest(store, [gap.gap_id]);
+      await store.claimPendingGaps([gap.gap_id], { runId: 'run_a', leaseId: 'lease_a', leaseExpiresAt: '2020-01-01T00:00:00.000Z' });
+      await store.reclaimStrandedInProgressGaps({ connectorId, connectorInstanceId, grantId: 'grant_pg_lease' });
+      await store.claimPendingGaps([gap.gap_id], { runId: 'run_b', leaseId: 'lease_b', leaseExpiresAt: '2030-01-01T00:00:00.000Z' });
+      assert.deepEqual(
+        await store.releaseLeasedGaps([{ gapId: gap.gap_id, runId: 'run_a', leaseId: 'lease_a' }]),
+        { released: 0, lost: 1, attemptedUnsettled: 0 },
+      );
+      assert.equal((await store.getGapById(gap.gap_id)).lease_id, 'lease_b');
+      await store.releaseLeasedGaps([{ gapId: gap.gap_id, runId: 'run_b', leaseId: 'lease_b' }]);
+      const after = await store.getGapById(gap.gap_id);
+      assert.equal(after.attempt_count, 1);
+      assert.equal(after.last_attempt_at, '2026-07-02T00:00:00.000Z');
+    } finally {
+      try { await postgresQuery('DELETE FROM connector_detail_gaps WHERE connector_instance_id = $1', [connectorInstanceId]); } catch {}
+      await closePostgresStorage();
+      closeDb();
+    }
+  });
+  test('Postgres bootstrap upgrades a legacy lease-less in_progress gap without erasing real attempt evidence', async () => {
+    initDb(':memory:');
+    await initPostgresStorage({ backend: 'postgres', databaseUrl: POSTGRES_URL });
+    try {
+      await postgresQuery('DROP TABLE connector_detail_gaps');
+      await postgresQuery(`
+        CREATE TABLE connector_detail_gaps (
+          gap_id TEXT PRIMARY KEY,
+          connector_id TEXT NOT NULL,
+          connector_instance_id TEXT NOT NULL,
+          grant_id TEXT,
+          source_json JSONB NOT NULL,
+          stream TEXT NOT NULL,
+          parent_stream TEXT,
+          record_key TEXT,
+          detail_locator_json JSONB,
+          list_cursor_json JSONB,
+          scope_json JSONB,
+          reason TEXT,
+          status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'in_progress', 'recovered', 'terminal')),
+          attempt_count INTEGER NOT NULL DEFAULT 0,
+          last_attempt_at TEXT,
+          next_attempt_after TEXT,
+          last_error_json JSONB,
+          discovered_run_id TEXT,
+          last_run_id TEXT,
+          recovered_run_id TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+      `);
+      await postgresQuery(`
+        INSERT INTO connector_detail_gaps(
+          gap_id, connector_id, connector_instance_id, grant_id, source_json, stream,
+          status, attempt_count, last_attempt_at, created_at, updated_at
+        ) VALUES ($1, 'gmail', 'cin_gmail_legacy_pg', 'grant_legacy_pg', '{}'::jsonb, 'attachments',
+          'in_progress', 7, '2026-07-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z')
+      `, ['gap_legacy_lease_less_pg']);
+      await closePostgresStorage();
+
+      await initPostgresStorage({ backend: 'postgres', databaseUrl: POSTGRES_URL });
+      const result = await postgresQuery(`
+        SELECT status, attempt_count, last_attempt_at, lease_run_id, lease_id, lease_attempted, lease_expires_at
+        FROM connector_detail_gaps WHERE gap_id = $1
+      `, ['gap_legacy_lease_less_pg']);
+      assert.deepEqual(result.rows[0], {
+        status: 'pending',
+        attempt_count: 7,
+        last_attempt_at: '2026-07-01T00:00:00.000Z',
+        lease_run_id: null,
+        lease_id: null,
+        lease_attempted: 0,
+        lease_expires_at: null,
+      });
+    } finally {
       await closePostgresStorage();
       closeDb();
     }
@@ -1944,6 +2447,66 @@ if (!POSTGRES_URL) {
         neverServed,
         [],
         `Postgres: every eligible row must eventually be served across successive runs; starved: ${neverServed.length}/${allIds.length}`,
+      );
+    } finally {
+      try {
+        await postgresQuery('DELETE FROM connector_detail_gaps WHERE connector_id = $1', [connectorId]);
+      } catch {}
+      await closePostgresStorage();
+      closeDb();
+    }
+  });
+
+  test('fair-progress: a row past the quarantine threshold is not starved forever behind a large backlog (Postgres)', async () => {
+    // Backend-parity twin of the SQLite attempt-count rank clamp test above:
+    // the store's `pendingGapOrderBySql` has separate SQLite (`MIN`) and
+    // Postgres (`LEAST`) branches for the same clamp, and only this branch
+    // runs against the live backend.
+    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const connectorId = `gmail_pg_clamp_${suffix}`;
+    const grantId = `grant_pg_clamp_${suffix}`;
+    const stream = 'attachments';
+    const baseIso = '2026-07-01T00:00:00.000Z';
+    const threshold = DEFAULT_QUARANTINE_POLICY.maxNoProgressAttempts;
+
+    initDb(':memory:');
+    await initPostgresStorage({ backend: 'postgres', databaseUrl: POSTGRES_URL });
+
+    try {
+      const store = createPostgresConnectorDetailGapStore();
+
+      let poison = await store.upsertPendingGap({
+        connectorId, grantId, stream, recordKey: 'poison', detailLocator: { id: 'poison' },
+        reason: 'temporary_unavailable', now: baseIso,
+      });
+      for (let i = 0; i < threshold + 20; i++) {
+        await store.markGapStatus(poison.gap_id, 'in_progress', { runId: `seed_${i}`, now: baseIso });
+        poison = await store.upsertPendingGap({
+          connectorId, grantId, stream, recordKey: 'poison', detailLocator: { id: 'poison' },
+          reason: 'temporary_unavailable', lastRunId: `seed_${i}`, now: baseIso,
+        });
+      }
+      assert.ok(
+        poison.attempt_count > threshold,
+        'Postgres: poison row attempt_count must exceed the quarantine threshold going into the assertion',
+      );
+      const maxAgeBuckets = 8;
+      const selectionIso = isoAfter(baseIso, maxAgeBuckets + 1);
+
+      const fresh = await store.upsertPendingGap({
+        connectorId, grantId, stream, recordKey: 'fresh', detailLocator: { id: 'fresh' },
+        reason: 'temporary_unavailable', now: selectionIso,
+      });
+
+      const page = await store.listPendingGaps({
+        connectorId, grantId, streams: [stream], limit: 1, now: selectionIso,
+      });
+
+      assert.deepEqual(
+        page.map((gap) => gap.gap_id),
+        [poison.gap_id],
+        'Postgres: a row past the quarantine threshold, once fully aged, must rank at or ahead of a genuinely fresh arrival ' +
+          `(fresh gap ${fresh.gap_id} must not permanently outrank it)`,
       );
     } finally {
       try {

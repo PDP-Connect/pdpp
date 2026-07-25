@@ -732,6 +732,46 @@ export interface RefConnectorSummariesResponse extends ListResponse<RefConnector
   runtime?: RefConnectorRuntimeStatus;
 }
 
+/** Owner-only server composition; never a grant-scoped health contract. */
+export type RefFleetHealthState = "healthy" | "healthy_with_advisories" | "indeterminate" | "unhealthy";
+
+export interface RefFleetConnectionReference {
+  connection_id: string;
+  connector_id: string;
+  connector_instance_id: string;
+  display_name: string;
+}
+
+export interface RefFleetHealthVerdict {
+  dimensions: {
+    active_work: readonly RefFleetConnectionReference[];
+    attention: { needs_owner: readonly RefFleetConnectionReference[] };
+    coverage_audit: "fail" | "inconclusive" | "pass";
+    freshness_advisories: readonly RefFleetConnectionReference[];
+    intentional_policy: {
+      manual: readonly RefFleetConnectionReference[];
+      paused: readonly RefFleetConnectionReference[];
+    };
+    recovery: {
+      retryable: readonly RefFleetConnectionReference[];
+      terminal: readonly RefFleetConnectionReference[];
+    };
+    runtime: "healthy" | "unhealthy" | "unknown";
+    stalled_work: readonly RefFleetConnectionReference[];
+    system: { degraded_or_broken: readonly RefFleetConnectionReference[] };
+    unknown_evidence: readonly RefFleetConnectionReference[];
+  };
+  fully_healthy: boolean;
+  scope: {
+    assessed: readonly RefFleetConnectionReference[];
+    configured: number;
+    intentional_exclusions: readonly RefFleetConnectionReference[];
+    setup_pending: readonly RefFleetConnectionReference[];
+    unassessed: readonly RefFleetConnectionReference[];
+  };
+  state: RefFleetHealthState;
+}
+
 /**
  * Mirrors `OwnerStateResolver` (`reference-implementation/runtime/owner-state.ts`).
  * Closed, server-side derivation aid — NEVER rendered to the owner verbatim.
@@ -1465,6 +1505,10 @@ export async function listConnectorSummaries(
   return (await refFetch("/_ref/connectors", {
     connection: options.connectionRouteId,
   })) as RefConnectorSummariesResponse;
+}
+
+export async function getFleetHealthVerdict(): Promise<RefFleetHealthVerdict> {
+  return (await refFetch("/_ref/fleet-health")) as RefFleetHealthVerdict;
 }
 
 export async function listRecordVersionStats(

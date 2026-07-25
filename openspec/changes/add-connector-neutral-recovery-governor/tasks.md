@@ -52,3 +52,101 @@
 - [x] 5.4 Run one supervised Amazon recovery batch and verify it recovers eligible work, respects any cooldown, and leaves the owner UI with typed recovery state rather than repeated retry instructions. (Live supervised owner run `run_1783369989300` for Amazon `cin_a8ec003e6d441205d646f178` on 2026-07-06 completed `succeeded`, emitted `run.detail_gap_recovered` events, recovered order-item detail gaps from 550 to 748 (+198), released the browser surface, and left remaining work typed as planned continuation (`run_cap_deferred` / `deferred_budget`) or transient no-progress (`temporary_unavailable` / `transient_no_progress`). Owner diagnostics after completion reported recovery admission `candidates=100`, `admitted=100`, `deferred=0`, and `stall.stalled=false`, proving the next batch is runnable rather than stuck behind owner retry busywork.)
 - [x] 5.5 Verify the live ChatGPT residue (942 non-pressure gaps held by stale pressure rows) begins draining under the new eligibility rule without manual data cleanup, and keep that dataset as the regression proof. (Live post-deploy durable state for scheduled ChatGPT `cin_11deac1e728b244aaeb56765` shows every known detail gap recovered, including `retry_exhausted/run_cap_deferred=1425`, `retry_exhausted=686`, `upstream_pressure/upstream_pressure_deferred=220`, `upstream_pressure=197`, and rate-limited rows; there are no pending or in-progress ChatGPT detail gaps. Owner diagnostics for both ChatGPT connections reported recovery admission `candidates=0`, `admitted=0`, `deferred=0`, and `stall.stalled=false`, proving the stale-pressure residue no longer blocks non-pressure recovery.)
 - [x] 5.6 Deploy the owner-started recovery continuation tranche and verify Amazon `cin_a8ec003e6d441205d646f178` drains or quarantines remaining eligible order-item gaps without repeated owner clicks. (Follow-up proof after PR #259: live run `run_1783464023399` recovered additional work and started continuation `run_1783464424703`; the continuation failed before connector execution because it leased a dead dynamic browser surface whose CDP endpoint was gone. PR #260 added one dynamic-surface readiness failover: invalidate/stop the stale surface, reacquire one fresh surface for the same run, then fail closed if readiness still fails. Deployed clean `origin/main` `a54611355` on 2026-07-07 after `controller_active_runs=0`; `COMPOSE_PROJECT_NAME=pdpp scripts/reference-stack.sh up --build-app` and `COMPOSE_PROJECT_NAME=pdpp scripts/reference-stack.sh verify` both completed `reference-stack: ok`; served revision `v0.19.3-25-ga54611355`. Live proof run `run_1783466388429` completed `succeeded`, recovered/terminalized order-item detail gaps, and automatically started continuation `run_1783466879005` without another owner click. That continuation hit the exact stale dynamic-surface readiness failure, released the stale surface, reacquired a fresh surface, reached `run.browser_surface_ready`, started, recovered detail gaps, completed `succeeded`, and started continuation `run_1783467240512`. The next continuation repeated the stale-surface failover path and emitted `run.detail_gap_recovered`, proving the loop continues useful work rather than dead-ending on a dead CDP endpoint.)
+
+## 6. Revision (live-instance follow-on: Amazon forward-walk re-fetch defect, 2026-07-21)
+
+- [x] 6.1 Diagnose: live Amazon `order_items` coverage read `partial`/`degraded`
+      indefinitely — `covered` pinned at exactly `MAX_DETAIL_ATTEMPTS_PER_RUN`
+      (200) across 3+ consecutive 12-hourly runs while `considered` grew.
+      Root cause: the current year is never frozen (orders are ongoing), so
+      `processListOrder` re-listed and re-attempted detail hydration for
+      EVERY order on EVERY run, including ones already durably hydrated by a
+      prior run — exhausting the per-run detail-attempt budget on repeat work
+      before it could reach genuinely new orders. The connector-neutral
+      recovery governor (section 3) was already draining every gap it was
+      served — this was never a recovery-admission or governor defect,
+      purely a connector forward-walk accounting defect that fed the
+      governor a stale/repeat workload every run.
+- [x] 6.2 First-cut fix (superseded by section 7 below): track hydrated order
+      ids in the `orders` STATE cursor as a plain id set, populated by both
+      the forward walk and the recovery pass, and skip `resolveOrderDetail`
+      (and re-emitting `order_items`) for orders already known-hydrated.
+- [x] 6.3 Add regression tests for the first-cut fix and re-run the Amazon
+      connector integration suite, typecheck, `openspec validate --strict`,
+      diff review.
+
+## 7. Revision (independent gate review near-miss: known-hydrated proof was permanent and unscoped, 2026-07-21)
+
+An independent adversarial review of section 6's first cut found a
+**confirmed data regression** (A1): the plain-id-set skip protected
+`order_items` from re-emission but let the order still flow through the
+`orders`-stream fingerprint gate with `detail: null`, silently downgrading
+already-good enriched records (recipient, payment, shipping, status_detail
+nulled) on the very next run. It also found the proof was effectively
+permanent (A3 — an order hydrated once was never re-fetched even after a
+real list-surface change, so detail-driven fields could go stale forever)
+and un-scoped by `wantsItems` (A4 — an orders-only run could mark an order
+known-hydrated with zero `order_items` ever emitted: a false-green coverage
+read with no recoverable gap). The review also found the Postgres half of
+the SIBLING Gmail rank-clamp fix (section 6 of
+`fix-gap-recovery-page-starvation`) had zero test coverage (A2) and that the
+all-frozen trailing-STATE guard's own comment overclaimed what it covered
+(A5).
+
+- [x] 7.1 Fix A1+A3 together with a change-trigger: promote the known-hydrated
+      store from a plain order-id set to `Record<orderId, listFingerprint>`,
+      where `listFingerprint` is the SAME `recordFingerprint` primitive the
+      `orders`-stream change-detection gate already uses, computed over
+      `buildOrderRecord(listOrder, null, ...)` (list-observable fields only —
+      delivery status, list total, list item count; excludes `fetched_at`).
+      In `processListOrder`: fingerprint match → skip the fetch AND skip
+      `emitOrderAndItems` entirely (no record on either stream — closes A1).
+      Fingerprint mismatch (list surface moved) → invalidate the entry and
+      fully re-hydrate, refreshing both streams enriched (closes A3; the
+      budget win is preserved because unchanged orders remain the
+      overwhelming majority). A legacy plain-id entry or missing fingerprint
+      decodes to "unknown list surface": one honest re-fetch, self-healing.
+      (`packages/polyfill-connectors/connectors/amazon/index.ts`:
+      `listSurfaceFingerprint`, `readPriorHydratedOrders`,
+      `EmitDeps.hydratedOrders`)
+- [x] 7.2 Fix A4: gate the forward-walk `hydratedOrders.set` on
+      `deps.wantsItems`, mirroring the recovery pass's own scope gate — the
+      map's honest meaning is "order_items durably emitted", so it is only
+      marked when that stream is actually in scope.
+- [x] 7.3 Fix A2: add the Postgres twin of the rank-clamp regression test in
+      `fix-gap-recovery-page-starvation` using the existing
+      `PDPP_TEST_POSTGRES_URL`-gated pattern, run against a dedicated
+      throwaway Postgres container (never the live database), and verify it
+      kills the Postgres-only mutation (reverting only the Postgres `LEAST`
+      clamp while SQLite stays fixed) while the SQLite twin stays green.
+      (`reference-implementation/test/connector-detail-gap-store.test.js`)
+- [x] 7.4 Fix A5: replace the `years.length === 0` trailing-STATE guard with
+      an `ordersStateEmitted` flag set inside the year loop, extracted as the
+      pure, directly-testable `shouldEmitTrailingOrdersState` predicate; the
+      trailing emit now correctly fires when every PLANNED year was frozen
+      (`years.length > 0` but the loop never reached its own STATE emit), not
+      only when zero years were planned.
+      (`packages/polyfill-connectors/connectors/amazon/index.ts`)
+- [x] 7.5 Add mutation-grade regressions for 7.1/7.2/7.4, each verified to
+      fail on the pre-revision code and pass on the fix: an already-hydrated,
+      UNCHANGED order emits nothing on either stream and never touches the
+      browser; a CHANGED list row invalidates the entry and fully
+      re-hydrates both streams with a refreshed fingerprint; a genuine
+      hydration records the correct fingerprint; a degraded attempt records
+      no entry; `wantsItems=false` never marks proof even on a real
+      hydration; the recovery path carries no `hydratedOrders` field at all
+      (cannot fabricate proof from a locator alone); the freed-budget
+      tail-convergence test now uses fingerprint-backed unchanged orders;
+      `shouldEmitTrailingOrdersState` fires exactly for the all-frozen case
+      and not otherwise. (`packages/polyfill-connectors/connectors/amazon/integration.test.ts`)
+- [x] 7.6 Re-run the full Amazon connector integration suite, the gap-store
+      suite WITH `PDPP_TEST_POSTGRES_URL` set against a dedicated throwaway
+      Postgres container, typecheck, `openspec validate --all --strict`,
+      touched-file lint, `git diff --check`.
+
+## 8. Gmail recovery byte-capacity boundary (2026-07-23)
+
+- [x] Determine that the generic governor has no appropriate attachment-byte
+      admission seam; retain its eligibility, pacing, and retry behavior.
+- [x] Record the Gmail-local bounded 4 MiB recovery-batch decision and its
+      deterministic acceptance target in the sibling starvation change.

@@ -59,6 +59,8 @@ export interface DetailGapStartEntry {
     [field: string]: unknown;
   } | null;
   gap_id: string;
+  /** Opaque, run-owned token required when settling a served recovery lease. */
+  lease_id?: string;
   record_key?: string | number | null;
   reference_only?: true;
   status: "pending";
@@ -152,12 +154,14 @@ export interface DetailGapMessage {
     kind: string;
     [field: string]: string | number | boolean | null | Record<string, string | number | boolean | null>;
   };
+  gap_id?: string;
   last_error?: {
     class?: string;
     http_status?: number;
     message?: string;
     network_pressure?: DetailGapNetworkPressure;
   };
+  lease_id?: string;
   list_cursor?: unknown;
   parent_stream?: string;
   reason: "rate_limited" | "retry_exhausted" | "temporary_unavailable" | "upstream_pressure";
@@ -207,10 +211,19 @@ export interface DetailCoverageMessage {
 
 export interface DetailGapRecoveredMessage {
   gap_id: string;
+  lease_id?: string;
   record_key?: string | number;
   reference_only: true;
   stream: string;
   type: "DETAIL_GAP_RECOVERED";
+}
+
+export interface DetailGapAttemptedMessage {
+  gap_id: string;
+  lease_id: string;
+  reference_only: true;
+  stream: string;
+  type: "DETAIL_GAP_ATTEMPTED";
 }
 
 export interface ProviderBudgetProgress {
@@ -246,7 +259,45 @@ export interface CollectionRateProgress {
   object: "collection_rate";
 }
 
+/**
+ * Aggregate-only outcome of Gmail's bounded served attachment-gap recovery
+ * lane. This is emitted on the lane's existing terminal PROGRESS summary;
+ * it carries no record identity, locator, provider identity, content, or
+ * error text.
+ */
+export interface AttachmentRecoveryOutcomeProgress {
+  admitted: number;
+  admitted_bytes: number;
+  attempted: number;
+  hydration_failed: number;
+  lookup_miss: number;
+  metadata_lookups: number;
+  object: "attachment_recovery_outcome";
+  recovered: number;
+  run_cap_deferred: number;
+  served: number;
+}
+
+/**
+ * Aggregate-only failure-stage evidence for Gmail served attachment recovery.
+ * This intentionally excludes item identity, provider responses, and raw
+ * status values so the terminal progress event remains safe to persist.
+ */
+export interface AttachmentHydrationFailureOutcomeProgress {
+  blob_upload_http_4xx: number;
+  blob_upload_http_5xx: number;
+  blob_upload_integrity_failed: number;
+  blob_upload_invalid_response: number;
+  blob_upload_transport_failed: number;
+  imap_download_failed: number;
+  object: "attachment_hydration_failure_outcome";
+  /** A failed hydration with no honest typed boundary classification. */
+  unclassified_failed: number;
+}
+
 export interface ProgressExtra {
+  attachment_hydration_failure_outcome?: AttachmentHydrationFailureOutcomeProgress;
+  attachment_recovery_outcome?: AttachmentRecoveryOutcomeProgress;
   count?: number;
   stream?: string;
   total?: number;
@@ -269,6 +320,8 @@ export type EmittedMessage =
       count?: number;
       stream?: string;
       total?: number;
+      attachment_hydration_failure_outcome?: AttachmentHydrationFailureOutcomeProgress;
+      attachment_recovery_outcome?: AttachmentRecoveryOutcomeProgress;
       provider_budget?: ProviderBudgetProgress;
       collection_rate?: CollectionRateProgress;
     }
@@ -283,6 +336,7 @@ export type EmittedMessage =
       recovery_hint?: string | { action?: string; retryable?: boolean };
     }
   | DetailGapMessage
+  | DetailGapAttemptedMessage
   | DetailCoverageMessage
   | DetailGapRecoveredMessage
   | DetailGapsPageRequestMessage

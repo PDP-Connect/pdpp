@@ -262,6 +262,46 @@ test("docker-neko-network-durability-smoke.sh uses a project-scoped PROFILE_ROOT
   );
 });
 
+test("docker-neko-network-durability-smoke.sh forces allocator recreation before proving dynamic process continuity", () => {
+  const scriptSource = readFileSync(SMOKE_SCRIPT, "utf8");
+
+  assert.match(
+    scriptSource,
+    /export NEKO_IMAGE="\$\{PROJECT_NAME\}-neko:local"/,
+    "the smoke must use a throwaway n.eko image tag rather than retagging a deployment image"
+  );
+  assert.match(
+    scriptSource,
+    /export NEKO_ALLOCATOR_IMAGE="\$\{PROJECT_NAME\}-neko-allocator:local"/,
+    "the smoke must use a throwaway allocator image tag rather than retagging a deployment image"
+  );
+  assert.match(
+    scriptSource,
+    /"\$\{DC\[@\]\}" up -d --force-recreate --no-deps neko-allocator/,
+    "the deployed-behavior smoke must force-recreate the allocator control plane"
+  );
+  assert.match(
+    scriptSource,
+    /assert_surface_continuity "after forced allocator recreation"/,
+    "the smoke must reject a forced control-plane replacement that changes the dynamic Chromium process"
+  );
+  assert.match(
+    scriptSource,
+    /before_chromium_epoch="\$\(chromium_epoch\)"/,
+    "the smoke must capture the Chromium process epoch before replacement"
+  );
+  assert.match(
+    scriptSource,
+    /\[\[ "\$after_chromium_epoch" == "\$before_chromium_epoch" \]\]/,
+    "the smoke must reject a Chromium restart inside an unchanged container"
+  );
+  assert.match(
+    scriptSource,
+    /after_allocator_id[\s\S]*!= "\$before_allocator_id"/,
+    "the smoke must prove that the forced-replacement boundary actually replaced the allocator"
+  );
+});
+
 test("docker-neko-network-durability-smoke.sh never honors an inherited PDPP_NEKO_PROFILE_STORAGE_ROOT", () => {
   // Independent review (2026-07-14) finding 3: the smoke scripts synthesized
   // a unique default profile root, but a caller shell that already exported

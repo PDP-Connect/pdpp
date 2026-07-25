@@ -39,6 +39,7 @@ export function readRuntimeCollectionFact(raw: unknown): RuntimeCollectionFact |
   if (typeof entry.stream !== "string" || !entry.stream) {
     return null;
   }
+  const coverageStatuses = readCoverageStatuses(entry.coverage_statuses);
   return {
     checkpoint: typeof entry.checkpoint === "string" ? entry.checkpoint : null,
     collected: readFiniteNumber(entry.collected, 0),
@@ -48,9 +49,17 @@ export function readRuntimeCollectionFact(raw: unknown): RuntimeCollectionFact |
     considered: readSafeNonNegativeInteger(entry.considered),
     covered: readSafeNonNegativeInteger(entry.covered),
     pending_detail_gaps: readFiniteNumber(entry.pending_detail_gaps, 0),
+    ...(coverageStatuses ? { coverage_statuses: coverageStatuses } : {}),
     skipped: readCollectionFactSkip(entry.skipped),
     stream: entry.stream,
   };
+}
+
+function readCoverageStatuses(value: unknown): readonly string[] | undefined {
+  if (!Array.isArray(value) || value.length === 0 || value.some((status) => typeof status !== "string" || !status)) {
+    return;
+  }
+  return [...new Set(value)].sort();
 }
 
 /**

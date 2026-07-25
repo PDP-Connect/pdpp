@@ -59,3 +59,173 @@ selected ahead of an unserved, equally-eligible row on a later selection.
   `last_attempt_at` — both backends SHALL treat an empty string the same as
   NULL (via `NULLIF`) rather than one backend aging from a different anchor
   than the other.
+
+#### Scenario: A row past the quarantine no-progress threshold is not starved forever behind a growing backlog
+
+- **WHEN** a pending row's `attempt_count` exceeds the quarantine policy's
+  `maxNoProgressAttempts` threshold
+- **AND** a backlog of other eligible rows keeps arriving and being served
+  ahead of it
+- **THEN** the row's selection rank SHALL NOT keep growing worse without
+  bound as its `attempt_count` climbs past the threshold
+- **AND** the row SHALL eventually be selected again once it has aged past
+  the rotation window, exactly as a row whose `attempt_count` equals the
+  threshold would
+- **AND** this SHALL hold so the row can reach quarantine evaluation
+  (`maybeQuarantineGap`) rather than remaining pending indefinitely with no
+  further attempts and no terminal classification.
+
+#### Scenario: The attempt-count rank clamp is proven independently on both storage backends
+
+- **WHEN** the attempt-count rank clamp is verified
+- **THEN** a regression SHALL exist for BOTH the SQLite and the Postgres
+  `pendingGapOrderBySql` branches, run against a real backend instance (a
+  dedicated throwaway database for Postgres, never a live/production
+  database)
+- **AND** each backend's regression SHALL independently fail when only that
+  backend's clamp is reverted, proving the two branches are not accidentally
+  coupled and that fixing one does not stand in as proof for the other.
+
+### Requirement: Recovery leases and provider attempts SHALL be separate durable facts
+
+The runtime SHALL claim a served detail gap with a unique run-owned lease before
+it sends the row to a connector. Claiming a lease SHALL NOT increment
+`attempt_count` or replace `last_attempt_at`. A connector SHALL explicitly
+report a provider attempt or a terminal recovery outcome; the runtime SHALL NOT
+infer that an otherwise-silent row was unattempted merely from `DONE:succeeded`.
+Lease attempt, recovery, re-deferral, and release mutations SHALL compare the
+same gap, run, and lease identities.
+
+#### Scenario: Legacy lease-less in-progress state is normalized at bootstrap
+
+- **WHEN** bootstrap upgrades a pre-lease schema containing an `in_progress`
+  detail gap with no lease run, lease id, or lease expiry
+- **THEN** bootstrap SHALL return that row to `pending`
+- **AND** it SHALL preserve the row's existing `attempt_count` and
+  `last_attempt_at` as prior real-attempt evidence.
+
+#### Scenario: Lease migration has a bounded mixed-version policy
+
+- **WHEN** the lease migration is deployed
+- **THEN** deployment SHALL drain active connector runs and restart only the
+  new runtime version before bootstrap normalizes legacy lease-less rows
+- **AND** bootstrap SHALL fail closed if the pre-lease schema still has a
+  durable active-run row
+- **AND** mixed old/new runtime operation SHALL be unsupported rather than
+  maintained by a recurring distributed compatibility mechanism.
+
+#### Scenario: A successful bounded prefix leaves its unadmitted suffix unattempted
+
+- **WHEN** a runtime serves multiple pending detail gaps
+- **AND** a connector cleanly completes after reporting a recovery outcome for
+  only an admitted prefix
+- **THEN** each remaining served row SHALL be `pending` with the same
+  `attempt_count` it had before that run
+- **AND** it SHALL retain any prior real `last_attempt_at` value unchanged.
+
+#### Scenario: An explicit attempt survives failed, cancelled, or crashed cleanup
+
+- **WHEN** a connector explicitly reports an attempt and then exits without a
+  recovery outcome
+- **THEN** cleanup SHALL return its owned lease to `pending` while retaining
+  that attempt's count and timestamp.
+
+#### Scenario: Gmail lookup misses explicitly settle an attempted lease
+
+- **WHEN** Gmail receives a served attachment gap with an owned lease
+- **AND** Gmail performs its bounded metadata lookup but cannot find the named
+  attachment
+- **THEN** Gmail SHALL report an explicit provider attempt followed by a
+  lease-owned `temporary_unavailable` re-deferral
+- **AND** the resulting pending row SHALL retain the real attempt evidence
+  rather than relying on a silent successful `DONE` inference.
+
+#### Scenario: Gmail's metadata-cap suffix remains untouched
+
+- **WHEN** Gmail reaches its bounded metadata-lookup cap before it begins a
+  served attachment gap
+- **THEN** it SHALL report neither an attempt nor an outcome for that untouched
+  suffix
+- **AND** runtime cleanup SHALL CAS-release the suffix without changing its
+  prior attempt count or timestamp.
+
+#### Scenario: Stale cleanup cannot release a re-served row
+
+- **WHEN** a lease expires, a later run reclaims and re-serves the gap, and the
+  earlier run subsequently cleans up
+- **THEN** the earlier cleanup SHALL not change the later lease, attempt count,
+  or timestamp on either SQLite or Postgres.
+
+#### Scenario: Same-page lease tokens cannot be swapped
+
+- **WHEN** two detail gaps are served in the same recovery page
+- **THEN** each SHALL receive a distinct `lease_id`
+- **AND** an outcome or explicit attempt naming one gap with the other gap's
+  lease id SHALL fail before settling either row.
+
+### Requirement: The runtime SHALL preserve only validated aggregate recovery outcomes on existing progress events
+
+When a connector includes an `attachment_recovery_outcome` on a `PROGRESS`
+message, the runtime SHALL accept only the fixed discriminator and exact set
+of non-negative integer aggregate fields: `served`, `metadata_lookups`,
+`attempted`, `admitted`, `admitted_bytes`, `recovered`, `lookup_miss`,
+`hydration_failed`, and `run_cap_deferred`. The runtime SHALL preserve a valid
+object on the existing `run.progress_reported` event and SHALL reject any
+extra field, identifier, locator, provider identity, content, error text, or
+invalid count as a connector protocol violation.
+
+#### Scenario: An aggregate recovery outcome reaches the existing spine without a new event type
+
+- **WHEN** a connector emits a valid `PROGRESS.attachment_recovery_outcome`
+- **THEN** the runtime SHALL record it on that same `run.progress_reported`
+  event
+- **AND** it SHALL NOT create a new durable subsystem or event type.
+
+#### Scenario: A recovery outcome cannot carry private detail
+
+- **WHEN** a connector emits an `attachment_recovery_outcome` with any field
+  outside the fixed aggregate allowlist
+- **THEN** the runtime SHALL reject the message before it reaches the spine.
+
+### Requirement: The runtime SHALL preserve only validated aggregate hydration failure stages on existing progress events
+
+When a connector includes `attachment_hydration_failure_outcome` on a
+`PROGRESS` message, the runtime SHALL accept only its fixed discriminator and
+the exact non-negative integer fields `imap_download_failed`,
+`blob_upload_transport_failed`, `blob_upload_http_4xx`,
+`blob_upload_http_5xx`, `blob_upload_invalid_response`, and
+`blob_upload_integrity_failed`, and `unclassified_failed`. The runtime SHALL preserve a valid object on
+the existing `run.progress_reported` event and SHALL reject every extra field,
+identifier, locator, filename, URL, message, body, raw status, credential,
+provider content, or invalid count as a connector protocol violation.
+It SHALL require this aggregate and `attachment_recovery_outcome` together and
+reject a pair whose stage counters do not sum exactly to
+`attachment_recovery_outcome.hydration_failed`.
+
+#### Scenario: Aggregate failure stages reach the existing spine without a new event type
+
+- **WHEN** a connector emits a valid
+  `PROGRESS.attachment_hydration_failure_outcome`
+- **THEN** the runtime SHALL record it on that same `run.progress_reported`
+  event
+- **AND** it SHALL NOT create a new durable subsystem or event type.
+
+#### Scenario: Hydration failure stages cannot carry private detail
+
+- **WHEN** a connector emits an `attachment_hydration_failure_outcome` with a
+  field outside the fixed aggregate allowlist
+- **THEN** the runtime SHALL reject the message before it reaches the spine.
+
+#### Scenario: Failure-stage aggregates remain exact
+
+- **WHEN** a connector emits either recovery aggregate without the other, or
+  emits stage counters whose sum differs from `hydration_failed`
+- **THEN** the runtime SHALL reject the message before it reaches the spine.
+
+#### Scenario: Success awaits accounting
+
+- **WHEN** a connector reports `DONE:succeeded` with outstanding leases
+- **THEN** the runtime SHALL await their durable CAS release before resolving
+  success, committing state, or emitting terminal success evidence
+- **AND** a durable accounting failure or explicitly-attempted lease without an
+  outcome SHALL fail the run.

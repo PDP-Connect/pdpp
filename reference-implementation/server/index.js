@@ -251,15 +251,20 @@ import {
   getConnectorSummaryForRoute,
   getOwnerConnectionDiagnostics,
   invalidateConnectorSummariesCache,
+  listOwnerVisibleConnectorInstances,
   listConnectorSummaries,
   listPendingApprovals,
 } from './ref-control.ts';
+import { composeFleetHealthVerdict } from './fleet-health.ts';
+import { auditStreamHealth } from '../../scripts/stream-health-audit/audit.mjs';
 import { unresolvedOwnerActionEvidenceFromSummary } from './owner-action-gate.js';
 import {
+  getConnectorSummaryEvidence,
   markConnectorSummaryEvidenceDirty,
   reconcileDirtyConnectorSummaryEvidence,
   runBoundedSummaryEvidenceSweep,
 } from './connector-summary-read-model.ts';
+import { hasForwardEvidenceDebt } from '../runtime/recovery-decision.ts';
 import { isHealthRelevant as isAttentionHealthRelevant } from '../runtime/attention.ts';
 import { getDefaultConnectorAttentionStore } from './stores/connector-attention-store.ts';
 import {
@@ -436,6 +441,7 @@ import {
   mountRefConnectorScheduleResume,
   mountRefConnectorScheduleUpsert,
   mountRefConnectorsList,
+  mountRefFleetHealth,
 } from './routes/ref-connectors.ts';
 import { mountRefStaticSecretCredentialCapture } from './routes/ref-static-secret-credentials.ts';
 import { mountRefStaticSecretDraftConnection } from './routes/ref-static-secret-draft-connection.ts';
@@ -848,7 +854,15 @@ function listReferenceLocalConnectorCatalogManifests() {
 async function ensureReferenceConnectorCatalogEntry(connectorId, connectorDisplayName) {
   const localCollectorManifest = readReferenceLocalConnectorCatalogManifest(connectorId);
   if (localCollectorManifest) {
-    await registerConnector(localCollectorManifest);
+    // Persist the catalog row + advance generations, but SKIP retrieval-index
+    // backfill. Enroll is a control-plane op; the backfill enters the
+    // connector-instance writer-admission fence (withConnectorInstanceWrite →
+    // pg_try_advisory_lock) shared with bulk ingest, which starves enrollment.
+    // It is also a no-op for a fresh enroll (the new instance has no records to
+    // index); real retrieval-index maintenance happens on the ingest write path
+    // and on any manifest (re)registration. See
+    // decouple-device-enrollment-from-ingest-writer-admission design D1.
+    await registerConnector(localCollectorManifest, { backfillRetrievalIndexes: false });
     return;
   }
   const connectorKey = canonicalConnectorKey(connectorId) ?? connectorId;
@@ -2855,7 +2869,7 @@ function resolveNekoWindowSettleProbe(probe) {
   return probe ?? defaultNekoWindowSettleProbe;
 }
 
-function buildAsApp(opts = {}) {
+export function buildAsApp(opts = {}) {
   const app = createApp({ logger: opts.logger });
   const nativeMode = !!resolveNativeManifest(opts);
   const providerName = resolveProviderName(opts);
@@ -3818,6 +3832,23 @@ function buildAsApp(opts = {}) {
   // owns owner-auth, namespace resolution, contract metadata, response
   // writing, and the `onScheduleMutation` callback.
   const attachActivationScheduleForConnection = createActivationScheduleAttacher(controller);
+  const getRuntimeStatus = () =>
+    controller
+      ? {
+          object: 'ref_runtime_status',
+          ok: true,
+          reason: null,
+          label: 'Collection runtime ready',
+          message: null,
+        }
+      : {
+          object: 'ref_runtime_status',
+          ok: false,
+          reason: 'controller_unavailable',
+          label: 'Collection runtime unavailable',
+          message:
+            'PDPP can still show saved sources, but automatic collection is paused until the reference runtime is back.',
+        };
 
   const refConnectorsContext = {
     requireOwnerSession: ownerAuth.requireOwnerSession,
@@ -3826,23 +3857,25 @@ function buildAsApp(opts = {}) {
     listConnectorSummaries: () => listConnectorSummaries(controller, { includeRunSummaries: 'singleton-active' }),
     getConnectorSummaryForRoute: (routeId) => getConnectorSummaryForRoute(routeId, controller),
     getConnectorDetail: (id) => getConnectorDetail(id, controller),
-    getRuntimeStatus: () =>
-      controller
-        ? {
-            object: 'ref_runtime_status',
-            ok: true,
-            reason: null,
-            label: 'Collection runtime ready',
-            message: null,
-          }
-        : {
-            object: 'ref_runtime_status',
-            ok: false,
-            reason: 'controller_unavailable',
-            label: 'Collection runtime unavailable',
-            message:
-              'PDPP can still show saved sources, but automatic collection is paused until the reference runtime is back.',
-          },
+    getRuntimeStatus,
+    getFleetHealthVerdict: async () => {
+      const ownerSubjectId = ownerAuth.subjectId || OWNER_AUTH_DEFAULT_SUBJECT_ID;
+      // Inventory and summaries consume one owner-visible snapshot. This
+      // boundary removes internal rows before reconciliation and preserves
+      // the configured owner subject instead of falling back to owner_local.
+      const inventory = await listOwnerVisibleConnectorInstances(ownerSubjectId);
+      const summaries = await listConnectorSummaries(controller, {
+        includeRunSummaries: 'singleton-active',
+        ownerSubjectId,
+        visibleConnections: inventory,
+      });
+      return composeFleetHealthVerdict({
+        inventory,
+        summaries,
+        runtime: getRuntimeStatus(),
+        coverageAudit: auditStreamHealth(summaries),
+      });
+    },
     invalidateConnectorSummariesCache,
     markConnectorSummaryEvidenceDirty,
     reconcileDirtyConnectorSummaryEvidence,
@@ -3888,6 +3921,7 @@ function buildAsApp(opts = {}) {
   };
 
   mountRefConnectorsList(app, refConnectorsContext);
+  mountRefFleetHealth(app, refConnectorsContext);
   mountRefConnectorDetail(app, refConnectorsContext);
 
   mountRefRecordsTimeline(app, refAdminContext);
@@ -4066,6 +4100,7 @@ function buildAsApp(opts = {}) {
     handleError,
     getOwnerSubjectId,
     enforceCollectorProtocolVersion,
+    emitSpineEvent,
     acceptedCollectorProtocolVersions,
     readCollectorProtocolHeader,
     generateSpineId,
@@ -5846,7 +5881,14 @@ export async function resolveNekoBrowserSurfaceControllerOptions({
     // actually live before the connector child is spawned. Prevents the
     // "ask the human for an OTP and discover the CDP socket was already
     // dead" failure mode that has burned Chase and USAA runs.
-    browserSurfaceReadinessProbe: createDefaultBrowserSurfaceReadinessProbe(),
+    // Dynamic mode has one configured readiness budget. It applies both while
+    // the allocator waits for a new surface and while the controller verifies
+    // the already-retained surface before dispatch. Leaving this probe on its
+    // five-second library default classified any slower semantic CDP command
+    // as dead, which triggers destructive surface replacement.
+    browserSurfaceReadinessProbe: createDefaultBrowserSurfaceReadinessProbe(
+      runtimeConfig.dynamic ? { timeoutMs: runtimeConfig.dynamic.readinessTimeoutMs } : {}
+    ),
   };
 
   if (runtimeConfig.dynamic) {
@@ -6244,6 +6286,35 @@ function createReferenceSchedulerManager({
           const message = err instanceof Error ? err.message : String(err);
           logger.error({ err: message }, `[scheduler] non-pressure recovery probe failed for ${connectorId}`);
           return 0;
+        }
+      },
+      getForwardEvidenceDebt: async (connectorId, connectorInstanceId, scheduleIntervalMs) => {
+        // Forward-evidence-debt bound for recovery-first selection
+        // (fix-pre-provenance-terminal-generation-semantics): bounds the
+        // otherwise-unbounded recovery-first priority so an existing
+        // non-pressure recovery backlog can never starve forward (fact-
+        // carrying) collection indefinitely.
+        //
+        // Reconciles just this one connection (the same scoped, cheap repair
+        // every other single-connection read uses) so the debt predicate
+        // reads a genuinely current evidence row, then passes the WHOLE row
+        // through — the predicate itself derives the newest per-stream
+        // `evidence_as_of` from `stream_latest_facts`, never the
+        // observation-timestamp `terminal_facts.as_of`.
+        //
+        // Fail-CLOSED to `false` (no debt) on error: a false positive would
+        // divert every failing tick to forward collection instead of
+        // draining recovery, which is a strictly worse failure mode than
+        // occasionally missing one debt-bounded forward run.
+        try {
+          const instanceId = connectorInstanceId || connectorId;
+          await reconcileDirtyConnectorSummaryEvidence([instanceId]);
+          const evidence = await getConnectorSummaryEvidence(instanceId);
+          return hasForwardEvidenceDebt(evidence, Date.now(), scheduleIntervalMs);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          logger.error({ err: message }, `[scheduler] forward-evidence-debt probe failed for ${connectorId}`);
+          return false;
         }
       },
       onInteraction: async (interaction) => {

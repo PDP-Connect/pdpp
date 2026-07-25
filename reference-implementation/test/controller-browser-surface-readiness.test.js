@@ -984,3 +984,135 @@ test("probe disabled (null) preserves legacy behavior: connector spawned, no pro
   assert.ok(!events.includes("run.browser_surface_ready"));
   assert.ok(!events.includes("run.browser_surface_probe_failed"));
 });
+
+// ─── Restart-lease-promotion: connectorInstanceId survives an empty
+// pendingBrowserSurfaceLaunches Map (the in-memory launch-options Map is
+// always empty on a fresh process, so promoteBrowserSurfaceLease must
+// restore connectorInstanceId from the persisted lease's surface_subject_id
+// rather than let it collapse to connector_id) ──────────────────────────────
+
+function setupPromotionHarness({
+  connectorId = "other-managed",
+  surfaceSubjectId,
+  pendingBrowserSurfaceLaunches = new Map(),
+} = {}) {
+  const surface = {
+    // Static-mode initial-surface compatibility (#isCompatibleInitialSurface)
+    // requires exactly this id.
+    surface_id: "neko-static",
+    backend: "neko",
+    profile_key: "managed-profile",
+    connector_id: connectorId,
+    cdp_url: "http://127.0.0.1:9222",
+    stream_base_url: "http://127.0.0.1:8080",
+    health: "ready",
+    created_at: "2026-05-12T11:00:00.000Z",
+    last_used_at: "2026-05-12T11:00:00.000Z",
+    ...(surfaceSubjectId ? { surface_subject_id: surfaceSubjectId } : {}),
+  };
+  const lease = {
+    lease_id: "lease_queued",
+    connector_id: connectorId,
+    profile_key: "managed-profile",
+    run_id: "run_after_restart",
+    status: "waiting_for_browser_surface",
+    priority_class: "interactive",
+    requested_at: "2026-05-12T12:10:02.000Z",
+    expires_at: "2026-05-12T12:40:02.000Z",
+    fencing_token: 0,
+    wait_reason: "capacity_full",
+    ...(surfaceSubjectId ? { surface_subject_id: surfaceSubjectId } : {}),
+  };
+  const leaseManager = new BrowserSurfaceLeaseManager({
+    config: {
+      managedConnectors: new Set([connectorId]),
+      surfaceCap: 1,
+      staticProfileKey: "managed-profile",
+      staticCdpHttpUrl: "http://127.0.0.1:9222",
+      staticStreamBaseUrl: "http://127.0.0.1:8080",
+      leaseWaitTimeoutMs: 60_000,
+      idleTtlMs: 600_000,
+      defaultPriorityClass: "background",
+      priorityRanks: DEFAULT_NEKO_PRIORITY_RANKS,
+      surfaceMode: "static",
+    },
+    // Fixed clock inside the lease's [requested_at, expires_at) window so
+    // pumpQueuedLeases promotes rather than expiring the queued lease.
+    now: () => new Date("2026-05-12T12:10:03.000Z"),
+    makeSurfaceId: () => "neko-static",
+    nextFencingToken: () => 7,
+    initialSurfaces: [surface],
+    initialLeases: [lease],
+  });
+
+  const calls = [];
+  const manager = createBrowserSurfaceManager({
+    activeRunInteractions: new Map(),
+    browserSurfaceAllocator: null,
+    browserSurfaceLeaseManager: leaseManager,
+    browserSurfaceLeaseStore: null,
+    browserSurfaceMidWaitPollIntervalMs: undefined,
+    browserSurfaceReadinessProbe: null,
+    browserSurfaceReadinessTimeoutMs: undefined,
+    browserSurfaceReplacementReceiptStore: null,
+    listPersistedActiveRuns: async () => [],
+    log: { error: () => {}, warn: () => {} },
+    pendingBrowserSurfaceLaunches,
+    scheduleRun: (schedConnectorId, options) => {
+      calls.push({ connectorId: schedConnectorId, options });
+    },
+    startupControllerRunReconciliation: Promise.resolve(),
+  });
+
+  return { leaseManager, calls, manager };
+}
+
+test("restart promotion restores connectorInstanceId from the persisted lease's surface_subject_id", async () => {
+  const { calls, manager } = setupPromotionHarness({
+    connectorId: "other-managed",
+    surfaceSubjectId: "other-managed-instance-2",
+  });
+
+  await manager.promoteBrowserSurfaceLeasesAfterBoot();
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].connectorId, "other-managed");
+  assert.equal(calls[0].options.runId, "run_after_restart");
+  assert.equal(
+    calls[0].options.connectorInstanceId,
+    "other-managed-instance-2",
+    "connectorInstanceId must be restored from the persisted lease's surface_subject_id, not collapse to connector_id",
+  );
+});
+
+test("restart promotion falls back to connector_id for a connector-wide lease (no surface_subject_id)", async () => {
+  const { calls, manager } = setupPromotionHarness({ connectorId: "managed" });
+
+  await manager.promoteBrowserSurfaceLeasesAfterBoot();
+
+  assert.equal(calls.length, 1);
+  assert.equal(
+    calls[0].options.connectorInstanceId,
+    "managed",
+    "a connector-wide lease (no surface_subject_id) must resolve connectorInstanceId to connector_id, preserving connector-wide semantics",
+  );
+});
+
+test("live (non-restart) promotion prefers a surviving pendingBrowserSurfaceLaunches entry over the persisted lease", async () => {
+  const { calls, manager } = setupPromotionHarness({
+    connectorId: "other-managed",
+    surfaceSubjectId: "stale-persisted-instance",
+    pendingBrowserSurfaceLaunches: new Map([
+      ["run_after_restart", { connectorInstanceId: "live-instance-from-memory", runId: "run_after_restart" }],
+    ]),
+  });
+
+  await manager.promoteBrowserSurfaceLeasesAfterBoot();
+
+  assert.equal(calls.length, 1);
+  assert.equal(
+    calls[0].options.connectorInstanceId,
+    "live-instance-from-memory",
+    "a surviving in-memory launch entry must win over the persisted-lease fallback",
+  );
+});

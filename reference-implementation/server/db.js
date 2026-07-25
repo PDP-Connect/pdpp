@@ -23,6 +23,10 @@ import Database from 'better-sqlite3';
 import { createHash } from 'node:crypto';
 import * as sqliteVec from 'sqlite-vec';
 import { canonicalConnectorKey } from './connector-key.js';
+import {
+  makeConnectorInstanceId as canonicalConnectorInstanceId,
+  makeConnectorInstanceSourceBindingKey as canonicalSourceBindingKey,
+} from './connector-instance-utils.ts';
 
 const DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 30_000;
 const LEGACY_SYNC_STATE_OWNER_SUBJECT_ID = 'owner_local';
@@ -214,6 +218,26 @@ CREATE TABLE IF NOT EXISTS connector_instances (
 
 CREATE INDEX IF NOT EXISTS idx_connector_instances_owner_connector_status
   ON connector_instances(owner_subject_id, connector_id, status);
+
+-- Durable record that a connector-instance IDENTITY was owner-deleted.
+-- connector_instance_id is deterministic (hash of owner + connector +
+-- source_kind + source_binding_key), so once deleteConnection removes the
+-- connector_instances row, that same id/binding key is free to be reused by
+-- a later upsert (e.g. a device-exporter re-enrollment under the same
+-- local_binding_name). This table is the durable fact that blocks that
+-- reuse: upsert's no-existing-row path checks it and fails closed with
+-- connection_tombstoned instead of silently resurrecting the identity.
+-- Identity + timestamp only -- no configuration, secrets, or record data.
+-- See openspec/changes/fix-owner-delete-resurrection.
+CREATE TABLE IF NOT EXISTS connector_instance_tombstones (
+  connector_instance_id TEXT PRIMARY KEY,
+  owner_subject_id      TEXT NOT NULL,
+  connector_id          TEXT NOT NULL,
+  source_kind           TEXT NOT NULL,
+  source_binding_key    TEXT NOT NULL,
+  deleted_at            TEXT NOT NULL,
+  UNIQUE(owner_subject_id, connector_id, source_kind, source_binding_key)
+);
 
 -- Per-connection encrypted static-secret credential store. A peer of the
 -- instance-scoped storage / schedule state: a single connector-declared static
@@ -473,6 +497,15 @@ CREATE TABLE IF NOT EXISTS device_source_instances (
   connector_id        TEXT NOT NULL,
   connector_instance_id TEXT,
   local_binding_id    TEXT NOT NULL,
+  -- Peer axis to connector_instances.source_kind ('local_device' |
+  -- 'browser_collector' for enrollment-derived rows). Part of the stable
+  -- enrollment binding-identity key alongside (device_id owner, connector_id,
+  -- local_binding_id) so distinct connector-instance kinds sharing an owner,
+  -- connector, and binding name can never adopt or collide with each other's
+  -- orphaned identity. Nullable for legacy rows written before this column
+  -- existed; those never participate in orphan adoption (see
+  -- find-orphaned-device-for-binding.sql).
+  source_kind         TEXT,
   display_name        TEXT,
   status              TEXT NOT NULL DEFAULT 'active',
   last_error_json     TEXT,
@@ -1073,6 +1106,10 @@ CREATE TABLE IF NOT EXISTS connector_detail_gaps (
   discovered_run_id   TEXT,
   last_run_id         TEXT,
   recovered_run_id    TEXT,
+  lease_run_id        TEXT,
+  lease_id            TEXT,
+  lease_attempted     INTEGER NOT NULL DEFAULT 0,
+  lease_expires_at    TEXT,
   created_at          TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
   CHECK (status IN ('pending', 'in_progress', 'recovered', 'terminal'))
@@ -1932,14 +1969,6 @@ function hashKey(value) {
   return createHash('sha256').update(value).digest('hex');
 }
 
-function sourceBindingKey(sourceBinding) {
-  return hashKey(stableJson(sourceBinding ?? {}));
-}
-
-function connectorInstanceId(ownerSubjectId, connectorId, sourceKind, bindingKey) {
-  return `cin_${hashKey(`${ownerSubjectId}\n${connectorId}\n${sourceKind}\n${bindingKey}`).slice(0, 24)}`;
-}
-
 function localDeviceConnectorId(connectorId) {
   return `local-device:${encodeURIComponent(connectorId)}`;
 }
@@ -2177,6 +2206,24 @@ function migrateLocalDeviceConnectorInstances(raw, opts = {}) {
           AND source_binding_key = ?
         LIMIT 1`
     );
+    // Durability guard: this sweep runs on EVERY boot (not a one-time
+    // upgrade — the top-of-function gate only checks that today's columns
+    // exist), re-upserting a connector_instances row for every
+    // device_source_instances row it finds. Owner delete clears
+    // device_source_instances.connector_instance_id but leaves connector_id/
+    // local_binding_id populated, so without this check a plain process
+    // restart alone -- no re-enrollment, no HTTP call -- would silently
+    // resurrect a deleted connection the next time this sweep runs. See
+    // openspec/changes/fix-owner-delete-resurrection.
+    const getTombstoneByBinding = raw.prepare(
+      `SELECT connector_instance_id
+         FROM connector_instance_tombstones
+        WHERE owner_subject_id = ?
+          AND connector_id = ?
+          AND source_kind = 'local_device'
+          AND source_binding_key = ?
+        LIMIT 1`
+    );
     const upsertInstance = raw.prepare(
       `INSERT INTO connector_instances(
          connector_instance_id, owner_subject_id, connector_id, display_name, status,
@@ -2212,7 +2259,17 @@ function migrateLocalDeviceConnectorInstances(raw, opts = {}) {
         local_binding_name: row.local_binding_id,
         source_instance_id: row.source_instance_id,
       };
-      const bindingKey = sourceBindingKey(sourceBinding);
+      // The live enrollment path (ref-device-exporters.ts) keys this binding
+      // by {kind, local_binding_name} only -- device_id/source_instance_id
+      // are per-enrollment facts, not part of the binding's identity (a
+      // device reinstall re-pairs the SAME logical binding). Using the
+      // canonical shared derivation (the same one `upsert`/the tombstone
+      // table use) here, rather than hashing the full sourceBinding
+      // (including device_id/source_instance_id), is required for the
+      // tombstone check below to find the SAME identity delete recorded --
+      // and matches the Postgres counterpart of this migration, which
+      // already used the canonical shape.
+      const bindingKey = canonicalSourceBindingKey({ kind: 'local_device', local_binding_name: row.local_binding_id });
       // Relocate legacy `local-device:<id>:<source>` rows to the bare canonical
       // connector key — the same key the live ingest/read paths use — rather
       // than to a still-prefixed `local-device:<id>` form. Connection isolation
@@ -2258,10 +2315,32 @@ function migrateLocalDeviceConnectorInstances(raw, opts = {}) {
           `Cannot migrate local-device source_instance_id '${row.source_instance_id}': existing binding uses connector_instance_id '${existingBindingInstanceId}' but legacy rows use '${legacyInstanceId}'.`
         );
       }
+      // No live row anywhere references this identity (no current, existing-
+      // binding, or legacy-table instance id) -- this is the bare-INSERT
+      // path that a resurrection would take. Check the tombstone BEFORE
+      // computing/using a freshly derived id: an owner-deleted identity
+      // must never be silently re-materialized by this sweep, on this or
+      // any future boot. Mirrors the guard in the store's own `upsert`.
+      if (!currentInstanceId && !existingBindingInstanceId && !legacyInstanceId) {
+        const tombstone = getTombstoneByBinding.get(row.owner_subject_id, connectorKey, bindingKey);
+        if (tombstone) {
+          if (typeof opts.onSchemaMigration === 'function') {
+            opts.onSchemaMigration({
+              name: 'local_device_connector_instances',
+              skippedTombstonedRow: {
+                deviceId: row.device_id,
+                sourceInstanceId: row.source_instance_id,
+                connectorId: connectorKey,
+              },
+            });
+          }
+          continue;
+        }
+      }
       const resolvedInstanceId = currentInstanceId
         || existingBindingInstanceId
         || legacyInstanceId
-        || connectorInstanceId(row.owner_subject_id, connectorKey, 'local_device', bindingKey);
+        || canonicalConnectorInstanceId(row.owner_subject_id, connectorKey, 'local_device', bindingKey);
       const createdAt = row.created_at || now;
       const updatedAt = row.updated_at || now;
       const displayName = row.display_name || row.local_binding_id || row.connector_id;
@@ -2597,6 +2676,40 @@ function migrateLexicalSearchInstanceColumns(raw, opts = {}) {
 }
 
 function migrateConnectorDetailGapInstanceColumns(raw, opts = {}) {
+  // A recovery lease is distinct from a recovery attempt. A pre-lease schema
+  // can contain interrupted work with no owner tuple; schema bootstrap is the
+  // one bounded point that converts that legacy state back to retryable work.
+  // Deployment requires zero active runs and a single-version restart, so this
+  // is not a mixed-version compatibility protocol.
+  const needsLeaseMigration = [
+    'lease_run_id',
+    'lease_id',
+    'lease_attempted',
+    'lease_expires_at',
+  ].some((column) => !hasTableColumn(raw, 'connector_detail_gaps', column));
+  if (needsLeaseMigration) {
+    const activeRuns = raw.prepare('SELECT COUNT(*) AS count FROM controller_active_runs').get();
+    if (Number(activeRuns.count) > 0) {
+      throw new Error('detail-gap lease migration requires zero active connector runs; drain runs and perform a single-version restart');
+    }
+  }
+  addColumnIfMissing(raw, 'connector_detail_gaps', 'lease_run_id', 'TEXT');
+  addColumnIfMissing(raw, 'connector_detail_gaps', 'lease_id', 'TEXT');
+  addColumnIfMissing(raw, 'connector_detail_gaps', 'lease_attempted', 'INTEGER NOT NULL DEFAULT 0');
+  addColumnIfMissing(raw, 'connector_detail_gaps', 'lease_expires_at', 'TEXT');
+  const legacyLeaseLess = raw.prepare(`
+    UPDATE connector_detail_gaps
+    SET status = 'pending', lease_attempted = 0
+    WHERE status = 'in_progress'
+      AND lease_run_id IS NULL AND lease_id IS NULL AND lease_expires_at IS NULL
+  `).run();
+  if (legacyLeaseLess.changes > 0 && typeof opts.onSchemaMigration === 'function') {
+    opts.onSchemaMigration({
+      name: 'connector_detail_gap_legacy_lease_reclaim',
+      rebuilt: false,
+      backfilledRows: legacyLeaseLess.changes,
+    });
+  }
   const hasInstance = hasTableColumn(raw, 'connector_detail_gaps', 'connector_instance_id');
   if (!hasInstance) {
     addColumnIfMissing(raw, 'connector_detail_gaps', 'connector_instance_id', 'TEXT');
@@ -3851,6 +3964,7 @@ export function initDb(path = ':memory:', opts = {}) {
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_enrollment_codes', 'local_binding_id', "TEXT NOT NULL DEFAULT 'default'"));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_enrollment_codes', 'display_name', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_source_instances', 'connector_instance_id', 'TEXT'));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_source_instances', 'source_kind', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_source_instances', 'last_error_json', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_source_instances', 'last_heartbeat_at', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_source_instances', 'last_heartbeat_status', 'TEXT'));

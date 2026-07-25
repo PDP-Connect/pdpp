@@ -68,3 +68,59 @@ or to explain the state to the owner without vague "Checking" copy.
 - Amazon order-item recovery is the immediate proving case, but the contract is
   connector-neutral and applies to any first-party connector that emits durable
   recoverable detail gaps.
+
+### Revision (live-instance follow-on, 2026-07-21)
+
+Live evidence on Amazon showed `order_items` health stuck `degraded`/`partial`
+indefinitely even though the recovery governor's own admission diagnostics
+reported zero pending candidates — the governor was correctly draining every
+gap it was served, but Amazon's forward walk kept re-generating the same
+~200-order workload every 12-hour run instead of making net progress, because
+it re-attempted detail hydration for orders already durably hydrated by a
+prior run (the current year never freezes, so it is re-listed every run).
+This adds a connector-neutral requirement — a forward walk must not
+re-attempt already-covered detail work — and the concrete Amazon fix.
+
+### Revision (independent gate review near-miss, 2026-07-21)
+
+An independent adversarial review of the first cut of this fix found a
+**confirmed data regression**: the initial "known-hydrated order id set"
+design skipped the re-fetch but still let the order flow through the
+existing `orders`-stream fingerprint gate with `detail: null`, which
+silently **downgraded already-good enriched records** (recipient, payment,
+shipping, status_detail nulled) on the very next run — empirically
+reproduced with a two-run probe (real hydration, then the skip path
+overwriting it with nulled fields). The review also found the proof was
+permanent (an order hydrated once was never re-fetched even after a real
+list-surface change — delivery progressed, a return appeared — so
+detail-driven fields silently went stale) and un-scoped by `wantsItems` (an
+orders-only run could mark an order known-hydrated with zero `order_items`
+ever emitted, producing a false-green coverage read with no recoverable
+gap).
+
+This revision closes all three by changing what "known-hydrated" proves:
+
+- **Proof semantics, corrected:** "known-hydrated" now means "`order_items`
+  durably emitted for this order **AND** the order's list-surface fingerprint
+  (delivery status, list total, list item count — reusing the same
+  `recordFingerprint` primitive the existing `orders`-stream change-detection
+  gate already uses) has not moved since." The known-hydrated store is
+  `Record<orderId, listSurfaceFingerprint>`, not a plain id set.
+- **Already-hydrated AND unchanged:** skip the detail fetch and skip
+  `emitOrderAndItems` entirely — no record on either stream is re-emitted, so
+  there is nothing to downgrade.
+- **Already-hydrated but list surface CHANGED:** the stale entry is
+  invalidated and the order is fully re-hydrated, refreshing both streams —
+  detail-driven fields never go stale behind an unbounded "hydrated once,
+  proven forever" claim.
+- **Scope-honest:** the map is only written when `wantsItems` is true,
+  mirroring the recovery pass's existing scope gate — an orders-only run can
+  still fetch detail for order enrichment without falsely marking
+  `order_items` covered.
+- A legacy or missing per-order fingerprint (pre-fix state, or the recovery
+  pass — which has no list-page row to fingerprint against) is treated as
+  "unknown list surface": one honest re-fetch, self-healing from that run
+  onward.
+
+See `specs/polyfill-runtime/spec.md` and tasks section 6 for the full
+diagnosis, near-miss, and fix.

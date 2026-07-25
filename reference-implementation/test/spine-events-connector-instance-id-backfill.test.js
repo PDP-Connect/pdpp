@@ -135,7 +135,7 @@ function seedSqliteTerminalEventOldShape(connectorInstanceId, streams, { identit
 }
 
 test(
-  'SQLite: migration backfills identity but keeps pre-generation terminal facts historical',
+  'SQLite: migration backfills identity and a never-advanced connection consumes pre-generation terminal facts as current',
   withTempDbPath(async (dbPath) => {
     // Boot 1: create the connection + a current evidence row at checkpoint 0
     // (no terminal events exist yet) — the migration/column/index already
@@ -175,17 +175,115 @@ test(
       'identity migration never invents a source generation for an old terminal row',
     );
 
-    // The real SCOPED path sees the row but refuses it as historical.
+    // fix-pre-provenance-terminal-generation-semantics: the connection's
+    // durable generation has never advanced past 0, so the real SCOPED path
+    // consumes the unstamped event as current-generation evidence — the
+    // pre-provenance era and generation 0 are the same declaration epoch.
     const scoped = await foldConnectorSummaryStreamFacts(['cin_backfill_target']);
     assert.equal(scoped.participants, 1);
-    assert.equal(scoped.folded, 0);
-    assert.equal(scoped.refused, 1);
+    assert.equal(scoped.folded, 1, 'a never-advanced connection consumes its unstamped terminal history as current');
+    assert.equal(scoped.refused, 0);
 
     const evidence = await getConnectorSummaryEvidence('cin_backfill_target');
-    assert.equal(evidence.stream_facts_event_seq, 0, 'historical rows do not advance current terminal proof');
-    assert.equal(evidence.stream_latest_facts, null);
+    assert.equal(evidence.stream_facts_event_seq, targetEventSeq, 'the pre-provenance event advances the current terminal checkpoint');
+    assert.ok(evidence.stream_latest_facts, 'the pre-provenance fact is now the current stored fact map');
+    assert.equal(evidence.terminal_facts?.state, 'current');
+    assert.equal(evidence.terminal_facts?.reason_code, null);
+
+    closeDb();
+  }),
+);
+
+test(
+  'SQLite: a genuine generation transition permanently refuses prior unstamped and stamped-zero history',
+  withTempDbPath(async (dbPath) => {
+    initDb(dbPath);
+    seedSqliteConnection('cin_backfill_transition', MANIFEST.connector_id, MANIFEST);
+    await rebuildConnectorSummaryEvidence();
+
+    // Pre-transition: an unstamped (pre-provenance) terminal event at
+    // generation 0 — consumed as current, per the fix above. Reboot first so
+    // the identity-backfill migration populates the event's
+    // `connector_instance_id` column from `data_json` (a scoped fold reads
+    // that column directly, not `data_json`).
+    seedSqliteTerminalEventOldShape('cin_backfill_transition', [
+      { stream: 'messages', resolved: true, record_count: 5 },
+    ]);
+    closeDb();
+    initDb(dbPath);
+    const preTransition = await foldConnectorSummaryStreamFacts(['cin_backfill_transition']);
+    assert.equal(preTransition.folded, 1);
+    const beforeTransition = await getConnectorSummaryEvidence('cin_backfill_transition');
+    assert.equal(beforeTransition.terminal_facts?.state, 'current');
+
+    // A genuine manifest transition: advance the connection's durable
+    // generation directly (mirrors what `persistManifestAndAdvanceGenerations`
+    // does on a real manifest change: `manifest_generation = manifest_generation
+    // + 1`, `dirty = 1, state = 'stale'`), then let the real reconcile barrier
+    // sync the evidence row's own `manifest_generation` column — exactly as
+    // the production registry transaction plus its reconcile pass would.
+    getDb()
+      .prepare('UPDATE connector_instances SET manifest_generation = 1 WHERE connector_instance_id = ?')
+      .run('cin_backfill_transition');
+    getDb()
+      .prepare("UPDATE connector_summary_evidence SET dirty = 1, state = 'stale' WHERE connector_instance_id = ?")
+      .run('cin_backfill_transition');
+    await rebuildConnectorSummaryEvidence();
+
+    // A converged fold pass with ZERO new terminal events since the
+    // transition boundary (the ordinary case immediately after
+    // `rebuildConnectorSummaryEvidence()`'s own reconcile-triggered fold)
+    // MUST preserve the transition's historical write, not silently heal to
+    // current on pure silence — `seedFoldState` now seeds
+    // `generationCurrentByInstance` from each participant's own incoming
+    // `terminal_facts_state`, so "no qualifying event this round" inherits
+    // the row's already-non-current verdict instead of defaulting to true.
+    const rightAfterTransition = await getConnectorSummaryEvidence('cin_backfill_transition');
+    assert.equal(
+      rightAfterTransition.terminal_facts?.state,
+      'stale',
+      'a converged zero-new-event fold pass after a generation transition must preserve the historical write',
+    );
+    assert.equal(rightAfterTransition.terminal_facts?.reason_code, 'terminal_facts_historical');
+
+    // Simulate the pre-transition event now carrying a generation-0 stamp
+    // (as if it had been stamped just before the transition landed) and
+    // force one more fold pass. The event already sits at/below this
+    // connection's checkpoint (nothing new to read), so `folded`/`refused`
+    // are both genuinely zero this pass — the assertion that matters is that
+    // the state stays historical, not that this specific pass counts a refusal.
+    getDb().exec("UPDATE spine_events SET manifest_generation = 0 WHERE connector_instance_id = 'cin_backfill_transition' AND manifest_generation IS NULL");
+    const afterTransition = await foldConnectorSummaryStreamFacts(['cin_backfill_transition']);
+    assert.equal(afterTransition.folded, 0, 'post-transition, the generation-0-stamped history is not consumed as new proof');
+
+    const evidence = await getConnectorSummaryEvidence('cin_backfill_transition');
     assert.equal(evidence.terminal_facts?.state, 'stale');
     assert.equal(evidence.terminal_facts?.reason_code, 'terminal_facts_historical');
+
+    // A post-transition terminal event, stamped with the new generation, IS
+    // consumed as current.
+    getDb().exec('DROP TRIGGER IF EXISTS stamp_terminal_manifest_generation');
+    getDb()
+      .prepare(
+        `INSERT INTO spine_events(
+           event_id, event_seq, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+           actor_type, actor_id, object_type, object_id, status, run_id, connector_instance_id, manifest_generation, data_json, version
+         )
+         VALUES('evt_post_transition', (SELECT COALESCE(MAX(event_seq),0)+1 FROM spine_events), 'run.completed', ?, ?, 'test', 'trace_post', 'runtime', 'test-connector', 'run', 'run_post', 'succeeded', 'run_post', 'cin_backfill_transition', 1, ?, '1')`,
+      )
+      .run(
+        NOW,
+        NOW,
+        JSON.stringify({
+          connector_instance_id: 'cin_backfill_transition',
+          connection_id: 'cin_backfill_transition',
+          collection_facts: { reference_only: true, schema_version: 1, streams: [{ stream: 'messages', resolved: true, record_count: 11 }] },
+        }),
+      );
+    const postTransitionFold = await foldConnectorSummaryStreamFacts(['cin_backfill_transition']);
+    assert.equal(postTransitionFold.folded, 1, 'a post-transition, correctly-stamped terminal event is consumed as current');
+    const finalEvidence = await getConnectorSummaryEvidence('cin_backfill_transition');
+    assert.equal(finalEvidence.terminal_facts?.state, 'current');
 
     closeDb();
   }),
@@ -224,15 +322,21 @@ test(
       'a genuinely unattributable legacy event (no identity in data_json) stays NULL — the backfill never fabricates one',
     );
 
-    // Scoped fold for the target sees ONLY its own backfilled row.
+    // Scoped fold for the target sees ONLY its own backfilled row — the
+    // unattributed event's column is genuinely NULL, so it can never match
+    // the scoped `connector_instance_id IN (...)` read at all (it is never
+    // "scoped in", not merely refused). The source-attributed event IS
+    // consumed as current (never-advanced, generation 0) — proving no
+    // blanket resurrection: attribution is still the load-bearing gate, only
+    // the generation-match predicate changed.
     const scoped = await foldConnectorSummaryStreamFacts(['cin_backfill_target']);
-    assert.equal(scoped.participants, 1);
-    assert.equal(scoped.folded, 0);
-    assert.equal(scoped.refused, 1, 'the source-attributed legacy event is historical; unattributed history is never scoped in');
+    assert.equal(scoped.participants, 1, 'only the source-attributed row is scoped in; the unattributed row is invisible to a scoped read');
+    assert.equal(scoped.folded, 1, 'the source-attributed legacy event is consumed as current-generation evidence');
+    assert.equal(scoped.refused, 0);
 
     const targetEvidence = await getConnectorSummaryEvidence('cin_backfill_target');
-    assert.equal(targetEvidence.stream_latest_facts, null);
-    assert.equal(targetEvidence.terminal_facts?.state, 'stale');
+    assert.ok(targetEvidence.stream_latest_facts, 'the attributed pre-provenance fact is now the current stored fact map');
+    assert.equal(targetEvidence.terminal_facts?.state, 'current');
     const unrelatedEvidence = await getConnectorSummaryEvidence('cin_backfill_unrelated');
     assert.equal(unrelatedEvidence.stream_facts_event_seq, 0, 'the unrelated connection is untouched by the target-scoped fold');
 
@@ -241,7 +345,7 @@ test(
 );
 
 test(
-  'SQLite: the real mounted route and startup sweep preserve historical terminal uncertainty after reboot',
+  'SQLite: the real mounted route and startup sweep converge a never-advanced connection to current terminal facts after reboot',
   withTempDbPath(async (dbPath) => {
     initDb(dbPath);
     seedSqliteConnection('cin_backfill_route', MANIFEST.connector_id, MANIFEST);
@@ -252,7 +356,9 @@ test(
       )
       .run(MANIFEST.connector_id, NOW, NOW);
     await rebuildConnectorSummaryEvidence();
-    seedSqliteTerminalEventOldShape('cin_backfill_route', [{ stream: 'messages', resolved: true, record_count: 1 }]);
+    const routeEventSeq = seedSqliteTerminalEventOldShape('cin_backfill_route', [
+      { stream: 'messages', resolved: true, record_count: 1 },
+    ]);
     closeDb();
 
     initDb(dbPath);
@@ -265,15 +371,20 @@ test(
       'canonical records remain visible independently of terminal provenance',
     );
 
-    assert.equal(routeSummary.terminal_facts.state, 'stale');
+    // fix-pre-provenance-terminal-generation-semantics: this connection has
+    // never advanced past generation 0, so its pre-provenance terminal event
+    // is consumed as current — no per-row repair, no data migration, this is
+    // the existing reconcile-before-read barrier replaying it under the new
+    // fold-contract version.
+    assert.equal(routeSummary.terminal_facts.state, 'current');
 
     // The startup sweep (which pages connections into the same scoped
-    // barrier) preserves the same source-provenance refusal.
+    // barrier) independently converges to the same current verdict.
     const sweep = await runBoundedSummaryEvidenceSweep({ maxDurationMs: 60_000, pageSize: 25 });
     assert.equal(sweep.incomplete, false);
     const evidence = await getConnectorSummaryEvidence('cin_backfill_route');
-    assert.equal(evidence.stream_facts_event_seq, 0);
-    assert.equal(evidence.terminal_facts?.state, 'stale');
+    assert.equal(evidence.stream_facts_event_seq, routeEventSeq);
+    assert.equal(evidence.terminal_facts?.state, 'current');
 
     closeDb();
   }),
@@ -342,7 +453,7 @@ async function cleanupPostgres() {
 }
 
 test(
-  'real PostgreSQL: migration backfills identity but refuses pre-generation terminal facts',
+  'real PostgreSQL: migration backfills identity and a never-advanced connection consumes pre-generation terminal facts as current',
   { skip: !POSTGRES_URL },
   async () => {
     let beforeCheckpoint;
@@ -379,17 +490,103 @@ test(
       );
       assert.equal(eventRow.rows[0].manifest_generation, null, 'bootstrap does not invent legacy source provenance');
 
+      // fix-pre-provenance-terminal-generation-semantics: never-advanced
+      // (generation 0) connection consumes its unstamped terminal event as
+      // current.
       const scoped = await foldConnectorSummaryStreamFacts(['cin_backfill_target_pg']);
       assert.equal(scoped.participants, 1);
-      assert.equal(scoped.folded, 0);
-      assert.equal(scoped.refused, 1);
+      assert.equal(scoped.folded, 1);
+      assert.equal(scoped.refused, 0);
 
       const evidence = await getConnectorSummaryEvidence('cin_backfill_target_pg');
-      assert.equal(Number(evidence.stream_facts_event_seq), beforeCheckpoint);
-      assert.equal(evidence.stream_latest_facts, null);
+      assert.ok(Number(evidence.stream_facts_event_seq) > beforeCheckpoint, 'the pre-provenance event advances the checkpoint');
+      assert.ok(evidence.stream_latest_facts, 'the pre-provenance fact is now current');
+      assert.equal(evidence.terminal_facts?.state, 'current');
+      assert.equal(evidence.terminal_facts?.reason_code, null);
+    } finally {
+      await cleanupPostgres();
+      await closePostgresStorage();
+    }
+  },
+);
+
+test(
+  'real PostgreSQL: a genuine generation transition permanently refuses prior unstamped history',
+  { skip: !POSTGRES_URL },
+  async () => {
+    await initPostgresStorage({ backend: 'postgres', databaseUrl: POSTGRES_URL });
+    try {
+      await cleanupPostgres();
+      await seedPostgresConnection('cin_backfill_transition_pg', MANIFEST.connector_id, MANIFEST);
+      await rebuildConnectorSummaryEvidence();
+      await seedPostgresTerminalEventOldShape('cin_backfill_transition_pg', [
+        { stream: 'messages', resolved: true, record_count: 5 },
+      ]);
+    } finally {
+      await closePostgresStorage();
+    }
+
+    // "Reboot": the bootstrap DDL (including the identity backfill UPDATE)
+    // runs again on initPostgresStorage, populating the event's
+    // connector_instance_id column from data_json.
+    await initPostgresStorage({ backend: 'postgres', databaseUrl: POSTGRES_URL });
+    try {
+      const preTransition = await foldConnectorSummaryStreamFacts(['cin_backfill_transition_pg']);
+      assert.equal(preTransition.folded, 1, 'never-advanced connection consumes the pre-provenance event as current');
+      const beforeTransition = await getConnectorSummaryEvidence('cin_backfill_transition_pg');
+      assert.equal(beforeTransition.terminal_facts?.state, 'current');
+
+      // A genuine manifest transition: advance the durable generation and
+      // dirty evidence, mirroring the production registry transaction
+      // (`persistManifestAndAdvanceGenerations`: `manifest_generation =
+      // manifest_generation + 1`, `dirty = 1, state = 'stale'`).
+      await postgresQuery('UPDATE connector_instances SET manifest_generation = 1 WHERE connector_instance_id = $1', [
+        'cin_backfill_transition_pg',
+      ]);
+      await postgresQuery(
+        "UPDATE connector_summary_evidence SET dirty = 1, state = 'stale' WHERE connector_instance_id = $1",
+        ['cin_backfill_transition_pg'],
+      );
+      await rebuildConnectorSummaryEvidence();
+
+      // A converged fold pass with ZERO new terminal events since the
+      // transition boundary MUST preserve the transition's historical write,
+      // not silently heal to current on pure silence — `seedFoldState` seeds
+      // `generationCurrentByInstance` from each participant's own incoming
+      // `terminal_facts_state`, so "no qualifying event this round" inherits
+      // the row's already-non-current verdict instead of defaulting to true.
+      const rightAfterTransition = await getConnectorSummaryEvidence('cin_backfill_transition_pg');
+      assert.equal(
+        rightAfterTransition.terminal_facts?.state,
+        'stale',
+        'a converged zero-new-event fold pass after a generation transition must preserve the historical write',
+      );
+      assert.equal(rightAfterTransition.terminal_facts?.reason_code, 'terminal_facts_historical');
+
+      // Simulate the pre-transition event now carrying a generation-0 stamp
+      // and force one more fold pass. The event already sits at/below this
+      // connection's checkpoint (nothing new to read), so `folded` is
+      // genuinely zero this pass — the assertion that matters is that the
+      // state stays historical.
+      await postgresQuery(
+        "UPDATE spine_events SET manifest_generation = 0 WHERE connector_instance_id = $1 AND manifest_generation IS NULL",
+        ['cin_backfill_transition_pg'],
+      );
+
+      const afterTransition = await foldConnectorSummaryStreamFacts(['cin_backfill_transition_pg']);
+      assert.equal(afterTransition.folded, 0, 'post-transition, the generation-0-stamped history is not consumed as new proof');
+
+      const evidence = await getConnectorSummaryEvidence('cin_backfill_transition_pg');
       assert.equal(evidence.terminal_facts?.state, 'stale');
       assert.equal(evidence.terminal_facts?.reason_code, 'terminal_facts_historical');
     } finally {
+      await postgresQuery('DELETE FROM connector_summary_evidence WHERE connector_instance_id = $1', [
+        'cin_backfill_transition_pg',
+      ]);
+      await postgresQuery('DELETE FROM spine_events WHERE connector_instance_id = $1', ['cin_backfill_transition_pg']);
+      await postgresQuery('DELETE FROM connector_instances WHERE connector_instance_id = $1', [
+        'cin_backfill_transition_pg',
+      ]);
       await cleanupPostgres();
       await closePostgresStorage();
     }
@@ -436,10 +633,15 @@ test(
       assert.equal(byId[unrelatedEventId], 'cin_backfill_unrelated_pg');
       assert.equal(byId[unattributedEventId], null, 'a genuinely unattributable legacy event stays NULL on real PostgreSQL too');
 
+      // Scoped fold sees ONLY the source-attributed row — the unattributed
+      // event's column is genuinely NULL, so it can never match the scoped
+      // `connector_instance_id = ANY(...)` read (invisible, not merely
+      // refused). The attributed event IS consumed as current
+      // (never-advanced, generation 0).
       const scoped = await foldConnectorSummaryStreamFacts(['cin_backfill_target_pg']);
       assert.equal(scoped.participants, 1);
-      assert.equal(scoped.folded, 0);
-      assert.equal(scoped.refused, 1);
+      assert.equal(scoped.folded, 1);
+      assert.equal(scoped.refused, 0);
 
       const unrelatedEvidence = await getConnectorSummaryEvidence('cin_backfill_unrelated_pg');
       assert.equal(Number(unrelatedEvidence.stream_facts_event_seq), unrelatedBaseline, 'the unrelated connection is untouched by the target-scoped fold');

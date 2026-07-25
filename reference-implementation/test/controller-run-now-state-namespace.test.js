@@ -7,11 +7,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { closeDb, initDb } from "../server/db.js";
+import { closeDb, getDb, initDb } from "../server/db.js";
 import {
   __resetControllerInteractionStateForTests,
   createController,
 } from "../runtime/controller.ts";
+import { reconcileDirtyConnectorSummaryEvidence } from "../server/connector-summary-read-model.ts";
 import { getSyncState, putSyncState } from "../server/records.js";
 import { makeDefaultAccountConnectorInstanceId } from "../server/stores/connector-instance-store.ts";
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from "../server/owner-auth.ts";
@@ -122,6 +123,63 @@ function detailGapStoreForContinuation(rowsByCall) {
       return rows;
     },
   };
+}
+
+// Recovery-first work selection (`resolveEffectiveRecoveryOnly`, controller.ts)
+// now also consults the connection's own forward-evidence-debt bound
+// (fix-pre-provenance-terminal-generation-semantics), which reads a real
+// `connector_summary_evidence` row. A `pendingRecoveryGap()` fixture implies a
+// real prior run against a real registered connection (gaps are only ever
+// written by an actual run), so seed the minimal `connectors` /
+// `connector_instances` row plus a CURRENT, fresh `connector_summary_evidence`
+// row for `cin_recovery` — the realistic state such a connection would be in,
+// distinct from the "aged/historical evidence" case the debt bound exists to
+// bound (covered separately by the dispatch-governor and recovery-decision
+// suites).
+async function seedCurrentRecoveryConnection() {
+  const now = new Date().toISOString();
+  getDb()
+    .prepare("INSERT OR IGNORE INTO connectors(connector_id, manifest, created_at) VALUES (?, ?, ?)")
+    .run(AMAZON, JSON.stringify(AMAZON_MANIFEST), now);
+  getDb()
+    .prepare(
+      `INSERT OR IGNORE INTO connector_instances(
+         connector_instance_id, owner_subject_id, connector_id, display_name, status,
+         source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
+       ) VALUES ('cin_recovery', 'owner_1', ?, 'x', 'active', 'account', 'cin_recovery', '{}', ?, ?, NULL)`,
+    )
+    .run(AMAZON, now, now);
+  // A genuinely fresh, real forward-evidence fact map — not a fabricated
+  // `connector_summary_evidence` row. The fold's own bootstrap/reconcile
+  // logic wipes any fact map with no backing `spine_events` row, so a real
+  // terminal event must be seeded and folded through the actual pipeline.
+  // The forward-evidence-debt predicate (fix-pre-provenance-terminal-
+  // generation-semantics, P1-A) reads the newest per-stream `evidence_as_of`
+  // from `stream_latest_facts`, so a "current, recently-collected" fixture
+  // must actually carry one via a real fold, or it reads as debt (empty fact
+  // map -> debt=true) and these recovery-first tests would incorrectly
+  // divert to forward mode.
+  getDb()
+    .prepare(
+      `INSERT INTO spine_events(
+         event_id, event_seq, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+         actor_type, actor_id, object_type, object_id, status, run_id, connector_instance_id, manifest_generation, data_json, version
+       ) VALUES ('evt_seed_current_recovery', (SELECT COALESCE(MAX(event_seq),0)+1 FROM spine_events), 'run.completed', ?, ?, 'test', 'trace_seed_current_recovery', 'runtime', 'test-connector', 'run', 'run_seed_current_recovery', 'succeeded', 'run_seed_current_recovery', 'cin_recovery', 0, ?, '1')`,
+    )
+    .run(
+      now,
+      now,
+      JSON.stringify({
+        connector_instance_id: "cin_recovery",
+        connection_id: "cin_recovery",
+        collection_facts: {
+          reference_only: true,
+          schema_version: 1,
+          streams: [{ stream: "order_items", checkpoint: "committed", considered: 1, collected: 1 }],
+        },
+      }),
+    );
+  await reconcileDirtyConnectorSummaryEvidence(["cin_recovery"]);
 }
 
 test("explicit connection state is handed to the connector run and yields incremental mode", async (t) => {
@@ -271,6 +329,7 @@ test("runNow forwards recoveryOnly to the runtime", async (t) => {
 
 test("runNow continues eligible recovery after a successful progress batch", async (t) => {
   freshDb(t);
+  await seedCurrentRecoveryConnection();
 
   const calls = [];
   const controller = makeController(calls, {
@@ -314,6 +373,7 @@ test("runNow continues eligible recovery after a successful progress batch", asy
 
 test("runNow continues eligible recovery after a terminalized poison item", async (t) => {
   freshDb(t);
+  await seedCurrentRecoveryConnection();
 
   const calls = [];
   const controller = makeController(calls, {
@@ -348,6 +408,7 @@ test("runNow continues eligible recovery after a terminalized poison item", asyn
 
 test("runNow continues eligible recovery after terminal known-gap progress", async (t) => {
   freshDb(t);
+  await seedCurrentRecoveryConnection();
 
   const calls = [];
   const controller = makeController(calls, {
@@ -480,6 +541,7 @@ test("runNow does not continue recovery for owner-required pending work", async 
 
 test("manual runNow with no explicit recoveryOnly and an eligible non-pressure gap backlog launches recoveryOnly", async (t) => {
   freshDb(t);
+  await seedCurrentRecoveryConnection();
 
   const calls = [];
   const controller = makeController(calls, {
@@ -550,6 +612,7 @@ test("explicit recoveryOnly:false from the caller is never overridden by recover
 
 test("force:true still selects eligible non-pressure recovery by default (force only bypasses the pressure cooldown gate)", async (t) => {
   freshDb(t);
+  await seedCurrentRecoveryConnection();
 
   const calls = [];
   const controller = makeController(calls, {

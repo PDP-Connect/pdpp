@@ -4317,6 +4317,28 @@ rl.on('line', (line) => {
       effective_rate_per_min: 40,
       last_backoff: { at_interval_ms: 2000, reason: 'throttle' },
     };
+    const attachmentRecoveryOutcome = {
+      object: 'attachment_recovery_outcome',
+      served: 5,
+      metadata_lookups: 3,
+      attempted: 3,
+      admitted: 2,
+      admitted_bytes: 200000,
+      recovered: 2,
+      lookup_miss: 0,
+      hydration_failed: 22,
+      run_cap_deferred: 3,
+    };
+    const attachmentHydrationFailureOutcome = {
+      object: 'attachment_hydration_failure_outcome',
+      imap_download_failed: 1,
+      blob_upload_transport_failed: 2,
+      blob_upload_http_4xx: 3,
+      blob_upload_http_5xx: 4,
+      blob_upload_invalid_response: 5,
+      blob_upload_integrity_failed: 6,
+      unclassified_failed: 1,
+    };
 
     const { connectorPath, cleanup } = createTestConnector([
       {
@@ -4324,6 +4346,8 @@ rl.on('line', (line) => {
         stream: 'items',
         message: 'Collection rate 40/min (interval 1500ms; ceiling 60/min)',
         collection_rate: collectionRate,
+        attachment_recovery_outcome: attachmentRecoveryOutcome,
+        attachment_hydration_failure_outcome: attachmentHydrationFailureOutcome,
       },
       { type: 'DONE', status: 'succeeded', records_emitted: 0 },
     ]);
@@ -4347,6 +4371,8 @@ rl.on('line', (line) => {
       assert.equal(result.status, 'succeeded');
       assert.equal(seenProgress.length, 1);
       assert.deepEqual(seenProgress[0].collection_rate, collectionRate);
+      assert.deepEqual(seenProgress[0].attachment_recovery_outcome, attachmentRecoveryOutcome);
+      assert.deepEqual(seenProgress[0].attachment_hydration_failure_outcome, attachmentHydrationFailureOutcome);
 
       // collection_rate must appear in the run.progress_reported spine event.
       const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
@@ -4354,6 +4380,10 @@ rl.on('line', (line) => {
       assert.ok(progressEvent, 'expected run.progress_reported event');
       assert.deepEqual(progressEvent.data.collection_rate, collectionRate,
         'collection_rate must be persisted in the spine event data');
+      assert.deepEqual(progressEvent.data.attachment_recovery_outcome, attachmentRecoveryOutcome,
+        'the aggregate recovery outcome must be preserved on the existing progress spine event');
+      assert.deepEqual(progressEvent.data.attachment_hydration_failure_outcome, attachmentHydrationFailureOutcome,
+        'the aggregate hydration failure stages must be preserved on the existing progress spine event');
 
       // collection_rate must also appear on the terminal event for post-run
       // projection (the reference→snapshot plumbing hop).
@@ -4382,6 +4412,103 @@ rl.on('line', (line) => {
     } finally {
       cleanup();
       await closeServer(server);
+    }
+  });
+
+  await t.test('runtime rejects incomplete or mismatched attachment recovery aggregates before the progress spine', async (t) => {
+    const recoveryOutcome = {
+      object: 'attachment_recovery_outcome',
+      served: 1,
+      metadata_lookups: 1,
+      attempted: 1,
+      admitted: 1,
+      admitted_bytes: 16,
+      recovered: 0,
+      lookup_miss: 0,
+      hydration_failed: 1,
+      run_cap_deferred: 0,
+    };
+    const failureOutcome = {
+      object: 'attachment_hydration_failure_outcome',
+      imap_download_failed: 0,
+      blob_upload_transport_failed: 0,
+      blob_upload_http_4xx: 0,
+      blob_upload_http_5xx: 0,
+      blob_upload_invalid_response: 0,
+      blob_upload_integrity_failed: 0,
+      unclassified_failed: 1,
+    };
+    const invalidPairs = [
+      {
+        name: 'recovery-only aggregate',
+        progress: { attachment_recovery_outcome: recoveryOutcome },
+      },
+      {
+        name: 'failure-only aggregate',
+        progress: { attachment_hydration_failure_outcome: failureOutcome },
+      },
+      {
+        name: 'mismatched aggregate sum',
+        progress: {
+          attachment_recovery_outcome: { ...recoveryOutcome, hydration_failed: 0 },
+          attachment_hydration_failure_outcome: failureOutcome,
+        },
+      },
+    ];
+
+    for (const invalidPair of invalidPairs) {
+      await t.test(invalidPair.name, async () => {
+        const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+        const { asPort, rsPort } = server;
+        const { ownerToken, connectorId } = await setupConnector(server, asPort);
+        const asUrl = `http://localhost:${asPort}`;
+        const { connectorPath, cleanup } = createTestConnector([
+          {
+            type: 'PROGRESS',
+            stream: 'items',
+            message: 'Gmail served attachment-gap recovery summary',
+            ...invalidPair.progress,
+          },
+          { type: 'DONE', status: 'succeeded', records_emitted: 0 },
+        ]);
+
+        try {
+          let capturedError = null;
+          await assert.rejects(
+            runConnector({
+              connectorPath,
+              connectorId,
+              ownerToken,
+              manifest: MINIMAL_MANIFEST,
+              state: null,
+              collectionMode: 'full_refresh',
+              persistState: true,
+              rsUrl: `http://localhost:${rsPort}`,
+              onInteraction: async () => ({}),
+            }),
+            (err) => {
+              capturedError = err;
+              assert.equal(err.failure_reason, 'connector_protocol_violation');
+              return true;
+            },
+          );
+
+          assert.ok(capturedError?.run_id, 'protocol-violation errors should expose run_id for reference inspection');
+          const { body: runTimeline } = await fetchJson(
+            `${asUrl}/_ref/runs/${encodeURIComponent(capturedError.run_id)}/timeline`
+          );
+          assert.ok(
+            !(runTimeline.data || []).some((event) => event.event_type === 'run.progress_reported'),
+            'invalid aggregate pairs must not enter the progress spine'
+          );
+          const failedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.failed');
+          assert.ok(failedEvent, 'invalid aggregate pairs must terminalize the run');
+          assert.equal(failedEvent.data.reason, 'connector_protocol_violation');
+        } finally {
+          cleanup();
+          await closeServer(server);
+        }
+      });
     }
   });
 

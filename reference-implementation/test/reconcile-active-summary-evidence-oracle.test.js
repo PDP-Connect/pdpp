@@ -397,38 +397,102 @@ test("SQLite rebuild refuses pre-generation terminal facts and accepts a post-mu
   }),
 );
 
-test("SQLite warm v2 terminal projection is invalidated before a route can trust generationless history", () =>
+test("SQLite: pre-provenance fact event straddled by later stamped recovery-only fact-less events stays current, sourced from the pre-provenance run", () =>
+  withSqlite(async () => {
+    seedConnectorSqlite();
+    seedInstanceSqlite();
+
+    // The pre-provenance (unstamped) fact-carrying terminal event — a
+    // never-advanced connection's only real evidence.
+    seedTerminalCollectionFactSqlite({ eventSeq: 1, eventId: "evt_straddle_pre_provenance" });
+    getDb().prepare("UPDATE spine_events SET manifest_generation = NULL WHERE event_id = ?").run("evt_straddle_pre_provenance");
+    await listBypassCache();
+    const preProvenanceFacts = (await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts;
+    assert.match(JSON.stringify(preProvenanceFacts), /messages/, "the pre-provenance event is consumed as current (never-advanced, generation 0)");
+
+    // Two LATER, correctly-stamped (generation 0) recovery-only events: no
+    // `collection_facts` block at all — `parseTerminalFactEvent` returns
+    // null for these, so `foldTerminalEventFacts` returns before the
+    // generation gate even runs (§1.3 fact 1 of the design review). They
+    // must neither heal (unnecessary — the pre-provenance facts are already
+    // current) nor poison (they carry no facts to poison with) the gate.
+    const insertRecoveryOnlyEvent = (eventSeq, eventId) => {
+      getDb()
+        .prepare(
+          `INSERT INTO spine_events(
+             event_id, event_seq, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+             actor_type, actor_id, object_type, object_id, status, run_id, connector_instance_id, manifest_generation, data_json, version
+           ) VALUES (?, ?, 'run.completed', ?, ?, 'test', ?, 'runtime', 'test-connector', 'run', ?, 'succeeded', ?, ?, 0, ?, '1')`,
+        )
+        .run(
+          eventId,
+          eventSeq,
+          NOW,
+          NOW,
+          `trace_${eventSeq}`,
+          `run_${eventSeq}`,
+          `run_${eventSeq}`,
+          INSTANCE_ID,
+          JSON.stringify({
+            connector_instance_id: INSTANCE_ID,
+            connection_id: INSTANCE_ID,
+            recovery_only: true,
+          }),
+        );
+    };
+    insertRecoveryOnlyEvent(2, "evt_straddle_recovery_only_1");
+    insertRecoveryOnlyEvent(3, "evt_straddle_recovery_only_2");
+
+    const afterRecoveryOnly = summaryFor(await listBypassCache());
+    assert.equal(afterRecoveryOnly.terminal_facts.state, "current", "recovery-only fact-less events do not disturb the current pre-provenance verdict");
+    assert.equal(afterRecoveryOnly.terminal_facts.reason_code, null);
+    assert.deepEqual(
+      (await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts,
+      preProvenanceFacts,
+      "the current fact map is still sourced from the pre-provenance run, unchanged by the fact-less recovery-only events",
+    );
+  }),
+);
+
+test("SQLite warm v3 terminal projection is invalidated and replayed, now accepting generationless history for a never-advanced connection", () =>
   withSqlite(async ({ databasePath }) => {
     seedConnectorSqlite();
     seedInstanceSqlite();
-    seedTerminalCollectionFactSqlite({ eventSeq: 1, eventId: "evt_v2_warm_upgrade" });
+    seedTerminalCollectionFactSqlite({ eventSeq: 1, eventId: "evt_v3_warm_upgrade" });
 
     // This is the pre-upgrade projection: its source event was stamped while
     // the current binary is running, then its durable row is made to look
-    // exactly like the version-2 binary's already-current terminal map.
+    // exactly like the version-3 binary's already-refused (historical) map —
+    // v3 refused this event outright because it treated EVERY NULL stamp as
+    // historical regardless of the connection's generation (fix-pre-
+    // provenance-terminal-generation-semantics' whole point). Blanking the
+    // stamp to NULL models "this event predates generation provenance."
     await getConnectorSummaryForRoute(INSTANCE_ID);
     assert.match(JSON.stringify((await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts), /messages/);
     getDb()
-      .prepare("UPDATE connector_summary_evidence SET stream_facts_fold_version = 2 WHERE connector_instance_id = ?")
+      .prepare("UPDATE connector_summary_evidence SET stream_facts_fold_version = 3, terminal_facts_state = 'stale', terminal_facts_reason_code = 'terminal_facts_historical', stream_latest_facts_json = NULL WHERE connector_instance_id = ?")
       .run(INSTANCE_ID);
     getDb()
       .prepare("UPDATE spine_events SET manifest_generation = NULL WHERE event_id = ?")
-      .run("evt_v2_warm_upgrade");
+      .run("evt_v3_warm_upgrade");
 
-    // Model the additive provenance migration: the source row is legacy but
-    // the disposable v2 projection survives deployment. The first real route
-    // read after restart must replay and reject it, not inherit the old map.
+    // Model the fold-contract upgrade: the source row is legacy (v3) but the
+    // disposable v3 projection survives deployment. The first real route
+    // read after restart must replay it under v4 semantics — the connection
+    // has never advanced past generation 0, so the unstamped event is now
+    // consumed as CURRENT evidence, healing the false-historical projection
+    // without any data migration.
     closeDb();
     initDb(databasePath);
     invalidateConnectorSummariesCache();
     const warmRead = await getConnectorSummaryForRoute(INSTANCE_ID);
     const warmEvidence = await getConnectorSummaryEvidence(INSTANCE_ID);
-    assert.equal(warmRead?.terminal_facts.state, "stale");
-    assert.equal(warmRead?.terminal_facts.reason_code, "terminal_facts_historical");
-    assert.equal(warmEvidence.stream_latest_facts, null);
-    assert.equal(Number(getDb().prepare("SELECT stream_facts_fold_version FROM connector_summary_evidence WHERE connector_instance_id = ?").get(INSTANCE_ID).stream_facts_fold_version), 3);
+    assert.equal(warmRead?.terminal_facts.state, "current");
+    assert.equal(warmRead?.terminal_facts.reason_code, null);
+    assert.match(JSON.stringify(warmEvidence.stream_latest_facts), /messages/);
+    assert.equal(Number(getDb().prepare("SELECT stream_facts_fold_version FROM connector_summary_evidence WHERE connector_instance_id = ?").get(INSTANCE_ID).stream_facts_fold_version), 4);
 
-    const historicalProjection = {
+    const healedProjection = {
       facts: warmEvidence.stream_latest_facts,
       reason: warmRead?.terminal_facts.reason_code,
       state: warmRead?.terminal_facts.state,
@@ -443,11 +507,12 @@ test("SQLite warm v2 terminal projection is invalidated before a route can trust
         reason: repeatedRestart?.terminal_facts.reason_code,
         state: repeatedRestart?.terminal_facts.state,
       },
-      historicalProjection,
-      "the upgraded stale projection is stable across repeated restarts",
+      healedProjection,
+      "the healed current projection is stable across repeated restarts",
     );
 
-    // Deleting the projector cannot change the source-derived verdict.
+    // Deleting the projector cannot change the source-derived verdict — the
+    // invalidate-and-replay contract produces the same verdict as delete/rebuild.
     getDb().prepare("DELETE FROM connector_summary_evidence WHERE connector_instance_id = ?").run(INSTANCE_ID);
     closeDb();
     initDb(databasePath);
@@ -459,19 +524,13 @@ test("SQLite warm v2 terminal projection is invalidated before a route can trust
         reason: rebuilt?.terminal_facts.reason_code,
         state: rebuilt?.terminal_facts.state,
       },
-      historicalProjection,
+      healedProjection,
       "first warm-upgrade read and delete/rebuild have identical terminal evidence",
     );
-
-    seedTerminalCollectionFactSqlite({ eventSeq: 2, eventId: "evt_v3_current_generation" });
-    const recovered = await getConnectorSummaryForRoute(INSTANCE_ID);
-    assert.equal(recovered?.terminal_facts.state, "current");
-    assert.equal(recovered?.terminal_facts.reason_code, null);
-    assert.match(JSON.stringify((await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts), /messages/);
   }),
 );
 
-test("SQLite route retries a lost v3 replay before trusting a mixed-version v2 terminal map", () =>
+test("SQLite route retries a lost v4 replay before trusting a mixed-version v2 terminal map", () =>
   withSqlite(async () => {
     seedConnectorSqlite();
     seedInstanceSqlite();
@@ -511,14 +570,17 @@ test("SQLite route retries a lost v3 replay before trusting a mixed-version v2 t
         baselineFoldVersion: 2,
         foldVersion: 2,
       });
-      assert.equal(v2WriteAccepted, true, "premise: the realistic v2 delta wins before v3 owns the row");
+      assert.equal(v2WriteAccepted, true, "premise: the realistic v2 delta wins before v4 owns the row");
       __testOnlySetFoldPauseHook(null);
       releaseReplay();
       const firstRoute = await routePromise;
       const firstEvidence = await getConnectorSummaryEvidence(INSTANCE_ID);
       assert.equal(firstRoute?.terminal_facts.state, "current");
-      assert.equal(Number(getDb().prepare("SELECT stream_facts_fold_version FROM connector_summary_evidence WHERE connector_instance_id = ?").get(INSTANCE_ID).stream_facts_fold_version), 3);
-      assert.deepEqual(Object.keys(firstEvidence.stream_latest_facts ?? {}).sort(), [EMPTY_STREAM]);
+      assert.equal(Number(getDb().prepare("SELECT stream_facts_fold_version FROM connector_summary_evidence WHERE connector_instance_id = ?").get(INSTANCE_ID).stream_facts_fold_version), 4);
+      // fix-pre-provenance-terminal-generation-semantics: the connection has
+      // never advanced past generation 0, so BOTH the v2 delta's EMPTY_STREAM
+      // fact AND the replayed unstamped `messages` event are consumed.
+      assert.deepEqual(Object.keys(firstEvidence.stream_latest_facts ?? {}).sort(), [EMPTY_STREAM, STREAM].sort());
 
       const firstProjection = {
         facts: firstEvidence.stream_latest_facts,
@@ -544,7 +606,7 @@ test("SQLite route retries a lost v3 replay before trusting a mixed-version v2 t
         baselineFoldVersion: 2,
         foldVersion: 2,
       });
-      assert.equal(laterV2WriteAccepted, false, "v2 cannot overwrite the converged v3 row");
+      assert.equal(laterV2WriteAccepted, false, "v2 cannot overwrite the converged v4 row");
     } finally {
       __testOnlySetFoldPauseHook(null);
     }
@@ -1111,7 +1173,7 @@ test(
 );
 
 test(
-  "dedicated PostgreSQL warm v2 terminal projection is invalidated before a route can trust generationless history",
+  "dedicated PostgreSQL warm v3 terminal projection is invalidated and replayed, now accepting generationless history for a never-advanced connection",
   { skip: !POSTGRES_URL },
   async () => {
     await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
@@ -1151,20 +1213,26 @@ test(
       );
       await getConnectorSummaryForRoute(INSTANCE_ID);
       assert.match(JSON.stringify((await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts), /messages/);
-      await postgresQuery("UPDATE connector_summary_evidence SET stream_facts_fold_version = 2 WHERE connector_instance_id = $1", [INSTANCE_ID]);
+      await postgresQuery(
+        "UPDATE connector_summary_evidence SET stream_facts_fold_version = 3, terminal_facts_state = 'stale', terminal_facts_reason_code = 'terminal_facts_historical', stream_latest_facts_json = NULL WHERE connector_instance_id = $1",
+        [INSTANCE_ID],
+      );
       await postgresQuery("UPDATE spine_events SET manifest_generation = NULL WHERE event_id = $1", ["evt_v2_warm_upgrade_pg"]);
 
+      // The fold-contract upgrade replays the v3 row under v4 semantics: the
+      // connection has never advanced past generation 0, so its unstamped
+      // event is now consumed as current evidence — no data migration.
       await closePostgresStorage();
       await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
       invalidateConnectorSummariesCache();
       const warmRead = await getConnectorSummaryForRoute(INSTANCE_ID);
       const warmEvidence = await getConnectorSummaryEvidence(INSTANCE_ID);
-      assert.equal(warmRead?.terminal_facts.state, "stale");
-      assert.equal(warmRead?.terminal_facts.reason_code, "terminal_facts_historical");
-      assert.equal(warmEvidence.stream_latest_facts, null);
-      assert.equal(Number((await postgresQuery("SELECT stream_facts_fold_version FROM connector_summary_evidence WHERE connector_instance_id = $1", [INSTANCE_ID])).rows[0].stream_facts_fold_version), 3);
+      assert.equal(warmRead?.terminal_facts.state, "current");
+      assert.equal(warmRead?.terminal_facts.reason_code, null);
+      assert.match(JSON.stringify(warmEvidence.stream_latest_facts), /messages/);
+      assert.equal(Number((await postgresQuery("SELECT stream_facts_fold_version FROM connector_summary_evidence WHERE connector_instance_id = $1", [INSTANCE_ID])).rows[0].stream_facts_fold_version), 4);
 
-      const historicalProjection = {
+      const healedProjection = {
         facts: warmEvidence.stream_latest_facts,
         reason: warmRead?.terminal_facts.reason_code,
         state: warmRead?.terminal_facts.state,
@@ -1179,8 +1247,8 @@ test(
           reason: repeatedRestart?.terminal_facts.reason_code,
           state: repeatedRestart?.terminal_facts.state,
         },
-        historicalProjection,
-        "the upgraded stale projection is stable across repeated restarts on PostgreSQL",
+        healedProjection,
+        "the healed current projection is stable across repeated restarts on PostgreSQL",
       );
 
       await postgresQuery("DELETE FROM connector_summary_evidence WHERE connector_instance_id = $1", [INSTANCE_ID]);
@@ -1194,33 +1262,9 @@ test(
           reason: rebuilt?.terminal_facts.reason_code,
           state: rebuilt?.terminal_facts.state,
         },
-        historicalProjection,
+        healedProjection,
         "first warm-upgrade read and delete/rebuild have identical terminal evidence on PostgreSQL",
       );
-
-      await postgresQuery(
-        `INSERT INTO spine_events(
-           event_id, event_seq, event_type, occurred_at, recorded_at, scenario_id, trace_id,
-           actor_type, actor_id, object_type, object_id, status, run_id, connector_instance_id, data_json, version
-         ) VALUES($1, $2, 'run.completed', $3, $3, 'test', $4, 'runtime', 'test-connector', 'run', $5, 'succeeded', $5, $6, $7::jsonb, '1')`,
-        [
-          "evt_v3_current_generation_pg",
-          eventSeq + 1,
-          NOW,
-          "trace_v3_current_generation_pg",
-          "run_v3_current_generation_pg",
-          INSTANCE_ID,
-          JSON.stringify({
-            connector_instance_id: INSTANCE_ID,
-            connection_id: INSTANCE_ID,
-            collection_facts: { reference_only: true, schema_version: 1, streams: [{ stream: STREAM, collected: 2, checkpoint: "committed" }] },
-          }),
-        ],
-      );
-      const recovered = await getConnectorSummaryForRoute(INSTANCE_ID);
-      assert.equal(recovered?.terminal_facts.state, "current");
-      assert.equal(recovered?.terminal_facts.reason_code, null);
-      assert.match(JSON.stringify((await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts), /messages/);
     } finally {
       await postgresQuery("DELETE FROM connector_summary_evidence WHERE connector_instance_id = $1", [INSTANCE_ID]);
       await postgresQuery("DELETE FROM spine_events WHERE connector_instance_id = $1", [INSTANCE_ID]);
@@ -1232,7 +1276,7 @@ test(
 );
 
 test(
-  "dedicated PostgreSQL route retries a lost v3 replay before trusting a mixed-version v2 terminal map",
+  "dedicated PostgreSQL route retries a lost v4 replay before trusting a mixed-version v2 terminal map",
   { skip: !POSTGRES_URL },
   async () => {
     await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
@@ -1308,14 +1352,18 @@ test(
           baselineFoldVersion: 2,
           foldVersion: 2,
         });
-        assert.equal(v2WriteAccepted, true, "premise: the realistic v2 delta wins before v3 owns the PostgreSQL row");
+        assert.equal(v2WriteAccepted, true, "premise: the realistic v2 delta wins before v4 owns the PostgreSQL row");
         __testOnlySetFoldPauseHook(null);
         releaseReplay();
         const firstRoute = await routePromise;
         const firstEvidence = await getConnectorSummaryEvidence(INSTANCE_ID);
         assert.equal(firstRoute?.terminal_facts.state, "current");
-        assert.equal(Number((await postgresQuery("SELECT stream_facts_fold_version FROM connector_summary_evidence WHERE connector_instance_id = $1", [INSTANCE_ID])).rows[0].stream_facts_fold_version), 3);
-        assert.deepEqual(Object.keys(firstEvidence.stream_latest_facts ?? {}).sort(), [EMPTY_STREAM]);
+        assert.equal(Number((await postgresQuery("SELECT stream_facts_fold_version FROM connector_summary_evidence WHERE connector_instance_id = $1", [INSTANCE_ID])).rows[0].stream_facts_fold_version), 4);
+        // fix-pre-provenance-terminal-generation-semantics: the connection
+        // has never advanced past generation 0, so BOTH the v2 delta's
+        // EMPTY_STREAM fact AND the replayed unstamped `messages` event are
+        // consumed.
+        assert.deepEqual(Object.keys(firstEvidence.stream_latest_facts ?? {}).sort(), [EMPTY_STREAM, STREAM].sort());
 
         const firstProjection = {
           facts: firstEvidence.stream_latest_facts,
@@ -1341,7 +1389,7 @@ test(
           baselineFoldVersion: 2,
           foldVersion: 2,
         });
-        assert.equal(laterV2WriteAccepted, false, "v2 cannot overwrite the converged v3 PostgreSQL row");
+        assert.equal(laterV2WriteAccepted, false, "v2 cannot overwrite the converged v4 PostgreSQL row");
       } finally {
         __testOnlySetFoldPauseHook(null);
       }

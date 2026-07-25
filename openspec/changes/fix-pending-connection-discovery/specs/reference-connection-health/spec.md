@@ -4,7 +4,7 @@
 
 The reference implementation SHALL project every owner-created connection — including one that has not yet completed credential capture / browser enrollment and has never ingested a record (a `draft` connector instance) — into the same owner-facing summary read the dashboard, Sources, and Syncs surfaces consume. A connection SHALL NOT be reachable only via a push notification or a bookmarked URL nothing else links to; the normal Sources list, Syncs list, and direct-by-id navigation to the connection SHALL all surface it.
 
-This is scoped to the one owner-facing summary read (`/_ref/connectors` / `listConnectorInstanceRowsForDashboard`). Every other read of connector instances (`/_ref/connections`, `/_ref/connector-instances`, owner-agent reads, the connector-template "already connected" projection, device-exporter listings) SHALL continue to exclude a not-yet-ingested draft exactly as before, to preserve the existing protection against phantom zero-record rows on those surfaces.
+This is scoped to the one owner-facing summary read (`/_ref/connectors` / `listOwnerVisibleConnectorInstances`). Every other read of connector instances (`/_ref/connections`, `/_ref/connector-instances`, owner-agent reads, the connector-template "already connected" projection, device-exporter listings) SHALL continue to exclude a not-yet-ingested draft exactly as before, to preserve the existing protection against phantom zero-record rows on those surfaces.
 
 #### Scenario: A freshly created draft connection appears on Sources and Syncs
 

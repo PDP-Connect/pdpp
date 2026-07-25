@@ -175,6 +175,10 @@ export interface EmitDeps {
     page: Page;
     sendInteraction: BrowserCollectContext["sendInteraction"];
   }) => Promise<void>;
+  /** Pending USAA account transaction gaps served by the runtime this run.
+   * A reached account emits recovery for its supplied gap id; this prevents a
+   * successful later export from leaving the durable gap pending forever. */
+  servedAccountTransactionGaps?: ReadonlyMap<string, string>;
 }
 
 /** Aggregate shape from the PDF hydration pass. Exposed so the emit-
@@ -280,6 +284,7 @@ export async function emitAccountsStream(
     if (emitEntity) {
       const rec = buildAccountRecord(a, emittedAt);
       if (!fingerprintCursor || fingerprintCursor.shouldEmit(rec)) {
+        // biome-ignore lint/performance/noAwaitInLoops: each account emits in list order; the runtime's stdout backpressure must settle per-record before the next account is processed
         await deps.emitRecord("accounts", rec);
       }
       // Emitted or suppressed-unchanged: either way the account was accounted
@@ -410,6 +415,7 @@ export async function emitDeferredStreams(emit: EmitFn, requested: RequestedScop
         reason: "selectors_pending",
         message: `${s} stream scaffolded in design-notes; click-chain or SPA-component wiring deferred.`,
       };
+      // biome-ignore lint/performance/noAwaitInLoops: each deferred-stream SKIP_RESULT emits in declared order via the runtime's backpressure-gated emit
       await emit(msg);
     }
   }
@@ -558,7 +564,7 @@ function sanitizeDiagnosticInfo(diag: DiagnosticInfo): DiagnosticInfo {
 }
 
 function summarizeArtifactDiagnostics(diag: DiagnosticInfo): string | null {
-  const artifact = diag.artifact;
+  const { artifact } = diag;
   if (!artifact) {
     return null;
   }
@@ -571,7 +577,7 @@ function summarizeArtifactDiagnostics(diag: DiagnosticInfo): string | null {
   if (artifact.cdpError) {
     parts.push(`cdpError=${artifact.cdpError.slice(0, ID_TEXT_SNIP)}`);
   }
-  const firstCandidate = artifact.candidates[0];
+  const [firstCandidate] = artifact.candidates;
   if (firstCandidate) {
     const firstParts = [
       firstCandidate.source,
@@ -714,6 +720,7 @@ export async function emitStatementRecords(
     // churn). When no cursor is supplied (legacy callers/tests) the
     // record always emits.
     if (!fingerprintCursor || fingerprintCursor.shouldEmit(rec)) {
+      // biome-ignore lint/performance/noAwaitInLoops: each statement emits in list order; the runtime's stdout backpressure must settle per-record before the next statement is processed
       await deps.emitRecord("statements", rec);
     }
   }
@@ -779,6 +786,7 @@ export async function emitStatementCoverage(
 ): Promise<void> {
   const result = computeStatementCoverage(coverageRows);
   for (const gap of result.gaps) {
+    // biome-ignore lint/performance/noAwaitInLoops: each gap emits in order via the runtime's backpressure-gated emit
     await deps.emit(gap);
   }
   await emitDetailCoverage(deps, result.coverage);
@@ -897,7 +905,7 @@ async function extractAccounts(page: Page): Promise<DashboardAccount[]> {
       const amounts = [...text.matchAll(DOLLAR_RE)]
         .map((m) => (m[1] ? m[1] : null))
         .filter((v): v is string => Boolean(v));
-      const firstAmount = amounts[0];
+      const [firstAmount] = amounts;
       const balanceCents = firstAmount ? Math.round(Number(firstAmount.replace(COMMA_RE_LOCAL, "")) * 100) : null;
       out.push({
         account_id_raw: accountId,
@@ -994,6 +1002,7 @@ function noExportAffordanceDiagnostic(diag: DiagnosticInfo | null, managedSurfac
     navigationMarkerCount: observation?.navigation_marker_count,
     parserCount: 0,
     readCount: 1,
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: false positive — observation is undefined when diag is null/lacks no_export_observation; the "unknown" fallback is reachable
     route: observation?.route ?? "unknown",
     targetCount: observation?.target_count,
     transactionMarkerCount: observation?.transaction_marker_count,
@@ -1059,6 +1068,7 @@ async function locateExportPage(
     }
     seen.add(url);
     try {
+      // biome-ignore lint/performance/noAwaitInLoops: navigation candidates share one Playwright page; each candidate must resolve before the next is attempted
       await page.goto(url, {
         waitUntil: "domcontentloaded",
         timeout: ACCOUNT_NAV_TIMEOUT_MS,
@@ -1126,11 +1136,8 @@ async function emitDialogUnexpectedShapeDiagnostic(
 }
 
 /** Click Export, then confirm the date-range selector rendered. */
-async function openExportDialog(
-  page: Page,
-  located: LocatedExportPage,
-  onDiagnostics: DriveExportOptions["onDiagnostics"]
-): Promise<boolean> {
+async function openExportDialog(page: Page, located: LocatedExportPage, options: DriveExportOptions): Promise<boolean> {
+  const { onDiagnostics } = options;
   try {
     await located.export.click({ timeout: EXPORT_CLICK_TIMEOUT_MS });
   } catch (err) {
@@ -1147,6 +1154,9 @@ async function openExportDialog(
     if (onDiagnostics) {
       await emitDialogUnexpectedShapeDiagnostic(page, onDiagnostics);
     }
+    // Capture before Escape: the keypress below can dismiss/mutate the
+    // dialog surface, so the checkpoint must run on the still-intact page.
+    await captureExportCheckpoint(page, options, "dialog-not-open");
     await page.keyboard.press("Escape").catch((): undefined => undefined);
     return false;
   }
@@ -1197,8 +1207,8 @@ type ExportSubmitOutcome =
  */
 class CsvArtifactError extends Error {
   readonly download: DownloadDiagnostics | null;
-  constructor(message: string, download: DownloadDiagnostics | null) {
-    super(message);
+  constructor(message: string, download: DownloadDiagnostics | null, cause?: unknown) {
+    super(message, cause === undefined ? undefined : { cause });
     this.name = "CsvArtifactError";
     this.download = download;
   }
@@ -1226,6 +1236,7 @@ function isAnalyticsBeacon(headers: Record<string, string>, url: string): boolea
   if (ANALYTICS_HOST_RE.test(url)) {
     return true;
   }
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: false positive — noUncheckedIndexedAccess types this index access as string | undefined
   const contentType = headers["content-type"]?.toLowerCase() ?? "";
   return ANALYTICS_CONTENT_TYPE_RE.test(contentType);
 }
@@ -1280,12 +1291,12 @@ async function waitForCsvArtifact(
   const downloadPromise = downloadQueue.waitForNextDownload({ timeoutMs: DOWNLOAD_TIMEOUT_MS });
   const result = await Promise.any([
     responsePromise.then((response) => ({ kind: "response" as const, response })),
-    downloadPromise.then((download) => ({ download, kind: "download" as const })),
+    downloadPromise.then((downloadResult) => ({ download: downloadResult, kind: "download" as const })),
   ]);
   if (result.kind === "response") {
     return { buffer: result.response.body, suggestedFilename: result.response.suggestedFilename };
   }
-  const download = result.download;
+  const { download } = result;
   try {
     const { buffer, outcome } = await readPlaywrightDownloadBufferDetailed(download);
     if (buffer.length > 0) {
@@ -1321,7 +1332,8 @@ async function waitForCsvArtifact(
     if (response) {
       return { buffer: response.body, suggestedFilename: response.suggestedFilename };
     }
-    throw new CsvArtifactError(err instanceof Error ? err.message : String(err), downloadDiag);
+    // biome-ignore lint/style/useErrorCause: CsvArtifactError's 3rd constructor arg forwards to super(message, { cause })
+    throw new CsvArtifactError(err instanceof Error ? err.message : String(err), downloadDiag, err);
   }
 }
 
@@ -1341,6 +1353,7 @@ async function submitExportAndAwait(page: Page): Promise<ExportSubmitOutcome> {
       .first()
       .waitFor({ state: "visible", timeout: DOWNLOAD_TIMEOUT_MS })
       .then(async (): Promise<ExportSubmitOutcome> => {
+        // biome-ignore lint/suspicious/noNestedPromises: this races against waitForCsvArtifact via Promise.race below; restructuring the inline .catch fallback risks changing the dialog-error timing/error semantics of that race.
         const message = ((await dialogMessage.textContent().catch((): string | null => null)) ?? "").trim();
         return isNoDataExportMessage(message) ? { kind: "empty", message } : { kind: "dialog_error", message };
       })
@@ -1389,9 +1402,8 @@ export async function driveExport(
     return noExportAffordanceFailure(page, options);
   }
 
-  const dialogOpen = await openExportDialog(page, located, onDiagnostics);
+  const dialogOpen = await openExportDialog(page, located, options);
   if (!dialogOpen) {
-    await captureExportCheckpoint(page, options, "dialog-not-open");
     return { kind: "failed" };
   }
 
@@ -1601,11 +1613,12 @@ async function tryExportLadder(
   const onDiagnostics = (info: DiagnosticInfo): void => {
     diagBox.current = info;
   };
-  for (let i = 0; i < candidateStarts.length; i++) {
+  for (let i = 0; i < candidateStarts.length; i += 1) {
     const sinceDate = candidateStarts[i];
     if (!sinceDate) {
       continue;
     }
+    // biome-ignore lint/performance/noAwaitInLoops: the export ladder retries with progressively narrower windows only after the prior attempt on the same shared page has settled
     const outcome = await runSingleLadderAttempt({
       deps,
       context,
@@ -1723,6 +1736,7 @@ export async function emitCsvTransactions(
     // `pruneStale()`d — pruning ids the run did not look at would drop
     // their fingerprints and re-churn them on the next overlapping window.
     if (!fingerprintCursor || fingerprintCursor.shouldEmit(t)) {
+      // biome-ignore lint/performance/noAwaitInLoops: each transaction emits in list order; the runtime's stdout backpressure must settle per-record before the next transaction is processed
       await deps.emitRecord("transactions", t);
     }
     if (!latest || t.date > latest) {
@@ -1796,6 +1810,75 @@ export function buildAccountTransactionDetailGap(outcome: {
     detail: { class: outcome.errorClass },
     last_error: { class: outcome.errorClass },
   };
+}
+
+/**
+ * Keep only USAA account-level transaction gaps the runtime actually served
+ * this run. The connector may recover only these supplied ids: synthesizing
+ * one, or accepting a foreign/malformed locator, could close unrelated work.
+ */
+export function buildServedAccountTransactionGapLookup(
+  detailGaps: readonly BrowserCollectContext["detailGaps"][number][]
+): Map<string, string> {
+  const lookup = new Map<string, string>();
+  for (const gap of detailGaps) {
+    if (gap.stream !== "transactions" || gap.status !== "pending") {
+      continue;
+    }
+    const locator = gap.detail_locator;
+    if (locator?.kind !== "usaa.account") {
+      continue;
+    }
+    const accountId = locator.account_id;
+    const recordKey = gap.record_key;
+    if (
+      typeof accountId !== "string" ||
+      accountId.length === 0 ||
+      typeof recordKey !== "string" ||
+      recordKey.length === 0 ||
+      recordKey !== accountId ||
+      typeof gap.gap_id !== "string" ||
+      !gap.gap_id
+    ) {
+      continue;
+    }
+    if (!lookup.has(accountId)) {
+      lookup.set(accountId, gap.gap_id);
+    }
+  }
+  return lookup;
+}
+
+/**
+ * A served account gap is recovered only after this run reaches that same
+ * account. `hydrated` and source-limited `no_activity` are both complete
+ * account coverage; a fresh `gap` is deliberately re-deferred instead.
+ */
+export async function recoverServedAccountTransactionGaps(
+  deps: EmitDeps,
+  outcomes: readonly AccountTransactionOutcome[]
+): Promise<void> {
+  const served = deps.servedAccountTransactionGaps;
+  if (!served || served.size === 0) {
+    return;
+  }
+  for (const outcome of outcomes) {
+    if (outcome.kind !== "hydrated" && outcome.kind !== "no_activity") {
+      continue;
+    }
+    const gapId = served.get(outcome.accountId);
+    if (!gapId) {
+      continue;
+    }
+    // biome-ignore lint/performance/noAwaitInLoops: each recovered gap emits in order via the runtime's backpressure-gated emit
+    await deps.emit({
+      type: "DETAIL_GAP_RECOVERED",
+      reference_only: true,
+      gap_id: gapId,
+      stream: "transactions",
+      record_key: outcome.accountId,
+    });
+  }
 }
 
 /**
@@ -1990,12 +2073,13 @@ async function runTransactionsStream(
 
   const transactionAccounts = accounts.filter((a) => TRANSACTION_ACCOUNT_TYPE_RE.test(a.account_type));
   const outcomes: AccountTransactionOutcome[] = [];
-  for (let i = 0; i < transactionAccounts.length; i++) {
+  for (let i = 0; i < transactionAccounts.length; i += 1) {
     const a = transactionAccounts[i];
     if (!a) {
       continue;
     }
     if (streamState.sessionDeadMidRun) {
+      // biome-ignore lint/performance/noAwaitInLoops: emitted once before the loop exits via break; not a per-iteration concurrency concern
       await deps.emit({
         type: "PROGRESS",
         stream: "transactions",
@@ -2047,6 +2131,7 @@ async function runTransactionsStream(
   // one means every transaction-eligible account was attempted (including
   // the zero-eligible-accounts case, where the loop body never ran at all),
   // so the denominator this run enumerated is genuinely complete.
+  await recoverServedAccountTransactionGaps(deps, outcomes);
   await emitTransactionsDetailCoverage(deps, outcomes, !streamState.sessionDeadMidRun);
   return transactionsCursor;
 }
@@ -2087,9 +2172,7 @@ function scrapeStatementsIndex(page: Page): Promise<DocRow[]> {
     }
     return [...t.querySelectorAll("tbody tr")].map((tr: El, rowIndex: number) => {
       const cells = [...tr.querySelectorAll("td")] as El[];
-      const c0 = cells[0];
-      const c1 = cells[1];
-      const c2 = cells[2];
+      const [c0, c1, c2] = cells;
       return {
         rowIndex,
         title: (c0?.innerText || "").replace(WS_RE, " ").trim(),
@@ -2136,7 +2219,7 @@ async function hydratePdfsForIndex(deps: StatementsSubDeps, indexRows: readonly 
       },
     });
     for (const h of hydrated) {
-      successes++;
+      successes += 1;
       results.set(h.statement.rowIndex, {
         pdfPath: h.pdfPath,
         pdfSha256: h.pdfSha256,
@@ -2185,7 +2268,7 @@ async function processPdfStatementRow(
       period,
     });
     if (!txns.length) {
-      counters.unknownTemplates++;
+      counters.unknownTemplates += 1;
       await deps.emit({
         type: "SKIP_RESULT",
         stream: "transactions",
@@ -2207,11 +2290,12 @@ async function processPdfStatementRow(
       // modulo `fetched_at`. Re-parsing the same statement PDFs every run
       // was appending a fresh version per transaction.
       if (!fingerprintCursor || fingerprintCursor.shouldEmit({ ...t })) {
+        // biome-ignore lint/performance/noAwaitInLoops: each PDF-parsed transaction emits in list order; the runtime's stdout backpressure must settle per-record before the next transaction is processed
         await deps.emitRecord("transactions", { ...t });
       }
-      counters.pdfTxnCount++;
+      counters.pdfTxnCount += 1;
     }
-    counters.parsedStatements++;
+    counters.parsedStatements += 1;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     await deps.emit({
@@ -2241,6 +2325,7 @@ async function emitPdfStatementTransactions(
     if (!ok) {
       continue;
     }
+    // biome-ignore lint/performance/noAwaitInLoops: PDF rows share mutable `counters` accumulated across the scan and must be processed in index order
     await processPdfStatementRow(deps, row, ok, accountById, counters, fingerprintCursor);
   }
   await deps.emit({
@@ -2326,9 +2411,7 @@ function scrapeInboxRows(page: Page): Promise<InboxRow[]> {
     }
     return [...t.querySelectorAll("tbody tr")].map((tr: El) => {
       const cells = [...tr.querySelectorAll("td")] as El[];
-      const c0 = cells[0];
-      const c1 = cells[1];
-      const c2 = cells[2];
+      const [c0, c1, c2] = cells;
       return {
         status: (c0?.innerText || "").replace(WS_RE, " ").trim(),
         date_short: (c1?.innerText || "").replace(WS_RE, " ").trim(),
@@ -2373,6 +2456,7 @@ async function runInboxStream(deps: EmitDeps, page: Page, state: Record<string, 
         continue;
       }
       if (fingerprintCursor.shouldEmit(record)) {
+        // biome-ignore lint/performance/noAwaitInLoops: each inbox message emits in list order; the runtime's stdout backpressure must settle per-record before the next message is processed
         await deps.emitRecord("inbox_messages", record);
       }
     }
@@ -2472,6 +2556,7 @@ async function runCreditCardBillingStream(
     });
     const cards = accounts.filter((a) => CREDIT_CARD_TYPE_RE.test(a.account_type));
     for (const a of cards) {
+      // biome-ignore lint/performance/noAwaitInLoops: credit-card candidates share one Playwright page; each navigation must resolve before the next card is attempted
       await page
         .goto(`https://www.usaa.com${a.account_url}`, {
           waitUntil: "domcontentloaded",
@@ -2628,6 +2713,7 @@ if (isMainModule(import.meta.url)) {
         capture,
         emit,
         emitRecord,
+        servedAccountTransactionGaps: buildServedAccountTransactionGapLookup(ctx.detailGaps),
       };
 
       // ACCOUNTS — extract from dashboard; emit optionally based on requested.

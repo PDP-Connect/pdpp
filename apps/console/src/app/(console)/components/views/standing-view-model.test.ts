@@ -62,15 +62,12 @@ const LATELY_READ_RE = /read 412 records/;
 const LATEST_SAVED_POSTS_RE = /latest saved posts/;
 const MAINTAINER_ACTION_RE = /maintainer action/;
 const NO_OWNER_TOKEN_RE = /No owner token can act as you yet/;
-const NOT_ALL_YOURS_RE = /all yours to read/i;
-const NOT_NEEDS_YOU_RE = /needs you/i;
 const OWNER_TOKEN_COUNT_RE = /1 client holds 2 active owner tokens/;
 const PROJECTION_COPY_RE = /projection|rebuild|bulk write|unknown connection/i;
 const PROJECTION_SQL_COPY_RE = /projection|rebuild|bulk write|unknown connection|SQL/i;
 const RAW_ORPHANED_RUN_RE = /orphaned_started_run/;
 const RAW_REASON_CODE_RE = /new_internal_reason_code/;
 const REFRESH_PAGE_RE = /Refresh this page/;
-const SAVED_RECORDS_RE = /saved records/;
 const SQL_FAILED_RE = /SQL failed/;
 const STALE_TOTALS_RE = /last completed update/;
 const TOKEN_OVERCOUNT_RE = /2 tokens can act as you/;
@@ -83,6 +80,7 @@ function baseInputs(over: Partial<StandingInputs> = {}): StandingInputs {
     bearerClients: [],
     failedRuns: [],
     failedTraces: [],
+    fleetHealth: null,
     grants: [],
     hrefs: HREFS,
     now: NOW,
@@ -188,11 +186,11 @@ test("hero is DECIDE when an approval is pending", () => {
   assert.equal(hero.cta?.href, HREFS.grants);
 });
 
-test("hero ALARM for a DEVICE-LOCAL recovery: CTA NAVIGATES (does not restate the action)", () => {
+test("local source rows remain detail when no server fleet verdict is available", () => {
   // Device-local recovery cannot run from the dashboard. The CTA must read as
   // navigation, route to the recovery panel (exact connection), and leave the
   // actual host command in the panel.
-  const alarm = computeHero(
+  const hero = computeHero(
     baseInputs({
       attentionConnections: [
         {
@@ -206,21 +204,13 @@ test("hero ALARM for a DEVICE-LOCAL recovery: CTA NAVIGATES (does not restate th
       ],
     })
   );
-  assert.equal(alarm.tone, "alarm");
-  assert.equal(alarm.kicker, "One thing needs you");
-  assert.equal(alarm.line.text, "laptop Claude Code ");
-  assert.equal(alarm.cta?.href, HREFS.connection("ci_laptop"));
-  assert.notEqual(alarm.cta?.href, HREFS.traces);
-  // The CTA is a NAVIGATION label, NOT the restated device action.
-  assert.equal(alarm.cta?.label, "See what to do");
-  assert.notEqual(alarm.cta?.label, "Recover local collector uploads");
-  // The real condition still appears in the sub line.
-  assert.match(alarm.sub, SAVED_RECORDS_RE);
+  assert.equal(hero.tone, "calm");
+  assert.equal(hero.kicker, "Where you stand");
 });
 
-test("hero ALARM for a DASHBOARD-ACTIONABLE recovery keeps its action verb", () => {
+test("local dashboard-actionable rows remain detail when no fleet verdict is supplied", () => {
   // A reconnect/refresh the dashboard CAN initiate keeps its action label.
-  const alarm = computeHero(
+  const hero = computeHero(
     baseInputs({
       attentionConnections: [
         {
@@ -234,11 +224,11 @@ test("hero ALARM for a DASHBOARD-ACTIONABLE recovery keeps its action verb", () 
       ],
     })
   );
-  assert.equal(alarm.cta?.label, "Reconnect");
+  assert.equal(hero.tone, "calm");
 });
 
-test("hero ALARM with several attention connections → CTA routes to the syncs triage list, not /traces", () => {
-  const alarm = computeHero(
+test("several local attention rows do not synthesize a fleet headline", () => {
+  const hero = computeHero(
     baseInputs({
       attentionConnections: [
         {
@@ -260,10 +250,7 @@ test("hero ALARM with several attention connections → CTA routes to the syncs 
       ],
     })
   );
-  assert.equal(alarm.tone, "alarm");
-  assert.equal(alarm.kicker, "2 things need you");
-  assert.equal(alarm.cta?.href, HREFS.runs);
-  assert.notEqual(alarm.cta?.href, HREFS.traces);
+  assert.equal(hero.tone, "calm");
 });
 
 test("failed syncs/traces alone do NOT drive the alarm — only the rendered-verdict attention set does", () => {
@@ -299,7 +286,7 @@ test("decide wins over alarm", () => {
   assert.equal(both.tone, "decide");
 });
 
-// ─── attention truth (the single source the hero + /runs share) ───────────
+// ─── attention truth (connection rows and /runs share) ───────────────────
 
 function connector(over: Partial<RefConnectorSummary>): RefConnectorSummary {
   return {
@@ -401,8 +388,8 @@ test("attention truth: only attention-channel connections with an owner-satisfia
   );
   assert.equal(attention[0]?.actionLabel, "Check the collector");
   assert.equal(attention[0]?.what, "Check the collector before this source can make progress.");
-  // The local_device remediation target → deviceLocal true → hero/runs use a
-  // navigation CTA instead of restating the action.
+  // The local_device remediation target → deviceLocal true → source rows and
+  // Runs use a navigation CTA instead of restating the action.
   assert.equal(attention[0]?.deviceLocal, true);
 });
 
@@ -424,7 +411,7 @@ test("attention truth falls back to legacy blocked health when rendered verdict 
   assert.equal(attention[0]?.actionLabel, "Reconnect");
 
   const hero = computeHero(baseInputs({ attentionConnections: attention }));
-  assert.equal(hero.tone, "alarm");
+  assert.equal(hero.tone, "calm");
 });
 
 test("source issues show non-owner material verdicts without alarming as owner attention", () => {
@@ -508,17 +495,7 @@ test("advisory owner actions surface non-urgent Amazon retry work without calm a
   assert.equal(advisoryOwnerActions[0]?.actionLabel, "Retry detail gap");
 
   const data = buildStandingData(baseInputs({ advisoryOwnerActions }));
-  assert.equal(data.hero.tone, "decide");
-  assert.equal(data.hero.kicker, "One optional action is available");
-  assert.equal(data.hero.line.emphasis, "Retry detail gap");
-  assert.equal(data.hero.line.text, "Amazon - Personal: ");
-  assert.equal(data.hero.cta?.label, "Retry detail gap");
-  assert.equal(data.hero.cta?.href, HREFS.connection("cin_amazon"));
-  assert.doesNotMatch(`${data.hero.kicker} ${data.hero.line.text} ${data.hero.line.emphasis}`, NOT_NEEDS_YOU_RE);
-  assert.doesNotMatch(
-    `${data.hero.kicker} ${data.hero.line.text} ${data.hero.line.emphasis ?? ""} ${data.hero.line.tail ?? ""}`,
-    NOT_ALL_YOURS_RE
-  );
+  assert.equal(data.hero.tone, "calm");
   assert.equal(data.advisoryOwnerActions.length, 1);
   assert.equal(data.advisoryOwnerActions[0]?.what, "Amazon - Personal has an action to review");
 });
@@ -554,7 +531,7 @@ test("advisory owner actions surface Reddit refresh work in the home summary", (
   assert.equal(data.advisoryOwnerActions[0]?.href, HREFS.connection("cin_reddit"));
   // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.match(data.advisoryOwnerActions[0]?.why ?? "", LATEST_SAVED_POSTS_RE);
-  assert.notEqual(data.hero.tone, "calm");
+  assert.equal(data.hero.tone, "calm");
 });
 
 test("source actionability groups live-shaped rows with scoped counts", () => {
@@ -670,8 +647,7 @@ test("source actionability groups live-shaped rows with scoped counts", () => {
   assert.equal(sourceWork.systemIssues.length, 1);
   assert.equal(sourceWork.notMeasured.length, 1);
   assert.equal(sourceAttentionHeadline(sourceWork).needsYou, sourceWork.needsOwner.length);
-  assert.equal(data.hero.tone, "alarm");
-  assert.equal(data.hero.kicker, "3 things need you");
+  assert.equal(data.hero.tone, "calm");
   assert.equal(data.sourceWorkSections[0]?.title, "Needs you");
   assert.equal(data.sourceWorkSections[0]?.countLabel, "3 sources");
   // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
@@ -1086,9 +1062,10 @@ test("attention routeId targets the EXACT connection instance, not the connector
   // exactly — NOT the shared connector_id "claude-code".
   assert.equal(attention[0]?.routeId, "ci_laptop");
   assert.notEqual(attention[0]?.routeId, "claude-code");
-  // And the hero CTA href uses that exact-connection routeId.
+  // The detail row retains that exact-connection routeId; it no longer drives
+  // the aggregate hero.
   const hero = computeHero(baseInputs({ attentionConnections: attention }));
-  assert.equal(hero.cta?.href, HREFS.connection("ci_laptop"));
+  assert.equal(hero.tone, "calm");
 });
 
 test("hero ALARMs on a stale projection even with no failures", () => {
@@ -1148,6 +1125,76 @@ test("hero ALARMs when dashboard inputs fail instead of claiming all-clear from 
   assert.equal(data.overviewIssues[0]?.what, "Overview could not check everything");
   // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.match(data.overviewIssues[0]?.why ?? "", REFRESH_PAGE_RE);
+});
+
+test("hero consumes the server fleet verdict when no per-connection row supplies the aggregate cause", () => {
+  const fleetHealth = {
+    state: "unhealthy",
+    fully_healthy: false,
+    scope: { configured: 1, assessed: [], intentional_exclusions: [], setup_pending: [], unassessed: [] },
+    dimensions: {
+      runtime: "unhealthy",
+      coverage_audit: "pass",
+      attention: { needs_owner: [] },
+      system: { degraded_or_broken: [] },
+      recovery: { retryable: [], terminal: [] },
+      stalled_work: [],
+      active_work: [],
+      freshness_advisories: [],
+      intentional_policy: { manual: [], paused: [] },
+      unknown_evidence: [],
+    },
+  } as const;
+  const hero = computeHero(baseInputs({ fleetHealth }));
+  assert.equal(hero.tone, "alarm");
+  assert.equal(hero.kicker, "Source fleet needs attention");
+  assert.equal(hero.cta?.href, HREFS.sources);
+});
+
+test("a locally alarming source row cannot override a healthy server fleet verdict", () => {
+  const fleetHealth = {
+    state: "healthy",
+    fully_healthy: true,
+    scope: { configured: 1, assessed: [], intentional_exclusions: [], setup_pending: [], unassessed: [] },
+    dimensions: {
+      runtime: "healthy",
+      coverage_audit: "pass",
+      attention: { needs_owner: [] },
+      system: { degraded_or_broken: [] },
+      recovery: { retryable: [], terminal: [] },
+      stalled_work: [],
+      active_work: [],
+      freshness_advisories: [],
+      intentional_policy: { manual: [], paused: [] },
+      unknown_evidence: [],
+    },
+  } as const;
+  const hero = computeHero(
+    baseInputs({
+      fleetHealth,
+      sourceWork: {
+        needsOwner: [
+          {
+            actionLabel: "Reconnect",
+            connectorKey: "chase",
+            deviceLocal: false,
+            group: "needsOwner",
+            id: "conn_chase",
+            label: "Chase",
+            routeId: "conn_chase",
+            statusLabel: "Needs you",
+            what: "This local row disagrees with the aggregate verdict.",
+          },
+        ],
+        notMeasured: [],
+        review: [],
+        systemIssues: [],
+        working: [],
+      },
+    })
+  );
+  assert.equal(hero.tone, "calm");
+  assert.equal(hero.kicker, "Where you stand");
 });
 
 test("hero is CALM with reassurance when all is well", () => {

@@ -129,10 +129,11 @@ export interface SourceAttentionHeadline {
 
 /**
  * The single derivation of the headline "how many sources need YOUR action"
- * number. The dashboard hero and the Runs band both call this so they cannot
- * diverge. It counts ONLY the owner-required (needs-you) group; the review,
- * system-issue, and checking groups are secondary and are never summed into
- * this headline (owner decision 2026-07-02).
+ * number used by source-row and Runs triage. It counts ONLY the owner-required
+ * (needs-you) group; the review, system-issue, and checking groups are
+ * secondary and are never summed into this headline (owner decision
+ * 2026-07-02). The aggregate dashboard hero intentionally follows the server
+ * fleet verdict.
  */
 export function sourceAttentionHeadline(groups: SourceWorkGroups): SourceAttentionHeadline {
   return { needsYou: groups.needsOwner.length };

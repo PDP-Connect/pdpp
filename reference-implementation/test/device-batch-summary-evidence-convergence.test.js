@@ -53,6 +53,7 @@ import { registerConnector } from '../server/auth.js';
 import { COLLECTOR_PROTOCOL_VERSION } from '../server/collector-protocol.ts';
 import { reconcileConnectorSummaryEvidence } from '../server/connector-summary-evidence-engine.ts';
 import { getConnectorSummaryEvidence } from '../server/connector-summary-read-model.ts';
+import { reconcileDirtyConnectorSummaryEvidence } from '../server/connector-summary-read-model.ts';
 import { closeDb, getDb, initDb } from '../server/db.js';
 import { startServer } from '../server/index.js';
 import {
@@ -524,10 +525,77 @@ async function runManifestRaceOracle(driver) {
   assert.equal(secondPass.repaired, 0, 'a second pass after the race settles repairs nothing further');
 }
 
+async function runTerminalCollectionEvidenceOracle(driver) {
+  const device = await enrollConfiguredDevice(driver, 'terminal-evidence');
+  const request = batch(device, nextId('terminal-evidence'), [deviceRecord('terminal-evidence-msg', 'payload-sentinel-never-in-spine')]);
+  assert.equal((await driver.ingest(device, request)).status, 201);
+
+  const omittedCoverageStatuses = await postJson(
+    `${driver.asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/source-instances/${encodeURIComponent(device.source_instance_id)}/terminal-collection`,
+    {
+      connector_id: 'codex',
+      run_id: nextId('local-terminal-invalid'),
+      source_instance_id: device.source_instance_id,
+      streams: [{ stream: 'messages', pending_detail_gaps: 0 }],
+    },
+    authHeaders(device.device_token),
+  );
+  assert.equal(omittedCoverageStatuses.status, 400, 'missing raw coverage status must not normalize to a complete fact');
+
+  const report = await postJson(
+    `${driver.asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/source-instances/${encodeURIComponent(device.source_instance_id)}/terminal-collection`,
+    {
+      connector_id: 'codex',
+      run_id: nextId('local-terminal'),
+      source_instance_id: device.source_instance_id,
+      streams: [
+        { stream: 'messages', coverage_statuses: ['collected'] },
+        { stream: 'history', coverage_statuses: ['inventory_only'] },
+        { stream: 'logs', coverage_statuses: ['deferred'] },
+        { stream: 'rules', coverage_statuses: ['missing'] },
+        { stream: 'skills', coverage_statuses: ['unaccounted'] },
+      ],
+    },
+    authHeaders(device.device_token),
+  );
+  assert.equal(report.status, 201, JSON.stringify(report.body));
+  await reconcileDirtyConnectorSummaryEvidence([device.connector_instance_id]);
+
+  const summary = driver.kind === 'sqlite'
+    ? getDb().prepare('SELECT terminal_facts_state, stream_latest_facts_json FROM connector_summary_evidence WHERE connector_instance_id = ?').get(device.connector_instance_id)
+    : (await postgresQuery('SELECT terminal_facts_state, stream_latest_facts_json::text AS stream_latest_facts_json FROM connector_summary_evidence WHERE connector_instance_id = $1', [device.connector_instance_id])).rows[0];
+  assert.equal(summary.terminal_facts_state, 'current');
+  const facts = JSON.parse(summary.stream_latest_facts_json);
+  assert.equal(facts.messages.fact.checkpoint, 'committed');
+  assert.equal(facts.messages.fact.pending_detail_gaps, 0, 'collected evidence may establish zero pending gaps');
+  assert.deepEqual(facts.history.fact.coverage_statuses, ['inventory_only'], 'raw accepted-absence evidence survives the summary fold');
+  assert.deepEqual(facts.logs.fact.coverage_statuses, ['deferred'], 'raw accepted-absence evidence survives the summary fold');
+  assert.equal(facts.rules.fact.pending_detail_gaps, 1, 'missing evidence must retain an unresolved gap');
+  assert.equal(facts.skills.fact.pending_detail_gaps, 1, 'unaccounted evidence must retain an unresolved gap');
+  assert.equal(facts.function_calls, undefined, 'an omitted stream receives no invented terminal fact');
+
+  const spine = driver.kind === 'sqlite'
+    ? getDb().prepare('SELECT data_json FROM spine_events WHERE connector_instance_id = ? AND event_type = ?').get(device.connector_instance_id, 'run.completed')
+    : (await postgresQuery('SELECT data_json::text AS data_json FROM spine_events WHERE connector_instance_id = $1 AND event_type = $2', [device.connector_instance_id, 'run.completed'])).rows[0];
+  assert.doesNotMatch(spine.data_json, /payload-sentinel-never-in-spine/);
+
+  // A failed/incomplete local attempt has no successful terminal report, so
+  // it cannot replace this committed fact. This is the producer boundary:
+  // accepted batches alone remain insufficient evidence.
+  const failedBatch = batch(device, nextId('failed-terminal-evidence'), [deviceRecord('failed-msg', 'second')], 2);
+  assert.equal((await driver.ingest(device, failedBatch)).status, 201);
+  await reconcileConnectorSummaryEvidence(null);
+  const afterFailedAttempt = driver.kind === 'sqlite'
+    ? getDb().prepare('SELECT stream_latest_facts_json FROM connector_summary_evidence WHERE connector_instance_id = ?').get(device.connector_instance_id)
+    : (await postgresQuery('SELECT stream_latest_facts_json::text AS stream_latest_facts_json FROM connector_summary_evidence WHERE connector_instance_id = $1', [device.connector_instance_id])).rows[0];
+  assert.equal(JSON.parse(afterFailedAttempt.stream_latest_facts_json).messages.fact.checkpoint, 'committed');
+}
+
 const ORACLES = [
   ['accepted replay converges the summary primitive without double-counting', runAcceptedReplayOracle],
   ['partial-prefix resume converges the summary primitive on the correct final state', runPartialPrefixResumeOracle],
   ['manifest registration racing an in-flight device batch converges the summary primitive with no lost update', runManifestRaceOracle],
+  ['terminal local-device evidence reaches the per-stream summary fold without inventing optional or failed-run facts', runTerminalCollectionEvidenceOracle],
 ];
 
 for (const [name, oracle] of ORACLES) {

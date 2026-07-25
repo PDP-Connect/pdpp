@@ -309,11 +309,11 @@ interface MaybeQuarantineResult {
  * interruption** with a transient-*looking* signal — the poison item that would
  * otherwise retry forever and consume the backlog's recovery budget.
  *
- * The escalation signal is purely the item's own `attempt_count`. Every served
- * attempt increments it (via `markGapStatus('in_progress')`) BEFORE the
- * connector acts, and the crash-reclaim path resets `in_progress` → `pending`
- * WITHOUT decrementing, so repeated interruption climbs `attempt_count` exactly
- * like a repeated deterministic failure (design.md D9). Once the item crosses
+ * The escalation signal is purely the item's own `attempt_count`. A recovery
+ * lease is not an attempt: the runtime increments this count only after an
+ * explicit connector attempt or outcome. Cleanup CAS-releases an untouched
+ * lease without changing prior evidence; an explicitly attempted lease keeps
+ * its count across failed/crashed cleanup. Once the item crosses
  * its per-item no-progress budget it is quarantined into `terminal` with a
  * distinct `quarantined` class and captured evidence — visible in accounting,
  * routed to a connector/system issue by the recovery-decision classifier, and

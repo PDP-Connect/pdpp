@@ -35,6 +35,7 @@ function freshRuntime() {
 function makeGovernor(overrides = {}) {
   const runtime = overrides.runtime ?? freshRuntime();
   return createDispatchGovernor({
+    getForwardEvidenceDebt: overrides.getForwardEvidenceDebt ?? (() => false),
     getLastSuccessfulRunAt: overrides.getLastSuccessfulRunAt ?? (() => null),
     getNonPressureRecoverableCount: overrides.getNonPressureRecoverableCount ?? (() => 0),
     getSourcePressureGaps: overrides.getSourcePressureGaps ?? (() => []),
@@ -223,4 +224,192 @@ test('recovery cadence elapsed but forward-walk interval not yet elapsed (legacy
 
   assert.equal(result.eligible, true, 'recovery-only launch still fires when only the recovery cadence has elapsed');
   assert.equal(result.recoveryOnly, true);
+});
+
+// ── Forward-evidence-debt bound (fix-pre-provenance-terminal-generation-semantics) ──
+//
+// Recovery-first has no forward bound on its own: live evidence showed a
+// connection's last fact-carrying forward run was 5+ days and ~640 runs ago,
+// with recovery-only winning every tick since. These cases drive the
+// governor's own `getForwardEvidenceDebt` probe directly (mirroring how the
+// other probes above are driven) to prove N consecutive recovery-only ticks
+// with aged/missing terminal evidence eventually yield to one forward
+// dispatch, and that dispatch resumes recovery-first once fresh evidence lands.
+
+test('N consecutive recovery-only ticks (fresh evidence) followed by evidence aging into debt, then healing after a forward dispatch', async () => {
+  // Simulates the self-healing loop end to end: while evidence stays fresh,
+  // recovery-first wins every tick (no starvation risk yet). Once evidence
+  // ages into debt, the very next tick diverts to forward collection instead
+  // of extending the streak further. That one forward dispatch is modeled as
+  // minting fresh evidence (debt flips back to false), so the tick right
+  // after it resumes recovery-first — proving the bound self-heals in both
+  // directions with no manual intervention.
+  let debt = false;
+  const governor = makeGovernor({
+    getNonPressureRecoverableCount: () => 10_264,
+    getForwardEvidenceDebt: () => debt,
+  });
+
+  for (let i = 0; i < 3; i += 1) {
+    const result = await governor.evaluateBackoffDispatch(schedule(), DUE_NOW + i);
+    assert.equal(result.eligible, true, `tick ${i}: still dispatches`);
+    assert.equal(result.recoveryOnly, true, `tick ${i}: recovery-only wins while evidence is fresh`);
+  }
+
+  // Evidence ages past FORWARD_EVIDENCE_MAX_AGE with no forward run having
+  // occurred in the interim (recovery-only ticks mint no forward facts).
+  debt = true;
+  const forwardTick = await governor.evaluateBackoffDispatch(schedule(), DUE_NOW + 100);
+  assert.equal(forwardTick.eligible, true, 'the tick still dispatches');
+  assert.equal(forwardTick.recoveryOnly, false, 'debt diverts this tick to forward collection');
+
+  // That forward run mints fresh, current-generation terminal evidence.
+  debt = false;
+  const healedTick = await governor.evaluateBackoffDispatch(schedule(), DUE_NOW + 200);
+  assert.equal(healedTick.eligible, true);
+  assert.equal(healedTick.recoveryOnly, true, 'fresh evidence -> recovery-first resumes on the very next tick');
+});
+
+test('aged terminal evidence with an eligible recovery backlog diverts one tick to forward collection', async () => {
+  const governor = makeGovernor({
+    getNonPressureRecoverableCount: () => 10_264, // large eligible non-pressure backlog
+    getForwardEvidenceDebt: () => true, // forward evidence is missing/historical/aged
+  });
+
+  const result = await governor.evaluateBackoffDispatch(schedule(), DUE_NOW);
+
+  assert.equal(result.eligible, true, 'the tick still dispatches');
+  assert.equal(
+    result.recoveryOnly,
+    false,
+    'forward-evidence debt bounds the otherwise-unbounded recovery-first default — forward collection wins this tick',
+  );
+});
+
+test('recovery-first resumes once forward evidence is no longer in debt', async () => {
+  const governor = makeGovernor({
+    getNonPressureRecoverableCount: () => 10_264,
+    getForwardEvidenceDebt: () => false, // fresh, current terminal evidence
+  });
+
+  const result = await governor.evaluateBackoffDispatch(schedule(), DUE_NOW);
+
+  assert.equal(result.eligible, true);
+  assert.equal(result.recoveryOnly, true, 'no debt -> recovery-first wins the tick exactly as before this change');
+});
+
+test('the forward-evidence-debt probe is only consulted when non-pressure recovery is otherwise eligible', async () => {
+  let probeCalls = 0;
+  const governor = makeGovernor({
+    getNonPressureRecoverableCount: () => 0, // no recovery backlog at all
+    getForwardEvidenceDebt: () => {
+      probeCalls += 1;
+      return true;
+    },
+  });
+
+  const result = await governor.evaluateBackoffDispatch(schedule(), DUE_NOW);
+
+  assert.equal(result.recoveryOnly, false, 'no recovery backlog -> ordinary forward-walk regardless of debt');
+  assert.equal(probeCalls, 0, 'the debt probe is skipped entirely when recovery is not otherwise eligible (no wasted read)');
+});
+
+test('a forward-evidence-debt probe failure fails closed to false (no debt) and preserves recovery-first', async () => {
+  const governor = makeGovernor({
+    getNonPressureRecoverableCount: () => 10_264,
+    getForwardEvidenceDebt: () => {
+      throw new Error('evidence read unavailable');
+    },
+  });
+
+  const result = await governor.evaluateBackoffDispatch(schedule(), DUE_NOW);
+
+  assert.equal(result.eligible, true);
+  assert.equal(
+    result.recoveryOnly,
+    true,
+    'a probe failure must not divert every failing tick to forward collection — fail closed to no debt',
+  );
+});
+
+// ── P1-B regression: debt must never make a tick dispatch NOTHING ───────────
+//
+// Fable review (2026-07-21, PART 2 §3): debt only suppressed the recovery-only
+// branch; `eligible` stayed `intervalElapsed && !cooldownDefers`. When the
+// recovery cadence had elapsed but the failure-backoff-inflated forward-walk
+// interval had not — the exact live deadlock shape the surviving
+// "recovery cadence elapsed but forward-walk interval not yet elapsed" test
+// above documents — a debt-true tick dispatched NEITHER recovery NOR forward:
+// `{"probeCalls":1,"eligible":false,"recoveryOnly":false}`. Lifted directly
+// from the review's own repro (`~/.tmp/fable-review-repro-governor-donothing.mjs`).
+// Debt may only PREFER forward when forward is otherwise eligible; it must
+// never veto recovery's own independent cadence and leave the tick dispatching
+// nothing.
+test('debt=true + failure-backoff-inflated interval (forward not otherwise eligible) -> recovery-only proceeds, never a do-nothing tick', async () => {
+  const connectorId = 'gmail-recovery-first-connector';
+  const lastFailAt = 10 * 60 * 60 * 1000;
+  const failedHistory = Array.from({ length: 6 }, (_, i) => ({
+    connectorId,
+    connectorInstanceId: connectorId,
+    source: { kind: 'connector', id: connectorId },
+    status: 'failed',
+    terminalReason: 'connector_reported_failed',
+    failureReason: null,
+    connectorError: null,
+    error: 'connector_reported_failed',
+    recordsEmitted: 0,
+    reportedRecordsEmitted: null,
+    checkpointSummary: null,
+    knownGaps: [],
+    runId: null,
+    traceId: null,
+    startedAt: new Date(lastFailAt - (6 - i) * 1000 - 1000).toISOString(),
+    completedAt: new Date(lastFailAt - (6 - i) * 1000).toISOString(),
+    attempt: 1,
+  }));
+  const runtime = freshRuntime();
+  runtime.history.push(...failedHistory);
+  runtime.lastRunTime.set(connectorId, lastFailAt);
+
+  let probeCalls = 0;
+  const governor = makeGovernor({
+    runtime,
+    getNonPressureRecoverableCount: () => 10_264, // large eligible backlog
+    getForwardEvidenceDebt: () => {
+      probeCalls += 1;
+      return true; // aged/missing forward evidence
+    },
+  });
+
+  // Base interval 50ms; 6 consecutive same-class failures inflate the
+  // failure-backoff `effectiveIntervalMs` to ~400ms. `now` sits past the
+  // recovery cadence (50ms elapsed) but short of the inflated backoff window
+  // (400ms elapsed) — forward-walk is NOT otherwise eligible, recovery
+  // cadence IS.
+  const now = lastFailAt + 60;
+  const result = await governor.evaluateBackoffDispatch(schedule({ intervalMs: 50 }), now);
+
+  assert.equal(probeCalls, 1, 'the debt probe is still consulted (recovery is otherwise eligible)');
+  assert.equal(result.eligible, true, 'the tick MUST dispatch something — debt can never produce a do-nothing tick');
+  assert.equal(
+    result.recoveryOnly,
+    true,
+    'forward is not otherwise eligible (backoff-inflated interval), so debt falls back to recovery-only on its own independent cadence',
+  );
+});
+
+test('debt=true + forward otherwise eligible still selects forward (existing behavior unaffected by the P1-B fallback)', async () => {
+  const governor = makeGovernor({
+    getNonPressureRecoverableCount: () => 10_264,
+    getForwardEvidenceDebt: () => true,
+  });
+
+  const result = await governor.evaluateBackoffDispatch(schedule(), DUE_NOW);
+
+  assert.equal(result.eligible, true);
+  assert.equal(
+    result.recoveryOnly,
+    false,
+    'forward-walk is due (DUE_NOW) and no backoff/cooldown gates it, so debt correctly selects forward collection',
+  );
 });

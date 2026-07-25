@@ -2,7 +2,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// Stream-health machine audit — CLI entry.
+// Stream-health coverage-evidence audit — CLI entry, not a fleet-health verdict.
 //
 // Fails when a required stream lacks a resolved coverage posture beneath a
 // settled connection: resting unknown/unmeasured coverage, or an
@@ -14,6 +14,9 @@
 // and specs/reference-connection-health/spec.md "A reproducible machine
 // audit SHALL distinguish settled failures from active or unreliable
 // evidence".
+// A PASS says only that required-stream coverage evidence passed this narrow
+// audit; owner action, runtime, lifecycle, recovery, and fleet scope are
+// composed separately by the owner fleet-health read.
 //
 // Usage:
 //   node scripts/check-stream-health-audit.mjs --origin https://pdpp.example.com

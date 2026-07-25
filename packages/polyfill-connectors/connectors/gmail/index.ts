@@ -45,6 +45,7 @@ import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerp
 import { isMainModule } from "../../src/is-main-module.ts";
 import {
   makeReferenceBlobUploader as makeSharedReferenceBlobUploader,
+  ReferenceBlobUploadFailure,
   runtimeBlobUploadAvailable as sharedRuntimeBlobUploadAvailable,
 } from "../../src/reference-blob-uploader.ts";
 import { stringifyForJsonl } from "../../src/safe-emit.ts";
@@ -275,7 +276,28 @@ export type UploadAttachmentBlobFn = (args: {
   stream: "attachments";
 }) => Promise<BlobRef>;
 
-export type HydrateAttachmentFn = (msg: FetchMessageObject, attachment: AttachmentRecord) => Promise<AttachmentRecord>;
+type AttachmentHydrationFailureStage =
+  | "blob_upload_http_4xx"
+  | "blob_upload_http_5xx"
+  | "blob_upload_integrity_failed"
+  | "blob_upload_invalid_response"
+  | "blob_upload_transport_failed"
+  | "imap_download_failed";
+
+/** Aggregate-safe taxonomy retained only until recovery telemetry settles. */
+interface AttachmentHydrationFailure {
+  readonly stage: AttachmentHydrationFailureStage;
+}
+
+export interface AttachmentHydrationResult {
+  readonly failure: AttachmentHydrationFailure | null;
+  readonly record: AttachmentRecord;
+}
+
+export type HydrateAttachmentFn = (
+  msg: FetchMessageObject,
+  attachment: AttachmentRecord
+) => Promise<AttachmentHydrationResult>;
 
 export interface AttachmentBackfillSummary {
   failed: number;
@@ -475,6 +497,7 @@ export function buildAttachmentDetailGap(attachment: AttachmentRecord): DetailGa
 }
 
 function normalizeAttachmentRecoveryKey(recordKey: string | number | null | undefined): string | null {
+  // biome-ignore lint/suspicious/noEqualsToNull: check for both null and undefined
   if (recordKey == null) {
     return null;
   }
@@ -501,12 +524,15 @@ function attachmentDetailGapMatches(
   if (typedLocator.kind !== "gmail.attachment_detail") {
     return false;
   }
+  // biome-ignore lint/suspicious/noEqualsToNull: check for both null and undefined
   if (typedLocator.attachment_id != null && typedLocator.attachment_id !== attachment.id) {
     return false;
   }
+  // biome-ignore lint/suspicious/noEqualsToNull: check for both null and undefined
   if (typedLocator.message_id != null && typedLocator.message_id !== attachment.message_id) {
     return false;
   }
+  // biome-ignore lint/suspicious/noEqualsToNull: check for both null and undefined
   if (typedLocator.part_index != null && typedLocator.part_index !== attachment.part_index) {
     return false;
   }
@@ -544,7 +570,9 @@ async function emitAttachmentRecords(
   }
   const recoveredAttachmentGapIds = deps.recoveredAttachmentGapIds ?? new Set<string>();
   for (const a of attachments) {
-    const hydrated = await deps.hydrateAttachment(msg, a);
+    // biome-ignore lint/performance/noAwaitInLoops: hydration must stay sequential — coverage accounting below records each outcome before the next attempt starts
+    const hydration = await deps.hydrateAttachment(msg, a);
+    const hydrated = hydration.record;
     // Record the outcome BEFORE emitting so the coverage denominator counts
     // every attempt even if the emit is scope-filtered downstream.
     if (deps.attachmentCoverage) {
@@ -568,6 +596,7 @@ async function emitAttachmentRecords(
     const recoveredGaps = findRecoveredAttachmentDetailGaps(deps.detailGaps, hydrated, recoveredAttachmentGapIds);
     for (const gap of recoveredGaps) {
       recoveredAttachmentGapIds.add(gap.gap_id);
+      // biome-ignore lint/performance/noAwaitInLoops: must emit sequentially — recoveredAttachmentGapIds is mutated per-iteration and shared across the outer loop
       await deps.emitProtocol({
         type: "DETAIL_GAP_RECOVERED",
         reference_only: true,
@@ -590,6 +619,7 @@ async function emitAttachmentDetailGaps(coverage: AttachmentDetailCoverage | und
     return;
   }
   for (const attachment of coverage.failedRecords) {
+    // biome-ignore lint/performance/noAwaitInLoops: must emit sequentially after the coverage report and before the messages STATE commit (see doc comment above)
     await emit(buildAttachmentDetailGap(attachment));
   }
 }
@@ -713,6 +743,7 @@ export async function emitMessagesPass(deps: PerMessageDeps, metas: readonly Fet
   let count = 0;
   for (const msg of metas) {
     try {
+      // biome-ignore lint/performance/noAwaitInLoops: must stay sequential — the per-message try/catch isolates one bad message, and the count-modulo progress report below depends on processing order
       const processed = await processMessage(deps, msg);
       if (!processed) {
         continue;
@@ -922,6 +953,7 @@ async function emitLabelsStream(
     };
     // Fingerprint by the label `name` (the record key for this stream).
     if (cursor.shouldEmit({ id: name, ...record })) {
+      // biome-ignore lint/performance/noAwaitInLoops: must emit sequentially — shared fingerprint cursor state is read/written per-iteration and pruned once the loop completes
       await emitRecord("labels", record, "name");
     }
   }
@@ -1234,6 +1266,11 @@ function normalizeAttachmentBackfillWindowUids(value: number | undefined): numbe
 export const ATTACHMENT_BACKFILL_PAGE_MIN_BYTES = 256 * 1024;
 export const ATTACHMENT_BACKFILL_PAGE_DEFAULT_BYTES = 1024 * 1024;
 export const ATTACHMENT_BACKFILL_PAGE_MAX_BYTES = 4 * 1024 * 1024;
+// Served recovery is the whole run's bounded work unit: it returns before the
+// ordinary forward walk. It can therefore use the established 4 MiB safe
+// ceiling without changing the 1 MiB historical-backfill default, which
+// reserves time for ordinary sync work in mixed runs.
+export const ATTACHMENT_RECOVERY_PAGE_DEFAULT_BYTES = ATTACHMENT_BACKFILL_PAGE_MAX_BYTES;
 /**
  * Fixed conservative per-UID cost used only when BODYSTRUCTURE reported no
  * usable attachment size. Not learned or updated — a single documented
@@ -1243,6 +1280,7 @@ export const ATTACHMENT_BACKFILL_PAGE_MAX_BYTES = 4 * 1024 * 1024;
  */
 export const ATTACHMENT_BACKFILL_UNKNOWN_SIZE_FALLBACK_BYTES = 256 * 1024;
 const ATTACHMENT_BACKFILL_PAGE_BYTES_ENV = "PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES";
+const ATTACHMENT_RECOVERY_PAGE_BYTES_ENV = "PDPP_GMAIL_ATTACHMENT_RECOVERY_PAGE_BYTES";
 
 function boundedPositiveInteger(value: number | undefined, fallback: number, min: number, max: number): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value < min) {
@@ -1266,6 +1304,29 @@ export function resolveAttachmentBackfillPageByteBudget(env: NodeJS.ProcessEnv =
     return attachmentBackfillPageByteBudget();
   }
   return attachmentBackfillPageByteBudget(Number(value));
+}
+
+function resolveAttachmentPageByteBudgetOverride(value: string | undefined): number | undefined {
+  if (!(value && POSITIVE_INTEGER_PATTERN.test(value))) {
+    return;
+  }
+  const parsed = Number(value);
+  return parsed >= ATTACHMENT_BACKFILL_PAGE_MIN_BYTES && parsed <= ATTACHMENT_BACKFILL_PAGE_MAX_BYTES
+    ? parsed
+    : undefined;
+}
+
+/**
+ * Resolve the served-recovery byte budget without coupling it to ordinary
+ * forward backfill. The legacy backfill variable continues to override both
+ * lanes until an operator opts into the recovery-specific variable.
+ */
+export function resolveAttachmentRecoveryPageByteBudget(env: NodeJS.ProcessEnv = process.env): number {
+  return (
+    resolveAttachmentPageByteBudgetOverride(env[ATTACHMENT_RECOVERY_PAGE_BYTES_ENV]) ??
+    resolveAttachmentPageByteBudgetOverride(env[ATTACHMENT_BACKFILL_PAGE_BYTES_ENV]) ??
+    ATTACHMENT_RECOVERY_PAGE_DEFAULT_BYTES
+  );
 }
 
 const GMAIL_METADATA_FETCH_QUERY: ExtendedFetchQuery = {
@@ -1298,7 +1359,37 @@ export interface AttachmentBackfillCandidate {
 }
 export interface ServedAttachmentRecoverySummary {
   admitted: number;
+  admitted_bytes: number;
+  attachment_hydration_failure_outcome: AttachmentHydrationFailureOutcome;
+  attempted: number;
+  hydration_failed: number;
+  lookup_miss: number;
+  metadata_lookups: number;
   recovered: number;
+  run_cap_deferred: number;
+  served: number;
+}
+
+interface AttachmentHydrationFailureOutcome {
+  blob_upload_http_4xx: number;
+  blob_upload_http_5xx: number;
+  blob_upload_integrity_failed: number;
+  blob_upload_invalid_response: number;
+  blob_upload_transport_failed: number;
+  imap_download_failed: number;
+  unclassified_failed: number;
+}
+
+function createAttachmentHydrationFailureOutcome(): AttachmentHydrationFailureOutcome {
+  return {
+    blob_upload_http_4xx: 0,
+    blob_upload_http_5xx: 0,
+    blob_upload_integrity_failed: 0,
+    blob_upload_invalid_response: 0,
+    blob_upload_transport_failed: 0,
+    imap_download_failed: 0,
+    unclassified_failed: 0,
+  };
 }
 
 type GmailMessageLookupClient = Pick<ImapFlow, "search" | "fetchOne">;
@@ -1358,7 +1449,9 @@ function servedAttachmentDetailGaps(
     const typedLocator = locator as Record<string, unknown>;
     return (
       typedLocator.kind === "gmail.attachment_detail" &&
+      // biome-ignore lint/suspicious/noEqualsToNull: check for both null and undefined
       typedLocator.message_id != null &&
+      // biome-ignore lint/suspicious/noEqualsToNull: check for both null and undefined
       typedLocator.part_index != null
     );
   });
@@ -1377,11 +1470,14 @@ function normalizeGmailAttachmentRecoveryLocator(gap: DetailGapStartEntry): {
   if (typedLocator.kind !== "gmail.attachment_detail") {
     return null;
   }
+  // biome-ignore lint/suspicious/noEqualsToNull: check for both null and undefined
   const messageId = typedLocator.message_id == null ? "" : String(typedLocator.message_id).trim();
+  // biome-ignore lint/suspicious/noEqualsToNull: check for both null and undefined
   const partIndex = typedLocator.part_index == null ? "" : String(typedLocator.part_index).trim();
   if (!(messageId && partIndex)) {
     return null;
   }
+  // biome-ignore lint/suspicious/noEqualsToNull: check for both null and undefined
   const attachmentId = typedLocator.attachment_id == null ? null : String(typedLocator.attachment_id).trim() || null;
   return { attachmentId, messageId, partIndex };
 }
@@ -1394,7 +1490,8 @@ async function fetchGmailMessageByMessageId(
   if (!uids || uids.length === 0) {
     return null;
   }
-  const uid = uids[0];
+  const [uid] = uids;
+  // biome-ignore lint/suspicious/noEqualsToNull: check for both null and undefined
   if (uid == null) {
     return null;
   }
@@ -1432,13 +1529,19 @@ async function emitServedAttachmentRecoveryProgress(
 interface ServedAttachmentRecoveryState {
   admitted: number;
   admittedBytesTotal: number;
+  attachmentHydrationFailureOutcome: AttachmentHydrationFailureOutcome;
+  attempted: number;
+  hydrationFailed: number;
+  lookupMiss: number;
   messageCache: Map<string, FetchMessageObject | null>;
   metadataLookups: number;
   recovered: number;
   recoveredAttachmentGapIds: Set<string>;
+  runCapDeferred: number;
 }
 
 type ServedAttachmentRecoveryLookupResult = FetchMessageObject | null | "metadata_lookup_limit_reached";
+type ServedAttachmentRecoveryStop = "byte_budget" | "metadata_lookup_cap" | false;
 
 async function loadServedAttachmentRecoveryMessage(
   client: GmailMessageLookupClient,
@@ -1466,8 +1569,9 @@ async function settleServedAttachmentRecoveryAttempt(
     emitRecord: EmitRecordFn;
   },
   state: ServedAttachmentRecoveryState,
-  hydrated: AttachmentRecord
+  hydration: AttachmentHydrationResult
 ): Promise<void> {
+  const hydrated = hydration.record;
   if (deps.attachmentCoverage) {
     recordAttachmentCoverage(deps.attachmentCoverage, hydrated);
   }
@@ -1476,14 +1580,24 @@ async function settleServedAttachmentRecoveryAttempt(
     const recoveredGaps = findRecoveredAttachmentDetailGaps(deps.detailGaps, hydrated, state.recoveredAttachmentGapIds);
     for (const recoveredGap of recoveredGaps) {
       state.recoveredAttachmentGapIds.add(recoveredGap.gap_id);
+      // biome-ignore lint/performance/noAwaitInLoops: must emit sequentially — shared recovery state (recoveredAttachmentGapIds, recovered count) is mutated per-iteration
       await deps.emitProtocol({
         type: "DETAIL_GAP_RECOVERED",
         reference_only: true,
         gap_id: recoveredGap.gap_id,
+        ...(recoveredGap.lease_id ? { lease_id: recoveredGap.lease_id } : {}),
         record_key: hydrated.id,
         stream: "attachments",
       });
       state.recovered += 1;
+    }
+  }
+  if (hydrated.hydration_status === "failed") {
+    state.hydrationFailed += 1;
+    if (hydration.failure) {
+      state.attachmentHydrationFailureOutcome[hydration.failure.stage] += 1;
+    } else {
+      state.attachmentHydrationFailureOutcome.unclassified_failed += 1;
     }
   }
   // Emit bounded, non-secret progress as each admitted attempt settles so a
@@ -1493,6 +1607,46 @@ async function settleServedAttachmentRecoveryAttempt(
     metadataLookups: state.metadataLookups,
     phase: "settled",
     recovered: state.recovered,
+  });
+}
+
+function buildServedAttachmentRecoveryDeferredGap(
+  gap: DetailGapStartEntry,
+  errorClass: "attachment_lookup_miss" | "run_cap_deferred"
+): EmittedMessage {
+  const locator =
+    gap.detail_locator && typeof gap.detail_locator === "object" && !Array.isArray(gap.detail_locator)
+      ? (gap.detail_locator as DetailGapMessage["detail_locator"])
+      : { kind: "gmail.attachment_detail" };
+  return {
+    type: "DETAIL_GAP",
+    reference_only: true,
+    status: "pending",
+    stream: "attachments",
+    parent_stream: "messages",
+    record_key: gap.record_key ?? gap.gap_id,
+    detail_locator: locator,
+    reason: "temporary_unavailable",
+    retryable: true,
+    last_error: { class: errorClass },
+    gap_id: gap.gap_id,
+    ...(gap.lease_id ? { lease_id: gap.lease_id } : {}),
+  };
+}
+
+async function markServedAttachmentRecoveryAttempt(
+  gap: DetailGapStartEntry,
+  emitProtocol: (msg: EmittedMessage) => Promise<void>
+): Promise<void> {
+  if (!gap.lease_id) {
+    return;
+  }
+  await emitProtocol({
+    type: "DETAIL_GAP_ATTEMPTED",
+    reference_only: true,
+    gap_id: gap.gap_id,
+    lease_id: gap.lease_id,
+    stream: "attachments",
   });
 }
 
@@ -1508,9 +1662,9 @@ async function processServedAttachmentRecoveryGap(
   },
   state: ServedAttachmentRecoveryState,
   byteBudget: number
-): Promise<boolean> {
+): Promise<ServedAttachmentRecoveryStop> {
   if (state.admitted > 0 && state.admittedBytesTotal >= byteBudget) {
-    return true;
+    return "byte_budget";
   }
 
   const locator = normalizeGmailAttachmentRecoveryLocator(gap);
@@ -1518,11 +1672,24 @@ async function processServedAttachmentRecoveryGap(
     return false;
   }
 
+  // A metadata lookup is a real provider attempt even when it finds no
+  // matching message/attachment. The host records this explicit outcome; it
+  // never infers attempt status from a successful DONE envelope.
+  if (
+    !state.messageCache.has(locator.messageId) &&
+    state.metadataLookups >= SERVED_ATTACHMENT_RECOVERY_METADATA_LOOKUP_LIMIT
+  ) {
+    return "metadata_lookup_cap";
+  }
+  state.attempted += 1;
+  await markServedAttachmentRecoveryAttempt(gap, deps.emitProtocol);
   const loadedMessage = await loadServedAttachmentRecoveryMessage(client, locator.messageId, state);
   if (loadedMessage === "metadata_lookup_limit_reached") {
-    return true;
+    return "metadata_lookup_cap";
   }
   if (!loadedMessage) {
+    state.lookupMiss += 1;
+    await deps.emitProtocol(buildServedAttachmentRecoveryDeferredGap(gap, "attachment_lookup_miss"));
     return false;
   }
 
@@ -1538,13 +1705,16 @@ async function processServedAttachmentRecoveryGap(
     attachmentDetailGapMatches(gap, candidate, normalizedAttachmentKey)
   );
   if (!attachment) {
+    state.lookupMiss += 1;
+    await deps.emitProtocol(buildServedAttachmentRecoveryDeferredGap(gap, "attachment_lookup_miss"));
     return false;
   }
 
   const attachmentBytes =
     typeof attachment.size_bytes === "number" ? attachment.size_bytes : ATTACHMENT_BACKFILL_UNKNOWN_SIZE_FALLBACK_BYTES;
   if (state.admitted > 0 && state.admittedBytesTotal + attachmentBytes > byteBudget) {
-    return true;
+    await deps.emitProtocol(buildServedAttachmentRecoveryDeferredGap(gap, "run_cap_deferred"));
+    return "byte_budget";
   }
 
   state.admitted += 1;
@@ -1557,8 +1727,8 @@ async function processServedAttachmentRecoveryGap(
     recovered: state.recovered,
   });
 
-  const hydrated = await deps.hydrateAttachment(loadedMessage, attachment);
-  await settleServedAttachmentRecoveryAttempt(deps, state, hydrated);
+  const hydration = await deps.hydrateAttachment(loadedMessage, attachment);
+  await settleServedAttachmentRecoveryAttempt(deps, state, hydration);
   return false;
 }
 
@@ -1575,16 +1745,32 @@ export async function recoverServedAttachmentGaps(
 ): Promise<ServedAttachmentRecoverySummary> {
   const servedGaps = servedAttachmentDetailGaps(deps.detailGaps);
   if (servedGaps.length === 0) {
-    return { admitted: 0, recovered: 0 };
+    return {
+      admitted: 0,
+      admitted_bytes: 0,
+      attempted: 0,
+      attachment_hydration_failure_outcome: createAttachmentHydrationFailureOutcome(),
+      hydration_failed: 0,
+      lookup_miss: 0,
+      metadata_lookups: 0,
+      recovered: 0,
+      run_cap_deferred: 0,
+      served: 0,
+    };
   }
-  const byteBudget = resolveAttachmentBackfillPageByteBudget();
+  const byteBudget = resolveAttachmentRecoveryPageByteBudget();
   const recoveryState: ServedAttachmentRecoveryState = {
     admitted: 0,
     admittedBytesTotal: 0,
+    attachmentHydrationFailureOutcome: createAttachmentHydrationFailureOutcome(),
+    attempted: 0,
+    hydrationFailed: 0,
+    lookupMiss: 0,
     metadataLookups: 0,
     messageCache: new Map<string, FetchMessageObject | null>(),
     recovered: 0,
     recoveredAttachmentGapIds: deps.recoveredAttachmentGapIds ?? new Set<string>(),
+    runCapDeferred: 0,
   };
   const recoveryAttemptDeps = {
     ...(deps.attachmentCoverage ? { attachmentCoverage: deps.attachmentCoverage } : {}),
@@ -1594,12 +1780,28 @@ export async function recoverServedAttachmentGaps(
     hydrateAttachment: deps.hydrateAttachment,
   };
 
-  for (const gap of servedGaps) {
-    if (await processServedAttachmentRecoveryGap(client, gap, recoveryAttemptDeps, recoveryState, byteBudget)) {
+  for (const [index, gap] of servedGaps.entries()) {
+    // biome-ignore lint/performance/noAwaitInLoops: must stay sequential — a "byte_budget" stop must halt remaining iterations, and the shared byteBudget/recoveryState accumulate across attempts
+    const stop = await processServedAttachmentRecoveryGap(client, gap, recoveryAttemptDeps, recoveryState, byteBudget);
+    if (stop) {
+      if (stop === "byte_budget") {
+        recoveryState.runCapDeferred = servedGaps.length - index;
+      }
       break;
     }
   }
-  return { admitted: recoveryState.admitted, recovered: recoveryState.recovered };
+  return {
+    admitted: recoveryState.admitted,
+    admitted_bytes: recoveryState.admittedBytesTotal,
+    attempted: recoveryState.attempted,
+    attachment_hydration_failure_outcome: recoveryState.attachmentHydrationFailureOutcome,
+    hydration_failed: recoveryState.hydrationFailed,
+    lookup_miss: recoveryState.lookupMiss,
+    metadata_lookups: recoveryState.metadataLookups,
+    recovered: recoveryState.recovered,
+    run_cap_deferred: recoveryState.runCapDeferred,
+    served: servedGaps.length,
+  };
 }
 
 async function recoverServedAttachmentGapsIfRequested(
@@ -1624,12 +1826,21 @@ async function recoverServedAttachmentGapsIfRequested(
     hydrateAttachment: deps.hydrateAttachment,
     recoveredAttachmentGapIds: deps.recoveredAttachmentGapIds,
   });
+  const { attachment_hydration_failure_outcome, ...attachmentRecoveryOutcome } = recoverySummary;
   await deps.emitProtocol({
     type: "PROGRESS",
     stream: "attachments",
     message: `Gmail served attachment-gap recovery summary: admitted=${recoverySummary.admitted} recovered=${recoverySummary.recovered}`,
     count: recoverySummary.recovered,
     total: recoverySummary.admitted,
+    attachment_recovery_outcome: {
+      object: "attachment_recovery_outcome",
+      ...attachmentRecoveryOutcome,
+    },
+    attachment_hydration_failure_outcome: {
+      object: "attachment_hydration_failure_outcome",
+      ...attachment_hydration_failure_outcome,
+    },
   });
 }
 
@@ -1821,18 +2032,48 @@ function boundedHydrationError(err: unknown): string {
   return raw.slice(0, HYDRATION_ERROR_MAX_CHARS);
 }
 
-function attachmentWithHydrationFailure(
+function hydrationFailureResult(
   attachment: AttachmentRecord,
   status: Exclude<AttachmentHydrationStatus, "hydrated">,
-  err: unknown
-): AttachmentRecord {
+  err: unknown,
+  failure: AttachmentHydrationFailure | null = null
+): AttachmentHydrationResult {
   return {
-    ...attachment,
-    blob_ref: null,
-    content_sha256: null,
-    hydration_status: status,
-    hydration_error: boundedHydrationError(err),
+    failure,
+    record: {
+      ...attachment,
+      blob_ref: null,
+      content_sha256: null,
+      hydration_status: status,
+      hydration_error: boundedHydrationError(err),
+    },
   };
+}
+
+function originalHydrationError(err: unknown): unknown {
+  return err instanceof ReferenceBlobUploadFailure && err.cause !== undefined ? err.cause : err;
+}
+
+function hydrationFailureForBlobUpload(err: unknown): AttachmentHydrationFailure | null {
+  if (!(err instanceof ReferenceBlobUploadFailure)) {
+    return null;
+  }
+  switch (err.kind) {
+    case "http_4xx":
+      return { stage: "blob_upload_http_4xx" };
+    case "http_5xx":
+      return { stage: "blob_upload_http_5xx" };
+    case "invalid_response":
+      return { stage: "blob_upload_invalid_response" };
+    case "integrity_mismatch":
+      return { stage: "blob_upload_integrity_failed" };
+    case "source_content_failed":
+      return { stage: "imap_download_failed" };
+    case "transport":
+      return { stage: "blob_upload_transport_failed" };
+    default:
+      return null;
+  }
 }
 
 /**
@@ -1914,21 +2155,26 @@ export function makeAttachmentHydrator(args: {
   const maxBytes = args.maxBytes ?? DEFAULT_MAX_ATTACHMENT_BYTES;
   return async (msg, attachment) => {
     if (typeof attachment.size_bytes === "number" && attachment.size_bytes > maxBytes) {
-      return attachmentWithHydrationFailure(
+      return hydrationFailureResult(
         attachment,
         "too_large",
         new AttachmentTooLargeError(attachment.size_bytes, maxBytes)
       );
     }
+    let downloaded: AttachmentDownload;
     try {
-      const downloaded = await args.fetchAttachment(msg, attachment);
-      if (typeof downloaded.expectedSize === "number" && downloaded.expectedSize > maxBytes) {
-        return attachmentWithHydrationFailure(
-          attachment,
-          "too_large",
-          new AttachmentTooLargeError(downloaded.expectedSize, maxBytes)
-        );
-      }
+      downloaded = await args.fetchAttachment(msg, attachment);
+    } catch (err) {
+      return hydrationFailureResult(attachment, "failed", err, { stage: "imap_download_failed" });
+    }
+    if (typeof downloaded.expectedSize === "number" && downloaded.expectedSize > maxBytes) {
+      return hydrationFailureResult(
+        attachment,
+        "too_large",
+        new AttachmentTooLargeError(downloaded.expectedSize, maxBytes)
+      );
+    }
+    try {
       const guarded = enforceMaxBytes(downloaded.content, maxBytes);
       const blobRef = await args.uploadBlob({
         content: guarded,
@@ -1938,18 +2184,23 @@ export function makeAttachmentHydrator(args: {
         stream: "attachments",
       });
       return {
-        ...attachment,
-        blob_ref: blobRef,
-        content_sha256: blobRef.sha256,
-        content_type: blobRef.mime_type,
-        size_bytes: blobRef.size_bytes,
-        hydration_status: "hydrated",
-        hydration_error: null,
+        failure: null,
+        record: {
+          ...attachment,
+          blob_ref: blobRef,
+          content_sha256: blobRef.sha256,
+          content_type: blobRef.mime_type,
+          size_bytes: blobRef.size_bytes,
+          hydration_status: "hydrated",
+          hydration_error: null,
+        },
       };
     } catch (err) {
-      const status: Exclude<AttachmentHydrationStatus, "hydrated"> =
-        err instanceof AttachmentTooLargeError ? "too_large" : "failed";
-      return attachmentWithHydrationFailure(attachment, status, err);
+      const originalError = originalHydrationError(err);
+      if (originalError instanceof AttachmentTooLargeError) {
+        return hydrationFailureResult(attachment, "too_large", originalError);
+      }
+      return hydrationFailureResult(attachment, "failed", err, hydrationFailureForBlobUpload(err));
     }
   };
 }
@@ -2030,7 +2281,7 @@ async function runDeltaPass(
   if (session.fullResync || session.priorModseq === undefined || session.priorModseq === null) {
     return;
   }
-  const priorModseq = session.priorModseq;
+  const { priorModseq } = session;
   const priorModseqBig = typeof priorModseq === "bigint" ? priorModseq : BigInt(priorModseq);
   await emit({
     type: "PROGRESS",
@@ -2140,6 +2391,7 @@ export async function emitChangedThreads(
     if (!cursor.shouldEmit(record)) {
       continue;
     }
+    // biome-ignore lint/performance/noAwaitInLoops: must emit sequentially — shared fingerprint cursor state is read/written per-iteration
     await emitRecord("threads", record);
   }
 }
@@ -2194,7 +2446,7 @@ async function runAllMailPasses(
   state: Record<string, unknown>,
   deps: AllMailDeps
 ): Promise<void> {
-  const mailbox = client.mailbox;
+  const { mailbox } = client;
   if (!mailbox) {
     fail("mailbox not selected after lock");
     return;
@@ -2380,6 +2632,7 @@ function makeEmitRecord(
 ): EmitRecordFn {
   return async (stream: string, data: Record<string, unknown>, keyField: "id" | "name" = "id"): Promise<boolean> => {
     const keyCandidate = data[keyField] ?? data.name;
+    // biome-ignore lint/suspicious/noEqualsToNull: check for both null and undefined
     if (keyCandidate == null) {
       return false;
     }
@@ -2514,6 +2767,22 @@ async function main(): Promise<void> {
   flushAndExit(0);
 }
 
+// Named (not inline) so its own internal `emit(...).catch(...)` isn't a
+// promise chain nested inside another chain's callback.
+function handleMainRejection(e: unknown): void {
+  const msg = e instanceof Error ? e.message : String(e);
+  const retryable = RETRYABLE_ERROR_RE.test(msg);
+  const trace = e instanceof Error ? (e.stack ?? msg) : msg;
+  process.stderr.write(`[gmail] main rejected: ${trace}\n`);
+  emit({
+    type: "DONE",
+    status: "failed",
+    records_emitted: 0,
+    error: { message: msg, retryable },
+  }).catch((): undefined => undefined);
+  flushAndExit(1);
+}
+
 // Guarded so `import "./index.ts"` in tests doesn't spin up the runtime
 // (process-level handlers, stdin reader, IMAP connect) and block the
 // Node event loop. Only fires when this module IS the process entry
@@ -2549,17 +2818,5 @@ if (isMainModule(import.meta.url)) {
     flushAndExit(1);
   });
 
-  main().catch((e: unknown) => {
-    const msg = e instanceof Error ? e.message : String(e);
-    const retryable = RETRYABLE_ERROR_RE.test(msg);
-    const trace = e instanceof Error ? (e.stack ?? msg) : msg;
-    process.stderr.write(`[gmail] main rejected: ${trace}\n`);
-    emit({
-      type: "DONE",
-      status: "failed",
-      records_emitted: 0,
-      error: { message: msg, retryable },
-    }).catch((): undefined => undefined);
-    flushAndExit(1);
-  });
+  main().catch(handleMainRejection);
 }

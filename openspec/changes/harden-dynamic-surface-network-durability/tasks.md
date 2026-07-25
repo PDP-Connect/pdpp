@@ -14,7 +14,7 @@
 - [x] Unit: `ensureNetworkExists` inspects first, creates only on 404, treats 409 as success.
 - [x] Unit: regression guard — the configured network name is never derived from `COMPOSE_PROJECT_NAME`.
 - [x] Unit: compose file regression guard — `pdpp_neko_dynamic` is declared `external: true` and its env default is not `COMPOSE_PROJECT_NAME`-derived.
-- [x] Docker acceptance (opt-in smoke script): acquire a dynamic surface, run `docker compose down` (no flags) then `docker compose up -d`, confirm same container ID (and unchanged `StartedAt`) survives and remains reachable through the allocator. Run live: PASSED.
+- [x] Docker acceptance (opt-in smoke script): acquire a dynamic surface, force-recreate the allocator control plane (and prove its container ID changed), then run `docker compose down` (no flags) followed by `docker compose up -d`; confirm the same surface container ID, container `StartedAt`, and Chromium PID/start-time epoch survive and the surface remains reachable through the allocator. The complete flow passed in an isolated throwaway deployment with per-run image tags; the live stack was untouched. This is infrastructure/process continuity only; it does not assert provider authentication or connector-run continuity.
 
 ## 4. Docs
 

@@ -14,13 +14,16 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  DEFAULT_FORWARD_EVIDENCE_MAX_AGE_FLOOR_MS,
   DEFAULT_PRESSURE_EVIDENCE_WINDOW_MS,
   RECOVERY_STALL_CADENCE_MS,
   classifyRecoveryGap,
   classifyRecoveryReason,
   deriveRecoveryStall,
   filterFreshPressureRows,
+  forwardEvidenceMaxAgeMs,
   hasEligibleNonPressureRecovery,
+  hasForwardEvidenceDebt,
   hasFreshPressureEvidence,
   lastPressureAtForGap,
   partitionPressureEvidence,
@@ -28,6 +31,7 @@ import {
   providerWorkDomainForGap,
   providerWorkDomainKey,
   resolveRecoveryAdmission,
+  resolveRecoveryFirstMode,
   sameWorkDomain,
   summarizeRecoveryAdmissionDiagnostics,
 } from '../runtime/recovery-decision.ts';
@@ -568,4 +572,189 @@ test('2.7 observe-only: deriveRecoveryStall does not mutate the input rows', () 
   const snapshot = JSON.parse(JSON.stringify(row));
   deriveRecoveryStall([row], { nowMs: NOW_MS });
   assert.deepEqual(row, snapshot);
+});
+
+// ── forward-evidence-debt bound (fix-pre-provenance-terminal-generation-semantics) ──
+//
+// `resolveRecoveryFirstMode`'s implicit-unscoped branch had no forward bound:
+// live evidence showed an existing non-pressure recovery backlog could win
+// every tick indefinitely while forward (fact-carrying) terminal evidence
+// aged past any reasonable bound. These pin the truth table for the new
+// `forwardEvidenceDebt` input and the pure `hasForwardEvidenceDebt` /
+// `forwardEvidenceMaxAgeMs` predicates that derive it.
+
+test('forwardEvidenceDebt truth table: debt false -> unchanged recovery-first behavior', () => {
+  assert.equal(
+    resolveRecoveryFirstMode({ nonPressureRecoveryEligible: true, forwardEvidenceDebt: false }),
+    true,
+    'no debt, eligible recovery -> recovery-only wins, exactly like before this change',
+  );
+  assert.equal(
+    resolveRecoveryFirstMode({ nonPressureRecoveryEligible: true }),
+    true,
+    'omitting forwardEvidenceDebt entirely (legacy caller) preserves the old behavior',
+  );
+});
+
+test('forwardEvidenceDebt truth table: debt true + eligible recovery -> forward wins', () => {
+  assert.equal(
+    resolveRecoveryFirstMode({ nonPressureRecoveryEligible: true, forwardEvidenceDebt: true }),
+    false,
+    'debt bounds the implicit recovery-first default: forward collection is selected instead',
+  );
+});
+
+test('forwardEvidenceDebt truth table: debt true + no eligible recovery -> forward wins regardless (debt is moot)', () => {
+  assert.equal(
+    resolveRecoveryFirstMode({ nonPressureRecoveryEligible: false, forwardEvidenceDebt: true }),
+    false,
+  );
+});
+
+test('forwardEvidenceDebt truth table: explicit requestedRecoveryOnly is never overridden by debt', () => {
+  assert.equal(
+    resolveRecoveryFirstMode({ nonPressureRecoveryEligible: true, forwardEvidenceDebt: true, requestedRecoveryOnly: true }),
+    true,
+    'an explicit recoveryOnly:true wins even while forward evidence is in debt',
+  );
+  assert.equal(
+    resolveRecoveryFirstMode({ nonPressureRecoveryEligible: true, forwardEvidenceDebt: true, requestedRecoveryOnly: false }),
+    false,
+    'an explicit recoveryOnly:false also wins regardless of debt (already forward, unaffected)',
+  );
+});
+
+test('forwardEvidenceDebt truth table: scoped runs are never overridden by debt', () => {
+  assert.equal(
+    resolveRecoveryFirstMode({ nonPressureRecoveryEligible: true, forwardEvidenceDebt: true, scopedToResources: true }),
+    false,
+    'a scoped run is forward-work intent by construction, independent of the debt bound',
+  );
+});
+
+test('forwardEvidenceMaxAgeMs is max(4 * scheduleIntervalMs, 1h floor)', () => {
+  assert.equal(forwardEvidenceMaxAgeMs(15 * 60 * 1000), DEFAULT_FORWARD_EVIDENCE_MAX_AGE_FLOOR_MS, '4 * 15m = 1h, ties the floor');
+  assert.equal(forwardEvidenceMaxAgeMs(60 * 60 * 1000), 4 * 60 * 60 * 1000, '4 * 1h = 4h, above the floor');
+  assert.equal(forwardEvidenceMaxAgeMs(0), DEFAULT_FORWARD_EVIDENCE_MAX_AGE_FLOOR_MS, 'a zero/invalid interval falls back to the floor, never zero');
+});
+
+// `hasForwardEvidenceDebt` reads the NEWEST per-stream `evidence_as_of` from
+// `stream_latest_facts` — NEVER `terminal_facts.as_of` (that field is
+// `computed_at`, the projection's own observation/repair timestamp, which is
+// refreshed by the very reconcile call the probe itself triggers — see the
+// P1-A fix and its regression test below). These unit cases construct the
+// real evidence-row shape (`{terminal_facts: {state}, stream_latest_facts}`)
+// rather than a flat `{state, as_of}` fixture, so a future accidental
+// reversion back to `terminal_facts.as_of` cannot pass silently.
+
+function factMap(entries) {
+  const map = {};
+  for (const [stream, evidenceAsOf] of entries) {
+    map[stream] = { evidence_as_of: evidenceAsOf, event_seq: 1, fact: { stream }, run_id: 'run_1' };
+  }
+  return map;
+}
+
+test('hasForwardEvidenceDebt: current evidence within the bound is not debt', () => {
+  const asOf = new Date(NOW_MS - 10 * 60 * 1000).toISOString(); // 10m ago
+  const evidence = { terminal_facts: { state: 'current' }, stream_latest_facts: factMap([['messages', asOf]]) };
+  assert.equal(hasForwardEvidenceDebt(evidence, NOW_MS, 15 * 60 * 1000), false);
+});
+
+test('hasForwardEvidenceDebt: current evidence older than the bound is debt', () => {
+  const asOf = new Date(NOW_MS - 5 * 60 * 60 * 1000).toISOString(); // 5h ago
+  const evidence = { terminal_facts: { state: 'current' }, stream_latest_facts: factMap([['messages', asOf]]) };
+  assert.equal(hasForwardEvidenceDebt(evidence, NOW_MS, 15 * 60 * 1000), true); // bound is max(1h,1h)=1h
+});
+
+test('hasForwardEvidenceDebt: reads the NEWEST per-stream evidence_as_of, not terminal_facts.as_of', () => {
+  // terminal_facts.as_of (the projection's observation timestamp) is
+  // deliberately absent/irrelevant here — only stream_latest_facts drives
+  // the age comparison. A stale fact map with a fresh terminal_facts.as_of
+  // (exactly what a reconcile-then-read probe call produces) must still
+  // read as debt.
+  const staleFactAsOf = new Date(NOW_MS - 3 * 24 * 60 * 60 * 1000).toISOString(); // 3 days ago
+  const evidence = {
+    terminal_facts: { state: 'current', as_of: new Date(NOW_MS).toISOString() },
+    stream_latest_facts: factMap([['messages', staleFactAsOf]]),
+  };
+  assert.equal(
+    hasForwardEvidenceDebt(evidence, NOW_MS, 15 * 60 * 1000),
+    true,
+    'a 3-day-old fact must read as debt even though terminal_facts.as_of is fresh (the P1-A defect this pins)',
+  );
+});
+
+test('hasForwardEvidenceDebt: the NEWEST stream wins across a multi-stream fact map', () => {
+  const old = new Date(NOW_MS - 5 * 60 * 60 * 1000).toISOString(); // 5h ago
+  const fresh = new Date(NOW_MS - 5 * 60 * 1000).toISOString(); // 5m ago
+  const evidence = {
+    terminal_facts: { state: 'current' },
+    stream_latest_facts: factMap([
+      ['old_stream', old],
+      ['fresh_stream', fresh],
+    ]),
+  };
+  assert.equal(
+    hasForwardEvidenceDebt(evidence, NOW_MS, 15 * 60 * 1000),
+    false,
+    'the newest stream (5m ago) is within the 1h bound, so the connection is not in debt even though another stream is 5h stale',
+  );
+});
+
+test('hasForwardEvidenceDebt: non-current (stale/historical) terminal facts are always debt regardless of a fresh fact map', () => {
+  const freshAsOf = new Date(NOW_MS - 60 * 1000).toISOString();
+  assert.equal(
+    hasForwardEvidenceDebt(
+      { terminal_facts: { state: 'stale' }, stream_latest_facts: factMap([['messages', freshAsOf]]) },
+      NOW_MS,
+      60 * 60 * 1000,
+    ),
+    true,
+  );
+  assert.equal(
+    hasForwardEvidenceDebt({ terminal_facts: { state: 'unobserved' }, stream_latest_facts: null }, NOW_MS, 60 * 60 * 1000),
+    true,
+  );
+});
+
+test('hasForwardEvidenceDebt: missing evidence (null/undefined) is debt', () => {
+  assert.equal(hasForwardEvidenceDebt(null, NOW_MS, 60 * 60 * 1000), true);
+  assert.equal(hasForwardEvidenceDebt(undefined, NOW_MS, 60 * 60 * 1000), true);
+});
+
+test('hasForwardEvidenceDebt: current state with an EMPTY or missing fact map is debt', () => {
+  assert.equal(
+    hasForwardEvidenceDebt({ terminal_facts: { state: 'current' }, stream_latest_facts: {} }, NOW_MS, 60 * 60 * 1000),
+    true,
+    'a current-but-empty fact map has nothing to measure freshness against — absence is not fresh evidence',
+  );
+  assert.equal(
+    hasForwardEvidenceDebt({ terminal_facts: { state: 'current' }, stream_latest_facts: null }, NOW_MS, 60 * 60 * 1000),
+    true,
+  );
+  assert.equal(
+    hasForwardEvidenceDebt({ terminal_facts: { state: 'current' } }, NOW_MS, 60 * 60 * 1000),
+    true,
+    'stream_latest_facts entirely absent from the evidence shape is likewise debt',
+  );
+});
+
+test('hasForwardEvidenceDebt: current with every fact carrying an unparseable/missing evidence_as_of is debt', () => {
+  assert.equal(
+    hasForwardEvidenceDebt(
+      { terminal_facts: { state: 'current' }, stream_latest_facts: factMap([['messages', null]]) },
+      NOW_MS,
+      60 * 60 * 1000,
+    ),
+    true,
+  );
+  assert.equal(
+    hasForwardEvidenceDebt(
+      { terminal_facts: { state: 'current' }, stream_latest_facts: factMap([['messages', 'not-a-date']]) },
+      NOW_MS,
+      60 * 60 * 1000,
+    ),
+    true,
+  );
 });

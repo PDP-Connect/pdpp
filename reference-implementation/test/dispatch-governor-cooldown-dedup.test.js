@@ -18,6 +18,7 @@ function createRuntime() {
 
 function createGovernor(runtime) {
   return createDispatchGovernor({
+    getForwardEvidenceDebt: async () => false,
     getLastSuccessfulRunAt: async () => null,
     getNonPressureRecoverableCount: async () => 0,
     getSourcePressureGaps: async () => [],

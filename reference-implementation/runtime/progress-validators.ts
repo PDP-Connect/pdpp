@@ -138,3 +138,110 @@ export function validateProgressCollectionRate(collectionRate: unknown): void {
   validateCollectionRateRequiredNumbers(collectionRate);
   validateCollectionRateLastBackoff(rate.last_backoff);
 }
+
+const ATTACHMENT_RECOVERY_OUTCOME_FIELDS = new Set([
+  "admitted",
+  "admitted_bytes",
+  "attempted",
+  "hydration_failed",
+  "lookup_miss",
+  "metadata_lookups",
+  "object",
+  "recovered",
+  "run_cap_deferred",
+  "served",
+]);
+const ATTACHMENT_HYDRATION_FAILURE_OUTCOME_FIELDS = new Set([
+  "blob_upload_http_4xx",
+  "blob_upload_http_5xx",
+  "blob_upload_integrity_failed",
+  "blob_upload_invalid_response",
+  "blob_upload_transport_failed",
+  "imap_download_failed",
+  "object",
+  "unclassified_failed",
+]);
+
+interface AttachmentRecoveryOutcome {
+  object: string;
+  [key: string]: unknown;
+}
+
+interface AttachmentHydrationFailureOutcome {
+  object: string;
+  [key: string]: unknown;
+}
+
+export function validateProgressAttachmentRecoveryOutcome(outcome: unknown): void {
+  if (!outcome || typeof outcome !== "object" || Array.isArray(outcome)) {
+    throw new Error("Connector emitted invalid PROGRESS.attachment_recovery_outcome: expected object");
+  }
+  const recoveryOutcome = outcome as AttachmentRecoveryOutcome;
+  if (recoveryOutcome.object !== "attachment_recovery_outcome") {
+    throw new Error("Connector emitted invalid PROGRESS.attachment_recovery_outcome.object");
+  }
+  const fields = Object.keys(recoveryOutcome);
+  if (
+    fields.length !== ATTACHMENT_RECOVERY_OUTCOME_FIELDS.size ||
+    fields.some((field) => !ATTACHMENT_RECOVERY_OUTCOME_FIELDS.has(field))
+  ) {
+    throw new Error("Connector emitted invalid PROGRESS.attachment_recovery_outcome: unexpected field");
+  }
+  for (const fieldName of ATTACHMENT_RECOVERY_OUTCOME_FIELDS) {
+    if (fieldName === "object") continue;
+    const value = recoveryOutcome[fieldName];
+    if (!Number.isSafeInteger(value) || (value as number) < 0) {
+      throw new Error(`Connector emitted invalid PROGRESS.attachment_recovery_outcome.${fieldName}: expected non-negative integer`);
+    }
+  }
+}
+
+export function validateProgressAttachmentHydrationFailureOutcome(outcome: unknown): void {
+  if (!outcome || typeof outcome !== "object" || Array.isArray(outcome)) {
+    throw new Error("Connector emitted invalid PROGRESS.attachment_hydration_failure_outcome: expected object");
+  }
+  const failureOutcome = outcome as AttachmentHydrationFailureOutcome;
+  if (failureOutcome.object !== "attachment_hydration_failure_outcome") {
+    throw new Error("Connector emitted invalid PROGRESS.attachment_hydration_failure_outcome.object");
+  }
+  const fields = Object.keys(failureOutcome);
+  if (
+    fields.length !== ATTACHMENT_HYDRATION_FAILURE_OUTCOME_FIELDS.size ||
+    fields.some((field) => !ATTACHMENT_HYDRATION_FAILURE_OUTCOME_FIELDS.has(field))
+  ) {
+    throw new Error("Connector emitted invalid PROGRESS.attachment_hydration_failure_outcome: unexpected field");
+  }
+  for (const fieldName of ATTACHMENT_HYDRATION_FAILURE_OUTCOME_FIELDS) {
+    if (fieldName === "object") continue;
+    const value = failureOutcome[fieldName];
+    if (!Number.isSafeInteger(value) || (value as number) < 0) {
+      throw new Error(
+        `Connector emitted invalid PROGRESS.attachment_hydration_failure_outcome.${fieldName}: expected non-negative integer`
+      );
+    }
+  }
+}
+
+export function validateProgressAttachmentHydrationFailureOutcomeSum(
+  recoveryOutcome: AttachmentRecoveryOutcome | null | undefined,
+  failureOutcome: AttachmentHydrationFailureOutcome | null | undefined
+): void {
+  // biome-ignore lint/suspicious/noEqualsToNull: check for both null and undefined
+  if (recoveryOutcome == null && failureOutcome == null) {
+    return;
+  }
+  // biome-ignore lint/suspicious/noEqualsToNull: check for both null and undefined
+  if (recoveryOutcome == null || failureOutcome == null) {
+    throw new Error(
+      "Connector emitted invalid PROGRESS.attachment_recovery_aggregates: attachment_recovery_outcome and attachment_hydration_failure_outcome must be emitted together"
+    );
+  }
+  const stagesTotal = Object.entries(failureOutcome)
+    .filter(([fieldName]) => fieldName !== "object")
+    .reduce((total, [, count]) => total + (count as number), 0);
+  if (stagesTotal !== recoveryOutcome.hydration_failed) {
+    throw new Error(
+      "Connector emitted invalid PROGRESS.attachment_hydration_failure_aggregate: stage counters must sum to attachment_recovery_outcome.hydration_failed"
+    );
+  }
+}

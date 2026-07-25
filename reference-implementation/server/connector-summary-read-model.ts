@@ -786,7 +786,16 @@ const STREAM_FACTS_FOLD_BATCH = 2000;
 // contract. A v2 current map may have folded events created before that
 // provenance existed, so it is never a valid baseline after this upgrade:
 // `seedFoldState` replays it from an empty map on the first observation.
-const STREAM_FACTS_FOLD_LOGIC_VERSION = 3;
+//
+// Version 4 refines the v3 generation-match predicate: an unstamped
+// (pre-provenance) terminal event is now accepted as current-generation
+// evidence while the connection's durable generation has never advanced past
+// 0 (see `foldTerminalEventFacts`). A v3 current map may have refused such
+// events outright (treating every NULL stamp as historical regardless of the
+// connection's generation), so it is never a valid baseline after this
+// upgrade either: `seedFoldState` replays it from an empty map on the first
+// observation, exactly like the v2->v3 upgrade.
+const STREAM_FACTS_FOLD_LOGIC_VERSION = 4;
 // A route may retry a replay once after a concurrent writer wins its CAS.
 // This is deliberately small: each retry rereads the durable baseline, and
 // persistent contention fails closed in memory rather than spinning or
@@ -1080,7 +1089,10 @@ function parseTerminalFactEvent(row: Row): { payload: Row; streams: unknown[] } 
  * imported so this read-model module keeps zero dependency on the coverage-
  * derivation module (a raw-facts store must not need to know how coverage is
  * derived); the two are kept in lockstep by
- * `stream-facts-checkpoint-proof-parity.test.js`.
+ * `test/connector-summary-stream-facts.test.js`'s "monotonic guard" cases
+ * (this predicate's `committed`/`disabled` behavior at the store layer) and
+ * `test/connector-coverage-policy.test.js` (the same boundary's behavior at
+ * the coverage-derivation layer).
  */
 function factCheckpointProvesDurableCoverage(fact: Row): boolean {
   const checkpoint = fact.checkpoint;
@@ -1186,9 +1198,24 @@ function foldTerminalEventFacts(
     return;
   }
   const eventGeneration = row.manifest_generation;
-  if (eventGeneration == null || Number(eventGeneration) !== generationByInstance.get(instanceId)) {
-    // A missing stamp is legacy/unattributed; an unequal one belongs to a
-    // prior manifest generation. Both are historical, never current proof.
+  const currentGeneration = generationByInstance.get(instanceId);
+  // A NULL stamp means the event predates generation provenance
+  // (`stamp_terminal_manifest_generation`, introduced alongside this gate).
+  // It is safe to treat as generation 0 evidence ONLY while the connection's
+  // durable generation has never advanced past 0 — generation 0 is by
+  // construction the only generation such a connection has ever had, so an
+  // unstamped event cannot belong to any other generation. The moment the
+  // connection's generation advances to >= 1, its NULL rows become
+  // permanently ambiguous (they could predate or postdate any earlier
+  // untracked manifest change) and must stay historical forever, exactly
+  // like a genuinely mismatched non-NULL stamp.
+  const eventGenerationMatches =
+    eventGeneration == null ? currentGeneration === 0 : Number(eventGeneration) === currentGeneration;
+  if (!eventGenerationMatches) {
+    // A missing stamp on a never-advanced connection is handled above; this
+    // is either a missing stamp on an already-advanced connection, or an
+    // unequal stamp belonging to a prior manifest generation. Both are
+    // historical, never current proof.
     generationCurrentByInstance.set(instanceId, false);
     counters.refused += 1;
     return;
@@ -1293,12 +1320,14 @@ function seedFoldState(participants: readonly Row[]): {
   checkpointByInstance: Map<string, number | null>;
   factsByInstance: Map<string, Record<string, StoredStreamFactEntry>>;
   generationByInstance: Map<string, number>;
+  generationCurrentSeedByInstance: Map<string, boolean>;
   sinceSeq: number;
 } {
   const factsByInstance = new Map<string, Record<string, StoredStreamFactEntry>>();
   const checkpointByInstance = new Map<string, number | null>();
   const casBaselineByInstance = new Map<string, FoldCasBaseline>();
   const generationByInstance = new Map<string, number>();
+  const generationCurrentSeedByInstance = new Map<string, boolean>();
   let sinceSeq = Number.POSITIVE_INFINITY;
   for (const row of participants) {
     const instanceId = String(row.connector_instance_id);
@@ -1317,9 +1346,37 @@ function seedFoldState(participants: readonly Row[]): {
       eventSeq: row.stream_facts_event_seq == null ? null : Number(row.stream_facts_event_seq),
       foldVersion: row.stream_facts_fold_version == null ? null : Number(row.stream_facts_fold_version),
     });
+    // The pass's default verdict for an instance no qualifying event touches
+    // THIS round (e.g. a generation-transition boundary whose checkpoint
+    // already sits at this round's high-water mark, so the drain genuinely
+    // reads zero events for it): inherit the row's OWN incoming generation
+    // verdict, never a blind `true`. A row already refused as historical for
+    // a GENERATION reason (`terminal_facts_historical` — no attributable
+    // event ever matched; or `manifest_generation_changed` — a fresh
+    // transition just cleared it) must stay non-current when nothing new is
+    // found — "no new events" is silence, not proof the source generation is
+    // still current.
+    //
+    // Deliberately NARROW: this must NOT catch every non-`current` state.
+    // `terminal_fold_incomplete` (a still-in-progress BUDGETED replay of a
+    // generation-CURRENT row) is an orthogonal reason — seeding `false` for
+    // it would make `writeParticipantStreamFacts` floor the checkpoint at
+    // its stale baseline every resumption round (`sourceGenerationCurrent ?
+    // writeSeq : checkpointByInstance.get(...)`), which never advances and
+    // starves the bounded-resume contract's own convergence. Only the two
+    // generation-refusal reason codes seed `false`; every other reason
+    // (`terminal_fold_incomplete`, `terminal_fold_failed`,
+    // `terminal_fold_contention`, `unobserved`, or simply `current`) seeds
+    // `true` — the neutral "assume still current, let a real refused event
+    // this round override it" default this predicate always had.
+    generationCurrentSeedByInstance.set(
+      instanceId,
+      row.terminal_facts_reason_code !== REASON_CODES.TERMINAL_FACTS_HISTORICAL &&
+        row.terminal_facts_reason_code !== "manifest_generation_changed"
+    );
     sinceSeq = Math.min(sinceSeq, checkpoint ?? 0);
   }
-  return { casBaselineByInstance, checkpointByInstance, factsByInstance, generationByInstance, sinceSeq };
+  return { casBaselineByInstance, checkpointByInstance, factsByInstance, generationByInstance, generationCurrentSeedByInstance, sinceSeq };
 }
 
 export interface FoldStreamFactsResult {
@@ -1405,9 +1462,20 @@ function rowNeedsFoldParticipation(row: Row, maxSeq: number | null): boolean {
   }
   // A manifest fingerprint transition intentionally clears the terminal map
   // while retaining the current event high-water as its generation boundary.
-  // It still needs one converged fold pass to turn that deliberately stale
-  // component into a current, empty post-boundary fact set. The same retry
-  // behavior is correct for other recoverable terminal-fold failures.
+  // It still needs a fold pass to attempt converging: a NEW post-boundary
+  // fact-carrying event (stamped with the connection's new current
+  // generation) DOES turn it current again — but with zero such events since
+  // the boundary, the pass converges to the SAME non-current verdict it
+  // started with (see `seedFoldState`'s `generationCurrentSeedByInstance`,
+  // which seeds `false` from exactly this row's own incoming
+  // `manifest_generation_changed`/`terminal_facts_historical` reason code, so
+  // silence is never misread as proof the source generation is still
+  // current). This is distinct from a genuinely checkpointed-EMPTY history
+  // (`stampZeroCheckpointForBootstrap`'s zero-terminal-events-ever case),
+  // which IS current — a connection that has never had any terminal history
+  // has nothing to be historical ABOUT. The same retry behavior (participate
+  // every pass until genuinely converged) is correct for other recoverable
+  // terminal-fold failures too.
   if (row.terminal_facts_state !== "current") {
     return true;
   }
@@ -1593,7 +1661,8 @@ async function foldConnectorSummaryStreamFactsOnce(
     const casRejectedInstanceIds = await stampZeroCheckpointForBootstrap(foldStore, participants);
     return { casRejectedInstanceIds, folded: 0, participants: participants.length, refused: 0, incomplete: false, resumeAfterSeq: null };
   }
-  const { factsByInstance, checkpointByInstance, casBaselineByInstance, generationByInstance, sinceSeq } = seedFoldState(participants);
+  const { factsByInstance, checkpointByInstance, casBaselineByInstance, generationByInstance, generationCurrentSeedByInstance, sinceSeq } =
+    seedFoldState(participants);
   // Test-only: see `testOnlyFoldPauseHook` — a no-op unless a test installs
   // a hook. Held here, immediately after the baseline (checkpointByInstance)
   // is captured and before this pass's own terminal-event read/CAS write —
@@ -1603,7 +1672,7 @@ async function foldConnectorSummaryStreamFactsOnce(
   // interleave, instead of one pass completing before the next starts.
   await testOnlyFoldPauseHook("after_seed_before_read");
   const counters = { folded: 0, refused: 0 };
-  const generationCurrentByInstance = new Map<string, boolean>();
+  const generationCurrentByInstance = new Map<string, boolean>(generationCurrentSeedByInstance);
   const drain = await drainTerminalEventBatches({
     foldStore,
     factsByInstance,
@@ -1652,6 +1721,13 @@ async function foldConnectorSummaryStreamFactsOnce(
   const replayConverged = !budgetExhausted;
   const casRejectedInstanceIds: string[] = [];
   for (const [instanceId, facts] of factsByInstance) {
+    // Every participant is seeded above (`generationCurrentSeedByInstance`)
+    // from its OWN incoming `terminal_facts_state`, so this is never an
+    // absent-key default — a row that entered the pass already non-current
+    // (e.g. a fresh generation-transition boundary with zero qualifying
+    // events this round) reads `false` here exactly like a row a real
+    // refused event flipped to `false`, rather than silently healing to
+    // `true` on pure silence.
     const sourceGenerationCurrent = generationCurrentByInstance.get(instanceId) !== false;
     const terminalFactsCurrent = replayConverged && sourceGenerationCurrent;
     const accepted = await writeParticipantStreamFacts(

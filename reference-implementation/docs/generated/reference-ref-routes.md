@@ -6,6 +6,7 @@ Generated from `packages/reference-contract/src/reference/`. Reference-designate
 |--------|------|-----------|---------|
 | **GET** | `/_ref/search` | `refSearch` | Search exact trace/grant/run ids and record content across retained records. |
 | **GET** | `/_ref/connectors` | `refListConnectors` | List configured connection summaries with manifest, latest run, schedule, and freshness. |
+| **GET** | `/_ref/fleet-health` | `refGetFleetHealth` | Get the owner-only composed fleet-health verdict for configured connections. |
 | **GET** | `/_ref/connectors/{connectorId}` | `refGetConnector` | Get a single connector with manifest excerpt, schedule, recent runs, and stream summaries. |
 | **GET** | `/_ref/connections` | `refListConnections` | List owner-facing configured connector connections with labels, lifecycle status, binding metadata, and schedules. |
 | **GET** | `/_ref/connector-instances` | `refListConnectorInstances` | Compatibility alias for listing configured connector instances behind owner-facing connections. |
@@ -107,6 +108,19 @@ List configured connection summaries with manifest, latest run, schedule, and fr
 ### Query parameters
 
 - `connection` — string
+
+### Responses
+
+- `200` — JSON body
+- `400` — Invalid request
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
+## refGetFleetHealth
+
+`GET /_ref/fleet-health`
+
+Get the owner-only composed fleet-health verdict for configured connections.
 
 ### Responses
 

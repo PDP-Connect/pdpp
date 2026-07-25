@@ -34,6 +34,7 @@ import { liveDashboardDataSource } from "./lib/data-source.ts";
 import { getReferencePublicOrigin } from "./lib/owner-token.ts";
 import {
   type GrantSummary,
+  getFleetHealthVerdict,
   getGrantPackageCount,
   listConnectorSummaries,
   listOwnerIssuedClients,
@@ -84,36 +85,38 @@ async function safe<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
 
 async function loadStandingInputs(): Promise<StandingInputs> {
   const ds = liveDashboardDataSource;
-  const [summary, grantsRes, tracesRes, pendingRes, clientsRes, connectorsRes, packageCountRes] = await Promise.all([
-    safeRead("dataset_summary", () => ds.getDatasetSummary(), null),
-    safeRead("grants", () => ds.listGrants({ limit: 12 }), {
-      data: [] as GrantSummary[],
-      has_more: false,
-      object: "list" as const,
-    }),
-    safeRead("traces", () => ds.listTraces({ limit: 6 }), {
-      data: [] as TraceSummary[],
-      has_more: false,
-      object: "list" as const,
-    }),
-    safeRead("pending_approvals", () => ds.listPendingApprovals(), {
-      data: [] as PendingApproval[],
-      has_more: false,
-      object: "list" as const,
-    }),
-    safeRead("owner_tokens", () => listOwnerIssuedClients(), {
-      data: [] as OwnerIssuedClient[],
-      has_more: false,
-      object: "list" as const,
-    }),
-    // The SINGLE source of attention truth — same `_ref/connectors` family `/runs` uses.
-    safeRead("source_status", () => listConnectorSummaries(), { data: [], has_more: false, object: "list" as const }),
-    // Authoritative grant-package count so the overview badge need not page the
-    // full grants/packages list. Fails soft to a null count, which makes the
-    // view-model fall back to the loaded-grants floor.
-    safeRead<{ count: number | null }>("grant_package_count", () => getGrantPackageCount(), { count: null }),
-  ]);
-  const overviewLoadIssues = [summary, grantsRes, tracesRes, pendingRes, clientsRes, connectorsRes]
+  const [summary, grantsRes, tracesRes, pendingRes, clientsRes, connectorsRes, fleetHealthRes, packageCountRes] =
+    await Promise.all([
+      safeRead("dataset_summary", () => ds.getDatasetSummary(), null),
+      safeRead("grants", () => ds.listGrants({ limit: 12 }), {
+        data: [] as GrantSummary[],
+        has_more: false,
+        object: "list" as const,
+      }),
+      safeRead("traces", () => ds.listTraces({ limit: 6 }), {
+        data: [] as TraceSummary[],
+        has_more: false,
+        object: "list" as const,
+      }),
+      safeRead("pending_approvals", () => ds.listPendingApprovals(), {
+        data: [] as PendingApproval[],
+        has_more: false,
+        object: "list" as const,
+      }),
+      safeRead("owner_tokens", () => listOwnerIssuedClients(), {
+        data: [] as OwnerIssuedClient[],
+        has_more: false,
+        object: "list" as const,
+      }),
+      // The SINGLE source of attention truth — same `_ref/connectors` family `/runs` uses.
+      safeRead("source_status", () => listConnectorSummaries(), { data: [], has_more: false, object: "list" as const }),
+      safeRead("fleet_health", () => getFleetHealthVerdict(), null),
+      // Authoritative grant-package count so the overview badge need not page the
+      // full grants/packages list. Fails soft to a null count, which makes the
+      // view-model fall back to the loaded-grants floor.
+      safeRead<{ count: number | null }>("grant_package_count", () => getGrantPackageCount(), { count: null }),
+    ]);
+  const overviewLoadIssues = [summary, grantsRes, tracesRes, pendingRes, clientsRes, connectorsRes, fleetHealthRes]
     .map((result) => result.issue)
     .filter((issue): issue is string => issue !== null);
 
@@ -124,6 +127,7 @@ async function loadStandingInputs(): Promise<StandingInputs> {
     bearerClients: clientsRes.value.data,
     failedRuns: [],
     failedTraces: [],
+    fleetHealth: fleetHealthRes.value,
     grantPackageCount: packageCountRes.value.count,
     grants: grantsRes.value.data,
     hrefs: HREFS,

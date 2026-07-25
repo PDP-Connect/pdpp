@@ -428,7 +428,6 @@ test('manual run forwards bounded trigger and automation metadata to connector c
       detailGapStore: {
         async listPendingGaps() { return []; },
         async reclaimStrandedInProgressGaps() {},
-        async resetServedInProgressGaps() {},
         async upsertPendingGap() { return null; },
       },
       manifest: BACKGROUND_SAFE_MANIFEST,

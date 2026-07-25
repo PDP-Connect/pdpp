@@ -26,7 +26,13 @@ import { canonicalConnectorKey } from '../server/connector-key.js';
 import { buildHttpFailure, buildIngestHttpFailure, buildInvalidIngestResponseFailure } from './ingest-failures.ts';
 import { createDetailGapPageReader, validateDetailGapsPageRequest } from './detail-gap-paging.ts';
 import { validateDoneError, validateDoneExitCode, validateDoneRecordsEmitted, validateDoneStatus } from './done-validators.ts';
-import { validateProgressCollectionRate, validateProgressProviderBudget } from './progress-validators.ts';
+import {
+  validateProgressAttachmentRecoveryOutcome,
+  validateProgressAttachmentHydrationFailureOutcome,
+  validateProgressAttachmentHydrationFailureOutcomeSum,
+  validateProgressCollectionRate,
+  validateProgressProviderBudget,
+} from './progress-validators.ts';
 import { classifyRuntimeFailure } from './classify-runtime-failure.ts';
 import {
   VIOLATION_LIST_MAX,
@@ -550,6 +556,16 @@ function validateProgressMessage(msg, scopeByStream) {
   if (msg.collection_rate != null) {
     validateProgressCollectionRate(msg.collection_rate);
   }
+  if (msg.attachment_recovery_outcome != null) {
+    validateProgressAttachmentRecoveryOutcome(msg.attachment_recovery_outcome);
+  }
+  if (msg.attachment_hydration_failure_outcome != null) {
+    validateProgressAttachmentHydrationFailureOutcome(msg.attachment_hydration_failure_outcome);
+  }
+  validateProgressAttachmentHydrationFailureOutcomeSum(
+    msg.attachment_recovery_outcome,
+    msg.attachment_hydration_failure_outcome,
+  );
 }
 
 function validateSkipResultMessage(msg, scopeByStream) {
@@ -607,6 +623,28 @@ function validateDetailGapMessage(msg, scopeByStream) {
   if (msg.retryable != null && typeof msg.retryable !== 'boolean') {
     throw new Error('Connector emitted invalid DETAIL_GAP.retryable: expected boolean');
   }
+  requireOptionalNonEmptyString(msg.gap_id, 'DETAIL_GAP.gap_id');
+  requireOptionalNonEmptyString(msg.lease_id, 'DETAIL_GAP.lease_id');
+}
+
+function findServedDetailGapLease(leases, msg) {
+  if (msg.gap_id) return leases.get(msg.gap_id) || null;
+  if (msg.record_key == null) return null;
+  const recordKey = String(msg.record_key);
+  for (const lease of leases.values()) {
+    if (lease.stream === msg.stream && lease.recordKey === recordKey) return lease;
+  }
+  return null;
+}
+
+function validateDetailGapAttemptedMessage(msg, scopeByStream) {
+  requireOptionalNonEmptyString(msg.gap_id, 'DETAIL_GAP_ATTEMPTED.gap_id');
+  requireOptionalNonEmptyString(msg.lease_id, 'DETAIL_GAP_ATTEMPTED.lease_id');
+  requireOptionalNonEmptyString(msg.stream, 'DETAIL_GAP_ATTEMPTED.stream');
+  if (!msg.gap_id || !msg.lease_id || !msg.stream || msg.reference_only !== true) {
+    throw new Error('Connector emitted invalid DETAIL_GAP_ATTEMPTED');
+  }
+  validateOptionalScopedStream(msg.stream, 'DETAIL_GAP_ATTEMPTED', scopeByStream);
 }
 
 function assertCoverageKeyArray(value, fieldName) {
@@ -661,6 +699,7 @@ function validateDetailGapRecoveredMessage(msg, scopeByStream) {
   if (msg.record_key != null && typeof msg.record_key !== 'string' && typeof msg.record_key !== 'number') {
     throw new Error('Connector emitted invalid DETAIL_GAP_RECOVERED.record_key: expected string or number');
   }
+  requireOptionalNonEmptyString(msg.lease_id, 'DETAIL_GAP_RECOVERED.lease_id');
 }
 
 function validateInteractionMessage(msg, scopeByStream) {
@@ -1314,10 +1353,10 @@ export async function runConnector(opts) {
     try { appendFileSync(_traceAppendFile, line + '\n'); } catch {}
   };
 
-  // Tracks all gap IDs served to the connector this run (across START + paged requests).
-  // Used in cleanup to reset still-in_progress gaps back to pending if the connector
-  // exits without recovering or re-deferring them.
-  const allServedGapIds = new Set();
+  // Tracks each run-owned detail-gap lease. A lease is distinct from a provider
+  // attempt: connectors explicitly mark attempts/outcomes, and cleanup CASes
+  // only the lease it owns.
+  const allServedGapLeases = new Map();
 
   const readDetailGapPage = createDetailGapPageReader({
     connectorId,
@@ -1325,15 +1364,14 @@ export async function runConnector(opts) {
     detailGapStore,
     grantId,
     runId,
-    allServedGapIds,
+    allServedGapLeases,
   });
 
   let startDetailGaps = [];
   let startDetailGapAdmission = null;
   try {
-    // Reclaim in_progress gaps left by prior crashed/killed runs before loading
-    // new pending gaps. Uses last_run_id != currentRunId so only prior-run
-    // leftovers are touched; never resets recovered gaps.
+    // Reclaim only expired leases from crashed/killed runs; a different live
+    // run id is never evidence that this run may steal a lease.
     if (typeof detailGapStore.reclaimStrandedInProgressGaps === 'function') {
       await detailGapStore.reclaimStrandedInProgressGaps({
         connectorId,
@@ -2026,6 +2064,7 @@ export async function runConnector(opts) {
     const msgQueue = [];
     let processing = false;
     let cleanedUp = false;
+    let leaseAccountingPromise = null;
     let queueDrainedResolve = null;
     let pendingInteractionViolationReject = null;
     let terminateTimer = null;
@@ -2148,12 +2187,39 @@ export async function runConnector(opts) {
       proc.stdin.destroy();
       proc.stdout.destroy();
       proc.stderr.destroy();
-      // Reset any gaps this run marked in_progress but the connector never
-      // recovered or re-deferred — so they remain retryable on the next run.
-      // Best-effort: fire-and-forget; cleanup must not throw.
-      if (allServedGapIds.size > 0 && typeof detailGapStore.resetServedInProgressGaps === 'function') {
-        Promise.resolve(detailGapStore.resetServedInProgressGaps([...allServedGapIds])).catch(() => {});
+      if (allServedGapLeases.size > 0 && typeof detailGapStore.releaseLeasedGaps === 'function') {
+        const outstandingLeases = [...allServedGapLeases.values()];
+        leaseAccountingPromise = Promise.resolve(detailGapStore.releaseLeasedGaps(outstandingLeases));
+        // The close path awaits this promise before it reports completion. This
+        // handler also runs on exceptional paths, so attach a no-op observer to
+        // prevent an unhandled-rejection process warning before that await.
+        leaseAccountingPromise.catch(() => {});
       }
+    }
+
+    async function awaitLeaseAccounting() {
+      if (!leaseAccountingPromise) return;
+      const attemptedWithoutOutcome = [...allServedGapLeases.values()]
+        .filter((lease) => lease.attempted).length;
+      await leaseAccountingPromise;
+      allServedGapLeases.clear();
+      if (finalStatus === 'succeeded' && attemptedWithoutOutcome > 0) {
+        throw new Error('Connector completed successfully with attempted detail-gap leases lacking an explicit outcome');
+      }
+    }
+
+    async function rejectAfterLeaseAccounting(err) {
+      cleanupChildHandles();
+      try {
+        await awaitLeaseAccounting();
+      } catch (accountingErr) {
+        // Durable lease accounting has a stronger completion guarantee than
+        // the triggering error: callers must not observe a settled run while
+        // its coverage accounting failed to settle.
+        reject(accountingErr);
+        return;
+      }
+      reject(err);
     }
 
     function notifyQueueDrained() {
@@ -2233,8 +2299,7 @@ export async function runConnector(opts) {
           queueDrainedResolve = null;
           resolveDrain();
         }
-        cleanupChildHandles();
-        reject(err);
+        await rejectAfterLeaseAccounting(err);
         terminateChild();
         return;
       } finally {
@@ -2617,9 +2682,28 @@ export async function runConnector(opts) {
           break;
         }
 
+        case 'DETAIL_GAP_ATTEMPTED': {
+          validateDetailGapAttemptedMessage(msg, scopeByStream);
+          const lease = allServedGapLeases.get(msg.gap_id);
+          if (!lease || lease.leaseId !== msg.lease_id) {
+            throw new Error('Connector attempted a detail gap without the current run-owned lease');
+          }
+          const attempted = await detailGapStore.markLeasedGapAttempt(lease);
+          if (!attempted || attempted.lease_id !== lease.leaseId || attempted.lease_run_id !== lease.runId) {
+            throw new Error('Detail-gap attempt lease was lost before durable accounting');
+          }
+          lease.attempted = true;
+          onProgress({ ...msg, status: 'attempted' });
+          break;
+        }
+
         case 'DETAIL_GAP': {
           validateDetailGapMessage(msg, scopeByStream);
-          const storedGap = await detailGapStore.upsertPendingGap({
+          const leasedGap = findServedDetailGapLease(allServedGapLeases, msg);
+          if (msg.lease_id && (!leasedGap || leasedGap.leaseId !== msg.lease_id)) {
+            throw new Error('Connector re-deferred a detail gap without the current run-owned lease');
+          }
+          const gapInput = {
             connectorId,
             connectorInstanceId: normalizedConnectorInstanceId,
             grantId,
@@ -2635,10 +2719,14 @@ export async function runConnector(opts) {
             lastError: msg.last_error ?? null,
             discoveredRunId: runId,
             lastRunId: runId,
-          });
-          // Gap was explicitly re-deferred by the connector — it's already pending
-          // again via upsert; remove from lease set so cleanup won't double-reset it.
-          allServedGapIds.delete(storedGap.gap_id);
+          };
+          const storedGap = leasedGap
+            ? await detailGapStore.settleLeasedGapPending(leasedGap, gapInput)
+            : await detailGapStore.upsertPendingGap(gapInput);
+          if (!storedGap || (leasedGap && storedGap.lease_id === leasedGap.leaseId)) {
+            throw new Error('Detail-gap re-deferral lease was lost before durable accounting');
+          }
+          if (leasedGap) allServedGapLeases.delete(leasedGap.gapId);
 
           // §10-A: a gap that re-defers with a NON-TRANSIENT error (404/410/
           // permanent-403/401) and has exhausted its recovery budget transitions
@@ -2890,9 +2978,17 @@ export async function runConnector(opts) {
         case 'DETAIL_GAP_RECOVERED': {
           validateDetailGapRecoveredMessage(msg, scopeByStream);
           await flushAll();
-          const recoveredGap = await detailGapStore.markGapStatus(msg.gap_id, 'recovered', { runId });
-          // Gap is now recovered — remove from the lease set so cleanup won't reset it.
-          allServedGapIds.delete(msg.gap_id);
+          const lease = allServedGapLeases.get(msg.gap_id);
+          if (msg.lease_id && (!lease || lease.leaseId !== msg.lease_id)) {
+            throw new Error('Connector recovered a detail gap without the current run-owned lease');
+          }
+          const recoveredGap = lease
+            ? await detailGapStore.settleLeasedGapRecovered(lease)
+            : await detailGapStore.markGapStatus(msg.gap_id, 'recovered', { runId });
+          if (!recoveredGap || (lease && recoveredGap.lease_id === lease.leaseId)) {
+            throw new Error('Detail-gap recovery lease was lost before durable accounting');
+          }
+          if (lease) allServedGapLeases.delete(msg.gap_id);
           durableDetailGaps.push(recoveredGap);
           await emitSpineEventTracked({
             event_type: 'run.detail_gap_recovered',
@@ -2940,6 +3036,12 @@ export async function runConnector(opts) {
               ...(msg.total == null ? {} : { total: msg.total }),
               ...(msg.provider_budget == null ? {} : { provider_budget: msg.provider_budget }),
               ...(msg.collection_rate == null ? {} : { collection_rate: msg.collection_rate }),
+              ...(msg.attachment_recovery_outcome == null
+                ? {}
+                : { attachment_recovery_outcome: msg.attachment_recovery_outcome }),
+              ...(msg.attachment_hydration_failure_outcome == null
+                ? {}
+                : { attachment_hydration_failure_outcome: msg.attachment_hydration_failure_outcome }),
             },
           });
           if (msg.collection_rate != null) {
@@ -3104,8 +3206,7 @@ export async function runConnector(opts) {
                 exit_code: code,
                 reason: failureReason,
               });
-              cleanupChildHandles();
-              reject(exitCodeMismatch);
+              await rejectAfterLeaseAccounting(exitCodeMismatch);
               return;
             }
 
@@ -3151,10 +3252,16 @@ export async function runConnector(opts) {
                 exit_code: code,
                 reason: failureReason,
               });
-              cleanupChildHandles();
-              reject(recordsEmittedMismatch);
+              await rejectAfterLeaseAccounting(recordsEmittedMismatch);
               return;
             }
+
+            // Durable lease accounting is a completion postcondition, not
+            // background cleanup. If it fails (or an explicit attempt lacks a
+            // settlement), the run must fail before state commit and terminal
+            // success evidence are emitted.
+            cleanupChildHandles();
+            await awaitLeaseAccounting();
 
             if (doneMessage.status === 'succeeded' && persistState) {
               assertDetailCoverageSatisfiedBeforeCommit();
@@ -3275,6 +3382,7 @@ export async function runConnector(opts) {
           terminalEventRecorded = true;
         }
         cleanupChildHandles();
+        await awaitLeaseAccounting();
         const derivedTerminal = deriveTerminalReason({
           doneMessage,
           finalStatus,
@@ -3388,14 +3496,12 @@ export async function runConnector(opts) {
           exit_code: code,
           reason: failureReason,
         });
-        cleanupChildHandles();
-        reject(err);
+        await rejectAfterLeaseAccounting(err);
       }
     });
 
-    proc.on('error', (err) => {
-      cleanupChildHandles();
-      reject(err);
+    proc.on('error', async (err) => {
+      await rejectAfterLeaseAccounting(err);
     });
   });
 }

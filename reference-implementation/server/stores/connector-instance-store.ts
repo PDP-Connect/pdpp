@@ -222,15 +222,17 @@ function assertDeletableConnection(
   if (instance.sourceKind === 'account' && instance.sourceBindingKey === DEFAULT_ACCOUNT_SOURCE_BINDING_KEY) {
     // The default-account id is deterministic, so a hard row delete would be
     // silently re-materialized to active (with zero records) by the next
-    // `ensureDefaultAccountConnection` read. This slice does not ship the
-    // tombstone ledger that would let the materialization path refuse a
-    // deleted binding, so default-account delete stays typed-unsupported
-    // rather than shipping silent resurrection. Device-collected and explicit
-    // (non-default) account connections have non-deterministic binding keys and
-    // are deletable. See add-owner-connection-delete-contract Decision 1.
+    // `ensureDefaultAccountConnection` read. A tombstone ledger now exists
+    // (see fix-owner-delete-resurrection) and WOULD block that
+    // materialization the same way it blocks device-exporter re-enroll — but
+    // default-account delete stays typed-unsupported regardless, rather than
+    // changing this route's behavior as a side effect of the tombstone fix.
+    // Device-collected and explicit (non-default) account connections have
+    // non-deterministic binding keys and are deletable. See
+    // add-owner-connection-delete-contract Decision 1.
     throw new ConnectorInstanceDeleteError(
       'default_account_delete_unsupported',
-      `Connection '${connectorInstanceId}' is a default-account binding; deleting it is not supported until a deletion tombstone exists, because the deterministic default-account id would otherwise silently re-materialize on the next owner read. Revoke it instead, or re-initiate to replace it.`,
+      `Connection '${connectorInstanceId}' is a default-account binding; deleting it is not supported, because the deterministic default-account id would otherwise be resolved outside the normal upsert path. Revoke it instead, or re-initiate to replace it.`,
       { ownerSubjectId, connectorInstanceId, connectorId: instance.connectorId },
     );
   }
@@ -300,6 +302,54 @@ function makeConnectorInstanceId({ ownerSubjectId, connectorId, sourceKind, sour
   return `cin_${hashKey(`${ownerSubjectId}\n${connectorId}\n${sourceKind}\n${sourceBindingKey}`).slice(0, 24)}`;
 }
 
+// Design D8 (fix-enroll-connector-instance-pk-collision). A legacy
+// deployment computed source_binding_key from the FULL sourceBinding object
+// (including device_id/source_instance_id, which are per-enrollment, not
+// per-binding) before deviceExporterSourceBindingIdentity narrowed it to the
+// stable {kind, local_binding_name} shape. A legacy row's key therefore
+// never matches today's ON CONFLICT(owner, connector, source_kind,
+// source_binding_key) target for the SAME logical binding, so a retried
+// upsert falls through to INSERT -- whose deterministic id can coincide with
+// that legacy row's PRIMARY KEY (the legacy row's own id predates
+// makeConnectorInstanceId and was assigned some other way). Extracts the
+// local_binding_name this store instance already agrees is stable
+// (record.sourceBinding.local_binding_name) so the caller can decide,
+// without re-deriving any hashing logic, whether a PK-colliding row is
+// provably the SAME logical binding (only its key derivation is stale) or a
+// genuinely unrelated row that must never be touched.
+function extractLocalBindingName(sourceBinding: unknown): string | null {
+  const value = (sourceBinding as { local_binding_name?: unknown } | null | undefined)?.local_binding_name;
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+// True only when `existingRow` is PROVABLY the same logical binding as
+// `normalized` under a legacy key derivation -- same owner, connector, and
+// source_kind, and the local_binding_name embedded in the existing row's own
+// stored source_binding_json matches the binding being upserted now. Never
+// matches on id alone (a coincidental PK collision against an unrelated
+// binding must fail closed, not be treated as a match).
+function isSameLogicalBindingUnderLegacyKey(
+  existingRow: { connector_id?: unknown; owner_subject_id?: unknown; source_binding_json?: unknown; source_kind?: unknown } | null | undefined,
+  normalized: { connectorId: string; ownerSubjectId: string; sourceKind: string },
+  currentLocalBindingName: string | null
+): boolean {
+  if (!existingRow || currentLocalBindingName == null) {
+    return false;
+  }
+  if (
+    existingRow.owner_subject_id !== normalized.ownerSubjectId ||
+    existingRow.connector_id !== normalized.connectorId ||
+    existingRow.source_kind !== normalized.sourceKind
+  ) {
+    return false;
+  }
+  const existingBinding =
+    typeof existingRow.source_binding_json === 'string'
+      ? JSON.parse(existingRow.source_binding_json)
+      : existingRow.source_binding_json;
+  return extractLocalBindingName(existingBinding) === currentLocalBindingName;
+}
+
 export function makeDefaultAccountConnectorInstanceId(ownerSubjectId: string, connectorId: string): string {
   return makeConnectorInstanceId({
     ownerSubjectId,
@@ -366,6 +416,76 @@ function mapInstance(row: ConnectorInstanceRow | null): ConnectorInstance | null
     updatedAt: row.updated_at,
     revokedAt: row.revoked_at,
   };
+}
+
+interface ConnectorInstanceTombstone {
+  connectorId: string;
+  connectorInstanceId: string;
+  deletedAt: string;
+  ownerSubjectId: string;
+  sourceBindingKey: string;
+  sourceKind: string;
+}
+
+interface ConnectorInstanceTombstoneRow extends Record<string, unknown> {
+  connector_id: string;
+  connector_instance_id: string;
+  deleted_at: string;
+  owner_subject_id: string;
+  source_binding_key: string;
+  source_kind: string;
+}
+
+function mapTombstone(row: ConnectorInstanceTombstoneRow | null | undefined): ConnectorInstanceTombstone | null {
+  if (!row) return null;
+  return {
+    connectorInstanceId: row.connector_instance_id,
+    ownerSubjectId: row.owner_subject_id,
+    connectorId: row.connector_id,
+    sourceKind: row.source_kind,
+    sourceBindingKey: row.source_binding_key,
+    deletedAt: row.deleted_at,
+  };
+}
+
+// Throws `connection_tombstoned` when `normalized`'s identity
+// (owner/connector/source_kind/source_binding_key) was previously
+// owner-deleted. `tombstone` is the already-fetched tombstone row (or null),
+// resolved by the caller so this stays a plain sync assertion usable from
+// both the sync SQLite store and the awaited Postgres store. See
+// openspec/changes/fix-owner-delete-resurrection.
+function assertIdentityNotTombstoned(
+  tombstone: ConnectorInstanceTombstone | null,
+  normalized: { connectorId: string; ownerSubjectId: string; sourceBindingKey: string; sourceKind: string }
+): void {
+  if (!tombstone) {
+    return;
+  }
+  throw new ConnectorInstanceDeleteError(
+    'connection_tombstoned',
+    `Connector instance identity for owner '${normalized.ownerSubjectId}', connector '${normalized.connectorId}' was previously deleted by the owner and cannot be silently re-created. Re-enroll under a distinct binding, or ask the owner to explicitly re-initiate this connection.`,
+    {
+      ownerSubjectId: normalized.ownerSubjectId,
+      connectorId: normalized.connectorId,
+      sourceKind: normalized.sourceKind,
+      sourceBindingKey: normalized.sourceBindingKey,
+    },
+  );
+}
+
+// Test-only, opt-in delay between the Postgres upsert's tombstone check and
+// its INSERT — the exact window a delete/upsert TOCTOU race must widen to be
+// deterministically reproducible rather than a timing-luck flake. A complete
+// no-op unless PDPP_TEST_UPSERT_TOMBSTONE_CHECK_DELAY_MS is set to a positive
+// integer (never set in production). See
+// test/connector-instance-delete-upsert-two-process-race.test.js.
+async function testOnlyUpsertTombstoneCheckDelay(): Promise<void> {
+  const raw = process.env.PDPP_TEST_UPSERT_TOMBSTONE_CHECK_DELAY_MS;
+  const ms = raw ? Number.parseInt(raw, 10) : 0;
+  if (!Number.isFinite(ms) || ms <= 0) {
+    return;
+  }
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function resolveSingleActive(rows: ConnectorInstance[], ownerSubjectId: string, connectorId: string): ConnectorInstance {
@@ -601,22 +721,73 @@ export async function resolveOwnerConnectorInstanceNamespace({
 
 export function createSqliteConnectorInstanceStore() {
   const store = {
+    // Design D8 (fix-enroll-connector-instance-pk-collision). See the
+    // Postgres implementation's doc comment for the full rationale: a legacy
+    // row's source_binding_key (computed under the older, larger sourceBinding
+    // shape) never matches the named ON CONFLICT target for the SAME logical
+    // binding under today's stable {kind, local_binding_name} key, so the
+    // INSERT is attempted and can collide on the PRIMARY KEY with that
+    // legacy row -- the SAME logical binding, just keyed under a stale
+    // derivation. better-sqlite3 raises SQLITE_CONSTRAINT_PRIMARYKEY
+    // (distinct from the named ON CONFLICT target's own
+    // SQLITE_CONSTRAINT_UNIQUE) for exactly this case. On that error, look
+    // up the colliding row and migrate it in place ONLY if it is PROVABLY
+    // the same logical binding (see isSameLogicalBindingUnderLegacyKey);
+    // otherwise fail closed by re-throwing.
     upsert(record: ConnectorInstanceUpsertRecord): ConnectorInstance | null {
       const normalized = normalizeRecord(record);
-      exec(referenceQueries.connectorInstancesInsert, [
-        normalized.connectorInstanceId,
-        normalized.ownerSubjectId,
-        normalized.connectorId,
-        normalized.displayName,
-        normalized.status,
-        normalized.sourceKind,
-        normalized.sourceBindingKey,
-        normalized.sourceBindingJson,
-        normalized.createdAt ?? null,
-        normalized.updatedAt ?? null,
-        normalized.revokedAt,
-      ]);
-      return this.get(normalized.connectorInstanceId);
+      const currentLocalBindingName = extractLocalBindingName(record.sourceBinding);
+      // Tombstone guard: only relevant when no LIVE row exists for this
+      // identity yet — an `ON CONFLICT DO UPDATE` hit against an existing row
+      // (revoke, pause, reactivate-by-re-enroll) is untouched by this check.
+      // A missing row for a tombstoned identity means the identity was
+      // owner-deleted; refuse to silently re-materialize it. See
+      // openspec/changes/fix-owner-delete-resurrection.
+      if (!this.get(normalized.connectorInstanceId)) {
+        assertIdentityNotTombstoned(
+          this.getTombstoneByBinding({
+            ownerSubjectId: normalized.ownerSubjectId,
+            connectorId: normalized.connectorId,
+            sourceKind: normalized.sourceKind,
+            sourceBindingKey: normalized.sourceBindingKey,
+          }),
+          normalized,
+        );
+      }
+      try {
+        exec(referenceQueries.connectorInstancesInsert, [
+          normalized.connectorInstanceId,
+          normalized.ownerSubjectId,
+          normalized.connectorId,
+          normalized.displayName,
+          normalized.status,
+          normalized.sourceKind,
+          normalized.sourceBindingKey,
+          normalized.sourceBindingJson,
+          normalized.createdAt ?? null,
+          normalized.updatedAt ?? null,
+          normalized.revokedAt,
+        ]);
+        return this.get(normalized.connectorInstanceId);
+      } catch (err) {
+        if ((err as { code?: string } | null)?.code !== 'SQLITE_CONSTRAINT_PRIMARYKEY') {
+          throw err;
+        }
+        const collidingRow = getOne(referenceQueries.connectorInstancesGetById, [normalized.connectorInstanceId]) as ConnectorInstanceRow | null;
+        if (!isSameLogicalBindingUnderLegacyKey(collidingRow, normalized, currentLocalBindingName)) {
+          throw err;
+        }
+        exec(referenceQueries.connectorInstancesMigrateLegacyBindingKey, [
+          normalized.displayName,
+          normalized.status,
+          normalized.sourceBindingKey,
+          normalized.sourceBindingJson,
+          normalized.updatedAt ?? null,
+          normalized.revokedAt,
+          (collidingRow as ConnectorInstanceRow).connector_instance_id,
+        ]);
+        return this.get((collidingRow as ConnectorInstanceRow).connector_instance_id);
+      }
     },
 
     ensureDefaultAccountConnection({ ownerSubjectId, connectorId, displayName, now }: {
@@ -689,6 +860,25 @@ export function createSqliteConnectorInstanceStore() {
     }): ConnectorInstance | null {
       return mapInstance(
         getOne<ConnectorInstanceRow>(referenceQueries.connectorInstancesGetByBinding, [
+          ownerSubjectId,
+          connectorId,
+          sourceKind,
+          sourceBindingKey,
+        ]),
+      );
+    },
+
+    // Reads the tombstone (if any) for one identity. Consulted ONLY by
+    // `upsert`'s no-existing-row path; no other read surface in the system
+    // queries this table. See openspec/changes/fix-owner-delete-resurrection.
+    getTombstoneByBinding({ ownerSubjectId, connectorId, sourceKind, sourceBindingKey }: {
+      ownerSubjectId: string;
+      connectorId: string;
+      sourceKind: string;
+      sourceBindingKey: string;
+    }): ConnectorInstanceTombstone | null {
+      return mapTombstone(
+        getOne<ConnectorInstanceTombstoneRow>(referenceQueries.connectorInstancesGetTombstoneByBinding, [
           ownerSubjectId,
           connectorId,
           sourceKind,
@@ -859,10 +1049,22 @@ export function createSqliteConnectorInstanceStore() {
         // (no inner transaction of its own), so it is atomic with the schedule /
         // device / row deletes below.
         const recordCount = purge.deleteRecordRowsSqlite(connectorInstanceId);
-        exec(referenceQueries.recordsDeleteDeleteManifestWriteViolationsByInstance, [connectorInstanceId]);
-        exec(referenceQueries.recordsDeleteDeleteConnectorSummaryEvidenceByInstance, [connectorInstanceId]);
+        exec(referenceQueries.connectorInstancesDeleteManifestWriteViolationsByConnectorInstance, [connectorInstanceId]);
+        exec(referenceQueries.connectorInstancesDeleteSummaryEvidenceByConnectorInstance, [connectorInstanceId]);
         const schedule = exec(referenceQueries.controllerDeleteSchedule, [connectorInstanceId]);
         const device = exec(referenceQueries.deviceExportersClearSourceInstanceConnectorRef, [stamp, connectorInstanceId]);
+        // Record the tombstone BEFORE removing the row, same transaction: the
+        // durable fact that this identity was owner-deleted must survive even
+        // though the row itself is about to be erased. See
+        // openspec/changes/fix-owner-delete-resurrection.
+        exec(referenceQueries.connectorInstancesInsertTombstone, [
+          instance.connectorInstanceId,
+          instance.ownerSubjectId,
+          instance.connectorId,
+          instance.sourceKind,
+          instance.sourceBindingKey,
+          stamp,
+        ]);
         exec(referenceQueries.connectorInstancesDeleteById, [connectorInstanceId]);
         return {
           deletedRecordCount: recordCount,
@@ -894,6 +1096,16 @@ export function createSqliteConnectorInstanceStore() {
     withConnectorInstanceWrite(connectorInstanceId, () =>
       deleteConnectionUncoordinated.call(store, connectorInstanceId, options),
     );
+  // `upsert` is NOT wrapped in write coordination here: better-sqlite3 is
+  // synchronous and single-connection per process, so there is no genuine
+  // multi-process race to close on this backend (unlike Postgres — see the
+  // Postgres arm's `upsert` wrap and its rationale). Wrapping this
+  // synchronous method in the async coordinator would silently change its
+  // sync-\>async calling contract for every existing caller. The tombstone
+  // guard inside `upsert` itself (see `assertIdentityNotTombstoned` above)
+  // is already sufficient here: a single-process, single-connection SQLite
+  // handle can never interleave the tombstone check and the INSERT with a
+  // concurrent delete on a DIFFERENT connection.
   return store;
 }
 
@@ -943,32 +1155,120 @@ function assertOwnerSetDisplayNameArgs({ connectorInstanceId, ownerSubjectId, di
 
 export function createPostgresConnectorInstanceStore() {
   const store = {
+    // Design D8 (fix-enroll-connector-instance-pk-collision). connectorInstanceId
+    // is normally deterministic (makeConnectorInstanceId, hashed from owner +
+    // connector + sourceKind + sourceBindingKey) so a retried upsert for the
+    // SAME logical binding always targets the SAME row, and the ON CONFLICT
+    // target above (the binding's own unique key) absorbs every same-binding
+    // race by design -- it can never itself raise 23505.
+    //
+    // A live counterexample proved a residual gap: a pre-D6/D7 deployment
+    // computed source_binding_key from the FULL sourceBinding object
+    // (including per-enrollment device_id/source_instance_id), before
+    // deviceExporterSourceBindingIdentity narrowed it to the stable
+    // {kind, local_binding_name} shape. That legacy row's key therefore never
+    // matches the ON CONFLICT target above for the SAME logical binding --
+    // Postgres attempts the INSERT -- whose deterministic id (computed from
+    // TODAY's key) happens to equal that legacy row's own PRIMARY KEY (the
+    // legacy row's id predates makeConnectorInstanceId and was assigned by
+    // an older mechanism). This is a legacy key-normalization gap, not a
+    // cryptographic collision: the colliding row genuinely IS this binding's
+    // pre-existing connector instance, just keyed under a stale derivation.
+    //
+    // On a PRIMARY KEY conflict, look up the colliding row and check whether
+    // it is PROVABLY the same logical binding under the legacy key shape
+    // (same owner/connector/source_kind, and the local_binding_name embedded
+    // in its own stored source_binding_json matches this binding's). Only
+    // then migrate it in place -- UPDATE its source_binding_key/
+    // source_binding_json to the current stable shape and return that SAME
+    // connector_instance_id, preserving one logical connector instance and
+    // every reference to it. A collision against any row that is NOT
+    // provably this same binding (different owner/connector/kind, or a
+    // mismatched/unrecoverable local_binding_name) FAILS CLOSED by
+    // re-throwing the raw 23505 -- never adopted, never silently retried
+    // under a different id, since that would either corrupt an unrelated
+    // connector instance or fork a duplicate for this one.
     async upsert(record: ConnectorInstanceUpsertRecord): Promise<ConnectorInstance | null> {
       const normalized = normalizeRecord(record);
-      await postgresQuery(
-        `INSERT INTO connector_instances(connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at)
-         VALUES($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)
-         ON CONFLICT(owner_subject_id, connector_id, source_kind, source_binding_key) DO UPDATE SET
-           display_name = excluded.display_name,
-           status = excluded.status,
-           source_binding_json = excluded.source_binding_json,
-           updated_at = excluded.updated_at,
-           revoked_at = excluded.revoked_at`,
-        [
-          normalized.connectorInstanceId,
-          normalized.ownerSubjectId,
-          normalized.connectorId,
-          normalized.displayName,
-          normalized.status,
-          normalized.sourceKind,
-          normalized.sourceBindingKey,
-          normalized.sourceBindingJson,
-          normalized.createdAt,
-          normalized.updatedAt,
-          normalized.revokedAt,
-        ],
-      );
-      return await this.get(normalized.connectorInstanceId);
+      const currentLocalBindingName = extractLocalBindingName(record.sourceBinding);
+      // Tombstone guard: only relevant when no LIVE row exists for this
+      // identity yet — an `ON CONFLICT DO UPDATE` hit against an existing row
+      // (revoke, pause, reactivate-by-re-enroll) is untouched by this check.
+      // See the SQLite arm for the full rationale.
+      if (!(await this.get(normalized.connectorInstanceId))) {
+        assertIdentityNotTombstoned(
+          await this.getTombstoneByBinding({
+            ownerSubjectId: normalized.ownerSubjectId,
+            connectorId: normalized.connectorId,
+            sourceKind: normalized.sourceKind,
+            sourceBindingKey: normalized.sourceBindingKey,
+          }),
+          normalized,
+        );
+      }
+      // Test-only, opt-in — widens the tombstone-check-to-INSERT window so a
+      // genuine two-process race is deterministically reproducible. No-op in
+      // production.
+      await testOnlyUpsertTombstoneCheckDelay();
+      try {
+        await postgresQuery(
+          `INSERT INTO connector_instances(connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at)
+           VALUES($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)
+           ON CONFLICT(owner_subject_id, connector_id, source_kind, source_binding_key) DO UPDATE SET
+             display_name = excluded.display_name,
+             status = excluded.status,
+             source_binding_json = excluded.source_binding_json,
+             updated_at = excluded.updated_at,
+             revoked_at = excluded.revoked_at`,
+          [
+            normalized.connectorInstanceId,
+            normalized.ownerSubjectId,
+            normalized.connectorId,
+            normalized.displayName,
+            normalized.status,
+            normalized.sourceKind,
+            normalized.sourceBindingKey,
+            normalized.sourceBindingJson,
+            normalized.createdAt,
+            normalized.updatedAt,
+            normalized.revokedAt,
+          ],
+        );
+        return await this.get(normalized.connectorInstanceId);
+      } catch (err) {
+        if ((err as { code?: string } | null)?.code !== '23505') {
+          throw err;
+        }
+        const colliding = await postgresQuery(
+          `SELECT connector_instance_id, owner_subject_id, connector_id, source_kind, source_binding_json
+             FROM connector_instances WHERE connector_instance_id = $1`,
+          [normalized.connectorInstanceId],
+        );
+        const collidingRow = colliding.rows[0];
+        if (!isSameLogicalBindingUnderLegacyKey(collidingRow, normalized, currentLocalBindingName)) {
+          throw err;
+        }
+        await postgresQuery(
+          `UPDATE connector_instances SET
+             display_name = $1,
+             status = $2,
+             source_binding_key = $3,
+             source_binding_json = $4::jsonb,
+             updated_at = $5,
+             revoked_at = $6
+           WHERE connector_instance_id = $7`,
+          [
+            normalized.displayName,
+            normalized.status,
+            normalized.sourceBindingKey,
+            normalized.sourceBindingJson,
+            normalized.updatedAt,
+            normalized.revokedAt,
+            collidingRow.connector_instance_id,
+          ],
+        );
+        return await this.get(collidingRow.connector_instance_id);
+      }
     },
 
     async ensureDefaultAccountConnection({ ownerSubjectId, connectorId, displayName, now }: {
@@ -1050,6 +1350,25 @@ export function createPostgresConnectorInstanceStore() {
       );
       const row: ConnectorInstanceRow | undefined = result.rows[0];
       return row ? mapInstance(row) : null;
+    },
+
+    // Reads the tombstone (if any) for one identity. Consulted ONLY by
+    // `upsert`'s no-existing-row path; no other read surface in the system
+    // queries this table. See openspec/changes/fix-owner-delete-resurrection.
+    async getTombstoneByBinding({ ownerSubjectId, connectorId, sourceKind, sourceBindingKey }: {
+      ownerSubjectId: string;
+      connectorId: string;
+      sourceKind: string;
+      sourceBindingKey: string;
+    }): Promise<ConnectorInstanceTombstone | null> {
+      const result = await postgresQuery(
+        `SELECT connector_instance_id, owner_subject_id, connector_id, source_kind, source_binding_key, deleted_at
+         FROM connector_instance_tombstones
+         WHERE owner_subject_id = $1 AND connector_id = $2 AND source_kind = $3 AND source_binding_key = $4`,
+        [ownerSubjectId, connectorId, sourceKind, sourceBindingKey],
+      );
+      const row: ConnectorInstanceTombstoneRow | undefined = result.rows[0];
+      return mapTombstone(row);
     },
 
     async listByOwner(ownerSubjectId: string, { limit = LIST_LIMIT }: { limit?: number } = {}): Promise<ConnectorInstance[]> {
@@ -1225,6 +1544,16 @@ export function createPostgresConnectorInstanceStore() {
           `UPDATE device_source_instances SET connector_instance_id = NULL, updated_at = $1 WHERE connector_instance_id = $2`,
           [stamp, connectorInstanceId],
         );
+        // Record the tombstone BEFORE removing the row, same transaction: the
+        // durable fact that this identity was owner-deleted must survive even
+        // though the row itself is about to be erased. See
+        // openspec/changes/fix-owner-delete-resurrection.
+        await client.query(
+          `INSERT INTO connector_instance_tombstones(connector_instance_id, owner_subject_id, connector_id, source_kind, source_binding_key, deleted_at)
+           VALUES($1, $2, $3, $4, $5, $6)
+           ON CONFLICT(owner_subject_id, connector_id, source_kind, source_binding_key) DO NOTHING`,
+          [instance.connectorInstanceId, instance.ownerSubjectId, instance.connectorId, instance.sourceKind, instance.sourceBindingKey, stamp],
+        );
         await client.query(
           `DELETE FROM connector_instances WHERE connector_instance_id = $1`,
           [connectorInstanceId],
@@ -1256,6 +1585,26 @@ export function createPostgresConnectorInstanceStore() {
   store.deleteConnection = (connectorInstanceId, options) =>
     withConnectorInstanceWrite(connectorInstanceId, () =>
       deleteConnectionUncoordinated.call(store, connectorInstanceId, options),
+    );
+  // Close the delete/upsert TOCTOU: without this, a concurrent delete and
+  // upsert for the SAME identity could interleave between the tombstone
+  // check and the INSERT (the tombstone commits after upsert already read
+  // "no tombstone"), resurrecting the connection despite the guard above.
+  // Coordinated on the SAME deterministic connector_instance_id
+  // `deleteConnection` uses, so a delete and an upsert for the same
+  // identity always serialize through the one per-identity gate.
+  // `withConnectorInstanceWrite`'s Postgres path acquires a REAL
+  // `pg_try_advisory_lock` (postgresCoordinationEnabled() /
+  // acquirePostgresAdvisoryLock in connector-instance-write-coordinator.ts)
+  // -- exclusion enforced by the Postgres server across connections and
+  // processes, not merely the coordinator's in-process mutex. Proven by a
+  // genuine two-OS-process discriminator, not just concurrent async calls
+  // in one process: test/connector-instance-delete-upsert-two-process-race.test.js.
+  // See openspec/changes/fix-owner-delete-resurrection.
+  const upsertUncoordinated = store.upsert;
+  store.upsert = (record) =>
+    withConnectorInstanceWrite(normalizeRecord(record).connectorInstanceId, () =>
+      upsertUncoordinated.call(store, record),
     );
   return store;
 }

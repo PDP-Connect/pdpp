@@ -206,6 +206,23 @@ export type GetNonPressureRecoverableCountHandler = (
 ) => Promise<number> | number;
 
 /**
+ * Returns whether this connection currently has forward-evidence debt: its
+ * durable terminal-facts evidence is missing, historical, or older than
+ * `forwardEvidenceMaxAgeMs(scheduleIntervalMs)` (`recovery-decision.ts`).
+ * Bounds recovery-first selection (`resolveRecoveryFirstMode`'s
+ * `forwardEvidenceDebt` input) so an unbounded non-pressure recovery backlog
+ * can never starve forward (fact-carrying) collection indefinitely. Defaults
+ * to `() => false` so a host that does not wire it keeps the pre-bound
+ * recovery-first behaviour (never treated as debt, matching the legacy
+ * unbounded default).
+ */
+export type GetForwardEvidenceDebtHandler = (
+  connectorId: string,
+  connectorInstanceId: string,
+  scheduleIntervalMs: number
+) => Promise<boolean> | boolean;
+
+/**
  * Returns the epoch ms of the most recent GENUINELY-SUCCESSFUL run for this
  * connection from a durable cross-path projection (the spine run timeline),
  * regardless of which path dispatched it. The scheduler's own `runtime.history`
@@ -330,6 +347,7 @@ export interface SchedulerOptions {
    * failure. Optional: defaults to "no external success known" (legacy
    * in-history-only streak walk).
    */
+  getForwardEvidenceDebt?: GetForwardEvidenceDebtHandler;
   getLastSuccessfulRunAt?: GetLastSuccessfulRunAtHandler;
   getNonPressureRecoverableCount?: GetNonPressureRecoverableCountHandler;
   getSourcePressureGaps?: GetSourcePressureGapsHandler;

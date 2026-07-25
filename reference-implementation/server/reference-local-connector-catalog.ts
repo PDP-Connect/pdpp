@@ -52,7 +52,12 @@ export function listReferenceLocalConnectorCatalogManifests() {
 export async function ensureReferenceConnectorCatalogEntry(connectorId: string, connectorDisplayName?: string) {
   const localCollectorManifest = readReferenceLocalConnectorCatalogManifest(connectorId);
   if (localCollectorManifest) {
-    await registerConnector(localCollectorManifest);
+    // Persist the catalog row + advance generations, but SKIP retrieval-index
+    // backfill. Enroll is a control-plane op; the backfill enters the
+    // connector-instance writer-admission fence shared with bulk ingest, which
+    // starves enrollment, and is a no-op for a fresh enroll. See
+    // decouple-device-enrollment-from-ingest-writer-admission design D1.
+    await registerConnector(localCollectorManifest, { backfillRetrievalIndexes: false });
     return;
   }
   const connectorKey = canonicalConnectorKey(connectorId) ?? connectorId;

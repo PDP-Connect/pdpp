@@ -4,11 +4,13 @@
 // Detail-gap page reader for the connector runtime.
 //
 // When a connector emits DETAIL_GAPS_PAGE_REQUEST, the runtime serves a
-// byte-bounded page of pending detail gaps from the store, marks them
-// in_progress (so attempt_count increments before any provider request), and
-// adapts its per-entry byte estimate from observed page sizes. These helpers
-// hold the paging math (byte budget, candidate-row estimate, serialized-size
-// accounting) and request validation.
+// byte-bounded page of pending detail gaps from the store under a run-owned
+// CAS lease per gap (so a stale/concurrent page can never serve a row another
+// run already owns), and adapts its per-entry byte estimate from observed
+// page sizes. Leasing is not an attempt: attempt_count only advances when the
+// connector explicitly reports an attempt or outcome for its lease. These
+// helpers hold the paging math (byte budget, candidate-row estimate,
+// serialized-size accounting) and request validation.
 //
 // Extracted from runtime/index.js. The reader closes over the store and run
 // identifiers passed by runConnector; the byte accounting and validation are
@@ -37,7 +39,7 @@ interface DetailGap {
   [key: string]: unknown;
 }
 
-interface StartDetailGap {
+interface PendingStartDetailGap {
   detail_locator: string | null;
   gap_id: string;
   record_key: string | null;
@@ -46,13 +48,26 @@ interface StartDetailGap {
   stream: string;
 }
 
+interface StartDetailGap extends PendingStartDetailGap {
+  lease_id: string;
+}
+
+interface ServedDetailGapLease {
+  attempted: boolean;
+  gapId: string;
+  leaseId: string;
+  recordKey: string | null;
+  runId: string;
+  stream: string | null;
+}
+
 interface DetailGapPagePlan {
   byteBudget: number;
   candidateLimit: number;
 }
 
 interface DetailGapPageReadResult {
-  detailGaps: StartDetailGap[];
+  detailGaps: PendingStartDetailGap[];
   entryBytesTotal: number;
   serializedBytes: number;
   servedGapIds: string[];
@@ -82,6 +97,10 @@ interface DetailGapPageReaderResult {
 }
 
 interface DetailGapStore {
+  claimPendingGaps: (
+    gapIds: readonly (string | null | undefined)[],
+    options: { leaseExpiresAt?: string | null; leaseId?: string | null; runId?: string | null }
+  ) => Promise<string[]>;
   listPendingGaps: (options: {
     connectorId: string;
     connectorInstanceId: string;
@@ -93,7 +112,7 @@ interface DetailGapStore {
 }
 
 interface DetailGapPageReaderOptions {
-  allServedGapIds?: Set<string>;
+  allServedGapLeases?: Map<string, ServedDetailGapLease>;
   connectorId: string;
   connectorInstanceId: string;
   detailGapStore: DetailGapStore;
@@ -147,7 +166,7 @@ function planDetailGapPageRead({
   };
 }
 
-function serializedDetailGapBytes(entry: StartDetailGap): number {
+function serializedDetailGapBytes(entry: PendingStartDetailGap): number {
   try {
     return Buffer.byteLength(JSON.stringify(entry), "utf8") + 1;
   } catch {
@@ -155,7 +174,7 @@ function serializedDetailGapBytes(entry: StartDetailGap): number {
   }
 }
 
-function buildStartDetailGap(gap: DetailGap): StartDetailGap {
+function buildStartDetailGap(gap: DetailGap): PendingStartDetailGap {
   return {
     detail_locator: gap.detail_locator ?? null,
     gap_id: gap.gap_id,
@@ -167,7 +186,7 @@ function buildStartDetailGap(gap: DetailGap): StartDetailGap {
 }
 
 function trimDetailGapPageToByteBudget(pendingGaps: DetailGap[], byteBudget: number): DetailGapPageReadResult {
-  const detailGaps: StartDetailGap[] = [];
+  const detailGaps: PendingStartDetailGap[] = [];
   const servedGapIds: string[] = [];
   let serializedBytes = 2; // JSON array brackets; exact enough for page sizing.
   let entryBytesTotal = 0;
@@ -282,9 +301,10 @@ export function createDetailGapPageReader({
   detailGapStore,
   grantId,
   runId,
-  allServedGapIds,
+  allServedGapLeases,
 }: DetailGapPageReaderOptions): (options?: DetailGapPageReadOptions) => Promise<DetailGapPageReaderResult> {
   let observedAverageBytes = DETAIL_GAP_PAGE_ASSUMED_AVG_BYTES;
+  let pageSequence = 0;
 
   return async function readDetailGapPage({
     maxBytes = null,
@@ -304,34 +324,62 @@ export function createDetailGapPageReader({
         streams,
       })) ?? [];
     const admission = summarizeDetailGapAdmission(pendingGaps);
-    const { detailGaps, servedGapIds, serializedBytes, entryBytesTotal } = trimDetailGapPageToByteBudget(
-      pendingGaps,
-      byteBudget
-    );
+    const { detailGaps, serializedBytes, entryBytesTotal } = trimDetailGapPageToByteBudget(pendingGaps, byteBudget);
 
-    if (detailGaps.length > 0) {
-      const pageAverage = entryBytesTotal / detailGaps.length;
-      observedAverageBytes = Math.max(1, Math.round(observedAverageBytes * 0.65 + pageAverage * 0.35));
-      // Mark served gaps in_progress so attempt_count increments before the
-      // connector makes any provider requests. Re-deferred gaps (connector
-      // emits DETAIL_GAP again) revert to pending via upsertPendingGap while
-      // keeping the incremented attempt_count. Recovered gaps advance to
-      // 'recovered' via DETAIL_GAP_RECOVERED handling.
-      await Promise.all(servedGapIds.map((gapId) => detailGapStore.markGapStatus(gapId, "in_progress", { runId })));
-      if (allServedGapIds) {
-        for (const gapId of servedGapIds) {
-          allServedGapIds.add(gapId);
+    if (detailGaps.length === 0) {
+      return {
+        admission,
+        candidateLimit,
+        detailGaps: [],
+        maxBytes: byteBudget,
+        serializedBytes,
+        servedGapIds: [],
+      };
+    }
+
+    const pageAverage = entryBytesTotal / detailGaps.length;
+    observedAverageBytes = Math.max(1, Math.round(observedAverageBytes * 0.65 + pageAverage * 0.35));
+
+    // Leasing is not an attempt. Every selected gap receives its own
+    // run-owned token; the connector must explicitly report an attempt or
+    // outcome before attempt_count changes. CAS claim prevents a stale page
+    // from serving a row another run already owns, and a per-gap token makes
+    // a swapped same-page gap/token pairing fail closed.
+    const pageId = ++pageSequence;
+    const leaseExpiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    const leasesByGapId = new Map<string, string>();
+    await Promise.all(
+      detailGaps.map(async (gap) => {
+        const leaseId = `${runId}:detail-gap-page:${pageId}:gap:${gap.gap_id}`;
+        const claimed = await detailGapStore.claimPendingGaps([gap.gap_id], { runId, leaseId, leaseExpiresAt });
+        if (claimed.includes(gap.gap_id)) {
+          leasesByGapId.set(gap.gap_id, leaseId);
         }
+      })
+    );
+    const claimedDetailGaps: StartDetailGap[] = detailGaps
+      .filter((gap) => leasesByGapId.has(gap.gap_id))
+      .map((gap) => ({ ...gap, lease_id: leasesByGapId.get(gap.gap_id) as string }));
+    if (allServedGapLeases) {
+      for (const gap of claimedDetailGaps) {
+        allServedGapLeases.set(gap.gap_id, {
+          attempted: false,
+          gapId: gap.gap_id,
+          leaseId: gap.lease_id,
+          recordKey: gap.record_key == null ? null : String(gap.record_key),
+          runId,
+          stream: gap.stream ?? null,
+        });
       }
     }
 
     return {
       admission,
       candidateLimit,
-      detailGaps,
+      detailGaps: claimedDetailGaps,
       maxBytes: byteBudget,
       serializedBytes,
-      servedGapIds,
+      servedGapIds: claimedDetailGaps.map((gap) => gap.gap_id),
     };
   };
 }

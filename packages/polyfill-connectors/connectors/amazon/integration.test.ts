@@ -45,6 +45,7 @@ import {
   type EmitDeps,
   emitOrderAndItems,
   emitOrderItemsCoverage,
+  listSurfaceFingerprint,
   newOrderItemsCoverage,
   type OrderItemsCoverage,
   planIncrementalYears,
@@ -55,7 +56,9 @@ import {
   recordDetailOutcome,
   recoverPendingOrderItemDetailGaps,
   recoverPendingOrderItemDetailGapsBeforeForwardRun,
+  shouldEmitTrailingOrdersState,
 } from "./index.ts";
+import { parseOrderDate } from "./parsers.ts";
 import { validateRecord } from "./schemas.ts";
 import type { DetailItem, ListPageDiagnostics, ListPageOrder, OrderDetail } from "./types.ts";
 
@@ -364,6 +367,7 @@ test("processListOrder: unparseable order date returns false (dropped) and emits
 test("processListOrder: empty/null order date is also a drop", async () => {
   const { deps, emitted } = makeRecordingDeps({ skipDetail: true });
   for (const raw of [null, ""]) {
+    // biome-ignore lint/performance/noAwaitInLoops: deps is shared mutable recording state; concurrent calls would race on emitted/coverage bookkeeping
     const dropped = await processListOrder(
       NEVER_CALLED_PAGE,
       deps,
@@ -567,6 +571,52 @@ test("planIncrementalYears: legacy state shape (flat years object) treated as pr
   assert.ok(planned.includes(2025));
   assert.ok(!planned.includes(2024), "2024 with real last_scraped should be skipped");
   assert.ok(planned.includes(2023), "2023 with empty last_scraped treated as not-yet-scraped");
+});
+
+// ─── Trailing orders STATE persistence when the year loop emits nothing ─────
+//
+// `planIncrementalYears` always plans the current AND previous year — and
+// the previous year CAN already be frozen — so a run can have `years.length
+// > 0` while every iteration `continue`s before reaching a STATE emit. A
+// guard keyed on `years.length === 0` misses this case; `collect()` tracks
+// whether the loop actually emitted STATE instead (`ordersStateEmitted`),
+// which `shouldEmitTrailingOrdersState` decides on.
+
+test("shouldEmitTrailingOrdersState: fires when every planned year was frozen (loop ran, never emitted) and known-hydrated proof exists", () => {
+  // Reproduces the precondition directly: planIncrementalYears plans both
+  // years (so years.length > 0, the old years.length===0 guard would NOT
+  // fire), but both are already frozen, so collect()'s loop would `continue`
+  // on every iteration and never set ordersStateEmitted.
+  const yearsState = {
+    "2025": { frozen: true, last_scraped: "2026-01-01T00:00:00.000Z", order_count: 5 },
+    "2026": { frozen: true, last_scraped: "2026-07-01T00:00:00.000Z", order_count: 2 },
+  };
+  const { planned } = planIncrementalYears([2026, 2025], yearsState, 2026);
+  assert.ok(planned.length > 0, "both years are still planned even though frozen (precondition: years.length > 0)");
+
+  const ordersStateEmitted = false; // every planned year was frozen; the loop never reached its STATE emit
+  const hydratedOrders = new Map([["ord-1", "fp-1"]]); // recovery pass (or a carried-forward map) has durable progress
+  assert.equal(
+    shouldEmitTrailingOrdersState(ordersStateEmitted, hydratedOrders),
+    true,
+    "recovery-pass progress must still reach a STATE emit even though the year loop ran (years.length > 0) but froze out"
+  );
+});
+
+test("shouldEmitTrailingOrdersState: does not fire when the loop already emitted STATE", () => {
+  assert.equal(
+    shouldEmitTrailingOrdersState(true, new Map([["ord-1", "fp-1"]])),
+    false,
+    "no redundant trailing emit when the loop's own STATE emit already carried the same progress forward"
+  );
+});
+
+test("shouldEmitTrailingOrdersState: does not fire when there is no known-hydrated progress to persist", () => {
+  assert.equal(
+    shouldEmitTrailingOrdersState(false, new Map()),
+    false,
+    "nothing to carry forward — a trailing emit here would just repeat the year cursors for no reason"
+  );
 });
 
 // ─── Progress signal invariants ───────────────────────────────────────────
@@ -777,6 +827,203 @@ test("processListOrder: a hydrated detail records the order id in required + hyd
   assert.deepEqual(coverage.gap, []);
   // A hydration is not a gap — it must emit no DETAIL_GAP.
   assert.equal(findDetailGaps(protocolMessages).length, 0, "a hydrated detail emits no DETAIL_GAP");
+});
+
+// ─── Already-hydrated orders skip repeat detail fetches ─────────────────────
+//
+// The current year is never frozen (orders are ongoing), so
+// processListOrder re-lists every order on every run. Without a durable
+// known-hydrated proof it would re-attempt detail hydration for every
+// listed order every run, including ones already covered, exhausting the
+// per-run detail budget on repeat work before reaching genuinely new
+// orders. `hydratedOrders` (persisted in the `orders` STATE cursor) maps
+// each known-hydrated order id to the LIST-SURFACE fingerprint observed at
+// hydration time (see `listSurfaceFingerprint`) — proof is "hydrated AND
+// the list surface has not moved since", not permanent. A list-row change
+// (delivery status, a return becoming visible) invalidates the entry and
+// forces a full re-hydration.
+
+function orderDateFor(listOrder: ListPageOrder): string {
+  const orderDate = parseOrderDate(listOrder.orderDateRaw);
+  if (!orderDate) {
+    throw new Error("test fixture must have a parseable orderDateRaw");
+  }
+  return orderDate;
+}
+
+test("processListOrder: an already-hydrated, UNCHANGED order emits nothing on either stream and never touches the browser", async () => {
+  const coverage = newOrderItemsCoverage();
+  const listOrder = makeListOrder({ orderId: "ord-known" });
+  const orderDate = orderDateFor(listOrder);
+  const emittedAt = "2026-04-22T12:00:00.000Z";
+  const priorFingerprint = listSurfaceFingerprint(listOrder, orderDate, emittedAt);
+  const hydratedOrders = new Map([["ord-known", priorFingerprint]]);
+  const { deps, emitted, protocolMessages } = makeRecordingDeps({
+    emittedAt,
+    orderItemsCoverage: coverage,
+    hydratedOrders,
+  });
+
+  // NEVER_CALLED_PAGE proves the detail fetch is genuinely skipped, not just
+  // returning a null/degraded result.
+  await processListOrder(NEVER_CALLED_PAGE, deps, makeRunFlags(), listOrder);
+
+  assert.deepEqual(coverage.required, ["ord-known"]);
+  assert.deepEqual(
+    coverage.hydrated,
+    ["ord-known"],
+    "an already-hydrated, unchanged order counts as hydrated, not a gap"
+  );
+  assert.deepEqual(coverage.gap, []);
+  assert.equal(findDetailGaps(protocolMessages).length, 0, "an already-hydrated order emits no DETAIL_GAP");
+  assert.deepEqual(
+    emitted,
+    [],
+    "neither `orders` nor `order_items` is re-emitted for an already-hydrated, unchanged order — re-emitting `orders` " +
+      "here with detail:null would silently downgrade the durable enriched record (recipient/payment/status_detail nulled)"
+  );
+  assert.deepEqual(
+    [...hydratedOrders.entries()],
+    [["ord-known", priorFingerprint]],
+    "the known-hydrated map is unchanged, not double-added or invalidated"
+  );
+});
+
+test("processListOrder: a CHANGED list row invalidates the known-hydrated entry and fully re-hydrates both streams", async () => {
+  const coverage = newOrderItemsCoverage();
+  const emittedAt = "2026-04-22T12:00:00.000Z";
+  const priorListOrder = makeListOrder({ orderId: "ord-changed", deliveryStatus: "Shipped" });
+  const priorOrderDate = orderDateFor(priorListOrder);
+  const staleFingerprint = listSurfaceFingerprint(priorListOrder, priorOrderDate, emittedAt);
+  const hydratedOrders = new Map([["ord-changed", staleFingerprint]]);
+  const { deps, emitted } = makeRecordingDeps({
+    emittedAt,
+    orderItemsCoverage: coverage,
+    hydratedOrders,
+  });
+
+  // The list row's delivery status moved since hydration — the list surface
+  // fingerprint no longer matches the stored proof.
+  const changedListOrder = makeListOrder({ orderId: "ord-changed", deliveryStatus: "Delivered" });
+  const page = makeDetailPageStub(makeDetailHtml());
+  await processListOrder(page, deps, makeRunFlags(), changedListOrder);
+
+  assert.deepEqual(coverage.hydrated, ["ord-changed"], "a real re-hydration still counts as hydrated");
+  assert.deepEqual(coverage.gap, []);
+  assert.ok(
+    emitted.some((r) => r.stream === "orders" && r.data.id === "ord-changed"),
+    "the enriched `orders` record is re-emitted on a list-surface change"
+  );
+  assert.ok(
+    emitted.some((r) => r.stream === "order_items"),
+    "order_items is re-emitted (refreshed) on a list-surface change"
+  );
+  const newFingerprint = hydratedOrders.get("ord-changed");
+  assert.ok(newFingerprint, "the entry is re-established after re-hydration");
+  assert.notEqual(
+    newFingerprint,
+    staleFingerprint,
+    "the refreshed entry carries the NEW list-surface fingerprint, not the stale one"
+  );
+});
+
+test("processListOrder: a genuinely new detail hydration adds the order id to hydratedOrders, keyed to the observed list fingerprint", async () => {
+  const coverage = newOrderItemsCoverage();
+  const hydratedOrders = new Map<string, string>();
+  const emittedAt = "2026-04-22T12:00:00.000Z";
+  const { deps } = makeRecordingDeps({ emittedAt, orderItemsCoverage: coverage, hydratedOrders });
+  const page = makeDetailPageStub(makeDetailHtml());
+  const listOrder = makeListOrder({ orderId: "ord-new" });
+
+  await processListOrder(page, deps, makeRunFlags(), listOrder);
+
+  assert.deepEqual(coverage.hydrated, ["ord-new"]);
+  const expectedFingerprint = listSurfaceFingerprint(listOrder, orderDateFor(listOrder), emittedAt);
+  assert.equal(
+    hydratedOrders.get("ord-new"),
+    expectedFingerprint,
+    "a real hydration this run joins the durable known-hydrated map, keyed to the list surface observed THIS run"
+  );
+});
+
+test("processListOrder: a degraded (gap) detail attempt does NOT add the order id to hydratedOrders", async () => {
+  const coverage = newOrderItemsCoverage();
+  const hydratedOrders = new Map<string, string>();
+  const { deps } = makeRecordingDeps({ orderItemsCoverage: coverage, hydratedOrders });
+  const page = makeDetailPageStub(NO_DETAIL_HTML);
+
+  await processListOrder(page, deps, makeRunFlags(), makeListOrder({ orderId: "ord-gap" }));
+
+  assert.deepEqual(coverage.gap, ["ord-gap"]);
+  assert.ok(
+    !hydratedOrders.has("ord-gap"),
+    "a degraded detail attempt must not be marked known-hydrated — it must remain reachable for recovery/retry"
+  );
+});
+
+test("processListOrder: wantsItems=false does not mark durable known-hydrated proof, even on a real hydration", async () => {
+  // An orders-only scoped run may still legitimately fetch detail (to
+  // enrich the `orders` record), but the known-hydrated map's honest
+  // meaning is "order_items durably emitted" — marking it here would let a
+  // LATER item-scoped run skip an order that never actually got its
+  // order_items recorded (a false-green: coverage would read "hydrated"
+  // with zero item records and no durable gap to recover from).
+  const coverage = newOrderItemsCoverage();
+  const hydratedOrders = new Map<string, string>();
+  const { deps } = makeRecordingDeps({
+    orderItemsCoverage: coverage,
+    hydratedOrders,
+    wantsItems: false,
+    wantsOrders: true,
+  });
+  const page = makeDetailPageStub(makeDetailHtml());
+
+  await processListOrder(page, deps, makeRunFlags(), makeListOrder({ orderId: "ord-orders-only" }));
+
+  assert.equal(
+    hydratedOrders.size,
+    0,
+    "a wantsItems=false run must never mark an order known-hydrated, regardless of whether detail was fetched"
+  );
+});
+
+test("processListOrder: the already-hydrated skip frees per-run detail budget for a genuinely new order (tail convergence)", async () => {
+  // Reproduces the live shape at small scale: a per-run budget that would be
+  // exhausted by re-fetching N already-hydrated, unchanged orders now
+  // reaches a NEW order instead, because the unchanged ones are skipped
+  // entirely.
+  const coverage = newOrderItemsCoverage();
+  const emittedAt = "2026-04-22T12:00:00.000Z";
+  const oldOrder1 = makeListOrder({ orderId: "ord-old-1" });
+  const oldOrder2 = makeListOrder({ orderId: "ord-old-2" });
+  const hydratedOrders = new Map([
+    ["ord-old-1", listSurfaceFingerprint(oldOrder1, orderDateFor(oldOrder1), emittedAt)],
+    ["ord-old-2", listSurfaceFingerprint(oldOrder2, orderDateFor(oldOrder2), emittedAt)],
+  ]);
+  const { deps } = makeRecordingDeps({ emittedAt, orderItemsCoverage: coverage, hydratedOrders });
+  // A budget that would have been fully consumed by the two already-hydrated
+  // orders alone under the pre-fix always-refetch behavior.
+  const flags = { ...makeRunFlags(), detailAttempts: 0 };
+  const budgetCeiling = 2;
+
+  // ord-old-1 / ord-old-2 are already known-hydrated and unchanged:
+  // NEVER_CALLED_PAGE proves neither touches the browser, so
+  // `flags.detailAttempts` stays 0.
+  await processListOrder(NEVER_CALLED_PAGE, deps, flags, oldOrder1);
+  await processListOrder(NEVER_CALLED_PAGE, deps, flags, oldOrder2);
+  assert.equal(flags.detailAttempts, 0, "already-hydrated, unchanged orders consume zero detail-attempt budget");
+  assert.ok(flags.detailAttempts < budgetCeiling, "budget remains available for a genuinely new order");
+
+  // A genuinely new order now gets a real detail attempt using the budget
+  // that would otherwise have been wasted re-fetching ord-old-1/ord-old-2.
+  const page = makeDetailPageStub(makeDetailHtml());
+  await processListOrder(page, deps, flags, makeListOrder({ orderId: "ord-new-reaches-budget" }));
+
+  assert.deepEqual(
+    coverage.hydrated.sort((a, b) => a.localeCompare(b)),
+    ["ord-new-reaches-budget", "ord-old-1", "ord-old-2"].sort((a, b) => a.localeCompare(b))
+  );
+  assert.deepEqual(coverage.gap, [], "no order in this run is left as a gap — budget was not wasted on repeat work");
 });
 
 test("processListOrder: fopo Whole Foods detail URL hydrates instead of becoming a gap", async () => {
@@ -1127,6 +1374,48 @@ test("recoverPendingOrderItemDetailGaps: hydrates future Amazon order-item gaps 
       stream: "order_items",
       record_key: orderId,
     }
+  );
+});
+
+test("recoverPendingOrderItemDetailGaps: a recovered gap does NOT mark durable known-hydrated proof (no list-surface data available)", async () => {
+  // The recovery path only has the gap locator's order id/date, not the
+  // full list-page row (delivery status, list total, list item count) that
+  // `listSurfaceFingerprint` needs. Marking known-hydrated here without a
+  // real fingerprint would either always mismatch on the next forward walk
+  // (useless) or fabricate a proof the connector cannot actually stand
+  // behind. The next forward walk that lists this order establishes the
+  // proof normally, with a real fingerprint — recovered orders are a
+  // bounded, already-gapped set, so this costs at most one ordinary
+  // re-fetch, not the unbounded repeat-work the fingerprint fix targets.
+  const { deps } = makeRecordingDeps();
+  const flags = makeRunFlags();
+  const orderId = "111-1234567-8901234";
+
+  const result = await recoverPendingOrderItemDetailGaps(
+    makeDetailPageStub(makeDetailHtml()),
+    {
+      capture: null,
+      detailGaps: [
+        {
+          detail_locator: { kind: "amazon.order_detail", order_date: "2026-01-05", order_id: orderId },
+          gap_id: "gap_recover_hyd",
+          record_key: orderId,
+          reference_only: true,
+          status: "pending",
+          stream: "order_items",
+        },
+      ],
+      emit: deps.emit,
+      emitRecord: deps.emitRecord,
+    },
+    flags
+  );
+
+  assert.equal(result.recovered, 1);
+  assert.equal(
+    (deps as { hydratedOrders?: Map<string, string> }).hydratedOrders,
+    undefined,
+    "AmazonDetailRecoveryDeps carries no hydratedOrders field — the recovery path cannot mark durable proof"
   );
 });
 

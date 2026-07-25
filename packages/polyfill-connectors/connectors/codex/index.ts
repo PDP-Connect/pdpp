@@ -481,6 +481,7 @@ async function emitRulesStream(
       continue;
     }
     const p = join(rulesDir, f);
+    // biome-ignore lint/performance/noAwaitInLoops: each file must be stat+read sequentially (bounded, small directory) before its lines can be split and emitted in order.
     const loaded = await statAndRead(p);
     if (!loaded) {
       continue;
@@ -494,8 +495,9 @@ async function emitRulesStream(
         continue;
       }
       emitRecord("rules", buildRuleRecord({ ruleset, line, index: idx, path: p, mtime }));
+      // biome-ignore lint/performance/noAwaitInLoops: waitForEmitDrain enforces stdout backpressure between emits; parallelizing would let unbounded record writes queue in memory.
       await waitForEmitDrain();
-      idx++;
+      idx += 1;
     }
   }
 }
@@ -513,6 +515,7 @@ async function emitPromptsStream(
       continue;
     }
     const p = join(promptsDir, f);
+    // biome-ignore lint/performance/noAwaitInLoops: each file must be stat+read sequentially (bounded, small directory) before its record can be built and emitted.
     const loaded = await statAndRead(p);
     if (!loaded) {
       continue;
@@ -553,6 +556,7 @@ async function emitSkillsStream(
       continue;
     }
     const dirPath = join(skillsDir, ent.name);
+    // biome-ignore lint/performance/noAwaitInLoops: each entry must be checked sequentially (bounded, small directory) before its SKILL.md can be loaded and emitted.
     if (!(await isDirectoryPath(dirPath))) {
       continue;
     }
@@ -617,9 +621,12 @@ export function makeRolloutParseState(seed?: RolloutParseSeed): RolloutParseStat
     sessionMeta: null,
     firstTimestamp: seed?.firstTimestamp ?? null,
     lastTimestamp: seed?.lastTimestamp ?? null,
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: false positive — `seed` is an optional parameter (RolloutParseSeed | undefined); when omitted, seed?.messageCount really is undefined and the ?? 0 fallback is load-bearing (verified at runtime).
     messageCount: seed?.messageCount ?? 0,
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: false positive — same optional-`seed` case as messageCount above.
     functionCallCount: seed?.functionCallCount ?? 0,
     pendingCalls: new Map(),
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: false positive — same optional-`seed` case as messageCount above.
     lineCount: seed?.lineCount ?? 0,
   };
 }
@@ -632,7 +639,7 @@ function emitMessageRecord(
   ts: string | null,
   emitRecord: (stream: string, data: RecordData) => void
 ): void {
-  const sessionId = state.sessionId;
+  const { sessionId } = state;
   if (!sessionId) {
     return;
   }
@@ -653,7 +660,7 @@ function registerFunctionCall(
   ts: string | null,
   emitRecord: (stream: string, data: RecordData) => void
 ): void {
-  const sessionId = state.sessionId;
+  const { sessionId } = state;
   if (!sessionId) {
     return;
   }
@@ -684,7 +691,7 @@ function applyFunctionCallOutput(
   ts: string | null,
   emitRecord: (stream: string, data: RecordData) => void
 ): void {
-  const sessionId = state.sessionId;
+  const { sessionId } = state;
   if (!sessionId) {
     return;
   }
@@ -744,14 +751,14 @@ export interface ProcessResponseItemArgs {
  */
 export function processResponseItem({ deps, payload, state, ts }: ProcessResponseItemArgs): void {
   if (payload.type === "message") {
-    state.messageCount++;
+    state.messageCount += 1;
     if (deps.requested.has("messages")) {
       emitMessageRecord(state, payload, ts, deps.emitRecord);
     }
     return;
   }
   if (payload.type === "function_call") {
-    state.functionCallCount++;
+    state.functionCallCount += 1;
     if (deps.requested.has("function_calls")) {
       registerFunctionCall(state, payload, ts, deps.emitRecord);
     }
@@ -795,7 +802,7 @@ export function shouldDeferActiveRolloutFile(input: { mtimeMs: number; nowMs: nu
  * of dispatch, so the session aggregate covers the full file span.
  */
 export function processRolloutLine({ deps, obj, state }: ProcessRolloutLineArgs): void {
-  state.lineCount++;
+  state.lineCount += 1;
   if (state.lineCount % PROGRESS_EVERY === 0) {
     deps.progress(`Codex phase=emit pass=emit lines_parsed=${state.lineCount}`);
   }
@@ -904,10 +911,10 @@ export function shouldReemitThreadSession(
   }
   const priorUpdatedAt = priorFingerprint.updated_at ?? null;
   const currentUpdatedAt = thread.updated_at ?? null;
-  if (currentUpdatedAt == null) {
-    return priorUpdatedAt != null;
+  if (currentUpdatedAt === null) {
+    return priorUpdatedAt !== null;
   }
-  if (priorUpdatedAt == null) {
+  if (priorUpdatedAt === null) {
     return true;
   }
   return currentUpdatedAt > priorUpdatedAt;
@@ -924,7 +931,9 @@ function makeThreadFingerprint(
   // while the count field oscillates.
   return {
     updated_at: thread.updated_at ?? null,
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: false positive — `agg`/`priorFingerprint` are `T | undefined` parameters; when both are undefined the chain really does fall through to null (verified at runtime).
     message_count: agg?.messageCount ?? priorFingerprint?.message_count ?? null,
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: false positive — same `T | undefined` case as message_count above.
     function_call_count: agg?.functionCallCount ?? priorFingerprint?.function_call_count ?? null,
   };
 }
@@ -992,11 +1001,11 @@ function emitSessionsFromRows({ threadsRows, rolloutAggregates, emitRecord, curs
   for (const t of threadsRows) {
     const agg = rolloutAggregates.get(t.id);
     rolloutAggregates.delete(t.id);
-    const prior = cursor?.prior(t.id);
+    const prior = cursor.prior(t.id);
     if (shouldReemitThreadSession(t, agg, prior)) {
       emitRecord("sessions", buildThreadSessionRecord(t.id, t, agg, prior));
     }
-    cursor?.note(t.id, makeThreadFingerprint(t, agg, prior));
+    cursor.note(t.id, makeThreadFingerprint(t, agg, prior));
   }
 
   for (const [id, agg] of rolloutAggregates) {
@@ -1189,7 +1198,7 @@ async function buildFileCursorAfterParse(path: string, result: ParseRolloutFileR
   // record a size that disagrees with what we committed.
   let mtimeMs = 0;
   try {
-    mtimeMs = statSync(path).mtimeMs;
+    ({ mtimeMs } = statSync(path));
   } catch {
     mtimeMs = 0;
   }
@@ -1309,9 +1318,9 @@ async function scanRollouts(args: ScanRolloutsArgs): Promise<ScanRolloutsResult>
   let totalRollouts = 0;
   let parsedRollouts = 0;
   for await (const entry of walkRollouts(args.baseDir)) {
-    totalRollouts++;
+    totalRollouts += 1;
     if ((await processRolloutEntry(entry, args, totalRollouts)) === "parsed") {
-      parsedRollouts++;
+      parsedRollouts += 1;
     }
   }
   emit({
@@ -1517,15 +1526,14 @@ async function assertRequestedCodexSources(dirs: CodexDirs, requested: Map<strin
       missing.push(`CODEX_SESSIONS_DIR=${dirs.baseDir} or CODEX_STATE_DB=${dirs.stateDbPath}`);
     }
   }
-  if (requested.has("rules") && !(await isReadableDirectory(dirs.rulesDir))) {
-    missing.push(`CODEX_RULES_DIR=${dirs.rulesDir}`);
-  }
-  if (requested.has("prompts") && !(await isReadableDirectory(dirs.promptsDir))) {
-    missing.push(`CODEX_PROMPTS_DIR=${dirs.promptsDir}`);
-  }
-  if (requested.has("skills") && !(await isReadableDirectory(dirs.skillsDir))) {
-    missing.push(`CODEX_SKILLS_DIR=${dirs.skillsDir}`);
-  }
+  // rules/prompts/skills are optional, user-authored directories that Codex
+  // itself never creates until the user writes one — coverage_diagnostics
+  // already reports each as "missing" (not an error) when absent, and
+  // emitRulesStream/emitPromptsStream/emitSkillsStream already no-op safely
+  // on a missing directory. Requiring them here was fatal-on-every-fresh-
+  // install: any host without a manually-created empty rules/prompts dir
+  // failed its very first run. Only sources with no graceful empty-result
+  // path (sessions) stay a hard precondition.
   if (missing.length > 0) {
     throw new Error(`requested Codex local source path(s) are missing or unreadable: ${missing.join(", ")}`);
   }
@@ -1585,7 +1593,7 @@ function emitStateCursors({
 
 function readPriorSessionsSourceMtimeMs(startMsg: StartMessage): number | null {
   const state = startMsg.state || {};
-  const sessions = state.sessions;
+  const { sessions } = state;
   const value =
     sessions && typeof sessions === "object" && !Array.isArray(sessions)
       ? (sessions as Record<string, unknown>).source_mtime_ms
@@ -1613,15 +1621,15 @@ function rawFingerprintMap(startMsg: unknown): Record<string, unknown> | null {
   if (!startMsg || typeof startMsg !== "object") {
     return null;
   }
-  const state = (startMsg as Record<string, unknown>).state;
+  const { state } = startMsg as Record<string, unknown>;
   if (!state || typeof state !== "object") {
     return null;
   }
-  const sessions = (state as Record<string, unknown>).sessions;
+  const { sessions } = state as Record<string, unknown>;
   if (!sessions || typeof sessions !== "object" || Array.isArray(sessions)) {
     return null;
   }
-  const raw = (sessions as Record<string, unknown>).thread_fingerprints;
+  const { thread_fingerprints: raw } = sessions as Record<string, unknown>;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     return null;
   }
@@ -1680,6 +1688,7 @@ async function emitCoverageDiagnostics(input: {
   }
   for (const record of input.inventory.coverage) {
     input.emitRecord("coverage_diagnostics", record);
+    // biome-ignore lint/performance/noAwaitInLoops: waitForEmitDrain enforces stdout backpressure between emits; parallelizing would let unbounded record writes queue in memory.
     await waitForEmitDrain();
   }
 }
@@ -1700,6 +1709,7 @@ async function emitGatedInventoryStream(input: {
   for (const record of input.records) {
     if (cursor.shouldEmit(record)) {
       input.emitRecord(input.stream, record);
+      // biome-ignore lint/performance/noAwaitInLoops: waitForEmitDrain enforces stdout backpressure between emits; parallelizing would let unbounded record writes queue in memory.
       await waitForEmitDrain();
     }
   }
@@ -1726,6 +1736,27 @@ export const CODEX_GATED_INVENTORY_STREAMS = [
   "logs",
 ] as const;
 
+/** Resolve one gated inventory stream's records: `shell_snapshots` is a live
+ *  directory listing; every other gated stream reads from the pre-built
+ *  store inventory's `recordsByStream` map (empty for an absent store). */
+async function resolveGatedInventoryRecords(
+  stream: string,
+  codexHome: string,
+  inventory: Awaited<ReturnType<typeof buildLocalSourceInventory>>
+): Promise<readonly RecordData[]> {
+  if (stream !== "shell_snapshots") {
+    return inventory.recordsByStream.get(stream) ?? [];
+  }
+  return await listDirectoryInventory({
+    tool: "codex",
+    sourceHome: codexHome,
+    relativeRoot: "shell-snapshots",
+    store: "shell_snapshots",
+    stream: "shell_snapshots",
+    reason: "shell content requires redaction review before payload collection",
+  });
+}
+
 async function emitLocalInventoryStreams(input: {
   codexHome: string;
   emitRecord: (stream: string, data: RecordData) => void;
@@ -1741,17 +1772,8 @@ async function emitLocalInventoryStreams(input: {
     if (!input.requested.has(stream)) {
       continue;
     }
-    const records =
-      stream === "shell_snapshots"
-        ? await listDirectoryInventory({
-            tool: "codex",
-            sourceHome: input.codexHome,
-            relativeRoot: "shell-snapshots",
-            store: "shell_snapshots",
-            stream: "shell_snapshots",
-            reason: "shell content requires redaction review before payload collection",
-          })
-        : (input.inventory.recordsByStream.get(stream) ?? []);
+    // biome-ignore lint/performance/noAwaitInLoops: each gated inventory stream is resolved and emitted one at a time, in CODEX_GATED_INVENTORY_STREAMS order, before the next stream's records are enumerated.
+    const records = await resolveGatedInventoryRecords(stream, input.codexHome, input.inventory);
     await emitGatedInventoryStream({
       emitRecord: input.emitRecord,
       nowIso: input.nowIso,
@@ -1784,6 +1806,7 @@ async function main(): Promise<void> {
   const nowIso = (): string => new Date().toISOString();
   const emittedAt = nowIso();
   const emitRecord = (s: string, d: RecordData): void => {
+    // biome-ignore lint/suspicious/noEqualsToNull: id is string | number | null | undefined; == null intentionally covers both a missing id and an explicit null.
     if (d.id == null) {
       return;
     }
@@ -1809,7 +1832,7 @@ async function main(): Promise<void> {
       data: d,
       emitted_at: emittedAt,
     });
-    total++;
+    total += 1;
   };
 
   const needRollouts = requested.has("sessions") || requested.has("messages") || requested.has("function_calls");

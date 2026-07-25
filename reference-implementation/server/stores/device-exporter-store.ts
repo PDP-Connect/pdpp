@@ -1,6 +1,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import { createHash } from "node:crypto";
 import {
   allowUnboundedReadAcknowledged,
   type BindValue,
@@ -21,6 +22,35 @@ import {
 /** A raw database row (column-keyed) crossing the untyped storage boundary. */
 // biome-ignore lint/suspicious/noExplicitAny: raw db.js/postgres rows are untyped at this boundary.
 type Row = Record<string, any>;
+
+// Design D6 (fix-enroll-stable-binding-identity-key), extended by D7
+// (fix-enroll-source-kind-identity-gap) to include sourceKind in the lock
+// material. Distinct namespace prefix from
+// connector-instance-write-coordinator.ts's advisoryKey — this locks the
+// enrollment BINDING decision (which device identity a first enroll for
+// this binding should resolve to), an entirely different resource than
+// that module's per-connector-instance ingest writer-admission fence.
+// Sharing a keyspace would risk accidental cross-fence coupling; a distinct
+// prefix makes collision cryptographically negligible even if the same
+// (owner, connector, sourceKind, binding) string ever collided with a
+// connector_instance_id, which it structurally cannot (different id
+// shapes). sourceKind is part of the hash input (not just the SQL
+// predicate) so two enrollments sharing owner+connector+binding but
+// resolving to different source kinds serialize on DISTINCT lock keys —
+// each kind's identity decision is independent, never blocked by or
+// racing against the other's.
+function advisoryEnrollmentBindingKey(
+  ownerSubjectId: string,
+  connectorId: string,
+  sourceKind: string,
+  localBindingId: string
+): string {
+  const bytes = createHash("sha256")
+    .update("pdpp:enrollment-binding-identity:v1:\0")
+    .update(`${ownerSubjectId}\n${connectorId}\n${sourceKind}\n${localBindingId}`)
+    .digest();
+  return bytes.readBigInt64BE(0).toString();
+}
 
 export class DeviceBatchConflictError extends Error {
   code: string;
@@ -411,6 +441,75 @@ export function createSqliteDeviceExporterStore() {
       return mapDevice(getOne(referenceQueries.deviceExportersGetDevice, [deviceId]));
     },
 
+    // Design D6 (fix-enroll-stable-binding-identity-key), qualified by
+    // sourceKind per D7 (fix-enroll-source-kind-identity-gap). See the
+    // Postgres implementation's doc comment for the full contract (orphan
+    // eligibility, fail-closed-on-ambiguity, why sourceKind is part of the
+    // identity key). No explicit lock is needed here: better-sqlite3 is
+    // synchronous and single-connection, so the lookup-then-create sequence
+    // below cannot be interleaved by a concurrent request — Node's
+    // single-threaded event loop cannot run another callback
+    // mid-synchronous-execution, which is the actual property a lock would
+    // otherwise need to provide.
+    resolveOrCreateEnrollmentDevice(params: {
+      ownerSubjectId: string;
+      connectorId: string;
+      sourceKind: string;
+      localBindingId: string;
+      candidateDeviceId: string;
+      candidateSourceInstanceId: string;
+      displayName: string;
+      collectorProtocolVersion: string | null;
+      now: string;
+    }) {
+      const orphans = allowUnboundedReadAcknowledged<{ device_id: string; source_instance_id: string }>(
+        referenceQueries.deviceExportersFindOrphanedDeviceForBinding,
+        [params.ownerSubjectId, params.connectorId, params.sourceKind, params.localBindingId]
+      );
+      if (orphans.length > 1) {
+        throw new Error(
+          `resolveOrCreateEnrollmentDevice: ambiguous orphan set (${orphans.length} candidates) for owner=${params.ownerSubjectId} connector=${params.connectorId} sourceKind=${params.sourceKind} binding=${params.localBindingId}; refusing to guess`
+        );
+      }
+      const orphan = orphans[0];
+      if (orphan) {
+        return { deviceId: orphan.device_id, sourceInstanceId: orphan.source_instance_id, adopted: true };
+      }
+      exec(referenceQueries.deviceExportersInsertDevice, [
+        params.candidateDeviceId,
+        params.ownerSubjectId,
+        params.displayName,
+        "active",
+        null,
+        params.collectorProtocolVersion,
+        null,
+        null,
+        params.now,
+        params.now,
+        null,
+      ]);
+      // Placeholder source-instance row (connector_instance_id NULL) in the
+      // SAME synchronous call sequence as the device — see the Postgres
+      // implementation's doc comment for why this matters even here (a
+      // future refactor that made this async could otherwise reintroduce
+      // the race this placeholder exists to prevent).
+      exec(referenceQueries.deviceExportersUpsertSourceInstance, [
+        params.candidateSourceInstanceId,
+        params.candidateDeviceId,
+        params.connectorId,
+        null,
+        params.localBindingId,
+        params.sourceKind,
+        params.displayName,
+        "active",
+        null,
+        params.now,
+        params.now,
+        null,
+      ]);
+      return { deviceId: params.candidateDeviceId, sourceInstanceId: params.candidateSourceInstanceId, adopted: false };
+    },
+
     listDevices(ownerSubjectId: string) {
       return allowUnboundedReadAcknowledged<Row>(referenceQueries.deviceExportersListDevices, [ownerSubjectId]).map(
         mapDevice
@@ -449,6 +548,23 @@ export function createSqliteDeviceExporterStore() {
         record.createdAt,
         record.lastUsedAt ?? null,
         record.revokedAt ?? null,
+      ]);
+    },
+
+    // Revoke every non-revoked credential for the device and install exactly one
+    // fresh credential, so a re-enroll (idempotent-response retry) yields a
+    // single current token and invalidates any previously issued token. See
+    // decouple-device-enrollment-from-ingest-writer-admission design D2.
+    rotateDeviceCredential(record: Row) {
+      exec(referenceQueries.deviceExportersRevokeCredentialsForDevice, [record.rotatedAt, record.deviceId]);
+      exec(referenceQueries.deviceExportersInsertCredential, [
+        record.credentialId,
+        record.deviceId,
+        record.tokenHash,
+        "active",
+        record.createdAt,
+        null,
+        null,
       ]);
     },
 
@@ -502,6 +618,7 @@ export function createSqliteDeviceExporterStore() {
         record.connectorId,
         record.connectorInstanceId ?? null,
         record.localBindingId,
+        record.sourceKind ?? null,
         record.displayName ?? null,
         record.status ?? "active",
         record.lastError === undefined ? null : JSON.stringify(record.lastError),
@@ -672,9 +789,15 @@ export function createSqliteDeviceExporterStore() {
 export function createPostgresDeviceExporterStore() {
   return {
     async createDevice(record: Row) {
+      // ON CONFLICT DO NOTHING: device_id is deterministic per enrollment
+      // code (see fix-enroll-pending-code-partial-write-idempotency design
+      // D5), so a concurrent retry of the same pending code racing another
+      // first attempt converges on one device row instead of a duplicate-key
+      // error.
       await postgresQuery(
         `INSERT INTO device_exporters(device_id, owner_subject_id, display_name, status, agent_version, collector_protocol_version, last_heartbeat_at, last_error_json, created_at, updated_at, revoked_at)
-         VALUES($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)`,
+         VALUES($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)
+         ON CONFLICT(device_id) DO NOTHING`,
         [
           record.deviceId,
           record.ownerSubjectId,
@@ -784,6 +907,46 @@ export function createPostgresDeviceExporterStore() {
       );
     },
 
+    // Revoke every non-revoked credential for the device and install exactly one
+    // fresh credential, so a re-enroll (idempotent-response retry) yields a
+    // single current token and invalidates any previously issued token. See
+    // decouple-device-enrollment-from-ingest-writer-admission design D2.
+    //
+    // Serialization: the revoke UPDATE alone only locks rows it actually
+    // matches. When the device has ZERO credential rows yet (the D5
+    // empty-device first-attempt case — concurrent first enrolls for the same
+    // pending code, or the very first rotation any device ever gets), the
+    // revoke touches nothing and takes no lock, so two concurrent
+    // transactions can both fall through to INSERT and each commit an active
+    // credential — violating "exactly one active credential." Lock the
+    // device's OWN identity row first with SELECT ... FOR UPDATE: that row is
+    // guaranteed to exist (created by createDevice before any rotation is
+    // ever attempted) and is guaranteed unique per device, so it is always a
+    // real serialization point regardless of how many credential rows exist.
+    // A concurrent rotation for the SAME device blocks on this lock until the
+    // first transaction commits, then re-reads the now-revoked prior
+    // credential and inserts its own — exactly-once-active is a database
+    // invariant, not a race on which UPDATE happens to touch a row.
+    async rotateDeviceCredential(record: Row) {
+      await withPostgresTransaction(async (client: PostgresTransactionClient) => {
+        const locked = await client.query("SELECT device_id FROM device_exporters WHERE device_id = $1 FOR UPDATE", [
+          record.deviceId,
+        ]);
+        if (locked.rowCount === 0) {
+          throw new Error(`rotateDeviceCredential: no device_exporters row for device_id ${record.deviceId}`);
+        }
+        await client.query(
+          `UPDATE device_ingest_credentials SET status = 'revoked', revoked_at = $1 WHERE device_id = $2 AND status <> 'revoked'`,
+          [record.rotatedAt, record.deviceId]
+        );
+        await client.query(
+          `INSERT INTO device_ingest_credentials(credential_id, device_id, token_hash, status, created_at, last_used_at, revoked_at)
+           VALUES($1, $2, $3, 'active', $4, NULL, NULL)`,
+          [record.credentialId, record.deviceId, record.tokenHash, record.createdAt]
+        );
+      });
+    },
+
     async findCredentialByTokenHash(tokenHash: string) {
       const result = await postgresQuery(
         `SELECT credential_id, device_id, token_hash, status, created_at, last_used_at, revoked_at
@@ -830,6 +993,137 @@ export function createPostgresDeviceExporterStore() {
       return mapEnrollment(result.rows[0]);
     },
 
+    // Design D6 (fix-enroll-stable-binding-identity-key), qualified by
+    // sourceKind per D7 (fix-enroll-source-kind-identity-gap). Resolves the
+    // device identity a first-time enroll for this (owner, connector,
+    // sourceKind, binding) should use, adopting an orphaned partial-write
+    // device if one exists rather than always minting fresh identity.
+    //
+    // sourceKind is part of the identity key — not just the local binding
+    // name — because the same owner, connector, and binding name can be
+    // enrolled under two structurally distinct connector-instance kinds
+    // (local_device vs browser_collector; see connector-source-kind.ts).
+    // Without this qualifier, an orphan created under one kind could be
+    // adopted by an enrollment resolving to the other, silently merging two
+    // unrelated identities. The caller resolves sourceKind from the
+    // connector's manifest BEFORE calling this method (never derived here),
+    // so the same qualifier is available for both the lock key and the
+    // orphan-eligibility predicate.
+    //
+    // Serialization: the lookup-then-create decision is itself a race — two
+    // genuinely concurrent enroll attempts for the same still-empty binding
+    // could both observe "no orphan" and each create a distinct device
+    // before either commits, since neither has written anything yet for the
+    // per-device lock (rotateDeviceCredential's SELECT...FOR UPDATE) to
+    // serialize on. This method closes that gap with a DURABLE,
+    // database-backed serialization boundary — pg_advisory_xact_lock keyed
+    // on the (owner, connector, sourceKind, binding) tuple, held for exactly
+    // the find-or-create decision and released automatically on
+    // commit/rollback — never a process-local lock (worthless across
+    // concurrent requests on the same or different processes; useless
+    // against real Postgres concurrency).
+    //
+    // Orphan eligibility (see the WHERE clause): exact owner_subject_id +
+    // connector_id + source_kind + local_binding_id match; never had a code
+    // successfully consumed for it (device_enrollment_codes.status =
+    // 'consumed'); not revoked. If more than one candidate somehow exists
+    // (should be unreachable given this method is the only writer, but the
+    // query is defensive), this FAILS CLOSED by throwing rather than
+    // silently picking one — an ambiguous orphan set must never be resolved
+    // by guessing.
+    async resolveOrCreateEnrollmentDevice(params: {
+      ownerSubjectId: string;
+      connectorId: string;
+      sourceKind: string;
+      localBindingId: string;
+      candidateDeviceId: string;
+      candidateSourceInstanceId: string;
+      displayName: string;
+      collectorProtocolVersion: string | null;
+      now: string;
+    }) {
+      return await withPostgresTransaction(async (client: PostgresTransactionClient) => {
+        const lockKey = advisoryEnrollmentBindingKey(
+          params.ownerSubjectId,
+          params.connectorId,
+          params.sourceKind,
+          params.localBindingId
+        );
+        await client.query("SELECT pg_advisory_xact_lock($1::bigint)", [lockKey]);
+
+        const orphans = await client.query(
+          `SELECT dsi.device_id, dsi.source_instance_id
+             FROM device_source_instances dsi
+             JOIN device_exporters de ON de.device_id = dsi.device_id
+            WHERE de.owner_subject_id = $1
+              AND dsi.connector_id = $2
+              AND dsi.source_kind = $3
+              AND dsi.local_binding_id = $4
+              AND dsi.status != 'revoked'
+              AND de.status != 'revoked'
+              AND NOT EXISTS (
+                SELECT 1 FROM device_enrollment_codes dec
+                WHERE dec.device_id = dsi.device_id AND dec.status = 'consumed'
+              )
+            ORDER BY dsi.created_at DESC`,
+          [params.ownerSubjectId, params.connectorId, params.sourceKind, params.localBindingId]
+        );
+        if (orphans.rows.length > 1) {
+          throw new Error(
+            `resolveOrCreateEnrollmentDevice: ambiguous orphan set (${orphans.rows.length} candidates) for owner=${params.ownerSubjectId} connector=${params.connectorId} sourceKind=${params.sourceKind} binding=${params.localBindingId}; refusing to guess`
+          );
+        }
+        const orphan = orphans.rows[0];
+        if (orphan) {
+          return { deviceId: orphan.device_id, sourceInstanceId: orphan.source_instance_id, adopted: true };
+        }
+
+        await client.query(
+          `INSERT INTO device_exporters(device_id, owner_subject_id, display_name, status, agent_version, collector_protocol_version, last_heartbeat_at, last_error_json, created_at, updated_at, revoked_at)
+           VALUES($1, $2, $3, 'active', NULL, $4, NULL, NULL, $5, $5, NULL)
+           ON CONFLICT(device_id) DO NOTHING`,
+          [
+            params.candidateDeviceId,
+            params.ownerSubjectId,
+            params.displayName,
+            params.collectorProtocolVersion,
+            params.now,
+          ]
+        );
+        // A placeholder source-instance row (connector_instance_id NULL) is
+        // created in the SAME locked transaction as the device, not left for
+        // the caller's later upsertSourceInstance call. Otherwise the orphan
+        // query above — which requires a device_source_instances row to
+        // exist — would never see a device between the moment this
+        // transaction commits and the moment the caller's own (unlocked)
+        // upsertSourceInstance runs, so a concurrent second attempt's lock
+        // acquisition in that window would wrongly conclude no orphan exists
+        // and create a SECOND, independent device for the same binding.
+        // upsertSourceInstance's own ON CONFLICT(device_id, connector_id,
+        // local_binding_id) safely fills in the real connector_instance_id
+        // afterward.
+        await client.query(
+          `INSERT INTO device_source_instances(source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, source_kind, display_name, status, last_error_json, created_at, updated_at, revoked_at)
+           VALUES($1, $2, $3, NULL, $4, $5, $6, 'active', NULL, $7, $7, NULL)
+           ON CONFLICT(device_id, connector_id, local_binding_id) DO NOTHING`,
+          [
+            params.candidateSourceInstanceId,
+            params.candidateDeviceId,
+            params.connectorId,
+            params.localBindingId,
+            params.sourceKind,
+            params.displayName,
+            params.now,
+          ]
+        );
+        return {
+          deviceId: params.candidateDeviceId,
+          sourceInstanceId: params.candidateSourceInstanceId,
+          adopted: false,
+        };
+      });
+    },
+
     async consumeEnrollmentCode(enrollmentCodeId: string, deviceId: string, consumedAt: string) {
       const result = await postgresQuery(
         `UPDATE device_enrollment_codes SET status = 'consumed', device_id = $1, consumed_at = $2
@@ -850,11 +1144,12 @@ export function createPostgresDeviceExporterStore() {
 
     async upsertSourceInstance(record: Row) {
       await postgresQuery(
-        `INSERT INTO device_source_instances(source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, display_name, status, last_error_json, created_at, updated_at, revoked_at)
-         VALUES($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)
+        `INSERT INTO device_source_instances(source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, source_kind, display_name, status, last_error_json, created_at, updated_at, revoked_at)
+         VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12)
          ON CONFLICT(device_id, connector_id, local_binding_id) DO UPDATE SET
            source_instance_id = excluded.source_instance_id,
            connector_instance_id = excluded.connector_instance_id,
+           source_kind = excluded.source_kind,
            display_name = excluded.display_name,
            status = excluded.status,
            last_error_json = excluded.last_error_json,
@@ -866,6 +1161,7 @@ export function createPostgresDeviceExporterStore() {
           record.connectorId,
           record.connectorInstanceId ?? null,
           record.localBindingId,
+          record.sourceKind ?? null,
           record.displayName ?? null,
           record.status ?? "active",
           record.lastError === undefined ? null : JSON.stringify(record.lastError),

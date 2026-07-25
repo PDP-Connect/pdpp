@@ -240,19 +240,21 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly connectorInstanceCredentialsRevokeByInstance: MutationQuery;
   readonly connectorInstanceCredentialsUpsert: MutationQuery;
   readonly connectorInstancesDeleteById: MutationQuery;
+  readonly connectorInstancesDeleteManifestWriteViolationsByConnectorInstance: MutationQuery;
+  readonly connectorInstancesDeleteSummaryEvidenceByConnectorInstance: MutationQuery;
   readonly connectorInstancesGetByBinding: ReadOneQuery;
   readonly connectorInstancesGetById: ReadOneQuery;
+  readonly connectorInstancesGetTombstoneByBinding: ReadOneQuery;
   readonly connectorInstancesInsert: MutationQuery;
+  readonly connectorInstancesInsertTombstone: MutationQuery;
   readonly connectorInstancesListActiveByOwnerConnector: ReadManyQuery;
   readonly connectorInstancesListByOwner: ReadManyQuery;
   readonly connectorInstancesListByOwnerIncludingDrafts: ReadManyQuery;
   readonly connectorInstancesListDraftBrowserEnrollmentShells: SmallEnumerationQuery;
+  readonly connectorInstancesMigrateLegacyBindingKey: MutationQuery;
   readonly connectorInstancesUpdateDisplayName: MutationQuery;
   readonly connectorInstancesUpdateStatus: MutationQuery;
   readonly controllerDeleteActiveRun: MutationQuery;
-  // Records — deletion (manifest_write_violations and connector_summary_evidence).
-  readonly recordsDeleteDeleteConnectorSummaryEvidenceByInstance: MutationQuery;
-  readonly recordsDeleteDeleteManifestWriteViolationsByInstance: MutationQuery;
   readonly controllerDeleteSchedule: MutationQuery;
   readonly controllerGetLatestSchedulerRunHistoryForConnection: ReadOneQuery;
   readonly controllerGetScheduleByConnector: ReadOneQuery;
@@ -271,6 +273,7 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly deviceExportersClearSourceInstanceConnectorRef: MutationQuery;
   readonly deviceExportersCompleteProcessingBatch: MutationQuery;
   readonly deviceExportersConsumeEnrollmentCode: MutationQuery;
+  readonly deviceExportersFindOrphanedDeviceForBinding: SmallEnumerationQuery;
   readonly deviceExportersGetBatchOutcomeByBatch: ReadOneQuery;
   readonly deviceExportersGetCredentialByTokenHash: ReadOneQuery;
   readonly deviceExportersGetDevice: ReadOneQuery;
@@ -766,8 +769,6 @@ export function loadReferenceQueries(queryDir = QUERIES_DIR): ReferenceQueryRegi
     // Records — deletion.
     "recordsDeleteCountRecordsByStream",
     "recordsDeleteCountRecordsByInstance",
-    "recordsDeleteDeleteManifestWriteViolationsByInstance",
-    "recordsDeleteDeleteConnectorSummaryEvidenceByInstance",
     "recordsDeleteDeleteRecordsByStream",
     "recordsDeleteDeleteRecordsByInstance",
     "recordsDeleteDeleteRecordChangesByStream",

@@ -138,11 +138,11 @@ test('maybeQuarantineGap: poison item reaches its per-item threshold -> terminal
   const policy = { maxNoProgressAttempts: 3 };
 
   await store.markGapStatus(gap.gap_id, 'in_progress');
-  await store.resetServedInProgressGaps([gap.gap_id]);
+  await store.markGapStatus(gap.gap_id, 'pending');
   await store.markGapStatus(gap.gap_id, 'in_progress');
   let outcome = await maybeQuarantineGap(store, gap.gap_id, { failure_class: 'transient_no_progress' }, policy);
   assert.equal(outcome.quarantined, false, 'below budget: not quarantined');
-  await store.resetServedInProgressGaps([gap.gap_id]);
+  await store.markGapStatus(gap.gap_id, 'pending');
   assert.equal(
     (await store.listPendingGaps({ connectorId: 'amazon', connectorInstanceId: CONNECTOR_INSTANCE_ID, grantId: 'grant_test' })).length,
     1,
@@ -210,12 +210,17 @@ test('maybeQuarantineGap: quarantine is sticky - re-upsert does not revive a qua
   assert.equal(again.quarantined, false, 'terminal is sticky; no double-quarantine');
 }));
 
-test('interrupted attempts count: markGapStatus(in_progress) increments before the connector acts, and crash-reclaim does not decrement', withTempDb(async () => {
+test('interrupted explicit attempts survive expired-lease reclaim', withTempDb(async () => {
   const store = createSqliteConnectorDetailGapStore();
   const gap = await seedGap(store, 'order_crash');
 
   for (let i = 0; i < 3; i++) {
-    await store.markGapStatus(gap.gap_id, 'in_progress');
+    await store.claimPendingGaps([gap.gap_id], {
+      runId: `crashed_run_${i}`,
+      leaseId: `crashed_lease_${i}`,
+      leaseExpiresAt: '2020-01-01T00:00:00.000Z',
+    });
+    await store.markLeasedGapAttempt({ gapId: gap.gap_id, runId: `crashed_run_${i}`, leaseId: `crashed_lease_${i}` });
     await store.reclaimStrandedInProgressGaps({
       connectorId: 'amazon',
       connectorInstanceId: CONNECTOR_INSTANCE_ID,
@@ -226,7 +231,7 @@ test('interrupted attempts count: markGapStatus(in_progress) increments before t
 
   const after = await store.getGapById(gap.gap_id);
   assert.equal(after.status, 'pending', 'reclaimed back to pending for the next attempt');
-  assert.equal(after.attempt_count, 3, 'each interrupted attempt counted; reclaim did NOT decrement');
+  assert.equal(after.attempt_count, 3, 'each explicit interrupted attempt is retained');
 }));
 
 test('repeated interruption escalates to quarantine exactly like repeated deterministic failure', withTempDb(async () => {
@@ -236,7 +241,7 @@ test('repeated interruption escalates to quarantine exactly like repeated determ
 
   for (let i = 0; i < policy.maxNoProgressAttempts; i++) {
     await store.markGapStatus(gap.gap_id, 'in_progress');
-    await store.resetServedInProgressGaps([gap.gap_id]);
+    await store.markGapStatus(gap.gap_id, 'pending');
   }
 
   const outcome = await maybeQuarantineGap(store, gap.gap_id, { failure_class: 'interrupted' }, policy);

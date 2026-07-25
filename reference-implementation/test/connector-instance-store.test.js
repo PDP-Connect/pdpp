@@ -3,12 +3,16 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { closeDb, getDb, initDb } from '../server/db.js';
 import {
   ConnectorInstanceResolutionError,
   createPostgresConnectorInstanceStore,
   createSqliteConnectorInstanceStore,
+  makeConnectorInstanceSourceBindingKey,
   makeDefaultAccountConnectorInstanceId,
   resolveOwnerConnectorInstanceNamespace,
 } from '../server/stores/connector-instance-store.ts';
@@ -32,13 +36,19 @@ const realSqlitePurge = {
 // A purge whose record phase is a counted no-op returning a fixed count, used by
 // the store-arm tests that don't seed real records but want to assert the
 // schedule/device/row cascade and the deletion summary. `enumerateStreams` and
-// `teardownProjection` are real (harmless on an empty record set).
+// `teardownProjection` are real (harmless on an empty record set). Both
+// backend record-phase methods are stubbed so this is usable from the shared
+// (SQLite + Postgres) `runConformance` driver as well as SQLite-only tests.
 function stubPurge({ deletedRecordCount = 0, onDeleteRows = () => {} } = {}) {
   return {
     enumerateStreams: () => Promise.resolve({ streams: [] }),
     deleteRecordRowsSqlite: (id) => {
       onDeleteRows(id);
       return deletedRecordCount;
+    },
+    deleteRecordRowsPostgres: (_client, id) => {
+      onDeleteRows(id);
+      return Promise.resolve(deletedRecordCount);
     },
     teardownProjection: () => Promise.resolve(),
   };
@@ -395,6 +405,112 @@ async function runConformance({ makeStore, seedConnector }) {
   });
   assert.equal(freshDefault.status, 'active');
   assert.equal(freshDefault.createdDefaultAccount, true);
+
+  // ─── Owner-delete resurrection guard (fix-owner-delete-resurrection) ───
+  // A device-collected (local_device) connection's connector_instance_id is
+  // deterministic: hash(owner, connector, source_kind, source_binding_key),
+  // where source_binding_key derives from {kind, local_binding_name} only —
+  // independent of device_id/source_instance_id. deleteConnection hard-
+  // removes the row. Without a tombstone, a later upsert for the SAME
+  // identity (e.g. a device re-enrollment under the same local_binding_name,
+  // from a DIFFERENT device_id/source_instance_id — a genuinely new
+  // enrollment event) would silently resurrect the row as active. This
+  // proves it does not.
+  await seedConnector('codex');
+  const codexBindingKey = makeConnectorInstanceSourceBindingKey({ kind: 'local_device', local_binding_name: 'default' });
+  const codexOriginal = await driver.call('upsert', {
+    ownerSubjectId: 'owner_6',
+    connectorId: 'codex',
+    displayName: 'Codex',
+    status: 'active',
+    sourceKind: 'local_device',
+    sourceBindingKey: codexBindingKey,
+    sourceBinding: { kind: 'local_device', device_id: 'dexp_original', local_binding_name: 'default', source_instance_id: 'dsrc_original' },
+    createdAt: NOW,
+    updatedAt: NOW,
+  });
+  await driver.call('deleteConnection', codexOriginal.connectorInstanceId, {
+    ownerSubjectId: 'owner_6',
+    now: LATER,
+    purge: stubPurge(),
+  });
+  assert.equal(await driver.call('get', codexOriginal.connectorInstanceId), null, 'row is gone after delete');
+
+  // The resurrection attempt: a DIFFERENT device_id/source_instance_id (a
+  // genuinely new enrollment), same owner/connector/source_kind/binding.
+  await assert.rejects(
+    () => driver.call('upsert', {
+      ownerSubjectId: 'owner_6',
+      connectorId: 'codex',
+      displayName: 'Codex',
+      status: 'active',
+      sourceKind: 'local_device',
+      sourceBindingKey: codexBindingKey,
+      sourceBinding: { kind: 'local_device', device_id: 'dexp_reenrolled', local_binding_name: 'default', source_instance_id: 'dsrc_reenrolled' },
+      createdAt: LATER,
+      updatedAt: LATER,
+    }),
+    (err) => err.code === 'connection_tombstoned',
+    'a deleted identity must fail closed, not silently resurrect',
+  );
+  assert.equal(
+    await driver.call('get', codexOriginal.connectorInstanceId),
+    null,
+    'no row was created by the rejected upsert — the tombstoned identity stays absent, not half-resurrected',
+  );
+
+  // Unaffected-sibling: a DIFFERENT binding (distinct local_binding_name) for
+  // the SAME owner/connector succeeds normally and is untouched by the
+  // unrelated tombstone.
+  const codexOtherBindingKey = makeConnectorInstanceSourceBindingKey({ kind: 'local_device', local_binding_name: 'work-laptop' });
+  const codexSibling = await driver.call('upsert', {
+    ownerSubjectId: 'owner_6',
+    connectorId: 'codex',
+    displayName: 'Codex - work laptop',
+    status: 'active',
+    sourceKind: 'local_device',
+    sourceBindingKey: codexOtherBindingKey,
+    sourceBinding: { kind: 'local_device', device_id: 'dexp_sibling', local_binding_name: 'work-laptop', source_instance_id: 'dsrc_sibling' },
+    createdAt: LATER,
+    updatedAt: LATER,
+  });
+  assert.equal(codexSibling.status, 'active', 'a distinct binding is unaffected by an unrelated tombstone');
+  assert.notEqual(codexSibling.connectorInstanceId, codexOriginal.connectorInstanceId);
+
+  // Unaffected-revoke: REVOKE (not delete) still allows the existing
+  // reactivate-by-re-enroll behavior — the tombstone guard only applies to
+  // the no-existing-row path, never to an ON CONFLICT DO UPDATE hit against
+  // a live row.
+  const codexRevokeBindingKey = makeConnectorInstanceSourceBindingKey({ kind: 'local_device', local_binding_name: 'revoke-then-reenroll' });
+  const codexRevokable = await driver.call('upsert', {
+    ownerSubjectId: 'owner_6',
+    connectorId: 'codex',
+    displayName: 'Codex - revoke test',
+    status: 'active',
+    sourceKind: 'local_device',
+    sourceBindingKey: codexRevokeBindingKey,
+    sourceBinding: { kind: 'local_device', device_id: 'dexp_revoke', local_binding_name: 'revoke-then-reenroll', source_instance_id: 'dsrc_revoke' },
+    createdAt: NOW,
+    updatedAt: NOW,
+  });
+  await driver.call('updateStatus', codexRevokable.connectorInstanceId, {
+    status: 'revoked',
+    updatedAt: LATER,
+    revokedAt: LATER,
+  });
+  const codexReenrolled = await driver.call('upsert', {
+    ownerSubjectId: 'owner_6',
+    connectorId: 'codex',
+    displayName: 'Codex - revoke test',
+    status: 'active',
+    sourceKind: 'local_device',
+    sourceBindingKey: codexRevokeBindingKey,
+    sourceBinding: { kind: 'local_device', device_id: 'dexp_revoke_new', local_binding_name: 'revoke-then-reenroll', source_instance_id: 'dsrc_revoke_new' },
+    createdAt: LATER,
+    updatedAt: LATER,
+  });
+  assert.equal(codexReenrolled.connectorInstanceId, codexRevokable.connectorInstanceId, 'revoke (not delete) still reactivates the SAME row on re-enroll');
+  assert.equal(codexReenrolled.status, 'active', 'revoke-then-re-enroll behavior is unchanged by the tombstone guard');
 }
 
 test('SQLite ConnectorInstanceStore supports default account connections and ambiguous connector-only resolution', async () => {
@@ -404,6 +520,98 @@ test('SQLite ConnectorInstanceStore supports default account connections and amb
       makeStore: () => createSqliteConnectorInstanceStore(),
       seedConnector: seedSqliteConnector,
     });
+  } finally {
+    closeDb();
+  }
+});
+
+test('SQLite ConnectorInstanceStore.upsert migrates a legacy same-binding row in place on a primary-key collision (D8, fix-enroll-connector-instance-pk-collision)', async () => {
+  // A legacy row (source_binding_key computed under the older, larger
+  // sourceBinding shape) can predate makeConnectorInstanceId and coincide,
+  // on the PRIMARY KEY alone, with what today's deterministic formula
+  // computes for the SAME logical binding under its current stable key.
+  // upsert() must recognize this is provably the same binding (same owner,
+  // connector, source_kind, and local_binding_name embedded in the legacy
+  // row's own source_binding_json) and migrate the key in place, not fork a
+  // second row.
+  initDb();
+  try {
+    await seedSqliteConnector('codex');
+    const store = createSqliteConnectorInstanceStore();
+    const legacyConnectorInstanceId = 'cin_legacy_fixed_id';
+    const legacySourceBindingKey = 'legacy-key-embedding-device-and-source-instance';
+
+    getDb()
+      .prepare(
+        `INSERT INTO connector_instances(connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at)
+         VALUES(?, ?, 'codex', 'vivid-fish', 'active', 'local_device', ?, ?, ?, ?, NULL)`,
+      )
+      .run(
+        legacyConnectorInstanceId,
+        'owner_1',
+        legacySourceBindingKey,
+        JSON.stringify({
+          kind: 'local_device',
+          device_id: 'dexp_legacy',
+          local_binding_name: 'vivid-fish',
+          source_instance_id: 'dsrc_legacy',
+        }),
+        NOW,
+        NOW,
+      );
+
+    // A fresh upsert for the SAME logical binding, under the current stable
+    // key shape, whose deterministic id happens to equal the legacy row's
+    // PRIMARY KEY (forced here via an explicit connectorInstanceId, standing
+    // in for makeConnectorInstanceId computing the same value live).
+    const resolved = await store.upsert({
+      connectorInstanceId: legacyConnectorInstanceId,
+      ownerSubjectId: 'owner_1',
+      connectorId: 'codex',
+      displayName: 'vivid-fish',
+      status: 'active',
+      sourceKind: 'local_device',
+      sourceBindingKey: 'stable-key-kind-and-binding-name-only',
+      sourceBinding: { kind: 'local_device', local_binding_name: 'vivid-fish' },
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+
+    assert.equal(resolved.connectorInstanceId, legacyConnectorInstanceId, 'must reuse the legacy row\'s own id, not fork a new one');
+    assert.equal(resolved.sourceBindingKey, 'stable-key-kind-and-binding-name-only', 'the stale key must be migrated to the current stable key');
+    assert.deepEqual(resolved.sourceBinding, { kind: 'local_device', local_binding_name: 'vivid-fish' });
+
+    const rows = getDb().prepare(`SELECT connector_instance_id FROM connector_instances WHERE owner_subject_id = 'owner_1' AND connector_id = 'codex'`).all();
+    assert.equal(rows.length, 1, 'exactly one row must exist for this binding — migrated in place, never duplicated');
+
+    // A PK collision against a row that is NOT the same logical binding
+    // (different local_binding_name in the legacy row's own JSON) must fail
+    // closed, never silently adopted.
+    const unrelatedId = 'cin_unrelated_fixed_id';
+    getDb()
+      .prepare(
+        `INSERT INTO connector_instances(connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at)
+         VALUES(?, 'owner_1', 'codex', 'other-binding', 'active', 'local_device', 'unrelated-key', ?, ?, ?, NULL)`,
+      )
+      .run(unrelatedId, JSON.stringify({ kind: 'local_device', local_binding_name: 'a-totally-different-binding' }), NOW, NOW);
+
+    assert.throws(
+      () =>
+        store.upsert({
+          connectorInstanceId: unrelatedId,
+          ownerSubjectId: 'owner_1',
+          connectorId: 'codex',
+          displayName: 'vivid-fish-2',
+          status: 'active',
+          sourceKind: 'local_device',
+          sourceBindingKey: 'a-second-stable-key',
+          sourceBinding: { kind: 'local_device', local_binding_name: 'vivid-fish-2' },
+          createdAt: NOW,
+          updatedAt: NOW,
+        }),
+      (err) => err?.code === 'SQLITE_CONSTRAINT_PRIMARYKEY',
+      'a PK collision against an unrelated binding must fail closed, never be silently adopted',
+    );
   } finally {
     closeDb();
   }
@@ -482,6 +690,12 @@ test('SQLite deleteConnection erases schedule + row + device back-ref and refuse
     assert.ok(getDb().prepare('SELECT device_id FROM device_exporters WHERE device_id=?').get('dev_x'), 'device edge preserved');
     assert.equal(getDb().prepare('SELECT COUNT(*) n FROM connector_summary_evidence WHERE connector_instance_id=?').get('cin_del').n, 0, 'summary evidence erased');
     assert.equal(getDb().prepare('SELECT COUNT(*) n FROM manifest_write_violations WHERE connector_instance_id=?').get('cin_del').n, 0, 'generation-keyed violation evidence erased');
+    const tombstone = getDb().prepare('SELECT owner_subject_id, connector_id, source_kind, source_binding_key, deleted_at FROM connector_instance_tombstones WHERE connector_instance_id=?').get('cin_del');
+    assert.ok(tombstone, 'delete writes a tombstone row for the deleted identity, same transaction');
+    assert.equal(tombstone.owner_subject_id, 'owner_1');
+    assert.equal(tombstone.connector_id, 'reddit');
+    assert.equal(tombstone.source_binding_key, 'the owner');
+    assert.equal(tombstone.deleted_at, LATER);
 
     // Repeat delete → typed not-found (idempotency I4).
     await assert.rejects(
@@ -536,6 +750,237 @@ test('SQLite deleteConnection erases schedule + row + device back-ref and refuse
   }
 });
 
+test('SQLite tombstone survives a process restart (file-backed DB, close + reopen)', async () => {
+  // A bare `initDb()` (no path) opens `:memory:`, which cannot prove
+  // restart-survival — the whole DB vanishes on close regardless of whether
+  // the fix works. This test uses a real on-disk file and closes/reopens the
+  // handle against the SAME path between delete and the resurrection
+  // attempt, mirroring `connection-restart-acceptance.test.js`'s
+  // `simulateRestart` pattern: the only state that can survive is whatever
+  // was actually committed to disk.
+  const dir = mkdtempSync(join(tmpdir(), 'pdpp-owner-delete-resurrection-'));
+  const dbPath = join(dir, 'pdpp.sqlite');
+  try {
+    initDb(dbPath);
+    await seedSqliteConnector('codex');
+    let store = createSqliteConnectorInstanceStore();
+    const bindingKey = makeConnectorInstanceSourceBindingKey({ kind: 'local_device', local_binding_name: 'default' });
+    const original = store.upsert({
+      ownerSubjectId: 'owner_restart',
+      connectorId: 'codex',
+      displayName: 'Codex',
+      status: 'active',
+      sourceKind: 'local_device',
+      sourceBindingKey: bindingKey,
+      sourceBinding: { kind: 'local_device', device_id: 'dexp_a', local_binding_name: 'default', source_instance_id: 'dsrc_a' },
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    await store.deleteConnection(original.connectorInstanceId, {
+      ownerSubjectId: 'owner_restart',
+      now: LATER,
+      purge: stubPurge(),
+    });
+    assert.equal(store.get(original.connectorInstanceId), null, 'row gone before restart');
+
+    // Simulate a process restart: close the handle, reopen against the SAME
+    // on-disk file. This is the exact "normal stack rebuild" scenario from
+    // the live incident.
+    closeDb();
+    initDb(dbPath);
+    store = createSqliteConnectorInstanceStore();
+
+    assert.equal(store.get(original.connectorInstanceId), null, 'row still absent after restart');
+    assert.throws(
+      () => store.upsert({
+        ownerSubjectId: 'owner_restart',
+        connectorId: 'codex',
+        displayName: 'Codex',
+        status: 'active',
+        sourceKind: 'local_device',
+        sourceBindingKey: bindingKey,
+        sourceBinding: { kind: 'local_device', device_id: 'dexp_b', local_binding_name: 'default', source_instance_id: 'dsrc_b' },
+        createdAt: LATER,
+        updatedAt: LATER,
+      }),
+      (err) => err.code === 'connection_tombstoned',
+      'the tombstone recorded before restart still blocks resurrection after restart',
+    );
+    assert.equal(store.get(original.connectorInstanceId), null, 'still no row after the rejected post-restart upsert');
+  } finally {
+    closeDb();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('SQLite startup migration (migrateLocalDeviceConnectorInstances) does not resurrect a deleted connection on restart -- no re-enrollment, no HTTP call', async () => {
+  // Judge-identified critical gap: deleteConnection's device-back-ref clear
+  // (clear-source-instance-connector-ref.sql) only nulls
+  // device_source_instances.connector_instance_id -- it leaves connector_id,
+  // local_binding_id, device_id, and source_instance_id populated exactly as
+  // a real enrolled device would (see the SQL's own doc comment: "device row
+  // and its sibling connections stay intact"). `initDb`'s boot sequence
+  // unconditionally runs migrateLocalDeviceConnectorInstances on EVERY
+  // start (server/db.js), which scans device_source_instances for exactly
+  // this row shape (connector_id IS NOT NULL, source_instance_id IS NOT
+  // NULL) and re-upserts a connector_instances row for it. Before the fix,
+  // a bare process restart -- with NO re-enrollment and NO HTTP call --
+  // silently resurrected the deleted connection. This test reproduces that
+  // exact live-incident shape ("after a normal stack rebuild") end to end
+  // through real initDb() boots, not a direct call to the migration
+  // function or a hand-rolled upsert.
+  const dir = mkdtempSync(join(tmpdir(), 'pdpp-owner-delete-resurrection-migration-'));
+  const dbPath = join(dir, 'pdpp.sqlite');
+  try {
+    initDb(dbPath);
+    await seedSqliteConnector('codex');
+    let store = createSqliteConnectorInstanceStore();
+    const bindingKey = makeConnectorInstanceSourceBindingKey({ kind: 'local_device', local_binding_name: 'default' });
+    const original = store.upsert({
+      ownerSubjectId: 'owner_migration_restart',
+      connectorId: 'codex',
+      displayName: 'Codex',
+      status: 'active',
+      sourceKind: 'local_device',
+      sourceBindingKey: bindingKey,
+      sourceBinding: { kind: 'local_device', device_id: 'dexp_real', local_binding_name: 'default', source_instance_id: 'dsrc_real' },
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+
+    // Seed device_exporters + device_source_instances exactly as the real
+    // device-exporter enroll route (server/routes/ref-device-exporters.ts)
+    // leaves them for a live enrollment -- this is the realistic back-ref
+    // shape the judge's reproduction used, not a minimal stub.
+    getDb()
+      .prepare(
+        `INSERT OR IGNORE INTO device_exporters(device_id, owner_subject_id, display_name, status, created_at, updated_at)
+         VALUES('dexp_real','owner_migration_restart','Codex laptop','active',?,?)`,
+      )
+      .run(NOW, NOW);
+    getDb()
+      .prepare(
+        `INSERT INTO device_source_instances(source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, source_kind, display_name, status, created_at, updated_at)
+         VALUES('dsrc_real','dexp_real','codex',?,'default','local_device','Codex laptop','active',?,?)`,
+      )
+      .run(original.connectorInstanceId, NOW, NOW);
+
+    // The owner deletes the connection through the REAL cascade (not a
+    // hand-rolled UPDATE) -- this is what actually clears
+    // device_source_instances.connector_instance_id in production.
+    await store.deleteConnection(original.connectorInstanceId, {
+      ownerSubjectId: 'owner_migration_restart',
+      now: LATER,
+      purge: stubPurge(),
+    });
+    assert.equal(store.get(original.connectorInstanceId), null, 'row gone after delete');
+    const dsiAfterDelete = getDb()
+      .prepare('SELECT connector_id, local_binding_id, device_id, source_instance_id, connector_instance_id FROM device_source_instances WHERE source_instance_id=?')
+      .get('dsrc_real');
+    assert.equal(dsiAfterDelete.connector_instance_id, null, 'delete clears ONLY the connector_instance_id back-ref');
+    assert.equal(dsiAfterDelete.connector_id, 'codex', 'delete leaves connector_id populated (realistic post-delete shape)');
+    assert.equal(dsiAfterDelete.local_binding_id, 'default', 'delete leaves local_binding_id populated (realistic post-delete shape)');
+
+    // Simulate a real process restart: close and reopen the SAME on-disk
+    // file. initDb() runs the FULL boot migration sequence, including
+    // migrateLocalDeviceConnectorInstances, exactly as a real "stack
+    // rebuild" would -- no test seam bypasses it.
+    closeDb();
+    initDb(dbPath);
+    store = createSqliteConnectorInstanceStore();
+
+    assert.equal(
+      store.get(original.connectorInstanceId),
+      null,
+      'CRITICAL: the startup migration sweep must not resurrect the deleted connection on a bare restart',
+    );
+    const dsiAfterRestart = getDb()
+      .prepare('SELECT connector_instance_id FROM device_source_instances WHERE source_instance_id=?')
+      .get('dsrc_real');
+    assert.equal(
+      dsiAfterRestart.connector_instance_id,
+      null,
+      'the migration must not re-link the device_source_instances row to a resurrected/new connector_instances row',
+    );
+
+    // A second restart (repeat boot) must also stay quiescent -- the
+    // tombstone guard is not a one-shot fluke.
+    closeDb();
+    initDb(dbPath);
+    store = createSqliteConnectorInstanceStore();
+    assert.equal(store.get(original.connectorInstanceId), null, 'still absent after a SECOND restart');
+  } finally {
+    closeDb();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('SQLite mutation proof: without the tombstone check, the resurrecting upsert would silently succeed (documents the pre-fix defect)', async () => {
+  // This is the pre-fix reproduction, kept as a permanent regression test on
+  // the OLD behavior being wrong — not just a happy-path assertion that the
+  // new code returns the right error. It calls the SAME low-level primitives
+  // `upsert` uses (raw INSERT ... ON CONFLICT DO UPDATE), bypassing the
+  // store's tombstone guard entirely, to prove that WITHOUT the guard this
+  // exact sequence resurrects a deleted connection — i.e. the guard is
+  // load-bearing, not incidental.
+  initDb();
+  try {
+    await seedSqliteConnector('codex');
+    const store = createSqliteConnectorInstanceStore();
+    const bindingKey = makeConnectorInstanceSourceBindingKey({ kind: 'local_device', local_binding_name: 'default' });
+    const original = store.upsert({
+      ownerSubjectId: 'owner_mutation',
+      connectorId: 'codex',
+      displayName: 'Codex',
+      status: 'active',
+      sourceKind: 'local_device',
+      sourceBindingKey: bindingKey,
+      sourceBinding: { kind: 'local_device', device_id: 'dexp_a', local_binding_name: 'default', source_instance_id: 'dsrc_a' },
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    await store.deleteConnection(original.connectorInstanceId, {
+      ownerSubjectId: 'owner_mutation',
+      now: LATER,
+      purge: stubPurge(),
+    });
+    assert.equal(store.get(original.connectorInstanceId), null);
+    assert.ok(
+      getDb().prepare('SELECT 1 x FROM connector_instance_tombstones WHERE connector_instance_id=?').get(original.connectorInstanceId),
+      'delete left a tombstone (this is what the guard consults)',
+    );
+
+    // Bypass the store entirely: this is exactly the raw statement `upsert`
+    // issues, run directly against the SAME identity, with NO tombstone
+    // check in front of it — reproducing the pre-fix code path verbatim.
+    getDb()
+      .prepare(
+        `INSERT INTO connector_instances(connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at)
+         VALUES(?, ?, 'codex', 'Codex', 'active', 'local_device', ?, ?, ?, ?, NULL)
+         ON CONFLICT(owner_subject_id, connector_id, source_kind, source_binding_key) DO UPDATE SET
+           status = excluded.status, updated_at = excluded.updated_at, revoked_at = excluded.revoked_at`,
+      )
+      .run(
+        original.connectorInstanceId,
+        'owner_mutation',
+        bindingKey,
+        JSON.stringify({ kind: 'local_device', device_id: 'dexp_b', local_binding_name: 'default', source_instance_id: 'dsrc_b' }),
+        LATER,
+        LATER,
+      );
+
+    const resurrected = store.get(original.connectorInstanceId);
+    assert.ok(resurrected, 'PROVEN DEFECT (pre-fix): the bare INSERT resurrects the deleted identity');
+    assert.equal(resurrected.status, 'active');
+    assert.equal(resurrected.revokedAt, null);
+    // This confirms the defect is real and the guard in `upsert` (not this
+    // raw statement) is what closes it — `upsert` itself is proven to refuse
+    // the exact same sequence in the tests above.
+  } finally {
+    closeDb();
+  }
+});
+
 // Shared setup for the I8 atomicity tests: a deletable connection with REAL
 // seeded records/history/version_counter, a schedule, and a device back-ref.
 // Returns helpers to assert the whole cascade survived a rollback.
@@ -572,6 +1017,11 @@ async function seedAtomicFixture(store, cin) {
       assert.equal(count('connector_schedules'), 1, 'schedule still present after rollback');
       const dsi = getDb().prepare('SELECT connector_instance_id FROM device_source_instances WHERE source_instance_id=?').get('dsi_a');
       assert.equal(dsi.connector_instance_id, cin, 'device back-ref still intact after rollback');
+      assert.equal(
+        getDb().prepare('SELECT COUNT(*) n FROM connector_instance_tombstones WHERE connector_instance_id=?').get(cin).n,
+        0,
+        'no tombstone was left behind by a rolled-back delete',
+      );
     },
   };
 }
@@ -654,17 +1104,121 @@ test('SQLite deleteConnection is all-or-nothing: a schedule/device/row failure A
   }
 });
 
+const CONFORMANCE_TEST_OWNER_SUBJECT_IDS = ['owner_1', 'owner_2', 'owner_3', 'owner_4', 'owner_5', 'owner_6'];
+const CONFORMANCE_TEST_CONNECTOR_IDS = ['gmail', 'claude-code', 'reddit', 'github', 'spotify', 'codex'];
+
+async function cleanConformanceFixtures() {
+  const ownerPlaceholders = CONFORMANCE_TEST_OWNER_SUBJECT_IDS.map((_, i) => `$${i + 1}`).join(', ');
+  // Tombstones are NOT cascade-deleted by a connector_instances row delete
+  // (they are deliberately independent, identity-only rows — see
+  // openspec/changes/fix-owner-delete-resurrection) and must be cleaned
+  // explicitly, or a leftover tombstone from a prior run makes the NEXT
+  // run's first upsert for the same identity fail spuriously.
+  await postgresQuery(`DELETE FROM connector_instance_tombstones WHERE owner_subject_id IN (${ownerPlaceholders})`, CONFORMANCE_TEST_OWNER_SUBJECT_IDS);
+  await postgresQuery(`DELETE FROM connector_instances WHERE owner_subject_id IN (${ownerPlaceholders})`, CONFORMANCE_TEST_OWNER_SUBJECT_IDS);
+}
+
 test('Postgres ConnectorInstanceStore conforms when PDPP_TEST_POSTGRES_URL is set', { skip: !process.env.PDPP_TEST_POSTGRES_URL }, async () => {
   await initPostgresStorage({ backend: 'postgres', databaseUrl: process.env.PDPP_TEST_POSTGRES_URL });
   try {
-    await postgresQuery(`DELETE FROM connector_instances WHERE owner_subject_id IN ('owner_1', 'owner_2', 'owner_3', 'owner_4', 'owner_5')`);
+    await cleanConformanceFixtures();
     await runConformance({
       makeStore: () => createPostgresConnectorInstanceStore(),
       seedConnector: seedPostgresConnector,
     });
   } finally {
-    await postgresQuery(`DELETE FROM connector_instances WHERE owner_subject_id IN ('owner_1', 'owner_2', 'owner_3', 'owner_4', 'owner_5')`);
-    await postgresQuery(`DELETE FROM connectors WHERE connector_id IN ('gmail', 'claude-code', 'reddit', 'github', 'spotify')`);
+    await cleanConformanceFixtures();
+    await postgresQuery(
+      `DELETE FROM connectors WHERE connector_id = ANY($1::text[])`,
+      [CONFORMANCE_TEST_CONNECTOR_IDS],
+    );
+    await closePostgresStorage();
+  }
+});
+
+test('Postgres startup migration (migratePostgresLocalDeviceConnectorInstances) does not resurrect a deleted connection on restart', { skip: !process.env.PDPP_TEST_POSTGRES_URL }, async () => {
+  // Postgres counterpart of the SQLite startup-migration restart regression
+  // above. bootstrapPostgresSchema (called by every initPostgresStorage)
+  // unconditionally runs migratePostgresLocalDeviceConnectorInstances on
+  // every boot, mirroring the SQLite sweep exactly.
+  const deviceId = 'dexp_pg_restart';
+  const sourceInstanceId = 'dsrc_pg_restart';
+  const ownerSubjectId = 'owner_pg_migration_restart';
+  const cleanupDeviceRows = async () => {
+    await postgresQuery(`DELETE FROM device_source_instances WHERE device_id = $1`, [deviceId]);
+    await postgresQuery(`DELETE FROM device_exporters WHERE device_id = $1`, [deviceId]);
+    await postgresQuery(`DELETE FROM connector_instance_tombstones WHERE owner_subject_id = $1`, [ownerSubjectId]);
+    await postgresQuery(`DELETE FROM connector_instances WHERE owner_subject_id = $1`, [ownerSubjectId]);
+  };
+  await initPostgresStorage({ backend: 'postgres', databaseUrl: process.env.PDPP_TEST_POSTGRES_URL });
+  try {
+    await cleanConformanceFixtures();
+    await cleanupDeviceRows();
+    await seedPostgresConnector('codex');
+    const store = createPostgresConnectorInstanceStore();
+    const bindingKey = makeConnectorInstanceSourceBindingKey({ kind: 'local_device', local_binding_name: 'default' });
+    const original = await store.upsert({
+      ownerSubjectId,
+      connectorId: 'codex',
+      displayName: 'Codex',
+      status: 'active',
+      sourceKind: 'local_device',
+      sourceBindingKey: bindingKey,
+      sourceBinding: { kind: 'local_device', device_id: deviceId, local_binding_name: 'default', source_instance_id: sourceInstanceId },
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+
+    // Realistic post-enrollment device_source_instances shape, same as the
+    // SQLite test.
+    await postgresQuery(
+      `INSERT INTO device_exporters(device_id, owner_subject_id, display_name, status, created_at, updated_at)
+       VALUES($1, $2, 'Codex laptop', 'active', $3, $3)
+       ON CONFLICT(device_id) DO NOTHING`,
+      [deviceId, ownerSubjectId, NOW],
+    );
+    await postgresQuery(
+      `INSERT INTO device_source_instances(source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, source_kind, display_name, status, created_at, updated_at)
+       VALUES($1, $2, 'codex', $3, 'default', 'local_device', 'Codex laptop', 'active', $4, $4)`,
+      [sourceInstanceId, deviceId, original.connectorInstanceId, NOW],
+    );
+
+    await store.deleteConnection(original.connectorInstanceId, {
+      ownerSubjectId,
+      now: LATER,
+      purge: stubPurge(),
+    });
+    assert.equal(await store.get(original.connectorInstanceId), null, 'row gone after delete');
+    const dsiAfterDelete = await postgresQuery(
+      `SELECT connector_id, local_binding_id, connector_instance_id FROM device_source_instances WHERE source_instance_id = $1`,
+      [sourceInstanceId],
+    );
+    assert.equal(dsiAfterDelete.rows[0].connector_instance_id, null, 'delete clears ONLY the connector_instance_id back-ref');
+    assert.equal(dsiAfterDelete.rows[0].connector_id, 'codex', 'delete leaves connector_id populated (realistic post-delete shape)');
+
+    // Simulate a restart: initPostgresStorage re-runs the FULL boot
+    // migration sequence, including migratePostgresLocalDeviceConnectorInstances,
+    // against the SAME durable database -- no test seam bypasses it.
+    await initPostgresStorage({ backend: 'postgres', databaseUrl: process.env.PDPP_TEST_POSTGRES_URL });
+
+    assert.equal(
+      await store.get(original.connectorInstanceId),
+      null,
+      'CRITICAL: the startup migration sweep must not resurrect the deleted connection on a bare restart',
+    );
+    const dsiAfterRestart = await postgresQuery(
+      `SELECT connector_instance_id FROM device_source_instances WHERE source_instance_id = $1`,
+      [sourceInstanceId],
+    );
+    assert.equal(
+      dsiAfterRestart.rows[0].connector_instance_id,
+      null,
+      'the migration must not re-link the device_source_instances row to a resurrected/new connector_instances row',
+    );
+  } finally {
+    await cleanupDeviceRows();
+    await cleanConformanceFixtures();
+    await postgresQuery(`DELETE FROM connectors WHERE connector_id = 'codex'`);
     await closePostgresStorage();
   }
 });

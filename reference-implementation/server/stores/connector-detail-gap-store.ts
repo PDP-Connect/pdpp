@@ -25,6 +25,13 @@ interface DetailGap {
   discovered_run_id: string | null;
   last_run_id: string | null;
   recovered_run_id: string | null;
+  // CAS recovery lease (see claimPendingGaps/releaseLeasedGaps): the run-owned
+  // token that gates every attempt/outcome transition while a gap is served
+  // in_progress. Null when the gap is not currently leased.
+  lease_run_id: string | null;
+  lease_id: string | null;
+  lease_attempted: boolean;
+  lease_expires_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -54,6 +61,10 @@ interface DetailGapRow {
   discovered_run_id: string | null;
   last_run_id: string | null;
   recovered_run_id: string | null;
+  lease_run_id: string | null;
+  lease_id: string | null;
+  lease_attempted: number;
+  lease_expires_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -158,6 +169,7 @@ interface CountByStream {
 }
 
 import { execDynamicSqlAcknowledged, iterateDynamicSqlAcknowledged } from '../../lib/db.ts';
+import { DEFAULT_QUARANTINE_POLICY } from '../../runtime/recovery-quarantine.ts';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from '../owner-auth.ts';
 import { getStorageBackendKind, isPostgresStorageBackend, postgresQuery } from '../postgres-storage.js';
 import { makeDefaultAccountConnectorInstanceId } from './connector-instance-store.ts';
@@ -171,6 +183,22 @@ const MAX_OBJECT_KEYS = 40;
 const MAX_DEPTH = 5;
 const PENDING_GAP_ROTATION_WINDOW_SECONDS = 15 * 60;
 const PENDING_GAP_MAX_AGE_BUCKETS = 8;
+// A row's own `attempt_count` term in the selection rank is clamped at the
+// quarantine no-progress threshold. The age bonus is capped at
+// `PENDING_GAP_MAX_AGE_BUCKETS`, so without this clamp a row served past the
+// threshold keeps climbing `attempt_count` on every re-defer and its rank
+// gets strictly worse forever — permanently sinking it behind the rest of
+// the backlog. Once starved that way it is never selected again, so it can
+// never reach `maybeQuarantineGap` (runtime/recovery-quarantine.ts) either,
+// which only evaluates a row when it IS selected and re-defers. Clamping the
+// attempt_count term at the SAME threshold quarantine uses means a row can
+// never rank worse than a fresh threshold-attempt row: once it ages back to
+// the front (the same mechanism that already rescues old rows from a
+// fresh-arrival flood), it is selected once more and either recovers or
+// crosses the quarantine threshold and terminalizes. This only ever raises
+// (never lowers) the effective rank of a row already past its no-progress
+// budget — ordering for every row under the threshold is unaffected.
+const PENDING_GAP_ATTEMPT_RANK_CLAMP = DEFAULT_QUARANTINE_POLICY.maxNoProgressAttempts;
 const SAFE_ROUTE_TEMPLATE_KEY_PATTERN = /^(endpoint_route|route_template)$/i;
 const SAFE_ROUTE_TEMPLATE_PATTERN = /^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS) \/[A-Za-z0-9._~!$&'()*+,;=:@/%{}-]+$/;
 
@@ -385,6 +413,10 @@ function rowToGap(row: DetailGapRow | null): DetailGap | null {
     discovered_run_id: nullableGapRowValue(row.discovered_run_id),
     last_run_id: nullableGapRowValue(row.last_run_id),
     recovered_run_id: nullableGapRowValue(row.recovered_run_id),
+    lease_run_id: nullableGapRowValue(row.lease_run_id),
+    lease_id: nullableGapRowValue(row.lease_id),
+    lease_attempted: Number(row.lease_attempted || 0) === 1,
+    lease_expires_at: nullableGapRowValue(row.lease_expires_at),
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -456,7 +488,7 @@ function pendingGapOrderBySql(isPostgres: boolean): string {
   if (isPostgres) {
     return `
         (
-          attempt_count - LEAST(
+          LEAST(attempt_count, ${PENDING_GAP_ATTEMPT_RANK_CLAMP}) - LEAST(
             ${PENDING_GAP_MAX_AGE_BUCKETS},
             COALESCE(
               FLOOR(EXTRACT(EPOCH FROM ($4::timestamptz - COALESCE(NULLIF(last_attempt_at, ''), created_at)::timestamptz)) / ${PENDING_GAP_ROTATION_WINDOW_SECONDS}),
@@ -470,7 +502,7 @@ function pendingGapOrderBySql(isPostgres: boolean): string {
   }
   return `
         (
-          attempt_count - MIN(
+          MIN(attempt_count, ${PENDING_GAP_ATTEMPT_RANK_CLAMP}) - MIN(
             ${PENDING_GAP_MAX_AGE_BUCKETS},
             COALESCE(
               CAST((unixepoch(?) - unixepoch(COALESCE(NULLIF(last_attempt_at, ''), created_at))) / ${PENDING_GAP_ROTATION_WINDOW_SECONDS} AS INTEGER),
@@ -523,6 +555,22 @@ function normalizeGapStatusMutation(gapId: string, status: string, options: Mark
     lastErrorJson: encodeJson(sanitizeDetailGapMetadata(options.lastError ?? null)),
     runId: nonEmptyString(options.runId),
   };
+}
+
+interface DetailGapLease {
+  gapId: string;
+  leaseId: string;
+  runId: string;
+}
+
+function normalizeLease(lease: { gapId?: unknown; leaseId?: unknown; runId?: unknown } | null | undefined): DetailGapLease {
+  const gapId = nonEmptyString(lease?.gapId);
+  const runId = nonEmptyString(lease?.runId);
+  const leaseId = nonEmptyString(lease?.leaseId);
+  if (!gapId || !runId || !leaseId) {
+    throw new Error('detail-gap lease requires gapId, runId, and leaseId');
+  }
+  return { gapId, runId, leaseId };
 }
 
 function requeueReasonForQuarantinedGap(gap: DetailGap): string {
@@ -928,17 +976,133 @@ export function createSqliteConnectorDetailGapStore() {
       return rowToGap(firstSqliteRow('SELECT * FROM connector_detail_gaps WHERE gap_id = ? LIMIT 1', [id]));
     },
 
-    // Reset in_progress gaps from prior runs (different runId, same scope) back
-    // to pending so crash leftovers become retryable. Never touches recovered gaps.
-    async reclaimStrandedInProgressGaps({ connectorId, connectorInstanceId, grantId, currentRunId }: {
+    // Leasing is not an attempt. Every claimed gap moves pending → in_progress
+    // under a run-owned lease id via a CAS UPDATE, so a stale/concurrent claim
+    // can never take a row another run already owns.
+    async claimPendingGaps(gapIds: readonly (string | null | undefined)[], { runId, leaseId, leaseExpiresAt }: {
+      leaseExpiresAt?: string | null;
+      leaseId?: string | null;
+      runId?: string | null;
+    } = {}): Promise<string[]> {
+      const owner = normalizeLease({ gapId: 'claim-owner', runId, leaseId });
+      const expiresAt = nonEmptyString(leaseExpiresAt);
+      if (!expiresAt) throw new Error('detail-gap lease requires leaseExpiresAt');
+      const claimedGapIds: string[] = [];
+      for (const gapId of gapIds || []) {
+        const id = nonEmptyString(gapId);
+        if (!id) continue;
+        const result = execDynamicSqlAcknowledged(`
+          UPDATE connector_detail_gaps
+          SET status = 'in_progress', lease_run_id = ?, lease_id = ?, lease_attempted = 0,
+              lease_expires_at = ?, updated_at = ?
+          WHERE gap_id = ? AND status = 'pending'
+        `, [owner.runId, owner.leaseId, expiresAt, nowIso(), id]);
+        if (Number(result.changes || 0) === 1) claimedGapIds.push(id);
+      }
+      return claimedGapIds;
+    },
+
+    async markLeasedGapAttempt(lease: { gapId?: unknown; leaseId?: unknown; runId?: unknown }): Promise<DetailGap | null> {
+      const owner = normalizeLease(lease);
+      const now = nowIso();
+      const result = execDynamicSqlAcknowledged(`
+        UPDATE connector_detail_gaps
+        SET attempt_count = attempt_count + CASE WHEN lease_attempted = 0 THEN 1 ELSE 0 END,
+            last_attempt_at = CASE WHEN lease_attempted = 0 THEN ? ELSE last_attempt_at END,
+            lease_attempted = 1, updated_at = ?
+        WHERE gap_id = ? AND status = 'in_progress'
+          AND lease_run_id = ? AND lease_id = ?
+      `, [now, now, owner.gapId, owner.runId, owner.leaseId]);
+      if (Number(result.changes || 0) !== 1) return null;
+      return rowToGap(firstSqliteRow('SELECT * FROM connector_detail_gaps WHERE gap_id = ? LIMIT 1', [owner.gapId]));
+    },
+
+    async settleLeasedGapRecovered(lease: { gapId?: unknown; leaseId?: unknown; runId?: unknown }): Promise<DetailGap | null> {
+      const owner = normalizeLease(lease);
+      const now = nowIso();
+      const result = execDynamicSqlAcknowledged(`
+        UPDATE connector_detail_gaps
+        SET status = 'recovered', recovered_run_id = ?, last_run_id = ?,
+            attempt_count = attempt_count + CASE WHEN lease_attempted = 0 THEN 1 ELSE 0 END,
+            last_attempt_at = CASE WHEN lease_attempted = 0 THEN ? ELSE last_attempt_at END,
+            lease_run_id = NULL, lease_id = NULL, lease_attempted = 0, lease_expires_at = NULL,
+            updated_at = ?
+        WHERE gap_id = ? AND status = 'in_progress'
+          AND lease_run_id = ? AND lease_id = ?
+      `, [owner.runId, owner.runId, now, now, owner.gapId, owner.runId, owner.leaseId]);
+      if (Number(result.changes || 0) !== 1) return null;
+      return rowToGap(firstSqliteRow('SELECT * FROM connector_detail_gaps WHERE gap_id = ? LIMIT 1', [owner.gapId]));
+    },
+
+    async settleLeasedGapPending(
+      lease: { gapId?: unknown; leaseId?: unknown; runId?: unknown },
+      input: UpsertGapInput
+    ): Promise<DetailGap | null> {
+      const owner = normalizeLease(lease);
+      const gap = normalizeGapInput(input);
+      const detailLocatorJson = encodeJson(gap.detailLocator);
+      const result = execDynamicSqlAcknowledged(`
+        UPDATE connector_detail_gaps
+        SET source_json = ?, detail_locator_json = ?, list_cursor_json = ?, scope_json = ?, reason = ?,
+            status = 'pending', next_attempt_after = ?, last_error_json = ?, last_run_id = ?,
+            attempt_count = attempt_count + CASE WHEN lease_attempted = 0 THEN 1 ELSE 0 END,
+            last_attempt_at = CASE WHEN lease_attempted = 0 THEN ? ELSE last_attempt_at END,
+            lease_run_id = NULL, lease_id = NULL, lease_attempted = 0, lease_expires_at = NULL,
+            updated_at = ?
+        WHERE gap_id = ? AND status = 'in_progress'
+          AND lease_run_id = ? AND lease_id = ?
+      `, [
+        encodeJson(gap.source), detailLocatorJson, encodeJson(gap.listCursor), encodeJson(gap.scope), gap.reason,
+        gap.nextAttemptAfter, encodeJson(gap.lastError), gap.lastRunId, gap.now, gap.now,
+        owner.gapId, owner.runId, owner.leaseId,
+      ]);
+      if (Number(result.changes || 0) !== 1) return null;
+      return rowToGap(firstSqliteRow('SELECT * FROM connector_detail_gaps WHERE gap_id = ? LIMIT 1', [owner.gapId]));
+    },
+
+    async releaseLeasedGaps(leases: readonly { gapId?: unknown; leaseId?: unknown; runId?: unknown }[]): Promise<{
+      attemptedUnsettled: number;
+      lost: number;
+      released: number;
+    }> {
+      let released = 0;
+      let lost = 0;
+      let attemptedUnsettled = 0;
+      for (const lease of leases || []) {
+        const owner = normalizeLease(lease);
+        const row = firstSqliteRow(`
+          SELECT lease_attempted FROM connector_detail_gaps
+          WHERE gap_id = ? AND status = 'in_progress' AND lease_run_id = ? AND lease_id = ?
+        `, [owner.gapId, owner.runId, owner.leaseId]) as unknown as { lease_attempted?: number } | null;
+        if (!row) { lost += 1; continue; }
+        const result = execDynamicSqlAcknowledged(`
+          UPDATE connector_detail_gaps
+          SET status = 'pending', lease_run_id = NULL, lease_id = NULL, lease_attempted = 0,
+              lease_expires_at = NULL, updated_at = ?
+          WHERE gap_id = ? AND status = 'in_progress' AND lease_run_id = ? AND lease_id = ?
+        `, [nowIso(), owner.gapId, owner.runId, owner.leaseId]);
+        if (Number(result.changes || 0) === 1) {
+          released += 1;
+          attemptedUnsettled += Number(row.lease_attempted || 0) === 1 ? 1 : 0;
+        } else {
+          lost += 1;
+        }
+      }
+      return { released, lost, attemptedUnsettled };
+    },
+
+    // Reclaim only an expired owner lease. A different live run is not evidence
+    // of a crash and must never be stolen merely because its run id differs.
+    async reclaimStrandedInProgressGaps({ connectorId, connectorInstanceId, grantId }: {
       connectorId: string;
       connectorInstanceId?: string | null;
+      currentRunId?: string;
       grantId?: string | null;
-      currentRunId: string;
     }): Promise<void> {
       const cii = nonEmptyString(connectorInstanceId) || defaultConnectorInstanceId(connectorId);
       const now = nowIso();
-      // REVIEWED-DYNAMIC: bulk status reset for stranded in_progress gaps from prior runs.
+      // REVIEWED-DYNAMIC: bulk status reset for stranded in_progress gaps whose
+      // owner lease has expired.
       execDynamicSqlAcknowledged(`
         UPDATE connector_detail_gaps
         SET status = 'pending', updated_at = ?
@@ -946,23 +1110,8 @@ export function createSqliteConnectorDetailGapStore() {
           AND connector_id = ?
           AND (? IS NULL OR grant_id = ?)
           AND status = 'in_progress'
-          AND (last_run_id IS NULL OR last_run_id != ?)
-      `, [now, cii, connectorId, grantId ?? null, grantId ?? null, currentRunId]);
-    },
-
-    // Reset still-in_progress gaps served by this run (by gap id) back to pending.
-    // Called in run cleanup/finally. Does not decrement attempt_count.
-    async resetServedInProgressGaps(gapIds: string[] | null | undefined): Promise<void> {
-      if (!gapIds || !gapIds.length) return;
-      const now = nowIso();
-      const placeholders = gapIds.map(() => '?').join(', ');
-      // REVIEWED-DYNAMIC: bulk reset of specific in_progress gap ids served this run.
-      execDynamicSqlAcknowledged(`
-        UPDATE connector_detail_gaps
-        SET status = 'pending', updated_at = ?
-        WHERE gap_id IN (${placeholders})
-          AND status = 'in_progress'
-      `, [now, ...gapIds]);
+          AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?
+      `, [now, cii, connectorId, grantId ?? null, grantId ?? null, now]);
     },
 
     async requeueQuarantinedTerminalGapsForConnectorInstance(
@@ -1184,11 +1333,127 @@ export function createPostgresConnectorDetailGapStore() {
       return result.rows[0] ? rowToGap(result.rows[0]) : null;
     },
 
-    async reclaimStrandedInProgressGaps({ connectorId, connectorInstanceId, grantId, currentRunId }: {
+    // Leasing is not an attempt. Every claimed gap moves pending → in_progress
+    // under a run-owned lease id via a CAS UPDATE, so a stale/concurrent claim
+    // can never take a row another run already owns.
+    async claimPendingGaps(gapIds: readonly (string | null | undefined)[], { runId, leaseId, leaseExpiresAt }: {
+      leaseExpiresAt?: string | null;
+      leaseId?: string | null;
+      runId?: string | null;
+    } = {}): Promise<string[]> {
+      const owner = normalizeLease({ gapId: 'claim-owner', runId, leaseId });
+      const expiresAt = nonEmptyString(leaseExpiresAt);
+      if (!expiresAt) throw new Error('detail-gap lease requires leaseExpiresAt');
+      const claimedGapIds: string[] = [];
+      for (const gapId of gapIds || []) {
+        const id = nonEmptyString(gapId);
+        if (!id) continue;
+        const result = await postgresQuery(`
+          UPDATE connector_detail_gaps
+          SET status = 'in_progress', lease_run_id = $1, lease_id = $2, lease_attempted = 0,
+              lease_expires_at = $3, updated_at = $4
+          WHERE gap_id = $5 AND status = 'pending'
+          RETURNING gap_id
+        `, [owner.runId, owner.leaseId, expiresAt, nowIso(), id]);
+        if (result.rows[0]?.gap_id) claimedGapIds.push(result.rows[0].gap_id);
+      }
+      return claimedGapIds;
+    },
+
+    async markLeasedGapAttempt(lease: { gapId?: unknown; leaseId?: unknown; runId?: unknown }): Promise<DetailGap | null> {
+      const owner = normalizeLease(lease);
+      const now = nowIso();
+      const result = await postgresQuery(`
+        UPDATE connector_detail_gaps
+        SET attempt_count = attempt_count + CASE WHEN lease_attempted = 0 THEN 1 ELSE 0 END,
+            last_attempt_at = CASE WHEN lease_attempted = 0 THEN $1 ELSE last_attempt_at END,
+            lease_attempted = 1, updated_at = $1
+        WHERE gap_id = $2 AND status = 'in_progress' AND lease_run_id = $3 AND lease_id = $4
+        RETURNING *
+      `, [now, owner.gapId, owner.runId, owner.leaseId]);
+      return result.rows[0] ? rowToGap(result.rows[0]) : null;
+    },
+
+    async settleLeasedGapRecovered(lease: { gapId?: unknown; leaseId?: unknown; runId?: unknown }): Promise<DetailGap | null> {
+      const owner = normalizeLease(lease);
+      const now = nowIso();
+      const result = await postgresQuery(`
+        UPDATE connector_detail_gaps
+        SET status = 'recovered', recovered_run_id = $1, last_run_id = $1,
+            attempt_count = attempt_count + CASE WHEN lease_attempted = 0 THEN 1 ELSE 0 END,
+            last_attempt_at = CASE WHEN lease_attempted = 0 THEN $2 ELSE last_attempt_at END,
+            lease_run_id = NULL, lease_id = NULL, lease_attempted = 0, lease_expires_at = NULL,
+            updated_at = $2
+        WHERE gap_id = $3 AND status = 'in_progress' AND lease_run_id = $1 AND lease_id = $4
+        RETURNING *
+      `, [owner.runId, now, owner.gapId, owner.leaseId]);
+      return result.rows[0] ? rowToGap(result.rows[0]) : null;
+    },
+
+    async settleLeasedGapPending(
+      lease: { gapId?: unknown; leaseId?: unknown; runId?: unknown },
+      input: UpsertGapInput
+    ): Promise<DetailGap | null> {
+      const owner = normalizeLease(lease);
+      const gap = normalizeGapInput(input);
+      const result = await postgresQuery(`
+        UPDATE connector_detail_gaps
+        SET source_json = $1::jsonb, detail_locator_json = $2::jsonb, list_cursor_json = $3::jsonb,
+            scope_json = $4::jsonb, reason = $5, status = 'pending', next_attempt_after = $6,
+            last_error_json = $7::jsonb, last_run_id = $8,
+            attempt_count = attempt_count + CASE WHEN lease_attempted = 0 THEN 1 ELSE 0 END,
+            last_attempt_at = CASE WHEN lease_attempted = 0 THEN $9 ELSE last_attempt_at END,
+            lease_run_id = NULL, lease_id = NULL, lease_attempted = 0, lease_expires_at = NULL,
+            updated_at = $9
+        WHERE gap_id = $10 AND status = 'in_progress' AND lease_run_id = $11 AND lease_id = $12
+        RETURNING *
+      `, [
+        JSON.stringify(gap.source), encodeJson(gap.detailLocator), encodeJson(gap.listCursor), JSON.stringify(gap.scope),
+        gap.reason, gap.nextAttemptAfter, encodeJson(gap.lastError), gap.lastRunId, gap.now,
+        owner.gapId, owner.runId, owner.leaseId,
+      ]);
+      return result.rows[0] ? rowToGap(result.rows[0]) : null;
+    },
+
+    async releaseLeasedGaps(leases: readonly { gapId?: unknown; leaseId?: unknown; runId?: unknown }[]): Promise<{
+      attemptedUnsettled: number;
+      lost: number;
+      released: number;
+    }> {
+      let released = 0;
+      let lost = 0;
+      let attemptedUnsettled = 0;
+      for (const lease of leases || []) {
+        const owner = normalizeLease(lease);
+        const result = await postgresQuery(`
+          WITH leased AS (
+            SELECT gap_id, lease_attempted
+            FROM connector_detail_gaps
+            WHERE gap_id = $2 AND status = 'in_progress' AND lease_run_id = $3 AND lease_id = $4
+            FOR UPDATE
+          )
+          UPDATE connector_detail_gaps
+          SET status = 'pending', lease_run_id = NULL, lease_id = NULL, lease_attempted = 0,
+              lease_expires_at = NULL, updated_at = $1
+          FROM leased
+          WHERE connector_detail_gaps.gap_id = leased.gap_id
+          RETURNING leased.lease_attempted
+        `, [nowIso(), owner.gapId, owner.runId, owner.leaseId]);
+        const row = result.rows[0];
+        if (!row) { lost += 1; continue; }
+        released += 1;
+        attemptedUnsettled += Number(row.lease_attempted || 0) === 1 ? 1 : 0;
+      }
+      return { released, lost, attemptedUnsettled };
+    },
+
+    // Reclaim only an expired owner lease. A different live run is not evidence
+    // of a crash and must never be stolen merely because its run id differs.
+    async reclaimStrandedInProgressGaps({ connectorId, connectorInstanceId, grantId }: {
       connectorId: string;
       connectorInstanceId?: string | null;
+      currentRunId?: string;
       grantId?: string | null;
-      currentRunId: string;
     }): Promise<void> {
       const cii = nonEmptyString(connectorInstanceId) || defaultConnectorInstanceId(connectorId);
       const now = nowIso();
@@ -1199,19 +1464,8 @@ export function createPostgresConnectorDetailGapStore() {
           AND connector_id = $3
           AND ($4::text IS NULL OR grant_id = $4)
           AND status = 'in_progress'
-          AND (last_run_id IS NULL OR last_run_id != $5)
-      `, [now, cii, connectorId, grantId ?? null, currentRunId]);
-    },
-
-    async resetServedInProgressGaps(gapIds: string[] | null | undefined): Promise<void> {
-      if (!gapIds || !gapIds.length) return;
-      const now = nowIso();
-      await postgresQuery(`
-        UPDATE connector_detail_gaps
-        SET status = 'pending', updated_at = $1
-        WHERE gap_id = ANY($2::text[])
-          AND status = 'in_progress'
-      `, [now, gapIds]);
+          AND lease_expires_at IS NOT NULL AND lease_expires_at <= $5
+      `, [now, cii, connectorId, grantId ?? null, now]);
     },
 
     async requeueQuarantinedTerminalGapsForConnectorInstance(

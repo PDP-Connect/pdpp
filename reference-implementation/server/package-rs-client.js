@@ -34,7 +34,7 @@
  * Spec: openspec/changes/add-hosted-mcp-grant-packages/
  */
 
-import { RsClient } from '../../packages/mcp-server/src/rs-client.js';
+import { RsClient } from '../../packages/mcp-server/src/rs-client.ts';
 import { schemaSourceOptions } from '../operations/rs-schema-get/compact-view.ts';
 
 const PACKAGE_INTROSPECTION_PATH = null;

@@ -269,7 +269,7 @@ test('CAS-loser: a rejected stale write is a true no-op — no partial/torn colu
   });
 });
 
-test('fold-contract upgrade: a version-2 writer cannot overwrite a version-3 terminal map even at the same checkpoint', async () => {
+test('fold-contract upgrade: a version-2 writer cannot overwrite a version-4 terminal map even at the same checkpoint', async () => {
   await withTempDb(async () => {
     seedInstance('cin_v3_owner', 'gmail');
     await rebuildConnectorSummaryEvidence();
@@ -281,12 +281,12 @@ test('fold-contract upgrade: a version-2 writer cannot overwrite a version-3 ter
     });
     await foldConnectorSummaryStreamFacts();
     const version3Row = evidenceRow('cin_v3_owner');
-    assert.equal(Number(version3Row.stream_facts_fold_version), 3, 'premise: the new fold contract owns the durable row');
+    assert.equal(Number(version3Row.stream_facts_fold_version), 4, 'premise: the new fold contract owns the durable row');
 
     // This is precisely the CAS a v2 binary would issue if it had read the
-    // same source high-water before the v3 deploy committed its replay. The
-    // checkpoint alone cannot distinguish them, so the fold-version baseline
-    // must reject the old writer as well.
+    // same source high-water before the current deploy committed its replay.
+    // The checkpoint alone cannot distinguish them, so the fold-version
+    // baseline must reject the old writer as well.
     const oldBinaryWriteAccepted = await __testOnlyUpdateStreamFactsCasWrite({
       connectorInstanceId: 'cin_v3_owner',
       factsJson: JSON.stringify({ messages: { fact: { stream: 'messages', collected: 2 }, run_id: 'v2', event_seq: seq, evidence_as_of: null } }),
@@ -295,8 +295,8 @@ test('fold-contract upgrade: a version-2 writer cannot overwrite a version-3 ter
       baselineFoldVersion: 2,
       foldVersion: 2,
     });
-    assert.equal(oldBinaryWriteAccepted, false, 'the version-2 CAS baseline cannot match a version-3 row');
-    assert.deepEqual(evidenceRow('cin_v3_owner'), version3Row, 'the rejected old-binary write leaves the v3 map byte-for-byte intact');
+    assert.equal(oldBinaryWriteAccepted, false, 'the version-2 CAS baseline cannot match a version-4 row');
+    assert.deepEqual(evidenceRow('cin_v3_owner'), version3Row, 'the rejected old-binary write leaves the current-version map byte-for-byte intact');
   });
 });
 

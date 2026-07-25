@@ -34,6 +34,7 @@ import {
   executeRefConnectorsList,
   type RefConnectorsRuntimeStatus,
 } from "../../operations/ref-connectors-list/index.ts";
+import type { FleetHealthVerdict } from "../fleet-health.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 import { assertRemoteControlSupported } from "./_route-contract.ts";
 
@@ -161,6 +162,7 @@ export interface MountRefConnectorsContext {
   ensureRequestId(res: RouteResponse): string;
   getConnectorDetail(connectorId: string): Promise<Record<string, unknown> | null>;
   getConnectorSummaryForRoute(routeId: string): Promise<unknown | null> | unknown | null;
+  getFleetHealthVerdict(): Promise<FleetHealthVerdict> | FleetHealthVerdict;
   getOwnerSubjectId(req: unknown): string;
   getRuntimeStatus(): RefConnectorsRuntimeStatus;
   getSchedule(connectorId: string, options: { connectorInstanceId?: string | null }): Promise<unknown> | unknown;
@@ -356,6 +358,22 @@ export function mountRefConnectorsList(app: AppLike, ctx: MountRefConnectorsCont
           getRuntimeStatus: ctx.getRuntimeStatus,
         });
         res.json(envelope);
+      } catch (err) {
+        ctx.handleError(res, err);
+      }
+    }
+  );
+}
+
+/** Owner-only fleet verdict; the console consumes this server composition. */
+export function mountRefFleetHealth(app: AppLike, ctx: MountRefConnectorsContext): void {
+  app.get(
+    "/_ref/fleet-health",
+    { contract: "refGetFleetHealth" },
+    ctx.requireOwnerSession,
+    async (_req: RouteRequest, res: RouteResponse) => {
+      try {
+        res.json(await ctx.getFleetHealthVerdict());
       } catch (err) {
         ctx.handleError(res, err);
       }

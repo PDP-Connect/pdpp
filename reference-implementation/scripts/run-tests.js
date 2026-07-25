@@ -11,6 +11,10 @@ import { buildScrubbedTestEnv } from './test-env.js';
 import { storageProfileEnvironment } from './test-profile-env.js';
 import { accountingResultLine, repositoryPaths, structuredNodeSummary } from '../../scripts/test-accounting/receipt.mjs';
 import { RUN_AUTHORITY_SCHEMA } from '../../scripts/test-accounting/inventory.mjs';
+import {
+  dedicatedPostgresTestUrl,
+  isDedicatedPostgresTestDatabaseName,
+} from '../test/helpers/dedicated-postgres-test-url.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = dirname(__dirname);
@@ -43,6 +47,20 @@ if (accountingAuthority && (accountingAuthority.suite !== 'ri-default' || accoun
 if (accountingAuthority?.profile === 'postgres' && !process.env.PDPP_TEST_POSTGRES_URL) throw new Error('postgres profile requires PDPP_TEST_POSTGRES_URL');
 const selectedProfile = accountingAuthority?.profile ?? process.env.PDPP_TEST_PROFILE ?? 'memory-default';
 const requestedConcurrency = Number.parseInt(process.env.PDPP_TEST_CONCURRENCY || '', 10);
+const scrubbedBaseEnv = storageProfileEnvironment(selectedProfile, buildScrubbedTestEnv(process.env));
+const configuredPostgresTestUrl = scrubbedBaseEnv.PDPP_TEST_POSTGRES_URL;
+const dedicatedBasePostgresTestUrl = configuredPostgresTestUrl
+  ? dedicatedPostgresTestUrl(configuredPostgresTestUrl)
+  : undefined;
+
+// Validate before the runner derives its admin URL or opens a connection.
+// `pg` lets query parameters override connection-string authority and path,
+// so only the narrow helper contract may enter the real-Postgres lane.
+if (configuredPostgresTestUrl && !dedicatedBasePostgresTestUrl) {
+  throw new Error(
+    'PDPP_TEST_POSTGRES_URL must be a query- and fragment-free dedicated loopback PostgreSQL test URL',
+  );
+}
 
 // --- Per-file Postgres database isolation ---
 //
@@ -80,7 +98,11 @@ function deriveDbName(filePath) {
     .toLowerCase()
     .slice(0, 40);
   fileCounter += 1;
-  return `pdpp_test_${base}_${fileCounter}`;
+  const dbName = `pdpp_test_${base}_${fileCounter}`;
+  if (!isDedicatedPostgresTestDatabaseName(dbName)) {
+    throw new Error(`runner derived a database name outside the dedicated test contract: ${dbName}`);
+  }
+  return dbName;
 }
 
 // Per-file databases currently allocated. Tracked so that if the runner
@@ -156,8 +178,8 @@ async function allocateTestDb(filePath, baseUrl) {
 
 async function runNodeTest(filePath, extraArgs) {
   const startedAt = Date.now();
-  const baseEnv = storageProfileEnvironment(selectedProfile, buildScrubbedTestEnv(process.env));
-  const baseUrl = baseEnv.PDPP_TEST_POSTGRES_URL;
+  const baseEnv = scrubbedBaseEnv;
+  const baseUrl = dedicatedBasePostgresTestUrl;
 
   // Allocate a per-file DB when a base Postgres URL is configured.
   let allocation;

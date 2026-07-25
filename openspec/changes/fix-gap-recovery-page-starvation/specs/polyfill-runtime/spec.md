@@ -110,3 +110,105 @@ incremental UID walk.
 - **AND** `streamsToBackfill` does not include `attachments`
 - **THEN** the connector SHALL still run the historical attachment-backfill
   pass for the current run.
+
+### Requirement: Gmail served attachment recovery SHALL emit one aggregate-only terminal outcome
+
+When Gmail processes valid served attachment detail gaps, it SHALL enrich its
+existing final served-recovery `PROGRESS` summary with exactly one
+`attachment_recovery_outcome` object. The object SHALL contain only the fixed
+discriminator and non-negative integer aggregates `served`,
+`metadata_lookups`, `attempted`, `admitted`, `admitted_bytes`, `recovered`,
+`lookup_miss`, `hydration_failed`, and `run_cap_deferred`. It SHALL NOT
+contain identifiers, locators, provider identities, content, or error text.
+Emitting this evidence SHALL NOT itself alter the recovery byte budget, lookup
+cap, scheduler, governor, retry behavior, or user-facing progress copy.
+
+#### Scenario: One terminal aggregate distinguishes the served recovery outcomes
+
+- **WHEN** Gmail completes a served attachment recovery pass
+- **THEN** it SHALL emit its existing terminal served-recovery `PROGRESS`
+  summary with exact aggregate counts for the served page
+- **AND** `run_cap_deferred` SHALL count every served gap left unadmitted when
+  the byte budget stops the ordered lane, including an untouched suffix
+- **AND** a count near the byte budget with `run_cap_deferred > 0` SHALL be
+  observable separately from the metadata lookup count, lookup misses, and
+  hydration failures.
+
+### Requirement: Gmail served attachment recovery SHALL use a bounded recovery-specific byte budget
+
+Gmail served attachment recovery SHALL use a known-byte positional prefix with
+a 4 MiB default budget. It SHALL accept an in-range positive integer from
+`PDPP_GMAIL_ATTACHMENT_RECOVERY_PAGE_BYTES`; when that variable is absent or
+invalid, it SHALL continue to honor the existing
+`PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES` override. Both values SHALL remain
+bounded to the established 256 KiB through 4 MiB range. Historical attachment
+backfill SHALL retain its independent 1 MiB default. The recovery budget SHALL
+not alter scheduler admission, generic recovery-governor policy, lookup cap,
+or attachment-size safety.
+
+#### Scenario: Default recovery batches the measured healthy shape
+
+- **WHEN** three served attachment gaps each resolve to an attachment of
+  1,889,782 bytes with no recovery or legacy byte-budget override
+- **THEN** the connector SHALL admit and hydrate the first two attachments
+- **AND** it SHALL report `admitted=2`, `admitted_bytes=3779564`,
+  `recovered=2`, and `run_cap_deferred=1`
+- **AND** it SHALL leave the third attachment unhydrated for a later run.
+
+#### Scenario: An existing backfill override remains a recovery safety setting
+
+- **WHEN** `PDPP_GMAIL_ATTACHMENT_RECOVERY_PAGE_BYTES` is absent and
+  `PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES` is a valid in-range value
+- **THEN** served attachment recovery SHALL use that legacy value
+- **AND** a valid recovery-specific value SHALL take precedence when both are
+  present.
+
+#### Scenario: An oversized first attachment still makes bounded progress
+
+- **WHEN** the first served attachment is larger than the 4 MiB recovery
+  budget
+- **THEN** the connector SHALL admit and attempt that one attachment
+- **AND** it SHALL not hydrate a following attachment solely because the first
+  attachment exceeded the budget.
+
+### Requirement: Gmail SHALL emit typed and unclassified aggregate hydration failure stages without changing recovery behavior
+
+Gmail's existing terminal served-attachment recovery `PROGRESS` summary SHALL
+include `attachment_hydration_failure_outcome` with exactly the fixed object
+discriminator and non-negative integer fields `imap_download_failed`,
+`blob_upload_transport_failed`, `blob_upload_http_4xx`,
+`blob_upload_http_5xx`, `blob_upload_invalid_response`, and
+`blob_upload_integrity_failed`, and `unclassified_failed`. The seven counters SHALL sum exactly to
+`attachment_recovery_outcome.hydration_failed`. Each failed hydration attempt
+SHALL increment exactly one stage. A failed hydration with no honest typed
+boundary stage SHALL increment `unclassified_failed`; it SHALL NOT be guessed
+as transport or another typed cause. `too_large` SHALL remain outside this
+outcome.
+
+The stage SHALL be derived from typed IMAP-download/source-stream and
+blob-uploader catch boundaries, not error-message matching. The object SHALL
+NOT contain a key, locator, filename, URL, message, body, raw HTTP status,
+credential, provider content, or any other field. This evidence SHALL NOT
+change retry, quarantine, terminal, admission, or owner-action behavior.
+
+#### Scenario: Typed stages preserve a re-failed recovery attempt
+
+- **WHEN** an admitted served attachment fails at one typed hydration boundary
+- **THEN** Gmail SHALL increment that boundary's one aggregate counter
+- **AND** it SHALL NOT emit `DETAIL_GAP_RECOVERED` or change the failed
+  attachment's existing retry behavior.
+
+#### Scenario: A successful or too-large attachment does not enter the stage outcome
+
+- **WHEN** an admitted served attachment hydrates successfully or is too large
+- **THEN** Gmail SHALL NOT increment any hydration failure-stage counter.
+
+#### Scenario: An unclassified blob failure preserves recovery behavior
+
+- **WHEN** an admitted served attachment's `uploadBlob` rejects with a plain
+  error that carries no typed failure stage
+- **THEN** Gmail SHALL complete the recovery pass and emit the failed
+  attachment's ordinary retryable detail-gap path
+- **AND** it SHALL NOT emit `DETAIL_GAP_RECOVERED`
+- **AND** it SHALL increment `hydration_failed` and `unclassified_failed` by
+  one while every typed stage remains unchanged.

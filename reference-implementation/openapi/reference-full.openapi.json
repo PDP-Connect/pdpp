@@ -12827,6 +12827,782 @@
         ]
       }
     },
+    "/_ref/fleet-health": {
+      "get": {
+        "operationId": "refGetFleetHealth",
+        "tags": [
+          "reference",
+          "connectors",
+          "owner"
+        ],
+        "summary": "Get the owner-only composed fleet-health verdict for configured connections.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "dimensions": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "active_work": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "connection_id": {
+                                "type": "string"
+                              },
+                              "connector_id": {
+                                "type": "string"
+                              },
+                              "connector_instance_id": {
+                                "type": "string"
+                              },
+                              "display_name": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "connection_id",
+                              "connector_id",
+                              "connector_instance_id",
+                              "display_name"
+                            ]
+                          }
+                        },
+                        "attention": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "needs_owner": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                  "connection_id": {
+                                    "type": "string"
+                                  },
+                                  "connector_id": {
+                                    "type": "string"
+                                  },
+                                  "connector_instance_id": {
+                                    "type": "string"
+                                  },
+                                  "display_name": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "connection_id",
+                                  "connector_id",
+                                  "connector_instance_id",
+                                  "display_name"
+                                ]
+                              }
+                            }
+                          },
+                          "required": [
+                            "needs_owner"
+                          ]
+                        },
+                        "coverage_audit": {
+                          "type": "string",
+                          "enum": [
+                            "fail",
+                            "inconclusive",
+                            "pass"
+                          ]
+                        },
+                        "freshness_advisories": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "connection_id": {
+                                "type": "string"
+                              },
+                              "connector_id": {
+                                "type": "string"
+                              },
+                              "connector_instance_id": {
+                                "type": "string"
+                              },
+                              "display_name": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "connection_id",
+                              "connector_id",
+                              "connector_instance_id",
+                              "display_name"
+                            ]
+                          }
+                        },
+                        "intentional_policy": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "manual": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                  "connection_id": {
+                                    "type": "string"
+                                  },
+                                  "connector_id": {
+                                    "type": "string"
+                                  },
+                                  "connector_instance_id": {
+                                    "type": "string"
+                                  },
+                                  "display_name": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "connection_id",
+                                  "connector_id",
+                                  "connector_instance_id",
+                                  "display_name"
+                                ]
+                              }
+                            },
+                            "paused": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                  "connection_id": {
+                                    "type": "string"
+                                  },
+                                  "connector_id": {
+                                    "type": "string"
+                                  },
+                                  "connector_instance_id": {
+                                    "type": "string"
+                                  },
+                                  "display_name": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "connection_id",
+                                  "connector_id",
+                                  "connector_instance_id",
+                                  "display_name"
+                                ]
+                              }
+                            }
+                          },
+                          "required": [
+                            "manual",
+                            "paused"
+                          ]
+                        },
+                        "recovery": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "retryable": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                  "connection_id": {
+                                    "type": "string"
+                                  },
+                                  "connector_id": {
+                                    "type": "string"
+                                  },
+                                  "connector_instance_id": {
+                                    "type": "string"
+                                  },
+                                  "display_name": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "connection_id",
+                                  "connector_id",
+                                  "connector_instance_id",
+                                  "display_name"
+                                ]
+                              }
+                            },
+                            "terminal": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                  "connection_id": {
+                                    "type": "string"
+                                  },
+                                  "connector_id": {
+                                    "type": "string"
+                                  },
+                                  "connector_instance_id": {
+                                    "type": "string"
+                                  },
+                                  "display_name": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "connection_id",
+                                  "connector_id",
+                                  "connector_instance_id",
+                                  "display_name"
+                                ]
+                              }
+                            }
+                          },
+                          "required": [
+                            "retryable",
+                            "terminal"
+                          ]
+                        },
+                        "runtime": {
+                          "type": "string",
+                          "enum": [
+                            "healthy",
+                            "unhealthy",
+                            "unknown"
+                          ]
+                        },
+                        "stalled_work": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "connection_id": {
+                                "type": "string"
+                              },
+                              "connector_id": {
+                                "type": "string"
+                              },
+                              "connector_instance_id": {
+                                "type": "string"
+                              },
+                              "display_name": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "connection_id",
+                              "connector_id",
+                              "connector_instance_id",
+                              "display_name"
+                            ]
+                          }
+                        },
+                        "system": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "degraded_or_broken": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                  "connection_id": {
+                                    "type": "string"
+                                  },
+                                  "connector_id": {
+                                    "type": "string"
+                                  },
+                                  "connector_instance_id": {
+                                    "type": "string"
+                                  },
+                                  "display_name": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "connection_id",
+                                  "connector_id",
+                                  "connector_instance_id",
+                                  "display_name"
+                                ]
+                              }
+                            }
+                          },
+                          "required": [
+                            "degraded_or_broken"
+                          ]
+                        },
+                        "unknown_evidence": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "connection_id": {
+                                "type": "string"
+                              },
+                              "connector_id": {
+                                "type": "string"
+                              },
+                              "connector_instance_id": {
+                                "type": "string"
+                              },
+                              "display_name": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "connection_id",
+                              "connector_id",
+                              "connector_instance_id",
+                              "display_name"
+                            ]
+                          }
+                        }
+                      },
+                      "required": [
+                        "active_work",
+                        "attention",
+                        "coverage_audit",
+                        "freshness_advisories",
+                        "intentional_policy",
+                        "recovery",
+                        "runtime",
+                        "stalled_work",
+                        "system",
+                        "unknown_evidence"
+                      ]
+                    },
+                    "fully_healthy": {
+                      "type": "boolean"
+                    },
+                    "scope": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "assessed": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "connection_id": {
+                                "type": "string"
+                              },
+                              "connector_id": {
+                                "type": "string"
+                              },
+                              "connector_instance_id": {
+                                "type": "string"
+                              },
+                              "display_name": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "connection_id",
+                              "connector_id",
+                              "connector_instance_id",
+                              "display_name"
+                            ]
+                          }
+                        },
+                        "configured": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "intentional_exclusions": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "connection_id": {
+                                "type": "string"
+                              },
+                              "connector_id": {
+                                "type": "string"
+                              },
+                              "connector_instance_id": {
+                                "type": "string"
+                              },
+                              "display_name": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "connection_id",
+                              "connector_id",
+                              "connector_instance_id",
+                              "display_name"
+                            ]
+                          }
+                        },
+                        "setup_pending": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "connection_id": {
+                                "type": "string"
+                              },
+                              "connector_id": {
+                                "type": "string"
+                              },
+                              "connector_instance_id": {
+                                "type": "string"
+                              },
+                              "display_name": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "connection_id",
+                              "connector_id",
+                              "connector_instance_id",
+                              "display_name"
+                            ]
+                          }
+                        },
+                        "unassessed": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "connection_id": {
+                                "type": "string"
+                              },
+                              "connector_id": {
+                                "type": "string"
+                              },
+                              "connector_instance_id": {
+                                "type": "string"
+                              },
+                              "display_name": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "connection_id",
+                              "connector_id",
+                              "connector_instance_id",
+                              "display_name"
+                            ]
+                          }
+                        }
+                      },
+                      "required": [
+                        "assessed",
+                        "configured",
+                        "intentional_exclusions",
+                        "setup_pending",
+                        "unassessed"
+                      ]
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "healthy",
+                        "healthy_with_advisories",
+                        "indeterminate",
+                        "unhealthy"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "dimensions",
+                    "fully_healthy",
+                    "scope",
+                    "state"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        },
+                        "resource_metadata": {
+                          "type": "string"
+                        },
+                        "next_step": {
+                          "type": "string"
+                        },
+                        "available_connections": {
+                          "type": "array",
+                          "items": {
+                            "$id": "pdpp/common/ErrorAvailableConnection",
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "connection_id": {
+                                "type": "string"
+                              },
+                              "connector_id": {
+                                "type": "string"
+                              },
+                              "connector_key": {
+                                "type": "string"
+                              },
+                              "display_name": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "label_status": {
+                                "type": "string",
+                                "enum": [
+                                  "owner_set",
+                                  "fallback"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "connection_id"
+                            ]
+                          }
+                        },
+                        "retry_with": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        },
+                        "resource_metadata": {
+                          "type": "string"
+                        },
+                        "next_step": {
+                          "type": "string"
+                        },
+                        "available_connections": {
+                          "type": "array",
+                          "items": {
+                            "$id": "pdpp/common/ErrorAvailableConnection",
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "connection_id": {
+                                "type": "string"
+                              },
+                              "connector_id": {
+                                "type": "string"
+                              },
+                              "connector_key": {
+                                "type": "string"
+                              },
+                              "display_name": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "label_status": {
+                                "type": "string",
+                                "enum": [
+                                  "owner_set",
+                                  "fallback"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "connection_id"
+                            ]
+                          }
+                        },
+                        "retry_with": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict (e.g. run_already_active)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        },
+                        "resource_metadata": {
+                          "type": "string"
+                        },
+                        "next_step": {
+                          "type": "string"
+                        },
+                        "available_connections": {
+                          "type": "array",
+                          "items": {
+                            "$id": "pdpp/common/ErrorAvailableConnection",
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "connection_id": {
+                                "type": "string"
+                              },
+                              "connector_id": {
+                                "type": "string"
+                              },
+                              "connector_key": {
+                                "type": "string"
+                              },
+                              "display_name": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "label_status": {
+                                "type": "string",
+                                "enum": [
+                                  "owner_set",
+                                  "fallback"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "connection_id"
+                            ]
+                          }
+                        },
+                        "retry_with": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/_ref/connectors/{connectorId}": {
       "get": {
         "operationId": "refGetConnector",
