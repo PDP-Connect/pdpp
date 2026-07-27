@@ -8,6 +8,8 @@ connector — is collected into a single queryable substrate.
 This repository holds the normative protocol specification, a forkable
 reference implementation, and supporting documentation.
 
+**Read the specification at [pdpp.dev](https://pdpp.dev).**
+
 ## Specification
 
 The protocol is defined by the `spec-*.md` files at the repository root. Not
