@@ -10,7 +10,6 @@ import { Writable } from "node:stream";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { Pool } from "pg";
-
 import { registerEphemeralOrigin, unregisterEphemeralOrigin } from "../../scripts/hermetic/guard.ts";
 import { COLLECTOR_PROTOCOL_VERSION } from "../server/collector-protocol.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
@@ -31,6 +30,7 @@ import {
   createPostgresDeviceExporterStore,
 } from "../server/stores/device-exporter-store.ts";
 import { dedicatedPostgresTestUrl } from "./helpers/dedicated-postgres-test-url.ts";
+import { withTemporaryPostgresDatabase } from "./helpers/postgres-temp-database.ts";
 
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 const DEDICATED_POSTGRES_URL = dedicatedPostgresTestUrl(POSTGRES_URL);
@@ -47,18 +47,6 @@ function tempDbName(): string {
   return `pdpp_device_ingest_${process.pid}_${Date.now()}_${tempCounter}`;
 }
 
-function databaseUrl(url: string, name: string): string {
-  const parsed = new URL(url);
-  parsed.pathname = `/${name}`;
-  return parsed.toString();
-}
-
-function adminUrl(url: string): string {
-  const parsed = new URL(url);
-  parsed.pathname = "/postgres";
-  return parsed.toString();
-}
-
 function requiredEnvironmentUrl(value: string | undefined, name: string): string {
   if (!value) {
     throw new Error(`${name} must be configured for the PostgreSQL proof`);
@@ -68,26 +56,11 @@ function requiredEnvironmentUrl(value: string | undefined, name: string): string
 
 async function withTempPostgres(fn: (url: string) => Promise<void>): Promise<void> {
   const postgresUrl = requiredEnvironmentUrl(POSTGRES_URL, "PDPP_TEST_POSTGRES_URL");
-  const admin = new Pool({ connectionString: adminUrl(postgresUrl) });
   const name = tempDbName();
-  await admin.query(`DROP DATABASE IF EXISTS "${name}"`);
-  await admin.query(`CREATE DATABASE "${name}"`);
-  const url = databaseUrl(postgresUrl, name);
-  try {
-    await fn(url);
-  } finally {
-    await closePostgresStorage().catch(() => undefined);
-    await admin
-      .query(
-        `SELECT pg_terminate_backend(pid)
-         FROM pg_stat_activity
-        WHERE datname = $1 AND pid <> pg_backend_pid()`,
-        [name]
-      )
-      .catch(() => undefined);
-    await admin.query(`DROP DATABASE IF EXISTS "${name}"`).catch(() => undefined);
-    await admin.end();
-  }
+  await withTemporaryPostgresDatabase(
+    { closeConnections: closePostgresStorage, connectionString: postgresUrl, databaseName: name },
+    fn
+  );
 }
 
 async function closeServer(server: Awaited<ReturnType<typeof startServer>> | null): Promise<void> {

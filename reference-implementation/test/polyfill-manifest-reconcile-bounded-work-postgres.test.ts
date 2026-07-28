@@ -31,7 +31,7 @@
  * pagination loop runs and issues real `records` queries.
  *
  * Target for local runs:
- *   docker run -d --name pg-pilot -p 55463:5432 \
+ *   docker run --rm -d --name pg-pilot -p 55463:5432 \
  *     -e POSTGRES_USER=pdpp -e POSTGRES_PASSWORD=pdpp \
  *     -e POSTGRES_DB=pdpp_pilot \
  *     pgvector/pgvector:pg16

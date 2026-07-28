@@ -35,6 +35,7 @@ import { closeDb, getDb, initDb } from "../server/db.ts";
 import { closePostgresStorage, initPostgresStorage, postgresQuery } from "../server/postgres-storage.ts";
 import { deleteAllRecordsForConnector, ingestRecord } from "../server/records.ts";
 import { dedicatedPostgresTestUrl } from "./helpers/dedicated-postgres-test-url.ts";
+import { withTemporaryPostgresDatabase } from "./helpers/postgres-temp-database.ts";
 
 const OWNER = "owner_local";
 const NOW = "2026-07-17T00:00:00.000Z";
@@ -107,18 +108,6 @@ async function seedInstancePostgres(connectorInstanceId: string, connectorId: st
   );
 }
 
-function databaseUrl(url: string, name: string): string {
-  const parsed = new URL(url);
-  parsed.pathname = `/${name}`;
-  return parsed.toString();
-}
-
-function adminUrl(url: string): string {
-  const parsed = new URL(url);
-  parsed.pathname = "/postgres";
-  return parsed.toString();
-}
-
 let uniquePgDb = 0;
 
 /**
@@ -130,26 +119,15 @@ let uniquePgDb = 0;
  */
 async function withTemporaryPostgres(fn: () => Promise<void>): Promise<void> {
   const dedicatedUrl = requireDedicatedPostgresUrl();
-  const pg = await import("pg");
-  const { Pool } = pg.default;
   uniquePgDb += 1;
-  const admin = new Pool({ connectionString: adminUrl(dedicatedUrl) });
   const database = `pdpp_summary_throughput_${process.pid}_${Date.now()}_${uniquePgDb}`;
-  await admin.query(`DROP DATABASE IF EXISTS "${database}"`);
-  await admin.query(`CREATE DATABASE "${database}"`);
-  try {
-    await initPostgresStorage({ backend: "postgres", databaseUrl: databaseUrl(dedicatedUrl, database) });
-    await fn();
-  } finally {
-    await closePostgresStorage().catch(() => undefined);
-    await admin
-      .query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()", [
-        database,
-      ])
-      .catch(() => undefined);
-    await admin.query(`DROP DATABASE IF EXISTS "${database}"`).catch(() => undefined);
-    await admin.end();
-  }
+  await withTemporaryPostgresDatabase(
+    { closeConnections: closePostgresStorage, connectionString: dedicatedUrl, databaseName: database },
+    async (databaseUrl) => {
+      await initPostgresStorage({ backend: "postgres", databaseUrl });
+      await fn();
+    }
+  );
 }
 
 function storageTargetFor(connectorId: string, connectorInstanceId: string) {

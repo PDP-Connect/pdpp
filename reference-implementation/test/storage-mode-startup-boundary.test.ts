@@ -31,12 +31,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { Pool } from "pg";
-
 import { getRegisteredClient } from "../server/auth.ts";
 import { closeDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
 import { closePostgresStorage, getStorageBackendKind } from "../server/postgres-storage.ts";
+import { withTemporaryPostgresDatabase } from "./helpers/postgres-temp-database.ts";
 
 const SEED_CLIENT = {
   client_id: "storage-boundary-smoke-client",
@@ -52,18 +51,6 @@ function tempPostgresDbName(): string {
   return `pdpp_storage_boundary_${process.pid}_${tempPostgresCounter}`;
 }
 
-function adminUrl(url: string): string {
-  const u = new URL(url);
-  u.pathname = "/postgres";
-  return u.toString();
-}
-
-function dbUrl(url: string, dbName: string): string {
-  const u = new URL(url);
-  u.pathname = `/${dbName}`;
-  return u.toString();
-}
-
 async function withTempPostgresDb(fn: (databaseUrl: string) => Promise<void>): Promise<void> {
   // Only ever invoked from the `else` branch below, which is itself gated on
   // `POSTGRES_URL` being set; this guard makes that invariant visible to the
@@ -71,35 +58,10 @@ async function withTempPostgresDb(fn: (databaseUrl: string) => Promise<void>): P
   if (!POSTGRES_URL) {
     throw new Error("withTempPostgresDb requires PDPP_TEST_POSTGRES_URL to be set");
   }
-  const admin = new Pool({ connectionString: adminUrl(POSTGRES_URL) });
-  const name = tempPostgresDbName();
-  try {
-    await admin.query(`DROP DATABASE IF EXISTS "${name}"`);
-    await admin.query(`CREATE DATABASE "${name}"`);
-    await fn(dbUrl(POSTGRES_URL, name));
-  } finally {
-    try {
-      await closePostgresStorage();
-    } catch {
-      // Cleanup is best-effort because the temporary database may not have booted.
-    }
-    try {
-      await admin.query(
-        `SELECT pg_terminate_backend(pid)
-           FROM pg_stat_activity
-          WHERE datname = $1 AND pid <> pg_backend_pid()`,
-        [name]
-      );
-    } catch {
-      // No active sessions is also a valid cleanup state.
-    }
-    try {
-      await admin.query(`DROP DATABASE IF EXISTS "${name}"`);
-    } catch {
-      // The database can already be absent after a failed create.
-    }
-    await admin.end();
-  }
+  await withTemporaryPostgresDatabase(
+    { closeConnections: closePostgresStorage, connectionString: POSTGRES_URL, databaseName: tempPostgresDbName() },
+    fn
+  );
 }
 
 async function withPostgresDatabaseUrl<T>(databaseUrl: string, fn: () => Promise<T>): Promise<T> {

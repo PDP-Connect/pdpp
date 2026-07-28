@@ -63,6 +63,7 @@ import { closePostgresStorage, postgresQuery } from "../server/postgres-storage.
 import { __setSqliteRecordSortBackfillPhaseHookForTest } from "../server/records.ts";
 import { __setDeviceIngestPhaseFaultHookForTest } from "../server/routes/ref-device-exporters.ts";
 import { dedicatedPostgresTestUrl } from "./helpers/dedicated-postgres-test-url.ts";
+import { withTemporaryPostgresDatabase } from "./helpers/postgres-temp-database.ts";
 
 const DEDICATED_POSTGRES_URL = dedicatedPostgresTestUrl(process.env.PDPP_TEST_POSTGRES_URL);
 const PROTOCOL_HEADERS = { "X-PDPP-Collector-Protocol": COLLECTOR_PROTOCOL_VERSION };
@@ -223,37 +224,16 @@ function deviceIngestUrl(asUrl: string, device: Record<string, unknown>): string
   return `${asUrl}/_ref/device-exporters/${encodeURIComponent(String(device.device_id))}/ingest-batches`;
 }
 
-function databaseUrl(url: string, name: string): string {
-  const parsed = new URL(url);
-  parsed.pathname = `/${name}`;
-  return parsed.toString();
-}
-
-function adminUrl(url: string): string {
-  const parsed = new URL(url);
-  parsed.pathname = "/postgres";
-  return parsed.toString();
-}
-
 async function withTemporaryPostgres(fn: (url: string) => Promise<void>) {
-  const pgModule = await import("pg");
-  const { Pool } = pgModule.default;
-  const admin = new Pool({ connectionString: adminUrl(DEDICATED_POSTGRES_URL ?? "") });
   const database = `pdpp_devbatch_summary_${process.pid}_${Date.now()}_${unique}`;
-  await admin.query(`DROP DATABASE IF EXISTS "${database}"`);
-  await admin.query(`CREATE DATABASE "${database}"`);
-  try {
-    await fn(databaseUrl(DEDICATED_POSTGRES_URL ?? "", database));
-  } finally {
-    await closePostgresStorage().catch(() => undefined);
-    await admin
-      .query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()", [
-        database,
-      ])
-      .catch(() => undefined);
-    await admin.query(`DROP DATABASE IF EXISTS "${database}"`).catch(() => undefined);
-    await admin.end();
-  }
+  await withTemporaryPostgresDatabase(
+    {
+      closeConnections: closePostgresStorage,
+      connectionString: DEDICATED_POSTGRES_URL ?? "",
+      databaseName: database,
+    },
+    fn
+  );
 }
 
 interface Driver {

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import type { Dirent } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { availableParallelism } from "node:os";
@@ -125,6 +126,7 @@ if (configuredPostgresTestUrl && !dedicatedBasePostgresTestUrl) {
 // requiring any changes to individual test files.
 
 let fileCounter = 0;
+const runnerId = randomBytes(4).toString("hex");
 
 const WINDOWS_PATH_SEPARATOR_PATTERN = /\\/g;
 const FILE_EXTENSION_SUFFIX_PATTERN = /\.[^.]+$/;
@@ -143,8 +145,8 @@ function adminUrlFromBase(baseUrl: string): string {
 }
 
 /**
- * Derive a short, safe DB name from the test file path and a monotonic
- * counter so concurrent workers never collide.
+ * Derive a short, safe DB name from the test file path, a per-run random ID,
+ * and a monotonic counter so concurrent runners and workers never collide.
  */
 function deriveDbName(filePath: string): string {
   // Strip directory and extension; keep only alphanumeric/underscore chars.
@@ -152,9 +154,9 @@ function deriveDbName(filePath: string): string {
     .replace(FILE_EXTENSION_SUFFIX_PATTERN, "")
     .replace(NON_DB_IDENTIFIER_CHAR_PATTERN, "_")
     .toLowerCase()
-    .slice(0, 40);
+    .slice(0, 38);
   fileCounter += 1;
-  const dbName = `pdpp_test_${base}_${fileCounter}`;
+  const dbName = `pdpp_test_${base}_${runnerId}_${fileCounter.toString(36)}`;
   if (!isDedicatedPostgresTestDatabaseName(dbName)) {
     throw new Error(`runner derived a database name outside the dedicated test contract: ${dbName}`);
   }
@@ -208,6 +210,7 @@ async function allocateTestDb(filePath: string, baseUrl: string): Promise<TestDb
   try {
     await client.connect();
     // Identifier is safe: deriveDbName produces only [a-z0-9_] chars.
+    await client.query(`DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`);
     await client.query(`CREATE DATABASE "${dbName}"`);
     await client.end();
   } catch (err) {
@@ -226,24 +229,30 @@ async function allocateTestDb(filePath: string, baseUrl: string): Promise<TestDb
   const testUrl = new URL(baseUrl);
   testUrl.pathname = `/${dbName}`;
 
+  let releasePromise: Promise<void> | undefined;
   const allocation: TestDbAllocation = {
-    release: async () => {
-      activeAllocations.delete(allocation);
+    release: () => {
+      if (releasePromise) return releasePromise;
+      releasePromise = (async () => {
       const drop = new pg.Client({ connectionString: adminUrl });
       try {
         await drop.connect();
-        await drop.query(`DROP DATABASE IF EXISTS "${dbName}"`);
+        await drop.query(`DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`);
         await drop.end();
+        activeAllocations.delete(allocation);
       } catch (err) {
         try {
           await drop.end();
         } catch {
           // Best-effort teardown after a failed connect/query.
         }
-        process.stderr.write(
-          `[run-tests] WARN: could not drop test DB ${dbName}: ${err instanceof Error ? err.message : String(err)}\n`
-        );
+        throw new Error(`[run-tests] could not drop test DB ${dbName}: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
       }
+      })().catch((error) => {
+        releasePromise = undefined;
+        throw error;
+      });
+      return releasePromise;
     },
     url: testUrl.toString(),
   };

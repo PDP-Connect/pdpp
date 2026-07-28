@@ -19,12 +19,12 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 // biome-ignore lint/correctness/noUnresolvedImports: localized test assertion preserves its explicit contract.
-import pg from "pg";
+import type pg from "pg";
 import { mergeEventRows, postgresListSpineCorrelations } from "../lib/postgres-spine.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
 import { closePostgresStorage, getPostgresPool, initPostgresStorage } from "../server/postgres-storage.ts";
+import { withTemporaryPostgresDatabase } from "./helpers/postgres-temp-database.ts";
 
-const { Pool } = pg;
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 type SpineEventRow = Parameters<typeof mergeEventRows>[0][number];
 
@@ -67,61 +67,22 @@ function tempDbName() {
   return `pdpp_spine_boot_${process.pid}_${tempCounter}`;
 }
 
-function adminUrl(url: string): string {
-  const u = new URL(url);
-  u.pathname = "/postgres";
-  return u.toString();
-}
-
-function dbUrl(url: string, dbName: string): string {
-  const u = new URL(url);
-  u.pathname = `/${dbName}`;
-  return u.toString();
-}
-
 async function withTempDb(fn: (url: string) => Promise<void>): Promise<void> {
   // withTempDb is only ever invoked from inside the `if (POSTGRES_URL)` gate
   // below, but that guard lives in a different function scope than this one,
   // so TS cannot narrow the module-level `POSTGRES_URL` here on its own.
   assert.ok(POSTGRES_URL, "withTempDb requires PDPP_TEST_POSTGRES_URL");
-  const admin = new Pool({ connectionString: adminUrl(POSTGRES_URL) });
-  const name = tempDbName();
-  try {
-    await admin.query(`DROP DATABASE IF EXISTS "${name}"`);
-    await admin.query(`CREATE DATABASE "${name}"`);
-  } catch (err) {
-    await admin.end();
-    throw err;
-  }
-  const url = dbUrl(POSTGRES_URL, name);
-  try {
-    await fn(url);
-  } finally {
-    try {
-      await closePostgresStorage();
-      // biome-ignore lint/suspicious/noEmptyBlockStatements: localized test assertion preserves its explicit contract.
-    } catch {}
-    // Terminate stragglers, then drop.
-    try {
-      await admin.query(
-        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()",
-        [name]
-      );
-      // biome-ignore lint/suspicious/noEmptyBlockStatements: localized test assertion preserves its explicit contract.
-    } catch {}
-    try {
-      await admin.query(`DROP DATABASE IF EXISTS "${name}"`);
-      // biome-ignore lint/suspicious/noEmptyBlockStatements: localized test assertion preserves its explicit contract.
-    } catch {}
-    await admin.end();
-  }
+  await withTemporaryPostgresDatabase(
+    { closeConnections: closePostgresStorage, connectionString: POSTGRES_URL, databaseName: tempDbName() },
+    fn
+  );
 }
 
 // Insert a minimal spine_events row with NULL source columns. `actorType`
 // 'runtime' + actorId makes the row resolvable (deriveSpineSource → connector);
 // any other actor_type with an empty payload is genuinely sourceless.
 async function insertEvent(
-  pool: InstanceType<typeof Pool>,
+  pool: pg.Pool,
   {
     eventId,
     actorType,
@@ -146,7 +107,7 @@ async function insertEvent(
   );
 }
 
-async function columnExists(pool: InstanceType<typeof Pool>, table: string, column: string): Promise<boolean> {
+async function columnExists(pool: pg.Pool, table: string, column: string): Promise<boolean> {
   const r = await pool.query(
     `SELECT 1 FROM information_schema.columns
       WHERE table_schema = current_schema() AND table_name = $1 AND column_name = $2`,
@@ -155,7 +116,7 @@ async function columnExists(pool: InstanceType<typeof Pool>, table: string, colu
   return (r.rowCount ?? 0) > 0;
 }
 
-async function indexExists(pool: InstanceType<typeof Pool>, name: string): Promise<boolean> {
+async function indexExists(pool: pg.Pool, name: string): Promise<boolean> {
   const r = await pool.query("SELECT 1 FROM pg_indexes WHERE indexname = $1", [name]);
   return (r.rowCount ?? 0) > 0;
 }
