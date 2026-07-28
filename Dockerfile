@@ -62,7 +62,7 @@ COPY reference-implementation/package.json reference-implementation/package.json
 # dependencies still need their approved install hooks before the runtime is
 # assembled; workspace outputs are built from the complete source stage below.
 RUN pnpm install --frozen-lockfile --ignore-scripts \
-  && pnpm rebuild better-sqlite3 esbuild onnxruntime-node protobufjs
+  && pnpm -r rebuild better-sqlite3 esbuild onnxruntime-node protobufjs
 
 FROM deps AS source
 
