@@ -55,7 +55,7 @@ jobs:
 
       - name: Fetch inventory baseline
         run: |
-          base_sha="$(node -p \"require('./test-accounting.manifest.json').inventory_base_sha\")"
+          base_sha="$(node -p 'require("./test-accounting.manifest.json").inventory_base_sha')"
           git fetch --no-tags origin "$base_sha"
           git merge-base --is-ancestor "$base_sha" HEAD
 

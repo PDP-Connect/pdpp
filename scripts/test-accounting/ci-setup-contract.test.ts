@@ -18,7 +18,7 @@ test("root pnpm config serializes workspace lifecycle children for every install
 
 test("inventory workflow explicitly fetches and verifies the manifest baseline", async () => {
   const workflow = await readFile(new URL(".github/workflows/test-accounting.yml", root), "utf8");
-  assert.match(workflow, /base_sha=.*inventory_base_sha/);
+  assert.match(workflow, /node -p 'require\("\.\/test-accounting\.manifest\.json"\)\.inventory_base_sha'/);
   assert.match(workflow, /git fetch --no-tags origin "\$base_sha"/);
   assert.match(workflow, /git merge-base --is-ancestor "\$base_sha" HEAD/);
 });
