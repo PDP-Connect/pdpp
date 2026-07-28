@@ -55,7 +55,8 @@ const LIST_PAGE = `${HERE}page.tsx`;
 // account -> transactions to an unfiltered list.
 const LIST_DEFINES_FILTER_RE = /FILTER_PARAM_RE = \/\^filter\\\[\(\.\+\)\\\]\$\//;
 const LIST_PARSES_FILTERS = /const exactFilters = readExactFilters\(/;
-const LIST_PASSES_FILTERS_TO_QUERY = /Object\.keys\(exactFilters\)\.length > 0 \? \{ filter: exactFilters \} : \{\}/;
+const LIST_PASSES_FILTERS_TO_QUERY = /filter: filterParamForQuery\(filtered, exactFilters\)/;
+const LIST_FILTER_HELPER_GUARDS_EMPTY_FILTERS = /return filtered \? filters : undefined/;
 
 // Byte-faithful replica of the page's `readExactFilters` + `FILTER_PARAM_RE`
 // (page.tsx). The real function is a non-exported local in an RSC module that
@@ -148,6 +149,7 @@ test("WIRING list page passes the parsed filters to queryRecords only when prese
   assert.match(
     src,
     LIST_PASSES_FILTERS_TO_QUERY,
-    "list page must spread { filter: exactFilters } into queryRecords only when at least one filter is present"
+    "list page must pass exactFilters to queryRecords through the empty-filter guard"
   );
+  assert.match(src, LIST_FILTER_HELPER_GUARDS_EMPTY_FILTERS, "empty filter maps must not be sent to queryRecords");
 });

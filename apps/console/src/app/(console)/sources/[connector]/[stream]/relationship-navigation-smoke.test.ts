@@ -77,9 +77,9 @@ interface ChaseManifest {
 const DETAIL_RESOLVES_META_BACKLINK = /findParentBackLink\(/;
 const DETAIL_RESOLVES_CHILD_BACKLINK = /childHasOneBackLinksFromManifest\(/;
 const DETAIL_MERGES_BACKLINKS = /mergeParentBackLinks\(/;
-const DETAIL_RENDERS_BACKLINKS = /allParentBackLinks\.map\(/;
+const DETAIL_RENDERS_BACKLINKS = /parentBackLinks: allParentBackLinks/;
 const DETAIL_BUILDS_REVERSE_LINKS = /reverseChildListLinksFromManifest\(/;
-const DETAIL_RENDERS_REVERSE_LINKS = /reverseChildListLinks\.map\(/;
+const DETAIL_RENDERS_REVERSE_LINKS = /reverseChildListLinks,/;
 const LIST_COMPUTES_LINK_FIELDS = /childHasOneLinkFields\(/;
 const LIST_RESOLVES_CELL_BACKLINK = /childHasOneBackLinkForField\(/;
 const LIST_APPLIES_CELL_LINK = /parentLinkForCell\(/;

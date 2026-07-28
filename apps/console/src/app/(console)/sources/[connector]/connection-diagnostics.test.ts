@@ -30,6 +30,7 @@ import { fileURLToPath } from "node:url";
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const DIAG_FILE = `${HERE}connection-diagnostics.tsx`;
 const PAGE_FILE = `${HERE}page.tsx`;
+const SOURCES_VIEW_MODEL_FILE = fileURLToPath(new URL("../sources-view-model.ts", import.meta.url));
 
 const PROJECTION_MISSING_TESTID = /data-testid="diagnostics-projection-missing"/;
 const PROJECTION_UNAVAILABLE_COPY = /Projection evidence unavailable/;
@@ -477,7 +478,8 @@ test("connector detail page mounts <ConnectionDiagnostics>", async () => {
 const PAGE_DERIVES_DEVICE_LABELS = /summarizeSourceInstancesForHeader/;
 const PAGE_RENDERS_DEVICE_LABELS_TESTID = /data-testid="records-device-labels"/;
 const PAGE_DERIVES_PENDING_ON_DEVICES = /summarizeSourceInstancesForHeader[\s\S]{0,200}pendingOnDevices/;
-const PAGE_RENDERS_PENDING_ON_DEVICES = /pending on devices/;
+const PAGE_THREADS_PENDING_ON_DEVICES = /formatConnectorHeaderCount\(\{[\s\S]{0,200}pendingOnDevices/;
+const HEADER_COUNT_RENDERS_PENDING_ON_DEVICES = /pending on devices/;
 
 test("connector detail page surfaces device labels for bound source instances", async () => {
   const page = await readFile(PAGE_FILE, "utf8");
@@ -488,7 +490,9 @@ test("connector detail page surfaces device labels for bound source instances", 
 test("connector detail page surfaces pending-on-devices delta when source instances report queued work", async () => {
   const page = await readFile(PAGE_FILE, "utf8");
   assert.match(page, PAGE_DERIVES_PENDING_ON_DEVICES);
-  assert.match(page, PAGE_RENDERS_PENDING_ON_DEVICES);
+  assert.match(page, PAGE_THREADS_PENDING_ON_DEVICES);
+  const viewModel = await readFile(SOURCES_VIEW_MODEL_FILE, "utf8");
+  assert.match(viewModel, HEADER_COUNT_RENDERS_PENDING_ON_DEVICES);
 });
 
 // Local-collector recovery (connection-lifecycle objective #2): a stalled

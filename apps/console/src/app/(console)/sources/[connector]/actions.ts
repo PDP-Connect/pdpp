@@ -100,7 +100,7 @@ export async function renameConnectionAction(
     await setConnectionDisplayName(connectionId, trimmed);
     revalidatePath("/sources");
     revalidatePath(`/sources/${encodeURIComponent(connectionId)}`);
-    return { display_name: trimmed, ok: true };
+    return { ok: true, display_name: trimmed };
   } catch (err) {
     return { message: errorMessage(err), ok: false };
   }
