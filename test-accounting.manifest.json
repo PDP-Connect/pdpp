@@ -1,6 +1,6 @@
 {
   "schema": "pdpp.test-accounting/v3",
-  "inventory_base_sha": "055be42b9d871e547ea96578373f06e5b02c1764",
+  "inventory_base_sha": "cbd8a0140f822e38b67ab438f0562f6f75dffa70",
   "suites": [
     {
       "id": "ri-default",
