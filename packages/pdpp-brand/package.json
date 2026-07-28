@@ -13,8 +13,8 @@
     "./record-format": "./record-format.ts"
   },
   "dependencies": {
-    "@fontsource-variable/geist": "^5.2.8",
-    "@fontsource-variable/jetbrains-mono": "^5.2.8"
+    "@fontsource-variable/geist": "^5.3.0",
+    "@fontsource-variable/jetbrains-mono": "^5.3.0"
   },
   "license": "Apache-2.0"
 }
