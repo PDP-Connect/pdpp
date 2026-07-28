@@ -85,7 +85,7 @@ try {
     run("npm", ["pack", "--json", "--ignore-scripts", "--pack-destination", packRoot], {
       cwd: packageRoot,
     })
-  )[0];
+  );
   const tarball = join(packRoot, packResult.filename);
 
   run("npm", ["init", "-y"], { cwd: consumerRoot });
