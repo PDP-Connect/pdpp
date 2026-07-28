@@ -101,7 +101,7 @@ export async function cancelRunAction(runId: string): Promise<CancelRunActionRes
     result = await cancelRun(trimmed);
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
-      return { kind: "unreachable", message: err.message, ok: false };
+      return { ok: false, kind: "unreachable", message: err.message };
     }
     return { kind: "error", message: errorMessage(err), ok: false };
   }
