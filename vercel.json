@@ -1,0 +1,3 @@
+{
+  "installCommand": "PATCHRIGHT_SKIP_BROWSER_DOWNLOAD=1 PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 pnpm install --child-concurrency=1"
+}
