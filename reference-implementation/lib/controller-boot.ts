@@ -9,7 +9,7 @@
  *
  * Called from `startServer` after spine init and BEFORE HTTP routes
  * are mounted. The order is enforced by `startServer`'s sequence, not
- * by this module — see `reference-implementation/server/index.js`.
+ * by this module — see `reference-implementation/server/index.ts`.
  *
  * After this returns, the singleton is populated and any subsequent
  * `run.started` emission can stamp itself (see `lib/spine.ts`).
@@ -19,8 +19,8 @@
 
 import { randomUUID } from "node:crypto";
 import os from "node:os";
-import { getDb } from "../server/db.js";
-import { isPostgresStorageBackend, postgresQuery, withPostgresTransaction } from "../server/postgres-storage.js";
+import { getDb } from "../server/db.ts";
+import { isPostgresStorageBackend, postgresQuery, withPostgresTransaction } from "../server/postgres-storage.ts";
 import { type BootEpoch, emitSpineEvent, setCurrentBootEpoch } from "./spine.ts";
 
 export interface BootControllerOpts {
@@ -64,6 +64,7 @@ async function nextSeqForController(controllerId: string): Promise<number> {
     return Number(rows[0]?.next_seq ?? 1);
   }
   const db = getDb();
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
   if (!db) {
     return 1;
   }
@@ -79,6 +80,7 @@ async function nextSeqForController(controllerId: string): Promise<number> {
          AND json_extract(data_json, '$.controller_id') = ?`
     )
     .get(controllerId);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
   return Number(row?.next_seq ?? 1);
 }
 
@@ -96,26 +98,26 @@ export async function emitControllerBootedAndStashEpoch(opts: BootControllerOpts
   const seq = await nextSeqForController(controllerId);
 
   await emitSpineEvent({
-    event_type: "controller.booted",
-    actor_type: "runtime",
     actor_id: "controller",
+    actor_type: "runtime",
     data: {
-      epoch: bootEpoch,
-      seq,
       controller_id: controllerId,
-      started_at: new Date().toISOString(),
+      epoch: bootEpoch,
       process_info: {
-        node_version: process.versions.node,
         git_sha: opts.gitSha ?? process.env.PDPP_GIT_SHA ?? null,
+        node_version: process.versions.node,
         storage_backend: isPostgresStorageBackend() ? "postgres" : "sqlite",
       },
+      seq,
+      started_at: new Date().toISOString(),
     },
+    event_type: "controller.booted",
   });
 
   const triple: BootEpoch = {
     boot_epoch: bootEpoch,
-    seq,
     controller_id: controllerId,
+    seq,
   };
   setCurrentBootEpoch(triple);
   return triple;
@@ -215,9 +217,10 @@ async function reconcilePostgres(epoch: BootEpoch): Promise<ReconcileResult> {
 
       let abandoned = 0;
       for (const orphan of rows) {
+        // biome-ignore lint/performance/noAwaitInLoops: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
         const inserted = await emitRunAbandoned(client, orphan, epoch, "postgres");
         if (inserted) {
-          abandoned++;
+          abandoned += 1;
         }
       }
       return { abandoned, selected: rows.length };
@@ -227,6 +230,7 @@ async function reconcilePostgres(epoch: BootEpoch): Promise<ReconcileResult> {
 
 function reconcileSqlite(epoch: BootEpoch): Promise<ReconcileResult> {
   const db = getDb();
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   if (!db) {
     return Promise.resolve({ abandoned: 0, selected: 0 });
   }
@@ -273,7 +277,7 @@ function reconcileSqlite(epoch: BootEpoch): Promise<ReconcileResult> {
     // eslint-disable-next-line no-await-in-loop
     const inserted = emitRunAbandonedSyncSqlite(orphan, epoch);
     if (inserted) {
-      abandoned++;
+      abandoned += 1;
     }
   }
   return Promise.resolve({ abandoned, selected: orphans.length });
@@ -291,11 +295,11 @@ async function emitRunAbandoned(
     caused_by_event_id: orphan.event_id,
     original_boot_epoch: orphan.original_boot_epoch,
     original_controller_id: orphan.original_controller_id,
-    reconciled_by_boot_epoch: epoch.boot_epoch,
-    reconciled_by_seq: epoch.seq,
-    reconciled_by_controller_id: epoch.controller_id,
-    source: "recovery_worker",
     reason: "controller_terminated_before_run_finished",
+    reconciled_by_boot_epoch: epoch.boot_epoch,
+    reconciled_by_controller_id: epoch.controller_id,
+    reconciled_by_seq: epoch.seq,
+    source: "recovery_worker",
   });
 
   try {
@@ -326,6 +330,7 @@ async function emitRunAbandoned(
     // Idempotency: a prior reconciler already abandoned this orphan.
     // Catch ONLY the named constraint — never blanket-catch 23505.
     const e = err as { code?: string; constraint?: string };
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     if (e?.code === "23505" && e?.constraint === "spine_run_abandoned_cause_unique") {
       return false;
     }
@@ -335,6 +340,7 @@ async function emitRunAbandoned(
 
 function emitRunAbandonedSyncSqlite(orphan: OrphanRow, epoch: BootEpoch): boolean {
   const db = getDb();
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   if (!db) {
     return false;
   }
@@ -348,11 +354,11 @@ function emitRunAbandonedSyncSqlite(orphan: OrphanRow, epoch: BootEpoch): boolea
     caused_by_event_id: orphan.event_id,
     original_boot_epoch: orphan.original_boot_epoch,
     original_controller_id: orphan.original_controller_id,
-    reconciled_by_boot_epoch: epoch.boot_epoch,
-    reconciled_by_seq: epoch.seq,
-    reconciled_by_controller_id: epoch.controller_id,
-    source: "recovery_worker",
     reason: "controller_terminated_before_run_finished",
+    reconciled_by_boot_epoch: epoch.boot_epoch,
+    reconciled_by_controller_id: epoch.controller_id,
+    reconciled_by_seq: epoch.seq,
+    source: "recovery_worker",
   });
 
   try {
@@ -386,6 +392,7 @@ function emitRunAbandonedSyncSqlite(orphan: OrphanRow, epoch: BootEpoch): boolea
     // unique-constraint violations.
     const e = err as { code?: string; message?: string };
     if (
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
       e?.code === "SQLITE_CONSTRAINT_UNIQUE" &&
       typeof e.message === "string" &&
       e.message.includes("spine_run_abandoned_cause_unique")

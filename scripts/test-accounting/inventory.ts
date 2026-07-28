@@ -476,8 +476,12 @@ function validateExclusions(manifest: Manifest, tracked: Set<string>): void {
     }
   }
 }
-export function validateIncludeGlobsClassifyExecutable(manifest: Manifest, files: string[]): void {
-  for (const suite of manifest.suites) {
+export function validateIncludeGlobsClassifyExecutable(
+  manifest: Manifest,
+  files: string[],
+  suiteIds: string[] = []
+): void {
+  for (const suite of selectedSuites(manifest, suiteIds)) {
     if (zeroTestSuite(suite)) {
       continue;
     }
@@ -494,7 +498,17 @@ export function validateIncludeGlobsClassifyExecutable(manifest: Manifest, files
     }
   }
 }
-export function planFor(manifest: Manifest, files: string[], suiteIds: string[] = []) {
+// Builds per-suite plans without failing on a suite whose plan comes up
+// empty. `planFor` (below) is the fail-closed production entry point most
+// callers want; this tolerant variant exists only so a global,
+// whole-manifest computation (e.g. "is every executable file owned by some
+// suite") can run without being derailed by an unrelated, already-known,
+// separately-reported empty suite — mirroring the scoping rationale
+// `verifyReceipts` already applies to its own plan check (see
+// `965708787`: planning every manifest suite unconditionally made a
+// single-suite run fail closed on a stale, unrelated suite it never
+// selected).
+function tolerantPlanFor(manifest: Manifest, files: string[], suiteIds: string[] = []) {
   const suites = selectedSuites(manifest, suiteIds);
   const executable = files.filter((path) => classifyTrackedPath(path).kind === "executable");
   const plans = new Map<string, string[]>();
@@ -509,9 +523,6 @@ export function planFor(manifest: Manifest, files: string[], suiteIds: string[] 
         (path) => suite.include.some((glob) => matchesGlob(path, glob)) && exclusionsFor(manifest, path).length === 0
       )
       .sort(compareStrings);
-    if (plan.length === 0) {
-      fail(`${suite.id} selects no executable tests`);
-    }
     plans.set(suite.id, plan);
     for (const path of plan) {
       if (owners.has(path)) {
@@ -521,6 +532,28 @@ export function planFor(manifest: Manifest, files: string[], suiteIds: string[] 
     }
   }
   return { executable, owners, plans, suites };
+}
+export function planFor(manifest: Manifest, files: string[], suiteIds: string[] = []) {
+  const result = tolerantPlanFor(manifest, files, suiteIds);
+  for (const suite of result.suites) {
+    if (!(zeroTestSuite(suite) || result.plans.get(suite.id)?.length)) {
+      fail(`${suite.id} selects no executable tests`);
+    }
+  }
+  return result;
+}
+// Fails closed if any executable-classified, non-excluded file is not owned
+// by ANY suite anywhere in the manifest — the defect class a suite-local
+// check cannot see, because a file that silently drops out of every glob it
+// used to match (e.g. renamed off its suite's expected extension while a
+// sibling glob keeps that suite's own plan non-empty) never shows up as
+// that suite "selecting no executable tests". This computation is
+// necessarily whole-manifest (ownership is a global property), but it never
+// throws on an unrelated suite's empty plan — only `suiteIds`' own empty
+// plans are enforced, via `planFor`, by the caller.
+export function unaccountedExecutableTests(manifest: Manifest, files: string[]): string[] {
+  const { executable, owners } = tolerantPlanFor(manifest, files, []);
+  return executable.filter((path) => !owners.has(path) && exclusionsFor(manifest, path).length === 0);
 }
 export function selectedRuns(
   manifest: Manifest,

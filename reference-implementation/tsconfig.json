@@ -32,7 +32,7 @@
     // type-stripping). tsc type-checks, never emits.
     "noEmit": true,
     "skipLibCheck": true,
-    "types": ["node", "better-sqlite3"],
+    "types": ["node", "better-sqlite3", "pg"],
 
     // Legacy .js modules (server/, lib/, runtime/, cli/, examples/, test/)
     // are present in the module graph; we let allowJs pull them in but
@@ -56,6 +56,8 @@
     "runtime/**/*.js",
     "cli/**/*.ts",
     "cli/**/*.js",
+    "connectors/**/*.ts",
+    "connectors/**/*.js",
     "test/**/*.ts",
     "test/**/*.js",
     "scripts/**/*.ts",

@@ -200,7 +200,7 @@ export function resolveOwnerExposurePosture(inputs: OwnerExposureInputs): OwnerE
   if (considerInferred && isNonLoopbackOrigin(inputs.publicUrlOption)) {
     hostedSignals.push("asPublicUrl=<non-loopback>");
   }
-  if (considerInferred && bindsNonLoopback && inputs.bindHost != null) {
+  if (considerInferred && bindsNonLoopback && inputs.bindHost !== null && inputs.bindHost !== undefined) {
     // An explicit non-loopback bind host (e.g. 0.0.0.0 / a LAN IP) is an
     // internet-facing intent. An undefined bindHost also binds all interfaces,
     // but that is the local-dev default and must not, on its own, force hosted
@@ -228,11 +228,11 @@ export function resolveOwnerExposurePosture(inputs: OwnerExposureInputs): OwnerE
   const lockConnectorRegistry = (hosted || lockRegistryOverride) && !allowUnauthenticatedOverride;
 
   return {
+    allowUnauthenticatedOwnerWhenDisabled,
+    bindsNonLoopback,
     hosted,
     hostedSignals,
-    bindsNonLoopback,
-    refuseBootReason,
-    allowUnauthenticatedOwnerWhenDisabled,
     lockConnectorRegistry,
+    refuseBootReason,
   };
 }

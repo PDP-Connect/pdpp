@@ -47,24 +47,24 @@ export function deriveTerminalReason({
 }: DeriveTerminalReasonInput = {}): TerminalReason {
   if (doneMessage) {
     if (doneMessage.status === "failed") {
-      return { reason: "connector_reported_failed", phase: null };
+      return { phase: null, reason: "connector_reported_failed" };
     }
     if (doneMessage.status === "cancelled") {
-      return { reason: "connector_reported_cancelled", phase: null };
+      return { phase: null, reason: "connector_reported_cancelled" };
     }
-    return { reason: null, phase: null };
+    return { phase: null, reason: null };
   }
 
   if (finalStatus !== "failed") {
-    return { reason: null, phase: null };
+    return { phase: null, reason: null };
   }
 
   if (childStdinClosedReason) {
     return {
-      reason: childStdinClosedReason,
       phase: childStdinClosedAtPhase || "unknown",
+      reason: childStdinClosedReason,
     };
   }
 
-  return { reason: "connector_exit_without_done", phase: null };
+  return { phase: null, reason: "connector_exit_without_done" };
 }

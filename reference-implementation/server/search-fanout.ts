@@ -31,7 +31,7 @@ export async function mapSearchFanout<T, R>(
   if (!Array.isArray(items) || items.length === 0) {
     return [];
   }
-  const concurrency = resolveSearchFanoutConcurrency({ isPostgres, env });
+  const concurrency = resolveSearchFanoutConcurrency({ env, isPostgres });
   if (!Number.isFinite(concurrency) || concurrency >= items.length) {
     return Promise.all(items.map((item, index) => mapper(item, index)));
   }
@@ -41,7 +41,9 @@ export async function mapSearchFanout<T, R>(
   let nextIndex = 0;
   const workers = Array.from({ length: Math.min(bounded, items.length) }, async () => {
     while (nextIndex < items.length) {
+      // biome-ignore lint/style/noIncrementDecrement: The explicit counter update preserves this loop’s evaluation order.
       const index = nextIndex++;
+      // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
       results[index] = await mapper(items[index] as T, index);
     }
   });

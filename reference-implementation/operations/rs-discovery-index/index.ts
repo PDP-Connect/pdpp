@@ -25,16 +25,16 @@ export interface RsDiscoveryIndexInput {
 }
 
 export interface RsDiscoveryIndexEnvelope {
-  readonly object: "pdpp_discovery_index";
-  readonly role: "resource_server";
-  readonly resource_name: string;
   readonly links: {
     readonly well_known: "/.well-known/oauth-protected-resource";
     readonly schema: "/v1/schema";
     readonly core_query_base: "/v1";
     readonly connectors: "/v1/connectors";
   };
+  readonly object: "pdpp_discovery_index";
   readonly reference_revision: string | null;
+  readonly resource_name: string;
+  readonly role: "resource_server";
 }
 
 export interface RsDiscoveryIndexOutput {
@@ -48,21 +48,19 @@ export interface RsDiscoveryIndexOutput {
  * `referenceRevision`; the operation projects the canonical pointer
  * envelope.
  */
-export function executeRsDiscoveryIndex(
-  input: RsDiscoveryIndexInput,
-): RsDiscoveryIndexOutput {
+export function executeRsDiscoveryIndex(input: RsDiscoveryIndexInput): RsDiscoveryIndexOutput {
   return {
     envelope: {
-      object: "pdpp_discovery_index",
-      role: "resource_server",
-      resource_name: input.providerName,
       links: {
-        well_known: "/.well-known/oauth-protected-resource",
-        schema: "/v1/schema",
-        core_query_base: "/v1",
         connectors: "/v1/connectors",
+        core_query_base: "/v1",
+        schema: "/v1/schema",
+        well_known: "/.well-known/oauth-protected-resource",
       },
+      object: "pdpp_discovery_index",
       reference_revision: input.referenceRevision,
+      resource_name: input.providerName,
+      role: "resource_server",
     },
   };
 }

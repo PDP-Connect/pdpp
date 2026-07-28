@@ -1,1 +1,1061 @@
-{"namespace":"PDPPDesignSystem_b4e65a","components":[],"startingPoints":[],"cards":[{"path":"preview/brand-logo.html","group":"Brand","viewport":"700x230","subtitle":"Mark, wordmark, and the carbon signature","name":"Brand"},{"path":"preview/iconography.html","group":"Brand","viewport":"700x200","subtitle":"The system draws no pictures — status is typed","name":"Glyphs, not icons"},{"path":"preview/colors-primary.html","group":"Colors","viewport":"700x170","subtitle":"Paper, ink, protocol ink, human warmth","name":"Colors · Core"},{"path":"preview/colors-semantic.html","group":"Colors","viewport":"700x170","subtitle":"Recorded, expiring, destructive — each spent on one meaning","name":"Colors · State"},{"path":"preview/colors-washes.html","group":"Colors","viewport":"700x230","subtitle":"Where hue is allowed — and where it is not","name":"Spent color"},{"path":"preview/components-badges.html","group":"Components","viewport":"700x190","subtitle":"Status, typed by the protocol — and neutral tags","name":"Endorsements"},{"path":"preview/components-buttons.html","group":"Components","viewport":"700x150","subtitle":"Ink, human act, ghost, destructive","name":"Buttons"},{"path":"preview/components-cards.html","group":"Components","viewport":"700x260","subtitle":"The paper artifact — and the duplicate the server keeps","name":"Sheets & carbon"},{"path":"preview/components-code.html","group":"Components","viewport":"700x230","subtitle":"Protocol payloads — the typed voice at full width","name":"Code"},{"path":"preview/components-consent-row.html","group":"Components","viewport":"700x230","subtitle":"Scope rows — granted typed, declined struck","name":"Consent scopes"},{"path":"preview/components-dataflow.html","group":"Components","viewport":"700x270","subtitle":"The aligned list — shared column axis, mandatory headers","name":"Table"},{"path":"preview/components-grant-card.html","group":"Components","viewport":"700x330","subtitle":"The full sheet — kv block, endorsement, actions","name":"Grant record"},{"path":"preview/components-inputs.html","group":"Components","viewport":"700x200","subtitle":"Fields — mono values, grotesk labels","name":"Inputs"},{"path":"preview/layout-grid.html","group":"Spacing","viewport":"700x220","subtitle":"Content widths, sidebar, stat band","name":"Layout"},{"path":"preview/radii.html","group":"Spacing","viewport":"700x190","subtitle":"Paper is square; controls get a 2px ease","name":"Corners"},{"path":"preview/shadows.html","group":"Spacing","viewport":"700x230","subtitle":"Nothing floats — retention casts carbon instead of shadow","name":"Elevation"},{"path":"preview/spacing-scale.html","group":"Spacing","viewport":"700x170","subtitle":"4px grid — compose padding and gap from these steps","name":"Spacing"},{"path":"preview/type-body.html","group":"Type","viewport":"700x220","subtitle":"Body, title, label, caption","name":"Type · Body"},{"path":"preview/type-display.html","group":"Type","viewport":"700x230","subtitle":"Schibsted Grotesk — the human voice, set heavy","name":"Type · Display"},{"path":"preview/type-mono.html","group":"Type","viewport":"700x230","subtitle":"JetBrains Mono — everything the protocol writes","name":"Type · Typed voice"}],"templates":[],"globalCssPaths":["colors_and_type.css","ui_kits/web/kit.css","explorer/explorer.css","labs/labs.css","styles.css"],"tokens":[{"name":"--font-sans","value":"\"Geist\", ui-sans-serif, system-ui, sans-serif","kind":"font","definedIn":"labs/labs.css"},{"name":"--font-mono","value":"\"JetBrains Mono\", ui-monospace, monospace","kind":"font","definedIn":"labs/labs.css"},{"name":"--background","value":"oklch(0.985 0.004 90)","kind":"color","definedIn":"colors_and_type.css"},{"name":"--foreground","value":"oklch(0.18 0.005 270)","kind":"color","definedIn":"colors_and_type.css"},{"name":"--card","value":"oklch(1 0 0)","kind":"color","definedIn":"colors_and_type.css"},{"name":"--card-foreground","value":"oklch(0.18 0.005 270)","kind":"color","definedIn":"colors_and_type.css"},{"name":"--popover","value":"oklch(1 0 0)","kind":"color","definedIn":"colors_and_type.css"},{"name":"--popover-foreground","value":"oklch(0.18 0.005 270)","kind":"color","definedIn":"colors_and_type.css"},{"name":"--primary","value":"oklch(0.46 0.11 255)","kind":"color","definedIn":"colors_and_type.css"},{"name":"--primary-foreground","value":"oklch(0.99 0.002 90)","kind":"color","definedIn":"colors_and_type.css"},{"name":"--primary-tint","value":"oklch(0.46 0.11 255 / 0.08)","kind":"color","definedIn":"colors_and_type.css"},{"name":"--human","value":"oklch(0.52 0.11 45)","kind":"color","definedIn":"labs/labs.css"},{"name":"--human-foreground","value":"oklch(0.99 0.005 90)","kind":"color","definedIn":"colors_and_type.css"},{"name":"--human-tint","value":"oklch(0.55 0.11 45 / 0.08)","kind":"color","definedIn":"colors_and_type.css"},{"name":"--carbon-outline","value":"oklch(0.46 0.11 255 / 0.40)","kind":"color","definedIn":"colors_and_type.css"},{"name":"--carbon-fill","value":"oklch(0.46 0.11 255 / 0.09)","kind":"color","definedIn":"colors_and_type.css"},{"name":"--carbon-offset","value":"9px","kind":"spacing","definedIn":"colors_and_type.css"},{"name":"--secondary","value":"oklch(0.955 0.004 270)","kind":"color","definedIn":"colors_and_type.css"},{"name":"--secondary-foreground","value":"oklch(0.22 0.005 270)","kind":"color","definedIn":"colors_and_type.css"},{"name":"--muted","value":"oklch(0.955 0.004 270)","kind":"color","definedIn":"colors_and_type.css"},{"name":"--muted-foreground","value":"oklch(0.47 0.008 270)","kind":"color","definedIn":"colors_and_type.css"},{"name":"--accent","value":"oklch(0.955 0.004 270)","kind":"color","definedIn":"colors_and_type.css"},{"name":"--accent-foreground","value":"oklch(0.22 0.005 270)","kind":"color","definedIn":"colors_and_type.css"},{"name":"--border","value":"oklch(0.905 0.005 270)","kind":"color","definedIn":"colors_and_type.css"},{"name":"--border-strong","value":"oklch(0.79 0.006 270)","kind":"color","definedIn":"colors_and_type.css"},{"name":"--input","value":"oklch(0.79 0.006 270)","kind":"color","definedIn":"colors_and_type.css"},{"name":"--ring","value":"oklch(0.46 0.11 255)","kind":"color","definedIn":"colors_and_type.css"},{"name":"--success","value":"oklch(0.50 0.11 158)","kind":"color","definedIn":"colors_and_type.css"},{"name":"--success-tint","value":"oklch(0.50 0.11 158 / 0.10)","kind":"color","definedIn":"colors_and_type.css"},{"name":"--warning","value":"oklch(0.58 0.13 70)","kind":"color","definedIn":"colors_and_type.css"},{"name":"--warning-tint","value":"oklch(0.58 0.13 70 / 0.10)","kind":"color","definedIn":"colors_and_type.css"},{"name":"--destructive","value":"oklch(0.52 0.16 27)","kind":"color","definedIn":"colors_and_type.css"},{"name":"--destructive-foreground","value":"oklch(0.99 0.002 90)","kind":"color","definedIn":"colors_and_type.css"},{"name":"--destructive-tint","value":"oklch(0.52 0.16 27 / 0.08)","kind":"color","definedIn":"colors_and_type.css"},{"name":"--primary-wash","value":"var(--primary-tint)","kind":"color","definedIn":"colors_and_type.css"},{"name":"--human-wash","value":"oklch(0.52 0.11 45 / 0.08)","kind":"color","definedIn":"labs/labs.css"},{"name":"--success-wash","value":"var(--success-tint)","kind":"color","definedIn":"colors_and_type.css"},{"name":"--success-wash-strong","value":"oklch(0.50 0.11 158 / 0.16)","kind":"color","definedIn":"colors_and_type.css"},{"name":"--warning-wash","value":"var(--warning-tint)","kind":"color","definedIn":"colors_and_type.css"},{"name":"--verified-wash","value":"var(--success-tint)","kind":"color","definedIn":"colors_and_type.css"},{"name":"--edu-fg","value":"oklch(0.50 0.06 210)","kind":"color","definedIn":"colors_and_type.css"},{"name":"--radius","value":"0px","kind":"radius","definedIn":"colors_and_type.css"},{"name":"--radius-control","value":"2px","kind":"radius","definedIn":"colors_and_type.css"},{"name":"--duration-instant","value":"0ms","kind":"other","definedIn":"colors_and_type.css","annotation":"other"},{"name":"--duration-fast","value":"0.01ms","kind":"other","definedIn":"colors_and_type.css","annotation":"other"},{"name":"--duration-base","value":"0.01ms","kind":"other","definedIn":"colors_and_type.css","annotation":"other"},{"name":"--duration-moderate","value":"0.01ms","kind":"other","definedIn":"colors_and_type.css","annotation":"other"},{"name":"--duration-slow","value":"0.01ms","kind":"other","definedIn":"colors_and_type.css","annotation":"other"},{"name":"--ease-enter","value":"cubic-bezier(0, 0, 0.2, 1)","kind":"other","definedIn":"colors_and_type.css","annotation":"other"},{"name":"--ease-exit","value":"cubic-bezier(0.4, 0, 1, 1)","kind":"other","definedIn":"colors_and_type.css","annotation":"other"},{"name":"--ease-standard","value":"cubic-bezier(0.4, 0, 0.2, 1)","kind":"other","definedIn":"colors_and_type.css","annotation":"other"},{"name":"--motion-enter","value":"var(--duration-moderate) var(--ease-enter)","kind":"other","definedIn":"colors_and_type.css","annotation":"other"},{"name":"--motion-exit","value":"var(--duration-fast) var(--ease-exit)","kind":"other","definedIn":"colors_and_type.css","annotation":"other"},{"name":"--motion-state","value":"var(--duration-base) var(--ease-standard)","kind":"other","definedIn":"colors_and_type.css","annotation":"other"},{"name":"--stagger-fast","value":"30ms","kind":"other","definedIn":"colors_and_type.css","annotation":"other"},{"name":"--stagger-base","value":"50ms","kind":"other","definedIn":"colors_and_type.css","annotation":"other"},{"name":"--content-width","value":"760px","kind":"spacing","definedIn":"colors_and_type.css"},{"name":"--content-wide-width","value":"1200px","kind":"spacing","definedIn":"colors_and_type.css"},{"name":"--chrome-height","value":"3.5rem","kind":"spacing","definedIn":"colors_and_type.css"},{"name":"--pdpp-sidebar-width","value":"280px","kind":"spacing","definedIn":"colors_and_type.css"},{"name":"--background","value":"oklch(0.17 0.006 262)","kind":"color","definedIn":"colors_and_type.css","scope":"html[data-theme=\"dark\"])"},{"name":"--foreground","value":"oklch(0.95 0.005 262)","kind":"color","definedIn":"colors_and_type.css","scope":"html[data-theme=\"dark\"])"},{"name":"--card","value":"oklch(0.21 0.007 262)","kind":"color","definedIn":"colors_and_type.css","scope":"html[data-theme=\"dark\"])"},{"name":"--card-foreground","value":"oklch(0.95 0.005 262)","kind":"color","definedIn":"colors_and_type.css","scope":"html[data-theme=\"dark\"])"},{"name":"--popover","value":"oklch(0.24 0.007 262)","kind":"color","definedIn":"colors_and_type.css","scope":"html[data-theme=\"dark\"])"},{"name":"--popover-foreground","value":"oklch(0.95 0.005 262)","kind":"color","definedIn":"colors_and_type.css","scope":"html[data-theme=\"dark\"])"},{"name":"--primary","value":"oklch(0.74 0.13 255)","kind":"color","definedIn":"colors_and_type.css","scope":"html[data-theme=\"dark\"])"},{"name":"--primary-foreground","value":"oklch(0.15 0.01 262)","kind":"color","definedIn":"colors_and_type.css","scope":"html[data-theme=\"dark\"])"},{"name":"--primary-tint","value":"oklch(0.74 0.13 255 / 0.13)","kind":"color","definedIn":"colors_and_type.css","scope":"html[data-theme=\"dark\"])"},{"name":"--human","value":"oklch(0.76 0.12 45)","kind":"color","definedIn":"colors_and_type.css","scope":"html[data-theme=\"dark\"])"},{"name":"--human-foreground","value":"oklch(0.16 0.01 45)","kind":"color","definedIn":"colors_and_type.css","scope":"html[data-theme=\"dark\"])"},{"name":"--human-tint","value":"oklch(0.76 0.12 45 / 0.11)","kind":"color","definedIn":"colors_and_type.css","scope":"html[data-theme=\"dark\"])"},{"name":"--carbon-outline","value":"oklch(0.74 0.13 255 / 0.62)","kind":"color","definedIn":"colors_and_type.css","scope":"html[data-theme=\"dark\"])"},{"name":"--carbon-fill","value":"oklch(0.74 0.13 255 / 0.22)","kind":"color","definedIn":"colors_and_type.css","scope":"html[data-theme=\"dark\"])"},{"name":"--secondary","value":"oklch(0.26 0.007 262)","kind":"color","definedIn":"colors_and_type.css","scope":"html[data-theme=\"dark\"])"},{"name":"--secondary-foreground","value":"oklch(0.95 0.005 262)","kind":"color","definedIn":"colors_and_type.css","scope":"html[data-theme=\"dark\"])"},{"name":"--muted","value":"oklch(0.24 0.007 262)","kind":"color","definedIn":"colors_and_type.css","scope":"html[data-theme=\"dark\"])"},{"name":"--muted-foreground","value":"oklch(0.72 0.01 262)","kind":"color","definedIn":"colors_and_type.css","scope":"html[data-theme=\"dark\"])"},{"name":"--accent","value":"oklch(0.26 0.007 262)","kind":"color","definedIn":"colors_and_type.css","scope":"html[data-theme=\"dark\"])"},{"name":"--accent-foreground","value":"oklch(0.95 0.005 262)","kind":"color","definedIn":"colors_and_type.css","scope":"html[data-theme=\"dark\"])"},{"name":"--border","value":"oklch(0.29 0.008 262)","kind":"color","definedIn":"colors_and_type.css","scope":"html[data-theme=\"dark\"])"},{"name":"--border-strong","value":"oklch(0.40 0.008 262)","kind":"color","definedIn":"colors_and_type.css","scope":"html[data-theme=\"dark\"])"},{"name":"--input","value":"oklch(0.34 0.008 262)","kind":"color","definedIn":"colors_and_type.css","scope":"html[data-theme=\"dark\"])"},{"name":"--ring","value":"oklch(0.74 0.13 255)","kind":"color","definedIn":"colors_and_type.css","scope":"html[data-theme=\"dark\"])"},{"name":"--success","value":"oklch(0.76 0.13 158)","kind":"color","definedIn":"colors_and_type.css","scope":"html[data-theme=\"dark\"])"},{"name":"--success-tint","value":"oklch(0.76 0.13 158 / 0.14)","kind":"color","definedIn":"colors_and_type.css","scope":"html[data-theme=\"dark\"])"},{"name":"--warning","value":"oklch(0.80 0.14 75)","kind":"color","definedIn":"colors_and_type.css","scope":"html[data-theme=\"dark\"])"},{"name":"--warning-tint","value":"oklch(0.80 0.14 75 / 0.13)","kind":"color","definedIn":"colors_and_type.css","scope":"html[data-theme=\"dark\"])"},{"name":"--destructive","value":"oklch(0.70 0.16 27)","kind":"color","definedIn":"colors_and_type.css","scope":"html[data-theme=\"dark\"])"},{"name":"--destructive-foreground","value":"oklch(0.15 0.01 262)","kind":"color","definedIn":"colors_and_type.css","scope":"html[data-theme=\"dark\"])"},{"name":"--destructive-tint","value":"oklch(0.70 0.16 27 / 0.12)","kind":"color","definedIn":"colors_and_type.css","scope":"html[data-theme=\"dark\"])"},{"name":"--primary-wash","value":"var(--primary-tint)","kind":"color","definedIn":"colors_and_type.css","scope":"html[data-theme=\"dark\"])"},{"name":"--human-wash","value":"var(--human-tint)","kind":"color","definedIn":"colors_and_type.css","scope":"html[data-theme=\"dark\"])"},{"name":"--success-wash","value":"var(--success-tint)","kind":"color","definedIn":"colors_and_type.css","scope":"html[data-theme=\"dark\"])"},{"name":"--success-wash-strong","value":"oklch(0.76 0.13 158 / 0.20)","kind":"color","definedIn":"colors_and_type.css","scope":"html[data-theme=\"dark\"])"},{"name":"--warning-wash","value":"var(--warning-tint)","kind":"color","definedIn":"colors_and_type.css","scope":"html[data-theme=\"dark\"])"},{"name":"--verified-wash","value":"var(--success-tint)","kind":"color","definedIn":"colors_and_type.css","scope":"html[data-theme=\"dark\"])"},{"name":"--edu-fg","value":"oklch(0.78 0.06 210)","kind":"color","definedIn":"colors_and_type.css","scope":"html[data-theme=\"dark\"])"},{"name":"--font-serif","value":"\"Fraunces\", Georgia, serif","kind":"font","definedIn":"labs/labs.css"},{"name":"--human-deep","value":"oklch(0.38 0.09 40)","kind":"color","definedIn":"labs/labs.css"},{"name":"--human-glow","value":"oklch(0.68 0.14 45)","kind":"color","definedIn":"labs/labs.css"},{"name":"--protocol","value":"oklch(0.58 0.18 253)","kind":"color","definedIn":"labs/labs.css"},{"name":"--protocol-deep","value":"oklch(0.42 0.14 253)","kind":"color","definedIn":"labs/labs.css"},{"name":"--protocol-wash","value":"oklch(0.58 0.18 253 / 0.08)","kind":"color","definedIn":"labs/labs.css"},{"name":"--protocol-glow","value":"oklch(0.72 0.16 253)","kind":"color","definedIn":"labs/labs.css"},{"name":"--thermal","value":"linear-gradient(90deg, var(--human) 0%, oklch(0.55 0.1 180) 50%, var(--protocol) 100%)","kind":"color","definedIn":"labs/labs.css"},{"name":"--paper","value":"oklch(0.985 0.005 85)","kind":"color","definedIn":"labs/labs.css"},{"name":"--paper-warm","value":"oklch(0.98 0.008 75)","kind":"color","definedIn":"labs/labs.css"},{"name":"--ink","value":"oklch(0.16 0.01 60)","kind":"color","definedIn":"labs/labs.css"},{"name":"--ink-soft","value":"oklch(0.35 0.01 60)","kind":"color","definedIn":"labs/labs.css"},{"name":"--ink-faint","value":"oklch(0.55 0.01 60)","kind":"color","definedIn":"labs/labs.css"},{"name":"--ink-whisper","value":"oklch(0.72 0.01 60)","kind":"color","definedIn":"labs/labs.css"},{"name":"--rule","value":"oklch(0.88 0.01 60)","kind":"color","definedIn":"labs/labs.css"},{"name":"--rule-deep","value":"oklch(0.78 0.01 60)","kind":"color","definedIn":"labs/labs.css"},{"name":"--live","value":"oklch(0.55 0.13 145)","kind":"color","definedIn":"labs/labs.css"},{"name":"--waning","value":"oklch(0.64 0.14 65)","kind":"color","definedIn":"labs/labs.css"},{"name":"--voided","value":"oklch(0.5 0.16 25)","kind":"color","definedIn":"labs/labs.css"},{"name":"--teach","value":"oklch(0.48 0.1 280)","kind":"color","definedIn":"labs/labs.css"},{"name":"--ease-read","value":"cubic-bezier(0.2, 0, 0, 1)","kind":"other","definedIn":"labs/labs.css","annotation":"other"},{"name":"--ease-settle","value":"cubic-bezier(0.34, 1.2, 0.64, 1)","kind":"other","definedIn":"labs/labs.css","annotation":"other"},{"name":"--paper","value":"oklch(0.14 0.012 255)","kind":"color","definedIn":"labs/labs.css","scope":":root[data-view=\"night\"]"},{"name":"--paper-warm","value":"oklch(0.17 0.015 255)","kind":"color","definedIn":"labs/labs.css","scope":":root[data-view=\"night\"]"},{"name":"--ink","value":"oklch(0.94 0.008 85)","kind":"color","definedIn":"labs/labs.css","scope":":root[data-view=\"night\"]"},{"name":"--ink-soft","value":"oklch(0.78 0.008 85)","kind":"color","definedIn":"labs/labs.css","scope":":root[data-view=\"night\"]"},{"name":"--ink-faint","value":"oklch(0.58 0.008 85)","kind":"color","definedIn":"labs/labs.css","scope":":root[data-view=\"night\"]"},{"name":"--ink-whisper","value":"oklch(0.38 0.008 85)","kind":"color","definedIn":"labs/labs.css","scope":":root[data-view=\"night\"]"},{"name":"--rule","value":"oklch(0.26 0.012 255)","kind":"color","definedIn":"labs/labs.css","scope":":root[data-view=\"night\"]"},{"name":"--rule-deep","value":"oklch(0.34 0.012 255)","kind":"color","definedIn":"labs/labs.css","scope":":root[data-view=\"night\"]"},{"name":"--human","value":"oklch(0.72 0.12 45)","kind":"color","definedIn":"labs/labs.css","scope":":root[data-view=\"night\"]"},{"name":"--human-wash","value":"oklch(0.72 0.12 45 / 0.1)","kind":"color","definedIn":"labs/labs.css","scope":":root[data-view=\"night\"]"},{"name":"--human-glow","value":"oklch(0.82 0.15 45)","kind":"color","definedIn":"labs/labs.css","scope":":root[data-view=\"night\"]"},{"name":"--protocol","value":"oklch(0.74 0.16 253)","kind":"color","definedIn":"labs/labs.css","scope":":root[data-view=\"night\"]"},{"name":"--protocol-wash","value":"oklch(0.74 0.16 253 / 0.1)","kind":"color","definedIn":"labs/labs.css","scope":":root[data-view=\"night\"]"},{"name":"--protocol-glow","value":"oklch(0.85 0.18 253)","kind":"color","definedIn":"labs/labs.css","scope":":root[data-view=\"night\"]"},{"name":"--live","value":"oklch(0.72 0.15 145)","kind":"color","definedIn":"labs/labs.css","scope":":root[data-view=\"night\"]"}],"themes":[{"selector":"html[data-theme=\"dark\"])","label":"Dark )"},{"selector":":root[data-view=\"night\"]","label":"Root View Night"}],"fonts":[],"brandFonts":[{"family":"Geist","status":"ok","tokens":["--font-sans"],"path":"labs/labs.css"},{"family":"JetBrains Mono","status":"ok","tokens":["--font-mono"],"path":"labs/labs.css"},{"family":"Fraunces","status":"ok","tokens":["--font-serif"],"path":"labs/labs.css"}],"source":"spa"}
+{
+  "namespace": "PDPPDesignSystem_b4e65a",
+  "components": [],
+  "startingPoints": [],
+  "cards": [
+    {
+      "path": "preview/brand-logo.html",
+      "group": "Brand",
+      "viewport": "700x230",
+      "subtitle": "Mark, wordmark, and the carbon signature",
+      "name": "Brand"
+    },
+    {
+      "path": "preview/iconography.html",
+      "group": "Brand",
+      "viewport": "700x200",
+      "subtitle": "The system draws no pictures — status is typed",
+      "name": "Glyphs, not icons"
+    },
+    {
+      "path": "preview/colors-primary.html",
+      "group": "Colors",
+      "viewport": "700x170",
+      "subtitle": "Paper, ink, protocol ink, human warmth",
+      "name": "Colors · Core"
+    },
+    {
+      "path": "preview/colors-semantic.html",
+      "group": "Colors",
+      "viewport": "700x170",
+      "subtitle": "Recorded, expiring, destructive — each spent on one meaning",
+      "name": "Colors · State"
+    },
+    {
+      "path": "preview/colors-washes.html",
+      "group": "Colors",
+      "viewport": "700x230",
+      "subtitle": "Where hue is allowed — and where it is not",
+      "name": "Spent color"
+    },
+    {
+      "path": "preview/components-badges.html",
+      "group": "Components",
+      "viewport": "700x190",
+      "subtitle": "Status, typed by the protocol — and neutral tags",
+      "name": "Endorsements"
+    },
+    {
+      "path": "preview/components-buttons.html",
+      "group": "Components",
+      "viewport": "700x150",
+      "subtitle": "Ink, human act, ghost, destructive",
+      "name": "Buttons"
+    },
+    {
+      "path": "preview/components-cards.html",
+      "group": "Components",
+      "viewport": "700x260",
+      "subtitle": "The paper artifact — and the duplicate the server keeps",
+      "name": "Sheets & carbon"
+    },
+    {
+      "path": "preview/components-code.html",
+      "group": "Components",
+      "viewport": "700x230",
+      "subtitle": "Protocol payloads — the typed voice at full width",
+      "name": "Code"
+    },
+    {
+      "path": "preview/components-consent-row.html",
+      "group": "Components",
+      "viewport": "700x230",
+      "subtitle": "Scope rows — granted typed, declined struck",
+      "name": "Consent scopes"
+    },
+    {
+      "path": "preview/components-dataflow.html",
+      "group": "Components",
+      "viewport": "700x270",
+      "subtitle": "The aligned list — shared column axis, mandatory headers",
+      "name": "Table"
+    },
+    {
+      "path": "preview/components-grant-card.html",
+      "group": "Components",
+      "viewport": "700x330",
+      "subtitle": "The full sheet — kv block, endorsement, actions",
+      "name": "Grant record"
+    },
+    {
+      "path": "preview/components-inputs.html",
+      "group": "Components",
+      "viewport": "700x200",
+      "subtitle": "Fields — mono values, grotesk labels",
+      "name": "Inputs"
+    },
+    {
+      "path": "preview/layout-grid.html",
+      "group": "Spacing",
+      "viewport": "700x220",
+      "subtitle": "Content widths, sidebar, stat band",
+      "name": "Layout"
+    },
+    {
+      "path": "preview/radii.html",
+      "group": "Spacing",
+      "viewport": "700x190",
+      "subtitle": "Paper is square; controls get a 2px ease",
+      "name": "Corners"
+    },
+    {
+      "path": "preview/shadows.html",
+      "group": "Spacing",
+      "viewport": "700x230",
+      "subtitle": "Nothing floats — retention casts carbon instead of shadow",
+      "name": "Elevation"
+    },
+    {
+      "path": "preview/spacing-scale.html",
+      "group": "Spacing",
+      "viewport": "700x170",
+      "subtitle": "4px grid — compose padding and gap from these steps",
+      "name": "Spacing"
+    },
+    {
+      "path": "preview/type-body.html",
+      "group": "Type",
+      "viewport": "700x220",
+      "subtitle": "Body, title, label, caption",
+      "name": "Type · Body"
+    },
+    {
+      "path": "preview/type-display.html",
+      "group": "Type",
+      "viewport": "700x230",
+      "subtitle": "Schibsted Grotesk — the human voice, set heavy",
+      "name": "Type · Display"
+    },
+    {
+      "path": "preview/type-mono.html",
+      "group": "Type",
+      "viewport": "700x230",
+      "subtitle": "JetBrains Mono — everything the protocol writes",
+      "name": "Type · Typed voice"
+    }
+  ],
+  "templates": [],
+  "globalCssPaths": [
+    "colors_and_type.css",
+    "ui_kits/web/kit.css",
+    "explorer/explorer.css",
+    "labs/labs.css",
+    "styles.css"
+  ],
+  "tokens": [
+    {
+      "name": "--font-sans",
+      "value": "\"Geist\", ui-sans-serif, system-ui, sans-serif",
+      "kind": "font",
+      "definedIn": "labs/labs.css"
+    },
+    {
+      "name": "--font-mono",
+      "value": "\"JetBrains Mono\", ui-monospace, monospace",
+      "kind": "font",
+      "definedIn": "labs/labs.css"
+    },
+    {
+      "name": "--background",
+      "value": "oklch(0.985 0.004 90)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--foreground",
+      "value": "oklch(0.18 0.005 270)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--card",
+      "value": "oklch(1 0 0)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--card-foreground",
+      "value": "oklch(0.18 0.005 270)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--popover",
+      "value": "oklch(1 0 0)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--popover-foreground",
+      "value": "oklch(0.18 0.005 270)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--primary",
+      "value": "oklch(0.46 0.11 255)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--primary-foreground",
+      "value": "oklch(0.99 0.002 90)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--primary-tint",
+      "value": "oklch(0.46 0.11 255 / 0.08)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--human",
+      "value": "oklch(0.52 0.11 45)",
+      "kind": "color",
+      "definedIn": "labs/labs.css"
+    },
+    {
+      "name": "--human-foreground",
+      "value": "oklch(0.99 0.005 90)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--human-tint",
+      "value": "oklch(0.55 0.11 45 / 0.08)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--carbon-outline",
+      "value": "oklch(0.46 0.11 255 / 0.40)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--carbon-fill",
+      "value": "oklch(0.46 0.11 255 / 0.09)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--carbon-offset",
+      "value": "9px",
+      "kind": "spacing",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--secondary",
+      "value": "oklch(0.955 0.004 270)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--secondary-foreground",
+      "value": "oklch(0.22 0.005 270)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--muted",
+      "value": "oklch(0.955 0.004 270)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--muted-foreground",
+      "value": "oklch(0.47 0.008 270)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--accent",
+      "value": "oklch(0.955 0.004 270)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--accent-foreground",
+      "value": "oklch(0.22 0.005 270)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--border",
+      "value": "oklch(0.905 0.005 270)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--border-strong",
+      "value": "oklch(0.79 0.006 270)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--input",
+      "value": "oklch(0.79 0.006 270)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--ring",
+      "value": "oklch(0.46 0.11 255)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--success",
+      "value": "oklch(0.50 0.11 158)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--success-tint",
+      "value": "oklch(0.50 0.11 158 / 0.10)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--warning",
+      "value": "oklch(0.58 0.13 70)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--warning-tint",
+      "value": "oklch(0.58 0.13 70 / 0.10)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--destructive",
+      "value": "oklch(0.52 0.16 27)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--destructive-foreground",
+      "value": "oklch(0.99 0.002 90)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--destructive-tint",
+      "value": "oklch(0.52 0.16 27 / 0.08)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--primary-wash",
+      "value": "var(--primary-tint)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--human-wash",
+      "value": "oklch(0.52 0.11 45 / 0.08)",
+      "kind": "color",
+      "definedIn": "labs/labs.css"
+    },
+    {
+      "name": "--success-wash",
+      "value": "var(--success-tint)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--success-wash-strong",
+      "value": "oklch(0.50 0.11 158 / 0.16)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--warning-wash",
+      "value": "var(--warning-tint)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--verified-wash",
+      "value": "var(--success-tint)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--edu-fg",
+      "value": "oklch(0.50 0.06 210)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--radius",
+      "value": "0px",
+      "kind": "radius",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--radius-control",
+      "value": "2px",
+      "kind": "radius",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--duration-instant",
+      "value": "0ms",
+      "kind": "other",
+      "definedIn": "colors_and_type.css",
+      "annotation": "other"
+    },
+    {
+      "name": "--duration-fast",
+      "value": "0.01ms",
+      "kind": "other",
+      "definedIn": "colors_and_type.css",
+      "annotation": "other"
+    },
+    {
+      "name": "--duration-base",
+      "value": "0.01ms",
+      "kind": "other",
+      "definedIn": "colors_and_type.css",
+      "annotation": "other"
+    },
+    {
+      "name": "--duration-moderate",
+      "value": "0.01ms",
+      "kind": "other",
+      "definedIn": "colors_and_type.css",
+      "annotation": "other"
+    },
+    {
+      "name": "--duration-slow",
+      "value": "0.01ms",
+      "kind": "other",
+      "definedIn": "colors_and_type.css",
+      "annotation": "other"
+    },
+    {
+      "name": "--ease-enter",
+      "value": "cubic-bezier(0, 0, 0.2, 1)",
+      "kind": "other",
+      "definedIn": "colors_and_type.css",
+      "annotation": "other"
+    },
+    {
+      "name": "--ease-exit",
+      "value": "cubic-bezier(0.4, 0, 1, 1)",
+      "kind": "other",
+      "definedIn": "colors_and_type.css",
+      "annotation": "other"
+    },
+    {
+      "name": "--ease-standard",
+      "value": "cubic-bezier(0.4, 0, 0.2, 1)",
+      "kind": "other",
+      "definedIn": "colors_and_type.css",
+      "annotation": "other"
+    },
+    {
+      "name": "--motion-enter",
+      "value": "var(--duration-moderate) var(--ease-enter)",
+      "kind": "other",
+      "definedIn": "colors_and_type.css",
+      "annotation": "other"
+    },
+    {
+      "name": "--motion-exit",
+      "value": "var(--duration-fast) var(--ease-exit)",
+      "kind": "other",
+      "definedIn": "colors_and_type.css",
+      "annotation": "other"
+    },
+    {
+      "name": "--motion-state",
+      "value": "var(--duration-base) var(--ease-standard)",
+      "kind": "other",
+      "definedIn": "colors_and_type.css",
+      "annotation": "other"
+    },
+    {
+      "name": "--stagger-fast",
+      "value": "30ms",
+      "kind": "other",
+      "definedIn": "colors_and_type.css",
+      "annotation": "other"
+    },
+    {
+      "name": "--stagger-base",
+      "value": "50ms",
+      "kind": "other",
+      "definedIn": "colors_and_type.css",
+      "annotation": "other"
+    },
+    {
+      "name": "--content-width",
+      "value": "760px",
+      "kind": "spacing",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--content-wide-width",
+      "value": "1200px",
+      "kind": "spacing",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--chrome-height",
+      "value": "3.5rem",
+      "kind": "spacing",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--pdpp-sidebar-width",
+      "value": "280px",
+      "kind": "spacing",
+      "definedIn": "colors_and_type.css"
+    },
+    {
+      "name": "--background",
+      "value": "oklch(0.17 0.006 262)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css",
+      "scope": "html[data-theme=\"dark\"])"
+    },
+    {
+      "name": "--foreground",
+      "value": "oklch(0.95 0.005 262)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css",
+      "scope": "html[data-theme=\"dark\"])"
+    },
+    {
+      "name": "--card",
+      "value": "oklch(0.21 0.007 262)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css",
+      "scope": "html[data-theme=\"dark\"])"
+    },
+    {
+      "name": "--card-foreground",
+      "value": "oklch(0.95 0.005 262)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css",
+      "scope": "html[data-theme=\"dark\"])"
+    },
+    {
+      "name": "--popover",
+      "value": "oklch(0.24 0.007 262)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css",
+      "scope": "html[data-theme=\"dark\"])"
+    },
+    {
+      "name": "--popover-foreground",
+      "value": "oklch(0.95 0.005 262)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css",
+      "scope": "html[data-theme=\"dark\"])"
+    },
+    {
+      "name": "--primary",
+      "value": "oklch(0.74 0.13 255)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css",
+      "scope": "html[data-theme=\"dark\"])"
+    },
+    {
+      "name": "--primary-foreground",
+      "value": "oklch(0.15 0.01 262)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css",
+      "scope": "html[data-theme=\"dark\"])"
+    },
+    {
+      "name": "--primary-tint",
+      "value": "oklch(0.74 0.13 255 / 0.13)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css",
+      "scope": "html[data-theme=\"dark\"])"
+    },
+    {
+      "name": "--human",
+      "value": "oklch(0.76 0.12 45)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css",
+      "scope": "html[data-theme=\"dark\"])"
+    },
+    {
+      "name": "--human-foreground",
+      "value": "oklch(0.16 0.01 45)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css",
+      "scope": "html[data-theme=\"dark\"])"
+    },
+    {
+      "name": "--human-tint",
+      "value": "oklch(0.76 0.12 45 / 0.11)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css",
+      "scope": "html[data-theme=\"dark\"])"
+    },
+    {
+      "name": "--carbon-outline",
+      "value": "oklch(0.74 0.13 255 / 0.62)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css",
+      "scope": "html[data-theme=\"dark\"])"
+    },
+    {
+      "name": "--carbon-fill",
+      "value": "oklch(0.74 0.13 255 / 0.22)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css",
+      "scope": "html[data-theme=\"dark\"])"
+    },
+    {
+      "name": "--secondary",
+      "value": "oklch(0.26 0.007 262)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css",
+      "scope": "html[data-theme=\"dark\"])"
+    },
+    {
+      "name": "--secondary-foreground",
+      "value": "oklch(0.95 0.005 262)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css",
+      "scope": "html[data-theme=\"dark\"])"
+    },
+    {
+      "name": "--muted",
+      "value": "oklch(0.24 0.007 262)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css",
+      "scope": "html[data-theme=\"dark\"])"
+    },
+    {
+      "name": "--muted-foreground",
+      "value": "oklch(0.72 0.01 262)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css",
+      "scope": "html[data-theme=\"dark\"])"
+    },
+    {
+      "name": "--accent",
+      "value": "oklch(0.26 0.007 262)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css",
+      "scope": "html[data-theme=\"dark\"])"
+    },
+    {
+      "name": "--accent-foreground",
+      "value": "oklch(0.95 0.005 262)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css",
+      "scope": "html[data-theme=\"dark\"])"
+    },
+    {
+      "name": "--border",
+      "value": "oklch(0.29 0.008 262)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css",
+      "scope": "html[data-theme=\"dark\"])"
+    },
+    {
+      "name": "--border-strong",
+      "value": "oklch(0.40 0.008 262)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css",
+      "scope": "html[data-theme=\"dark\"])"
+    },
+    {
+      "name": "--input",
+      "value": "oklch(0.34 0.008 262)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css",
+      "scope": "html[data-theme=\"dark\"])"
+    },
+    {
+      "name": "--ring",
+      "value": "oklch(0.74 0.13 255)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css",
+      "scope": "html[data-theme=\"dark\"])"
+    },
+    {
+      "name": "--success",
+      "value": "oklch(0.76 0.13 158)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css",
+      "scope": "html[data-theme=\"dark\"])"
+    },
+    {
+      "name": "--success-tint",
+      "value": "oklch(0.76 0.13 158 / 0.14)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css",
+      "scope": "html[data-theme=\"dark\"])"
+    },
+    {
+      "name": "--warning",
+      "value": "oklch(0.80 0.14 75)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css",
+      "scope": "html[data-theme=\"dark\"])"
+    },
+    {
+      "name": "--warning-tint",
+      "value": "oklch(0.80 0.14 75 / 0.13)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css",
+      "scope": "html[data-theme=\"dark\"])"
+    },
+    {
+      "name": "--destructive",
+      "value": "oklch(0.70 0.16 27)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css",
+      "scope": "html[data-theme=\"dark\"])"
+    },
+    {
+      "name": "--destructive-foreground",
+      "value": "oklch(0.15 0.01 262)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css",
+      "scope": "html[data-theme=\"dark\"])"
+    },
+    {
+      "name": "--destructive-tint",
+      "value": "oklch(0.70 0.16 27 / 0.12)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css",
+      "scope": "html[data-theme=\"dark\"])"
+    },
+    {
+      "name": "--primary-wash",
+      "value": "var(--primary-tint)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css",
+      "scope": "html[data-theme=\"dark\"])"
+    },
+    {
+      "name": "--human-wash",
+      "value": "var(--human-tint)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css",
+      "scope": "html[data-theme=\"dark\"])"
+    },
+    {
+      "name": "--success-wash",
+      "value": "var(--success-tint)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css",
+      "scope": "html[data-theme=\"dark\"])"
+    },
+    {
+      "name": "--success-wash-strong",
+      "value": "oklch(0.76 0.13 158 / 0.20)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css",
+      "scope": "html[data-theme=\"dark\"])"
+    },
+    {
+      "name": "--warning-wash",
+      "value": "var(--warning-tint)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css",
+      "scope": "html[data-theme=\"dark\"])"
+    },
+    {
+      "name": "--verified-wash",
+      "value": "var(--success-tint)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css",
+      "scope": "html[data-theme=\"dark\"])"
+    },
+    {
+      "name": "--edu-fg",
+      "value": "oklch(0.78 0.06 210)",
+      "kind": "color",
+      "definedIn": "colors_and_type.css",
+      "scope": "html[data-theme=\"dark\"])"
+    },
+    {
+      "name": "--font-serif",
+      "value": "\"Fraunces\", Georgia, serif",
+      "kind": "font",
+      "definedIn": "labs/labs.css"
+    },
+    {
+      "name": "--human-deep",
+      "value": "oklch(0.38 0.09 40)",
+      "kind": "color",
+      "definedIn": "labs/labs.css"
+    },
+    {
+      "name": "--human-glow",
+      "value": "oklch(0.68 0.14 45)",
+      "kind": "color",
+      "definedIn": "labs/labs.css"
+    },
+    {
+      "name": "--protocol",
+      "value": "oklch(0.58 0.18 253)",
+      "kind": "color",
+      "definedIn": "labs/labs.css"
+    },
+    {
+      "name": "--protocol-deep",
+      "value": "oklch(0.42 0.14 253)",
+      "kind": "color",
+      "definedIn": "labs/labs.css"
+    },
+    {
+      "name": "--protocol-wash",
+      "value": "oklch(0.58 0.18 253 / 0.08)",
+      "kind": "color",
+      "definedIn": "labs/labs.css"
+    },
+    {
+      "name": "--protocol-glow",
+      "value": "oklch(0.72 0.16 253)",
+      "kind": "color",
+      "definedIn": "labs/labs.css"
+    },
+    {
+      "name": "--thermal",
+      "value": "linear-gradient(90deg, var(--human) 0%, oklch(0.55 0.1 180) 50%, var(--protocol) 100%)",
+      "kind": "color",
+      "definedIn": "labs/labs.css"
+    },
+    {
+      "name": "--paper",
+      "value": "oklch(0.985 0.005 85)",
+      "kind": "color",
+      "definedIn": "labs/labs.css"
+    },
+    {
+      "name": "--paper-warm",
+      "value": "oklch(0.98 0.008 75)",
+      "kind": "color",
+      "definedIn": "labs/labs.css"
+    },
+    {
+      "name": "--ink",
+      "value": "oklch(0.16 0.01 60)",
+      "kind": "color",
+      "definedIn": "labs/labs.css"
+    },
+    {
+      "name": "--ink-soft",
+      "value": "oklch(0.35 0.01 60)",
+      "kind": "color",
+      "definedIn": "labs/labs.css"
+    },
+    {
+      "name": "--ink-faint",
+      "value": "oklch(0.55 0.01 60)",
+      "kind": "color",
+      "definedIn": "labs/labs.css"
+    },
+    {
+      "name": "--ink-whisper",
+      "value": "oklch(0.72 0.01 60)",
+      "kind": "color",
+      "definedIn": "labs/labs.css"
+    },
+    {
+      "name": "--rule",
+      "value": "oklch(0.88 0.01 60)",
+      "kind": "color",
+      "definedIn": "labs/labs.css"
+    },
+    {
+      "name": "--rule-deep",
+      "value": "oklch(0.78 0.01 60)",
+      "kind": "color",
+      "definedIn": "labs/labs.css"
+    },
+    {
+      "name": "--live",
+      "value": "oklch(0.55 0.13 145)",
+      "kind": "color",
+      "definedIn": "labs/labs.css"
+    },
+    {
+      "name": "--waning",
+      "value": "oklch(0.64 0.14 65)",
+      "kind": "color",
+      "definedIn": "labs/labs.css"
+    },
+    {
+      "name": "--voided",
+      "value": "oklch(0.5 0.16 25)",
+      "kind": "color",
+      "definedIn": "labs/labs.css"
+    },
+    {
+      "name": "--teach",
+      "value": "oklch(0.48 0.1 280)",
+      "kind": "color",
+      "definedIn": "labs/labs.css"
+    },
+    {
+      "name": "--ease-read",
+      "value": "cubic-bezier(0.2, 0, 0, 1)",
+      "kind": "other",
+      "definedIn": "labs/labs.css",
+      "annotation": "other"
+    },
+    {
+      "name": "--ease-settle",
+      "value": "cubic-bezier(0.34, 1.2, 0.64, 1)",
+      "kind": "other",
+      "definedIn": "labs/labs.css",
+      "annotation": "other"
+    },
+    {
+      "name": "--paper",
+      "value": "oklch(0.14 0.012 255)",
+      "kind": "color",
+      "definedIn": "labs/labs.css",
+      "scope": ":root[data-view=\"night\"]"
+    },
+    {
+      "name": "--paper-warm",
+      "value": "oklch(0.17 0.015 255)",
+      "kind": "color",
+      "definedIn": "labs/labs.css",
+      "scope": ":root[data-view=\"night\"]"
+    },
+    {
+      "name": "--ink",
+      "value": "oklch(0.94 0.008 85)",
+      "kind": "color",
+      "definedIn": "labs/labs.css",
+      "scope": ":root[data-view=\"night\"]"
+    },
+    {
+      "name": "--ink-soft",
+      "value": "oklch(0.78 0.008 85)",
+      "kind": "color",
+      "definedIn": "labs/labs.css",
+      "scope": ":root[data-view=\"night\"]"
+    },
+    {
+      "name": "--ink-faint",
+      "value": "oklch(0.58 0.008 85)",
+      "kind": "color",
+      "definedIn": "labs/labs.css",
+      "scope": ":root[data-view=\"night\"]"
+    },
+    {
+      "name": "--ink-whisper",
+      "value": "oklch(0.38 0.008 85)",
+      "kind": "color",
+      "definedIn": "labs/labs.css",
+      "scope": ":root[data-view=\"night\"]"
+    },
+    {
+      "name": "--rule",
+      "value": "oklch(0.26 0.012 255)",
+      "kind": "color",
+      "definedIn": "labs/labs.css",
+      "scope": ":root[data-view=\"night\"]"
+    },
+    {
+      "name": "--rule-deep",
+      "value": "oklch(0.34 0.012 255)",
+      "kind": "color",
+      "definedIn": "labs/labs.css",
+      "scope": ":root[data-view=\"night\"]"
+    },
+    {
+      "name": "--human",
+      "value": "oklch(0.72 0.12 45)",
+      "kind": "color",
+      "definedIn": "labs/labs.css",
+      "scope": ":root[data-view=\"night\"]"
+    },
+    {
+      "name": "--human-wash",
+      "value": "oklch(0.72 0.12 45 / 0.1)",
+      "kind": "color",
+      "definedIn": "labs/labs.css",
+      "scope": ":root[data-view=\"night\"]"
+    },
+    {
+      "name": "--human-glow",
+      "value": "oklch(0.82 0.15 45)",
+      "kind": "color",
+      "definedIn": "labs/labs.css",
+      "scope": ":root[data-view=\"night\"]"
+    },
+    {
+      "name": "--protocol",
+      "value": "oklch(0.74 0.16 253)",
+      "kind": "color",
+      "definedIn": "labs/labs.css",
+      "scope": ":root[data-view=\"night\"]"
+    },
+    {
+      "name": "--protocol-wash",
+      "value": "oklch(0.74 0.16 253 / 0.1)",
+      "kind": "color",
+      "definedIn": "labs/labs.css",
+      "scope": ":root[data-view=\"night\"]"
+    },
+    {
+      "name": "--protocol-glow",
+      "value": "oklch(0.85 0.18 253)",
+      "kind": "color",
+      "definedIn": "labs/labs.css",
+      "scope": ":root[data-view=\"night\"]"
+    },
+    {
+      "name": "--live",
+      "value": "oklch(0.72 0.15 145)",
+      "kind": "color",
+      "definedIn": "labs/labs.css",
+      "scope": ":root[data-view=\"night\"]"
+    }
+  ],
+  "themes": [
+    { "selector": "html[data-theme=\"dark\"])", "label": "Dark )" },
+    { "selector": ":root[data-view=\"night\"]", "label": "Root View Night" }
+  ],
+  "fonts": [],
+  "brandFonts": [
+    {
+      "family": "Geist",
+      "status": "ok",
+      "tokens": ["--font-sans"],
+      "path": "labs/labs.css"
+    },
+    {
+      "family": "JetBrains Mono",
+      "status": "ok",
+      "tokens": ["--font-mono"],
+      "path": "labs/labs.css"
+    },
+    {
+      "family": "Fraunces",
+      "status": "ok",
+      "tokens": ["--font-serif"],
+      "path": "labs/labs.css"
+    }
+  ],
+  "source": "spa"
+}

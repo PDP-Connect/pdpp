@@ -87,17 +87,17 @@ interface RouteRequest {
 }
 
 interface RouteResponse {
-  getHeader(name: string): string | number | string[] | undefined;
-  json(body: unknown): unknown;
-  setHeader(name: string, value: string): void;
-  status(code: number): RouteResponse;
+  getHeader: (name: string) => string | number | string[] | undefined;
+  json: (body: unknown) => unknown;
+  setHeader: (name: string, value: string) => void;
+  status: (code: number) => RouteResponse;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
 type NextFn = () => unknown | Promise<unknown>;
 
 interface AppLike {
-  get(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  get: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
 }
 
 export interface MountOwnerConnectionDiagnosticsContext {
@@ -109,32 +109,32 @@ export interface MountOwnerConnectionDiagnosticsContext {
     message: string,
     availableConnections: WireConnection[]
   ) => AmbiguousConnectionErrorLike;
-  canonicalConnectorKey(value: string | null | undefined): string | null;
-  createTraceContext(input?: { scenarioId?: string }): TraceContext;
-  emitSpineEvent(event: Record<string, unknown>): Promise<unknown>;
-  ensureRequestId(res: RouteResponse): string;
+  canonicalConnectorKey: (value: string | null | undefined) => string | null;
+  createTraceContext: (input?: { scenarioId?: string }) => TraceContext;
+  emitSpineEvent: (event: Record<string, unknown>) => Promise<unknown>;
+  ensureRequestId: (res: RouteResponse) => string;
   // Shared connection-scoped diagnostics read. Owner-scoped because the
   // namespace was already resolved owner-side; returns `null` when no
   // configured connection matches the resolved instance id.
-  getOwnerConnectionDiagnostics(connectorInstanceId: string): Promise<unknown | null>;
-  getOwnerTokenSubjectId(req: unknown): string;
-  handleError(res: unknown, err: unknown): void;
+  getOwnerConnectionDiagnostics: (connectorInstanceId: string) => Promise<unknown | null>;
+  getOwnerTokenSubjectId: (req: unknown) => string;
+  handleError: (res: unknown, err: unknown) => void;
   // Lists the owner's active connection bindings for a connector. Used to
   // populate `available_connections` on the typed ambiguity error.
-  listActiveBindingsForGrant(input: {
+  listActiveBindingsForGrant: (input: {
     ownerSubjectId: string;
     connectorId: string;
-  }): Promise<ActiveBinding[]> | ActiveBinding[];
+  }) => Promise<ActiveBinding[]> | ActiveBinding[];
   pdppError: PdppErrorFn;
   // Projects one active binding to the wire `{ connection_id, display_name? }`
   // shape used in `available_connections` (placeholder labels suppressed).
-  projectBindingForWire(instance: ActiveBinding): WireConnection | null;
+  projectBindingForWire: (instance: ActiveBinding) => WireConnection | null;
   requireOwner: MiddlewareHandler;
   requireToken: MiddlewareHandler;
   // Owner-scoped connector-instance namespace resolution. Throws
   // `ConnectorInstanceResolutionError` with code `ambiguous_connector_instance`
   // when a connector-only address resolves to more than one active connection.
-  resolveOwnerConnectorNamespace(
+  resolveOwnerConnectorNamespace: (
     req: unknown,
     connectorId: string | null,
     options?: {
@@ -142,11 +142,12 @@ export interface MountOwnerConnectionDiagnosticsContext {
       readonly connectorInstanceId?: string | null;
       readonly ownerSubjectId?: string;
     }
-  ): Promise<ConnectorNamespace>;
-  setReferenceTraceId(res: RouteResponse, traceId: string): void;
+  ) => Promise<ConnectorNamespace>;
+  setReferenceTraceId: (res: RouteResponse, traceId: string) => void;
 }
 
 function httpStatusForDiagnosticsError(err: unknown): number {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const code = (err as { code?: unknown })?.code;
   if (code === "authentication_error") {
     return 401;
@@ -189,31 +190,22 @@ async function emitDiagnosticsAudit(
     args.ownerSubjectId ?? (typeof req.tokenInfo?.subject_id === "string" ? req.tokenInfo.subject_id : null);
   const code = (args.error as { code?: unknown } | null)?.code;
   await ctx.emitSpineEvent({
-    event_type: "owner_agent.connection.inspect",
-    trace_id: trace.trace_id,
-    scenario_id: trace.scenario_id,
-    request_id: trace.request_id,
-    actor_type: actorKind,
     actor_id: clientId ?? ownerSubjectId ?? actorKind,
-    subject_type: "subject",
-    subject_id: ownerSubjectId,
+    actor_type: actorKind,
     client_id: clientId,
-    object_type: "connection",
-    object_id: args.connectionId || args.connectorKey || "unknown_connection",
-    status: args.outcome,
     data: {
-      auth_token_kind: req.tokenInfo?.pdpp_token_kind ?? null,
       actor_kind: actorKind,
+      auth_token_kind: req.tokenInfo?.pdpp_token_kind ?? null,
       client_id: clientId,
       client_name: clientName,
       connection_id: args.connectionId ?? null,
       connector_key: args.connectorKey ?? null,
-      selector: args.selector,
-      operation: "inspect_diagnostics",
-      outcome: args.outcome,
       // Non-secret health verdict so an owner can see what state the agent
       // observed without re-reading the diagnostics body. `null` on failure.
       health_state: args.healthState ?? null,
+      operation: "inspect_diagnostics",
+      outcome: args.outcome,
+      selector: args.selector,
       target_resource: "connection_diagnostics",
       ...(args.error
         ? {
@@ -224,6 +216,15 @@ async function emitDiagnosticsAudit(
           }
         : {}),
     },
+    event_type: "owner_agent.connection.inspect",
+    object_id: args.connectionId || args.connectorKey || "unknown_connection",
+    object_type: "connection",
+    request_id: trace.request_id,
+    scenario_id: trace.scenario_id,
+    status: args.outcome,
+    subject_id: ownerSubjectId,
+    subject_type: "subject",
+    trace_id: trace.trace_id,
   });
 }
 
@@ -281,9 +282,9 @@ function buildDiagnosticsHandler(
         // verifies the connection belongs to this owner and is active; a
         // foreign or unknown id surfaces as connector_instance_not_found (404).
         namespace = await ctx.resolveOwnerConnectorNamespace(req, null, {
-          ownerSubjectId,
           allowDefaultAccount: false,
           connectorInstanceId: addressed,
+          ownerSubjectId,
         });
       } else {
         const rawConnectorId = decodeURIComponent(req.params.connectorId as string);
@@ -292,8 +293,8 @@ function buildDiagnosticsHandler(
           // connector-only addressing: auto-select the single active
           // connection, or throw ambiguity when more than one exists.
           namespace = await ctx.resolveOwnerConnectorNamespace(req, rawConnectorId, {
-            ownerSubjectId,
             allowDefaultAccount: false,
+            ownerSubjectId,
           });
         } catch (resolveErr) {
           await rethrowAsAmbiguousConnection(ctx, resolveErr, ownerSubjectId, connectorKey);

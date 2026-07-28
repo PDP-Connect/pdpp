@@ -31,8 +31,8 @@ export interface StderrTail {
 }
 
 export interface StderrTailBuffer {
-  append(chunk: Buffer | string | null | undefined): void;
-  finalize(): StderrTail;
+  append: (chunk: Buffer | string | null | undefined) => void;
+  finalize: () => StderrTail;
 }
 
 export function createStderrTailBuffer({ capBytes = DEFAULT_CAP_BYTES }: { capBytes?: number } = {}): StderrTailBuffer {
@@ -51,6 +51,7 @@ export function createStderrTailBuffer({ capBytes = DEFAULT_CAP_BYTES }: { capBy
     chunks.push(buf);
     kept += buf.length;
     while (kept > capBytes && chunks.length > 0) {
+      // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
       const head = chunks[0];
       if (head === undefined) {
         break;
@@ -75,9 +76,9 @@ export function createStderrTailBuffer({ capBytes = DEFAULT_CAP_BYTES }: { capBy
     const decoder = new TextDecoder("utf-8", { fatal: false });
     const text = decoder.decode(tail);
     return {
-      text,
-      bytes_observed: observed,
       bytes_captured: tail.length,
+      bytes_observed: observed,
+      text,
       truncated: observed > tail.length,
     };
   }

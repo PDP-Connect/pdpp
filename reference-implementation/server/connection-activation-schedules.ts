@@ -16,12 +16,12 @@ export interface ActivationRefreshContract {
 }
 
 export interface ActivationScheduleController {
-  getSchedule(connectorId: string, options?: { connectorInstanceId?: string | null }): Promise<ScheduleApi | null>;
-  upsertSchedule(
+  getSchedule: (connectorId: string, options?: { connectorInstanceId?: string | null }) => Promise<ScheduleApi | null>;
+  upsertSchedule: (
     connectorId: string,
     input: ConnectorSchedulePatch,
     options?: { connectorInstanceId?: string | null }
-  ): Promise<ScheduleUpsertResult>;
+  ) => Promise<ScheduleUpsertResult>;
 }
 
 export interface ActivationScheduleResult {

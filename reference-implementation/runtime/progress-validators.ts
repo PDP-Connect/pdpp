@@ -188,10 +188,14 @@ export function validateProgressAttachmentRecoveryOutcome(outcome: unknown): voi
     throw new Error("Connector emitted invalid PROGRESS.attachment_recovery_outcome: unexpected field");
   }
   for (const fieldName of ATTACHMENT_RECOVERY_OUTCOME_FIELDS) {
-    if (fieldName === "object") continue;
+    if (fieldName === "object") {
+      continue;
+    }
     const value = recoveryOutcome[fieldName];
     if (!Number.isSafeInteger(value) || (value as number) < 0) {
-      throw new Error(`Connector emitted invalid PROGRESS.attachment_recovery_outcome.${fieldName}: expected non-negative integer`);
+      throw new Error(
+        `Connector emitted invalid PROGRESS.attachment_recovery_outcome.${fieldName}: expected non-negative integer`
+      );
     }
   }
 }
@@ -212,7 +216,9 @@ export function validateProgressAttachmentHydrationFailureOutcome(outcome: unkno
     throw new Error("Connector emitted invalid PROGRESS.attachment_hydration_failure_outcome: unexpected field");
   }
   for (const fieldName of ATTACHMENT_HYDRATION_FAILURE_OUTCOME_FIELDS) {
-    if (fieldName === "object") continue;
+    if (fieldName === "object") {
+      continue;
+    }
     const value = failureOutcome[fieldName];
     if (!Number.isSafeInteger(value) || (value as number) < 0) {
       throw new Error(

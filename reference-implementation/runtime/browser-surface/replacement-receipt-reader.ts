@@ -5,11 +5,11 @@ import type { CurrentReplacementReceipt } from "./ephemeral-health-projection.ts
 
 /** Luna owns this store and its current-generation selection semantics. */
 export interface CurrentReplacementReceiptReader {
-  selectCurrent(input: {
+  selectCurrent: (input: {
     readonly connection_id: string;
     readonly surface_subject_id?: string;
     readonly current_generation_hash?: string;
-  }): Promise<CurrentReplacementReceipt | null>;
+  }) => CurrentReplacementReceipt | null | Promise<CurrentReplacementReceipt | null>;
 }
 
 export type CurrentReplacementReceiptRead =
@@ -71,7 +71,7 @@ export async function readCurrentReplacementReceipt(input: {
   readonly surface_subject_id?: string;
 }): Promise<CurrentReplacementReceiptRead> {
   if (!input.reader) {
-    return { state: "unavailable", receipt: null };
+    return { receipt: null, state: "unavailable" };
   }
   try {
     const receipt = await input.reader.selectCurrent({
@@ -80,9 +80,9 @@ export async function readCurrentReplacementReceipt(input: {
       ...(input.current_generation_hash ? { current_generation_hash: input.current_generation_hash } : {}),
     });
     return isScopedCurrentReceipt(receipt, input.connection_id, input.surface_subject_id)
-      ? { state: "available", receipt }
-      : { state: "available", receipt: null };
+      ? { receipt, state: "available" }
+      : { receipt: null, state: "available" };
   } catch {
-    return { state: "unavailable", receipt: null };
+    return { receipt: null, state: "unavailable" };
   }
 }

@@ -30,44 +30,20 @@ import { extname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  COLLECTOR_PROTOCOL_VERSION as PROTOCOL_VERSION,
   COLLECTOR_RUNTIME_CAPABILITIES as POLYFILL_COLLECTOR_RUNTIME_CAPABILITIES,
+  COLLECTOR_PROTOCOL_VERSION as PROTOCOL_VERSION,
   type RuntimeCapabilityProfile,
 } from "../../polyfill-connectors/src/runner/index.ts";
 
+// biome-ignore lint/performance/noBarrelFile: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
 export {
+  assertPlacementOrThrow,
+  type BuildLocalDeviceOutboxIdInput,
   buildCollectorStartMessage,
+  buildLocalDeviceOutboxId,
+  buildLocalDeviceRecordEnvelope,
   COLLECTOR_COVERAGE_STATUSES,
   COLLECTOR_PROTOCOL_VERSION,
-  CollectorStateReadError,
-  drainCollectorQueue,
-  emitToStdout,
-  enrollCollector,
-  evaluatePlacement,
-  isMainModule,
-  LocalDeviceClient,
-  LocalDeviceHttpError,
-  LocalDeviceRequestTimeoutError,
-  LocalDeviceOutbox,
-  LocalDeviceQueue,
-  PROVIDER_RUNTIME_CAPABILITIES,
-  RUNTIME_CAPABILITY_MISMATCH_CODE,
-  RuntimeCapabilityMismatchError,
-  assertPlacementOrThrow,
-  buildLocalDeviceRecordEnvelope,
-  buildLocalDeviceOutboxId,
-  canonicalJson,
-  classifyDeadLetterError,
-  deriveLocalCollectorLifecycleState,
-  diffRequiredBindings,
-  hashCanonicalJson,
-  LOCAL_COLLECTOR_LIFECYCLE_STATES,
-  parseJsonlLine,
-  resourceSet,
-  runCollectorConnector,
-  stringifyForJsonl,
-  summarizeCollectorCompleteness,
-  transformRecordsToCollectorEnvelopes,
   type CollectorChildContext,
   type CollectorCompletenessSummary,
   type CollectorConnectorSpec,
@@ -75,14 +51,27 @@ export {
   type CollectorEnrollmentConfig,
   type CollectorRunConfig,
   type CollectorRunResult,
+  CollectorStateReadError,
   type ConnectorPlacementInput,
   type ConnectorRuntimeRequirements,
+  canonicalJson,
+  classifyDeadLetterError,
+  deriveLocalCollectorLifecycleState,
+  diffRequiredBindings,
+  drainCollectorQueue,
   type EmittedMessage,
   type EnrollmentExchangeResponse,
+  emitToStdout,
+  enrollCollector,
+  evaluatePlacement,
+  hashCanonicalJson,
+  isMainModule,
+  LOCAL_COLLECTOR_LIFECYCLE_STATES,
   type LocalCollectorLifecycleInput,
   type LocalCollectorLifecycleState,
-  type LocalDeviceRecordEnvelope,
-  type BuildLocalDeviceOutboxIdInput,
+  LocalDeviceClient,
+  LocalDeviceHttpError,
+  LocalDeviceOutbox,
   type LocalDeviceOutboxClaimInput,
   type LocalDeviceOutboxCompactResult,
   type LocalDeviceOutboxDeadLetterErrorClass,
@@ -102,11 +91,23 @@ export {
   type LocalDeviceOutboxRequeueDeadLettersResult,
   type LocalDeviceOutboxStatus,
   type LocalDeviceOutboxSummary,
+  LocalDeviceQueue,
+  type LocalDeviceRecordEnvelope,
+  LocalDeviceRequestTimeoutError,
   type PlacementDecision,
+  PROVIDER_RUNTIME_CAPABILITIES,
+  parseJsonlLine,
+  RUNTIME_CAPABILITY_MISMATCH_CODE,
   type RuntimeBindingName,
+  RuntimeCapabilityMismatchError,
   type RuntimeCapabilityProfile,
+  resourceSet,
+  runCollectorConnector,
   type StartMessage,
   type StreamScope,
+  stringifyForJsonl,
+  summarizeCollectorCompleteness,
+  transformRecordsToCollectorEnvelopes,
 } from "../../polyfill-connectors/src/runner/index.ts";
 
 /**
@@ -159,14 +160,14 @@ export interface LocalCollectorDefinition {
  * Spec: openspec/changes/publish-pdpp-local-collector/design.md §3.
  */
 export interface BundledConnectorEntry {
-  /** Stable connector id (matches the manifest + ingest envelope). */
-  readonly connector_id: string;
   /** Argv to feed `runCollectorConnector` (typically `tsx <entry>`). */
   readonly args: readonly string[];
-  /** Default executable; `tsx` for the source-only TypeScript entrypoints. */
-  readonly command: string;
   /** Bindings the connector requires from the collector runtime profile. */
   readonly bindings: Readonly<Record<string, { required: boolean }>>;
+  /** Default executable; `tsx` for the source-only TypeScript entrypoints. */
+  readonly command: string;
+  /** Stable connector id (matches the manifest + ingest envelope). */
+  readonly connector_id: string;
   /** Default stream set; operators can override with `--streams`. */
   readonly streams: readonly string[];
 }
@@ -185,15 +186,11 @@ export type BundledConnectorRegistry = Readonly<Record<string, BundledConnectorE
  * connectors into `dist/polyfill-connectors/connectors/<entry>/`.
  */
 export function resolveBundledConnectorEntry(entry: string): string {
-  const built = fileURLToPath(
-    new URL(`../../polyfill-connectors/connectors/${entry}/index.js`, import.meta.url)
-  );
+  const built = fileURLToPath(new URL(`../../polyfill-connectors/connectors/${entry}/index.js`, import.meta.url));
   if (existsSync(built)) {
     return built;
   }
-  return fileURLToPath(
-    new URL(`../../polyfill-connectors/connectors/${entry}/index.ts`, import.meta.url)
-  );
+  return fileURLToPath(new URL(`../../polyfill-connectors/connectors/${entry}/index.ts`, import.meta.url));
 }
 
 function commandForEntry(entry: string): "node" | "tsx" {
@@ -255,9 +252,7 @@ export function getBundledConnectorFrom(
  * the map covers exactly the injected ids; the shape stays stable so
  * per-connector versioning can be added later without a payload migration.
  */
-export function bundledConnectorVersions(
-  registry: BundledConnectorRegistry
-): Readonly<Record<string, string>> {
+export function bundledConnectorVersions(registry: BundledConnectorRegistry): Readonly<Record<string, string>> {
   const versions: Record<string, string> = {};
   for (const id of Object.keys(registry)) {
     versions[id] = PROTOCOL_VERSION;

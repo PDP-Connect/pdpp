@@ -4,7 +4,7 @@
 import { createHash } from "node:crypto";
 
 import { execDynamicSqlAcknowledged, iterateDynamicSqlAcknowledged } from "../../lib/db.ts";
-import { postgresQuery } from "../postgres-storage.js";
+import { postgresQuery } from "../postgres-storage.ts";
 
 const DEFAULT_LIST_LIMIT = 25;
 
@@ -141,28 +141,28 @@ interface NormalizedInsert {
 }
 
 export interface SqliteAcquisitionBatchStore {
-  findByArtifactHash(ownerSubjectId: string, connectorId: string, artifactSha256: string): AcquisitionBatch | null;
-  get(batchId: string): AcquisitionBatch | null;
-  insertOwnerArtifactBatch(record: AcquisitionBatchInsert): AcquisitionBatch | null;
-  listByConnection(connectorInstanceId: string, opts?: ListOptions): (AcquisitionBatch | null)[];
-  markCommittedForConnection(connectorInstanceId: string, opts?: MarkCommittedOptions): AcquisitionBatch | null;
-  recordRecordProvenance(input: RecordProvenanceInput): RecordProvenanceResult;
+  findByArtifactHash: (ownerSubjectId: string, connectorId: string, artifactSha256: string) => AcquisitionBatch | null;
+  get: (batchId: string) => AcquisitionBatch | null;
+  insertOwnerArtifactBatch: (record: AcquisitionBatchInsert) => AcquisitionBatch | null;
+  listByConnection: (connectorInstanceId: string, opts?: ListOptions) => (AcquisitionBatch | null)[];
+  markCommittedForConnection: (connectorInstanceId: string, opts?: MarkCommittedOptions) => AcquisitionBatch | null;
+  recordRecordProvenance: (input: RecordProvenanceInput) => RecordProvenanceResult;
 }
 
 export interface PostgresAcquisitionBatchStore {
-  findByArtifactHash(
+  findByArtifactHash: (
     ownerSubjectId: string,
     connectorId: string,
     artifactSha256: string
-  ): Promise<AcquisitionBatch | null>;
-  get(batchId: string): Promise<AcquisitionBatch | null>;
-  insertOwnerArtifactBatch(record: AcquisitionBatchInsert): Promise<AcquisitionBatch | null>;
-  listByConnection(connectorInstanceId: string, opts?: ListOptions): Promise<(AcquisitionBatch | null)[]>;
-  markCommittedForConnection(
+  ) => Promise<AcquisitionBatch | null>;
+  get: (batchId: string) => Promise<AcquisitionBatch | null>;
+  insertOwnerArtifactBatch: (record: AcquisitionBatchInsert) => Promise<AcquisitionBatch | null>;
+  listByConnection: (connectorInstanceId: string, opts?: ListOptions) => Promise<(AcquisitionBatch | null)[]>;
+  markCommittedForConnection: (
     connectorInstanceId: string,
     opts?: MarkCommittedOptions
-  ): Promise<AcquisitionBatch | null>;
-  recordRecordProvenance(input: RecordProvenanceInput): Promise<RecordProvenanceResult>;
+  ) => Promise<AcquisitionBatch | null>;
+  recordRecordProvenance: (input: RecordProvenanceInput) => Promise<RecordProvenanceResult>;
 }
 
 function hashKey(value: string): string {
@@ -174,7 +174,7 @@ export function makeAcquisitionBatchId(ownerSubjectId: string, connectorId: stri
 }
 
 function parseJson(value: unknown, fallback: unknown): unknown {
-  if (value == null) {
+  if (value === null) {
     return fallback;
   }
   if (typeof value !== "string") {
@@ -207,28 +207,28 @@ function mapRow(row: AcquisitionBatchRow | null | undefined): AcquisitionBatch |
     return null;
   }
   return {
+    acceptedCount: numberOrNull(row.accepted_count),
+    acquisitionMethod: row.acquisition_method,
+    artifactSha256: row.artifact_sha256,
     batchId: row.batch_id,
-    ownerSubjectId: row.owner_subject_id,
     connectorId: row.connector_id,
     connectorInstanceId: row.connector_instance_id,
-    acquisitionMethod: row.acquisition_method,
-    sourceFormat: row.source_format,
-    parserVersion: row.parser_version,
-    artifactSha256: row.artifact_sha256,
-    uploadedFileName: row.uploaded_file_name,
-    status: row.status,
-    eventTimeStart: row.event_time_start,
-    eventTimeEnd: row.event_time_end,
-    parsedCount: numberOrNull(row.parsed_count),
-    acceptedCount: numberOrNull(row.accepted_count),
+    createdAt: row.created_at,
     duplicateCount: numberOrNull(row.duplicate_count),
-    skippedCount: numberOrNull(row.skipped_count),
+    eventTimeEnd: row.event_time_end,
+    eventTimeStart: row.event_time_start,
     failedCount: numberOrNull(row.failed_count),
     mediaCoverage: parseJson(row.media_coverage_json, null),
-    warnings: parseJson(row.warnings_json, []),
+    ownerSubjectId: row.owner_subject_id,
+    parsedCount: numberOrNull(row.parsed_count),
+    parserVersion: row.parser_version,
     receipt: parseJson(row.receipt_json, null),
-    createdAt: row.created_at,
+    skippedCount: numberOrNull(row.skipped_count),
+    sourceFormat: row.source_format,
+    status: row.status,
     updatedAt: row.updated_at,
+    uploadedFileName: row.uploaded_file_name,
+    warnings: parseJson(row.warnings_json, []),
   };
 }
 
@@ -263,10 +263,10 @@ function assertRequiredInsertFields(record: AcquisitionBatchInsert): RequiredIns
     throw new Error("artifactSha256 is required for owner-artifact batches.");
   }
   return {
-    ownerSubjectId: record.ownerSubjectId,
+    artifactSha256: record.artifactSha256,
     connectorId: record.connectorId,
     connectorInstanceId: record.connectorInstanceId,
-    artifactSha256: record.artifactSha256,
+    ownerSubjectId: record.ownerSubjectId,
   };
 }
 
@@ -274,33 +274,52 @@ function normalizeInsert(record: AcquisitionBatchInsert): NormalizedInsert {
   const { ownerSubjectId, connectorId, connectorInstanceId, artifactSha256 } = assertRequiredInsertFields(record);
   const now = record.now ?? new Date().toISOString();
   return {
+    acceptedCount: record.acceptedCount ?? 0,
+    acquisitionMethod: record.acquisitionMethod ?? "owner_artifact",
+    artifactSha256,
     batchId: record.batchId ?? makeAcquisitionBatchId(ownerSubjectId, connectorId, artifactSha256),
-    ownerSubjectId,
     connectorId,
     connectorInstanceId,
-    acquisitionMethod: record.acquisitionMethod ?? "owner_artifact",
-    sourceFormat: record.sourceFormat ?? null,
-    parserVersion: record.parserVersion ?? null,
-    artifactSha256,
-    uploadedFileName: record.uploadedFileName ?? null,
-    status: record.status ?? "validated",
-    eventTimeStart: record.eventTimeStart ?? null,
-    eventTimeEnd: record.eventTimeEnd ?? null,
-    parsedCount: record.parsedCount ?? null,
-    acceptedCount: record.acceptedCount ?? 0,
+    createdAt: record.createdAt ?? now,
     duplicateCount: record.duplicateCount ?? 0,
-    skippedCount: record.skippedCount ?? 0,
+    eventTimeEnd: record.eventTimeEnd ?? null,
+    eventTimeStart: record.eventTimeStart ?? null,
     failedCount: record.failedCount ?? 0,
     mediaCoverageJson: stringifyJson(record.mediaCoverage ?? null),
-    warningsJson: stringifyJson(record.warnings ?? []),
+    ownerSubjectId,
+    parsedCount: record.parsedCount ?? null,
+    parserVersion: record.parserVersion ?? null,
     receiptJson: stringifyJson(record.receipt ?? null),
-    createdAt: record.createdAt ?? now,
+    skippedCount: record.skippedCount ?? 0,
+    sourceFormat: record.sourceFormat ?? null,
+    status: record.status ?? "validated",
     updatedAt: record.updatedAt ?? now,
+    uploadedFileName: record.uploadedFileName ?? null,
+    warningsJson: stringifyJson(record.warnings ?? []),
   };
 }
 
 export function createSqliteAcquisitionBatchStore(): SqliteAcquisitionBatchStore {
   return {
+    findByArtifactHash(ownerSubjectId: string, connectorId: string, artifactSha256: string): AcquisitionBatch | null {
+      // REVIEWED-DYNAMIC: single-row lookup for the store-owned table.
+      const row = sqliteGetOne(
+        `SELECT *
+           FROM acquisition_batches
+          WHERE owner_subject_id = ?
+            AND connector_id = ?
+            AND artifact_sha256 = ?
+          ORDER BY created_at ASC
+          LIMIT 1`,
+        [ownerSubjectId, connectorId, artifactSha256]
+      );
+      return mapRow(row);
+    },
+
+    get(batchId: string): AcquisitionBatch | null {
+      // REVIEWED-DYNAMIC: single-row lookup for the store-owned table.
+      return mapRow(sqliteGetOne("SELECT * FROM acquisition_batches WHERE batch_id = ? LIMIT 1", [batchId]));
+    },
     insertOwnerArtifactBatch(record: AcquisitionBatchInsert): AcquisitionBatch | null {
       const row = normalizeInsert(record);
       // REVIEWED-DYNAMIC: store-owned mutation; acquisition_batches is created
@@ -346,26 +365,6 @@ export function createSqliteAcquisitionBatchStore(): SqliteAcquisitionBatchStore
       return this.get(row.batchId);
     },
 
-    findByArtifactHash(ownerSubjectId: string, connectorId: string, artifactSha256: string): AcquisitionBatch | null {
-      // REVIEWED-DYNAMIC: single-row lookup for the store-owned table.
-      const row = sqliteGetOne(
-        `SELECT *
-           FROM acquisition_batches
-          WHERE owner_subject_id = ?
-            AND connector_id = ?
-            AND artifact_sha256 = ?
-          ORDER BY created_at ASC
-          LIMIT 1`,
-        [ownerSubjectId, connectorId, artifactSha256]
-      );
-      return mapRow(row);
-    },
-
-    get(batchId: string): AcquisitionBatch | null {
-      // REVIEWED-DYNAMIC: single-row lookup for the store-owned table.
-      return mapRow(sqliteGetOne("SELECT * FROM acquisition_batches WHERE batch_id = ? LIMIT 1", [batchId]));
-    },
-
     listByConnection(
       connectorInstanceId: string,
       { limit = DEFAULT_LIST_LIMIT }: ListOptions = {}
@@ -380,26 +379,6 @@ export function createSqliteAcquisitionBatchStore(): SqliteAcquisitionBatchStore
         [connectorInstanceId, limit]
       );
       return rows.map(mapRow);
-    },
-
-    recordRecordProvenance({
-      connectorInstanceId,
-      stream,
-      recordKey,
-      batchId,
-      acquisitionMethod = "owner_artifact",
-      createdAt,
-    }: RecordProvenanceInput): RecordProvenanceResult {
-      const now = createdAt ?? new Date().toISOString();
-      // REVIEWED-DYNAMIC: store-owned provenance mutation.
-      execDynamicSqlAcknowledged(
-        `INSERT OR IGNORE INTO record_acquisition_provenance(
-           connector_instance_id, stream, record_key, batch_id, acquisition_method, created_at
-         )
-         VALUES(?, ?, ?, ?, ?, ?)`,
-        [connectorInstanceId, stream, recordKey, batchId, acquisitionMethod, now]
-      );
-      return { batchId, connectorInstanceId, recordKey, stream };
     },
 
     markCommittedForConnection(
@@ -427,11 +406,55 @@ export function createSqliteAcquisitionBatchStore(): SqliteAcquisitionBatchStore
       );
       return this.listByConnection(connectorInstanceId, { limit: 1 })[0] ?? null;
     },
+
+    recordRecordProvenance({
+      connectorInstanceId,
+      stream,
+      recordKey,
+      batchId,
+      acquisitionMethod = "owner_artifact",
+      createdAt,
+    }: RecordProvenanceInput): RecordProvenanceResult {
+      const now = createdAt ?? new Date().toISOString();
+      // REVIEWED-DYNAMIC: store-owned provenance mutation.
+      execDynamicSqlAcknowledged(
+        `INSERT OR IGNORE INTO record_acquisition_provenance(
+           connector_instance_id, stream, record_key, batch_id, acquisition_method, created_at
+         )
+         VALUES(?, ?, ?, ?, ?, ?)`,
+        [connectorInstanceId, stream, recordKey, batchId, acquisitionMethod, now]
+      );
+      return { batchId, connectorInstanceId, recordKey, stream };
+    },
   };
 }
 
 export function createPostgresAcquisitionBatchStore(): PostgresAcquisitionBatchStore {
   return {
+    async findByArtifactHash(
+      ownerSubjectId: string,
+      connectorId: string,
+      artifactSha256: string
+    ): Promise<AcquisitionBatch | null> {
+      const result = await postgresQuery<AcquisitionBatchRow>(
+        `SELECT *
+           FROM acquisition_batches
+          WHERE owner_subject_id = $1
+            AND connector_id = $2
+            AND artifact_sha256 = $3
+          ORDER BY created_at ASC
+          LIMIT 1`,
+        [ownerSubjectId, connectorId, artifactSha256]
+      );
+      return mapRow(result.rows[0]);
+    },
+
+    async get(batchId: string): Promise<AcquisitionBatch | null> {
+      const result = await postgresQuery<AcquisitionBatchRow>("SELECT * FROM acquisition_batches WHERE batch_id = $1", [
+        batchId,
+      ]);
+      return mapRow(result.rows[0]);
+    },
     async insertOwnerArtifactBatch(record: AcquisitionBatchInsert): Promise<AcquisitionBatch | null> {
       const row = normalizeInsert(record);
       await postgresQuery(
@@ -475,34 +498,11 @@ export function createPostgresAcquisitionBatchStore(): PostgresAcquisitionBatchS
       return await this.get(row.batchId);
     },
 
-    async findByArtifactHash(
-      ownerSubjectId: string,
-      connectorId: string,
-      artifactSha256: string
-    ): Promise<AcquisitionBatch | null> {
-      const result = await postgresQuery(
-        `SELECT *
-           FROM acquisition_batches
-          WHERE owner_subject_id = $1
-            AND connector_id = $2
-            AND artifact_sha256 = $3
-          ORDER BY created_at ASC
-          LIMIT 1`,
-        [ownerSubjectId, connectorId, artifactSha256]
-      );
-      return mapRow(result.rows[0]);
-    },
-
-    async get(batchId: string): Promise<AcquisitionBatch | null> {
-      const result = await postgresQuery("SELECT * FROM acquisition_batches WHERE batch_id = $1", [batchId]);
-      return mapRow(result.rows[0]);
-    },
-
     async listByConnection(
       connectorInstanceId: string,
       { limit = DEFAULT_LIST_LIMIT }: ListOptions = {}
     ): Promise<(AcquisitionBatch | null)[]> {
-      const result = await postgresQuery(
+      const result = await postgresQuery<AcquisitionBatchRow>(
         `SELECT *
            FROM acquisition_batches
           WHERE connector_instance_id = $1
@@ -511,26 +511,6 @@ export function createPostgresAcquisitionBatchStore(): PostgresAcquisitionBatchS
         [connectorInstanceId, limit]
       );
       return result.rows.map(mapRow);
-    },
-
-    async recordRecordProvenance({
-      connectorInstanceId,
-      stream,
-      recordKey,
-      batchId,
-      acquisitionMethod = "owner_artifact",
-      createdAt,
-    }: RecordProvenanceInput): Promise<RecordProvenanceResult> {
-      const now = createdAt ?? new Date().toISOString();
-      await postgresQuery(
-        `INSERT INTO record_acquisition_provenance(
-           connector_instance_id, stream, record_key, batch_id, acquisition_method, created_at
-         )
-         VALUES($1, $2, $3, $4, $5, $6)
-         ON CONFLICT (connector_instance_id, stream, record_key, batch_id) DO NOTHING`,
-        [connectorInstanceId, stream, recordKey, batchId, acquisitionMethod, now]
-      );
-      return { batchId, connectorInstanceId, recordKey, stream };
     },
 
     async markCommittedForConnection(
@@ -556,6 +536,26 @@ export function createPostgresAcquisitionBatchStore(): PostgresAcquisitionBatchS
       );
       const rows = await this.listByConnection(connectorInstanceId, { limit: 1 });
       return rows[0] ?? null;
+    },
+
+    async recordRecordProvenance({
+      connectorInstanceId,
+      stream,
+      recordKey,
+      batchId,
+      acquisitionMethod = "owner_artifact",
+      createdAt,
+    }: RecordProvenanceInput): Promise<RecordProvenanceResult> {
+      const now = createdAt ?? new Date().toISOString();
+      await postgresQuery(
+        `INSERT INTO record_acquisition_provenance(
+           connector_instance_id, stream, record_key, batch_id, acquisition_method, created_at
+         )
+         VALUES($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (connector_instance_id, stream, record_key, batch_id) DO NOTHING`,
+        [connectorInstanceId, stream, recordKey, batchId, acquisitionMethod, now]
+      );
+      return { batchId, connectorInstanceId, recordKey, stream };
     },
   };
 }

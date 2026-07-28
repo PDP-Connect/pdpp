@@ -33,11 +33,11 @@
 
 ## Acceptance checks
 
-- [ ] A. `node scripts/test-accounting/inventory.mjs --check --fail-on-unaccounted --fail-on-empty` on a clean worktree.
-- [ ] B. `node scripts/test-accounting/authority.mjs --run --suite all` produces
+- [x] A. `pnpm test-accounting:inventory` (`node --import tsx scripts/test-accounting/inventory.ts --check --fail-on-unaccounted --fail-on-empty`) on a clean worktree.
+- [x] B. `pnpm test-accounting:check` (`node --import tsx scripts/test-accounting/authority.ts --run --suite all`) produces
       and consumes one verified receipt for every required suite/profile.
 - [x] C. Run focused authority and packet fixture mutations; each returns a
       nonzero rejection before the unmutated fixture passes.
-- [ ] D. `git diff --check`, relevant package suites, and
+- [x] D. `git diff --check`, relevant package suites, and
       `openspec validate make-test-accounting-fail-closed --strict`.
-- [ ] E. `openspec validate --all --strict`.
+- [x] E. `openspec validate --all --strict`.

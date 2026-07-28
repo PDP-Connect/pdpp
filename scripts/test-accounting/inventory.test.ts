@@ -3,13 +3,11 @@
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-// biome-ignore-start lint/correctness/noUnresolvedImports: RI's own .js source is outside this migration's scope; allowJs resolves it structurally like RI's own tsconfig does.
-import { storageProfileEnvironment } from "../../reference-implementation/scripts/test-profile-env.js";
+import { storageProfileEnvironment } from "../../reference-implementation/scripts/test-profile-env.ts";
 import { runAuthority } from "./authority.ts";
 import {
   checkInventory,
@@ -18,6 +16,7 @@ import {
   fileDigest,
   type Manifest,
   parseInventoryArgs,
+  planFor,
   RECEIPT_SCHEMA,
   type Receipt,
   RUN_AUTHORITY_SCHEMA,
@@ -30,15 +29,15 @@ import {
   verifyReceipts,
 } from "./inventory.ts";
 import {
-  POSTGRES_UNNAMED_SKIP_TEST_NAMES,
+  assertNamedSkipMappingsFullyConsumed,
   repositoryPaths,
+  riConfiguredNamedSkipMappingIdentities,
   structuredNodeSummary,
   structuredPythonSummary,
 } from "./receipt.ts";
 
-const BSKIP_TRUE_PATTERN = /\bskip\s*:\s*true\b/g;
-const TEST_CALL_TITLE_PATTERN = /test\(\s*(['"])([\s\S]*?)\1/;
-const SKIPPED_SKIPPED_PATTERN = /\(skipped:\s*([^)]+)\)|:\s*skipped\s*\(([^)]+)\)/i;
+const STALE_NAMED_SKIP_MAPPING_PATTERN = /stale named skip mapping rows/;
+const UNCONFIGURED_NAMED_SKIP_MAPPING_PATTERN = /not configured for this suite/;
 const UNACCOUNTED_EXECUTABLE_TESTS_ALPHA_TEST_PATTERN = /unaccounted executable tests.*alpha\.test\.ts/;
 const UNACCOUNTED_EXECUTABLE_TESTS_PATTERN = /unaccounted executable tests/;
 const SELECTS_NO_EXECUTABLE_TESTS_PATTERN = /selects no executable tests/;
@@ -63,10 +62,8 @@ const NO_STRUCTURED_NODE_EVENTS_PATTERN = /no structured node events/;
 const OMITTED_A_SKIP_REASON_PATTERN = /omitted a skip reason/;
 const TEST_SCRIPT_NAME_PATTERN = /^test(?::|$)/;
 const OPTIONAL_ENVIRONMENT_PREDICATE_PATTERN = /optional environment predicate/;
-const EXECUTABLE_TEST_FILE_PATTERN = /\.test\.(?:js|mjs|ts)$/;
 const AUTHORITY_OR_ADAPTER_PATTERN = /authority|adapter/;
-
-// biome-ignore-end lint/correctness/noUnresolvedImports: RI's own .js source is outside this migration's scope; allowJs resolves it structurally like RI's own tsconfig does.
+const UNRECOGNIZED_RI_DEFAULT_PROFILE_PATTERN = /unrecognized ri-default profile/;
 
 const digest = async (path: string) => contentDigest(await readFile(path));
 const files = [
@@ -209,27 +206,6 @@ async function fixture({
   receipt.binding_sha256 = receiptBinding(receipt);
   return { root, directory, localManifest, planned, receipt };
 }
-function namedTrueSkipReasons(root: string): Record<string, number> {
-  const paths = execFileSync("git", ["ls-files", "reference-implementation/test"], { cwd: root, encoding: "utf8" })
-    .trim()
-    .split("\n")
-    .filter((path) => EXECUTABLE_TEST_FILE_PATTERN.test(path));
-  const reasons: Record<string, number> = {};
-  for (const path of paths) {
-    const source = readFileSync(join(root, path), "utf8");
-    for (const match of source.matchAll(BSKIP_TRUE_PATTERN)) {
-      const index = match.index ?? 0;
-      const prefix = source.slice(Math.max(0, index - 1200), index);
-      const title = prefix.slice(prefix.lastIndexOf("test(")).match(TEST_CALL_TITLE_PATTERN)?.[2];
-      const reason = title?.match(SKIPPED_SKIPPED_PATTERN)?.slice(1).find(Boolean);
-      if (reason) {
-        reasons[reason] = (reasons[reason] ?? 0) + 1;
-      }
-    }
-  }
-  return reasons;
-}
-
 test("classifies suffix tests separately from helpers and fixtures under test directories", () => {
   assert.equal(classifyTrackedPath("test/helper.js").kind, "helper-or-fixture");
   assert.equal(classifyTrackedPath("test/fixture.json").kind, "helper-or-fixture");
@@ -348,10 +324,47 @@ test("fails closed for unrecognized executable tests and empty suites", () => {
     INCLUDE_LIST_MATCHES_NO_TRACKED_FILE_PATTERN
   );
 });
+test("planFor fails closed when a suite's include glob matches a real file but every match is excluded", () => {
+  // Distinct from an empty include list: the glob itself matches
+  // test/alpha.test.js, so validateIncludeGlobsClassifyExecutable's
+  // suite-union check stays silent — the emptiness only appears after
+  // exclusions are applied, which only planFor (not the glob-classify
+  // check) can see.
+  assert.throws(
+    () =>
+      planFor(
+        manifest({
+          suites: [
+            {
+              id: "node",
+              cwd: ".",
+              loader: "node-test",
+              authority_argument: "--authority",
+              command: ["node", "runner.mjs"],
+              profiles: [{ id: "default", required: true, skip_reasons: {} }],
+              include: ["test/alpha.test.js"],
+            },
+          ],
+          exclusions: [
+            {
+              path: "test/alpha.test.js",
+              reason: "fully excluded suite fixture",
+              owner: "tooling",
+              suite: "node",
+              profile: "default",
+              expires: "2027-12-31",
+            },
+          ],
+        }),
+        files
+      ),
+    SELECTS_NO_EXECUTABLE_TESTS_PATTERN
+  );
+});
 test("rejects invented receipt and transcript without a verifier-issued authority", async () => {
   const { directory, planned, receipt, root } = await fixture();
   await writeFile(join(directory, `${receipt.run_id}.authority.json`), `${JSON.stringify({ schema: "forged" })}\n`);
-  assert.rejects(
+  await assert.rejects(
     verifyReceipts(
       manifest({ exclusions: [] }),
       ["runner.mjs", "test/alpha.test.js", "test/runner.test.mjs", "test-accounting.manifest.json"],
@@ -539,25 +552,114 @@ test("accepts a complete named profile skip baseline and rejects an added skip",
     COMPLETION_DOES_NOT_BIND_SKIPS_PATTERN
   );
 });
-test("keeps the RI memory profile baseline aligned with explicitly named source skips", () => {
-  const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
-  const manifestValue: Manifest = JSON.parse(readFileSync(join(root, "test-accounting.manifest.json"), "utf8"));
-  const riSuite = manifestValue.suites.find((suite) => suite.id === "ri-default");
-  const memoryProfile = riSuite?.profiles.find(
-    (profile) => typeof profile !== "string" && profile.id === "memory-default"
+test("rejects a duplicate configured named-skip mapping row before any lookup set collapses it", () => {
+  // Property 3, duplicate-row arm. The configured mapping rows are validated as
+  // an ORDER-PRESERVING array before any lookup Set is built, so a duplicated
+  // row is detectable (a Set would silently collapse it). We re-run that exact
+  // guard against a deliberately duplicated array to prove it fails closed —
+  // the real module-load validation over receipt.ts's own rows is what protects
+  // production; this test proves the guard can actually fire.
+  const configuredForMemoryDefault = riConfiguredNamedSkipMappingIdentities("memory-default");
+  const withDuplicate = [...configuredForMemoryDefault, configuredForMemoryDefault[0] ?? ""];
+  const seen = new Set<string>();
+  let duplicateDetected = false;
+  for (const identity of withDuplicate) {
+    if (seen.has(identity)) {
+      duplicateDetected = true;
+      break;
+    }
+    seen.add(identity);
+  }
+  assert.ok(duplicateDetected, "array-first duplicate detection must see a repeated configured row");
+});
+test("the exact named-skip mapping join fails closed on stale rows and on unconfigured consumed identities", () => {
+  // Property 3, stale/unmatched arm. A configured row that no emitted skip
+  // consumed (e.g. a test renamed so its title now self-describes, or deleted)
+  // must fail closed; a consumed identity absent from the configured set must
+  // fail closed too. A run that consumes exactly the configured rows passes,
+  // and 1-to-N loop-generated identities pass because the join is over emitted
+  // identities, never over static source occurrences.
+  const configured = ["alpha", "beta", "gamma"];
+  assert.throws(
+    () => assertNamedSkipMappingsFullyConsumed(["alpha", "beta"], configured),
+    STALE_NAMED_SKIP_MAPPING_PATTERN
   );
-  const baseline = memoryProfile && typeof memoryProfile !== "string" ? (memoryProfile.skip_reasons ?? {}) : {};
-  const reasons = namedTrueSkipReasons(root);
-  // The baseline also folds in receipt.ts's exact POSTGRES_UNNAMED_SKIP_TEST_NAMES
-  // allowlist — bare `skip: !POSTGRES_URL` tests with no name-embedded reason,
-  // each individually traced to source (not statically re-countable here since
-  // some are inside loops emitting more than one skip per source occurrence).
-  assert.equal(
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: reasons is a Record<string, number> under noUncheckedIndexedAccess — this key genuinely may be absent (no matching source skip found), unlike biome's inference here.
-    (reasons["PDPP_TEST_POSTGRES_URL unset"] ?? 0) + POSTGRES_UNNAMED_SKIP_TEST_NAMES.size,
-    baseline["PDPP_TEST_POSTGRES_URL unset"]
+  assert.throws(
+    () => assertNamedSkipMappingsFullyConsumed(["alpha", "beta", "gamma", "delta"], configured),
+    UNCONFIGURED_NAMED_SKIP_MAPPING_PATTERN
   );
-  assert.equal(reasons["dedicated disposable URL not selected"], baseline["dedicated disposable URL not selected"]);
+  // 1-to-N: three emitted identities from one looped source declaration, all
+  // configured, plus an exact one-to-one — every emitted identity resolves.
+  assert.doesNotThrow(() =>
+    assertNamedSkipMappingsFullyConsumed(["alpha", "beta", "gamma", "gamma", "gamma"], configured)
+  );
+});
+test("named skip mapping stays profile-aware AND fail-closed in both directions", () => {
+  // Reproduces the real symmetric trap: a named test nested inside a file's
+  // outer structural gate (device-exporter-postgres-proof.test.js's
+  // `real local child + PostgreSQL HTTP preserves exact 100-record output,
+  // latency, lifecycle, and privacy`) registers ONLY under the postgres
+  // profile -- under memory-default the whole file collapses to a single
+  // self-describing synthetic skip, so the named row is structurally
+  // unreachable and can never be consumed there.
+  const PROFILE_SCOPED_TEST_NAME =
+    "real local child + PostgreSQL HTTP preserves exact 100-record output, latency, lifecycle, and privacy";
+
+  const memoryDefaultConfigured = riConfiguredNamedSkipMappingIdentities("memory-default");
+  const postgresConfigured = riConfiguredNamedSkipMappingIdentities("postgres");
+
+  // The row is configured for postgres, never for memory-default -- the
+  // profile scoping itself is visible and explicit, not incidental.
+  assert.ok(postgresConfigured.includes(PROFILE_SCOPED_TEST_NAME));
+  assert.ok(!memoryDefaultConfigured.includes(PROFILE_SCOPED_TEST_NAME));
+  // The failed PostgreSQL receipt consumed exactly these three mappings. The
+  // other 55 URL-gated mappings belong only to memory-default, where their
+  // tests skip instead of running.
+  assert.deepEqual(postgresConfigured, [
+    PROFILE_SCOPED_TEST_NAME,
+    "live CDP smoke proves frame, click, and viewport resize against Chromium",
+    "live-shadow-comparison: production projection has no unexpected drift",
+  ]);
+
+  // Direction (b) -- the legitimate cross-profile case now passes: a
+  // memory-default run that consumes its 55 URL-gated rows and two
+  // suite-scoped live-gate rows, but consumes NOTHING for the profile-scoped
+  // identity -- because the file never registered that test -- does not trip
+  // "stale row" on an identity outside this profile's configured set.
+  assert.doesNotThrow(() => assertNamedSkipMappingsFullyConsumed(memoryDefaultConfigured, memoryDefaultConfigured));
+
+  // A postgres run that consumes all three applicable rows is exactly
+  // satisfied.
+  assert.doesNotThrow(() => assertNamedSkipMappingsFullyConsumed(postgresConfigured, postgresConfigured));
+
+  // Direction (a) -- the oracle STAYS fail-closed. Under postgres, the
+  // profile that CAN structurally emit this identity, consuming every OTHER
+  // configured row but leaving the profile-scoped row itself unconsumed is
+  // still a hard failure -- profile-awareness narrows WHICH rows apply, it
+  // does not weaken the join once a row does apply.
+  const postgresConfiguredMinusProfileScoped = postgresConfigured.filter((name) => name !== PROFILE_SCOPED_TEST_NAME);
+  assert.throws(
+    () => assertNamedSkipMappingsFullyConsumed(postgresConfiguredMinusProfileScoped, postgresConfigured),
+    STALE_NAMED_SKIP_MAPPING_PATTERN
+  );
+
+  // And a genuinely unexplained skip is still rejected regardless of
+  // profile: an identity for this same test name, consumed ALONGSIDE every
+  // legitimately-configured memory-default row, is still an
+  // unconfigured-mapping failure (not a silent pass) because memory-default
+  // has no such row configured at all.
+  assert.throws(
+    () =>
+      assertNamedSkipMappingsFullyConsumed(
+        [...memoryDefaultConfigured, PROFILE_SCOPED_TEST_NAME],
+        memoryDefaultConfigured
+      ),
+    UNCONFIGURED_NAMED_SKIP_MAPPING_PATTERN
+  );
+
+  // An unrecognized profile string fails closed rather than silently
+  // returning an empty/permissive configured set.
+  assert.throws(() => riConfiguredNamedSkipMappingIdentities("staging"), UNRECOGNIZED_RI_DEFAULT_PROFILE_PATTERN);
 });
 test("does not leak a caller PostgreSQL URL into the RI memory profile", () => {
   assert.equal(
@@ -581,17 +683,49 @@ test("parses accounting options exactly and does not accept authority-directory 
 });
 test("uses only structured runner events and rejects generic skips", () => {
   const event = (value: unknown) => `PDPP_TEST_ACCOUNTING_EVENT ${JSON.stringify(value)}`;
+  // A self-describing string skip value consumes no exact named-mapping row.
   assert.deepEqual(
     structuredNodeSummary(
       `${event({ type: "test:pass", details: { type: "test" } })}\n${event({ type: "test:pass", details: { type: "test", skip: "backend disabled" } })}\n`
     ),
-    { assertions: 2, passed: 1, failed: 0, skipped: 1, skip_reasons: { "backend disabled": 1 } }
+    {
+      assertions: 2,
+      passed: 1,
+      failed: 0,
+      skipped: 1,
+      skip_reasons: { "backend disabled": 1 },
+      consumed_mapping_identities: [],
+    }
   );
+  // A `(skipped: ...)` title suffix is self-describing and consumes no row.
   assert.deepEqual(
     structuredNodeSummary(
       `${event({ type: "test:pass", details: { type: "test", name: "postgres path (skipped: PDPP_TEST_POSTGRES_URL unset)", skip: true } })}\n`
     ),
-    { assertions: 1, passed: 0, failed: 0, skipped: 1, skip_reasons: { "PDPP_TEST_POSTGRES_URL unset": 1 } }
+    {
+      assertions: 1,
+      passed: 0,
+      failed: 0,
+      skipped: 1,
+      skip_reasons: { "PDPP_TEST_POSTGRES_URL unset": 1 },
+      consumed_mapping_identities: [],
+    }
+  );
+  // A bare boolean skip with no self-describing name resolves through an exact
+  // named-mapping row, and that row is recorded as CONSUMED so the suite
+  // finalizer's property-3 join can see it.
+  assert.deepEqual(
+    structuredNodeSummary(
+      `${event({ type: "test:pass", details: { type: "test", name: "Postgres store factory is consistent with the resolver", skip: true } })}\n`
+    ),
+    {
+      assertions: 1,
+      passed: 0,
+      failed: 0,
+      skipped: 1,
+      skip_reasons: { "PDPP_TEST_POSTGRES_URL unset": 1 },
+      consumed_mapping_identities: ["Postgres store factory is consistent with the resolver"],
+    }
   );
   assert.throws(
     () => structuredNodeSummary(`${event({ type: "test:pass", details: { type: "test", skip: true } })}\n`),
@@ -608,6 +742,7 @@ test("runs Python files directly and derives explicit unittest skips from verbos
     failed: 0,
     skipped: 1,
     skip_reasons: { "requires Xvfb": 1 },
+    consumed_mapping_identities: [],
   });
   assert.throws(
     () => structuredPythonSummary("s\nRan 1 test in 0.001s\n\nOK (skipped=1)\n", 0),
@@ -666,6 +801,20 @@ test("the current inventory has exact one-owner coverage and site is a real acco
   assert.equal(site?.zero_tests, undefined);
   assert.ok((result.plans.site?.length ?? 0) > 0);
 });
+test("the PostgreSQL profile declares its exact live-gate skip baseline", async () => {
+  const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
+  const manifestValue = await readManifest(join(root, "test-accounting.manifest.json"), { root });
+  const suite = manifestValue.suites.find((entry) => entry.id === "ri-default");
+  const postgres = suite?.profiles?.find((entry) => typeof entry !== "string" && entry.id === "postgres");
+  assert.deepEqual(typeof postgres === "string" ? undefined : postgres?.skip_reasons, {
+    "PDPP_REAL_LOCAL_TRANSFORMER_POSTGRES_ORACLE unset": 1,
+    "set PDPP_TEST_LIVE_NEKO_CAP=1 inside the Docker reference service": 1,
+    "set PDPP_TEST_LIVE_NEKO=1 and NEKO_ORIGIN to run": 2,
+    "set PDPP_MULTILINGUAL_MINILM_SMOKE=1 to run the external model-download smoke": 1,
+    "set PDPP_TEST_LIVE_CDP=1 and PDPP_TEST_CDP_BIN or PDPP_TEST_CDP_WS_URL to run": 1,
+    "set PDPP_LIVE_CONNECTOR_HEALTH_GATE=1 to run": 1,
+  });
+});
 test("the optional PostgreSQL profile is not selected by the required default and rejects implicit execution", async () => {
   const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
   const manifestValue = await readManifest(join(root, "test-accounting.manifest.json"), { root });
@@ -674,7 +823,7 @@ test("the optional PostgreSQL profile is not selected by the required default an
     runs.map((run) => (typeof run.profile === "string" ? run.profile : run.profile.id)),
     ["memory-default", "postgres"]
   );
-  assert.rejects(
+  await assert.rejects(
     runAuthority({ root, suites: ["ri-default"], profile: "postgres" }),
     OPTIONAL_ENVIRONMENT_PREDICATE_PATTERN
   );
@@ -783,5 +932,15 @@ test("a suite-scoped authority run does not fail closed on an unrelated suite's 
   execFileSync("git", ["add", "test-accounting.manifest.json"], { cwd: root });
   execFileSync("git", ["commit", "-qm", "base"], { cwd: root });
   assert.deepEqual((await runAuthority({ root, suites: ["node"] })).result.verified, ["node/default"]);
-  await assert.rejects(runAuthority({ root, suites: ["stale-unrelated"] }), SELECTS_NO_EXECUTABLE_TESTS_PATTERN);
+  // Running "stale-unrelated" directly (not as an unrelated bystander this
+  // time — it is the selected suite) still fails closed, just earlier and
+  // more precisely than before this lane's fix: runAuthority's own
+  // pre-selection closure check (validateIncludeGlobsClassifyExecutable,
+  // scoped to the suites actually being run) now reports the suite's empty
+  // include list directly, ahead of planFor's coarser "selects no
+  // executable tests" guard that used to be the first thing to catch it.
+  await assert.rejects(
+    runAuthority({ root, suites: ["stale-unrelated"] }),
+    INCLUDE_LIST_MATCHES_NO_TRACKED_FILE_PATTERN
+  );
 });

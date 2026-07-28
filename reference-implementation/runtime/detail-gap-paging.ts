@@ -348,13 +348,14 @@ export function createDetailGapPageReader({
     if (typeof detailGapStore.claimPendingGaps !== "function") {
       throw new Error("detail-gap store must support CAS recovery leases");
     }
+    // biome-ignore lint/style/noIncrementDecrement: The explicit counter update preserves this loop’s evaluation order.
     const pageId = ++pageSequence;
     const leaseExpiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
     const leasesByGapId = new Map<string, string>();
     await Promise.all(
       detailGaps.map(async (gap) => {
         const leaseId = `${runId}:detail-gap-page:${pageId}:gap:${gap.gap_id}`;
-        const claimed = await detailGapStore.claimPendingGaps([gap.gap_id], { runId, leaseId, leaseExpiresAt });
+        const claimed = await detailGapStore.claimPendingGaps([gap.gap_id], { leaseExpiresAt, leaseId, runId });
         if (claimed.includes(gap.gap_id)) {
           leasesByGapId.set(gap.gap_id, leaseId);
         }
@@ -369,8 +370,9 @@ export function createDetailGapPageReader({
           attempted: false,
           gapId: gap.gap_id,
           leaseId: gap.lease_id,
-          recordKey: gap.record_key == null ? null : String(gap.record_key),
+          recordKey: gap.record_key === null ? null : String(gap.record_key),
           runId,
+          // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
           stream: gap.stream ?? null,
         });
       }

@@ -31,7 +31,7 @@ export interface RefConnectorScheduleGetDependencies {
    * no schedule exists; the operation maps that to a typed not-found error
    * the host translates into the existing PDPP 404 envelope.
    */
-  getConnectorSchedule(connectorId: string): Promise<unknown> | unknown;
+  getConnectorSchedule: (connectorId: string) => Promise<unknown> | unknown;
 }
 
 export interface RefConnectorScheduleGetInput {
@@ -59,7 +59,7 @@ export class RefConnectorScheduleGetNotFoundError extends Error {
  */
 export async function executeRefConnectorScheduleGet(
   input: RefConnectorScheduleGetInput,
-  dependencies: RefConnectorScheduleGetDependencies,
+  dependencies: RefConnectorScheduleGetDependencies
 ): Promise<unknown> {
   const schedule = await dependencies.getConnectorSchedule(input.connectorId);
   if (schedule === null || schedule === undefined) {

@@ -8,7 +8,7 @@
  * and query spine emission. No auth logic lives here.
  *
  * Dependency direction: this is a LEAF — it imports only from lib/spine.ts and
- * routes/ref-error-status.ts. Nothing imports from auth-middleware.js or index.js.
+ * routes/ref-error-status.ts. Nothing imports from auth-middleware.ts or index.js.
  */
 
 import { emitSpineEvent, generateSpineId, type SpineEventInput } from "../lib/spine.ts";
@@ -19,11 +19,11 @@ import { codeToStatus, typeFor } from "./routes/ref-error-status.ts";
 // transport passes in; we type only the members these helpers read/write.
 
 interface ResponseLike {
-  getHeader(name: string): unknown;
-  json(body: unknown): void;
+  getHeader: (name: string) => unknown;
+  json: (body: { error: Record<string, unknown> }) => unknown;
   locals?: Record<string, unknown>;
-  setHeader(name: string, value: string): void;
-  status(code: number): ResponseLike;
+  setHeader: (name: string, value: string) => void;
+  status: (code: number) => ResponseLike;
 }
 
 interface RequestLike {
@@ -96,7 +96,7 @@ export function pdppError(
   param: string | null = null,
   extras: PdppErrorExtras | null = null
 ): void {
-  const errorBody: Record<string, unknown> = { type: typeFor(status), code, message };
+  const errorBody: Record<string, unknown> = { code, message, type: typeFor(status) };
   const body = { error: errorBody };
   if (param) {
     errorBody.param = param;
@@ -121,6 +121,7 @@ export function pdppError(
 // ─── Query spine emission ────────────────────────────────────────────────────
 
 export async function emitQueryRejected(context: QueryContext, req: RequestLike, err: ErrorWithCode): Promise<void> {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   if (!context?.queryId) {
     return;
   }
@@ -130,8 +131,8 @@ export async function emitQueryRejected(context: QueryContext, req: RequestLike,
     ...(context.queryData || {}),
     error: {
       code,
-      message: err.message,
       http_status: status,
+      message: err.message,
     },
   };
   if (Object.hasOwn(context, "sourceDescriptor")) {
@@ -139,21 +140,21 @@ export async function emitQueryRejected(context: QueryContext, req: RequestLike,
   }
 
   await emitSpineEvent({
-    event_type: "query.rejected",
-    trace_id: context.traceId,
-    scenario_id: context.scenarioId,
-    actor_type: context.actorType,
     actor_id: context.actorId,
-    subject_type: "subject",
-    subject_id: context.tokenInfo?.subject_id || null,
-    object_type: "query",
-    object_id: context.queryId,
-    status: "failed",
-    grant_id: context.tokenInfo?.grant_id || null,
+    actor_type: context.actorType,
     client_id: context.tokenInfo?.client_id || null,
-    stream_id: context.streamId || null,
-    token_id: req.headers.authorization?.slice(7) || null,
     data,
+    event_type: "query.rejected",
+    grant_id: context.tokenInfo?.grant_id || null,
+    object_id: context.queryId,
+    object_type: "query",
+    scenario_id: context.scenarioId,
+    status: "failed",
+    stream_id: context.streamId || null,
+    subject_id: context.tokenInfo?.subject_id || null,
+    subject_type: "subject",
+    token_id: req.headers.authorization?.slice(7) || null,
+    trace_id: context.traceId,
     // Cast bridges `exactOptionalPropertyTypes`: several context fields are
     // `string | null | undefined` at runtime (e.g. `scenarioId` from
     // `scenario_id || undefined`), which the runtime spine input accepts but
@@ -163,6 +164,7 @@ export async function emitQueryRejected(context: QueryContext, req: RequestLike,
 }
 
 export async function emitQueryReceived(context: QueryContext, req: RequestLike): Promise<void> {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   if (!context?.queryId) {
     return;
   }
@@ -179,21 +181,21 @@ export async function emitQueryReceived(context: QueryContext, req: RequestLike)
   }
 
   await emitSpineEvent({
-    event_type: "query.received",
-    trace_id: context.traceId,
-    scenario_id: context.scenarioId,
-    actor_type: context.actorType,
     actor_id: context.actorId,
-    subject_type: "subject",
-    subject_id: context.tokenInfo?.subject_id || null,
-    object_type: "query",
-    object_id: context.queryId,
-    status: "started",
-    grant_id: context.tokenInfo?.grant_id || null,
+    actor_type: context.actorType,
     client_id: context.tokenInfo?.client_id || null,
-    stream_id: context.streamId || null,
-    token_id: req.headers.authorization?.slice(7) || null,
     data,
+    event_type: "query.received",
+    grant_id: context.tokenInfo?.grant_id || null,
+    object_id: context.queryId,
+    object_type: "query",
+    scenario_id: context.scenarioId,
+    status: "started",
+    stream_id: context.streamId || null,
+    subject_id: context.tokenInfo?.subject_id || null,
+    subject_type: "subject",
+    token_id: req.headers.authorization?.slice(7) || null,
+    trace_id: context.traceId,
     // See the cast note in `emitQueryRejected` above — same runtime-vs-
     // exactOptional bridge; no value coercion.
   } as SpineEventInput);

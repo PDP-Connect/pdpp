@@ -1709,7 +1709,7 @@ async function runCliChecks({
 }: CliCheckOptions) {
   const results: CheckResult[] = [];
   const { spawnSync } = await import("node:child_process");
-  const cliBin = join(process.cwd(), "packages/cli/bin/pdpp.js");
+  const cliBin = join(process.cwd(), "packages/cli/bin/pdpp.ts");
   let parent: string | null = null;
   let cacheRoot: string | null = null;
   let firstRecordId: string | null = null;

@@ -487,7 +487,7 @@ export async function listDirectoryInventory(input: {
 /** Payload keys excluded from inventory-record change detection. Incidental
  *  file-stat metadata that moves on every tool write without changing the
  *  store's inventory meaning. Mirrored by the compaction policy in
- *  `reference-implementation/scripts/compact-record-history.mjs`. */
+ *  `reference-implementation/scripts/compact-record-history.ts`. */
 export const INVENTORY_FINGERPRINT_EXCLUDE_KEYS = ["mtime_epoch", "size_bytes"] as const;
 
 /** Open a fingerprint cursor for an inventory stream, seeded from the prior

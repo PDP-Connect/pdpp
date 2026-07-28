@@ -263,7 +263,7 @@ async function getJson<T>(fetchFn: FetchFn, url: string, errorCode: string): Pro
   if (!response.ok) {
     throw new OwnerAgentError(errorCode, `Failed to fetch ${url}: HTTP ${response.status}.`);
   }
-  return response.json();
+  return (await response.json()) as T;
 }
 
 async function getJsonOptional<T>(fetchFn: FetchFn, url: string): Promise<T | null> {
@@ -277,7 +277,7 @@ async function getJsonOptional<T>(fetchFn: FetchFn, url: string): Promise<T | nu
     return null;
   }
   try {
-    return await response.json();
+    return (await response.json()) as T;
   } catch {
     return null;
   }

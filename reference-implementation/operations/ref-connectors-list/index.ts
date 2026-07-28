@@ -25,27 +25,24 @@
  */
 
 export interface RefConnectorsListFreshness {
-  readonly status: "unknown";
   readonly captured_at?: string;
   readonly last_attempted_at?: string;
+  readonly status: "unknown";
 }
 
 export interface RefConnectorsListRunSummary {
-  readonly run_id: string | undefined;
-  readonly status: string;
-  readonly started_at: string;
-  readonly finished_at: string | null;
-  readonly first_at: string;
-  readonly last_at: string;
   readonly event_count: number;
   readonly failure_reason: string | null;
+  readonly finished_at: string | null;
+  readonly first_at: string;
   readonly known_gaps: unknown[];
+  readonly last_at: string;
+  readonly run_id: string | undefined;
+  readonly started_at: string;
+  readonly status: string;
 }
 
 export interface RefConnectorsListStreamRecord {
-  readonly last_updated: string | null;
-  readonly record_count: number;
-  readonly stream: string;
   /**
    * Orthogonal state for `record_count` (reconcile-active-summary-evidence
    * design.md "Health boundary"): `"stale"` when the value is carried over
@@ -54,19 +51,29 @@ export interface RefConnectorsListStreamRecord {
    * this shape are unaffected.
    */
   readonly count_state?: "known" | "known_zero" | "unobserved" | "stale" | "unknown";
+  readonly last_updated: string | null;
+  readonly record_count: number;
+  readonly stream: string;
 }
 
 export interface RefConnectorsListItem {
-  readonly connection_id: string;
   readonly connection_health: unknown;
+  readonly connection_id: string;
   readonly connector_display_name?: string;
   readonly connector_id: string;
   readonly connector_instance_id?: string;
   readonly display_name: string;
+  readonly freshness: RefConnectorsListFreshness;
+  readonly last_run: RefConnectorsListRunSummary | null;
+  readonly last_successful_run: RefConnectorsListRunSummary | null;
   readonly manifest_version: string | null;
-  readonly streams: string[];
+  readonly refresh_policy: unknown;
+  readonly revoked_at?: string | null;
+  readonly schedule: unknown;
+  readonly status?: string | null;
   readonly stream_count?: number;
   readonly stream_records?: readonly RefConnectorsListStreamRecord[];
+  readonly streams: string[];
   readonly total_records: number;
   /**
    * Orthogonal state for `total_records` (reconcile-active-summary-evidence
@@ -79,24 +86,24 @@ export interface RefConnectorsListItem {
    */
   readonly total_records_state?: "known" | "known_zero" | "unobserved" | "stale" | "unknown";
   readonly total_retained_bytes?: number | null;
-  readonly freshness: RefConnectorsListFreshness;
-  readonly refresh_policy: unknown;
-  readonly revoked_at?: string | null;
-  readonly schedule: unknown;
-  readonly status?: string | null;
-  readonly last_run: RefConnectorsListRunSummary | null;
-  readonly last_successful_run: RefConnectorsListRunSummary | null;
 }
 
 export interface RefConnectorsRuntimeStatus {
+  readonly label: string;
+  readonly message: string | null;
   readonly object: "ref_runtime_status";
   readonly ok: boolean;
   readonly reason: "controller_unavailable" | null;
-  readonly label: string;
-  readonly message: string | null;
 }
 
 export interface RefConnectorsListDependencies {
+  /**
+   * Owner-only runtime liveness for the connector-control substrate. When false,
+   * per-connection rendered verdicts are still honest about their own state but
+   * SHALL NOT cascade into N owner-attention pulls; the caller renders this one
+   * global status instead.
+   */
+  getRuntimeStatus?: () => Promise<RefConnectorsRuntimeStatus> | RefConnectorsRuntimeStatus;
   /**
    * Returns configured connection summaries for the route. Host
    * implementation owns the substrate read; the operation does not
@@ -104,19 +111,12 @@ export interface RefConnectorsListDependencies {
    * — the operation preserves insertion order so the host can choose the
    * canonical sort.
    */
-  listConnectorSummaries(): Promise<readonly RefConnectorsListItem[]> | readonly RefConnectorsListItem[];
-  /**
-   * Owner-only runtime liveness for the connector-control substrate. When false,
-   * per-connection rendered verdicts are still honest about their own state but
-   * SHALL NOT cascade into N owner-attention pulls; the caller renders this one
-   * global status instead.
-   */
-  getRuntimeStatus?(): Promise<RefConnectorsRuntimeStatus> | RefConnectorsRuntimeStatus;
+  listConnectorSummaries: () => Promise<readonly RefConnectorsListItem[]> | readonly RefConnectorsListItem[];
 }
 
 export interface RefConnectorsListEnvelope {
-  readonly object: "list";
   readonly data: RefConnectorsListItem[];
+  readonly object: "list";
   readonly runtime?: RefConnectorsRuntimeStatus;
 }
 
@@ -129,15 +129,15 @@ export interface RefConnectorsListEnvelope {
  * the host write the response.
  */
 export async function executeRefConnectorsList(
-  dependencies: RefConnectorsListDependencies,
+  dependencies: RefConnectorsListDependencies
 ): Promise<RefConnectorsListEnvelope> {
   const [summaries, runtime] = await Promise.all([
     dependencies.listConnectorSummaries(),
     dependencies.getRuntimeStatus ? dependencies.getRuntimeStatus() : Promise.resolve(undefined),
   ]);
   const envelope: RefConnectorsListEnvelope = {
-    object: "list",
     data: [...summaries],
+    object: "list",
   };
   return runtime ? { ...envelope, runtime } : envelope;
 }

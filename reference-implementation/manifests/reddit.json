@@ -47,7 +47,18 @@
         {
           "id": "full",
           "label": "Full post data",
-          "fields": ["id", "title", "subreddit", "selftext", "url", "score", "upvote_ratio", "num_comments", "is_self", "source_created_at"]
+          "fields": [
+            "id",
+            "title",
+            "subreddit",
+            "selftext",
+            "url",
+            "score",
+            "upvote_ratio",
+            "num_comments",
+            "is_self",
+            "source_created_at"
+          ]
         }
       ],
       "query": {
@@ -90,7 +101,15 @@
         {
           "id": "full",
           "label": "Full comment data",
-          "fields": ["id", "post_id", "subreddit", "body", "score", "post_title", "source_created_at"]
+          "fields": [
+            "id",
+            "post_id",
+            "subreddit",
+            "body",
+            "score",
+            "post_title",
+            "source_created_at"
+          ]
         }
       ],
       "query": {

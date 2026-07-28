@@ -69,8 +69,7 @@ test("summarizes many expected failures into ONE deduped partial_fan_in warning"
   // Exactly one warning, with the stable partial_fan_in code (no duplicate keys).
   const fanIn = warnings.filter((w) => w.code === "partial_fan_in");
   assert.equal(fanIn.length, 1);
-  // biome-ignore lint/style/useDestructuring: Indexed access and property reads preserve the local guard and exact source-order reasoning here.
-  const only = fanIn[0];
+  const [only] = fanIn;
   assert.ok(only);
   // It summarizes count of streams + distinct sources, and never leaks JSON.
   assert.match(only.message, FOUR_STREAMS_TWO_SOURCES_RE);

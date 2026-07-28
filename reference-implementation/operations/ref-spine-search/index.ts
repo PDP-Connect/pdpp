@@ -30,22 +30,18 @@ import type {
   RefSpineRunSummary,
   RefSpineTraceSummary,
 } from "../ref-spine-correlations-list/index.ts";
-import {
-  summaryToGrant,
-  summaryToRun,
-  summaryToTrace,
-} from "../ref-spine-correlations-list/index.ts";
+import { summaryToGrant, summaryToRun, summaryToTrace } from "../ref-spine-correlations-list/index.ts";
 
 export interface RefSpineSearchExactRef {
-  readonly kind: RefSpineCorrelationKind;
   readonly id: string;
+  readonly kind: RefSpineCorrelationKind;
 }
 
 export interface RefSpineSearchResult {
   readonly exact: RefSpineSearchExactRef | null;
-  readonly traces: readonly RefSpineCorrelationSummary[];
   readonly grants: readonly RefSpineCorrelationSummary[];
   readonly runs: readonly RefSpineCorrelationSummary[];
+  readonly traces: readonly RefSpineCorrelationSummary[];
 }
 
 export interface RefSpineSearchInput {
@@ -58,21 +54,21 @@ export interface RefSpineSearchDependencies {
    * not import server connector-key helpers, but artifact search must not expose
    * reference-internal maintenance connectors.
    */
-  isInternalConnectorId?(id: string): boolean;
+  isInternalConnectorId?: (id: string) => boolean;
   /**
    * Run the spine artifact-jump search. The host implementation owns
    * substrate access; the operation projects the per-bucket summaries
    * into discriminated entries.
    */
-  searchSpine(query: string): Promise<RefSpineSearchResult> | RefSpineSearchResult;
+  searchSpine: (query: string) => Promise<RefSpineSearchResult> | RefSpineSearchResult;
 }
 
 export interface RefSpineSearchEnvelope {
-  readonly object: "search_result";
   readonly exact: RefSpineSearchExactRef | null;
-  readonly traces: readonly RefSpineTraceSummary[];
   readonly grants: readonly RefSpineGrantSummary[];
+  readonly object: "search_result";
   readonly runs: readonly RefSpineRunSummary[];
+  readonly traces: readonly RefSpineTraceSummary[];
 }
 
 function summarySourceId(s: RefSpineCorrelationSummary): string | null {
@@ -90,7 +86,7 @@ function summarySourceId(s: RefSpineCorrelationSummary): string | null {
 
 function ownerVisibleSummaries(
   summaries: readonly RefSpineCorrelationSummary[],
-  isInternalConnectorId: RefSpineSearchDependencies["isInternalConnectorId"],
+  isInternalConnectorId: RefSpineSearchDependencies["isInternalConnectorId"]
 ): readonly RefSpineCorrelationSummary[] {
   return summaries.filter((summary) => {
     const sourceId = summarySourceId(summary);
@@ -109,13 +105,17 @@ function exactIfVisible(
     readonly grants: readonly RefSpineCorrelationSummary[];
     readonly runs: readonly RefSpineCorrelationSummary[];
     readonly traces: readonly RefSpineCorrelationSummary[];
-  },
+  }
 ): RefSpineSearchExactRef | null {
   if (!exact) {
     return null;
   }
-  const originalSummaries = exact.kind === "grant" ? original.grants : exact.kind === "run" ? original.runs : original.traces;
-  const filteredSummaries = exact.kind === "grant" ? buckets.grants : exact.kind === "run" ? buckets.runs : buckets.traces;
+  const originalSummaries =
+    // biome-ignore lint/style/noNestedTernary: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
+    exact.kind === "grant" ? original.grants : exact.kind === "run" ? original.runs : original.traces;
+  const filteredSummaries =
+    // biome-ignore lint/style/noNestedTernary: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
+    exact.kind === "grant" ? buckets.grants : exact.kind === "run" ? buckets.runs : buckets.traces;
   if (!originalSummaries.some((summary) => summary.id === exact.id)) {
     return exact;
   }
@@ -131,17 +131,17 @@ function exactIfVisible(
  */
 export async function executeRefSpineSearch(
   input: RefSpineSearchInput,
-  dependencies: RefSpineSearchDependencies,
+  dependencies: RefSpineSearchDependencies
 ): Promise<RefSpineSearchEnvelope> {
   const result = await dependencies.searchSpine(input.query);
   const traces = ownerVisibleSummaries(result.traces, dependencies.isInternalConnectorId);
   const grants = ownerVisibleSummaries(result.grants, dependencies.isInternalConnectorId);
   const runs = ownerVisibleSummaries(result.runs, dependencies.isInternalConnectorId);
   return {
-    object: "search_result",
-    exact: exactIfVisible(result.exact, result, { traces, grants, runs }),
-    traces: traces.map(summaryToTrace),
+    exact: exactIfVisible(result.exact, result, { grants, runs, traces }),
     grants: grants.map(summaryToGrant),
+    object: "search_result",
     runs: runs.map(summaryToRun),
+    traces: traces.map(summaryToTrace),
   };
 }

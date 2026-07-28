@@ -51,38 +51,41 @@ const BUTTON_MAP: Record<number, string> = { 0: "left", 1: "middle", 2: "right" 
 
 // Wire touch action → CDP `Input.dispatchTouchEvent` type.
 const TOUCH_TYPE_MAP: Record<string, string> = {
-  touchstart: "touchStart",
-  touchmove: "touchMove",
   touchend: "touchEnd",
+  touchmove: "touchMove",
+  touchstart: "touchStart",
 };
 
 // Browser-event vk codes we use for keys whose `key` is a name (Backspace, etc.)
 const VIRTUAL_KEY_CODES: Record<string, number> = {
+  ArrowDown: 40,
+  ArrowLeft: 37,
+  ArrowRight: 39,
+  ArrowUp: 38,
   Backspace: 8,
-  Tab: 9,
+  Delete: 46,
+  End: 35,
   Enter: 13,
   Escape: 27,
-  ArrowLeft: 37,
-  ArrowUp: 38,
-  ArrowRight: 39,
-  ArrowDown: 40,
-  Delete: 46,
   Home: 36,
-  End: 35,
-  PageUp: 33,
   PageDown: 34,
+  PageUp: 33,
+  Tab: 9,
 };
 
+// biome-ignore lint/suspicious/noExplicitAny: This external runtime boundary has no stable static type.
 type WireInput = Record<string, any>;
 type MouseCommandBuilder = (input: { x: number; y: number; button: string }) => CdpCommand[];
 
 function mouseCommand(type: string, x: number, y: number, button: string, clickCount = 1): CdpCommand {
-  return { method: "Input.dispatchMouseEvent", params: { type, x, y, button, clickCount } };
+  return { method: "Input.dispatchMouseEvent", params: { button, clickCount, type, x, y } };
 }
 
 const MOUSE_COMMANDS: Record<string, MouseCommandBuilder> = {
-  mousemove: ({ x, y }) => [{ method: "Input.dispatchMouseEvent", params: { type: "mouseMoved", x, y, button: "none" } }],
-  click: ({ x, y, button }) => [mouseCommand("mousePressed", x, y, button), mouseCommand("mouseReleased", x, y, button)],
+  click: ({ x, y, button }) => [
+    mouseCommand("mousePressed", x, y, button),
+    mouseCommand("mouseReleased", x, y, button),
+  ],
   dblclick: ({ x, y }) => [
     mouseCommand("mousePressed", x, y, "left"),
     mouseCommand("mouseReleased", x, y, "left"),
@@ -90,6 +93,9 @@ const MOUSE_COMMANDS: Record<string, MouseCommandBuilder> = {
     mouseCommand("mouseReleased", x, y, "left", 2),
   ],
   mousedown: ({ x, y, button }) => [mouseCommand("mousePressed", x, y, button)],
+  mousemove: ({ x, y }) => [
+    { method: "Input.dispatchMouseEvent", params: { button: "none", type: "mouseMoved", x, y } },
+  ],
   mouseup: ({ x, y, button }) => [mouseCommand("mouseReleased", x, y, button)],
 };
 
@@ -116,8 +122,10 @@ function mapMouseEventToCdp(event: WireInput): CdpCommand[] {
   const y = ensureNumber(event.y, "y");
   const button = BUTTON_MAP[event.button ?? 0] ?? "left";
   const buildCommands = MOUSE_COMMANDS[event.action];
-  if (!buildCommands) throw invalidInput(`unknown mouse action: ${event.action}`);
-  return buildCommands({ x, y, button });
+  if (!buildCommands) {
+    throw invalidInput(`unknown mouse action: ${event.action}`);
+  }
+  return buildCommands({ button, x, y });
 }
 
 /**
@@ -125,12 +133,16 @@ function mapMouseEventToCdp(event: WireInput): CdpCommand[] {
  * shape-validated event; this focuses purely on the action dispatch.
  */
 function virtualKeyCodeParams(vk: number | undefined) {
-  return vk ? { windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk } : {};
+  return vk ? { nativeVirtualKeyCode: vk, windowsVirtualKeyCode: vk } : {};
 }
 
 function keyboardType(action: unknown, isPrintable: boolean): string {
-  if (action === "keydown") return isPrintable ? "keyDown" : "rawKeyDown";
-  if (action === "keyup") return "keyUp";
+  if (action === "keydown") {
+    return isPrintable ? "keyDown" : "rawKeyDown";
+  }
+  if (action === "keyup") {
+    return "keyUp";
+  }
   throw invalidInput(`unknown keyboard action: ${action}`);
 }
 
@@ -144,7 +156,12 @@ function mapKeyboardEventToCdp(event: WireInput): CdpCommand[] {
   const isPrintable = event.key.length === 1;
   const type = keyboardType(event.action, isPrintable);
   const text = type === "keyDown" ? { text: event.key } : {};
-  return [{ method: "Input.dispatchKeyEvent", params: { type, key: event.key, code, modifiers, ...text, ...virtualKeyCodeParams(vk) } }];
+  return [
+    {
+      method: "Input.dispatchKeyEvent",
+      params: { code, key: event.key, modifiers, type, ...text, ...virtualKeyCodeParams(vk) },
+    },
+  ];
 }
 
 function mapTouchEventToCdp(event: WireInput): CdpCommand[] {
@@ -152,9 +169,11 @@ function mapTouchEventToCdp(event: WireInput): CdpCommand[] {
   const y = ensureNumber(event.y, "y");
   const id = Number.isFinite(event.id) ? Number(event.id) : 1;
   const cdpType = TOUCH_TYPE_MAP[event.action] ?? null;
-  if (!cdpType) throw invalidInput(`unknown touch action: ${event.action}`);
-  const touchPoints = cdpType === "touchEnd" ? [] : [{ x, y, id }];
-  return [{ method: "Input.dispatchTouchEvent", params: { type: cdpType, touchPoints } }];
+  if (!cdpType) {
+    throw invalidInput(`unknown touch action: ${event.action}`);
+  }
+  const touchPoints = cdpType === "touchEnd" ? [] : [{ id, x, y }];
+  return [{ method: "Input.dispatchTouchEvent", params: { touchPoints, type: cdpType } }];
 }
 
 function mapScrollEventToCdp(event: WireInput): CdpCommand[] {
@@ -162,11 +181,13 @@ function mapScrollEventToCdp(event: WireInput): CdpCommand[] {
   const y = ensureNumber(event.y, "y");
   const deltaX = ensureNumber(event.deltaX, "deltaX");
   const deltaY = ensureNumber(event.deltaY, "deltaY");
-  return [{ method: "Input.dispatchMouseEvent", params: { type: "mouseWheel", x, y, deltaX, deltaY } }];
+  return [{ method: "Input.dispatchMouseEvent", params: { deltaX, deltaY, type: "mouseWheel", x, y } }];
 }
 
 function mapPasteEventToCdp(event: WireInput): CdpCommand[] {
-  if (typeof event.text !== "string") throw invalidInput("paste.text must be a string");
+  if (typeof event.text !== "string") {
+    throw invalidInput("paste.text must be a string");
+  }
   return [{ method: "Input.insertText", params: { text: event.text } }];
 }
 
@@ -176,18 +197,18 @@ function mapViewportEventToCdp(event: WireInput): CdpCommand[] {
   const deviceScaleFactor = Number.isFinite(event.deviceScaleFactor) ? Number(event.deviceScaleFactor) : 1;
   const mobile = event.mobile === true;
   return [
-    { method: "Emulation.setDeviceMetricsOverride", params: { width, height, deviceScaleFactor, mobile } },
+    { method: "Emulation.setDeviceMetricsOverride", params: { deviceScaleFactor, height, mobile, width } },
     { method: "Page.stopScreencast", params: undefined },
-    { method: "Page.startScreencast", params: buildScreencastParams({ viewport: { width, height } }) },
+    { method: "Page.startScreencast", params: buildScreencastParams({ viewport: { height, width } }) },
   ];
 }
 
 const INPUT_EVENT_MAPPERS: Record<string, (event: WireInput) => CdpCommand[]> = {
-  mouse: mapMouseEventToCdp,
   keyboard: mapKeyboardEventToCdp,
-  touch: mapTouchEventToCdp,
-  scroll: mapScrollEventToCdp,
+  mouse: mapMouseEventToCdp,
   paste: mapPasteEventToCdp,
+  scroll: mapScrollEventToCdp,
+  touch: mapTouchEventToCdp,
   viewport: mapViewportEventToCdp,
 };
 
@@ -197,12 +218,15 @@ const INPUT_EVENT_MAPPERS: Record<string, (event: WireInput) => CdpCommand[]> = 
  *
  * `event` is untrusted wire JSON; the function validates shape at runtime.
  */
+// biome-ignore lint/suspicious/noExplicitAny: This external runtime boundary has no stable static type.
 export function mapInputEventToCdp(event: any): CdpCommand[] {
   if (!event || typeof event !== "object") {
     throw invalidInput("input event must be an object");
   }
   const mapEvent = INPUT_EVENT_MAPPERS[event.type];
-  if (!mapEvent) throw invalidInput(`unknown input event type: ${event.type}`);
+  if (!mapEvent) {
+    throw invalidInput(`unknown input event type: ${event.type}`);
+  }
   return mapEvent(event);
 }
 
@@ -231,11 +255,11 @@ export function buildScreencastParams({
   const maxWidth = Number.isFinite(width) && (width as number) > 0 ? Math.floor(width as number) : 1280;
   const maxHeight = Number.isFinite(height) && (height as number) > 0 ? Math.floor(height as number) : 720;
   return {
-    format: "jpeg",
-    quality: Math.max(1, Math.min(100, Math.floor(quality))),
-    maxWidth,
-    maxHeight,
     everyNthFrame: 1,
+    format: "jpeg",
+    maxHeight,
+    maxWidth,
+    quality: Math.max(1, Math.min(100, Math.floor(quality))),
   };
 }
 
@@ -251,19 +275,19 @@ export function buildScreencastParams({
 
 /** The deterministic mock companion returned by `createMockCompanion`. */
 export interface MockCompanion {
-  ackFrame(sessionId: unknown): Promise<void>;
+  ackFrame: (sessionId: unknown) => Promise<void>;
   browser_session_id: string;
   cdpCalls: CdpCommand[];
-  dispatch(event: unknown): Promise<void>;
+  dispatch: (event: unknown) => Promise<void>;
   inputs: unknown[];
-  lastViewport(): unknown;
-  onEvent(fn: (event: unknown) => void): () => void;
-  onFrame(fn: (frame: unknown) => void): () => void;
-  pushEvent(event: unknown): void;
-  pushFrame(frame: unknown): void;
-  start(viewport?: unknown): Promise<void>;
-  started(): boolean;
-  stop(): Promise<void>;
+  lastViewport: () => unknown;
+  onEvent: (fn: (event: unknown) => void) => () => void;
+  onFrame: (fn: (frame: unknown) => void) => () => void;
+  pushEvent: (event: unknown) => void;
+  pushFrame: (frame: unknown) => void;
+  start: (viewport?: unknown) => Promise<void>;
+  started: () => boolean;
+  stop: () => Promise<void>;
 }
 
 /**
@@ -285,11 +309,40 @@ export function createMockCompanion({
   const cdpCalls: CdpCommand[] = [];
 
   return {
+    // biome-ignore lint/suspicious/useAwait: satisfies the MockCompanion/Companion contract (the real CDP companion twin awaits).
+    async ackFrame(sessionId) {
+      cdpCalls.push({ method: "Page.screencastFrameAck", params: { sessionId } });
+    },
     browser_session_id,
-    started: () => started,
-    lastViewport: () => lastViewport,
-    inputs,
     cdpCalls,
+    // biome-ignore lint/suspicious/useAwait: satisfies the MockCompanion/Companion contract (the real CDP companion twin awaits).
+    async dispatch(event) {
+      const commands = mapInputEventToCdp(event);
+      inputs.push(event);
+      for (const cmd of commands) {
+        cdpCalls.push(cmd);
+      }
+    },
+    inputs,
+    lastViewport: () => lastViewport,
+    onEvent(fn) {
+      eventHandlers.add(fn);
+      return () => eventHandlers.delete(fn);
+    },
+    onFrame(fn) {
+      handlers.add(fn);
+      return () => handlers.delete(fn);
+    },
+    pushEvent(event) {
+      for (const handler of eventHandlers) {
+        handler(event);
+      }
+    },
+    pushFrame(frame) {
+      for (const handler of handlers) {
+        handler(frame);
+      }
+    },
     // biome-ignore lint/suspicious/useAwait: satisfies the MockCompanion/Companion contract (the real CDP companion twin awaits).
     async start(viewport) {
       started = true;
@@ -299,42 +352,13 @@ export function createMockCompanion({
         params: buildScreencastParams({ viewport: viewport as Viewport }),
       });
     },
+    started: () => started,
     // biome-ignore lint/suspicious/useAwait: satisfies the MockCompanion/Companion contract (the real CDP companion twin awaits).
     async stop() {
       started = false;
       cdpCalls.push({ method: "Page.stopScreencast", params: {} });
       handlers.clear();
       eventHandlers.clear();
-    },
-    onFrame(fn) {
-      handlers.add(fn);
-      return () => handlers.delete(fn);
-    },
-    onEvent(fn) {
-      eventHandlers.add(fn);
-      return () => eventHandlers.delete(fn);
-    },
-    pushFrame(frame) {
-      for (const handler of handlers) {
-        handler(frame);
-      }
-    },
-    pushEvent(event) {
-      for (const handler of eventHandlers) {
-        handler(event);
-      }
-    },
-    // biome-ignore lint/suspicious/useAwait: satisfies the MockCompanion/Companion contract (the real CDP companion twin awaits).
-    async dispatch(event) {
-      const commands = mapInputEventToCdp(event);
-      inputs.push(event);
-      for (const cmd of commands) {
-        cdpCalls.push(cmd);
-      }
-    },
-    // biome-ignore lint/suspicious/useAwait: satisfies the MockCompanion/Companion contract (the real CDP companion twin awaits).
-    async ackFrame(sessionId) {
-      cdpCalls.push({ method: "Page.screencastFrameAck", params: { sessionId } });
     },
   };
 }

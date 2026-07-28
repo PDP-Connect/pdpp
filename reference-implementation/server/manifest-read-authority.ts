@@ -27,7 +27,7 @@ export interface ManifestReadAuthorityOptions {
 }
 
 function declaredNames(manifest: ManifestLike): Set<string> {
-  if (manifest == null || !Array.isArray(manifest.streams)) {
+  if (manifest === null || manifest === undefined || !Array.isArray(manifest.streams)) {
     throw new ManifestReadAuthorityError(null);
   }
   return new Set(

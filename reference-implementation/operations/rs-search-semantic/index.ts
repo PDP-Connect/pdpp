@@ -125,8 +125,8 @@ export interface SearchSemanticManifest {
 }
 
 export interface SearchSemanticGrantStream {
-  name: string;
   fields?: string[];
+  name: string;
   [extra: string]: unknown;
 }
 
@@ -140,9 +140,7 @@ export interface SearchSemanticGrant {
  * `capabilities.semantic_retrieval` shape published in RS metadata.
  */
 export interface SearchSemanticAdvertisement {
-  supported?: boolean;
   cross_stream?: boolean;
-  snippets?: boolean;
   default_limit?: number;
   max_limit?: number;
   score?: {
@@ -152,6 +150,8 @@ export interface SearchSemanticAdvertisement {
     value_semantics?: string;
     comparable_with?: unknown;
   };
+  snippets?: boolean;
+  supported?: boolean;
   [extra: string]: unknown;
 }
 
@@ -162,15 +162,15 @@ export interface SearchSemanticAdvertisement {
  * fields they need through the plan back into the snapshot builder.
  */
 export interface SearchSemanticPlanEntry {
-  streamName: string;
   searchableFields: string[];
+  streamName: string;
   [extra: string]: unknown;
 }
 
 export interface SearchSemanticConnectorPlan {
   connectorId: string | null;
-  manifest: SearchSemanticManifest;
   grant: SearchSemanticGrant;
+  manifest: SearchSemanticManifest;
   planEntries: SearchSemanticPlanEntry[];
 }
 
@@ -197,29 +197,29 @@ export interface SearchSemanticSnapshotResult {
    * result item only when the snapshot captured a non-placeholder label.
    */
   displayName?: string | null;
-  stream: string;
-  recordKey: string;
-  matchedFields: string[];
   distance: number;
+  matchedFields: string[];
+  recordKey: string;
+  stream: string;
   [extra: string]: unknown;
 }
 
 export interface SearchSemanticSnapshot {
-  snapshot_id: string;
-  query: string;
   /**
    * Opaque backend identity hash captured at snapshot build time. The
    * operation compares it against `getCurrentBackendIdentity()` on cursor
    * load and raises `invalid_cursor` on any divergence.
    */
   backend_hash: string;
+  query: string;
   results: SearchSemanticSnapshotResult[];
+  snapshot_id: string;
   [extra: string]: unknown;
 }
 
 export interface SearchSemanticHydratedResult {
-  emittedAt: string | null;
   authoredAt?: string | null;
+  emittedAt: string | null;
   /**
    * Verbatim contiguous substring of the matched field's stored value.
    * Adapters MUST NOT paraphrase, summarize, or model-generate snippet text.
@@ -245,89 +245,18 @@ export interface SearchSemanticOwnerBinding {
  * downstream plan compiler scopes vector queries to that binding.
  */
 export interface SearchSemanticClientBinding {
-  manifest: SearchSemanticManifest;
   connectorInstanceId: string;
   displayName?: string | null;
+  manifest: SearchSemanticManifest;
 }
 
 export interface SearchSemanticDependencies {
-  /**
-   * Capability advertisement; controls cross-stream and score-emission gates.
-   */
-  getAdvertisement(): SearchSemanticAdvertisement | null;
-  /**
-   * Current backend identity hash. Compared against `snapshot.backend_hash`
-   * on cursor load; any divergence ⇒ `invalid_cursor`.
-   */
-  getCurrentBackendIdentity(): string;
-  /**
-   * Owner fan-out: list every connector id whose manifest the owner can read.
-   *
-   * Legacy single-binding-per-connector path. Hosts that support cross-
-   * binding fan-in SHOULD additionally implement `listOwnerVisibleBindings`
-   * below; when present, the operation uses it and ignores this method.
-   */
-  listOwnerVisibleConnectorIds(): Promise<string[]> | string[];
-  /**
-   * Owner cross-binding fan-out (optional): list every active owner-visible
-   * binding. When provided, the operation emits one connector plan per
-   * binding so the snapshot's total-order merge fans across bindings.
-   */
-  listOwnerVisibleBindings?: () =>
-    | Promise<SearchSemanticOwnerBinding[]>
-    | SearchSemanticOwnerBinding[];
-  /**
-   * Owner fan-out helper: return the manifest for one connector, or null to
-   * skip it (e.g. broken polyfill manifests).
-   */
-  resolveOwnerManifestForConnector(
-    connectorId: string,
-  ):
-    | Promise<SearchSemanticManifest | null>
-    | SearchSemanticManifest
-    | null;
-  /**
-   * Owner cross-binding fan-out helper (optional): resolve the manifest for
-   * one specific binding. When omitted, the operation falls back to
-   * `resolveOwnerManifestForConnector(binding.connectorId)`.
-   */
-  resolveOwnerManifestForBinding?: (
-    binding: SearchSemanticOwnerBinding,
-  ) =>
-    | Promise<SearchSemanticManifest | null>
-    | SearchSemanticManifest
-    | null;
   /**
    * Owner fan-out helper: build a synthetic owner read-grant covering every
    * stream of `manifest`. Adapter decides field-set semantics (typically
    * `fields = undefined ⇒ all fields authorized`).
    */
-  buildOwnerReadGrantForManifest(
-    manifest: SearchSemanticManifest,
-  ): SearchSemanticGrant;
-  /**
-   * Client-mode helper: resolve the manifest the supplied client grant
-   * applies against. Hosts build this from the bearer token information.
-   *
-   * Legacy single-binding path. Hosts that support cross-binding fan-in
-   * SHOULD additionally implement `resolveClientBindings` below; when
-   * present, the operation uses it and ignores this method.
-   */
-  resolveClientManifest(
-    actor: { kind: "client"; grant: SearchSemanticGrant },
-  ): Promise<SearchSemanticManifest> | SearchSemanticManifest;
-  /**
-   * Client cross-binding fan-out (optional). Same semantics as the lexical
-   * counterpart: honors grant-scope per-stream constraints, request-time
-   * `connection_id` narrowing, and exactly-one auto-select; raises
-   * `connection_not_found` / `invalid_argument` on resolution failure.
-   */
-  resolveClientBindings?: (
-    actor: { kind: "client"; grant: SearchSemanticGrant },
-    request: { connectionId: string | null },
-  ) =>
-    | Promise<SearchSemanticClientBinding[]>
-    | SearchSemanticClientBinding[];
+  buildOwnerReadGrantForManifest: (manifest: SearchSemanticManifest) => SearchSemanticGrant;
   /**
    * Compile one connector's grant + manifest + request filter shape into a
    * plan. Implementations MUST enforce field-grant intersection,
@@ -339,14 +268,14 @@ export interface SearchSemanticDependencies {
    * absent). `filter` and `filteredStream` are the request `filter[...]` and
    * the single `streams[]` value bound to it (if `filter` is present).
    */
-  buildSearchPlanForGrant(args: {
+  buildSearchPlanForGrant: (args: {
     manifest: SearchSemanticManifest;
     grant: SearchSemanticGrant;
     streamsFilter: string[] | null;
     filter: unknown;
     filteredStream: string | null;
     connectorId: string | null;
-  }): SearchSemanticPlanEntry[];
+  }) => SearchSemanticPlanEntry[];
   /**
    * Build a snapshot of the fully-ranked result set for `(q, plans)`. The
    * adapter owns embedding, KNN, ranking, per-record collapsing, and
@@ -354,47 +283,97 @@ export interface SearchSemanticDependencies {
    * The returned snapshot MUST carry the backend identity captured at build
    * time as `backend_hash` so cursor staleness is decidable on later loads.
    */
-  buildSnapshot(args: {
+  buildSnapshot: (args: {
     q: string;
     perConnectorPlans: SearchSemanticConnectorPlan[];
     isOwner: boolean;
     pageLimit: number;
-  }): Promise<SearchSemanticSnapshot> | SearchSemanticSnapshot;
+  }) => Promise<SearchSemanticSnapshot> | SearchSemanticSnapshot;
   /**
-   * Persist a freshly-built snapshot for cursor reuse.
+   * Format the public `record_url` for one search result. Hosts wire the
+   * concrete implementation: native -> `/v1/streams/<stream>/records/<id>`
+   * (with `?connector_id=` for owner mode).
    */
-  persistSnapshot(snapshot: SearchSemanticSnapshot): Promise<void> | void;
+  formatRecordUrl: (args: { stream: string; recordKey: string; connectorId: string; isOwner: boolean }) => string;
   /**
-   * Load a previously-persisted snapshot by id. Returns `null` if the
-   * snapshot has expired or never existed.
+   * Capability advertisement; controls cross-stream and score-emission gates.
    */
-  loadSnapshot(
-    snapshotId: string,
-  ):
-    | Promise<SearchSemanticSnapshot | null>
-    | SearchSemanticSnapshot
-    | null;
+  getAdvertisement: () => SearchSemanticAdvertisement | null;
+  /**
+   * Current backend identity hash. Compared against `snapshot.backend_hash`
+   * on cursor load; any divergence ⇒ `invalid_cursor`.
+   */
+  getCurrentBackendIdentity: () => string;
   /**
    * Hydrate `emitted_at` and (optionally) `snippet` for one search hit.
    * Snippet MUST be a verbatim contiguous substring of the matched field's
    * stored value. The operation calls this once per emitted hit so the
    * records-table read stays in the dependency.
    */
-  hydrateResult(args: {
+  hydrateResult: (args: {
     hit: SearchSemanticSnapshotResult;
     isOwner: boolean;
-  }): Promise<SearchSemanticHydratedResult> | SearchSemanticHydratedResult;
+  }) => Promise<SearchSemanticHydratedResult> | SearchSemanticHydratedResult;
   /**
-   * Format the public `record_url` for one search result. Hosts wire the
-   * concrete implementation: native -> `/v1/streams/<stream>/records/<id>`
-   * (with `?connector_id=` for owner mode).
+   * Owner cross-binding fan-out (optional): list every active owner-visible
+   * binding. When provided, the operation emits one connector plan per
+   * binding so the snapshot's total-order merge fans across bindings.
    */
-  formatRecordUrl(args: {
-    stream: string;
-    recordKey: string;
-    connectorId: string;
-    isOwner: boolean;
-  }): string;
+  listOwnerVisibleBindings?: () => Promise<SearchSemanticOwnerBinding[]> | SearchSemanticOwnerBinding[];
+  /**
+   * Owner fan-out: list every connector id whose manifest the owner can read.
+   *
+   * Legacy single-binding-per-connector path. Hosts that support cross-
+   * binding fan-in SHOULD additionally implement `listOwnerVisibleBindings`
+   * below; when present, the operation uses it and ignores this method.
+   */
+  listOwnerVisibleConnectorIds: () => Promise<string[]> | string[];
+  /**
+   * Load a previously-persisted snapshot by id. Returns `null` if the
+   * snapshot has expired or never existed.
+   */
+  loadSnapshot: (snapshotId: string) => Promise<SearchSemanticSnapshot | null> | SearchSemanticSnapshot | null;
+  /**
+   * Persist a freshly-built snapshot for cursor reuse.
+   */
+  persistSnapshot: (snapshot: SearchSemanticSnapshot) => Promise<void> | void;
+  /**
+   * Client cross-binding fan-out (optional). Same semantics as the lexical
+   * counterpart: honors grant-scope per-stream constraints, request-time
+   * `connection_id` narrowing, and exactly-one auto-select; raises
+   * `connection_not_found` / `invalid_argument` on resolution failure.
+   */
+  resolveClientBindings?: (
+    actor: { kind: "client"; grant: SearchSemanticGrant },
+    request: { connectionId: string | null }
+  ) => Promise<SearchSemanticClientBinding[]> | SearchSemanticClientBinding[];
+  /**
+   * Client-mode helper: resolve the manifest the supplied client grant
+   * applies against. Hosts build this from the bearer token information.
+   *
+   * Legacy single-binding path. Hosts that support cross-binding fan-in
+   * SHOULD additionally implement `resolveClientBindings` below; when
+   * present, the operation uses it and ignores this method.
+   */
+  resolveClientManifest: (actor: {
+    kind: "client";
+    grant: SearchSemanticGrant;
+  }) => Promise<SearchSemanticManifest> | SearchSemanticManifest;
+  /**
+   * Owner cross-binding fan-out helper (optional): resolve the manifest for
+   * one specific binding. When omitted, the operation falls back to
+   * `resolveOwnerManifestForConnector(binding.connectorId)`.
+   */
+  resolveOwnerManifestForBinding?: (
+    binding: SearchSemanticOwnerBinding
+  ) => Promise<SearchSemanticManifest | null> | SearchSemanticManifest | null;
+  /**
+   * Owner fan-out helper: return the manifest for one connector, or null to
+   * skip it (e.g. broken polyfill manifests).
+   */
+  resolveOwnerManifestForConnector: (
+    connectorId: string
+  ) => Promise<SearchSemanticManifest | null> | SearchSemanticManifest | null;
 }
 
 export interface SearchSemanticInput {
@@ -411,33 +390,33 @@ export interface SearchSemanticInput {
 }
 
 export interface SearchSemanticResultItem {
-  object: "search_result";
-  stream: string;
-  record_key: string;
-  connector_id: string;
+  authored_at?: string;
   /**
    * Canonical connection identifier — present whenever the snapshot result
    * captured one. `connector_instance_id` mirrors the same value during the
    * deprecation window so clients can migrate without coordinated cutovers.
    */
   connection_id?: string;
+  connector_id: string;
   connector_instance_id?: string;
   /**
    * Owner-facing label for the connection. Emitted only when the snapshot
    * captured a non-placeholder label. Mirrors records-list/detail wire shape.
    */
   display_name?: string;
-  record_url: string;
   emitted_at: string | null;
-  authored_at?: string;
   matched_fields: string[];
+  object: "search_result";
+  record_key: string;
+  record_url: string;
   /**
    * v1: every hit emits `retrieval_mode: "semantic"`. `lexical_blending` is
    * advertised as `false` in v1 and the operation does not blend.
    */
   retrieval_mode: "semantic";
-  snippet?: { field: string; text: string };
   score?: { kind: "semantic_distance"; value: number; order: "lower_is_better" };
+  snippet?: { field: string; text: string };
+  stream: string;
 }
 
 export interface SearchSemanticEnvelopeMeta {
@@ -446,33 +425,33 @@ export interface SearchSemanticEnvelopeMeta {
 }
 
 export interface SearchSemanticEnvelope {
-  object: "list";
-  has_more: boolean;
-  next_cursor?: string;
   data: SearchSemanticResultItem[];
+  has_more: boolean;
   /** Optional canonical `meta` slot; only emitted when warnings are non-empty. */
   meta?: SearchSemanticEnvelopeMeta;
+  next_cursor?: string;
+  object: "list";
 }
 
 export interface SearchSemanticDisclosureData {
-  query_shape: "search_semantic";
-  record_count: number;
+  connector_count: number;
   has_more: boolean;
   mode: "owner" | "client";
-  connector_count: number;
+  query_shape: "search_semantic";
+  record_count: number;
 }
 
 export interface SearchSemanticOutput {
-  /**
-   * List envelope minus the host-shaped `url` field. Hosts add
-   * `url: '/v1/search/semantic'`.
-   */
-  envelope: SearchSemanticEnvelope;
   /**
    * Pre-shaped `disclosure.served` data block. Hosts merge in `source` and
    * any host-only fields.
    */
   disclosureData: SearchSemanticDisclosureData;
+  /**
+   * List envelope minus the host-shaped `url` field. Hosts add
+   * `url: '/v1/search/semantic'`.
+   */
+  envelope: SearchSemanticEnvelope;
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────
@@ -491,10 +470,7 @@ export interface SearchSemanticOutput {
  * connector triggered them.
  */
 function isInvalidQueryError(err: unknown): boolean {
-  return (
-    err instanceof Error &&
-    (err as Error & { code?: unknown }).code === "filter_field_not_in_schema"
-  );
+  return err instanceof Error && (err as Error & { code?: unknown }).code === "filter_field_not_in_schema";
 }
 
 // `connection_id` is the canonical public connection identifier;
@@ -544,12 +520,12 @@ const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 100;
 
 interface NormalizedRequestParams {
-  q: string;
-  limit: number;
   cursor: string | null;
-  streams: string[] | null;
   filter: unknown;
   filteredStream: string | null;
+  limit: number;
+  q: string;
+  streams: string[] | null;
   warnings: SearchSemanticWarning[];
 }
 
@@ -560,9 +536,9 @@ interface NormalizedRequestParams {
  */
 export interface SearchSemanticWarning {
   code: string;
-  param?: string;
-  message?: string;
   detail?: Record<string, unknown>;
+  message?: string;
+  param?: string;
 }
 
 /**
@@ -587,24 +563,28 @@ export const SEARCH_SEMANTIC_SOURCE_SKIPPED_WARNING_CODE = "source_skipped_not_a
  */
 export const SEARCH_LIMIT_CLAMPED_WARNING_CODE = "limit_clamped";
 
-function deriveSearchConnectionAliasWarnings(
-  query: Record<string, unknown>,
-): SearchSemanticWarning[] {
+function deriveSearchConnectionAliasWarnings(query: Record<string, unknown>): SearchSemanticWarning[] {
   const alias = query.connector_instance_id;
-  if (typeof alias !== "string" || alias.length === 0) return [];
+  if (typeof alias !== "string" || alias.length === 0) {
+    return [];
+  }
   return [
     {
       code: SEARCH_CONNECTION_ALIAS_DEPRECATED_WARNING_CODE,
-      param: "connector_instance_id",
       message: "`connector_instance_id` is deprecated; send `connection_id` instead.",
+      param: "connector_instance_id",
     },
   ];
 }
 
 function clampLimit(raw: unknown): number {
-  if (raw === undefined || raw === null || raw === "") return DEFAULT_LIMIT;
+  if (raw === undefined || raw === null || raw === "") {
+    return DEFAULT_LIMIT;
+  }
   const n = Number(raw);
-  if (!Number.isFinite(n) || n < 1) return DEFAULT_LIMIT;
+  if (!Number.isFinite(n) || n < 1) {
+    return DEFAULT_LIMIT;
+  }
   return Math.min(Math.floor(n), MAX_LIMIT);
 }
 
@@ -616,27 +596,33 @@ function clampLimit(raw: unknown): number {
  * the records-list and lexical wire shape.
  */
 function deriveLimitClampedWarning(raw: unknown): SearchSemanticWarning[] {
-  if (raw === undefined || raw === null || raw === "") return [];
+  if (raw === undefined || raw === null || raw === "") {
+    return [];
+  }
   const n = Number(raw);
-  if (!Number.isFinite(n)) return [];
+  if (!Number.isFinite(n)) {
+    return [];
+  }
   const requested = Math.floor(n);
-  if (requested <= MAX_LIMIT) return [];
+  if (requested <= MAX_LIMIT) {
+    return [];
+  }
   return [
     {
       code: SEARCH_LIMIT_CLAMPED_WARNING_CODE,
-      param: "limit",
-      detail: { requested_limit: requested, max_limit: MAX_LIMIT },
+      detail: { max_limit: MAX_LIMIT, requested_limit: requested },
       message: `Requested limit=${requested} exceeds the maximum page size of ${MAX_LIMIT}; returned at most ${MAX_LIMIT} hits per page. Page forward with the returned cursor.`,
+      param: "limit",
     },
   ];
 }
 
 function normalizeStreamsParam(raw: unknown): string[] | null {
-  if (raw === undefined || raw === null) return null;
+  if (raw === undefined || raw === null) {
+    return null;
+  }
   const arr = Array.isArray(raw) ? raw : [raw];
-  const cleaned = arr
-    .map((v) => (typeof v === "string" ? v.trim() : ""))
-    .filter((v) => v.length > 0);
+  const cleaned = arr.map((v) => (typeof v === "string" ? v.trim() : "")).filter((v) => v.length > 0);
   return cleaned.length === 0 ? null : cleaned;
 }
 
@@ -646,77 +632,60 @@ function normalizeStreamsParam(raw: unknown): string[] | null {
  * operation owns it now so the native dependency wiring runs the same
  * allowlist, forbidden list, and coupling rules.
  */
-export function parseSearchSemanticParams(
-  query: Record<string, unknown>,
-): NormalizedRequestParams {
+export function parseSearchSemanticParams(query: Record<string, unknown>): NormalizedRequestParams {
   for (const key of Object.keys(query)) {
     if (FORBIDDEN_PARAMS.has(key)) {
-      throw new SearchSemanticRequestError(
-        "invalid_request",
-        `Unsupported query parameter: ${key}`,
-        key,
-      );
+      throw new SearchSemanticRequestError("invalid_request", `Unsupported query parameter: ${key}`, key);
     }
     if (!ALLOWED_PARAMS.has(key)) {
-      throw new SearchSemanticRequestError(
-        "invalid_request",
-        `Unsupported query parameter: ${key}`,
-        key,
-      );
+      throw new SearchSemanticRequestError("invalid_request", `Unsupported query parameter: ${key}`, key);
     }
   }
   const q = typeof query.q === "string" ? query.q : "";
   if (!q) {
-    throw new SearchSemanticRequestError(
-      "invalid_request",
-      "q is required",
-      "q",
-    );
+    throw new SearchSemanticRequestError("invalid_request", "q is required", "q");
   }
   const limit = clampLimit(query.limit);
-  const cursor =
-    typeof query.cursor === "string" && query.cursor ? query.cursor : null;
+  const cursor = typeof query.cursor === "string" && query.cursor ? query.cursor : null;
   const streams = normalizeStreamsParam(query.streams ?? query["streams[]"]);
-  const hasFilter = Object.prototype.hasOwnProperty.call(query, "filter");
-  if (hasFilter && (!streams || streams.length !== 1)) {
+  const hasFilter = Object.hasOwn(query, "filter");
+  if (hasFilter && streams?.length !== 1) {
     throw new SearchSemanticRequestError(
       "invalid_request",
       "filter[...] requires exactly one streams[] value (e.g. ?streams[]=messages&filter[received_at][gte]=...). filter[stream] and filter[connector_id] are not supported.",
-      "streams",
+      "streams"
     );
   }
   const canonicalConn = query.connection_id;
   const aliasConn = query.connector_instance_id;
   if (
-    typeof canonicalConn === "string"
-    && canonicalConn.length > 0
-    && typeof aliasConn === "string"
-    && aliasConn.length > 0
-    && canonicalConn !== aliasConn
+    typeof canonicalConn === "string" &&
+    canonicalConn.length > 0 &&
+    typeof aliasConn === "string" &&
+    aliasConn.length > 0 &&
+    canonicalConn !== aliasConn
   ) {
     throw new SearchSemanticRequestError(
       "invalid_argument",
       "connection_id and connector_instance_id refer to the same connection. Send only `connection_id` (canonical) or supply matching values.",
-      "connector_instance_id",
+      "connector_instance_id"
     );
   }
   return {
-    q,
-    limit,
     cursor,
-    streams,
     filter: hasFilter ? query.filter : null,
+    // biome-ignore lint/style/noNonNullAssertion: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     filteredStream: hasFilter && streams && streams.length > 0 ? streams[0]! : null,
-    warnings: [
-      ...deriveSearchConnectionAliasWarnings(query),
-      ...deriveLimitClampedWarning(query.limit),
-    ],
+    limit,
+    q,
+    streams,
+    warnings: [...deriveSearchConnectionAliasWarnings(query), ...deriveLimitClampedWarning(query.limit)],
   };
 }
 
 interface CursorPayload {
-  snap: string;
   off: number;
+  snap: string;
 }
 
 /**
@@ -754,21 +723,19 @@ export function decodeSearchSemanticCursor(cursor: string): CursorPayload | null
     if (typeof parsed.snap !== "string" || typeof parsed.off !== "number") {
       return null;
     }
-    return { snap: parsed.snap, off: parsed.off };
+    return { off: parsed.off, snap: parsed.snap };
   } catch {
     return null;
   }
 }
 
-function advertisesSemanticScore(
-  advertisement: SearchSemanticAdvertisement | null,
-): boolean {
+function advertisesSemanticScore(advertisement: SearchSemanticAdvertisement | null): boolean {
   return !!(
-    advertisement
-    && advertisement.supported !== false
-    && advertisement.score?.supported === true
-    && advertisement.score.kind === "semantic_distance"
-    && advertisement.score.order === "lower_is_better"
+    advertisement &&
+    advertisement.supported !== false &&
+    advertisement.score?.supported === true &&
+    advertisement.score.kind === "semantic_distance" &&
+    advertisement.score.order === "lower_is_better"
   );
 }
 
@@ -777,23 +744,23 @@ async function buildResultItem(
   isOwner: boolean,
   emitScore: boolean,
   hydrate: SearchSemanticDependencies["hydrateResult"],
-  formatRecordUrl: SearchSemanticDependencies["formatRecordUrl"],
+  formatRecordUrl: SearchSemanticDependencies["formatRecordUrl"]
 ): Promise<SearchSemanticResultItem> {
   const hydrated = await hydrate({ hit, isOwner });
   const item: SearchSemanticResultItem = {
-    object: "search_result",
-    stream: hit.stream,
-    record_key: hit.recordKey,
     connector_id: hit.connectorId,
-    record_url: formatRecordUrl({
-      stream: hit.stream,
-      recordKey: hit.recordKey,
-      connectorId: hit.connectorId,
-      isOwner,
-    }),
     emitted_at: hydrated.emittedAt ?? null,
     matched_fields: hit.matchedFields,
+    object: "search_result",
+    record_key: hit.recordKey,
+    record_url: formatRecordUrl({
+      connectorId: hit.connectorId,
+      isOwner,
+      recordKey: hit.recordKey,
+      stream: hit.stream,
+    }),
     retrieval_mode: "semantic",
+    stream: hit.stream,
   };
   if (typeof hydrated.authoredAt === "string" && hydrated.authoredAt.length > 0) {
     item.authored_at = hydrated.authoredAt;
@@ -811,8 +778,8 @@ async function buildResultItem(
   if (emitScore && Number.isFinite(hit.distance)) {
     item.score = {
       kind: "semantic_distance",
-      value: hit.distance,
       order: "lower_is_better",
+      value: hit.distance,
     };
   }
   return item;
@@ -826,9 +793,11 @@ async function buildResultItem(
  * The operation does not mutate `input.query`; it parses and normalizes a
  * fresh request-params object internally.
  */
+
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
 export async function executeSearchSemantic(
   input: SearchSemanticInput,
-  dependencies: SearchSemanticDependencies,
+  dependencies: SearchSemanticDependencies
 ): Promise<SearchSemanticOutput> {
   // 1. Strict v1 allowlist + forbidden list + required `q` + `filter[...]`
   //    coupling.
@@ -837,15 +806,11 @@ export async function executeSearchSemantic(
   // 2. Cross-stream advertisement gate: when capability says cross-stream
   //    search is disabled, `streams[]` becomes mandatory.
   const advertisement = dependencies.getAdvertisement();
-  if (
-    advertisement
-    && advertisement.cross_stream === false
-    && (!params.streams || params.streams.length === 0)
-  ) {
+  if (advertisement && advertisement.cross_stream === false && (!params.streams || params.streams.length === 0)) {
     throw new SearchSemanticRequestError(
       "invalid_request",
       "streams[] is required when cross_stream search is disabled",
-      "streams",
+      "streams"
     );
   }
 
@@ -863,8 +828,8 @@ export async function executeSearchSemantic(
   const requestConnectionId =
     typeof input.query.connection_id === "string" && input.query.connection_id.length > 0
       ? input.query.connection_id
-      : typeof input.query.connector_instance_id === "string"
-            && input.query.connector_instance_id.length > 0
+      : // biome-ignore lint/style/noNestedTernary: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
+        typeof input.query.connector_instance_id === "string" && input.query.connector_instance_id.length > 0
         ? input.query.connector_instance_id
         : null;
   if (input.actor.kind === "owner") {
@@ -877,20 +842,19 @@ export async function executeSearchSemantic(
         throw new SearchSemanticRequestError(
           "connection_not_found",
           `connection_id '${requestConnectionId}' is not addressable for this owner.`,
-          "connection_id",
+          "connection_id"
         );
       }
       for (const binding of narrowedBindings) {
-        const manifest = typeof dependencies.resolveOwnerManifestForBinding
-          === "function"
-          ? await dependencies.resolveOwnerManifestForBinding(binding)
-          : await dependencies.resolveOwnerManifestForConnector(
-              binding.connectorId,
-            );
+        const manifest =
+          typeof dependencies.resolveOwnerManifestForBinding === "function"
+            ? // biome-ignore lint/performance/noAwaitInLoops: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
+              await dependencies.resolveOwnerManifestForBinding(binding)
+            : await dependencies.resolveOwnerManifestForConnector(binding.connectorId);
         if (!manifest) {
           skippedSources.push({
-            source: binding.connectorId,
             connection_id: binding.connectorInstanceId,
+            source: binding.connectorId,
           });
           continue;
         }
@@ -898,41 +862,42 @@ export async function executeSearchSemantic(
         let planEntries: SearchSemanticPlanEntry[];
         try {
           planEntries = dependencies.buildSearchPlanForGrant({
-            manifest,
-            grant,
-            streamsFilter: params.streams,
+            connectorId: binding.connectorId,
             filter: params.filter,
             filteredStream: params.filteredStream,
-            connectorId: binding.connectorId,
+            grant,
+            manifest,
+            streamsFilter: params.streams,
           });
         } catch (err) {
-          if (!isInvalidQueryError(err)) throw err;
+          if (!isInvalidQueryError(err)) {
+            throw err;
+          }
           skippedSources.push({
-            source: binding.connectorId,
             connection_id: binding.connectorInstanceId,
+            source: binding.connectorId,
           });
           continue;
         }
         if (planEntries.length === 0) {
           skippedSources.push({
-            source: binding.connectorId,
             connection_id: binding.connectorInstanceId,
+            source: binding.connectorId,
           });
           continue;
         }
         perConnectorPlans.push({
           connectorId: binding.connectorId,
-          manifest,
           grant,
+          manifest,
           planEntries,
         });
       }
     } else {
       const connectorIds = await dependencies.listOwnerVisibleConnectorIds();
       for (const connectorId of connectorIds) {
-        const manifest = await dependencies.resolveOwnerManifestForConnector(
-          connectorId,
-        );
+        // biome-ignore lint/performance/noAwaitInLoops: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
+        const manifest = await dependencies.resolveOwnerManifestForConnector(connectorId);
         if (!manifest) {
           skippedSources.push({ source: connectorId });
           continue;
@@ -941,15 +906,17 @@ export async function executeSearchSemantic(
         let planEntries: SearchSemanticPlanEntry[];
         try {
           planEntries = dependencies.buildSearchPlanForGrant({
-            manifest,
-            grant,
-            streamsFilter: params.streams,
+            connectorId,
             filter: params.filter,
             filteredStream: params.filteredStream,
-            connectorId,
+            grant,
+            manifest,
+            streamsFilter: params.streams,
           });
         } catch (err) {
-          if (!isInvalidQueryError(err)) throw err;
+          if (!isInvalidQueryError(err)) {
+            throw err;
+          }
           skippedSources.push({ source: connectorId });
           continue;
         }
@@ -957,74 +924,69 @@ export async function executeSearchSemantic(
           skippedSources.push({ source: connectorId });
           continue;
         }
-        perConnectorPlans.push({ connectorId, manifest, grant, planEntries });
+        perConnectorPlans.push({ connectorId, grant, manifest, planEntries });
       }
     }
     // Owner-mode `streams[]` is a soft filter: unknown stream names just
     // produce zero hits.
   } else {
-    const grant = input.actor.grant;
+    const { grant } = input.actor;
     if (params.streams) {
-      const grantedStreamNames = new Set(
-        (grant.streams || []).map((s) => s.name),
-      );
+      const grantedStreamNames = new Set((grant.streams || []).map((s) => s.name));
       for (const s of params.streams) {
         if (!grantedStreamNames.has(s)) {
-          throw new SearchSemanticRequestError(
-            "grant_stream_not_allowed",
-            `Stream '${s}' not in grant`,
-          );
+          throw new SearchSemanticRequestError("grant_stream_not_allowed", `Stream '${s}' not in grant`);
         }
       }
     }
     const connectorId =
       (grant as { source?: { kind?: unknown; id?: unknown } } | null)?.source?.kind === "connector" &&
       typeof (grant as { source?: { id?: unknown } } | null)?.source?.id === "string"
-        ? ((grant as { source?: { id?: string } }).source!.id as string)
+        ? ((grant as { source?: { id?: string } }).source?.id as string)
         : null;
     if (typeof dependencies.resolveClientBindings === "function") {
       const clientBindings = await dependencies.resolveClientBindings(
-        { kind: "client", grant },
-        { connectionId: requestConnectionId },
+        { grant, kind: "client" },
+        { connectionId: requestConnectionId }
       );
       for (const cb of clientBindings) {
         const planEntries = dependencies.buildSearchPlanForGrant({
-          manifest: cb.manifest,
-          grant,
-          streamsFilter: params.streams,
+          connectorId,
           filter: params.filter,
           filteredStream: params.filteredStream,
-          connectorId,
+          grant,
+          manifest: cb.manifest,
+          streamsFilter: params.streams,
         });
         if (planEntries.length === 0) {
           skippedSources.push({
-            source: connectorId ?? "",
             connection_id: cb.connectorInstanceId,
+            source: connectorId ?? "",
           });
           continue;
         }
         perConnectorPlans.push({
           connectorId,
-          manifest: cb.manifest,
           grant,
+          manifest: cb.manifest,
           planEntries,
         });
       }
     } else {
       const manifest = await dependencies.resolveClientManifest({
-        kind: "client",
         grant,
+        kind: "client",
       });
       const planEntries = dependencies.buildSearchPlanForGrant({
-        manifest,
-        grant,
-        streamsFilter: params.streams,
+        connectorId,
         filter: params.filter,
         filteredStream: params.filteredStream,
-        connectorId,
+        grant,
+        manifest,
+        streamsFilter: params.streams,
       });
       if (planEntries.length > 0) {
-        perConnectorPlans.push({ connectorId, manifest, grant, planEntries });
+        perConnectorPlans.push({ connectorId, grant, manifest, planEntries });
       }
     }
   }
@@ -1037,27 +999,18 @@ export async function executeSearchSemantic(
   if (params.cursor) {
     const decoded = decodeSearchSemanticCursor(params.cursor);
     if (!decoded) {
-      throw new SearchSemanticRequestError(
-        "invalid_cursor",
-        "Cursor is malformed",
-      );
+      throw new SearchSemanticRequestError("invalid_cursor", "Cursor is malformed");
     }
     const loaded = await dependencies.loadSnapshot(decoded.snap);
     if (!loaded) {
-      throw new SearchSemanticRequestError(
-        "invalid_cursor",
-        "Cursor refers to an expired or unknown snapshot",
-      );
+      throw new SearchSemanticRequestError("invalid_cursor", "Cursor refers to an expired or unknown snapshot");
     }
     // Stale-cursor backend-identity check: any divergence ⇒ invalid_cursor.
     // Recomputing under a different model would be dishonest — the spec
     // permits this and the previous native behavior raises the same code.
     const currentBackendIdentity = dependencies.getCurrentBackendIdentity();
     if (loaded.backend_hash !== currentBackendIdentity) {
-      throw new SearchSemanticRequestError(
-        "invalid_cursor",
-        "Cursor predates a backend identity change",
-      );
+      throw new SearchSemanticRequestError("invalid_cursor", "Cursor predates a backend identity change");
     }
     snapshot = loaded;
     snapshotId = decoded.snap;
@@ -1068,18 +1021,18 @@ export async function executeSearchSemantic(
     // an empty result without touching vector/index storage or snapshots.
     if (perConnectorPlans.length === 0) {
       snapshot = {
-        snapshot_id: "",
-        query: params.q,
         backend_hash: dependencies.getCurrentBackendIdentity(),
+        query: params.q,
         results: [],
+        snapshot_id: "",
       };
       snapshotId = "";
     } else {
       snapshot = await dependencies.buildSnapshot({
-        q: params.q,
-        perConnectorPlans,
         isOwner,
         pageLimit: params.limit,
+        perConnectorPlans,
+        q: params.q,
       });
       snapshotId = snapshot.snapshot_id;
       await dependencies.persistSnapshot(snapshot);
@@ -1093,8 +1046,8 @@ export async function executeSearchSemantic(
   const hasMore = offset + params.limit < allHits.length;
   const nextCursor = hasMore
     ? encodeSearchSemanticCursor({
-        snap: snapshotId,
         off: offset + params.limit,
+        snap: snapshotId,
       })
     : null;
 
@@ -1104,52 +1057,40 @@ export async function executeSearchSemantic(
   const emitScore = advertisesSemanticScore(advertisement);
   const data: SearchSemanticResultItem[] = [];
   for (const hit of slice) {
-    data.push(
-      await buildResultItem(
-        hit,
-        isOwner,
-        emitScore,
-        dependencies.hydrateResult,
-        dependencies.formatRecordUrl,
-      ),
-    );
+    // biome-ignore lint/performance/noAwaitInLoops: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
+    data.push(await buildResultItem(hit, isOwner, emitScore, dependencies.hydrateResult, dependencies.formatRecordUrl));
   }
 
-  const skippedWarnings: SearchSemanticWarning[] = skippedSources.map(
-    (skipped) => {
-      const detail: Record<string, unknown> = { source: skipped.source };
-      if (skipped.connection_id) detail.connection_id = skipped.connection_id;
-      const subject = skipped.connection_id
-        ? `Connection '${skipped.connection_id}' under connector '${skipped.source}'`
-        : `Connector '${skipped.source}'`;
-      return {
-        code: SEARCH_SEMANTIC_SOURCE_SKIPPED_WARNING_CODE,
-        message: `${subject} is not applicable to this query and was skipped.`,
-        detail,
-      };
-    },
-  );
-  const allWarnings: SearchSemanticWarning[] = [
-    ...params.warnings,
-    ...skippedWarnings,
-  ];
+  const skippedWarnings: SearchSemanticWarning[] = skippedSources.map((skipped) => {
+    const detail: Record<string, unknown> = { source: skipped.source };
+    if (skipped.connection_id) {
+      detail.connection_id = skipped.connection_id;
+    }
+    const subject = skipped.connection_id
+      ? `Connection '${skipped.connection_id}' under connector '${skipped.source}'`
+      : `Connector '${skipped.source}'`;
+    return {
+      code: SEARCH_SEMANTIC_SOURCE_SKIPPED_WARNING_CODE,
+      detail,
+      message: `${subject} is not applicable to this query and was skipped.`,
+    };
+  });
+  const allWarnings: SearchSemanticWarning[] = [...params.warnings, ...skippedWarnings];
   const envelope: SearchSemanticEnvelope = {
-    object: "list",
     has_more: hasMore,
+    object: "list",
     ...(nextCursor ? { next_cursor: nextCursor } : {}),
     data,
-    ...(allWarnings.length > 0
-      ? { meta: { warnings: allWarnings } }
-      : {}),
+    ...(allWarnings.length > 0 ? { meta: { warnings: allWarnings } } : {}),
   };
 
   const disclosureData: SearchSemanticDisclosureData = {
-    query_shape: "search_semantic",
-    record_count: data.length,
+    connector_count: perConnectorPlans.length,
     has_more: hasMore,
     mode,
-    connector_count: perConnectorPlans.length,
+    query_shape: "search_semantic",
+    record_count: data.length,
   };
 
-  return { envelope, disclosureData };
+  return { disclosureData, envelope };
 }

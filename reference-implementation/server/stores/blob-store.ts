@@ -19,8 +19,8 @@
  */
 
 import { getMany, getOne, referenceQueries } from "../../lib/db.ts";
-import { postgresListBlobBindings, postgresLoadContentAddressedBlob } from "../postgres-records.js";
-import { isPostgresStorageBackend } from "../postgres-storage.js";
+import { postgresListBlobBindings, postgresLoadContentAddressedBlob } from "../postgres-records.ts";
+import { isPostgresStorageBackend } from "../postgres-storage.ts";
 
 /**
  * Row shape returned by `loadContentAddressedBlob`. The `data` field carries
@@ -58,8 +58,8 @@ export interface BlobBinding extends Record<string, unknown> {
 type MaybeAsync<T> = T | Promise<T>;
 
 export interface BlobStore {
-  listBlobBindings(blobId: string, opts?: { limit?: number }): MaybeAsync<readonly BlobBinding[]>;
-  loadContentAddressedBlob(blobId: string): MaybeAsync<BlobRow | null>;
+  listBlobBindings: (blobId: string, opts?: { limit?: number }) => MaybeAsync<readonly BlobBinding[]>;
+  loadContentAddressedBlob: (blobId: string) => MaybeAsync<BlobRow | null>;
 }
 
 /**
@@ -83,29 +83,29 @@ const DEFAULT_BINDING_LIMIT = 1024;
 export function createBlobStore(): BlobStore {
   if (isPostgresStorageBackend()) {
     return {
-      loadContentAddressedBlob(blobId: string): MaybeAsync<BlobRow | null> {
-        return postgresLoadContentAddressedBlob(blobId);
-      },
       listBlobBindings(
         blobId: string,
         { limit = DEFAULT_BINDING_LIMIT }: { limit?: number } = {}
       ): MaybeAsync<readonly BlobBinding[]> {
-        return postgresListBlobBindings(blobId, { limit });
+        return postgresListBlobBindings(blobId, { limit }) as unknown as Promise<readonly BlobBinding[]>;
+      },
+      loadContentAddressedBlob(blobId: string): MaybeAsync<BlobRow | null> {
+        return postgresLoadContentAddressedBlob(blobId) as unknown as Promise<BlobRow | null>;
       },
     };
   }
 
   return {
-    loadContentAddressedBlob(blobId: string): BlobRow | null {
-      const row = getOne<BlobRow>(referenceQueries.blobsGetRowById, [blobId]);
-      return row ?? null;
-    },
     listBlobBindings(
       blobId: string,
       { limit = DEFAULT_BINDING_LIMIT }: { limit?: number } = {}
     ): readonly BlobBinding[] {
       const { rows } = getMany<BlobBinding>(referenceQueries.blobsListBindingsById, [blobId, blobId], { limit });
       return rows;
+    },
+    loadContentAddressedBlob(blobId: string): BlobRow | null {
+      const row = getOne<BlobRow>(referenceQueries.blobsGetRowById, [blobId]);
+      return row ?? null;
     },
   };
 }

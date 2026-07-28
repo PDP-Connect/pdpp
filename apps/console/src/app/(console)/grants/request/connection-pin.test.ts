@@ -28,12 +28,14 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import {
+  buildConnectionPinOptions,
+  type ConnectionPinDraft,
+  streamSelectionFromDraft,
+} from "../../lib/grant-request-connection-pin.ts";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const LIB_DIR = `${HERE}../../lib/`;
-const { buildConnectionPinOptions, streamSelectionFromDraft } = await import(
-  new URL("../../lib/grant-request-connection-pin.ts", import.meta.url).href
-);
 
 const PAGE_FILE = `${HERE}page.tsx`;
 const ACTIONS_FILE = `${HERE}actions.ts`;
@@ -46,12 +48,13 @@ const LIB_EXAMPLE_STREAM_RE =
 const ACTION_READS_FIELD_RE = /connectionId: asString\(formData\.get\("connection_id"\)\)/;
 const PAGE_FAN_IN_LABEL_RE = /All connections \(fan-in\)/;
 const PAGE_FAN_IN_VALUE_RE = /const FAN_IN_OPTION_VALUE = "";/;
-const PAGE_DEFAULT_OPTION_RE = /<option value=\{FAN_IN_OPTION_VALUE\}>\{FAN_IN_OPTION_LABEL\}<\/option>/;
+const PAGE_DEFAULT_OPTION_RE =
+  /options=\{\[\{ label: FAN_IN_OPTION_LABEL, value: FAN_IN_OPTION_VALUE \}, \.\.\.connectionOptions\]\}/;
 const PAGE_COLLAPSE_GUARD_RE = /if \(connectionOptions\.length <= 1\)/;
 const PAGE_FAN_IN_TESTID_RE = /data-testid="connection-pin-fan-in-only"/;
 const PAGE_LOADS_OPTIONS_RE = /const connectionOptions = await loadConnectionPinOptions\(draft\)/;
 
-function draft(overrides = {}) {
+function draft(overrides: Partial<ConnectionPinDraft> = {}): ConnectionPinDraft {
   return {
     connectionId: "",
     fields: "",
@@ -93,8 +96,8 @@ test("buildConnectionPinOptions derives an owner-meaningful default for never-re
     { connection_id: "cin_b", connector_id: "gmail", display_name: "gmail", streams: ["messages"] },
   ]);
   assert.deepEqual(options, [
-    { label: "gmail · account 1", value: "cin_a" },
-    { label: "gmail · account 2", value: "cin_b" },
+    { label: "Gmail · account 1", value: "cin_a" },
+    { label: "Gmail · account 2", value: "cin_b" },
   ]);
   // No rendered label is ever the raw connection_id or a placeholder string.
   for (const opt of options) {

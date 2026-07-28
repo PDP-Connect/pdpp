@@ -109,13 +109,13 @@ function expirationHasPassed(expiresAt: string, now: string): boolean {
 
 function expiredObservation(observation: AllocatorObservation & { readonly expires_at: string }): AllocatorObservation {
   if (!observation.observed_at) {
-    return { status: "unknown", reason: "expired", expires_at: observation.expires_at };
+    return { expires_at: observation.expires_at, reason: "expired", status: "unknown" };
   }
   return {
-    status: "unknown",
-    reason: "expired",
-    observed_at: observation.observed_at,
     expires_at: observation.expires_at,
+    observed_at: observation.observed_at,
+    reason: "expired",
+    status: "unknown",
   };
 }
 
@@ -194,7 +194,7 @@ function dynamicHealthEligible(
   demand: "active" | "none",
   activeLease: ActiveLeaseExecution | null
 ): boolean {
-  return isCurrentAvailableObservation(allocatorObservation) && hasHealthyActiveExecution({ demand, activeLease });
+  return isCurrentAvailableObservation(allocatorObservation) && hasHealthyActiveExecution({ activeLease, demand });
 }
 
 interface NormalizedRuntimeEvidence {
@@ -224,23 +224,23 @@ function buildRuntimeProjection(
   execution: ReturnType<typeof normalizeRuntimeExecution>
 ): EphemeralBrowserRuntimeProjection {
   const healthEligible = runtimeHealthEligibility({
-    surfaceMode: input.surface_mode,
+    activeLease: execution.activeLease,
     allocatorObservation: evidence.allocatorObservation,
     demand: execution.demand,
-    activeLease: execution.activeLease,
     staticSurface: evidence.staticSurface,
+    surfaceMode: input.surface_mode,
   });
   return {
-    connection_kind: input.connection_kind,
-    surface_mode: input.surface_mode,
-    allocator_observation: input.surface_mode === "none" ? null : evidence.allocatorObservation,
-    demand: execution.demand,
     active_lease: execution.activeLease,
-    current_compatible_idle_surfaces: input.current_compatible_idle_surfaces ?? 0,
+    allocator_observation: input.surface_mode === "none" ? null : evidence.allocatorObservation,
+    connection_kind: input.connection_kind,
     credential_continuity: defaultCredentialContinuity(input),
-    last_successful_runtime_receipt: evidence.lastSuccessfulRuntimeReceipt,
+    current_compatible_idle_surfaces: input.current_compatible_idle_surfaces ?? 0,
     current_replacement_receipt: input.current_replacement_receipt ?? null,
+    demand: execution.demand,
     health_eligible: healthEligible,
+    last_successful_runtime_receipt: evidence.lastSuccessfulRuntimeReceipt,
+    surface_mode: input.surface_mode,
   };
 }
 

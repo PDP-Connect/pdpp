@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
-
 // Single-source the normative spec docs.
 //
 // The repository root holds the normative `spec-*.md` files (source of truth).
@@ -21,31 +20,27 @@
 //
 // Runs from `predev` and `prebuild`. Vercel builds from apps/site with the
 // monorepo root available, so the relative path to the repo root resolves.
-
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const siteDir = path.join(scriptDir, "..");
 const repoRoot = path.join(siteDir, "..", "..");
 const contentDir = path.join(siteDir, "content", "docs");
 const headerDir = path.join(siteDir, "spec-headers");
-
 // The normative spec files that are single-sourced from the repo root.
 // Non-spec docs (reference-implementation*, open-questions, extension specs,
 // index, README) live only under content/docs and are NOT touched here.
 const SPECS = [
-  "spec-architecture",
-  "spec-auth-design",
-  "spec-change-tracking",
-  "spec-collection-profile",
-  "spec-connector-ecosystem",
-  "spec-core",
-  "spec-data-query-api",
-  "spec-deferred",
+    "spec-architecture",
+    "spec-auth-design",
+    "spec-change-tracking",
+    "spec-collection-profile",
+    "spec-connector-ecosystem",
+    "spec-core",
+    "spec-data-query-api",
+    "spec-deferred",
 ];
-
 // Root header shape (uniform across all spec files):
 //   line 1: `# <Title>`
 //   line 2: (blank)
@@ -56,86 +51,66 @@ const SPECS = [
 //            site drops because the frontmatter block already separates head
 //            from body.
 function extractBody(rootText, specName) {
-  const lines = rootText.split("\n");
-
-  if (!lines[0]?.startsWith("# ")) {
-    throw new Error(
-      `sync-spec-docs: ${specName}.md: expected a '# Title' heading on line 1, got: ${JSON.stringify(lines[0])}`
-    );
-  }
-  if (!(lines[2]?.startsWith("Status:") && lines[3]?.startsWith("Date:"))) {
-    throw new Error(
-      `sync-spec-docs: ${specName}.md: expected 'Status:'/'Date:' on lines 3-4; header shape changed. ` +
-        "Update scripts/sync-spec-docs.mjs to match the new root format."
-    );
-  }
-
-  const status = lines[2].slice("Status:".length).trim();
-  const date = lines[3].slice("Date:".length).trim();
-
-  // Drop the four header lines, then any leading blank lines.
-  const body = lines.slice(4);
-  while (body.length && body[0].trim() === "") {
-    body.shift();
-  }
-
-  // Drop a leading horizontal rule + following blanks (header/body separator).
-  if (body[0] === "---") {
-    body.shift();
-    while (body.length && body[0].trim() === "") {
-      body.shift();
+    const lines = rootText.split("\n");
+    if (!lines[0]?.startsWith("# ")) {
+        throw new Error(`sync-spec-docs: ${specName}.md: expected a '# Title' heading on line 1, got: ${JSON.stringify(lines[0])}`);
     }
-  }
-
-  return { body: body.join("\n"), date, status };
+    if (!(lines[2]?.startsWith("Status:") && lines[3]?.startsWith("Date:"))) {
+        throw new Error(`sync-spec-docs: ${specName}.md: expected 'Status:'/'Date:' on lines 3-4; header shape changed. ` +
+            "Update scripts/sync-spec-docs.mjs to match the new root format.");
+    }
+    const status = lines[2].slice("Status:".length).trim();
+    const date = lines[3].slice("Date:".length).trim();
+    // Drop the four header lines, then any leading blank lines.
+    const body = lines.slice(4);
+    while (body.length && body[0].trim() === "") {
+        body.shift();
+    }
+    // Drop a leading horizontal rule + following blanks (header/body separator).
+    if (body[0] === "---") {
+        body.shift();
+        while (body.length && body[0].trim() === "") {
+            body.shift();
+        }
+    }
+    return { body: body.join("\n"), date, status };
 }
-
 // The header sidecar mirrors the root Status/Date inside its <Callout>. Root is
 // the source of truth; warn loudly if they drift so the sidecar gets updated
 // rather than silently rendering a stale status banner.
 function checkStatusDateDrift(header, root, spec) {
-  // biome-ignore lint/performance/useTopLevelRegex: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
-  const statusMatch = header.match(/Status:\s*\*\*(.+?)\*\*/);
-  // biome-ignore lint/performance/useTopLevelRegex: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
-  const dateMatch = header.match(/Date:\s*(.+)/);
-  const sideStatus = statusMatch?.[1]?.trim();
-  const sideDate = dateMatch?.[1]?.trim();
-
-  if (sideStatus && sideStatus !== root.status) {
-    console.warn(
-      `[sync-spec-docs] WARNING ${spec}: Callout Status "${sideStatus}" != root "${root.status}". ` +
-        `Update apps/site/spec-headers/${spec}.header.md to match the root spec.`
-    );
-  }
-  if (sideDate && sideDate !== root.date) {
-    console.warn(
-      `[sync-spec-docs] WARNING ${spec}: Callout Date "${sideDate}" != root "${root.date}". ` +
-        `Update apps/site/spec-headers/${spec}.header.md to match the root spec.`
-    );
-  }
+    // biome-ignore lint/performance/useTopLevelRegex: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
+    const statusMatch = header.match(/Status:\s*\*\*(.+?)\*\*/);
+    // biome-ignore lint/performance/useTopLevelRegex: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
+    const dateMatch = header.match(/Date:\s*(.+)/);
+    const sideStatus = statusMatch?.[1]?.trim();
+    const sideDate = dateMatch?.[1]?.trim();
+    if (sideStatus && sideStatus !== root.status) {
+        console.warn(`[sync-spec-docs] WARNING ${spec}: Callout Status "${sideStatus}" != root "${root.status}". ` +
+            `Update apps/site/spec-headers/${spec}.header.md to match the root spec.`);
+    }
+    if (sideDate && sideDate !== root.date) {
+        console.warn(`[sync-spec-docs] WARNING ${spec}: Callout Date "${sideDate}" != root "${root.date}". ` +
+            `Update apps/site/spec-headers/${spec}.header.md to match the root spec.`);
+    }
 }
-
 let generated = 0;
 for (const spec of SPECS) {
-  const rootPath = path.join(repoRoot, `${spec}.md`);
-  const headerPath = path.join(headerDir, `${spec}.header.md`);
-  const outPath = path.join(contentDir, `${spec}.md`);
-
-  if (!existsSync(rootPath)) {
-    throw new Error(`sync-spec-docs: missing root spec ${rootPath}`);
-  }
-  if (!existsSync(headerPath)) {
-    throw new Error(`sync-spec-docs: missing header sidecar ${headerPath}`);
-  }
-
-  const header = readFileSync(headerPath, "utf8").replace(/\s*$/, "");
-  const root = extractBody(readFileSync(rootPath, "utf8"), spec);
-  checkStatusDateDrift(header, root, spec);
-
-  // header (frontmatter + Callout) + blank line + normative body.
-  const out = `${header}\n\n${root.body.replace(/\s*$/, "")}\n`;
-  writeFileSync(outPath, out);
-  generated += 1;
+    const rootPath = path.join(repoRoot, `${spec}.md`);
+    const headerPath = path.join(headerDir, `${spec}.header.md`);
+    const outPath = path.join(contentDir, `${spec}.md`);
+    if (!existsSync(rootPath)) {
+        throw new Error(`sync-spec-docs: missing root spec ${rootPath}`);
+    }
+    if (!existsSync(headerPath)) {
+        throw new Error(`sync-spec-docs: missing header sidecar ${headerPath}`);
+    }
+    const header = readFileSync(headerPath, "utf8").replace(/\s*$/, "");
+    const root = extractBody(readFileSync(rootPath, "utf8"), spec);
+    checkStatusDateDrift(header, root, spec);
+    // header (frontmatter + Callout) + blank line + normative body.
+    const out = `${header}\n\n${root.body.replace(/\s*$/, "")}\n`;
+    writeFileSync(outPath, out);
+    generated += 1;
 }
-
 console.log(`[sync-spec-docs] generated ${generated} spec page(s) from root spec-*.md`);

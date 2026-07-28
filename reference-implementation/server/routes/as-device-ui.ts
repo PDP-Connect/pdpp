@@ -32,9 +32,9 @@ interface RouteRequest {
 }
 
 interface RouteResponse {
-  send(body: string): unknown;
-  setHeader(name: string, value: string): unknown;
-  status(code: number): RouteResponse;
+  send: (body: string) => unknown;
+  setHeader: (name: string, value: string) => unknown;
+  status: (code: number) => RouteResponse;
 }
 
 type NextFn = () => void;
@@ -42,15 +42,15 @@ type MiddlewareFn = (req: RouteRequest, res: RouteResponse, next: NextFn) => Pro
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => Promise<void>;
 
 interface AppLike {
-  get(path: string, ...args: RouteArg<RouteHandler | MiddlewareFn>[]): AppLike;
-  post(path: string, ...args: RouteArg<RouteHandler | MiddlewareFn>[]): AppLike;
+  get: (path: string, ...args: RouteArg<RouteHandler | MiddlewareFn>[]) => AppLike;
+  post: (path: string, ...args: RouteArg<RouteHandler | MiddlewareFn>[]) => AppLike;
 }
 
 // ─── Hosted-UI rendering surface (injected to avoid importing .js directly) ──
 
 export interface HostedUiRenderer {
-  escapeHtml(input: unknown): string;
-  renderEmptyState(opts: {
+  escapeHtml: (input: unknown) => string;
+  renderEmptyState: (opts: {
     form?: {
       method: string;
       action: string;
@@ -63,12 +63,12 @@ export interface HostedUiRenderer {
         autocomplete?: string;
       }>;
     };
-  }): string;
-  renderHostedDocument(opts: { title: string; providerName: string; body: string }): string;
-  renderKeyValueList(items: Array<{ label: string; value?: unknown; html?: string }>): string;
-  renderPageIntro(opts: { eyebrow: string; title: string; lede?: string }): string;
-  renderResultState(opts: { tone: string; title: string; body: string }): string;
-  renderSurface(opts: { surface?: string; children: string }): string;
+  }) => string;
+  renderHostedDocument: (opts: { title: string; providerName: string; body: string }) => string;
+  renderKeyValueList: (items: Array<{ label: string; value?: unknown; html?: string }>) => string;
+  renderPageIntro: (opts: { eyebrow: string; title: string; lede?: string }) => string;
+  renderResultState: (opts: { tone: string; title: string; body: string }) => string;
+  renderSurface: (opts: { surface?: string; children: string }) => string;
 }
 
 // ─── Injected capabilities ───────────────────────────────────────────────────
@@ -83,11 +83,11 @@ export interface MountAsDeviceUiContext {
   /** Device-decision store capabilities. */
   deviceDecision: AsDeviceDecisionDependencies;
   /** Generates a fresh CSRF token and sets it in the response. */
-  ensureCsrfToken(req: RouteRequest, res: RouteResponse): string;
+  ensureCsrfToken: (req: RouteRequest, res: RouteResponse) => string;
   /** Looks up a pending device-auth record by user_code; null if not found. */
-  getByUserCode(userCode: string): Promise<OwnerDeviceAuthPendingRow | null> | OwnerDeviceAuthPendingRow | null;
+  getByUserCode: (userCode: string) => Promise<OwnerDeviceAuthPendingRow | null> | OwnerDeviceAuthPendingRow | null;
   /** Writes an OAuth error envelope (`error` / `error_description`). */
-  oauthError(res: unknown, status: number, code: string, message: string): unknown;
+  oauthError: (res: unknown, status: number, code: string, message: string) => unknown;
   /** Default subject ID used when owner-auth is disabled and no subject_id in form body. */
   ownerAuthDefaultSubjectId: string;
   /** Whether owner-session auth is enabled on this server instance. */
@@ -97,13 +97,13 @@ export interface MountAsDeviceUiContext {
   /** Human-readable display name for the provider (shown in page titles). */
   providerName: string;
   /** Renders a hidden CSRF input field for the given token. */
-  renderCsrfField(token: string): string;
+  renderCsrfField: (token: string) => string;
   /** CSRF enforcement middleware. */
   requireCsrf: MiddlewareFn;
   /** Owner-session enforcement middleware. */
   requireOwnerSession: MiddlewareFn;
   /** Attaches a trace-id header to the response. */
-  setReferenceTraceId(res: unknown, traceId: string): void;
+  setReferenceTraceId: (res: unknown, traceId: string) => void;
   /** Hosted-UI rendering helpers injected to avoid a direct .js import. */
   ui: HostedUiRenderer;
 }
@@ -120,31 +120,31 @@ export function mountAsDeviceUi(app: AppLike, ctx: MountAsDeviceUiContext): void
       const emptyBody = [
         ui.renderPageIntro({
           eyebrow: "Device verification",
-          title: "Enter verification code",
           lede: "Paste the code shown by the CLI to continue the owner sign-in flow.",
+          title: "Enter verification code",
         }),
         ui.renderEmptyState({
           form: {
-            method: "GET",
             action: "/device",
-            submitLabel: "Continue",
             fields: [
               {
-                name: "user_code",
-                label: "User code",
-                value: userCode || "",
-                autofocus: true,
                 autocomplete: "one-time-code",
+                autofocus: true,
+                label: "User code",
+                name: "user_code",
+                value: userCode || "",
               },
             ],
+            method: "GET",
+            submitLabel: "Continue",
           },
         }),
       ].join("\n");
       res.send(
         ui.renderHostedDocument({
-          title: `${ctx.providerName} — Device verification`,
-          providerName: ctx.providerName,
           body: emptyBody,
+          providerName: ctx.providerName,
+          title: `${ctx.providerName} — Device verification`,
         })
       );
       return;
@@ -152,15 +152,15 @@ export function mountAsDeviceUi(app: AppLike, ctx: MountAsDeviceUiContext): void
 
     const facts = ui.renderKeyValueList([
       { label: "Client", value: pending.client_id },
-      { label: "User code", html: `<span class="hosted-ui-code">${ui.escapeHtml(pending.user_code)}</span>` },
+      { html: `<span class="hosted-ui-code">${ui.escapeHtml(pending.user_code)}</span>`, label: "User code" },
       { label: "Expires", value: pending.expires_at },
     ]);
 
     const ownerBlock = ctx.ownerAuthEnabled
       ? ui.renderKeyValueList([
           {
-            label: "Owner subject",
             html: `<code>${ui.escapeHtml(ctx.ownerSubjectId)}</code> <span class="pdpp-caption">signed-in owner</span>`,
+            label: "Owner subject",
           },
         ])
       : `<div class="hosted-ui-field">
@@ -184,17 +184,17 @@ export function mountAsDeviceUi(app: AppLike, ctx: MountAsDeviceUiContext): void
     const body = [
       ui.renderPageIntro({
         eyebrow: "Device verification",
-        title: `Approve owner access to ${ctx.providerName}`,
         lede: "A CLI is asking to sign in on your behalf. Approve only if you started this on a device you trust.",
+        title: `Approve owner access to ${ctx.providerName}`,
       }),
       formOpen,
     ].join("\n");
 
     res.send(
       ui.renderHostedDocument({
-        title: `${ctx.providerName} — Approve CLI access`,
-        providerName: ctx.providerName,
         body,
+        providerName: ctx.providerName,
+        title: `${ctx.providerName} — Approve CLI access`,
       })
     );
   };
@@ -213,28 +213,28 @@ export function mountAsDeviceUi(app: AppLike, ctx: MountAsDeviceUiContext): void
     const outcome = await executeAsDeviceDecision(
       {
         action: "approve",
-        userCode: req.body?.user_code as string | null | undefined,
         approvalId: req.body?.approval_id as string | null | undefined,
         subjectId,
+        userCode: req.body?.user_code as string | null | undefined,
       },
       ctx.deviceDecision
     );
     if (outcome.outcome === "success") {
       res.send(
         ui.renderHostedDocument({
-          title: `${ctx.providerName} — Device access approved`,
-          providerName: ctx.providerName,
           body: [
             ui.renderPageIntro({ eyebrow: "Device verification", title: "Approved" }),
             ui.renderSurface({
-              surface: "human",
               children: ui.renderResultState({
-                tone: "success",
-                title: "CLI access approved",
                 body: "The CLI can return to polling and complete sign-in now.",
+                title: "CLI access approved",
+                tone: "success",
               }),
+              surface: "human",
             }),
           ].join("\n"),
+          providerName: ctx.providerName,
+          title: `${ctx.providerName} — Device access approved`,
         })
       );
       return;
@@ -256,27 +256,27 @@ export function mountAsDeviceUi(app: AppLike, ctx: MountAsDeviceUiContext): void
     const outcome = await executeAsDeviceDecision(
       {
         action: "deny",
-        userCode: req.body?.user_code as string | null | undefined,
         approvalId: req.body?.approval_id as string | null | undefined,
         subjectId,
+        userCode: req.body?.user_code as string | null | undefined,
       },
       ctx.deviceDecision
     );
     if (outcome.outcome === "success") {
       res.send(
         ui.renderHostedDocument({
-          title: `${ctx.providerName} — Device access denied`,
-          providerName: ctx.providerName,
           body: [
             ui.renderPageIntro({ eyebrow: "Device verification", title: "Denied" }),
             ui.renderSurface({
               children: ui.renderResultState({
-                tone: "danger",
-                title: "CLI access denied",
                 body: "The CLI will stop polling and report that access was denied.",
+                title: "CLI access denied",
+                tone: "danger",
               }),
             }),
           ].join("\n"),
+          providerName: ctx.providerName,
+          title: `${ctx.providerName} — Device access denied`,
         })
       );
       return;

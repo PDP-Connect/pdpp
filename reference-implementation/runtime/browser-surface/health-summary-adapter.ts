@@ -1,6 +1,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+// biome-ignore lint/correctness/noUnresolvedImports: remote-surface 1.5.1 exports ./leases; Biome 2.5.5 fails to resolve this package export.
 import type { BrowserSurface, BrowserSurfaceLease } from "@opendatalabs/remote-surface/leases";
 
 import { listSpineEventsPage, type SpineEventRecord } from "../../lib/spine.ts";
@@ -36,8 +37,8 @@ const RUNTIME_RECEIPT_EVENT_LIMIT = 128;
 const RUNTIME_RECEIPT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 export interface BrowserSurfaceHealthSummaryReader {
-  listLeases(): Promise<readonly BrowserSurfaceLease[]>;
-  listSurfaces(): Promise<readonly BrowserSurface[]>;
+  listLeases: () => Promise<readonly BrowserSurfaceLease[]>;
+  listSurfaces: () => Promise<readonly BrowserSurface[]>;
 }
 
 interface LastSuccessfulRunLike {
@@ -54,8 +55,8 @@ interface RuntimeSummaryInstance {
 }
 
 interface BrowserSurfaceRuntimeManagementReader {
-  getBrowserSurfaceRuntimeManagement?(connectorId: string): BrowserSurfaceRuntimeManagement;
-  observeBrowserSurfaceRuntimeInventory?(): Promise<BrowserSurfaceRuntimeInventorySnapshot>;
+  getBrowserSurfaceRuntimeManagement?: (connectorId: string) => BrowserSurfaceRuntimeManagement;
+  observeBrowserSurfaceRuntimeInventory?: () => Promise<BrowserSurfaceRuntimeInventorySnapshot>;
 }
 
 export interface BrowserSurfaceHealthRemoteProjection {
@@ -131,14 +132,14 @@ function receiptContext(input: {
   return {
     connection_id: input.connectionId,
     connector_id: input.connectorId,
+    generation: input.lease.fencing_token,
+    lease_id: input.lease.lease_id,
+    max_age_ms: RUNTIME_RECEIPT_MAX_AGE_MS,
+    now: input.now,
     profile_key: input.profileKey,
     run_id: input.runId,
-    surface_subject_id: input.lease.surface_subject_id ?? input.connectionId,
     surface_id: input.lease.surface_id,
-    lease_id: input.lease.lease_id,
-    generation: input.lease.fencing_token,
-    now: input.now,
-    max_age_ms: RUNTIME_RECEIPT_MAX_AGE_MS,
+    surface_subject_id: input.lease.surface_subject_id ?? input.connectionId,
   };
 }
 
@@ -255,7 +256,7 @@ export async function readProcessBoundCurrentReplacementReceipt(input: {
   try {
     return await selectProcessBoundCurrentReplacementReceipt(input);
   } catch {
-    return { state: "unavailable", receipt: null };
+    return { receipt: null, state: "unavailable" };
   }
 }
 
@@ -297,7 +298,7 @@ export async function readConnectorRuntimeReceiptEvidence(input: {
     }),
     readCurrentProcessReceipt(input, execution),
   ]);
-  return { execution, lastSuccessfulRuntimeReceipt, currentReplacementRead };
+  return { currentReplacementRead, execution, lastSuccessfulRuntimeReceipt };
 }
 
 /** One full-refresh inventory read; failure becomes absent runtime evidence, never a thrown list request. */
@@ -312,9 +313,9 @@ export function readBrowserSurfaceRuntimeInventory(
 
 function noCurrentReceiptEvidence(execution: RuntimeLeaseFacts): ConnectorRuntimeReceiptEvidence {
   return {
+    currentReplacementRead: { receipt: null, state: "available" },
     execution,
     lastSuccessfulRuntimeReceipt: null,
-    currentReplacementRead: { state: "available", receipt: null },
   };
 }
 
@@ -323,7 +324,7 @@ function readCurrentProcessReceipt(
   execution: RuntimeLeaseFacts
 ): Promise<CurrentReplacementReceiptRead> {
   if (!connectorRetainsSurfaceProcess(input.connectorId)) {
-    return Promise.resolve({ state: "available", receipt: null });
+    return Promise.resolve({ receipt: null, state: "available" });
   }
   return readProcessBoundCurrentReplacementReceipt({
     connectionId: input.connectionId,
@@ -356,7 +357,7 @@ async function selectProcessBoundCurrentReplacementReceipt(
       surface_mode: input.surfaceMode,
     })
   ) {
-    return { state: "available", receipt: null };
+    return { receipt: null, state: "available" };
   }
   const factory = await loadDefaultCurrentReplacementReceiptReaderFactory();
   const currentGenerationHash = selectCurrentBrowserGenerationHash({
@@ -409,15 +410,15 @@ export function currentRuntimeLease(input: {
   const demand = runtimeDemand(input.activeRun, input.remoteSurface);
   const remote = input.remoteSurface;
   if (demand === "none" || !remote?.leaseId || !remote.surfaceId) {
-    return { demand, active_lease: null };
+    return { active_lease: null, demand };
   }
   return {
-    demand,
     active_lease: {
+      health: activeLeaseHealth(remote.surfaceHealth),
       lease_id: remote.leaseId,
       surface_id: remote.surfaceId,
-      health: activeLeaseHealth(remote.surfaceHealth),
     },
+    demand,
   };
 }
 
@@ -525,6 +526,7 @@ export async function projectConnectorHealthSummaryRuntime(input: {
   });
   return projectConnectorEphemeralBrowserRuntime({
     activeRun: input.activeRun,
+    browserSessionBound: input.browserSessionBound,
     connectionId: input.connectionId,
     connectorId: input.connectorId,
     credentialContinuity: receipts.currentReplacementRead.state === "unavailable" ? "indeterminate" : undefined,
@@ -536,7 +538,6 @@ export async function projectConnectorHealthSummaryRuntime(input: {
     now: input.now,
     profileKey: input.profileKey,
     remoteSurface: input.remoteSurface,
-    browserSessionBound: input.browserSessionBound,
   });
 }
 
@@ -586,14 +587,14 @@ function staticRuntimeProjection(
   execution: RuntimeLeaseFacts
 ): EphemeralBrowserRuntimeProjection {
   return projectEphemeralBrowserSurfaceHealth({
+    active_lease: execution.active_lease,
     connection_id: input.connectionId,
     connection_kind: "browser-runtime",
-    surface_mode: "static-managed",
     demand: execution.demand,
-    active_lease: execution.active_lease,
+    surface_mode: "static-managed",
     ...continuationInput(input.credentialContinuity),
-    last_successful_runtime_receipt: input.lastSuccessfulRuntimeReceipt,
     current_replacement_receipt: input.currentReplacementReceipt,
+    last_successful_runtime_receipt: input.lastSuccessfulRuntimeReceipt,
     static_surface: {
       readable: input.remoteSurface?.axis !== "unknown",
       status: staticSurfaceStatus(input.remoteSurface),
@@ -606,16 +607,16 @@ function dynamicRuntimeProjection(
   execution: RuntimeLeaseFacts
 ): EphemeralBrowserRuntimeProjection {
   return projectEphemeralBrowserSurfaceHealth({
+    active_lease: execution.active_lease,
+    allocator_observation: input.inventory?.allocator_observation ?? { reason: "not_observed", status: "unknown" },
     connection_id: input.connectionId,
     connection_kind: "browser-runtime",
-    surface_mode: "dynamic-managed",
-    allocator_observation: input.inventory?.allocator_observation ?? { status: "unknown", reason: "not_observed" },
-    demand: execution.demand,
-    active_lease: execution.active_lease,
     current_compatible_idle_surfaces: compatibleIdleSurfaceCount(input.inventory, input.connectorId, input.profileKey),
+    demand: execution.demand,
+    surface_mode: "dynamic-managed",
     ...continuationInput(input.credentialContinuity),
-    last_successful_runtime_receipt: input.lastSuccessfulRuntimeReceipt,
     current_replacement_receipt: input.currentReplacementReceipt,
+    last_successful_runtime_receipt: input.lastSuccessfulRuntimeReceipt,
     now: input.now,
   });
 }

@@ -28,7 +28,7 @@ import {
   renderPageIntro,
   renderResultState,
   renderSurface,
-} from "./hosted-ui.js";
+} from "./hosted-ui.ts";
 import {
   buildOwnerCsrfClearCookie,
   buildOwnerCsrfSetCookie,
@@ -80,20 +80,20 @@ interface AuthRequest {
 }
 
 interface AuthResponse {
-  end(): void;
-  getHeader?(name: string): unknown;
-  json(body: unknown): AuthResponse;
-  redirect(url: string): void;
-  send(body: string): AuthResponse;
-  setHeader(name: string, value: string | string[]): AuthResponse;
-  status(code: number): AuthResponse;
+  end: () => void;
+  getHeader?: (name: string) => unknown;
+  json: (body: Record<string, unknown>) => AuthResponse;
+  redirect: (url: string) => void;
+  send: (body: string) => AuthResponse;
+  setHeader: (name: string, value: string | string[]) => AuthResponse;
+  status: (code: number) => AuthResponse;
 }
 
 type AuthNextFunction = () => void;
 
 interface AuthAppLike {
-  get(path: string, handler: (req: AuthRequest, res: AuthResponse) => unknown): void;
-  post(path: string, handler: (req: AuthRequest, res: AuthResponse) => unknown): void;
+  get: (path: string, handler: (req: AuthRequest, res: AuthResponse) => unknown) => void;
+  post: (path: string, handler: (req: AuthRequest, res: AuthResponse) => unknown) => void;
 }
 
 interface LoginPageOptions {
@@ -148,11 +148,11 @@ export interface OwnerAuthPlaceholderOptions {
 }
 
 export interface OwnerAuthPlaceholder {
-  attachRoutes(app: AuthAppLike): void;
+  attachRoutes: (app: AuthAppLike) => void;
   readonly csrfCookieName: string;
   readonly csrfFieldName: string;
   readonly enabled: boolean;
-  ensureCsrfToken(req: AuthRequest, res: AuthResponse): string;
+  ensureCsrfToken: (req: AuthRequest, res: AuthResponse) => string;
   /**
    * Soft session reader — returns the validated owner session payload when
    * the request carries one, or null when it doesn't. Unlike
@@ -161,10 +161,10 @@ export interface OwnerAuthPlaceholder {
    * happens to be signed in (e.g. `/oauth/register` stamping
    * `issuer_subject_id`).
    */
-  readOwnerSession(req: AuthRequest): OwnerSessionPayload | null;
-  renderCsrfField(token: string): string;
-  requireCsrf(req: AuthRequest, res: AuthResponse, next: AuthNextFunction): void;
-  requireOwnerSession(req: AuthRequest, res: AuthResponse, next: AuthNextFunction): void;
+  readOwnerSession: (req: AuthRequest) => OwnerSessionPayload | null;
+  renderCsrfField: (token: string) => string;
+  requireCsrf: (req: AuthRequest, res: AuthResponse, next: AuthNextFunction) => void;
+  requireOwnerSession: (req: AuthRequest, res: AuthResponse, next: AuthNextFunction) => void;
   readonly subjectId: string;
 }
 
@@ -183,6 +183,7 @@ function isSecureRequest(req: AuthRequest): boolean {
   }
   const forwarded = req.headers["x-forwarded-proto"];
   if (typeof forwarded === "string") {
+    // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
     const first = forwarded.split(",")[0];
     if (first && first.trim() === "https") {
       return true;
@@ -192,6 +193,7 @@ function isSecureRequest(req: AuthRequest): boolean {
 }
 
 function wantsHtml(req: AuthRequest): boolean {
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const accept = req.headers.accept;
   if (typeof accept !== "string") {
     return false;
@@ -221,17 +223,17 @@ function renderLoginPage({ providerName, error, returnTo, csrfToken, themeChoice
   const body = [
     renderPageIntro({
       eyebrow: "Owner sign-in",
-      title: `Sign in to ${providerName}`,
       lede: "This is the local placeholder owner auth for the reference implementation. It is not a full auth product.",
+      title: `Sign in to ${providerName}`,
     }),
     form,
   ].join("\n");
 
   return renderHostedDocument({
-    title: `${providerName} — Owner sign-in`,
-    providerName,
     body,
+    providerName,
     themeChoice,
+    title: `${providerName} — Owner sign-in`,
   });
 }
 
@@ -239,40 +241,40 @@ function renderOwnerAuthDisabledPage({ providerName, themeChoice }: DisabledPage
   const body = [
     renderPageIntro({
       eyebrow: "Owner approval UI",
-      title: `${providerName} owner access`,
       lede: "Placeholder owner sign-in is disabled on this local reference instance, so approval pages remain open in local-dev mode.",
+      title: `${providerName} owner access`,
     }),
     renderSurface({
-      surface: "human",
       ariaLabel: "Owner auth status",
       children: renderResultState({
-        tone: "neutral",
-        title: "Sign-in is not required right now",
         body: "Device approvals are open locally. Consent approvals still arrive through pending request links.",
         footnote: "Set PDPP_OWNER_PASSWORD to turn on the reference-only session gate.",
+        title: "Sign-in is not required right now",
+        tone: "neutral",
       }),
+      surface: "human",
     }),
     renderSurface({
-      surface: "protocol",
       ariaLabel: "Owner auth configuration details",
       children: renderKeyValueList([
         { label: "Current mode", value: "Open local-dev approval UI" },
-        { label: "Enable sign-in", html: "<code>PDPP_OWNER_PASSWORD=&lt;password&gt;</code>" },
+        { html: "<code>PDPP_OWNER_PASSWORD=&lt;password&gt;</code>", label: "Enable sign-in" },
         { label: "Protected when enabled", value: "/consent*, /device*, /owner/login" },
         {
           label: "Consent pages",
           value: "Reached from a pending request authorization_url / request_uri flow",
         },
       ]),
+      surface: "protocol",
     }),
     renderActionRow([{ href: "/device", label: "Open device approval UI", variant: "primary" }]),
   ].join("\n");
 
   return renderHostedDocument({
-    title: `${providerName} — Owner access`,
-    providerName,
     body,
+    providerName,
     themeChoice,
+    title: `${providerName} — Owner access`,
   });
 }
 
@@ -280,38 +282,38 @@ function renderSignedInOwnerPage({ providerName, subjectId, csrfToken, themeChoi
   const body = [
     renderPageIntro({
       eyebrow: "Owner approval UI",
-      title: `${providerName} owner access`,
       lede: "You are signed in to the local placeholder owner-auth gate for the reference implementation.",
+      title: `${providerName} owner access`,
     }),
     renderSurface({
-      surface: "human",
       ariaLabel: "Signed-in owner state",
       children: [
         renderResultState({
-          tone: "success",
-          title: "Signed in",
           body: "You can approve device flows directly here, or open a pending consent URL from a staged provider-connect request.",
           footnote: "This session is reference-only placeholder auth, not a full owner account system.",
+          title: "Signed in",
+          tone: "success",
         }),
-        renderKeyValueList([{ label: "Owner subject", html: `<code>${hostedEscape(subjectId)}</code>` }]),
+        renderKeyValueList([{ html: `<code>${hostedEscape(subjectId)}</code>`, label: "Owner subject" }]),
       ].join("\n"),
+      surface: "human",
     }),
     renderActionRow([
       { href: "/", label: "Open PDPP", variant: "primary" },
       { href: "/device", label: "Open device approval UI" },
       {
         action: "/owner/logout",
-        label: "Sign out",
         hidden: [{ name: OWNER_CSRF_FIELD_NAME, value: csrfToken }],
+        label: "Sign out",
       },
     ]),
   ].join("\n");
 
   return renderHostedDocument({
-    title: `${providerName} — Owner access`,
-    providerName,
     body,
+    providerName,
     themeChoice,
+    title: `${providerName} — Owner access`,
   });
 }
 
@@ -331,6 +333,7 @@ function pickReferrerHeader(headers: AuthRequestHeaders): string {
 // Biome's noControlCharactersInRegex lint (the rule is about accidental
 // inclusion; this is an intentional security sanitizer).
 function containsControlCharacter(value: string): boolean {
+  // biome-ignore lint/style/noIncrementDecrement: The explicit counter update preserves this loop’s evaluation order.
   for (let i = 0; i < value.length; i++) {
     const code = value.charCodeAt(i);
     if (code <= 0x1f || code === 0x7f) {
@@ -409,9 +412,9 @@ function readReturnToFromBodyOrQuery(req: AuthRequest): string {
 }
 
 interface SessionHelpers {
-  clearSession(res: AuthResponse, req: AuthRequest): void;
-  issueSession(res: AuthResponse, req: AuthRequest): void;
-  readSession(req: AuthRequest): OwnerSessionPayload | null;
+  clearSession: (res: AuthResponse, req: AuthRequest) => void;
+  issueSession: (res: AuthResponse, req: AuthRequest) => void;
+  readSession: (req: AuthRequest) => OwnerSessionPayload | null;
 }
 
 function appendSetCookie(res: AuthResponse, value: string): void {
@@ -432,14 +435,14 @@ function appendSetCookie(res: AuthResponse, value: string): void {
 
 function buildSessionHelpers(controller: OwnerSessionController): SessionHelpers {
   return {
+    clearSession(res: AuthResponse, req: AuthRequest): void {
+      appendSetCookie(res, controller.clearSessionCookieHeader({ secure: isSecureRequest(req) }));
+    },
     issueSession(res: AuthResponse, req: AuthRequest): void {
       const cookieHeader = controller.issueSessionCookieHeader({ secure: isSecureRequest(req) });
       if (cookieHeader) {
         appendSetCookie(res, cookieHeader);
       }
-    },
-    clearSession(res: AuthResponse, req: AuthRequest): void {
-      appendSetCookie(res, controller.clearSessionCookieHeader({ secure: isSecureRequest(req) }));
     },
     readSession(req: AuthRequest): OwnerSessionPayload | null {
       return controller.readSessionFromCookieHeader(req.headers.cookie);
@@ -510,15 +513,15 @@ function replyCsrfFailure(req: AuthRequest, res: AuthResponse, providerName: str
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.status(403).send(
       renderHostedDocument({
-        title: `${providerName} — Request blocked`,
-        providerName,
         body: [
           renderPageIntro({
             eyebrow: "Owner approval UI",
-            title: "Request blocked",
             lede: "The form submission is missing a valid CSRF token. Reload the page and try again from a freshly rendered owner-hosted form.",
+            title: "Request blocked",
           }),
         ].join("\n"),
+        providerName,
+        title: `${providerName} — Request blocked`,
       })
     );
     return;
@@ -528,9 +531,9 @@ function replyCsrfFailure(req: AuthRequest, res: AuthResponse, providerName: str
     .setHeader("Content-Type", "application/json")
     .json({
       error: {
-        type: "invalid_request",
         code: "csrf_token_invalid",
         message: "CSRF token missing or invalid for hosted owner form POST.",
+        type: "invalid_request",
       },
     });
 }
@@ -551,9 +554,9 @@ function replyDisabledLogin(req: AuthRequest, res: AuthResponse, providerName: s
     .setHeader("Content-Type", "application/json")
     .json({
       error: {
-        type: "invalid_request",
         code: "owner_auth_disabled",
         message: "Owner placeholder auth is disabled on this reference instance.",
+        type: "invalid_request",
       },
     });
 }
@@ -563,13 +566,13 @@ function replyLogoutCsrfFailure(req: AuthRequest, res: AuthResponse, providerNam
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.status(403).send(
       renderHostedDocument({
-        title: `${providerName} — Request blocked`,
-        providerName,
         body: renderPageIntro({
           eyebrow: "Owner approval UI",
-          title: "Request blocked",
           lede: "The sign-out submission is missing a valid CSRF token. Reload the page and try again.",
+          title: "Request blocked",
         }),
+        providerName,
+        title: `${providerName} — Request blocked`,
       })
     );
     return;
@@ -579,9 +582,9 @@ function replyLogoutCsrfFailure(req: AuthRequest, res: AuthResponse, providerNam
     .setHeader("Content-Type", "application/json")
     .json({
       error: {
-        type: "invalid_request",
         code: "csrf_token_invalid",
         message: "CSRF token missing or invalid for /owner/logout.",
+        type: "invalid_request",
       },
     });
 }
@@ -598,10 +601,10 @@ function sendOwnerLoginPage(
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.status(status).send(
     renderLoginPage({
-      providerName,
-      error,
-      returnTo,
       csrfToken,
+      error,
+      providerName,
+      returnTo,
       ...(themeChoice === undefined ? {} : { themeChoice }),
     })
   );
@@ -627,10 +630,10 @@ function handleOwnerLoginGet(req: AuthRequest, res: AuthResponse, context: Owner
     const csrfToken = context.ensureCsrfToken(req, res);
     res.status(200).send(
       renderLoginPage({
-        providerName: context.providerName,
-        error: null,
-        returnTo,
         csrfToken,
+        error: null,
+        providerName: context.providerName,
+        returnTo,
         themeChoice: readHostedThemeChoiceFromCookieHeader(req.headers.cookie),
       })
     );
@@ -643,9 +646,9 @@ function handleOwnerLoginGet(req: AuthRequest, res: AuthResponse, context: Owner
   const csrfToken = context.ensureCsrfToken(req, res);
   res.status(200).send(
     renderSignedInOwnerPage({
+      csrfToken,
       providerName: context.providerName,
       subjectId: context.resolvedSubjectId,
-      csrfToken,
       themeChoice: readHostedThemeChoiceFromCookieHeader(req.headers.cookie),
     })
   );
@@ -737,10 +740,10 @@ function denyOwnerAccess(req: AuthRequest, res: AuthResponse): void {
     .setHeader("Content-Type", "application/json")
     .json({
       error: {
-        type: "authentication_error",
         code: "owner_session_required",
         message:
           "Owner session required. This is the reference implementation placeholder owner auth; sign in at /owner/login.",
+        type: "authentication_error",
       },
     });
 }
@@ -781,11 +784,11 @@ export function createOwnerAuthPlaceholder({
   // so we fall back to the declared `null` sentinel the controller already
   // understands as "not provided."
   const sessionController = createOwnerSessionController({
-    password: password ?? null,
-    subjectId: subjectId ?? null,
-    sessionTtlSeconds,
-    sameSite,
     forceSecureCookies,
+    password: password ?? null,
+    sameSite,
+    sessionTtlSeconds,
+    subjectId: subjectId ?? null,
   });
   const { enabled, subjectId: resolvedSubjectId } = sessionController;
   const session = buildSessionHelpers(sessionController);
@@ -817,9 +820,9 @@ export function createOwnerAuthPlaceholder({
     appendSetCookie(
       res,
       buildOwnerCsrfSetCookie(token, {
-        secure: forceSecureCookies || isSecureRequest(req),
-        sameSite,
         maxAgeSeconds: sessionTtlSeconds,
+        sameSite,
+        secure: forceSecureCookies || isSecureRequest(req),
       })
     );
     // Ensure subsequent reads in the same request see the freshly minted
@@ -832,8 +835,8 @@ export function createOwnerAuthPlaceholder({
     appendSetCookie(
       res,
       buildOwnerCsrfClearCookie({
-        secure: forceSecureCookies || isSecureRequest(req),
         sameSite,
+        secure: forceSecureCookies || isSecureRequest(req),
       })
     );
   }
@@ -924,16 +927,16 @@ export function createOwnerAuthPlaceholder({
   }
 
   return {
-    enabled,
-    subjectId: resolvedSubjectId,
     attachRoutes,
-    requireOwnerSession,
-    readOwnerSession: (req) => session.readSession(req),
-    requireCsrf,
-    ensureCsrfToken,
-    renderCsrfField: renderCsrfHiddenField,
-    csrfFieldName: OWNER_CSRF_FIELD_NAME,
     csrfCookieName: OWNER_CSRF_COOKIE_NAME,
+    csrfFieldName: OWNER_CSRF_FIELD_NAME,
+    enabled,
+    ensureCsrfToken,
+    readOwnerSession: (req) => session.readSession(req),
+    renderCsrfField: renderCsrfHiddenField,
+    requireCsrf,
+    requireOwnerSession,
+    subjectId: resolvedSubjectId,
   };
 }
 

@@ -22,21 +22,21 @@ export interface AsPolyfillConnectorDetailInput {
 }
 
 export interface AsPolyfillConnectorDetailDependencies {
-  getConnectorManifest(
-    connectorId: string,
-  ): Promise<Record<string, unknown> | null | undefined> | Record<string, unknown> | null | undefined;
+  getConnectorManifest: (
+    connectorId: string
+  ) => Promise<Record<string, unknown> | null | undefined> | Record<string, unknown> | null | undefined;
 }
 
 export interface AsPolyfillConnectorDetailSuccessOutcome {
-  readonly outcome: "success";
   readonly envelope: Record<string, unknown>;
+  readonly outcome: "success";
 }
 
 export interface AsPolyfillConnectorDetailFailureOutcome {
-  readonly outcome: "failure";
-  readonly status: 404;
   readonly errorCode: "not_found";
   readonly errorMessage: string;
+  readonly outcome: "failure";
+  readonly status: 404;
 }
 
 export type AsPolyfillConnectorDetailOutcome =
@@ -45,16 +45,16 @@ export type AsPolyfillConnectorDetailOutcome =
 
 export async function executeAsPolyfillConnectorDetail(
   input: AsPolyfillConnectorDetailInput,
-  deps: AsPolyfillConnectorDetailDependencies,
+  deps: AsPolyfillConnectorDetailDependencies
 ): Promise<AsPolyfillConnectorDetailOutcome> {
   const manifest = await deps.getConnectorManifest(input.connectorId);
   if (!manifest) {
     return {
-      outcome: "failure",
-      status: 404,
       errorCode: "not_found",
       errorMessage: "Connector not found",
+      outcome: "failure",
+      status: 404,
     };
   }
-  return { outcome: "success", envelope: manifest };
+  return { envelope: manifest, outcome: "success" };
 }

@@ -43,15 +43,17 @@ interface ChildReply {
 }
 
 interface ChildStdin {
-  end(): void;
-  on?(event: "error", listener: (error: Error) => void): ChildStdin;
-  write(value: string): boolean;
+  end: () => void;
+  on?: (event: "error", listener: (error: Error) => void) => ChildStdin;
+  write: (value: string) => boolean;
 }
 
 export interface TransformerChild {
   readonly exitCode?: number | null;
-  kill(signal: NodeJS.Signals): boolean;
+  kill: (signal: NodeJS.Signals) => boolean;
+  // biome-ignore lint/style/useConsistentMethodSignatures: The interface preserves its callable compatibility surface.
   once(event: "error", listener: (error: Error) => void): TransformerChild;
+  // biome-ignore lint/style/useConsistentMethodSignatures: The interface preserves its callable compatibility surface.
   once(event: "exit", listener: (code: number | null, signal: NodeJS.Signals | null) => void): TransformerChild;
   readonly pid?: number;
   readonly signalCode?: NodeJS.Signals | null;
@@ -217,13 +219,15 @@ export class LocalTransformerExecutor {
     );
     this.#failStop = options.failStop ?? defaultFailStop;
     this.#spawnChild = options.spawnChild ?? defaultSpawnChild;
-    this.#workerPath = options.workerPath ?? fileURLToPath(new URL("./local-transformer-child.js", import.meta.url));
+    this.#workerPath = options.workerPath ?? fileURLToPath(new URL("./local-transformer-child.ts", import.meta.url));
   }
 
   embed(text: string, backendIdentity: string, config: Record<string, unknown>): Promise<Float32Array> {
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     if (this.#closed) {
       return Promise.reject(new LocalTransformerExecutorError("transformer_closed"));
     }
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     if (this.#stopped) {
       return Promise.reject(new LocalTransformerExecutorError("transformer_fail_stop"));
     }
@@ -244,6 +248,7 @@ export class LocalTransformerExecutor {
       return Promise.reject(new LocalTransformerExecutorError("transformer_terminating"));
     }
 
+    // biome-ignore lint/style/noIncrementDecrement: The explicit counter update preserves this loop’s evaluation order.
     const jobId = `job_${++this.#jobNumber}`;
     // Each submitted job receives the current monotonic ordinal. This is the
     // attempt identity carried through the child-generation fence; a
@@ -254,28 +259,29 @@ export class LocalTransformerExecutor {
         this.#beginTermination(session, "transformer_deadline").catch(() => undefined);
       }, this.#deadlineMs);
       this.#pending.set(jobId, {
-        generation: session.generation,
         attempt,
         backendIdentity,
-        resolve,
+        generation: session.generation,
         reject,
+        resolve,
         timer,
       });
     });
 
     try {
+      // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
       const stdin = session.child.stdin;
       if (!stdin) {
         throw new Error("transformer child stdin is unavailable");
       }
       stdin.write(
         `${JSON.stringify({
-          generation: session.generation,
-          jobId,
           attempt,
           backendIdentity,
-          text,
           config,
+          generation: session.generation,
+          jobId,
+          text,
         })}\n`
       );
       this.#sampleChildRss(session);
@@ -286,6 +292,7 @@ export class LocalTransformerExecutor {
   }
 
   async close(): Promise<void> {
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     if (this.#closed) {
       return;
     }
@@ -304,15 +311,16 @@ export class LocalTransformerExecutor {
       this.#sampleChildRss(session);
     }
     return {
+      childHighWater: this.#childHighWater,
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+      childPid: session?.child.pid ?? null,
+      childQueueDepth: this.#childQueueDepth,
+      childRssBytes: session ? safeChildRssBytes(session.child.pid) : null,
       generation: this.#generation,
+      peakChildRssBytes: this.#peakChildRssBytes,
       pendingJobs: this.#pending.size,
       stopped: this.#stopped,
       terminating: Boolean(session?.termination),
-      childPid: session?.child.pid ?? null,
-      childRssBytes: session ? safeChildRssBytes(session.child.pid) : null,
-      peakChildRssBytes: this.#peakChildRssBytes,
-      childHighWater: this.#childHighWater,
-      childQueueDepth: this.#childQueueDepth,
     };
   }
 
@@ -353,13 +361,13 @@ export class LocalTransformerExecutor {
     });
     const session: ChildSession = {
       child,
-      generation: this.#generation,
-      reader: createInterface({ input: child.stdout, crlfDelay: Number.POSITIVE_INFINITY }),
-      exited,
-      resolveExited,
       exitConfirmed: false,
+      exited,
       fenced: false,
       finalized: false,
+      generation: this.#generation,
+      reader: createInterface({ crlfDelay: Number.POSITIVE_INFINITY, input: child.stdout }),
+      resolveExited,
       termination: null,
     };
     this.#session = session;

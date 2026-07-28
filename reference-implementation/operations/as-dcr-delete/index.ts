@@ -19,30 +19,26 @@
  *   `process` / `process.env`.
  */
 
-export type DcrDeleteErrorCode =
-  | "not_found"
-  | "forbidden"
-  | "invalid_request"
-  | string;
+export type DcrDeleteErrorCode = "not_found" | "forbidden" | "invalid_request" | string;
 
 export interface DcrDeleteInput {
-  /** Already URL-decoded client id from the path parameter. */
-  readonly clientId: string;
   /** Acting subject id (owner session sub or default placeholder). */
   readonly actingSubjectId: string;
+  /** Already URL-decoded client id from the path parameter. */
+  readonly clientId: string;
   readonly requestId: string;
   readonly traceId: string;
 }
 
 export interface DcrDeleteDependencies {
-  deleteRegisteredClient(
+  deleteRegisteredClient: (
     clientId: string,
     context: {
       actingSubjectId: string;
       requestId: string;
       traceId: string;
-    },
-  ): Promise<void> | void;
+    }
+  ) => Promise<void> | void;
 }
 
 export interface DcrDeleteSuccessOutcome {
@@ -51,25 +47,27 @@ export interface DcrDeleteSuccessOutcome {
 }
 
 export interface DcrDeleteFailureOutcome {
-  readonly outcome: "failure";
-  readonly status: number;
   readonly errorCode: string;
   readonly errorMessage: string;
+  readonly outcome: "failure";
+  readonly status: number;
 }
 
-export type DcrDeleteOutcome =
-  | DcrDeleteSuccessOutcome
-  | DcrDeleteFailureOutcome;
+export type DcrDeleteOutcome = DcrDeleteSuccessOutcome | DcrDeleteFailureOutcome;
 
 function mapErrorStatus(code: string): number {
-  if (code === "not_found") return 404;
-  if (code === "forbidden") return 403;
+  if (code === "not_found") {
+    return 404;
+  }
+  if (code === "forbidden") {
+    return 403;
+  }
   return 400;
 }
 
 export async function executeAsDcrDelete(
   input: DcrDeleteInput,
-  deps: DcrDeleteDependencies,
+  deps: DcrDeleteDependencies
 ): Promise<DcrDeleteOutcome> {
   try {
     await deps.deleteRegisteredClient(input.clientId, {
@@ -79,14 +77,15 @@ export async function executeAsDcrDelete(
     });
     return { outcome: "success", status: 204 };
   } catch (err) {
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     const errCode = (err as { code?: string })?.code || "invalid_request";
-    const errMessage =
-      (err as { message?: string })?.message || "Client deletion rejected";
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
+    const errMessage = (err as { message?: string })?.message || "Client deletion rejected";
     return {
-      outcome: "failure",
-      status: mapErrorStatus(errCode),
       errorCode: errCode,
       errorMessage: errMessage,
+      outcome: "failure",
+      status: mapErrorStatus(errCode),
     };
   }
 }

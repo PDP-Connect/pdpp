@@ -44,11 +44,11 @@ const FIXTURE_PATH = join(DEBUG_DIR, `${NOW}-stream-mint-probe.jsonl`);
 mkdirSync(DEBUG_DIR, { recursive: true });
 
 const TEST_FILES = [
-  "reference-implementation/test/run-interaction-stream-routes.test.js",
-  "reference-implementation/test/run-interaction-stream-neko-adapter.test.js",
-  "reference-implementation/test/run-interaction-stream-playground.test.js",
-  "reference-implementation/test/neko-surface-allocator-server.test.js",
-  "reference-implementation/test/neko-surface-allocator.test.js",
+  "reference-implementation/test/run-interaction-stream-routes.test.ts",
+  "reference-implementation/test/run-interaction-stream-neko-adapter.test.ts",
+  "reference-implementation/test/run-interaction-stream-playground.test.ts",
+  "reference-implementation/test/neko-surface-allocator-server.test.ts",
+  "reference-implementation/test/neko-surface-allocator.test.ts",
 ];
 
 console.log(`[stream-mint-probe] running ${TEST_FILES.length} test files`);

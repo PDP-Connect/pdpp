@@ -61,11 +61,11 @@ export interface ShellRetirementStore {
   // the given owner, or all owners if ownerSubjectId is null. Implementations
   // may scope this to `source_binding_json->>'kind' =
   // 'browser_enrollment_shell'` for efficiency.
-  listDraftBrowserEnrollmentShells(ownerSubjectId: string | null): Promise<EnrollmentShellLike[]>;
-  updateStatus(
+  listDraftBrowserEnrollmentShells: (ownerSubjectId: string | null) => Promise<EnrollmentShellLike[]>;
+  updateStatus: (
     connectorInstanceId: string,
     args: { status: string; updatedAt: string; revokedAt?: string | null }
-  ): Promise<unknown>;
+  ) => Promise<unknown>;
 }
 
 // Retires all expired browser-enrollment shells system-wide (or scoped to one
@@ -77,7 +77,8 @@ export async function retireExpiredBrowserEnrollmentShells(
   const shells = await store.listDraftBrowserEnrollmentShells(ownerSubjectId);
   const ids = expiredEnrollmentShellIds(shells, now);
   for (const id of ids) {
-    await store.updateStatus(id, { status: "revoked", updatedAt: now, revokedAt: now });
+    // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
+    await store.updateStatus(id, { revokedAt: now, status: "revoked", updatedAt: now });
   }
   return ids;
 }

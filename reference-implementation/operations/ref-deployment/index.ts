@@ -59,9 +59,9 @@ export interface RefDeploymentEnvEntry {
 export interface RefDeploymentReport {
   readonly database: { readonly path: string };
   readonly environment: readonly RefDeploymentEnvEntry[];
-  readonly runtime_capabilities: Readonly<Record<string, unknown>>;
   readonly lexical: Readonly<Record<string, unknown>>;
   readonly manifests: readonly Readonly<Record<string, unknown>>[];
+  readonly runtime_capabilities: Readonly<Record<string, unknown>>;
   readonly semantic: Readonly<Record<string, unknown>>;
   readonly warnings: readonly Readonly<Record<string, unknown>>[];
 }
@@ -74,7 +74,7 @@ export interface RefDeploymentDependencies {
    * field-level shape and for secret redaction. The operation calls
    * this once per execution.
    */
-  collectDeploymentReport(): Promise<RefDeploymentReport> | RefDeploymentReport;
+  collectDeploymentReport: () => Promise<RefDeploymentReport> | RefDeploymentReport;
 }
 
 export type RefDeploymentEnvelope = RefDeploymentReport;
@@ -87,9 +87,7 @@ export type RefDeploymentEnvelope = RefDeploymentReport;
  * invariant check on the env-redaction posture. The operation has no
  * notion of HTTP, owner sessions, headers, or framework.
  */
-export async function executeRefDeployment(
-  dependencies: RefDeploymentDependencies,
-): Promise<RefDeploymentEnvelope> {
+export async function executeRefDeployment(dependencies: RefDeploymentDependencies): Promise<RefDeploymentEnvelope> {
   const report = await dependencies.collectDeploymentReport();
 
   // Defensive: a regressed dependency must not be able to leak
@@ -98,18 +96,12 @@ export async function executeRefDeployment(
   // re-asserting here keeps a one-line operation contract on the
   // public surface.
   for (const entry of report.environment) {
-    if (
-      entry.provenance !== "present" &&
-      entry.provenance !== "absent" &&
-      entry.provenance !== "redacted"
-    ) {
-      throw new Error(
-        `ref.deployment: dependency emitted environment entry with invalid provenance for ${entry.name}`,
-      );
+    if (entry.provenance !== "present" && entry.provenance !== "absent" && entry.provenance !== "redacted") {
+      throw new Error(`ref.deployment: dependency emitted environment entry with invalid provenance for ${entry.name}`);
     }
     if (entry.secret && entry.provenance === "present" && entry.value !== null) {
       throw new Error(
-        `ref.deployment: dependency leaked a secret env value for ${entry.name}; secret entries MUST be redacted`,
+        `ref.deployment: dependency leaked a secret env value for ${entry.name}; secret entries MUST be redacted`
       );
     }
   }

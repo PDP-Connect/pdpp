@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { exec, referenceQueries } from "../../lib/db.ts";
-import { getStorageBackendKind, isPostgresStorageBackend, postgresQuery } from "../postgres-storage.js";
+import { getStorageBackendKind, isPostgresStorageBackend, postgresQuery } from "../postgres-storage.ts";
 
 export interface SourceWebhookEventClaim {
   readonly bodyHash: string;
@@ -12,7 +12,7 @@ export interface SourceWebhookEventClaim {
 }
 
 export interface SourceWebhookEventStore {
-  claimEvent(event: SourceWebhookEventClaim): boolean | Promise<boolean>;
+  claimEvent: (event: SourceWebhookEventClaim) => boolean | Promise<boolean>;
 }
 
 export function createSqliteSourceWebhookEventStore(): SourceWebhookEventStore {

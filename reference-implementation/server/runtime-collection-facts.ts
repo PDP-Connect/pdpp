@@ -82,6 +82,7 @@ export function readCollectionFactsFromTerminalData(
   if (!block || typeof block !== "object" || Array.isArray(block)) {
     return null;
   }
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const streams = (block as { streams?: unknown }).streams;
   if (!Array.isArray(streams)) {
     return null;
@@ -118,7 +119,7 @@ function readCollectionRateNumbers(entry: Record<string, unknown>): CollectionRa
 }
 
 function readCollectionRateLastBackoff(entry: Record<string, unknown>): CollectionRateSnapshot["last_backoff"] {
-  if (entry.last_backoff == null) {
+  if (entry.last_backoff === null) {
     return null;
   }
   const backoff = entry.last_backoff as Record<string, unknown>;

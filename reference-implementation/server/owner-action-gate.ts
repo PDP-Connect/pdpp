@@ -13,11 +13,11 @@ interface ActionSurface {
 }
 
 interface RequiredAction {
-  kind?: unknown;
   audience?: unknown;
-  urgency?: unknown;
+  kind?: unknown;
   satisfied_when?: ActionSatisfiedWhen;
   surface?: ActionSurface;
+  urgency?: unknown;
 }
 
 interface RenderedVerdict {
@@ -29,11 +29,11 @@ interface ConnectionHealth {
 }
 
 interface Summary {
-  connection_id?: unknown;
-  connector_instance_id?: unknown;
-  connector_id?: unknown;
-  rendered_verdict?: RenderedVerdict;
   connection_health?: ConnectionHealth;
+  connection_id?: unknown;
+  connector_id?: unknown;
+  connector_instance_id?: unknown;
+  rendered_verdict?: RenderedVerdict;
 }
 
 interface UnresolvedOwnerActionEvidence {

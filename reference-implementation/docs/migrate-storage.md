@@ -38,7 +38,7 @@ The actual decision hinges on **concurrency model**, not data volume. A 10 GB SQ
 All commands use the CLI entry point:
 
 ```shell
-node scripts/migrate-storage/cli.mjs <command> --from <source> --to <target> [options]
+node scripts/migrate-storage/cli.ts <command> --from <source> --to <target> [options]
 ```
 
 ### plan
@@ -52,7 +52,7 @@ node scripts/migrate-storage/cli.mjs <command> --from <source> --to <target> [op
 **Invocation:**
 
 ```shell
-node scripts/migrate-storage/cli.mjs plan \
+node scripts/migrate-storage/cli.ts plan \
   --from sqlite://./data/pdpp.sqlite \
   --to postgres://user:password@localhost:5432/pdpp
 ```
@@ -118,7 +118,7 @@ Estimated duration: 2 minutes on typical hardware (SSD, gigabit network)
 **Invocation:**
 
 ```shell
-node scripts/migrate-storage/cli.mjs diff \
+node scripts/migrate-storage/cli.ts diff \
   --from sqlite://./data/pdpp.sqlite \
   --to postgres://user:password@localhost:5432/pdpp
 ```
@@ -177,7 +177,7 @@ Result: INCOMPATIBLE. Schema differs on column type. See details above.
 **Invocation:**
 
 ```shell
-node scripts/migrate-storage/cli.mjs execute \
+node scripts/migrate-storage/cli.ts execute \
   --from sqlite://./data/pdpp.sqlite \
   --to postgres://user:password@localhost:5432/pdpp
 ```
@@ -243,7 +243,7 @@ Migration complete. Next: run verify, then update PDPP_STORAGE_BACKEND and resta
 **Invocation:**
 
 ```shell
-node scripts/migrate-storage/cli.mjs verify \
+node scripts/migrate-storage/cli.ts verify \
   --from sqlite://./data/pdpp.sqlite \
   --to postgres://user:password@localhost:5432/pdpp
 ```
@@ -296,7 +296,7 @@ Follow these steps in order. Each is a gate for the next.
 
 1. **Stop PDPP.** Kill all running instances:
    ```shell
-   pkill -f 'node.*server/index.js'
+   pkill -f 'node.*server/index.ts'
    ```
    Confirm no writers on the source:
    ```shell
@@ -324,7 +324,7 @@ Follow these steps in order. Each is a gate for the next.
 
 4. **Plan the migration.** Estimate row counts and duration:
    ```shell
-   node scripts/migrate-storage/cli.mjs plan \
+   node scripts/migrate-storage/cli.ts plan \
      --from sqlite://./data/pdpp.sqlite \
      --to postgres://user:password@localhost:5432/pdpp
    ```
@@ -332,7 +332,7 @@ Follow these steps in order. Each is a gate for the next.
 
 5. **Diff schema compatibility.** Verify the target is empty and schemas align:
    ```shell
-   node scripts/migrate-storage/cli.mjs diff \
+   node scripts/migrate-storage/cli.ts diff \
      --from sqlite://./data/pdpp.sqlite \
      --to postgres://user:password@localhost:5432/pdpp
    ```
@@ -340,7 +340,7 @@ Follow these steps in order. Each is a gate for the next.
 
 6. **Execute migration.** Perform the actual data transfer:
    ```shell
-   node scripts/migrate-storage/cli.mjs execute \
+   node scripts/migrate-storage/cli.ts execute \
      --from sqlite://./data/pdpp.sqlite \
      --to postgres://user:password@localhost:5432/pdpp
    ```
@@ -348,7 +348,7 @@ Follow these steps in order. Each is a gate for the next.
 
 7. **Verify integrity.** Confirm row counts and spot-check values:
    ```shell
-   node scripts/migrate-storage/cli.mjs verify \
+   node scripts/migrate-storage/cli.ts verify \
      --from sqlite://./data/pdpp.sqlite \
      --to postgres://user:password@localhost:5432/pdpp
    ```
@@ -364,7 +364,7 @@ Follow these steps in order. Each is a gate for the next.
 
 9. **Start PDPP.** Boot the reference server against Postgres:
    ```shell
-   node server/index.js
+   node server/index.ts
    ```
    **First boot rebuilds search indexes** (lexical and semantic). This is expected and unavoidable: search index schemas differ between SQLite (sqlite-vec virtual tables) and Postgres (pgvector columns), and the runtime owns rebuilding them from `blobs` and `records`. Tail logs to confirm completion:
    ```shell
@@ -391,7 +391,7 @@ Follow these steps in order. Each is a gate for the next.
 Use the same four commands with source and target swapped:
 
 ```shell
-node scripts/migrate-storage/cli.mjs plan \
+node scripts/migrate-storage/cli.ts plan \
   --from postgres://user:password@localhost:5432/pdpp \
   --to sqlite://./data/pdpp.sqlite
 ```
@@ -458,7 +458,7 @@ These are reconstructed by the PDPP runtime on first boot after migration:
 2. If target is stale: drop the target database and re-bootstrap:
    ```shell
    dropdb pdpp  # or DELETE FROM <table> IF EMPTY
-   node scripts/migrate-storage/cli.mjs plan --from sqlite://... --to postgres://...
+   node scripts/migrate-storage/cli.ts plan --from sqlite://... --to postgres://...
    ```
 3. If source is stale: ensure you are running the same PDPP version for both source and target. Upgrade the older instance and re-snapshot.
 4. Re-run `diff` to confirm `COMPATIBLE`.
@@ -472,7 +472,7 @@ These are reconstructed by the PDPP runtime on first boot after migration:
 **Recovery:**
 1. Kill all writers:
    ```shell
-   pkill -f 'node.*server/index.js'
+   pkill -f 'node.*server/index.ts'
    lsof data/pdpp.sqlite  # Confirm zero results
    ```
 2. Remove stale journal files if present:
@@ -496,7 +496,7 @@ These are reconstructed by the PDPP runtime on first boot after migration:
   Then re-run `execute`.
 - **Risky (if you know what you're doing):** Pass `--allow-non-empty` to `execute` and accept the risk of mixing old and new data:
   ```shell
-  node scripts/migrate-storage/cli.mjs execute \
+  node scripts/migrate-storage/cli.ts execute \
     --from sqlite://./data/pdpp.sqlite \
     --to postgres://user:password@localhost:5432/pdpp \
     --allow-non-empty
@@ -593,26 +593,26 @@ Migration complete: 4,812,309 rows in 412.04s [jsonb-nul-policy=migrate-to-blobs
 
 ```shell
 # Plan and diff are safe to run with any policy.
-node scripts/migrate-storage/cli.mjs plan \
+node scripts/migrate-storage/cli.ts plan \
   --from .pdpp-data/pdpp.sqlite \
   --to "postgres://user:password@localhost:5432/pdpp"
 
 # Dry-run to preview extraction scope without writing anything.
-node scripts/migrate-storage/cli.mjs execute \
+node scripts/migrate-storage/cli.ts execute \
   --from .pdpp-data/pdpp.sqlite \
   --to "postgres://user:password@localhost:5432/pdpp" \
   --jsonb-nul-policy migrate-to-blobs \
   --dry-run
 
 # Lossless migration of legacy records. Verifier runs automatically at the end.
-node scripts/migrate-storage/cli.mjs execute \
+node scripts/migrate-storage/cli.ts execute \
   --from .pdpp-data/pdpp.sqlite \
   --to "postgres://user:password@localhost:5432/pdpp" \
   --jsonb-nul-policy migrate-to-blobs \
   --ledger .pdpp-data/migration-extractions.jsonl
 
 # Standalone re-verification (e.g., after any out-of-band write).
-node scripts/migrate-storage/cli.mjs verify \
+node scripts/migrate-storage/cli.ts verify \
   --from .pdpp-data/pdpp.sqlite \
   --to "postgres://user:password@localhost:5432/pdpp"
 ```

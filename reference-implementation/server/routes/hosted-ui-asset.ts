@@ -24,18 +24,18 @@
 // Auth posture: none. The original route is unauthenticated — it returns a
 // static stylesheet with no user data. This adapter owns Express plumbing only.
 
-import { HOSTED_UI_CSS, HOSTED_UI_CSS_PATH } from "../hosted-ui.js";
+import { HOSTED_UI_CSS, HOSTED_UI_CSS_PATH } from "../hosted-ui.ts";
 import type { RouteArg } from "./_route-contract.ts";
 
 interface RouteResponse {
-  send(body: string): unknown;
-  setHeader(name: string, value: string): unknown;
+  send: (body: string) => unknown;
+  setHeader: (name: string, value: string) => unknown;
 }
 
 type RouteHandler = (req: unknown, res: RouteResponse) => void;
 
 interface AppLike {
-  get(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  get: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
 }
 
 // GET /__pdpp/hosted-ui.css

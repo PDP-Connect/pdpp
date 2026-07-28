@@ -49,6 +49,7 @@ export interface PackageManifest {
 
 export function assertManifestTargets(manifest: unknown, packageRoot: string): asserts manifest is PackageManifest {
   const m = manifest as PackageManifest;
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
   assert.equal(m?.name, "@pdpp/cli", "package manifest must identify @pdpp/cli");
   assert.equal(Array.isArray(m.files), true, "package manifest must have a files allowlist");
   assert.equal(m.files.includes("dist/"), true, "package files must include dist/");
@@ -57,6 +58,7 @@ export function assertManifestTargets(manifest: unknown, packageRoot: string): a
   }
 
   const exportTargets: ExportTarget[] = [];
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
   assert.equal(m.exports !== null && typeof m.exports === "object", true, "package must declare exports");
   for (const [subpath, value] of Object.entries(m.exports)) {
     collectExportTargets(value, `exports[${JSON.stringify(subpath)}]`, exportTargets);
@@ -73,6 +75,7 @@ export function assertManifestTargets(manifest: unknown, packageRoot: string): a
     assert.equal(statSync(targetPath).isFile(), true, `${label} must resolve to a file: ${target}`);
   }
 
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
   assert.equal(m.bin !== null && typeof m.bin === "object", true, "package must declare a bin map");
   for (const [name, target] of Object.entries(m.bin)) {
     const { targetPath } = assertInsideDist(packageRoot, target, `bin.${name}`);

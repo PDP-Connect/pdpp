@@ -52,6 +52,7 @@
  */
 
 import { createHash } from "node:crypto";
+// biome-ignore lint/correctness/noUnresolvedImports: remote-surface 1.5.1 exports ./leases; Biome 2.5.5 fails to resolve this package export.
 import type { BrowserSurface } from "@opendatalabs/remote-surface/leases";
 
 export const BROWSER_SURFACE_READINESS_PROBE_CODES = [
@@ -83,7 +84,7 @@ export type BrowserSurfaceReadinessProbeResult =
   | BrowserSurfaceReadinessProbeFailure;
 
 export interface BrowserSurfaceReadinessProbe {
-  probe(surface: BrowserSurface): Promise<BrowserSurfaceReadinessProbeResult>;
+  probe: (surface: BrowserSurface) => Promise<BrowserSurfaceReadinessProbeResult>;
 }
 
 interface DevtoolsVersionPayload {
@@ -112,12 +113,12 @@ interface DevtoolsPageGetFrameTreeResult {
 }
 
 export interface BrowserSurfaceReadinessWebSocketLike {
-  addEventListener(
+  addEventListener: (
     type: "open" | "message" | "error" | "close",
     listener: (event: { readonly data?: unknown }) => void
-  ): void;
-  close(): void;
-  send(data: string): void;
+  ) => void;
+  close: () => void;
+  send: (data: string) => void;
 }
 
 export type BrowserSurfaceReadinessWebSocketFactory = (url: string) => BrowserSurfaceReadinessWebSocketLike;
@@ -150,7 +151,7 @@ export interface MidWaitSurfaceLossDetectorOptions {
 
 export interface MidWaitSurfaceLossDetector {
   /** Stop polling. Safe to call multiple times. */
-  cancel(): void;
+  cancel: () => void;
   /**
    * Resolves with the first failing probe result, or never resolves if the
    * surface stays live until `cancel()` is called.
@@ -203,9 +204,9 @@ export function createMidWaitSurfaceLossDetector(
   function pollErrorToFailure(err: unknown): BrowserSurfaceReadinessProbeFailure {
     const message = err instanceof Error ? err.message : String(err);
     return {
-      ok: false,
       code: "browser_surface_cdp_unreachable",
       detail: `mid-wait surface poll threw: ${message}`,
+      ok: false,
     };
   }
 
@@ -240,11 +241,11 @@ export function createMidWaitSurfaceLossDetector(
   scheduleNextPoll();
 
   return {
-    lossPromise,
     cancel() {
       cancelled = true;
       clearScheduledPoll();
     },
+    lossPromise,
   };
 }
 
@@ -312,9 +313,9 @@ export async function probeBrowserSurfaceReadinessOverHttp(
     typeof versionPayload.webSocketDebuggerUrl !== "string"
   ) {
     return {
-      ok: false,
       code: "browser_surface_cdp_disconnected",
       detail: `cdp_url ${baseUrl}json/version returned a payload without webSocketDebuggerUrl`,
+      ok: false,
     };
   }
 
@@ -391,9 +392,9 @@ async function probeWindowSettleBehavior(
     return null;
   }
   return {
-    ok: false,
     code: "browser_surface_window_settle_unavailable",
     detail: `cdp_url ${baseUrl}pdpp/window-settle returned an invalid status`,
+    ok: false,
   };
 }
 
@@ -406,34 +407,34 @@ function deriveBrowserGenerationHash(browserVersion: string | undefined, webSock
 function validateSurfaceShape(surface: BrowserSurface): BrowserSurfaceReadinessProbeFailure | null {
   if (surface.health !== "ready") {
     return {
-      ok: false,
       code: "browser_surface_not_ready",
       detail: `surface ${surface.surface_id} health is ${surface.health}`,
+      ok: false,
     };
   }
   const cdpUrl = surface.cdp_url;
   if (typeof cdpUrl !== "string" || cdpUrl.length === 0) {
     return {
-      ok: false,
       code: "browser_surface_not_ready",
       detail: `surface ${surface.surface_id} has no cdp_url`,
+      ok: false,
     };
   }
   try {
     const parsed = new URL(cdpUrl);
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
       return {
-        ok: false,
         code: "browser_surface_not_ready",
         detail: `surface ${surface.surface_id} cdp_url scheme ${parsed.protocol} is not http(s)`,
+        ok: false,
       };
     }
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : String(cause);
     return {
-      ok: false,
       code: "browser_surface_not_ready",
       detail: `surface ${surface.surface_id} cdp_url is unparseable: ${message}`,
+      ok: false,
     };
   }
   return null;
@@ -494,32 +495,33 @@ function isValidFrameTreeResult(result: unknown): result is DevtoolsPageGetFrame
 function projectUsablePageTargetCount(baseUrl: string, targets: unknown): TargetListProjectionResult {
   if (!Array.isArray(targets)) {
     return {
-      ok: false,
       failure: {
-        ok: false,
         code: "browser_surface_cdp_disconnected",
         detail: `cdp_url ${baseUrl}json/list did not return a target array`,
+        ok: false,
       },
+      ok: false,
     };
   }
 
   const pageTargets = targets.filter((entry): entry is UsableDevtoolsPageTarget => isUsablePageTarget(entry));
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const pageTarget = pageTargets[0];
   if (!pageTarget) {
     return {
-      ok: false,
       failure: {
-        ok: false,
         code: "browser_surface_page_stale",
         detail:
           targets.length === 0
             ? `cdp_url ${baseUrl}json/list reported zero targets`
             : `cdp_url ${baseUrl}json/list reported ${String(targets.length)} target(s) but none are usable page targets`,
+        ok: false,
       },
+      ok: false,
     };
   }
 
-  return { ok: true, pageTargetCount: pageTargets.length, pageTarget };
+  return { ok: true, pageTarget, pageTargetCount: pageTargets.length };
 }
 
 async function probeSemanticPageTarget(
@@ -554,12 +556,12 @@ async function probeSemanticPageTarget(
     const fail = (code: BrowserSurfaceReadinessProbeCode, detail: string) => {
       resolve(
         finish({
-          ok: false,
           failure: {
-            ok: false,
             code,
             detail,
+            ok: false,
           },
+          ok: false,
         })
       );
     };
@@ -592,6 +594,7 @@ async function probeSemanticPageTarget(
       }
     };
 
+    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This protocol transition owns ordered state invariants that must remain local.
     const onMessage = (event: { readonly data?: unknown }) => {
       if (settled) {
         return;
@@ -674,32 +677,32 @@ async function fetchJsonWithBudget(
     } catch (cause) {
       if (controller.signal.aborted) {
         return {
-          ok: false,
           failure: {
-            ok: false,
             code: "browser_surface_probe_timeout",
             detail: `GET ${url} exceeded ${String(timeoutMs)}ms budget`,
+            ok: false,
           },
+          ok: false,
         };
       }
       const message = cause instanceof Error ? cause.message : String(cause);
       return {
-        ok: false,
         failure: {
-          ok: false,
           code: "browser_surface_cdp_unreachable",
           detail: `GET ${url} failed: ${message}`,
+          ok: false,
         },
+        ok: false,
       };
     }
     if (!response.ok) {
       return {
-        ok: false,
         failure: {
-          ok: false,
           code: "browser_surface_cdp_disconnected",
           detail: `GET ${url} returned HTTP ${String(response.status)}`,
+          ok: false,
         },
+        ok: false,
       };
     }
     let payload: unknown;
@@ -708,12 +711,12 @@ async function fetchJsonWithBudget(
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
       return {
-        ok: false,
         failure: {
-          ok: false,
           code: "browser_surface_cdp_disconnected",
           detail: `GET ${url} returned malformed JSON: ${message}`,
+          ok: false,
         },
+        ok: false,
       };
     }
     return { ok: true, payload };

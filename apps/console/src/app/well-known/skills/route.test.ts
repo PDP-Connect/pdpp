@@ -9,14 +9,21 @@ import { fileURLToPath } from "node:url";
 import { GET } from "./[...path]/route.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const SKILLS_REWRITE_PAIR =
-  /source:\s*['"]\/\.well-known\/skills\/:path\*['"][\s\S]*?destination:\s*['"]\/well-known\/skills\/:path\*['"]/;
+const SKILLS_REWRITE_DESTINATION = /\bdestination:\s*['"]\/well-known\/skills\/:path\*['"]/;
+const SKILLS_REWRITE_SOURCE = /\bsource:\s*['"]\/\.well-known\/skills\/:path\*['"]/;
 
 const APPLICATION_JSON = /^application\/json/;
 const PDPP_SKILL_FRONTMATTER = /name: pdpp-data-access/;
 const OWNER_AGENT_SKILL_FRONTMATTER = /name: pdpp-owner-agent/;
 const TEXT_MARKDOWN = /^text\/markdown/;
 const TROUBLESHOOTING_HEADING = /# Troubleshooting/;
+
+function hasSkillsRewrite(nextConfig: string): boolean {
+  return [...nextConfig.matchAll(/\{[^{}]*\}/g)].some((rewrite) => {
+    const [object] = rewrite;
+    return object !== undefined && SKILLS_REWRITE_SOURCE.test(object) && SKILLS_REWRITE_DESTINATION.test(object);
+  });
+}
 
 function callSkillsRoute(routePath: string[], headers?: HeadersInit): Promise<Response> {
   return GET(new Request(`http://0.0.0.0:3000/.well-known/skills/${routePath.join("/")}`, { headers }), {
@@ -66,9 +73,9 @@ test("console well-known skills handler lives at the rewrite destination", () =>
 
   const nextConfigPath = path.resolve(HERE, "..", "..", "..", "..", "next.config.mjs");
   const nextConfig = readFileSync(nextConfigPath, "utf8");
-  assert.match(
-    nextConfig,
-    SKILLS_REWRITE_PAIR,
+  assert.equal(
+    hasSkillsRewrite(nextConfig),
+    true,
     "next.config.mjs must rewrite /.well-known/skills/** to the routable /well-known/skills/** destination"
   );
 });

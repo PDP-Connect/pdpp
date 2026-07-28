@@ -13,6 +13,7 @@ const testFilePattern = /\.test\.(?:[cm]?[jt]s)$/;
 async function discoverTests(dir: string): Promise<string[]> {
   const entries = await readdir(dir, { withFileTypes: true });
   const files = await Promise.all(
+    // biome-ignore lint/suspicious/useAwait: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     entries.map(async (entry) => {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) {
@@ -24,6 +25,7 @@ async function discoverTests(dir: string): Promise<string[]> {
   return files.flat();
 }
 
+// biome-ignore lint/suspicious/useArraySortCompare: Input ordering is intentionally the runtime’s established default string order.
 const tests = (await discoverTests(testRoot)).sort();
 if (tests.length === 0) {
   throw new Error(`No test files matched ${testFilePattern} under ${testRoot}`);

@@ -1,7 +1,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { PDPP_CLI_BIN_NAME } from "../package-info.js";
+import { PDPP_CLI_BIN_NAME } from "../package-info.ts";
 import { CollectorUsageError } from "./errors.ts";
 import { spawnCollectorRunner } from "./runner.ts";
 

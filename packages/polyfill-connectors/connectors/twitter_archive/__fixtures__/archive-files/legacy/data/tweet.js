@@ -1,5 +1,6 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
+// Generated archive artifact from tweet.ts; preserve this assignment shape.
 
 window.YTD.tweet.part0 = [
   {

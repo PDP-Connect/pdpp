@@ -81,7 +81,7 @@ function runFailure(command: string, args: string[], options: ExecFileOptions = 
 try {
   mkdirSync(consumerRoot, { recursive: true });
   mkdirSync(packRoot, { recursive: true });
-  const packResult = parseNpmPackOutput(
+  const [packResult] = parseNpmPackOutput(
     run("npm", ["pack", "--json", "--ignore-scripts", "--pack-destination", packRoot], {
       cwd: packageRoot,
     })
@@ -94,6 +94,7 @@ try {
   const tree = JSON.parse(run("npm", ["ls", "--all", "--json"], { cwd: consumerRoot })) as {
     dependencies?: { [key: string]: { version: string } };
   };
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves established behavior; this diagnostic requires a semantic refactor outside the closure scope.
   assert.equal(tree.dependencies?.["@pdpp/cli"]?.version, manifest.version, "consumer resolved the candidate CLI");
   assert.equal(
     existsSync(join(consumerRoot, "node_modules", "@pdpp", "local-collector")),

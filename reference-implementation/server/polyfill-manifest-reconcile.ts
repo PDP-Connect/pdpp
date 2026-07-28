@@ -34,16 +34,16 @@ const JSON_EXTENSION_RE = /\.json$/;
 // auth.js is still JavaScript; the imported functions are typed
 // loosely below since their full signatures land with the auth.js
 // migration slice. Until then we narrow the surface used here.
-import { getConnectorManifest, registerConnector } from "./auth.js";
-// records.js is also still JavaScript. The invalidation helper is
-// scoped to the reconciliation flip path; see the design notes under
-// openspec/changes/reconcile-invalidates-stale-records/.
-import { deleteAllRecordsForConnector } from "./records.js";
+import { getConnectorManifest, registerConnector } from "./auth.ts";
 // connector-key.js is a small, DB-free, pure module (no auth.js coupling),
 // so it's safe to import directly rather than duplicate. Used to predict
 // the storage-normalized shape of a shipped manifest for comparison; see
 // `normalizeForComparison` below.
-import { canonicalConnectorKeyFromManifest } from "./connector-key.js";
+import { canonicalConnectorKeyFromManifest } from "./connector-key.ts";
+// records.js is also still JavaScript. The invalidation helper is
+// scoped to the reconciliation flip path; see the design notes under
+// openspec/changes/reconcile-invalidates-stale-records/.
+import { deleteAllRecordsForConnector } from "./records.ts";
 
 // Auth.js wires these as untyped JS functions; until that file
 // migrates, we re-declare the narrow shape this module relies on so
@@ -145,8 +145,8 @@ function normalizeForComparison(manifest: PolyfillManifest): PolyfillManifest {
   const connectorId = canonicalConnectorKeyFromManifest(manifest) ?? manifest.connector_id;
   const normalized: PolyfillManifest = {
     ...manifest,
-    connector_key: connectorId,
     connector_id: connectorId,
+    connector_key: connectorId,
   };
   if (!normalized.manifest_uri && isNonEmptyString(manifest.connector_id)) {
     const originalConnectorId = manifest.connector_id.trim();
@@ -224,8 +224,9 @@ function fingerprintManifest(manifest: unknown): ManifestFingerprint | null {
       }
     }
   }
+  // biome-ignore lint/suspicious/useArraySortCompare: Input ordering is intentionally the runtime’s established default string order.
   streamNames.sort();
-  return { version, streams: streamNames.join(",") };
+  return { streams: streamNames.join(","), version };
 }
 
 function fingerprintsEqual(a: ManifestFingerprint | null, b: ManifestFingerprint | null): boolean {
@@ -245,7 +246,7 @@ async function loadReferenceFixtureFingerprints(
   const fingerprints = new Map<string, ManifestFingerprint>();
   let entries: Dirent<string>[];
   try {
-    entries = await readdir(referenceFixturesDir, { withFileTypes: true, encoding: "utf8" });
+    entries = await readdir(referenceFixturesDir, { encoding: "utf8", withFileTypes: true });
   } catch {
     return fingerprints;
   }
@@ -254,6 +255,7 @@ async function loadReferenceFixtureFingerprints(
       continue;
     }
     try {
+      // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
       const manifest = await readManifestJson(join(referenceFixturesDir, entry.name));
       const connectorId = manifest.connector_id;
       if (typeof connectorId !== "string" || !connectorId.trim()) {
@@ -273,14 +275,14 @@ async function loadReferenceFixtureFingerprints(
 
 const EMPTY_SUMMARY: ReconcileSummary = {
   disabled_reason: null,
-  scanned: 0,
-  updated: 0,
-  unchanged: 0,
-  skipped: 0,
   errors: 0,
   invalidatedConnectors: 0,
   invalidatedRecords: 0,
   registered: 0,
+  scanned: 0,
+  skipped: 0,
+  unchanged: 0,
+  updated: 0,
 };
 
 function errorMessage(err: unknown): string {
@@ -288,6 +290,7 @@ function errorMessage(err: unknown): string {
     // Some I/O errors carry a `.code` (`ENOENT`, etc.) on the Error
     // object directly; surface that when present, otherwise fall back
     // to the message.
+    // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
     const code = (err as { code?: unknown }).code;
     if (typeof code === "string" && code.length > 0) {
       return code;
@@ -342,9 +345,9 @@ async function invalidatePriorRecords(
       log(
         `[manifest-reconcile] invalidated ${connectorId}: ${invalidation.deletedCount} record(s) across streams [${invalidation.streams.join(", ")}] before applying new manifest`
       );
-      return { ok: true, invalidatedConnectors: 1, invalidatedRecords: invalidation.deletedCount };
+      return { invalidatedConnectors: 1, invalidatedRecords: invalidation.deletedCount, ok: true };
     }
-    return { ok: true, invalidatedConnectors: 0, invalidatedRecords: 0 };
+    return { invalidatedConnectors: 0, invalidatedRecords: 0, ok: true };
   } catch (err) {
     log(`[manifest-reconcile] invalidation failed for ${connectorId}: ${errorMessage(err)}`);
     return { ok: false };
@@ -437,13 +440,13 @@ type ManifestEntryBranch =
 
 function validateOrReconcileInvalidManifestEntry(shipped: PolyfillManifest | null): ManifestEntryBranch {
   if (!shipped) {
-    return { kind: "invalid", delta: { errors: 1 } };
+    return { delta: { errors: 1 }, kind: "invalid" };
   }
   const connectorIdRaw = shipped.connector_id;
   if (typeof connectorIdRaw !== "string" || connectorIdRaw.length === 0) {
-    return { kind: "invalid", delta: { skipped: 1 } };
+    return { delta: { skipped: 1 }, kind: "invalid" };
   }
-  return { kind: "valid", shipped, connectorId: connectorIdRaw };
+  return { connectorId: connectorIdRaw, kind: "valid", shipped };
 }
 
 async function reconcileInvalidPersistedManifestEntry(
@@ -500,7 +503,9 @@ async function reconcileChangedManifestEntry(
     if (!invalidation.ok) {
       return { errors: 1 };
     }
+    // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
     invalidatedConnectors = invalidation.invalidatedConnectors;
+    // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
     invalidatedRecords = invalidation.invalidatedRecords;
   }
   const registration = await applyShippedManifest(shipped, connectorId, entryName, ctx.log);
@@ -598,7 +603,7 @@ export async function reconcilePolyfillManifests(opts: ReconcileOptions = {}): P
   // function operates on (entry.name is a string).
   let entries: Dirent<string>[];
   try {
-    entries = await readdir(manifestsDir, { withFileTypes: true, encoding: "utf8" });
+    entries = await readdir(manifestsDir, { encoding: "utf8", withFileTypes: true });
   } catch (err) {
     log(`[manifest-reconcile] manifests dir unavailable: ${errorMessage(err)}`);
     return { ...EMPTY_SUMMARY, disabled_reason: "manifests_dir_unavailable" };
@@ -613,6 +618,7 @@ export async function reconcilePolyfillManifests(opts: ReconcileOptions = {}): P
       continue;
     }
     summary.scanned += 1;
+    // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
     applyDelta(summary, await reconcileEntry(entry.name, ctx));
   }
   return summary;

@@ -19,8 +19,7 @@ test("grant lifecycle maps unknown to a neutral 'unknown' badge, never active/su
 });
 
 test("active stays success — the neutral unknown fix does not bleed into known live states", () => {
-  // biome-ignore lint/style/useDestructuring: Indexed access and property reads preserve the local guard and exact source-order reasoning here.
-  const active = GRANT_LIFECYCLE_VOCABULARY.active;
+  const { active } = GRANT_LIFECYCLE_VOCABULARY;
   assert.ok(active, "expected an `active` entry");
   assert.equal(active.tone, "success");
 });

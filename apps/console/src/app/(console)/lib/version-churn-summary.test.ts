@@ -16,8 +16,8 @@
  * explicitly (that is what the route returns) and the tests assert the console
  * renders/aggregates the field honestly — not that the console re-derives it.
  * The derivation itself is pinned server-side in
- * `reference-implementation/test/version-disposition.test.js` and
- * `record-version-stats.test.js`.
+ * `reference-implementation/test/version-disposition.test.ts` and
+ * `record-version-stats.test.ts`.
  */
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -300,7 +300,7 @@ test("buildChurnDrilldownRows produces a stable, unique key per (connection, str
 test("churnDryRunCommand builds the default read-only maintenance command", () => {
   assert.equal(
     churnDryRunCommand(row()),
-    "node reference-implementation/scripts/compact-record-history.mjs --connector-instance-id='cin_ynab_1' --stream='budgets' --connector-id='ynab'"
+    "node reference-implementation/scripts/compact-record-history.ts --connector-instance-id='cin_ynab_1' --stream='budgets' --connector-id='ynab'"
   );
 });
 
@@ -313,7 +313,7 @@ test("churnDryRunCommand shell-quotes metadata and omits absent connector id", (
         stream: "raw uploads",
       })
     ),
-    "node reference-implementation/scripts/compact-record-history.mjs --connector-instance-id='cin_owner'\\''s_box' --stream='raw uploads'"
+    "node reference-implementation/scripts/compact-record-history.ts --connector-instance-id='cin_owner'\\''s_box' --stream='raw uploads'"
   );
 });
 

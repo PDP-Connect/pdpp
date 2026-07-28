@@ -24,6 +24,8 @@ import {
   sourceTreeDigest,
   trackedFiles,
   treeDigest,
+  unaccountedExecutableTests,
+  validateIncludeGlobsClassifyExecutable,
   verifyReceipts,
 } from "./inventory.ts";
 import { readStructuredChildResult, structuredNodeSummary, structuredPythonSummary } from "./receipt.ts";
@@ -264,6 +266,41 @@ export async function runAuthority({
   const head = gitHead(root);
   const manifest = await readManifest(resolve(root, "test-accounting.manifest.json"), { root, intendedBase: base });
   const files = trackedFiles(root);
+  // Fail closed BEFORE selection — this is the fix for the gap the R1
+  // remeasure found: the closure oracle existed but nothing on the real
+  // `--run` path ever called it, so a silent discovery shrink shipped
+  // straight into a live test run with zero error anywhere in CI.
+  //
+  // Two checks, deliberately different scopes:
+  //
+  // 1. `validateIncludeGlobsClassifyExecutable`, scoped to the suites this
+  //    run actually selects (mirrors `verifyReceipts`'s scoping, see
+  //    `965708787`): a suite's include glob that still matches at least
+  //    one tracked file (so `planFor`'s own "selects no executable tests"
+  //    guard stays silent) can still match a file that no longer
+  //    classifies as executable, or a suite's entire include list can go
+  //    empty. Scoping this to `suites` means an unrelated suite's stale,
+  //    deliberately-empty include glob elsewhere in the manifest cannot
+  //    fail a run that never touches it.
+  //
+  // 2. `unaccountedExecutableTests`, necessarily whole-manifest (ownership
+  //    is a global property — a file renamed off the one glob that used to
+  //    match it, e.g. mcp-server's `.test.ts` -> `.test.js`, simply stops
+  //    being matched by anything; no suite-scoped check can see a file
+  //    that fell out of its own suite's purview entirely). This is the
+  //    check that closes the N -> N-1 multi-glob partial-rename hole:
+  //    `validateIncludeGlobsClassifyExecutable` alone does not catch it
+  //    (the file is still executable-classified, just unmatched), and
+  //    `planFor`'s per-suite empty-plan guard does not catch it either
+  //    (the suite's other globs keep its plan non-empty). It never throws
+  //    on an unrelated suite's empty plan, only on a genuinely orphaned
+  //    executable file, so it is safe to run unconditionally regardless of
+  //    which suites were selected.
+  validateIncludeGlobsClassifyExecutable(manifest, files, suites);
+  const unaccounted = unaccountedExecutableTests(manifest, files);
+  if (unaccounted.length) {
+    fail(`unaccounted executable tests: ${unaccounted.join(", ")}`);
+  }
   const selection = selectedRuns(manifest, files, { suites, profile });
   if (profile) {
     for (const run of selection.runs) {

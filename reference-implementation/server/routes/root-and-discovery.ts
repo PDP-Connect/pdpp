@@ -47,18 +47,23 @@ interface RouteOptions {
 }
 
 interface RouteRequest {
+  readonly accepts?: (types: string[]) => string | false;
+  readonly headers?: { accept?: unknown; cookie?: string | null };
   readonly hostname: string;
   readonly protocol: string;
+  readonly query?: { format?: unknown };
 }
 
 interface RouteResponse {
-  json(body: unknown): unknown;
+  json: (body: unknown) => unknown;
+  send: (body: string) => void;
+  setHeader: (name: string, value: string) => void;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown;
 
 interface AppLike {
-  get(path: string, opts: RouteOptions, handler: RouteHandler): AppLike;
+  get: (path: string, opts: RouteOptions, handler: RouteHandler) => AppLike;
 }
 
 // ─── AS root (`GET /`) ──────────────────────────────────────────────────────
@@ -66,11 +71,11 @@ interface AppLike {
 export interface MountAsRootContext {
   providerName: string;
   referenceRevision: string;
-  servedRootLandingIfBrowser(
-    req: unknown,
-    res: unknown,
+  servedRootLandingIfBrowser: (
+    req: RouteRequest,
+    res: RouteResponse,
     args: { role: "authorization_server"; providerName: string; referenceRevision: string }
-  ): boolean;
+  ) => boolean;
 }
 
 export function mountAsRoot(app: AppLike, ctx: MountAsRootContext): void {
@@ -90,9 +95,9 @@ export function mountAsRoot(app: AppLike, ctx: MountAsRootContext): void {
     // byte-for-byte. See openspec/changes/split-public-site-and-operator-console.
     if (
       ctx.servedRootLandingIfBrowser(req, res, {
-        role: "authorization_server",
         providerName: ctx.providerName,
         referenceRevision: ctx.referenceRevision,
+        role: "authorization_server",
       })
     ) {
       return;
@@ -109,20 +114,20 @@ export function mountAsRoot(app: AppLike, ctx: MountAsRootContext): void {
 // ─── AS `/.well-known/oauth-authorization-server` ───────────────────────────
 
 export interface MountAsAuthorizationServerMetadataContext {
-  buildAuthorizationServerMetadata(input: AsAuthorizationServerMetadataBuilderInput): unknown;
+  buildAuthorizationServerMetadata: (input: AsAuthorizationServerMetadataBuilderInput) => unknown;
   cimdEnabled?: boolean;
   dynamicClientRegistrationEnabled: boolean;
-  publicClientMetadataForAuthorizationServer(clients: unknown[]): readonly AsAuthorizationServerPublicClient[];
-  rejectUntrustedMetadataHost(
+  publicClientMetadataForAuthorizationServer: (clients: unknown[]) => readonly AsAuthorizationServerPublicClient[];
+  rejectUntrustedMetadataHost: (
     req: unknown,
     res: unknown,
     explicitUrl: unknown,
     trustedHosts: unknown,
     options?: unknown
-  ): boolean;
-  resolveExplicitIssuer(): string | null;
-  resolvePreRegisteredPublicClients(): unknown[];
-  resolvePublicUrl(req: unknown, explicit: unknown): string;
+  ) => boolean;
+  resolveExplicitIssuer: () => string | null;
+  resolvePreRegisteredPublicClients: () => unknown[];
+  resolvePublicUrl: (req: unknown, explicit: unknown) => string;
   trustedMetadataHosts: unknown;
 }
 
@@ -141,9 +146,9 @@ export function mountAsAuthorizationServerMetadata(app: AppLike, ctx: MountAsAut
     res.json(
       executeAsAuthorizationServerMetadata(
         {
-          issuer,
-          dynamicClientRegistrationEnabled: ctx.dynamicClientRegistrationEnabled,
           cimdEnabled: ctx.cimdEnabled === true,
+          dynamicClientRegistrationEnabled: ctx.dynamicClientRegistrationEnabled,
+          issuer,
           preRegisteredPublicClients: ctx.publicClientMetadataForAuthorizationServer(
             ctx.resolvePreRegisteredPublicClients()
           ),
@@ -166,26 +171,26 @@ export interface MountRsRootContext {
   // openspec/changes/add-trusted-owner-agent-onboarding.
   agentDiscoveryOrigin: string | null;
   asPort: number;
-  buildOwnerAgentOnboardingMetadata(args: { origin: string | null; resource: string; issuer: string }): unknown;
+  buildOwnerAgentOnboardingMetadata: (args: { origin: string | null; resource: string; issuer: string }) => unknown;
   explicitResource: unknown;
   providerName: string;
   referenceRevision: string;
-  rejectUntrustedMetadataHost(
+  rejectUntrustedMetadataHost: (
     req: unknown,
     res: unknown,
     explicitUrl: unknown,
     trustedHosts: unknown,
     options?: unknown
-  ): boolean;
-  resolveExplicitIssuer(): string | null;
-  resolvePublicUrl(req: unknown, explicit: unknown): string;
-  resolveSiblingPublicUrl(req: unknown, origin: string): string;
-  servedRootLandingIfBrowser(
+  ) => boolean;
+  resolveExplicitIssuer: () => string | null;
+  resolvePublicUrl: (req: unknown, explicit: unknown) => string;
+  resolveSiblingPublicUrl: (req: unknown, origin: string) => string;
+  servedRootLandingIfBrowser: (
     req: unknown,
     res: unknown,
     args: { role: "resource_server"; providerName: string; referenceRevision: string }
-  ): boolean;
-  shouldUseDirectRequestOrigin(req: unknown, explicit: unknown): boolean;
+  ) => boolean;
+  shouldUseDirectRequestOrigin: (req: unknown, explicit: unknown) => boolean;
   trustedMetadataHosts: unknown;
 }
 
@@ -200,9 +205,9 @@ export function mountRsRoot(app: AppLike, ctx: MountRsRootContext): void {
     // See openspec/changes/split-public-site-and-operator-console.
     if (
       ctx.servedRootLandingIfBrowser(req, res, {
-        role: "resource_server",
         providerName: ctx.providerName,
         referenceRevision: ctx.referenceRevision,
+        role: "resource_server",
       })
     ) {
       return;
@@ -233,9 +238,9 @@ export function mountRsRoot(app: AppLike, ctx: MountRsRootContext): void {
       }
       const issuer = ctx.resolvePublicUrl(req, issuerSource);
       const ownerAgentOnboarding = ctx.buildOwnerAgentOnboardingMetadata({
+        issuer,
         origin: ctx.resolveSiblingPublicUrl(req, ctx.agentDiscoveryOrigin),
         resource,
-        issuer,
       });
       if (ownerAgentOnboarding) {
         res.json({ ...envelope, pdpp_owner_agent_onboarding: ownerAgentOnboarding });
@@ -251,44 +256,44 @@ export function mountRsRoot(app: AppLike, ctx: MountRsRootContext): void {
 export interface MountRsProtectedResourceMetadataContext {
   agentDiscoveryOrigin: string | null;
   asPort: number;
-  buildAgentDiscoveryMetadata(
+  buildAgentDiscoveryMetadata: (
     origin: string | null,
     opts?: { noOwnerToken?: boolean; docsOrigin?: string | null; mcpAuthorization?: unknown }
-  ): unknown;
-  buildDefaultHybridCapability(args: {
+  ) => unknown;
+  buildDefaultHybridCapability: (args: {
     lexicalAvailable: true;
     semanticAvailable: true;
-  }): RsProtectedResourceMetadataHybridCapability | null;
+  }) => RsProtectedResourceMetadataHybridCapability | null;
   // Advisory trusted-owner-agent onboarding block. Returns `null` (omitting
   // the block) when owner-agent onboarding is not safely configured — the host
   // passes the resolved trusted public `resource`/`issuer` and the
   // composed-mode approval `origin` (null in direct/ephemeral mode). See
   // openspec/changes/add-trusted-owner-agent-onboarding.
-  buildOwnerAgentOnboardingMetadata(args: { origin: string | null; resource: string; issuer: string }): unknown;
-  buildProtectedResourceMetadata(input: unknown): unknown;
+  buildOwnerAgentOnboardingMetadata: (args: { origin: string | null; resource: string; issuer: string }) => unknown;
+  buildProtectedResourceMetadata: (input: unknown) => unknown;
   explicitResource: unknown;
-  isHybridSuppressed(): boolean;
+  isHybridSuppressed: () => boolean;
   nativeMode: boolean;
   pdppProviderConnectVersion: string;
   providerName: string;
-  rejectUntrustedMetadataHost(
+  rejectUntrustedMetadataHost: (
     req: unknown,
     res: unknown,
     explicitUrl: unknown,
     trustedHosts: unknown,
     options?: unknown
-  ): boolean;
-  resolveClientEventSubscriptionsCapability(): RsProtectedResourceMetadataClientEventSubscriptionsCapability | null;
-  resolveExplicitIssuer(): string | null;
-  resolveHybridCapabilityOverride(): RsProtectedResourceMetadataHybridCapability | null;
-  resolveLexicalCapability(): RsProtectedResourceMetadataLexicalCapability | null;
-  resolvePublicUrl(req: unknown, explicit: unknown): string;
-  resolveSemanticCapability():
+  ) => boolean;
+  resolveClientEventSubscriptionsCapability: () => RsProtectedResourceMetadataClientEventSubscriptionsCapability | null;
+  resolveExplicitIssuer: () => string | null;
+  resolveHybridCapabilityOverride: () => RsProtectedResourceMetadataHybridCapability | null;
+  resolveLexicalCapability: () => RsProtectedResourceMetadataLexicalCapability | null;
+  resolvePublicUrl: (req: unknown, explicit: unknown) => string;
+  resolveSemanticCapability: () =>
     | RsProtectedResourceMetadataSemanticCapability
     | null
     | Promise<RsProtectedResourceMetadataSemanticCapability | null>;
-  resolveSiblingPublicUrl(req: unknown, origin: string): string;
-  shouldUseDirectRequestOrigin(req: unknown, explicit: unknown): boolean;
+  resolveSiblingPublicUrl: (req: unknown, origin: string) => string;
+  shouldUseDirectRequestOrigin: (req: unknown, explicit: unknown) => boolean;
   trustedMetadataHosts: unknown;
 }
 
@@ -327,9 +332,6 @@ export function mountRsProtectedResourceMetadata(app: AppLike, ctx: MountRsProte
     const { composition } = await executeRsProtectedResourceMetadata(
       {},
       {
-        resolveLexicalCapability: ctx.resolveLexicalCapability,
-        resolveSemanticCapability: ctx.resolveSemanticCapability,
-        resolveHybridCapabilityOverride: ctx.resolveHybridCapabilityOverride,
         buildDefaultHybridCapability: ctx.buildDefaultHybridCapability,
         isHybridSuppressed: ctx.isHybridSuppressed,
         isNativeSingleSourceMode: () => ctx.nativeMode,
@@ -340,38 +342,41 @@ export function mountRsProtectedResourceMetadata(app: AppLike, ctx: MountRsProte
         // pass `clientEventSubscriptionsSupported: false`. See
         // openspec/changes/add-client-event-subscriptions/.
         resolveClientEventSubscriptionsCapability: ctx.resolveClientEventSubscriptionsCapability,
+        resolveHybridCapabilityOverride: ctx.resolveHybridCapabilityOverride,
+        resolveLexicalCapability: ctx.resolveLexicalCapability,
+        resolveSemanticCapability: ctx.resolveSemanticCapability,
       }
     );
     const { capabilities, discoveryHints } = composition;
 
     res.json(
       ctx.buildProtectedResourceMetadata({
-        resource,
-        resourceName: `${ctx.providerName} Resource Server`,
-        authorizationServers: [issuer],
-        queryBase: `${resource}/v1`,
-        providerConnectVersion: ctx.pdppProviderConnectVersion,
-        selfExportSupported: true,
-        tokenKindsSupported: ["owner", "client"],
-        capabilities,
-        discoveryHints,
         agentDiscovery: ctx.buildAgentDiscoveryMetadata(
           ctx.agentDiscoveryOrigin ? ctx.resolveSiblingPublicUrl(req, ctx.agentDiscoveryOrigin) : null,
           {
-            noOwnerToken: ctx.nativeMode,
             mcpAuthorization: buildMcpAuthorizationDiscovery({ issuer, resource: `${resource}/mcp` }),
+            noOwnerToken: ctx.nativeMode,
           }
         ),
+        authorizationServers: [issuer],
+        capabilities,
+        discoveryHints,
         // Advisory owner-agent onboarding block. The approval origin is the
         // composed-mode browser origin rebased to the caller-visible trusted
         // public host (null in direct/ephemeral mode → block omitted). The
         // resource and issuer are the already-trusted, forwarded-origin-safe
         // values resolved above, so the block can never name an untrusted host.
         ownerAgentOnboarding: ctx.buildOwnerAgentOnboardingMetadata({
+          issuer,
           origin: ctx.agentDiscoveryOrigin ? ctx.resolveSiblingPublicUrl(req, ctx.agentDiscoveryOrigin) : null,
           resource,
-          issuer,
         }),
+        providerConnectVersion: ctx.pdppProviderConnectVersion,
+        queryBase: `${resource}/v1`,
+        resource,
+        resourceName: `${ctx.providerName} Resource Server`,
+        selfExportSupported: true,
+        tokenKindsSupported: ["owner", "client"],
       })
     );
   });
@@ -406,13 +411,6 @@ export function mountRsMcpProtectedResourceMetadata(
 
     res.json(
       ctx.buildProtectedResourceMetadata({
-        resource,
-        resourceName: `${ctx.providerName} Hosted MCP Resource`,
-        authorizationServers: [issuer],
-        queryBase: `${resourceBase}/v1`,
-        providerConnectVersion: ctx.pdppProviderConnectVersion,
-        selfExportSupported: true,
-        tokenKindsSupported: ["client", "mcp_package"],
         // The hosted-MCP discovery surface always advertises the MCP endpoint
         // and CLI connect target, both of which the RS itself serves — so the
         // `origin` falls back to the RS `resourceBase` in direct/ephemeral mode.
@@ -425,11 +423,18 @@ export function mountRsMcpProtectedResourceMetadata(
         agentDiscovery: ctx.buildAgentDiscoveryMetadata(
           ctx.agentDiscoveryOrigin ? ctx.resolveSiblingPublicUrl(req, ctx.agentDiscoveryOrigin) : resourceBase,
           {
-            noOwnerToken: true,
             docsOrigin: ctx.agentDiscoveryOrigin ? ctx.resolveSiblingPublicUrl(req, ctx.agentDiscoveryOrigin) : null,
             mcpAuthorization: buildMcpAuthorizationDiscovery({ issuer, resource }),
+            noOwnerToken: true,
           }
         ),
+        authorizationServers: [issuer],
+        providerConnectVersion: ctx.pdppProviderConnectVersion,
+        queryBase: `${resourceBase}/v1`,
+        resource,
+        resourceName: `${ctx.providerName} Hosted MCP Resource`,
+        selfExportSupported: true,
+        tokenKindsSupported: ["client", "mcp_package"],
       })
     );
   });
@@ -438,29 +443,29 @@ export function mountRsMcpProtectedResourceMetadata(
 function buildMcpAuthorizationDiscovery({ issuer, resource }: { issuer: string; resource: string }): unknown {
   return {
     authorization_code_pkce: {
+      authorization_endpoint: `${issuer}/oauth/authorize`,
       flow: "authorization_code_pkce",
       pdpp_token_kind: "client",
-      authorization_endpoint: `${issuer}/oauth/authorize`,
       resource,
       resource_parameter: "required",
     },
     device_code: {
+      authorization_details_type: "https://pdpp.org/data-access",
+      device_authorization_endpoint: `${issuer}/oauth/device_authorization`,
       flow: "device_code",
       grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-      pdpp_token_kind: "client",
-      device_authorization_endpoint: `${issuer}/oauth/device_authorization`,
-      token_endpoint: `${issuer}/oauth/token`,
-      resource,
-      required_parameters: ["client_id", "resource", "authorization_details"],
-      authorization_details_type: "https://pdpp.org/data-access",
       owner_bearer_accepted: false,
+      pdpp_token_kind: "client",
+      required_parameters: ["client_id", "resource", "authorization_details"],
+      resource,
+      token_endpoint: `${issuer}/oauth/token`,
     },
     owner_agent_device_code: {
-      flow: "device_code",
-      pdpp_token_kind: "owner",
-      normal_mcp_setup: false,
       advertised_in: "pdpp_owner_agent_onboarding",
+      flow: "device_code",
       mcp_owner_bearer_rejected: true,
+      normal_mcp_setup: false,
+      pdpp_token_kind: "owner",
     },
   };
 }

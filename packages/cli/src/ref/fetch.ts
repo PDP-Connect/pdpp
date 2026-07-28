@@ -52,9 +52,9 @@ export async function fetchJson(
 }
 
 export interface OwnerSessionHeadersOpts {
-  cacheRoot?: string;
-  ownerSession?: string;
-  referenceUrl?: string;
+  cacheRoot?: string | undefined;
+  ownerSession?: string | undefined;
+  referenceUrl?: string | undefined;
 }
 
 // Resolves owner session cookie with precedence:

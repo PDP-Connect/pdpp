@@ -10,7 +10,7 @@
  * logic.
  */
 
-import { canonicalConnectorKey, isConnectorKey } from "./connector-key.js";
+import { canonicalConnectorKey, isConnectorKey } from "./connector-key.ts";
 
 // Inline copy — isNonEmptyString is used 30+ times in auth.js so moving it
 // would create a back-edge import; a verbatim 1-liner copy is the cleanest
@@ -56,7 +56,7 @@ function toTypeList(rawType: unknown): unknown[] {
   if (Array.isArray(rawType)) {
     return rawType;
   }
-  return rawType == null ? [] : [rawType];
+  return rawType === null || rawType === undefined ? [] : [rawType];
 }
 
 export function isReferenceCompatibleCursorSchema(fieldSchema: unknown): boolean {
@@ -68,6 +68,7 @@ export function isReferenceCompatibleCursorSchema(fieldSchema: unknown): boolean
   if (nonNull.length !== 1) {
     return false;
   }
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const only = nonNull[0];
   if (only === "integer" || only === "number") {
     return true;
@@ -108,6 +109,7 @@ export function validateBlobRefSchemaDeclaration(
     );
   }
   const schema = fieldSchema as Record<string, unknown>;
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const properties = schema.properties;
   if (!properties || typeof properties !== "object" || Array.isArray(properties)) {
     throw invalidConnectorManifest(`Stream '${stream.name as string}' blob_ref must declare object properties`, code);
@@ -116,8 +118,8 @@ export function validateBlobRefSchemaDeclaration(
   for (const [fieldName, expectedType] of Object.entries({
     blob_id: "string",
     mime_type: "string",
-    size_bytes: "integer",
     sha256: "string",
+    size_bytes: "integer",
   })) {
     if (!props[fieldName] || props[fieldName]?.type !== expectedType) {
       throw invalidConnectorManifest(
@@ -247,6 +249,7 @@ const EXTERNAL_TOOL_DETECT_ALLOWED_KEYS = new Set(["args", "executable", "exit_c
 // runtime_requirements object without bindings is accepted verbatim). Returns
 // `true` once bindings are present and fully validated.
 function validateRuntimeBindings(req: Record<string, unknown>, code: string): boolean {
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const bindings = req.bindings;
   if (bindings === undefined || bindings === null) {
     return false;
@@ -532,6 +535,7 @@ function validateRefreshPolicyFields(pol: Record<string, unknown>, code: string)
 }
 
 export function validateRefreshPolicyCapability(manifest: Record<string, unknown>, code: string): void {
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const capabilities = manifest.capabilities;
   if (capabilities === undefined || capabilities === null) {
     return;
@@ -551,6 +555,7 @@ export function validateRefreshPolicyCapability(manifest: Record<string, unknown
 }
 
 export function validateManifestSensitivity(manifest: Record<string, unknown>, code: string): void {
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const sensitivity = manifest.sensitivity;
   if (sensitivity === undefined) {
     return;
@@ -692,6 +697,7 @@ function validateExpandCapability({
 
   // The parent stream's schema was already validated above; this extra check
   // keeps the validator close to the runtime's parent-record-key join shape.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   if (!schemaProperties || typeof schemaProperties !== "object" || Array.isArray(schemaProperties)) {
     throw invalidConnectorManifest(`Stream '${streamName}' must include schema.properties`, code);
   }
@@ -741,6 +747,7 @@ export function validateStreamExpandDeclarations({
 }
 
 export function validateStreamAvailabilityDeclaration(stream: Record<string, unknown>, code: string): void {
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const availability = stream.availability;
   if (availability === undefined || availability === null) {
     return;
@@ -931,7 +938,11 @@ function validateStreamKeyFields({
   }
 
   for (const fieldName of ["cursor_field", "consent_time_field"]) {
-    if (streamObj[fieldName] != null && !schemaFieldNames.has(streamObj[fieldName] as string)) {
+    if (
+      streamObj[fieldName] !== null &&
+      streamObj[fieldName] !== undefined &&
+      !schemaFieldNames.has(streamObj[fieldName] as string)
+    ) {
       throw invalidConnectorManifest(
         `Stream '${streamObj.name as string}' ${fieldName} must exist in schema.properties`,
         code
@@ -953,7 +964,7 @@ function validateStreamKeyFields({
   // this guardrail may still hold stale manifests; blocking reads on them
   // would defeat the whole point of the runtime JS-comparator fallback in
   // records.js. Registration-time paths always enforce the check.
-  if (streamObj.cursor_field != null && !opts.skipCursorFieldSortCheck) {
+  if (typeof streamObj.cursor_field === "string" && !opts.skipCursorFieldSortCheck) {
     const cursorSchema = schemaProperties[streamObj.cursor_field as string];
     if (!isReferenceCompatibleCursorSchema(cursorSchema)) {
       const cs = cursorSchema as Record<string, unknown> | undefined;

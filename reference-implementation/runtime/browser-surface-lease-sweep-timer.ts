@@ -12,7 +12,7 @@
 
 /** Minimal shape of anything the timer can bind its stop to — any Node EventEmitter-like object that emits 'close' once (http.Server, net.Server, ...). */
 export interface BrowserSurfaceLeaseSweepCloseSource {
-  once(event: "close", listener: () => void): unknown;
+  once: (event: "close", listener: () => void) => unknown;
 }
 
 export interface BrowserSurfaceLeaseSweepTimerOptions {
@@ -25,8 +25,8 @@ export interface BrowserSurfaceLeaseSweepTimerOptions {
 }
 
 export interface BrowserSurfaceLeaseSweepTimer {
-  start(): void;
-  stop(): void;
+  start: () => void;
+  stop: () => void;
   /**
    * Stop this timer once EVERY given close source has emitted its own
    * 'close' event — NOT on the first. The timer's sweep can depend on
@@ -37,7 +37,7 @@ export interface BrowserSurfaceLeaseSweepTimer {
    * stops (idempotently — safe to call stop() again from any path,
    * including this one racing an explicit stop()).
    */
-  stopWhenAllClosed(sources: readonly BrowserSurfaceLeaseSweepCloseSource[]): void;
+  stopWhenAllClosed: (sources: readonly BrowserSurfaceLeaseSweepCloseSource[]) => void;
 }
 
 export function createBrowserSurfaceLeaseSweepTimer(
@@ -68,6 +68,7 @@ export function createBrowserSurfaceLeaseSweepTimer(
         return;
       }
       timer = setIntervalFn(runTick, intervalMs);
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
       if (typeof (timer as { unref?: () => void })?.unref === "function") {
         (timer as { unref: () => void }).unref();
       }

@@ -10,8 +10,8 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { startServer } from "../../../reference-implementation/server/index.js";
-import { ingestRecord } from "../../../reference-implementation/server/records.js";
+import { startServer } from "../../../reference-implementation/server/index.ts";
+import { ingestRecord } from "../../../reference-implementation/server/records.ts";
 import { runOwnerAgent } from "../src/owner-agent/command.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -260,7 +260,7 @@ test("owner-agent CLI smoke discovers metadata, writes Daisy credential, reads R
           now: () => Date.parse("2026-05-31T00:00:00Z"),
         }
       );
-      assert.equal(onboardCode, 0);
+      assert.equal(onboardCode, 0, onboarding.stderr);
       assert.ok(existsSync(credentialPath));
       // biome-ignore lint/suspicious/noBitwiseOperators: genuine POSIX file-mode bitmask, not a style mistake.
       assert.equal(statSync(credentialPath).mode & 0o777, 0o600);

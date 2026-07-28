@@ -46,14 +46,14 @@ export interface MutableScheduleHistoryFacts {
 }
 
 export const EMPTY_SCHEDULE_HISTORY_FACTS: ScheduleHistoryFacts = {
-  latestStartedAt: null,
+  lastRunTimeMs: null,
+  latestErrorCode: null,
   latestFinishedAt: null,
+  latestStartedAt: null,
   latestStatus: null,
   latestSuccessfulAt: null,
-  latestErrorCode: null,
-  lastRunTimeMs: null,
-  recentRuns: [],
   pendingPressureGaps: [],
+  recentRuns: [],
 };
 
 const SAFE_SCHEDULER_ERROR_PREFIXES = new Set([
@@ -91,14 +91,14 @@ function ensureScheduleHistoryFacts(
   let entry = facts.get(connectorKey);
   if (!entry) {
     entry = {
-      latestStartedAt: null,
+      lastRunTimeMs: null,
+      latestErrorCode: null,
       latestFinishedAt: null,
+      latestStartedAt: null,
       latestStatus: null,
       latestSuccessfulAt: null,
-      latestErrorCode: null,
-      lastRunTimeMs: null,
-      recentRuns: [],
       pendingPressureGaps: [],
+      recentRuns: [],
     };
     facts.set(connectorKey, entry);
   }
@@ -140,6 +140,7 @@ function bucketRecentRunsByConnector(history: readonly SchedulerRunHistoryRecord
 // "first sighting wins" semantics for both `latest{Started,Successful}At`
 // so we never overwrite a newer fact with an older one.
 function deriveLatestScheduleFacts(history: readonly SchedulerRunHistoryRecord[], ensure: EnsureScheduleFacts): void {
+  // biome-ignore lint/style/noIncrementDecrement: The explicit counter update preserves this loop’s evaluation order.
   for (let i = history.length - 1; i >= 0; i--) {
     const row = history[i];
     if (!row || typeof row.connectorId !== "string") {

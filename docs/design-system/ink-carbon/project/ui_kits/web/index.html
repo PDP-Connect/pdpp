@@ -1,49 +1,136 @@
 <!doctype html>
 <!-- old-direction kit home — pending Ink Carbon restyle, not a DS card -->
 <html lang="en">
-<head>
-<meta charset="utf-8"/>
-<title>PDPP · Web UI Kit</title>
-<meta name="viewport" content="width=1200, initial-scale=1"/>
-<link rel="stylesheet" href="../../colors_and_type.css"/>
-<link rel="stylesheet" href="kit.css"/>
-<style>
-  .page { min-height: 100vh; }
-  .section { max-width: var(--content-wide-width); margin: 0 auto; padding: 0 48px; }
-  .dash-grid { display: grid; grid-template-columns: 280px 1fr; gap: 48px; padding-top: 48px; padding-bottom: 96px; }
-  .side {
-    border-right: 1px solid var(--border); padding-right: 32px;
-    display: flex; flex-direction: column; gap: 14px;
-    position: sticky; top: 72px; align-self: start;
-  }
-  .side-h { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted-foreground); margin-bottom: 4px; }
-  .side-link { display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; border-radius: 6px; font-size: 13.5px; color: var(--muted-foreground); cursor: pointer; }
-  .side-link.on { background: var(--muted); color: var(--foreground); font-weight: 500; }
-  .side-link small { font-family: var(--font-mono); font-size: 11px; color: var(--muted-foreground); }
-  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-  .sec-title { font-family: var(--font-mono); font-size: 11.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted-foreground); margin: 40px 0 14px; }
-  .spec-row { display: grid; grid-template-columns: 32px 1fr; gap: 12px; align-items: flex-start; padding: 14px 0; border-top: 1px solid var(--border); }
-  .spec-row .n { font-family: var(--font-mono); font-size: 12px; color: var(--primary); }
-  .spec-row .t { font-size: 15px; font-weight: 600; }
-  .spec-row .b { font-size: 14px; color: var(--muted-foreground); line-height: 1.55; margin-top: 2px; max-width: 620px; }
-</style>
-</head>
-<body>
-<div id="root" class="page"></div>
+  <head>
+    <meta charset="utf-8">
+    <title>PDPP · Web UI Kit</title>
+    <meta content="width=1200, initial-scale=1" name="viewport">
+    <link href="../../colors_and_type.css" rel="stylesheet">
+    <link href="kit.css" rel="stylesheet">
+    <style>
+    .page {
+      min-height: 100vh;
+    }
+    .section {
+      max-width: var(--content-wide-width);
+      padding: 0 48px;
+      margin: 0 auto;
+    }
+    .dash-grid {
+      display: grid;
+      grid-template-columns: 280px 1fr;
+      gap: 48px;
+      padding-top: 48px;
+      padding-bottom: 96px;
+    }
+    .side {
+      position: sticky;
+      top: 72px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      align-self: start;
+      padding-right: 32px;
+      border-right: 1px solid var(--border);
+    }
+    .side-h {
+      margin-bottom: 4px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--muted-foreground);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+    }
+    .side-link {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 10px;
+      font-size: 13.5px;
+      color: var(--muted-foreground);
+      cursor: pointer;
+      border-radius: 6px;
+    }
+    .side-link.on {
+      font-weight: 500;
+      color: var(--foreground);
+      background: var(--muted);
+    }
+    .side-link small {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--muted-foreground);
+    }
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+    .sec-title {
+      margin: 40px 0 14px;
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      color: var(--muted-foreground);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+    }
+    .spec-row {
+      display: grid;
+      grid-template-columns: 32px 1fr;
+      gap: 12px;
+      align-items: flex-start;
+      padding: 14px 0;
+      border-top: 1px solid var(--border);
+    }
+    .spec-row .n {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--primary);
+    }
+    .spec-row .t {
+      font-size: 15px;
+      font-weight: 600;
+    }
+    .spec-row .b {
+      max-width: 620px;
+      margin-top: 2px;
+      font-size: 14px;
+      line-height: 1.55;
+      color: var(--muted-foreground);
+    }
+    </style>
+  </head>
+  <body>
+    <div class="page" id="root"></div>
 
-<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
-<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
-<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+    <script
+      crossorigin="anonymous"
+      defer
+      integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L"
+      src="https://unpkg.com/react@18.3.1/umd/react.development.js"
+    ></script>
+    <script
+      crossorigin="anonymous"
+      defer
+      integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm"
+      src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js"
+    ></script>
+    <script
+      crossorigin="anonymous"
+      defer
+      integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y"
+      src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js"
+    ></script>
 
-<script type="text/babel" src="SiteHeader.jsx"></script>
-<script type="text/babel" src="Hero.jsx"></script>
-<script type="text/babel" src="ConsentCard.jsx"></script>
-<script type="text/babel" src="GrantInspector.jsx"></script>
-<script type="text/babel" src="StreamInventory.jsx"></script>
-<script type="text/babel" src="GrantsList.jsx"></script>
-<script type="text/babel" src="Teaching.jsx"></script>
+    <script defer src="site-header.jsx" type="text/babel"></script>
+    <script defer src="hero.jsx" type="text/babel"></script>
+    <script defer src="consent-card.jsx" type="text/babel"></script>
+    <script defer src="grant-inspector.jsx" type="text/babel"></script>
+    <script defer src="stream-inventory.jsx" type="text/babel"></script>
+    <script defer src="grants-list.jsx" type="text/babel"></script>
+    <script defer src="teaching.jsx" type="text/babel"></script>
 
-<script type="text/babel">
+    <script defer type="text/babel">
 const NAV_SIDE = [
   { k: 'overview', t: 'Overview', meta: '§1' },
   { k: 'consent', t: 'Consent', meta: '§2' },
@@ -150,5 +237,5 @@ Authorization: Bearer grt_longview01
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App />);
 </script>
-</body>
+  </body>
 </html>

@@ -39,11 +39,11 @@ export interface OwnerSessionSetCookieOptions extends OwnerSessionCookieOptions 
 }
 
 export interface OwnerSessionController {
-  clearSessionCookieHeader(opts?: OwnerSessionCookieOptions): string;
+  clearSessionCookieHeader: (opts?: OwnerSessionCookieOptions) => string;
   readonly enabled: boolean;
-  issueSessionCookieHeader(opts?: OwnerSessionCookieOptions): string | null;
-  readSessionFromCookieHeader(header?: string | null): OwnerSessionPayload | null;
-  readSessionFromCookieValue(raw?: string | null): OwnerSessionPayload | null;
+  issueSessionCookieHeader: (opts?: OwnerSessionCookieOptions) => string | null;
+  readSessionFromCookieHeader: (header?: string | null) => OwnerSessionPayload | null;
+  readSessionFromCookieValue: (raw?: string | null) => OwnerSessionPayload | null;
   readonly subjectId: string;
 }
 
@@ -78,7 +78,7 @@ function coerceOwnerSessionPayload(value: unknown): OwnerSessionPayload | null {
   }
   const sub = typeof candidate.sub === "string" ? candidate.sub : "";
   const iat = typeof candidate.iat === "number" ? candidate.iat : 0;
-  return { sub, iat, exp: candidate.exp };
+  return { exp: candidate.exp, iat, sub };
 }
 
 export function encodeOwnerSession(payload: OwnerSessionPayload, secret: OwnerSessionSecret): string {
@@ -124,7 +124,7 @@ export function decodeOwnerSession(
  *
  * Previously this was a single-round SHA-256 hash, which is GPU-fast and
  * offline-brute-forceable if a session cookie leaks. Replaced with scrypt at
- * the same cost parameters used by credential-encryption.js (N=16384, r=8,
+ * the same cost parameters used by credential-encryption.ts (N=16384, r=8,
  * p=1) to match the ~100 000× work factor increase.
  *
  * The domain string "pdpp-owner-session-kdf-v1" acts as a fixed application
@@ -139,7 +139,7 @@ export function decodeOwnerSession(
  */
 export function deriveOwnerSessionSecret(password: string): Buffer {
   const domainSalt = Buffer.from("pdpp-owner-session-kdf-v1", "utf8");
-  return crypto.scryptSync(password, domainSalt, 32, { N: 16_384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 });
+  return crypto.scryptSync(password, domainSalt, 32, { maxmem: 64 * 1024 * 1024, N: 16_384, p: 1, r: 8 });
 }
 
 export function parseCookieHeader(header?: string | null): Record<string, string> {
@@ -237,8 +237,8 @@ export function createOwnerSessionController({
     sameSite: OwnerSessionSameSite;
   } {
     return {
-      secure: forceSecureCookies || Boolean(secure),
       sameSite: callerSameSite ?? sameSite,
+      secure: forceSecureCookies || Boolean(secure),
     };
   }
 
@@ -262,30 +262,30 @@ export function createOwnerSessionController({
     }
     const now = Math.floor(Date.now() / 1000);
     const payload: OwnerSessionPayload = {
-      sub: resolvedSubjectId,
-      iat: now,
       exp: now + sessionTtlSeconds,
+      iat: now,
+      sub: resolvedSubjectId,
     };
     const token = encodeOwnerSession(payload, secret);
     const flags = resolveCookieFlags(opts);
     return buildOwnerSessionSetCookie(token, {
       maxAgeSeconds: sessionTtlSeconds,
-      secure: flags.secure,
       sameSite: flags.sameSite,
+      secure: flags.secure,
     });
   }
 
   function clearSessionCookieHeader(opts: OwnerSessionCookieOptions = {}): string {
     const flags = resolveCookieFlags(opts);
-    return buildOwnerSessionClearCookie({ secure: flags.secure, sameSite: flags.sameSite });
+    return buildOwnerSessionClearCookie({ sameSite: flags.sameSite, secure: flags.secure });
   }
 
   return {
+    clearSessionCookieHeader,
     enabled,
-    subjectId: resolvedSubjectId,
+    issueSessionCookieHeader,
     readSessionFromCookieHeader,
     readSessionFromCookieValue,
-    issueSessionCookieHeader,
-    clearSessionCookieHeader,
+    subjectId: resolvedSubjectId,
   };
 }

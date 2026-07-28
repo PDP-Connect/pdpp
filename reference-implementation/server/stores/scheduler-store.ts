@@ -25,7 +25,7 @@
 // the persistence seam only.
 
 import { allowUnboundedReadAcknowledged, exec, getMany, getOne, referenceQueries } from "../../lib/db.ts";
-import { getStorageBackendKind, isPostgresStorageBackend, postgresQuery } from "../postgres-storage.js";
+import { getStorageBackendKind, isPostgresStorageBackend, postgresQuery } from "../postgres-storage.ts";
 
 // ─── Domain records (public, semantic) ──────────────────────────────────────
 
@@ -97,33 +97,35 @@ export interface SchedulerLastRunTimeRecord {
 
 export interface SchedulerStore {
   // Scheduler run history + interval gate timestamps.
-  appendRunHistory(record: SchedulerRunHistoryRecord): Promise<void> | void;
+  appendRunHistory: (record: SchedulerRunHistoryRecord) => Promise<void> | void;
 
   // Schedule registry — semantic lifecycle verbs.
-  createSchedule(record: ScheduleCreate): Promise<void> | void;
+  createSchedule: (record: ScheduleCreate) => Promise<void> | void;
 
   // Active-run registry — semantic lifecycle verbs.
-  deleteActiveRun(connectorInstanceId: string, runId: string): Promise<void> | void;
-  deleteSchedule(connectorInstanceId: string): Promise<void> | void;
-  getActiveRun(connectorInstanceId: string): Promise<ActiveRunRecord | null> | ActiveRunRecord | null;
-  getLatestRunHistoryForConnection(
+  deleteActiveRun: (connectorInstanceId: string, runId: string) => Promise<void> | void;
+  deleteSchedule: (connectorInstanceId: string) => Promise<void> | void;
+  getActiveRun: (connectorInstanceId: string) => Promise<ActiveRunRecord | null> | ActiveRunRecord | null;
+  getLatestRunHistoryForConnection: (
     connectorInstanceId: string,
     status?: string | null
-  ): Promise<SchedulerRunHistoryRecord | null> | SchedulerRunHistoryRecord | null;
-  getSchedule(connectorInstanceId: string): Promise<ScheduleRecord | null> | ScheduleRecord | null;
-  listActiveRuns(): Promise<readonly ActiveRunRecord[]> | readonly ActiveRunRecord[];
-  listLastRunTimes(): Promise<readonly SchedulerLastRunTimeRecord[]> | readonly SchedulerLastRunTimeRecord[];
-  listRunHistory(limit: number): Promise<readonly SchedulerRunHistoryRecord[]> | readonly SchedulerRunHistoryRecord[];
-  listSchedules(): Promise<readonly ScheduleRecord[]> | readonly ScheduleRecord[];
-  setScheduleEnabled(connectorInstanceId: string, enabled: boolean, updatedAt: string): Promise<void> | void;
-  updateSchedule(connectorInstanceId: string, patch: ScheduleUpdate): Promise<void> | void;
-  upsertActiveRun(record: ActiveRunRecord): Promise<boolean> | boolean;
-  upsertLastRunTime(
+  ) => Promise<SchedulerRunHistoryRecord | null> | SchedulerRunHistoryRecord | null;
+  getSchedule: (connectorInstanceId: string) => Promise<ScheduleRecord | null> | ScheduleRecord | null;
+  listActiveRuns: () => Promise<readonly ActiveRunRecord[]> | readonly ActiveRunRecord[];
+  listLastRunTimes: () => Promise<readonly SchedulerLastRunTimeRecord[]> | readonly SchedulerLastRunTimeRecord[];
+  listRunHistory: (
+    limit: number
+  ) => Promise<readonly SchedulerRunHistoryRecord[]> | readonly SchedulerRunHistoryRecord[];
+  listSchedules: () => Promise<readonly ScheduleRecord[]> | readonly ScheduleRecord[];
+  setScheduleEnabled: (connectorInstanceId: string, enabled: boolean, updatedAt: string) => Promise<void> | void;
+  updateSchedule: (connectorInstanceId: string, patch: ScheduleUpdate) => Promise<void> | void;
+  upsertActiveRun: (record: ActiveRunRecord) => Promise<boolean> | boolean;
+  upsertLastRunTime: (
     connectorInstanceId: string,
     lastRunTimeMs: number,
     updatedAt: string,
     connectorId?: string
-  ): Promise<void> | void;
+  ) => Promise<void> | void;
 }
 
 // ─── SQLite implementation ──────────────────────────────────────────────────
@@ -160,18 +162,18 @@ interface SchedulerRunHistoryRow extends Record<string, unknown> {
 
 function rowToScheduleRecord(row: ScheduleSqliteRow): ScheduleRecord {
   return {
-    connector_instance_id: row.connector_instance_id,
     connector_id: row.connector_id,
+    connector_instance_id: row.connector_instance_id,
+    created_at: row.created_at,
+    enabled: row.enabled === true || row.enabled === 1,
     interval_seconds: row.interval_seconds,
     jitter_seconds: row.jitter_seconds,
-    enabled: row.enabled === true || row.enabled === 1,
-    created_at: row.created_at,
     updated_at: row.updated_at,
   };
 }
 
 function parseJsonValue(value: unknown, fallback: unknown): unknown {
-  if (value == null) {
+  if (value === null || value === undefined) {
     return fallback;
   }
   if (typeof value === "string") {
@@ -198,22 +200,22 @@ function asObjectArray(value: unknown): readonly Record<string, unknown>[] {
 
 function rowToRunHistoryRecord(row: SchedulerRunHistoryRow): SchedulerRunHistoryRecord {
   const record: SchedulerRunHistoryRecord = {
+    attempt: row.attempt,
+    checkpointSummary: asObjectOrNull(parseJsonValue(row.checkpoint_summary_json, null)),
+    completedAt: row.completed_at,
+    connectorError: asObjectOrNull(parseJsonValue(row.connector_error_json, null)),
     connectorId: row.connector_id,
     connectorInstanceId: row.connector_instance_id,
-    source: asObjectOrNull(parseJsonValue(row.source_json, {})) ?? {},
-    status: row.status,
+    failureReason: row.failure_reason,
+    knownGaps: asObjectArray(parseJsonValue(row.known_gaps_json, [])),
     recordsEmitted: row.records_emitted,
     reportedRecordsEmitted: row.reported_records_emitted,
-    checkpointSummary: asObjectOrNull(parseJsonValue(row.checkpoint_summary_json, null)),
-    knownGaps: asObjectArray(parseJsonValue(row.known_gaps_json, [])),
-    connectorError: asObjectOrNull(parseJsonValue(row.connector_error_json, null)),
     runId: row.run_id,
-    traceId: row.trace_id,
-    failureReason: row.failure_reason,
-    terminalReason: row.terminal_reason,
+    source: asObjectOrNull(parseJsonValue(row.source_json, {})) ?? {},
     startedAt: row.started_at,
-    completedAt: row.completed_at,
-    attempt: row.attempt,
+    status: row.status,
+    terminalReason: row.terminal_reason,
+    traceId: row.trace_id,
   };
   return row.error === null ? record : { ...record, error: row.error };
 }
@@ -247,48 +249,6 @@ export function createSqliteSchedulerStore(): SchedulerStore {
       ]);
     },
 
-    listRunHistory(limit) {
-      return getMany<SchedulerRunHistoryRow>(referenceQueries.controllerListSchedulerRunHistory, [], {
-        limit,
-      }).rows.map(rowToRunHistoryRecord);
-    },
-
-    getLatestRunHistoryForConnection(connectorInstanceId, status = null) {
-      const row = getOne<SchedulerRunHistoryRow>(referenceQueries.controllerGetLatestSchedulerRunHistoryForConnection, [
-        connectorInstanceId,
-        status,
-        status,
-      ]);
-      return row ? rowToRunHistoryRecord(row) : null;
-    },
-
-    listLastRunTimes() {
-      return allowUnboundedReadAcknowledged<SchedulerLastRunTimeRecord>(
-        referenceQueries.controllerListSchedulerLastRunTimes
-      );
-    },
-
-    upsertLastRunTime(connectorInstanceId, lastRunTimeMs, updatedAt, connectorId = connectorInstanceId) {
-      exec(referenceQueries.controllerUpsertSchedulerLastRunTime, [
-        connectorInstanceId,
-        connectorId,
-        lastRunTimeMs,
-        updatedAt,
-      ]);
-    },
-
-    getSchedule(connectorInstanceId) {
-      const row = getOne<ScheduleSqliteRow>(referenceQueries.controllerGetScheduleByConnector, [connectorInstanceId]);
-      return row ? rowToScheduleRecord(row) : null;
-    },
-
-    listSchedules() {
-      // REVIEWED-BOUNDED: connector_schedules holds at most one row per
-      // configured connector instance; scan is bounded by instance count.
-      const rows = allowUnboundedReadAcknowledged<ScheduleSqliteRow>(referenceQueries.controllerListSchedules);
-      return rows.map(rowToScheduleRecord);
-    },
-
     createSchedule(record) {
       const connectorInstanceId = record.connector_instance_id ?? record.connector_id;
       exec(referenceQueries.controllerInsertSchedule, [
@@ -302,6 +262,62 @@ export function createSqliteSchedulerStore(): SchedulerStore {
       ]);
     },
 
+    deleteActiveRun(connectorInstanceId, runId) {
+      exec(referenceQueries.controllerDeleteActiveRun, [runId, connectorInstanceId, connectorInstanceId]);
+    },
+
+    deleteSchedule(connectorInstanceId) {
+      exec(referenceQueries.controllerDeleteSchedule, [connectorInstanceId]);
+    },
+
+    getActiveRun(connectorInstanceId) {
+      const rows = allowUnboundedReadAcknowledged<ActiveRunRecord>(referenceQueries.controllerListActiveRuns);
+      const found = rows.find((row) => (row.connector_instance_id ?? row.connector_id) === connectorInstanceId);
+      return found ?? null;
+    },
+
+    getLatestRunHistoryForConnection(connectorInstanceId, status = null) {
+      const row = getOne<SchedulerRunHistoryRow>(referenceQueries.controllerGetLatestSchedulerRunHistoryForConnection, [
+        connectorInstanceId,
+        status,
+        status,
+      ]);
+      return row ? rowToRunHistoryRecord(row) : null;
+    },
+
+    getSchedule(connectorInstanceId) {
+      const row = getOne<ScheduleSqliteRow>(referenceQueries.controllerGetScheduleByConnector, [connectorInstanceId]);
+      return row ? rowToScheduleRecord(row) : null;
+    },
+
+    listActiveRuns() {
+      // REVIEWED-BOUNDED: at most one row per configured connector instance.
+      return allowUnboundedReadAcknowledged<ActiveRunRecord>(referenceQueries.controllerListActiveRuns);
+    },
+
+    listLastRunTimes() {
+      return allowUnboundedReadAcknowledged<SchedulerLastRunTimeRecord>(
+        referenceQueries.controllerListSchedulerLastRunTimes
+      );
+    },
+
+    listRunHistory(limit) {
+      return getMany<SchedulerRunHistoryRow>(referenceQueries.controllerListSchedulerRunHistory, [], {
+        limit,
+      }).rows.map(rowToRunHistoryRecord);
+    },
+
+    listSchedules() {
+      // REVIEWED-BOUNDED: connector_schedules holds at most one row per
+      // configured connector instance; scan is bounded by instance count.
+      const rows = allowUnboundedReadAcknowledged<ScheduleSqliteRow>(referenceQueries.controllerListSchedules);
+      return rows.map(rowToScheduleRecord);
+    },
+
+    setScheduleEnabled(connectorInstanceId, enabled, updatedAt) {
+      exec(referenceQueries.controllerUpdateScheduleEnabled, [enabled ? 1 : 0, updatedAt, connectorInstanceId]);
+    },
+
     updateSchedule(connectorInstanceId, patch) {
       exec(referenceQueries.controllerUpdateSchedule, [
         patch.interval_seconds,
@@ -310,14 +326,6 @@ export function createSqliteSchedulerStore(): SchedulerStore {
         patch.updated_at,
         connectorInstanceId,
       ]);
-    },
-
-    setScheduleEnabled(connectorInstanceId, enabled, updatedAt) {
-      exec(referenceQueries.controllerUpdateScheduleEnabled, [enabled ? 1 : 0, updatedAt, connectorInstanceId]);
-    },
-
-    deleteSchedule(connectorInstanceId) {
-      exec(referenceQueries.controllerDeleteSchedule, [connectorInstanceId]);
     },
 
     upsertActiveRun(record) {
@@ -335,19 +343,13 @@ export function createSqliteSchedulerStore(): SchedulerStore {
       return result.changes > 0;
     },
 
-    getActiveRun(connectorInstanceId) {
-      const rows = allowUnboundedReadAcknowledged<ActiveRunRecord>(referenceQueries.controllerListActiveRuns);
-      const found = rows.find((row) => (row.connector_instance_id ?? row.connector_id) === connectorInstanceId);
-      return found ?? null;
-    },
-
-    listActiveRuns() {
-      // REVIEWED-BOUNDED: at most one row per configured connector instance.
-      return allowUnboundedReadAcknowledged<ActiveRunRecord>(referenceQueries.controllerListActiveRuns);
-    },
-
-    deleteActiveRun(connectorInstanceId, runId) {
-      exec(referenceQueries.controllerDeleteActiveRun, [runId, connectorInstanceId, connectorInstanceId]);
+    upsertLastRunTime(connectorInstanceId, lastRunTimeMs, updatedAt, connectorId = connectorInstanceId) {
+      exec(referenceQueries.controllerUpsertSchedulerLastRunTime, [
+        connectorInstanceId,
+        connectorId,
+        lastRunTimeMs,
+        updatedAt,
+      ]);
     },
   };
 }
@@ -398,6 +400,109 @@ export function createPostgresSchedulerStore(): SchedulerStore {
       );
     },
 
+    async createSchedule(record) {
+      const connectorInstanceId = record.connector_instance_id ?? record.connector_id;
+      await postgresQuery(
+        `INSERT INTO connector_schedules(
+           connector_instance_id, connector_id, interval_seconds, jitter_seconds, enabled, created_at, updated_at
+         ) VALUES($1, $2, $3, $4, $5, $6, $7)`,
+        [
+          connectorInstanceId,
+          record.connector_id,
+          record.interval_seconds,
+          record.jitter_seconds,
+          record.enabled,
+          record.created_at,
+          record.updated_at,
+        ]
+      );
+    },
+
+    async deleteActiveRun(connectorInstanceId, runId) {
+      await postgresQuery(
+        `DELETE FROM controller_active_runs
+         WHERE run_id = $1
+           AND (
+             connector_instance_id = $2
+             OR (connector_instance_id IS NULL AND connector_id = $2)
+           )`,
+        [runId, connectorInstanceId]
+      );
+    },
+
+    async deleteSchedule(connectorInstanceId) {
+      await postgresQuery("DELETE FROM connector_schedules WHERE connector_instance_id = $1", [connectorInstanceId]);
+    },
+
+    async getActiveRun(connectorInstanceId) {
+      const result = await postgresQuery(
+        `SELECT connector_instance_id, connector_id, run_id, trace_id, scenario_id, started_at, run_generation
+         FROM controller_active_runs
+         WHERE connector_instance_id = $1`,
+        [connectorInstanceId]
+      );
+      return result.rows[0] ? (result.rows[0] as ActiveRunRecord) : null;
+    },
+
+    async getLatestRunHistoryForConnection(connectorInstanceId, status = null) {
+      const result = await postgresQuery(
+        `SELECT
+           id,
+           connector_instance_id,
+           connector_id,
+           source_json,
+           status,
+           records_emitted,
+           reported_records_emitted,
+           checkpoint_summary_json,
+           known_gaps_json,
+           connector_error_json,
+           run_id,
+           trace_id,
+           failure_reason,
+           terminal_reason,
+           started_at,
+           completed_at,
+           error,
+           attempt
+         FROM scheduler_run_history
+         WHERE connector_instance_id = $1
+           AND ($2::text IS NULL OR status = $2)
+         ORDER BY completed_at DESC, id DESC
+         LIMIT 1`,
+        [connectorInstanceId, status]
+      );
+      return result.rows[0] ? rowToRunHistoryRecord(result.rows[0] as SchedulerRunHistoryRow) : null;
+    },
+
+    async getSchedule(connectorInstanceId) {
+      const result = await postgresQuery(
+        `SELECT connector_instance_id, connector_id, interval_seconds, jitter_seconds, enabled, created_at, updated_at
+         FROM connector_schedules
+         WHERE connector_instance_id = $1`,
+        [connectorInstanceId]
+      );
+      return result.rows[0] ? rowToScheduleRecord(result.rows[0] as ScheduleSqliteRow) : null;
+    },
+
+    async listActiveRuns() {
+      const result = await postgresQuery(
+        `SELECT connector_instance_id, connector_id, run_id, trace_id, scenario_id, started_at, run_generation
+         FROM controller_active_runs
+         ORDER BY connector_id, connector_instance_id`
+      );
+      return result.rows as ActiveRunRecord[];
+    },
+
+    async listLastRunTimes() {
+      const result = await postgresQuery(
+        `SELECT connector_instance_id, connector_id, last_run_time_ms, updated_at
+         FROM scheduler_last_run_times
+         ORDER BY connector_id, connector_instance_id`
+      );
+      return result.rows as SchedulerLastRunTimeRecord[];
+    },
+
     async listRunHistory(limit) {
       const boundedLimit = Math.max(1, Math.min(5000, Math.trunc(limit)));
       const result = await postgresQuery(
@@ -432,68 +537,6 @@ export function createPostgresSchedulerStore(): SchedulerStore {
       return (result.rows as SchedulerRunHistoryRow[]).map(rowToRunHistoryRecord);
     },
 
-    async getLatestRunHistoryForConnection(connectorInstanceId, status = null) {
-      const result = await postgresQuery(
-        `SELECT
-           id,
-           connector_instance_id,
-           connector_id,
-           source_json,
-           status,
-           records_emitted,
-           reported_records_emitted,
-           checkpoint_summary_json,
-           known_gaps_json,
-           connector_error_json,
-           run_id,
-           trace_id,
-           failure_reason,
-           terminal_reason,
-           started_at,
-           completed_at,
-           error,
-           attempt
-         FROM scheduler_run_history
-         WHERE connector_instance_id = $1
-           AND ($2::text IS NULL OR status = $2)
-         ORDER BY completed_at DESC, id DESC
-         LIMIT 1`,
-        [connectorInstanceId, status]
-      );
-      return result.rows[0] ? rowToRunHistoryRecord(result.rows[0] as SchedulerRunHistoryRow) : null;
-    },
-
-    async listLastRunTimes() {
-      const result = await postgresQuery(
-        `SELECT connector_instance_id, connector_id, last_run_time_ms, updated_at
-         FROM scheduler_last_run_times
-         ORDER BY connector_id, connector_instance_id`
-      );
-      return result.rows as SchedulerLastRunTimeRecord[];
-    },
-
-    async upsertLastRunTime(connectorInstanceId, lastRunTimeMs, updatedAt, connectorId = connectorInstanceId) {
-      await postgresQuery(
-        `INSERT INTO scheduler_last_run_times(connector_instance_id, connector_id, last_run_time_ms, updated_at)
-         VALUES($1, $2, $3, $4)
-         ON CONFLICT(connector_instance_id) DO UPDATE SET
-           connector_id = EXCLUDED.connector_id,
-           last_run_time_ms = EXCLUDED.last_run_time_ms,
-           updated_at = EXCLUDED.updated_at`,
-        [connectorInstanceId, connectorId, lastRunTimeMs, updatedAt]
-      );
-    },
-
-    async getSchedule(connectorInstanceId) {
-      const result = await postgresQuery(
-        `SELECT connector_instance_id, connector_id, interval_seconds, jitter_seconds, enabled, created_at, updated_at
-         FROM connector_schedules
-         WHERE connector_instance_id = $1`,
-        [connectorInstanceId]
-      );
-      return result.rows[0] ? rowToScheduleRecord(result.rows[0] as ScheduleSqliteRow) : null;
-    },
-
     async listSchedules() {
       const result = await postgresQuery(
         `SELECT connector_instance_id, connector_id, interval_seconds, jitter_seconds, enabled, created_at, updated_at
@@ -503,21 +546,13 @@ export function createPostgresSchedulerStore(): SchedulerStore {
       return (result.rows as ScheduleSqliteRow[]).map(rowToScheduleRecord);
     },
 
-    async createSchedule(record) {
-      const connectorInstanceId = record.connector_instance_id ?? record.connector_id;
+    async setScheduleEnabled(connectorInstanceId, enabled, updatedAt) {
       await postgresQuery(
-        `INSERT INTO connector_schedules(
-           connector_instance_id, connector_id, interval_seconds, jitter_seconds, enabled, created_at, updated_at
-         ) VALUES($1, $2, $3, $4, $5, $6, $7)`,
-        [
-          connectorInstanceId,
-          record.connector_id,
-          record.interval_seconds,
-          record.jitter_seconds,
-          record.enabled,
-          record.created_at,
-          record.updated_at,
-        ]
+        `UPDATE connector_schedules
+         SET enabled = $1,
+             updated_at = $2
+         WHERE connector_instance_id = $3`,
+        [enabled, updatedAt, connectorInstanceId]
       );
     },
 
@@ -531,20 +566,6 @@ export function createPostgresSchedulerStore(): SchedulerStore {
          WHERE connector_instance_id = $5`,
         [patch.interval_seconds, patch.jitter_seconds, patch.enabled, patch.updated_at, connectorInstanceId]
       );
-    },
-
-    async setScheduleEnabled(connectorInstanceId, enabled, updatedAt) {
-      await postgresQuery(
-        `UPDATE connector_schedules
-         SET enabled = $1,
-             updated_at = $2
-         WHERE connector_instance_id = $3`,
-        [enabled, updatedAt, connectorInstanceId]
-      );
-    },
-
-    async deleteSchedule(connectorInstanceId) {
-      await postgresQuery("DELETE FROM connector_schedules WHERE connector_instance_id = $1", [connectorInstanceId]);
     },
 
     async upsertActiveRun(record) {
@@ -562,37 +583,18 @@ export function createPostgresSchedulerStore(): SchedulerStore {
           record.run_generation,
         ]
       );
-      return result.rowCount > 0;
+      return (result.rowCount ?? 0) > 0;
     },
 
-    async getActiveRun(connectorInstanceId) {
-      const result = await postgresQuery(
-        `SELECT connector_instance_id, connector_id, run_id, trace_id, scenario_id, started_at, run_generation
-         FROM controller_active_runs
-         WHERE connector_instance_id = $1`,
-        [connectorInstanceId]
-      );
-      return result.rows[0] ? (result.rows[0] as ActiveRunRecord) : null;
-    },
-
-    async listActiveRuns() {
-      const result = await postgresQuery(
-        `SELECT connector_instance_id, connector_id, run_id, trace_id, scenario_id, started_at, run_generation
-         FROM controller_active_runs
-         ORDER BY connector_id, connector_instance_id`
-      );
-      return result.rows as ActiveRunRecord[];
-    },
-
-    async deleteActiveRun(connectorInstanceId, runId) {
+    async upsertLastRunTime(connectorInstanceId, lastRunTimeMs, updatedAt, connectorId = connectorInstanceId) {
       await postgresQuery(
-        `DELETE FROM controller_active_runs
-         WHERE run_id = $1
-           AND (
-             connector_instance_id = $2
-             OR (connector_instance_id IS NULL AND connector_id = $2)
-           )`,
-        [runId, connectorInstanceId]
+        `INSERT INTO scheduler_last_run_times(connector_instance_id, connector_id, last_run_time_ms, updated_at)
+         VALUES($1, $2, $3, $4)
+         ON CONFLICT(connector_instance_id) DO UPDATE SET
+           connector_id = EXCLUDED.connector_id,
+           last_run_time_ms = EXCLUDED.last_run_time_ms,
+           updated_at = EXCLUDED.updated_at`,
+        [connectorInstanceId, connectorId, lastRunTimeMs, updatedAt]
       );
     },
   };

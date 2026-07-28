@@ -42,29 +42,29 @@ type Json = unknown;
 
 interface CapabilityFlag {
   readonly declared?: unknown;
-  readonly usable?: unknown;
   readonly operators?: unknown;
   readonly reason?: unknown;
+  readonly usable?: unknown;
   readonly [key: string]: unknown;
 }
 
 interface FieldCapability {
-  readonly type?: unknown;
-  readonly granted?: unknown;
-  readonly schema?: unknown;
-  readonly role?: unknown;
-  readonly exact_filter?: unknown;
-  readonly range_filter?: unknown;
-  readonly lexical_search?: unknown;
-  readonly semantic_search?: unknown;
   readonly aggregation?: unknown;
+  readonly exact_filter?: unknown;
+  readonly granted?: unknown;
+  readonly lexical_search?: unknown;
+  readonly range_filter?: unknown;
+  readonly role?: unknown;
+  readonly schema?: unknown;
+  readonly semantic_search?: unknown;
+  readonly type?: unknown;
   readonly [key: string]: unknown;
 }
 
 interface SchemaResponse {
-  object: "schema";
   bearer: unknown;
   connectors: ConnectorSchemaItem[];
+  object: "schema";
   [extra: string]: unknown;
 }
 
@@ -120,28 +120,38 @@ function isObject(value: Json): value is Record<string, unknown> {
 
 function firstString(...values: unknown[]): string | undefined {
   for (const value of values) {
-    if (typeof value === "string" && value.length > 0) return value;
+    if (typeof value === "string" && value.length > 0) {
+      return value;
+    }
   }
-  return undefined;
+  // biome-ignore lint/complexity/noUselessReturn: required by TypeScript noImplicitReturns to make the empty result explicit.
+  return;
 }
 
 // Render a value so the flag string stays single-token: strip separators that
 // would break `key=value,key2` parsing.
 function inlineValue(value: unknown): string {
-  if (value === undefined || value === null) return "null";
+  if (value === undefined || value === null) {
+    return "null";
+  }
   return String(value)
     .replace(/[;,[\]{}=]/g, "_")
     .replace(/\s+/g, "_");
 }
 
 function schemaTypeOf(schema: unknown): string | undefined {
-  if (!isObject(schema)) return undefined;
-  if (typeof schema.type === "string") return schema.type;
+  if (!isObject(schema)) {
+    return;
+  }
+  if (typeof schema.type === "string") {
+    return schema.type;
+  }
   if (Array.isArray(schema.type)) {
     const joined = schema.type.filter((item) => typeof item === "string").join("|");
     return joined.length > 0 ? joined : undefined;
   }
-  return undefined;
+  // biome-ignore lint/complexity/noUselessReturn: required by TypeScript noImplicitReturns to make the empty result explicit.
+  return;
 }
 
 function reasonSuffix(reason: unknown): string {
@@ -149,7 +159,9 @@ function reasonSuffix(reason: unknown): string {
 }
 
 function addCapabilityFlag(flags: string[], name: string, capability: unknown): void {
-  if (!isObject(capability)) return;
+  if (!isObject(capability)) {
+    return;
+  }
   const cap = capability as CapabilityFlag;
   if (cap.usable === true) {
     flags.push(name);
@@ -159,10 +171,11 @@ function addCapabilityFlag(flags: string[], name: string, capability: unknown): 
 }
 
 function addRangeCapabilityFlag(flags: string[], capability: unknown): void {
-  if (!isObject(capability)) return;
+  if (!isObject(capability)) {
+    return;
+  }
   const cap = capability as CapabilityFlag;
-  const operators =
-    Array.isArray(cap.operators) && cap.operators.length > 0 ? cap.operators.join("|") : null;
+  const operators = Array.isArray(cap.operators) && cap.operators.length > 0 ? cap.operators.join("|") : null;
   if (cap.usable === true) {
     flags.push(operators ? `r=${inlineValue(operators)}` : "r");
   } else if (cap.declared === true && cap.usable === false) {
@@ -171,7 +184,9 @@ function addRangeCapabilityFlag(flags: string[], capability: unknown): void {
 }
 
 function addAggregationCapabilityFlags(flags: string[], aggregation: unknown): void {
-  if (!isObject(aggregation)) return;
+  if (!isObject(aggregation)) {
+    return;
+  }
   const usable = Object.entries(aggregation)
     .filter(([, capability]) => isObject(capability) && (capability as CapabilityFlag).usable === true)
     .map(([name]) => name);
@@ -188,12 +203,18 @@ function addAggregationCapabilityFlags(flags: string[], aggregation: unknown): v
  * it is omitted; `g=false` is emitted only when the field is not granted.
  */
 export function formatFieldCapabilityFlags(capabilities: unknown): string {
-  if (!isObject(capabilities)) return "declared";
+  if (!isObject(capabilities)) {
+    return "declared";
+  }
   const cap = capabilities as FieldCapability;
   const flags: string[] = [];
   const type = firstString(typeof cap.type === "string" ? cap.type : undefined, schemaTypeOf(cap.schema));
-  if (type) flags.push(`t=${inlineValue(type)}`);
-  if (typeof cap.role === "string" && cap.role.length > 0) flags.push(`role=${inlineValue(cap.role)}`);
+  if (type) {
+    flags.push(`t=${inlineValue(type)}`);
+  }
+  if (typeof cap.role === "string" && cap.role.length > 0) {
+    flags.push(`role=${inlineValue(cap.role)}`);
+  }
   if (cap.granted === false) {
     flags.push("g=false");
   }
@@ -208,12 +229,16 @@ export function formatFieldCapabilityFlags(capabilities: unknown): string {
 function compactFieldCapabilities(fieldCapabilities: unknown): unknown {
   if (Array.isArray(fieldCapabilities)) {
     return fieldCapabilities.map((entry) => {
-      if (!isObject(entry)) return entry;
+      if (!isObject(entry)) {
+        return entry;
+      }
       const name = firstString(entry.name as string, entry.field as string);
-      return { name, flags: formatFieldCapabilityFlags(entry) };
+      return { flags: formatFieldCapabilityFlags(entry), name };
     });
   }
-  if (!isObject(fieldCapabilities)) return fieldCapabilities;
+  if (!isObject(fieldCapabilities)) {
+    return fieldCapabilities;
+  }
   const out: Record<string, string> = {};
   for (const [name, capability] of Object.entries(fieldCapabilities)) {
     out[name] = formatFieldCapabilityFlags(capability);
@@ -222,12 +247,18 @@ function compactFieldCapabilities(fieldCapabilities: unknown): unknown {
 }
 
 function compactExpandCapabilities(expandCapabilities: unknown): unknown {
-  if (!Array.isArray(expandCapabilities)) return expandCapabilities;
+  if (!Array.isArray(expandCapabilities)) {
+    return expandCapabilities;
+  }
   return expandCapabilities.map((relation) => {
-    if (!isObject(relation)) return relation;
+    if (!isObject(relation)) {
+      return relation;
+    }
     const out: Record<string, unknown> = {};
     for (const key of EXPAND_PASSTHROUGH_KEYS) {
-      if (relation[key] !== undefined) out[key] = relation[key];
+      if (relation[key] !== undefined) {
+        out[key] = relation[key];
+      }
     }
     return Object.keys(out).length > 0 ? out : relation;
   });
@@ -241,9 +272,13 @@ function compactExpandCapabilities(expandCapabilities: unknown): unknown {
  * verbatim wherever it is actually emitted.
  */
 function grantedConnectionsKey(value: unknown): string {
-  if (!Array.isArray(value)) return "";
+  if (!Array.isArray(value)) {
+    return "";
+  }
   const entries = value.map((entry) => {
-    if (!isObject(entry)) return JSON.stringify(entry);
+    if (!isObject(entry)) {
+      return JSON.stringify(entry);
+    }
     const id = typeof entry.connection_id === "string" ? entry.connection_id : "";
     const label = typeof entry.display_name === "string" ? entry.display_name : "";
     const alias = typeof entry.connector_instance_id === "string" ? entry.connector_instance_id : "";
@@ -266,14 +301,18 @@ function pickSharedGrantedConnections(streams: unknown[]): {
 } {
   const byKey = new Map<string, { value: unknown[]; count: number }>();
   for (const stream of streams) {
-    if (!isObject(stream) || !Array.isArray(stream.granted_connections)) continue;
-    if (stream.granted_connections.length === 0) continue;
+    if (!(isObject(stream) && Array.isArray(stream.granted_connections))) {
+      continue;
+    }
+    if (stream.granted_connections.length === 0) {
+      continue;
+    }
     const key = grantedConnectionsKey(stream.granted_connections);
     const existing = byKey.get(key);
     if (existing) {
       existing.count += 1;
     } else {
-      byKey.set(key, { value: stream.granted_connections, count: 1 });
+      byKey.set(key, { count: 1, value: stream.granted_connections });
     }
   }
   let bestKey = "";
@@ -288,10 +327,14 @@ function pickSharedGrantedConnections(streams: unknown[]): {
 }
 
 function compactStream(entry: unknown, hasShared: boolean, sharedKey: string): unknown {
-  if (!isObject(entry)) return entry;
+  if (!isObject(entry)) {
+    return entry;
+  }
   const out: Record<string, unknown> = {};
   for (const key of STREAM_PASSTHROUGH_KEYS) {
-    if (entry[key] !== undefined) out[key] = entry[key];
+    if (entry[key] !== undefined) {
+      out[key] = entry[key];
+    }
   }
   // Keep `granted_connections` per stream ONLY when it diverges from the
   // connector-level shared set (a per-stream grant that pins a connection
@@ -343,18 +386,22 @@ function compactConnector(connector: ConnectorSchemaItem): ConnectorSchemaItem {
 }
 
 function streamNameOf(entry: unknown): string | undefined {
-  if (!isObject(entry)) return undefined;
+  if (!isObject(entry)) {
+    return;
+  }
   return firstString(entry.name as string, entry.stream as string, entry.stream_name as string);
 }
 
 function connectionIdOf(entry: unknown): string | undefined {
-  if (!isObject(entry)) return undefined;
+  if (!isObject(entry)) {
+    return;
+  }
   const source = isObject(entry.source) ? entry.source : {};
   return firstString(
     entry.connection_id as string,
     entry.connector_instance_id as string,
     source.connection_id as string,
-    source.connector_instance_id as string,
+    source.connector_instance_id as string
   );
 }
 
@@ -372,24 +419,29 @@ function connectorKeyOf(stream: unknown, connector: unknown): string | undefined
     connectorObj.connector_id as string,
     connectorSource.connector_key as string,
     connectorSource.connector_id as string,
-    connectorSource.id as string,
+    connectorSource.id as string
   );
 }
 
 function displayNameOf(...values: unknown[]): string | undefined {
   for (const value of values) {
-    if (!isObject(value)) continue;
+    if (!isObject(value)) {
+      continue;
+    }
     const source = isObject(value.source) ? value.source : {};
     const name = firstString(
       value.display_name as string,
       value.connection_display_name as string,
       value.name as string,
       source.display_name as string,
-      source.name as string,
+      source.name as string
     );
-    if (name) return name;
+    if (name) {
+      return name;
+    }
   }
-  return undefined;
+  // biome-ignore lint/complexity/noUselessReturn: required by TypeScript noImplicitReturns to make the empty result explicit.
+  return;
 }
 
 function sourceOptionEntries(stream: unknown, connector: ConnectorSchemaItem): unknown[] {
@@ -403,8 +455,12 @@ function sourceOptionEntries(stream: unknown, connector: ConnectorSchemaItem): u
 }
 
 function matchingGrantedConnections(value: unknown, connectionId: string | null): unknown[] | null {
-  if (!connectionId) return Array.isArray(value) ? value : null;
-  if (!Array.isArray(value)) return null;
+  if (!connectionId) {
+    return Array.isArray(value) ? value : null;
+  }
+  if (!Array.isArray(value)) {
+    return null;
+  }
   return value.filter((entry) => connectionIdOf(entry) === connectionId);
 }
 
@@ -415,19 +471,32 @@ function entryMatchesConnection(entry: unknown, connectionId: string): boolean {
 function streamMatchesConnection(
   stream: unknown,
   connector: ConnectorSchemaItem,
-  connectionId: string | null,
+  connectionId: string | null
 ): boolean {
-  if (!connectionId) return true;
-  if (entryMatchesConnection(stream, connectionId)) return true;
-  const streamConnections = matchingGrantedConnections(isObject(stream) ? stream.granted_connections : undefined, connectionId);
-  if (streamConnections && streamConnections.length > 0) return true;
+  if (!connectionId) {
+    return true;
+  }
+  if (entryMatchesConnection(stream, connectionId)) {
+    return true;
+  }
+  const streamConnections = matchingGrantedConnections(
+    isObject(stream) ? stream.granted_connections : undefined,
+    connectionId
+  );
+  if (streamConnections && streamConnections.length > 0) {
+    return true;
+  }
   const connectorConnections = matchingGrantedConnections(connector.granted_connections, connectionId);
-  if (connectorConnections && connectorConnections.length > 0) return true;
+  if (connectorConnections && connectorConnections.length > 0) {
+    return true;
+  }
   return entryMatchesConnection(connector, connectionId);
 }
 
 function scopeStreamToConnection(stream: unknown, connectionId: string | null): unknown {
-  if (!connectionId || !isObject(stream)) return stream;
+  if (!(connectionId && isObject(stream))) {
+    return stream;
+  }
   const out = { ...stream };
   if (Array.isArray(stream.granted_connections)) {
     out.granted_connections = matchingGrantedConnections(stream.granted_connections, connectionId) ?? [];
@@ -436,7 +505,9 @@ function scopeStreamToConnection(stream: unknown, connectionId: string | null): 
 }
 
 function scopeConnectorToConnection(connector: ConnectorSchemaItem, connectionId: string | null): ConnectorSchemaItem {
-  if (!connectionId) return connector;
+  if (!connectionId) {
+    return connector;
+  }
   const out: ConnectorSchemaItem = { ...connector };
   if (Array.isArray(connector.granted_connections)) {
     out.granted_connections = matchingGrantedConnections(connector.granted_connections, connectionId) ?? [];
@@ -452,9 +523,11 @@ function scopeConnectorToConnection(connector: ConnectorSchemaItem, connectionId
  */
 function scopeConnectors(
   connectors: ConnectorSchemaItem[],
-  { stream = null, connectionId = null }: { stream?: string | null; connectionId?: string | null } = {},
+  { stream = null, connectionId = null }: { stream?: string | null; connectionId?: string | null } = {}
 ): ConnectorSchemaItem[] {
-  if (!stream && !connectionId) return connectors;
+  if (!(stream || connectionId)) {
+    return connectors;
+  }
   return connectors
     .map((connector) => {
       const streams = Array.isArray(connector.streams) ? connector.streams : [];
@@ -462,8 +535,14 @@ function scopeConnectors(
         .filter((entry) => (stream ? streamNameOf(entry) === stream : true))
         .filter((entry) => streamMatchesConnection(entry, connector, connectionId))
         .map((entry) => scopeStreamToConnection(entry, connectionId));
-      if (matching.length === 0) return null;
-      return { ...scopeConnectorToConnection(connector, connectionId), streams: matching, stream_count: matching.length };
+      if (matching.length === 0) {
+        return null;
+      }
+      return {
+        ...scopeConnectorToConnection(connector, connectionId),
+        stream_count: matching.length,
+        streams: matching,
+      };
     })
     .filter((item): item is ConnectorSchemaItem => item !== null);
 }
@@ -481,8 +560,8 @@ function schemaCounts(connectors: ConnectorSchemaItem[]): { connector_count: num
 export interface SchemaSourceOption {
   connection_id?: string;
   connector_key?: string;
-  stream?: string;
   display_name?: string;
+  stream?: string;
 }
 
 /**
@@ -490,12 +569,14 @@ export interface SchemaSourceOption {
  * Used by adapters that need to reject exhaustive detail over an ambiguous
  * stream without reconstructing schema source identity locally.
  */
+
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
 export function schemaSourceOptions(
   response: SchemaResponse,
-  { stream = null, connectionId = null }: SchemaStreamScopeOptions = {},
+  { stream = null, connectionId = null }: SchemaStreamScopeOptions = {}
 ): SchemaSourceOption[] {
   const connectors = Array.isArray(response.connectors) ? response.connectors : [];
-  const scoped = scopeConnectors(connectors, { stream, connectionId });
+  const scoped = scopeConnectors(connectors, { connectionId, stream });
   const seen = new Set<string>();
   const options: SchemaSourceOption[] = [];
   for (const connector of scoped) {
@@ -508,7 +589,9 @@ export function schemaSourceOptions(
         const connector_key = connectorKeyOf(entry, connector);
         const display_name = displayNameOf(sourceObj, entry, connector);
         const key = `${connection_id ?? ""}\0${connector_key ?? ""}\0${streamName ?? ""}`;
-        if (seen.has(key)) continue;
+        if (seen.has(key)) {
+          continue;
+        }
         seen.add(key);
         options.push({
           ...(connection_id ? { connection_id } : {}),
@@ -523,10 +606,10 @@ export function schemaSourceOptions(
 }
 
 export interface SchemaStreamScopeOptions {
-  /** When set, scope the document to a single stream. */
-  stream?: string | null;
   /** When set, scope the document to a single configured source. */
   connectionId?: string | null;
+  /** When set, scope the document to a single stream. */
+  stream?: string | null;
 }
 
 /**
@@ -536,11 +619,13 @@ export interface SchemaStreamScopeOptions {
  */
 export function projectSchemaStreamScope(
   response: SchemaResponse,
-  { stream = null, connectionId = null }: SchemaStreamScopeOptions = {},
+  { stream = null, connectionId = null }: SchemaStreamScopeOptions = {}
 ): SchemaResponse {
-  if (!stream && !connectionId) return response;
+  if (!(stream || connectionId)) {
+    return response;
+  }
   const connectors = Array.isArray(response.connectors) ? response.connectors : [];
-  const scoped = scopeConnectors(connectors, { stream, connectionId });
+  const scoped = scopeConnectors(connectors, { connectionId, stream });
   return {
     ...response,
     ...schemaCounts(scoped),
@@ -549,10 +634,10 @@ export function projectSchemaStreamScope(
 }
 
 export interface CompactSchemaOptions {
-  /** When set, scope the document to a single stream before compaction. */
-  stream?: string | null;
   /** When set, scope the document to a single configured source before compaction. */
   connectionId?: string | null;
+  /** When set, scope the document to a single stream before compaction. */
+  stream?: string | null;
 }
 
 /**
@@ -576,10 +661,10 @@ export interface CompactSchemaOptions {
  */
 export function projectSchemaCompactView(
   response: SchemaResponse,
-  { stream = null, connectionId = null }: CompactSchemaOptions = {},
+  { stream = null, connectionId = null }: CompactSchemaOptions = {}
 ): SchemaResponse {
   const connectors = Array.isArray(response.connectors) ? response.connectors : [];
-  const scoped = scopeConnectors(connectors, { stream, connectionId });
+  const scoped = scopeConnectors(connectors, { connectionId, stream });
   return {
     ...response,
     detail: "compact",

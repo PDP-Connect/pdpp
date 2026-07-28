@@ -15,12 +15,10 @@ const NAVIGATION_IMPORT = /import \{ unstable_rethrow \} from "next\/navigation"
 const RETHROW_WRAPPER =
   /export function rethrowControlFlow\(err: unknown\): void \{[\s\S]*unstable_rethrow\(err\);[\s\S]*\}/;
 const CONTROL_FLOW_IMPORT = /import \{ rethrowControlFlow \} from "\.\/lib\/control-flow\.ts";/;
-// Each overview section's catch must call the rethrow guard immediately before
-// its fallback return, so a swallowed redirect can never leak "NEXT_REDIRECT".
-const OVERVIEW_HERO_GUARDED = /rethrowControlFlow\(err\);\s*return <OverviewHeroError /;
-const ATTENTION_GUARDED = /rethrowControlFlow\(err\);\s*return <AttentionOverviewError \/>;/;
-const RECENT_ACTIVITY_GUARDED = /rethrowControlFlow\(err\);\s*return <RecentActivityError \/>;/;
-const WEB_PUSH_GUARDED = /rethrowControlFlow\(err\);\s*return null;/;
+// The overview concentrates fault isolation in `safeRead`; its catch must
+// rethrow control flow immediately before returning the typed fallback.
+const OVERVIEW_SAFE_READ_GUARDED =
+  /async function safeRead<[\s\S]*?catch \(err\) \{\s*rethrowControlFlow\(err\);\s*return \{ issue, value: fallback \};/;
 // A bare `catch {` cannot name `err` to re-throw it; every overview catch binds it.
 const BARE_CATCH_RETURNING_JSX = /\} catch \{\s*\n\s*return </;
 
@@ -82,9 +80,6 @@ test("every dashboard overview section catch re-throws control flow before its f
   const src = await readFile(PAGE_FILE, "utf8");
 
   assert.match(src, CONTROL_FLOW_IMPORT);
-  assert.match(src, OVERVIEW_HERO_GUARDED);
-  assert.match(src, ATTENTION_GUARDED);
-  assert.match(src, RECENT_ACTIVITY_GUARDED);
-  assert.match(src, WEB_PUSH_GUARDED);
+  assert.match(src, OVERVIEW_SAFE_READ_GUARDED);
   assert.doesNotMatch(src, BARE_CATCH_RETURNING_JSX);
 });

@@ -80,7 +80,7 @@ export async function introspectOwnerAgentCredential({
     scope?: string;
   };
   try {
-    json = await response.json();
+    json = (await response.json()) as typeof json;
   } catch {
     // biome-ignore lint/style/useErrorCause: OwnerAgentError has no cause slot; the parse error carries no owner-facing detail beyond "invalid JSON".
     throw new OwnerAgentError("introspection_failed", "Introspection response was not valid JSON.");

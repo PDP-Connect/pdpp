@@ -65,36 +65,30 @@ run "OpenSpec validate (change, strict)" \
 run "OpenSpec validate (--all, strict)" \
   pnpm exec openspec validate --all --strict
 
-run "remote-surface unit tests" \
-  pnpm --dir packages/remote-surface run test
-
-run "remote-surface typecheck" \
-  pnpm --dir packages/remote-surface run typecheck
-
 # Scoped to the streaming surface on purpose. The full
 # `reference-implementation test` suite carries baseline failures unrelated to
-# this change (e.g. example-client.test.js reads a now-deleted apps/web path,
-# and hosted-mcp-oauth spotify fanout). Those are tracked separately; gating
-# streaming closeout on them would be dishonest. Run the full suite directly if
+# this change (e.g. a deleted fixture path and hosted-mcp-oauth Spotify fanout).
+# Those are tracked separately; gating streaming closeout on them would be
+# dishonest. Run the full suite directly if
 # you want the whole-repo picture.
 run "reference-implementation streaming unit tests" \
-  node --test --test-force-exit \
-    reference-implementation/test/run-interaction-stream-cdp-adapter.test.js \
-    reference-implementation/test/run-interaction-stream-companion.test.js \
-    reference-implementation/test/run-interaction-stream-neko-adapter.test.js \
-    reference-implementation/test/run-interaction-stream-neko-compose.test.js \
-    reference-implementation/test/run-interaction-stream-playground.test.js \
-    reference-implementation/test/run-interaction-stream-routes.test.js \
-    reference-implementation/test/run-interaction-stream-store.test.js \
-    reference-implementation/test/neko-surface-allocator.test.js \
-    reference-implementation/test/neko-surface-allocator-server.test.js \
-    reference-implementation/test/server-neko-runtime-config.test.js \
-    reference-implementation/test/manifest-stream-availability.test.js \
-    reference-implementation/test/assistant-readiness-smoke.test.js \
-    reference-implementation/server/streaming/cdp-method-allowlist.test.js \
-    reference-implementation/server/streaming/neko-adapter.test.js \
-    reference-implementation/server/streaming/playground.test.js \
-    reference-implementation/server/streaming/run-target-registry.test.js
+  node --test --import tsx --test-force-exit \
+    reference-implementation/test/run-interaction-stream-cdp-adapter.test.ts \
+    reference-implementation/test/run-interaction-stream-companion.test.ts \
+    reference-implementation/test/run-interaction-stream-neko-adapter.test.ts \
+    reference-implementation/test/run-interaction-stream-neko-compose.test.ts \
+    reference-implementation/test/run-interaction-stream-playground.test.ts \
+    reference-implementation/test/run-interaction-stream-routes.test.ts \
+    reference-implementation/test/run-interaction-stream-store.test.ts \
+    reference-implementation/test/neko-surface-allocator.test.ts \
+    reference-implementation/test/neko-surface-allocator-server.test.ts \
+    reference-implementation/test/server-neko-runtime-config.test.ts \
+    reference-implementation/test/manifest-stream-availability.test.ts \
+    reference-implementation/test/assistant-readiness-smoke.test.ts \
+    reference-implementation/server/streaming/cdp-method-allowlist.test.ts \
+    reference-implementation/server/streaming/neko-adapter.test.ts \
+    reference-implementation/server/streaming/playground.test.ts \
+    reference-implementation/server/streaming/run-target-registry.test.ts
 
 run "local phone-surface parity oracle" \
   pnpm stream:parity:oracle

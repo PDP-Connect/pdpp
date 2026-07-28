@@ -32,6 +32,11 @@
       "!!**/*.har",
       "!!**/*.jsonl",
       "!!**/docs/generated",
+      // OpenAPI JSON is generator-owned and byte-checked by
+      // reference-contract:check-generated. Formatting it here would create
+      // drift from the canonical generator and the full artifact exceeds
+      // Biome's source-file size ceiling.
+      "!!reference-implementation/openapi",
       "!!packages/polyfill-connectors/fixtures/**/*.json",
       "!!packages/polyfill-connectors/fixtures/**/*.html",
       "!!packages/polyfill-connectors/fixtures/**/*.csv",
@@ -51,52 +56,19 @@
   },
   "overrides": [
     {
-      // Remote-surface was previously outside the workspace check set, so
-      // `pnpm --filter @opendatalabs/remote-surface check` was a false green. Keep
-      // the package under Biome analysis now, but waive the pre-existing
-      // Ultracite migration debt that surfaced when the files became visible.
-      //
-      // This is intentionally scoped to packages/remote-surface/src/**/*.ts:
-      // new syntax/configuration problems and any non-waived Ultracite rules
-      // still fail the package check, while style/assist cleanup can land in a
-      // separate product-code-only tranche.
-      "includes": ["packages/remote-surface/src/**/*.ts"],
-      "formatter": {
-        "enabled": false
-      },
-      "assist": {
-        "actions": {
-          "source": {
-            "organizeImports": "off",
-            "useSortedInterfaceMembers": "off"
-          }
-        }
-      },
-      "linter": {
-        "rules": {
-          "complexity": {
-            "noExcessiveCognitiveComplexity": "off",
-            "noUselessUndefined": "off",
-            "noVoid": "off",
-            "useSimplifiedLogicExpression": "off"
-          },
-          "correctness": {
-            "noUnresolvedImports": "off"
-          },
-          "performance": {
-            "noBarrelFile": "off"
-          },
-          "style": {
-            "useBlockStatements": "off",
-            "useConsistentTypeDefinitions": "off",
-            "useExportType": "off",
-            "useNumericSeparators": "off"
-          },
-          "suspicious": {
-            "useAwait": "off"
-          }
-        }
-      }
+      // These six classic-script files are emitted from the adjacent TypeScript
+      // sources. They remain selected so inventory coverage cannot shrink, but
+      // their formatter/linter output is judged by generated-artifacts:check.
+      "includes": [
+        "docs/design-system/ink-carbon/project/explorer/data.js",
+        "docs/design-system/ink-carbon/project/explorer/dispatch.js",
+        "docs/design-system/ink-carbon/project/explorer/query.js",
+        "docs/design-system/ink-carbon/project/recordroom/image-slot.js",
+        "docs/design-system/ink-carbon/project/recordroom/rr-data.js",
+        "docs/design-system/ink-carbon/project/recordroom/rr-explore-data.js"
+      ],
+      "formatter": { "enabled": false },
+      "linter": { "enabled": false }
     },
     {
       // Connector-specific override. As of 2026-04-22 only
@@ -135,6 +107,24 @@
       }
     },
     {
+      // reference-implementation/server/records.ts TypeScript migration
+      // (2026-07-27). Line 120 is a deliberate single re-export at the package
+      // boundary (`export { resolveRecordIdentityForBinding } from
+      // "./connection-identity.ts"`). This is not a barrel of a directory —
+      // it re-exports exactly one symbol so callers outside the server/ subtree
+      // can import via the canonical records entry point rather than navigating
+      // into an internal helper. Same class of deliberate single re-export as
+      // the mcp-server override above.
+      "includes": ["reference-implementation/server/records.ts"],
+      "linter": {
+        "rules": {
+          "performance": {
+            "noBarrelFile": "off"
+          }
+        }
+      }
+    },
+    {
       // @pdpp/mcp-server TypeScript migration (2026-07-25). Two rules are
       // confirmed Biome-resolver false positives here, not real debt:
       //
@@ -151,7 +141,10 @@
       //   boundary (not a full barrel re-export of a directory) — the same
       //   pattern the MCP SDK and this package's own public API already
       //   rely on for `@pdpp/mcp-server` and `@pdpp/mcp-server/server`.
-      "includes": ["packages/mcp-server/src/server.ts", "packages/mcp-server/src/index.ts"],
+      "includes": [
+        "packages/mcp-server/src/server.ts",
+        "packages/mcp-server/src/index.ts"
+      ],
       "linter": {
         "rules": {
           "correctness": {
@@ -211,6 +204,36 @@
       "includes": [
         "packages/mcp-server/test/hosted-schema-token-budget.test.ts",
         "packages/mcp-server/test/schema-token-budget.test.ts"
+      ],
+      "linter": {
+        "rules": {
+          "correctness": {
+            "noUnresolvedImports": "off"
+          }
+        }
+      }
+    },
+    {
+      // scripts/test-migration (T1-BUILD, 2026-07-25). These modules parse
+      // JS/TS source with @babel/parser (a root devDependency, pinned
+      // 7.29.2, already resolved in the lockfile as a transitive dep of
+      // several existing tools before being declared direct here) rather
+      // than TypeScript 7's own compiler API, which no longer exposes a
+      // lightweight `createSourceFile`-style parser via `require("typescript")`
+      // (only an `unstable/ast` project/checker surface). Same confirmed
+      // resolver-gap class as the SDK/tsx overrides above, not real debt:
+      // `tsc --noEmit -p tsconfig.json` resolves it cleanly and
+      // `node --input-type=module -e "console.log(import.meta.resolve('@babel/parser'))"`
+      // resolves to node_modules/.pnpm/@babel+parser@7.29.2/node_modules/@babel/parser/lib/index.js.
+      "includes": [
+        "scripts/test-migration/babel-ast-walk.test.ts",
+        "scripts/test-migration/catch-clause-narrowing.ts",
+        "scripts/test-migration/helper-family.ts",
+        "scripts/test-migration/import-resolution.ts",
+        "scripts/test-migration/importer-scan.ts",
+        "scripts/test-migration/literal-path-scan.ts",
+        "scripts/test-migration/stage-b.ts",
+        "scripts/test-migration/static-test-inventory.ts"
       ],
       "linter": {
         "rules": {

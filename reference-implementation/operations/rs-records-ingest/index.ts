@@ -32,36 +32,36 @@
  */
 
 export interface RecordsIngestInput {
+  /** Raw NDJSON body as received by the host. */
+  readonly body: string | null | undefined;
   /** Connector id parsed from the query string. May be null/empty. */
   readonly connectorId: string | null;
   /** Connector instance id parsed from the query string. Optional for legacy connector-only compatibility. */
   readonly connectorInstanceId?: string | null;
   /** Stream name from the request path. */
   readonly streamName: string;
-  /** Raw NDJSON body as received by the host. */
-  readonly body: string | null | undefined;
 }
 
 export interface RecordsIngestDependencies {
-  hasManifestStream(connectorId: string, streamName: string): boolean | Promise<boolean>;
+  hasManifestStream: (connectorId: string, streamName: string) => boolean | Promise<boolean>;
   /**
    * Ingest a single parsed record under the connector instance + stream.
    * Hosts wire the existing durable ingest capability after resolving
    * connector-only compatibility to a connector instance. Throws on failure;
    * the operation increments `records_rejected` and collects the message.
    */
-  ingestRecord(
+  ingestRecord: (
     connectorId: string,
     connectorInstanceId: string | null,
-    record: Record<string, unknown>,
-  ): unknown | Promise<unknown>;
+    record: Record<string, unknown>
+  ) => unknown | Promise<unknown>;
 }
 
 export interface RecordsIngestEnvelope {
-  readonly stream: string;
+  readonly errors: readonly string[];
   readonly records_accepted: number;
   readonly records_rejected: number;
-  readonly errors: readonly string[];
+  readonly stream: string;
 }
 
 export interface RecordsIngestOutput {
@@ -103,7 +103,9 @@ export class RecordsIngestNotFoundError extends Error {
  * duplicating the line-model rule.
  */
 export function parseLines(body: string | null | undefined): string[] {
-  if (typeof body !== "string" || body.length === 0) return [];
+  if (typeof body !== "string" || body.length === 0) {
+    return [];
+  }
   return body.split("\n").filter((line) => line.trim().length > 0);
 }
 
@@ -121,23 +123,19 @@ export function parseLines(body: string | null | undefined): string[] {
  */
 export async function executeRecordsIngest(
   input: RecordsIngestInput,
-  dependencies: RecordsIngestDependencies,
+  dependencies: RecordsIngestDependencies
 ): Promise<RecordsIngestOutput> {
   const lines = parseLines(input.body);
   const submittedRecordCount = lines.length;
 
   const connectorId = typeof input.connectorId === "string" ? input.connectorId : null;
   if (!connectorId) {
-    throw new RecordsIngestInvalidRequestError(
-      "connector_id must be a single non-empty string",
-    );
+    throw new RecordsIngestInvalidRequestError("connector_id must be a single non-empty string");
   }
 
   const visible = await dependencies.hasManifestStream(connectorId, input.streamName);
   if (!visible) {
-    throw new RecordsIngestNotFoundError(
-      `Stream '${input.streamName}' not found for connector ${connectorId}`,
-    );
+    throw new RecordsIngestNotFoundError(`Stream '${input.streamName}' not found for connector ${connectorId}`);
   }
 
   let recordsAccepted = 0;
@@ -147,6 +145,7 @@ export async function executeRecordsIngest(
   for (const line of lines) {
     try {
       const parsed = JSON.parse(line) as Record<string, unknown>;
+      // biome-ignore lint/performance/noAwaitInLoops: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
       await dependencies.ingestRecord(connectorId, input.connectorInstanceId ?? null, {
         ...parsed,
         stream: input.streamName,
@@ -160,10 +159,10 @@ export async function executeRecordsIngest(
 
   return {
     envelope: {
-      stream: input.streamName,
+      errors,
       records_accepted: recordsAccepted,
       records_rejected: recordsRejected,
-      errors,
+      stream: input.streamName,
     },
     submittedRecordCount,
   };

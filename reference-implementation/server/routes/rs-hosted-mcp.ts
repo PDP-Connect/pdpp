@@ -43,20 +43,20 @@ interface RouteRequest extends ResolvePublicUrlRequest {
 }
 
 interface RouteResponse {
-  end(): void;
+  end: () => void;
   locals: Record<string, unknown>;
-  send(body: unknown): void;
-  setHeader(name: string, value: string): void;
-  status(code: number): RouteResponse;
+  send: (body: unknown) => void;
+  setHeader: (name: string, value: string) => void;
+  status: (code: number) => RouteResponse;
 }
 
 type Middleware = (req: RouteRequest, res: RouteResponse, next: () => void) => void;
 type Handler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
 
 interface AppLike {
-  delete(path: string, ...handlers: (Middleware | Handler)[]): AppLike;
-  get(path: string, ...handlers: (Middleware | Handler)[]): AppLike;
-  post(path: string, ...handlers: (Middleware | Handler)[]): AppLike;
+  delete: (path: string, ...handlers: (Middleware | Handler)[]) => AppLike;
+  get: (path: string, ...handlers: (Middleware | Handler)[]) => AppLike;
+  post: (path: string, ...handlers: (Middleware | Handler)[]) => AppLike;
 }
 
 export interface GrantPackageMember {
@@ -89,27 +89,27 @@ export interface MountRsHostedMcpContext {
    * `createPackageRsClient` from `./package-rs-client.js`.
    * Injected for the same reason — called with a JS-only signature.
    */
-  createPackageRsClient(options: {
+  createPackageRsClient: (options: {
     providerUrl: string;
     members: readonly GrantPackageMember[];
     fetch: typeof globalThis.fetch;
-  }): unknown;
+  }) => unknown;
   /**
    * `createRsClient` from `./package-rs-client.js` — builds one single-bearer
    * RsClient against a chosen fetch base. Injected for the same JS-only reason.
    * Used for the standalone (`client`-token) path so its self-calls can use the
    * internal RS base too (parity with the package path's child clients).
    */
-  createRsClient(options: { providerUrl: string; accessToken: string; fetch: typeof globalThis.fetch }): unknown;
+  createRsClient: (options: { providerUrl: string; accessToken: string; fetch: typeof globalThis.fetch }) => unknown;
   /** Resolved RS public URL (or null; adapter derives it per-request). */
   readonly explicitResource: string | null | undefined;
   /** From auth.js: resolve active grant-package members for a package token. */
-  getGrantPackageAccess(packageId: string): Promise<GrantPackageAccess | null>;
+  getGrantPackageAccess: (packageId: string) => Promise<GrantPackageAccess | null>;
   /**
    * `handleStreamableHttpRequest` from `@pdpp/mcp-server/server`.
    * Injected because the package is JS-only without type declarations.
    */
-  handleStreamableHttpRequest(request: Request, options: McpServerOptions): Promise<Response>;
+  handleStreamableHttpRequest: (request: Request, options: McpServerOptions) => Promise<Response>;
   /**
    * Trusted INTERNAL resource-server base URL for the adapter's own
    * server-internal self-calls (the child `RsClient` fetch base). Sourced
@@ -127,7 +127,7 @@ export interface MountRsHostedMcpContext {
    */
   readonly internalResource?: string | null;
   /** Standard error helper. */
-  pdppError(res: RouteResponse, status: number, code: string, message: string): unknown;
+  pdppError: (res: RouteResponse, status: number, code: string, message: string) => unknown;
   /** Reference server revision string for MCP server identification. */
   readonly referenceRevision: string;
   /** Guard: only `client` or `mcp_package` token kinds allowed. */
@@ -160,13 +160,13 @@ function buildMcpWebRequestHeaders(req: RouteRequest): Headers {
 
 function buildMcpWebRequestBody(req: RouteRequest, headers: Headers): Buffer | string | undefined {
   if (["GET", "HEAD"].includes(req.method)) {
-    return undefined;
+    return;
   }
   if (Buffer.isBuffer(req.body) || typeof req.body === "string") {
     return req.body as Buffer | string;
   }
   if (req.body === undefined) {
-    return undefined;
+    return;
   }
 
   const body = JSON.stringify(req.body);
@@ -179,7 +179,7 @@ function buildMcpWebRequestBody(req: RouteRequest, headers: Headers): Buffer | s
 function buildMcpWebRequestInit(req: RouteRequest, headers: Headers): RequestInit {
   const body = buildMcpWebRequestBody(req, headers);
   const init: RequestInit =
-    body === undefined ? { method: req.method, headers } : { method: req.method, headers, body };
+    body === undefined ? { headers, method: req.method } : { body, headers, method: req.method };
   return init;
 }
 
@@ -226,7 +226,7 @@ function hostedMcpIconUrl(resource: string): string {
 }
 
 function hostedMcpIcons(resource: string): readonly McpServerIcon[] {
-  return [{ src: hostedMcpIconUrl(resource), mimeType: "image/svg+xml", sizes: ["any"] }];
+  return [{ mimeType: "image/svg+xml", sizes: ["any"], src: hostedMcpIconUrl(resource) }];
 }
 
 function hostedMcpIconLink(resource: string): string {
@@ -264,26 +264,26 @@ export function mountRsHostedMcp(app: AppLike, ctx: MountRsHostedMcpContext): vo
     resource: string,
     internalBase: string
   ): Promise<McpServerOptions | null> {
-    const access = await ctx.getGrantPackageAccess(req.tokenInfo!.grant_package_id as string);
+    const access = await ctx.getGrantPackageAccess(req.tokenInfo?.grant_package_id as string);
     if (!access || access.members.length === 0) {
       ctx.pdppError(res, 403, "package_revoked", "Grant package is revoked or has no active members");
       return null;
     }
     const rsClient = ctx.createPackageRsClient({
+      fetch: globalThis.fetch,
+      members: access.members,
       // Child self-calls use the internal base, not the public edge.
       providerUrl: internalBase,
-      members: access.members,
-      fetch: globalThis.fetch,
     });
     const mcpServerOptions = {
+      fetch: globalThis.fetch,
       providerUrl: resource,
       rsClient,
-      fetch: globalThis.fetch,
       serverIcons: hostedMcpIcons(resource),
       serverName: "pdpp-reference-mcp",
       serverVersion: referenceRevision,
     } satisfies McpServerOptions;
-    res.setHeader("x-pdpp-grant-package-id", req.tokenInfo!.grant_package_id as string);
+    res.setHeader("x-pdpp-grant-package-id", req.tokenInfo?.grant_package_id as string);
     res.setHeader("x-pdpp-grant-package-member-count", String(access.members.length));
     return mcpServerOptions;
   }
@@ -301,20 +301,21 @@ export function mountRsHostedMcp(app: AppLike, ctx: MountRsHostedMcpContext): vo
     // through the injected rsClient). When no internal base is configured,
     // internalBase === resource, so this is a no-op vs prior behavior.
     const rsClient = ctx.createRsClient({
-      providerUrl: internalBase,
       accessToken,
       fetch: globalThis.fetch,
+      providerUrl: internalBase,
     });
     return {
+      fetch: globalThis.fetch,
       providerUrl: resource,
       rsClient,
-      fetch: globalThis.fetch,
       serverIcons: hostedMcpIcons(resource),
       serverName: "pdpp-reference-mcp",
       serverVersion: referenceRevision,
     };
   }
 
+  // biome-ignore lint/suspicious/useAwait: The async signature is part of this caller-facing contract.
   async function buildHostedMcpServerOptions(
     req: RouteRequest,
     res: RouteResponse,
@@ -323,12 +324,7 @@ export function mountRsHostedMcp(app: AppLike, ctx: MountRsHostedMcpContext): vo
     inboundToken: string
   ): Promise<McpServerOptions | null> {
     if (req.tokenInfo?.pdpp_token_kind === "mcp_package") {
-      return buildPackageMcpServerOptions(
-        req,
-        res,
-        resource,
-        internalBase
-      );
+      return buildPackageMcpServerOptions(req, res, resource, internalBase);
     }
     return buildStandaloneMcpServerOptions(resource, internalBase, inboundToken);
   }

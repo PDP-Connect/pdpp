@@ -25,7 +25,7 @@
 
 import { createTraceContext, type SpineTraceContext } from "../../lib/spine.ts";
 import type { SchedulerRunHistoryRecord } from "../../server/stores/scheduler-store.ts";
-import { runConnector } from "../index.js";
+import { runConnector } from "../index.ts";
 import {
   type AutomationRefreshPolicy,
   projectRunAutomationPolicy,
@@ -95,18 +95,18 @@ export interface RunExecutorDeps {
 // ─── Public interface ─────────────────────────────────────────────────────────
 
 export interface RunExecutor {
-  launchRun(
+  launchRun: (
     schedule: ConnectorSchedule,
     isManual: boolean,
     automationPolicy: ReturnType<typeof projectRunAutomationPolicy>,
     options?: { recoveryOnly?: boolean }
-  ): Promise<RunRecord>;
+  ) => Promise<RunRecord>;
 }
 
 // ─── Local helpers (pure — no runtime dep) ───────────────────────────────────
 
 function buildScheduledRunSource(connectorId: string): RunSource {
-  return { kind: "connector", id: connectorId };
+  return { id: connectorId, kind: "connector" };
 }
 
 function getManifestRefreshPolicy(manifest: SchedulerManifest | null | undefined): AutomationRefreshPolicy | null {
@@ -121,16 +121,16 @@ function getManifestRefreshPolicy(manifest: SchedulerManifest | null | undefined
 
 function describeFailedRunResult(result: RunConnectorResult): RunConnectorError {
   return {
+    checkpoint_summary: result.checkpoint_summary || null,
+    connector_error: result.connector_error || null,
+    failure_reason: result.terminal_reason === "connector_protocol_violation" ? result.terminal_reason : null,
+    known_gaps: result.known_gaps || null,
     message: result.message || "unknown",
     records_emitted: result.records_emitted ?? 0,
     reported_records_emitted: result.reported_records_emitted ?? null,
-    checkpoint_summary: result.checkpoint_summary || null,
     run_id: result.run_id || null,
-    trace_id: result.trace_id || null,
-    failure_reason: result.terminal_reason === "connector_protocol_violation" ? result.terminal_reason : null,
     terminal_reason: result.terminal_reason || null,
-    connector_error: result.connector_error || null,
-    known_gaps: result.known_gaps || null,
+    trace_id: result.trace_id || null,
   };
 }
 
@@ -171,6 +171,7 @@ function narrowState(state: unknown): Record<string, unknown> | null {
 }
 
 function displayNameForScheduledConnector(manifest: SchedulerManifest, connectorId: string): string {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   return typeof manifest?.display_name === "string" && manifest.display_name.trim()
     ? manifest.display_name.trim()
     : connectorId;
@@ -199,22 +200,22 @@ function withSchedulerInteractionContext(
 
 function toStoredRunRecord(record: RunRecord): SchedulerRunHistoryRecord {
   const stored: SchedulerRunHistoryRecord = {
+    attempt: record.attempt,
+    checkpointSummary: record.checkpointSummary,
+    completedAt: record.completedAt,
+    connectorError: record.connectorError ? { ...record.connectorError } : null,
     connectorId: record.connectorId,
     connectorInstanceId: record.connectorInstanceId ?? null,
-    source: { ...record.source },
-    status: record.status,
+    failureReason: record.failureReason ?? null,
+    knownGaps: record.knownGaps,
     recordsEmitted: record.recordsEmitted,
     reportedRecordsEmitted: record.reportedRecordsEmitted ?? null,
-    checkpointSummary: record.checkpointSummary,
-    knownGaps: record.knownGaps,
-    connectorError: record.connectorError ? { ...record.connectorError } : null,
     runId: record.runId ?? null,
-    traceId: record.traceId ?? null,
-    failureReason: record.failureReason ?? null,
-    terminalReason: record.terminalReason ?? null,
+    source: { ...record.source },
     startedAt: record.startedAt,
-    completedAt: record.completedAt,
-    attempt: record.attempt,
+    status: record.status,
+    terminalReason: record.terminalReason ?? null,
+    traceId: record.traceId ?? null,
   };
   if (record.error !== undefined) {
     return { ...stored, error: record.error };
@@ -284,11 +285,11 @@ async function invokeRunConnector(call: RunConnectorCall): Promise<RunConnectorR
 // ─── Attempt watchdog ─────────────────────────────────────────────────────────
 
 interface AttemptWatchdog {
-  cancel(): void;
-  clear(): void;
-  markProgress(): void;
+  cancel: () => void;
+  clear: () => void;
+  markProgress: () => void;
   readonly signal: AbortSignal;
-  timedOut(): boolean;
+  timedOut: () => boolean;
 }
 
 function createAttemptWatchdog(maxRunWallClockMs: number): AttemptWatchdog {
@@ -364,22 +365,22 @@ function buildSuccessOrFailureRecord({
   startedAt: string;
 }): RunRecord {
   return {
+    attempt,
+    checkpointSummary: result.checkpoint_summary || null,
+    completedAt: nowIso(),
+    connectorError: result.connector_error || null,
     connectorId,
     connectorInstanceId: connectorInstanceId ?? null,
-    source: buildScheduledRunSource(connectorId),
-    status: schedulerStatusFromRuntimeResult(result.status),
+    failureReason: null,
+    knownGaps: result.known_gaps || [],
     recordsEmitted: result.records_emitted || 0,
     reportedRecordsEmitted: result.reported_records_emitted ?? null,
-    checkpointSummary: result.checkpoint_summary || null,
-    knownGaps: result.known_gaps || [],
     runId: result.run_id || null,
-    traceId: result.trace_id || null,
-    failureReason: null,
-    terminalReason: result.terminal_reason || null,
-    connectorError: result.connector_error || null,
+    source: buildScheduledRunSource(connectorId),
     startedAt,
-    completedAt: nowIso(),
-    attempt,
+    status: schedulerStatusFromRuntimeResult(result.status),
+    terminalReason: result.terminal_reason || null,
+    traceId: result.trace_id || null,
   };
 }
 
@@ -395,23 +396,23 @@ function buildExhaustedFailureRecord({
   lastError: RunConnectorError | null;
 }): RunRecord {
   return {
+    attempt,
+    checkpointSummary: lastError?.checkpoint_summary || null,
+    completedAt: nowIso(),
+    connectorError: lastError?.connector_error || null,
     connectorId,
     connectorInstanceId: connectorInstanceId ?? null,
-    source: buildScheduledRunSource(connectorId),
-    status: "failed",
+    error: lastError?.message || "unknown",
+    failureReason: lastError?.failure_reason || null,
+    knownGaps: lastError?.known_gaps || [],
     recordsEmitted: lastError?.records_emitted ?? 0,
     reportedRecordsEmitted: lastError?.reported_records_emitted ?? null,
-    checkpointSummary: lastError?.checkpoint_summary || null,
-    knownGaps: lastError?.known_gaps || [],
     runId: lastError?.run_id || null,
-    traceId: lastError?.trace_id || null,
-    failureReason: lastError?.failure_reason || null,
-    terminalReason: lastError?.terminal_reason || null,
-    connectorError: lastError?.connector_error || null,
+    source: buildScheduledRunSource(connectorId),
     startedAt: nowIso(),
-    completedAt: nowIso(),
-    error: lastError?.message || "unknown",
-    attempt,
+    status: "failed",
+    terminalReason: lastError?.terminal_reason || null,
+    traceId: lastError?.trace_id || null,
   };
 }
 
@@ -421,18 +422,18 @@ function buildCredentialResolutionFailure(
   connectorInstanceId?: string
 ): RunRecord {
   return {
+    attempt: 0,
+    checkpointSummary: null,
+    completedAt: nowIso(),
     connectorId,
     connectorInstanceId: connectorInstanceId ?? null,
-    source: buildScheduledRunSource(connectorId),
-    status: "failed",
-    recordsEmitted: 0,
-    checkpointSummary: null,
-    knownGaps: [],
-    startedAt: nowIso(),
-    completedAt: nowIso(),
-    failureReason: "static_secret_credential_unavailable",
     error: `static_secret_credential_unavailable: ${message}`,
-    attempt: 0,
+    failureReason: "static_secret_credential_unavailable",
+    knownGaps: [],
+    recordsEmitted: 0,
+    source: buildScheduledRunSource(connectorId),
+    startedAt: nowIso(),
+    status: "failed",
   };
 }
 
@@ -442,6 +443,7 @@ function ownerRepairCredentialCode(err: unknown): string | null {
   if (!err || typeof err !== "object" || !("code" in err)) {
     return null;
   }
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const code = (err as { code?: unknown }).code;
   return typeof code === "string" && OWNER_REPAIR_CREDENTIAL_CODES.has(code) ? code : null;
 }
@@ -453,34 +455,34 @@ function buildCredentialResolutionOwnerActionSkip(
   connectorInstanceId?: string
 ): RunRecord {
   return {
+    attempt: 0,
+    checkpointSummary: null,
+    completedAt: nowIso(),
     connectorId,
     connectorInstanceId: connectorInstanceId ?? null,
-    source: buildScheduledRunSource(connectorId),
-    status: "skipped",
-    recordsEmitted: 0,
-    checkpointSummary: null,
-    knownGaps: [],
-    startedAt: nowIso(),
-    completedAt: nowIso(),
     error: `needs_human_attention: ${code}: ${message}`,
-    attempt: 0,
+    knownGaps: [],
+    recordsEmitted: 0,
+    source: buildScheduledRunSource(connectorId),
+    startedAt: nowIso(),
+    status: "skipped",
   };
 }
 
 function buildBackoffClearedEvent(connectorId: string, resumedAt: string, connectorInstanceId?: string): RunRecord {
   const payload = JSON.stringify({ resumed_at: resumedAt });
   return {
+    attempt: 0,
+    checkpointSummary: null,
+    completedAt: nowIso(),
     connectorId,
     connectorInstanceId: connectorInstanceId ?? null,
-    source: buildScheduledRunSource(connectorId),
-    status: "skipped",
-    recordsEmitted: 0,
-    checkpointSummary: null,
-    knownGaps: [],
-    startedAt: nowIso(),
-    completedAt: nowIso(),
     error: `schedule.back_off.cleared: ${payload}`,
-    attempt: 0,
+    knownGaps: [],
+    recordsEmitted: 0,
+    source: buildScheduledRunSource(connectorId),
+    startedAt: nowIso(),
+    status: "skipped",
   };
 }
 
@@ -490,17 +492,17 @@ function buildBrowserSurfaceUnavailableSkip(
   connectorInstanceId?: string
 ): RunRecord {
   return {
+    attempt: 0,
+    checkpointSummary: null,
+    completedAt: nowIso(),
     connectorId,
     connectorInstanceId: connectorInstanceId ?? null,
-    source: buildScheduledRunSource(connectorId),
-    status: "skipped",
-    recordsEmitted: 0,
-    checkpointSummary: null,
-    knownGaps: [],
-    startedAt: nowIso(),
-    completedAt: nowIso(),
     error: `browser_surface_unavailable: ${status}`,
-    attempt: 0,
+    knownGaps: [],
+    recordsEmitted: 0,
+    source: buildScheduledRunSource(connectorId),
+    startedAt: nowIso(),
+    status: "skipped",
   };
 }
 
@@ -512,6 +514,7 @@ const BROWSER_SURFACE_UNAVAILABLE_STATUSES = new Set([
 ]);
 
 function controllerRunNowDeferReason(err: unknown): string | null {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const code = typeof (err as { code?: unknown })?.code === "string" ? (err as { code: string }).code : "";
   if (code === "run_already_active") {
     return "run_already_active";
@@ -563,11 +566,11 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
   ): Promise<RunRecord> {
     const { connectorId, connectorInstanceId = connectorId, grantAccessMode = "continuous" } = schedule;
     const record = buildSuccessOrFailureRecord({
+      attempt,
       connectorId,
       connectorInstanceId,
       result,
       startedAt,
-      attempt,
     });
 
     // Capture pre-success streak state so we can emit a one-shot
@@ -659,13 +662,13 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
       admitted =
         (await Promise.resolve(
           activeRunStore.upsertActiveRun({
-            connector_instance_id: connectorInstanceId,
             connector_id: connectorId,
-            run_id: runId,
+            connector_instance_id: connectorInstanceId,
             run_generation: attempt,
-            trace_id: traceContext.trace_id,
+            run_id: runId,
             scenario_id: traceContext.scenario_id,
             started_at: startedAt,
+            trace_id: traceContext.trace_id,
           })
         ).catch((err: unknown) => {
           const message = err instanceof Error ? err.message : String(err);
@@ -676,8 +679,6 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
 
     const leasedCall: RunConnectorCall = {
       ...call,
-      runId,
-      traceContext,
       cancelSignal: watchdog.signal,
       onProgress: () => {
         watchdog.markProgress();
@@ -700,6 +701,8 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
             runId: startedRun.runId,
           }) ?? null;
       },
+      runId,
+      traceContext,
     };
 
     const clear = async (): Promise<void> => {
@@ -714,7 +717,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
       }
     };
 
-    return { call: leasedCall, admitted, watchdog, clear };
+    return { admitted, call: leasedCall, clear, watchdog };
   }
 
   async function runSingleAttempt(
@@ -738,17 +741,17 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
       }
       const result = await invokeRunConnector(lease.call);
       if (watchdog.timedOut()) {
-        return { kind: "give-up", error: runTimedOutError(result, maxRunWallClockMs) };
+        return { error: runTimedOutError(result, maxRunWallClockMs), kind: "give-up" };
       }
       const candidateError: RunConnectorError = {
-        failure_reason: result.terminal_reason === "connector_protocol_violation" ? result.terminal_reason : null,
-        terminal_reason: result.terminal_reason || null,
         connector_error: result.connector_error || null,
+        failure_reason: result.terminal_reason === "connector_protocol_violation" ? result.terminal_reason : null,
         known_gaps: result.known_gaps || null,
+        terminal_reason: result.terminal_reason || null,
       };
 
       if (result.status !== "succeeded" && attempt <= maxRetries && shouldRetryRunFailure(candidateError)) {
-        return { kind: "retry", error: describeFailedRunResult(result) };
+        return { error: describeFailedRunResult(result), kind: "retry" };
       }
 
       const record = await finalizeSuccessOrFailure(schedule, call, result, startedAt, attempt);
@@ -756,9 +759,9 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     } catch (err) {
       const error = coerceRunError(err);
       if (attempt <= maxRetries && shouldRetryRunFailure(error)) {
-        return { kind: "retry", error };
+        return { error, kind: "retry" };
       }
-      return { kind: "give-up", error };
+      return { error, kind: "give-up" };
     } finally {
       await lease.clear();
     }
@@ -767,15 +770,15 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
   function buildAttemptCall(schedule: ConnectorSchedule, call: RunConnectorCall, attempt: number): RunConnectorCall {
     const attemptTriggerKind: RunTriggerKind = attempt === 1 ? (call.triggerKind ?? "scheduled") : "retry";
     const attemptPolicy = projectRunAutomationPolicy({
-      triggerKind: attemptTriggerKind,
       refreshPolicy: getManifestRefreshPolicy(schedule.manifest),
+      triggerKind: attemptTriggerKind,
     });
     return {
       ...call,
+      automationMode: attemptPolicy.automation_mode,
       runId: call.runId ?? `run_${Date.now()}_${attempt}`,
       traceContext: call.traceContext ?? createTraceContext(),
       triggerKind: attemptPolicy.trigger_kind,
-      automationMode: attemptPolicy.automation_mode,
     };
   }
 
@@ -790,10 +793,10 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
   ): RunRecord {
     const { connectorId, connectorInstanceId = connectorId } = schedule;
     const failRecord = buildExhaustedFailureRecord({
+      attempt,
       connectorId,
       connectorInstanceId,
       lastError,
-      attempt,
     });
     runtime.history.push(failRecord);
     if (schedulerStore) {
@@ -817,8 +820,10 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
       if (!runtime.running) {
         break;
       }
+      // biome-ignore lint/style/noIncrementDecrement: The explicit counter update preserves this loop’s evaluation order.
       attempt++;
 
+      // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
       const outcome = await runSingleAttempt(schedule, buildAttemptCall(schedule, call, attempt), attempt);
       if (outcome.kind === "done") {
         return outcome.record;
@@ -856,17 +861,18 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     attempt = 1
   ): RunRecord {
     return {
-      connectorId,
-      connectorInstanceId: connectorInstanceId ?? null,
-      source: buildScheduledRunSource(connectorId),
-      status: "failed",
-      recordsEmitted: 0,
-      checkpointSummary: null,
-      knownGaps: [],
-      startedAt,
-      completedAt: nowIso(),
-      error: `controller_run_now_failed: ${message}`,
       attempt,
+      checkpointSummary: null,
+      completedAt: nowIso(),
+      connectorId,
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+      connectorInstanceId: connectorInstanceId ?? null,
+      error: `controller_run_now_failed: ${message}`,
+      knownGaps: [],
+      recordsEmitted: 0,
+      source: buildScheduledRunSource(connectorId),
+      startedAt,
+      status: "failed",
     };
   }
 
@@ -880,24 +886,26 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     attempt = 1
   ): RunRecord {
     return {
-      connectorId,
-      connectorInstanceId: connectorInstanceId ?? null,
-      source: buildScheduledRunSource(connectorId),
-      status: schedulerStatusFromRuntimeResult(runNowResult.status),
-      recordsEmitted: 0,
+      attempt,
       checkpointSummary: null,
-      knownGaps: runNowResult.known_gaps || [],
-      connectorError: runNowResult.connector_error || null,
-      failureReason: runNowResult.failure_reason || null,
-      startedAt,
       completedAt: nowIso(),
+      connectorError: runNowResult.connector_error || null,
+      connectorId,
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+      connectorInstanceId: connectorInstanceId ?? null,
+      failureReason: runNowResult.failure_reason || null,
+      knownGaps: runNowResult.known_gaps || [],
+      recordsEmitted: 0,
       runId: runNowResult.run_id ?? null,
+      source: buildScheduledRunSource(connectorId),
+      startedAt,
+      status: schedulerStatusFromRuntimeResult(runNowResult.status),
       terminalReason: runNowResult.terminal_reason || null,
       traceId: runNowResult.trace_id ?? null,
-      attempt,
     };
   }
 
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This protocol transition owns ordered state invariants that must remain local.
   async function routeScheduledManagedRun(
     via: RunManagedConnectorViaController,
     connectorId: string,
@@ -912,18 +920,20 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     let attempt = 0;
 
     while (attempt <= maxRetries) {
+      // biome-ignore lint/style/noIncrementDecrement: The explicit counter update preserves this loop’s evaluation order.
       attempt++;
       const startedAt = nowIso();
       let runNowResult: Awaited<ReturnType<RunManagedConnectorViaController>>;
       try {
+        // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
         runNowResult = await via(connectorId, {
           connectorInstanceId,
           ownerToken,
           priorityClass: "background",
           recoveryOnly: options.recoveryOnly === true,
-          triggerKind: "scheduled",
           referenceBaseUrl,
           rsUrl,
+          triggerKind: "scheduled",
         });
       } catch (err) {
         const deferReason = controllerRunNowDeferReason(err);
@@ -1050,7 +1060,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
       );
     };
 
-    return { state, collectionMode, wrappedInteraction };
+    return { collectionMode, state, wrappedInteraction };
   }
 
   async function launchRun(
@@ -1152,27 +1162,27 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     }
 
     return await runWithRetries(schedule, {
-      connectorPath,
+      automationMode: automationPolicy.automation_mode,
+      collectionMode,
       connectorId,
       connectorInstanceId,
-      ownerToken,
+      connectorPath,
       manifest,
-      state,
-      collectionMode,
-      recoveryOnly,
-      persistState,
-      referenceBaseUrl,
-      rsUrl,
-      staticSecretEnv,
-      triggerKind: automationPolicy.trigger_kind,
-      automationMode: automationPolicy.automation_mode,
       onInteraction: wrappedInteraction,
-      onStarted: (run) => {
-        currentRunIdBox.value = typeof run?.run_id === "string" ? run.run_id : null;
-      },
       onProgress: () => {
         // no-op; progress is driven by the runtime's own logging.
       },
+      onStarted: (run) => {
+        currentRunIdBox.value = typeof run?.run_id === "string" ? run.run_id : null;
+      },
+      ownerToken,
+      persistState,
+      recoveryOnly,
+      referenceBaseUrl,
+      rsUrl,
+      state,
+      staticSecretEnv,
+      triggerKind: automationPolicy.trigger_kind,
     });
   }
 

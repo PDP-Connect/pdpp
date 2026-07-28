@@ -40,18 +40,19 @@ interface RouteRequest {
 }
 
 interface RouteResponse {
-  json(body: unknown): unknown;
-  status(code: number): RouteResponse;
+  json: (body: unknown) => unknown;
+  status: (code: number) => RouteResponse;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
 
 interface AppLike {
-  get(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
-  post(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  get: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
+  post: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
 }
 
 function subscriptionIdFromParams(params: Readonly<Record<string, string>>): string {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   return params.subscription_id ?? params.id ?? "";
 }
 
@@ -163,6 +164,7 @@ function parseGrantPackageListQuery(query: Readonly<Record<string, unknown>>): {
   limit: number;
   cursor: string | null;
 } {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const rawLimit = query?.limit;
   let limit = 50;
   if (rawLimit !== undefined && rawLimit !== null) {
@@ -184,8 +186,9 @@ function parseGrantPackageListQuery(query: Readonly<Record<string, unknown>>): {
     limit = parsed;
   }
   return {
-    limit,
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     cursor: typeof query?.cursor === "string" && (query.cursor as string).length > 0 ? (query.cursor as string) : null,
+    limit,
   };
 }
 
@@ -195,22 +198,22 @@ export function mountRefGrantPackagesList(app: AppLike, ctx: MountRefGrantsConte
     try {
       const page = await ctx.listGrantPackagesForOwner(parseGrantPackageListQuery(req.query));
       res.json({
-        object: "list",
         data: page.data.map((pkg) => ({
+          approved_at: pkg.approved_at,
+          client_id: pkg.client_id,
+          created_at: pkg.created_at,
+          member_count: pkg.member_count,
           object: "grant_package_summary",
           package_id: pkg.package_id,
           parent_package_id: pkg.parent_package_id,
-          subject_id: pkg.subject_id,
-          client_id: pkg.client_id,
-          status: pkg.status,
-          member_count: pkg.member_count,
-          created_at: pkg.created_at,
-          approved_at: pkg.approved_at,
           revoked_at: pkg.revoked_at,
+          status: pkg.status,
+          subject_id: pkg.subject_id,
         })),
         has_more: page.has_more,
-        next_cursor: page.next_cursor,
         limit: page.limit,
+        next_cursor: page.next_cursor,
+        object: "list",
       });
     } catch (err) {
       ctx.handleError(res, err);
@@ -227,7 +230,7 @@ export function mountRefGrantPackagesCount(app: AppLike, ctx: MountRefGrantsCont
   app.get("/_ref/grant-packages/count", ctx.requireOwnerSession, async (_req: RouteRequest, res: RouteResponse) => {
     try {
       const count = await ctx.countGrantPackagesForOwner();
-      res.json({ object: "grant_package_count", count });
+      res.json({ count, object: "grant_package_count" });
     } catch (err) {
       ctx.handleError(res, err);
     }
@@ -238,6 +241,7 @@ export function mountRefGrantPackagesCount(app: AppLike, ctx: MountRefGrantsCont
 export function mountRefGrantPackagesGet(app: AppLike, ctx: MountRefGrantsContext): void {
   app.get("/_ref/grant-packages/:id", ctx.requireOwnerSession, async (req: RouteRequest, res: RouteResponse) => {
     try {
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
       const id = req.params.id ?? "";
       const pkg = await ctx.getGrantPackageForOwner(id);
       if (!pkg) {
@@ -245,27 +249,27 @@ export function mountRefGrantPackagesGet(app: AppLike, ctx: MountRefGrantsContex
         return;
       }
       res.json({
-        object: "grant_package",
-        package_id: pkg.package_id,
-        parent_package_id: pkg.parent_package_id,
-        subject_id: pkg.subject_id,
-        client_id: pkg.client_id,
-        status: pkg.status,
-        member_count: pkg.member_count,
-        created_at: pkg.created_at,
         approved_at: pkg.approved_at,
-        revoked_at: pkg.revoked_at,
-        trace_id: pkg.trace_id,
-        scenario_id: pkg.scenario_id,
         children: pkg.children.map((child) => ({
-          object: "grant_package_child",
+          added_at: child.added_at,
           grant_id: child.grant_id,
           grant_status: child.grant_status,
           member_status: child.member_status,
-          added_at: child.added_at,
+          object: "grant_package_child",
           revoked_at: child.revoked_at,
           source: child.source,
         })),
+        client_id: pkg.client_id,
+        created_at: pkg.created_at,
+        member_count: pkg.member_count,
+        object: "grant_package",
+        package_id: pkg.package_id,
+        parent_package_id: pkg.parent_package_id,
+        revoked_at: pkg.revoked_at,
+        scenario_id: pkg.scenario_id,
+        status: pkg.status,
+        subject_id: pkg.subject_id,
+        trace_id: pkg.trace_id,
       });
     } catch (err) {
       ctx.handleError(res, err);
@@ -287,6 +291,7 @@ export function mountRefGrantPackagesCumulative(app: AppLike, ctx: MountRefGrant
     ctx.requireOwnerSession,
     async (req: RouteRequest, res: RouteResponse) => {
       try {
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
         const id = req.params.id ?? "";
         const view = await ctx.getCumulativeClientAccessForPackage(id);
         if (!view) {
@@ -294,33 +299,33 @@ export function mountRefGrantPackagesCumulative(app: AppLike, ctx: MountRefGrant
           return;
         }
         res.json({
-          object: "grant_package_cumulative_view",
-          experimental: "reference.batch_consent.v1",
-          root_package_id: view.root_package_id,
-          client_id: view.client_id,
-          subject_id: view.subject_id,
-          package_count: view.package_count,
           active_child_count: view.active_child_count,
-          packages: view.packages.map((pkg) => ({
-            object: "grant_package_lineage_member",
-            package_id: pkg.package_id,
-            parent_package_id: pkg.parent_package_id,
-            status: pkg.status,
-            member_count: pkg.member_count,
-            created_at: pkg.created_at,
-            approved_at: pkg.approved_at,
-            revoked_at: pkg.revoked_at,
-          })),
           children: view.children.map((child) => ({
-            object: "grant_package_child",
-            package_id: child.package_id,
+            added_at: child.added_at,
             grant_id: child.grant_id,
             grant_status: child.grant_status,
             member_status: child.member_status,
-            added_at: child.added_at,
+            object: "grant_package_child",
+            package_id: child.package_id,
             revoked_at: child.revoked_at,
             source: child.source,
           })),
+          client_id: view.client_id,
+          experimental: "reference.batch_consent.v1",
+          object: "grant_package_cumulative_view",
+          package_count: view.package_count,
+          packages: view.packages.map((pkg) => ({
+            approved_at: pkg.approved_at,
+            created_at: pkg.created_at,
+            member_count: pkg.member_count,
+            object: "grant_package_lineage_member",
+            package_id: pkg.package_id,
+            parent_package_id: pkg.parent_package_id,
+            revoked_at: pkg.revoked_at,
+            status: pkg.status,
+          })),
+          root_package_id: view.root_package_id,
+          subject_id: view.subject_id,
         });
       } catch (err) {
         ctx.handleError(res, err);
@@ -336,6 +341,7 @@ export function mountRefGrantPackagesRevoke(app: AppLike, ctx: MountRefGrantsCon
     ctx.requireOwnerSession,
     async (req: RouteRequest, res: RouteResponse) => {
       try {
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
         const id = req.params.id ?? "";
         const pkg = await ctx.getGrantPackageForOwner(id);
         if (!pkg) {
@@ -351,14 +357,14 @@ export function mountRefGrantPackagesRevoke(app: AppLike, ctx: MountRefGrantsCon
         const result = await ctx.revokeGrantPackage(id, revokeOpts);
         const after = await ctx.getGrantPackageForOwner(id);
         const body = {
+          not_revoked_child_count: result.not_revoked_child_grants.length,
+          not_revoked_child_grants: result.not_revoked_child_grants,
           object: "grant_package_revoke_result",
           package_id: id,
-          status: result.status,
           revoked_at: result.revoked_at ?? after?.revoked_at ?? null,
           revoked_child_count: result.revoked_child_grants.length,
-          not_revoked_child_count: result.not_revoked_child_grants.length,
           revoked_child_grants: result.revoked_child_grants,
-          not_revoked_child_grants: result.not_revoked_child_grants,
+          status: result.status,
         };
         if (result.status === "partial_failure") {
           res.status(500).json(body);
@@ -389,8 +395,8 @@ export function mountRefEventSubscriptionsList(app: AppLike, ctx: MountRefGrants
             status: typeof req.query.status === "string" ? req.query.status : null,
           },
           {
-            listAllSubscriptions: ctx.listAllSubscriptions,
             getSubscriptionSummary: ctx.getSubscriptionSummary,
+            listAllSubscriptions: ctx.listAllSubscriptions,
           }
         );
         res.json(envelope);
@@ -436,8 +442,8 @@ export function mountRefEventSubscriptionsDisable(app: AppLike, ctx: MountRefGra
         const body = req.body as Record<string, unknown> | null | undefined;
         const reason = body && typeof body === "object" && typeof body.reason === "string" ? body.reason : null;
         const out = await executeRefClientEventSubscriptionsDisable(
-          { subscriptionId: subscriptionIdFromParams(req.params), reason },
-          { store: ctx.getClientEventSubscriptionStore(), nowIso: ctx.nowIso }
+          { reason, subscriptionId: subscriptionIdFromParams(req.params) },
+          { nowIso: ctx.nowIso, store: ctx.getClientEventSubscriptionStore() }
         );
         const detail = await executeRefClientEventSubscriptionsGet(out.subscriptionId, {
           getSubscriptionSummary: ctx.getSubscriptionSummary,

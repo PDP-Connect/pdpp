@@ -575,7 +575,7 @@ browser origin, checks that public metadata does not leak Docker service names,
 and confirms `/` redirects to `/owner/login` when owner auth is
 configured.
 
-Scheduler startup uses the same `reference-implementation/server/index.js`
+Scheduler startup uses the same `reference-implementation/server/index.ts`
 entrypoint in Docker as local long-lived startup. To smoke enabled schedule
 execution in Compose, seed a connector and enabled `connector_schedules` row in
 the mounted reference database, restart only the `reference` service, then

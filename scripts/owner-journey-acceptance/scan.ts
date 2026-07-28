@@ -606,8 +606,10 @@ export function checkSharedShellNavContract({
   const findings: Finding[] = [];
 
   for (const item of requiredItems) {
+    const labelPat = quotedLiteralPattern(item.label);
+    const hrefPat = quotedLiteralPattern(item.href);
     const itemRe = new RegExp(
-      `\\{\\s*label:\\s*${quotedLiteralPattern(item.label)},\\s*href:\\s*${quotedLiteralPattern(item.href)}\\s*\\}`
+      `\\{\\s*(?:label:\\s*${labelPat},\\s*href:\\s*${hrefPat}|href:\\s*${hrefPat},\\s*label:\\s*${labelPat})\\s*\\}`
     );
     if (!itemRe.test(cleaned)) {
       findings.push({

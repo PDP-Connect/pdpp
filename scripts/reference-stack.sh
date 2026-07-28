@@ -277,11 +277,11 @@ case "$cmd" in
       shift
     fi
     [[ $# -eq 0 ]] || fail "unexpected extra arguments: $*"
-    ensure_dynamic_surface_network
     case "$mode" in
       --build-app)
         guard_clean_tree
         check_disk_headroom
+        ensure_dynamic_surface_network
         inject_revision
         # The reference app depends on n.eko's container-local settle route.
         # Build/converge both in one deployment so a new app cannot be paired
@@ -292,10 +292,12 @@ case "$cmd" in
       --build-all)
         guard_clean_tree
         check_disk_headroom
+        ensure_dynamic_surface_network
         inject_revision
         "${COMPOSE[@]}" up -d --build "${SERVICES[@]}"
         ;;
       --no-build)
+        ensure_dynamic_surface_network
         "${COMPOSE[@]}" up -d --no-build "${SERVICES[@]}"
         ;;
       *)

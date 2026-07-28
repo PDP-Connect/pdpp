@@ -22,7 +22,7 @@
 // one implementation of the CSRF/cookie parsing and the POST body shape.
 //
 // `return_to` is fixed to `/` — the current owner-console landing route
-// (reference-implementation/test/dashboard-proxy-redirect.test.js pins
+// (reference-implementation/test/dashboard-proxy-redirect.test.ts pins
 // `GET /` -> 307 to `/owner/login?return_to=%2F`).
 //
 // Recognized environment variables for `resolveOwnerAuthForLive` (first

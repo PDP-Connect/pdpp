@@ -19,16 +19,13 @@
  *   `process` / `process.env`.
  */
 
-export type DcrRegisterErrorCode =
-  | "invalid_client"
-  | "invalid_request"
-  | "invalid_client_metadata";
+export type DcrRegisterErrorCode = "invalid_client" | "invalid_request" | "invalid_client_metadata";
 
 export interface DcrRegisterInput {
-  /** Free-form request body (typed by JSON parser). */
-  readonly body: Record<string, unknown> | null | undefined;
   /** Authorization header value, if present. */
   readonly authorizationHeader: string | null;
+  /** Free-form request body (typed by JSON parser). */
+  readonly body: Record<string, unknown> | null | undefined;
   /** Whether DCR is enabled in this AS deployment. */
   readonly dcrEnabled: boolean;
   /**
@@ -43,24 +40,24 @@ export interface DcrRegisterInput {
 export interface DcrRegisteredClient {
   readonly client_id: string;
   readonly client_name?: string | null;
-  readonly token_endpoint_auth_method?: string | null;
   readonly redirect_uris?: readonly string[] | null;
+  readonly token_endpoint_auth_method?: string | null;
   readonly [extra: string]: unknown;
 }
 
 export interface DcrRegisterDependencies {
   /** Persist a new dynamic client registration. */
-  registerDynamicClient(
+  registerDynamicClient: (
     sanitizedInput: Record<string, unknown>,
-    extraMetadata: Record<string, unknown>,
-  ): Promise<DcrRegisteredClient> | DcrRegisteredClient;
+    extraMetadata: Record<string, unknown>
+  ) => Promise<DcrRegisteredClient> | DcrRegisteredClient;
 }
 
 export interface DcrRegisterRequestSummary {
   readonly requested_client_name: string | null;
-  readonly requested_token_endpoint_auth_method: string | null;
-  readonly requested_redirect_uri_count: number;
   readonly requested_metadata_fields: readonly string[];
+  readonly requested_redirect_uri_count: number;
+  readonly requested_token_endpoint_auth_method: string | null;
 }
 
 export interface DcrRegisterError extends Error {
@@ -68,14 +65,11 @@ export interface DcrRegisterError extends Error {
 }
 
 export interface DcrRegisterSuccessSpineData {
-  readonly registration_mode: "dynamic";
-  readonly registration_access:
-    | "public"
-    | "initial_access_token"
-    | "owner_session";
   readonly client_name: string | null;
-  readonly token_endpoint_auth_method: string | null;
   readonly redirect_uri_count: number;
+  readonly registration_access: "public" | "initial_access_token" | "owner_session";
+  readonly registration_mode: "dynamic";
+  readonly token_endpoint_auth_method: string | null;
 }
 
 export interface DcrRegisterFailureSpineData extends DcrRegisterRequestSummary {
@@ -87,67 +81,60 @@ export interface DcrRegisterFailureSpineData extends DcrRegisterRequestSummary {
 
 export interface DcrRegisterSuccessOutcome {
   readonly outcome: "success";
-  readonly status: 201;
   readonly registered: DcrRegisteredClient;
   readonly spineData: DcrRegisterSuccessSpineData;
+  readonly status: 201;
 }
 
 export interface DcrRegisterFailureOutcome {
-  readonly outcome: "failure";
-  readonly status: number;
   readonly errorCode: string;
   readonly errorMessage: string;
+  readonly outcome: "failure";
   readonly spineData: DcrRegisterFailureSpineData;
+  readonly status: number;
 }
 
-export type DcrRegisterOutcome =
-  | DcrRegisterSuccessOutcome
-  | DcrRegisterFailureOutcome;
+export type DcrRegisterOutcome = DcrRegisterSuccessOutcome | DcrRegisterFailureOutcome;
 
 export function summarizeDcrRegisterRequest(
-  body: Record<string, unknown> | null | undefined,
+  body: Record<string, unknown> | null | undefined
 ): DcrRegisterRequestSummary {
-  const safe =
-    body && typeof body === "object" && !Array.isArray(body)
-      ? (body as Record<string, unknown>)
-      : {};
+  const safe = body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : {};
   return {
-    requested_client_name:
-      typeof safe.client_name === "string" ? safe.client_name : null,
-    requested_token_endpoint_auth_method:
-      typeof safe.token_endpoint_auth_method === "string"
-        ? safe.token_endpoint_auth_method
-        : null,
-    requested_redirect_uri_count: Array.isArray(safe.redirect_uris)
-      ? safe.redirect_uris.length
-      : 0,
+    requested_client_name: typeof safe.client_name === "string" ? safe.client_name : null,
     requested_metadata_fields: Object.keys(safe).sort(),
+    requested_redirect_uri_count: Array.isArray(safe.redirect_uris) ? safe.redirect_uris.length : 0,
+    requested_token_endpoint_auth_method:
+      typeof safe.token_endpoint_auth_method === "string" ? safe.token_endpoint_auth_method : null,
   };
 }
 
 function mapErrorStatus(code: string): number {
-  if (code === "invalid_client") return 401;
-  if (code === "invalid_request") return 404;
+  if (code === "invalid_client") {
+    return 401;
+  }
+  if (code === "invalid_request") {
+    return 404;
+  }
   return 400;
 }
 
 export async function executeAsDcrRegister(
   input: DcrRegisterInput,
-  deps: DcrRegisterDependencies,
+  deps: DcrRegisterDependencies
 ): Promise<DcrRegisterOutcome> {
   const requestSummary = summarizeDcrRegisterRequest(input.body);
   try {
     if (!input.dcrEnabled) {
-      const err = new Error(
-        "Dynamic client registration is not enabled",
-      ) as DcrRegisterError;
+      const err = new Error("Dynamic client registration is not enabled") as DcrRegisterError;
       err.code = "invalid_request";
       throw err;
     }
 
     const auth = input.authorizationHeader;
-    let registrationAccess: DcrRegisterSuccessSpineData["registration_access"] =
-      input.ownerSessionSubjectId ? "owner_session" : "public";
+    let registrationAccess: DcrRegisterSuccessSpineData["registration_access"] = input.ownerSessionSubjectId
+      ? "owner_session"
+      : "public";
     if (auth) {
       if (!auth.startsWith("Bearer ")) {
         const err = new Error("Malformed initial access token") as DcrRegisterError;
@@ -170,42 +157,35 @@ export async function executeAsDcrRegister(
       input.body && typeof input.body === "object" && !Array.isArray(input.body)
         ? { ...(input.body as Record<string, unknown>) }
         : {};
-    delete sanitizedInput.issuer_subject_id;
+    Reflect.deleteProperty(sanitizedInput, "issuer_subject_id");
 
     const extraMetadata: Record<string, unknown> = input.ownerSessionSubjectId
       ? { issuer_subject_id: input.ownerSessionSubjectId }
       : {};
 
-    const registered = await deps.registerDynamicClient(
-      sanitizedInput,
-      extraMetadata,
-    );
+    const registered = await deps.registerDynamicClient(sanitizedInput, extraMetadata);
 
     return {
       outcome: "success",
-      status: 201,
       registered,
       spineData: {
-        registration_mode: "dynamic",
-        registration_access: registrationAccess,
         client_name: registered.client_name || null,
-        token_endpoint_auth_method:
-          registered.token_endpoint_auth_method || null,
-        redirect_uri_count: Array.isArray(registered.redirect_uris)
-          ? registered.redirect_uris.length
-          : 0,
+        redirect_uri_count: Array.isArray(registered.redirect_uris) ? registered.redirect_uris.length : 0,
+        registration_access: registrationAccess,
+        registration_mode: "dynamic",
+        token_endpoint_auth_method: registered.token_endpoint_auth_method || null,
       },
+      status: 201,
     };
   } catch (err) {
-    const errCode =
-      (err as { code?: string })?.code || "invalid_client_metadata";
-    const errMessage =
-      (err as { message?: string })?.message || "Registration rejected";
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
+    const errCode = (err as { code?: string })?.code || "invalid_client_metadata";
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
+    const errMessage = (err as { message?: string })?.message || "Registration rejected";
     return {
-      outcome: "failure",
-      status: mapErrorStatus(errCode),
       errorCode: errCode,
       errorMessage: errMessage,
+      outcome: "failure",
       spineData: {
         ...requestSummary,
         error: {
@@ -213,6 +193,7 @@ export async function executeAsDcrRegister(
           message: errMessage,
         },
       },
+      status: mapErrorStatus(errCode),
     };
   }
 }

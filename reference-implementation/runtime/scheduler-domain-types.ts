@@ -33,6 +33,7 @@ export type TerminalNonGrantReason =
   | "authentication_error"
   | "connector_protocol_violation"
   | "connector_reported_cancelled"
+  | "connector_reported_failed"
   | "owner_cancel_forced"
   | "owner_cancelled"
   | "run_timed_out"
@@ -315,6 +316,16 @@ export type HumanRequiredStateEscalationHandler = (info: {
  * Returning null signals that this connector is not managed; launchRun falls
  * through to the direct runConnector path unchanged.
  */
+interface ManagedConnectorRun {
+  readonly connector_error?: ConnectorError | null;
+  readonly failure_reason?: string | null;
+  readonly known_gaps?: readonly Record<string, unknown>[] | null;
+  readonly run_id: string;
+  readonly status: string;
+  readonly terminal_reason?: TerminalReason | null;
+  readonly trace_id: string;
+}
+
 export type RunManagedConnectorViaController = (
   connectorId: string,
   opts: {
@@ -328,15 +339,7 @@ export type RunManagedConnectorViaController = (
     rsUrl?: string;
     referenceBaseUrl?: string | null;
   }
-) => Promise<{
-  readonly connector_error?: ConnectorError | null;
-  readonly failure_reason?: string | null;
-  readonly known_gaps?: readonly Record<string, unknown>[] | null;
-  readonly run_id: string;
-  readonly status: string;
-  readonly terminal_reason?: TerminalReason | null;
-  readonly trace_id: string;
-} | null>;
+) => ManagedConnectorRun | null | Promise<ManagedConnectorRun | null>;
 
 export interface SchedulerOptions {
   connectors: readonly ConnectorSchedule[];

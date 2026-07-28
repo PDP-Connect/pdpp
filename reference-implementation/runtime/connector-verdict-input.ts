@@ -152,16 +152,16 @@ export function buildStreamRollups(
       entry.coverage_condition !== "unknown";
     const effectivePriority = connectionCompleteReportGap ? "optional" : priority;
     return {
-      stream_id: entry.stream,
-      collected: entry.collected,
-      considered: entry.considered === "unknown" ? null : entry.considered,
-      coverage: entry.coverage_condition,
-      gap_retryable: retryable,
       // Connection-level attention is the only attention signal the projection
       // exposes; attribute it to a stream only when that stream is not complete,
       // so a complete stream never inherits a connection-level attention flag.
       attention_open: attentionOpen && entry.coverage_condition !== "complete",
+      collected: entry.collected,
+      considered: entry.considered === "unknown" ? null : entry.considered,
+      coverage: entry.coverage_condition,
+      gap_retryable: retryable,
       priority: effectivePriority,
+      stream_id: entry.stream,
     };
   });
 }
@@ -223,12 +223,12 @@ export function buildProgressEvidence(input: {
   readonly observedAt?: string | null;
 }): ProgressEvidence {
   return {
-    mode: input.mode,
-    retained_records: input.retainedRecords,
-    records_committed_last_run: input.recordsCommittedLastRun,
     gaps_drained_last_run: input.gapsDrainedLastRun,
     last_refreshed_at: input.lastRefreshedAt,
+    mode: input.mode,
     observed_at: input.observedAt ?? null,
+    records_committed_last_run: input.recordsCommittedLastRun,
+    retained_records: input.retainedRecords,
   };
 }
 

@@ -81,22 +81,22 @@ export interface BrowserSurfaceReplacementLedgerOptions {
 }
 
 export interface BrowserSurfaceReplacementLedger {
-  complete(input: ReplacementCompletionInput): ReplacementReceipt;
-  hydrate(receipts: readonly ReplacementReceipt[]): void;
-  list(): readonly ReplacementReceipt[];
-  selectCurrent(
+  complete: (input: ReplacementCompletionInput) => ReplacementReceipt;
+  hydrate: (receipts: readonly ReplacementReceipt[]) => void;
+  list: () => readonly ReplacementReceipt[];
+  selectCurrent: (
     connectionId: string,
     surfaceSubjectId?: string,
     currentGenerationHash?: string
-  ): ReplacementReceipt | null;
-  start(input: ReplacementStartInput): ReplacementReceipt;
-  terminate(input: ReplacementTerminalInput): ReplacementReceipt;
+  ) => ReplacementReceipt | null;
+  start: (input: ReplacementStartInput) => ReplacementReceipt;
+  terminate: (input: ReplacementTerminalInput) => ReplacementReceipt;
 }
 
 export interface ReplacementReceiptStore {
-  append(receipt: ReplacementReceipt): Promise<ReplacementReceipt>;
-  findPendingForSurface(surfaceId: string): Promise<ReplacementReceipt | null>;
-  list(): Promise<readonly ReplacementReceipt[]>;
+  append: (receipt: ReplacementReceipt) => Promise<ReplacementReceipt>;
+  findPendingForSurface: (surfaceId: string) => Promise<ReplacementReceipt | null>;
+  list: () => Promise<readonly ReplacementReceipt[]>;
 }
 
 type StartIdentity = Pick<ReplacementReceipt, "connection_id" | "profile_key" | "cause"> &
@@ -193,20 +193,20 @@ export function createBrowserSurfaceReplacementLedger(
     const idempotencyKey = input.idempotency_key ?? deriveIdempotencyKey("start", identity);
     return append({
       event_seq: nextEventSeq,
-      replacement_id: `${idPrefix}_${sha256(idempotencyKey).slice(0, 24)}`,
       idempotency_key: idempotencyKey,
+      replacement_id: `${idPrefix}_${sha256(idempotencyKey).slice(0, 24)}`,
       scope: replacementScope(identity.connection_id, identity.surface_subject_id),
       ...identity,
-      phase: "started",
       observed_at: input.observed_at ?? now(),
+      phase: "started",
     });
   }
 
   function startIdentity(input: ReplacementStartInput): StartIdentity {
     const identity = {
+      cause: assertCause(input.cause),
       connection_id: assertNonEmpty(input.connection_id, "connection_id"),
       profile_key: assertNonEmpty(input.profile_key, "profile_key"),
-      cause: assertCause(input.cause),
     } as StartIdentity;
     assignOptional(identity, "connector_id", optionalNonEmpty(input.connector_id));
     assignOptional(identity, "surface_subject_id", optionalNonEmpty(input.surface_subject_id));
@@ -288,16 +288,16 @@ export function createBrowserSurfaceReplacementLedger(
     terminalOutcome?: ReplacementTerminalOutcome
   ): ReplacementReceipt {
     const receipt = {
+      cause: prior.cause,
+      connection_id: prior.connection_id,
       event_seq: nextEventSeq,
-      replacement_id: prior.replacement_id,
       idempotency_key:
         input.idempotency_key ?? `${prior.idempotency_key}:${phase}${terminalOutcome ? `:${terminalOutcome}` : ""}`,
-      scope: prior.scope,
-      connection_id: prior.connection_id,
-      profile_key: prior.profile_key,
-      cause: prior.cause,
-      phase,
       observed_at: input.observed_at ?? now(),
+      phase,
+      profile_key: prior.profile_key,
+      replacement_id: prior.replacement_id,
+      scope: prior.scope,
     } as ReplacementReceipt;
     copyIdentityFields(receipt, prior);
     assignOptional(receipt, "next_generation_hash", nextGenerationHash);
@@ -306,18 +306,18 @@ export function createBrowserSurfaceReplacementLedger(
   }
 
   return {
-    start,
     complete,
-    terminate,
-    list() {
-      return receipts.slice();
-    },
     hydrate(hydratedReceipts) {
       hydrateReceipts(hydratedReceipts, append);
+    },
+    list() {
+      return receipts.slice();
     },
     selectCurrent(connectionId, surfaceSubjectId, currentGenerationHash) {
       return selectCurrentForScope(receipts, connectionId, surfaceSubjectId, currentGenerationHash);
     },
+    start,
+    terminate,
   };
 
   function requireStarted(replacementId: string): ReplacementReceipt {

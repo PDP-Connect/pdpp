@@ -102,7 +102,7 @@ async function cmdRun(name: string): Promise<{ ok: boolean; result: RunResult }>
     const ownerToken = await issueOwnerToken(asUrl, process.env.PDPP_SUBJECT_ID || "owner_local");
 
     console.error("[orchestrate] loading prior sync state...");
-    const runtime = (await import(join(REFERENCE_IMPL_DIR, "runtime/index.js"))) as RuntimeModule;
+    const runtime = (await import(join(REFERENCE_IMPL_DIR, "runtime/index.ts"))) as RuntimeModule;
     const { runConnector, loadSyncState } = runtime;
     const prior = await loadSyncState({
       connectorId: manifest.connector_id,

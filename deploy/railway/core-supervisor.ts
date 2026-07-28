@@ -83,7 +83,7 @@ for (const line of firstBoot.bannerLines) {
   console.log(line);
 }
 
-start("reference", process.execPath, ["/app/reference-implementation/server/index.js"], {
+start("reference", process.execPath, ["/app/reference-implementation/server/index.ts"], {
   cwd: "/app",
   env: referenceEnv,
 });

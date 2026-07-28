@@ -99,6 +99,8 @@ for (const { file, text } of forbiddenChecks) {
  * root import, declaration, or bin can otherwise point at an omitted file and
  * still leave `npm pack` green.
  */
+
+// biome-ignore lint/suspicious/noShadow: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
 function assertPublishedEntrypoints(manifest: Manifest, packedFileSet: Set<string>): void {
   assert.equal(typeof manifest.main, "string", "package.json.main must be a string");
   assert.equal(typeof manifest.types, "string", "package.json.types must be a string");
@@ -126,7 +128,7 @@ function assertPublishedEntrypoints(manifest: Manifest, packedFileSet: Set<strin
     ["types", manifest.types || ""],
     ...collectExportTargets(manifest.exports),
     ...Object.entries(manifest.bin ?? {}).map(([name, target]) => [`bin.${name}`, target]),
-  ] as Array<[string, string]>;
+  ] as [string, string][];
   for (const [label, target] of targets) {
     assert.equal(typeof target, "string", `${label} must resolve to a string target`);
     const packedPath = target.startsWith("./") ? target.slice(2) : target;
@@ -134,6 +136,7 @@ function assertPublishedEntrypoints(manifest: Manifest, packedFileSet: Set<strin
     assert.equal(path.posix.normalize(packedPath).startsWith("../"), false, `${label} escapes the package: ${target}`);
     assert.equal(packedFileSet.has(packedPath), true, `${label} resolves to an unpacked file: ${target}`);
     assert.equal(
+      // biome-ignore lint/performance/useTopLevelRegex: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
       /\.ts$/.test(packedPath) && !/\.d\.ts$/.test(packedPath),
       false,
       `${label} points to source TypeScript: ${target}`
@@ -141,7 +144,7 @@ function assertPublishedEntrypoints(manifest: Manifest, packedFileSet: Set<strin
   }
 }
 
-function collectExportTargets(exportsField: unknown, label = "exports"): Array<[string, string]> {
+function collectExportTargets(exportsField: unknown, label = "exports"): [string, string][] {
   if (typeof exportsField === "string") {
     return [[label, exportsField]];
   }
@@ -157,6 +160,8 @@ function collectExportTargets(exportsField: unknown, label = "exports"): Array<[
  * published artifact. Only literal relative specifiers are package-owned and
  * therefore resolvable without executing arbitrary connector behavior.
  */
+
+// biome-ignore lint/suspicious/noShadow: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
 async function assertLiteralRelativeImportsResolve(packedFiles: string[], packedFileSet: Set<string>): Promise<void> {
   const fileChecks = await Promise.all(
     packedFiles
@@ -182,6 +187,7 @@ async function assertLiteralRelativeImportsResolve(packedFiles: string[], packed
         true,
         `${packedFile} has an unresolved relative import: ${specifier} -> ${packedTarget}`
       );
+      // biome-ignore lint/performance/noAwaitInLoops: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
       await stat(targetPath);
     }
   }

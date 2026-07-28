@@ -46,20 +46,20 @@ import type { PdppErrorFn, RouteArg } from "./_route-contract.ts";
 
 interface RouteRequest {
   readonly body?: Record<string, unknown>;
-  get(name: string): string | undefined;
+  get: (name: string) => string | undefined;
   readonly protocol: string;
 }
 
 interface RouteResponse {
-  json(body: unknown): unknown;
-  setHeader(name: string, value: string): unknown;
-  status(code: number): RouteResponse;
+  json: (body: unknown) => unknown;
+  setHeader: (name: string, value: string) => unknown;
+  status: (code: number) => RouteResponse;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => Promise<unknown>;
 
 interface AppLike {
-  post(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  post: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
 }
 
 const HOSTED_MCP_OAUTH_ACCESS_TOKEN_EXPIRES_IN_SECONDS = 365 * 24 * 60 * 60;
@@ -77,27 +77,27 @@ export interface MountAsDeviceAuthorizationContext {
    * Initiates a new RFC 8628 device-code flow.
    * Bare owner-agent requests delegate to `ownerDeviceAuthStore.initiate`.
    */
-  initiateDeviceAuth(
+  initiateDeviceAuth: (
     clientId: string,
     opts: { baseUrl: string }
-  ): Promise<AsDeviceAuthInitStoreResult> | AsDeviceAuthInitStoreResult;
+  ) => Promise<AsDeviceAuthInitStoreResult> | AsDeviceAuthInitStoreResult;
   /**
    * Initiates grant-scoped MCP device authorization. This is distinct from
    * owner-agent onboarding: it stages a normal pending-consent request and
    * eventually redeems to a scoped client token, not an owner bearer.
    */
-  initiateMcpDeviceAuth(
+  initiateMcpDeviceAuth: (
     args: {
       clientId: string;
       resource: string;
       authorizationDetails: unknown;
     },
     opts: { baseUrl: string }
-  ): Promise<AsDeviceAuthInitStoreResult> | AsDeviceAuthInitStoreResult;
+  ) => Promise<AsDeviceAuthInitStoreResult> | AsDeviceAuthInitStoreResult;
   oauthError: PdppErrorFn;
   /** Resolves the full base URL for the running AS given the inbound request. */
-  resolveBaseUrl(req: RouteRequest): string;
-  setReferenceTraceId(res: unknown, traceId: string): void;
+  resolveBaseUrl: (req: RouteRequest) => string;
+  setReferenceTraceId: (res: unknown, traceId: string) => void;
 }
 
 function isMcpDeviceAuthorizationRequest(body: Record<string, unknown> | undefined): boolean {
@@ -113,6 +113,7 @@ function parseAuthorizationDetails(value: unknown): unknown {
   } catch {
     const err = new Error("authorization_details must be valid JSON when form encoded");
     (err as { code?: string }).code = "invalid_request";
+    // biome-ignore lint/style/useErrorCause: This compatibility path preserves the established error shape and propagation.
     throw err;
   }
 }
@@ -149,7 +150,7 @@ async function handleMcpDeviceAuthorization(
   }
 
   try {
-    const result = await ctx.initiateMcpDeviceAuth({ clientId, resource, authorizationDetails }, { baseUrl });
+    const result = await ctx.initiateMcpDeviceAuth({ authorizationDetails, clientId, resource }, { baseUrl });
     const traceContext = result.trace_context ?? null;
     const { trace_context: _ignored, ...publicResult } = result as Record<string, unknown>;
     if (traceContext && typeof traceContext === "object") {
@@ -187,8 +188,8 @@ export function mountAsDeviceAuthorization(app: AppLike, ctx: MountAsDeviceAutho
 
     const outcome = await executeAsDeviceAuthInit(
       {
-        clientId: bodyString(req.body?.client_id),
         baseUrl: ctx.resolveBaseUrl(req),
+        clientId: bodyString(req.body?.client_id),
       },
       {
         initiate: (clientId, opts2) => ctx.initiateDeviceAuth(clientId, opts2),
@@ -231,22 +232,22 @@ export interface MountAsTokenContext {
    * The composition root routes owner-agent and grant-scoped MCP device
    * codes to their separate lifecycle stores.
    */
-  exchangeDeviceCode(args: {
+  exchangeDeviceCode: (args: {
     clientId: string | null | undefined;
     deviceCode: string | null | undefined;
-  }): Promise<AsDeviceTokenExchangeStoreResult> | AsDeviceTokenExchangeStoreResult;
+  }) => Promise<AsDeviceTokenExchangeStoreResult> | AsDeviceTokenExchangeStoreResult;
   /**
    * Exchanges an OAuth authorization code for an access token.
    * Delegated to `auth.js#exchangeOAuthAuthorizationCode` via context so
    * this adapter does not import `server/auth.js` directly.
    */
-  exchangeOAuthAuthorizationCode(args: {
+  exchangeOAuthAuthorizationCode: (args: {
     baseUrl: string;
     code: unknown;
     clientId: unknown;
     redirectUri: unknown;
     codeVerifier: unknown;
-  }): Promise<{
+  }) => Promise<{
     access_token: string;
     token_type: string;
     refresh_token?: string | null;
@@ -257,7 +258,7 @@ export interface MountAsTokenContext {
    * Exchanges a refresh token for a new access token.
    * Delegated to `auth.js#exchangeOAuthRefreshToken` via context.
    */
-  exchangeOAuthRefreshToken(args: { refreshToken: unknown; clientId: unknown }): Promise<{
+  exchangeOAuthRefreshToken: (args: { refreshToken: unknown; clientId: unknown }) => Promise<{
     access_token: string;
     token_type: string;
     refresh_token: string;
@@ -266,8 +267,8 @@ export interface MountAsTokenContext {
   }>;
   oauthError: PdppErrorFn;
   /** Resolves the full base URL for the running AS given the inbound request. */
-  resolveBaseUrl(req: RouteRequest): string;
-  setReferenceTraceId(res: unknown, traceId: string): void;
+  resolveBaseUrl: (req: RouteRequest) => string;
+  setReferenceTraceId: (res: unknown, traceId: string) => void;
 }
 
 function buildGrantIdPayload(token: {
@@ -286,15 +287,15 @@ async function handleAuthCodeExchange(
   try {
     const token = await ctx.exchangeOAuthAuthorizationCode({
       baseUrl: ctx.resolveBaseUrl(req),
-      code: body.code,
       clientId: body.client_id,
-      redirectUri: body.redirect_uri,
+      code: body.code,
       codeVerifier: body.code_verifier,
+      redirectUri: body.redirect_uri,
     });
     return res.json({
       access_token: token.access_token,
-      token_type: token.token_type,
       expires_in: HOSTED_MCP_OAUTH_ACCESS_TOKEN_EXPIRES_IN_SECONDS,
+      token_type: token.token_type,
       ...(token.refresh_token ? { refresh_token: token.refresh_token } : {}),
       ...buildGrantIdPayload(token),
     });
@@ -311,14 +312,14 @@ async function handleRefreshTokenExchange(
 ): Promise<unknown> {
   try {
     const token = await ctx.exchangeOAuthRefreshToken({
-      refreshToken: body.refresh_token,
       clientId: body.client_id,
+      refreshToken: body.refresh_token,
     });
     return res.json({
       access_token: token.access_token,
-      token_type: token.token_type,
       expires_in: HOSTED_MCP_OAUTH_ACCESS_TOKEN_EXPIRES_IN_SECONDS,
       refresh_token: token.refresh_token,
+      token_type: token.token_type,
       ...buildGrantIdPayload(token),
     });
   } catch (err) {
@@ -335,6 +336,7 @@ export function mountAsToken(app: AppLike, ctx: MountAsTokenContext): void {
   // refresh_token branches delegate to `auth.js` capabilities injected
   // via context.
   const handler: RouteHandler = async (req, res) => {
+    // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
     const body = req.body;
     if (body?.grant_type === "authorization_code") {
       return handleAuthCodeExchange(req, body, res, ctx);
@@ -344,9 +346,9 @@ export function mountAsToken(app: AppLike, ctx: MountAsTokenContext): void {
     }
     const outcome = await executeAsDeviceTokenExchange(
       {
-        grantType: bodyString(body?.grant_type),
         clientId: bodyString(body?.client_id),
         deviceCode: bodyString(body?.device_code),
+        grantType: bodyString(body?.grant_type),
       },
       { exchangeDeviceCode: (args) => ctx.exchangeDeviceCode(args) }
     );
@@ -382,7 +384,7 @@ export interface MountAsIntrospectContext {
    * Resolves a token's grant/introspection payload.
    * Delegated to `auth.js#introspect` via context.
    */
-  introspect(token: string): Promise<AsIntrospectInfo> | AsIntrospectInfo;
+  introspect: (token: string) => Promise<AsIntrospectInfo> | AsIntrospectInfo;
   pdppError: PdppErrorFn;
 }
 

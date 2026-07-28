@@ -26,11 +26,11 @@
 // directly.
 
 import { createHash } from "node:crypto";
+import { handleLocalDeviceTerminalCollection } from "../../operations/local-device-terminal-collection.ts";
 import { mapWithConcurrency } from "../concurrency.ts";
 import { type DeviceAttemptContext, fingerprintDeviceAttemptManifest } from "../device-ingest-attempt-context.ts";
 import { deriveReferenceFreshness } from "../freshness.ts";
-import { handleLocalDeviceTerminalCollection } from "../../operations/local-device-terminal-collection.ts";
-import { assertRecordIdentity, normalizePrimaryKey } from "../record-expand-helpers.js";
+import { assertRecordIdentity, normalizePrimaryKey } from "../record-expand-helpers.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 import {
   type EnrolledSourceKind,
@@ -48,18 +48,18 @@ interface RouteRequest {
 }
 
 interface RouteResponse {
-  end(): unknown;
-  json(body: unknown): unknown;
-  setHeader(name: string, value: string): void;
-  status(code: number): RouteResponse;
+  end: () => unknown;
+  json: (body: unknown) => unknown;
+  setHeader: (name: string, value: string) => void;
+  status: (code: number) => RouteResponse;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
 
 interface AppLike {
-  get(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
-  post(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
-  put(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  get: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
+  post: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
+  put: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
 }
 
 const SHA256_HEX = /^[a-f0-9]{64}$/;
@@ -201,7 +201,7 @@ interface SyncStateProjection {
 }
 
 interface DeviceExporterStore {
-  completeProcessingBatch(params: {
+  completeProcessingBatch: (params: {
     deviceId: string;
     batchId: string;
     bodyHash: string;
@@ -214,24 +214,24 @@ interface DeviceExporterStore {
     response: unknown;
     manifestFingerprint: string;
     semanticCapabilityIdentity: string;
-    getCurrentSemanticCapabilityIdentity(): string;
-  }): Promise<BatchOutcomeRow>;
-  consumeEnrollmentCode(enrollmentCodeId: string, deviceId: string, at: string): Promise<boolean>;
-  createCredential(params: {
+    getCurrentSemanticCapabilityIdentity: () => string;
+  }) => Promise<BatchOutcomeRow>;
+  consumeEnrollmentCode: (enrollmentCodeId: string, deviceId: string, at: string) => Promise<boolean>;
+  createCredential: (params: {
     credentialId: string;
     deviceId: string;
     tokenHash: string;
     createdAt: string;
-  }): Promise<void>;
-  createDevice(params: {
+  }) => Promise<void>;
+  createDevice: (params: {
     deviceId: string;
     ownerSubjectId: string;
     displayName: string;
     collectorProtocolVersion: string | null;
     createdAt: string;
     updatedAt: string;
-  }): Promise<void>;
-  createEnrollmentCode(params: {
+  }) => Promise<void>;
+  createEnrollmentCode: (params: {
     enrollmentCodeId: string;
     codeHash: string;
     ownerSubjectId: string;
@@ -240,8 +240,8 @@ interface DeviceExporterStore {
     displayName: string | null;
     createdAt: string;
     expiresAt: string;
-  }): Promise<void>;
-  ensureProcessingBatch(params: {
+  }) => Promise<void>;
+  ensureProcessingBatch: (params: {
     deviceId: string;
     batchId: string;
     bodyHash: string;
@@ -253,9 +253,9 @@ interface DeviceExporterStore {
     createdAt: string;
     manifestFingerprint: string;
     semanticCapabilityIdentity: string;
-  }): Promise<BatchOutcomeRow>;
-  findCredentialByTokenHash(hash: string): Promise<CredentialRow | null>;
-  findEnrollmentByCodeHash(hash: string): Promise<{
+  }) => Promise<BatchOutcomeRow>;
+  findCredentialByTokenHash: (hash: string) => Promise<CredentialRow | null>;
+  findEnrollmentByCodeHash: (hash: string) => Promise<{
     enrollmentCodeId: string;
     ownerSubjectId: string;
     connectorId: string;
@@ -266,18 +266,18 @@ interface DeviceExporterStore {
     expiresAt: string;
     consumedAt: string | null;
   } | null>;
-  getBatchOutcome(deviceId: string, batchId: string): Promise<BatchOutcomeRow | null>;
-  getDevice(deviceId: string): Promise<DeviceRow | null>;
-  getSourceInstance(deviceId: string, sourceInstanceId: string): Promise<SourceInstanceRow | null>;
-  listBatchOutcomes(options: { limit: number }): Promise<BatchOutcomeRow[]>;
-  listDevices(ownerSubjectId: string): Promise<DeviceRow[]>;
-  listSourceInstances(options?: { deviceId?: string | null }): Promise<SourceInstanceRow[]>;
-  markCredentialUsed(credentialId: string, at: string): Promise<void>;
-  markDeviceHeartbeat(
+  getBatchOutcome: (deviceId: string, batchId: string) => Promise<BatchOutcomeRow | null>;
+  getDevice: (deviceId: string) => Promise<DeviceRow | null>;
+  getSourceInstance: (deviceId: string, sourceInstanceId: string) => Promise<SourceInstanceRow | null>;
+  listBatchOutcomes: (options: { limit: number }) => Promise<BatchOutcomeRow[]>;
+  listDevices: (ownerSubjectId: string) => Promise<DeviceRow[]>;
+  listSourceInstances: (options?: { deviceId?: string | null }) => Promise<SourceInstanceRow[]>;
+  markCredentialUsed: (credentialId: string, at: string) => Promise<void>;
+  markDeviceHeartbeat: (
     deviceId: string,
     params: { receivedAt: string; agentVersion: string | null; lastError: unknown }
-  ): Promise<void>;
-  markSourceInstanceHeartbeat(
+  ) => Promise<void>;
+  markSourceInstanceHeartbeat: (
     deviceId: string,
     sourceInstanceId: string,
     params: {
@@ -287,8 +287,8 @@ interface DeviceExporterStore {
       recordsPending: number | null;
       outboxDiagnostics: unknown;
     }
-  ): Promise<void>;
-  recordBatchOutcome(params: {
+  ) => Promise<void>;
+  recordBatchOutcome: (params: {
     deviceId: string;
     batchId: string;
     bodyHash: string;
@@ -297,8 +297,8 @@ interface DeviceExporterStore {
     httpStatus: number;
     response: unknown;
     createdAt: string;
-  }): Promise<void>;
-  refreshProcessingAttemptContext(params: {
+  }) => Promise<void>;
+  refreshProcessingAttemptContext: (params: {
     deviceId: string;
     batchId: string;
     bodyHash: string;
@@ -308,7 +308,7 @@ interface DeviceExporterStore {
     batchSeq: number;
     manifestFingerprint: string;
     semanticCapabilityIdentity: string;
-  }): Promise<BatchOutcomeRow>;
+  }) => Promise<BatchOutcomeRow>;
   // Design D6 (fix-enroll-stable-binding-identity-key), qualified by
   // sourceKind per D7 (fix-enroll-source-kind-identity-gap). Atomically
   // resolves the device + placeholder source-instance identity a
@@ -333,7 +333,7 @@ interface DeviceExporterStore {
   // least one consumed code (a live, already-completed enrollment) is never
   // adopted here. Callers MUST resolve sourceKind BEFORE calling this
   // method — it is never derived internally.
-  resolveOrCreateEnrollmentDevice(params: {
+  resolveOrCreateEnrollmentDevice: (params: {
     ownerSubjectId: string;
     connectorId: string;
     sourceKind: string;
@@ -343,20 +343,20 @@ interface DeviceExporterStore {
     displayName: string;
     collectorProtocolVersion: string | null;
     now: string;
-  }): Promise<{ deviceId: string; sourceInstanceId: string; adopted: boolean }>;
-  revokeDevice(deviceId: string, at: string): Promise<void>;
-  revokeEnrollmentCode(id: string, at: string): Promise<void>;
+  }) => Promise<{ deviceId: string; sourceInstanceId: string; adopted: boolean }>;
+  revokeDevice: (deviceId: string, at: string) => Promise<void>;
+  revokeEnrollmentCode: (id: string, at: string) => Promise<void>;
   // Revoke every non-revoked credential for the device and install exactly one
   // fresh credential (idempotent re-enroll rotation). See
   // decouple-device-enrollment-from-ingest-writer-admission design D2.
-  rotateDeviceCredential(params: {
+  rotateDeviceCredential: (params: {
     credentialId: string;
     deviceId: string;
     tokenHash: string;
     createdAt: string;
     rotatedAt: string;
-  }): Promise<void>;
-  upsertSourceInstance(params: {
+  }) => Promise<void>;
+  upsertSourceInstance: (params: {
     sourceInstanceId: string;
     deviceId: string;
     connectorId: string;
@@ -366,23 +366,23 @@ interface DeviceExporterStore {
     displayName: string | null;
     createdAt: string;
     updatedAt: string;
-  }): Promise<void>;
+  }) => Promise<void>;
 }
 
 interface ConnectorInstanceStore {
-  get(connectorInstanceId: string): Promise<ConnectorInstanceRow | null>;
-  getByBinding(params: {
+  get: (connectorInstanceId: string) => Promise<ConnectorInstanceRow | null>;
+  getByBinding: (params: {
     ownerSubjectId: string;
     connectorId: string;
     sourceKind: string;
     sourceBindingKey: string;
-  }): Promise<ConnectorInstanceRow | null>;
-  listByOwner(ownerSubjectId: string): Promise<ConnectorInstanceRow[]>;
-  updateStatus(
+  }) => Promise<ConnectorInstanceRow | null>;
+  listByOwner: (ownerSubjectId: string) => Promise<ConnectorInstanceRow[]>;
+  updateStatus: (
     connectorInstanceId: string,
     params: { status: string; updatedAt: string; revokedAt: string }
-  ): Promise<void>;
-  upsert(params: {
+  ) => Promise<void>;
+  upsert: (params: {
     ownerSubjectId: string;
     connectorId: string;
     displayName: string;
@@ -392,20 +392,31 @@ interface ConnectorInstanceStore {
     sourceBinding: unknown;
     createdAt: string;
     updatedAt: string;
-  }): Promise<ConnectorInstanceRow>;
+  }) => Promise<ConnectorInstanceRow>;
+  upsertForEnrollment: (params: {
+    ownerSubjectId: string;
+    connectorId: string;
+    displayName: string;
+    status: string;
+    sourceKind: string;
+    sourceBindingKey: string;
+    sourceBinding: unknown;
+    createdAt: string;
+    updatedAt: string;
+  }) => Promise<ConnectorInstanceRow>;
 }
 
 interface ConnectorDetailGapStore {
-  listPendingGaps?(options: {
+  listPendingGaps?: (options: {
     connectorId: string;
     connectorInstanceId: string;
     grantId?: string | null;
     limit?: number;
     streams?: readonly string[] | null;
-  }): Promise<GapRow[]>;
-  listPendingGapsForConnector?(connectorId: string, options: { limit: number }): Promise<GapRow[]>;
-  markGapStatus(gapId: string, status: string, options: { runId?: string }): Promise<GapRow>;
-  upsertPendingGap(params: {
+  }) => Promise<GapRow[]>;
+  listPendingGapsForConnector?: (connectorId: string, options: { limit: number }) => Promise<GapRow[]>;
+  markGapStatus: (gapId: string, status: string, options: { runId?: string }) => Promise<GapRow>;
+  upsertPendingGap: (params: {
     connectorId: string;
     connectorInstanceId: string;
     stream: string;
@@ -415,15 +426,15 @@ interface ConnectorDetailGapStore {
     lastError: unknown;
     discoveredRunId?: string;
     lastRunId?: string;
-  }): Promise<GapRow>;
+  }) => Promise<GapRow>;
 }
 
 export interface MountRefDeviceExportersContext {
   acceptedCollectorProtocolVersions: readonly string[];
 
   // Canonical key resolution
-  canonicalConnectorKey(value: string | null | undefined): string | null;
-  createRequestConnectorInstanceStore(): ConnectorInstanceStore;
+  canonicalConnectorKey: (value: string | null | undefined) => string | null;
+  createRequestConnectorInstanceStore: () => ConnectorInstanceStore;
 
   // Error class for batch conflict detection
   DeviceBatchConflictError: new (
@@ -435,69 +446,69 @@ export interface MountRefDeviceExportersContext {
 
   // Audit-receipt emission (spine). Used to record idempotent re-enroll
   // credential rotation. See decouple-device-enrollment-from-ingest-writer-admission design D2.
-  emitSpineEvent(event: Record<string, unknown>): Promise<unknown>;
+  emitSpineEvent: (event: Record<string, unknown>) => Promise<unknown>;
 
   // Collector protocol enforcement (returns true if 409 was written)
-  enforceCollectorProtocolVersion(req: unknown, res: unknown): boolean;
+  enforceCollectorProtocolVersion: (req: unknown, res: unknown) => boolean;
 
   // Catalog entry registration at enroll time
-  ensureReferenceConnectorCatalogEntry(connectorId: string, displayName: string | null): Promise<void>;
-  generateReferenceSecret(prefix: string, bytes: number): string;
+  ensureReferenceConnectorCatalogEntry: (connectorId: string, displayName: string | null) => Promise<void>;
+  generateReferenceSecret: (prefix: string, bytes: number) => string;
 
   // ID generation
-  generateSpineId(prefix: string): string;
+  generateSpineId: (prefix: string) => string;
   // Resolves a registered connector manifest by key, or `null` for an unknown
   // connector. Used to derive the enrolled source kind from the manifest
   // bindings. Async to match the host's `getConnectorManifest`.
-  getConnectorManifest(connectorId: string): Promise<SourceKindManifestLike | null> | SourceKindManifestLike | null;
-  getDefaultConnectorDetailGapStore(): ConnectorDetailGapStore;
-  getOwnerSubjectId(req: unknown): string;
-  getSemanticCapabilityIdentity(): string;
-  getSyncState(storageTarget: StorageTarget, options: { grantId: null }): Promise<SyncStateProjection>;
-  handleError(res: unknown, err: unknown): void;
+  getConnectorManifest: (connectorId: string) => Promise<SourceKindManifestLike | null> | SourceKindManifestLike | null;
+  getDefaultConnectorDetailGapStore: () => ConnectorDetailGapStore;
+  getOwnerSubjectId: (req: unknown) => string;
+  getSemanticCapabilityIdentity: () => string;
+  getSyncState: (storageTarget: StorageTarget, options: { grantId: null }) => Promise<SyncStateProjection>;
+  handleError: (res: unknown, err: unknown) => void;
 
   // Hashing and sanitization
-  hashDeviceSecret(value: string): string;
+  hashDeviceSecret: (value: string) => string;
 
   // Record ingest and sync state
-  ingestRecord(storageTarget: StorageTarget, record: unknown, options?: unknown): Promise<unknown>;
-  isDeviceSemanticAttemptSupported(): boolean;
+  ingestRecord: (storageTarget: StorageTarget, record: unknown, options?: unknown) => Promise<unknown>;
+  isDeviceSemanticAttemptSupported: () => boolean;
 
   // Safe local-collector coverage read (Section 5.3). Returns only the
   // `{ store, stream, status }` triple per store — never paths, payloads,
   // the coverage `reason` text, or secrets.
-  listLocalCoverageDiagnostics(storageTarget: StorageTarget): Promise<LocalCoverageRow[]>;
-  maintainRecordIndexes(storageTarget: StorageTarget, record: unknown, options?: unknown): Promise<void>;
-  makeConnectorInstanceSourceBindingKey(identity: { kind: string; local_binding_name: string }): string;
+  listLocalCoverageDiagnostics: (storageTarget: StorageTarget) => Promise<LocalCoverageRow[]>;
+  maintainRecordIndexes: (storageTarget: StorageTarget, record: unknown, options?: unknown) => Promise<void>;
+  makeConnectorInstanceSourceBindingKey: (identity: { kind: string; local_binding_name: string }) => string;
   pdppError: PdppErrorFn;
-  prepareDeviceFinalRecords(
+  prepareDeviceFinalRecords: (
     storageTarget: StorageTarget,
     plan: readonly { inputIndex: number; record: unknown }[],
     attemptContext: DeviceAttemptContext,
     durablePrefixCount: number,
     ownership?: unknown
-  ): Promise<{ inputIndex: number; record: unknown }[]>;
-  putSyncState(
+  ) => Promise<{ inputIndex: number; record: unknown }[]>;
+  putSyncState: (
     storageTarget: StorageTarget,
     stateMap: Record<string, unknown>,
     options: { grantId: null }
-  ): Promise<SyncStateProjection>;
-  readCollectorProtocolHeader(headers: unknown): string | null;
+  ) => Promise<SyncStateProjection>;
+  readCollectorProtocolHeader: (headers: unknown) => string | null;
   // Resolves a local-collector catalog manifest (claude-code, codex) by key, or
   // `null` for connectors not in the local-collector catalog. Mirrors the
   // intent route so the enroll path classifies a local-collector connector even
   // before any registered connector manifest exists.
-  readReferenceLocalConnectorCatalogManifest(connectorId: string): SourceKindManifestLike | null;
+  readReferenceLocalConnectorCatalogManifest: (connectorId: string) => SourceKindManifestLike | null;
   requireDeviceExporterCredential: MiddlewareHandler;
   // Auth middleware
   requireOwnerSession: MiddlewareHandler;
-  sanitizeDeviceExporterDiagnostic(value: unknown, depth?: number): unknown;
-  sanitizeLocalCollectorGapDetails(value: unknown): string | null;
-  withConnectorInstanceWrite<T>(
+  sanitizeDeviceExporterDiagnostic: (value: unknown, depth?: number) => unknown;
+  sanitizeLocalCollectorGapDetails: (value: unknown) => string | null;
+  withConnectorInstanceWrite: <T>(
     connectorInstanceId: string,
     operation: (ownership: unknown) => Promise<T>,
     ownership?: unknown
-  ): Promise<T>;
+  ) => Promise<T>;
 }
 
 // ─── Module-level helpers moved from server/index.js ────────────────────────
@@ -631,11 +642,11 @@ async function handleIdempotentReEnroll(
   const credentialId = ctx.generateSpineId("dcred");
   const deviceToken = ctx.generateReferenceSecret("ldt", 32);
   await ctx.deviceExporterStore.rotateDeviceCredential({
+    createdAt: now.toISOString(),
     credentialId,
     deviceId: boundDeviceId,
-    tokenHash: ctx.hashDeviceSecret(deviceToken),
-    createdAt: now.toISOString(),
     rotatedAt: now.toISOString(),
+    tokenHash: ctx.hashDeviceSecret(deviceToken),
   });
 
   // D5: a still-pending code reaching this path means a prior attempt created
@@ -649,34 +660,34 @@ async function handleIdempotentReEnroll(
 
   // Audit receipt: record that a re-enroll retry rotated the device credential.
   await ctx.emitSpineEvent({
-    event_type: "device.enroll.credential_rotated",
-    trace_id: ctx.generateSpineId("trace"),
-    actor_type: "device_enrollment",
     actor_id: boundDeviceId,
-    subject_type: "subject",
-    subject_id: enrollment.ownerSubjectId,
-    object_type: "device_exporter",
-    object_id: boundDeviceId,
-    status: "success",
+    actor_type: "device_enrollment",
     data: {
-      device_id: boundDeviceId,
       connector_id: enrollConnectorKey,
       connector_instance_id: sourceInstance.connectorInstanceId,
-      source_instance_id: sourceInstance.sourceInstanceId,
-      local_binding_name: enrollment.localBindingId,
       credential_id: credentialId,
+      device_id: boundDeviceId,
+      local_binding_name: enrollment.localBindingId,
       reason: "idempotent_re_enroll",
+      source_instance_id: sourceInstance.sourceInstanceId,
     },
+    event_type: "device.enroll.credential_rotated",
+    object_id: boundDeviceId,
+    object_type: "device_exporter",
+    status: "success",
+    subject_id: enrollment.ownerSubjectId,
+    subject_type: "subject",
+    trace_id: ctx.generateSpineId("trace"),
   });
 
   res.status(201).json({
-    object: "device_exporter_enrollment",
-    device_id: boundDeviceId,
-    connector_instance_id: sourceInstance.connectorInstanceId,
-    source_instance_id: sourceInstance.sourceInstanceId,
-    device_token: deviceToken,
     connector_id: enrollConnectorKey,
+    connector_instance_id: sourceInstance.connectorInstanceId,
+    device_id: boundDeviceId,
+    device_token: deviceToken,
     local_binding_name: enrollment.localBindingId,
+    object: "device_exporter_enrollment",
+    source_instance_id: sourceInstance.sourceInstanceId,
   });
   return "handled";
 }
@@ -696,7 +707,7 @@ function respondEnrollError(ctx: MountRefDeviceExportersContext, res: RouteRespo
       "connector_instance_busy",
       "Enrollment is temporarily unavailable due to write pressure; retry shortly",
       null,
-      { retryable: true, retry_after_seconds: 2 }
+      { retry_after_seconds: 2, retryable: true }
     );
     return;
   }
@@ -714,7 +725,7 @@ function respondEnrollError(ctx: MountRefDeviceExportersContext, res: RouteRespo
       "enrollment_identity_conflict",
       "Enrollment hit a concurrent identity write; retry the same code",
       null,
-      { retryable: true, retry_after_seconds: 1 }
+      { retry_after_seconds: 1, retryable: true }
     );
     return;
   }
@@ -786,46 +797,48 @@ async function performFirstEnrollment(
   const sourceKind = await resolveEnrollmentSourceKind(ctx, enrollConnectorKey);
 
   const resolved = await ctx.deviceExporterStore.resolveOrCreateEnrollmentDevice({
-    ownerSubjectId: enrollment.ownerSubjectId,
-    connectorId: enrollConnectorKey,
-    sourceKind,
-    localBindingId: enrollment.localBindingId,
     candidateDeviceId,
     candidateSourceInstanceId,
-    displayName,
     collectorProtocolVersion,
+    connectorId: enrollConnectorKey,
+    displayName,
+    localBindingId: enrollment.localBindingId,
     now: now.toISOString(),
+    ownerSubjectId: enrollment.ownerSubjectId,
+    sourceKind,
   });
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const deviceId = resolved.deviceId;
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const sourceInstanceId = resolved.sourceInstanceId;
 
   await ctx.ensureReferenceConnectorCatalogEntry(enrollConnectorKey, enrollment.displayName || displayName);
   const sourceBindingIdentity = deviceExporterSourceBindingIdentity(enrollment.localBindingId, sourceKind);
-  const connectorInstance = await ctx.createRequestConnectorInstanceStore().upsert({
-    ownerSubjectId: enrollment.ownerSubjectId,
+  const connectorInstance = await ctx.createRequestConnectorInstanceStore().upsertForEnrollment({
     connectorId: enrollConnectorKey,
+    createdAt: now.toISOString(),
     displayName,
-    status: "active",
-    sourceKind,
-    sourceBindingKey: ctx.makeConnectorInstanceSourceBindingKey(sourceBindingIdentity),
+    ownerSubjectId: enrollment.ownerSubjectId,
     sourceBinding: {
-      kind: sourceKind,
       device_id: deviceId,
+      kind: sourceKind,
       local_binding_name: enrollment.localBindingId,
       source_instance_id: sourceInstanceId,
     },
-    createdAt: now.toISOString(),
+    sourceBindingKey: ctx.makeConnectorInstanceSourceBindingKey(sourceBindingIdentity),
+    sourceKind,
+    status: "active",
     updatedAt: now.toISOString(),
   });
   await ctx.deviceExporterStore.upsertSourceInstance({
-    sourceInstanceId,
-    deviceId,
     connectorId: enrollConnectorKey,
     connectorInstanceId: connectorInstance.connectorInstanceId,
-    localBindingId: enrollment.localBindingId,
-    sourceKind,
-    displayName: enrollment.displayName,
     createdAt: now.toISOString(),
+    deviceId,
+    displayName: enrollment.displayName,
+    localBindingId: enrollment.localBindingId,
+    sourceInstanceId,
+    sourceKind,
     updatedAt: now.toISOString(),
   });
 
@@ -853,11 +866,11 @@ async function performFirstEnrollment(
   const credentialId = ctx.generateSpineId("dcred");
   const deviceToken = ctx.generateReferenceSecret("ldt", 32);
   await ctx.deviceExporterStore.rotateDeviceCredential({
+    createdAt: now.toISOString(),
     credentialId,
     deviceId,
-    tokenHash: ctx.hashDeviceSecret(deviceToken),
-    createdAt: now.toISOString(),
     rotatedAt: now.toISOString(),
+    tokenHash: ctx.hashDeviceSecret(deviceToken),
   });
 
   // Test-only interruption point: this attempt's own credential rotation has
@@ -921,13 +934,13 @@ async function performFirstEnrollment(
   }
 
   res.status(201).json({
-    object: "device_exporter_enrollment",
-    device_id: deviceId,
-    connector_instance_id: connectorInstance.connectorInstanceId,
-    source_instance_id: sourceInstanceId,
-    device_token: deviceToken,
     connector_id: enrollConnectorKey,
+    connector_instance_id: connectorInstance.connectorInstanceId,
+    device_id: deviceId,
+    device_token: deviceToken,
     local_binding_name: enrollment.localBindingId,
+    object: "device_exporter_enrollment",
+    source_instance_id: sourceInstanceId,
   });
 }
 
@@ -984,6 +997,7 @@ async function resolveStalenessWindowsByConnector(
 ): Promise<Map<string, number | null>> {
   const windows = new Map<string, number | null>();
   for (const connectorId of new Set(connectorIds)) {
+    // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
     windows.set(connectorId, await resolveConnectorMaximumStalenessSeconds(ctx, connectorId));
   }
   return windows;
@@ -1008,7 +1022,7 @@ function deviceMaximumStalenessSeconds(
       continue;
     }
     const seconds = windowsByConnector.get(connectorId) ?? null;
-    if (seconds != null && (maxSeconds == null || seconds > maxSeconds)) {
+    if (seconds !== null && (maxSeconds === null || seconds > maxSeconds)) {
       maxSeconds = seconds;
     }
   }
@@ -1045,7 +1059,7 @@ function isDrainedHealthyLocalHeartbeat(
 ): boolean {
   return (
     status === "healthy" &&
-    (recordsPending == null || recordsPending === 0) &&
+    (recordsPending === null || recordsPending === 0) &&
     deriveSourceInstanceOutboxState(outbox) === "drained"
   );
 }
@@ -1071,6 +1085,7 @@ async function recoverDrainedPolicyBudgetGaps(
   });
   for (const gap of gaps) {
     if (gap.reason === "policy_budget" && isLocalCollectorPolicyBudgetStream(gap.stream)) {
+      // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
       await detailGapStore.markGapStatus(gap.gap_id, "recovered", {});
     }
   }
@@ -1083,11 +1098,11 @@ function normalizeHeartbeatSourceInstances(body: Record<string, unknown>): unkno
   if (typeof body.source_instance_id === "string") {
     return [
       {
-        source_instance_id: body.source_instance_id,
         last_error: body.last_error ?? null,
-        status: typeof body.status === "string" ? body.status : null,
-        records_pending: typeof body.records_pending === "number" ? body.records_pending : null,
         outbox: body.outbox ?? null,
+        records_pending: typeof body.records_pending === "number" ? body.records_pending : null,
+        source_instance_id: body.source_instance_id,
+        status: typeof body.status === "string" ? body.status : null,
       },
     ];
   }
@@ -1103,7 +1118,7 @@ function normalizeDeviceIngestRecord(record: unknown, index: number) {
   }
   const r = record as Record<string, unknown>;
   const key = r.record_key ?? r.key;
-  if (key == null || (typeof key !== "string" && !Array.isArray(key))) {
+  if (key === null || (typeof key !== "string" && !Array.isArray(key))) {
     const err = new Error(`records[${index}].record_key is required`) as Error & { code: string; param: string };
     err.code = "invalid_request";
     err.param = "records";
@@ -1120,6 +1135,7 @@ function normalizeDeviceIngestRecord(record: unknown, index: number) {
     throw err;
   }
   const hasData = Object.hasOwn(r, "data");
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const data = r.data;
   if (op === "upsert") {
     if (!data || typeof data !== "object" || Array.isArray(data)) {
@@ -1141,11 +1157,11 @@ function normalizeDeviceIngestRecord(record: unknown, index: number) {
     throw err;
   }
   return {
-    stream: requireNonEmptyString(r.stream, `records[${index}].stream`),
-    key,
-    emitted_at: typeof r.emitted_at === "string" ? r.emitted_at : undefined,
     data: op === "delete" ? {} : data,
+    emitted_at: typeof r.emitted_at === "string" ? r.emitted_at : undefined,
+    key,
     op,
+    stream: requireNonEmptyString(r.stream, `records[${index}].stream`),
   };
 }
 
@@ -1206,11 +1222,11 @@ function attemptStreamFacts(rawStreams: unknown[]): Record<string, DeviceAttempt
         ? (query.search as Record<string, unknown>)
         : null;
     streams[stream.name] = {
-      primaryKey: normalizePrimaryKey(stream.primary_key),
-      cursorField: typeof stream.cursor_field === "string" && stream.cursor_field ? stream.cursor_field : null,
       consentTimeField:
         typeof stream.consent_time_field === "string" && stream.consent_time_field ? stream.consent_time_field : null,
+      cursorField: typeof stream.cursor_field === "string" && stream.cursor_field ? stream.cursor_field : null,
       lexicalFields: declaredFields(search?.lexical_fields),
+      primaryKey: normalizePrimaryKey(stream.primary_key),
       semanticFields: declaredFields(search?.semantic_fields),
     };
   }
@@ -1230,6 +1246,7 @@ function validateAttemptRecords(records: unknown[], streams: DeviceAttemptContex
       // Identity guards are intentionally detailed for general server writes,
       // but device envelopes must never reflect key/data values or raw guard
       // messages. The index is enough to repair the collector payload.
+      // biome-ignore lint/style/useErrorCause: This compatibility path preserves the established error shape and propagation.
       throw attemptContextError(`records[${index}] has invalid record identity`);
     }
   }
@@ -1255,6 +1272,7 @@ async function compileDeviceAttemptContext(
   const streams = attemptStreamFacts(rawStreams);
   validateAttemptRecords(records, streams);
   const requiresSemanticWork = records.some((record) => {
+    // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
     const stream = (record as { stream?: unknown }).stream;
     return typeof stream === "string" && (streams[stream]?.semanticFields.length ?? 0) > 0;
   });
@@ -1459,25 +1477,28 @@ function summarizeLocalCoverage(rows: readonly LocalCoverageRow[]): LocalCoverag
     fully_accounted: rows.length > 0 && unaccountedStores.length === 0,
     observed: rows.length > 0,
     store_count: rows.length,
+    // biome-ignore lint/suspicious/useArraySortCompare: Input ordering is intentionally the runtime’s established default string order.
     unaccounted_stores: unaccountedStores.sort(),
   };
 }
 
 function accumulateGapRow(stats: GapStatMap, gap: GapRow): void {
-  if (!gap || gap.status !== "pending") {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+  if (gap?.status !== "pending") {
     return;
   }
   const src = gap.source && typeof gap.source === "object" ? (gap.source as Record<string, unknown>) : null;
-  if (!src || src.kind !== "local_device") {
+  if (src?.kind !== "local_device") {
     return;
   }
   const sourceInstanceId = typeof src.source_instance_id === "string" ? src.source_instance_id : null;
   if (!sourceInstanceId) {
     return;
   }
-  const current = stats.get(sourceInstanceId) ?? { pending: 0, lastUpdatedAt: null, reasons: new Set<string>() };
+  const current = stats.get(sourceInstanceId) ?? { lastUpdatedAt: null, pending: 0, reasons: new Set<string>() };
   current.pending += 1;
   if (!current.lastUpdatedAt || (gap.updated_at && gap.updated_at > current.lastUpdatedAt)) {
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     current.lastUpdatedAt = gap.updated_at ?? current.lastUpdatedAt;
   }
   if (typeof gap.reason === "string" && gap.reason) {
@@ -1499,6 +1520,7 @@ async function aggregateLocalCollectorGapStats(
   for (const connectorId of connectorIds) {
     let gaps: GapRow[] = [];
     try {
+      // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
       gaps = await detailGapStore.listPendingGapsForConnector?.(connectorId, { limit: 500 });
     } catch {
       unreliableIds.add(connectorId);
@@ -1579,6 +1601,7 @@ async function aggregateLocalCoverage(
   const coverage = new Map<string, LocalCoverageProjection>();
   for (const { connectorId, connectorInstanceId } of targets.values()) {
     try {
+      // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
       const rows = await ctx.listLocalCoverageDiagnostics(
         referenceLocalDeviceStorageTarget(ctx, connectorId, connectorInstanceId)
       );
@@ -1594,7 +1617,7 @@ function aggregateOutcomeStats(outcomes: BatchOutcomeRow[]): OutcomeStatMap {
   const map: OutcomeStatMap = new Map();
   for (const outcome of outcomes) {
     const key = outcome.sourceInstanceId;
-    const current = map.get(key) ?? { accepted: 0, rejected: 0, lastIngestAt: null };
+    const current = map.get(key) ?? { accepted: 0, lastIngestAt: null, rejected: 0 };
     if (outcome.status === "accepted") {
       current.accepted += outcome.response?.accepted_record_count ?? 0;
     } else if (outcome.status === "rejected") {
@@ -1623,7 +1646,7 @@ function projectSourceInstance(
   unreliableIds: Set<string>,
   coverageByConnectorInstance: Map<string, LocalCoverageProjection>
 ): unknown {
-  const stats = outcomeStats.get(source.sourceInstanceId) ?? { accepted: 0, rejected: 0, lastIngestAt: null };
+  const stats = outcomeStats.get(source.sourceInstanceId) ?? { accepted: 0, lastIngestAt: null, rejected: 0 };
   const device = devicesById.get(source.deviceId);
   const identityKey = ctx.makeConnectorInstanceSourceBindingKey(
     deviceExporterSourceBindingIdentity(source.localBindingId)
@@ -1637,33 +1660,33 @@ function projectSourceInstance(
   const gap = gapStats.get(source.sourceInstanceId) ?? null;
   const outboxDiagnostics = source.outboxDiagnostics ?? null;
   return {
-    object: "device_source_instance",
-    source_instance_id: source.sourceInstanceId,
-    connector_instance_id: connectorInstance?.connectorInstanceId ?? null,
-    device_id: source.deviceId,
-    connector_id: source.connectorId,
-    local_binding_name: source.localBindingId,
-    display_name: source.displayName,
-    created_at: source.createdAt,
-    last_ingest_at: stats.lastIngestAt,
     accepted_record_count: stats.accepted,
-    rejected_record_count: stats.rejected,
+    connector_id: source.connectorId,
+    connector_instance_id: connectorInstance?.connectorInstanceId ?? null,
+    created_at: source.createdAt,
+    device_id: source.deviceId,
+    display_name: source.displayName,
+    last_error: source.lastError,
     last_heartbeat_at: source.lastHeartbeatAt ?? null,
     last_heartbeat_status: source.lastHeartbeatStatus ?? null,
-    records_pending: source.recordsPending ?? null,
-    outbox_diagnostics: outboxDiagnostics,
-    outbox_state: deriveSourceInstanceOutboxState(outboxDiagnostics),
-    local_collector_gaps: {
-      pending_count: gap ? gap.pending : 0,
-      reasons: gap ? [...gap.reasons].sort() : [],
-      last_updated_at: gap ? gap.lastUpdatedAt : null,
-      unreliable: unreliableIds.has(source.connectorId),
-    },
+    last_ingest_at: stats.lastIngestAt,
+    local_binding_name: source.localBindingId,
     local_collector_coverage:
       (connectorInstance?.connectorInstanceId
         ? coverageByConnectorInstance.get(connectorInstance.connectorInstanceId)
         : null) ?? EMPTY_LOCAL_COVERAGE,
-    last_error: source.lastError,
+    local_collector_gaps: {
+      last_updated_at: gap ? gap.lastUpdatedAt : null,
+      pending_count: gap ? gap.pending : 0,
+      reasons: gap ? [...gap.reasons].sort() : [],
+      unreliable: unreliableIds.has(source.connectorId),
+    },
+    object: "device_source_instance",
+    outbox_diagnostics: outboxDiagnostics,
+    outbox_state: deriveSourceInstanceOutboxState(outboxDiagnostics),
+    records_pending: source.recordsPending ?? null,
+    rejected_record_count: stats.rejected,
+    source_instance_id: source.sourceInstanceId,
   };
 }
 
@@ -1704,16 +1727,11 @@ function projectDeviceExporter(
   // rather than alarmed on a hard-coded window.
   const stale =
     deriveReferenceFreshness({
-      recordLastUpdatedAt: lastHeartbeatAt,
       maximumStalenessSeconds,
       now,
+      recordLastUpdatedAt: lastHeartbeatAt,
     }).status === "stale";
   return {
-    object: "device_exporter",
-    device_id: device.deviceId,
-    subject_id: device.ownerSubjectId,
-    display_name: device.displayName,
-    status: device.status,
     // Build-derived agent version the device last reported on a heartbeat (e.g.
     // `0.0.0+43f63825f01a`), persisted on the device row. Owner-only diagnostic:
     // it lets an owner see which collector build a host is running — and catch
@@ -1722,12 +1740,17 @@ function projectDeviceExporter(
     // `null` and is not alarmed on its absence.
     agent_version: device.agentVersion ?? null,
     created_at: device.createdAt,
+    device_id: device.deviceId,
+    display_name: device.displayName,
+    last_error: device.lastError,
     last_heartbeat_at: lastHeartbeatAt,
     last_ingest_at: lastIngestAt,
+    object: "device_exporter",
     revoked_at: device.revokedAt,
-    stale,
     source_instances: sourceList,
-    last_error: device.lastError,
+    stale,
+    status: device.status,
+    subject_id: device.ownerSubjectId,
   };
 }
 
@@ -1753,8 +1776,8 @@ async function buildDeviceExporterDiagnostics(
   const outcomeStats = aggregateOutcomeStats(outcomes);
   const stalenessWindowsByConnector = await resolveStalenessWindowsByConnector(ctx, connectorIds);
   const coverageByConnectorInstance = await aggregateLocalCoverage(ctx, sourceInstances, {
-    connectorInstancesById,
     connectorInstancesByBinding,
+    connectorInstancesById,
   });
 
   const sourcesByDevice = new Map<string, unknown[]>();
@@ -1795,7 +1818,7 @@ async function resolveAuthorizedDeviceSource(
 ): Promise<{ sourceInstance: SourceInstanceRow; connectorInstance: ConnectorInstanceRow } | null> {
   const store = ctx.deviceExporterStore;
   const sourceInstance = await store.getSourceInstance(deviceId, sourceInstanceId);
-  if (!sourceInstance || sourceInstance.status !== "active") {
+  if (sourceInstance?.status !== "active") {
     ctx.pdppError(
       res,
       notFoundStatus,
@@ -1805,6 +1828,7 @@ async function resolveAuthorizedDeviceSource(
     );
     return null;
   }
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const ownerSubjectId = req.deviceExporter?.ownerSubjectId ?? "";
   const connectorInstance = await resolveActiveDeviceConnectorInstance(ctx, deviceId, ownerSubjectId, sourceInstance);
   if (!connectorInstance || connectorInstance.ownerSubjectId !== ownerSubjectId) {
@@ -1817,7 +1841,7 @@ async function resolveAuthorizedDeviceSource(
     );
     return null;
   }
-  return { sourceInstance, connectorInstance };
+  return { connectorInstance, sourceInstance };
 }
 
 async function resolveActiveDeviceConnectorInstance(
@@ -1841,12 +1865,12 @@ async function resolveActiveDeviceConnectorInstance(
   }
   const identity = deviceExporterSourceBindingIdentity(sourceInstance.localBindingId);
   const instance = await store.getByBinding({
-    ownerSubjectId,
     connectorId: ctx.canonicalConnectorKey(sourceInstance.connectorId) ?? sourceInstance.connectorId,
-    sourceKind: "local_device",
+    ownerSubjectId,
     sourceBindingKey: ctx.makeConnectorInstanceSourceBindingKey(identity),
+    sourceKind: "local_device",
   });
-  if (!instance || instance.status !== "active") {
+  if (instance?.status !== "active") {
     return null;
   }
   return instance;
@@ -1894,28 +1918,27 @@ export function mountRefDeviceExporterEnrollmentCodes(app: AppLike, ctx: MountRe
         const enrollmentCode = ctx.generateReferenceSecret("lde", 18);
         const expiresAt = new Date(now.getTime() + expiresInSeconds * 1000).toISOString();
         await ctx.deviceExporterStore.createEnrollmentCode({
-          enrollmentCodeId: ctx.generateSpineId("denroll"),
           codeHash: ctx.hashDeviceSecret(enrollmentCode),
-          ownerSubjectId: ctx.getOwnerSubjectId(req),
           connectorId,
-          localBindingId,
+          createdAt: now.toISOString(),
           displayName:
             typeof body.display_name === "string" && (body.display_name as string).trim()
               ? (body.display_name as string).trim()
               : null,
-          createdAt: now.toISOString(),
+          enrollmentCodeId: ctx.generateSpineId("denroll"),
           expiresAt,
+          localBindingId,
+          ownerSubjectId: ctx.getOwnerSubjectId(req),
         });
         res.status(201).json({
-          object: "device_exporter_enrollment_code",
+          connector_id: connectorId,
           enrollment_code: enrollmentCode,
           expires_at: expiresAt,
-          connector_id: connectorId,
           local_binding_name: localBindingId,
+          object: "device_exporter_enrollment_code",
         });
       } catch (err) {
         ctx.handleError(res, err);
-        return;
       }
     }
   );
@@ -1990,7 +2013,6 @@ export function mountRefDeviceExporterEnroll(app: AppLike, ctx: MountRefDeviceEx
         await performFirstEnrollment(ctx, req, res, body, enrollment, now);
       } catch (err) {
         respondEnrollError(ctx, res, err);
-        return;
       }
     }
   );
@@ -2005,8 +2027,8 @@ export function mountRefDeviceExportersList(app: AppLike, ctx: MountRefDeviceExp
     async (req: RouteRequest, res: RouteResponse) => {
       try {
         res.json({
-          object: "list",
           data: await buildDeviceExporterDiagnostics(ctx, ctx.getOwnerSubjectId(req)),
+          object: "list",
         });
       } catch (err) {
         ctx.handleError(res, err);
@@ -2042,7 +2064,7 @@ export function mountRefDeviceExporterSourceInstances(app: AppLike, ctx: MountRe
             const s = source as { connector_instance_id: string };
             return !requestedConnectorInstanceId || s.connector_instance_id === requestedConnectorInstanceId;
           });
-        res.json({ object: "list", data });
+        res.json({ data, object: "list" });
       } catch (err) {
         ctx.handleError(res, err);
       }
@@ -2059,8 +2081,8 @@ export function mountRefDeviceExporterDiagnostics(app: AppLike, ctx: MountRefDev
     async (req: RouteRequest, res: RouteResponse) => {
       try {
         res.json({
-          object: "list",
           data: await buildDeviceExporterDiagnostics(ctx, ctx.getOwnerSubjectId(req)),
+          object: "list",
         });
       } catch (err) {
         ctx.handleError(res, err);
@@ -2085,10 +2107,9 @@ export function mountRefDeviceExporterRevoke(app: AppLike, ctx: MountRefDeviceEx
         }
         const revokedAt = new Date().toISOString();
         await ctx.deviceExporterStore.revokeDevice(deviceId, revokedAt);
-        res.json({ object: "device_exporter_revocation", device_id: deviceId, revoked_at: revokedAt });
+        res.json({ device_id: deviceId, object: "device_exporter_revocation", revoked_at: revokedAt });
       } catch (err) {
         ctx.handleError(res, err);
-        return;
       }
     }
   );
@@ -2114,11 +2135,11 @@ async function markHeartbeatSourceInstance(input: {
   const recordsPending = typeof s.records_pending === "number" ? s.records_pending : null;
   const outboxDiagnostics = (s.outbox as unknown) ?? null;
   await ctx.deviceExporterStore.markSourceInstanceHeartbeat(deviceId, sourceInstanceId, {
-    receivedAt,
     lastError: ctx.sanitizeDeviceExporterDiagnostic(s.last_error),
-    status,
-    recordsPending,
     outboxDiagnostics,
+    receivedAt,
+    recordsPending,
+    status,
   });
   if (
     isDrainedHealthyLocalHeartbeat(status, recordsPending, outboxDiagnostics) &&
@@ -2149,25 +2170,25 @@ export function mountRefDeviceExporterHeartbeat(app: AppLike, ctx: MountRefDevic
         const body = (req.body as Record<string, unknown>) || {};
         const receivedAt = new Date().toISOString();
         await ctx.deviceExporterStore.markDeviceHeartbeat(deviceId, {
-          receivedAt,
           agentVersion: typeof body.agent_version === "string" ? body.agent_version : null,
           lastError: ctx.sanitizeDeviceExporterDiagnostic(body.last_error),
+          receivedAt,
         });
         for (const source of normalizeHeartbeatSourceInstances(body)) {
+          // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
           const accepted = await markHeartbeatSourceInstance({ ctx, deviceId, receivedAt, req, res, source });
           if (!accepted) {
             return;
           }
         }
         res.json({
-          object: "device_exporter_heartbeat",
           device_id: deviceId,
+          object: "device_exporter_heartbeat",
           received_at: receivedAt,
           status: "accepted",
         });
       } catch (err) {
         ctx.handleError(res, err);
-        return;
       }
     }
   );
@@ -2232,15 +2253,15 @@ export function mountRefDeviceExporterIngestBatches(app: AppLike, ctx: MountRefD
         }
 
         await processDeviceIngestBatch(ctx, res, {
-          deviceId,
-          connectorId,
-          sourceInstanceId,
           batchId,
-          bodyHash,
           batchSeq: body.batch_seq as number,
+          bodyHash,
+          connectorId,
           connectorInstanceId: connectorInstance.connectorInstanceId,
+          deviceId,
           records: normalizeDeviceIngestRecords(canonical.records),
           sourceConnectorMatches,
+          sourceInstanceId,
         });
       } catch (err) {
         if (err instanceof ctx.DeviceBatchConflictError) {
@@ -2284,7 +2305,6 @@ export function mountRefDeviceExporterIngestBatches(app: AppLike, ctx: MountRefD
           "device_ingest_retryable",
           "Device ingest is temporarily unavailable; retry the same batch"
         );
-        return;
       }
     }
   );
@@ -2316,7 +2336,7 @@ async function processDeviceIngestBatch(
     records,
     sourceConnectorMatches,
   } = params;
-  const identity = { bodyHash, sourceInstanceId, connectorInstanceId, connectorId, batchSeq };
+  const identity = { batchSeq, bodyHash, connectorId, connectorInstanceId, sourceInstanceId };
   // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: this boundary keeps reservation, durable prefix, derived repair, and terminal response precedence visible.
   await ctx.withConnectorInstanceWrite(connectorInstanceId, async (coordinatorOwnership) => {
     maybeDeviceIngestStoreFault("before-get-batch-outcome");
@@ -2353,17 +2373,17 @@ async function processDeviceIngestBatch(
 
     maybeDeviceIngestStoreFault("before-ensure-processing-batch");
     let reservation = await ctx.deviceExporterStore.ensureProcessingBatch({
-      deviceId,
       batchId,
-      bodyHash,
-      sourceInstanceId,
-      connectorInstanceId,
-      connectorId,
       batchSeq,
-      recordCount: records.length,
+      bodyHash,
+      connectorId,
+      connectorInstanceId,
       createdAt: new Date().toISOString(),
+      deviceId,
       manifestFingerprint: attemptContext.manifestFingerprint,
+      recordCount: records.length,
       semanticCapabilityIdentity: attemptContext.semanticCapabilityIdentity,
+      sourceInstanceId,
     });
     if (reservation.status === "accepted") {
       res.status(reservation.httpStatus ?? 201).json(reservation.response ?? {});
@@ -2379,15 +2399,15 @@ async function processDeviceIngestBatch(
     ) {
       maybeDeviceIngestStoreFault("before-refresh-processing-attempt-context");
       reservation = await ctx.deviceExporterStore.refreshProcessingAttemptContext({
-        deviceId,
         batchId,
-        bodyHash,
-        sourceInstanceId,
-        connectorInstanceId,
-        connectorId,
         batchSeq,
+        bodyHash,
+        connectorId,
+        connectorInstanceId,
+        deviceId,
         manifestFingerprint: attemptContext.manifestFingerprint,
         semanticCapabilityIdentity: attemptContext.semanticCapabilityIdentity,
+        sourceInstanceId,
       });
     }
     try {
@@ -2397,20 +2417,21 @@ async function processDeviceIngestBatch(
       for (let inputIndex = start; inputIndex < records.length; inputIndex += 1) {
         const record = records[inputIndex];
         assertBatchAttemptBefore(attemptDeadline);
+        // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
         await ctx.ingestRecord(storageTarget, record, {
+          attemptContext,
+          coordinatorOwnership,
           deferIndexes: true,
           deviceReservation: {
-            deviceId,
             batchId,
-            bodyHash,
-            sourceInstanceId,
-            connectorInstanceId,
-            connectorId,
             batchSeq,
+            bodyHash,
+            connectorId,
+            connectorInstanceId,
+            deviceId,
             inputIndex,
+            sourceInstanceId,
           },
-          coordinatorOwnership,
-          attemptContext,
         });
         await maybeDeviceIngestPhaseFault("after-durable-record", inputIndex);
         assertBatchAttemptBefore(attemptDeadline);
@@ -2440,31 +2461,31 @@ async function processDeviceIngestBatch(
       });
       assertBatchAttemptBefore(attemptDeadline);
       const response = {
-        object: "device_ingest_batch_result",
-        device_id: deviceId,
-        connector_instance_id: connectorInstanceId,
-        source_instance_id: sourceInstanceId,
+        accepted_record_count: records.length,
         batch_id: batchId,
         body_hash: bodyHash,
-        status: "accepted",
-        accepted_record_count: records.length,
+        connector_instance_id: connectorInstanceId,
+        device_id: deviceId,
+        object: "device_ingest_batch_result",
         rejected_record_count: 0,
+        source_instance_id: sourceInstanceId,
+        status: "accepted",
       };
       maybeDeviceIngestStoreFault("before-complete-processing-batch");
       await ctx.deviceExporterStore.completeProcessingBatch({
-        deviceId,
-        batchId,
-        bodyHash,
-        sourceInstanceId,
-        connectorInstanceId,
-        connectorId,
-        batchSeq,
-        httpStatus: 201,
-        response,
         acceptedAt: new Date().toISOString(),
-        manifestFingerprint: attemptContext.manifestFingerprint,
-        semanticCapabilityIdentity: attemptContext.semanticCapabilityIdentity,
+        batchId,
+        batchSeq,
+        bodyHash,
+        connectorId,
+        connectorInstanceId,
+        deviceId,
         getCurrentSemanticCapabilityIdentity: () => ctx.getSemanticCapabilityIdentity(),
+        httpStatus: 201,
+        manifestFingerprint: attemptContext.manifestFingerprint,
+        response,
+        semanticCapabilityIdentity: attemptContext.semanticCapabilityIdentity,
+        sourceInstanceId,
       });
       await maybeDeviceIngestPhaseFault("after-accepted-commit");
       res.status(201).json(response);
@@ -2472,6 +2493,7 @@ async function processDeviceIngestBatch(
       // Once a processing reservation exists, no storage/index/model/SQL
       // diagnostic is safe to expose to a collector. The reservation remains
       // sticky and the fixed retry envelope lets the next attempt resume it.
+      // biome-ignore lint/style/useErrorCause: This compatibility path preserves the established error shape and propagation.
       throw safeDeviceIngestAttemptError();
     }
   });
@@ -2505,16 +2527,15 @@ export function mountRefDeviceExporterSourceInstanceStateGet(app: AppLike, ctx: 
         );
         const projection = await ctx.getSyncState(storageTarget, { grantId: null });
         res.json({
-          object: "device_source_instance_state",
-          device_id: deviceId,
           connector_instance_id: connectorInstance.connectorInstanceId,
+          device_id: deviceId,
+          object: "device_source_instance_state",
           source_instance_id: sourceInstanceId,
           state: projection.state ?? {},
           updated_at: projection.updated_at ?? null,
         });
       } catch (err) {
         ctx.handleError(res, err);
-        return;
       }
     }
   );
@@ -2553,16 +2574,15 @@ export function mountRefDeviceExporterSourceInstanceStatePut(app: AppLike, ctx: 
         );
         const projection = await ctx.putSyncState(storageTarget, stateMap, { grantId: null });
         res.json({
-          object: "device_source_instance_state",
-          device_id: deviceId,
           connector_instance_id: connectorInstance.connectorInstanceId,
+          device_id: deviceId,
+          object: "device_source_instance_state",
           source_instance_id: sourceInstanceId,
           state: projection.state ?? {},
           updated_at: projection.updated_at ?? null,
         });
       } catch (err) {
         ctx.handleError(res, err);
-        return;
       }
     }
   );
@@ -2650,8 +2670,8 @@ function parseGapBodyBase(
     ...(streamName ? { stream: streamName } : {}),
     ...(streamBoundary ? { stream_boundary: streamBoundary } : {}),
   };
-  const source = { kind: "local_device", device_id: deviceId, source_instance_id: sourceInstanceId };
-  return { connectorId, reason, streamName, streamBoundary, syntheticStream, detailLocator, source };
+  const source = { device_id: deviceId, kind: "local_device", source_instance_id: sourceInstanceId };
+  return { connectorId, detailLocator, reason, source, streamBoundary, streamName, syntheticStream };
 }
 
 function validateGapReportFields(
@@ -2679,7 +2699,7 @@ function validateGapReportFields(
     return null;
   }
   const details = ctx.sanitizeLocalCollectorGapDetails(body.details);
-  return { firstSeenAt, details };
+  return { details, firstSeenAt };
 }
 
 async function reportLocalCollectorGap(
@@ -2711,29 +2731,29 @@ async function reportLocalCollectorGap(
   const gap = await store.upsertPendingGap({
     connectorId,
     connectorInstanceId,
-    stream: syntheticStream,
-    source,
     detailLocator,
-    reason,
     lastError,
+    reason,
+    source,
+    stream: syntheticStream,
     ...(firstSeenRunId ? { discoveredRunId: firstSeenRunId } : {}),
     ...(lastRunId ? { lastRunId } : {}),
   });
   res.status(201).json({
-    object: "device_local_collector_gap",
-    device_id: deviceId,
+    attempt_count: gap.attempt_count,
     connector_id: connectorId,
     connector_instance_id: connectorInstanceId,
-    source_instance_id: sourceInstanceId,
-    gap_id: gap.gap_id,
-    stream: syntheticStream,
-    reason,
-    retryable: body.retryable,
-    status: gap.status,
-    attempt_count: gap.attempt_count,
+    device_id: deviceId,
     first_seen_at: firstSeenAt,
     first_seen_run_id: firstSeenRunId,
+    gap_id: gap.gap_id,
     last_run_id: gap.last_run_id ?? lastRunId,
+    object: "device_local_collector_gap",
+    reason,
+    retryable: body.retryable,
+    source_instance_id: sourceInstanceId,
+    status: gap.status,
+    stream: syntheticStream,
     updated_at: gap.updated_at,
   });
 }
@@ -2752,31 +2772,31 @@ async function recoverLocalCollectorGap(
   const gap = await store.upsertPendingGap({
     connectorId,
     connectorInstanceId,
-    stream: syntheticStream,
-    source,
     detailLocator,
+    lastError: { recovered_at: new Date().toISOString(), recovered_by: "local_collector" },
     reason,
-    lastError: { recovered_by: "local_collector", recovered_at: new Date().toISOString() },
+    source,
+    stream: syntheticStream,
     ...(recoveredRunId ? { discoveredRunId: recoveredRunId, lastRunId: recoveredRunId } : {}),
   });
   const recovered = await store.markGapStatus(gap.gap_id, "recovered", {
     ...(recoveredRunId ? { runId: recoveredRunId } : {}),
   });
   res.status(200).json({
-    object: "device_local_collector_gap",
-    device_id: deviceId,
+    attempt_count: recovered.attempt_count,
     connector_id: connectorId,
     connector_instance_id: connectorInstanceId,
-    source_instance_id: sourceInstanceId,
-    gap_id: recovered.gap_id,
-    stream: syntheticStream,
-    reason,
-    retryable: false,
-    status: recovered.status,
-    attempt_count: recovered.attempt_count,
+    device_id: deviceId,
     first_seen_at: null,
     first_seen_run_id: recovered.discovered_run_id ?? null,
+    gap_id: recovered.gap_id,
     last_run_id: recovered.last_run_id ?? recoveredRunId,
+    object: "device_local_collector_gap",
+    reason,
+    retryable: false,
+    source_instance_id: sourceInstanceId,
+    status: recovered.status,
+    stream: syntheticStream,
     updated_at: recovered.updated_at,
   });
 }
@@ -2828,7 +2848,6 @@ export function mountRefDeviceExporterLocalCollectorGaps(app: AppLike, ctx: Moun
           return;
         }
         ctx.handleError(res, err);
-        return;
       }
     }
   );
@@ -2883,7 +2902,6 @@ export function mountRefDeviceExporterLocalCollectorGapsRecovered(
           return;
         }
         ctx.handleError(res, err);
-        return;
       }
     }
   );

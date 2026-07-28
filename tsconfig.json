@@ -32,10 +32,9 @@
     "skipLibCheck": true,
     "types": ["node"],
     "allowImportingTsExtensions": true,
-    // scripts/test-accounting/inventory.test.ts imports
-    // reference-implementation/scripts/test-profile-env.js, an
-    // un-migrated JS file outside this migration's scope (reference-implementation
-    // is off-limits here). allowJs lets it resolve like RI's own
+    // Several scripts/**/*.test.ts files still import not-yet-migrated JS
+    // (e.g. reference-implementation/**/*.js, out of this tsconfig's own
+    // scope). allowJs lets those resolve structurally, same as RI's own
     // tsconfig.json does for its own not-yet-migrated JS.
     "allowJs": true,
     "checkJs": false

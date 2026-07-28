@@ -22,7 +22,7 @@ on:
     branches: [main]
     paths:
       - "reference-implementation/runtime/browser-surface/remote-surface-optional.ts"
-      - "reference-implementation/test/remote-surface-reference-boundary.test.js"
+      - "reference-implementation/test/remote-surface-reference-boundary.test.ts"
       - "reference-implementation/package.json"
       - "apps/console/package.json"
       - ".github/workflows/remote-surface.yml"
@@ -30,7 +30,7 @@ on:
   pull_request:
     paths:
       - "reference-implementation/runtime/browser-surface/remote-surface-optional.ts"
-      - "reference-implementation/test/remote-surface-reference-boundary.test.js"
+      - "reference-implementation/test/remote-surface-reference-boundary.test.ts"
       - "reference-implementation/package.json"
       - "apps/console/package.json"
       - ".github/workflows/remote-surface.yml"
@@ -127,4 +127,4 @@ jobs:
           "
 
       - name: Verify remote-surface reference boundary
-        run: node --test reference-implementation/test/remote-surface-reference-boundary.test.js
+        run: node --test reference-implementation/test/remote-surface-reference-boundary.test.ts

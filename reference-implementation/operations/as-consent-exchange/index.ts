@@ -30,74 +30,72 @@ export type AsConsentExchangeConsumeResult =
   | { readonly ok: false; readonly reason: "expired" | "consumed" | string };
 
 export interface AsConsentExchangeDependencies {
-  consumeConsentExchangeCode(
-    code: string,
-  ): Promise<AsConsentExchangeConsumeResult> | AsConsentExchangeConsumeResult;
+  consumeConsentExchangeCode: (
+    code: string
+  ) => Promise<AsConsentExchangeConsumeResult> | AsConsentExchangeConsumeResult;
 }
 
 export interface AsConsentExchangeSuccessOutcome {
-  readonly outcome: "success";
   readonly envelope: {
     readonly grant_id: string;
     readonly token: string;
     readonly grant: Record<string, unknown>;
   };
+  readonly outcome: "success";
 }
 
 export interface AsConsentExchangeFailureOutcome {
-  readonly outcome: "failure";
-  readonly status: number;
   readonly errorCode: string;
   readonly errorMessage: string;
+  readonly outcome: "failure";
+  readonly status: number;
 }
 
-export type AsConsentExchangeOutcome =
-  | AsConsentExchangeSuccessOutcome
-  | AsConsentExchangeFailureOutcome;
+export type AsConsentExchangeOutcome = AsConsentExchangeSuccessOutcome | AsConsentExchangeFailureOutcome;
 
 export async function executeAsConsentExchange(
   input: AsConsentExchangeInput,
-  deps: AsConsentExchangeDependencies,
+  deps: AsConsentExchangeDependencies
 ): Promise<AsConsentExchangeOutcome> {
   if (typeof input.code !== "string" || !input.code) {
     return {
-      outcome: "failure",
-      status: 400,
       errorCode: "invalid_request",
       errorMessage: "code is required",
+      outcome: "failure",
+      status: 400,
     };
   }
   const result = await deps.consumeConsentExchangeCode(input.code);
   if (!result.ok) {
     if (result.reason === "expired") {
       return {
-        outcome: "failure",
-        status: 410,
         errorCode: "invalid_grant",
         errorMessage: "Consent exchange code has expired",
+        outcome: "failure",
+        status: 410,
       };
     }
     if (result.reason === "consumed") {
       return {
-        outcome: "failure",
-        status: 410,
         errorCode: "invalid_grant",
         errorMessage: "Consent exchange code has already been redeemed",
+        outcome: "failure",
+        status: 410,
       };
     }
     return {
-      outcome: "failure",
-      status: 404,
       errorCode: "not_found",
       errorMessage: "Unknown consent exchange code",
+      outcome: "failure",
+      status: 404,
     };
   }
   return {
-    outcome: "success",
     envelope: {
+      grant: result.grant,
       grant_id: result.grantId,
       token: result.token,
-      grant: result.grant,
     },
+    outcome: "success",
   };
 }

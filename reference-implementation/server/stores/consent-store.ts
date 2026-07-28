@@ -25,7 +25,7 @@ import {
   getPendingConsentRowByApprovalId,
   initiateGrant,
   parsePendingConsentRequestUri,
-} from "../auth.js";
+} from "../auth.ts";
 
 interface TraceContext {
   readonly [key: string]: unknown;
@@ -73,6 +73,19 @@ interface ConsentStore {
   getPendingConsentByRequestUri: (requestUri: string, opts?: ConsentStoreOptions) => Promise<PendingConsentView | null>;
   initiateGrant: (input: InitiateGrantInput, opts?: InitiateGrantOptions) => Promise<InitiateGrantResponse>;
   parseRequestUri: (requestUri: string) => string | null;
+}
+
+function isInitiateGrantResponse(
+  value: Record<string, unknown>
+): value is InitiateGrantResponse & Record<string, unknown> {
+  return (
+    typeof value.authorization_url === "string" &&
+    typeof value.expires_in === "number" &&
+    typeof value.request_uri === "string" &&
+    value.trace_context !== null &&
+    typeof value.trace_context === "object" &&
+    !Array.isArray(value.trace_context)
+  );
 }
 
 /**
@@ -157,6 +170,9 @@ export function createConsentStore(): ConsentStore {
       opts: ConsentStoreOptions = {}
     ): Promise<PendingConsentView | null> {
       const deviceCode = parsePendingConsentRequestUri(requestUri);
+      if (deviceCode === null) {
+        return Promise.resolve(null);
+      }
       return getPendingConsent(deviceCode, opts) as Promise<PendingConsentView | null>;
     },
     /**
@@ -166,8 +182,12 @@ export function createConsentStore(): ConsentStore {
      * @param {object} [opts] reference-side opts (baseUrl, scenarioId, ...)
      * @returns {Promise<{ request_uri: string, authorization_url: string, expires_in: number, trace_context: object }>}
      */
-    initiateGrant(input: InitiateGrantInput, opts: InitiateGrantOptions = {}): Promise<InitiateGrantResponse> {
-      return initiateGrant(input, opts) as Promise<InitiateGrantResponse>;
+    async initiateGrant(input: InitiateGrantInput, opts: InitiateGrantOptions = {}): Promise<InitiateGrantResponse> {
+      const response = await initiateGrant(input, opts);
+      if (!isInitiateGrantResponse(response)) {
+        throw new Error("initiateGrant returned an invalid pending-consent response");
+      }
+      return response;
     },
 
     /**

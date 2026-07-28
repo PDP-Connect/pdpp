@@ -35,34 +35,34 @@ import type { MiddlewareHandler, RouteArg } from "./_route-contract.ts";
 // `server/routes/owner-connections.ts`.
 
 interface RouteRequest {
-  get(name: string): string | undefined;
+  get: (name: string) => string | undefined;
   readonly hostname: string;
   readonly protocol: string;
 }
 
 interface RouteResponse {
-  json(body: unknown): unknown;
-  status(code: number): RouteResponse;
+  json: (body: unknown) => unknown;
+  status: (code: number) => RouteResponse;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
 
 interface AppLike {
-  get(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  get: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
 }
 
 export interface MountOwnerControlContext {
   // Projects the owner-agent control-surface capability document from the
   // resolved, forwarded-origin-safe RS public base. Same builder the discovery
   // metadata uses.
-  buildOwnerAgentControlSurface(args: { resource: string }): OwnerAgentControlSurface;
-  handleError(res: unknown, err: unknown): void;
+  buildOwnerAgentControlSurface: (args: { resource: string }) => OwnerAgentControlSurface;
+  handleError: (res: unknown, err: unknown) => void;
   requireOwner: MiddlewareHandler;
   requireToken: MiddlewareHandler;
   // Resolves the caller-visible trusted RS public base for this request, using
   // the same forwarded-origin handling as the metadata routes so the catalog's
   // URLs match the advertised resource exactly.
-  resolveResource(req: unknown): string;
+  resolveResource: (req: unknown) => string;
 }
 
 // GET /v1/owner/control — bearer-authed owner-agent control capability

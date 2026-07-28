@@ -5,7 +5,7 @@ import { runCollector } from "./collector/commands.ts";
 // biome-ignore lint/style/noExportedImports: index.ts is @pdpp/cli's public entry point; connectProvider/normalizeProviderUrl/readStoredCredential are re-exported by design for library consumers, matching the reference-contract package's index.ts precedent.
 import { ConnectError, connectProvider, normalizeProviderUrl, readStoredCredential } from "./connect/flow.ts";
 import { runOwnerAgent } from "./owner-agent/command.ts";
-import { createPdppCliCommand, getPdppCliPackageInfo, PDPP_CLI_BIN_NAME } from "./package-info.js";
+import { createPdppCliCommand, getPdppCliPackageInfo, PDPP_CLI_BIN_NAME } from "./package-info.ts";
 import { readHelp, runRead } from "./read/commands.ts";
 import type { CommandIo } from "./ref/commands/call.ts";
 import { runRefCall } from "./ref/commands/call.ts";
@@ -122,9 +122,8 @@ export async function runCli(
     }
 
     try {
-      const { credential } = await readStoredCredential(providerUrl, {
-        cacheRoot: readOption(rest, "--cache-root"),
-      });
+      const cacheRoot = readOption(rest, "--cache-root");
+      const { credential } = await readStoredCredential(providerUrl, cacheRoot === undefined ? {} : { cacheRoot });
       io.stdout.write(`${credential.access_token}\n`);
       return 0;
     } catch (error) {
@@ -249,15 +248,21 @@ function readOption(argv: string[], name: string): string | undefined {
 }
 
 function readFirstPositional(argv: string[]): string | undefined {
+  let positional: string | undefined;
   // biome-ignore lint/style/useForOf: index is advanced by 2 when skipping a flag+value pair; not expressible as for...of.
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
+    if (value === undefined) {
+      break;
+    }
     if (value.startsWith("--")) {
       index += 1;
       continue;
     }
-    return value;
+    positional = value;
+    break;
   }
+  return positional;
 }
 
 export { connectProvider, normalizeProviderUrl, readStoredCredential };

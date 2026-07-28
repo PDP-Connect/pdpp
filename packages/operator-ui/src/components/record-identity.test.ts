@@ -58,11 +58,12 @@ function parseIdentityRules(rawCss: string): CssRule[] {
         }
       }
       // Specificity here = number of class-like simple selectors incl. those inside :not().
+      const ruleOrder = order;
+      order += 1;
       rules.push({
         classes: classes.filter((c) => !notClasses.includes(c)),
         decls,
-        // biome-ignore lint/style/noIncrementDecrement: Loop increment is local and cannot cross automatic-semicolon-insertion boundaries.
-        order: order++,
+        order: ruleOrder,
         selector: selectorRaw,
         // Store the :not exclusions on the rule via a sentinel property.
         specificity: classes.length,
@@ -128,8 +129,7 @@ function previewFor(input: {
 }) {
   const roles = input.roles ?? EMPTY_DECLARED_FIELD_ROLES;
   const types = input.types ?? {};
-  // biome-ignore lint/style/useDestructuring: Indexed access and property reads preserve the local guard and exact source-order reasoning here.
-  const kind = classifyRecordKind(input.stream, input.data, types, undefined, roles).kind;
+  const { kind } = classifyRecordKind(input.stream, input.data, types, undefined, roles);
   return buildRecordPreview(kind, input.data, types, roles);
 }
 

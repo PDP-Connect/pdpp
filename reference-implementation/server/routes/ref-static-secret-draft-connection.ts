@@ -30,7 +30,7 @@ import {
   CREDENTIAL_ENCRYPTION_KEY_ENV,
   CREDENTIAL_ENCRYPTION_KEY_FILE_ENV,
   isCredentialEncryptionConfigured,
-} from "../stores/credential-encryption.js";
+} from "../stores/credential-encryption.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 
 interface RouteRequest {
@@ -40,17 +40,17 @@ interface RouteRequest {
 }
 
 interface RouteResponse {
-  getHeader(name: string): string | number | string[] | undefined;
-  json(body: unknown): unknown;
-  setHeader(name: string, value: string): void;
-  status(code: number): RouteResponse;
+  getHeader: (name: string) => string | number | string[] | undefined;
+  json: (body: unknown) => unknown;
+  setHeader: (name: string, value: string) => void;
+  status: (code: number) => RouteResponse;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
 
 interface AppLike {
-  get(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
-  post(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  get: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
+  post: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
 }
 
 interface TraceContext {
@@ -67,7 +67,7 @@ interface ConnectorInstance {
 }
 
 interface ConnectorInstanceStore {
-  upsert(record: {
+  upsert: (record: {
     ownerSubjectId: string;
     connectorId: string;
     displayName: string;
@@ -77,25 +77,25 @@ interface ConnectorInstanceStore {
     sourceBinding: Record<string, unknown>;
     createdAt: string;
     updatedAt: string;
-  }): Promise<ConnectorInstance> | ConnectorInstance;
+  }) => Promise<ConnectorInstance> | ConnectorInstance;
 }
 
 export interface MountRefStaticSecretDraftConnectionContext {
-  canonicalConnectorKey(value: string | null | undefined): string | null;
-  createRequestConnectorInstanceStore(): ConnectorInstanceStore;
-  createTraceContext(input?: { scenarioId?: string }): TraceContext;
-  emitSpineEvent(event: Record<string, unknown>): Promise<unknown>;
-  ensureRequestId(res: RouteResponse): string;
-  getOwnerSubjectId(req: unknown): string;
-  handleError(res: unknown, err: unknown): void;
-  now?(): string;
+  canonicalConnectorKey: (value: string | null | undefined) => string | null;
+  createRequestConnectorInstanceStore: () => ConnectorInstanceStore;
+  createTraceContext: (input?: { scenarioId?: string }) => TraceContext;
+  emitSpineEvent: (event: Record<string, unknown>) => Promise<unknown>;
+  ensureRequestId: (res: RouteResponse) => string;
+  getOwnerSubjectId: (req: unknown) => string;
+  handleError: (res: unknown, err: unknown) => void;
+  now?: () => string;
   pdppError: PdppErrorFn;
   requireOwnerSession: MiddlewareHandler;
   // Resolves a registered connector manifest, throwing a typed not_found when
   // the connector is unknown. Used only to reject an unknown connector id with
   // 404 before creating a draft.
-  resolveRegisteredConnectorManifest(connectorId: string): Promise<ConnectorManifestLike>;
-  setReferenceTraceId(res: RouteResponse, traceId: string): void;
+  resolveRegisteredConnectorManifest: (connectorId: string) => Promise<ConnectorManifestLike>;
+  setReferenceTraceId: (res: RouteResponse, traceId: string) => void;
 }
 
 function errWithCode(code: string): { code: string } {
@@ -171,15 +171,7 @@ function projectSetup(connectorId: string, manifest: ConnectorManifestLike): Rec
   }
   const displayName = displayNameForConnector(connectorId, manifest);
   return {
-    object: "static_secret_setup",
     connector_id: connectorId,
-    display_name: displayName,
-    credential_kind: credentialKind,
-    // Whether the credential is validated synchronously at capture (a registry
-    // connector with a `probeCredential` hook echoes the account identity in
-    // ≤10s) or only at first sync. Owner-generic; drives the Console form's
-    // validate-then-activate flow with no connector-specific branch.
-    validation: credentialValidationMode(connectorId),
     credential_capture: {
       description: capture.description,
       fields: capture.fields.map(projectField),
@@ -187,7 +179,15 @@ function projectSetup(connectorId: string, manifest: ConnectorManifestLike): Rec
       label: capture.label,
       submit_label: capture.submitLabel,
     },
+    credential_kind: credentialKind,
     deployment_readiness: staticSecretDeploymentReadiness(),
+    display_name: displayName,
+    object: "static_secret_setup",
+    // Whether the credential is validated synchronously at capture (a registry
+    // connector with a `probeCredential` hook echoes the account identity in
+    // ≤10s) or only at first sync. Owner-generic; drives the Console form's
+    // validate-then-activate flow with no connector-specific branch.
+    validation: credentialValidationMode(connectorId),
   };
 }
 
@@ -247,17 +247,8 @@ async function emitDraftAudit(
   const ownerSubjectId = args.ownerSubjectId ?? req.ownerSession?.sub ?? null;
   const code = (args.error as { code?: unknown } | null)?.code;
   await ctx.emitSpineEvent({
-    event_type: "owner.connection.static_secret_draft.create",
-    trace_id: trace.trace_id,
-    scenario_id: trace.scenario_id,
-    request_id: trace.request_id,
-    actor_type: "owner_session",
     actor_id: ownerSubjectId ?? "owner_session",
-    subject_type: "subject",
-    subject_id: ownerSubjectId,
-    object_type: "connection",
-    object_id: args.connectionId ?? "unknown_connection",
-    status: args.outcome,
+    actor_type: "owner_session",
     data: {
       connection_id: args.connectionId ?? null,
       connector_id: args.connectorId ?? null,
@@ -272,6 +263,15 @@ async function emitDraftAudit(
           }
         : {}),
     },
+    event_type: "owner.connection.static_secret_draft.create",
+    object_id: args.connectionId ?? "unknown_connection",
+    object_type: "connection",
+    request_id: trace.request_id,
+    scenario_id: trace.scenario_id,
+    status: args.outcome,
+    subject_id: ownerSubjectId,
+    subject_type: "subject",
+    trace_id: trace.trace_id,
   });
 }
 
@@ -298,14 +298,14 @@ function createDraftConnection(
     ? `${displayNameForConnector(input.connectorId, input.manifest)} - ${idValue}`
     : displayNameForConnector(input.connectorId, input.manifest);
   const instance = store.upsert({
-    ownerSubjectId: input.ownerSubjectId,
     connectorId: input.connectorId,
-    displayName,
-    status: "draft",
-    sourceKind: "account",
-    sourceBindingKey,
-    sourceBinding: { kind: "static_secret_draft", setup_fields: input.setupFields },
     createdAt: now,
+    displayName,
+    ownerSubjectId: input.ownerSubjectId,
+    sourceBinding: { kind: "static_secret_draft", setup_fields: input.setupFields },
+    sourceBindingKey,
+    sourceKind: "account",
+    status: "draft",
     updatedAt: now,
   });
   return { displayName, instance };
@@ -414,11 +414,11 @@ export function mountRefStaticSecretDraftConnection(
         }
 
         const { displayName, instance: pendingInstance } = createDraftConnection(ctx, {
+          captureSetup,
           connectorId,
           manifest,
-          captureSetup,
-          setupFields,
           ownerSubjectId,
+          setupFields,
         });
         const instance = await pendingInstance;
 
@@ -431,20 +431,20 @@ export function mountRefStaticSecretDraftConnection(
         });
 
         res.status(201).json({
-          object: "static_secret_draft_connection",
           connection_id: instance.connectorInstanceId,
-          connector_instance_id: instance.connectorInstanceId,
           connector_id: connectorId,
-          display_name: displayName,
-          status: instance.status,
+          connector_instance_id: instance.connectorInstanceId,
           credential_kind: credentialKind,
+          display_name: displayName,
           next_step: {
             kind: "capture_static_secret_credential",
             method: "POST",
-            url: `/_ref/connections/${encodeURIComponent(instance.connectorInstanceId)}/static-secret-credential`,
             reason:
               "Capture the provider static secret onto this draft from the owner session. The connection stays invisible until its first successful ingest.",
+            url: `/_ref/connections/${encodeURIComponent(instance.connectorInstanceId)}/static-secret-credential`,
           },
+          object: "static_secret_draft_connection",
+          status: instance.status,
         });
       } catch (err) {
         await emitDraftAudit(ctx, req, res, {

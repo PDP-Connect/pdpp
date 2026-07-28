@@ -35,7 +35,7 @@ export function sanitizeLocalCollectorGapDetails(value: unknown): string | null 
 }
 
 export function sanitizeDeviceExporterDiagnostic(value: unknown, depth = 0): unknown {
-  if (value == null) {
+  if (value === null) {
     return null;
   }
   if (typeof value === "string") {

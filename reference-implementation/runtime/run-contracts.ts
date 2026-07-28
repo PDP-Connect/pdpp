@@ -14,6 +14,7 @@
 // and it imports NOTHING from `controller.ts` or any `runtime/browser-surface/*`
 // module (no back-edge).
 
+// biome-ignore lint/correctness/noUnresolvedImports: remote-surface 1.5.1 exports ./leases; Biome 2.5.5 fails to resolve this package export.
 import type { BrowserSurfaceProjection } from "@opendatalabs/remote-surface/leases";
 import type { SpineTraceContext } from "../lib/spine.ts";
 import type { RunAutomationMode, RunTriggerKind } from "./run-automation-policy.ts";

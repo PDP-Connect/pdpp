@@ -5,18 +5,19 @@ import {
   type BrowserSurface,
   type BrowserSurfaceLease,
   TERMINAL_BROWSER_SURFACE_LEASE_STATUSES,
+  // biome-ignore lint/correctness/noUnresolvedImports: Biome cannot resolve this installed package export; Node and TypeScript resolve it.
 } from "@opendatalabs/remote-surface/leases";
 import { type BindValue, execDynamicSqlAcknowledged, iterateDynamicSqlAcknowledged } from "../../lib/db.ts";
-import { getDb } from "../db.js";
+import { getDb } from "../db.ts";
 import {
   getStorageBackendKind,
   isPostgresStorageBackend,
   postgresQuery,
   withPostgresTransaction,
-} from "../postgres-storage.js";
+} from "../postgres-storage.ts";
 
 interface Queryable {
-  query(sql: string, params?: unknown[]): Promise<{ rows: BrowserSurfaceRow[] | BrowserSurfaceLeaseRow[] }>;
+  query: (sql: string, params?: unknown[]) => Promise<{ rows: (BrowserSurfaceRow | BrowserSurfaceLeaseRow)[] }>;
 }
 
 interface BrowserSurfaceRow {
@@ -62,29 +63,29 @@ interface BrowserSurfaceLeaseRow {
 }
 
 export interface BrowserSurfaceLeaseStore {
-  clearSurfaceActiveLease(
+  clearSurfaceActiveLease: (
     surfaceId: string,
     leaseId: string,
     fencingToken: number
-  ): Promise<BrowserSurfaceWithPersistenceMetadata | null>;
-  getLease(leaseId: string): Promise<BrowserSurfaceLease | null>;
-  getSurface(surfaceId: string): Promise<BrowserSurfaceWithPersistenceMetadata | null>;
-  listLeases(): Promise<BrowserSurfaceLease[]>;
-  listNonTerminalLeases(): Promise<BrowserSurfaceLease[]>;
-  listSurfaces(): Promise<BrowserSurfaceWithPersistenceMetadata[]>;
-  repairStaleSurfaceActiveLeases(): Promise<void>;
-  updateBrowserGenerationHash(surfaceId: string, browserGenerationHash: string): Promise<void>;
-  updateLeaseTerminal(
+  ) => Promise<BrowserSurfaceWithPersistenceMetadata | null>;
+  getLease: (leaseId: string) => Promise<BrowserSurfaceLease | null>;
+  getSurface: (surfaceId: string) => Promise<BrowserSurfaceWithPersistenceMetadata | null>;
+  listLeases: () => Promise<BrowserSurfaceLease[]>;
+  listNonTerminalLeases: () => Promise<BrowserSurfaceLease[]>;
+  listSurfaces: () => Promise<BrowserSurfaceWithPersistenceMetadata[]>;
+  repairStaleSurfaceActiveLeases: () => Promise<void>;
+  updateBrowserGenerationHash: (surfaceId: string, browserGenerationHash: string) => Promise<void>;
+  updateLeaseTerminal: (
     leaseId: string,
     status: Extract<
       BrowserSurfaceLease["status"],
       "released" | "expired" | "deferred" | "cancelled" | "surface_failed"
     >,
     options?: { releasedAt?: string; waitReason?: BrowserSurfaceLease["wait_reason"] | null }
-  ): Promise<BrowserSurfaceLease | null>;
-  upsertLease(lease: BrowserSurfaceLease): Promise<BrowserSurfaceLease>;
-  upsertSurface(surface: BrowserSurfaceWithPersistenceMetadata): Promise<BrowserSurfaceWithPersistenceMetadata>;
-  withLeaseTransaction<T>(fn: (store: BrowserSurfaceLeaseStore) => Promise<T> | T): Promise<T>;
+  ) => Promise<BrowserSurfaceLease | null>;
+  upsertLease: (lease: BrowserSurfaceLease) => Promise<BrowserSurfaceLease>;
+  upsertSurface: (surface: BrowserSurfaceWithPersistenceMetadata) => Promise<BrowserSurfaceWithPersistenceMetadata>;
+  withLeaseTransaction: <T>(fn: (store: BrowserSurfaceLeaseStore) => Promise<T> | T) => Promise<T>;
 }
 
 const TERMINAL_STATUS_SQL = TERMINAL_BROWSER_SURFACE_LEASE_STATUSES.map((status) => `'${status}'`).join(", ");
@@ -115,15 +116,15 @@ function mapSurface(row: BrowserSurfaceRow | null | undefined): BrowserSurfaceWi
     return null;
   }
   const surface = {
-    surface_id: row.surface_id,
     backend: row.backend,
-    profile_key: row.profile_key,
-    connector_id: row.connector_id,
     cdp_url: row.cdp_url,
-    stream_base_url: row.stream_base_url,
-    health: row.health,
+    connector_id: row.connector_id,
     created_at: row.created_at,
+    health: row.health,
     last_used_at: row.last_used_at,
+    profile_key: row.profile_key,
+    stream_base_url: row.stream_base_url,
+    surface_id: row.surface_id,
   };
   assignOptionalSurfaceField(surface, "account_key", row.account_key);
   assignOptionalSurfaceField(surface, "surface_subject_id", row.surface_subject_id);
@@ -159,15 +160,15 @@ function mapLease(row: BrowserSurfaceLeaseRow | null | undefined): BrowserSurfac
     return null;
   }
   return {
-    lease_id: row.lease_id,
     connector_id: row.connector_id,
-    profile_key: row.profile_key,
-    run_id: row.run_id,
-    status: row.status,
-    priority_class: row.priority_class,
-    requested_at: row.requested_at,
     expires_at: row.expires_at,
     fencing_token: Number(row.fencing_token),
+    lease_id: row.lease_id,
+    priority_class: row.priority_class,
+    profile_key: row.profile_key,
+    requested_at: row.requested_at,
+    run_id: row.run_id,
+    status: row.status,
     ...(row.account_key ? { account_key: row.account_key } : {}),
     ...(row.surface_subject_id ? { surface_subject_id: row.surface_subject_id } : {}),
     ...(row.leased_at ? { leased_at: row.leased_at } : {}),
@@ -236,6 +237,7 @@ function firstDynamicRow<R>(sql: string, params: BindValue[] = []): R | undefine
   for (const row of iterateDynamicSqlAcknowledged<R>(sql, params)) {
     return row;
   }
+  // biome-ignore lint/complexity/noUselessReturn: required by TypeScript noImplicitReturns to make the empty result explicit.
   return;
 }
 
@@ -435,12 +437,15 @@ class PostgresBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
   readonly #query: (
     sql: string,
     params?: unknown[]
-  ) => Promise<{ rows: BrowserSurfaceRow[] | BrowserSurfaceLeaseRow[] }>;
+  ) => Promise<{ rows: (BrowserSurfaceRow | BrowserSurfaceLeaseRow)[] }>;
 
   constructor(client?: Queryable) {
     this.#query = client
       ? (sql, params = []) => client.query(sql, params)
-      : (sql, params = []) => postgresQuery(sql, params);
+      : async (sql, params = []) => {
+          const result = await postgresQuery<BrowserSurfaceRow | BrowserSurfaceLeaseRow>(sql, params);
+          return { rows: result.rows };
+        };
   }
 
   async upsertSurface(surface: BrowserSurfaceWithPersistenceMetadata): Promise<BrowserSurfaceWithPersistenceMetadata> {
@@ -597,7 +602,7 @@ class PostgresBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
   }
 
   withLeaseTransaction<T>(fn: (store: BrowserSurfaceLeaseStore) => Promise<T> | T): Promise<T> {
-    return withPostgresTransaction((client: Queryable) => fn(new PostgresBrowserSurfaceLeaseStore(client)));
+    return withPostgresTransaction(async (client) => await fn(new PostgresBrowserSurfaceLeaseStore(client)));
   }
 }
 

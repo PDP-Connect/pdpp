@@ -72,33 +72,33 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     heading: null,
     items: [
-      { href: "/", label: "Overview" },
-      { href: "/explore", label: "Explore" },
+      { label: "Overview", href: "/" },
+      { label: "Explore", href: "/explore" },
     ],
   },
   {
     heading: "Collection",
     items: [
-      { href: "/sources", label: "Sources" },
-      { href: "/syncs", label: "Syncs" },
-      { href: "/schedules", label: "Schedules" },
+      { label: "Sources", href: "/sources" },
+      { label: "Syncs", href: "/syncs" },
+      { label: "Schedules", href: "/schedules" },
     ],
   },
   {
     heading: "Sharing",
     items: [
-      { href: "/connect", label: "Connect AI apps" },
-      { href: "/grants", label: "Grants" },
-      { href: "/audit", label: "Audit" },
+      { label: "Connect AI apps", href: "/connect" },
+      { label: "Grants", href: "/grants" },
+      { label: "Audit", href: "/audit" },
     ],
   },
   {
     heading: "Server",
     items: [
-      { href: "/notifications", label: "Notifications" },
-      { href: "/deployment", label: "Deployment" },
-      { href: "/device-exporters", label: "Device exporters" },
-      { href: "/event-subscriptions", label: "Event subscriptions" },
+      { label: "Notifications", href: "/notifications" },
+      { label: "Deployment", href: "/deployment" },
+      { label: "Device exporters", href: "/device-exporters" },
+      { label: "Event subscriptions", href: "/event-subscriptions" },
     ],
   },
 ];

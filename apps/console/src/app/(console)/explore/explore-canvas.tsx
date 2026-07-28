@@ -3469,7 +3469,7 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
     (recordId: string) => {
       setLastRecordIdSearch(recordId);
       setDraft(recordId);
-      navigate({ peek: undefined, query: recordId });
+      navigate({ query: recordId, peek: undefined });
     },
     [navigate]
   );
@@ -3659,10 +3659,10 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
       buildHref(explorePath, {
         connectionIds: selectedConnectionIds,
         query: data.query,
-        searchSort,
         since: data.since,
         streams: selectedStreams,
         until: data.until,
+        searchSort,
       }),
     [data.query, data.since, data.until, explorePath, selectedConnectionIds, selectedStreams]
   );
@@ -3672,7 +3672,7 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
   // and the feed claims the freed width — no reserved-empty 420px inspector (the
   // dead-canvas + query-bar/inspector-overlap root cause). `data.peek != null` is
   // the single source of selection truth (selectedPeekParam derives from it).
-  const hasSelection = data.peek !== null;
+  const hasSelection = data.peek !== null && data.peek !== undefined;
   return (
     <div className={hasSelection ? "rr-x has-selection" : "rr-x"}>
       {/* ── In-page route progress bar ──

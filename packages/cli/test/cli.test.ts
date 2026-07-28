@@ -18,7 +18,7 @@ import {
   PDPP_CLI_NO_OWNER_TOKEN_POLICY,
   PDPP_CLI_PACKAGE_NAME,
   PDPP_CLI_PACKAGE_SPECIFIER,
-} from "../src/package-info.js";
+} from "../src/package-info.ts";
 
 // The bin facade (bin/pdpp.js) imports the emitted `dist/src/index.js`, so
 // subprocess smoke tests must exercise the built artifact — pnpm test builds

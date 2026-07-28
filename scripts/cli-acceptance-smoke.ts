@@ -11,7 +11,7 @@ import process from "node:process";
 
 const [, , mode] = process.argv;
 const repoRoot = new URL("..", import.meta.url).pathname;
-const cliBin = join(repoRoot, "packages/cli/bin/pdpp.js");
+const cliBin = join(repoRoot, "packages/cli/bin/pdpp.ts");
 const APPROVAL_URL_PATTERN = /https?:\/\/[^\s]+\/consent\?request_uri=[^\s]+/;
 const NOT_ENABLED_PATTERN = /not enabled yet|no-owner-token scoped grant completion/i;
 const HTTP_404_PATTERN = /HTTP 404/i;
@@ -108,7 +108,7 @@ async function runLocalConnectSmoke(): Promise<void> {
     // into this migration's compilation graph and re-check them under this
     // config's stricter flags — the module path is built from a variable so
     // tsc treats the import as untyped while Node still resolves it identically.
-    const referenceServerEntry = new URL("../reference-implementation/server/index.js", import.meta.url).href;
+    const referenceServerEntry = new URL("../reference-implementation/server/index.ts", import.meta.url).href;
     const [{ startServer }, nativeManifest] = await Promise.all([
       import(referenceServerEntry) as Promise<{
         startServer: (options: Record<string, unknown>) => Promise<ReferenceServerHandle>;

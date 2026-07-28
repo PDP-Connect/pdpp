@@ -107,8 +107,8 @@ export interface SearchLexicalManifest {
 }
 
 export interface SearchLexicalGrantStream {
-  name: string;
   fields?: string[];
+  name: string;
   [extra: string]: unknown;
 }
 
@@ -122,9 +122,7 @@ export interface SearchLexicalGrant {
  * `capabilities.lexical_retrieval` shape published in RS metadata.
  */
 export interface SearchLexicalAdvertisement {
-  supported?: boolean;
   cross_stream?: boolean;
-  snippets?: boolean;
   default_limit?: number;
   max_limit?: number;
   score?: {
@@ -133,6 +131,8 @@ export interface SearchLexicalAdvertisement {
     order?: string;
     value_semantics?: string;
   };
+  snippets?: boolean;
+  supported?: boolean;
   [extra: string]: unknown;
 }
 
@@ -143,15 +143,15 @@ export interface SearchLexicalAdvertisement {
  * through the plan back into the snapshot builder.
  */
 export interface SearchLexicalPlanEntry {
-  streamName: string;
   searchableFields: string[];
+  streamName: string;
   [extra: string]: unknown;
 }
 
 export interface SearchLexicalConnectorPlan {
   connectorId: string | null;
-  manifest: SearchLexicalManifest;
   grant: SearchLexicalGrant;
+  manifest: SearchLexicalManifest;
   planEntries: SearchLexicalPlanEntry[];
 }
 
@@ -161,6 +161,7 @@ export interface SearchLexicalConnectorPlan {
  * when the advertisement gates score emission.
  */
 export interface SearchLexicalSnapshotResult {
+  authoredAt?: string | null;
   connectorId: string;
   /**
    * Connection identifier (canonical) for the binding this hit came from.
@@ -176,13 +177,12 @@ export interface SearchLexicalSnapshotResult {
    * label SHOULD omit this field rather than fabricate one.
    */
   displayName?: string | null;
-  stream: string;
-  recordKey: string;
   emittedAt: string;
-  authoredAt?: string | null;
   matchedFields: string[];
-  snippet?: { field: string; text: string } | null;
+  recordKey: string;
   score?: number;
+  snippet?: { field: string; text: string } | null;
+  stream: string;
   [extra: string]: unknown;
 }
 
@@ -195,16 +195,9 @@ export interface SearchLexicalSnapshotResult {
  * - `estimated`: `count` is approximate.
  * - `not_counted`: the server did not compute a count; `count` is `null`.
  */
-export type SearchLexicalCountAccuracy =
-  | "exact"
-  | "lower_bound"
-  | "estimated"
-  | "not_counted";
+export type SearchLexicalCountAccuracy = "exact" | "lower_bound" | "estimated" | "not_counted";
 
-export type SearchLexicalRankingScope =
-  | "all_matches"
-  | "candidate_window"
-  | "unknown";
+export type SearchLexicalRankingScope = "all_matches" | "candidate_window" | "unknown";
 
 /**
  * Response-level recall disclosure. Describes the ranking *input* — whether the
@@ -217,24 +210,24 @@ export type SearchLexicalRankingScope =
  * cannot prove cheaply and MUST NOT fabricate a fact to look more complete.
  */
 export interface SearchLexicalRecallMeta {
+  /** Per-source candidate cap that produced the window, when one applies. */
+  candidate_window_limit?: number;
   /**
    * `true` ⇒ the implementation ranked all known caller-visible matches for
    * the query before pagination. `false` ⇒ additional caller-visible matches
    * may exist outside the ranked set.
    */
   complete: boolean;
+  /** Number of caller-visible candidates the implementation actually ranked. */
+  ranked_candidate_count?: number;
   ranking_scope: SearchLexicalRankingScope;
+  /** Count of caller-visible sources that were searched under this query. */
+  sources_searched_count?: number;
   /**
    * `true` ⇒ an implementation-applied candidate or source window prevented
    * the ranked set from representing every caller-visible match.
    */
   truncated: boolean;
-  /** Number of caller-visible candidates the implementation actually ranked. */
-  ranked_candidate_count?: number;
-  /** Per-source candidate cap that produced the window, when one applies. */
-  candidate_window_limit?: number;
-  /** Count of caller-visible sources that were searched under this query. */
-  sources_searched_count?: number;
   /** Count of searched sources whose candidate set was truncated by the cap. */
   truncated_source_count?: number;
 }
@@ -252,9 +245,7 @@ export interface SearchLexicalSnapshotRecall {
 }
 
 export interface SearchLexicalSnapshot {
-  snapshot_id: string;
   query: string;
-  results: SearchLexicalSnapshotResult[];
   /**
    * Operation-level recall/count disclosure for the *whole* ranked set. The
    * preferred durable seam: the snapshot owns it so every page (fresh or
@@ -262,6 +253,8 @@ export interface SearchLexicalSnapshot {
    * recall MAY omit it; the operation then emits `not_counted` / `unknown`.
    */
   recall_meta?: SearchLexicalSnapshotRecall;
+  results: SearchLexicalSnapshotResult[];
+  snapshot_id: string;
   [extra: string]: unknown;
 }
 
@@ -289,24 +282,57 @@ export interface SearchLexicalOwnerBinding {
  * surfaced through the snapshot builder for the per-hit `display_name`.
  */
 export interface SearchLexicalClientBinding {
-  manifest: SearchLexicalManifest;
   connectorInstanceId: string;
   displayName?: string | null;
+  manifest: SearchLexicalManifest;
 }
 
 export interface SearchLexicalDependencies {
   /**
+   * Owner fan-out helper: build a synthetic owner read-grant covering every
+   * stream of `manifest`. Adapter decides field-set semantics (typically
+   * `fields = undefined ⇒ all fields authorized`).
+   */
+  buildOwnerReadGrantForManifest: (manifest: SearchLexicalManifest) => SearchLexicalGrant;
+  /**
+   * Compile one connector's grant + manifest + request filter shape into a
+   * plan. Implementations must enforce field-grant intersection and
+   * stream-grant intersection — the operation does not look inside the plan
+   * entries beyond `streamName` and `searchableFields`.
+   *
+   * `streamsFilter` is the normalized `streams[]` request value (null if
+   * absent). `filter` and `filteredStream` are the request `filter[...]` and
+   * the single `streams[]` value bound to it (if `filter` is present).
+   */
+  buildSearchPlanForGrant: (args: {
+    manifest: SearchLexicalManifest;
+    grant: SearchLexicalGrant;
+    streamsFilter: string[] | null;
+    filter: unknown;
+    filteredStream: string | null;
+    connectorId: string | null;
+  }) => SearchLexicalPlanEntry[];
+  /**
+   * Build a snapshot of the fully-ranked result set for `(q, plans)`. The
+   * adapter owns FTS5/ranking/snippet semantics; the operation only slices
+   * the snapshot.
+   */
+  buildSnapshot: (args: {
+    q: string;
+    perConnectorPlans: SearchLexicalConnectorPlan[];
+    isOwner: boolean;
+  }) => Promise<SearchLexicalSnapshot> | SearchLexicalSnapshot;
+  /**
+   * Format the public `record_url` for one search result. Hosts wire the
+   * concrete implementation: native -> `/v1/streams/<stream>/records/<id>`
+   * (with `?connector_id=` for owner mode); sandbox ->
+   * `/sandbox/v1/streams/<stream>/records/<id>`.
+   */
+  formatRecordUrl: (args: { stream: string; recordKey: string; connectorId: string; isOwner: boolean }) => string;
+  /**
    * Capability advertisement; controls cross-stream and score-emission gates.
    */
-  getAdvertisement(): SearchLexicalAdvertisement | null;
-  /**
-   * Owner fan-out: list every connector id whose manifest the owner can read.
-   *
-   * Legacy single-binding-per-connector path. Hosts that support cross-
-   * binding fan-in SHOULD additionally implement `listOwnerVisibleBindings`
-   * below; when present, the operation uses it and ignores this method.
-   */
-  listOwnerVisibleConnectorIds(): Promise<string[]> | string[];
+  getAdvertisement: () => SearchLexicalAdvertisement | null;
   /**
    * Owner cross-binding fan-out (optional): list every active owner-visible
    * binding (one entry per `(connector_id, connector_instance_id)`). When
@@ -318,50 +344,24 @@ export interface SearchLexicalDependencies {
    *       specs/reference-implementation-architecture/spec.md
    *       (#"Multi-connection list and search reads SHALL fan in by default")
    */
-  listOwnerVisibleBindings?: () =>
-    | Promise<SearchLexicalOwnerBinding[]>
-    | SearchLexicalOwnerBinding[];
+  listOwnerVisibleBindings?: () => Promise<SearchLexicalOwnerBinding[]> | SearchLexicalOwnerBinding[];
   /**
-   * Owner fan-out helper: return the manifest for one connector, or null to
-   * skip it (e.g. broken polyfill manifests).
-   */
-  resolveOwnerManifestForConnector(
-    connectorId: string,
-  ):
-    | Promise<SearchLexicalManifest | null>
-    | SearchLexicalManifest
-    | null;
-  /**
-   * Owner cross-binding fan-out helper (optional): resolve the manifest for
-   * one specific binding. Used in conjunction with
-   * `listOwnerVisibleBindings`. When omitted, the operation falls back to
-   * `resolveOwnerManifestForConnector(binding.connectorId)`.
-   */
-  resolveOwnerManifestForBinding?: (
-    binding: SearchLexicalOwnerBinding,
-  ) =>
-    | Promise<SearchLexicalManifest | null>
-    | SearchLexicalManifest
-    | null;
-  /**
-   * Owner fan-out helper: build a synthetic owner read-grant covering every
-   * stream of `manifest`. Adapter decides field-set semantics (typically
-   * `fields = undefined ⇒ all fields authorized`).
-   */
-  buildOwnerReadGrantForManifest(
-    manifest: SearchLexicalManifest,
-  ): SearchLexicalGrant;
-  /**
-   * Client-mode helper: resolve the manifest the supplied client grant
-   * applies against. Hosts build this from the bearer token information.
+   * Owner fan-out: list every connector id whose manifest the owner can read.
    *
-   * Legacy single-binding path. Hosts that support cross-binding fan-in
-   * SHOULD additionally implement `resolveClientBindings` below; when
-   * present, the operation uses it and ignores this method.
+   * Legacy single-binding-per-connector path. Hosts that support cross-
+   * binding fan-in SHOULD additionally implement `listOwnerVisibleBindings`
+   * below; when present, the operation uses it and ignores this method.
    */
-  resolveClientManifest(
-    actor: { kind: "client"; grant: SearchLexicalGrant },
-  ): Promise<SearchLexicalManifest> | SearchLexicalManifest;
+  listOwnerVisibleConnectorIds: () => Promise<string[]> | string[];
+  /**
+   * Load a previously-persisted snapshot by id. Returns `null` if the
+   * snapshot has expired or never existed.
+   */
+  loadSnapshot: (snapshotId: string) => Promise<SearchLexicalSnapshot | null> | SearchLexicalSnapshot | null;
+  /**
+   * Persist a freshly-built snapshot for cursor reuse.
+   */
+  persistSnapshot: (snapshot: SearchLexicalSnapshot) => Promise<void> | void;
   /**
    * Client cross-binding fan-out (optional): resolve the set of bindings the
    * grant authorizes. Each entry carries a manifest pinned to one binding
@@ -382,64 +382,36 @@ export interface SearchLexicalDependencies {
    */
   resolveClientBindings?: (
     actor: { kind: "client"; grant: SearchLexicalGrant },
-    request: { connectionId: string | null },
-  ) =>
-    | Promise<SearchLexicalClientBinding[]>
-    | SearchLexicalClientBinding[];
+    request: { connectionId: string | null }
+  ) => Promise<SearchLexicalClientBinding[]> | SearchLexicalClientBinding[];
   /**
-   * Compile one connector's grant + manifest + request filter shape into a
-   * plan. Implementations must enforce field-grant intersection and
-   * stream-grant intersection — the operation does not look inside the plan
-   * entries beyond `streamName` and `searchableFields`.
+   * Client-mode helper: resolve the manifest the supplied client grant
+   * applies against. Hosts build this from the bearer token information.
    *
-   * `streamsFilter` is the normalized `streams[]` request value (null if
-   * absent). `filter` and `filteredStream` are the request `filter[...]` and
-   * the single `streams[]` value bound to it (if `filter` is present).
+   * Legacy single-binding path. Hosts that support cross-binding fan-in
+   * SHOULD additionally implement `resolveClientBindings` below; when
+   * present, the operation uses it and ignores this method.
    */
-  buildSearchPlanForGrant(args: {
-    manifest: SearchLexicalManifest;
+  resolveClientManifest: (actor: {
+    kind: "client";
     grant: SearchLexicalGrant;
-    streamsFilter: string[] | null;
-    filter: unknown;
-    filteredStream: string | null;
-    connectorId: string | null;
-  }): SearchLexicalPlanEntry[];
+  }) => Promise<SearchLexicalManifest> | SearchLexicalManifest;
   /**
-   * Build a snapshot of the fully-ranked result set for `(q, plans)`. The
-   * adapter owns FTS5/ranking/snippet semantics; the operation only slices
-   * the snapshot.
+   * Owner cross-binding fan-out helper (optional): resolve the manifest for
+   * one specific binding. Used in conjunction with
+   * `listOwnerVisibleBindings`. When omitted, the operation falls back to
+   * `resolveOwnerManifestForConnector(binding.connectorId)`.
    */
-  buildSnapshot(args: {
-    q: string;
-    perConnectorPlans: SearchLexicalConnectorPlan[];
-    isOwner: boolean;
-  }): Promise<SearchLexicalSnapshot> | SearchLexicalSnapshot;
+  resolveOwnerManifestForBinding?: (
+    binding: SearchLexicalOwnerBinding
+  ) => Promise<SearchLexicalManifest | null> | SearchLexicalManifest | null;
   /**
-   * Persist a freshly-built snapshot for cursor reuse.
+   * Owner fan-out helper: return the manifest for one connector, or null to
+   * skip it (e.g. broken polyfill manifests).
    */
-  persistSnapshot(snapshot: SearchLexicalSnapshot): Promise<void> | void;
-  /**
-   * Load a previously-persisted snapshot by id. Returns `null` if the
-   * snapshot has expired or never existed.
-   */
-  loadSnapshot(
-    snapshotId: string,
-  ):
-    | Promise<SearchLexicalSnapshot | null>
-    | SearchLexicalSnapshot
-    | null;
-  /**
-   * Format the public `record_url` for one search result. Hosts wire the
-   * concrete implementation: native -> `/v1/streams/<stream>/records/<id>`
-   * (with `?connector_id=` for owner mode); sandbox ->
-   * `/sandbox/v1/streams/<stream>/records/<id>`.
-   */
-  formatRecordUrl(args: {
-    stream: string;
-    recordKey: string;
-    connectorId: string;
-    isOwner: boolean;
-  }): string;
+  resolveOwnerManifestForConnector: (
+    connectorId: string
+  ) => Promise<SearchLexicalManifest | null> | SearchLexicalManifest | null;
 }
 
 export interface SearchLexicalInput {
@@ -455,16 +427,14 @@ export interface SearchLexicalInput {
 }
 
 export interface SearchLexicalResultItem {
-  object: "search_result";
-  stream: string;
-  record_key: string;
-  connector_id: string;
+  authored_at?: string;
   /**
    * Canonical connection identifier — present whenever the snapshot result
    * captured one. `connector_instance_id` mirrors the same value during the
    * deprecation window so clients can migrate without coordinated cutovers.
    */
   connection_id?: string;
+  connector_id: string;
   connector_instance_id?: string;
   /**
    * Owner-facing label for the connection. Emitted only when the snapshot
@@ -473,13 +443,15 @@ export interface SearchLexicalResultItem {
    * uniform form across read surfaces.
    */
   display_name?: string;
-  record_url: string;
   emitted_at: string;
-  authored_at?: string;
-  matched_fields: string[];
-  snippet?: { field: string; text: string };
   evidence_excerpts?: SearchLexicalEvidenceExcerpt[];
+  matched_fields: string[];
+  object: "search_result";
+  record_key: string;
+  record_url: string;
   score?: { kind: "bm25"; value: number; order: "lower_is_better" };
+  snippet?: { field: string; text: string };
+  stream: string;
 }
 
 /**
@@ -493,26 +465,25 @@ export interface SearchLexicalResultItem {
  */
 export interface SearchLexicalWarning {
   code: string;
-  param?: string;
-  message?: string;
   detail?: Record<string, unknown>;
+  message?: string;
+  param?: string;
 }
 
 export interface SearchLexicalEvidenceExcerptRead {
-  object: "field_window_read";
+  connection_id?: string;
+  field: string;
   method: "GET";
+  object: "field_window_read";
+  record_id: string;
   route: string;
   stream: string;
-  record_id: string;
-  field: string;
-  connection_id?: string;
 }
 
 export interface SearchLexicalEvidenceExcerpt {
-  object: "evidence_excerpt";
   field_path: string;
+  object: "evidence_excerpt";
   preview_text: string;
-  truncated: boolean;
   provenance: "lexical_match";
   /**
    * Bounded read continuation for the matched field. A REST/CLI client can
@@ -521,10 +492,10 @@ export interface SearchLexicalEvidenceExcerpt {
    * visible search excerpt from being a dead end on any surface.
    */
   read?: SearchLexicalEvidenceExcerptRead;
+  truncated: boolean;
 }
 
 export interface SearchLexicalEnvelopeMeta {
-  warnings?: SearchLexicalWarning[];
   /**
    * Caller-visible match count. `null` when `count_accuracy` is
    * `not_counted`. Interpreted by `count_accuracy`; never read in isolation.
@@ -533,37 +504,38 @@ export interface SearchLexicalEnvelopeMeta {
   count_accuracy?: SearchLexicalCountAccuracy;
   /** Response-level recall disclosure (see {@link SearchLexicalRecallMeta}). */
   recall?: SearchLexicalRecallMeta;
+  warnings?: SearchLexicalWarning[];
   [extra: string]: unknown;
 }
 
 export interface SearchLexicalEnvelope {
-  object: "list";
-  has_more: boolean;
-  next_cursor?: string;
   data: SearchLexicalResultItem[];
+  has_more: boolean;
   /** Optional canonical `meta` slot; only emitted when warnings are non-empty. */
   meta?: SearchLexicalEnvelopeMeta;
+  next_cursor?: string;
+  object: "list";
 }
 
 export interface SearchLexicalDisclosureData {
-  query_shape: "search";
-  record_count: number;
+  connector_count: number;
   has_more: boolean;
   mode: "owner" | "client";
-  connector_count: number;
+  query_shape: "search";
+  record_count: number;
 }
 
 export interface SearchLexicalOutput {
-  /**
-   * List envelope minus the host-shaped `url` field. Hosts add
-   * `url: '/v1/search'` (native) or `url: '/sandbox/v1/search'` (sandbox).
-   */
-  envelope: SearchLexicalEnvelope;
   /**
    * Pre-shaped `disclosure.served` data block. Hosts merge in `source` and
    * any host-only fields.
    */
   disclosureData: SearchLexicalDisclosureData;
+  /**
+   * List envelope minus the host-shaped `url` field. Hosts add
+   * `url: '/v1/search'` (native) or `url: '/sandbox/v1/search'` (sandbox).
+   */
+  envelope: SearchLexicalEnvelope;
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────
@@ -582,10 +554,7 @@ export interface SearchLexicalOutput {
  * connector triggered them.
  */
 function isInvalidQueryError(err: unknown): boolean {
-  return (
-    err instanceof Error &&
-    (err as Error & { code?: unknown }).code === "filter_field_not_in_schema"
-  );
+  return err instanceof Error && (err as Error & { code?: unknown }).code === "filter_field_not_in_schema";
 }
 
 // `connection_id` is the canonical public connection identifier;
@@ -609,12 +578,12 @@ const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 100;
 
 interface NormalizedRequestParams {
-  q: string;
-  limit: number;
   cursor: string | null;
-  streams: string[] | null;
   filter: unknown;
   filteredStream: string | null;
+  limit: number;
+  q: string;
+  streams: string[] | null;
   /**
    * Structured warnings derived from the raw request shape (currently only
    * `deprecated_alias_used`). The operation surfaces them via the envelope's
@@ -647,24 +616,28 @@ export const SEARCH_SOURCE_SKIPPED_WARNING_CODE = "source_skipped_not_applicable
  */
 export const SEARCH_LIMIT_CLAMPED_WARNING_CODE = "limit_clamped";
 
-function deriveSearchConnectionAliasWarnings(
-  query: Record<string, unknown>,
-): SearchLexicalWarning[] {
+function deriveSearchConnectionAliasWarnings(query: Record<string, unknown>): SearchLexicalWarning[] {
   const alias = query.connector_instance_id;
-  if (typeof alias !== "string" || alias.length === 0) return [];
+  if (typeof alias !== "string" || alias.length === 0) {
+    return [];
+  }
   return [
     {
       code: SEARCH_CONNECTION_ALIAS_DEPRECATED_WARNING_CODE,
-      param: "connector_instance_id",
       message: "`connector_instance_id` is deprecated; send `connection_id` instead.",
+      param: "connector_instance_id",
     },
   ];
 }
 
 function clampLimit(raw: unknown): number {
-  if (raw === undefined || raw === null || raw === "") return DEFAULT_LIMIT;
+  if (raw === undefined || raw === null || raw === "") {
+    return DEFAULT_LIMIT;
+  }
   const n = Number(raw);
-  if (!Number.isFinite(n) || n < 1) return DEFAULT_LIMIT;
+  if (!Number.isFinite(n) || n < 1) {
+    return DEFAULT_LIMIT;
+  }
   return Math.min(Math.floor(n), MAX_LIMIT);
 }
 
@@ -680,27 +653,33 @@ function clampLimit(raw: unknown): number {
  * identical structure across read surfaces.
  */
 function deriveLimitClampedWarning(raw: unknown): SearchLexicalWarning[] {
-  if (raw === undefined || raw === null || raw === "") return [];
+  if (raw === undefined || raw === null || raw === "") {
+    return [];
+  }
   const n = Number(raw);
-  if (!Number.isFinite(n)) return [];
+  if (!Number.isFinite(n)) {
+    return [];
+  }
   const requested = Math.floor(n);
-  if (requested <= MAX_LIMIT) return [];
+  if (requested <= MAX_LIMIT) {
+    return [];
+  }
   return [
     {
       code: SEARCH_LIMIT_CLAMPED_WARNING_CODE,
-      param: "limit",
-      detail: { requested_limit: requested, max_limit: MAX_LIMIT },
+      detail: { max_limit: MAX_LIMIT, requested_limit: requested },
       message: `Requested limit=${requested} exceeds the maximum page size of ${MAX_LIMIT}; returned at most ${MAX_LIMIT} hits per page. Page forward with the returned cursor.`,
+      param: "limit",
     },
   ];
 }
 
 function normalizeStreamsParam(raw: unknown): string[] | null {
-  if (raw === undefined || raw === null) return null;
+  if (raw === undefined || raw === null) {
+    return null;
+  }
   const arr = Array.isArray(raw) ? raw : [raw];
-  const cleaned = arr
-    .map((v) => (typeof v === "string" ? v.trim() : ""))
-    .filter((v) => v.length > 0);
+  const cleaned = arr.map((v) => (typeof v === "string" ? v.trim() : "")).filter((v) => v.length > 0);
   return cleaned.length === 0 ? null : cleaned;
 }
 
@@ -710,50 +689,37 @@ function normalizeStreamsParam(raw: unknown): string[] | null {
  * native dependency wiring and the sandbox host run the same allowlist and
  * coupling rules.
  */
-export function parseSearchLexicalParams(
-  query: Record<string, unknown>,
-): NormalizedRequestParams {
+export function parseSearchLexicalParams(query: Record<string, unknown>): NormalizedRequestParams {
   for (const key of Object.keys(query)) {
     if (!ALLOWED_PARAMS.has(key)) {
-      throw new SearchLexicalRequestError(
-        "invalid_request",
-        `Unsupported query parameter: ${key}`,
-        key,
-      );
+      throw new SearchLexicalRequestError("invalid_request", `Unsupported query parameter: ${key}`, key);
     }
   }
   const q = typeof query.q === "string" ? query.q : "";
   if (!q) {
-    throw new SearchLexicalRequestError(
-      "invalid_request",
-      "q is required",
-      "q",
-    );
+    throw new SearchLexicalRequestError("invalid_request", "q is required", "q");
   }
   const limit = clampLimit(query.limit);
-  const cursor =
-    typeof query.cursor === "string" && query.cursor ? query.cursor : null;
+  const cursor = typeof query.cursor === "string" && query.cursor ? query.cursor : null;
   const streams = normalizeStreamsParam(query.streams ?? query["streams[]"]);
-  const hasFilter = Object.prototype.hasOwnProperty.call(query, "filter");
-  if (hasFilter && (!streams || streams.length !== 1)) {
+  const hasFilter = Object.hasOwn(query, "filter");
+  if (hasFilter && streams?.length !== 1) {
     throw new SearchLexicalRequestError(
       "invalid_request",
       "filter[...] requires exactly one streams[] value (e.g. ?streams[]=messages&filter[received_at][gte]=...). filter[stream] and filter[connector_id] are not supported.",
-      "streams",
+      "streams"
     );
   }
   validateSearchConnectionAlias(query, SearchLexicalRequestError);
   return {
-    q,
-    limit,
     cursor,
-    streams,
     filter: hasFilter ? query.filter : null,
+    // biome-ignore lint/style/noNonNullAssertion: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     filteredStream: hasFilter && streams && streams.length > 0 ? streams[0]! : null,
-    warnings: [
-      ...deriveSearchConnectionAliasWarnings(query),
-      ...deriveLimitClampedWarning(query.limit),
-    ],
+    limit,
+    q,
+    streams,
+    warnings: [...deriveSearchConnectionAliasWarnings(query), ...deriveLimitClampedWarning(query.limit)],
   };
 }
 
@@ -766,7 +732,7 @@ export function parseSearchLexicalParams(
  */
 function validateSearchConnectionAlias(
   query: Record<string, unknown>,
-  ErrorCtor: typeof SearchLexicalRequestError,
+  ErrorCtor: typeof SearchLexicalRequestError
 ): void {
   const canonical = query.connection_id;
   const alias = query.connector_instance_id;
@@ -776,14 +742,14 @@ function validateSearchConnectionAlias(
     throw new ErrorCtor(
       "invalid_argument",
       "connection_id and connector_instance_id refer to the same connection. Send only `connection_id` (canonical) or supply matching values.",
-      "connector_instance_id",
+      "connector_instance_id"
     );
   }
 }
 
 interface CursorPayload {
-  snap: string;
   off: number;
+  snap: string;
 }
 
 /** Encode an opaque cursor pointing at offset `off` of snapshot `snap`. */
@@ -805,7 +771,7 @@ export function decodeSearchLexicalCursor(cursor: string): CursorPayload | null 
     if (typeof parsed.snap !== "string" || typeof parsed.off !== "number") {
       return null;
     }
-    return { snap: parsed.snap, off: parsed.off };
+    return { off: parsed.off, snap: parsed.snap };
   } catch {
     return null;
   }
@@ -822,11 +788,11 @@ export function decodeSearchLexicalCursor(cursor: string): CursorPayload | null 
  * inferring completeness from `has_more` or the hit count, which would be a
  * lie about the ranking input.
  */
-function resolveEnvelopeRecall(
-  snapshot: SearchLexicalSnapshot,
-): SearchLexicalSnapshotRecall {
+function resolveEnvelopeRecall(snapshot: SearchLexicalSnapshot): SearchLexicalSnapshotRecall {
   const provided = snapshot.recall_meta;
-  if (provided) return provided;
+  if (provided) {
+    return provided;
+  }
   return {
     count: null,
     count_accuracy: "not_counted",
@@ -840,11 +806,11 @@ function resolveEnvelopeRecall(
 
 function advertisesScore(advertisement: SearchLexicalAdvertisement | null): boolean {
   return !!(
-    advertisement
-    && advertisement.supported !== false
-    && advertisement.score?.supported === true
-    && advertisement.score.kind === "bm25"
-    && advertisement.score.order === "lower_is_better"
+    advertisement &&
+    advertisement.supported !== false &&
+    advertisement.score?.supported === true &&
+    advertisement.score.kind === "bm25" &&
+    advertisement.score.order === "lower_is_better"
   );
 }
 
@@ -852,21 +818,21 @@ function buildResultItem(
   hit: SearchLexicalSnapshotResult,
   isOwner: boolean,
   emitScore: boolean,
-  formatRecordUrl: SearchLexicalDependencies["formatRecordUrl"],
+  formatRecordUrl: SearchLexicalDependencies["formatRecordUrl"]
 ): SearchLexicalResultItem {
   const item: SearchLexicalResultItem = {
-    object: "search_result",
-    stream: hit.stream,
-    record_key: hit.recordKey,
     connector_id: hit.connectorId,
-    record_url: formatRecordUrl({
-      stream: hit.stream,
-      recordKey: hit.recordKey,
-      connectorId: hit.connectorId,
-      isOwner,
-    }),
     emitted_at: hit.emittedAt,
     matched_fields: hit.matchedFields,
+    object: "search_result",
+    record_key: hit.recordKey,
+    record_url: formatRecordUrl({
+      connectorId: hit.connectorId,
+      isOwner,
+      recordKey: hit.recordKey,
+      stream: hit.stream,
+    }),
+    stream: hit.stream,
   };
   if (typeof hit.authoredAt === "string" && hit.authoredAt.length > 0) {
     item.authored_at = hit.authoredAt;
@@ -885,33 +851,36 @@ function buildResultItem(
   if (emitScore && typeof hit.score === "number" && Number.isFinite(hit.score)) {
     item.score = {
       kind: "bm25",
-      value: hit.score,
       order: "lower_is_better",
+      value: hit.score,
     };
   }
   return item;
 }
 
 function buildEvidenceExcerpts(hit: SearchLexicalSnapshotResult): SearchLexicalEvidenceExcerpt[] {
-  if (!hit.snippet) return [];
+  if (!hit.snippet) {
+    return [];
+  }
+  // biome-ignore lint/style/useDestructuring: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
   const field = hit.snippet.field;
   const read: SearchLexicalEvidenceExcerptRead = {
-    object: "field_window_read",
+    field,
     method: "GET",
+    object: "field_window_read",
+    record_id: hit.recordKey,
     route: `/v1/streams/${encodeURIComponent(hit.stream)}/records/${encodeURIComponent(hit.recordKey)}/field-window`,
     stream: hit.stream,
-    record_id: hit.recordKey,
-    field,
     ...(hit.connectorInstanceId ? { connection_id: hit.connectorInstanceId } : {}),
   };
   return [
     {
-      object: "evidence_excerpt",
       field_path: field,
+      object: "evidence_excerpt",
       preview_text: hit.snippet.text,
-      truncated: true,
       provenance: "lexical_match",
       read,
+      truncated: true,
     },
   ];
 }
@@ -924,9 +893,11 @@ function buildEvidenceExcerpts(hit: SearchLexicalSnapshotResult): SearchLexicalE
  * The operation does not mutate `input.query`; it parses and normalizes a
  * fresh request-params object internally.
  */
+
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
 export async function executeSearchLexical(
   input: SearchLexicalInput,
-  dependencies: SearchLexicalDependencies,
+  dependencies: SearchLexicalDependencies
 ): Promise<SearchLexicalOutput> {
   // 1. Strict v1 allowlist + required `q` + `filter[...]` coupling.
   const params = parseSearchLexicalParams(input.query);
@@ -934,15 +905,11 @@ export async function executeSearchLexical(
   // 2. Cross-stream advertisement gate: when capability says cross-stream
   //    search is disabled, `streams[]` becomes mandatory.
   const advertisement = dependencies.getAdvertisement();
-  if (
-    advertisement
-    && advertisement.cross_stream === false
-    && (!params.streams || params.streams.length === 0)
-  ) {
+  if (advertisement && advertisement.cross_stream === false && (!params.streams || params.streams.length === 0)) {
     throw new SearchLexicalRequestError(
       "invalid_request",
       "streams[] is required when cross_stream search is disabled",
-      "streams",
+      "streams"
     );
   }
 
@@ -967,8 +934,8 @@ export async function executeSearchLexical(
   const requestConnectionId =
     typeof input.query.connection_id === "string" && input.query.connection_id.length > 0
       ? input.query.connection_id
-      : typeof input.query.connector_instance_id === "string"
-            && input.query.connector_instance_id.length > 0
+      : // biome-ignore lint/style/noNestedTernary: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
+        typeof input.query.connector_instance_id === "string" && input.query.connector_instance_id.length > 0
         ? input.query.connector_instance_id
         : null;
   if (input.actor.kind === "owner") {
@@ -986,22 +953,21 @@ export async function executeSearchLexical(
         throw new SearchLexicalRequestError(
           "connection_not_found",
           `connection_id '${requestConnectionId}' is not addressable for this owner.`,
-          "connection_id",
+          "connection_id"
         );
       }
       // Skipped (out-of-scope under request-time narrowing) bindings do NOT
       // become warnings — narrowing is the caller's explicit ask.
       for (const binding of narrowedBindings) {
-        const manifest = typeof dependencies.resolveOwnerManifestForBinding
-          === "function"
-          ? await dependencies.resolveOwnerManifestForBinding(binding)
-          : await dependencies.resolveOwnerManifestForConnector(
-              binding.connectorId,
-            );
+        const manifest =
+          typeof dependencies.resolveOwnerManifestForBinding === "function"
+            ? // biome-ignore lint/performance/noAwaitInLoops: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
+              await dependencies.resolveOwnerManifestForBinding(binding)
+            : await dependencies.resolveOwnerManifestForConnector(binding.connectorId);
         if (!manifest) {
           skippedSources.push({
-            source: binding.connectorId,
             connection_id: binding.connectorInstanceId,
+            source: binding.connectorId,
           });
           continue;
         }
@@ -1009,32 +975,34 @@ export async function executeSearchLexical(
         let planEntries: SearchLexicalPlanEntry[];
         try {
           planEntries = dependencies.buildSearchPlanForGrant({
-            manifest,
-            grant,
-            streamsFilter: params.streams,
+            connectorId: binding.connectorId,
             filter: params.filter,
             filteredStream: params.filteredStream,
-            connectorId: binding.connectorId,
+            grant,
+            manifest,
+            streamsFilter: params.streams,
           });
         } catch (err) {
-          if (!isInvalidQueryError(err)) throw err;
+          if (!isInvalidQueryError(err)) {
+            throw err;
+          }
           skippedSources.push({
-            source: binding.connectorId,
             connection_id: binding.connectorInstanceId,
+            source: binding.connectorId,
           });
           continue;
         }
         if (planEntries.length === 0) {
           skippedSources.push({
-            source: binding.connectorId,
             connection_id: binding.connectorInstanceId,
+            source: binding.connectorId,
           });
           continue;
         }
         perConnectorPlans.push({
           connectorId: binding.connectorId,
-          manifest,
           grant,
+          manifest,
           planEntries,
         });
       }
@@ -1044,9 +1012,8 @@ export async function executeSearchLexical(
       // working unchanged.
       const connectorIds = await dependencies.listOwnerVisibleConnectorIds();
       for (const connectorId of connectorIds) {
-        const manifest = await dependencies.resolveOwnerManifestForConnector(
-          connectorId,
-        );
+        // biome-ignore lint/performance/noAwaitInLoops: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
+        const manifest = await dependencies.resolveOwnerManifestForConnector(connectorId);
         if (!manifest) {
           skippedSources.push({ source: connectorId });
           continue;
@@ -1055,15 +1022,17 @@ export async function executeSearchLexical(
         let planEntries: SearchLexicalPlanEntry[];
         try {
           planEntries = dependencies.buildSearchPlanForGrant({
-            manifest,
-            grant,
-            streamsFilter: params.streams,
+            connectorId,
             filter: params.filter,
             filteredStream: params.filteredStream,
-            connectorId,
+            grant,
+            manifest,
+            streamsFilter: params.streams,
           });
         } catch (err) {
-          if (!isInvalidQueryError(err)) throw err;
+          if (!isInvalidQueryError(err)) {
+            throw err;
+          }
           skippedSources.push({ source: connectorId });
           continue;
         }
@@ -1071,30 +1040,25 @@ export async function executeSearchLexical(
           skippedSources.push({ source: connectorId });
           continue;
         }
-        perConnectorPlans.push({ connectorId, manifest, grant, planEntries });
+        perConnectorPlans.push({ connectorId, grant, manifest, planEntries });
       }
     }
     // Owner-mode `streams[]` is a soft filter: unknown stream names just
     // produce zero hits.
   } else {
-    const grant = input.actor.grant;
+    const { grant } = input.actor;
     if (params.streams) {
-      const grantedStreamNames = new Set(
-        (grant.streams || []).map((s) => s.name),
-      );
+      const grantedStreamNames = new Set((grant.streams || []).map((s) => s.name));
       for (const s of params.streams) {
         if (!grantedStreamNames.has(s)) {
-          throw new SearchLexicalRequestError(
-            "grant_stream_not_allowed",
-            `Stream '${s}' not in grant`,
-          );
+          throw new SearchLexicalRequestError("grant_stream_not_allowed", `Stream '${s}' not in grant`);
         }
       }
     }
     const connectorId =
       (grant as { source?: { kind?: unknown; id?: unknown } } | null)?.source?.kind === "connector" &&
       typeof (grant as { source?: { id?: unknown } } | null)?.source?.id === "string"
-        ? ((grant as { source?: { id?: string } }).source!.id as string)
+        ? ((grant as { source?: { id?: string } }).source?.id as string)
         : null;
     // Cross-binding fan-in path for client mode. When the host wires the
     // binding-aware resolver, the operation iterates every binding the grant
@@ -1104,47 +1068,47 @@ export async function executeSearchLexical(
     // re-implement those checks.
     if (typeof dependencies.resolveClientBindings === "function") {
       const clientBindings = await dependencies.resolveClientBindings(
-        { kind: "client", grant },
-        { connectionId: requestConnectionId },
+        { grant, kind: "client" },
+        { connectionId: requestConnectionId }
       );
       for (const cb of clientBindings) {
         const planEntries = dependencies.buildSearchPlanForGrant({
-          manifest: cb.manifest,
-          grant,
-          streamsFilter: params.streams,
+          connectorId,
           filter: params.filter,
           filteredStream: params.filteredStream,
-          connectorId,
+          grant,
+          manifest: cb.manifest,
+          streamsFilter: params.streams,
         });
         if (planEntries.length === 0) {
           skippedSources.push({
-            source: connectorId ?? "",
             connection_id: cb.connectorInstanceId,
+            source: connectorId ?? "",
           });
           continue;
         }
         perConnectorPlans.push({
           connectorId,
-          manifest: cb.manifest,
           grant,
+          manifest: cb.manifest,
           planEntries,
         });
       }
     } else {
       const manifest = await dependencies.resolveClientManifest({
-        kind: "client",
         grant,
+        kind: "client",
       });
       const planEntries = dependencies.buildSearchPlanForGrant({
-        manifest,
-        grant,
-        streamsFilter: params.streams,
+        connectorId,
         filter: params.filter,
         filteredStream: params.filteredStream,
-        connectorId,
+        grant,
+        manifest,
+        streamsFilter: params.streams,
       });
       if (planEntries.length > 0) {
-        perConnectorPlans.push({ connectorId, manifest, grant, planEntries });
+        perConnectorPlans.push({ connectorId, grant, manifest, planEntries });
       }
     }
   }
@@ -1157,17 +1121,11 @@ export async function executeSearchLexical(
   if (params.cursor) {
     const decoded = decodeSearchLexicalCursor(params.cursor);
     if (!decoded) {
-      throw new SearchLexicalRequestError(
-        "invalid_cursor",
-        "Cursor is malformed",
-      );
+      throw new SearchLexicalRequestError("invalid_cursor", "Cursor is malformed");
     }
     const loaded = await dependencies.loadSnapshot(decoded.snap);
     if (!loaded) {
-      throw new SearchLexicalRequestError(
-        "invalid_cursor",
-        "Cursor refers to an expired or unknown snapshot",
-      );
+      throw new SearchLexicalRequestError("invalid_cursor", "Cursor refers to an expired or unknown snapshot");
     }
     snapshot = loaded;
     snapshotId = decoded.snap;
@@ -1178,13 +1136,13 @@ export async function executeSearchLexical(
     // stream; planner omission must short-circuit before the host adapter can
     // scan records or FTS state.
     if (perConnectorPlans.length === 0) {
-      snapshot = { snapshot_id: "", query: params.q, results: [] };
+      snapshot = { query: params.q, results: [], snapshot_id: "" };
       snapshotId = "";
     } else {
       snapshot = await dependencies.buildSnapshot({
-        q: params.q,
-        perConnectorPlans,
         isOwner,
+        perConnectorPlans,
+        q: params.q,
       });
       snapshotId = snapshot.snapshot_id;
       await dependencies.persistSnapshot(snapshot);
@@ -1196,43 +1154,36 @@ export async function executeSearchLexical(
   const allHits = snapshot.results;
   const slice = allHits.slice(offset, offset + params.limit);
   const hasMore = offset + params.limit < allHits.length;
-  const nextCursor = hasMore
-    ? encodeSearchLexicalCursor({ snap: snapshotId, off: offset + params.limit })
-    : null;
+  const nextCursor = hasMore ? encodeSearchLexicalCursor({ off: offset + params.limit, snap: snapshotId }) : null;
 
   // 6. Shape into `search_result` items. Score emission is gated by the
   //    advertisement.
   const emitScore = advertisesScore(advertisement);
-  const data = slice.map((hit) =>
-    buildResultItem(hit, isOwner, emitScore, dependencies.formatRecordUrl),
-  );
+  const data = slice.map((hit) => buildResultItem(hit, isOwner, emitScore, dependencies.formatRecordUrl));
 
-  const skippedWarnings: SearchLexicalWarning[] = skippedSources.map(
-    (skipped) => {
-      const detail: Record<string, unknown> = { source: skipped.source };
-      if (skipped.connection_id) detail.connection_id = skipped.connection_id;
-      const subject = skipped.connection_id
-        ? `Connection '${skipped.connection_id}' under connector '${skipped.source}'`
-        : `Connector '${skipped.source}'`;
-      return {
-        code: SEARCH_SOURCE_SKIPPED_WARNING_CODE,
-        message: `${subject} is not applicable to this query and was skipped.`,
-        detail,
-      };
-    },
-  );
-  const allWarnings: SearchLexicalWarning[] = [
-    ...params.warnings,
-    ...skippedWarnings,
-  ];
+  const skippedWarnings: SearchLexicalWarning[] = skippedSources.map((skipped) => {
+    const detail: Record<string, unknown> = { source: skipped.source };
+    if (skipped.connection_id) {
+      detail.connection_id = skipped.connection_id;
+    }
+    const subject = skipped.connection_id
+      ? `Connection '${skipped.connection_id}' under connector '${skipped.source}'`
+      : `Connector '${skipped.source}'`;
+    return {
+      code: SEARCH_SOURCE_SKIPPED_WARNING_CODE,
+      detail,
+      message: `${subject} is not applicable to this query and was skipped.`,
+    };
+  });
+  const allWarnings: SearchLexicalWarning[] = [...params.warnings, ...skippedWarnings];
   // Recall/count disclosure is a property of the whole ranked snapshot, not of
   // the current page, so it is identical across fresh and cursor-loaded pages
   // and is never inferred from `has_more`. It is always present so a client can
   // distinguish a complete exact search from a bounded-window one on every page.
   const { count, count_accuracy, recall } = resolveEnvelopeRecall(snapshot);
   const envelope: SearchLexicalEnvelope = {
-    object: "list",
     has_more: hasMore,
+    object: "list",
     ...(nextCursor ? { next_cursor: nextCursor } : {}),
     data,
     meta: {
@@ -1244,12 +1195,12 @@ export async function executeSearchLexical(
   };
 
   const disclosureData: SearchLexicalDisclosureData = {
-    query_shape: "search",
-    record_count: data.length,
+    connector_count: perConnectorPlans.length,
     has_more: hasMore,
     mode,
-    connector_count: perConnectorPlans.length,
+    query_shape: "search",
+    record_count: data.length,
   };
 
-  return { envelope, disclosureData };
+  return { disclosureData, envelope };
 }

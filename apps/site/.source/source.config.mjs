@@ -1,6 +1,6 @@
 // source.config.ts
-import { defineConfig, defineDocs } from "fumadocs-mdx/config";
 import { metaSchema, pageSchema } from "fumadocs-core/source/schema";
+import { defineConfig, defineDocs } from "fumadocs-mdx/config";
 
 // src/lib/remark-legacy-heading-ids.ts
 var LEGACY_ID_PATTERN = /\s*\{#([A-Za-z0-9_-]+)\}\s*$/;
@@ -15,7 +15,7 @@ function visit(node, visitor) {
 }
 function applyLegacyId(node) {
   const lastChild = node.children?.[node.children.length - 1];
-  if (!lastChild || lastChild.type !== "text" || typeof lastChild.value !== "string") {
+  if (lastChild?.type !== "text" || typeof lastChild.value !== "string") {
     return;
   }
   const match = lastChild.value.match(LEGACY_ID_PATTERN);
@@ -46,10 +46,10 @@ function remarkLegacyHeadingIds() {
 var docs = defineDocs({
   dir: "content/docs",
   docs: {
-    schema: pageSchema,
     postprocess: {
       includeProcessedMarkdown: true
-    }
+    },
+    schema: pageSchema
   },
   meta: {
     schema: metaSchema

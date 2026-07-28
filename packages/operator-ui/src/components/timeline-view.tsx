@@ -204,8 +204,7 @@ function summarizeStreams(events: SpineEvent[]): StreamBreakdown[] {
 }
 
 function ProgressGroupRow({ events, startIndex }: { events: SpineEvent[]; startIndex: number }) {
-  // biome-ignore lint/style/useDestructuring: Indexed access and property reads preserve the local guard and exact source-order reasoning here.
-  const first = events[0];
+  const [first] = events;
   const last = events.at(-1);
   if (!(first && last)) {
     return null;

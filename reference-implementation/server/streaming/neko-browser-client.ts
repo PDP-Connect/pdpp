@@ -30,15 +30,15 @@ interface Viewport {
 }
 
 export interface NekoBrowserClient {
-  addInitScript(source: unknown): Promise<void>;
-  close(): Promise<void>;
-  connect(): Promise<NekoBrowserClient>;
-  evaluate(source: unknown): Promise<unknown>;
-  exposeBinding(name: string, handler: unknown): Promise<void>;
-  getPage(): Promise<Page>;
-  goto(url: string): Promise<void>;
-  keyboard: { insertText(text: string): Promise<void> };
-  setViewportSize(viewport: Viewport): Promise<void>;
+  addInitScript: (source: unknown) => Promise<void>;
+  close: () => Promise<void>;
+  connect: () => Promise<NekoBrowserClient>;
+  evaluate: (source: unknown) => Promise<unknown>;
+  exposeBinding: (name: string, handler: (source: unknown, payload: unknown) => void) => Promise<void>;
+  getPage: () => Promise<Page>;
+  goto: (url: string) => Promise<void>;
+  keyboard: { insertText: (text: string) => Promise<void> };
+  setViewportSize: (viewport: Viewport) => Promise<void>;
 }
 
 function assertCdpHttpUrl(cdpHttpUrl: unknown): asserts cdpHttpUrl is string {
@@ -86,6 +86,7 @@ async function resolvePage(context: BrowserContext): Promise<Page> {
 }
 
 function isDuplicateBindingRegistration(err: unknown): boolean {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   return BINDING_ALREADY_REGISTERED_RE.test(String((err as { message?: unknown })?.message || ""));
 }
 
@@ -133,27 +134,27 @@ export function createNekoBrowserClient({
   }
 
   return {
+    async addInitScript(source) {
+      await ensureConnected();
+      await context.addInitScript(source);
+    },
+    async close() {
+      if (!browser) {
+        return;
+      }
+      const activeBrowser = browser;
+      browser = null;
+      context = null;
+      page = null;
+      await disconnectBrowser(activeBrowser);
+    },
     async connect() {
       await ensureConnected();
       return this;
     },
-    async getPage() {
-      return await ensurePage();
-    },
-    async setViewportSize(viewport) {
+    async evaluate(source) {
       const activePage = await ensurePage();
-      await activePage.setViewportSize({
-        width: viewport.width,
-        height: viewport.height,
-      });
-    },
-    async goto(url) {
-      const activePage = await ensurePage();
-      await activePage.goto(url, { waitUntil: "load" });
-    },
-    async addInitScript(source) {
-      await ensureConnected();
-      await context.addInitScript(source);
+      return activePage.evaluate(source);
     },
     async exposeBinding(name, handler) {
       await ensureConnected();
@@ -165,9 +166,12 @@ export function createNekoBrowserClient({
         }
       }
     },
-    async evaluate(source) {
+    async getPage() {
+      return await ensurePage();
+    },
+    async goto(url) {
       const activePage = await ensurePage();
-      return activePage.evaluate(source);
+      await activePage.goto(url, { waitUntil: "load" });
     },
     keyboard: {
       async insertText(text) {
@@ -175,15 +179,12 @@ export function createNekoBrowserClient({
         await activePage.keyboard.insertText(text);
       },
     },
-    async close() {
-      if (!browser) {
-        return;
-      }
-      const activeBrowser = browser;
-      browser = null;
-      context = null;
-      page = null;
-      await disconnectBrowser(activeBrowser);
+    async setViewportSize(viewport) {
+      const activePage = await ensurePage();
+      await activePage.setViewportSize({
+        height: viewport.height,
+        width: viewport.width,
+      });
     },
   };
 }

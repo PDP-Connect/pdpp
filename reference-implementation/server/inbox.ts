@@ -13,10 +13,10 @@ interface InboxRequest {
 }
 
 interface InboxResponse {
-  json(body: unknown): void;
-  send(body: string): void;
-  setHeader(name: string, value: string): void;
-  status(code: number): { json(body: unknown): void };
+  json: (body: unknown) => void;
+  send: (body: string) => void;
+  setHeader: (name: string, value: string) => void;
+  status: (code: number) => { json: (body: unknown) => void };
 }
 
 // Express-style route handler / middleware. The owner-session middleware is
@@ -25,8 +25,8 @@ type RouteHandler = (req: InboxRequest, res: InboxResponse) => unknown | Promise
 type Middleware = unknown;
 
 interface RouteApp {
-  get(path: string, middleware: Middleware, handler: RouteHandler): void;
-  post(path: string, middleware: Middleware, handler: RouteHandler): void;
+  get: (path: string, middleware: Middleware, handler: RouteHandler) => void;
+  post: (path: string, middleware: Middleware, handler: RouteHandler) => void;
 }
 
 interface PendingInteraction {
@@ -39,15 +39,15 @@ interface PendingInteraction {
 }
 
 interface RunController {
-  getPendingInteraction(runId: string): PendingInteraction | null | undefined;
-  respondToInteraction(
+  getPendingInteraction: (runId: string) => PendingInteraction | null | undefined;
+  respondToInteraction: (
     runId: string,
     payload: {
       interaction_id: string;
       status: "success" | "cancelled";
       data?: Record<string, unknown>;
     }
-  ): { status: string } | Promise<{ status: string }>;
+  ) => { status: string } | Promise<{ status: string }>;
 }
 
 interface OwnerAuthLike {
@@ -80,7 +80,7 @@ function escapeHtml(value: unknown): string {
 }
 
 function parseJsonObject(value: unknown): Record<string, unknown> {
-  if (value == null || String(value).trim() === "") {
+  if (value === null || String(value).trim() === "") {
     return {};
   }
   let parsed: unknown;
@@ -90,6 +90,7 @@ function parseJsonObject(value: unknown): Record<string, unknown> {
     const err: ErrorWithCode = new Error("data_json must be valid JSON");
     err.code = "invalid_request";
     err.param = "data_json";
+    // biome-ignore lint/style/useErrorCause: This compatibility path preserves the established error shape and propagation.
     throw err;
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
@@ -182,7 +183,7 @@ export function registerInboxRoutes(
       requireController(controller);
       const runId = decodeURIComponent(req.params.runId);
       const pending = getPendingOrThrow(controller, runId);
-      res.json({ object: "ref_inbox_item", data: pending });
+      res.json({ data: pending, object: "ref_inbox_item" });
     } catch (err) {
       handleError(res, err);
     }
@@ -211,14 +212,14 @@ export function registerInboxRoutes(
       }
       const data = parseJsonObject(body.data_json);
       const result = await controller.respondToInteraction(runId, {
+        data,
         interaction_id: interactionId,
         status: "success",
-        data,
       });
       res.status(202).json({
+        interaction_id: interactionId,
         object: "run_interaction_ack",
         run_id: runId,
-        interaction_id: interactionId,
         status: result.status,
       });
     } catch (err) {
@@ -240,9 +241,9 @@ export function registerInboxRoutes(
         status: "cancelled",
       });
       res.status(202).json({
+        interaction_id: interactionId,
         object: "run_interaction_ack",
         run_id: runId,
-        interaction_id: interactionId,
         status: result.status,
       });
     } catch (err) {

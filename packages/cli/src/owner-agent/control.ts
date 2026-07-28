@@ -178,7 +178,7 @@ async function getJson<T>(
     throw new OwnerAgentError(errorCode, `Failed to fetch ${url}: HTTP ${response.status}.`);
   }
   try {
-    return await response.json();
+    return (await response.json()) as T;
   } catch {
     // biome-ignore lint/style/useErrorCause: OwnerAgentError's constructor (code, message, exitCode) has no cause param; the response was not valid JSON, so the parse error carries no additional information beyond that fact.
     throw new OwnerAgentError(errorCode, `Response from ${url} was not valid JSON.`);

@@ -47,16 +47,16 @@ interface RouteRequest {
 }
 
 interface RouteResponse {
-  redirect(status: number, url: string): unknown;
-  send(body: string): unknown;
-  status(status: number): RouteResponse;
+  redirect: (status: number, url: string) => unknown;
+  send: (body: string) => unknown;
+  status: (status: number) => RouteResponse;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => Promise<unknown>;
 
 interface AppLike {
-  get(path: string, ...args: RouteArg<RouteHandler | MiddlewareHandler>[]): AppLike;
-  post(path: string, ...args: RouteArg<RouteHandler | MiddlewareHandler>[]): AppLike;
+  get: (path: string, ...args: RouteArg<RouteHandler | MiddlewareHandler>[]) => AppLike;
+  post: (path: string, ...args: RouteArg<RouteHandler | MiddlewareHandler>[]) => AppLike;
 }
 
 // Shape expected by requireRegisteredRedirectUri (mirrors as-consent-ui-helpers.ts internal type).
@@ -71,11 +71,11 @@ interface ConsentStoreOutput {
 }
 
 interface ConsentStore {
-  initiateGrant(
+  initiateGrant: (
     params: { client_id: string; authorization_details: unknown },
     opts: { baseUrl: string; nativeManifest: unknown }
-  ): Promise<ConsentStoreOutput>;
-  parseRequestUri(requestUri: string): string | null;
+  ) => Promise<ConsentStoreOutput>;
+  parseRequestUri: (requestUri: string) => string | null;
 }
 
 interface PackageGrantResult {
@@ -93,8 +93,8 @@ interface IssuedCode {
 // part of ConsentPickerCapabilities (that interface covers picker-page rendering
 // capabilities), so they are injected separately.
 interface HostedMcpSelectionParsers {
-  parseHostedMcpSelections(raw: unknown): Array<{ connectorId: string; connectionId: string | null }>;
-  parseHostedMcpStreamSelections(raw: unknown): {
+  parseHostedMcpSelections: (raw: unknown) => Array<{ connectorId: string; connectionId: string | null }>;
+  parseHostedMcpStreamSelections: (raw: unknown) => {
     bySource: Map<string, Set<string>>;
   };
 }
@@ -111,7 +111,7 @@ export interface MountAsAuthorizeContext {
   /** The consent/authorize UI rendering helpers. */
   consentUi: ConsentUiRenderer;
   /** Creates a hosted MCP multi-source package grant. */
-  createHostedMcpGrantPackage(args: {
+  createHostedMcpGrantPackage: (args: {
     authorizationDetails: unknown[];
     clientId: string;
     connectionIds: Array<string | null>;
@@ -119,22 +119,22 @@ export interface MountAsAuthorizeContext {
     sourceMetadata: Array<{ connector_display_name: string; display_name: string | null }>;
     storageBindings: Array<{ connector_id: string }>;
     subjectId: string;
-  }): Promise<PackageGrantResult>;
+  }) => Promise<PackageGrantResult>;
   /** Reads the owner CSRF token from session, setting a new one if absent. */
-  ensureCsrfToken(req: RouteRequest, res: RouteResponse): string;
+  ensureCsrfToken: (req: RouteRequest, res: RouteResponse) => string;
   /** Retrieves a registered OAuth client by client_id, or null if not found. */
-  getRegisteredClient(clientId: string): Promise<OAuthClient | null>;
+  getRegisteredClient: (clientId: string) => Promise<OAuthClient | null>;
   /** Whether to ignore ambient PUBLIC_URL env vars when resolving the base URL. */
   ignoreAmbientPublicUrls: boolean;
   /** Issues an OAuth authorization code bound to a package device-code. */
-  issueOAuthAuthorizationCodeForPackageDeviceCode(
+  issueOAuthAuthorizationCodeForPackageDeviceCode: (
     deviceCode: string,
     args: { packageId: string; token: string }
-  ): Promise<IssuedCode | null>;
+  ) => Promise<IssuedCode | null>;
   /** Resolved native manifest for this server instance, or null. */
   nativeManifest: unknown;
   /** Writes an OAuth error envelope and returns. */
-  oauthError(res: unknown, status: number, code: string, message: string): unknown;
+  oauthError: (res: unknown, status: number, code: string, message: string) => unknown;
   /** Provider name for picker HTML rendering. */
   providerName: string;
   /** CSRF enforcement middleware. */
@@ -142,11 +142,11 @@ export interface MountAsAuthorizeContext {
   /** Owner-session enforcement middleware. */
   requireOwnerSession: MiddlewareHandler;
   /** Resolves the public base URL from the request and any explicit override. */
-  resolvePublicUrl(req: RouteRequest, explicitBaseUrl: string | null): string;
+  resolvePublicUrl: (req: RouteRequest, explicitBaseUrl: string | null) => string;
   /** Hosted-MCP selection parsers (from hosted-mcp-selection.js). */
   selectionParsers: HostedMcpSelectionParsers;
   /** Stages an OAuth authorization code request (PKCE device-code shell). */
-  stageOAuthAuthorizationCodeRequest(args: {
+  stageOAuthAuthorizationCodeRequest: (args: {
     clientId: string;
     codeChallenge: string;
     codeChallengeMethod: string;
@@ -154,7 +154,7 @@ export interface MountAsAuthorizeContext {
     expiresInSeconds: number;
     redirectUri: string;
     state: string | null;
-  }): Promise<void>;
+  }) => Promise<void>;
 }
 
 // ─── Per-source entry builder (extracted to reduce POST handler complexity) ──
@@ -238,15 +238,15 @@ async function accumulateSourceEntry(
 
   const narrowedStreamNames = resolveNarrowedStreams(
     manifest,
-    caps.hostedMcpSourceKey({ connectorId, connectionId }),
+    caps.hostedMcpSourceKey({ connectionId, connectorId }),
     streamSelectionsBySource
   );
 
   if (narrowedStreamNames === "deselected") {
     // Owner deliberately unchecked every stream — track for the error message.
     acc.sourcesWithEmptyStreams.push({
-      connectorId,
       connectionId: connectionId || null,
+      connectorId,
       connectorLabel: manifest.display_name || manifest.name || connectorId,
     });
     return "skipped";
@@ -364,6 +364,7 @@ async function buildSourceAccumulator(
     storageBindings: [],
   };
   for (const selection of selections) {
+    // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
     const result = await accumulateSourceEntry(
       selection,
       streamSelectionsBySource,
@@ -456,6 +457,7 @@ async function renderHostedMcpPickerValidationPage(
   ctx: Pick<MountAsAuthorizeContext, "consentPickerCaps" | "consentUi" | "ensureCsrfToken" | "providerName">,
   message: string
 ): Promise<unknown> {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const ownerSubjectId = req?.ownerAuth?.subjectId || "owner_local";
   const csrfToken = ctx.ensureCsrfToken(req, res);
   const html = await renderHostedMcpSourceSelection(
@@ -563,6 +565,7 @@ export function mountAsAuthorize(app: AppLike, ctx: MountAsAuthorizeContext): vo
       const responseType = requireAuthorizeString(req.query, "response_type");
       const codeChallenge = requireAuthorizeString(req.query, "code_challenge");
       const codeChallengeMethod = requireAuthorizeString(req.query, "code_challenge_method");
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
       const state = typeof req.query?.state === "string" ? req.query.state : null;
       validateAuthorizePkce({ codeChallenge, codeChallengeMethod, responseType });
 
@@ -574,6 +577,7 @@ export function mountAsAuthorize(app: AppLike, ctx: MountAsAuthorizeContext): vo
 
       const authorizationDetails = parseAuthorizeAuthorizationDetails(req.query);
       const rawConnectorId =
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
         typeof req.query?.connector_id === "string" && req.query.connector_id.trim()
           ? req.query.connector_id.trim()
           : null;
@@ -588,6 +592,7 @@ export function mountAsAuthorize(app: AppLike, ctx: MountAsAuthorizeContext): vo
 
       if (!(authorizationDetails || selectedConnectorId)) {
         const csrfToken = ctx.ensureCsrfToken(req, res);
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
         const ownerSubjectId = req?.ownerAuth?.subjectId || "owner_local";
         return res.send(
           await renderHostedMcpSourceSelection(
@@ -673,6 +678,7 @@ export function mountAsAuthorize(app: AppLike, ctx: MountAsAuthorizeContext): vo
           return ctx.oauthError(res, 400, "invalid_request", "access_mode must be 'single_use' or 'continuous'");
         }
 
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
         const ownerSubjectId = req?.ownerAuth?.subjectId || "owner_local";
         const acc = await buildSourceAccumulator(
           selections,

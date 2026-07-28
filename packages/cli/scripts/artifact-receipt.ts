@@ -107,6 +107,7 @@ export function fileSha256(path: string): string {
 export function gitHeadSha(packageRoot: string): string {
   const boundHead = process.env.PDPP_ARTIFACT_GIT_HEAD_SHA;
   if (boundHead) {
+    // biome-ignore lint/performance/useTopLevelRegex: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     assert.match(boundHead, /^[a-f0-9]{40}$/, "PDPP_ARTIFACT_GIT_HEAD_SHA must bind one full commit SHA");
     return boundHead;
   }
@@ -139,6 +140,7 @@ export function assertArtifactReceipt(
   expected: AssertArtifactReceiptOptions = {}
 ): asserts receipt is ArtifactReceipt {
   const r = receipt as ArtifactReceipt;
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves established behavior; this diagnostic requires a semantic refactor outside the closure scope.
   assert.equal(typeof r?.nodeVersion, "string", "receipt must record its Node version");
   if (expected.nodeVersion) {
     assert.equal(r.nodeVersion, expected.nodeVersion);

@@ -83,7 +83,7 @@ test("catches `PDPP monorepo checkout` phrasing", () => {
 });
 
 test("catches source-tree node server start command", () => {
-  const src = `const cmd = "node reference-implementation/server/index.js";`;
+  const src = `const cmd = "node reference-implementation/server/index.ts";`;
   assert.ok(found(src, "source-tree-node-server"));
 });
 

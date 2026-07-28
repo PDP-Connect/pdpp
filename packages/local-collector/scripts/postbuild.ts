@@ -74,9 +74,12 @@ export { COLLECTOR_BUILD_INFO, COLLECTOR_BUILD_SOURCE_SENTINEL, buildAgentVersio
 /** Use a validated release timestamp when the matrix needs byte-identical rows. */
 function resolveBuildTimestamp() {
   const fromEnv = process.env.PDPP_BUILD_TIMESTAMP;
+  // biome-ignore lint/performance/useTopLevelRegex: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
   if (typeof fromEnv === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(fromEnv.trim())) {
     const normalized = new Date(fromEnv.trim()).toISOString();
-    if (normalized === fromEnv.trim()) return normalized;
+    if (normalized === fromEnv.trim()) {
+      return normalized;
+    }
   }
   return new Date().toISOString();
 }

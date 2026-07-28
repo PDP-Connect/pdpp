@@ -63,7 +63,7 @@ export type GateOutcome = "proceed" | RunRecord | null;
 // ─── Local helpers (mirrored from scheduler.ts; kept in sync by extraction) ──
 
 function buildScheduledRunSource(connectorId: string): RunSource {
-  return { kind: "connector", id: connectorId };
+  return { id: connectorId, kind: "connector" };
 }
 
 function runtimeKey(schedule: Pick<ConnectorSchedule, "connectorId" | "connectorInstanceId">): string {
@@ -86,17 +86,17 @@ function nowIso(): string {
 
 function buildSingleUseExhaustedSkip(connectorId: string, connectorInstanceId?: string): RunRecord {
   return {
+    attempt: 0,
+    checkpointSummary: null,
+    completedAt: nowIso(),
     connectorId,
     connectorInstanceId: connectorInstanceId ?? null,
-    source: buildScheduledRunSource(connectorId),
-    status: "skipped",
-    recordsEmitted: 0,
-    checkpointSummary: null,
-    knownGaps: [],
-    startedAt: nowIso(),
-    completedAt: nowIso(),
     error: "single_use grant already consumed",
-    attempt: 0,
+    knownGaps: [],
+    recordsEmitted: 0,
+    source: buildScheduledRunSource(connectorId),
+    startedAt: nowIso(),
+    status: "skipped",
   };
 }
 
@@ -106,18 +106,18 @@ function buildDisabledGrantSkip(
   connectorInstanceId?: string
 ): RunRecord {
   return {
+    attempt: 0,
+    checkpointSummary: null,
+    completedAt: nowIso(),
     connectorId,
     connectorInstanceId: connectorInstanceId ?? null,
-    source: buildScheduledRunSource(connectorId),
-    status: "skipped",
-    recordsEmitted: 0,
-    checkpointSummary: null,
-    knownGaps: [],
-    terminalReason,
-    startedAt: nowIso(),
-    completedAt: nowIso(),
     error: `${terminalReason} grant no longer usable`,
-    attempt: 0,
+    knownGaps: [],
+    recordsEmitted: 0,
+    source: buildScheduledRunSource(connectorId),
+    startedAt: nowIso(),
+    status: "skipped",
+    terminalReason,
   };
 }
 
@@ -128,49 +128,49 @@ function buildUnresolvedAttentionSkip(
 ): RunRecord {
   const tail = evidence.reason ? `: ${evidence.reason} (${evidence.key})` : `: ${evidence.key}`;
   return {
+    attempt: 0,
+    checkpointSummary: null,
+    completedAt: nowIso(),
     connectorId,
     connectorInstanceId: connectorInstanceId ?? null,
-    source: buildScheduledRunSource(connectorId),
-    status: "skipped",
-    recordsEmitted: 0,
-    checkpointSummary: null,
-    knownGaps: [],
-    startedAt: nowIso(),
-    completedAt: nowIso(),
     error: `attention_unresolved${tail}`,
-    attempt: 0,
+    knownGaps: [],
+    recordsEmitted: 0,
+    source: buildScheduledRunSource(connectorId),
+    startedAt: nowIso(),
+    status: "skipped",
   };
 }
 
 function buildNeedsHumanSkip(connectorId: string, connectorInstanceId?: string): RunRecord {
   return {
+    attempt: 0,
+    checkpointSummary: null,
+    completedAt: nowIso(),
     connectorId,
     connectorInstanceId: connectorInstanceId ?? null,
-    source: buildScheduledRunSource(connectorId),
-    status: "skipped",
-    recordsEmitted: 0,
-    checkpointSummary: null,
-    knownGaps: [],
-    startedAt: nowIso(),
-    completedAt: nowIso(),
     error: "needs_human_attention: automatic run skipped until owner provides input",
-    attempt: 0,
+    knownGaps: [],
+    recordsEmitted: 0,
+    source: buildScheduledRunSource(connectorId),
+    startedAt: nowIso(),
+    status: "skipped",
   };
 }
 
 function buildNotReadySkip(connectorId: string, reason: string, connectorInstanceId?: string): RunRecord {
   return {
+    attempt: 0,
+    checkpointSummary: null,
+    completedAt: nowIso(),
     connectorId,
     connectorInstanceId: connectorInstanceId ?? null,
-    source: buildScheduledRunSource(connectorId),
-    status: "skipped",
-    recordsEmitted: 0,
-    checkpointSummary: null,
-    knownGaps: [],
-    startedAt: nowIso(),
-    completedAt: nowIso(),
     error: `not_ready: ${reason}`,
-    attempt: 0,
+    knownGaps: [],
+    recordsEmitted: 0,
+    source: buildScheduledRunSource(connectorId),
+    startedAt: nowIso(),
+    status: "skipped",
   };
 }
 
@@ -180,52 +180,52 @@ function buildAutomationPolicySkip(
   connectorInstanceId?: string
 ): RunRecord {
   return {
+    attempt: 0,
+    checkpointSummary: null,
+    completedAt: nowIso(),
     connectorId,
     connectorInstanceId: connectorInstanceId ?? null,
-    source: buildScheduledRunSource(connectorId),
-    status: "skipped",
-    recordsEmitted: 0,
-    checkpointSummary: null,
-    knownGaps: [],
-    startedAt: nowIso(),
-    completedAt: nowIso(),
     error: `automation_policy_blocked: ${reason || "automatic run is not allowed by connector policy"}`,
-    attempt: 0,
+    knownGaps: [],
+    recordsEmitted: 0,
+    source: buildScheduledRunSource(connectorId),
+    startedAt: nowIso(),
+    status: "skipped",
   };
 }
 
 // ─── Factory ─────────────────────────────────────────────────────────────────
 
 export interface PreRunGate {
-  decideDisabledGrant(connectorId: string, connectorInstanceId: string): "proceed" | "silent-skip" | RunRecord;
-  decideNotReady(schedule: ConnectorSchedule): Promise<"proceed" | "silent-skip" | RunRecord>;
-  gateAttention(connectorId: string, connectorInstanceId: string, key: string): Promise<GateOutcome>;
-  gateAutomationPolicy(
+  decideDisabledGrant: (connectorId: string, connectorInstanceId: string) => "proceed" | "silent-skip" | RunRecord;
+  decideNotReady: (schedule: ConnectorSchedule) => Promise<"proceed" | "silent-skip" | RunRecord>;
+  gateAttention: (connectorId: string, connectorInstanceId: string, key: string) => Promise<GateOutcome>;
+  gateAutomationPolicy: (
     connectorId: string,
     connectorInstanceId: string,
     key: string,
     policy: ReturnType<typeof projectRunAutomationPolicy>
-  ): GateOutcome;
-  gateGrantState(
+  ) => GateOutcome;
+  gateGrantState: (
     connectorId: string,
     connectorInstanceId: string,
     grantAccessMode: NonNullable<ConnectorSchedule["grantAccessMode"]>
-  ): GateOutcome;
-  gateNeedsHuman(connectorId: string, connectorInstanceId: string, key: string): GateOutcome;
-  maybeSkipSingleUseExhausted(
+  ) => GateOutcome;
+  gateNeedsHuman: (connectorId: string, connectorInstanceId: string, key: string) => GateOutcome;
+  maybeSkipSingleUseExhausted: (
     connectorId: string,
     connectorInstanceId: string,
     grantAccessMode: GrantAccessMode
-  ): RunRecord | null;
-  probeUnresolvedAttention(
+  ) => RunRecord | null;
+  probeUnresolvedAttention: (
     connectorId: string,
     connectorInstanceId: string
-  ): Promise<UnresolvedAttentionEvidence | null>;
-  runAutomaticPreflight(
+  ) => Promise<UnresolvedAttentionEvidence | null>;
+  runAutomaticPreflight: (
     schedule: ConnectorSchedule,
     key: string,
     automationPolicy: ReturnType<typeof projectRunAutomationPolicy>
-  ): Promise<GateOutcome>;
+  ) => Promise<GateOutcome>;
 }
 
 export function createPreRunGate(deps: PreRunGateDeps): PreRunGate {
@@ -273,12 +273,12 @@ export function createPreRunGate(deps: PreRunGateDeps): PreRunGate {
       return "proceed";
     }
     const projection = projectRunAutomationPolicy({
-      triggerKind: "scheduled",
-      refreshPolicy: getManifestRefreshPolicy(schedule.manifest),
       deploymentReadiness: {
         ready: false,
         reason: readiness.reason || "scheduled connector runtime prerequisites are not currently satisfied",
       },
+      refreshPolicy: getManifestRefreshPolicy(schedule.manifest),
+      triggerKind: "scheduled",
     });
     const reason = projection.reason || "scheduled connector runtime prerequisites are not currently satisfied";
     if (runtime.notifiedNotReadySkips.get(key) === reason) {
@@ -400,14 +400,14 @@ export function createPreRunGate(deps: PreRunGateDeps): PreRunGate {
   }
 
   return {
-    probeUnresolvedAttention,
+    decideDisabledGrant,
+    decideNotReady,
     gateAttention,
     gateAutomationPolicy,
-    decideNotReady,
+    gateGrantState,
     gateNeedsHuman,
     maybeSkipSingleUseExhausted,
-    decideDisabledGrant,
-    gateGrantState,
+    probeUnresolvedAttention,
     runAutomaticPreflight,
   };
 }

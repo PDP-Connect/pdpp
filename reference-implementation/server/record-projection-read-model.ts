@@ -8,7 +8,7 @@
 // ref-control.ts is a facade consumer; this module must NOT import it.
 
 import { deriveReferenceFreshness, type ReferenceFreshness } from "./freshness.ts";
-import { listRetainedSizeConnections, listRetainedSizeStreams } from "./retained-size-read-model.js";
+import { listRetainedSizeConnections, listRetainedSizeStreams } from "./retained-size-read-model.ts";
 
 type Freshness = ReferenceFreshness;
 
@@ -71,6 +71,24 @@ function buildFreshness(lastUpdated: string | null = null): Freshness {
   return deriveReferenceFreshness({ recordLastUpdatedAt: lastUpdated });
 }
 
+function recordProjectionRowFromRetainedSizeRow(row: {
+  connector_id: string | null | undefined;
+  connector_instance_id: string | null | undefined;
+  record_count: number | null | undefined;
+  stream: string | null | undefined;
+}): RecordProjectionRow {
+  if (typeof row.stream !== "string") {
+    throw new TypeError("retained-size stream projection is missing its stream name");
+  }
+  return {
+    ...(row.connector_id === undefined ? {} : { connector_id: row.connector_id }),
+    ...(row.connector_instance_id === undefined ? {} : { connector_instance_id: row.connector_instance_id }),
+    last_updated: null,
+    record_count: Number(row.record_count || 0),
+    stream: row.stream,
+  };
+}
+
 // ─── Exported functions ───────────────────────────────────────────────────────
 
 async function getRetainedBytesForConnection(connectorInstanceId: string): Promise<RetainedBytesBreakdown | null> {
@@ -122,9 +140,9 @@ function buildRecordProjectionFromRetainedRows(input: {
     const recordCount = Number(row.record_count || 0);
     const lastUpdated = row.last_updated || null;
     byStream.set(row.stream, {
-      record_count: recordCount,
-      last_updated: lastUpdated,
       freshness: buildFreshness(lastUpdated),
+      last_updated: lastUpdated,
+      record_count: recordCount,
     });
     if (lastUpdated && (!latest || lastUpdated > latest)) {
       latest = lastUpdated;
@@ -141,9 +159,9 @@ function buildRecordProjectionFromRetainedRows(input: {
 function projectStreamRecordSummaries(byStream: ReadonlyMap<string, StreamProjection>): StreamRecordSummary[] {
   return [...byStream.entries()]
     .map(([stream, projection]) => ({
-      stream,
-      record_count: projection.record_count,
       last_updated: projection.last_updated,
+      record_count: projection.record_count,
+      stream,
     }))
     .sort((a, b) => a.stream.localeCompare(b.stream));
 }
@@ -157,38 +175,24 @@ async function getConnectorRecordProjection(
   if (connectorInstanceId && snapshot) {
     rows = [...(snapshot.streamsByInstanceId.get(connectorInstanceId) ?? [])];
     return buildRecordProjectionFromRetainedRows({
-      rows,
       retainedBytes: retainedBytesFromConnectionRow(snapshot.connectionsByInstanceId.get(connectorInstanceId)),
+      rows,
     });
   }
   if (!connectorInstanceId && snapshot) {
     rows = [...(snapshot.streamsByConnectorId.get(connectorId) ?? [])];
-    return buildRecordProjectionFromRetainedRows({ rows, retainedBytes: null });
+    return buildRecordProjectionFromRetainedRows({ retainedBytes: null, rows });
   }
   if (connectorInstanceId) {
-    rows = (await listRetainedSizeStreams({ connectorInstanceId })).map(
-      (row: { connector_id?: string; connector_instance_id?: string; stream: string; record_count?: number }) => ({
-        connector_id: row.connector_id,
-        connector_instance_id: row.connector_instance_id,
-        stream: row.stream,
-        record_count: Number(row.record_count || 0),
-        last_updated: null,
-      })
-    ) as RecordProjectionRow[];
+    rows = (await listRetainedSizeStreams({ connectorInstanceId })).map(recordProjectionRowFromRetainedSizeRow);
   } else {
     rows = (await listRetainedSizeStreams({}))
-      .filter((row: { connector_id?: string }) => row.connector_id === connectorId)
-      .map((row: { connector_id?: string; connector_instance_id?: string; stream: string; record_count?: number }) => ({
-        connector_id: row.connector_id,
-        connector_instance_id: row.connector_instance_id,
-        stream: row.stream,
-        record_count: Number(row.record_count || 0),
-        last_updated: null,
-      })) as RecordProjectionRow[];
+      .filter((row) => row.connector_id === connectorId)
+      .map(recordProjectionRowFromRetainedSizeRow);
   }
   return buildRecordProjectionFromRetainedRows({
-    rows,
     retainedBytes: connectorInstanceId ? await getRetainedBytesForConnection(connectorInstanceId) : null,
+    rows,
   });
 }
 

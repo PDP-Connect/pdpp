@@ -13,7 +13,7 @@ const RAILWAY_TEMPLATES_CONFIG_AS_CODE_PATTERN = /Railway templates\/config-as-c
 const FROM_BASE_AS_REFERENCE_PATTERN = /FROM base AS reference/;
 const EXPOSE_7662_7663_PATTERN = /\nEXPOSE 7662 7663\n/;
 const AS_PORT_EXPORT_PATTERN = /export AS_PORT=\\"?\$\{PORT:-\$\{AS_PORT:-7662\}\}\\"?/;
-const EXEC_NODE_REFERENCE_INDEX_PATTERN = /exec node reference-implementation\/server\/index\.js/;
+const EXEC_NODE_REFERENCE_INDEX_PATTERN = /exec node reference-implementation\/server\/index\.ts/;
 const FROM_BROWSERS_AS_REFERENCE_PATTERN = /FROM browsers AS reference/;
 const PATCHRIGHT_INSTALL_PATTERN = /patchright install/;
 const FROM_ANY_AS_CONSOLE_PATTERN = /FROM .* AS console/;
@@ -24,7 +24,7 @@ const CMD_CORE_SUPERVISOR_PATTERN = /CMD \["node", "--import", "tsx", "\/app\/de
 const EXPOSE_3000_PATTERN = /\nEXPOSE 3000\n/;
 const LOOPBACK_7662_PATTERN = /127\.0\.0\.1:7662/;
 const LOOPBACK_7663_PATTERN = /127\.0\.0\.1:7663/;
-const APP_REFERENCE_INDEX_PATTERN = /\/app\/reference-implementation\/server\/index\.js/;
+const APP_REFERENCE_INDEX_PATTERN = /\/app\/reference-implementation\/server\/index\.ts/;
 const CONSOLE_SERVER_JS_PATTERN = /\/console\/apps\/console\/server\.js/;
 const REFERENCE_ORIGIN_LOCALHOST_PATTERN = /PDPP_REFERENCE_ORIGIN=http:\/\/localhost:3000/;
 const DB_PATH_SQLITE_PATTERN = /PDPP_DB_PATH=\/var\/lib\/pdpp\/pdpp\.sqlite/;

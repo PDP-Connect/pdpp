@@ -94,18 +94,18 @@ interface RouteRequest {
 }
 
 interface RouteResponse {
-  end(): unknown;
-  getHeader(name: string): string | number | string[] | undefined;
-  json(body: unknown): unknown;
-  setHeader(name: string, value: string): void;
-  status(code: number): RouteResponse;
+  end: () => unknown;
+  getHeader: (name: string) => string | number | string[] | undefined;
+  json: (body: unknown) => unknown;
+  setHeader: (name: string, value: string) => void;
+  status: (code: number) => RouteResponse;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
 type NextFn = () => unknown | Promise<unknown>;
 
 interface AppLike {
-  delete(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  delete: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
 }
 
 // Non-secret deletion summary the store returns. Counts + stable ids only.
@@ -124,41 +124,41 @@ export interface MountOwnerConnectionDeleteContext {
     message: string,
     availableConnections: WireConnection[]
   ) => AmbiguousConnectionErrorLike;
-  canonicalConnectorKey(value: string | null | undefined): string | null;
-  createTraceContext(input?: { scenarioId?: string }): TraceContext;
+  canonicalConnectorKey: (value: string | null | undefined) => string | null;
+  createTraceContext: (input?: { scenarioId?: string }) => TraceContext;
   // Connection-scoped destructive delete primitive. Resolves + verifies owner
   // ownership BEFORE any mutation, refuses active-run / default-account, purges
   // data + state, deletes the row, returns the non-secret deletion summary.
-  deleteConnection(
+  deleteConnection: (
     connectorInstanceId: string,
     options: { ownerSubjectId: string; now?: string | undefined }
-  ): Promise<DeleteSummary>;
-  emitSpineEvent(event: Record<string, unknown>): Promise<unknown>;
-  ensureRequestId(res: RouteResponse): string;
-  getOwnerTokenSubjectId(req: unknown): string;
-  handleError(res: unknown, err: unknown): void;
-  invalidateConnectorSummariesCache?(): void;
-  listActiveBindingsForGrant(input: {
+  ) => Promise<DeleteSummary>;
+  emitSpineEvent: (event: Record<string, unknown>) => Promise<unknown>;
+  ensureRequestId: (res: RouteResponse) => string;
+  getOwnerTokenSubjectId: (req: unknown) => string;
+  handleError: (res: unknown, err: unknown) => void;
+  invalidateConnectorSummariesCache?: () => void;
+  listActiveBindingsForGrant: (input: {
     ownerSubjectId: string;
     connectorId: string;
-  }): Promise<ActiveBinding[]> | ActiveBinding[];
+  }) => Promise<ActiveBinding[]> | ActiveBinding[];
   // Marks the maintained connector-summary read-model evidence for exactly this
   // connection dirty after the delete cascade commits. The connection no longer
   // exists in canonical state, so a later reconcile drops the now-stale row (the
   // reconcile pass deletes dirty rows whose connection has vanished). Injected
   // (not imported) to match the optional `invalidateConnectorSummariesCache`
   // above; awaited, best-effort, and a no-op until the read model is warmed.
-  markConnectorSummaryEvidenceDirty?(input: { connectorInstanceId: string; reason?: string }): Promise<void> | void;
-  now?(): string;
+  markConnectorSummaryEvidenceDirty?: (input: { connectorInstanceId: string; reason?: string }) => Promise<void> | void;
+  now?: () => string;
   pdppError: PdppErrorFn;
-  projectBindingForWire(instance: ActiveBinding): WireConnection | null;
+  projectBindingForWire: (instance: ActiveBinding) => WireConnection | null;
   requireOwner: MiddlewareHandler;
   requireToken: MiddlewareHandler;
   // Owner-scoped namespace resolution — used ONLY for the connector-only path
   // (auto-select the single active connection or throw ambiguity). The
   // connection_id path resolves ownership inside `deleteConnection` instead, so
   // a non-active-but-present connection is still deletable.
-  resolveOwnerConnectorNamespace(
+  resolveOwnerConnectorNamespace: (
     req: unknown,
     connectorId: string | null,
     options?: {
@@ -166,8 +166,8 @@ export interface MountOwnerConnectionDeleteContext {
       readonly connectorInstanceId?: string | null;
       readonly ownerSubjectId?: string;
     }
-  ): Promise<ConnectorNamespace>;
-  setReferenceTraceId(res: RouteResponse, traceId: string): void;
+  ) => Promise<ConnectorNamespace>;
+  setReferenceTraceId: (res: RouteResponse, traceId: string) => void;
 }
 
 // Emits one non-secret owner_agent.connection.delete spine event. Carries the
@@ -196,36 +196,27 @@ async function emitDeleteAudit(
     args.ownerSubjectId ?? (typeof req.tokenInfo?.subject_id === "string" ? req.tokenInfo.subject_id : null);
   const code = (args.error as { code?: unknown } | null)?.code;
   await ctx.emitSpineEvent({
-    event_type: "owner_agent.connection.delete",
-    trace_id: trace.trace_id,
-    scenario_id: trace.scenario_id,
-    request_id: trace.request_id,
-    actor_type: actorKind,
     actor_id: clientId ?? ownerSubjectId ?? actorKind,
-    subject_type: "subject",
-    subject_id: ownerSubjectId,
+    actor_type: actorKind,
     client_id: clientId,
-    object_type: "connection",
-    object_id: args.connectionId || args.connectorKey || "unknown_connection",
-    status: args.outcome,
     data: {
-      auth_token_kind: req.tokenInfo?.pdpp_token_kind ?? null,
       actor_kind: actorKind,
+      auth_token_kind: req.tokenInfo?.pdpp_token_kind ?? null,
       client_id: clientId,
       client_name: clientName,
       connection_id: args.connectionId ?? null,
       connector_key: args.connectorKey ?? null,
-      selector: args.selector,
       operation: "delete",
       outcome: args.outcome,
+      selector: args.selector,
       target_resource: "connection",
       ...(args.summary
         ? {
             deletion_summary: {
               deleted_record_count: args.summary.deleted_record_count,
               deleted_stream_count: args.summary.deleted_stream_count,
-              schedule_deleted: args.summary.schedule_deleted,
               device_refs_cleared: args.summary.device_refs_cleared,
+              schedule_deleted: args.summary.schedule_deleted,
             },
           }
         : {}),
@@ -238,6 +229,15 @@ async function emitDeleteAudit(
           }
         : {}),
     },
+    event_type: "owner_agent.connection.delete",
+    object_id: args.connectionId || args.connectorKey || "unknown_connection",
+    object_type: "connection",
+    request_id: trace.request_id,
+    scenario_id: trace.scenario_id,
+    status: args.outcome,
+    subject_id: ownerSubjectId,
+    subject_type: "subject",
+    trace_id: trace.trace_id,
   });
 }
 
@@ -291,8 +291,8 @@ function buildDeleteHandler(
         let namespace: ConnectorNamespace;
         try {
           namespace = await ctx.resolveOwnerConnectorNamespace(req, rawConnectorId, {
-            ownerSubjectId,
             allowDefaultAccount: false,
+            ownerSubjectId,
           });
         } catch (resolveErr) {
           await rethrowAsAmbiguousConnection(ctx, resolveErr, ownerSubjectId, connectorKey);
@@ -304,7 +304,7 @@ function buildDeleteHandler(
       }
 
       const now = ctx.now ? ctx.now() : undefined;
-      const summary = await ctx.deleteConnection(connectionId as string, { ownerSubjectId, now });
+      const summary = await ctx.deleteConnection(connectionId as string, { now, ownerSubjectId });
       connectionId = summary.connection_id;
       connectorKey = ctx.canonicalConnectorKey(summary.connector_id) ?? summary.connector_id;
       ctx.invalidateConnectorSummariesCache?.();
@@ -326,15 +326,15 @@ function buildDeleteHandler(
         summary,
       });
       res.status(200).json({
-        object: "owner_connection_delete",
         connection_id: summary.connection_id,
         connector_id: connectorKey,
         connector_key: connectorKey,
         deleted: true,
         deleted_record_count: summary.deleted_record_count,
         deleted_stream_count: summary.deleted_stream_count,
-        schedule_deleted: summary.schedule_deleted,
         device_refs_cleared: summary.device_refs_cleared,
+        object: "owner_connection_delete",
+        schedule_deleted: summary.schedule_deleted,
       });
     } catch (err) {
       await emitDeleteAudit(ctx, req, res, {

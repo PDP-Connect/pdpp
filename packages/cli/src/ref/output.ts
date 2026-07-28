@@ -111,10 +111,10 @@ function writeTable(data: unknown, out: NodeJS.WritableStream = process.stdout):
   );
 
   const renderRow = (row: Record<string, unknown>) =>
-    columns.map((column) => String(row[column] ?? "").padEnd(widths[column])).join("  ");
+    columns.map((column) => String(row[column] ?? "").padEnd(widths[column] ?? column.length)).join("  ");
 
   out.write(`${renderRow(Object.fromEntries(columns.map((column) => [column, column])))}\n`);
-  out.write(`${columns.map((column) => "-".repeat(widths[column])).join("  ")}\n`);
+  out.write(`${columns.map((column) => "-".repeat(widths[column] ?? column.length)).join("  ")}\n`);
   for (const row of normalized) {
     out.write(`${renderRow(row)}\n`);
   }

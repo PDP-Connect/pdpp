@@ -205,13 +205,20 @@ export async function connectProvider(
   }
   io.stdout.write("Waiting for approval...\n");
 
-  const credential = await pollForCredential(fetchFn, pollUrl, {
+  const pollOptions: PollForCredentialOptions = {
     intervalMs: Number(start.interval_ms ?? start.interval ?? options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS),
     timeoutMs: options.pollTimeoutMs ?? DEFAULT_POLL_TIMEOUT_MS,
-    sleep: options.sleep,
-    now: options.now,
-    pollingCode: start.polling_code,
-  });
+  };
+  if (options.sleep) {
+    pollOptions.sleep = options.sleep;
+  }
+  if (options.now) {
+    pollOptions.now = options.now;
+  }
+  if (start.polling_code) {
+    pollOptions.pollingCode = start.polling_code;
+  }
+  const credential = await pollForCredential(fetchFn, pollUrl, pollOptions);
 
   await verifySchema(fetchFn, normalizedProviderUrl, credential.access_token);
   const cacheFile = await storeCredential(cacheRoot, normalizedProviderUrl, {
@@ -237,7 +244,7 @@ export async function connectProvider(
 }
 
 export interface ReadStoredCredentialOptions {
-  cacheRoot?: string;
+  cacheRoot?: string | undefined;
   now?: () => number;
 }
 
@@ -446,17 +453,17 @@ async function readCachedClientRegistration(cacheRoot: string, providerUrl: stri
 
 interface PollForCredentialOptions {
   intervalMs: number;
-  now?: () => number;
-  pollingCode?: string;
-  sleep?: (ms: number) => Promise<void>;
+  now?: (() => number) | undefined;
+  pollingCode?: string | undefined;
+  sleep?: ((ms: number) => Promise<void>) | undefined;
   timeoutMs: number;
 }
 
 interface PolledCredential {
   access_token: string;
-  expires_at?: string;
-  grant_id?: string;
-  scope?: string;
+  expires_at?: string | undefined;
+  grant_id?: string | undefined;
+  scope?: string | undefined;
   token_type: string;
 }
 
@@ -617,7 +624,7 @@ async function postJson<T>(fetchFn: FetchFn, url: string, body: unknown): Promis
   if (!response.ok) {
     let errBody: ConnectRequestErrorBody | null = null;
     try {
-      errBody = await response.json();
+      errBody = (await response.json()) as ConnectRequestErrorBody;
     } catch {
       // non-JSON error body is treated as absent detail below
     }

@@ -73,18 +73,18 @@ interface RouteRequest {
 }
 
 interface RouteResponse {
-  end(): unknown;
-  getHeader(name: string): string | number | string[] | undefined;
-  json(body: unknown): unknown;
-  setHeader(name: string, value: string): void;
-  status(code: number): RouteResponse;
+  end: () => unknown;
+  getHeader: (name: string) => string | number | string[] | undefined;
+  json: (body: unknown) => unknown;
+  setHeader: (name: string, value: string) => void;
+  status: (code: number) => RouteResponse;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
 type NextFn = () => unknown | Promise<unknown>;
 
 interface AppLike {
-  post(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  post: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
 }
 
 interface ReactivatedInstance {
@@ -103,33 +103,33 @@ export interface MountOwnerConnectionReactivateContext {
     message: string,
     availableConnections: WireConnection[]
   ) => AmbiguousConnectionErrorLike;
-  canonicalConnectorKey(value: string | null | undefined): string | null;
-  createTraceContext(input?: { scenarioId?: string }): TraceContext;
-  emitSpineEvent(event: Record<string, unknown>): Promise<unknown>;
-  ensureRequestId(res: RouteResponse): string;
-  getOwnerTokenSubjectId(req: unknown): string;
-  handleError(res: unknown, err: unknown): void;
-  invalidateConnectorSummariesCache?(): void;
-  listActiveBindingsForGrant(input: {
+  canonicalConnectorKey: (value: string | null | undefined) => string | null;
+  createTraceContext: (input?: { scenarioId?: string }) => TraceContext;
+  emitSpineEvent: (event: Record<string, unknown>) => Promise<unknown>;
+  ensureRequestId: (res: RouteResponse) => string;
+  getOwnerTokenSubjectId: (req: unknown) => string;
+  handleError: (res: unknown, err: unknown) => void;
+  invalidateConnectorSummariesCache?: () => void;
+  listActiveBindingsForGrant: (input: {
     ownerSubjectId: string;
     connectorId: string;
-  }): Promise<ActiveBinding[]> | ActiveBinding[];
+  }) => Promise<ActiveBinding[]> | ActiveBinding[];
   // Returns all revoked connections owned by `ownerSubjectId` for the given
   // connector. Used by the connector-only route to find the single revoked
   // connection to reactivate (mirroring listActiveBindingsForGrant for revoke).
-  listRevokedConnectionsForConnector(input: {
+  listRevokedConnectionsForConnector: (input: {
     ownerSubjectId: string;
     connectorId: string;
-  }): Promise<ActiveBinding[]> | ActiveBinding[];
+  }) => Promise<ActiveBinding[]> | ActiveBinding[];
   // Marks the maintained connector-summary read-model evidence for exactly this
   // connection dirty after the reactivate mutation commits. Injected (not
   // imported) to match the optional `invalidateConnectorSummariesCache` above;
   // awaited at the call site so ordering is explicit, best-effort, and a no-op
   // until the read model is warmed.
-  markConnectorSummaryEvidenceDirty?(input: { connectorInstanceId: string; reason?: string }): Promise<void> | void;
-  now?(): string;
+  markConnectorSummaryEvidenceDirty?: (input: { connectorInstanceId: string; reason?: string }) => Promise<void> | void;
+  now?: () => string;
   pdppError: PdppErrorFn;
-  projectBindingForWire(instance: ActiveBinding): WireConnection | null;
+  projectBindingForWire: (instance: ActiveBinding) => WireConnection | null;
   requireOwner: MiddlewareHandler;
   requireToken: MiddlewareHandler;
   // Resolves the connector-instance namespace for the given owner. Accepts
@@ -137,7 +137,7 @@ export interface MountOwnerConnectionReactivateContext {
   // revoked-status gate (foreign/unknown id → connector_instance_not_found 404;
   // non-revoked id → connector_instance_inactive 400, which the handler
   // re-labels as connector_instance_not_revoked 409).
-  resolveOwnerConnectorNamespace(
+  resolveOwnerConnectorNamespace: (
     req: unknown,
     connectorId: string | null,
     options?: {
@@ -146,13 +146,13 @@ export interface MountOwnerConnectionReactivateContext {
       readonly connectorInstanceId?: string | null;
       readonly ownerSubjectId?: string;
     }
-  ): Promise<ConnectorNamespace>;
-  setReferenceTraceId(res: RouteResponse, traceId: string): void;
+  ) => Promise<ConnectorNamespace>;
+  setReferenceTraceId: (res: RouteResponse, traceId: string) => void;
   // Shared store primitive. Flips the instance status, clears revokedAt.
-  updateConnectorInstanceStatus(
+  updateConnectorInstanceStatus: (
     connectorInstanceId: string,
     options: { status: "active"; updatedAt: string; revokedAt: null }
-  ): Promise<ReactivatedInstance> | ReactivatedInstance;
+  ) => Promise<ReactivatedInstance> | ReactivatedInstance;
 }
 
 // Emits one non-secret `owner_agent.connection.reactivate` spine event.
@@ -177,31 +177,31 @@ async function emitReactivateAudit(
   const actorKind = auditActorKind(req);
   const ownerSubjectId = resolveAuditOwnerSubjectId(req, args.ownerSubjectId);
   await ctx.emitSpineEvent({
-    event_type: "owner_agent.connection.reactivate",
-    trace_id: trace.trace_id,
-    scenario_id: trace.scenario_id,
-    request_id: trace.request_id,
-    actor_type: actorKind,
     actor_id: clientId ?? ownerSubjectId ?? actorKind,
-    subject_type: "subject",
-    subject_id: ownerSubjectId,
+    actor_type: actorKind,
     client_id: clientId,
-    object_type: "connection",
-    object_id: reactivateObjectId(args),
-    status: args.outcome,
     data: {
-      auth_token_kind: req.tokenInfo?.pdpp_token_kind ?? null,
       actor_kind: actorKind,
+      auth_token_kind: req.tokenInfo?.pdpp_token_kind ?? null,
       client_id: clientId,
       client_name: clientName,
       connection_id: args.connectionId ?? null,
       connector_key: args.connectorKey ?? null,
-      selector: args.selector,
       operation: "reactivate",
       outcome: args.outcome,
+      selector: args.selector,
       target_resource: "connection",
       ...reactivateAuditError(args.error),
     },
+    event_type: "owner_agent.connection.reactivate",
+    object_id: reactivateObjectId(args),
+    object_type: "connection",
+    request_id: trace.request_id,
+    scenario_id: trace.scenario_id,
+    status: args.outcome,
+    subject_id: ownerSubjectId,
+    subject_type: "subject",
+    trace_id: trace.trace_id,
   });
 }
 
@@ -269,7 +269,7 @@ async function resolveRevokedConnectorNamespace(
   connectorKey: string
 ): Promise<ConnectorNamespace> {
   const revoked = await Promise.resolve(
-    ctx.listRevokedConnectionsForConnector({ ownerSubjectId, connectorId: connectorKey })
+    ctx.listRevokedConnectionsForConnector({ connectorId: connectorKey, ownerSubjectId })
   );
   if (revoked.length === 0) {
     const err = new Error(
@@ -308,12 +308,13 @@ async function resolveConnectionReactivateNamespace(
   target.connectionId = addressed;
   try {
     return await ctx.resolveOwnerConnectorNamespace(req, null, {
-      ownerSubjectId,
       allowDefaultAccount: false,
       allowStatuses: ["revoked"],
       connectorInstanceId: addressed,
+      ownerSubjectId,
     });
   } catch (resolveErr) {
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     const code = (resolveErr as { code?: unknown })?.code;
     if (code === "connector_instance_inactive") {
       ctx.pdppError(
@@ -328,6 +329,7 @@ async function resolveConnectionReactivateNamespace(
   }
 }
 
+// biome-ignore lint/suspicious/useAwait: The async signature is part of this caller-facing contract.
 async function resolveConnectorReactivateNamespace(
   ctx: MountOwnerConnectionReactivateContext,
   ownerSubjectId: string,
@@ -339,6 +341,7 @@ async function resolveConnectorReactivateNamespace(
   return resolveRevokedConnectorNamespace(ctx, ownerSubjectId, target.connectorKey);
 }
 
+// biome-ignore lint/suspicious/useAwait: The async signature is part of this caller-facing contract.
 async function resolveReactivateNamespace(
   ctx: MountOwnerConnectionReactivateContext,
   req: RouteRequest,
@@ -364,9 +367,9 @@ async function applyReactivate(
   const stamp = reactivateTimestamp(ctx);
   const reactivated = await Promise.resolve(
     ctx.updateConnectorInstanceStatus(connectorInstanceId, {
+      revokedAt: null,
       status: "active",
       updatedAt: stamp,
-      revokedAt: null,
     })
   );
   ctx.invalidateConnectorSummariesCache?.();
@@ -386,12 +389,12 @@ function reactivateResponse(
   stamp: string
 ): Record<string, unknown> {
   return {
-    object: "owner_connection_reactivate",
     connection_id: connectionId,
     connector_id: connectorKey,
     connector_key: connectorKey,
-    status: reactivated.status ?? "active",
+    object: "owner_connection_reactivate",
     reactivated_at: stamp,
+    status: reactivated.status ?? "active",
   };
 }
 

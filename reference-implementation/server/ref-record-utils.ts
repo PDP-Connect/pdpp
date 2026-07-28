@@ -321,6 +321,7 @@ export function decodeOffsetCursor(raw: unknown): number | null {
     if (!isRecord(decoded)) {
       return null;
     }
+    // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
     const offset = decoded.offset;
     if (!Number.isInteger(offset) || (typeof offset === "number" && offset < 0)) {
       return null;

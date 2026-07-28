@@ -40,8 +40,8 @@ export interface RefSpineClientMetadata {
 }
 
 export interface RefSpineSource {
-  readonly kind: "connector" | "provider_native";
   readonly id: string;
+  readonly kind: "connector" | "provider_native";
 }
 
 /**
@@ -53,18 +53,20 @@ export interface RefSpineSource {
  * force a change here.
  */
 export interface RefSpineCorrelationSummary {
+  readonly actor_id: string;
+  readonly actor_type: string;
   readonly browser_surface_lease_id?: string;
   readonly browser_surface_profile_key?: string;
   readonly browser_surface_status?: string;
   readonly browser_surface_wait_reason?: string;
+  readonly client?: RefSpineClientMetadata | null;
+  readonly client_id: string | null;
   readonly connection_id?: string | null;
-  readonly id?: string;
-  readonly first_at: string;
-  readonly last_at: string;
+  readonly connector_id: string | null;
+  readonly connector_instance_id?: string | null;
   readonly event_count: number;
-  readonly status: string;
-  readonly kinds: readonly string[];
-  readonly request_id: string | null;
+  readonly failure: RefSpineFailureSummary | null;
+  readonly first_at: string;
   readonly grant_id: string | null;
   /**
    * Parent grant-package id when the grant's binding token carries
@@ -72,24 +74,22 @@ export interface RefSpineCorrelationSummary {
    * kind=`grant` and absent otherwise.
    */
   readonly grant_package_id?: string | null;
+  readonly id?: string;
+  readonly kinds: readonly string[];
+  readonly last_at: string;
+  readonly needs_input: boolean;
+  readonly request_id: string | null;
   readonly run_id: string | null;
-  readonly client_id: string | null;
-  readonly client?: RefSpineClientMetadata | null;
-  readonly connector_id: string | null;
-  readonly connector_instance_id?: string | null;
   readonly source: RefSpineSource | null;
   readonly source_id: string | null;
   readonly source_kind: "connector" | "provider_native" | null;
-  readonly actor_type: string;
-  readonly actor_id: string;
-  readonly failure: RefSpineFailureSummary | null;
-  readonly needs_input: boolean;
+  readonly status: string;
 }
 
 export interface RefSpineCorrelationPage {
-  readonly summaries: readonly RefSpineCorrelationSummary[];
   readonly hasMore: boolean;
   readonly nextCursor: string | null;
+  readonly summaries: readonly RefSpineCorrelationSummary[];
 }
 
 /**
@@ -101,8 +101,8 @@ export interface RefSpineCorrelationPage {
 export type RefSpineCorrelationFilters = Readonly<Record<string, unknown>>;
 
 export interface RefSpineCorrelationsListInput {
-  readonly kind: RefSpineCorrelationKind;
   readonly filters: RefSpineCorrelationFilters;
+  readonly kind: RefSpineCorrelationKind;
 }
 
 export interface RefSpineCorrelationsListDependencies {
@@ -111,40 +111,44 @@ export interface RefSpineCorrelationsListDependencies {
    * not import server connector-key helpers, but owner-facing lists must not
    * expose reference-internal maintenance connectors.
    */
-  isInternalConnectorId?(id: string): boolean;
+  isInternalConnectorId?: (id: string) => boolean;
   /**
    * Returns a page of correlation summaries for the given kind and
    * filter set. The host implementation owns substrate access (cursor
    * decoding, SQL pagination); the operation projects each summary into
    * a per-kind discriminator and assembles the envelope.
    */
-  listSpineCorrelations(
+  listSpineCorrelations: (
     kind: RefSpineCorrelationKind,
-    filters: RefSpineCorrelationFilters,
-  ): Promise<RefSpineCorrelationPage> | RefSpineCorrelationPage;
+    filters: RefSpineCorrelationFilters
+  ) => Promise<RefSpineCorrelationPage> | RefSpineCorrelationPage;
 }
 
 export interface RefSpineTraceSummary {
-  readonly object: "trace_summary";
-  readonly trace_id: string | undefined;
-  readonly first_at: string;
-  readonly last_at: string;
-  readonly event_count: number;
-  readonly status: string;
-  readonly kinds: readonly string[];
-  readonly request_id: string | null;
-  readonly grant_id: string | null;
-  readonly run_id: string | null;
-  readonly client_id: string | null;
-  readonly client?: RefSpineClientMetadata;
-  readonly source: RefSpineSource | null;
-  readonly actor_type: string;
   readonly actor_id: string;
+  readonly actor_type: string;
+  readonly client?: RefSpineClientMetadata;
+  readonly client_id: string | null;
+  readonly event_count: number;
   readonly failure: RefSpineFailureSummary | null;
+  readonly first_at: string;
+  readonly grant_id: string | null;
+  readonly kinds: readonly string[];
+  readonly last_at: string;
+  readonly object: "trace_summary";
+  readonly request_id: string | null;
+  readonly run_id: string | null;
+  readonly source: RefSpineSource | null;
+  readonly status: string;
+  readonly trace_id: string | undefined;
 }
 
 export interface RefSpineGrantSummary {
-  readonly object: "grant_summary";
+  readonly client?: RefSpineClientMetadata;
+  readonly client_id: string | null;
+  readonly event_count: number;
+  readonly failure: RefSpineFailureSummary | null;
+  readonly first_at: string;
   readonly grant_id: string | undefined;
   /**
    * Parent grant-package id when this grant's binding token carries
@@ -152,15 +156,11 @@ export interface RefSpineGrantSummary {
    * (clients that ignore unknown fields by contract) continue to work.
    */
   readonly grant_package_id?: string;
-  readonly first_at: string;
-  readonly last_at: string;
-  readonly event_count: number;
-  readonly status: string;
   readonly kinds: readonly string[];
-  readonly client_id: string | null;
-  readonly client?: RefSpineClientMetadata;
+  readonly last_at: string;
+  readonly object: "grant_summary";
   readonly source: RefSpineSource | null;
-  readonly failure: RefSpineFailureSummary | null;
+  readonly status: string;
 }
 
 export interface RefSpineRunSummary {
@@ -168,32 +168,29 @@ export interface RefSpineRunSummary {
   readonly browser_surface_profile_key?: string;
   readonly browser_surface_status?: string;
   readonly browser_surface_wait_reason?: string;
-  readonly object: "run_summary";
-  readonly run_id: string | undefined;
   readonly connection_id?: string | null;
   readonly connector_id: string | null;
   readonly connector_instance_id?: string | null;
-  readonly first_at: string;
-  readonly last_at: string;
   readonly event_count: number;
-  readonly status: string;
-  readonly kinds: readonly string[];
-  readonly needs_input: boolean;
-  readonly source: RefSpineSource | null;
-  readonly grant_id: string | null;
   readonly failure_reason: string | null;
+  readonly first_at: string;
+  readonly grant_id: string | null;
+  readonly kinds: readonly string[];
+  readonly last_at: string;
+  readonly needs_input: boolean;
+  readonly object: "run_summary";
+  readonly run_id: string | undefined;
+  readonly source: RefSpineSource | null;
+  readonly status: string;
 }
 
-export type RefSpineCorrelationEntry =
-  | RefSpineTraceSummary
-  | RefSpineGrantSummary
-  | RefSpineRunSummary;
+export type RefSpineCorrelationEntry = RefSpineTraceSummary | RefSpineGrantSummary | RefSpineRunSummary;
 
 export interface RefSpineCorrelationsListEnvelope {
-  readonly object: "list";
   readonly data: readonly RefSpineCorrelationEntry[];
   readonly has_more: boolean;
   readonly next_cursor?: string;
+  readonly object: "list";
 }
 
 function sourceFromSummary(s: RefSpineCorrelationSummary): RefSpineSource | null {
@@ -201,10 +198,10 @@ function sourceFromSummary(s: RefSpineCorrelationSummary): RefSpineSource | null
     return s.source;
   }
   if (s.source_kind && s.source_id) {
-    return { kind: s.source_kind, id: s.source_id };
+    return { id: s.source_id, kind: s.source_kind };
   }
   if (s.connector_id) {
-    return { kind: "connector", id: s.connector_id };
+    return { id: s.connector_id, kind: "connector" };
   }
   return null;
 }
@@ -224,7 +221,7 @@ function summarySourceId(s: RefSpineCorrelationSummary): string | null {
 
 function isOwnerVisibleSummary(
   summary: RefSpineCorrelationSummary,
-  isInternalConnectorId: RefSpineCorrelationsListDependencies["isInternalConnectorId"],
+  isInternalConnectorId: RefSpineCorrelationsListDependencies["isInternalConnectorId"]
 ): boolean {
   const sourceId = summarySourceId(summary);
   return !(sourceId && isInternalConnectorId?.(sourceId));
@@ -239,7 +236,11 @@ function connectionIdFromBrowserSurfaceProfileKey(profileKey: string | null | un
 }
 
 function runConnectionIdentity(s: RefSpineCorrelationSummary): string | null {
-  return s.connection_id ?? s.connector_instance_id ?? connectionIdFromBrowserSurfaceProfileKey(s.browser_surface_profile_key);
+  return (
+    s.connection_id ??
+    s.connector_instance_id ??
+    connectionIdFromBrowserSurfaceProfileKey(s.browser_surface_profile_key)
+  );
 }
 
 function runFailureReason(s: RefSpineCorrelationSummary): string | null {
@@ -254,38 +255,38 @@ function runFailureReason(s: RefSpineCorrelationSummary): string | null {
 
 export function summaryToTrace(s: RefSpineCorrelationSummary): RefSpineTraceSummary {
   return {
-    object: "trace_summary",
-    trace_id: s.id,
-    first_at: s.first_at,
-    last_at: s.last_at,
-    event_count: s.event_count,
-    status: s.status,
-    kinds: s.kinds,
-    request_id: s.request_id,
-    grant_id: s.grant_id,
-    run_id: s.run_id,
     client_id: s.client_id,
+    event_count: s.event_count,
+    first_at: s.first_at,
+    grant_id: s.grant_id,
+    kinds: s.kinds,
+    last_at: s.last_at,
+    object: "trace_summary",
+    request_id: s.request_id,
+    run_id: s.run_id,
+    status: s.status,
+    trace_id: s.id,
     ...(s.client ? { client: s.client } : {}),
-    source: sourceFromSummary(s),
-    actor_type: s.actor_type,
     actor_id: s.actor_id,
+    actor_type: s.actor_type,
     failure: s.failure,
+    source: sourceFromSummary(s),
   };
 }
 
 export function summaryToGrant(s: RefSpineCorrelationSummary): RefSpineGrantSummary {
   return {
-    object: "grant_summary",
-    grant_id: s.id,
-    first_at: s.first_at,
-    last_at: s.last_at,
-    event_count: s.event_count,
-    status: s.status,
-    kinds: s.kinds,
     client_id: s.client_id,
+    event_count: s.event_count,
+    first_at: s.first_at,
+    grant_id: s.id,
+    kinds: s.kinds,
+    last_at: s.last_at,
+    object: "grant_summary",
+    status: s.status,
     ...(s.client ? { client: s.client } : {}),
-    source: sourceFromSummary(s),
     failure: s.failure,
+    source: sourceFromSummary(s),
     ...(s.grant_package_id ? { grant_package_id: s.grant_package_id } : {}),
   };
 }
@@ -297,15 +298,15 @@ export function summaryToRun(s: RefSpineCorrelationSummary): RefSpineRunSummary 
     run_id: s.id,
     ...(connectionId ? { connection_id: connectionId, connector_instance_id: connectionId } : {}),
     connector_id: s.connector_id,
-    first_at: s.first_at,
-    last_at: s.last_at,
     event_count: s.event_count,
-    status: s.status,
+    failure_reason: runFailureReason(s),
+    first_at: s.first_at,
+    grant_id: s.grant_id,
     kinds: s.kinds,
+    last_at: s.last_at,
     needs_input: Boolean(s.needs_input),
     source: sourceFromSummary(s),
-    grant_id: s.grant_id,
-    failure_reason: runFailureReason(s),
+    status: s.status,
     ...(s.browser_surface_status ? { browser_surface_status: s.browser_surface_status } : {}),
     ...(s.browser_surface_wait_reason ? { browser_surface_wait_reason: s.browser_surface_wait_reason } : {}),
     ...(s.browser_surface_lease_id ? { browser_surface_lease_id: s.browser_surface_lease_id } : {}),
@@ -314,9 +315,9 @@ export function summaryToRun(s: RefSpineCorrelationSummary): RefSpineRunSummary 
 }
 
 const PROJECTORS = {
-  trace: summaryToTrace,
   grant: summaryToGrant,
   run: summaryToRun,
+  trace: summaryToTrace,
 } as const;
 
 /**
@@ -330,7 +331,7 @@ const PROJECTORS = {
  */
 export async function executeRefSpineCorrelationsList(
   input: RefSpineCorrelationsListInput,
-  dependencies: RefSpineCorrelationsListDependencies,
+  dependencies: RefSpineCorrelationsListDependencies
 ): Promise<RefSpineCorrelationsListEnvelope> {
   const page = await dependencies.listSpineCorrelations(input.kind, input.filters);
   const project = PROJECTORS[input.kind];
@@ -338,9 +339,9 @@ export async function executeRefSpineCorrelationsList(
     .filter((summary) => isOwnerVisibleSummary(summary, dependencies.isInternalConnectorId))
     .map((summary) => project(summary));
   const envelope: RefSpineCorrelationsListEnvelope = {
-    object: "list",
     data,
     has_more: page.hasMore,
+    object: "list",
   };
   if (page.nextCursor) {
     return { ...envelope, next_cursor: page.nextCursor };

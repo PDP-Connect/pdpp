@@ -96,15 +96,15 @@ interface RouteRequest {
 }
 
 interface RouteResponse {
-  json(body: unknown): unknown;
-  send(body: unknown): unknown;
-  setHeader(name: string, value: string): unknown;
+  json: (body: unknown) => unknown;
+  send: (body: unknown) => unknown;
+  setHeader: (name: string, value: string) => unknown;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
 
 interface AppLike {
-  get(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  get: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
 }
 
 // Structural token shape. The host's `requireToken` middleware narrows the
@@ -207,8 +207,8 @@ interface BlobRow {
 }
 
 interface BlobStoreLike {
-  listBlobBindings(blobId: string): Promise<BlobBindingRow[]>;
-  loadContentAddressedBlob(blobId: string): Promise<BlobRow | null>;
+  listBlobBindings: (blobId: string) => Promise<BlobBindingRow[]>;
+  loadContentAddressedBlob: (blobId: string) => Promise<BlobRow | null>;
 }
 
 interface AmbiguousConnectionErrorCtor {
@@ -231,66 +231,66 @@ type QueryContext = Record<string, unknown> & {
 // internal shape while still type-checking the wiring.
 export interface MountRsReadContext {
   AmbiguousConnectionError: AmbiguousConnectionErrorCtor;
-  aggregateRecordsAcrossBindings(
+  aggregateRecordsAcrossBindings: (
     bindings: ReadRequestBinding[],
     stream: string,
     grant: GrantLike | null,
     params: Record<string, unknown>,
     manifest: ManifestLike,
     options: { extraWarnings: ResolverWarning[] }
-  ): Promise<unknown>;
-  buildClientSourceDescriptor(tokenInfo: TokenInfo): SourceDescriptorLike | null;
-  buildConnectorAwareFreshness(evidence: unknown, recordLastUpdatedAt?: string | null): unknown;
+  ) => Promise<unknown>;
+  buildClientSourceDescriptor: (tokenInfo: TokenInfo) => SourceDescriptorLike | null;
+  buildConnectorAwareFreshness: (evidence: unknown, recordLastUpdatedAt?: string | null) => unknown;
 
   // discovery / metadata / freshness builders
-  buildConnectorDiscoveryItem(args: {
+  buildConnectorDiscoveryItem: (args: {
     source: SourceDescriptorLike | null;
     storageBinding: StorageBindingLike;
     manifest: ManifestLike;
     grant?: GrantLike | null | undefined;
-  }): Promise<unknown>;
-  buildConnectorSchemaItem(args: {
+  }) => Promise<unknown>;
+  buildConnectorSchemaItem: (args: {
     source: SourceDescriptorLike | null;
     storageBinding: StorageBindingLike;
     manifest: ManifestLike;
     grant?: GrantLike | null | undefined;
     ownerSubjectId?: string | null | undefined;
-  }): Promise<unknown>;
-  buildOwnerQuerySourceDescriptor(req: unknown, opts: unknown): SourceDescriptorLike | null;
-  buildOwnerReadGrant(streamName: string): GrantLike;
-  buildQueryActorContext(tokenInfo: TokenInfo): QueryActorContext;
-  buildSourceDescriptor(sourceBinding: unknown): SourceDescriptorLike;
-  buildStreamMetadataEntry(args: {
+  }) => Promise<unknown>;
+  buildOwnerQuerySourceDescriptor: (req: unknown, opts: unknown) => SourceDescriptorLike | null;
+  buildOwnerReadGrant: (streamName: string) => GrantLike;
+  buildQueryActorContext: (tokenInfo: TokenInfo) => QueryActorContext;
+  buildSourceDescriptor: (sourceBinding: unknown) => SourceDescriptorLike;
+  buildStreamMetadataEntry: (args: {
     manifestStream: ManifestStreamLike | undefined;
     streamGrant: GrantStreamLike | null | undefined;
     grantStreams: GrantStreamLike[];
     freshness: unknown;
     manifestStreamNames?: Set<string> | null;
-  }): unknown;
-  canonicalConnectorKey(connectorId: string): string | null;
+  }) => unknown;
+  canonicalConnectorKey: (connectorId: string) => string | null;
 
   // blob read
-  createBlobStore(): BlobStoreLike;
-  decorateRecordBlobRefs(record: unknown): unknown;
-  emitQueryReceived(context: QueryContext, req: unknown): Promise<void>;
-  emitSpineEvent(event: Record<string, unknown>): Promise<unknown>;
+  createBlobStore: () => BlobStoreLike;
+  decorateRecordBlobRefs: (record: unknown) => unknown;
+  emitQueryReceived: (context: QueryContext, req: unknown) => Promise<void>;
+  emitSpineEvent: (event: Record<string, unknown>) => Promise<unknown>;
 
   // request/response + instrumentation helpers
-  ensureRequestId(res: unknown): string;
-  finalizeCanonicalEnvelope(payload: unknown, req: unknown): unknown;
-  getConnectorFreshnessEvidence(args: {
+  ensureRequestId: (res: unknown) => string;
+  finalizeCanonicalEnvelope: (payload: unknown, req: unknown) => unknown;
+  getConnectorFreshnessEvidence: (args: {
     source: SourceDescriptorLike | null;
     manifest: ManifestLike;
-  }): Promise<unknown>;
-  getOwnerTokenSubjectId(req: unknown): string | null;
-  getRecord(
+  }) => Promise<unknown>;
+  getOwnerTokenSubjectId: (req: unknown) => string | null;
+  getRecord: (
     storageTarget: StorageBindingLike,
     stream: string,
     recordKey: string,
     grant: GrantLike | null,
     manifest: ManifestLike
-  ): Promise<{ data?: { blob_ref?: { blob_id?: string } } } | null>;
-  getRecordAcrossBindings(
+  ) => Promise<{ data?: { blob_ref?: { blob_id?: string } } } | null>;
+  getRecordAcrossBindings: (
     bindings: ReadRequestBinding[],
     stream: string,
     recordId: string,
@@ -298,8 +298,8 @@ export interface MountRsReadContext {
     manifest: ManifestLike,
     params: Record<string, unknown>,
     options: { extraWarnings: ResolverWarning[] }
-  ): Promise<unknown>;
-  getRecordFieldWindowAcrossBindings(
+  ) => Promise<unknown>;
+  getRecordFieldWindowAcrossBindings: (
     bindings: ReadRequestBinding[],
     stream: string,
     recordId: string,
@@ -308,70 +308,76 @@ export interface MountRsReadContext {
     manifest: ManifestLike,
     params: Record<string, unknown>,
     options: { extraWarnings: ResolverWarning[] }
-  ): Promise<unknown>;
-  getSemanticBackend(): { available(): boolean } | null;
-  getVisibleStreamFreshness(args: {
+  ) => Promise<unknown>;
+  getSemanticBackend: () => { available: () => boolean } | null;
+  getVisibleStreamFreshness: (args: {
     tokenInfo: TokenInfo;
     source: SourceDescriptorLike | null;
     storageBinding: StorageBindingLike;
     stream: string;
     manifest: ManifestLike;
-  }): Promise<unknown>;
-  handleError(res: unknown, err: unknown): void;
+  }) => Promise<unknown>;
+  handleError: (res: unknown, err: unknown) => void;
 
   // records.js substrate reads
-  listAllStreams(storageBinding: StorageBindingLike): Promise<unknown[]>;
-  listRegisteredConnectorIds(): Promise<string[]>;
-  listStreamsAcrossBindings(
+  listAllStreams: (storageBinding: StorageBindingLike) => Promise<unknown[]>;
+  listRegisteredConnectorIds: () => Promise<string[]>;
+  listStreamsAcrossBindings: (
     bindings: ReadRequestBinding[],
     grant: GrantLike | null,
     manifest: ManifestLike,
     options: { resolveBindingsForStream: (streamGrant: GrantStreamLike) => Promise<ReadRequestBinding[]> }
-  ): Promise<Record<string, unknown>[]>;
+  ) => Promise<Record<string, unknown>[]>;
   readonly opts: Readonly<Record<string, unknown>>;
-  ownerSubjectIdForBindings(tokenInfo: TokenInfo): string | null;
-  projectBindingForWire(args: {
+  ownerSubjectIdForBindings: (tokenInfo: TokenInfo) => string | null;
+  projectBindingForWire: (args: {
     connectorInstanceId: string | null;
     connectorId: string | null;
     displayName: string | null;
-  }): unknown;
-  queryRecordsAcrossBindings(
+  }) => unknown;
+  queryRecordsAcrossBindings: (
     bindings: ReadRequestBinding[],
     stream: string,
     grant: GrantLike | null,
     params: Record<string, unknown>,
     manifest: ManifestLike,
     options: { extraWarnings: ResolverWarning[] }
-  ): Promise<unknown>;
-  rejectQuery(res: unknown, req: unknown, context: QueryContext, err: unknown, param?: string | null): Promise<unknown>;
+  ) => Promise<unknown>;
+  rejectQuery: (
+    res: unknown,
+    req: unknown,
+    context: QueryContext,
+    err: unknown,
+    param?: string | null
+  ) => Promise<unknown>;
   readonly requireToken: MiddlewareHandler;
-  resolveGrantManifest(tokenInfo: TokenInfo, opts: unknown): Promise<ResolvedManifest>;
+  resolveGrantManifest: (tokenInfo: TokenInfo, opts: unknown) => Promise<ResolvedManifest>;
 
   // manifest / grant / scope resolution
-  resolveNativeManifest(opts: unknown): NativeManifest | null;
-  resolveNativeStorageBinding(opts: unknown): StorageBindingLike | null;
-  resolveOwnerManifest(req: unknown, opts: unknown): Promise<ResolvedManifest>;
-  resolveOwnerManifestFromScope(ownerScope: unknown, opts: unknown): Promise<ResolvedManifest>;
-  resolveOwnerReadScope(req: unknown, opts: unknown): Promise<OwnerScopeLike>;
-  resolveReadRequestBindings(args: {
+  resolveNativeManifest: (opts: unknown) => NativeManifest | null;
+  resolveNativeStorageBinding: (opts: unknown) => StorageBindingLike | null;
+  resolveOwnerManifest: (req: unknown, opts: unknown) => Promise<ResolvedManifest>;
+  resolveOwnerManifestFromScope: (ownerScope: unknown, opts: unknown) => Promise<ResolvedManifest>;
+  resolveOwnerReadScope: (req: unknown, opts: unknown) => Promise<OwnerScopeLike>;
+  resolveReadRequestBindings: (args: {
     ownerSubjectId: string | null;
     storageBinding: StorageBindingLike;
     grant: GrantLike | null;
     requestParams: Record<string, unknown>;
     streamName: string | null;
     nativeProviderStorage: boolean;
-  }): Promise<ReadRequestBindingsResult>;
-  resolveRegisteredConnectorManifest(connectorId: string): Promise<ManifestLike>;
-  runHybridSearch(args: Record<string, unknown>): Promise<{ envelope: unknown; disclosureData: unknown }>;
+  }) => Promise<ReadRequestBindingsResult>;
+  resolveRegisteredConnectorManifest: (connectorId: string) => Promise<ManifestLike>;
+  runHybridSearch: (args: Record<string, unknown>) => Promise<{ envelope: unknown; disclosureData: unknown }>;
 
   // search surfaces
-  runLexicalSearch(args: Record<string, unknown>): Promise<{ envelope: unknown; disclosureData: unknown }>;
-  runSemanticSearch(args: Record<string, unknown>): Promise<{ envelope: unknown; disclosureData: unknown }>;
-  setReferenceTraceId(res: unknown, traceId: string | null): void;
-  validateRequestedQueryFieldParams(
+  runLexicalSearch: (args: Record<string, unknown>) => Promise<{ envelope: unknown; disclosureData: unknown }>;
+  runSemanticSearch: (args: Record<string, unknown>) => Promise<{ envelope: unknown; disclosureData: unknown }>;
+  setReferenceTraceId: (res: unknown, traceId: string | null) => void;
+  validateRequestedQueryFieldParams: (
     requestParams: Record<string, unknown>,
     manifestStream: ManifestStreamLike | undefined
-  ): void;
+  ) => void;
 }
 
 function authorizationTokenId(req: RouteRequest): string | null {
@@ -384,9 +390,11 @@ function authorizationTokenId(req: RouteRequest): string | null {
 // `/v1/streams` handler used: explicit `connection_id` wins, then the
 // alias, then null.
 function resolveRequestConnectionId(query: Readonly<Record<string, unknown>>): string | null {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   if (typeof query?.connection_id === "string" && query.connection_id) {
     return query.connection_id;
   }
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   if (typeof query?.connector_instance_id === "string" && query.connector_instance_id) {
     return query.connector_instance_id;
   }
@@ -443,6 +451,7 @@ async function runWithVisibilityRejection<T>(
   } catch (err) {
     if (err instanceof errorType) {
       const mapped = new Error((err as Error).message) as Error & { code?: string };
+      // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
       const code = (err as Error & { code?: string }).code;
       if (code !== undefined) {
         mapped.code = code;
@@ -459,13 +468,13 @@ async function runWithVisibilityRejection<T>(
 function buildAggregateQueryEventData(requestParams: Record<string, unknown>): Record<string, unknown> {
   const stringOrNull = (value: unknown) => (typeof value === "string" ? value : null);
   return {
-    query_shape: "stream_aggregate",
-    metric: stringOrNull(requestParams.metric),
     field: stringOrNull(requestParams.field),
+    granularity: stringOrNull(requestParams.granularity),
     group_by: stringOrNull(requestParams.group_by),
     group_by_time: stringOrNull(requestParams.group_by_time),
-    granularity: stringOrNull(requestParams.granularity),
     limit: requestParams.limit ? Number(requestParams.limit) : null,
+    metric: stringOrNull(requestParams.metric),
+    query_shape: "stream_aggregate",
   };
 }
 
@@ -543,14 +552,14 @@ async function resolveReadScope(
     const sourceDescriptor = ctx.buildSourceDescriptor(ownerScope.source);
     queryContext.sourceDescriptor = sourceDescriptor;
     const ownerResolved = await ctx.resolveOwnerManifestFromScope(ownerScope, ctx.opts);
-    return { sourceDescriptor, storageBinding: ownerResolved.storageBinding, manifest: ownerResolved.manifest };
+    return { manifest: ownerResolved.manifest, sourceDescriptor, storageBinding: ownerResolved.storageBinding };
   }
   const grantResolved = await ctx.resolveGrantManifest(tokenInfo, ctx.opts);
   queryContext.sourceDescriptor = grantResolved.source;
   return {
+    manifest: grantResolved.manifest,
     sourceDescriptor: grantResolved.source,
     storageBinding: grantResolved.storageBinding,
-    manifest: grantResolved.manifest,
   };
 }
 
@@ -574,20 +583,20 @@ function emitDisclosureServed(
 ): Promise<unknown> {
   const { tokenInfo } = args;
   const event: Record<string, unknown> = {
-    event_type: "disclosure.served",
-    trace_id: args.traceId,
-    scenario_id: args.scenarioId,
-    actor_type: args.actorType,
     actor_id: args.actorId,
-    subject_type: "subject",
-    subject_id: tokenInfo.subject_id || null,
-    object_type: "query",
-    object_id: args.queryId,
-    status: "succeeded",
-    grant_id: tokenInfo.grant_id || null,
+    actor_type: args.actorType,
     client_id: tokenInfo.client_id || null,
-    token_id: authorizationTokenId(args.req),
     data: args.data,
+    event_type: "disclosure.served",
+    grant_id: tokenInfo.grant_id || null,
+    object_id: args.queryId,
+    object_type: "query",
+    scenario_id: args.scenarioId,
+    status: "succeeded",
+    subject_id: tokenInfo.subject_id || null,
+    subject_type: "subject",
+    token_id: authorizationTokenId(args.req),
+    trace_id: args.traceId,
   };
   if (args.streamId !== undefined) {
     event.stream_id = args.streamId;
@@ -618,10 +627,10 @@ function buildReadActor(tokenInfo: TokenInfo): Record<string, unknown> {
   return tokenInfo.pdpp_token_kind === "owner"
     ? { kind: "owner", subject_id: tokenInfo.subject_id || null }
     : {
-        kind: "client",
-        subject_id: tokenInfo.subject_id || null,
         client_id: tokenInfo.client_id || null,
         grant_id: tokenInfo.grant_id || null,
+        kind: "client",
+        subject_id: tokenInfo.subject_id || null,
       };
 }
 
@@ -640,17 +649,17 @@ export function mountRsConnectors(app: AppLike, ctx: MountRsReadContext): void {
         ctx.setReferenceTraceId(res, traceId);
 
         queryContext = {
-          tokenInfo,
-          queryId,
-          actorType,
           actorId,
-          traceId,
+          actorType,
+          queryData: { query_shape: "connector_list" },
+          queryId,
           scenarioId,
           sourceDescriptor:
             tokenInfo.pdpp_token_kind === "owner"
               ? ctx.buildOwnerQuerySourceDescriptor(req, ctx.opts)
               : ctx.buildClientSourceDescriptor(tokenInfo),
-          queryData: { query_shape: "connector_list" },
+          tokenInfo,
+          traceId,
         };
 
         let operationInput: Record<string, unknown>;
@@ -663,17 +672,17 @@ export function mountRsConnectors(app: AppLike, ctx: MountRsReadContext): void {
           const nativeStorageBinding = ctx.resolveNativeStorageBinding(ctx.opts);
           if (nativeManifest && nativeStorageBinding) {
             const source = ctx.buildSourceDescriptor({
-              kind: "provider_native",
               id: nativeManifest.provider_id,
+              kind: "provider_native",
             });
             queryContext.sourceDescriptor = source;
             dependencies = {
               getSourceDescriptor: () => source,
               listConnectorItems: async () => {
                 const item = await ctx.buildConnectorDiscoveryItem({
+                  manifest: nativeManifest,
                   source,
                   storageBinding: nativeStorageBinding,
-                  manifest: nativeManifest,
                 });
                 return [item];
               },
@@ -690,9 +699,9 @@ export function mountRsConnectors(app: AppLike, ctx: MountRsReadContext): void {
                   connectorIds.map(async (connectorId) => {
                     const manifest = await ctx.resolveRegisteredConnectorManifest(connectorId);
                     return ctx.buildConnectorDiscoveryItem({
-                      source: ctx.buildSourceDescriptor({ kind: "connector", id: connectorId }),
-                      storageBinding: { connector_id: connectorId },
                       manifest,
+                      source: ctx.buildSourceDescriptor({ id: connectorId, kind: "connector" }),
+                      storageBinding: { connector_id: connectorId },
                     });
                   })
                 );
@@ -702,25 +711,26 @@ export function mountRsConnectors(app: AppLike, ctx: MountRsReadContext): void {
         } else {
           operationInput = {
             actor: {
-              kind: "client",
-              subject_id: tokenInfo.subject_id || null,
               client_id: tokenInfo.client_id || null,
               grant_id: tokenInfo.grant_id || null,
+              kind: "client",
+              subject_id: tokenInfo.subject_id || null,
             },
           };
           // Eagerly resolve the grant so the rejected-query path has the
           // correct source descriptor even if connector-item assembly throws.
           const grantResolved = await ctx.resolveGrantManifest(tokenInfo, ctx.opts);
+          // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
           const source = grantResolved.source;
           queryContext.sourceDescriptor = source;
           dependencies = {
             getSourceDescriptor: () => source,
             listConnectorItems: async () => {
               const item = await ctx.buildConnectorDiscoveryItem({
+                grant: tokenInfo.grant,
+                manifest: grantResolved.manifest,
                 source,
                 storageBinding: grantResolved.storageBinding,
-                manifest: grantResolved.manifest,
-                grant: tokenInfo.grant,
               });
               return [item];
             },
@@ -735,19 +745,19 @@ export function mountRsConnectors(app: AppLike, ctx: MountRsReadContext): void {
         await ctx.emitQueryReceived(queryContext, req);
 
         await emitDisclosureServed(ctx, {
-          req,
-          tokenInfo,
-          actorType,
           actorId,
-          traceId,
-          scenarioId,
-          queryId,
+          actorType,
           data: {
-            source: result.sourceDescriptor,
-            query_shape: "connector_list",
             connector_count: result.disclosureTotals.connector_count,
+            query_shape: "connector_list",
+            source: result.sourceDescriptor,
             stream_count: result.disclosureTotals.stream_count,
           },
+          queryId,
+          req,
+          scenarioId,
+          tokenInfo,
+          traceId,
         });
 
         return res.json(result.envelope);
@@ -767,6 +777,7 @@ export function mountRsConnectors(app: AppLike, ctx: MountRsReadContext): void {
 // plain string is meaningful here, and it is compared case-insensitively after
 // trimming. Anything else is treated as "no view" so the full body is served.
 function readSchemaView(query: Readonly<Record<string, unknown>>): string | null {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const raw = query?.view;
   if (typeof raw !== "string") {
     return null;
@@ -778,6 +789,7 @@ function readSchemaView(query: Readonly<Record<string, unknown>>): string | null
 // Explicit detail selector for agent-facing schema discovery. The legacy REST
 // default remains full/current-compatible when this selector is omitted.
 function readSchemaDetail(query: Readonly<Record<string, unknown>>): string | null {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const raw = query?.detail;
   if (typeof raw !== "string") {
     return null;
@@ -790,6 +802,7 @@ function readSchemaDetail(query: Readonly<Record<string, unknown>>): string | nu
 // plain string narrows the document; any other shape leaves the document
 // unscoped.
 function readSchemaStreamScope(query: Readonly<Record<string, unknown>>): string | null {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const raw = query?.stream;
   if (typeof raw !== "string") {
     return null;
@@ -802,6 +815,7 @@ function readSchemaStreamScope(query: Readonly<Record<string, unknown>>): string
 // the public read selector used by records/search without accepting the
 // deprecated alias on this discovery path.
 function readSchemaConnectionScope(query: Readonly<Record<string, unknown>>): string | null {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const raw = query?.connection_id;
   if (typeof raw !== "string") {
     return null;
@@ -831,30 +845,29 @@ function buildOwnerSchemaGetPlan(
   const nativeStorageBinding = ctx.resolveNativeStorageBinding(ctx.opts);
   if (nativeManifest && nativeStorageBinding) {
     const source = ctx.buildSourceDescriptor({
-      kind: "provider_native",
       id: nativeManifest.provider_id,
+      kind: "provider_native",
     });
     queryContext.sourceDescriptor = source;
     return {
-      operationInput,
       dependencies: {
         getSourceDescriptor: () => source,
         listConnectorItems: async () => [
           await ctx.buildConnectorSchemaItem({
-            source,
-            storageBinding: nativeStorageBinding,
             manifest: nativeManifest,
             ownerSubjectId,
+            source,
+            storageBinding: nativeStorageBinding,
           }),
         ],
       },
+      operationInput,
     };
   }
   // Multiple registered connectors: no single source descriptor, the disclosure
   // event has historically emitted `source: null` for this branch. Operation
   // propagates `null` through verbatim.
   return {
-    operationInput,
     dependencies: {
       getSourceDescriptor: () => null,
       listConnectorItems: async () => {
@@ -863,15 +876,16 @@ function buildOwnerSchemaGetPlan(
           connectorIds.map(async (connectorId) => {
             const manifest = await ctx.resolveRegisteredConnectorManifest(connectorId);
             return ctx.buildConnectorSchemaItem({
-              source: ctx.buildSourceDescriptor({ kind: "connector", id: connectorId }),
-              storageBinding: { connector_id: connectorId },
               manifest,
               ownerSubjectId,
+              source: ctx.buildSourceDescriptor({ id: connectorId, kind: "connector" }),
+              storageBinding: { connector_id: connectorId },
             });
           })
         );
       },
     },
+    operationInput,
   };
 }
 
@@ -885,30 +899,31 @@ async function buildClientSchemaGetPlan(
 ): Promise<SchemaGetPlan> {
   const operationInput = {
     actor: {
-      kind: "client",
-      subject_id: tokenInfo.subject_id || null,
       client_id: tokenInfo.client_id || null,
       grant_id: tokenInfo.grant_id || null,
+      kind: "client",
+      subject_id: tokenInfo.subject_id || null,
     },
   };
   const grantResolved = await ctx.resolveGrantManifest(tokenInfo, ctx.opts);
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const source = grantResolved.source;
   queryContext.sourceDescriptor = source;
   const ownerSubjectId = ctx.ownerSubjectIdForBindings(tokenInfo);
   return {
-    operationInput,
     dependencies: {
       getSourceDescriptor: () => source,
       listConnectorItems: async () => [
         await ctx.buildConnectorSchemaItem({
+          grant: tokenInfo.grant,
+          manifest: grantResolved.manifest,
+          ownerSubjectId,
           source,
           storageBinding: grantResolved.storageBinding,
-          manifest: grantResolved.manifest,
-          grant: tokenInfo.grant,
-          ownerSubjectId,
         }),
       ],
     },
+    operationInput,
   };
 }
 
@@ -930,11 +945,13 @@ function deriveServedSchemaCounts(
   responseBody: { connectors?: unknown },
   fallback: { connector_count: number; stream_count: number }
 ): { connector_count: number; stream_count: number } {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const connectors = responseBody?.connectors;
   if (!Array.isArray(connectors)) {
     return fallback;
   }
   const stream_count = connectors.reduce((sum: number, connector) => {
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     const streams = (connector as { streams?: unknown })?.streams;
     return sum + (Array.isArray(streams) ? streams.length : 0);
   }, 0);
@@ -1024,20 +1041,20 @@ export function mountRsSchema(app: AppLike, ctx: MountRsReadContext): void {
       const explicitFullDetail = !compactView && readSchemaDetail(req.query) === "full";
       const streamScope = readSchemaStreamScope(req.query);
       const connectionScope = readSchemaConnectionScope(req.query);
-      const selectors: SchemaRequestSelectors = { compactView, explicitFullDetail, streamScope, connectionScope };
+      const selectors: SchemaRequestSelectors = { compactView, connectionScope, explicitFullDetail, streamScope };
 
       queryContext = {
-        tokenInfo,
-        queryId,
-        actorType,
         actorId,
-        traceId,
+        actorType,
+        queryData: buildSchemaQueryData(selectors),
+        queryId,
         scenarioId,
         sourceDescriptor:
           tokenInfo.pdpp_token_kind === "owner"
             ? ctx.buildOwnerQuerySourceDescriptor(req, ctx.opts)
             : ctx.buildClientSourceDescriptor(tokenInfo),
-        queryData: buildSchemaQueryData(selectors),
+        tokenInfo,
+        traceId,
       };
 
       // Build the actor input + connector-item dependencies for this bearer.
@@ -1066,29 +1083,29 @@ export function mountRsSchema(app: AppLike, ctx: MountRsReadContext): void {
       // post-operation transform. The operation owns visibility/grant scope and
       // emits the full body; the route only down-projects the rendered detail.
       const responseBody = compactView
-        ? projectSchemaCompactView(result.response, { stream: streamScope, connectionId: connectionScope })
-        : projectSchemaStreamScope(result.response, { stream: streamScope, connectionId: connectionScope });
+        ? projectSchemaCompactView(result.response, { connectionId: connectionScope, stream: streamScope })
+        : projectSchemaStreamScope(result.response, { connectionId: connectionScope, stream: streamScope });
       const servedCounts = deriveServedSchemaCounts(responseBody, result.counts);
 
       await ctx.emitQueryReceived(queryContext, req);
 
       await emitDisclosureServed(ctx, {
-        req,
-        tokenInfo,
-        actorType,
         actorId,
-        traceId,
-        scenarioId,
-        queryId,
+        actorType,
         data: {
-          source: result.sourceDescriptor,
-          query_shape: "schema",
           connector_count: servedCounts.connector_count,
+          query_shape: "schema",
+          source: result.sourceDescriptor,
           stream_count: servedCounts.stream_count,
           ...(compactView ? { requested_view: "compact" } : {}),
           ...(streamScope ? { requested_stream: streamScope } : {}),
           ...(connectionScope ? { requested_connection_id: connectionScope } : {}),
         },
+        queryId,
+        req,
+        scenarioId,
+        tokenInfo,
+        traceId,
       });
 
       return res.json(ctx.finalizeCanonicalEnvelope(responseBody, req));
@@ -1112,11 +1129,13 @@ interface StreamsListPlan {
 }
 
 function hasExplicitOwnerConnectorScope(query: Readonly<Record<string, unknown>>): boolean {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   return Object.hasOwn(query || {}, "connector_id");
 }
 
 function buildOwnerReadGrantForManifest(manifest: ManifestLike): GrantLike {
   return {
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     streams: (manifest?.streams || [])
       .map((stream) => (typeof stream?.name === "string" && stream.name ? { name: stream.name } : null))
       .filter(Boolean) as GrantStreamLike[],
@@ -1126,9 +1145,9 @@ function buildOwnerReadGrantForManifest(manifest: ManifestLike): GrantLike {
 function buildPolyfillOwnerScope(ctx: MountRsReadContext, req: RouteRequest, connectorId: string): OwnerScopeLike {
   const connectorKey = ctx.canonicalConnectorKey(connectorId) ?? connectorId;
   return {
-    public_scope: "polyfill",
     owner_subject_id: ctx.getOwnerTokenSubjectId(req),
-    source: { kind: "connector", id: connectorKey },
+    public_scope: "polyfill",
+    source: { id: connectorKey, kind: "connector" },
     storage_binding: { connector_id: connectorKey },
   };
 }
@@ -1146,23 +1165,24 @@ async function listOwnerStreamsForConnector(
   const grant = buildOwnerReadGrantForManifest(ownerResolved.manifest);
   const firstStream = Array.isArray(grant.streams) ? grant.streams[0]?.name : null;
   const { bindings, warnings: resolverWarnings } = await ctx.resolveReadRequestBindings({
-    ownerSubjectId,
-    storageBinding: ownerResolved.storageBinding,
     grant,
-    requestParams,
-    streamName: firstStream ?? null,
     nativeProviderStorage: false,
+    ownerSubjectId,
+    requestParams,
+    storageBinding: ownerResolved.storageBinding,
+    streamName: firstStream ?? null,
   });
   req._pdpp_resolver_warnings = [...(req._pdpp_resolver_warnings || []), ...(resolverWarnings || [])];
   const summaries = await ctx.listStreamsAcrossBindings(bindings, grant, ownerResolved.manifest, {
     resolveBindingsForStream: async (streamGrant: GrantStreamLike) => {
       const { bindings: streamBindings } = await ctx.resolveReadRequestBindings({
-        ownerSubjectId,
-        storageBinding: ownerResolved.storageBinding,
         grant,
-        requestParams,
-        streamName: streamGrant?.name || null,
         nativeProviderStorage: false,
+        ownerSubjectId,
+        requestParams,
+        storageBinding: ownerResolved.storageBinding,
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+        streamName: streamGrant?.name || null,
       });
       return streamBindings;
     },
@@ -1184,23 +1204,24 @@ async function listExplicitPolyfillOwnerStreams(
   const grant = buildOwnerReadGrantForManifest(ownerResolved.manifest);
   const firstStream = Array.isArray(grant.streams) ? grant.streams[0]?.name : null;
   const { bindings, warnings: resolverWarnings } = await ctx.resolveReadRequestBindings({
-    ownerSubjectId,
-    storageBinding: ownerResolved.storageBinding,
     grant,
-    requestParams,
-    streamName: firstStream ?? null,
     nativeProviderStorage: false,
+    ownerSubjectId,
+    requestParams,
+    storageBinding: ownerResolved.storageBinding,
+    streamName: firstStream ?? null,
   });
   req._pdpp_resolver_warnings = [...(req._pdpp_resolver_warnings || []), ...(resolverWarnings || [])];
   return await ctx.listStreamsAcrossBindings(bindings, grant, ownerResolved.manifest, {
     resolveBindingsForStream: async (streamGrant: GrantStreamLike) => {
       const { bindings: streamBindings } = await ctx.resolveReadRequestBindings({
-        ownerSubjectId,
-        storageBinding: ownerResolved.storageBinding,
         grant,
-        requestParams,
-        streamName: streamGrant?.name || null,
         nativeProviderStorage: false,
+        ownerSubjectId,
+        requestParams,
+        storageBinding: ownerResolved.storageBinding,
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+        streamName: streamGrant?.name || null,
       });
       return streamBindings;
     },
@@ -1252,13 +1273,13 @@ async function buildStreamsListOwnerPlan(
   if (!((nativeManifest && nativeStorageBinding) || hasExplicitOwnerConnectorScope(req.query))) {
     queryContext.sourceDescriptor = null;
     return {
-      operationInput: {
-        actor: { kind: "owner", subject_id: tokenInfo.subject_id || null },
-        connection_id: resolveRequestConnectionId(req.query),
-      },
       dependencies: {
         getSourceDescriptor: () => null,
         listSummaries: async () => listOwnerStreamsAcrossRegisteredConnectors(ctx, req),
+      },
+      operationInput: {
+        actor: { kind: "owner", subject_id: tokenInfo.subject_id || null },
+        connection_id: resolveRequestConnectionId(req.query),
       },
       streamListFreshnessEvidence: null,
     };
@@ -1270,14 +1291,10 @@ async function buildStreamsListOwnerPlan(
   queryContext.sourceDescriptor = ctx.buildSourceDescriptor(ownerScope.source);
   const ownerResolved = await ctx.resolveOwnerManifest(req, ctx.opts);
   const streamListFreshnessEvidence = await ctx.getConnectorFreshnessEvidence({
-    source: ownerScope.source ?? null,
     manifest: ownerResolved.manifest,
+    source: ownerScope.source ?? null,
   });
   return {
-    operationInput: {
-      actor: { kind: "owner", subject_id: tokenInfo.subject_id || null },
-      connection_id: resolveRequestConnectionId(req.query),
-    },
     dependencies: {
       getSourceDescriptor: () => queryContext.sourceDescriptor,
       listSummaries: () => {
@@ -1286,6 +1303,10 @@ async function buildStreamsListOwnerPlan(
         }
         return ctx.listAllStreams(ownerResolved.storageBinding);
       },
+    },
+    operationInput: {
+      actor: { kind: "owner", subject_id: tokenInfo.subject_id || null },
+      connection_id: resolveRequestConnectionId(req.query),
     },
     streamListFreshnessEvidence,
   };
@@ -1297,29 +1318,21 @@ async function buildStreamsListClientPlan(
   queryContext: QueryContext,
   tokenInfo: TokenInfo
 ): Promise<StreamsListPlan> {
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const grant = tokenInfo.grant;
   const grantResolved = await ctx.resolveGrantManifest(tokenInfo, ctx.opts);
   const streamListFreshnessEvidence = await ctx.getConnectorFreshnessEvidence({
-    source: grantResolved.source,
     manifest: grantResolved.manifest,
+    source: grantResolved.source,
   });
   const streamCountLimit = Array.isArray(grant?.streams) ? grant.streams.length : null;
   queryContext.sourceDescriptor = grantResolved.source;
   queryContext.queryData.stream_count_limit = streamCountLimit;
   const ownerSubjectId = ctx.ownerSubjectIdForBindings(tokenInfo);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const nativeProviderStorage = grantResolved.source?.kind === "provider_native";
   const requestParams = (req.query as Record<string, unknown>) || {};
   return {
-    operationInput: {
-      actor: {
-        kind: "client",
-        subject_id: tokenInfo.subject_id || null,
-        client_id: tokenInfo.client_id || null,
-        grant_id: tokenInfo.grant_id || null,
-        stream_count_limit: streamCountLimit,
-      },
-      connection_id: resolveRequestConnectionId(req.query),
-    },
     dependencies: {
       getSourceDescriptor: () => queryContext.sourceDescriptor,
       listSummaries: async () => {
@@ -1332,12 +1345,12 @@ async function buildStreamsListClientPlan(
         // constraint instead of borrowing the first stream's resolution.
         const firstStream = Array.isArray(grant?.streams) ? grant?.streams[0]?.name : null;
         const { bindings, warnings: resolverWarnings } = await ctx.resolveReadRequestBindings({
-          ownerSubjectId,
-          storageBinding: grantResolved.storageBinding,
           grant: grant ?? null,
-          requestParams,
-          streamName: firstStream ?? null,
           nativeProviderStorage,
+          ownerSubjectId,
+          requestParams,
+          storageBinding: grantResolved.storageBinding,
+          streamName: firstStream ?? null,
         });
         // Stash resolver warnings on the request scope so the route body can
         // thread them into `meta.warnings` (P3 fix).
@@ -1345,17 +1358,28 @@ async function buildStreamsListClientPlan(
         return await ctx.listStreamsAcrossBindings(bindings, grant ?? null, grantResolved.manifest, {
           resolveBindingsForStream: async (streamGrant: GrantStreamLike) => {
             const { bindings: streamBindings } = await ctx.resolveReadRequestBindings({
-              ownerSubjectId,
-              storageBinding: grantResolved.storageBinding,
               grant: grant ?? null,
-              requestParams,
-              streamName: streamGrant?.name || null,
               nativeProviderStorage,
+              ownerSubjectId,
+              requestParams,
+              storageBinding: grantResolved.storageBinding,
+              // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+              streamName: streamGrant?.name || null,
             });
             return streamBindings;
           },
         });
       },
+    },
+    operationInput: {
+      actor: {
+        client_id: tokenInfo.client_id || null,
+        grant_id: tokenInfo.grant_id || null,
+        kind: "client",
+        stream_count_limit: streamCountLimit,
+        subject_id: tokenInfo.subject_id || null,
+      },
+      connection_id: resolveRequestConnectionId(req.query),
     },
     streamListFreshnessEvidence,
   };
@@ -1376,17 +1400,17 @@ export function mountRsStreamsList(app: AppLike, ctx: MountRsReadContext): void 
         ctx.setReferenceTraceId(res, traceId);
 
         queryContext = {
-          tokenInfo,
-          queryId,
-          actorType,
           actorId,
-          traceId,
+          actorType,
+          queryData: { query_shape: "stream_list" },
+          queryId,
           scenarioId,
           sourceDescriptor:
             tokenInfo.pdpp_token_kind === "owner"
               ? ctx.buildOwnerQuerySourceDescriptor(req, ctx.opts)
               : ctx.buildClientSourceDescriptor(tokenInfo),
-          queryData: { query_shape: "stream_list" },
+          tokenInfo,
+          traceId,
         };
 
         const plan =
@@ -1403,23 +1427,21 @@ export function mountRsStreamsList(app: AppLike, ctx: MountRsReadContext): void 
         await ctx.emitQueryReceived(queryContext, req);
 
         await emitDisclosureServed(ctx, {
-          req,
-          tokenInfo,
-          actorType,
           actorId,
-          traceId,
-          scenarioId,
-          queryId,
+          actorType,
           data: {
-            source: result.sourceDescriptor,
             query_shape: "stream_list",
+            source: result.sourceDescriptor,
             stream_count: result.streams.length,
           },
+          queryId,
+          req,
+          scenarioId,
+          tokenInfo,
+          traceId,
         });
 
         const streamsListBody: Record<string, unknown> = {
-          object: "list",
-          has_more: false,
           data: result.streams.map((summary) => ({
             ...summary,
             freshness: ctx.buildConnectorAwareFreshness(
@@ -1427,6 +1449,8 @@ export function mountRsStreamsList(app: AppLike, ctx: MountRsReadContext): void 
               ((summary as unknown as Record<string, unknown>).last_updated as string | null) || null
             ),
           })),
+          has_more: false,
+          object: "list",
         };
         mergeResolverWarningsIntoBody(streamsListBody, req._pdpp_resolver_warnings);
         return res.json(ctx.finalizeCanonicalEnvelope(streamsListBody, req));
@@ -1463,15 +1487,15 @@ export function mountRsStreamDetail(app: AppLike, ctx: MountRsReadContext): void
             : ctx.buildClientSourceDescriptor(tokenInfo);
 
         queryContext = {
-          tokenInfo,
-          queryId,
-          actorType,
           actorId,
-          traceId,
+          actorType,
+          queryData: { query_shape: "stream_metadata" },
+          queryId,
           scenarioId,
           sourceDescriptor,
           streamId: req.params.stream,
-          queryData: { query_shape: "stream_metadata" },
+          tokenInfo,
+          traceId,
         };
 
         ({ storageBinding, manifest, sourceDescriptor } = await resolveReadScope(ctx, req, tokenInfo, queryContext));
@@ -1484,34 +1508,36 @@ export function mountRsStreamDetail(app: AppLike, ctx: MountRsReadContext): void
         };
 
         const dependencies = {
-          getSourceDescriptor: () => sourceDescriptor,
-          hasManifestStream: async (name: string) =>
-            Array.isArray(manifest?.streams) && manifest.streams.some((s) => s.name === name),
-          isStreamInGrant: (name: string) =>
-            Array.isArray(tokenInfo.grant?.streams) && tokenInfo.grant.streams.some((s) => s.name === name),
           buildStreamMetadata: async (name: string) => {
             const manifestStream = manifest.streams?.find((s) => s.name === name);
             const streamGrant =
               tokenInfo.pdpp_token_kind === "client" ? tokenInfo.grant?.streams?.find((s) => s.name === name) : null;
             const freshness = await ctx.getVisibleStreamFreshness({
-              tokenInfo,
+              manifest,
               source: sourceDescriptor,
               storageBinding,
               stream: name,
-              manifest,
+              tokenInfo,
             });
             return ctx.buildStreamMetadataEntry({
-              manifestStream,
-              streamGrant,
-              grantStreams: tokenInfo.grant?.streams || [],
               freshness,
+              grantStreams: tokenInfo.grant?.streams || [],
+              manifestStream,
               manifestStreamNames: new Set(
                 (manifest.streams || [])
                   .map((s: ManifestStreamLike) => s.name)
+                  // biome-ignore lint/suspicious/noShadow: The local name follows the external payload vocabulary at this boundary.
                   .filter((name): name is string => typeof name === "string")
               ),
+              streamGrant,
             });
           },
+          getSourceDescriptor: () => sourceDescriptor,
+          hasManifestStream: async (name: string) =>
+            // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+            Array.isArray(manifest?.streams) && manifest.streams.some((s) => s.name === name),
+          isStreamInGrant: (name: string) =>
+            Array.isArray(tokenInfo.grant?.streams) && tokenInfo.grant.streams.some((s) => s.name === name),
         };
 
         let result: Awaited<ReturnType<typeof executeStreamDetail>>;
@@ -1535,20 +1561,21 @@ export function mountRsStreamDetail(app: AppLike, ctx: MountRsReadContext): void
         } & Record<string, unknown>;
 
         await emitDisclosureServed(ctx, {
-          req,
-          tokenInfo,
-          actorType,
           actorId,
-          traceId,
-          scenarioId,
-          queryId,
-          streamId: req.params.stream ?? null,
+          actorType,
           data: {
-            source: result.sourceDescriptor,
             query_shape: "stream_metadata",
-            view_count: metadataBody.views.length,
             relationship_count: metadataBody.relationships.length,
+            source: result.sourceDescriptor,
+            view_count: metadataBody.views.length,
           },
+          queryId,
+          req,
+          scenarioId,
+          // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+          streamId: req.params.stream ?? null,
+          tokenInfo,
+          traceId,
         });
 
         return res.json(ctx.finalizeCanonicalEnvelope(metadataBody, req));
@@ -1581,20 +1608,14 @@ function buildStreamAggregateDeps(
 ): Record<string, unknown> {
   const { streamName, manifest, storageBinding, sourceDescriptor, grant } = refs;
   return {
-    getSourceDescriptor: () => sourceDescriptor,
-    hasManifestStream: (candidate: string) => Boolean(manifest?.streams?.find((stream) => stream.name === candidate)),
-    validateRequest: (params: Record<string, unknown>) => {
-      const mStream = manifest?.streams?.find((stream) => stream.name === streamName);
-      ctx.validateRequestedQueryFieldParams(params, mStream);
-    },
     aggregate: async (params: Record<string, unknown>) => {
       const { bindings, warnings: resolverWarnings } = await ctx.resolveReadRequestBindings({
-        ownerSubjectId: ctx.ownerSubjectIdForBindings(tokenInfo),
-        storageBinding,
         grant,
-        requestParams: params,
-        streamName,
         nativeProviderStorage: sourceDescriptor?.kind === "provider_native",
+        ownerSubjectId: ctx.ownerSubjectIdForBindings(tokenInfo),
+        requestParams: params,
+        storageBinding,
+        streamName,
       });
       // P3: thread resolver-level warnings (deprecated alias) into the
       // multi-binding aggregate envelope. The helper folds them into
@@ -1603,6 +1624,14 @@ function buildStreamAggregateDeps(
       return await ctx.aggregateRecordsAcrossBindings(bindings, streamName, grant, params, manifest, {
         extraWarnings: resolverWarnings || [],
       });
+    },
+    getSourceDescriptor: () => sourceDescriptor,
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+    hasManifestStream: (candidate: string) => Boolean(manifest?.streams?.find((stream) => stream.name === candidate)),
+    validateRequest: (params: Record<string, unknown>) => {
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+      const mStream = manifest?.streams?.find((stream) => stream.name === streamName);
+      ctx.validateRequestedQueryFieldParams(params, mStream);
     },
   };
 }
@@ -1631,21 +1660,22 @@ export function mountRsStreamAggregate(app: AppLike, ctx: MountRsReadContext): v
         // before or after the operation runs.
         const queryEventData = buildAggregateQueryEventData(requestParams);
         queryContext = {
-          tokenInfo,
-          queryId,
-          actorType,
           actorId,
-          traceId,
+          actorType,
+          queryData: { ...queryEventData },
+          queryId,
           scenarioId,
           sourceDescriptor: isOwner
             ? ctx.buildOwnerQuerySourceDescriptor(req, ctx.opts)
             : ctx.buildClientSourceDescriptor(tokenInfo),
           streamId: streamName,
-          queryData: { ...queryEventData },
+          tokenInfo,
+          traceId,
         };
 
         const scope = await resolveReadScope(ctx, req, tokenInfo, queryContext);
         const { storageBinding, manifest } = scope;
+        // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
         const sourceDescriptor = scope.sourceDescriptor;
         // Owner aggregate runs against a synthetic single-stream read grant;
         // client aggregate uses the bearer's grant.
@@ -1653,18 +1683,18 @@ export function mountRsStreamAggregate(app: AppLike, ctx: MountRsReadContext): v
 
         const operationInput = {
           actor: buildReadActor(tokenInfo),
-          streamName,
           requestParams,
+          streamName,
         };
 
         await ctx.emitQueryReceived(queryContext, req);
 
         const dependencies = buildStreamAggregateDeps(ctx, tokenInfo, {
-          streamName,
-          manifest,
-          storageBinding,
-          sourceDescriptor,
           grant,
+          manifest,
+          sourceDescriptor,
+          storageBinding,
+          streamName,
         });
 
         const outcome = await runWithVisibilityRejection(
@@ -1679,26 +1709,27 @@ export function mountRsStreamAggregate(app: AppLike, ctx: MountRsReadContext): v
         if (outcome.rejected) {
           return;
         }
+        // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
         const result = outcome.result;
 
         await emitDisclosureServed(ctx, {
-          req,
-          tokenInfo,
-          actorType,
           actorId,
-          traceId,
-          scenarioId,
-          queryId,
-          streamId: streamName,
+          actorType,
           data: {
-            source: result.sourceDescriptor,
-            query_shape: "stream_aggregate",
-            metric: result.disclosureTotals.metric,
             field: result.disclosureTotals.field,
-            group_by: result.disclosureTotals.group_by,
             filtered_record_count: result.disclosureTotals.filtered_record_count,
+            group_by: result.disclosureTotals.group_by,
             group_count: result.disclosureTotals.group_count,
+            metric: result.disclosureTotals.metric,
+            query_shape: "stream_aggregate",
+            source: result.sourceDescriptor,
           },
+          queryId,
+          req,
+          scenarioId,
+          streamId: streamName,
+          tokenInfo,
+          traceId,
         });
 
         return res.json(ctx.finalizeCanonicalEnvelope(result.result, req));
@@ -1729,23 +1760,23 @@ function buildRecordsListDeps(
 ): Record<string, unknown> {
   const { manifest, storageBinding, sourceDescriptor } = refs;
   return {
-    getSourceDescriptor: () => sourceDescriptor,
-    getManifest: () => manifest,
+    decorateRecord: (record: unknown) => ctx.decorateRecordBlobRefs(record),
     getGrant: () => tokenInfo.grant || { streams: [] },
+    getManifest: () => manifest,
+    getSourceDescriptor: () => sourceDescriptor,
     queryRecords: async (stream: string, grant: GrantLike | null, params: Record<string, unknown>, m: ManifestLike) => {
       const { bindings, warnings: resolverWarnings } = await ctx.resolveReadRequestBindings({
-        ownerSubjectId: ctx.ownerSubjectIdForBindings(tokenInfo),
-        storageBinding,
         grant,
-        requestParams: params,
-        streamName: stream,
         nativeProviderStorage: sourceDescriptor?.kind === "provider_native",
+        ownerSubjectId: ctx.ownerSubjectIdForBindings(tokenInfo),
+        requestParams: params,
+        storageBinding,
+        streamName: stream,
       });
       return await ctx.queryRecordsAcrossBindings(bindings, stream, grant, params, m, {
         extraWarnings: resolverWarnings || [],
       });
     },
-    decorateRecord: (record: unknown) => ctx.decorateRecordBlobRefs(record),
     validateRequestFields: (params: Record<string, unknown>, manifestStream: ManifestStreamLike | undefined) =>
       ctx.validateRequestedQueryFieldParams(params, manifestStream),
   };
@@ -1767,24 +1798,24 @@ export function mountRsRecordsList(app: AppLike, ctx: MountRsReadContext): void 
         const requestParams = { ...req.query } as Record<string, unknown>;
         const rawView = req.query.view;
         const queryEventData = {
-          query_shape: "record_list",
           has_changes_since: !!requestParams.changes_since,
           limit: requestParams.limit ? Number(requestParams.limit) : null,
+          query_shape: "record_list",
           ...(typeof rawView === "string" && rawView.trim() ? { requested_view: rawView.trim() } : {}),
         };
         queryContext = {
-          tokenInfo,
-          queryId,
-          actorType,
           actorId,
-          traceId,
+          actorType,
+          queryData: { ...queryEventData },
+          queryId,
           scenarioId,
           sourceDescriptor:
             tokenInfo.pdpp_token_kind === "owner"
               ? ctx.buildOwnerQuerySourceDescriptor(req, ctx.opts)
               : ctx.buildClientSourceDescriptor(tokenInfo),
           streamId: req.params.stream,
-          queryData: { ...queryEventData },
+          tokenInfo,
+          traceId,
         };
 
         // Self-export: owner can query without a client grant. `resolveReadScope`
@@ -1800,8 +1831,7 @@ export function mountRsRecordsList(app: AppLike, ctx: MountRsReadContext): void 
 
         const operationInput = {
           actor: buildReadActor(tokenInfo),
-          streamName: req.params.stream,
-          requestParams,
+          rawQueryFields: req.query.fields,
           // Forward the raw `view` / `fields` values without coercion so the
           // operation can apply the previous native truthiness test
           // (`if (req.query.view && req.query.fields)`). `qs.parse` may
@@ -1809,13 +1839,14 @@ export function mountRsRecordsList(app: AppLike, ctx: MountRsReadContext): void 
           // params); the operation handles each shape per its boundary
           // contract.
           rawQueryView: req.query.view,
-          rawQueryFields: req.query.fields,
+          requestParams,
+          streamName: req.params.stream,
         };
 
         const dependencies = buildRecordsListDeps(ctx, tokenInfo, {
           manifest,
-          storageBinding,
           sourceDescriptor,
+          storageBinding,
         });
 
         let result: Awaited<ReturnType<typeof executeRecordsList>>;
@@ -1834,15 +1865,16 @@ export function mountRsRecordsList(app: AppLike, ctx: MountRsReadContext): void 
         }
 
         await emitDisclosureServed(ctx, {
-          req,
-          tokenInfo,
-          actorType,
           actorId,
-          traceId,
-          scenarioId,
-          queryId,
-          streamId: req.params.stream ?? null,
+          actorType,
           data: { source: result.sourceDescriptor, ...result.disclosureData },
+          queryId,
+          req,
+          scenarioId,
+          // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+          streamId: req.params.stream ?? null,
+          tokenInfo,
+          traceId,
         });
 
         return res.json(
@@ -1886,20 +1918,20 @@ export function mountRsRecordDetail(app: AppLike, ctx: MountRsReadContext): void
         let manifest: ManifestLike;
         const requestedRecordId = decodeURIComponent(req.params.id as string);
         queryContext = {
-          tokenInfo,
-          queryId,
-          actorType,
           actorId,
-          traceId,
+          actorType,
+          queryData: {
+            has_changes_since: false,
+            limit: null,
+            query_shape: "record_detail",
+            requested_record_id: requestedRecordId,
+          },
+          queryId,
           scenarioId,
           sourceDescriptor,
           streamId: req.params.stream,
-          queryData: {
-            query_shape: "record_detail",
-            requested_record_id: requestedRecordId,
-            has_changes_since: false,
-            limit: null,
-          },
+          tokenInfo,
+          traceId,
         };
 
         ({ storageBinding, manifest, sourceDescriptor } = await resolveReadScope(ctx, req, tokenInfo, queryContext));
@@ -1907,19 +1939,19 @@ export function mountRsRecordDetail(app: AppLike, ctx: MountRsReadContext): void
 
         const operationInput = {
           actor: buildReadActor(tokenInfo),
-          streamName: req.params.stream,
-          recordId: requestedRecordId,
           expandOptions: {
             expand: req.query.expand,
             expand_limit: req.query.expand_limit,
             fields: req.query.fields,
           },
+          recordId: requestedRecordId,
+          streamName: req.params.stream,
         };
 
         const dependencies = {
-          getSourceDescriptor: () => sourceDescriptor,
-          getManifest: () => manifest,
+          decorateRecord: (record: unknown) => ctx.decorateRecordBlobRefs(record),
           getGrant: () => tokenInfo.grant || { streams: [] },
+          getManifest: () => manifest,
           getRecord: async (
             stream: string,
             recordId: string,
@@ -1927,20 +1959,21 @@ export function mountRsRecordDetail(app: AppLike, ctx: MountRsReadContext): void
             m: ManifestLike,
             options: Record<string, unknown>
           ) => {
+            // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
             const mergedParams = { ...((req.query as Record<string, unknown>) || {}), ...(options || {}) };
             const { bindings, warnings: resolverWarnings } = await ctx.resolveReadRequestBindings({
-              ownerSubjectId: ctx.ownerSubjectIdForBindings(tokenInfo),
-              storageBinding: storageBinding as StorageBindingLike,
               grant,
-              requestParams: mergedParams,
-              streamName: stream,
               nativeProviderStorage: sourceDescriptor?.kind === "provider_native",
+              ownerSubjectId: ctx.ownerSubjectIdForBindings(tokenInfo),
+              requestParams: mergedParams,
+              storageBinding: storageBinding as StorageBindingLike,
+              streamName: stream,
             });
             return await ctx.getRecordAcrossBindings(bindings, stream, recordId, grant, m, mergedParams, {
               extraWarnings: resolverWarnings || [],
             });
           },
-          decorateRecord: (record: unknown) => ctx.decorateRecordBlobRefs(record),
+          getSourceDescriptor: () => sourceDescriptor,
           validateRequestFields: (requestParams: Record<string, unknown>, manifestStream: ManifestStreamLike | null) =>
             ctx.validateRequestedQueryFieldParams(requestParams, manifestStream ?? undefined),
         };
@@ -1967,22 +2000,23 @@ export function mountRsRecordDetail(app: AppLike, ctx: MountRsReadContext): void
         }
 
         await emitDisclosureServed(ctx, {
-          req,
-          tokenInfo,
-          actorType,
           actorId,
-          traceId,
-          scenarioId,
-          queryId,
-          streamId: req.params.stream ?? null,
+          actorType,
           data: { source: result.sourceDescriptor, ...result.disclosureData },
+          queryId,
+          req,
+          scenarioId,
+          // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+          streamId: req.params.stream ?? null,
+          tokenInfo,
+          traceId,
         });
         return res.json(
           ctx.finalizeCanonicalEnvelope(
             withRecordSourceIdentity(result.record, {
+              requestConnectionId: resolveRequestConnectionId(req.query),
               sourceDescriptor,
               storageBinding,
-              requestConnectionId: resolveRequestConnectionId(req.query),
             }),
             req
           )
@@ -2041,24 +2075,24 @@ export function mountRsRecordFieldWindow(app: AppLike, ctx: MountRsReadContext):
         const fieldPath = typeof rawField === "string" ? rawField : "";
 
         queryContext = {
-          tokenInfo,
-          queryId,
-          actorType,
           actorId,
-          traceId,
+          actorType,
+          queryData: {
+            field_path: fieldPath || null,
+            has_changes_since: false,
+            limit: null,
+            query_shape: "field_window",
+            requested_record_id: requestedRecordId,
+          },
+          queryId,
           scenarioId,
           sourceDescriptor:
             tokenInfo.pdpp_token_kind === "owner"
               ? ctx.buildOwnerQuerySourceDescriptor(req, ctx.opts)
               : ctx.buildClientSourceDescriptor(tokenInfo),
           streamId: streamName,
-          queryData: {
-            query_shape: "field_window",
-            requested_record_id: requestedRecordId,
-            field_path: fieldPath || null,
-            has_changes_since: false,
-            limit: null,
-          },
+          tokenInfo,
+          traceId,
         };
 
         // `field` is required and selector-shaped before we resolve any scope,
@@ -2103,12 +2137,12 @@ export function mountRsRecordFieldWindow(app: AppLike, ctx: MountRsReadContext):
         }
 
         const { bindings, warnings: resolverWarnings } = await ctx.resolveReadRequestBindings({
-          ownerSubjectId: ctx.ownerSubjectIdForBindings(tokenInfo),
-          storageBinding,
           grant,
-          requestParams,
-          streamName,
           nativeProviderStorage: sourceDescriptor?.kind === "provider_native",
+          ownerSubjectId: ctx.ownerSubjectIdForBindings(tokenInfo),
+          requestParams,
+          storageBinding,
+          streamName,
         });
 
         const windowResult = (await ctx.getRecordFieldWindowAcrossBindings(
@@ -2129,28 +2163,28 @@ export function mountRsRecordFieldWindow(app: AppLike, ctx: MountRsReadContext):
         };
 
         await emitDisclosureServed(ctx, {
-          req,
-          tokenInfo,
-          actorType,
           actorId,
-          traceId,
-          scenarioId,
-          queryId,
-          streamId: streamName,
+          actorType,
           data: {
-            source: sourceDescriptor,
-            query_shape: "field_window",
             field_path: windowResult.field_path,
+            query_shape: "field_window",
+            source: sourceDescriptor,
           },
+          queryId,
+          req,
+          scenarioId,
+          streamId: streamName,
+          tokenInfo,
+          traceId,
         });
 
         const responseBody: Record<string, unknown> = {
-          object: "field_window",
-          stream: streamName,
-          record_id: requestedRecordId,
           field: { path: windowResult.field_path, type: windowResult.field_type },
-          window: windowResult.window,
+          object: "field_window",
+          record_id: requestedRecordId,
+          stream: streamName,
           url: req.path,
+          window: windowResult.window,
         };
         mergeResolverWarningsIntoBody(responseBody, windowResult.warnings);
 
@@ -2172,7 +2206,23 @@ export function mountRsRecordFieldWindow(app: AppLike, ctx: MountRsReadContext):
 // handlers expressed it (per-route literal objects).
 function buildSearchHelpers(req: RouteRequest, ctx: MountRsReadContext): Record<string, unknown> {
   return {
+    // Synthetic owner read grant covering every stream of the manifest;
+    // fields = undefined ⇒ "all fields authorized" per
+    // buildSearchPlanForGrant semantics.
+    buildOwnerReadGrantForManifest: (manifest: ManifestLike) => ({
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+      streams: (manifest?.streams || []).map((s) => ({ name: s.name })),
+    }),
     getOwnerSubjectId: () => ctx.getOwnerTokenSubjectId(req),
+    // Client-mode resolver
+    resolveGrantManifest: (info: TokenInfo) => ctx.resolveGrantManifest(info, ctx.opts),
+    resolveOwnerManifestFromScope: (ownerScope: unknown) => ctx.resolveOwnerManifestFromScope(ownerScope, ctx.opts),
+    resolveOwnerScopeForConnector: (connectorId: string) => ({
+      owner_subject_id: ctx.getOwnerTokenSubjectId(req),
+      public_scope: "polyfill",
+      source: { id: connectorId, kind: "connector" },
+      storage_binding: { connector_id: connectorId },
+    }),
     resolveOwnerVisibleConnectorIds: async () => {
       const native = ctx.resolveNativeManifest(ctx.opts);
       if (native?.storage_binding?.connector_id) {
@@ -2182,21 +2232,6 @@ function buildSearchHelpers(req: RouteRequest, ctx: MountRsReadContext): Record<
       // Polyfill mode: every registered connector is owner-visible.
       return await ctx.listRegisteredConnectorIds();
     },
-    resolveOwnerScopeForConnector: (connectorId: string) => ({
-      public_scope: "polyfill",
-      owner_subject_id: ctx.getOwnerTokenSubjectId(req),
-      source: { kind: "connector", id: connectorId },
-      storage_binding: { connector_id: connectorId },
-    }),
-    resolveOwnerManifestFromScope: (ownerScope: unknown) => ctx.resolveOwnerManifestFromScope(ownerScope, ctx.opts),
-    // Synthetic owner read grant covering every stream of the manifest;
-    // fields = undefined ⇒ "all fields authorized" per
-    // buildSearchPlanForGrant semantics.
-    buildOwnerReadGrantForManifest: (manifest: ManifestLike) => ({
-      streams: (manifest?.streams || []).map((s) => ({ name: s.name })),
-    }),
-    // Client-mode resolver
-    resolveGrantManifest: (info: TokenInfo) => ctx.resolveGrantManifest(info, ctx.opts),
   };
 }
 
@@ -2223,35 +2258,35 @@ async function runSearchRouteHandler(
 
     const isOwner = tokenInfo.pdpp_token_kind === "owner";
     queryContext = {
-      tokenInfo,
-      queryId,
-      actorType,
       actorId,
-      traceId,
+      actorType,
+      queryData: { query_shape: opts.queryShape },
+      queryId,
       scenarioId,
       sourceDescriptor: isOwner ? null : ctx.buildClientSourceDescriptor(tokenInfo),
       streamId: null,
-      queryData: { query_shape: opts.queryShape },
+      tokenInfo,
+      traceId,
     };
     await ctx.emitQueryReceived(queryContext, req);
 
     const { envelope, disclosureData } = await opts.runSearch({
-      req,
       opts: ctx.opts,
+      req,
       tokenInfo,
       ...buildSearchHelpers(req, ctx),
     });
 
     await emitDisclosureServed(ctx, {
-      req,
-      tokenInfo,
-      actorType,
       actorId,
-      traceId,
-      scenarioId,
-      queryId,
-      streamId: null,
+      actorType,
       data: disclosureData as Record<string, unknown>,
+      queryId,
+      req,
+      scenarioId,
+      streamId: null,
+      tokenInfo,
+      traceId,
     });
 
     return res.json(ctx.finalizeCanonicalEnvelope(envelope, req));
@@ -2348,16 +2383,17 @@ async function resolveBlobActorScope(
     const ownerScope = await ctx.resolveOwnerReadScope(req, ctx.opts);
     const ownerResolved = await ctx.resolveOwnerManifestFromScope(ownerScope, ctx.opts);
     return {
-      storageBinding: ownerResolved.storageBinding,
       manifest: ownerResolved.manifest,
       nativeProviderStorage: ownerScope.source?.kind === "provider_native",
+      storageBinding: ownerResolved.storageBinding,
     };
   }
   const grantResolved = await ctx.resolveGrantManifest(tokenInfo, ctx.opts);
   return {
-    storageBinding: grantResolved.storageBinding,
     manifest: grantResolved.manifest,
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     nativeProviderStorage: grantResolved.source?.kind === "provider_native",
+    storageBinding: grantResolved.storageBinding,
   };
 }
 
@@ -2413,17 +2449,18 @@ async function scanBlobBindingMatches(
     }
     try {
       const { bindings: streamBindings } = await ctx.resolveReadRequestBindings({
-        ownerSubjectId: ctx.ownerSubjectIdForBindings(tokenInfo),
-        storageBinding,
         grant: tokenInfo.grant || { streams: [] },
-        requestParams,
-        streamName,
         nativeProviderStorage,
+        ownerSubjectId: ctx.ownerSubjectIdForBindings(tokenInfo),
+        requestParams,
+        storageBinding,
+        streamName,
       });
       const ids = new Set(streamBindings.map((b) => b.connectorInstanceId).filter(Boolean) as string[]);
       streamBindingCache.set(streamName, ids);
       return ids;
     } catch (err) {
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
       const code = (err as { code?: string })?.code;
       if (code === "connection_not_found" || code === "invalid_argument") {
         // Grant-scope pins a connection that is not currently active, or the
@@ -2462,6 +2499,7 @@ async function scanBlobBindingMatches(
     try {
       record = await ctx.getRecord(bindingStorageTarget, binding.stream, binding.record_key, grant ?? null, manifest);
     } catch (err) {
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
       if ((err as { code?: string })?.code === "not_found") {
         return null;
       }
@@ -2475,6 +2513,7 @@ async function scanBlobBindingMatches(
     if (!actorConnectorId || binding.connector_id !== actorConnectorId) {
       continue;
     }
+    // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
     if (!(await bindingIsAddressable(binding))) {
       continue;
     }
@@ -2506,8 +2545,8 @@ function buildAmbiguousConnectionError(
   for (const [instanceId, m] of matchedByInstance) {
     const found = defaultBindings.find((b) => b.connectorInstanceId === instanceId);
     const wire = ctx.projectBindingForWire({
-      connectorInstanceId: instanceId,
       connectorId: m.binding.connector_id,
+      connectorInstanceId: instanceId,
       displayName: found?.displayName ?? null,
     });
     if (wire) {
@@ -2537,10 +2576,10 @@ async function serveResolvedBlob(
 ): Promise<void> {
   const { blobId, blobRow, actorConnectorId, resolvedMatch, resolverWarnings } = args;
   const dependencies = {
-    loadBlob: () => blobRow,
-    loadBindings: () => [resolvedMatch.binding],
     getActorConnectorId: () => actorConnectorId,
     getVisibleRecord: () => resolvedMatch.record,
+    loadBindings: () => [resolvedMatch.binding],
+    loadBlob: () => blobRow,
   };
   let output: Awaited<ReturnType<typeof executeBlobsRead>>;
   try {
@@ -2556,6 +2595,7 @@ async function serveResolvedBlob(
     }
     throw opErr;
   }
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const blob = output.blob;
   res.setHeader("Content-Type", blob.mime_type);
   res.setHeader("Content-Length", String(blob.size_bytes));
@@ -2597,12 +2637,12 @@ export function mountRsBlobRead(app: AppLike, ctx: MountRsReadContext): void {
           requestConnectionId,
           warnings: resolverWarnings,
         } = await ctx.resolveReadRequestBindings({
-          ownerSubjectId: ctx.ownerSubjectIdForBindings(tokenInfo),
-          storageBinding,
           grant: tokenInfo.grant || { streams: [] },
-          requestParams: (req.query as Record<string, unknown>) || {},
-          streamName: null,
           nativeProviderStorage,
+          ownerSubjectId: ctx.ownerSubjectIdForBindings(tokenInfo),
+          requestParams: (req.query as Record<string, unknown>) || {},
+          storageBinding,
+          streamName: null,
         });
         const defaultAddressableInstanceIds = new Set(
           defaultBindings.map((b) => b.connectorInstanceId).filter(Boolean) as string[]
@@ -2627,6 +2667,7 @@ export function mountRsBlobRead(app: AppLike, ctx: MountRsReadContext): void {
         // connector id, so canonicalize before matching binding.connector_id or
         // the visibility scan never matches and the read fails blob_not_found.
         // See canonicalize-connector-keys Decision 1.
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
         const rawActorConnectorId = storageBinding?.connector_id ?? null;
         const actorConnectorId = rawActorConnectorId
           ? (ctx.canonicalConnectorKey(rawActorConnectorId) ?? rawActorConnectorId)
@@ -2635,15 +2676,15 @@ export function mountRsBlobRead(app: AppLike, ctx: MountRsReadContext): void {
         // Iterate every blob binding and collect the unique connector instances
         // that expose a visible record referencing this blob.
         const matchedByInstance = await scanBlobBindingMatches(ctx, {
-          req,
-          tokenInfo,
-          blobId,
+          actorConnectorId,
           blobBindings,
-          storageBinding,
+          blobId,
+          defaultAddressableInstanceIds,
           manifest,
           nativeProviderStorage,
-          actorConnectorId,
-          defaultAddressableInstanceIds,
+          req,
+          storageBinding,
+          tokenInfo,
         });
 
         if (matchedByInstance.size === 0) {
@@ -2671,9 +2712,9 @@ export function mountRsBlobRead(app: AppLike, ctx: MountRsReadContext): void {
         }>;
         const resolvedMatch = selectedMatch as { binding: BlobBindingRow; record: unknown };
         await serveResolvedBlob(res, {
+          actorConnectorId,
           blobId,
           blobRow,
-          actorConnectorId,
           resolvedMatch,
           resolverWarnings,
         });

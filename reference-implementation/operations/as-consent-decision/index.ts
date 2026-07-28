@@ -26,15 +26,15 @@ export type AsConsentDecisionAction = "approve" | "deny";
 
 export interface AsConsentDecisionInput {
   readonly action: AsConsentDecisionAction;
-  readonly requestUri: string | null | undefined;
   readonly approvalId: string | null | undefined;
-  readonly subjectId: string;
   readonly approveOptions?: {
     readonly ai_training_consented?: unknown;
     readonly approvedSourceIndexes?: readonly number[];
     readonly confirmedApproveAll?: boolean;
     readonly sourceNarrowing?: Readonly<Record<number, unknown>>;
   };
+  readonly requestUri: string | null | undefined;
+  readonly subjectId: string;
 }
 
 export interface AsConsentDecisionPendingRow {
@@ -56,31 +56,13 @@ export interface AsConsentDecisionPending {
 
 export interface AsConsentDecisionApproveResult {
   readonly grant: { readonly grant_id: string; readonly [extra: string]: unknown };
-  readonly token: string;
   readonly package?: boolean;
   readonly package_id?: string;
+  readonly token: string;
 }
 
 export interface AsConsentDecisionDependencies {
-  getPendingConsentByApprovalId(
-    approvalId: string,
-  ):
-    | Promise<AsConsentDecisionPendingRow | null>
-    | AsConsentDecisionPendingRow
-    | null;
-  buildPendingConsentRequestUri(deviceCode: string): string;
-  getPendingFromRequestUri(
-    requestUri: string,
-  ):
-    | Promise<{
-        deviceCode: string | null;
-        pending: AsConsentDecisionPending | null;
-      }>
-    | {
-        deviceCode: string | null;
-        pending: AsConsentDecisionPending | null;
-      };
-  approveGrant(
+  approveGrant: (
     deviceCode: string,
     subjectId: string,
     opts:
@@ -91,34 +73,45 @@ export interface AsConsentDecisionDependencies {
           confirmedApproveAll?: boolean;
           sourceNarrowing?: Readonly<Record<number, unknown>>;
         }
-      | undefined,
-  ):
-    | Promise<AsConsentDecisionApproveResult>
-    | AsConsentDecisionApproveResult;
-  denyGrant(deviceCode: string): Promise<boolean> | boolean;
+      | undefined
+  ) => Promise<AsConsentDecisionApproveResult> | AsConsentDecisionApproveResult;
+  buildPendingConsentRequestUri: (deviceCode: string) => string;
+  denyGrant: (deviceCode: string) => Promise<boolean> | boolean;
+  getPendingConsentByApprovalId: (
+    approvalId: string
+  ) => Promise<AsConsentDecisionPendingRow | null> | AsConsentDecisionPendingRow | null;
+  getPendingFromRequestUri: (requestUri: string) =>
+    | Promise<{
+        deviceCode: string | null;
+        pending: AsConsentDecisionPending | null;
+      }>
+    | {
+        deviceCode: string | null;
+        pending: AsConsentDecisionPending | null;
+      };
 }
 
 export interface AsConsentDecisionApproveSuccessOutcome {
-  readonly outcome: "success";
   readonly action: "approve";
-  readonly traceContext: { request_id?: string | null; trace_id?: string | null } | null;
   readonly grant: { readonly grant_id: string; readonly [extra: string]: unknown };
-  readonly token: string;
+  readonly outcome: "success";
   readonly package?: boolean;
   readonly package_id?: string;
+  readonly token: string;
+  readonly traceContext: { request_id?: string | null; trace_id?: string | null } | null;
 }
 
 export interface AsConsentDecisionDenySuccessOutcome {
-  readonly outcome: "success";
   readonly action: "deny";
+  readonly outcome: "success";
   readonly traceContext: { request_id?: string | null; trace_id?: string | null } | null;
 }
 
 export interface AsConsentDecisionFailureOutcome {
-  readonly outcome: "failure";
-  readonly status: number;
   readonly errorCode: string;
   readonly errorMessage: string;
+  readonly outcome: "failure";
+  readonly status: number;
 }
 
 export type AsConsentDecisionOutcome =
@@ -128,17 +121,17 @@ export type AsConsentDecisionOutcome =
 
 export async function executeAsConsentDecision(
   input: AsConsentDecisionInput,
-  deps: AsConsentDecisionDependencies,
+  deps: AsConsentDecisionDependencies
 ): Promise<AsConsentDecisionOutcome> {
   let requestUri = input.requestUri || null;
   if (!requestUri && input.approvalId) {
     const row = await deps.getPendingConsentByApprovalId(input.approvalId);
-    if (!row || row.status !== "pending") {
+    if (row?.status !== "pending") {
       return {
-        outcome: "failure",
-        status: 404,
         errorCode: "not_found",
         errorMessage: "No pending consent for approval_id",
+        outcome: "failure",
+        status: 404,
       };
     }
     requestUri = deps.buildPendingConsentRequestUri(row.device_code);
@@ -146,39 +139,33 @@ export async function executeAsConsentDecision(
 
   if (!requestUri) {
     return {
-      outcome: "failure",
-      status: 400,
       errorCode: "invalid_request",
       errorMessage: "request_uri or approval_id is required",
+      outcome: "failure",
+      status: 400,
     };
   }
 
-  const { deviceCode, pending } = await deps.getPendingFromRequestUri(
-    requestUri,
-  );
+  const { deviceCode, pending } = await deps.getPendingFromRequestUri(requestUri);
   if (!deviceCode) {
     return {
-      outcome: "failure",
-      status: 400,
       errorCode: "invalid_request",
       errorMessage: "request_uri or approval_id is required",
+      outcome: "failure",
+      status: 400,
     };
   }
 
   const traceContext = pending?.request?.trace_context ?? null;
 
   if (input.action === "approve") {
-    const approve = await deps.approveGrant(
-      deviceCode,
-      input.subjectId,
-      input.approveOptions,
-    );
+    const approve = await deps.approveGrant(deviceCode, input.subjectId, input.approveOptions);
     return {
-      outcome: "success",
       action: "approve",
-      traceContext,
       grant: approve.grant,
+      outcome: "success",
       token: approve.token,
+      traceContext,
       ...(approve.package ? { package: true, package_id: approve.package_id } : {}),
     };
   }
@@ -186,15 +173,15 @@ export async function executeAsConsentDecision(
   const deleted = await deps.denyGrant(deviceCode);
   if (!deleted) {
     return {
-      outcome: "failure",
-      status: 404,
       errorCode: "not_found",
       errorMessage: "Pending consent request not found",
+      outcome: "failure",
+      status: 404,
     };
   }
   return {
-    outcome: "success",
     action: "deny",
+    outcome: "success",
     traceContext,
   };
 }

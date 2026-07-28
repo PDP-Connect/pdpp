@@ -1,7 +1,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { invalidQueryError, parseIntegerValue } from "./record-expand-helpers.js";
+import { invalidQueryError, parseIntegerValue } from "./record-expand-helpers.ts";
 
 export interface FieldSchema {
   format?: string | null;
@@ -40,11 +40,11 @@ export function getFieldSchema(manifestStream: ManifestStream | null | undefined
  */
 export function nonNullSchemaTypes(schema: FieldSchema | null | undefined): Set<string> {
   const raw = schema?.type;
-  if (raw == null) {
+  if (raw === null) {
     return new Set();
   }
   const list = Array.isArray(raw) ? raw : [raw];
-  return new Set(list.filter((t) => t !== "null"));
+  return new Set(list.filter((type): type is string => typeof type === "string" && type !== "null"));
 }
 
 function parseNumberValue(value: unknown): number | null {
@@ -71,7 +71,7 @@ export function coerceComparableValue(
   fieldSchema: FieldSchema | null | undefined,
   { strict = false } = {}
 ): string | number | null {
-  if (value == null) {
+  if (value === null) {
     return null;
   }
 
@@ -85,7 +85,7 @@ export function coerceComparableValue(
 
   if (only === "integer") {
     const parsed = parseIntegerValue(value);
-    if (parsed == null && strict) {
+    if (parsed === null && strict) {
       throw invalidQueryError(`Invalid integer value for '${String(value)}'`);
     }
     return parsed;
@@ -93,7 +93,7 @@ export function coerceComparableValue(
 
   if (only === "number") {
     const parsed = parseNumberValue(value);
-    if (parsed == null && strict) {
+    if (parsed === null && strict) {
       throw invalidQueryError(`Invalid number value for '${String(value)}'`);
     }
     return parsed;
@@ -105,7 +105,7 @@ export function coerceComparableValue(
     (["date", "date-time"] as string[]).includes(fieldSchema.format)
   ) {
     const parsed = parseDateValue(value);
-    if (parsed == null && strict) {
+    if (parsed === null && strict) {
       throw invalidQueryError(`Invalid date value for '${String(value)}'`);
     }
     return parsed;

@@ -225,17 +225,18 @@ async function runOnboard(argv: string[], { out }: RunCtx, deps: OwnerAgentDeps)
   if (!profile.tokenEndpoint) {
     throw new OwnerAgentError("onboarding_unavailable", "Owner-agent onboarding profile has no token endpoint.");
   }
-  const credential = await pollForOwnerAgentToken({
+  const pollOptions = {
     fetchFn,
     endpoint: profile.tokenEndpoint,
     clientId,
     deviceCode: device.deviceCode,
     intervalMs: device.intervalMs,
     timeoutMs: device.expiresInMs,
-    sleep: deps.sleep,
     now,
-    onPending: deps.onPending,
-  });
+    ...(deps.sleep ? { sleep: deps.sleep } : {}),
+    ...(deps.onPending ? { onPending: deps.onPending } : {}),
+  };
+  const credential = await pollForOwnerAgentToken(pollOptions);
 
   const record = buildCredentialRecord({
     resource: profile.resource,
@@ -252,9 +253,9 @@ async function runOnboard(argv: string[], { out }: RunCtx, deps: OwnerAgentDeps)
   });
 
   const targetPath = resolveCredentialFile({
-    credentialFile: typeof flags["credential-file"] === "string" ? flags["credential-file"] : undefined,
+    ...(typeof flags["credential-file"] === "string" ? { credentialFile: flags["credential-file"] } : {}),
     resource: profile.resource,
-    home: deps.home,
+    ...(deps.home ? { home: deps.home } : {}),
   });
   await writeOwnerAgentCredential(targetPath, record);
 
@@ -349,9 +350,9 @@ async function loadRecord(argv: string[], deps: OwnerAgentDeps): Promise<LoadRec
   const credentialFile = typeof flags["credential-file"] === "string" ? flags["credential-file"] : undefined;
   const entrypoint = typeof flags.entrypoint === "string" ? normalizeEntrypointUrl(flags.entrypoint) : null;
   const targetPath = resolveCredentialFile({
-    credentialFile,
+    ...(credentialFile ? { credentialFile } : {}),
     resource: entrypoint ?? "https://owner-agent.invalid",
-    home: deps.home,
+    ...(deps.home ? { home: deps.home } : {}),
   });
   const record = await readCredentialRecord(targetPath);
   return { record, targetPath, flags, positionals };
@@ -404,7 +405,7 @@ async function registerOwnerAgentClient({
   }
   let json: DynamicClientRegistrationResponse | null = null;
   try {
-    json = await response.json();
+    json = (await response.json()) as DynamicClientRegistrationResponse;
   } catch {
     json = null;
   }

@@ -97,7 +97,7 @@ export function resolvePartialCoverageCue({
   lastRunKnownGaps: readonly KnownGap[] | null | undefined;
   totalRecords: number;
 }): boolean {
-  if (collectionReport !== null) {
+  if (collectionReport !== null && collectionReport !== undefined) {
     return connectorHasPartialCoverageFromReport(collectionReport);
   }
   return connectorHasPartialCoverageHint({ lastRunKnownGaps, totalRecords });

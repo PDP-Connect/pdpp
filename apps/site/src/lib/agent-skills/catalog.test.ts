@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { createPdppCliCommand, getPdppCliPackageInfo } from "../../../../../packages/cli/src/package-info.js";
+import { createPdppCliCommand, getPdppCliPackageInfo } from "../../../../../packages/cli/src/package-info.ts";
 import { pdppCliConnectCommand, pdppCliPackageInfo } from "../pdpp-cli-command.ts";
 import {
   agentSkillsLLMSIndex,
@@ -127,12 +127,9 @@ test("reference docs and web copy use the CLI package-info source of truth", () 
     assert.match(contents, new RegExp(escapeRegExp(expectedCommand)), `${file} must include ${expectedCommand}`);
   }
 
-  const card = readFileSync(
-    path.join(REPO_ROOT, "apps/site/src/app/dashboard/components/connect-agent-card.tsx"),
-    "utf8"
-  );
-  assert.match(card, PDPP_CLI_CONNECT_COMMAND_SYMBOL);
-  assert.match(card, PDPP_CLI_TOKEN_COMPLETION_UNAVAILABLE_SYMBOL);
+  const agentSkillCopy = readFileSync(path.join(REPO_ROOT, "apps/site/src/lib/agent-skills/catalog.ts"), "utf8");
+  assert.match(agentSkillCopy, PDPP_CLI_CONNECT_COMMAND_SYMBOL);
+  assert.match(agentSkillCopy, PDPP_CLI_TOKEN_COMPLETION_UNAVAILABLE_SYMBOL);
 });
 
 function escapeRegExp(value: string): string {

@@ -29,7 +29,6 @@ import {
   SOURCE_WORK_GROUP_COPY,
   type SourceWorkGroups,
   type SourceWorkItem,
-  sourceAttentionHeadline,
   sourceWorkFromConnectors,
 } from "../../lib/source-actionability.ts";
 
@@ -882,71 +881,8 @@ function toOverviewIssues(loadIssues: readonly string[], hrefs: StandingHrefs): 
   ];
 }
 
-function workItemFromAttention(item: AttentionConnection): SourceWorkItem {
-  return {
-    actionLabel: item.actionLabel,
-    connectorKey: item.connectorKey,
-    deviceLocal: item.deviceLocal,
-    group: "needsOwner",
-    id: `needsOwner:${item.routeId}`,
-    label: item.label,
-    routeId: item.routeId,
-    statusLabel: "needs you",
-    what: item.what,
-  };
-}
-
-function workItemFromReview(item: AdvisoryOwnerActionConnection): SourceWorkItem {
-  return {
-    actionLabel: item.actionLabel,
-    connectorKey: item.connectorKey ?? item.routeId,
-    deviceLocal: false,
-    group: "review",
-    id: `review:${item.routeId}`,
-    label: item.label,
-    routeId: item.routeId,
-    // The concrete action is the row copy; statusLabel mirrors it as a neutral
-    // fallback rather than the "ready for review" taxonomy phrasing.
-    statusLabel: item.actionLabel,
-    what: item.what,
-  };
-}
-
-function workItemFromSourceIssue(item: SourceIssueConnection): SourceWorkItem {
-  return {
-    actionLabel: null,
-    connectorKey: item.connectorKey ?? item.routeId,
-    deviceLocal: false,
-    group: "systemIssue",
-    id: `systemIssue:${item.routeId}`,
-    label: item.label,
-    routeId: item.routeId,
-    statusLabel: item.status,
-    what: item.what,
-  };
-}
-
-function sourceWorkHasRows(groups: SourceWorkGroups): boolean {
-  return (
-    groups.needsOwner.length > 0 ||
-    groups.review.length > 0 ||
-    groups.systemIssues.length > 0 ||
-    groups.working.length > 0 ||
-    groups.notMeasured.length > 0
-  );
-}
-
 function activeSourceWork(input: StandingInputs): SourceWorkGroups {
-  if (sourceWorkHasRows(input.sourceWork)) {
-    return input.sourceWork;
-  }
-  return {
-    needsOwner: input.attentionConnections.map(workItemFromAttention),
-    notMeasured: [],
-    review: input.advisoryOwnerActions.map(workItemFromReview),
-    systemIssues: input.sourceIssues.map(workItemFromSourceIssue),
-    working: [],
-  };
+  return input.sourceWork;
 }
 
 function sourceWorkRow(item: SourceWorkItem, hrefs: StandingHrefs): AttentionRowView {
@@ -1053,39 +989,6 @@ function buildDecideHero(pending: PendingApproval[], hrefs: StandingHrefs): Stan
   };
 }
 
-/** ALARM — one or more connections need the owner. Derived from the attention
- *  truth, so the count, the line, and the CTA all name the SAME connections the
- *  "anything wrong" list and `/runs` show. The CTA lands on the focused recovery
- *  panel (single connection) or the syncs triage list (several) — never /traces. */
-function buildFailureHero(attention: AttentionConnection[], hrefs: StandingHrefs): StandingHero {
-  const count = attention.length;
-  const [only] = attention;
-  if (count === 1 && only) {
-    return {
-      // A device-local recovery is not performed by clicking — the CTA only
-      // navigates to where the commands are. Use a navigation label ("See what
-      // to do") so the owner doesn't click expecting the dashboard to run it.
-      // A dashboard-actionable verdict (reauth, refresh) keeps its action verb.
-      cta: {
-        href: hrefs.connection(only.routeId),
-        human: true,
-        label: only.deviceLocal ? "See what to do" : only.actionLabel,
-      },
-      kicker: "One thing needs you",
-      line: { emphasis: "needs you", tail: ".", text: `${only.label} ` },
-      sub: only.what,
-      tone: "alarm",
-    };
-  }
-  return {
-    cta: { href: hrefs.runs, label: "See what needs you" },
-    kicker: `${count} things need you`,
-    line: { emphasis: "need a look", tail: ".", text: `${count} connections ` },
-    sub: "Nothing you already have is lost — open each one to see what it needs.",
-    tone: "alarm",
-  };
-}
-
 /** ALARM — the summary projection is stale. */
 function buildStaleHero(summary: DatasetSummary | null, hrefs: StandingHrefs): StandingHero {
   const projectionState = summary?.projection?.state;
@@ -1117,29 +1020,6 @@ function buildPartialDataHero(loadIssues: readonly string[], hrefs: StandingHref
     },
     sub: "Refresh this page; if it keeps happening, check deployment. This page will not claim all-clear from partial data.",
     tone: "alarm",
-  };
-}
-
-function buildAdvisoryHero(actions: AdvisoryOwnerActionConnection[], hrefs: StandingHrefs): StandingHero {
-  const [only] = actions;
-  if (actions.length === 1 && only) {
-    // Lead with the CONCRETE action the owner can run ("Refresh now" / "Retry
-    // now"), not the "ready for review" taxonomy phrasing.
-    const action = only.actionLabel;
-    return {
-      cta: { href: hrefs.connection(only.routeId), human: true, label: action },
-      kicker: "One optional action is available",
-      line: { emphasis: action, tail: ".", text: `${only.label}: ` },
-      sub: only.what,
-      tone: "decide",
-    };
-  }
-  return {
-    cta: { href: hrefs.sources, label: "See available actions" },
-    kicker: `${actions.length} optional actions are available`,
-    line: { emphasis: "are available", tail: ".", text: "Refreshes and retries " },
-    sub: "Nothing is broken — run these refreshes and retries when you like. Records remain available.",
-    tone: "decide",
   };
 }
 
@@ -1199,47 +1079,17 @@ function buildCalmHero(input: StandingInputs): StandingHero {
 
 /**
  * Compute the hero. Precedence: a pending approval is a DECIDE (it needs a
- * yes/no), a failure or stale/failed projection is an ALARM, optional review
- * actions are a soft DECIDE, an incomplete dashboard read is an ALARM, then
- * the server fleet verdict owns aggregate source health. Only a healthy
- * fleet verdict falls through to the calm reassurance line.
+ * yes/no), stale/failed or incomplete dashboard reads are ALARMs, then the
+ * server fleet verdict owns aggregate source health. Only a healthy server
+ * verdict falls through to the calm reassurance line.
  */
 export function computeHero(input: StandingInputs): StandingHero {
-  const sourceWork = activeSourceWork(input);
   if (input.pendingApprovals.length > 0) {
     return buildDecideHero(input.pendingApprovals, input.hrefs);
-  }
-  // The hero headline "needs you" number is the SHARED attention headline — the
-  // same derivation the Runs band uses — so the dashboard and Runs can never
-  // disagree on how many sources need the owner. It counts ONLY the needs-you
-  // group; review/system/checking render as clearly-secondary rows below.
-  if (sourceAttentionHeadline(sourceWork).needsYou > 0) {
-    return buildFailureHero(
-      sourceWork.needsOwner.map((item) => ({
-        actionLabel: item.actionLabel ?? "Review source",
-        connectorKey: "",
-        deviceLocal: item.deviceLocal,
-        label: item.label,
-        routeId: item.routeId,
-        what: item.what,
-      })),
-      input.hrefs
-    );
   }
   const projectionState = input.summary?.projection?.state;
   if (projectionState === "stale" || projectionState === "failed") {
     return buildStaleHero(input.summary, input.hrefs);
-  }
-  if (sourceWork.review.length > 0) {
-    return buildAdvisoryHero(
-      sourceWork.review.map((item) => ({
-        actionLabel: item.actionLabel ?? "Run available action",
-        label: item.label,
-        routeId: item.routeId,
-        what: item.what,
-      })),
-      input.hrefs
-    );
   }
   if (input.overviewLoadIssues.length > 0) {
     return buildPartialDataHero(input.overviewLoadIssues, input.hrefs);

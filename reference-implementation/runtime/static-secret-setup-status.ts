@@ -228,11 +228,11 @@ const TERMINAL_FAILURE_STATUSES = new Set(["failed", "errored", "error", "cancel
 const RUNNING_STATUSES = new Set(["started", "in_progress", "running", "pending"]);
 
 function runIsFailure(run: SetupStatusRun | null): boolean {
-  return run != null && typeof run.status === "string" && TERMINAL_FAILURE_STATUSES.has(run.status);
+  return run !== null && typeof run.status === "string" && TERMINAL_FAILURE_STATUSES.has(run.status);
 }
 
 function runIsRunning(run: SetupStatusRun | null): boolean {
-  return run != null && typeof run.status === "string" && RUNNING_STATUSES.has(run.status);
+  return run !== null && typeof run.status === "string" && RUNNING_STATUSES.has(run.status);
 }
 
 function credentialUpdatedAt(credential: SetupStatusCredentialMetadata | null): string | null {
@@ -271,6 +271,7 @@ function deriveSetupState(
   hasSetupMaterial: boolean,
   running: boolean
 ): StaticSecretSetupState {
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const status = input.instance.status;
   if (status === "active") {
     return "active";
@@ -305,17 +306,17 @@ function defaultSetupMaterial(
   credential: SetupStatusCredentialMetadata | null
 ): SetupStatusMaterialMetadata {
   if (setupKind === "manual_upload") {
-    return { kind: "manual_upload", label: "Import file", present: true, capturedAt: null };
+    return { capturedAt: null, kind: "manual_upload", label: "Import file", present: true };
   }
   if (setupKind === "static_secret") {
     return {
+      capturedAt: credentialUpdatedAt(credential),
       kind: "static_secret",
       label: "Provider credential",
       present: credential?.present === true,
-      capturedAt: credentialUpdatedAt(credential),
     };
   }
-  return { kind: "unknown", label: "Setup material", present: false, capturedAt: null };
+  return { capturedAt: null, kind: "unknown", label: "Setup material", present: false };
 }
 
 function nullable<T>(value: T | null | undefined): T | null {
@@ -325,10 +326,10 @@ function nullable<T>(value: T | null | undefined): T | null {
 function projectedDateRange(
   range: SetupStatusImportReceipt["dateRange"]
 ): { readonly end: string | null; readonly start: string | null } | null {
-  if (!(range && (range.start != null || range.end != null))) {
+  if (!(range && (range.start !== null || range.end !== null))) {
     return null;
   }
-  return { start: nullable(range.start), end: nullable(range.end) };
+  return { end: nullable(range.end), start: nullable(range.start) };
 }
 
 function projectedWarnings(value: readonly string[] | null | undefined): readonly string[] {
@@ -343,8 +344,8 @@ function projectImportReceipt(
     return null;
   }
   return {
-    acquisition_method: nullable(receipt.acquisitionMethod),
     accepted_count: nullable(receipt.acceptedCount),
+    acquisition_method: nullable(receipt.acquisitionMethod),
     batch_id: nullable(receipt.batchId),
     date_range: projectedDateRange(receipt.dateRange),
     detected_format: nullable(receipt.detectedFormat),
@@ -373,7 +374,7 @@ export function projectConnectionSetupStatus(input: ProjectConnectionSetupStatus
   // A run is "running" when the active-run table holds it OR the last-run
   // summary still reports a non-terminal status (covers the window between
   // submit and the active-run row landing).
-  const running = runIsRunning(input.activeRun) || (input.activeRun == null && runIsRunning(input.lastRun));
+  const running = runIsRunning(input.activeRun) || (input.activeRun === null && runIsRunning(input.lastRun));
   const setupState = deriveSetupState(input, hasSetupMaterial, running);
   const run = input.activeRun ?? input.lastRun ?? null;
 
@@ -385,40 +386,40 @@ export function projectConnectionSetupStatus(input: ProjectConnectionSetupStatus
     : null;
 
   return {
-    object: "connection_setup_status",
+    account_identity: accountIdentity(input),
     connection_id: input.instance.connectorInstanceId,
     connector_id: input.instance.connectorId,
+    created_at: input.instance.createdAt,
+    credential: {
+      captured_at: input.credential?.capturedAt ?? null,
+      credential_kind: input.credential?.credentialKind ?? null,
+      present: input.credential?.present === true,
+      rotated_at: input.credential?.rotatedAt ?? null,
+    },
     display_name: input.instance.displayName,
-    account_identity: accountIdentity(input),
-    status: input.instance.status,
-    setup_state: setupState,
+    health_state: SETUP_STATE_HEALTH[setupState],
+    import_receipt: projectImportReceipt(setupKind, input.importReceipt),
+    last_error: lastError,
+    object: "connection_setup_status",
+    pending: input.instance.status === "draft",
+    run: run
+      ? {
+          finished_at: run.finishedAt ?? null,
+          run_id: run.runId,
+          started_at: run.startedAt ?? null,
+          status: run.status,
+        }
+      : null,
+    running,
     setup_kind: setupKind,
     setup_material: {
+      captured_at: material.capturedAt ?? null,
       kind: material.kind,
       label: material.label,
       present: material.present,
-      captured_at: material.capturedAt ?? null,
     },
-    health_state: SETUP_STATE_HEALTH[setupState],
-    pending: input.instance.status === "draft",
-    running,
-    credential: {
-      present: input.credential?.present === true,
-      credential_kind: input.credential?.credentialKind ?? null,
-      captured_at: input.credential?.capturedAt ?? null,
-      rotated_at: input.credential?.rotatedAt ?? null,
-    },
-    run: run
-      ? {
-          run_id: run.runId,
-          status: run.status,
-          started_at: run.startedAt ?? null,
-          finished_at: run.finishedAt ?? null,
-        }
-      : null,
-    last_error: lastError,
-    import_receipt: projectImportReceipt(setupKind, input.importReceipt),
-    created_at: input.instance.createdAt,
+    setup_state: setupState,
+    status: input.instance.status,
     updated_at: input.instance.updatedAt,
   };
 }

@@ -44,12 +44,28 @@
         {
           "id": "basic",
           "label": "Repository names and languages",
-          "fields": ["id", "name", "full_name", "description", "language", "is_private"]
+          "fields": [
+            "id",
+            "name",
+            "full_name",
+            "description",
+            "language",
+            "is_private"
+          ]
         },
         {
           "id": "stats",
           "label": "Repository stats",
-          "fields": ["id", "name", "full_name", "language", "stargazers_count", "forks_count", "topics", "source_created_at"]
+          "fields": [
+            "id",
+            "name",
+            "full_name",
+            "language",
+            "stargazers_count",
+            "forks_count",
+            "topics",
+            "source_created_at"
+          ]
         }
       ],
       "coverage_strategy": "full_inventory",
@@ -92,9 +108,7 @@
     {
       "id": "developer_profile",
       "label": "Developer activity summary",
-      "streams": [
-        { "name": "repositories", "view": "basic" }
-      ]
+      "streams": [{ "name": "repositories", "view": "basic" }]
     }
   ]
 }

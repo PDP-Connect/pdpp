@@ -304,6 +304,7 @@ function countConsecutiveSameClassFailures(history: readonly RunRecord[]): {
   let newestFailureAtMs: number | null = null;
 
   // Walk newest -> oldest until we hit a non-failure or a different class.
+  // biome-ignore lint/style/noIncrementDecrement: The explicit counter update preserves this loop’s evaluation order.
   for (let i = history.length - 1; i >= 0; i--) {
     const record = history[i];
     if (!record) {
@@ -333,10 +334,11 @@ function countConsecutiveSameClassFailures(history: readonly RunRecord[]): {
       // First (newest) failure of the streak anchors the recovery comparison.
       newestFailureAtMs = recordTimestampMs(record);
     }
+    // biome-ignore lint/style/noIncrementDecrement: The explicit counter update preserves this loop’s evaluation order.
     consecutiveFailures++;
   }
 
-  return { consecutiveFailures, reasonClass, newestFailureAtMs };
+  return { consecutiveFailures, newestFailureAtMs, reasonClass };
 }
 
 /**
@@ -345,10 +347,12 @@ function countConsecutiveSameClassFailures(history: readonly RunRecord[]): {
  * neither parses to a finite epoch.
  */
 function recordTimestampMs(record: RunRecord): number | null {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const completed = Date.parse(record.completedAt ?? "");
   if (Number.isFinite(completed)) {
     return completed;
   }
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const started = Date.parse(record.startedAt ?? "");
   return Number.isFinite(started) ? started : null;
 }

@@ -34,13 +34,15 @@ interface WebPushUpsertMetadata {
 }
 
 interface WebPushStore {
-  list(ownerSubjectId: string): Promise<readonly WebPushSubscriptionRecord[]> | readonly WebPushSubscriptionRecord[];
-  revoke(ownerSubjectId: string, endpoint: string): Promise<unknown> | unknown;
-  upsert(
+  list: (
+    ownerSubjectId: string
+  ) => Promise<readonly WebPushSubscriptionRecord[]> | readonly WebPushSubscriptionRecord[];
+  revoke: (ownerSubjectId: string, endpoint: string) => Promise<unknown> | unknown;
+  upsert: (
     ownerSubjectId: string,
     subscription: unknown,
     meta: WebPushUpsertMetadata
-  ): Promise<WebPushSubscriptionRecord> | WebPushSubscriptionRecord;
+  ) => Promise<WebPushSubscriptionRecord> | WebPushSubscriptionRecord;
 }
 
 interface FanoutTestResult {
@@ -57,26 +59,26 @@ type FanoutTestWebPush = (input: {
 
 interface RouteRequest {
   readonly body?: unknown;
-  get(name: string): string | undefined;
+  get: (name: string) => string | undefined;
 }
 
 interface RouteResponse {
-  json(body: unknown): unknown;
-  status(code: number): RouteResponse;
+  json: (body: unknown) => unknown;
+  status: (code: number) => RouteResponse;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
 
 interface AppLike {
-  delete(path: string, ...handlers: (MiddlewareHandler | RouteHandler)[]): AppLike;
-  get(path: string, ...handlers: (MiddlewareHandler | RouteHandler)[]): AppLike;
-  post(path: string, ...handlers: (MiddlewareHandler | RouteHandler)[]): AppLike;
+  delete: (path: string, ...handlers: (MiddlewareHandler | RouteHandler)[]) => AppLike;
+  get: (path: string, ...handlers: (MiddlewareHandler | RouteHandler)[]) => AppLike;
+  post: (path: string, ...handlers: (MiddlewareHandler | RouteHandler)[]) => AppLike;
 }
 
 export interface MountRefWebPushContext {
   fanoutTestWebPush: FanoutTestWebPush;
-  getOwnerSubjectId(req: unknown): string;
-  handleError(res: unknown, err: unknown): void;
+  getOwnerSubjectId: (req: unknown) => string;
+  handleError: (res: unknown, err: unknown) => void;
   pdppError: PdppErrorFn;
   requireOwnerSession: MiddlewareHandler;
   webPushConfig: WebPushConfig;
@@ -92,8 +94,8 @@ export function mountRefWebPushConfig(app: AppLike, ctx: MountRefWebPushContext)
   // when web push is configured; otherwise reports the static reason.
   app.get("/_ref/web-push/config", ctx.requireOwnerSession, (_req: RouteRequest, res: RouteResponse) => {
     res.json({
-      object: "web_push_config",
       enabled: ctx.webPushConfig.enabled,
+      object: "web_push_config",
       public_key: ctx.webPushConfig.enabled ? ctx.webPushConfig.publicKey : null,
       unavailable_reason: ctx.webPushConfig.enabled ? null : ctx.webPushConfig.unavailableReason,
     });
@@ -106,9 +108,9 @@ export function mountRefWebPushListSubscriptions(app: AppLike, ctx: MountRefWebP
   app.get("/_ref/web-push/subscriptions", ctx.requireOwnerSession, async (req: RouteRequest, res: RouteResponse) => {
     const ownerSubjectId = ctx.getOwnerSubjectId(req);
     res.json({
-      object: "list",
       data: await ctx.webPushStore.list(ownerSubjectId),
       has_more: false,
+      object: "list",
     });
   });
 }
@@ -132,9 +134,9 @@ export function mountRefWebPushCreateSubscription(app: AppLike, ctx: MountRefWeb
       const platform = body && typeof body.platform === "string" ? body.platform : null;
       const deviceLabel = body && typeof body.device_label === "string" ? body.device_label : null;
       const record = await ctx.webPushStore.upsert(ownerSubjectId, subscription, {
-        user_agent: req.get("user-agent") || null,
-        platform,
         device_label: deviceLabel,
+        platform,
+        user_agent: req.get("user-agent") || null,
       });
       res.status(201).json({ object: "web_push_subscription", subscription: record });
     } catch (err) {
@@ -161,7 +163,7 @@ export function mountRefWebPushDeleteSubscription(app: AppLike, ctx: MountRefWeb
     }
     const ownerSubjectId = ctx.getOwnerSubjectId(req);
     const revoked = await ctx.webPushStore.revoke(ownerSubjectId, endpoint);
-    res.json({ object: "web_push_subscription_deleted", deleted: Boolean(revoked) });
+    res.json({ deleted: Boolean(revoked), object: "web_push_subscription_deleted" });
   });
 }
 
@@ -179,12 +181,12 @@ export function mountRefWebPushTest(app: AppLike, ctx: MountRefWebPushContext): 
       const ownerSubjectId = ctx.getOwnerSubjectId(req);
       const result = await ctx.fanoutTestWebPush({
         config: ctx.webPushConfig,
-        store: ctx.webPushStore,
         ownerSubjectId,
+        store: ctx.webPushStore,
       });
       res.json({
-        object: "web_push_test_notification",
         attempted: result.attempted,
+        object: "web_push_test_notification",
         sent: result.sent,
         unavailable: Boolean(result.unavailable),
       });

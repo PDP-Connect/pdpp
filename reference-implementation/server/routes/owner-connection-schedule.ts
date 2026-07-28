@@ -87,11 +87,11 @@ interface RouteRequest {
 }
 
 interface RouteResponse {
-  end(): unknown;
-  getHeader(name: string): string | number | string[] | undefined;
-  json(body: unknown): unknown;
-  setHeader(name: string, value: string): void;
-  status(code: number): RouteResponse;
+  end: () => unknown;
+  getHeader: (name: string) => string | number | string[] | undefined;
+  json: (body: unknown) => unknown;
+  setHeader: (name: string, value: string) => void;
+  status: (code: number) => RouteResponse;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
@@ -104,8 +104,8 @@ type NextFn = () => unknown | Promise<unknown>;
 type ScheduleOperation = "pause_schedule" | "resume_schedule" | "delete_schedule";
 
 interface AppLike {
-  delete(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
-  post(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  delete: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
+  post: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
 }
 
 export interface MountOwnerConnectionScheduleContext {
@@ -117,42 +117,42 @@ export interface MountOwnerConnectionScheduleContext {
     message: string,
     availableConnections: WireConnection[]
   ) => AmbiguousConnectionErrorLike;
-  canonicalConnectorKey(value: string | null | undefined): string | null;
-  createTraceContext(input?: { scenarioId?: string }): TraceContext;
+  canonicalConnectorKey: (value: string | null | undefined) => string | null;
+  createTraceContext: (input?: { scenarioId?: string }) => TraceContext;
   // Controller schedule delete. Owner-scoped because the namespace was already
   // resolved owner-side; returns false when no schedule row existed to delete.
-  deleteSchedule(connectorId: string, options: { connectorInstanceId?: string | null }): Promise<boolean>;
-  emitSpineEvent(event: Record<string, unknown>): Promise<unknown>;
-  ensureRequestId(res: RouteResponse): string;
-  getOwnerTokenSubjectId(req: unknown): string;
-  handleError(res: unknown, err: unknown): void;
-  invalidateConnectorSummariesCache?(): void;
+  deleteSchedule: (connectorId: string, options: { connectorInstanceId?: string | null }) => Promise<boolean>;
+  emitSpineEvent: (event: Record<string, unknown>) => Promise<unknown>;
+  ensureRequestId: (res: RouteResponse) => string;
+  getOwnerTokenSubjectId: (req: unknown) => string;
+  handleError: (res: unknown, err: unknown) => void;
+  invalidateConnectorSummariesCache?: () => void;
   // Lists the owner's active connection bindings for a connector. Used to
   // populate `available_connections` on the typed ambiguity error.
-  listActiveBindingsForGrant(input: {
+  listActiveBindingsForGrant: (input: {
     ownerSubjectId: string;
     connectorId: string;
-  }): Promise<ActiveBinding[]> | ActiveBinding[];
+  }) => Promise<ActiveBinding[]> | ActiveBinding[];
   // Marks the maintained connector-summary read-model evidence for exactly this
   // connection dirty after the schedule mutation commits. Injected (not
   // imported) to match the optional `invalidateConnectorSummariesCache` above;
   // awaited at the call site so ordering is explicit, best-effort, and a no-op
   // until the read model is warmed.
-  markConnectorSummaryEvidenceDirty?(input: { connectorInstanceId: string; reason?: string }): Promise<void> | void;
+  markConnectorSummaryEvidenceDirty?: (input: { connectorInstanceId: string; reason?: string }) => Promise<void> | void;
   // Scheduler refresh hook fired after a successful pause/resume so the change
   // takes effect immediately. Same callback the cookie-authed `/_ref` schedule
   // routes use. Optional so a controller-less test harness can omit it.
-  onScheduleMutation?(): Promise<unknown> | unknown;
+  onScheduleMutation?: () => Promise<unknown> | unknown;
   pdppError: PdppErrorFn;
   // Projects one active binding to the wire `{ connection_id, display_name? }`
   // shape used in `available_connections` (placeholder labels suppressed).
-  projectBindingForWire(instance: ActiveBinding): WireConnection | null;
+  projectBindingForWire: (instance: ActiveBinding) => WireConnection | null;
   requireOwner: MiddlewareHandler;
   requireToken: MiddlewareHandler;
   // Owner-scoped connector-instance namespace resolution. Throws
   // `ConnectorInstanceResolutionError` with code `ambiguous_connector_instance`
   // when a connector-only address resolves to more than one active connection.
-  resolveOwnerConnectorNamespace(
+  resolveOwnerConnectorNamespace: (
     req: unknown,
     connectorId: string | null,
     options?: {
@@ -160,15 +160,15 @@ export interface MountOwnerConnectionScheduleContext {
       readonly connectorInstanceId?: string | null;
       readonly ownerSubjectId?: string;
     }
-  ): Promise<ConnectorNamespace>;
-  setReferenceTraceId(res: RouteResponse, traceId: string): void;
+  ) => Promise<ConnectorNamespace>;
+  setReferenceTraceId: (res: RouteResponse, traceId: string) => void;
   // Controller schedule enable/disable. Owner-scoped because the namespace was
   // already resolved owner-side; the controller acts on the resolved instance.
-  setScheduleEnabled(
+  setScheduleEnabled: (
     connectorId: string,
     enabled: boolean,
     options: { connectorInstanceId?: string | null }
-  ): Promise<unknown>;
+  ) => Promise<unknown>;
 }
 
 // Emits one non-secret `owner_agent.connection.schedule` spine event. The
@@ -195,31 +195,23 @@ async function emitScheduleAudit(
   const actorKind = auditActorKind(req);
   const ownerSubjectId =
     args.ownerSubjectId ?? (typeof req.tokenInfo?.subject_id === "string" ? req.tokenInfo.subject_id : null);
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const operation = args.operation;
   const code = (args.error as { code?: unknown } | null)?.code;
   await ctx.emitSpineEvent({
-    event_type: "owner_agent.connection.schedule",
-    trace_id: trace.trace_id,
-    scenario_id: trace.scenario_id,
-    request_id: trace.request_id,
-    actor_type: actorKind,
     actor_id: clientId ?? ownerSubjectId ?? actorKind,
-    subject_type: "subject",
-    subject_id: ownerSubjectId,
+    actor_type: actorKind,
     client_id: clientId,
-    object_type: "connection",
-    object_id: args.connectionId || args.connectorKey || "unknown_connection",
-    status: args.outcome,
     data: {
-      auth_token_kind: req.tokenInfo?.pdpp_token_kind ?? null,
       actor_kind: actorKind,
+      auth_token_kind: req.tokenInfo?.pdpp_token_kind ?? null,
       client_id: clientId,
       client_name: clientName,
       connection_id: args.connectionId ?? null,
       connector_key: args.connectorKey ?? null,
-      selector: args.selector,
       operation,
       outcome: args.outcome,
+      selector: args.selector,
       target_resource: "connection_schedule",
       ...(args.error
         ? {
@@ -230,6 +222,15 @@ async function emitScheduleAudit(
           }
         : {}),
     },
+    event_type: "owner_agent.connection.schedule",
+    object_id: args.connectionId || args.connectorKey || "unknown_connection",
+    object_type: "connection",
+    request_id: trace.request_id,
+    scenario_id: trace.scenario_id,
+    status: args.outcome,
+    subject_id: ownerSubjectId,
+    subject_type: "subject",
+    trace_id: trace.trace_id,
   });
 }
 
@@ -253,8 +254,8 @@ function buildScheduleRequireOwner(
     await emitScheduleAudit(ctx, req, res, {
       connectionId,
       connectorKey,
-      operation,
       error: err,
+      operation,
       outcome: "failed",
       ownerSubjectId: typeof req.tokenInfo?.subject_id === "string" ? req.tokenInfo.subject_id : null,
       selector,
@@ -286,9 +287,9 @@ function buildScheduleHandler(
         // verifies the connection belongs to this owner and is active; a
         // foreign or unknown id surfaces as connector_instance_not_found (404).
         namespace = await ctx.resolveOwnerConnectorNamespace(req, null, {
-          ownerSubjectId,
           allowDefaultAccount: false,
           connectorInstanceId: addressed,
+          ownerSubjectId,
         });
       } else {
         const rawConnectorId = decodeURIComponent(req.params.connectorId as string);
@@ -297,8 +298,8 @@ function buildScheduleHandler(
           // connector-only addressing: auto-select the single active
           // connection, or throw ambiguity when more than one exists.
           namespace = await ctx.resolveOwnerConnectorNamespace(req, rawConnectorId, {
-            ownerSubjectId,
             allowDefaultAccount: false,
+            ownerSubjectId,
           });
         } catch (resolveErr) {
           await rethrowAsAmbiguousConnection(ctx, resolveErr, ownerSubjectId, connectorKey);
@@ -325,8 +326,8 @@ function buildScheduleHandler(
           await emitScheduleAudit(ctx, req, res, {
             connectionId,
             connectorKey,
-            operation,
             error: notFound,
+            operation,
             outcome: "failed",
             ownerSubjectId,
             selector,
@@ -379,8 +380,8 @@ function buildScheduleHandler(
       await emitScheduleAudit(ctx, req, res, {
         connectionId,
         connectorKey,
-        operation,
         error: err,
+        operation,
         outcome: "failed",
         ownerSubjectId,
         selector,

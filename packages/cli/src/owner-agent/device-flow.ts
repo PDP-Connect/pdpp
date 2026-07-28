@@ -91,15 +91,15 @@ export interface OwnerAgentToken {
 }
 
 interface PollForOwnerAgentTokenArgs {
-  clientId?: string;
+  clientId?: string | undefined;
   deviceCode: string;
   endpoint: string;
   fetchFn: FetchFn;
-  intervalMs?: number;
-  now?: () => number;
-  onPending?: (kind: "pending" | "slow_down") => void;
-  sleep?: (ms: number) => Promise<void>;
-  timeoutMs?: number;
+  intervalMs?: number | undefined;
+  now?: (() => number) | undefined;
+  onPending?: ((kind: "pending" | "slow_down") => void) | undefined;
+  sleep?: ((ms: number) => Promise<void>) | undefined;
+  timeoutMs?: number | undefined;
 }
 
 /**
@@ -222,7 +222,7 @@ async function postFormRaw<T = TokenResponse & DeviceAuthorizationResponse>(
   }
   let json: T | null = null;
   try {
-    json = await response.json();
+    json = (await response.json()) as T;
   } catch {
     json = null;
   }

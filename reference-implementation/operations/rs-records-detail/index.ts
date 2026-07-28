@@ -35,14 +35,11 @@
  *   - response writing.
  */
 
-import {
-  normalizeProjectionFields,
-  projectRecordEnvelope,
-} from "../read-projection.ts";
+import { normalizeProjectionFields, projectRecordEnvelope } from "../read-projection.ts";
 
 export interface RecordDetailSourceDescriptor {
-  kind: "connector" | "provider_native";
   id: string;
+  kind: "connector" | "provider_native";
   [extra: string]: unknown;
 }
 
@@ -67,8 +64,8 @@ export interface RecordDetailManifest {
 }
 
 export interface RecordDetailGrantStream {
-  name: string;
   fields?: string[];
+  name: string;
   [extra: string]: unknown;
 }
 
@@ -90,72 +87,61 @@ export interface RecordDetailExpandOptions {
 
 export interface RecordDetailDependencies {
   /**
-   * Source descriptor for instrumentation events (`source` field on
-   * `disclosure.served` / `query.received`). Hosts compute this once.
-   */
-  getSourceDescriptor(): RecordDetailSourceDescriptor;
-  /**
-   * Resolved manifest the host built from the actor's scope. Forwarded into
-   * the `getRecord` capability so adapter-side schema/freshness lookups
-   * have the same input as the previous native route.
-   */
-  getManifest(): Promise<RecordDetailManifest> | RecordDetailManifest;
-  /**
-   * Resolved grant the host derived for this request. Owner actors get an
-   * owner read-grant; client actors get the token's grant.
-   */
-  getGrant(): RecordDetailGrant;
-  /**
-   * Fetch a single record. Returns `null` when the record does not exist;
-   * the operation maps that to `RecordDetailVisibilityError('not_found')`.
-   */
-  getRecord(
-    stream: string,
-    recordId: string,
-    grant: RecordDetailGrant,
-    manifest: RecordDetailManifest,
-    options: RecordDetailExpandOptions,
-  ): Promise<Record<string, unknown> | null>;
-  /**
    * Apply blob-ref URL decoration to the fetched record. Hosts wire the
    * concrete implementation: native -> `decorateRecordBlobRefs` from
    * `server/index.js`; sandbox -> identity (sandbox demo records do not
    * carry blob refs).
    */
-  decorateRecord(record: Record<string, unknown>): Record<string, unknown>;
+  decorateRecord: (record: Record<string, unknown>) => Record<string, unknown>;
+  /**
+   * Resolved grant the host derived for this request. Owner actors get an
+   * owner read-grant; client actors get the token's grant.
+   */
+  getGrant: () => RecordDetailGrant;
+  /**
+   * Resolved manifest the host built from the actor's scope. Forwarded into
+   * the `getRecord` capability so adapter-side schema/freshness lookups
+   * have the same input as the previous native route.
+   */
+  getManifest: () => Promise<RecordDetailManifest> | RecordDetailManifest;
+  /**
+   * Fetch a single record. Returns `null` when the record does not exist;
+   * the operation maps that to `RecordDetailVisibilityError('not_found')`.
+   */
+  getRecord: (
+    stream: string,
+    recordId: string,
+    grant: RecordDetailGrant,
+    manifest: RecordDetailManifest,
+    options: RecordDetailExpandOptions
+  ) => Promise<Record<string, unknown> | null>;
+  /**
+   * Source descriptor for instrumentation events (`source` field on
+   * `disclosure.served` / `query.received`). Hosts compute this once.
+   */
+  getSourceDescriptor: () => RecordDetailSourceDescriptor;
   /**
    * Validate request-level projection params against the manifest stream.
    * This mirrors `rs.records.list` so single-record fetch does not silently
    * drop unknown fields while list rejects them.
    */
-  validateRequestFields(
+  validateRequestFields: (
     requestParams: Record<string, unknown>,
-    manifestStream: RecordDetailManifestStream | null,
-  ): void;
+    manifestStream: RecordDetailManifestStream | null
+  ) => void;
 }
 
 export interface RecordDetailInput {
   actor: RecordDetailActor;
-  /** Stream name from the request path. */
-  streamName: string;
-  /** Record id (already URI-decoded by the host adapter). */
-  recordId: string;
   /** `expand` / `expand_limit` raw request values, forwarded unchanged. */
   expandOptions?: RecordDetailExpandOptions;
+  /** Record id (already URI-decoded by the host adapter). */
+  recordId: string;
+  /** Stream name from the request path. */
+  streamName: string;
 }
 
 export interface RecordDetailOutput {
-  /** Decorated record envelope. */
-  record: Record<string, unknown>;
-  /** Echoed for instrumentation parity with the native route. */
-  sourceDescriptor: RecordDetailSourceDescriptor;
-  /** `query.received`-shaped data block. */
-  queryData: {
-    query_shape: "record_detail";
-    requested_record_id: string;
-    has_changes_since: false;
-    limit: null;
-  };
   /** `disclosure.served`-shaped data block. Hosts merge in `source`. */
   disclosureData: {
     query_shape: "record_detail";
@@ -166,6 +152,17 @@ export interface RecordDetailOutput {
   };
   /** Owner read-grant the operation built when the actor is an owner. */
   effectiveGrant: RecordDetailGrant;
+  /** `query.received`-shaped data block. */
+  queryData: {
+    query_shape: "record_detail";
+    requested_record_id: string;
+    has_changes_since: false;
+    limit: null;
+  };
+  /** Decorated record envelope. */
+  record: Record<string, unknown>;
+  /** Echoed for instrumentation parity with the native route. */
+  sourceDescriptor: RecordDetailSourceDescriptor;
 }
 
 /**
@@ -192,7 +189,7 @@ function buildOwnerReadGrant(streamName: string): RecordDetailGrant {
  */
 export async function executeRecordDetail(
   input: RecordDetailInput,
-  dependencies: RecordDetailDependencies,
+  dependencies: RecordDetailDependencies
 ): Promise<RecordDetailOutput> {
   const sourceDescriptor = dependencies.getSourceDescriptor();
   const manifest = await dependencies.getManifest();
@@ -203,48 +200,36 @@ export async function executeRecordDetail(
   }
 
   const expandOptions: RecordDetailExpandOptions = input.expandOptions ?? {};
-  const manifestStream =
-    manifest.streams.find((s) => s.name === input.streamName) ?? null;
-  dependencies.validateRequestFields(
-    expandOptions as Record<string, unknown>,
-    manifestStream,
-  );
+  const manifestStream = manifest.streams.find((s) => s.name === input.streamName) ?? null;
+  dependencies.validateRequestFields(expandOptions as Record<string, unknown>, manifestStream);
 
-  const rawRecord = await dependencies.getRecord(
-    input.streamName,
-    input.recordId,
-    grant,
-    manifest,
-    expandOptions,
-  );
+  const rawRecord = await dependencies.getRecord(input.streamName, input.recordId, grant, manifest, expandOptions);
 
-  if (rawRecord == null) {
-    throw new RecordDetailVisibilityError(
-      `Record '${input.recordId}' not found in stream '${input.streamName}'`,
-    );
+  if (rawRecord === null) {
+    throw new RecordDetailVisibilityError(`Record '${input.recordId}' not found in stream '${input.streamName}'`);
   }
 
   const record = projectRecordEnvelope(
     dependencies.decorateRecord(rawRecord),
-    normalizeProjectionFields(expandOptions.fields),
+    normalizeProjectionFields(expandOptions.fields)
   );
 
   return {
-    record,
-    sourceDescriptor,
-    queryData: {
-      query_shape: "record_detail",
-      requested_record_id: input.recordId,
-      has_changes_since: false,
-      limit: null,
-    },
     disclosureData: {
-      query_shape: "record_detail",
-      record_count: 1,
       has_more: false,
       has_next_changes_since: false,
+      query_shape: "record_detail",
+      record_count: 1,
       requested_record_id: input.recordId,
     },
     effectiveGrant: grant,
+    queryData: {
+      has_changes_since: false,
+      limit: null,
+      query_shape: "record_detail",
+      requested_record_id: input.recordId,
+    },
+    record,
+    sourceDescriptor,
   };
 }

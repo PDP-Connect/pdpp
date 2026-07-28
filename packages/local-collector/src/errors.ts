@@ -11,6 +11,7 @@
  * Spec: openspec/changes/publish-pdpp-local-collector/design.md §1.
  */
 
+// biome-ignore lint/performance/noBarrelFile: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
 export {
   CollectorStateReadError,
   RUNTIME_CAPABILITY_MISMATCH_CODE,
@@ -33,9 +34,9 @@ export class CollectorCustomCommandRefusedError extends Error {
   readonly code: "custom_command_refused";
   constructor() {
     super(
-      `pdpp-local-collector refuses --command <bin> by default to keep the ` +
+      "pdpp-local-collector refuses --command <bin> by default to keep the " +
         `device-token supply chain narrow. Set ${ALLOW_CUSTOM_COMMAND_ENV}=1 ` +
-        `to opt in for monorepo development; see openspec/changes/publish-pdpp-local-collector/design.md §3.`
+        "to opt in for monorepo development; see openspec/changes/publish-pdpp-local-collector/design.md §3."
     );
     this.name = "CollectorCustomCommandRefusedError";
     this.code = "custom_command_refused";

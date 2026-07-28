@@ -23,8 +23,8 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 export const DEFAULT_OWNER_AGENT_DIR = join(".pdpp", "owner-agents");
 
 export interface ResolveCredentialFileArgs {
-  credentialFile?: string;
-  home?: string;
+  credentialFile?: string | undefined;
+  home?: string | undefined;
   resource: string;
 }
 

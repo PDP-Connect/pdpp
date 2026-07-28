@@ -17,7 +17,7 @@
  * records.js and postgres-records.js.
  */
 
-import { invalidQueryError } from "./record-expand-helpers.js";
+import { invalidQueryError } from "./record-expand-helpers.ts";
 
 // Canonical graded-count vocabulary.
 // Spec: openspec/changes/canonicalize-public-read-contract design.md ("Counts")
@@ -54,7 +54,7 @@ export interface ManifestStreamLike {
  * the server applies `none` as the default.
  */
 export function validateCountKind(value: unknown): void {
-  if (value == null || value === "") {
+  if (value === null || value === undefined || value === "") {
     return;
   }
   if (typeof value !== "string" || !SUPPORTED_COUNT_KINDS.has(value)) {
@@ -69,7 +69,7 @@ export function validateCountKind(value: unknown): void {
  * aggregate. Any other value is a typed invalid-query error.
  */
 export function validateWindowKind(value: unknown): void {
-  if (value == null || value === "") {
+  if (value === null || value === undefined || value === "") {
     return;
   }
   if (typeof value !== "string" || !SUPPORTED_WINDOW_KINDS.has(value)) {
@@ -80,7 +80,7 @@ export function validateWindowKind(value: unknown): void {
 export function rejectListOnlyParamsForChangesFeed(requestParams: Record<string, unknown>): void {
   const unsupported: string[] = [];
   for (const key of ["sort", "count", "order", "window"]) {
-    if (requestParams[key] != null && requestParams[key] !== "") {
+    if (requestParams[key] !== null && requestParams[key] !== undefined && requestParams[key] !== "") {
       unsupported.push(key);
     }
   }
@@ -113,7 +113,7 @@ export function validateCanonicalSort(
   value: unknown,
   manifestStream: ManifestStreamLike | null | undefined
 ): ResolvedSort | null {
-  if (value == null || value === "") {
+  if (value === null || value === undefined || value === "") {
     return null;
   }
   const raw = Array.isArray(value) ? value.join(",") : String(value);
@@ -148,13 +148,13 @@ export function validateCanonicalSort(
       err.param = "sort";
       throw err;
     }
-    resolved = { field, direction };
+    resolved = { direction, field };
   }
   return resolved;
 }
 
 export function parsePageOrder(rawOrder: unknown): SortDirection {
-  if (rawOrder == null || rawOrder === "") {
+  if (rawOrder === null || rawOrder === undefined || rawOrder === "") {
     return "DESC";
   }
   if (rawOrder === "asc") {
@@ -178,7 +178,7 @@ export function parsePageOrder(rawOrder: unknown): SortDirection {
  */
 export function resolveListOrder(rawOrder: unknown, resolvedSort: ResolvedSort | null): SortDirection {
   if (resolvedSort) {
-    if (rawOrder != null && rawOrder !== "") {
+    if (rawOrder !== null && rawOrder !== undefined && rawOrder !== "") {
       const legacyOrder = parsePageOrder(rawOrder);
       if (legacyOrder !== resolvedSort.direction) {
         const err = invalidQueryError(

@@ -28,7 +28,7 @@
  */
 
 import { getOne, referenceQueries } from "../lib/db.ts";
-import { assertRecordIdentity, normalizePrimaryKey } from "./record-expand-helpers.js";
+import { assertRecordIdentity, normalizePrimaryKey } from "./record-expand-helpers.ts";
 
 // Row shape returned by the manifest lookup query: a single `manifest`
 // column holding the JSON-serialized connector manifest (or absent).
@@ -71,6 +71,7 @@ export function getManifestConsentTimeField(connectorId: string, streamName: str
   } catch {
     return null;
   }
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const stream = Array.isArray(manifest?.streams)
     ? (manifest.streams as ManifestStreamShape[]).find((candidate) => candidate?.name === streamName)
     : null;
@@ -125,6 +126,7 @@ export function computeIngestSemanticTime(
   } catch {
     return effectiveEmittedAt;
   }
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const stream = Array.isArray(manifest?.streams)
     ? (manifest.streams as ManifestStreamShape[]).find((candidate) => candidate?.name === streamName)
     : null;
@@ -164,6 +166,7 @@ export function getManifestPrimaryKeyFields(connectorId: string, streamName: str
   } catch {
     return null;
   }
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const stream = Array.isArray(manifest?.streams)
     ? (manifest.streams as ManifestStreamShape[]).find((candidate) => candidate?.name === streamName)
     : null;

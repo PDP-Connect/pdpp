@@ -32,34 +32,34 @@
  */
 
 export interface RefApprovalConsentGrantPreview {
+  readonly access_mode: string | null;
   readonly connector_id: string | null;
   readonly provider_id: string | null;
-  readonly access_mode: string | null;
   readonly purpose_code: string | null;
   readonly purpose_description: string | null;
   readonly streams: unknown[];
 }
 
 export interface RefApprovalConsent {
-  readonly object: "approval";
   readonly approval_id: string;
-  readonly kind: "consent";
   readonly client_id: string | null;
-  readonly request_uri: null;
-  readonly user_code: null;
   readonly created_at: string;
   readonly grant_preview: RefApprovalConsentGrantPreview;
+  readonly kind: "consent";
+  readonly object: "approval";
+  readonly request_uri: null;
+  readonly user_code: null;
 }
 
 export interface RefApprovalOwnerDevice {
-  readonly object: "approval";
   readonly approval_id: string;
-  readonly kind: "owner_device";
   readonly client_id: string;
-  readonly request_uri: null;
-  readonly user_code: null;
   readonly created_at: string;
   readonly grant_preview: null;
+  readonly kind: "owner_device";
+  readonly object: "approval";
+  readonly request_uri: null;
+  readonly user_code: null;
 }
 
 export type RefApproval = RefApprovalConsent | RefApprovalOwnerDevice;
@@ -72,12 +72,12 @@ export interface RefApprovalsListDependencies {
    * future regression in the dependency cannot leak the device-code-
    * equivalent secrets).
    */
-  listPendingApprovals(): Promise<readonly RefApproval[]> | readonly RefApproval[];
+  listPendingApprovals: () => Promise<readonly RefApproval[]> | readonly RefApproval[];
 }
 
 export interface RefApprovalsListEnvelope {
-  readonly object: "list";
   readonly data: RefApproval[];
+  readonly object: "list";
 }
 
 function compareCreatedAtDesc(left: RefApproval, right: RefApproval): number {
@@ -97,23 +97,21 @@ function compareCreatedAtDesc(left: RefApproval, right: RefApproval): number {
  * headers, or framework.
  */
 export async function executeRefApprovalsList(
-  dependencies: RefApprovalsListDependencies,
+  dependencies: RefApprovalsListDependencies
 ): Promise<RefApprovalsListEnvelope> {
   const approvals = await dependencies.listPendingApprovals();
   const data: RefApproval[] = [...approvals];
 
   for (const approval of data) {
     if (approval.request_uri !== null || approval.user_code !== null) {
-      throw new Error(
-        "ref.approvals.list: dependency leaked request_uri or user_code; both MUST be null",
-      );
+      throw new Error("ref.approvals.list: dependency leaked request_uri or user_code; both MUST be null");
     }
   }
 
   data.sort(compareCreatedAtDesc);
 
   return {
-    object: "list",
     data,
+    object: "list",
   };
 }

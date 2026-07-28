@@ -2,29 +2,29 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /** A grouped `COUNT(*) AS n` row from an index-count query. */
-interface CountRow {
+export interface CountRow {
   n?: number | string | null;
 }
 
 /** Maps a declared field name to its JSON path expression. */
-type JsonPathForField = (field: string) => string;
+export type JsonPathForField = (field: string) => string;
 
 /** The dynamic-SQL escape hatch (`iterateDynamicSqlAcknowledged`), narrowed to count rows. */
 type IterateDynamicSql = (sql: string, params: unknown[]) => Iterable<CountRow>;
 
-export function sumCountRows(rows: Iterable<CountRow> | null | undefined): number {
+export function sumCountRows(rows: Iterable<CountRow | null> | null | undefined): number {
   return Array.from(rows || []).reduce((total, row) => total + Number(row?.n || 0), 0);
 }
 
 export function sqliteFieldPathCte(
-  declaredFields: readonly string[] | undefined,
+  declaredFields: readonly string[] | null | undefined,
   jsonPathForField: JsonPathForField
 ): { fields: string[]; valuesSql: string; binds: (string | number)[] } {
   const fields = Array.isArray(declaredFields) ? declaredFields : [];
   return {
+    binds: fields.flatMap((field, index) => [index, field, jsonPathForField(field)]),
     fields,
     valuesSql: fields.map(() => "(?, ?, ?)").join(", "),
-    binds: fields.flatMap((field, index) => [index, field, jsonPathForField(field)]),
   };
 }
 

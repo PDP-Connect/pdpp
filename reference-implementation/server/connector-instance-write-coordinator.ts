@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { createHash } from "node:crypto";
-import { getPostgresLockPool, getPostgresLockPoolCapacity, isPostgresStorageBackend } from "./postgres-storage.js";
+import { getPostgresLockPool, getPostgresLockPoolCapacity, isPostgresStorageBackend } from "./postgres-storage.ts";
 
 const DEFAULT_ACTIVE_LIMIT = 4;
 const DEFAULT_QUEUE_LIMIT = 16;
@@ -34,17 +34,20 @@ interface Waiter {
 }
 
 interface PostgresLockClient {
-  query(sql: string, params: readonly unknown[]): Promise<{ rows: Array<{ acquired?: boolean; unlocked?: boolean }> }>;
-  release(error?: boolean): void;
+  query: (
+    sql: string,
+    params: readonly unknown[]
+  ) => Promise<{ rows: Array<{ acquired?: boolean; unlocked?: boolean }> }>;
+  release: (error?: boolean) => void;
 }
 
 interface ManagedPostgresLockClient {
   readonly client: PostgresLockClient;
-  dispose(poison: boolean): void;
+  dispose: (poison: boolean) => void;
 }
 
 interface PostgresLockPool {
-  connect(): Promise<PostgresLockClient>;
+  connect: () => Promise<PostgresLockClient>;
 }
 
 interface KeyedGate {
@@ -78,7 +81,10 @@ export function __setConnectorInstancePostgresLockPoolForTest(
 /** Narrow deterministic ordering seam; production never installs a hook. */
 export function __setConnectorInstanceWritePhaseHookForTest(
   hook:
-    | ((stage: "before_key_acquire" | "after_acquire", context: { connectorInstanceId: string }) => Promise<void> | void)
+    | ((
+        stage: "before_key_acquire" | "after_acquire",
+        context: { connectorInstanceId: string }
+      ) => Promise<void> | void)
     | null
 ): void {
   writePhaseHookForTest = hook;
@@ -126,7 +132,7 @@ function boundedWait(waiters: Waiter[]): Promise<void> {
       removeWaiter(waiters, waiter);
       reject(new ConnectorInstanceAdmissionError());
     }, lockWaitMs());
-    waiter = { resolve, reject, timer };
+    waiter = { reject, resolve, timer };
     waiters.push(waiter);
   });
 }
@@ -270,13 +276,14 @@ async function acquirePostgresAdvisoryLock(connectorInstanceId: string) {
   const deadline = performance.now() + lockWaitMs();
   try {
     while (performance.now() < deadline) {
+      // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
       const attempt = await boundedQuery<{ rows: Array<{ acquired?: boolean }> }>(
         managed,
         "SELECT pg_try_advisory_lock($1::bigint) AS acquired",
         [key]
       );
       if (attempt.rows[0]?.acquired) {
-        return { managed, key };
+        return { key, managed };
       }
       await delay(25);
     }
@@ -337,6 +344,7 @@ export async function withConnectorInstanceWrite<T>(
   }
 
   await acquireAdmission();
+  // biome-ignore lint/suspicious/noShadow: The local name follows the external payload vocabulary at this boundary.
   let releaseKey: (() => void) | null = null;
   let postgresLock: Awaited<ReturnType<typeof acquirePostgresAdvisoryLock>> | null = null;
   let nextOwnership: ConnectorInstanceWriteOwnership | null = null;
@@ -365,10 +373,41 @@ export async function withConnectorInstanceWrite<T>(
   }
 }
 
+/**
+ * Serialize a control-plane mutation with the same per-instance exclusion as
+ * writers, without consuming an ingest writer-admission slot. This preserves
+ * delete/upsert ordering while allowing enrollment to proceed when unrelated
+ * bulk ingest has saturated the bounded data-plane admission gate.
+ */
+export async function withConnectorInstanceControlPlaneWrite<T>(
+  connectorInstanceId: string,
+  operation: () => Promise<T>
+): Promise<T> {
+  if (!connectorInstanceId) {
+    throw new Error("connector_instance_id is required for control-plane write coordination");
+  }
+
+  // biome-ignore lint/suspicious/noShadow: The local name follows the external payload vocabulary at this boundary.
+  let releaseKey: (() => void) | null = null;
+  let postgresLock: Awaited<ReturnType<typeof acquirePostgresAdvisoryLock>> | null = null;
+  try {
+    releaseKey = await acquireKey(connectorInstanceId);
+    if (postgresCoordinationEnabled()) {
+      postgresLock = await acquirePostgresAdvisoryLock(connectorInstanceId);
+    }
+    return await operation();
+  } finally {
+    if (postgresLock) {
+      await releasePostgresAdvisoryLock(postgresLock);
+    }
+    releaseKey?.();
+  }
+}
+
 export function connectorInstanceWriteCoordinatorStatsForTests() {
   return {
-    activeWriters,
     activeOwnerships: activeOwnerships.size,
+    activeWriters,
     keyedEntries: keyedGates.size,
     queuedWriters: admissionWaiters.length,
   };

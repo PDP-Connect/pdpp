@@ -25,7 +25,7 @@ import {
   getOwnerDeviceAuthorizationByUserCode,
   getOwnerDeviceAuthRowByApprovalId,
   initiateOwnerDeviceAuthorization,
-} from '../auth.js';
+} from "../auth.ts";
 
 /**
  * Construct the storage-backed `OwnerDeviceAuthStore`.
@@ -40,49 +40,6 @@ import {
 export function createOwnerDeviceAuthStore(): unknown {
   return {
     /**
-     * Initiate an owner device-authorization request and return the
-     * RFC 8628-shaped envelope (device_code, user_code, verification_uri,
-     * verification_uri_complete, interval, expires_in, trace_context).
-     *
-     * @param {string} clientId
-     * @param {object} [opts]  baseUrl, expiresIn, interval, scenarioId
-     * @returns {Promise<object>}
-     */
-    async initiate(
-      clientId: string,
-      opts?: { baseUrl?: string; expiresIn?: number; interval?: number; scenarioId?: string },
-    ): Promise<unknown> {
-      return initiateOwnerDeviceAuthorization(clientId, opts);
-    },
-
-    /**
-     * Resolve the public verification-UI view for the given user_code.
-     * Returns `null` when the row is not pending (terminal state) or
-     * has expired. The view exposes only the fields the verification UI
-     * needs (no token, no device_code, no subject).
-     *
-     * @param {string} userCode
-     * @returns {Promise<object | null>}
-     */
-    async getByUserCode(userCode: string): Promise<unknown> {
-      return getOwnerDeviceAuthorizationByUserCode(userCode);
-    },
-
-    /**
-     * Resolve the control-plane row for the given approval id. The
-     * approval id is the opaque, non-redeemable public handle used by
-     * the `_ref/approvals` projection. Returns the raw lifecycle fields
-     * (status, client_id, subject_id, ...); route handlers are
-     * responsible for projecting that to a non-leaky shape.
-     *
-     * @param {string} approvalId
-     * @returns {Promise<object | null>}
-     */
-    async getByApprovalId(approvalId: string): Promise<unknown> {
-      return getOwnerDeviceAuthRowByApprovalId(approvalId);
-    },
-
-    /**
      * Approve an owner device-authorization and mint an owner token.
      * Throws a typed PDPP error (`code: 'not_found' | 'invalid_client'`)
      * when the row is missing, terminal, expired, or bound to an unknown
@@ -92,6 +49,7 @@ export function createOwnerDeviceAuthStore(): unknown {
      * @param {string} [subjectId]  defaults to 'owner_local'
      * @returns {Promise<{ access_token: string, token_type: 'Bearer', expires_in: number, subject_id: string }>}
      */
+    // biome-ignore lint/suspicious/useAwait: The async signature is part of this caller-facing contract.
     async approve(userCode: string, subjectId?: string): Promise<unknown> {
       return approveOwnerDeviceAuthorization(userCode, subjectId);
     },
@@ -107,6 +65,7 @@ export function createOwnerDeviceAuthStore(): unknown {
      * @param {string} [subjectId]  defaults to 'owner_local'
      * @returns {Promise<void>}
      */
+    // biome-ignore lint/suspicious/useAwait: The async signature is part of this caller-facing contract.
     async deny(userCode: string, subjectId?: string): Promise<void> {
       return denyOwnerDeviceAuthorization(userCode, subjectId);
     },
@@ -120,8 +79,54 @@ export function createOwnerDeviceAuthStore(): unknown {
      * @param {{ clientId: string, deviceCode: string }} input
      * @returns {Promise<{ access_token: string, token_type: 'Bearer', expires_in: number, trace_context: object | null }>}
      */
+    // biome-ignore lint/suspicious/useAwait: The async signature is part of this caller-facing contract.
     async exchangeDeviceCode({ clientId, deviceCode }: { clientId: string; deviceCode: string }): Promise<unknown> {
       return exchangeOwnerDeviceCode({ clientId, deviceCode });
+    },
+
+    /**
+     * Resolve the control-plane row for the given approval id. The
+     * approval id is the opaque, non-redeemable public handle used by
+     * the `_ref/approvals` projection. Returns the raw lifecycle fields
+     * (status, client_id, subject_id, ...); route handlers are
+     * responsible for projecting that to a non-leaky shape.
+     *
+     * @param {string} approvalId
+     * @returns {Promise<object | null>}
+     */
+    // biome-ignore lint/suspicious/useAwait: The async signature is part of this caller-facing contract.
+    async getByApprovalId(approvalId: string): Promise<unknown> {
+      return getOwnerDeviceAuthRowByApprovalId(approvalId);
+    },
+
+    /**
+     * Resolve the public verification-UI view for the given user_code.
+     * Returns `null` when the row is not pending (terminal state) or
+     * has expired. The view exposes only the fields the verification UI
+     * needs (no token, no device_code, no subject).
+     *
+     * @param {string} userCode
+     * @returns {Promise<object | null>}
+     */
+    // biome-ignore lint/suspicious/useAwait: The async signature is part of this caller-facing contract.
+    async getByUserCode(userCode: string): Promise<unknown> {
+      return getOwnerDeviceAuthorizationByUserCode(userCode);
+    },
+    /**
+     * Initiate an owner device-authorization request and return the
+     * RFC 8628-shaped envelope (device_code, user_code, verification_uri,
+     * verification_uri_complete, interval, expires_in, trace_context).
+     *
+     * @param {string} clientId
+     * @param {object} [opts]  baseUrl, expiresIn, interval, scenarioId
+     * @returns {Promise<object>}
+     */
+    // biome-ignore lint/suspicious/useAwait: The async signature is part of this caller-facing contract.
+    async initiate(
+      clientId: string,
+      opts?: { baseUrl?: string; expiresIn?: number; interval?: number; scenarioId?: string }
+    ): Promise<unknown> {
+      return initiateOwnerDeviceAuthorization(clientId, opts);
     },
   };
 }

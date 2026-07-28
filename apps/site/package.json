@@ -16,7 +16,7 @@
     "start": "next start",
     "types:check": "node scripts/sync-spec-docs.mjs && fumadocs-mdx && next typegen && tsc --noEmit",
     "test": "node --test --import tsx \"scripts/*.test.ts\" \"src/**/*.test.ts\"",
-    "check": "ultracite check",
+    "check": "ultracite check && pnpm --dir ../.. generated-artifacts:check",
     "fix": "ultracite fix",
     "verify": "pnpm types:check && pnpm test && pnpm check && pnpm build"
   },

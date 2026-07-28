@@ -60,8 +60,13 @@ pre-commit:
     # are blocked. Grandfathered call sites remain tracked by OpenSpec.
 
     - name: reference-implementation:complexity-mass-ratchet
-      glob: "reference-implementation/{lib,server,runtime}/**/*.{ts,tsx,js,jsx}"
-      run: node reference-implementation/scripts/quality-ratchet/check-mass-ratchet.mjs --files "{staged_files}"
+      # NOTE: `**/*.{ext}` requires at least one intermediate directory in
+      # lefthook's doublestar glob engine, so it silently never matched
+      # files directly inside lib/server/runtime (e.g. runtime/attention.ts) —
+      # only files nested one level deeper. `**.{ext}` (no slash before the
+      # extension group) matches both depths.
+      glob: "reference-implementation/{lib,server,runtime}/**.{ts,tsx,js,jsx}"
+      run: node reference-implementation/scripts/quality-ratchet/check-mass-ratchet.ts --files "{staged_files}"
     - name: reference-implementation:no-direct-prepare
       # Direct `db.prepare(sql)` is forbidden outside three legitimate
       # locations:
@@ -73,23 +78,28 @@ pre-commit:
       # Everywhere else, use the typed wrapper primitives (`getOne` /
       # `getMany` / `iterate` / `exec` / `allowUnboundedReadAcknowledged` /
       # `iterateDynamicSqlAcknowledged`) exported from `lib/db.ts`.
-      glob: "reference-implementation/{lib,server,runtime,cli}/**/*.{ts,js}"
-      run: |
-        offending=$(echo "{staged_files}" | tr ' ' '\n' \
-          | grep -v '^reference-implementation/lib/db\.ts$' \
-          | grep -v '^reference-implementation/server/db\.js$' \
-          | grep -v '^reference-implementation/server/queries/index\.ts$' \
-          | grep -v '^$')
-        if [ -z "$offending" ]; then exit 0; fi
-        if echo "$offending" | xargs grep -nE '(^|[^a-zA-Z_])(db|getDb\(\))\.prepare\(' 2>/dev/null; then
-          echo "✗ Direct .prepare(...) is forbidden outside the wrapper."
-          echo "  Use the typed wrapper primitives from lib/db.ts:"
-          echo "    getOne, getMany, iterate, exec,"
-          echo "    allowUnboundedReadAcknowledged, iterateDynamicSqlAcknowledged."
-          echo "  Spec: openspec/specs/reference-implementation-architecture/spec.md"
-          echo "  Requirement: 'New direct DB prepare usage SHALL be blocked at the staged-file boundary'"
-          exit 1
-        fi
+      #
+      # NOTE: `**/*.{ext}` requires at least one intermediate directory in
+      # lefthook's doublestar glob engine, so it silently never matched files
+      # directly inside lib/server/runtime/cli (e.g. lib/db.ts, server/db.js,
+      # cli/index.js) — only files nested one level deeper. This made the
+      # exemption list below for lib/db.ts and server/db.js dead code, since
+      # neither file was ever selected for inspection in the first place.
+      # `**.{ext}` (no slash before the extension group) matches both depths.
+      #
+      # The check moved out of an inline grep into
+      # reference-implementation/scripts/check-direct-prepare-conformance.ts.
+      # Same policy, same regex, same three whole-file exemptions above — the
+      # only change is granularity: grandfathered call sites are pinned at
+      # exact (path, line) in scripts/direct-prepare-allowlist.ts rather than
+      # exempting a whole file forever. The rule still fires on any NEW
+      # direct-prepare anywhere, INCLUDING a new one inside an allowlisted
+      # file, and additionally fails on a STALE allowlist row (the pinned
+      # site moved or was migrated) so exceptions cannot be carried silently.
+      # Shape mirrors packages/polyfill-connectors' noAwaitInLoops allowlist +
+      # conformance gate.
+      glob: "reference-implementation/{lib,server,runtime,cli}/**.{ts,js}"
+      run: node reference-implementation/scripts/check-direct-prepare-conformance.ts {staged_files}
 
     # The escape hatches `allowUnboundedReadAcknowledged` and
     # `iterateDynamicSqlAcknowledged` are intentionally long and grep-
@@ -120,6 +130,20 @@ pre-push:
     - name: reference-implementation:typecheck
       glob: "reference-implementation/**/*.{ts,tsx}"
       run: pnpm --dir reference-implementation run typecheck
+
+    # Fail-closed inventory-closure check: every tracked file that
+    # classifies as an executable test must be planned by exactly one suite
+    # or explicitly (and non-expired) excluded. Fast (git-derived
+    # classification only, no test execution — well under a second on this
+    # repo), so it fits the pre-push "fast gate only" budget alongside the
+    # reference-implementation typecheck above. Scoped to changes that can
+    # actually move the inventory: the accounting scripts themselves or the
+    # manifest. CI (.github/workflows/test-accounting.yml) runs the same
+    # check plus the accounting scripts' own unit tests as the durable
+    # required gate; this is the fast local catch before a push.
+    - name: test-accounting:inventory-closure
+      glob: "{scripts/test-accounting/**,test-accounting.manifest.json}"
+      run: pnpm test-accounting:inventory
 
     # Non-blocking OpenSpec archive-rot warning. Surfaces changes under
     # openspec/changes/ that look archive-due (implementation done, or their

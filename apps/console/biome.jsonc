@@ -41,6 +41,25 @@
   },
   "overrides": [
     {
+      // Public service-worker JS is a TypeScript-emitted browser artifact.
+      // Keep it in selection; generated-artifacts:check is its byte oracle.
+      "includes": ["public/pdpp-dashboard-sw.js"],
+      "formatter": { "enabled": false },
+      "assist": { "actions": { "source": { "organizeImports": "off" } } },
+      "linter": { "enabled": false }
+    },
+    {
+      // These two console call sites intentionally retain the package export's
+      // emitted `.js` specifier. The source is resolved by the app's tsx/Next
+      // loader and the package build rewrites the same boundary; keep the
+      // files selected while the package's source/runtime contract is split.
+      "includes": [
+        "src/lib/agent-skills/catalog.test.ts",
+        "src/lib/pdpp-cli-command.ts"
+      ],
+      "linter": { "rules": { "correctness": { "useImportExtensions": "off" } } }
+    },
+    {
       // Upstream Biome resolver false-positive waiver — NOT a doctrine change.
       //
       // Biome's noUnresolvedImports resolver misreports 21 imports in this

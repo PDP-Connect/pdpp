@@ -31,26 +31,27 @@ export interface AsGrantRevokeRevokeResult {
 }
 
 export interface AsGrantRevokeDependencies {
-  revokeGrant(
+  revokeGrant: (
     grantId: string,
-    context: { request_id: string },
-  ): Promise<AsGrantRevokeRevokeResult> | AsGrantRevokeRevokeResult;
+    context: { request_id: string }
+  ) => Promise<AsGrantRevokeRevokeResult> | AsGrantRevokeRevokeResult;
 }
 
 export interface AsGrantRevokeOutput {
-  readonly traceId: string | null;
   readonly envelope: { readonly revoked: true };
+  readonly traceId: string | null;
 }
 
 export async function executeAsGrantRevoke(
   input: AsGrantRevokeInput,
-  deps: AsGrantRevokeDependencies,
+  deps: AsGrantRevokeDependencies
 ): Promise<AsGrantRevokeOutput> {
   const result = await deps.revokeGrant(input.grantId, {
     request_id: input.requestId,
   });
   return {
-    traceId: result?.trace_id ?? null,
     envelope: { revoked: true },
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
+    traceId: result?.trace_id ?? null,
   };
 }

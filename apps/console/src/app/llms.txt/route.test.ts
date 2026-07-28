@@ -11,7 +11,8 @@ import { GET as getIndex } from "./route.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const NEXT_CONFIG_FILE = path.resolve(HERE, "..", "..", "..", "next.config.mjs");
-const LLMS_REWRITE_PAIR = /source:\s*['"]\/\.well-known\/llms\.txt['"][\s\S]*?destination:\s*['"]\/llms\.txt['"]/;
+const LLMS_REWRITE_DESTINATION = /\bdestination:\s*['"]\/llms\.txt['"]/;
+const LLMS_REWRITE_SOURCE = /\bsource:\s*['"]\/\.well-known\/llms\.txt['"]/;
 const TEXT_MARKDOWN = /^text\/markdown/;
 const LLMS_HEADING = /# PDPP operator agent entrypoints/;
 const DATA_ACCESS_SKILL_PATH = /\/\.well-known\/skills\/pdpp-data-access\/SKILL\.md/;
@@ -22,6 +23,13 @@ const DATA_ACCESS_SKILL_BODY_HEADING = /## docs\/agent-skills\/pdpp-data-access\
 const DATA_ACCESS_SKILL_FRONTMATTER = /name: pdpp-data-access/;
 const OWNER_AGENT_SKILL_BODY_HEADING = /## docs\/agent-skills\/pdpp-owner-agent\/SKILL\.md/;
 const OWNER_AGENT_SKILL_FRONTMATTER = /name: pdpp-owner-agent/;
+
+function hasLlmsRewrite(nextConfig: string): boolean {
+  return [...nextConfig.matchAll(/\{[^{}]*\}/g)].some((rewrite) => {
+    const [object] = rewrite;
+    return object !== undefined && LLMS_REWRITE_SOURCE.test(object) && LLMS_REWRITE_DESTINATION.test(object);
+  });
+}
 
 test("console /llms.txt exposes same-origin agent skill pointers", async () => {
   const response = await getIndex();
@@ -50,5 +58,5 @@ test("console /llms-full.txt serves the bundled skill bodies", async () => {
 
 test("console rewrites .well-known llms alias to the routable handler", () => {
   const nextConfig = readFileSync(NEXT_CONFIG_FILE, "utf8");
-  assert.match(nextConfig, LLMS_REWRITE_PAIR, "next.config.mjs must rewrite /.well-known/llms.txt to /llms.txt");
+  assert.equal(hasLlmsRewrite(nextConfig), true, "next.config.mjs must rewrite /.well-known/llms.txt to /llms.txt");
 });

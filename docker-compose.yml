@@ -201,9 +201,9 @@ services:
   # setting PDPP_STORAGE_BACKEND=postgres and PDPP_DATABASE_URL in
   # .env.docker; otherwise the reference falls back to the SQLite default.
   # Used by env-gated conformance/runtime proofs such as
-  # `reference-implementation/test/connector-state-scheduler-conformance-postgres.test.js`,
-  # `reference-implementation/test/consent-device-auth-conformance-postgres.test.js`,
-  # and `reference-implementation/test/postgres-runtime-storage.test.js`
+  # `reference-implementation/test/connector-state-scheduler-conformance-postgres.test.ts`,
+  # `reference-implementation/test/consent-device-auth-conformance-postgres.test.ts`,
+  # and `reference-implementation/test/postgres-runtime-storage.test.ts`
   # (see openspec/changes/add-postgres-runtime-storage).
   postgres:
     image: ${PDPP_POSTGRES_IMAGE:-pgvector/pgvector:pg16}

@@ -1,7 +1,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { normalizePrimaryKey } from "./record-expand-helpers.js";
+import { normalizePrimaryKey } from "./record-expand-helpers.ts";
 import { coerceComparableValue, type FieldSchema, getFieldSchema } from "./schema-coercion.ts";
 
 interface ManifestStreamShape {
@@ -35,8 +35,8 @@ function compareCursorPositions(
   const fieldSchema = getFieldSchema(manifestStream, cursorField);
   const leftCursorValue = left?.cursor_value;
   const rightCursorValue = right?.cursor_value;
-  const leftMissing = leftCursorValue == null || leftCursorValue === "";
-  const rightMissing = rightCursorValue == null || rightCursorValue === "";
+  const leftMissing = leftCursorValue === null || leftCursorValue === "";
+  const rightMissing = rightCursorValue === null || rightCursorValue === "";
   if (leftMissing !== rightMissing) {
     // Missing bucket is after present in ASC, before in DESC.
     return (leftMissing ? 1 : -1) * direction;
@@ -55,7 +55,12 @@ function comparePrimaryKeyPositions(
 ): number {
   const primaryKeyFields = normalizePrimaryKey(manifestStream?.primary_key);
   for (let i = 0; i < primaryKeyFields.length; i += 1) {
-    const fieldSchema = getFieldSchema(manifestStream, primaryKeyFields[i]);
+    const field = primaryKeyFields[i];
+    if (field === undefined) {
+      continue;
+    }
+    const fieldSchema = getFieldSchema(manifestStream, field);
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     const cmp = compareComparableValues(left?.primary_key?.[i], right?.primary_key?.[i], fieldSchema);
     if (cmp !== 0) {
       return cmp * direction;

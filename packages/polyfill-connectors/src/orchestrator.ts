@@ -223,7 +223,7 @@ export interface StartEmbeddedServerOptions {
 export async function startEmbeddedServer({
   dbPath = join(PACKAGE_ROOT, ".pdpp-data/pdpp.sqlite"),
 }: StartEmbeddedServerOptions = {}): Promise<unknown> {
-  const { startServer } = (await import(join(REFERENCE_IMPL_DIR, "server/index.js"))) as {
+  const { startServer } = (await import(join(REFERENCE_IMPL_DIR, "server/index.ts"))) as {
     startServer: (opts: Record<string, unknown>) => Promise<unknown>;
   };
   // Ensure dir exists
@@ -252,7 +252,7 @@ export async function loadPriorState(
   ownerToken: string,
   connectorId: string
 ): Promise<Record<string, unknown> | null> {
-  const { loadSyncState } = (await import(join(REFERENCE_IMPL_DIR, "runtime/index.js"))) as {
+  const { loadSyncState } = (await import(join(REFERENCE_IMPL_DIR, "runtime/index.ts"))) as {
     loadSyncState: (args: {
       connectorId: string;
       ownerToken: string;
@@ -287,7 +287,7 @@ export async function runOne(
   const state = await loadPriorState(rsUrl, ownerToken, manifest.connector_id).catch((): null => null);
   const collectionMode = state && Object.keys(state).length ? "incremental" : "full_refresh";
 
-  const { runConnector } = (await import(join(REFERENCE_IMPL_DIR, "runtime/index.js"))) as {
+  const { runConnector } = (await import(join(REFERENCE_IMPL_DIR, "runtime/index.ts"))) as {
     runConnector: (args: Record<string, unknown>) => Promise<unknown>;
   };
   const result = await runConnector({

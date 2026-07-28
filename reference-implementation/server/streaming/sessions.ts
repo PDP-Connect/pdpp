@@ -7,6 +7,7 @@
  * The reference routes own a snake_case wire contract. Keep that shape at this
  * boundary while delegating the token/session lifecycle to the generic store.
  */
+// biome-ignore lint/correctness/noUnresolvedImports: Biome cannot resolve this installed package export; Node and TypeScript resolve it.
 import { createSurfaceSessionStore, type SurfaceSessionRecord } from "@opendatalabs/remote-surface/server";
 
 interface StreamingSessionRecord {
@@ -59,29 +60,29 @@ interface GetStreamingSessionSummaryRequest {
 }
 
 interface StreamingSessionStore {
-  attach(request: AttachStreamingSessionRequest): StreamingSessionRecord;
-  authorize(request: AuthorizeStreamingSessionRequest): StreamingSessionRecord;
-  getSummary(request: GetStreamingSessionSummaryRequest): StreamingSessionRecord | null;
-  invalidate(request?: InvalidateStreamingSessionRequest): StreamingSessionRecord | null;
-  mint(request?: MintStreamingSessionRequest): {
+  attach: (request: AttachStreamingSessionRequest) => StreamingSessionRecord;
+  authorize: (request: AuthorizeStreamingSessionRequest) => StreamingSessionRecord;
+  getSummary: (request: GetStreamingSessionSummaryRequest) => StreamingSessionRecord | null;
+  invalidate: (request?: InvalidateStreamingSessionRequest) => StreamingSessionRecord | null;
+  mint: (request?: MintStreamingSessionRequest) => {
     token: string;
     session: StreamingSessionRecord;
     idempotency_replayed: boolean;
   };
-  size(): number;
+  size: () => number;
 }
 
 function toStreamingSessionRecord(session: SurfaceSessionRecord): StreamingSessionRecord {
   return {
-    run_id: session.surfaceSessionId,
-    interaction_id: session.actionId,
-    browser_session_id: session.browserSessionId,
-    token_hash: session.tokenHash,
-    issued_at: session.issuedAt,
-    expires_at: session.expiresAt,
     attached_at: session.attachedAt,
+    browser_session_id: session.browserSessionId,
+    expires_at: session.expiresAt,
+    interaction_id: session.actionId,
     invalidated: session.invalidated,
     invalidated_reason: session.invalidatedReason,
+    issued_at: session.issuedAt,
+    run_id: session.surfaceSessionId,
+    token_hash: session.tokenHash,
     viewport: session.viewport,
   };
 }
@@ -90,47 +91,47 @@ export function createStreamingSessionStore(options?: StreamingSessionStoreOptio
   const store = createSurfaceSessionStore(options);
 
   return {
-    mint(request = {}) {
-      const result = store.mint({
-        surfaceSessionId: request.run_id,
-        actionId: request.interaction_id,
-        browserSessionId: request.browser_session_id,
-        viewport: request.viewport,
-        ttlMs: request.ttlMs,
-        idempotencyKey: request.idempotency_key,
-      });
-      return {
-        token: result.token,
-        session: toStreamingSessionRecord(result.session),
-        idempotency_replayed: result.idempotencyReplayed,
-      };
-    },
     attach(request) {
       return toStreamingSessionRecord(
         store.attach({
-          token: request.token,
-          surfaceSessionId: request.run_id,
           actionId: request.interaction_id,
+          surfaceSessionId: request.run_id,
+          token: request.token,
         })
       );
     },
     authorize(request) {
       return toStreamingSessionRecord(store.authorize({ token: request.token }));
     },
-    invalidate(request = {}) {
-      const session = store.invalidate({
-        surfaceSessionId: request.run_id,
+    getSummary(request) {
+      const session = store.getSummary({
         actionId: request.interaction_id,
-        reason: request.reason,
+        surfaceSessionId: request.run_id,
       });
       return session ? toStreamingSessionRecord(session) : null;
     },
-    getSummary(request) {
-      const session = store.getSummary({
-        surfaceSessionId: request.run_id,
+    invalidate(request = {}) {
+      const session = store.invalidate({
         actionId: request.interaction_id,
+        reason: request.reason,
+        surfaceSessionId: request.run_id,
       });
       return session ? toStreamingSessionRecord(session) : null;
+    },
+    mint(request = {}) {
+      const result = store.mint({
+        actionId: request.interaction_id,
+        browserSessionId: request.browser_session_id,
+        idempotencyKey: request.idempotency_key,
+        surfaceSessionId: request.run_id,
+        ttlMs: request.ttlMs,
+        viewport: request.viewport,
+      });
+      return {
+        idempotency_replayed: result.idempotencyReplayed,
+        session: toStreamingSessionRecord(result.session),
+        token: result.token,
+      };
     },
     size() {
       return store.size();

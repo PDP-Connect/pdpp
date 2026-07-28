@@ -25,6 +25,10 @@
       "!!**/*.har",
       "!!**/*.jsonl",
       "!!docs/generated",
+      // OpenAPI JSON is canonical generator output and is byte-checked by
+      // reference-contract:check-generated. Keep it out of formatter input;
+      // reference-full.openapi.json also exceeds Biome's source-size ceiling.
+      "!!openapi",
       "!!test/fixtures/*.json",
       "!!**/next-env.d.ts",
       "!!**/report.*.json"
@@ -42,5 +46,51 @@
         "useExhaustiveSwitchCases": "error"
       }
     }
-  }
+  },
+  "overrides": [
+    {
+      // server/records.ts TypeScript migration (2026-07-27). Line 120 is a
+      // deliberate single re-export (`export { resolveRecordIdentityForBinding }
+      // from "./connection-identity.ts"`) at the server package boundary — not
+      // a barrel re-export of a directory. Same class as the mcp-server override
+      // in the root biome.jsonc.
+      "includes": ["server/records.ts"],
+      "linter": {
+        "rules": {
+          "performance": {
+            "noBarrelFile": "off"
+          }
+        }
+      }
+    },
+    {
+      // server/local-transformer-child.ts (Lane C3c TypeScript migration,
+      // 2026-07-26). Same confirmed resolver-gap class as the
+      // packages/mcp-server SDK/tsx overrides in the root biome.jsonc, not
+      // real debt: `@huggingface/transformers` ships a package.json
+      // `exports` map (dist/transformers.node.mjs) that both
+      // `npx tsc --noEmit -p tsconfig.json` and
+      // `node --input-type=module -e
+      // "console.log(import.meta.resolve('@huggingface/transformers'))"`
+      // resolve cleanly; Biome's resolver reports "found directory without
+      // index" for this package's dist layout instead. `useAwait` is also
+      // disabled here: the `async ({ env, LogLevel, pipeline }) => {...}`
+      // callback passed to the dynamic `import(...)`'s `.then(...)`
+      // predates this migration (byte-identical logic to the original
+      // `.js`, only newly typed) and returns the `pipeline(...)` call's own
+      // Promise without an internal `await`; preserved as-is rather than
+      // refactored during a type-only migration.
+      "includes": ["server/local-transformer-child.ts"],
+      "linter": {
+        "rules": {
+          "correctness": {
+            "noUnresolvedImports": "off"
+          },
+          "suspicious": {
+            "useAwait": "off"
+          }
+        }
+      }
+    }
+  ]
 }

@@ -31,12 +31,12 @@
  */
 
 export interface RefClientToken {
+  readonly created_at: string;
+  readonly expires_at: string | null;
   readonly object: "owner_client_token";
   /** Non-reversible public id (digest of the bearer). Safe to render; not a credential. */
   readonly token_id_public: string;
   readonly token_kind: string;
-  readonly created_at: string;
-  readonly expires_at: string | null;
 }
 
 export interface RefClientTokensListInput {
@@ -56,12 +56,12 @@ export interface RefClientTokensListDependencies {
    * a typed `not_found`/`forbidden` error when the acting subject does not
    * own the client, which the host maps to 404/403.
    */
-  listActiveTokensForOwnerClient(): Promise<readonly RefClientToken[]> | readonly RefClientToken[];
+  listActiveTokensForOwnerClient: () => Promise<readonly RefClientToken[]> | readonly RefClientToken[];
 }
 
 export interface RefClientTokensListEnvelope {
-  readonly object: "list";
   readonly data: RefClientToken[];
+  readonly object: "list";
 }
 
 export class RefClientTokensListInvalidRequestError extends Error {
@@ -74,14 +74,14 @@ export class RefClientTokensListInvalidRequestError extends Error {
 
 export async function executeRefClientTokensList(
   input: RefClientTokensListInput,
-  dependencies: RefClientTokensListDependencies,
+  dependencies: RefClientTokensListDependencies
 ): Promise<RefClientTokensListEnvelope> {
   if (input.owner !== "true") {
     throw new RefClientTokensListInvalidRequestError();
   }
   const tokens = await dependencies.listActiveTokensForOwnerClient();
   return {
-    object: "list",
     data: [...tokens],
+    object: "list",
   };
 }

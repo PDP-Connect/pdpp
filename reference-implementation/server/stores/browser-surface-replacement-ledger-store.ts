@@ -7,27 +7,27 @@ import {
   ReplacementReplayConflictError,
   selectCurrentReplacementReceipt,
 } from "../../runtime/browser-surface/replacement-receipt-ledger.ts";
-import { getStorageBackendKind, isPostgresStorageBackend, postgresQuery } from "../postgres-storage.js";
+import { getStorageBackendKind, isPostgresStorageBackend, postgresQuery } from "../postgres-storage.ts";
 
 export interface BrowserSurfaceReplacementReceiptStore {
-  append(receipt: ReplacementReceipt): Promise<ReplacementReceipt>;
-  findPendingForScope(input: {
+  append: (receipt: ReplacementReceipt) => Promise<ReplacementReceipt>;
+  findPendingForScope: (input: {
     readonly connection_id: string;
     readonly surface_subject_id: string | null;
     readonly profile_key: string;
     readonly preferred_surface_id?: string;
-  }): Promise<ReplacementReceipt | null>;
-  findPendingForSurface(surfaceId: string): Promise<ReplacementReceipt | null>;
-  list(): Promise<readonly ReplacementReceipt[]>;
-  listForScope(input: {
+  }) => Promise<ReplacementReceipt | null>;
+  findPendingForSurface: (surfaceId: string) => Promise<ReplacementReceipt | null>;
+  list: () => Promise<readonly ReplacementReceipt[]>;
+  listForScope: (input: {
     readonly connection_id: string;
     readonly surface_subject_id?: string;
-  }): Promise<readonly ReplacementReceipt[]>;
-  selectCurrent(input: {
+  }) => Promise<readonly ReplacementReceipt[]>;
+  selectCurrent: (input: {
     readonly connection_id: string;
     readonly surface_subject_id?: string;
     readonly current_generation_hash?: string;
-  }): Promise<ReplacementReceipt | null>;
+  }) => Promise<ReplacementReceipt | null>;
 }
 
 interface ReplacementReceiptRow {
@@ -136,15 +136,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_pg_browser_surface_replacement_one_resolut
 
 function mapRow(row: ReplacementReceiptRow): ReplacementReceipt {
   const receipt = {
-    event_seq: Number(row.event_seq),
-    replacement_id: row.replacement_id,
-    idempotency_key: row.idempotency_key,
-    scope: row.scope,
-    connection_id: row.connection_id,
-    profile_key: row.profile_key,
     cause: row.cause,
-    phase: row.phase,
+    connection_id: row.connection_id,
+    event_seq: Number(row.event_seq),
+    idempotency_key: row.idempotency_key,
     observed_at: row.observed_at,
+    phase: row.phase,
+    profile_key: row.profile_key,
+    replacement_id: row.replacement_id,
+    scope: row.scope,
   } as ReplacementReceipt;
   setOptionalRowValue(receipt, "connector_id", row.connector_id);
   setOptionalRowValue(receipt, "surface_subject_id", row.surface_subject_id);
@@ -359,8 +359,11 @@ class SqliteBrowserSurfaceReplacementReceiptStore implements BrowserSurfaceRepla
 class PostgresBrowserSurfaceReplacementReceiptStore implements BrowserSurfaceReplacementReceiptStore {
   readonly #query: (sql: string, values?: readonly unknown[]) => Promise<{ rows: ReplacementReceiptRow[] }>;
 
-  constructor(query = postgresQuery) {
-    this.#query = (sql, values = []) => query(sql, [...values]) as Promise<{ rows: ReplacementReceiptRow[] }>;
+  constructor(query?: (sql: string, values?: readonly unknown[]) => Promise<{ rows: ReplacementReceiptRow[] }>) {
+    this.#query =
+      query ??
+      ((sql, values = []) =>
+        postgresQuery<ReplacementReceiptRow>(sql, [...values]) as Promise<{ rows: ReplacementReceiptRow[] }>);
   }
 
   async append(receipt: ReplacementReceipt): Promise<ReplacementReceipt> {
@@ -380,6 +383,7 @@ class PostgresBrowserSurfaceReplacementReceiptStore implements BrowserSurfaceRep
        WHERE replacement_id = $1 ORDER BY event_seq DESC LIMIT 1`,
       [receipt.replacement_id]
     );
+    // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
     const priorRow = prior.rows[0];
     if (priorRow) {
       assertSameEventIdentity(mapRow(priorRow), receipt);
@@ -539,6 +543,7 @@ function dbRow(sql: string, bind: readonly unknown[] = []): ReplacementReceiptRo
   for (const row of iterateDynamicSqlAcknowledged<ReplacementReceiptRow>(sql, bind as BindValue[])) {
     return row;
   }
+  // biome-ignore lint/complexity/noUselessReturn: required by TypeScript noImplicitReturns to make the empty result explicit.
   return;
 }
 

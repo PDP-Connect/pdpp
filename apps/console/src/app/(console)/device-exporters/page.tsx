@@ -69,7 +69,7 @@ export default async function DeviceExportersPage({
   // already validated against the supported sets, so it never names an arbitrary
   // value. The bare page (no deep-link) keeps its existing diagnostics framing.
   const addConnectionBreadcrumbs = defaultConnectorId
-    ? [{ href: "/sources", label: "Sources" }, { label: `Add ${formatConnectorKeyForDisplay(defaultConnectorId)}` }]
+    ? [{ label: "Sources", href: "/sources" }, { label: `Add ${formatConnectorKeyForDisplay(defaultConnectorId)}` }]
     : undefined;
 
   try {

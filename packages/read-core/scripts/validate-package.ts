@@ -13,6 +13,15 @@ import { type NpmRuntime, resolveNpmRuntime, runNpm } from "./npm-runtime.ts";
 
 const execFileAsync = promisify(execFile);
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const emittedJavaScriptPattern = /^\.\/dist\/.+\.js$/;
+const packageRelativePattern = /^\.\//;
+const pathSeparatorPattern = /[\\/]/;
+const testArtifactPattern = /(^|\/)\.test\./;
+const packJsonPattern = /^\[\s*\{/m;
+const scopedPackagePattern = /^@/;
+const packageNameSeparatorPattern = /\//;
+const packageEntryPattern = /^package\//;
+const lexicographicCompare = (left: string, right: string): number => left.localeCompare(right);
 
 interface PackageManifest {
   bin?: string | Record<string, string>;
@@ -20,6 +29,7 @@ interface PackageManifest {
   main?: string;
   name: string;
   types?: string;
+  version: string;
 }
 
 interface PackInfo {
@@ -30,8 +40,8 @@ export function exportedTargets(manifest: PackageManifest): string[] {
   return Object.values(manifest.exports ?? {}).flatMap((target) => (typeof target === "string" ? [target] : []));
 }
 
-export function declaredFileTargets(manifest: PackageManifest): Array<[string, string]> {
-  const targets: Array<[string, string]> = exportedTargets(manifest).map((target) => ["exports", target]);
+export function declaredFileTargets(manifest: PackageManifest): [string, string][] {
+  const targets: [string, string][] = exportedTargets(manifest).map((target) => ["exports", target]);
   if (typeof manifest.main === "string") {
     targets.push(["main", manifest.main]);
   }
@@ -51,36 +61,46 @@ export async function assertManifestTargets(manifest: PackageManifest, root: str
   const targets = exportedTargets(manifest);
   assert.ok(targets.length > 0, "package.json must declare at least one export target");
   for (const target of targets) {
-    assert.match(target, /^\.\/dist\/.+\.js$/, `export target must be emitted JavaScript: ${target}`);
+    assert.match(target, emittedJavaScriptPattern, `export target must be emitted JavaScript: ${target}`);
   }
-  for (const [field, target] of declaredFileTargets(manifest)) {
+  const declaredTargets = declaredFileTargets(manifest);
+  for (const [field, target] of declaredTargets) {
     assert.equal(
       path.isAbsolute(target) || path.win32.isAbsolute(target),
       false,
       `${field} must be package-relative: ${target}`
     );
-    assert.equal(target.split(/[\\/]/).includes(".."), false, `${field} must stay within the package: ${target}`);
-    await stat(path.join(root, target.replace(/^\.\//, "")));
+    assert.equal(
+      target.split(pathSeparatorPattern).includes(".."),
+      false,
+      `${field} must stay within the package: ${target}`
+    );
   }
+  await Promise.all(
+    declaredTargets.map(([, target]) => stat(path.join(root, target.replace(packageRelativePattern, ""))))
+  );
 }
 
 export function assertPackedFiles(packedFiles: string[], manifest: PackageManifest): void {
   for (const [field, target] of declaredFileTargets(manifest)) {
-    assert.ok(packedFiles.includes(target.replace(/^\.\//, "")), `missing packed ${field} target: ${target}`);
+    assert.ok(
+      packedFiles.includes(target.replace(packageRelativePattern, "")),
+      `missing packed ${field} target: ${target}`
+    );
   }
 
   for (const file of packedFiles) {
     assert.equal(file.startsWith("src/"), false, `source file leaked into package: ${file}`);
     assert.equal(file.startsWith("test/"), false, `test file leaked into package: ${file}`);
     assert.equal(file.startsWith("scripts/"), false, `build script leaked into package: ${file}`);
-    assert.equal(/(^|\/)\.test\./.test(file), false, `test artifact leaked into package: ${file}`);
+    assert.equal(testArtifactPattern.test(file), false, `test artifact leaked into package: ${file}`);
     assert.equal(file.endsWith(".ts") && !file.endsWith(".d.ts"), false, `raw TypeScript leaked into package: ${file}`);
     assert.equal(file.endsWith(".d.ts"), false, `unexpected declaration artifact leaked into package: ${file}`);
   }
 }
 
 export function parsePackInfo(output: string): PackInfo | null {
-  const jsonStart = output.search(/^\[\s*\{/m);
+  const jsonStart = output.search(packJsonPattern);
   return jsonStart === -1 ? null : JSON.parse(output.slice(jsonStart))[0];
 }
 
@@ -95,7 +115,7 @@ export async function packAndInspect(
   tarballHash: string;
   tarballPath: string;
 }> {
-  const tarballFilename = `${manifest.name.replace(/^@/, "").replace("/", "-")}-${(manifest as unknown as { version: string }).version}.tgz`;
+  const tarballFilename = `${manifest.name.replace(scopedPackagePattern, "").replace(packageNameSeparatorPattern, "-")}-${manifest.version}.tgz`;
   const tarballPath = path.join(root, tarballFilename);
   await rm(tarballPath, { force: true });
   const npmRuntime = options.npmRuntime ?? (await resolveNpmRuntime(options.env ?? process.env));
@@ -106,10 +126,14 @@ export async function packAndInspect(
   const packedFiles = tarListing
     .split("\n")
     .filter(Boolean)
-    .map((entry) => entry.replace(/^package\//, ""))
-    .sort();
+    .map((entry) => entry.replace(packageEntryPattern, ""))
+    .sort(lexicographicCompare);
   if (packInfo) {
-    assert.deepEqual(packedFiles, packInfo.files.map((file) => file.path).sort(), "npm and tar file lists must agree");
+    assert.deepEqual(
+      packedFiles,
+      packInfo.files.map((file) => file.path).sort(lexicographicCompare),
+      "npm and tar file lists must agree"
+    );
   }
   assertPackedFiles(packedFiles, manifest);
   const tarballHash = createHash("sha256")

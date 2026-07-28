@@ -14,8 +14,7 @@ const TEST_FILE = `${HERE}components/views/standing-view-model.test.ts`;
 
 const STANDING_OVERVIEW_RENDER = /<StandingOverview\b/;
 const SHARED_SOURCE_WORK_INPUT = /sourceWork: sourceWorkFromConnectors\(connectors\)/;
-const SHARED_SOURCE_WORK_PRECEDENCE =
-  /function activeSourceWork[\s\S]*if \(sourceWorkHasRows\(input\.sourceWork\)\)[\s\S]*return input\.sourceWork/;
+const SHARED_SOURCE_WORK_AUTHORITY = /function activeSourceWork[\s\S]*return input\.sourceWork/;
 const SERVER_FLEET_VERDICT_HERO_PRECEDENCE =
   /function computeHero\(input: StandingInputs\)[\s\S]*overviewLoadIssues\.length > 0[\s\S]*const fleetHealthHero = input\.fleetHealth \? buildFleetHealthHero\(input\.fleetHealth, input\.hrefs\) : null;[\s\S]*if \(fleetHealthHero\)[\s\S]*return fleetHealthHero/;
 const SOURCE_WORK_SECTIONS_RENDERED =
@@ -43,7 +42,7 @@ test("dashboard home renders the active Standing Overview path", async () => {
 test("Standing Overview uses source work for detail while the server fleet verdict owns the aggregate hero", async () => {
   const src = await readFile(MODEL_FILE, "utf8");
 
-  assert.match(src, SHARED_SOURCE_WORK_PRECEDENCE);
+  assert.match(src, SHARED_SOURCE_WORK_AUTHORITY);
   assert.match(src, SERVER_FLEET_VERDICT_HERO_PRECEDENCE);
 });
 

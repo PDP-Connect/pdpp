@@ -214,6 +214,10 @@ export function resolveTerminalGapPolicy(connectorId: string): ProviderProfile {
 
 interface Gap {
   readonly attempt_count?: number;
+  readonly gap_id: string;
+  readonly reason?: string | null;
+  readonly status?: string;
+  readonly stream?: string;
   readonly [key: string]: unknown;
 }
 

@@ -80,7 +80,7 @@ import type {
   StreamsListDependencies,
   StreamsListSourceDescriptor,
 } from "pdpp-reference-implementation/operations/rs-streams-list";
-import { createPdppCliCommand, getPdppCliPackageInfo } from "../../../../../../packages/cli/src/package-info.js";
+import { createPdppCliCommand, getPdppCliPackageInfo } from "../../../../../../packages/cli/src/package-info.ts";
 import { buildLiveStreamMetadata } from "./builders.ts";
 import { DEMO_CONNECTORS, DEMO_GRANTS, DEMO_RECORDS, DEMO_RUNS, DEMO_STREAMS, DEMO_TRACES } from "./dataset.ts";
 import type { DemoGrantDef, DemoRecord, DemoRunDef, DemoTimelineEvent, DemoTraceDef } from "./types.ts";

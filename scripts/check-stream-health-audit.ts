@@ -25,7 +25,7 @@
 //
 // This CLI only runs the live probe — it requires an origin (via --origin
 // or PDPP_ACCEPTANCE_ORIGIN). The seeded local audit lives in the unit
-// test at reference-implementation/test/stream-health-audit.test.js
+// test at reference-implementation/test/stream-health-audit.test.ts
 // (`node --test` target, wired into CI separately).
 //
 // Live owner auth (never printed) is read from the environment. `/_ref/connectors`
@@ -95,7 +95,7 @@ async function main(): Promise<void> {
   if (!origin) {
     process.stderr.write(
       "stream-health audit: no origin supplied. Pass --origin or set PDPP_ACCEPTANCE_ORIGIN.\n" +
-        "For the seeded/local audit, run: node --test reference-implementation/test/stream-health-audit.test.js\n"
+        "For the seeded/local audit, run: node --test reference-implementation/test/stream-health-audit.test.ts\n"
     );
     process.exitCode = 1;
     return;

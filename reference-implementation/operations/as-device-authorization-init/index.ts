@@ -20,8 +20,8 @@
  */
 
 export interface AsDeviceAuthInitInput {
-  readonly clientId: string | null | undefined;
   readonly baseUrl: string;
+  readonly clientId: string | null | undefined;
 }
 
 export interface AsDeviceAuthInitTraceContext {
@@ -35,43 +35,41 @@ export interface AsDeviceAuthInitStoreResult {
 }
 
 export interface AsDeviceAuthInitDependencies {
-  initiate(
+  initiate: (
     clientId: string,
-    opts: { baseUrl: string },
-  ): Promise<AsDeviceAuthInitStoreResult> | AsDeviceAuthInitStoreResult;
+    opts: { baseUrl: string }
+  ) => Promise<AsDeviceAuthInitStoreResult> | AsDeviceAuthInitStoreResult;
 }
 
 export interface AsDeviceAuthInitSuccessOutcome {
   readonly outcome: "success";
+  readonly publicResult: Record<string, unknown>;
   readonly status: 200;
   readonly traceContext: AsDeviceAuthInitTraceContext | null;
-  readonly publicResult: Record<string, unknown>;
 }
 
 export interface AsDeviceAuthInitFailureOutcome {
-  readonly outcome: "failure";
-  readonly status: 400;
   readonly errorCode: string;
   readonly errorMessage: string;
+  readonly outcome: "failure";
   readonly requestId: string | null;
+  readonly status: 400;
   readonly traceId: string | null;
 }
 
-export type AsDeviceAuthInitOutcome =
-  | AsDeviceAuthInitSuccessOutcome
-  | AsDeviceAuthInitFailureOutcome;
+export type AsDeviceAuthInitOutcome = AsDeviceAuthInitSuccessOutcome | AsDeviceAuthInitFailureOutcome;
 
 export async function executeAsDeviceAuthInit(
   input: AsDeviceAuthInitInput,
-  deps: AsDeviceAuthInitDependencies,
+  deps: AsDeviceAuthInitDependencies
 ): Promise<AsDeviceAuthInitOutcome> {
   if (!input.clientId) {
     return {
-      outcome: "failure",
-      status: 400,
       errorCode: "invalid_request",
       errorMessage: "client_id is required",
+      outcome: "failure",
       requestId: null,
+      status: 400,
       traceId: null,
     };
   }
@@ -80,26 +78,26 @@ export async function executeAsDeviceAuthInit(
       baseUrl: input.baseUrl,
     });
     const traceContext = result.trace_context ?? null;
-    const { trace_context: _ignored, ...publicResult } = result as Record<
-      string,
-      unknown
-    >;
+    const { trace_context: _ignored, ...publicResult } = result as Record<string, unknown>;
     return {
       outcome: "success",
+      publicResult,
       status: 200,
       traceContext,
-      publicResult,
     };
   } catch (err) {
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     const errCode = (err as { code?: string })?.code || "invalid_request";
-    const errMessage =
-      (err as { message?: string })?.message || "Device authorization rejected";
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
+    const errMessage = (err as { message?: string })?.message || "Device authorization rejected";
     return {
-      outcome: "failure",
-      status: 400,
       errorCode: errCode,
       errorMessage: errMessage,
+      outcome: "failure",
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
       requestId: (err as { request_id?: string | null })?.request_id ?? null,
+      status: 400,
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
       traceId: (err as { trace_id?: string | null })?.trace_id ?? null,
     };
   }

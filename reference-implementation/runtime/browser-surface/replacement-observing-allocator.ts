@@ -7,6 +7,7 @@ import type {
   BrowserSurfaceAllocator,
   EnsureBrowserSurfaceRequest,
   StopBrowserSurfaceRequest,
+  // biome-ignore lint/correctness/noUnresolvedImports: Biome cannot resolve this installed package export; Node and TypeScript resolve it.
 } from "@opendatalabs/remote-surface/leases";
 import {
   type BrowserSurfaceReplacementLedger,
@@ -38,8 +39,8 @@ export function createReplacementObservingAllocator(
   return {
     ensureSurface: (request) => ensureSurfaceWithObservation(allocator, options, request),
     getSurfaceStatus: (surfaceId) => allocator.getSurfaceStatus(surfaceId),
-    stopSurface: (request) => stopSurfaceWithObservation(allocator, options, request),
     listSurfaces: () => allocator.listSurfaces(),
+    stopSurface: (request) => stopSurfaceWithObservation(allocator, options, request),
   };
 }
 
@@ -62,7 +63,7 @@ async function prepareEnsureObservation(
   const before = await allocator.getSurfaceStatus(request.surfaceId);
   const attemptId = options.createEnsureAttemptId?.(request) ?? randomUUID();
   const preclaimed = await startAdvertisedReplacement(options, request, before, attemptId);
-  return { before, attemptId, preclaimed };
+  return { attemptId, before, preclaimed };
 }
 
 async function performEnsureEffect(
@@ -201,9 +202,9 @@ async function recordTerminal(
   await record(
     options,
     options.ledger.terminate({
-      replacement_id: started.replacement_id,
       connection_id: started.connection_id,
       profile_key: started.profile_key,
+      replacement_id: started.replacement_id,
       ...(started.surface_subject_id ? { surface_subject_id: started.surface_subject_id } : {}),
       ...(started.surface_id ? { surface_id: started.surface_id } : {}),
       cause: started.cause,
@@ -242,10 +243,10 @@ function startStopReceipt(
     connector_id: before.connector_id,
     profile_key: before.profile_key,
     ...(before.surface_subject_id ? { surface_subject_id: before.surface_subject_id } : {}),
-    surface_id: before.surface_id,
-    previous_generation_hash: deriveOpaqueGenerationHash(before.container_id),
-    idempotency_key: `stop:${before.surface_id}:${deriveOpaqueGenerationHash(before.container_id)}:${cause}:${attemptId}`,
     cause,
+    idempotency_key: `stop:${before.surface_id}:${deriveOpaqueGenerationHash(before.container_id)}:${cause}:${attemptId}`,
+    previous_generation_hash: deriveOpaqueGenerationHash(before.container_id),
+    surface_id: before.surface_id,
   });
   return record(options, started);
 }
@@ -304,10 +305,10 @@ function correlation(input: {
   readonly surface_id?: string;
 }): ReplacementStartInput {
   const result: ReplacementStartInput = {
+    cause: "allocator_internal_ensure_surface",
     connection_id: input.surface_subject_id ?? input.connector_id,
     connector_id: input.connector_id,
     profile_key: input.profile_key,
-    cause: "allocator_internal_ensure_surface",
     ...(input.surface_subject_id === undefined ? {} : { surface_subject_id: input.surface_subject_id }),
     ...(input.surface_id === undefined ? {} : { surface_id: input.surface_id }),
   };

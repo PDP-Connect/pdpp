@@ -10,7 +10,7 @@ import { GET } from "./[...path]/route.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SKILLS_REWRITE_PAIR =
-  /source:\s*['"]\/\.well-known\/skills\/:path\*['"][\s\S]*?destination:\s*['"]\/well-known\/skills\/:path\*['"]/;
+  /\{[^{}]*(?:source:\s*['"]\/\.well-known\/skills\/:path\*['"][^{}]*destination:\s*['"]\/well-known\/skills\/:path\*['"]|destination:\s*['"]\/well-known\/skills\/:path\*['"][^{}]*source:\s*['"]\/\.well-known\/skills\/:path\*['"])[^{}]*\}/;
 
 const APPLICATION_JSON = /^application\/json/;
 const PDPP_SKILL_FRONTMATTER = /name: pdpp-data-access/;

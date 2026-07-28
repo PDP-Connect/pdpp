@@ -187,7 +187,7 @@ async function main() {
     rsPort: number;
   }
   const { startServer }: { startServer: (options: StartServerOptions) => Promise<ReferenceServer> } = await import(
-    new URL("../../../../reference-implementation/server/index.js", import.meta.url).href
+    new URL("../../../../reference-implementation/server/index.ts", import.meta.url).href
   );
   const server = await startServer({
     quiet: true,

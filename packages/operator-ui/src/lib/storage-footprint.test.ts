@@ -78,8 +78,7 @@ test("measured model never sums physical with retained", () => {
 test("measured model carries ordered relation rows with only name + size", () => {
   const model = buildStorageFootprintModel(pgDatabase(), 1000);
   assert.equal(model.relations.length, 3);
-  // biome-ignore lint/style/useDestructuring: Indexed access and property reads preserve the local guard and exact source-order reasoning here.
-  const first = model.relations[0];
+  const [first] = model.relations;
   if (!first) {
     throw new Error("expected at least one relation row");
   }

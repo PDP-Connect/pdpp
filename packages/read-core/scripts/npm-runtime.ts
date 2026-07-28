@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 const npmCandidates = process.platform === "win32" ? ["npm.cmd", "npm.exe", "npm"] : ["npm"];
+const npmVersionPattern = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
 
 export interface BoundedRuntimeEnvironment extends NodeJS.ProcessEnv {
   PATH: string;
@@ -44,16 +45,23 @@ export function boundRuntimeEnvironment({
 
 export async function resolveNpmExecutable(env: NodeJS.ProcessEnv = process.env): Promise<string> {
   const pathValue = env.PATH ?? env.Path ?? "";
-  for (const directory of pathValue.split(path.delimiter).filter(Boolean)) {
-    for (const candidate of npmCandidates) {
-      const executable = path.resolve(directory, candidate);
+  const candidates = pathValue
+    .split(path.delimiter)
+    .filter(Boolean)
+    .flatMap((directory) => npmCandidates.map((candidate) => path.resolve(directory, candidate)));
+  const checks = await Promise.all(
+    candidates.map(async (executable) => {
       try {
         await access(executable, constants.X_OK);
         return executable;
       } catch {
-        // Continue searching the PATH in the same order the process launcher uses.
+        return null;
       }
-    }
+    })
+  );
+  const resolvedExecutable = checks.find((candidate): candidate is string => candidate !== null);
+  if (resolvedExecutable) {
+    return resolvedExecutable;
   }
   throw new Error(`npm executable was not found in PATH: ${pathValue}`);
 }
@@ -61,11 +69,7 @@ export async function resolveNpmExecutable(env: NodeJS.ProcessEnv = process.env)
 export async function readNpmVersion(npmExecutable: string, env: NodeJS.ProcessEnv): Promise<string> {
   const { stdout } = await execFileAsync(npmExecutable, ["--version"], { env });
   const version = stdout.trim();
-  assert.match(
-    version,
-    /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/,
-    `npm --version must be a semantic version: ${version}`
-  );
+  assert.match(version, npmVersionPattern, `npm --version must be a semantic version: ${version}`);
   return version;
 }
 

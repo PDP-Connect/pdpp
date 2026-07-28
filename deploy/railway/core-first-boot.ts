@@ -25,7 +25,7 @@
 // equivalent of the Railway template's generated
 // PDPP_CREDENTIAL_ENCRYPTION_KEY. The key is never printed. Postgres deploys
 // keep the explicit fail-closed key contract (see
-// reference-implementation/server/stores/credential-encryption.js).
+// reference-implementation/server/stores/credential-encryption.ts).
 //
 // The password appears exactly once, in the first-boot banner on stdout
 // (`docker logs`), and in the mode-0600 file on the data volume. It is never
@@ -62,7 +62,7 @@ export function resolveDataDir(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 // Mirrors resolveStorageBackend in
-// reference-implementation/server/postgres-storage.js: explicit
+// reference-implementation/server/postgres-storage.ts: explicit
 // PDPP_STORAGE_BACKEND wins, otherwise a database URL selects Postgres.
 function usesPostgresStorage(env: NodeJS.ProcessEnv): boolean {
   const explicit = trimmedValue(env.PDPP_STORAGE_BACKEND)?.toLowerCase();

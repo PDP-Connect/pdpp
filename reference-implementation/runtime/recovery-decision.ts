@@ -179,10 +179,12 @@ export function providerWorkDomainKey(domain: ProviderWorkDomain): string {
  * domain.
  */
 export function providerWorkDomainForGap(row: RecoveryGapRow): ProviderWorkDomain | null {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const connectorId = nonEmpty(row?.connector_id);
   if (!connectorId) {
     return null;
   }
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const connectorInstanceId = nonEmpty(row?.connector_instance_id) ?? connectorId;
   return { connectorId, connectorInstanceId };
 }
@@ -257,20 +259,25 @@ export interface RecoveryGapClassification {
 }
 
 export function classifyRecoveryGap(row: RecoveryGapRow): RecoveryGapClassification {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const connectorClass = nonEmpty(row?.detail_class) ?? nonEmpty(row?.last_error?.class);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const reasonClass = classifyRecoveryReason(row?.reason);
   const recoveryClass = connectorRecoveryClass(connectorClass, reasonClass);
 
   const isSourcePressure = recoveryClass === "provider_pressure";
   return {
-    recoveryClass,
-    isSourcePressure,
-    isNonPressureRecovery: NON_PRESSURE_RECOVERY_CLASSES.has(recoveryClass),
-    workDomain: providerWorkDomainForGap(row),
-    nextEligibleAt: nonEmpty(row?.next_attempt_after),
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     attemptCount: normalizeNonNegativeInteger(row?.attempt_count, 0),
     connectorClass: connectorClass ?? null,
+    isNonPressureRecovery: NON_PRESSURE_RECOVERY_CLASSES.has(recoveryClass),
+    isSourcePressure,
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+    nextEligibleAt: nonEmpty(row?.next_attempt_after),
+    recoveryClass,
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     stream: nonEmpty(row?.stream),
+    workDomain: providerWorkDomainForGap(row),
   };
 }
 
@@ -387,7 +394,7 @@ export function resolveRecoveryAdmission(
     return denyCooldown(nonEmpty(options.domainCooldownUntil));
   }
 
-  return { ok: true, mode: "recover", workDomain };
+  return { mode: "recover", ok: true, workDomain };
 }
 
 /**
@@ -397,7 +404,7 @@ export function resolveRecoveryAdmission(
  * undefined.
  */
 function denyCooldown(nextEligibleAt: string | null): RecoveryAdmission {
-  return nextEligibleAt ? { ok: false, reason: "cooldown", nextEligibleAt } : { ok: false, reason: "cooldown" };
+  return nextEligibleAt ? { nextEligibleAt, ok: false, reason: "cooldown" } : { ok: false, reason: "cooldown" };
 }
 
 // ─── Backlog partitioning (tasks 1.4/1.5 support) ────────────────────────────
@@ -428,7 +435,7 @@ export function partitionRecoveryBacklog(rows: readonly RecoveryGapRow[]): Map<s
     const key = providerWorkDomainKey(workDomain);
     let entry = byDomain.get(key);
     if (!entry) {
-      entry = { domain: workDomain, nonPressure: [], pressure: [], blocked: [] };
+      entry = { blocked: [], domain: workDomain, nonPressure: [], pressure: [] };
       byDomain.set(key, entry);
     }
     if (classification.isSourcePressure) {
@@ -651,7 +658,7 @@ export function hasForwardEvidenceDebt(
   nowMs: number,
   scheduleIntervalMs: number
 ): boolean {
-  if (!evidence || evidence.terminal_facts?.state !== "current") {
+  if (evidence?.terminal_facts?.state !== "current") {
     return true;
   }
   const newestMs = newestFactEvidenceAsOfMs(evidence.stream_latest_facts);
@@ -699,6 +706,7 @@ export const DEFAULT_PRESSURE_EVIDENCE_WINDOW_MS = 6 * 60 * 60 * 1000;
  * so the two agree on what "when was this pressure observed" means.
  */
 export function lastPressureAtForGap(row: RecoveryGapRow): string | null {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   return nonEmpty(row?.last_attempt_at) ?? nonEmpty(row?.updated_at);
 }
 
@@ -868,6 +876,7 @@ export function summarizeRecoveryAdmissionDiagnostics(
       admission.nextEligibleAt &&
       (nextEligibleAt === null || admission.nextEligibleAt < nextEligibleAt)
     ) {
+      // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
       nextEligibleAt = admission.nextEligibleAt;
     }
   }
@@ -880,8 +889,8 @@ export function summarizeRecoveryAdmissionDiagnostics(
     next_eligible_at?: string;
     why_not_now?: RecoveryAdmissionDenialReason;
   } = {
-    candidates: candidateRows.length,
     admitted,
+    candidates: candidateRows.length,
     deferred,
   };
   if (deferred > 0) {
@@ -998,9 +1007,9 @@ export function deriveRecoveryStall(
   }
 
   const stalled = computeStalled({
+    cadenceWindowMs,
     eligibleCandidates,
     newestAttemptMs,
-    cadenceWindowMs,
     nowMs: options.nowMs,
   });
   return { eligibleCandidates, lastAttemptAt: newestAttemptIso, stalled };

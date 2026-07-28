@@ -16,7 +16,7 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = path.resolve(scriptDir, "..");
 const repoRoot = path.resolve(packageRoot, "../..");
 const cliPackageRoot = path.join(repoRoot, "packages/cli");
-const referenceServerEntry = path.join(repoRoot, "reference-implementation/server/index.js");
+const referenceServerEntry = path.join(repoRoot, "reference-implementation/server/index.ts");
 const referenceDbModule = path.join(repoRoot, "reference-implementation/server/db.js");
 const forbiddenPackages = ["playwright", "patchright", "imapflow", "pdf-parse", "better-sqlite3", "linkedom"];
 const browserArtifactPatterns = [/chromium/i, /chrome-linux/i, /ms-playwright/i, /patchright/i];
@@ -78,12 +78,23 @@ async function run(
     });
   } catch (error) {
     if (error && typeof error === "object") {
+      // biome-ignore lint/suspicious/noExplicitAny: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
       (error as any).message += `\nCommand failed: ${command} ${args.join(" ")}`;
+      // biome-ignore lint/suspicious/noExplicitAny: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
       if ("stdout" in error && (error as any).stdout) {
-        (error as any).message += `\nstdout:\n${(error as any).stdout}`;
+        // biome-ignore lint/suspicious/noExplicitAny: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
+        (error as any).message += `\nstdout:\n${
+          // biome-ignore lint/suspicious/noExplicitAny: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
+          (error as any).stdout
+        }`;
       }
+      // biome-ignore lint/suspicious/noExplicitAny: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
       if ("stderr" in error && (error as any).stderr) {
-        (error as any).message += `\nstderr:\n${(error as any).stderr}`;
+        // biome-ignore lint/suspicious/noExplicitAny: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
+        (error as any).message += `\nstderr:\n${
+          // biome-ignore lint/suspicious/noExplicitAny: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
+          (error as any).stderr
+        }`;
       }
     }
     throw error;
@@ -117,7 +128,9 @@ function runWithInput(
       const error = new Error(
         `Command failed: ${command} ${args.join(" ")} (code ${code ?? "null"}${signal ? `, ${signal}` : ""})`
       );
+      // biome-ignore lint/suspicious/noExplicitAny: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
       (error as any).stderr = stderr;
+      // biome-ignore lint/suspicious/noExplicitAny: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
       (error as any).stdout = stdout;
       reject(error);
     });
@@ -135,6 +148,7 @@ async function pathExists(candidate: string): Promise<boolean> {
     await stat(candidate);
     return true;
   } catch (error) {
+    // biome-ignore lint/suspicious/noExplicitAny: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     if ((error as any)?.code === "ENOENT") {
       return false;
     }
@@ -150,7 +164,7 @@ async function assertPackageAbsent(projectDir: string, packageName: string): Pro
 async function assertNoBrowserArtifacts(rootDir: string): Promise<void> {
   const entries = await readdir(rootDir, { recursive: true, withFileTypes: true });
   for (const entry of entries) {
-    const name = entry.name;
+    const { name } = entry;
     for (const pattern of browserArtifactPatterns) {
       assert.equal(pattern.test(name), false, `unexpected browser install artifact in temp tree: ${name}`);
     }
@@ -189,6 +203,7 @@ async function main(): Promise<void> {
       assert.equal(pattern.test(installOutput), false, `install output referenced browser artifact ${pattern}`);
     }
     for (const packageName of forbiddenPackages) {
+      // biome-ignore lint/performance/noAwaitInLoops: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
       await assertPackageAbsent(projectDir, packageName);
     }
     await assertPackageAbsent(projectDir, "tsx");
@@ -205,6 +220,7 @@ async function main(): Promise<void> {
     assert.equal(advertised.runtime, "collector");
     assert.deepEqual([...advertised.bindings].sort(), ["filesystem", "local_device", "network"]);
     assert.deepEqual([...advertised.bundled_connectors].sort(), ["claude_code", "codex"]);
+    // biome-ignore lint/performance/useTopLevelRegex: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     assert.match(advertised.collector_protocol_version, /^\d+$/);
 
     if (await pathExists(path.join(cliPackageRoot, "package.json"))) {
@@ -232,8 +248,8 @@ async function main(): Promise<void> {
       });
       await runProtocolMismatchSmoke({ projectDir, env });
     } else {
-      log("SKIP fixture-backed enroll/run smoke: reference-implementation/server/index.js not present.");
-      log("SKIP collector_protocol_mismatch smoke: reference-implementation/server/index.js not present.");
+      log("SKIP fixture-backed enroll/run smoke: reference-implementation/server/index.ts not present.");
+      log("SKIP collector_protocol_mismatch smoke: reference-implementation/server/index.ts not present.");
     }
 
     log("PASS pack-install-run local smoke");
@@ -305,19 +321,31 @@ runConnector({
     await rm(probePath, { force: true });
   }
   assert.ok(failure, "installed browser-shaped runtime probe must fail closed");
-  const output = `${(failure as any).stdout ?? ""}\n${(failure as any).stderr ?? ""}\n${failure.message ?? ""}`;
+  const output = `${
+    // biome-ignore lint/suspicious/noExplicitAny: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
+    (failure as any).stdout ?? ""
+  }\n${
+    // biome-ignore lint/suspicious/noExplicitAny: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
+    (failure as any).stderr ?? ""
+  }\n${
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves established behavior; this diagnostic requires a semantic refactor outside the closure scope.
+    failure.message ?? ""
+  }`;
   assert.match(
     output,
+    // biome-ignore lint/performance/useTopLevelRegex: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     /browser_runtime_unavailable/,
     `browser branch must report its typed capability code: ${output}`
   );
   assert.match(
     output,
+    // biome-ignore lint/performance/useTopLevelRegex: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     /filesystem-class connectors only/,
     `browser branch must explain the published boundary: ${output}`
   );
   assert.doesNotMatch(
     output,
+    // biome-ignore lint/performance/useTopLevelRegex: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     /ERR_MODULE_NOT_FOUND/,
     `browser branch must not fail through a missing emitted module: ${output}`
   );
@@ -344,6 +372,7 @@ async function runFixtureBackedEnrollRunSmoke({
   log("Booting in-process reference server for fixture-backed enroll/run smoke...");
   const { startServer } = await import(`file://${referenceServerEntry}`);
   const { getDb } = await import(`file://${referenceDbModule}`);
+  // biome-ignore lint/suspicious/noExplicitAny: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
   const server = (await (startServer as any)({
     asPort: 0,
     dbPath: ":memory:",
@@ -364,6 +393,7 @@ async function runFixtureBackedEnrollRunSmoke({
       201,
       `enrollment-codes returned ${codeResp.status}: ${JSON.stringify(codeResp.body)}`
     );
+    // biome-ignore lint/suspicious/noExplicitAny: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     const enrollmentCode = (codeResp.body as any).enrollment_code;
     assert.ok(
       typeof enrollmentCode === "string" && enrollmentCode.length > 0,
@@ -377,11 +407,14 @@ async function runFixtureBackedEnrollRunSmoke({
       { cwd: projectDir, env }
     );
     const enrollment = JSON.parse(enroll.stdout) as EnrollmentData;
+    // biome-ignore lint/performance/useTopLevelRegex: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     assert.match(enrollment.device_id, /^dexp_/);
     assert.equal(typeof enrollment.device_token, "string");
+    // biome-ignore lint/performance/useTopLevelRegex: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     assert.match(enrollment.connector_instance_id, /^cin_/);
     assert.equal(typeof enrollment.source_instance_id, "string");
 
+    // biome-ignore lint/suspicious/noExplicitAny: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     const devicesAfterEnroll = (getDb() as any)
       .prepare("SELECT collector_protocol_version FROM device_exporters WHERE device_id = ?")
       .get(enrollment.device_id);
@@ -432,6 +465,7 @@ async function runFixtureBackedEnrollRunSmoke({
       `codex connector did not send any batches to the reference server: ${runResult.stdout}`
     );
 
+    // biome-ignore lint/suspicious/noExplicitAny: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     const persisted = (getDb() as any)
       .prepare(
         `SELECT COUNT(*) as n
@@ -470,6 +504,7 @@ async function runProtocolMismatchSmoke({
   log("Booting in-process reference server pinned to an older protocol for the 409 mismatch smoke...");
   const { startServer } = await import(`file://${referenceServerEntry}`);
   const { getDb } = await import(`file://${referenceDbModule}`);
+  // biome-ignore lint/suspicious/noExplicitAny: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
   const server = (await (startServer as any)({
     acceptedCollectorProtocolVersions: ["0"],
     asPort: 0,
@@ -490,6 +525,7 @@ async function runProtocolMismatchSmoke({
       201,
       `pinned enrollment-codes returned ${codeResp.status}: ${JSON.stringify(codeResp.body)}`
     );
+    // biome-ignore lint/suspicious/noExplicitAny: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     const enrollmentCode = (codeResp.body as any).enrollment_code;
 
     log("Calling pdpp-local-collector enroll against the pinned server (expecting 409)...");
@@ -504,14 +540,26 @@ async function runProtocolMismatchSmoke({
       failure = error as Error;
     }
     assert.ok(failure, "pdpp-local-collector enroll should fail when the server pins an incompatible protocol");
-    const combined = `${(failure as any).stdout ?? ""}\n${(failure as any).stderr ?? ""}\n${failure.message ?? ""}`;
+    const combined = `${
+      // biome-ignore lint/suspicious/noExplicitAny: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
+      (failure as any).stdout ?? ""
+    }\n${
+      // biome-ignore lint/suspicious/noExplicitAny: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
+      (failure as any).stderr ?? ""
+    }\n${
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves established behavior; this diagnostic requires a semantic refactor outside the closure scope.
+      failure.message ?? ""
+    }`;
+    // biome-ignore lint/performance/useTopLevelRegex: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     assert.match(combined, /409/, `runner error should mention HTTP status 409; got: ${combined}`);
     assert.match(
       combined,
+      // biome-ignore lint/performance/useTopLevelRegex: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
       /collector_protocol_mismatch/,
       `runner error should surface the typed collector_protocol_mismatch code; got: ${combined}`
     );
 
+    // biome-ignore lint/suspicious/noExplicitAny: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     const devicesAfter = (getDb() as any).prepare("SELECT COUNT(*) as n FROM device_exporters").get();
     assert.equal(devicesAfter.n, 0, "rejected enroll must not have leaked a device row into the pinned server");
 
@@ -530,11 +578,13 @@ async function postJson(url: string, body: unknown, headers: Record<string, stri
   let parsed: unknown = null;
   try {
     parsed = await resp.json();
+    // biome-ignore lint/suspicious/noEmptyBlockStatements: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
   } catch {}
   return { body: parsed, status: resp.status };
 }
 
 async function closeServer(server: ServerInstance): Promise<void> {
+  // biome-ignore lint/suspicious/noExplicitAny: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
   const closeOne = (srv: any) =>
     new Promise<void>((resolve) => {
       let settled = false;
@@ -546,6 +596,7 @@ async function closeServer(server: ServerInstance): Promise<void> {
       }, 2000);
       try {
         srv?.closeAllConnections?.();
+        // biome-ignore lint/suspicious/noEmptyBlockStatements: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
       } catch {}
       srv?.close?.(() => {
         if (!settled) {

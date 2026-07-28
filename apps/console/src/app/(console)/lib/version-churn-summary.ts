@@ -446,7 +446,7 @@ function shellQuote(value: string): string {
 export function churnDryRunCommand(row: RefRecordVersionStatsRow): string {
   const args = [
     "node",
-    "reference-implementation/scripts/compact-record-history.mjs",
+    "reference-implementation/scripts/compact-record-history.ts",
     `--connector-instance-id=${shellQuote(row.connector_instance_id)}`,
     `--stream=${shellQuote(row.stream)}`,
   ];

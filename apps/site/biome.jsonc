@@ -41,6 +41,14 @@
   },
   "overrides": [
     {
+      // The site sync MJS is emitted from sync-spec-docs.mts. Keep the host
+      // artifact selected; generated-artifacts:check owns its exact bytes.
+      "includes": ["scripts/sync-spec-docs.mjs"],
+      "formatter": { "enabled": false },
+      "assist": { "actions": { "source": { "organizeImports": "off" } } },
+      "linter": { "enabled": false }
+    },
+    {
       // Upstream Biome resolver false-positive waiver — NOT a doctrine change.
       //
       // Biome's noUnresolvedImports resolver misreports 21 imports in this

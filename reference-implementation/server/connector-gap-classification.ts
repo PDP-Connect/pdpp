@@ -22,6 +22,7 @@ export function isDegradingKnownGap(gap: unknown): boolean {
   if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
     return true;
   }
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const severity = (gap as { severity?: unknown }).severity;
   return severity !== "informational" && severity !== "recoverable";
 }
@@ -39,6 +40,7 @@ export function gapRecoveryAction(gap: unknown): string | null {
     return hint;
   }
   if (hint && typeof hint === "object" && !Array.isArray(hint)) {
+    // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
     const action = (hint as { action?: unknown }).action;
     return typeof action === "string" ? action : null;
   }
@@ -118,6 +120,7 @@ export function isRetryableKnownGap(gap: unknown): boolean {
   if (isSourceUnavailableKnownGap(gap)) {
     return true;
   }
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const severity = (gap as { severity?: unknown }).severity;
   return severity === "transient";
 }
@@ -191,6 +194,7 @@ export function hasTerminalKnownGap(
     if (isSourceUnavailableKnownGap(gap)) {
       return false;
     }
+    // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
     const severity = (gap as { severity?: unknown }).severity;
     if (severity === "actionable") {
       return true;
@@ -224,10 +228,12 @@ export function firstDegradingKnownGapReason(run: ConnectorRunSummary | null): s
     if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
       return null;
     }
+    // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
     const severity = (gap as { severity?: unknown }).severity;
     if (severity === "informational" || severity === "recoverable") {
       continue;
     }
+    // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
     const reason = (gap as { reason?: unknown }).reason;
     if (typeof reason === "string" && reason.length > 0) {
       return reason;

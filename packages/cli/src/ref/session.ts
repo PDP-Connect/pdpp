@@ -20,7 +20,7 @@ export interface OwnerSessionPaths {
 }
 
 export interface OwnerSessionOpts {
-  cacheRoot?: string;
+  cacheRoot?: string | undefined;
 }
 
 export function getOwnerSessionPaths(referenceUrl: string, opts: OwnerSessionOpts = {}): OwnerSessionPaths {
@@ -67,8 +67,8 @@ export function writeOwnerSession({ referenceUrl, cookie, cacheRoot }: WriteOwne
 }
 
 export interface ReadOwnerSessionArgs {
-  cacheRoot?: string;
-  referenceUrl?: string;
+  cacheRoot?: string | undefined;
+  referenceUrl?: string | undefined;
 }
 
 export interface OwnerSessionRecord {

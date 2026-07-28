@@ -677,8 +677,7 @@ function timelineRecordToEntry(
   // generic "Id:" card. The role no longer round-trips through capabilities.)
   // Undeclared streams resolve to EMPTY_DECLARED_FIELD_ROLES → the honest generic card.
   const droles = declaredFieldRoles.get(metaKey) ?? EMPTY_DECLARED_FIELD_ROLES;
-  // biome-ignore lint/style/useDestructuring: Indexed access and property reads preserve the local guard and exact source-order reasoning here.
-  const kind = classifyRecordKind(rec.stream, data, dtypes, undefined, droles).kind;
+  const { kind } = classifyRecordKind(rec.stream, data, dtypes, undefined, droles);
   // Prefer the server's authoritative SEMANTIC time — the exact value the timeline
   // is ORDERED by — so display == sort by construction. Re-deriving from manifest
   // metadata is the seam that silently showed emitted_at when the per-connector
@@ -1235,8 +1234,7 @@ function toTimeRangeEntry({
   }
   // Declared roles seam (empty default; see declaredRolesFromCapabilities).
   const declaredFieldRoles = declaredRolesFromCapabilities(fieldCapabilities);
-  // biome-ignore lint/style/useDestructuring: Indexed access and property reads preserve the local guard and exact source-order reasoning here.
-  const kind = classifyRecordKind(streamName, data, declaredFieldTypes, undefined, declaredFieldRoles).kind;
+  const { kind } = classifyRecordKind(streamName, data, declaredFieldTypes, undefined, declaredFieldRoles);
   return {
     blobAffordance: buildBlobAffordance(data, fieldCapabilities) ?? undefined,
     connectionDisplayName: connectorSummaryDisplayName(summary),
@@ -1526,8 +1524,7 @@ function detectSingleStreamDoor(
   if (filtered.length === 0) {
     return null;
   }
-  // biome-ignore lint/style/useDestructuring: Indexed access and property reads preserve the local guard and exact source-order reasoning here.
-  const first = filtered[0];
+  const [first] = filtered;
   if (!first) {
     return null;
   }
@@ -1542,8 +1539,7 @@ function detectSingleStreamDoor(
   if (matchingSummaries.length !== 1 || !matchingSummaries[0]) {
     return null;
   }
-  // biome-ignore lint/style/useDestructuring: Indexed access and property reads preserve the local guard and exact source-order reasoning here.
-  const summary = matchingSummaries[0];
+  const [summary] = matchingSummaries;
   return {
     connectionId: summary.connection_id,
     connectorId: sharedConnector,
@@ -1596,14 +1592,13 @@ async function loadMostRecentSingleStream(
       emittedAt: hit.emitted_at,
       metadata: lookupSearchTimestampMetadata(timestampMetadata, summary.connector_id, streamName),
     });
-    // biome-ignore lint/style/useDestructuring: Indexed access and property reads preserve the local guard and exact source-order reasoning here.
-    const kind = classifyRecordKind(
+    const { kind } = classifyRecordKind(
       streamName,
       null,
       metadata.declaredFieldTypes,
       metadata.fieldNames,
       declaredFieldRoles.get(metaKey)
-    ).kind;
+    );
     return {
       blobAffordance: undefined,
       connectionDisplayName: connectorSummaryDisplayName(summary),
@@ -1834,16 +1829,7 @@ async function loadSearchFeed(
   }
   if (!hybridUsed) {
     const probe = await probeLexical(query, searchSort, searchCursor, dataSource);
-    // biome-ignore lint/style/useDestructuring: Indexed access and property reads preserve the local guard and exact source-order reasoning here.
-    hits = probe.hits;
-    // biome-ignore lint/style/useDestructuring: Indexed access and property reads preserve the local guard and exact source-order reasoning here.
-    lexicalRecallExhaustive = probe.lexicalRecallExhaustive;
-    // biome-ignore lint/style/useDestructuring: Indexed access and property reads preserve the local guard and exact source-order reasoning here.
-    hasMoreRecords = probe.hasMoreRecords;
-    // biome-ignore lint/style/useDestructuring: Indexed access and property reads preserve the local guard and exact source-order reasoning here.
-    lexicalNextCursor = probe.lexicalNextCursor;
-    // biome-ignore lint/style/useDestructuring: Indexed access and property reads preserve the local guard and exact source-order reasoning here.
-    lexicalHasMore = probe.lexicalHasMore;
+    ({ hasMoreRecords, hits, lexicalHasMore, lexicalNextCursor, lexicalRecallExhaustive } = probe);
     if (probe.warning) {
       warnings.push(probe.warning);
     }

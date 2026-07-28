@@ -84,12 +84,7 @@
       },
       "schema": {
         "type": "object",
-        "required": [
-          "grant_id",
-          "grant_type",
-          "quantity",
-          "granted_at"
-        ],
+        "required": ["grant_id", "grant_type", "quantity", "granted_at"],
         "properties": {
           "grant_id": {
             "type": "string"

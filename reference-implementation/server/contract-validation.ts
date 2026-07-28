@@ -38,7 +38,7 @@ import { validateRequest, validateResponse } from "@pdpp/reference-contract";
 interface ResponseLike {
   getHeader?: (name: string) => unknown;
   setHeader?: (name: string, value: string) => void;
-  status(code: number): { json(body: unknown): void };
+  status: (code: number) => { json: (body: Record<string, unknown>) => void };
 }
 
 // Structural view of the incoming request object.
@@ -120,6 +120,7 @@ export function listResponseCanaryOperations(): string[] {
 // Falling back to PDPP is the safer default — it carries the
 // structured `code` callers already rely on.
 function pickRequestErrorEnvelope(manifest: RouteManifestLike): "oauth" | "pdpp" {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const response400 = manifest?.responses?.["400"];
   const schemaId = response400?.schema?.$id;
   if (schemaId === "pdpp/common/OAuthError") {
@@ -156,7 +157,7 @@ function summarizeFailure(failure: ValidationFailureLike): {
   const instancePath = first?.instancePath ?? "";
   const message = first?.message ?? "request did not match contract";
   const target = instancePath ? `${where}${instancePath}` : where;
-  return { where, target, message };
+  return { message, target, where };
 }
 
 function paramHintFromFailure(failure: ValidationFailureLike): string | null {
@@ -213,7 +214,7 @@ function pdppErrorBody({
   requestId: string;
 }): { error: Record<string, unknown> } {
   const type = errorTypeForStatus(status);
-  const error: Record<string, unknown> = { type, code, message };
+  const error: Record<string, unknown> = { code, message, type };
   if (param) {
     error.param = param;
   }
@@ -252,10 +253,10 @@ export function applyRequestValidation({
 }): boolean {
   const operationId = manifest.id;
   const result = validateRequest(operationId, {
-    params: req.params,
-    query: req.query,
     body: req.body,
     headers: req.headers,
+    params: req.params,
+    query: req.query,
   });
   if (result.ok) {
     return false;
@@ -274,11 +275,11 @@ export function applyRequestValidation({
     return true;
   }
   const body = pdppErrorBody({
-    status: 400,
     code: "invalid_request",
     message: `${target}: ${message}`,
     param,
     requestId,
+    status: 400,
   });
   res.status(400).json(body);
   return true;
@@ -307,11 +308,11 @@ export function applyResponseValidation({
   if (!RESPONSE_CANARY_OPERATIONS.has(operationId)) {
     return { ok: true, validated: false };
   }
-  const result = validateResponse(operationId, { status, body: payload });
+  const result = validateResponse(operationId, { body: payload, status });
   if (result.ok) {
     return { ok: true, validated: !result.skipped };
   }
-  return { ok: false, errors: result.errors };
+  return { errors: result.errors, ok: false };
 }
 
 /**
@@ -330,11 +331,11 @@ export function buildResponseContractErrorBody({
   requestId: string;
 }): { error: Record<string, unknown> } {
   return pdppErrorBody({
-    status: 500,
     code: "internal_contract_error",
     message: `Response for operation '${operationId}' violated its declared contract.`,
     param: null,
     requestId,
+    status: 500,
   });
 }
 

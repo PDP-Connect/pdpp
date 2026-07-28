@@ -20,11 +20,11 @@
  */
 
 export interface AsAuthorizationServerMetadataInput {
-  readonly issuer: string;
-  readonly dynamicClientRegistrationEnabled: boolean;
-  readonly preRegisteredPublicClients?: readonly AsAuthorizationServerPublicClient[];
   /** When true, advertise client_id_metadata_document in pdpp_registration_modes_supported. */
   readonly cimdEnabled?: boolean;
+  readonly dynamicClientRegistrationEnabled: boolean;
+  readonly issuer: string;
+  readonly preRegisteredPublicClients?: readonly AsAuthorizationServerPublicClient[];
 }
 
 export interface AsAuthorizationServerPublicClient {
@@ -34,36 +34,34 @@ export interface AsAuthorizationServerPublicClient {
 }
 
 export interface AsAuthorizationServerMetadataBuilderInput {
-  readonly authorizationEndpoint: string;
-  readonly issuer: string;
-  readonly introspectionEndpoint: string;
-  readonly pushedAuthorizationRequestEndpoint: string;
-  readonly registrationEndpoint: string | null;
-  readonly providerConnectCapabilities: readonly string[];
-  readonly preRegisteredPublicClients: readonly AsAuthorizationServerPublicClient[];
-  readonly registrationModesSupported: readonly string[];
-  readonly authorizationDetailsTypesSupported: readonly string[];
-  readonly tokenEndpoint: string;
-  readonly tokenEndpointAuthMethodsSupported: readonly string[];
-  readonly deviceAuthorizationEndpoint: string;
-  readonly deviceAuthorizationProfilesSupported: readonly Record<string, unknown>[];
   readonly agentConnectEndpoint: string;
-  readonly grantTypesSupported: readonly string[];
-  readonly responseTypesSupported: readonly string[];
-  readonly codeChallengeMethodsSupported: readonly string[];
+  readonly authorizationDetailsTypesSupported: readonly string[];
+  readonly authorizationEndpoint: string;
   /** Passed through so buildAuthorizationServerMetadata can emit the standard draft field. */
   readonly cimdEnabled?: boolean;
+  readonly codeChallengeMethodsSupported: readonly string[];
+  readonly deviceAuthorizationEndpoint: string;
+  readonly deviceAuthorizationProfilesSupported: readonly Record<string, unknown>[];
+  readonly grantTypesSupported: readonly string[];
+  readonly introspectionEndpoint: string;
+  readonly issuer: string;
+  readonly preRegisteredPublicClients: readonly AsAuthorizationServerPublicClient[];
+  readonly providerConnectCapabilities: readonly string[];
+  readonly pushedAuthorizationRequestEndpoint: string;
+  readonly registrationEndpoint: string | null;
+  readonly registrationModesSupported: readonly string[];
+  readonly responseTypesSupported: readonly string[];
+  readonly tokenEndpoint: string;
+  readonly tokenEndpointAuthMethodsSupported: readonly string[];
 }
 
 export interface AsAuthorizationServerMetadataDependencies {
-  buildAuthorizationServerMetadata(
-    input: AsAuthorizationServerMetadataBuilderInput,
-  ): unknown;
+  buildAuthorizationServerMetadata: (input: AsAuthorizationServerMetadataBuilderInput) => unknown;
 }
 
 export function executeAsAuthorizationServerMetadata(
   input: AsAuthorizationServerMetadataInput,
-  deps: AsAuthorizationServerMetadataDependencies,
+  deps: AsAuthorizationServerMetadataDependencies
 ): unknown {
   const { issuer, dynamicClientRegistrationEnabled, preRegisteredPublicClients = [], cimdEnabled = false } = input;
   const registrationModesBase = dynamicClientRegistrationEnabled
@@ -73,48 +71,38 @@ export function executeAsAuthorizationServerMetadata(
     ? [...registrationModesBase, "client_id_metadata_document"]
     : registrationModesBase;
   return deps.buildAuthorizationServerMetadata({
-    issuer,
-    authorizationEndpoint: `${issuer}/oauth/authorize`,
-    introspectionEndpoint: `${issuer}/introspect`,
-    pushedAuthorizationRequestEndpoint: `${issuer}/oauth/par`,
-    registrationEndpoint: dynamicClientRegistrationEnabled
-      ? `${issuer}/oauth/register`
-      : null,
-    cimdEnabled,
-    providerConnectCapabilities: [
-      "owner_self_export",
-      "cli_device_connect",
-      "third_party_client_connect",
-    ],
-    preRegisteredPublicClients,
-    registrationModesSupported,
+    agentConnectEndpoint: `${issuer}/agent-connect`,
     authorizationDetailsTypesSupported: ["https://pdpp.org/data-access"],
-    tokenEndpoint: `${issuer}/oauth/token`,
-    tokenEndpointAuthMethodsSupported: ["none"],
+    authorizationEndpoint: `${issuer}/oauth/authorize`,
+    cimdEnabled,
+    codeChallengeMethodsSupported: ["S256"],
     deviceAuthorizationEndpoint: `${issuer}/oauth/device_authorization`,
     deviceAuthorizationProfilesSupported: [
       {
-        profile: "grant_scoped_mcp",
-        pdpp_token_kind: "client",
-        normal_mcp_setup: true,
-        required_parameters: ["client_id", "resource", "authorization_details"],
         authorization_details_type: "https://pdpp.org/data-access",
+        normal_mcp_setup: true,
+        pdpp_token_kind: "client",
+        profile: "grant_scoped_mcp",
+        required_parameters: ["client_id", "resource", "authorization_details"],
       },
       {
-        profile: "trusted_owner_agent",
-        pdpp_token_kind: "owner",
-        normal_mcp_setup: false,
         advertised_in: "pdpp_owner_agent_onboarding",
         mcp_owner_bearer_rejected: true,
+        normal_mcp_setup: false,
+        pdpp_token_kind: "owner",
+        profile: "trusted_owner_agent",
       },
     ],
-    agentConnectEndpoint: `${issuer}/agent-connect`,
-    grantTypesSupported: [
-      "urn:ietf:params:oauth:grant-type:device_code",
-      "authorization_code",
-      "refresh_token",
-    ],
+    grantTypesSupported: ["urn:ietf:params:oauth:grant-type:device_code", "authorization_code", "refresh_token"],
+    introspectionEndpoint: `${issuer}/introspect`,
+    issuer,
+    preRegisteredPublicClients,
+    providerConnectCapabilities: ["owner_self_export", "cli_device_connect", "third_party_client_connect"],
+    pushedAuthorizationRequestEndpoint: `${issuer}/oauth/par`,
+    registrationEndpoint: dynamicClientRegistrationEnabled ? `${issuer}/oauth/register` : null,
+    registrationModesSupported,
     responseTypesSupported: ["code"],
-    codeChallengeMethodsSupported: ["S256"],
+    tokenEndpoint: `${issuer}/oauth/token`,
+    tokenEndpointAuthMethodsSupported: ["none"],
   });
 }

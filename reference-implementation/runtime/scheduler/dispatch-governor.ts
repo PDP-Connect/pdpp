@@ -63,7 +63,7 @@ export interface DispatchGovernorDeps {
 // ─── Local helpers (duplicated from scheduler.ts; pure — no runtime dep) ─────
 
 function buildScheduledRunSource(connectorId: string): RunSource {
-  return { kind: "connector", id: connectorId };
+  return { id: connectorId, kind: "connector" };
 }
 
 function runtimeKey(schedule: Pick<ConnectorSchedule, "connectorId" | "connectorInstanceId">): string {
@@ -86,6 +86,7 @@ function normalizeSchedulerEpochMs(epochMs: number | undefined): number {
 
 function newestHistoryEpochMs(history: readonly RunRecord[]): number {
   let newest = 0;
+  // biome-ignore lint/style/noIncrementDecrement: The explicit counter update preserves this loop’s evaluation order.
   for (let i = history.length - 1; i >= 0; i--) {
     const record = history[i];
     if (!record) {
@@ -136,17 +137,17 @@ function buildBackoffSkip(connectorId: string, decision: BackoffDecision, connec
   const failures = decision.consecutiveFailures;
   const next = formatNextAttempt(decision);
   return {
+    attempt: 0,
+    checkpointSummary: null,
+    completedAt: nowIso(),
     connectorId,
     connectorInstanceId: connectorInstanceId ?? null,
-    source: buildScheduledRunSource(connectorId),
-    status: "skipped",
-    recordsEmitted: 0,
-    checkpointSummary: null,
-    knownGaps: [],
-    startedAt: nowIso(),
-    completedAt: nowIso(),
     error: `scheduler_backoff_applied: ${failures} consecutive ${reason} failures; next attempt at ${next}`,
-    attempt: 0,
+    knownGaps: [],
+    recordsEmitted: 0,
+    source: buildScheduledRunSource(connectorId),
+    startedAt: nowIso(),
+    status: "skipped",
   };
 }
 
@@ -156,22 +157,22 @@ function buildBackoffStartedEvent(
   connectorInstanceId?: string
 ): RunRecord {
   const payload = JSON.stringify({
-    reason_class: decision.reasonClass,
     consecutive_failures: decision.consecutiveFailures,
     next_attempt_at: decision.nextRunAt,
+    reason_class: decision.reasonClass,
   });
   return {
+    attempt: 0,
+    checkpointSummary: null,
+    completedAt: nowIso(),
     connectorId,
     connectorInstanceId: connectorInstanceId ?? null,
-    source: buildScheduledRunSource(connectorId),
-    status: "skipped",
-    recordsEmitted: 0,
-    checkpointSummary: null,
-    knownGaps: [],
-    startedAt: nowIso(),
-    completedAt: nowIso(),
     error: `${BACKOFF_STARTED_PREFIX} ${payload}`,
-    attempt: 0,
+    knownGaps: [],
+    recordsEmitted: 0,
+    source: buildScheduledRunSource(connectorId),
+    startedAt: nowIso(),
+    status: "skipped",
   };
 }
 
@@ -182,22 +183,22 @@ function buildGaveUpEvent(
   connectorInstanceId?: string
 ): RunRecord {
   const payload = JSON.stringify({
-    reason_class: decision.reasonClass,
     final_consecutive_failures: decision.consecutiveFailures,
     last_success_at: lastSuccessAt,
+    reason_class: decision.reasonClass,
   });
   return {
+    attempt: 0,
+    checkpointSummary: null,
+    completedAt: nowIso(),
     connectorId,
     connectorInstanceId: connectorInstanceId ?? null,
-    source: buildScheduledRunSource(connectorId),
-    status: "skipped",
-    recordsEmitted: 0,
-    checkpointSummary: null,
-    knownGaps: [],
-    startedAt: nowIso(),
-    completedAt: nowIso(),
     error: `${GAVE_UP_PREFIX} ${payload}`,
-    attempt: 0,
+    knownGaps: [],
+    recordsEmitted: 0,
+    source: buildScheduledRunSource(connectorId),
+    startedAt: nowIso(),
+    status: "skipped",
   };
 }
 
@@ -210,21 +211,22 @@ function buildSourcePressureCooldownSkip(
   const gaps = decision.pendingPressureGapCount;
   const attempts = decision.maxAttemptCount;
   return {
+    attempt: 0,
+    checkpointSummary: null,
+    completedAt: nowIso(),
     connectorId,
     connectorInstanceId: connectorInstanceId ?? null,
-    source: buildScheduledRunSource(connectorId),
-    status: "skipped",
-    recordsEmitted: 0,
-    checkpointSummary: null,
-    knownGaps: [],
-    startedAt: nowIso(),
-    completedAt: nowIso(),
     error: `source_pressure_cooldown_applied: ${gaps} pending source-pressure gap(s), persistence ${attempts}; next attempt at ${next}`,
-    attempt: 0,
+    knownGaps: [],
+    recordsEmitted: 0,
+    source: buildScheduledRunSource(connectorId),
+    startedAt: nowIso(),
+    status: "skipped",
   };
 }
 
 function findLastSuccessAt(history: readonly RunRecord[], connectorKey: string): string | null {
+  // biome-ignore lint/style/noIncrementDecrement: The explicit counter update preserves this loop’s evaluation order.
   for (let i = history.length - 1; i >= 0; i--) {
     const record = history[i];
     if (
@@ -239,6 +241,7 @@ function findLastSuccessAt(history: readonly RunRecord[], connectorKey: string):
 }
 
 function readSchedulerEventReasonClass(record: RunRecord, prefix: string): string | null {
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const error = record.error;
   if (!error?.startsWith(prefix)) {
     return null;
@@ -276,10 +279,10 @@ function maxPressureGapAttemptCount(gaps: readonly PendingPressureGap[]): number
 function filterFreshPendingPressureGaps(gaps: readonly PendingPressureGap[], now: number): PendingPressureGap[] {
   const rows = (gaps ?? []).map((gap, index) => ({
     attempt_count: gap.attemptCount ?? null,
+    index,
     last_attempt_at: gap.lastPressureAt ?? null,
     next_attempt_after: gap.nextAttemptAfter ?? null,
     reason: gap.reason,
-    index,
   }));
   const freshIndices = new Set(filterFreshPressureRows(rows, now).map((row) => row.index));
   return (gaps ?? []).filter((_, index) => freshIndices.has(index));
@@ -371,9 +374,12 @@ function shouldEmitBackoffTransition(
  *   - backoffApplied && !reasonClass: no mutation, no transition (both cells `keep`).
  */
 export function decideBackoffDispatch(inputs: DecideBackoffDispatchInputs): DecideBackoffDispatchValue {
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const reasonClass = inputs.reasonClass;
   const transitions: BackoffDispatchTransition[] = [];
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   let eligible = inputs.eligible;
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   let recoveryOnly = inputs.recoveryOnly;
   let announcedBackoffMutation: DedupCellMutation = "keep";
   let announcedBlockedMutation: DedupCellMutation = "keep";
@@ -410,7 +416,7 @@ export function decideBackoffDispatch(inputs: DecideBackoffDispatchInputs): Deci
     announcedBackoffMutation = "delete";
   }
 
-  return { eligible, recoveryOnly, announcedBackoffMutation, announcedBlockedMutation, transitions };
+  return { announcedBackoffMutation, announcedBlockedMutation, eligible, recoveryOnly, transitions };
 }
 
 // ─── Public interface ─────────────────────────────────────────────────────────
@@ -425,14 +431,14 @@ export interface EvaluateBackoffDispatchResult {
 }
 
 export interface DispatchGovernor {
-  evaluateBackoffDispatch(schedule: ConnectorSchedule, now: number): Promise<EvaluateBackoffDispatchResult>;
-  resolveCooldownSkip(
+  evaluateBackoffDispatch: (schedule: ConnectorSchedule, now: number) => Promise<EvaluateBackoffDispatchResult>;
+  resolveCooldownSkip: (
     schedule: ConnectorSchedule,
     key: string,
     cooldown: SourcePressureCooldownDecision,
     cooldownDefers: boolean,
     existingSkip: RunRecord | null
-  ): RunRecord | null;
+  ) => RunRecord | null;
 }
 
 // ─── Factory ─────────────────────────────────────────────────────────────────
@@ -569,7 +575,9 @@ export function createDispatchGovernor(deps: DispatchGovernorDeps): DispatchGove
     decision: BackoffDecision,
     history: readonly RunRecord[]
   ): { skipToEmit: RunRecord | null; eventsToEmit: RunRecord[] } {
+    // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
     const connectorId = schedule.connectorId;
+    // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
     const reasonClass = decision.reasonClass;
     if (value.announcedBackoffMutation === "set" && reasonClass) {
       runtime.announcedBackoffClass.set(key, reasonClass);
@@ -605,7 +613,7 @@ export function createDispatchGovernor(deps: DispatchGovernorDeps): DispatchGove
         });
       }
     }
-    return { skipToEmit, eventsToEmit };
+    return { eventsToEmit, skipToEmit };
   }
 
   // Pure dispatch-gate: given the current history + lastRun for a
@@ -629,6 +637,7 @@ export function createDispatchGovernor(deps: DispatchGovernorDeps): DispatchGove
     schedule: ConnectorSchedule,
     now: number
   ): Promise<EvaluateBackoffDispatchResult> {
+    // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
     const connectorId = schedule.connectorId;
     const key = runtimeKey(schedule);
     const history = runtime.history.filter((r) => (r.connectorInstanceId || r.connectorId) === key);
@@ -731,7 +740,7 @@ export function createDispatchGovernor(deps: DispatchGovernorDeps): DispatchGove
       // implicit, unscoped dispatch, so eligible non-pressure recovery work
       // wins the tick over fresh forward-walk work, unless forward evidence
       // is already in debt.
-      const recoveryFirst = resolveRecoveryFirstMode({ nonPressureRecoveryEligible, forwardEvidenceDebt });
+      const recoveryFirst = resolveRecoveryFirstMode({ forwardEvidenceDebt, nonPressureRecoveryEligible });
       if (recoveryFirst) {
         eligible = true;
         recoveryOnly = true;
@@ -756,20 +765,25 @@ export function createDispatchGovernor(deps: DispatchGovernorDeps): DispatchGove
     // dedup state as inputs and returns the dispatch flags, the dedup-map
     // mutations, and the one-shot transitions to fire — all as data.
     const backoffDecision = decideBackoffDispatch({
-      backoffApplied: decision.backoffApplied,
-      reasonClass: decision.reasonClass,
-      blocked: decision.recommendedHealthState === "blocked",
-      eligible,
-      recoveryOnly,
       announcedBackoff: runtime.announcedBackoffClass.get(key),
       announcedBlocked: runtime.announcedBlockedClass.get(key),
+      backoffApplied: decision.backoffApplied,
+      blocked: decision.recommendedHealthState === "blocked",
+      eligible,
       persistedBackoffStarted:
-        decision.reasonClass != null &&
+        decision.reasonClass !== null &&
+        decision.reasonClass !== undefined &&
         currentStreakHasSchedulerEvent(history, BACKOFF_STARTED_PREFIX, decision.reasonClass),
       persistedGaveUp:
-        decision.reasonClass != null && currentStreakHasSchedulerEvent(history, GAVE_UP_PREFIX, decision.reasonClass),
+        decision.reasonClass !== null &&
+        decision.reasonClass !== undefined &&
+        currentStreakHasSchedulerEvent(history, GAVE_UP_PREFIX, decision.reasonClass),
+      reasonClass: decision.reasonClass,
+      recoveryOnly,
     });
+    // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
     eligible = backoffDecision.eligible;
+    // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
     recoveryOnly = backoffDecision.recoveryOnly;
     const { skipToEmit: backoffSkip, eventsToEmit } = applyBackoffDispatchDecision(
       backoffDecision,
@@ -795,7 +809,7 @@ export function createDispatchGovernor(deps: DispatchGovernorDeps): DispatchGove
       skipToEmit = resolveCooldownSkip(schedule, key, cooldown, cooldownDefers, skipToEmit);
     }
 
-    return { decision, eligible, recoveryOnly, skipToEmit, eventsToEmit };
+    return { decision, eligible, eventsToEmit, recoveryOnly, skipToEmit };
   }
 
   return { evaluateBackoffDispatch, resolveCooldownSkip };

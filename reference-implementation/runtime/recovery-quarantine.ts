@@ -95,6 +95,7 @@ export type QuarantineDecision =
  * is quarantined.
  */
 export function evaluateQuarantine(row: QuarantineGapRow, policy: QuarantinePolicy): QuarantineDecision {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const threshold = policy?.maxNoProgressAttempts;
   if (typeof threshold !== "number" || !Number.isFinite(threshold) || threshold <= 0) {
     throw new Error(
@@ -103,6 +104,7 @@ export function evaluateQuarantine(row: QuarantineGapRow, policy: QuarantinePoli
     );
   }
 
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const status = typeof row?.status === "string" ? row.status : null;
   if (status === "terminal") {
     return { quarantine: false, reason: "already_terminal" };
@@ -111,11 +113,12 @@ export function evaluateQuarantine(row: QuarantineGapRow, policy: QuarantinePoli
     return { quarantine: false, reason: "recovered" };
   }
 
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const attemptCount = normalizeNonNegativeInteger(row?.attempt_count);
   if (attemptCount < threshold) {
     return { quarantine: false, reason: "under_budget" };
   }
-  return { quarantine: true, attemptCount, threshold };
+  return { attemptCount, quarantine: true, threshold };
 }
 
 function normalizeNonNegativeInteger(value: number | null | undefined): number {

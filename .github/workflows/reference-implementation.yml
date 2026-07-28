@@ -6,7 +6,7 @@ name: reference-implementation
 # connector and package workspaces.
 #
 # The apps/console/** trigger is here because two integration tests in the
-# reference suite (composed-origin.test.js, dashboard-proxy-redirect.test.js)
+# reference suite (composed-origin.test.ts, dashboard-proxy-redirect.test.ts)
 # build apps/console and spawn its standalone server to exercise the
 # dashboard/BFF/proxy. The apps/site/** trigger is here because the RS/dataset
 # import-boundary tests read the public sandbox source from apps/site/src/app/
@@ -140,7 +140,7 @@ jobs:
 
       - name: Test stream health audit
         if: steps.changes.outputs.reference_impacting == 'true'
-        run: node --test reference-implementation/test/stream-health-audit.test.js
+        run: node --test reference-implementation/test/stream-health-audit.test.ts
 
       - name: Test console health surface gate
         if: steps.changes.outputs.reference_impacting == 'true'

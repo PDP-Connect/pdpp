@@ -141,7 +141,7 @@ export async function requestConnectionSetupPlan({
 
   let json: (OwnerConnectionIntent & OwnerRequestErrorBody) | null = null;
   try {
-    json = await response.json();
+    json = (await response.json()) as OwnerConnectionIntent & OwnerRequestErrorBody;
   } catch {
     json = null;
   }
@@ -238,7 +238,7 @@ export async function requestConnectorTemplates({
   }
   let json: ({ data?: ConnectorTemplate[] } & OwnerRequestErrorBody) | null = null;
   try {
-    json = await response.json();
+    json = (await response.json()) as { data?: ConnectorTemplate[] } & OwnerRequestErrorBody;
   } catch {
     json = null;
   }

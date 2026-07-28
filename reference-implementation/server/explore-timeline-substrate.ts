@@ -43,7 +43,7 @@ import type {
   UpcomingFetchResult,
   UpcomingPartitionPosition,
 } from "../operations/rs-explore-timeline/index.ts";
-import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.js";
+import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.ts";
 
 // Wall-clock helper. Isolated so the cursor TTL has a single time source.
 function nowMs(): number {
@@ -142,6 +142,7 @@ async function postgresLoadCursorBlob(handle: string): Promise<string | null> {
     cutoff,
   ]);
   const row = result.rows[0] as { blob: string } | undefined;
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   return row?.blob ?? null;
 }
 
@@ -190,20 +191,20 @@ const SQLITE_SCOPE_RULES: readonly {
   readonly key: ExploreTimelineScopeKey;
   readonly clause: (placeholderList: string) => string;
 }[] = [
-  { key: "connectionIds", clause: (placeholders) => `connector_instance_id IN (${placeholders})` },
-  { key: "streams", clause: (placeholders) => `stream IN (${placeholders})` },
-  { key: "excludeConnectionIds", clause: (placeholders) => `connector_instance_id NOT IN (${placeholders})` },
-  { key: "excludeStreams", clause: (placeholders) => `stream NOT IN (${placeholders})` },
+  { clause: (placeholders) => `connector_instance_id IN (${placeholders})`, key: "connectionIds" },
+  { clause: (placeholders) => `stream IN (${placeholders})`, key: "streams" },
+  { clause: (placeholders) => `connector_instance_id NOT IN (${placeholders})`, key: "excludeConnectionIds" },
+  { clause: (placeholders) => `stream NOT IN (${placeholders})`, key: "excludeStreams" },
 ];
 
 const POSTGRES_SCOPE_RULES: readonly {
   readonly key: ExploreTimelineScopeKey;
   readonly clause: (parameterIndex: number) => string;
 }[] = [
-  { key: "connectionIds", clause: (index) => `connector_instance_id = ANY($${index}::text[])` },
-  { key: "streams", clause: (index) => `stream = ANY($${index}::text[])` },
-  { key: "excludeConnectionIds", clause: (index) => `connector_instance_id <> ALL($${index}::text[])` },
-  { key: "excludeStreams", clause: (index) => `stream <> ALL($${index}::text[])` },
+  { clause: (index) => `connector_instance_id = ANY($${index}::text[])`, key: "connectionIds" },
+  { clause: (index) => `stream = ANY($${index}::text[])`, key: "streams" },
+  { clause: (index) => `connector_instance_id <> ALL($${index}::text[])`, key: "excludeConnectionIds" },
+  { clause: (index) => `stream <> ALL($${index}::text[])`, key: "excludeStreams" },
 ];
 
 function appendSqliteScope(
@@ -284,8 +285,8 @@ function sqliteFetchSnapshotAnchor(): { snapshotSeq: number; snapshotAt: string 
       return null;
     }
     return {
-      snapshotSeq: row.maxSeq,
       snapshotAt: row.maxAt ?? "1970-01-01T00:00:00.000Z",
+      snapshotSeq: row.maxSeq,
     };
   }
   return null;
@@ -293,10 +294,11 @@ function sqliteFetchSnapshotAnchor(): { snapshotSeq: number; snapshotAt: string 
 
 type PartitionPageDirection = "asc" | "desc";
 
-const PARTITION_PAGE_DIRECTION_SQL: Record<PartitionPageDirection, { readonly order: string; readonly seek: string }> = {
-  asc: { order: "ASC", seek: ">" },
-  desc: { order: "DESC", seek: "<" },
-};
+const PARTITION_PAGE_DIRECTION_SQL: Record<PartitionPageDirection, { readonly order: string; readonly seek: string }> =
+  {
+    asc: { order: "ASC", seek: ">" },
+    desc: { order: "DESC", seek: "<" },
+  };
 
 function partitionPageDirection(input: PartitionPageInput): PartitionPageDirection {
   return input.direction === "asc" ? "asc" : "desc";
@@ -335,12 +337,16 @@ function appendSqlitePartitionPageCursor(
   if (!cursorValues) {
     return;
   }
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const seek = PARTITION_PAGE_DIRECTION_SQL[direction].seek;
   whereParts.push(`(${semanticExpression} ${seek} ? OR (${semanticExpression} = ? AND record_key ${seek} ?))`);
   binds.push(...cursorValues);
 }
 
-function sqlitePartitionPageQuery(input: PartitionPageInput): { readonly sql: string; readonly binds: (string | number)[] } {
+function sqlitePartitionPageQuery(input: PartitionPageInput): {
+  readonly sql: string;
+  readonly binds: (string | number)[];
+} {
   const { connectorId, stream, snapshotSeq, limit } = input;
   const direction = partitionPageDirection(input);
   const directionSql = PARTITION_PAGE_DIRECTION_SQL[direction];
@@ -411,14 +417,14 @@ function sqliteFetchPartitionPage(input: PartitionPageInput): PartitionPageResul
   const rows: PartitionRow[] = pageRows.map((r) => ({
     connectorId: r.connectorId,
     connectorType: r.connectorType,
-    stream: r.stream,
-    recordKey: r.recordKey,
-    emittedAt: r.emittedAt,
-    semanticTime: r.semanticTime,
     data: parseSqliteRecordJson(r.recordJson),
+    emittedAt: r.emittedAt,
+    recordKey: r.recordKey,
+    semanticTime: r.semanticTime,
+    stream: r.stream,
   }));
 
-  return { rows, hasMore };
+  return { hasMore, rows };
 }
 
 function sqliteCountNewSinceSnapshot(input: CountNewSinceSnapshotInput): number {
@@ -466,8 +472,8 @@ function sqliteFetchUpcoming(input: UpcomingFetchInput): UpcomingFetchResult {
 
   return finalizeUpcoming({
     input,
-    tagged,
     partitionOverflow,
+    tagged,
     total: computeTotal ? total : 0,
   });
 }
@@ -479,14 +485,14 @@ interface TaggedUpcomingRow {
 }
 
 interface SqliteUpcomingQuery {
-  readonly where: string;
   readonly binds: (string | number)[];
+  readonly where: string;
 }
 
 interface UpcomingPartitionFetch {
-  readonly total: number;
-  readonly tagged: readonly TaggedUpcomingRow[];
   readonly overflow: boolean;
+  readonly tagged: readonly TaggedUpcomingRow[];
+  readonly total: number;
 }
 
 function sqliteUpcomingQuery(
@@ -501,7 +507,7 @@ function sqliteUpcomingQuery(
     where += ` AND (${semanticExpression} > ? OR (${semanticExpression} = ? AND record_key > ?))`;
     binds.push(after.lastSemanticTime, after.lastSemanticTime, after.lastRecordKey);
   }
-  return { where, binds };
+  return { binds, where };
 }
 
 function sqliteCountUpcomingRows(query: SqliteUpcomingQuery): number {
@@ -541,22 +547,22 @@ function sqliteFetchUpcomingTaggedRows(
     semanticTime: string;
   }>(sql, [...query.binds, input.limit + 1])) {
     if (tagged.length >= input.limit) {
-      return { tagged, overflow: true };
+      return { overflow: true, tagged };
     }
     tagged.push({
       partitionIndex,
       row: {
         connectorId: row.connectorId,
         connectorType: row.connectorType,
-        stream: row.stream,
-        recordKey: row.recordKey,
-        emittedAt: row.emittedAt,
-        semanticTime: row.semanticTime,
         data: parseSqliteRecordJson(row.recordJson),
+        emittedAt: row.emittedAt,
+        recordKey: row.recordKey,
+        semanticTime: row.semanticTime,
+        stream: row.stream,
       },
     });
   }
-  return { tagged, overflow: false };
+  return { overflow: false, tagged };
 }
 
 function sqliteFetchUpcomingPartition(
@@ -570,7 +576,7 @@ function sqliteFetchUpcomingPartition(
   const query = sqliteUpcomingQuery(input, semanticExpression, partition, after);
   const total = computeTotal ? sqliteCountUpcomingRows(query) : 0;
   const { tagged, overflow } = sqliteFetchUpcomingTaggedRows(input, semanticExpression, partitionIndex, query);
-  return { total, tagged, overflow };
+  return { overflow, tagged, total };
 }
 
 /** Stable key for matching afterPositions to partitions: connector_instance_id + stream. */
@@ -635,9 +641,9 @@ function nextUpcomingPositionForPartition(
     return {
       connectorId: lastEmitted.connectorId,
       connectorType: lastEmitted.connectorType,
-      stream: lastEmitted.stream,
-      lastSemanticTime: lastEmitted.semanticTime,
       lastRecordKey: lastEmitted.recordKey,
+      lastSemanticTime: lastEmitted.semanticTime,
+      stream: lastEmitted.stream,
     };
   }
   // Contributed nothing to this page but still has rows (all after the cut):
@@ -646,9 +652,9 @@ function nextUpcomingPositionForPartition(
   return {
     connectorId: partition.connectorId,
     connectorType: partition.connectorType,
-    stream: partition.stream,
-    lastSemanticTime: incoming?.lastSemanticTime ?? null,
     lastRecordKey: incoming?.lastRecordKey ?? null,
+    lastSemanticTime: incoming?.lastSemanticTime ?? null,
+    stream: partition.stream,
   };
 }
 
@@ -676,10 +682,10 @@ function finalizeUpcoming(args: {
   }
 
   const lookups: NextUpcomingPositionLookups = {
+    afterByKey,
+    cutByPartition,
     lastEmittedByPartition,
     partitionOverflow,
-    cutByPartition,
-    afterByKey,
   };
   const nextPositions: UpcomingPartitionPosition[] = [];
   input.partitions.forEach((partition, partitionIndex) => {
@@ -690,10 +696,10 @@ function finalizeUpcoming(args: {
   });
 
   return {
-    rows: page.map((t) => t.row),
-    total,
     hasMore: nextPositions.length > 0,
     nextPositions,
+    rows: page.map((t) => t.row),
+    total,
   };
 }
 
@@ -705,27 +711,27 @@ function compareUpcomingAsc(a: PartitionRow, b: PartitionRow): number {
 
 export function buildSqliteExploreTimelineDeps(): ExploreTimelineDependencies {
   return {
-    listPartitions(scope) {
-      return Promise.resolve(sqliteListPartitions(scope));
-    },
-    fetchSnapshotAnchor() {
-      return Promise.resolve(sqliteFetchSnapshotAnchor());
+    countNewSinceSnapshot(input) {
+      return Promise.resolve(sqliteCountNewSinceSnapshot(input));
     },
     fetchPartitionPage(input) {
       return Promise.resolve(sqliteFetchPartitionPage(input));
     },
-    countNewSinceSnapshot(input) {
-      return Promise.resolve(sqliteCountNewSinceSnapshot(input));
+    fetchSnapshotAnchor() {
+      return Promise.resolve(sqliteFetchSnapshotAnchor());
     },
     fetchUpcoming(input) {
       return Promise.resolve(sqliteFetchUpcoming(input));
     },
-    saveCursorBlob(blob) {
-      // Synchronous SQLite write wrapped to satisfy the Promise-typed dep.
-      return Promise.resolve(sqliteSaveCursorBlob(blob));
+    listPartitions(scope) {
+      return Promise.resolve(sqliteListPartitions(scope));
     },
     loadCursorBlob(handle) {
       return Promise.resolve(sqliteLoadCursorBlob(handle));
+    },
+    saveCursorBlob(blob) {
+      // Synchronous SQLite write wrapped to satisfy the Promise-typed dep.
+      return Promise.resolve(sqliteSaveCursorBlob(blob));
     },
   };
 }
@@ -758,7 +764,7 @@ async function postgresListPartitions(scope?: ExploreTimelineScope): Promise<rea
   const whereParts = ["deleted = FALSE"];
   const params: (string | number | readonly string[])[] = [];
   appendPostgresScope(whereParts, params, scope);
-  const result = await postgresQuery(
+  const result = await postgresQuery<{ connectorId: string; connectorType: string; stream: string }>(
     `SELECT DISTINCT connector_instance_id AS "connectorId", connector_id AS "connectorType", stream
      FROM records
      WHERE ${whereParts.join(" AND ")}`,
@@ -778,13 +784,14 @@ async function postgresFetchSnapshotAnchor(): Promise<{ snapshotSeq: number; sna
     `SELECT MAX(id) AS "maxSeq", MAX(emitted_at) AS "maxAt" FROM records WHERE deleted = FALSE`,
     []
   );
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const row = result.rows[0];
   if (!row || row.maxSeq === null || row.maxSeq === undefined) {
     return null;
   }
   return {
-    snapshotSeq: Number(row.maxSeq),
     snapshotAt: (row.maxAt as string | null | undefined) ?? "1970-01-01T00:00:00.000Z",
+    snapshotSeq: Number(row.maxSeq),
   };
 }
 
@@ -811,6 +818,7 @@ function postgresPartitionPageCursorClause(
     return "";
   }
   params.push(...cursorValues);
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const seek = PARTITION_PAGE_DIRECTION_SQL[direction].seek;
   return `AND (${semanticExpression} ${seek} $${params.length - 2} OR (${semanticExpression} = $${params.length - 1} AND record_key ${seek} $${params.length}))`;
 }
@@ -873,14 +881,14 @@ async function postgresFetchPartitionPage(input: PartitionPageInput): Promise<Pa
   const rows: PartitionRow[] = pageRows.map((r) => ({
     connectorId: r.connectorId,
     connectorType: r.connectorType,
-    stream: r.stream,
-    recordKey: r.recordKey,
-    emittedAt: r.emittedAt,
-    semanticTime: r.semanticTime,
     data: parsePostgresRecordJson(r.recordJson),
+    emittedAt: r.emittedAt,
+    recordKey: r.recordKey,
+    semanticTime: r.semanticTime,
+    stream: r.stream,
   }));
 
-  return { rows, hasMore };
+  return { hasMore, rows };
 }
 
 async function postgresCountNewSinceSnapshot(input: CountNewSinceSnapshotInput): Promise<number> {
@@ -910,7 +918,15 @@ async function postgresFetchUpcoming(input: UpcomingFetchInput): Promise<Upcomin
 
   for (const [partitionIndex, partition] of input.partitions.entries()) {
     const after = afterByKey.get(upcomingPartitionKey(partition.connectorId, partition.stream)) ?? null;
-    const fetched = await postgresFetchUpcomingPartition(input, semExpr, computeTotal, partition, partitionIndex, after);
+    // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
+    const fetched = await postgresFetchUpcomingPartition(
+      input,
+      semExpr,
+      computeTotal,
+      partition,
+      partitionIndex,
+      after
+    );
     total += fetched.total;
     tagged.push(...fetched.tagged);
     partitionOverflow[partitionIndex] = fetched.overflow;
@@ -918,15 +934,15 @@ async function postgresFetchUpcoming(input: UpcomingFetchInput): Promise<Upcomin
 
   return finalizeUpcoming({
     input,
-    tagged,
     partitionOverflow,
+    tagged,
     total: computeTotal ? total : 0,
   });
 }
 
 interface PostgresUpcomingQuery {
-  readonly where: string;
   readonly params: (string | number)[];
+  readonly where: string;
 }
 
 function postgresUpcomingQuery(
@@ -941,7 +957,7 @@ function postgresUpcomingQuery(
     where += ` AND (${semanticExpression} > $5 OR (${semanticExpression} = $5 AND record_key > $6))`;
     params.push(after.lastSemanticTime, after.lastRecordKey);
   }
-  return { where, params };
+  return { params, where };
 }
 
 async function postgresCountUpcomingRows(query: PostgresUpcomingQuery): Promise<number> {
@@ -977,22 +993,22 @@ async function postgresFetchUpcomingTaggedRows(
     semanticTime: string;
   }>) {
     if (tagged.length >= input.limit) {
-      return { tagged, overflow: true };
+      return { overflow: true, tagged };
     }
     tagged.push({
       partitionIndex,
       row: {
         connectorId: row.connectorId,
         connectorType: row.connectorType,
-        stream: row.stream,
-        recordKey: row.recordKey,
-        emittedAt: row.emittedAt,
-        semanticTime: row.semanticTime,
         data: parsePostgresRecordJson(row.recordJson),
+        emittedAt: row.emittedAt,
+        recordKey: row.recordKey,
+        semanticTime: row.semanticTime,
+        stream: row.stream,
       },
     });
   }
-  return { tagged, overflow: false };
+  return { overflow: false, tagged };
 }
 
 async function postgresFetchUpcomingPartition(
@@ -1006,18 +1022,18 @@ async function postgresFetchUpcomingPartition(
   const query = postgresUpcomingQuery(input, semanticExpression, partition, after);
   const total = computeTotal ? await postgresCountUpcomingRows(query) : 0;
   const { tagged, overflow } = await postgresFetchUpcomingTaggedRows(input, semanticExpression, partitionIndex, query);
-  return { total, tagged, overflow };
+  return { overflow, tagged, total };
 }
 
 export function buildPostgresExploreTimelineDeps(): ExploreTimelineDependencies {
   return {
-    listPartitions: postgresListPartitions,
-    fetchSnapshotAnchor: postgresFetchSnapshotAnchor,
-    fetchPartitionPage: postgresFetchPartitionPage,
     countNewSinceSnapshot: postgresCountNewSinceSnapshot,
+    fetchPartitionPage: postgresFetchPartitionPage,
+    fetchSnapshotAnchor: postgresFetchSnapshotAnchor,
     fetchUpcoming: postgresFetchUpcoming,
-    saveCursorBlob: postgresSaveCursorBlob,
+    listPartitions: postgresListPartitions,
     loadCursorBlob: postgresLoadCursorBlob,
+    saveCursorBlob: postgresSaveCursorBlob,
   };
 }
 
@@ -1038,9 +1054,9 @@ function parseBucketRow(row: {
   return {
     bucketStart: row.bucketStart,
     count: Number(row.count ?? 0),
-    extentStart: row.extentStart,
-    extentEnd: row.extentEnd,
     extentCount: Number(row.extentCount ?? 0),
+    extentEnd: row.extentEnd,
+    extentStart: row.extentStart,
     granularity: row.granularity as ExploreRecordBucketGranularity,
   };
 }

@@ -28,8 +28,8 @@ import type { ConnectorSchedulePatch, ScheduleApi, ScheduleUpsertResult } from "
 const DEFAULT_INTERVAL_SECONDS = 3600;
 
 export interface AutoEnrollControllerLike {
-  getSchedule(connectorId: string): Promise<ScheduleApi | null>;
-  upsertSchedule(connectorId: string, input: ConnectorSchedulePatch): Promise<ScheduleUpsertResult>;
+  getSchedule: (connectorId: string) => Promise<ScheduleApi | null>;
+  upsertSchedule: (connectorId: string, input: ConnectorSchedulePatch) => Promise<ScheduleUpsertResult>;
 }
 
 export interface AutoEnrollConnectorRow {
@@ -78,9 +78,9 @@ export interface AutoEnrollSummary {
 type AutoEnrollSummaryCounter = Exclude<keyof AutoEnrollSummary, "scanned">;
 
 const EMPTY_SUMMARY = (): AutoEnrollSummary => ({
-  scanned: 0,
   enrolled: 0,
   errors: 0,
+  scanned: 0,
   skipped_env: 0,
   skipped_existing: 0,
   skipped_policy: 0,
@@ -154,6 +154,7 @@ function getListingFacts(caps: ManifestCapabilities): ListingFacts {
 }
 
 function readAuthRequiredList(caps: ManifestCapabilities): readonly unknown[] | null {
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const auth = caps.auth;
   if (!auth || typeof auth !== "object" || Array.isArray(auth)) {
     return null;
@@ -162,6 +163,7 @@ function readAuthRequiredList(caps: ManifestCapabilities): readonly unknown[] | 
   if (a.kind !== "env") {
     return null;
   }
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const required = a.required;
   if (!Array.isArray(required) || required.length === 0) {
     return null;
@@ -427,13 +429,14 @@ export async function autoEnrollEligibleSchedules(opts: AutoEnrollOptions): Prom
       continue;
     }
     summary.scanned += 1;
+    // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
     const counter = await decideScheduleAttachmentForConnector({
       connectorId,
       controller,
       env,
       hasStoredCredential,
-      manifest: row.manifest,
       log,
+      manifest: row.manifest,
     });
     summary[counter] += 1;
   }
@@ -442,6 +445,7 @@ export async function autoEnrollEligibleSchedules(opts: AutoEnrollOptions): Prom
 
 function errorMessage(err: unknown): string {
   if (err instanceof Error) {
+    // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
     const code = (err as { code?: unknown }).code;
     if (typeof code === "string" && code.length > 0) {
       return `${code}: ${err.message}`;

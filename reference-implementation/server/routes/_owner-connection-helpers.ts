@@ -26,11 +26,6 @@ interface TokenInfoRequest {
   } | null;
 }
 
-// Minimal response slice buildAuditTrace needs (passed opaquely to ctx).
-// The actual RouteResponse in each caller is structurally wider; using
-// `unknown` here keeps this file free of per-adapter type bindings.
-type OpaqueResponse = unknown;
-
 // ---- auditActorKind --------------------------------------------------------
 
 // Returns the actor-kind label to record in spine events.  Reads only the
@@ -49,17 +44,21 @@ export function auditActorKind(req: TokenInfoRequest): "owner_agent" | "client" 
 // ---- buildAuditTrace -------------------------------------------------------
 
 // Minimal ctx slice buildAuditTrace needs.
-interface AuditTraceCtx {
-  createTraceContext(input?: { scenarioId?: string }): TraceContext;
-  ensureRequestId(res: OpaqueResponse): string;
-  setReferenceTraceId(res: OpaqueResponse, traceId: string): void;
+interface AuditTraceCtx<Response> {
+  createTraceContext: (input?: { scenarioId?: string }) => TraceContext;
+  ensureRequestId: (res: Response) => string;
+  setReferenceTraceId: (res: Response, traceId: string) => void;
 }
 
 // Builds and attaches a trace context for the current request.  Sets the
 // `X-Reference-Trace-Id` response header via ctx.setReferenceTraceId and
 // returns the { request_id, scenario_id, trace_id } triple for embedding in
 // spine events.
-export function buildAuditTrace(ctx: AuditTraceCtx, req: TokenInfoRequest, res: OpaqueResponse): TraceContext {
+export function buildAuditTrace<Response>(
+  ctx: AuditTraceCtx<Response>,
+  req: TokenInfoRequest,
+  res: Response
+): TraceContext {
   const scenarioId = typeof req.tokenInfo?.scenario_id === "string" ? req.tokenInfo.scenario_id : undefined;
   const trace = scenarioId ? ctx.createTraceContext({ scenarioId }) : ctx.createTraceContext();
   const requestId = ctx.ensureRequestId(res);
@@ -75,7 +74,7 @@ export function buildAuditTrace(ctx: AuditTraceCtx, req: TokenInfoRequest, res: 
 
 // Minimal ctx slice readConnectionTarget needs.
 interface ConnectionTargetCtx {
-  canonicalConnectorKey(value: string | null | undefined): string | null;
+  canonicalConnectorKey: (value: string | null | undefined) => string | null;
 }
 
 // Minimal request slice readConnectionTarget needs.
@@ -105,17 +104,17 @@ export function readConnectionTarget(
 // Minimal ctx slice rethrowAsAmbiguousConnection needs.
 interface AmbiguousConnectionCtx {
   AmbiguousConnectionError: new (message: string, availableConnections: WireConnection[]) => Error;
-  listActiveBindingsForGrant(input: {
+  listActiveBindingsForGrant: (input: {
     ownerSubjectId: string;
     connectorId: string;
-  }):
+  }) =>
     | Promise<{ connectorId?: string | null; connectorInstanceId: string; displayName?: string | null }[]>
     | { connectorId?: string | null; connectorInstanceId: string; displayName?: string | null }[];
-  projectBindingForWire(instance: {
+  projectBindingForWire: (instance: {
     connectorId?: string | null;
     connectorInstanceId: string;
     displayName?: string | null;
-  }): WireConnection | null;
+  }) => WireConnection | null;
 }
 
 // Maps the store's connector-only ambiguity (`ambiguous_connector_instance`)
@@ -128,10 +127,11 @@ export async function rethrowAsAmbiguousConnection(
   ownerSubjectId: string,
   connectorKey: string
 ): Promise<never> {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   if ((err as { code?: unknown })?.code !== "ambiguous_connector_instance") {
     throw err;
   }
-  const active = await Promise.resolve(ctx.listActiveBindingsForGrant({ ownerSubjectId, connectorId: connectorKey }));
+  const active = await Promise.resolve(ctx.listActiveBindingsForGrant({ connectorId: connectorKey, ownerSubjectId }));
   const available = active
     .map((binding) => ctx.projectBindingForWire(binding))
     .filter((row): row is WireConnection => row !== null);
@@ -147,6 +147,7 @@ export async function rethrowAsAmbiguousConnection(
 // table, defaulting to 500 for unknown codes.  Used by all mutation adapters
 // except owner-connection-diagnostics (which has a divergent hand-coded map).
 export function httpStatusForOperationError(err: unknown): number {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const code = (err as { code?: unknown })?.code;
   return typeof code === "string" ? (codeToStatus[code] ?? 500) : 500;
 }

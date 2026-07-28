@@ -37,8 +37,8 @@ export type RefRecordsTimelineOrder = "asc" | "desc";
 export type RefRecordsTimelineTimestampMode = "emitted" | "native";
 
 export interface RefRecordsTimelineSemanticTimestamp {
-  readonly value: string;
   readonly source?: unknown;
+  readonly value: string;
 }
 
 export interface RefRecordsTimelineEntry {
@@ -55,22 +55,22 @@ export interface RefRecordsTimelineEntry {
 
 export interface RefRecordsTimelineInput {
   readonly connectorId?: string | null;
-  readonly stream?: string | null;
-  readonly since?: string | null;
-  readonly until?: string | null;
   readonly limit?: number | null;
   readonly order?: RefRecordsTimelineOrder | string | null;
+  readonly since?: string | null;
+  readonly stream?: string | null;
   readonly timestampMode?: RefRecordsTimelineTimestampMode | string | null;
+  readonly until?: string | null;
 }
 
 export interface RefRecordsTimelineCollectInput {
   readonly connectorId: string | null;
-  readonly stream: string | null;
-  readonly since: string | null;
-  readonly until: string | null;
   readonly limit: number;
   readonly order: RefRecordsTimelineOrder;
+  readonly since: string | null;
+  readonly stream: string | null;
   readonly timestampMode: RefRecordsTimelineTimestampMode;
+  readonly until: string | null;
 }
 
 export interface RefRecordsTimelineDependencies {
@@ -86,13 +86,12 @@ export interface RefRecordsTimelineDependencies {
    * operation will clip to the limit. Returning fewer is fine and is
    * surfaced as-is.
    */
-  collectEntries(
-    input: RefRecordsTimelineCollectInput,
-  ): Promise<readonly RefRecordsTimelineEntry[]> | readonly RefRecordsTimelineEntry[];
+  collectEntries: (
+    input: RefRecordsTimelineCollectInput
+  ) => Promise<readonly RefRecordsTimelineEntry[]> | readonly RefRecordsTimelineEntry[];
 }
 
 export interface RefRecordsTimelineEnvelope {
-  readonly object: "list";
   readonly data: RefRecordsTimelineEntry[];
   readonly meta: {
     readonly bounded: true;
@@ -106,6 +105,7 @@ export interface RefRecordsTimelineEnvelope {
       readonly until: string | null;
     };
   };
+  readonly object: "list";
 }
 
 const DEFAULT_LIMIT = 50;
@@ -126,7 +126,9 @@ function normalizeTimestampMode(raw: unknown): RefRecordsTimelineTimestampMode {
 }
 
 function normalizeStringFilter(raw: unknown): string | null {
-  if (typeof raw !== "string") return null;
+  if (typeof raw !== "string") {
+    return null;
+  }
   const trimmed = raw.trim();
   return trimmed.length > 0 ? trimmed : null;
 }
@@ -142,7 +144,7 @@ function normalizeStringFilter(raw: unknown): string | null {
  */
 export async function executeRefRecordsTimeline(
   input: RefRecordsTimelineInput,
-  dependencies: RefRecordsTimelineDependencies,
+  dependencies: RefRecordsTimelineDependencies
 ): Promise<RefRecordsTimelineEnvelope> {
   const limit = normalizeLimit(input.limit ?? null);
   const order = normalizeOrder(input.order);
@@ -154,28 +156,28 @@ export async function executeRefRecordsTimeline(
 
   const collected = await dependencies.collectEntries({
     connectorId,
-    stream,
-    since,
-    until,
     limit,
     order,
+    since,
+    stream,
     timestampMode,
+    until,
   });
 
   return {
-    object: "list",
     data: [...collected].slice(0, limit),
     meta: {
       bounded: true,
-      ordering: `semantic_or_emitted ${order}`,
-      limit,
-      timestamp_mode: timestampMode,
       filters: {
         connector_id: connectorId,
-        stream,
         since,
+        stream,
         until,
       },
+      limit,
+      ordering: `semantic_or_emitted ${order}`,
+      timestamp_mode: timestampMode,
     },
+    object: "list",
   };
 }

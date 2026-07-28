@@ -18,12 +18,12 @@
  *   - the `event_count` and pagination fields (`truncated`,
  *     `next_cursor`, `limit`);
  *   - the per-event live-bearer redaction:
- *       * strip `token_id` from every event;
- *       * replace the literal `object_id` for `token`,
+ * strip `token_id` from every event;
+ * replace the literal `object_id` for `token`,
  *         `pending_consent`, and `owner_device_auth` events with
  *         redaction sentinels so the bearer / device_code is never
  *         echoed back;
- *       * replace `device_code` / `user_code` / `request_uri` keys
+ * replace `device_code` / `user_code` / `request_uri` keys
  *         inside each event's `data` map with a redaction sentinel.
  *
  * The empty-page on first cursor (`!events.length && !cursor`) is
@@ -53,25 +53,25 @@ export type RefSpineEventsKind = "trace" | "grant" | "run";
 export type RefSpineRunTerminalStatus = "completed" | "failed" | "cancelled" | "abandoned";
 
 export interface RefSpineEventInput {
-  readonly token_id?: string | null;
-  readonly object_type: string;
-  readonly object_id: string;
-  readonly trace_id?: string | null;
   readonly data?: unknown;
+  readonly object_id: string;
+  readonly object_type: string;
+  readonly token_id?: string | null;
+  readonly trace_id?: string | null;
   readonly [key: string]: unknown;
 }
 
 export interface RefSpineEventsPageInputPagination {
   readonly events: readonly RefSpineEventInput[];
-  readonly truncated: boolean;
-  readonly next_cursor: string | null;
   readonly limit: number;
+  readonly next_cursor: string | null;
+  readonly truncated: boolean;
 }
 
 export interface RefSpineEventsPageInput {
-  readonly kind: RefSpineEventsKind;
-  readonly id: string;
   readonly cursor: string | null;
+  readonly id: string;
+  readonly kind: RefSpineEventsKind;
   readonly page: RefSpineEventsPageInputPagination;
   /**
    * Run-kind only: the run's window-independent terminal status, resolved
@@ -94,13 +94,11 @@ export interface RefSpineEventsPageDependencies {
 }
 
 export interface RefSpineEventsPageEnvelope {
-  readonly object: "trace" | "grant_timeline" | "run_timeline";
-  readonly trace_id: string | null;
-  readonly event_count: number;
   readonly data: readonly Record<string, unknown>[];
-  readonly truncated: boolean;
-  readonly next_cursor: string | null;
+  readonly event_count: number;
   readonly limit: number;
+  readonly next_cursor: string | null;
+  readonly object: "trace" | "grant_timeline" | "run_timeline";
   /**
    * Run-kind only: the run's window-independent terminal status. Present on
    * the run-timeline envelope (value or `null`); always `null` for the
@@ -108,19 +106,21 @@ export interface RefSpineEventsPageEnvelope {
    * same value — it does not depend on `limit`/`cursor`.
    */
   readonly terminal_status: RefSpineRunTerminalStatus | null;
+  readonly trace_id: string | null;
+  readonly truncated: boolean;
   readonly [identifierKey: string]: unknown;
 }
 
 const KIND_TO_ENVELOPE_OBJECT = {
-  trace: "trace",
   grant: "grant_timeline",
   run: "run_timeline",
+  trace: "trace",
 } as const;
 
 const KIND_TO_ID_KEY = {
-  trace: "trace_id",
   grant: "grant_id",
   run: "run_id",
+  trace: "trace_id",
 } as const;
 
 /**
@@ -137,23 +137,19 @@ const KIND_TO_ID_KEY = {
  * read-time guarantee shipped today.
  */
 const REDACTED_OBJECT_ID_LITERAL_BY_TYPE: Record<string, string> = {
-  token: "<redacted-token-id>",
-  pending_consent: "<redacted-device-code>",
   owner_device_auth: "<redacted-device-code>",
+  pending_consent: "<redacted-device-code>",
+  token: "<redacted-token-id>",
 };
 
-const REDACTED_BEARER_DATA_KEYS: ReadonlySet<string> = new Set([
-  "device_code",
-  "user_code",
-  "request_uri",
-]);
+const REDACTED_BEARER_DATA_KEYS: ReadonlySet<string> = new Set(["device_code", "user_code", "request_uri"]);
 
 const REDACTED_BEARER_VALUE = "<redacted-bearer>";
 
-export function redactSpineEventForPublic(
-  event: RefSpineEventInput,
-): Record<string, unknown> {
-  if (!event || typeof event !== "object") return event as unknown as Record<string, unknown>;
+export function redactSpineEventForPublic(event: RefSpineEventInput): Record<string, unknown> {
+  if (!event || typeof event !== "object") {
+    return event as unknown as Record<string, unknown>;
+  }
   // Strip `token_id` defensively — even if a host accidentally surfaces
   // a `null`, the field is removed from the projected event entirely.
   const { token_id: _token_id, ...rest } = event as Record<string, unknown>;
@@ -167,11 +163,15 @@ export function redactSpineEventForPublic(
     const dataObj = rest.data as Record<string, unknown>;
     for (const key of REDACTED_BEARER_DATA_KEYS) {
       if (key in dataObj) {
-        if (!cloned) cloned = { ...dataObj };
+        if (!cloned) {
+          cloned = { ...dataObj };
+        }
         cloned[key] = REDACTED_BEARER_VALUE;
       }
     }
-    if (cloned) rest.data = cloned;
+    if (cloned) {
+      rest.data = cloned;
+    }
   }
   return rest;
 }
@@ -187,11 +187,10 @@ export function redactSpineEventForPublic(
  */
 export function executeRefSpineEventsPage(
   input: RefSpineEventsPageInput,
-  _dependencies: RefSpineEventsPageDependencies = {},
+  _dependencies: RefSpineEventsPageDependencies = {}
 ): RefSpineEventsPageEnvelope {
-  const events = input.page.events;
-  const traceId =
-    events.find((event) => typeof event.trace_id === "string" && event.trace_id)?.trace_id ?? null;
+  const { events } = input.page;
+  const traceId = events.find((event) => typeof event.trace_id === "string" && event.trace_id)?.trace_id ?? null;
   const idKey = KIND_TO_ID_KEY[input.kind];
   const objectKind = KIND_TO_ENVELOPE_OBJECT[input.kind];
   const data = events.map((event) => redactSpineEventForPublic(event));
@@ -201,12 +200,12 @@ export function executeRefSpineEventsPage(
   return {
     object: objectKind,
     [idKey]: input.id,
-    trace_id: traceId,
-    event_count: events.length,
     data,
-    truncated: input.page.truncated,
-    next_cursor: input.page.next_cursor,
+    event_count: events.length,
     limit: input.page.limit,
+    next_cursor: input.page.next_cursor,
     terminal_status: terminalStatus,
+    trace_id: traceId,
+    truncated: input.page.truncated,
   } as RefSpineEventsPageEnvelope;
 }

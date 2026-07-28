@@ -19,20 +19,12 @@
  */
 
 export interface StreamsListSourceDescriptor {
-  kind: "connector" | "provider_native";
   id: string;
+  kind: "connector" | "provider_native";
   [extra: string]: unknown;
 }
 
 export interface StreamSummary {
-  /** Always the literal "stream" — matches the live RS list-item shape. */
-  object: "stream";
-  /** Stream name as declared in the manifest. */
-  name: string;
-  /** Number of visible records under the actor's scope. */
-  record_count: number;
-  /** ISO 8601 timestamp of the latest visible record, or null. */
-  last_updated: string | null;
   /**
    * Canonical public identifier of the connection (owner-configured
    * account/device/profile) the entry attributes to, when known. Populated
@@ -44,12 +36,11 @@ export interface StreamSummary {
    */
   connection_id?: string;
   /**
-   * Owner-meaningful label for the connection. Never the storage-layer
-   * placeholder (`legacy`, `default_account`); host adapters SHOULD fall
-   * back to `<connector> · account N` when the owner has not renamed the
-   * connection. Omitted only when `connection_id` is also omitted.
+   * Connector identity for owner-wide polyfill stream catalogs where there
+   * is no single request-level source descriptor. Omitted for single-source
+   * calls whose `sourceDescriptor` already identifies the source.
    */
-  display_name?: string;
+  connector_id?: string;
   /**
    * Deprecated wire alias for `connection_id`. Carries the same opaque
    * value during the migration window so pre-migration consumers can
@@ -57,11 +48,20 @@ export interface StreamSummary {
    */
   connector_instance_id?: string;
   /**
-   * Connector identity for owner-wide polyfill stream catalogs where there
-   * is no single request-level source descriptor. Omitted for single-source
-   * calls whose `sourceDescriptor` already identifies the source.
+   * Owner-meaningful label for the connection. Never the storage-layer
+   * placeholder (`legacy`, `default_account`); host adapters SHOULD fall
+   * back to `<connector> · account N` when the owner has not renamed the
+   * connection. Omitted only when `connection_id` is also omitted.
    */
-  connector_id?: string;
+  display_name?: string;
+  /** ISO 8601 timestamp of the latest visible record, or null. */
+  last_updated: string | null;
+  /** Stream name as declared in the manifest. */
+  name: string;
+  /** Always the literal "stream" — matches the live RS list-item shape. */
+  object: "stream";
+  /** Number of visible records under the actor's scope. */
+  record_count: number;
   /** Per-entry source descriptor for owner-wide polyfill stream catalogs. */
   source?: StreamsListSourceDescriptor;
 }
@@ -78,18 +78,18 @@ export type StreamsListActor =
 
 export interface StreamsListDependencies {
   /**
-   * Returns the stream summaries the actor is allowed to see, in the order
-   * the host wants them rendered. Implementations are responsible for the
-   * actor's visibility rules (owner-wide vs grant-scoped vs fixture).
-   */
-  listSummaries(): Promise<StreamSummary[]>;
-  /**
    * Source descriptor that should appear in instrumentation events for this
    * call (`source` field on disclosure.served / query.received). Hosts
    * compute this once and hand it to the operation so dependency
    * implementations stay narrow.
    */
-  getSourceDescriptor(): StreamsListSourceDescriptor | null;
+  getSourceDescriptor: () => StreamsListSourceDescriptor | null;
+  /**
+   * Returns the stream summaries the actor is allowed to see, in the order
+   * the host wants them rendered. Implementations are responsible for the
+   * actor's visibility rules (owner-wide vs grant-scoped vs fixture).
+   */
+  listSummaries: () => Promise<StreamSummary[]>;
 }
 
 export interface StreamsListInput {
@@ -108,10 +108,6 @@ export interface StreamsListInput {
 }
 
 export interface StreamsListOutput {
-  /** Canonical list of stream summaries; envelope shape is host-owned. */
-  streams: StreamSummary[];
-  /** Echoed for instrumentation parity with the native route. */
-  sourceDescriptor: StreamsListSourceDescriptor | null;
   /**
    * `query.received`-shaped data block. Hosts pass this through to the
    * disclosure spine; the operation populates the conserved fields.
@@ -120,6 +116,10 @@ export interface StreamsListOutput {
     query_shape: "stream_list";
     stream_count_limit?: number | null;
   };
+  /** Echoed for instrumentation parity with the native route. */
+  sourceDescriptor: StreamsListSourceDescriptor | null;
+  /** Canonical list of stream summaries; envelope shape is host-owned. */
+  streams: StreamSummary[];
 }
 
 /**
@@ -131,7 +131,7 @@ export interface StreamsListOutput {
  */
 export async function executeStreamsList(
   input: StreamsListInput,
-  dependencies: StreamsListDependencies,
+  dependencies: StreamsListDependencies
 ): Promise<StreamsListOutput> {
   const sourceDescriptor = dependencies.getSourceDescriptor();
   const streams = await dependencies.listSummaries();
@@ -144,8 +144,8 @@ export async function executeStreamsList(
   }
 
   return {
-    streams,
-    sourceDescriptor,
     queryData,
+    sourceDescriptor,
+    streams,
   };
 }

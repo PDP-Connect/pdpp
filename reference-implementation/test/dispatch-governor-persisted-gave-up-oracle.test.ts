@@ -1,0 +1,32 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { decideBackoffDispatch } from "../runtime/scheduler/dispatch-governor.ts";
+
+test("decideBackoffDispatch honors a persisted gave_up marker while preserving blocked suppression", (t) => {
+  t.diagnostic("BASELINE: authored test active");
+
+  assert.deepEqual(
+    decideBackoffDispatch({
+      announcedBackoff: "source_pressure",
+      announcedBlocked: undefined,
+      backoffApplied: true,
+      blocked: true,
+      eligible: true,
+      persistedBackoffStarted: false,
+      persistedGaveUp: true,
+      reasonClass: "source_pressure",
+      recoveryOnly: true,
+    }),
+    {
+      announcedBackoffMutation: "set",
+      announcedBlockedMutation: "set",
+      eligible: false,
+      recoveryOnly: false,
+      transitions: [],
+    }
+  );
+});

@@ -37,13 +37,13 @@ interface RouteRequest {
 }
 
 interface RouteResponse {
-  json(body: unknown): unknown;
+  json: (body: unknown) => unknown;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
 
 interface AppLike {
-  get(path: string, ...handlers: (MiddlewareHandler | RouteHandler)[]): AppLike;
+  get: (path: string, ...handlers: (MiddlewareHandler | RouteHandler)[]) => AppLike;
 }
 
 interface TimelinePageOptions {
@@ -58,13 +58,13 @@ export interface MountRefSpineTimelinesContext {
    * returns `null` when the run has no terminal event. Only invoked for
    * `kind === "run"` (trace/grant timelines have no terminal status).
    */
-  getRunTerminalStatus(runId: string): Promise<RefSpineRunTerminalStatus | null> | RefSpineRunTerminalStatus | null;
-  handleError(res: unknown, err: unknown): void;
-  listSpineEventsPage(
+  getRunTerminalStatus: (runId: string) => Promise<RefSpineRunTerminalStatus | null> | RefSpineRunTerminalStatus | null;
+  handleError: (res: unknown, err: unknown) => void;
+  listSpineEventsPage: (
     kind: RefSpineEventsKind,
     id: string,
     opts: TimelinePageOptions
-  ): Promise<RefSpineEventsPageInputPagination> | RefSpineEventsPageInputPagination;
+  ) => Promise<RefSpineEventsPageInputPagination> | RefSpineEventsPageInputPagination;
   pdppError: PdppErrorFn;
   requireOwnerSession: MiddlewareHandler;
 }
@@ -86,6 +86,7 @@ function parseTimelinePageOptions(
   res: RouteResponse,
   pdppError: PdppErrorFn
 ): TimelinePageOptions | null {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const rawLimit = req.query?.limit;
   let limit = TIMELINE_DEFAULT_LIMIT;
   if (rawLimit !== undefined && rawLimit !== null && rawLimit !== "") {
@@ -100,9 +101,10 @@ function parseTimelinePageOptions(
     }
     limit = parsed;
   }
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const rawCursor = req.query?.cursor;
   const cursor = typeof rawCursor === "string" && rawCursor.length > 0 ? rawCursor : null;
-  return { limit, cursor };
+  return { cursor, limit };
 }
 
 function mountTimeline(
@@ -134,9 +136,9 @@ function mountTimeline(
       // Run kind only — trace/grant timelines have no terminal status.
       const terminalStatus = kind === "run" ? await ctx.getRunTerminalStatus(id) : null;
       const envelope = executeRefSpineEventsPage({
-        kind,
-        id,
         cursor: opts.cursor,
+        id,
+        kind,
         page,
         terminalStatus,
       });

@@ -16,6 +16,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
+    if (arg === undefined) {
+      continue;
+    }
     if (arg === "--") {
       positionals.push(...argv.slice(i + 1));
       break;

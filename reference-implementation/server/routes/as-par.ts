@@ -26,33 +26,33 @@ interface RouteRequest {
 }
 
 interface RouteResponse {
-  json(body: unknown): unknown;
-  setHeader(name: string, value: string): unknown;
-  status(code: number): RouteResponse;
+  json: (body: unknown) => unknown;
+  setHeader: (name: string, value: string) => unknown;
+  status: (code: number) => RouteResponse;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => Promise<void>;
 
 interface AppLike {
-  post(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  post: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
 }
 
 // ─── Injected capabilities ───────────────────────────────────────────────────
 
 export interface MountAsParContext {
   /** Generic error handler for unexpected thrown errors. */
-  handleError(res: unknown, err: unknown): void;
+  handleError: (res: unknown, err: unknown) => void;
   /** Initiates a new PAR grant in the consent store. */
-  initiateGrant(
+  initiateGrant: (
     body: Record<string, unknown> | null | undefined,
     opts: { baseUrl: string; nativeManifest: unknown }
-  ): Promise<AsParCreateStoreResult> | AsParCreateStoreResult;
+  ) => Promise<AsParCreateStoreResult> | AsParCreateStoreResult;
   /** The native manifest for this server instance, or null if not set. */
   nativeManifest: unknown;
   /** Resolves the full base URL for the running AS given the inbound request. */
-  resolveBaseUrl(req: RouteRequest): string;
+  resolveBaseUrl: (req: RouteRequest) => string;
   /** Attaches a trace-id header to the response. */
-  setReferenceTraceId(res: unknown, traceId: string): void;
+  setReferenceTraceId: (res: unknown, traceId: string) => void;
 }
 
 // ─── Route mount ─────────────────────────────────────────────────────────────
@@ -66,8 +66,8 @@ export function mountAsPar(app: AppLike, ctx: MountAsParContext): void {
     try {
       const output = await executeAsParCreate(
         {
-          body: req.body,
           baseUrl: ctx.resolveBaseUrl(req),
+          body: req.body,
           nativeManifest: ctx.nativeManifest,
         },
         {

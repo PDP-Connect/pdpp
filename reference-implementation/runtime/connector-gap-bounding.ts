@@ -27,6 +27,7 @@
 // No Playwright/CDP/raw-DOM terms. Closed connector evidence is revalidated
 // here before it can enter the durable spine.
 
+import { isNullish } from "../lib/nullish.ts";
 import { redactStderrTail } from "./stderr-redact.ts";
 
 // ── CLUSTER-EXCLUSIVE CONSTANTS ───────────────────────────────────────────────
@@ -165,7 +166,7 @@ export function boundGapStringList(values: unknown): string[] | null {
  * openspec/changes/propagate-skip-result-diagnostics.
  */
 export function boundGapDiagnostics(value: unknown): Record<string, unknown> | null {
-  if (value == null || typeof value !== "object" || Array.isArray(value)) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
     return null;
   }
   if (Object.hasOwn(value, "browser_surface")) {
@@ -173,17 +174,17 @@ export function boundGapDiagnostics(value: unknown): Record<string, unknown> | n
     return browserSurface ? { browser_surface: browserSurface } : null;
   }
   const projected = projectDiagnosticsNode(value as Record<string, unknown>, 0);
-  if (projected == null) {
-    return { truncated: true, reason: "depth_overflow" };
+  if (projected === null) {
+    return { reason: "depth_overflow", truncated: true };
   }
   let serialized: string;
   try {
     serialized = JSON.stringify(projected);
   } catch {
-    return { truncated: true, reason: "serialization_failed" };
+    return { reason: "serialization_failed", truncated: true };
   }
   if (serialized.length > GAP_DIAGNOSTICS_BYTES_MAX) {
-    return { truncated: true, reason: "size_overflow" };
+    return { reason: "size_overflow", truncated: true };
   }
   return projected as Record<string, unknown>;
 }
@@ -194,7 +195,7 @@ export function boundGapDiagnostics(value: unknown): Record<string, unknown> | n
  * route URLs, selector strings, and identifiers cannot survive this boundary.
  */
 function boundBrowserSurfaceDiagnostic(value: unknown): Record<string, unknown> | null {
-  if (value == null || typeof value !== "object" || Array.isArray(value)) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
     return null;
   }
   const input = value as Record<string, unknown>;
@@ -288,7 +289,7 @@ function isBrowserSurfaceCount(value: unknown): boolean {
 }
 
 function projectDiagnosticsNode(value: unknown, depth: number): unknown {
-  if (value == null) {
+  if (isNullish(value)) {
     return null;
   }
   if (typeof value === "string") {
@@ -298,7 +299,7 @@ function projectDiagnosticsNode(value: unknown, depth: number): unknown {
     return value;
   }
   if (depth >= GAP_DIAGNOSTICS_DEPTH_MAX) {
-    return { truncated: true, reason: "depth_overflow" };
+    return { reason: "depth_overflow", truncated: true };
   }
   if (Array.isArray(value)) {
     const items: unknown[] = [];
@@ -310,7 +311,7 @@ function projectDiagnosticsNode(value: unknown, depth: number): unknown {
       }
     }
     if (value.length > GAP_DIAGNOSTICS_LIST_MAX) {
-      items.push({ truncated: true, reason: "list_overflow", omitted: value.length - GAP_DIAGNOSTICS_LIST_MAX });
+      items.push({ omitted: value.length - GAP_DIAGNOSTICS_LIST_MAX, reason: "list_overflow", truncated: true });
     }
     return items;
   }
@@ -324,6 +325,7 @@ function projectDiagnosticsNode(value: unknown, depth: number): unknown {
     }
     return out;
   }
+  // biome-ignore lint/complexity/noUselessReturn: required by TypeScript noImplicitReturns to make the empty result explicit.
   return;
 }
 
@@ -344,7 +346,7 @@ function normalizeConsideredInDiagnostics(
   boundedDiagnostics: Record<string, unknown> | null
 ): Record<string, unknown> | null {
   if (
-    boundedDiagnostics == null ||
+    boundedDiagnostics === null ||
     typeof boundedDiagnostics !== "object" ||
     Array.isArray(boundedDiagnostics) ||
     !Object.hasOwn(boundedDiagnostics, "considered")
@@ -352,7 +354,7 @@ function normalizeConsideredInDiagnostics(
     return boundedDiagnostics;
   }
   const considered = boundConsideredCount(boundedDiagnostics.considered);
-  if (considered == null) {
+  if (considered === null) {
     const { considered: _dropped, ...rest } = boundedDiagnostics;
     return rest;
   }
@@ -496,6 +498,7 @@ export function buildCollectionFacts({
     }
   }
 
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const committed = committedStateStreams instanceof Set ? committedStateStreams : new Set(committedStateStreams || []);
   const stagedStateStreams = new Set(Object.keys(newState || {}));
 
@@ -524,7 +527,7 @@ export function buildCollectionFacts({
         if (typeof entry.considered === "number") {
           return entry.considered;
         }
-        if (requiredKeysFallback == null && Array.isArray(entry.requiredKeys)) {
+        if (requiredKeysFallback === null && Array.isArray(entry.requiredKeys)) {
           requiredKeysFallback = entry.requiredKeys.length;
         }
       }
@@ -575,14 +578,14 @@ export function buildCollectionFacts({
     const covered = declaredCoveredForStream(stream);
     const stateStream = streamToStateStream.get(stream) || stream;
     return {
-      stream,
       collected: emittedByStream.get(stream) || 0,
+      stream,
       // Omit when unknown — absence reads as `unknown` downstream; never
       // inferred from collected count.
-      ...(considered == null ? {} : { considered }),
+      ...(considered === null ? {} : { considered }),
       // Optional covered count (task 4.4): omit when unknown. When present the
       // projection compares `considered` against this instead of `collected`.
-      ...(covered == null ? {} : { covered }),
+      ...(covered === null ? {} : { covered }),
       checkpoint: checkpointForStateStream(stateStream),
       pending_detail_gaps: pendingDetailGapsForStream(stream),
       skipped: skipForStream(stream),
@@ -731,6 +734,7 @@ function classifyKnownGapSeverity({
   if (typeof recoveryHint === "string") {
     action = recoveryHint;
   } else if (recoveryHint && typeof recoveryHint === "object") {
+    // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
     action = (recoveryHint as { action?: unknown }).action;
   }
   if (action === "retry_by_runtime") {
@@ -771,25 +775,25 @@ export function buildKnownGap({
   const safeReason = boundGapString(reason) || "unknown";
   const safeMessage = boundGapString(message);
   const normalizedSeverity = classifyKnownGapSeverity({
+    explicitSelection,
     kind,
     reason: safeReason,
     recoveryHint,
-    explicitSelection,
     severity,
     unsupportedInDefaultScope,
   });
   const boundedDiagnostics = normalizeConsideredInDiagnostics(boundGapDiagnostics(diagnostics));
   return {
     kind,
-    stream: boundGapString(stream),
     reason: safeReason,
     severity: normalizedSeverity,
+    stream: boundGapString(stream),
     ...(safeMessage ? { message: safeMessage } : {}),
     ...(scope ? { scope } : {}),
     recovery_hint: normalizeRecoveryHint(recoveryHint, {
-      reason: safeReason,
-      message: safeMessage,
       interactionKind,
+      message: safeMessage,
+      reason: safeReason,
     }),
     ...(boundedDiagnostics ? { diagnostics: boundedDiagnostics } : {}),
   };

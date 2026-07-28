@@ -50,6 +50,10 @@ const MUST_MATCH_NVMRC_PATTERN = /must match \.nvmrc/;
 const DOCKERFILE_PNPM_VERSION_PATTERN = /Dockerfile pnpm version/;
 const PNPM_INTEGRITY_PATTERN = /pnpm integrity/;
 const COREPACK_MESSAGE_PATTERN = /Corepack/;
+const MONOREPO_DEV_SCRIPT_ESCAPE_PATTERN = /resolved the monorepo dev script instead of the installed local-collector/;
+const CLI_COLLECTOR_SHIM_MISMATCH_PATTERN = /must reach the installed local-collector candidate/;
+const MCP_STDIO_SILENT_PATTERN = /must log a scoped-credential connection/;
+const MCP_STDIO_WRONG_VERSION_PATTERN = /did not reach the read-surface stub/;
 
 function compareStrings(a: string, b: string): number {
   if (a < b) {
@@ -132,6 +136,24 @@ function buildRow(matrixRow: MatrixRow): Receipt["rows"][number] {
       command: ["/usr/local/bin/node", "/workspace/.release-matrix/consumer/candidate-probe.mjs"],
       cwd: "/workspace/.release-matrix/consumer",
     },
+    { command: ["npm", "init", "--yes"], cwd: "<deep-consumer>" },
+    {
+      command: [
+        "npm",
+        "install",
+        "--ignore-scripts",
+        "--offline",
+        "--force",
+        ...candidates.map(({ tarball }) => `/workspace/.release-matrix/candidates/${tarball.filename}`),
+      ],
+      cwd: "<deep-consumer>",
+    },
+    { command: ["npx", "--no-install", "pdpp-local-collector", "advertise"], cwd: "<deep-consumer>" },
+    { command: ["npx", "--no-install", "pdpp", "collector", "advertise"], cwd: "<deep-consumer>" },
+    {
+      command: ["/usr/local/bin/node", "<deep-consumer>/resolve-collector-runner.mjs"],
+      cwd: "<deep-consumer>",
+    },
   ];
   if (matrixRow.exactFloor) {
     commands.splice(
@@ -195,6 +217,18 @@ function buildRow(matrixRow: MatrixRow): Receipt["rows"][number] {
           helpSha256: "e".repeat(64),
         })),
       })),
+    },
+    deepProbe: {
+      cliCollector: {
+        advertiseMatchesDirect: true,
+        resolvedRunnerScript:
+          "<deep-consumer>/node_modules/@pdpp/local-collector/dist/local-collector/bin/pdpp-local-collector.js",
+      },
+      mcpStdio: {
+        connectedToScopedCredential: true,
+        toolContract: "schema",
+        toolResultVersion: "artifact-proof",
+      },
     },
     commands: recordedCommands,
   };
@@ -322,6 +356,45 @@ test("receipt rejects image, package-manager, consumer, and tarball drift", () =
   assert.ok(firstDigestRow);
   firstDigestRow.consumer.network = "bridge";
   assert.throws(() => assertReceipt(digest, snapshot), DIGEST_MISMATCH_PATTERN);
+});
+
+test("receipt rejects a CLI collector shim that escapes to the monorepo dev script or a stdio-silent MCP install", () => {
+  // Registry/monorepo-substitution proof: if the installed CLI collector
+  // shim ever again preferred the monorepo dev bin/collector-runner.ts over
+  // the installed @pdpp/local-collector candidate (the exact regression
+  // resolveCollectorRunnerScript's walk-up makes possible from inside
+  // /workspace), the receipt must fail rather than silently accept it.
+  const escapedRunner = buildReceipt();
+  const [firstEscapedRunnerRow] = escapedRunner.rows;
+  assert.ok(firstEscapedRunnerRow);
+  firstEscapedRunnerRow.deepProbe.cliCollector.resolvedRunnerScript =
+    "/workspace/packages/polyfill-connectors/bin/collector-runner.ts";
+  reseal(escapedRunner);
+  assert.throws(() => assertReceipt(escapedRunner, snapshot), MONOREPO_DEV_SCRIPT_ESCAPE_PATTERN);
+
+  const mismatchedAdvertise = buildReceipt();
+  const [firstMismatchedAdvertiseRow] = mismatchedAdvertise.rows;
+  assert.ok(firstMismatchedAdvertiseRow);
+  firstMismatchedAdvertiseRow.deepProbe.cliCollector.advertiseMatchesDirect = false;
+  reseal(mismatchedAdvertise);
+  assert.throws(() => assertReceipt(mismatchedAdvertise, snapshot), CLI_COLLECTOR_SHIM_MISMATCH_PATTERN);
+
+  // A registry substitute (or any installed package that never reaches
+  // startStdioServer) would fail to log the scoped-credential connection
+  // line; a receipt claiming success without that signal must fail closed.
+  const silentMcp = buildReceipt();
+  const [firstSilentMcpRow] = silentMcp.rows;
+  assert.ok(firstSilentMcpRow);
+  firstSilentMcpRow.deepProbe.mcpStdio.connectedToScopedCredential = false;
+  reseal(silentMcp);
+  assert.throws(() => assertReceipt(silentMcp, snapshot), MCP_STDIO_SILENT_PATTERN);
+
+  const wrongToolResult = buildReceipt();
+  const [firstWrongToolResultRow] = wrongToolResult.rows;
+  assert.ok(firstWrongToolResultRow);
+  firstWrongToolResultRow.deepProbe.mcpStdio.toolResultVersion = "registry-substitute";
+  reseal(wrongToolResult);
+  assert.throws(() => assertReceipt(wrongToolResult, snapshot), MCP_STDIO_WRONG_VERSION_PATTERN);
 });
 
 test("replay comparison rejects resealed command, runtime, file-list, and cross-row tarball forgeries", () => {

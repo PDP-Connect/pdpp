@@ -1,0 +1,80 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { codeToStatus } from "../server/routes/ref-error-status.ts";
+
+const EXPECTED = {
+  ambiguous_connection: 409,
+  ambiguous_connector_instance: 400,
+  ambiguous_schema_detail: 409,
+
+  authentication_error: 401,
+  blob_not_found: 404,
+
+  connection_not_found: 404,
+  connection_run_active: 409,
+  connection_tombstoned: 409,
+  connector_instance_connector_mismatch: 400,
+  connector_instance_inactive: 400,
+  connector_instance_not_found: 404,
+  connector_instance_not_revoked: 409,
+  connector_instance_owner_mismatch: 403,
+  connector_instance_selector_required: 400,
+
+  connector_instance_store_required: 500,
+  connector_invalid: 400,
+
+  cursor_expired: 410,
+  default_account_delete_unsupported: 409,
+  field_not_found: 404,
+  field_not_granted: 403,
+
+  field_not_text: 422,
+  grant_consumed: 403,
+  grant_expired: 403,
+  grant_invalid: 403,
+  grant_revoked: 403,
+  grant_stream_not_allowed: 403,
+  insufficient_scope: 403,
+  interaction_id_mismatch: 409,
+  invalid_argument: 400,
+  invalid_client: 400,
+  invalid_client_metadata: 400,
+  invalid_cursor: 400,
+  invalid_expand: 400,
+
+  invalid_field_path: 400,
+  invalid_record: 400,
+  invalid_record_identity: 400,
+  invalid_request: 400,
+  invalid_sort: 400,
+  invalid_status: 400,
+  invalid_window: 400,
+  local_device_control_unsupported: 409,
+  no_pending_interaction: 409,
+  not_found: 404,
+  owner_subject_required: 400,
+
+  provider_pressure_cooldown: 425,
+  query_not_found: 404,
+  run_already_active: 409,
+  unknown_field: 400,
+  unsupported_version: 400,
+};
+
+test("codeToStatus maps every pinned error code to its exact HTTP status", () => {
+  for (const [code, status] of Object.entries(EXPECTED)) {
+    assert.equal(codeToStatus[code], status, `${code} must map to ${status}`);
+  }
+});
+
+test("codeToStatus has no added or removed codes versus the pinned contract", () => {
+  assert.deepEqual(Object.keys(codeToStatus).sort(), Object.keys(EXPECTED).sort());
+});
+
+test("codeToStatus contains all 49 committed error codes", () => {
+  assert.equal(Object.keys(codeToStatus).length, 49);
+});

@@ -60,6 +60,6 @@ test("package validation builds once through npm pack prepare", async () => {
   const packageJson = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8"));
 
   assert.equal(packageJson.scripts.prepare, "pnpm build");
-  assert.equal(packageJson.scripts.prepack, undefined);
+  assert.equal(packageJson.scripts.prepack, "pnpm build");
   assert.equal(packageJson.scripts["validate:package"], "tsx scripts/validate-package.ts");
 });

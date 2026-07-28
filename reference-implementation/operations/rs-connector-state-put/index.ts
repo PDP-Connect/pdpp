@@ -43,10 +43,10 @@ export class RsConnectorStatePutValidationError extends Error {
 }
 
 export interface RsConnectorStatePutGrantScope {
-  readonly grantId: string;
   readonly grantedStreams: ReadonlySet<string>;
-  readonly traceId?: string | null;
+  readonly grantId: string;
   readonly scenarioId?: string;
+  readonly traceId?: string | null;
   readonly [extra: string]: unknown;
 }
 
@@ -56,7 +56,7 @@ export interface RsConnectorStatePutManifestStream {
 }
 
 export interface RsConnectorStatePutManifest {
-  readonly streams?: ReadonlyArray<RsConnectorStatePutManifestStream>;
+  readonly streams?: readonly RsConnectorStatePutManifestStream[];
   readonly [extra: string]: unknown;
 }
 
@@ -68,43 +68,41 @@ export interface RsConnectorStatePutState {
 
 export interface RsConnectorStatePutDependencies {
   /**
-   * Resolve and validate the connector's manifest. The host throws
-   * a typed error (`code: 'not_found'`) when the connector is not
-   * registered. The operation reads `streams[].name` from the result
-   * for stream-membership validation.
-   */
-  resolveRegisteredConnectorManifest(
-    connectorId: string,
-  ): Promise<RsConnectorStatePutManifest> | RsConnectorStatePutManifest;
-  /**
-   * Resolve the grant scope when `grantId` is provided.
-   */
-  resolveGrantScope(
-    connectorId: string,
-    grantId: string,
-  ): Promise<RsConnectorStatePutGrantScope> | RsConnectorStatePutGrantScope;
-  /**
    * Notification hook: invoked after grant scope is resolved (or
    * skipped) and before stream validation, so the host can refresh
    * trace id state and emit `state.requested` on the correlated
    * trace. Stream-validation failures and the storage write happen
    * after this notification.
    */
-  onGrantResolved(
-    grantScope: RsConnectorStatePutGrantScope | null,
-  ): Promise<void> | void;
+  onGrantResolved: (grantScope: RsConnectorStatePutGrantScope | null) => Promise<void> | void;
   /**
    * Persist the sync state, scoped to the grant's allowed streams
    * when present.
    */
-  putSyncState(
+  putSyncState: (
     connectorId: string,
     stateMap: Record<string, unknown>,
     args: {
       grantId: string | null;
       allowedStreams: ReadonlySet<string> | null;
-    },
-  ): Promise<RsConnectorStatePutState> | RsConnectorStatePutState;
+    }
+  ) => Promise<RsConnectorStatePutState> | RsConnectorStatePutState;
+  /**
+   * Resolve the grant scope when `grantId` is provided.
+   */
+  resolveGrantScope: (
+    connectorId: string,
+    grantId: string
+  ) => Promise<RsConnectorStatePutGrantScope> | RsConnectorStatePutGrantScope;
+  /**
+   * Resolve and validate the connector's manifest. The host throws
+   * a typed error (`code: 'not_found'`) when the connector is not
+   * registered. The operation reads `streams[].name` from the result
+   * for stream-membership validation.
+   */
+  resolveRegisteredConnectorManifest: (
+    connectorId: string
+  ) => Promise<RsConnectorStatePutManifest> | RsConnectorStatePutManifest;
 }
 
 export interface RsConnectorStatePutInput {
@@ -118,8 +116,8 @@ export interface RsConnectorStatePutInput {
 }
 
 export interface RsConnectorStatePutOutput {
-  readonly state: RsConnectorStatePutState;
   readonly grantScope: RsConnectorStatePutGrantScope | null;
+  readonly state: RsConnectorStatePutState;
 }
 
 /**
@@ -127,11 +125,9 @@ export interface RsConnectorStatePutOutput {
  */
 export async function executeRsConnectorStatePut(
   input: RsConnectorStatePutInput,
-  dependencies: RsConnectorStatePutDependencies,
+  dependencies: RsConnectorStatePutDependencies
 ): Promise<RsConnectorStatePutOutput> {
-  const manifest = await dependencies.resolveRegisteredConnectorManifest(
-    input.connectorId,
-  );
+  const manifest = await dependencies.resolveRegisteredConnectorManifest(input.connectorId);
 
   const grantScope: RsConnectorStatePutGrantScope | null = input.grantId
     ? await dependencies.resolveGrantScope(input.connectorId, input.grantId)
@@ -139,33 +135,27 @@ export async function executeRsConnectorStatePut(
 
   await dependencies.onGrantResolved(grantScope);
 
-  const manifestStreamNames = new Set(
-    (manifest.streams || []).map((s) => s.name),
-  );
+  const manifestStreamNames = new Set((manifest.streams || []).map((s) => s.name));
 
   for (const stream of Object.keys(input.stateMap)) {
     if (!manifestStreamNames.has(stream)) {
       throw new RsConnectorStatePutValidationError(
         "not_found",
-        `Stream '${stream}' not found for connector ${input.connectorId}`,
+        `Stream '${stream}' not found for connector ${input.connectorId}`
       );
     }
     if (grantScope && !grantScope.grantedStreams.has(stream)) {
       throw new RsConnectorStatePutValidationError(
         "invalid_request",
-        `Grant '${input.grantId}' is not scoped to stream ${stream}`,
+        `Grant '${input.grantId}' is not scoped to stream ${stream}`
       );
     }
   }
 
-  const state = await dependencies.putSyncState(
-    input.connectorId,
-    input.stateMap,
-    {
-      grantId: input.grantId,
-      allowedStreams: grantScope?.grantedStreams ?? null,
-    },
-  );
+  const state = await dependencies.putSyncState(input.connectorId, input.stateMap, {
+    allowedStreams: grantScope?.grantedStreams ?? null,
+    grantId: input.grantId,
+  });
 
-  return { state, grantScope };
+  return { grantScope, state };
 }

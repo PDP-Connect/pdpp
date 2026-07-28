@@ -20,25 +20,23 @@ export interface AsDiscoveryIndexInput {
 }
 
 export interface AsDiscoveryIndexEnvelope {
-  readonly object: "pdpp_discovery_index";
-  readonly role: "authorization_server";
-  readonly resource_name: string;
   readonly links: {
     readonly well_known_authorization_server: "/.well-known/oauth-authorization-server";
   };
+  readonly object: "pdpp_discovery_index";
   readonly reference_revision: string;
+  readonly resource_name: string;
+  readonly role: "authorization_server";
 }
 
-export function executeAsDiscoveryIndex(
-  input: AsDiscoveryIndexInput,
-): AsDiscoveryIndexEnvelope {
+export function executeAsDiscoveryIndex(input: AsDiscoveryIndexInput): AsDiscoveryIndexEnvelope {
   return {
-    object: "pdpp_discovery_index",
-    role: "authorization_server",
-    resource_name: input.providerName,
     links: {
       well_known_authorization_server: "/.well-known/oauth-authorization-server",
     },
+    object: "pdpp_discovery_index",
     reference_revision: input.referenceRevision,
+    resource_name: input.providerName,
+    role: "authorization_server",
   };
 }

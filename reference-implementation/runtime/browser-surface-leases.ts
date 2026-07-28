@@ -12,9 +12,10 @@ import {
   DEFAULT_NEKO_LEASE_WAIT_TIMEOUT_MS,
   DEFAULT_NEKO_PRIORITY_CLASS,
   DEFAULT_NEKO_PRIORITY_RANKS,
+  // biome-ignore lint/correctness/noUnresolvedImports: Biome cannot resolve this installed package export; Node and TypeScript resolve it.
 } from "@opendatalabs/remote-surface/leases";
 
-import { canonicalConnectorKey } from "../server/connector-key.js";
+import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { connectorRetainsSurfaceProcess } from "./browser-surface/retained-surface-connectors.ts";
 
 export const DEFAULT_NEKO_READINESS_TIMEOUT_MS = 120_000;
@@ -64,7 +65,7 @@ export function toDurableProfileBinding(lease: BrowserSurfaceLease): DurableProf
 }
 
 export function toSurfaceTransport(surface: BrowserSurface): SurfaceTransport {
-  return { surfaceId: surface.surface_id, remoteCdpUrl: surface.cdp_url };
+  return { remoteCdpUrl: surface.cdp_url, surfaceId: surface.surface_id };
 }
 
 export function toOwnerInteractionChannel(surface: BrowserSurface): OwnerInteractionChannel {
@@ -76,11 +77,11 @@ export function browserSurfaceLeaseEnv(lease: BrowserSurfaceLease, surface: Brow
   const transport = toSurfaceTransport(surface);
   const channel = toOwnerInteractionChannel(surface);
   return {
-    PDPP_BROWSER_SURFACE_REQUIRED: "neko",
+    PDPP_BROWSER_SURFACE_ID: transport.surfaceId,
     PDPP_BROWSER_SURFACE_LEASE_ID: profile.leaseId,
     PDPP_BROWSER_SURFACE_PROFILE_KEY: profile.profileKey,
-    PDPP_BROWSER_SURFACE_ID: transport.surfaceId,
     PDPP_BROWSER_SURFACE_REMOTE_CDP_URL: transport.remoteCdpUrl,
+    PDPP_BROWSER_SURFACE_REQUIRED: "neko",
     PDPP_BROWSER_SURFACE_STREAM_BASE_URL: channel.streamBaseUrl,
   };
 }
@@ -128,13 +129,13 @@ function readNekoEnvShape(env: NodeJS.ProcessEnv): RawNekoEnvShape {
   const configuredStaticProfileKey = emptyToUndefined(env.PDPP_NEKO_STATIC_PROFILE_KEY);
 
   return {
+    configuredStaticProfileKey,
     managedConnectorIds,
     managedConnectors,
     requestedSurfaceMode,
-    surfaceCap,
-    configuredStaticProfileKey,
     staticCdpHttpUrl: emptyToUndefined(env.PDPP_NEKO_CDP_HTTP_URL),
     staticStreamBaseUrl: emptyToUndefined(env.PDPP_NEKO_BASE_URL),
+    surfaceCap,
   };
 }
 
@@ -192,24 +193,24 @@ function enforceDynamicModeInvariants(shape: ParsedNekoEnvShape): void {
 
 function readLeaseConfigEnv(env: NodeJS.ProcessEnv): ParsedNekoLeaseEnv {
   return {
+    defaultPriorityClass: parsePriorityClass(env.PDPP_NEKO_DEFAULT_PRIORITY_CLASS),
+    idleTtlMs: parseIntegerEnv(env.PDPP_NEKO_IDLE_TTL_MS, "PDPP_NEKO_IDLE_TTL_MS", DEFAULT_NEKO_IDLE_TTL_MS),
     leaseWaitTimeoutMs: parseIntegerEnv(
       env.PDPP_NEKO_LEASE_WAIT_TIMEOUT_MS,
       "PDPP_NEKO_LEASE_WAIT_TIMEOUT_MS",
       DEFAULT_NEKO_LEASE_WAIT_TIMEOUT_MS
     ),
-    idleTtlMs: parseIntegerEnv(env.PDPP_NEKO_IDLE_TTL_MS, "PDPP_NEKO_IDLE_TTL_MS", DEFAULT_NEKO_IDLE_TTL_MS),
-    defaultPriorityClass: parsePriorityClass(env.PDPP_NEKO_DEFAULT_PRIORITY_CLASS),
   };
 }
 
 function buildLeaseConfig(shape: ParsedNekoEnvShape, leaseEnv: ParsedNekoLeaseEnv): BrowserSurfaceLeaseConfig {
   return {
-    managedConnectors: shape.managedConnectors,
-    surfaceCap: shape.surfaceCap,
-    leaseWaitTimeoutMs: leaseEnv.leaseWaitTimeoutMs,
-    idleTtlMs: leaseEnv.idleTtlMs,
     defaultPriorityClass: leaseEnv.defaultPriorityClass,
+    idleTtlMs: leaseEnv.idleTtlMs,
+    leaseWaitTimeoutMs: leaseEnv.leaseWaitTimeoutMs,
+    managedConnectors: shape.managedConnectors,
     priorityRanks: DEFAULT_NEKO_PRIORITY_RANKS,
+    surfaceCap: shape.surfaceCap,
     surfaceMode: shape.surfaceMode,
     ...(shape.staticProfileKey ? { staticProfileKey: shape.staticProfileKey } : {}),
     ...(shape.staticCdpHttpUrl ? { staticCdpHttpUrl: shape.staticCdpHttpUrl } : {}),
@@ -238,8 +239,8 @@ export function parseNekoBrowserSurfaceRuntimeConfig(
   const dynamic = parseDynamicRuntimeConfig(env);
   assertRetainedManagedConnectorReserve(shape.surfaceCap, shape.managedConnectorIds);
   return {
-    leaseConfig,
     dynamic,
+    leaseConfig,
     leaseSweepIntervalMs,
   };
 }
@@ -305,6 +306,8 @@ function normalizeConnectorUrl(connectorId: string): string | undefined {
     const parsed = new URL(connectorId);
     return parsed.href.endsWith("/") ? parsed.href.slice(0, -1) : parsed.href;
   } catch {
+    // Invalid connector identifiers do not have a canonical URL form.
+    // biome-ignore lint/complexity/noUselessReturn: required by TypeScript noImplicitReturns to make the empty result explicit.
     return;
   }
 }

@@ -5,11 +5,13 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+
+import { runInstalledStdioProbe } from "../packages/mcp-server/scripts/installed-stdio-probe.ts";
 
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const RECEIPT_VERSION = 2;
@@ -54,6 +56,20 @@ interface RunOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   stdio?: "inherit";
+}
+
+interface RecordedRunOptions extends RunOptions {
+  // Overrides the args array bound into the receipt's command ledger (and
+  // its resultSha256) without changing what the process is actually invoked
+  // with. Same mkdtemp-normalization purpose as recordedCwd, for commands
+  // whose argv (not just cwd) embeds the ephemeral deep-probe root.
+  recordedArgs?: string[];
+  // Overrides the `cwd` bound into the receipt's command ledger (and its
+  // resultSha256) without changing the actual working directory the command
+  // executes in. Used to normalize an mkdtemp-random path (never stable
+  // across independent runs) to a fixed marker so the receipt stays
+  // replay-comparable while the process itself still runs outside /workspace.
+  recordedCwd?: string;
 }
 
 function run(command: string, args: string[], options: RunOptions = {}): string {
@@ -387,7 +403,12 @@ interface RecordedError extends Error {
   stdout: string;
 }
 
-function runRecorded(recorded: RecordedCommand[], command: string, args: string[], options: RunOptions = {}): string {
+function runRecorded(
+  recorded: RecordedCommand[],
+  command: string,
+  args: string[],
+  options: RecordedRunOptions = {}
+): string {
   const result = spawnSync(command, args, {
     cwd: options.cwd ?? REPOSITORY_ROOT,
     encoding: "utf8",
@@ -399,17 +420,17 @@ function runRecorded(recorded: RecordedCommand[], command: string, args: string[
   }
   const stdout = result.stdout ?? "";
   const stderr = result.stderr ?? "";
+  const cwd = options.recordedCwd ?? options.cwd ?? process.cwd();
+  const recordedCommand = [command, ...(options.recordedArgs ?? args)];
   recorded.push({
-    command: [command, ...args],
-    cwd: options.cwd ?? process.cwd(),
+    command: recordedCommand,
+    cwd,
     exitCode: result.status ?? 1,
     // Package-manager progress logs contain elapsed-time and cache details.
     // The matrix captures their semantic effects below (tarballs, installed
     // tree, and probes), so bind this command's deterministic outcome rather
     // than pretending those ephemeral logs are reproducible evidence.
-    resultSha256: sha256(
-      JSON.stringify({ command: [command, ...args], cwd: options.cwd ?? process.cwd(), exitCode: result.status ?? 1 })
-    ),
+    resultSha256: sha256(JSON.stringify({ command: recordedCommand, cwd, exitCode: result.status ?? 1 })),
   });
   if (result.status !== 0) {
     const error = new Error(`${command} ${args.join(" ")} failed with exit code ${result.status}`) as RecordedError;
@@ -421,6 +442,221 @@ function runRecorded(recorded: RecordedCommand[], command: string, args: string[
   return stdout;
 }
 
+export interface DeepProbeResult {
+  cliCollector: {
+    advertiseMatchesDirect: boolean;
+    resolvedRunnerScript: string;
+  };
+  mcpStdio: {
+    connectedToScopedCredential: boolean;
+    toolContract: string;
+    toolResultVersion: unknown;
+  };
+}
+
+const MCP_STDIO_CONNECTED_PATTERN = /pdpp-mcp-server: connected to .* using scoped credential at/;
+
+const MONOREPO_COLLECTOR_RUNNER_ESCAPE_PATTERN = /packages\/polyfill-connectors\/bin\/collector-runner\.(ts|js)$/;
+const DEEP_PROBE_INSTALLED_LOCAL_COLLECTOR_PATTERN =
+  /^<deep-consumer>\/node_modules\/@pdpp\/local-collector\/dist\/local-collector\/bin\//;
+const BIN_RELATIVE_PATH_PATTERN = /^\.\//;
+
+// The consumer install proven above intentionally lives under /workspace so
+// its receipt can bind file: paths back to /workspace/.release-matrix. But
+// @pdpp/cli's collector shim (resolveCollectorRunnerScript in
+// packages/cli/src/collector/runner.ts) walks up from its own installed
+// file location looking for packages/polyfill-connectors/bin/collector-runner.ts
+// before ever considering an installed @pdpp/local-collector sibling. Every
+// directory under /workspace has that monorepo script as an ancestor, so a
+// probe run from .release-matrix/consumer would silently exercise the
+// in-repo dev script instead of the installed package it is supposed to
+// prove. Stage a second, otherwise-identical install outside /workspace
+// (under the container's /tmp) purely so this probe exercises the resolution
+// path a real `npm i -g @pdpp/cli @pdpp/local-collector` install would hit.
+async function runDeepInstalledProbes({
+  candidates,
+  commands,
+  manifests,
+  offlineEnv,
+  packRoot,
+}: {
+  candidates: {
+    name: string;
+    tarball: { filename: string };
+  }[];
+  commands: RecordedCommand[];
+  manifests: PackageManifest[];
+  offlineEnv: NodeJS.ProcessEnv;
+  packRoot: string;
+}): Promise<DeepProbeResult> {
+  // mkdtemp's random suffix keeps this consumer outside /workspace (see the
+  // MONOREPO_COLLECTOR_RUNNER_ESCAPE_PATTERN comment above), but that same
+  // randomness must never leak into the receipt: runRecorded's resultSha256
+  // binds `cwd`, and the replay-check in assertReplayMatches expects it
+  // byte-stable across independent runs from the same clean head. Every
+  // command below passes `recordedCwd` so the ledger and its hash use the
+  // fixed "<deep-consumer>" marker while the process itself still executes
+  // in the real ephemeral directory outside /workspace.
+  const deepRoot = mkdtempSync(join(tmpdir(), "pdpp-release-matrix-deep-"));
+  const deepConsumer = join(deepRoot, "consumer");
+  const stableConsumerMarker = "<deep-consumer>";
+  const normalizeDeepPath = (path: string): string =>
+    path === deepConsumer
+      ? stableConsumerMarker
+      : path.replace(`${deepConsumer}${sep}`, `${stableConsumerMarker}${sep}`);
+  run("mkdir", ["-p", deepConsumer]);
+  const deepEnv: NodeJS.ProcessEnv = { ...offlineEnv, HOME: join(deepRoot, "home") };
+  runRecorded(commands, "npm", ["init", "--yes"], {
+    cwd: deepConsumer,
+    env: deepEnv,
+    recordedCwd: stableConsumerMarker,
+  });
+  // @pdpp/mcp-server declares ordinary registry-range dependencies on
+  // @pdpp/cli and @pdpp/read-core (its manifest's own lower-bounded ranges,
+  // e.g. ">=0.18.11 <1.0.0"), so a bare `npm install <tarball> <tarball>
+  // <tarball> <tarball>` cannot know to satisfy those from the sibling
+  // tarballs already on this command line — it would otherwise try the
+  // registry, exactly the outcome this matrix exists to rule out. Pin the
+  // same override the primary consumer above already proves before install.
+  const deepCandidatePathsByName = Object.fromEntries(
+    candidates.map(({ name, tarball }) => [name, `file:${join(packRoot, tarball.filename)}`])
+  );
+  writeFileSync(
+    join(deepConsumer, "package.json"),
+    `${JSON.stringify(
+      {
+        name: "pdpp-release-matrix-deep-consumer",
+        version: "0.0.0",
+        private: true,
+        overrides: {
+          "@pdpp/mcp-server": {
+            "@pdpp/cli": deepCandidatePathsByName["@pdpp/cli"],
+            "@pdpp/read-core": deepCandidatePathsByName["@pdpp/read-core"],
+          },
+        },
+      },
+      null,
+      2
+    )}\n`
+  );
+  runRecorded(
+    commands,
+    "npm",
+    [
+      "install",
+      "--ignore-scripts",
+      "--offline",
+      "--force",
+      ...candidates.map(({ tarball }) => join(packRoot, tarball.filename)),
+    ],
+    { cwd: deepConsumer, env: deepEnv, recordedCwd: stableConsumerMarker }
+  );
+  assert.doesNotMatch(
+    deepConsumer,
+    MONOREPO_COLLECTOR_RUNNER_ESCAPE_PATTERN,
+    "deep-probe consumer must not sit inside the monorepo collector-runner ancestry"
+  );
+
+  const mcpManifest = manifests.find((manifest) => manifest.name === "@pdpp/mcp-server");
+  assert.ok(mcpManifest, "matrix candidate set must include @pdpp/mcp-server");
+
+  const directAdvertise = runRecorded(commands, "npx", ["--no-install", "pdpp-local-collector", "advertise"], {
+    cwd: deepConsumer,
+    env: deepEnv,
+    recordedCwd: stableConsumerMarker,
+  });
+  const shimAdvertise = runRecorded(commands, "npx", ["--no-install", "pdpp", "collector", "advertise"], {
+    cwd: deepConsumer,
+    env: deepEnv,
+    recordedCwd: stableConsumerMarker,
+  });
+  assert.equal(
+    shimAdvertise,
+    directAdvertise,
+    "installed CLI collector shim must reach byte-identical output as the installed local-collector bin"
+  );
+  // spawnCollectorRunner's resolution order (packages/cli/src/collector/runner.ts)
+  // tries resolveCollectorRunnerScript() — the monorepo dev-workspace
+  // bin/collector-runner.ts walk-up — before ever considering an installed
+  // @pdpp/local-collector sibling. A real `npm i -g @pdpp/cli
+  // @pdpp/local-collector` install must resolve nothing there and fall
+  // through to resolveLocalCollectorPackage() instead; assert both halves so
+  // this probe would fail if the shim's resolution order regressed and
+  // silently started preferring monorepo source again.
+  const resolveProbePath = join(deepConsumer, "resolve-collector-runner.mjs");
+  writeFileSync(
+    resolveProbePath,
+    `import { resolveCollectorRunnerScript, resolveLocalCollectorPackage } from ${JSON.stringify(
+      `${deepConsumer}/node_modules/@pdpp/cli/dist/src/collector/runner.js`
+    )};
+const runnerScript = resolveCollectorRunnerScript();
+const localCollector = resolveLocalCollectorPackage();
+process.stdout.write(JSON.stringify({ runnerScript, localCollectorManifestPath: localCollector?.manifestPath ?? null }));
+`
+  );
+  const resolveProbeOutput = JSON.parse(
+    runRecorded(commands, process.execPath, [resolveProbePath], {
+      cwd: deepConsumer,
+      env: deepEnv,
+      recordedArgs: [normalizeDeepPath(resolveProbePath)],
+      recordedCwd: stableConsumerMarker,
+    }).trim()
+  ) as { localCollectorManifestPath: string | null; runnerScript: string | null };
+  assert.equal(
+    resolveProbeOutput.runnerScript,
+    null,
+    "installed-only consumer must not resolve the monorepo dev collector-runner script"
+  );
+  const installedLocalCollectorRoot = join(deepConsumer, "node_modules", "@pdpp", "local-collector");
+  const { localCollectorManifestPath } = resolveProbeOutput;
+  assert.ok(localCollectorManifestPath, "installed CLI collector shim must resolve @pdpp/local-collector");
+  assert.ok(
+    relative(installedLocalCollectorRoot, localCollectorManifestPath) !== "" &&
+      !relative(installedLocalCollectorRoot, localCollectorManifestPath).startsWith(`..${sep}`),
+    `installed CLI collector shim resolved @pdpp/local-collector outside the installed candidate: ${localCollectorManifestPath}`
+  );
+  const resolvedRunnerScriptAbsolute = join(
+    dirname(localCollectorManifestPath),
+    "dist",
+    "local-collector",
+    "bin",
+    "pdpp-local-collector.js"
+  );
+  assert.ok(
+    existsSync(resolvedRunnerScriptAbsolute),
+    `installed local-collector candidate is missing its resolved bin entrypoint: ${resolvedRunnerScriptAbsolute}`
+  );
+  const resolvedRunnerScript = normalizeDeepPath(resolvedRunnerScriptAbsolute);
+
+  const mcpBinTarget = mcpManifest.bin?.["pdpp-mcp-server"];
+  assert.ok(mcpBinTarget, "@pdpp/mcp-server manifest must declare a pdpp-mcp-server bin");
+  const mcpBinPath = join(
+    deepConsumer,
+    "node_modules",
+    "@pdpp",
+    "mcp-server",
+    mcpBinTarget.replace(BIN_RELATIVE_PATH_PATTERN, "")
+  );
+  const mcpStdioResult = await runInstalledStdioProbe({ binPath: mcpBinPath, consumerRoot: deepConsumer });
+  // The raw stderr lines embed a fresh mkdtemp cache path and an ephemeral
+  // loopback port on every run (see runInstalledStdioProbe's cacheRoot/rs
+  // setup), so they can never be replay-stable evidence. Reduce them to the
+  // one structural fact worth binding: did the installed server actually log
+  // that it connected using a scoped credential, as opposed to failing
+  // silently before ever reaching that line.
+  const connectedToScopedCredential = mcpStdioResult.stderr.some((line) => MCP_STDIO_CONNECTED_PATTERN.test(line));
+
+  rmSync(deepRoot, { force: true, recursive: true });
+  return {
+    cliCollector: { advertiseMatchesDirect: shimAdvertise === directAdvertise, resolvedRunnerScript },
+    mcpStdio: {
+      connectedToScopedCredential,
+      toolContract: mcpStdioResult.toolContract,
+      toolResultVersion: mcpStdioResult.toolResultVersion,
+    },
+  };
+}
+
 interface MatrixContext {
   baseSha: string;
   headSha: string;
@@ -428,7 +664,7 @@ interface MatrixContext {
   sourceClosureSha256: string;
 }
 
-function runMatrixRow(): void {
+async function runMatrixRow(): Promise<void> {
   const context: MatrixContext = JSON.parse(
     Buffer.from(process.env.PDPP_RELEASE_MATRIX_CONTEXT ?? "", "base64url").toString("utf8")
   );
@@ -571,6 +807,8 @@ function runMatrixRow(): void {
   writeFileSync(probePath, consumerProbeSource(manifests));
   const probe = JSON.parse(runRecorded(commands, process.execPath, [probePath], { cwd: consumer, env: offlineEnv }));
 
+  const deepProbe = await runDeepInstalledProbes({ candidates, commands, manifests, offlineEnv, packRoot });
+
   const receipt = {
     row,
     runtime: {
@@ -593,6 +831,7 @@ function runMatrixRow(): void {
       tree,
       probe,
     },
+    deepProbe,
     commands,
   };
   writeFileSync(join("/out", `${row.id}.json`), `${JSON.stringify(receipt, null, 2)}\n`);
@@ -619,6 +858,7 @@ interface RowReceipt {
     }[];
     tree: { dependencies?: Record<string, { resolved?: string; version?: string }> };
   };
+  deepProbe: DeepProbeResult;
   packageManager: { integrity: string; path: string; realpath: string; sha256: string; version: string };
   row: MatrixRow;
   runner: RunnerBinding;
@@ -782,6 +1022,32 @@ function assertRowReceipt(
       assert.match(bin.helpSha256, HEX64_PATTERN, `consumer bin proof is missing for ${bin.bin}`);
     }
   }
+  assert.equal(
+    rowReceipt.deepProbe.cliCollector.advertiseMatchesDirect,
+    true,
+    "installed CLI collector shim must reach the installed local-collector candidate, not the monorepo dev script"
+  );
+  assert.doesNotMatch(
+    rowReceipt.deepProbe.cliCollector.resolvedRunnerScript,
+    MONOREPO_COLLECTOR_RUNNER_ESCAPE_PATTERN,
+    "CLI collector shim resolved the monorepo dev script instead of the installed local-collector candidate"
+  );
+  assert.match(
+    rowReceipt.deepProbe.cliCollector.resolvedRunnerScript,
+    DEEP_PROBE_INSTALLED_LOCAL_COLLECTOR_PATTERN,
+    "CLI collector shim did not resolve inside the installed local-collector candidate"
+  );
+  assert.equal(
+    rowReceipt.deepProbe.mcpStdio.connectedToScopedCredential,
+    true,
+    "installed MCP stdio server must log a scoped-credential connection"
+  );
+  assert.equal(rowReceipt.deepProbe.mcpStdio.toolContract, "schema", "installed MCP stdio tool contract drifted");
+  assert.equal(
+    rowReceipt.deepProbe.mcpStdio.toolResultVersion,
+    "artifact-proof",
+    "installed MCP stdio schema tool did not reach the read-surface stub"
+  );
   assert.ok(rowReceipt.commands.length > 0, "receipt must bind executed commands");
   for (const command of rowReceipt.commands) {
     assert.equal(command.exitCode, 0, "receipt must bind successful command results");
@@ -789,6 +1055,7 @@ function assertRowReceipt(
   }
   const workspace = "/workspace";
   const consumer = `${workspace}/.release-matrix/consumer`;
+  const deepConsumerMarker = "<deep-consumer>";
   const candidatePaths = rowReceipt.candidates.map(
     ({ tarball }) => `${workspace}/.release-matrix/candidates/${tarball.filename}`
   );
@@ -827,6 +1094,17 @@ function assertRowReceipt(
     { command: ["npm", "install", "--ignore-scripts", "--offline", "--force", ...candidatePaths], cwd: consumer },
     { command: ["npm", "ls", "--all", "--json"], cwd: consumer },
     { command: [rowReceipt.runtime.nodePath, `${consumer}/candidate-probe.mjs`], cwd: consumer },
+    { command: ["npm", "init", "--yes"], cwd: deepConsumerMarker },
+    {
+      command: ["npm", "install", "--ignore-scripts", "--offline", "--force", ...candidatePaths],
+      cwd: deepConsumerMarker,
+    },
+    { command: ["npx", "--no-install", "pdpp-local-collector", "advertise"], cwd: deepConsumerMarker },
+    { command: ["npx", "--no-install", "pdpp", "collector", "advertise"], cwd: deepConsumerMarker },
+    {
+      command: [rowReceipt.runtime.nodePath, `${deepConsumerMarker}/resolve-collector-runner.mjs`],
+      cwd: deepConsumerMarker,
+    },
   ];
   assert.deepEqual(
     rowReceipt.commands.map(({ command, cwd }) => ({ command, cwd })),
@@ -922,11 +1200,18 @@ function collectMatrixEvidence(snapshot: Snapshot): Omit<Receipt, "receiptSha256
           "--env",
           `PDPP_RELEASE_MATRIX_ROW=${row.id}`,
           runner.tag,
-          "node",
-          "--import",
-          "tsx",
-          "scripts/release-package-matrix.ts",
-          "--row",
+          "sh",
+          "-c",
+          // The row script is TypeScript and needs `tsx` (a root
+          // devDependency) on the module resolution path before `node --import
+          // tsx` can even parse it. Bootstrap that install here, outside the
+          // receipt, with the exact same frozen/offline invocation
+          // runMatrixRow() records as its own first command — once
+          // node_modules is populated this bootstrap is a fast no-op, so the
+          // recorded command and its result hash stay meaningful evidence
+          // rather than a duplicate side effect.
+          "pnpm install --frozen-lockfile --ignore-scripts --offline --store-dir /pdpp-pnpm-store 1>&2 && " +
+            "exec node --import tsx scripts/release-package-matrix.ts --row",
         ],
         { stdio: "inherit" }
       );
@@ -980,7 +1265,7 @@ function verifyReceipt(file: string | undefined): void {
 const matrixArguments = process.argv.slice(2).filter((argument) => argument !== "--");
 
 if (matrixArguments[0] === "--row") {
-  runMatrixRow();
+  await runMatrixRow();
 } else if (matrixArguments[0] === "--verify-receipt") {
   verifyReceipt(matrixArguments[1]);
 } else if (matrixArguments[0] === "--receipt") {

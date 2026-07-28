@@ -12,7 +12,7 @@
       shells and static-secret/manual-upload drafts all use fresh random
       binding keys and can never collide with a tombstoned identity.
 - [x] ~~Rule out boot-time resurrection~~ — **CORRECTED (independent judge
-      gate, `/home/tnunamak/.tmp/owner-delete-resurrection-gate-0725.md`):
+      gate report):
       this was WRONG.** The original audit checked `startServer` in
       `server/index.js` for calls to `connectorInstanceStore.upsert` and
       found none, but missed `migrateLocalDeviceConnectorInstances`
@@ -134,8 +134,7 @@
       updating for the new `connection_tombstoned` code); no
       secrets/record contents in the tombstone table (identity + timestamp
       only) or its logging.
-- [x] Report LAND/REVISE with evidence to
-      `/home/tnunamak/.tmp/owner-delete-resurrection-sonnet-0725.md`.
+- [x] Report LAND/REVISE with evidence in the independent owner report.
 
 ### Pinned-contract fallout (discovered during verification)
 
@@ -151,7 +150,7 @@ the externally-observable status contract").
 
 ## 7. REVISE closure packet (independent judge gate, 2026-07-25)
 
-Judge report: `/home/tnunamak/.tmp/owner-delete-resurrection-gate-0725.md`.
+Judge report: independent owner gate report.
 Verdict REVISE, critical finding: the startup local-device migration sweep
 (both backends) bypasses the tombstone entirely and reproducibly
 resurrects a deleted connection on a bare restart — the actual "stack

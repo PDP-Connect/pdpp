@@ -40,7 +40,7 @@ function response(status: number, body: string, setCookieHeaders: string[] = [])
 }
 
 test("OWNER_LANDING_RETURN_TO is the current console root", () => {
-  // reference-implementation/test/dashboard-proxy-redirect.test.js pins
+  // reference-implementation/test/dashboard-proxy-redirect.test.ts pins
   // GET / -> 307 to /owner/login?return_to=%2F.
   assert.equal(OWNER_LANDING_RETURN_TO, "/");
 });

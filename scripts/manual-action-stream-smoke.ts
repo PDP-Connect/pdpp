@@ -152,6 +152,13 @@ interface StreamFailureSignature {
   hasRasterMedia: boolean;
 }
 
+const STREAM_FAILURE_SIGNATURE_PATTERNS = {
+  inlineError: "n\\.eko WebRTC stream did not attach|secure browser viewport could not be applied",
+  reachFailure:
+    "couldn['’]t reach the browser stream|browser stream failed to start|browser stream isn['’]t available|n\\.eko browser window did not settle",
+  retryAffordance: "retry secure browser",
+} as const;
+
 interface RemotePoint {
   x: number;
   y: number;
@@ -771,28 +778,20 @@ async function streamFramePixelStats(page: PatchrightPage): Promise<StreamPixelS
 
 function streamFailureSignature(page: PatchrightPage): Promise<StreamFailureSignature> {
   const frame = page.locator(STREAM_FRAME_SELECTOR).first();
-  return frame.evaluate<StreamFailureSignature, undefined>((node) => {
+  return frame.evaluate<StreamFailureSignature, typeof STREAM_FAILURE_SIGNATURE_PATTERNS>((node, patterns) => {
     const media = node.querySelector("video, canvas");
     const video = media instanceof HTMLVideoElement ? media : null;
-    // These regexes run inside a page.evaluate callback, which Playwright
-    // serializes and executes in the browser page context — they cannot
-    // reference module-level constants from this file's outer scope.
+    const inlineErrorPattern = new RegExp(patterns.inlineError, "i");
+    const retryAffordancePattern = new RegExp(patterns.retryAffordance, "i");
+    const reachFailurePattern = new RegExp(patterns.reachFailure, "i");
     const inlineError = [...node.querySelectorAll("[data-pdpp-stream-ui]")].some((element) =>
-      // biome-ignore lint/performance/useTopLevelRegex: browser-context callback body, see comment above
-      /n\.eko WebRTC stream did not attach|secure browser viewport could not be applied/i.test(
-        element.textContent || ""
-      )
+      inlineErrorPattern.test(element.textContent || "")
     );
     const retryAffordance = [...node.querySelectorAll("button")].some((button) =>
-      // biome-ignore lint/performance/useTopLevelRegex: browser-context callback body, see comment above
-      /retry secure browser/i.test(button.textContent || "")
+      retryAffordancePattern.test(button.textContent || "")
     );
     const bodyText = document.body?.innerText || "";
-    const reachFailure =
-      // biome-ignore lint/performance/useTopLevelRegex: browser-context callback body, see comment above
-      /couldn['’]t reach the browser stream|browser stream failed to start|browser stream isn['’]t available|n\.eko browser window did not settle/i.test(
-        bodyText
-      );
+    const reachFailure = reachFailurePattern.test(bodyText);
     return {
       hasErrorAffordance: Boolean(inlineError || retryAffordance || reachFailure),
       // A video can validly show a dark page. Its decoded, advancing frame is
@@ -807,7 +806,7 @@ function streamFailureSignature(page: PatchrightPage): Promise<StreamFailureSign
       ),
       hasRasterMedia: Boolean(media),
     };
-  }, undefined);
+  }, STREAM_FAILURE_SIGNATURE_PATTERNS);
 }
 
 async function assertKnownBlackFrameFailureAbsent(page: PatchrightPage) {

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { execDynamicSqlAcknowledged, iterateDynamicSqlAcknowledged } from "../../lib/db.ts";
-import { postgresQuery } from "../postgres-storage.js";
+import { postgresQuery } from "../postgres-storage.ts";
 
 const DEFAULT_LIST_LIMIT = 20;
 const VALID_STATUSES = new Set(["uploaded", "validating", "staged", "duplicate", "failed"]);
@@ -122,21 +122,21 @@ interface NormalizedPatch {
 }
 
 export interface SqliteManualUploadArtifactStore {
-  get(artifactId: string): ManualUploadArtifact | null;
-  insert(record: ManualUploadArtifactInsert): ManualUploadArtifact | null;
-  listByConnection(connectorInstanceId: string, opts?: ListOptions): (ManualUploadArtifact | null)[];
-  update(artifactId: string, patch: ManualUploadArtifactPatch): ManualUploadArtifact | null;
+  get: (artifactId: string) => ManualUploadArtifact | null;
+  insert: (record: ManualUploadArtifactInsert) => ManualUploadArtifact | null;
+  listByConnection: (connectorInstanceId: string, opts?: ListOptions) => (ManualUploadArtifact | null)[];
+  update: (artifactId: string, patch: ManualUploadArtifactPatch) => ManualUploadArtifact | null;
 }
 
 export interface PostgresManualUploadArtifactStore {
-  get(artifactId: string): Promise<ManualUploadArtifact | null>;
-  insert(record: ManualUploadArtifactInsert): Promise<ManualUploadArtifact | null>;
-  listByConnection(connectorInstanceId: string, opts?: ListOptions): Promise<(ManualUploadArtifact | null)[]>;
-  update(artifactId: string, patch: ManualUploadArtifactPatch): Promise<ManualUploadArtifact | null>;
+  get: (artifactId: string) => Promise<ManualUploadArtifact | null>;
+  insert: (record: ManualUploadArtifactInsert) => Promise<ManualUploadArtifact | null>;
+  listByConnection: (connectorInstanceId: string, opts?: ListOptions) => Promise<(ManualUploadArtifact | null)[]>;
+  update: (artifactId: string, patch: ManualUploadArtifactPatch) => Promise<ManualUploadArtifact | null>;
 }
 
 function parseJson(value: unknown, fallback: unknown): unknown {
-  if (value == null) {
+  if (value === null) {
     return fallback;
   }
   if (typeof value !== "string") {
@@ -150,7 +150,7 @@ function parseJson(value: unknown, fallback: unknown): unknown {
 }
 
 function stringifyJson(value: unknown): string | null {
-  return value == null ? null : JSON.stringify(value);
+  return value === null || value === undefined ? null : JSON.stringify(value);
 }
 
 function numberOrNull(value: unknown): number | null {
@@ -169,21 +169,21 @@ function mapRow(row: ManualUploadArtifactRow | null | undefined): ManualUploadAr
     return null;
   }
   return {
+    acquisitionBatchId: row.acquisition_batch_id,
     artifactId: row.artifact_id,
-    ownerSubjectId: row.owner_subject_id,
+    artifactSha256: row.artifact_sha256,
     connectorId: row.connector_id,
     connectorInstanceId: row.connector_instance_id,
-    fileName: row.file_name,
-    stagingPath: row.staging_path,
-    finalPath: row.final_path,
-    fileSizeBytes: numberOrNull(row.file_size_bytes) ?? 0,
-    artifactSha256: row.artifact_sha256,
-    status: row.status,
-    acquisitionBatchId: row.acquisition_batch_id,
-    validation: parseJson(row.validation_json, null),
-    error: parseJson(row.error_json, null),
     createdAt: row.created_at,
+    error: parseJson(row.error_json, null),
+    fileName: row.file_name,
+    fileSizeBytes: numberOrNull(row.file_size_bytes) ?? 0,
+    finalPath: row.final_path,
+    ownerSubjectId: row.owner_subject_id,
+    stagingPath: row.staging_path,
+    status: row.status,
     updatedAt: row.updated_at,
+    validation: parseJson(row.validation_json, null),
   };
 }
 
@@ -215,43 +215,46 @@ function normalizeInsert(record: ManualUploadArtifactInsert): NormalizedInsert {
   normalizedRecord.createdAt ??= normalizedRecord.now;
   normalizedRecord.updatedAt ??= normalizedRecord.now;
   return {
+    acquisitionBatchId: normalizedRecord.acquisitionBatchId,
     artifactId: normalizedRecord.artifactId,
-    ownerSubjectId: normalizedRecord.ownerSubjectId,
+    artifactSha256: normalizedRecord.artifactSha256,
     connectorId: normalizedRecord.connectorId,
     connectorInstanceId: normalizedRecord.connectorInstanceId,
-    fileName: normalizedRecord.fileName,
-    stagingPath: normalizedRecord.stagingPath,
-    finalPath: normalizedRecord.finalPath,
-    fileSizeBytes: normalizedRecord.fileSizeBytes,
-    artifactSha256: normalizedRecord.artifactSha256,
-    status: normalizedRecord.status,
-    acquisitionBatchId: normalizedRecord.acquisitionBatchId,
-    validationJson: stringifyJson(normalizedRecord.validation),
-    errorJson: stringifyJson(normalizedRecord.error),
     createdAt: normalizedRecord.createdAt,
+    errorJson: stringifyJson(normalizedRecord.error),
+    fileName: normalizedRecord.fileName,
+    fileSizeBytes: normalizedRecord.fileSizeBytes,
+    finalPath: normalizedRecord.finalPath,
+    ownerSubjectId: normalizedRecord.ownerSubjectId,
+    stagingPath: normalizedRecord.stagingPath,
+    status: normalizedRecord.status,
     updatedAt: normalizedRecord.updatedAt,
+    validationJson: stringifyJson(normalizedRecord.validation),
   };
 }
 
 function normalizePatch(patch: ManualUploadArtifactPatch): NormalizedPatch {
-  if (patch.status != null && !VALID_STATUSES.has(patch.status)) {
+  if (patch.status !== null && patch.status !== undefined && !VALID_STATUSES.has(patch.status)) {
     throw new Error(`Invalid manual upload artifact status '${patch.status}'.`);
   }
   return {
-    status: patch.status ?? null,
-    connectorInstanceId: patch.connectorInstanceId ?? null,
-    finalPath: patch.finalPath ?? null,
-    fileSizeBytes: patch.fileSizeBytes ?? null,
-    artifactSha256: patch.artifactSha256 ?? null,
     acquisitionBatchId: patch.acquisitionBatchId ?? null,
-    validationJson: Object.hasOwn(patch, "validation") ? stringifyJson(patch.validation) : undefined,
+    artifactSha256: patch.artifactSha256 ?? null,
+    connectorInstanceId: patch.connectorInstanceId ?? null,
     errorJson: Object.hasOwn(patch, "error") ? stringifyJson(patch.error) : undefined,
+    fileSizeBytes: patch.fileSizeBytes ?? null,
+    finalPath: patch.finalPath ?? null,
+    status: patch.status ?? null,
     updatedAt: patch.updatedAt ?? new Date().toISOString(),
+    validationJson: Object.hasOwn(patch, "validation") ? stringifyJson(patch.validation) : undefined,
   };
 }
 
 export function createSqliteManualUploadArtifactStore(): SqliteManualUploadArtifactStore {
   return {
+    get(artifactId: string): ManualUploadArtifact | null {
+      return mapRow(sqliteGetOne("SELECT * FROM manual_upload_artifacts WHERE artifact_id = ? LIMIT 1", [artifactId]));
+    },
     insert(record: ManualUploadArtifactInsert): ManualUploadArtifact | null {
       const row = normalizeInsert(record);
       execDynamicSqlAcknowledged(
@@ -286,10 +289,6 @@ export function createSqliteManualUploadArtifactStore(): SqliteManualUploadArtif
         ]
       );
       return this.get(row.artifactId);
-    },
-
-    get(artifactId: string): ManualUploadArtifact | null {
-      return mapRow(sqliteGetOne("SELECT * FROM manual_upload_artifacts WHERE artifact_id = ? LIMIT 1", [artifactId]));
     },
 
     listByConnection(
@@ -343,6 +342,13 @@ export function createSqliteManualUploadArtifactStore(): SqliteManualUploadArtif
 
 export function createPostgresManualUploadArtifactStore(): PostgresManualUploadArtifactStore {
   return {
+    async get(artifactId: string): Promise<ManualUploadArtifact | null> {
+      const result = await postgresQuery<ManualUploadArtifactRow>(
+        "SELECT * FROM manual_upload_artifacts WHERE artifact_id = $1 LIMIT 1",
+        [artifactId]
+      );
+      return mapRow(result.rows[0]);
+    },
     async insert(record: ManualUploadArtifactInsert): Promise<ManualUploadArtifact | null> {
       const row = normalizeInsert(record);
       await postgresQuery(
@@ -379,18 +385,11 @@ export function createPostgresManualUploadArtifactStore(): PostgresManualUploadA
       return await this.get(row.artifactId);
     },
 
-    async get(artifactId: string): Promise<ManualUploadArtifact | null> {
-      const result = await postgresQuery("SELECT * FROM manual_upload_artifacts WHERE artifact_id = $1 LIMIT 1", [
-        artifactId,
-      ]);
-      return mapRow(result.rows[0]);
-    },
-
     async listByConnection(
       connectorInstanceId: string,
       { limit = DEFAULT_LIST_LIMIT }: ListOptions = {}
     ): Promise<(ManualUploadArtifact | null)[]> {
-      const result = await postgresQuery(
+      const result = await postgresQuery<ManualUploadArtifactRow>(
         `SELECT *
            FROM manual_upload_artifacts
           WHERE connector_instance_id = $1

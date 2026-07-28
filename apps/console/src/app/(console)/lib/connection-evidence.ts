@@ -462,7 +462,7 @@ const FORWARD_DISPOSITION_LABELS: Record<RefForwardDisposition, ForwardDispositi
 export function formatForwardDisposition(
   disposition: RefForwardDisposition | null | string | undefined
 ): ForwardDispositionSummary | null {
-  if (disposition === null) {
+  if (disposition === null || disposition === undefined) {
     return null;
   }
   if (disposition !== undefined && Object.hasOwn(FORWARD_DISPOSITION_LABELS, disposition)) {

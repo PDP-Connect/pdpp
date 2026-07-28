@@ -25,8 +25,8 @@
 import { randomBytes } from "node:crypto";
 import { allowUnboundedReadAcknowledged, exec, getOne, referenceQueries } from "../lib/db.ts";
 import { createTraceContext, emitSpineEvent, type SpineEventInput, type SpineTraceContext } from "../lib/spine.ts";
-import { listActiveBindingsForGrant, projectBindingForWire } from "./connection-identity.js";
-import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.js";
+import { listActiveBindingsForGrant, projectBindingForWire } from "./connection-identity.ts";
+import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.ts";
 
 // ---------------------------------------------------------------------------
 // Local pure utilities (no auth.js dep needed for these)
@@ -61,6 +61,7 @@ function parsePackageJson(raw: unknown): Record<string, unknown> | null {
 
 async function pgOne(sql: string, params: unknown[] = []): Promise<Record<string, unknown> | null> {
   const result = await postgresQuery(sql, params);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   return (result.rows[0] as Record<string, unknown>) ?? null;
 }
 
@@ -410,9 +411,9 @@ export interface GrantPackageLifecycle {
 // ---------------------------------------------------------------------------
 
 interface GrantPackageStore {
-  getPackageById(packageId: string): Promise<Record<string, unknown> | null> | Record<string, unknown> | null;
-  getPackageIdForGrant(grantId: string): Promise<Record<string, unknown> | null> | Record<string, unknown> | null;
-  insertPackage(args: {
+  getPackageById: (packageId: string) => Promise<Record<string, unknown> | null> | Record<string, unknown> | null;
+  getPackageIdForGrant: (grantId: string) => Promise<Record<string, unknown> | null> | Record<string, unknown> | null;
+  insertPackage: (args: {
     packageId: string;
     subjectId: string;
     clientId: string;
@@ -422,51 +423,32 @@ interface GrantPackageStore {
     scenarioId: string;
     createdAt: string;
     approvedAt: string;
-  }): Promise<{ changes: number }> | { changes: number };
-  insertPackageMember(args: {
+  }) => Promise<{ changes: number }> | { changes: number };
+  insertPackageMember: (args: {
     packageId: string;
     grantId: string;
     tokenId: string;
     sourceJson: string;
     addedAt: string;
-  }): Promise<{ changes: number }> | { changes: number };
-  insertPackageToken(args: {
+  }) => Promise<{ changes: number }> | { changes: number };
+  insertPackageToken: (args: {
     tokenId: string;
     packageId: string;
     subjectId: string;
     clientId: string;
     expiresAt: string | null;
-  }): Promise<{ changes: number }> | { changes: number };
-  listActiveMembers(packageId: string): Promise<readonly MemberRow[]> | readonly MemberRow[];
-  listAllMembers(packageId: string): Promise<readonly MemberRow[]> | readonly MemberRow[];
-  markMemberRevoked(args: {
+  }) => Promise<{ changes: number }> | { changes: number };
+  listActiveMembers: (packageId: string) => Promise<readonly MemberRow[]> | readonly MemberRow[];
+  listAllMembers: (packageId: string) => Promise<readonly MemberRow[]> | readonly MemberRow[];
+  markMemberRevoked: (args: {
     packageId: string;
     grantId: string;
     revokedAt: string;
-  }): Promise<{ changes: number }> | { changes: number };
-  markPackageRevokedCascade(args: { packageId: string; revokedAt: string }): Promise<void> | void;
+  }) => Promise<{ changes: number }> | { changes: number };
+  markPackageRevokedCascade: (args: { packageId: string; revokedAt: string }) => Promise<void> | void;
 }
 
 const postgresGrantPackageStore: GrantPackageStore = {
-  insertPackageToken: ({
-    tokenId,
-    packageId,
-    subjectId,
-    clientId,
-    expiresAt,
-  }: {
-    tokenId: string;
-    packageId: string;
-    subjectId: string;
-    clientId: string;
-    expiresAt: string | null;
-  }): Promise<{ changes: number }> =>
-    pgExec(
-      `INSERT INTO tokens(token_id, grant_id, package_id, subject_id, client_id, token_kind, expires_at)
-       VALUES($1, NULL, $2, $3, $4, 'mcp_package', $5)`,
-      [tokenId, packageId, subjectId, clientId, expiresAt]
-    ),
-
   getPackageById: (packageId: string): Promise<Record<string, unknown> | null> =>
     pgOne(
       `SELECT package_id, subject_id, client_id, status, package_json::text AS package_json,
@@ -474,6 +456,16 @@ const postgresGrantPackageStore: GrantPackageStore = {
          FROM grant_packages
          WHERE package_id = $1`,
       [packageId]
+    ),
+
+  getPackageIdForGrant: (grantId: string): Promise<Record<string, unknown> | null> =>
+    pgOne(
+      `SELECT package_id
+         FROM grant_package_members
+         WHERE grant_id = $1
+         ORDER BY added_at
+         LIMIT 1`,
+      [grantId]
     ),
 
   insertPackage: ({
@@ -524,6 +516,24 @@ const postgresGrantPackageStore: GrantPackageStore = {
        ) VALUES($1, $2, $3, $4::jsonb, 'active', $5, NULL)`,
       [packageId, grantId, tokenId, sourceJson, addedAt]
     ),
+  insertPackageToken: ({
+    tokenId,
+    packageId,
+    subjectId,
+    clientId,
+    expiresAt,
+  }: {
+    tokenId: string;
+    packageId: string;
+    subjectId: string;
+    clientId: string;
+    expiresAt: string | null;
+  }): Promise<{ changes: number }> =>
+    pgExec(
+      `INSERT INTO tokens(token_id, grant_id, package_id, subject_id, client_id, token_kind, expires_at)
+       VALUES($1, NULL, $2, $3, $4, 'mcp_package', $5)`,
+      [tokenId, packageId, subjectId, clientId, expiresAt]
+    ),
 
   listActiveMembers: async (packageId: string): Promise<MemberRow[]> =>
     (
@@ -556,16 +566,6 @@ const postgresGrantPackageStore: GrantPackageStore = {
         [packageId]
       )
     ).rows as MemberRow[],
-
-  getPackageIdForGrant: (grantId: string): Promise<Record<string, unknown> | null> =>
-    pgOne(
-      `SELECT package_id
-         FROM grant_package_members
-         WHERE grant_id = $1
-         ORDER BY added_at
-         LIMIT 1`,
-      [grantId]
-    ),
 
   markMemberRevoked: ({
     packageId,
@@ -607,22 +607,11 @@ const postgresGrantPackageStore: GrantPackageStore = {
 };
 
 const sqliteGrantPackageStore: GrantPackageStore = {
-  insertPackageToken: ({
-    tokenId,
-    packageId,
-    subjectId,
-    clientId,
-    expiresAt,
-  }: {
-    tokenId: string;
-    packageId: string;
-    subjectId: string;
-    clientId: string;
-    expiresAt: string | null;
-  }) => exec(requireReferenceQuery("authTokensInsertMcpPackage"), [tokenId, packageId, subjectId, clientId, expiresAt]),
-
   getPackageById: (packageId: string) =>
     getOne<Record<string, unknown>>(requireReferenceQuery("authGrantPackagesGetById"), [packageId]),
+
+  getPackageIdForGrant: (grantId: string) =>
+    getOne<Record<string, unknown>>(requireReferenceQuery("authGrantPackageMembersGetPackageIdByGrant"), [grantId]),
 
   insertPackage: ({
     packageId,
@@ -671,6 +660,19 @@ const sqliteGrantPackageStore: GrantPackageStore = {
     addedAt: string;
   }) =>
     exec(requireReferenceQuery("authGrantPackageMembersInsert"), [packageId, grantId, tokenId, sourceJson, addedAt]),
+  insertPackageToken: ({
+    tokenId,
+    packageId,
+    subjectId,
+    clientId,
+    expiresAt,
+  }: {
+    tokenId: string;
+    packageId: string;
+    subjectId: string;
+    clientId: string;
+    expiresAt: string | null;
+  }) => exec(requireReferenceQuery("authTokensInsertMcpPackage"), [tokenId, packageId, subjectId, clientId, expiresAt]),
 
   listActiveMembers: (packageId: string): readonly MemberRow[] =>
     allowUnboundedReadAcknowledged<MemberRow>(requireReferenceQuery("authGrantPackageMembersListActiveByPackage"), [
@@ -681,9 +683,6 @@ const sqliteGrantPackageStore: GrantPackageStore = {
     allowUnboundedReadAcknowledged<MemberRow>(requireReferenceQuery("authGrantPackageMembersListAllByPackage"), [
       packageId,
     ]),
-
-  getPackageIdForGrant: (grantId: string) =>
-    getOne<Record<string, unknown>>(requireReferenceQuery("authGrantPackageMembersGetPackageIdByGrant"), [grantId]),
 
   markMemberRevoked: ({ packageId, grantId, revokedAt }: { packageId: string; grantId: string; revokedAt: string }) =>
     exec(requireReferenceQuery("authGrantPackageMembersMarkRevokedByGrant"), [revokedAt, packageId, grantId]),
@@ -709,17 +708,17 @@ function normalizePackageRow(row: Record<string, unknown> | null): NormalizedPac
     return null;
   }
   return {
-    package_id: row.package_id as string,
-    subject_id: row.subject_id as string,
-    client_id: row.client_id as string,
-    status: row.status as string,
-    package: parsePackageJson(row.package_json),
-    parent_package_id: (row.parent_package_id as string | null) ?? null,
-    trace_id: (row.trace_id as string | null) ?? null,
-    scenario_id: (row.scenario_id as string | null) ?? null,
-    created_at: row.created_at as string,
     approved_at: (row.approved_at as string | null) ?? null,
+    client_id: row.client_id as string,
+    created_at: row.created_at as string,
+    package: parsePackageJson(row.package_json),
+    package_id: row.package_id as string,
+    parent_package_id: (row.parent_package_id as string | null) ?? null,
     revoked_at: (row.revoked_at as string | null) ?? null,
+    scenario_id: (row.scenario_id as string | null) ?? null,
+    status: row.status as string,
+    subject_id: row.subject_id as string,
+    trace_id: (row.trace_id as string | null) ?? null,
   };
 }
 
@@ -768,9 +767,11 @@ function normalizePackageRevokeError(
   err: unknown
 ): { grant_id: string; error: { code: string; message: string } } {
   const e = err as Record<string, unknown>;
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const code = isNonEmptyString(e?.code) ? (e.code as string) : "revoke_failed";
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const message = isNonEmptyString(e?.message) ? (e.message as string) : "Child grant revoke failed";
-  return { grant_id: grantId, error: { code, message } };
+  return { error: { code, message }, grant_id: grantId };
 }
 
 // ---------------------------------------------------------------------------
@@ -817,33 +818,36 @@ export function createGrantPackageLifecycle(deps: GrantPackageLifecycleDeps): Gr
   ): Promise<string> {
     const tokenId = generateId("tok");
     await getGrantPackageStore().insertPackageToken({
-      tokenId,
-      packageId,
-      subjectId,
       clientId,
       expiresAt,
+      packageId,
+      subjectId,
+      tokenId,
     });
 
     const traceContext = meta.traceContext as SpineTraceContext | undefined;
     await emitSpineEvent({
-      event_type: "token.issued",
-      trace_id: traceContext?.trace_id ?? null,
-      scenario_id: traceContext?.scenario_id ?? null,
-      request_id: traceContext?.request_id ?? null,
-      actor_type: "authorization_server",
       actor_id: "pdpp_as",
-      subject_type: "subject",
-      subject_id: subjectId,
-      object_type: "token",
-      object_id: tokenId,
-      status: "succeeded",
+      actor_type: "authorization_server",
       client_id: clientId,
-      token_id: tokenId,
       data: {
-        token_kind: "mcp_package",
         grant_package_id: packageId,
         issuance_path: (meta.source as string | undefined) ?? "hosted_mcp_package",
+        token_kind: "mcp_package",
       },
+      event_type: "token.issued",
+      object_id: tokenId,
+      object_type: "token",
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+      request_id: traceContext?.request_id ?? null,
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+      scenario_id: traceContext?.scenario_id ?? null,
+      status: "succeeded",
+      subject_id: subjectId,
+      subject_type: "subject",
+      token_id: tokenId,
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+      trace_id: traceContext?.trace_id ?? null,
     } satisfies SpineEventInput);
 
     return tokenId;
@@ -925,8 +929,8 @@ export function createGrantPackageLifecycle(deps: GrantPackageLifecycleDeps): Gr
     const connectorId = isNonEmptyString(sanitized.id) ? (sanitized.id as string) : null;
     if (isNonEmptyString(ownerSubjectId) && connectorId) {
       const active = await listActiveBindingsForGrant({
-        ownerSubjectId,
         connectorId,
+        ownerSubjectId,
       }).catch(() => []);
       const binding =
         (active as Record<string, unknown>[]).find((row) => row.connectorInstanceId === sanitized.connection_id) ??
@@ -981,67 +985,67 @@ export function createGrantPackageLifecycle(deps: GrantPackageLifecycleDeps): Gr
     const persistedStorageBinding = normalizeStorageBinding(storageBinding);
 
     const grant: Record<string, unknown> = {
-      version: "0.1.0",
-      grant_id: grantId,
-      issued_at: issuedAt,
-      subject: { id: subjectId },
+      access_mode: selection.access_mode,
       client: {
         client_id: registeredClient.client_id,
         registration_mode: registeredClient.registration_mode || "pre_registered_public",
         ...(client.client_display ? { client_display: client.client_display } : {}),
       },
-      source: persistedSource,
+      expires_at: expiresAt,
+      grant_id: grantId,
+      issued_at: issuedAt,
       manifest_version: manifest.version,
       purpose_code: selection.purpose_code,
       purpose_description: selection.purpose_description,
-      access_mode: selection.access_mode,
-      streams: resolvedStreams,
       retention: selection.retention,
-      expires_at: expiresAt,
+      source: persistedSource,
+      streams: resolvedStreams,
+      subject: { id: subjectId },
+      version: "0.1.0",
     };
 
     await persistGrant({
-      grantId,
-      subjectId,
-      clientId: registeredClient.client_id,
-      storageBindingJson: serializeStorageBinding(persistedStorageBinding),
-      grantJson: JSON.stringify(grant),
       accessMode: selection.access_mode as string,
-      issuedAt,
+      clientId: registeredClient.client_id,
       expiresAt,
-      traceId: traceContext.trace_id,
+      grantId,
+      grantJson: JSON.stringify(grant),
+      issuedAt,
       scenarioId: traceContext.scenario_id,
+      storageBindingJson: serializeStorageBinding(persistedStorageBinding),
+      subjectId,
+      traceId: traceContext.trace_id,
     });
 
     await emitSpineEvent({
-      event_type: "grant.issued",
-      trace_id: traceContext.trace_id,
-      scenario_id: traceContext.scenario_id,
-      request_id: traceContext.request_id,
-      actor_type: "authorization_server",
       actor_id: "pdpp_as",
-      subject_type: "subject",
-      subject_id: subjectId,
-      object_type: "grant",
-      object_id: grantId,
-      status: "succeeded",
-      grant_id: grantId,
+      actor_type: "authorization_server",
       client_id: registeredClient.client_id,
       data: {
-        source: describeGrantSource(grant),
         access_mode: selection.access_mode,
         purpose_code: selection.purpose_code,
-        stream_names: resolvedStreams.map((stream) => stream.name),
         retention: (selection.retention as unknown) ?? null,
+        source: describeGrantSource(grant),
+        stream_names: resolvedStreams.map((stream) => stream.name),
       },
+      event_type: "grant.issued",
+      grant_id: grantId,
+      object_id: grantId,
+      object_type: "grant",
+      request_id: traceContext.request_id,
+      scenario_id: traceContext.scenario_id,
+      status: "succeeded",
+      subject_id: subjectId,
+      subject_type: "subject",
+      trace_id: traceContext.trace_id,
     } satisfies SpineEventInput);
 
     const token = await issueToken(grantId, subjectId, registeredClient.client_id, expiresAt, {
-      traceContext,
       source: "hosted_mcp_package_child",
+      traceContext,
     });
 
-    return { grant, token, expiresAt };
+    return { expiresAt, grant, token };
   }
 
   // -------------------------------------------------------------------------
@@ -1083,28 +1087,28 @@ export function createGrantPackageLifecycle(deps: GrantPackageLifecycleDeps): Gr
       typeof scenarioIdVal === "string" ? createTraceContext({ scenarioId: scenarioIdVal }) : createTraceContext();
     const createdAt = nowIso();
     const packageEnvelope: Record<string, unknown> = {
-      version: "reference.mcp_package.v1",
-      package_id: packageId,
-      subject: { id: subjectId },
+      approved_source_count: authorizationDetails.length,
       client: {
+        client_display: buildClientDisplayFromRegistration(registeredClient.metadata),
         client_id: clientId,
         registration_mode: registeredClient.registration_mode || "pre_registered_public",
-        client_display: buildClientDisplayFromRegistration(registeredClient.metadata),
       },
-      approved_source_count: authorizationDetails.length,
+      package_id: packageId,
       source_bounded_child_grants: true,
+      subject: { id: subjectId },
+      version: "reference.mcp_package.v1",
     };
 
     await getGrantPackageStore().insertPackage({
-      packageId,
-      subjectId,
+      approvedAt: createdAt,
       clientId,
+      createdAt,
+      packageId,
       packageJson: JSON.stringify(packageEnvelope),
       parentPackageId: null,
-      traceId: traceContext.trace_id,
       scenarioId: traceContext.scenario_id,
-      createdAt,
-      approvedAt: createdAt,
+      subjectId,
+      traceId: traceContext.trace_id,
     });
 
     const childGrants: Array<{
@@ -1115,10 +1119,11 @@ export function createGrantPackageLifecycle(deps: GrantPackageLifecycleDeps): Gr
     }> = [];
 
     for (const [index, detail] of authorizationDetails.entries()) {
-      const request = normalizePendingGrantRequest({ client_id: clientId, authorization_details: [detail] }, opts);
+      const request = normalizePendingGrantRequest({ authorization_details: [detail], client_id: clientId }, opts);
       applyPendingRequestStorageBinding(request, storageBindings[index] ?? null);
       requireStructuredPendingRequestShape(request);
       request.trace_context = traceContext;
+      // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
       const childRegisteredClient = await requirePendingRequestClientRegistration(request, opts);
       const { sourceBinding, storageBinding } = requireStructuredPendingRequestBindings(request);
       request.source_binding = describeSourceBinding(sourceBinding);
@@ -1127,13 +1132,13 @@ export function createGrantPackageLifecycle(deps: GrantPackageLifecycleDeps): Gr
       request.manifest_version = manifest.version;
       const resolvedStreams = resolveGrantSelection(request.selection as Record<string, unknown>, manifest);
       const { grant, token } = await persistChildGrantForPackage({
-        request,
+        manifest,
         registeredClient: childRegisteredClient,
-        subjectId,
+        request,
+        resolvedStreams,
         sourceBinding,
         storageBinding,
-        manifest,
-        resolvedStreams,
+        subjectId,
         traceContext,
       });
       const connectionId = isNonEmptyString(connectionIds[index] ?? null) ? (connectionIds[index] as string) : null;
@@ -1144,41 +1149,42 @@ export function createGrantPackageLifecycle(deps: GrantPackageLifecycleDeps): Gr
       );
       const addedAt = nowIso();
       await getGrantPackageStore().insertPackageMember({
-        packageId,
-        grantId: grant.grant_id as string,
-        tokenId: token,
-        sourceJson: JSON.stringify(source),
         addedAt,
+        grantId: grant.grant_id as string,
+        packageId,
+        sourceJson: JSON.stringify(source),
+        tokenId: token,
       });
-      childGrants.push({ grant, token, source, connection_id: connectionId });
+      childGrants.push({ connection_id: connectionId, grant, source, token });
     }
 
     const packageToken = await issuePackageToken(packageId, subjectId, clientId, null, {
-      traceContext,
       source: "hosted_mcp_package",
+      traceContext,
     });
 
     await emitSpineEvent({
-      event_type: "grant_package.issued",
-      trace_id: traceContext.trace_id,
-      scenario_id: traceContext.scenario_id,
-      request_id: traceContext.request_id,
-      actor_type: "authorization_server",
       actor_id: "pdpp_as",
-      subject_type: "subject",
-      subject_id: subjectId,
-      object_type: "grant_package",
-      object_id: packageId,
-      status: "succeeded",
+      actor_type: "authorization_server",
       client_id: clientId,
-      token_id: packageToken,
       data: {
         child_grant_ids: childGrants.map((entry) => entry.grant.grant_id),
         sources: childGrants.map((entry) => entry.source),
       },
+      event_type: "grant_package.issued",
+      object_id: packageId,
+      object_type: "grant_package",
+      request_id: traceContext.request_id,
+      scenario_id: traceContext.scenario_id,
+      status: "succeeded",
+      subject_id: subjectId,
+      subject_type: "subject",
+      token_id: packageToken,
+      trace_id: traceContext.trace_id,
     } satisfies SpineEventInput);
 
     return {
+      child_grants: childGrants,
       package: {
         ...packageEnvelope,
         child_grants: childGrants.map((entry) => ({
@@ -1188,7 +1194,6 @@ export function createGrantPackageLifecycle(deps: GrantPackageLifecycleDeps): Gr
       },
       package_id: packageId,
       token: packageToken,
-      child_grants: childGrants,
       trace_context: traceContext,
     };
   }
@@ -1200,7 +1205,7 @@ export function createGrantPackageLifecycle(deps: GrantPackageLifecycleDeps): Gr
     const store = getGrantPackageStore();
     const packageRow = await store.getPackageById(packageId);
     const grantPackage = normalizePackageRow(packageRow as Record<string, unknown> | null);
-    if (!grantPackage || grantPackage.status !== "active") {
+    if (grantPackage?.status !== "active") {
       return null;
     }
 
@@ -1220,22 +1225,23 @@ export function createGrantPackageLifecycle(deps: GrantPackageLifecycleDeps): Gr
       } catch {
         continue;
       }
+      // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
       const persistedSource = await normalizePersistedPackageMemberSource(
         parsePackageJson(row.source_json) ?? describeGrantSource(grantState.grant),
         { ownerSubjectId: grantPackage.subject_id }
       );
       activeMembers.push({
-        package_id: packageId,
-        grant_id: row.grant_id,
-        token: row.token_id,
-        source: persistedSource,
-        grant: grantState.grant,
-        grant_storage_binding: grantState.storageBinding,
         connection_id: (persistedSource?.connection_id as string | null) ?? null,
+        grant: grantState.grant,
+        grant_id: row.grant_id,
+        grant_storage_binding: grantState.storageBinding,
+        package_id: packageId,
+        source: persistedSource,
+        token: row.token_id,
       });
     }
 
-    return { package: grantPackage, members: activeMembers };
+    return { members: activeMembers, package: grantPackage };
   }
 
   async function listGrantPackagesForOwner(
@@ -1304,8 +1310,8 @@ export function createGrantPackageLifecycle(deps: GrantPackageLifecycleDeps): Gr
     return {
       data,
       has_more: hasMore,
-      next_cursor: tail ? encodeGrantPackageCursor(tail) : null,
       limit,
+      next_cursor: tail ? encodeGrantPackageCursor(tail) : null,
     };
   }
 
@@ -1349,10 +1355,10 @@ export function createGrantPackageLifecycle(deps: GrantPackageLifecycleDeps): Gr
 
     const children = await Promise.all(
       memberRows.map(async (row) => ({
+        added_at: row.added_at,
         grant_id: row.grant_id,
         grant_status: (row.grant_status ?? "") as string,
         member_status: (row.member_status ?? "") as string,
-        added_at: row.added_at,
         revoked_at: (row.member_revoked_at as string | null) ?? null,
         source: await normalizePersistedPackageMemberSource(parsePackageJson(row.source_json) ?? null, {
           ownerSubjectId: grantPackage.subject_id,
@@ -1362,8 +1368,8 @@ export function createGrantPackageLifecycle(deps: GrantPackageLifecycleDeps): Gr
 
     return {
       ...grantPackage,
-      member_count: children.length,
       children,
+      member_count: children.length,
     };
   }
 
@@ -1398,6 +1404,7 @@ export function createGrantPackageLifecycle(deps: GrantPackageLifecycleDeps): Gr
     let root = start;
     while (root.parent_package_id && !visitedUp.has(root.package_id)) {
       visitedUp.add(root.package_id);
+      // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
       const parent = await getGrantPackageRow(root.parent_package_id);
       if (!parent) {
         break;
@@ -1421,6 +1428,7 @@ export function createGrantPackageLifecycle(deps: GrantPackageLifecycleDeps): Gr
       }
       seen.add(current);
       lineageIds.push(current);
+      // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
       const childPackages = await listGrantPackagesByParent(current);
       for (const child of childPackages) {
         if (child.client_id !== root.client_id || child.subject_id !== root.subject_id) {
@@ -1441,18 +1449,19 @@ export function createGrantPackageLifecycle(deps: GrantPackageLifecycleDeps): Gr
     const packages: CumulativeClientAccess["packages"][number][] = [];
     const cumulativeChildren: (PackageChildEntry & { package_id: string })[] = [];
     for (const id of lineageIds) {
+      // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
       const detail = await getGrantPackageForOwner(id);
       if (!detail) {
         continue;
       }
       packages.push({
+        approved_at: detail.approved_at,
+        created_at: detail.created_at,
+        member_count: detail.member_count,
         package_id: detail.package_id,
         parent_package_id: detail.parent_package_id,
-        status: detail.status,
-        created_at: detail.created_at,
-        approved_at: detail.approved_at,
         revoked_at: detail.revoked_at,
-        member_count: detail.member_count,
+        status: detail.status,
       });
       for (const child of detail.children) {
         cumulativeChildren.push({ ...child, package_id: detail.package_id });
@@ -1482,13 +1491,13 @@ export function createGrantPackageLifecycle(deps: GrantPackageLifecycleDeps): Gr
     );
 
     return {
+      active_child_count: activeChildren.length,
+      children: cumulativeChildren,
       client_id: clientId,
-      subject_id: subjectId,
-      root_package_id: root.package_id,
       package_count: packages.length,
       packages,
-      children: cumulativeChildren,
-      active_child_count: activeChildren.length,
+      root_package_id: root.package_id,
+      subject_id: subjectId,
     };
   }
 
@@ -1514,11 +1523,12 @@ export function createGrantPackageLifecycle(deps: GrantPackageLifecycleDeps): Gr
         continue;
       }
       try {
+        // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
         await revokeGrant(member.grant_id, context);
         const childRevokedAt = nowIso();
         await getGrantPackageStore().markMemberRevoked({
-          packageId,
           grantId: member.grant_id,
+          packageId,
           revokedAt: childRevokedAt,
         });
         revokedChildGrants.push(member.grant_id);
@@ -1529,26 +1539,26 @@ export function createGrantPackageLifecycle(deps: GrantPackageLifecycleDeps): Gr
 
     if (notRevokedChildGrants.length > 0) {
       await emitSpineEvent({
-        event_type: "grant_package.revoke_partial",
-        trace_id: (context.trace_id as string | undefined) ?? null,
-        scenario_id: (context.scenario_id as string | undefined) ?? null,
-        request_id: (context.request_id as string | undefined) ?? null,
-        actor_type: "authorization_server",
         actor_id: "pdpp_as",
-        object_type: "grant_package",
-        object_id: packageId,
-        status: "failed",
+        actor_type: "authorization_server",
         data: {
-          revoked_child_grants: revokedChildGrants,
           not_revoked_child_grants: notRevokedChildGrants,
+          revoked_child_grants: revokedChildGrants,
         },
+        event_type: "grant_package.revoke_partial",
+        object_id: packageId,
+        object_type: "grant_package",
+        request_id: (context.request_id as string | undefined) ?? null,
+        scenario_id: (context.scenario_id as string | undefined) ?? null,
+        status: "failed",
+        trace_id: (context.trace_id as string | undefined) ?? null,
       } satisfies SpineEventInput);
       return {
-        status: "partial_failure",
+        not_revoked_child_grants: notRevokedChildGrants,
         package_id: packageId,
         revoked_at: null,
         revoked_child_grants: revokedChildGrants,
-        not_revoked_child_grants: notRevokedChildGrants,
+        status: "partial_failure",
       };
     }
 
@@ -1556,24 +1566,24 @@ export function createGrantPackageLifecycle(deps: GrantPackageLifecycleDeps): Gr
     await getGrantPackageStore().markPackageRevokedCascade({ packageId, revokedAt: now });
 
     await emitSpineEvent({
-      event_type: "grant_package.revoked",
-      trace_id: (context.trace_id as string | undefined) ?? null,
-      scenario_id: (context.scenario_id as string | undefined) ?? null,
-      request_id: (context.request_id as string | undefined) ?? null,
-      actor_type: "authorization_server",
       actor_id: "pdpp_as",
-      object_type: "grant_package",
-      object_id: packageId,
-      status: "succeeded",
+      actor_type: "authorization_server",
       data: { revoked_child_grants: revokedChildGrants },
+      event_type: "grant_package.revoked",
+      object_id: packageId,
+      object_type: "grant_package",
+      request_id: (context.request_id as string | undefined) ?? null,
+      scenario_id: (context.scenario_id as string | undefined) ?? null,
+      status: "succeeded",
+      trace_id: (context.trace_id as string | undefined) ?? null,
     } satisfies SpineEventInput);
 
     return {
-      status: "revoked",
+      not_revoked_child_grants: [],
       package_id: packageId,
       revoked_at: now,
       revoked_child_grants: revokedChildGrants,
-      not_revoked_child_grants: [],
+      status: "revoked",
     };
   }
 
@@ -1610,15 +1620,15 @@ export function createGrantPackageLifecycle(deps: GrantPackageLifecycleDeps): Gr
     packageToken: string;
   }> {
     await getGrantPackageStore().insertPackage({
-      packageId,
-      subjectId,
+      approvedAt: createdAt,
       clientId: registeredClient.client_id,
+      createdAt,
+      packageId,
       packageJson: JSON.stringify(packageEnvelope),
       parentPackageId,
-      traceId: traceContext.trace_id,
       scenarioId: traceContext.scenario_id,
-      createdAt,
-      approvedAt: createdAt,
+      subjectId,
+      traceId: traceContext.trace_id,
     });
 
     const childGrants: Array<{
@@ -1628,31 +1638,32 @@ export function createGrantPackageLifecycle(deps: GrantPackageLifecycleDeps): Gr
     }> = [];
 
     for (const resolved of resolvedEntries) {
+      // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
       const { grant, token } = await persistChildGrantForPackage({
-        request: resolved.slice as PendingRequest,
+        manifest: resolved.manifest as GrantManifest,
         registeredClient: registeredClient as RegisteredClient,
-        subjectId,
+        request: resolved.slice as PendingRequest,
+        resolvedStreams: resolved.resolvedStreams,
         sourceBinding: resolved.sourceBinding as SourceBinding,
         storageBinding: resolved.storageBinding as StorageBinding | null,
-        manifest: resolved.manifest as GrantManifest,
-        resolvedStreams: resolved.resolvedStreams,
+        subjectId,
         traceContext,
       });
       const source = describePackageMemberSource(grant);
       const addedAt = nowIso();
       await getGrantPackageStore().insertPackageMember({
-        packageId,
-        grantId: grant.grant_id as string,
-        tokenId: token,
-        sourceJson: JSON.stringify(source),
         addedAt,
+        grantId: grant.grant_id as string,
+        packageId,
+        sourceJson: JSON.stringify(source),
+        tokenId: token,
       });
-      childGrants.push({ grant, token, source });
+      childGrants.push({ grant, source, token });
     }
 
     const packageToken = await issuePackageToken(packageId, subjectId, registeredClient.client_id, null, {
-      traceContext,
       source: "batch_consent_package",
+      traceContext,
     });
 
     return { childGrants, packageToken };
@@ -1660,15 +1671,15 @@ export function createGrantPackageLifecycle(deps: GrantPackageLifecycleDeps): Gr
 
   return {
     createHostedMcpGrantPackage,
-    getGrantPackageAccess,
-    listGrantPackagesForOwner,
-    getGrantPackageForOwner,
     getCumulativeClientAccessForPackage,
+    getGrantPackageAccess,
+    getGrantPackageForOwner,
     getGrantPackageIdForGrant,
+    issuePackageToken,
     listActivePackageIdsForClient,
+    listGrantPackagesForOwner,
+    persistStagedBatchPackage,
     requireValidParentPackageLinkage,
     revokeGrantPackage,
-    persistStagedBatchPackage,
-    issuePackageToken,
   };
 }

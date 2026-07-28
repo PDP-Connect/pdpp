@@ -12830,12 +12830,6 @@
     "/_ref/fleet-health": {
       "get": {
         "operationId": "refGetFleetHealth",
-        "tags": [
-          "reference",
-          "connectors",
-          "owner"
-        ],
-        "summary": "Get the owner-only composed fleet-health verdict for configured connections.",
         "parameters": [],
         "responses": {
           "200": {
@@ -13342,39 +13336,14 @@
               "application/json": {
                 "schema": {
                   "$id": "pdpp/common/PdppError",
-                  "type": "object",
                   "additionalProperties": false,
                   "properties": {
                     "error": {
-                      "type": "object",
                       "additionalProperties": false,
                       "properties": {
-                        "type": {
-                          "type": "string"
-                        },
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "param": {
-                          "type": "string"
-                        },
-                        "request_id": {
-                          "type": "string"
-                        },
-                        "resource_metadata": {
-                          "type": "string"
-                        },
-                        "next_step": {
-                          "type": "string"
-                        },
                         "available_connections": {
-                          "type": "array",
                           "items": {
                             "$id": "pdpp/common/ErrorAvailableConnection",
-                            "type": "object",
                             "additionalProperties": false,
                             "properties": {
                               "connection_id": {
@@ -13393,19 +13362,42 @@
                                 ]
                               },
                               "label_status": {
-                                "type": "string",
                                 "enum": [
                                   "owner_set",
                                   "fallback"
-                                ]
+                                ],
+                                "type": "string"
                               }
                             },
                             "required": [
                               "connection_id"
-                            ]
-                          }
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "next_step": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        },
+                        "resource_metadata": {
+                          "type": "string"
                         },
                         "retry_with": {
+                          "type": "string"
+                        },
+                        "type": {
                           "type": "string"
                         }
                       },
@@ -13414,12 +13406,14 @@
                         "code",
                         "message",
                         "request_id"
-                      ]
+                      ],
+                      "type": "object"
                     }
                   },
                   "required": [
                     "error"
-                  ]
+                  ],
+                  "type": "object"
                 }
               }
             }
@@ -13430,39 +13424,14 @@
               "application/json": {
                 "schema": {
                   "$id": "pdpp/common/PdppError",
-                  "type": "object",
                   "additionalProperties": false,
                   "properties": {
                     "error": {
-                      "type": "object",
                       "additionalProperties": false,
                       "properties": {
-                        "type": {
-                          "type": "string"
-                        },
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "param": {
-                          "type": "string"
-                        },
-                        "request_id": {
-                          "type": "string"
-                        },
-                        "resource_metadata": {
-                          "type": "string"
-                        },
-                        "next_step": {
-                          "type": "string"
-                        },
                         "available_connections": {
-                          "type": "array",
                           "items": {
                             "$id": "pdpp/common/ErrorAvailableConnection",
-                            "type": "object",
                             "additionalProperties": false,
                             "properties": {
                               "connection_id": {
@@ -13481,19 +13450,42 @@
                                 ]
                               },
                               "label_status": {
-                                "type": "string",
                                 "enum": [
                                   "owner_set",
                                   "fallback"
-                                ]
+                                ],
+                                "type": "string"
                               }
                             },
                             "required": [
                               "connection_id"
-                            ]
-                          }
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "next_step": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        },
+                        "resource_metadata": {
+                          "type": "string"
                         },
                         "retry_with": {
+                          "type": "string"
+                        },
+                        "type": {
                           "type": "string"
                         }
                       },
@@ -13502,12 +13494,14 @@
                         "code",
                         "message",
                         "request_id"
-                      ]
+                      ],
+                      "type": "object"
                     }
                   },
                   "required": [
                     "error"
-                  ]
+                  ],
+                  "type": "object"
                 }
               }
             }
@@ -13518,39 +13512,14 @@
               "application/json": {
                 "schema": {
                   "$id": "pdpp/common/PdppError",
-                  "type": "object",
                   "additionalProperties": false,
                   "properties": {
                     "error": {
-                      "type": "object",
                       "additionalProperties": false,
                       "properties": {
-                        "type": {
-                          "type": "string"
-                        },
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "param": {
-                          "type": "string"
-                        },
-                        "request_id": {
-                          "type": "string"
-                        },
-                        "resource_metadata": {
-                          "type": "string"
-                        },
-                        "next_step": {
-                          "type": "string"
-                        },
                         "available_connections": {
-                          "type": "array",
                           "items": {
                             "$id": "pdpp/common/ErrorAvailableConnection",
-                            "type": "object",
                             "additionalProperties": false,
                             "properties": {
                               "connection_id": {
@@ -13569,19 +13538,42 @@
                                 ]
                               },
                               "label_status": {
-                                "type": "string",
                                 "enum": [
                                   "owner_set",
                                   "fallback"
-                                ]
+                                ],
+                                "type": "string"
                               }
                             },
                             "required": [
                               "connection_id"
-                            ]
-                          }
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "next_step": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        },
+                        "resource_metadata": {
+                          "type": "string"
                         },
                         "retry_with": {
+                          "type": "string"
+                        },
+                        "type": {
                           "type": "string"
                         }
                       },
@@ -13590,17 +13582,25 @@
                         "code",
                         "message",
                         "request_id"
-                      ]
+                      ],
+                      "type": "object"
                     }
                   },
                   "required": [
                     "error"
-                  ]
+                  ],
+                  "type": "object"
                 }
               }
             }
           }
-        }
+        },
+        "summary": "Get the owner-only composed fleet-health verdict for configured connections.",
+        "tags": [
+          "reference",
+          "connectors",
+          "owner"
+        ]
       }
     },
     "/_ref/connectors/{connectorId}": {

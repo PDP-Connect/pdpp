@@ -215,8 +215,7 @@ function makeTrailDataSource(pages: Map<string, ExploreTimelinePage>, capturedKe
 
 function assertNonIncreasing(feed: ReadonlyArray<{ emittedAt: string }>): void {
   const times = feed.map((e) => Date.parse(e.emittedAt));
-  // biome-ignore lint/style/noIncrementDecrement: Loop increment is local and cannot cross automatic-semicolon-insertion boundaries.
-  for (let i = 1; i < times.length; i++) {
+  for (let i = 1; i < times.length; i += 1) {
     assert.ok((times[i] ?? 0) <= (times[i - 1] ?? 0), `feed must stay non-increasing emitted_at at index ${i}`);
   }
 }
