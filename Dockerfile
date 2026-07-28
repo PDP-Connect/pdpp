@@ -50,17 +50,28 @@ COPY apps/console/package.json apps/console/package.json
 COPY packages/operator-ui/package.json packages/operator-ui/package.json
 COPY packages/pdpp-brand/package.json packages/pdpp-brand/package.json
 COPY packages/pdpp-brand-react/package.json packages/pdpp-brand-react/package.json
+COPY packages/cli/package.json packages/cli/package.json
 COPY packages/mcp-server/package.json packages/mcp-server/package.json
+COPY packages/read-core/package.json packages/read-core/package.json
 COPY packages/polyfill-connectors/package.json packages/polyfill-connectors/package.json
 COPY packages/polyfill-connectors/scripts/install-patchright-browser.ts packages/polyfill-connectors/scripts/install-patchright-browser.ts
 COPY packages/reference-contract/package.json packages/reference-contract/package.json
 COPY reference-implementation/package.json reference-implementation/package.json
 
-RUN pnpm install --frozen-lockfile
+# Do not run workspace prepare scripts against this manifest-only tree. Native
+# dependencies still need their approved install hooks before the runtime is
+# assembled; workspace outputs are built from the complete source stage below.
+RUN pnpm install --frozen-lockfile --ignore-scripts \
+  && pnpm rebuild better-sqlite3 esbuild onnxruntime-node protobufjs
 
 FROM deps AS source
 
 COPY . .
+
+RUN pnpm --filter @pdpp/polyfill-connectors run postinstall \
+  && pnpm --filter @pdpp/read-core run build \
+  && pnpm --filter @pdpp/cli run build \
+  && pnpm --filter @pdpp/mcp-server run build
 
 FROM source AS console-builder
 
@@ -85,13 +96,10 @@ ENV NODE_ENV=production \
     PDPP_REFERENCE_OPERATIONAL_DEFAULTS=1 \
     PDPP_REFERENCE_REVISION=${PDPP_REFERENCE_REVISION}
 
-# Two-layer copy instead of `COPY --from=source /app /app`: node_modules comes
-# from `deps` (cache key = lockfile + manifests, so it survives source edits)
-# and the source tree is overlaid from the build context (tens of MB). The
-# single-COPY form re-materialized a node_modules-sized layer on every source
-# change — ~1.5GB of builder-cache churn per stage per rebuild.
-COPY --from=deps /app /app
-COPY . .
+# The source stage contains lifecycle-independent, dependency-ordered workspace
+# outputs. Runtime imports must use that completed tree, not a manifest-only
+# dependency stage overlaid with raw source.
+COPY --from=source /app /app
 
 EXPOSE 7662 7663
 
@@ -137,9 +145,8 @@ ENV NODE_ENV=production \
     PDPP_REFERENCE_OPERATIONAL_DEFAULTS=1 \
     PDPP_REFERENCE_REVISION=${PDPP_REFERENCE_REVISION}
 
-# Two-layer copy — see the `reference` stage for rationale.
-COPY --from=deps /app /app
-COPY . .
+# See the `reference` stage: retain built workspace artifacts from source.
+COPY --from=source /app /app
 
 EXPOSE 7662 7663
 
@@ -205,9 +212,8 @@ ENV NODE_ENV=production \
     PDPP_LOCAL_TRANSFORMER_SUPERVISOR_RESTART_CONTRACT=1 \
     PDPP_REFERENCE_REVISION=${PDPP_REFERENCE_REVISION}
 
-# Two-layer copy — see the `reference` stage for rationale.
-COPY --from=deps /app /app
-COPY . .
+# See the `reference` stage: retain built workspace artifacts from source.
+COPY --from=source /app /app
 COPY --from=console-builder /app/apps/console/.next/standalone /console
 COPY --from=console-builder /app/apps/console/.next/static /console/apps/console/.next/static
 COPY --from=console-builder /app/apps/console/public /console/apps/console/public
