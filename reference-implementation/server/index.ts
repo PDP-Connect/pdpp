@@ -107,6 +107,7 @@ import {
   updateRegisteredClientName,
 } from "./auth.ts";
 import { autoEnrollEligibleSchedules } from "./auto-enroll-eligible-schedules.ts";
+import type { CimdFetchDependencies } from "./cimd.ts";
 import { acquireDefaultDeliveryWorker, getDefaultDeliveryWorker } from "./client-event-delivery-worker.ts";
 import {
   buildCollectorProtocolMismatchBody,
@@ -630,6 +631,7 @@ interface ServerOpts {
   browserSurfaceReadinessProbe?: BrowserSurfaceReadinessProbe;
   cancelScheduledRun?: ((runId: string) => unknown) | null;
   cimdEnabled?: boolean;
+  cimdFetchDependencies?: CimdFetchDependencies;
   clientEventSubscriptionsCapability?: unknown;
   clientEventSubscriptionsSupported?: boolean;
   configuredProviderAuthConnectorKeys?: readonly string[];
@@ -3942,6 +3944,8 @@ export function buildAsApp(opts: ServerOpts = {}) {
     projectBindingForWire,
   };
   const explicitAsBaseUrl = opts.asPublicUrl || (opts.ignoreAmbientPublicUrls ? null : process.env.AS_PUBLIC_URL);
+  const onCimdTransportFailure = (event: import("./cimd.ts").CimdTransportFailureEvent) =>
+    opts.logger?.warn?.(event, "CIMD transport failure");
 
   // GET /oauth/authorize and POST /oauth/authorize/mcp-package extracted to
   // `server/routes/as-authorize.ts` per OpenSpec change
@@ -3958,10 +3962,15 @@ export function buildAsApp(opts: ServerOpts = {}) {
       typeof mountAsAuthorize
     >[1]["createHostedMcpGrantPackage"],
     ensureCsrfToken: ownerAuth.ensureCsrfToken as unknown as Parameters<typeof mountAsAuthorize>[1]["ensureCsrfToken"],
-    getRegisteredClient: ((clientId: string) =>
-      resolveOAuthClient(clientId, explicitAsBaseUrl ? { baseUrl: explicitAsBaseUrl } : {})) as unknown as Parameters<
-      typeof mountAsAuthorize
-    >[1]["getRegisteredClient"],
+    ensureRequestId: ensureRequestId as unknown as Parameters<typeof mountAsAuthorize>[1]["ensureRequestId"],
+    getRegisteredClient: ((clientId: string, correlation: { requestId: string | null; traceId: string | null }) =>
+      resolveOAuthClient(clientId, {
+        ...(explicitAsBaseUrl ? { baseUrl: explicitAsBaseUrl } : {}),
+        ...(opts.cimdFetchDependencies ? { cimdFetchDependencies: opts.cimdFetchDependencies } : {}),
+        onCimdTransportFailure,
+        requestId: correlation.requestId,
+        traceId: correlation.traceId,
+      })) as unknown as Parameters<typeof mountAsAuthorize>[1]["getRegisteredClient"],
     ignoreAmbientPublicUrls: !!opts.ignoreAmbientPublicUrls,
     issueOAuthAuthorizationCodeForPackageDeviceCode:
       issueOAuthAuthorizationCodeForPackageDeviceCode as unknown as Parameters<
@@ -4027,7 +4036,9 @@ export function buildAsApp(opts: ServerOpts = {}) {
         },
         {
           baseUrl: opts2.baseUrl,
+          ...(opts.cimdFetchDependencies ? { cimdFetchDependencies: opts.cimdFetchDependencies } : {}),
           nativeManifest: resolveNativeManifest(opts),
+          onCimdTransportFailure,
         }
       );
       const initiatedR = initiated as unknown as Record<string, unknown>;
@@ -6592,6 +6603,7 @@ export async function startServer(opts: ServerOpts = {}) {
     agentConnectTtlMs: opts.agentConnectTtlMs,
     asIssuer: configuredAsIssuer,
     asPublicUrl: configuredAsPublicUrl,
+    cimdFetchDependencies: opts.cimdFetchDependencies,
     controller,
     dbPath: opts.dbPath || DB_PATH,
     dynamicClientRegistrationInitialAccessTokens: resolveDynamicClientRegistrationInitialAccessTokens(opts),

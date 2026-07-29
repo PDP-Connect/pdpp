@@ -52,6 +52,11 @@ interface RouteResponse {
   status: (status: number) => RouteResponse;
 }
 
+interface ClientResolutionCorrelation {
+  requestId: string | null;
+  traceId: string | null;
+}
+
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => Promise<unknown>;
 
 interface AppLike {
@@ -122,8 +127,10 @@ export interface MountAsAuthorizeContext {
   }) => Promise<PackageGrantResult>;
   /** Reads the owner CSRF token from session, setting a new one if absent. */
   ensureCsrfToken: (req: RouteRequest, res: RouteResponse) => string;
+  /** Reads the Request-Id set by AS middleware for causal transport-event correlation. */
+  ensureRequestId: (res: RouteResponse) => string;
   /** Retrieves a registered OAuth client by client_id, or null if not found. */
-  getRegisteredClient: (clientId: string) => Promise<OAuthClient | null>;
+  getRegisteredClient: (clientId: string, correlation: ClientResolutionCorrelation) => Promise<OAuthClient | null>;
   /** Whether to ignore ambient PUBLIC_URL env vars when resolving the base URL. */
   ignoreAmbientPublicUrls: boolean;
   /** Issues an OAuth authorization code bound to a package device-code. */
@@ -569,7 +576,10 @@ export function mountAsAuthorize(app: AppLike, ctx: MountAsAuthorizeContext): vo
       const state = typeof req.query?.state === "string" ? req.query.state : null;
       validateAuthorizePkce({ codeChallenge, codeChallengeMethod, responseType });
 
-      const client = await ctx.getRegisteredClient(clientId);
+      const client = await ctx.getRegisteredClient(clientId, {
+        requestId: ctx.ensureRequestId(res),
+        traceId: null,
+      });
       if (!client) {
         return ctx.oauthError(res, 400, "invalid_client", "Unknown client_id");
       }
@@ -654,7 +664,10 @@ export function mountAsAuthorize(app: AppLike, ctx: MountAsAuthorizeContext): vo
         const state = typeof body.state === "string" ? body.state : null;
         validateAuthorizePkce({ codeChallenge, codeChallengeMethod, responseType });
 
-        const client = await ctx.getRegisteredClient(clientId);
+        const client = await ctx.getRegisteredClient(clientId, {
+          requestId: ctx.ensureRequestId(res),
+          traceId: null,
+        });
         if (!client) {
           return ctx.oauthError(res, 400, "invalid_client", "Unknown client_id");
         }

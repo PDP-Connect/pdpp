@@ -26,6 +26,7 @@ import {
   transaction,
 } from "../lib/db.ts";
 import { createTraceContext, emitSpineEvent as emitRawSpineEvent, type SpineEventInput } from "../lib/spine.ts";
+import type { CimdFetchDependencies, CimdTransportFailureEvent } from "./cimd.ts";
 import { listActiveBindingsForGrant, projectBindingForWire } from "./connection-identity.ts";
 import { canonicalConnectorKey, canonicalConnectorKeyFromManifest } from "./connector-key.ts";
 import {
@@ -60,6 +61,15 @@ interface TraceContext {
   request_id: string;
   scenario_id?: string;
   trace_id: string;
+}
+
+interface InitiateGrantOptions {
+  baseUrl?: string;
+  cimdFetchDependencies?: CimdFetchDependencies;
+  issuerBase?: string;
+  nativeManifest?: DbRow | null;
+  onCimdTransportFailure?: (event: CimdTransportFailureEvent) => void;
+  scenarioId?: string;
 }
 
 interface SourceBinding extends Record<string, unknown> {
@@ -3941,6 +3951,7 @@ function normalizeCimdRegisteredClient(value: unknown): RegisteredClient {
   };
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This protocol boundary retains its existing ordered local/self-hosted/external resolution branches; observability only forwards an optional sink.
 async function resolveCimdClientForGrant(
   clientId: string,
   opts: {
@@ -3950,6 +3961,8 @@ async function resolveCimdClientForGrant(
     request_id?: string | null;
     traceId?: string | null;
     trace_id?: string | null;
+    cimdFetchDependencies?: CimdFetchDependencies;
+    onCimdTransportFailure?: (event: CimdTransportFailureEvent) => void;
   } = {}
 ): Promise<RegisteredClient | null> {
   const { isCimdClientId, validateCimdUrl, fetchCimdDocument, buildCimdRegisteredClient } = await import("./cimd.ts");
@@ -3995,14 +4008,27 @@ async function resolveCimdClientForGrant(
 
   // External fetch with SSRF guards, timeout, size cap
   const { doc } = await fetchCimdDocument(clientId, {
+    ...opts.cimdFetchDependencies,
     onSecurityRelevantMetadataChange: (event) => revokeCimdClientAccessForSecurityMetadataChange(event, opts),
+    ...(opts.onCimdTransportFailure ? { onTransportFailure: opts.onCimdTransportFailure } : {}),
+    ...((opts.requestId ?? opts.request_id) === undefined ? {} : { requestId: opts.requestId ?? opts.request_id }),
+    ...((opts.traceId ?? opts.trace_id) === undefined ? {} : { traceId: opts.traceId ?? opts.trace_id }),
   });
   return normalizeCimdRegisteredClient(buildCimdRegisteredClient(clientId, doc));
 }
 
 export async function resolveOAuthClient(
   clientId: unknown,
-  opts: { issuerBase?: string; baseUrl?: string } = {}
+  opts: {
+    issuerBase?: string;
+    baseUrl?: string;
+    cimdFetchDependencies?: CimdFetchDependencies;
+    onCimdTransportFailure?: (event: CimdTransportFailureEvent) => void;
+    requestId?: string | null;
+    request_id?: string | null;
+    traceId?: string | null;
+    trace_id?: string | null;
+  } = {}
 ): Promise<RegisteredClient | null> {
   let registeredClient = await getRegisteredClient(clientId);
   if (registeredClient) {
@@ -4026,7 +4052,7 @@ function requiresStagedGrantBatch(input: Record<string, unknown>): boolean {
  */
 export async function initiateGrant(
   input: Record<string, unknown>,
-  opts: { scenarioId?: string; baseUrl?: string; nativeManifest?: DbRow | null; issuerBase?: string } = {}
+  opts: InitiateGrantOptions = {}
 ): Promise<Record<string, unknown>> {
   if (requiresStagedGrantBatch(input)) {
     return initiateStagedGrantBatch(input, opts);
@@ -4041,7 +4067,11 @@ export async function initiateGrant(
   const sourceBinding = getRequestSourceBinding(normalized);
 
   try {
-    const registeredClient = await resolveOAuthClient(normalized.client.client_id, opts);
+    const registeredClient = await resolveOAuthClient(normalized.client.client_id, {
+      ...opts,
+      requestId: traceContext.request_id,
+      traceId: traceContext.trace_id,
+    });
     if (!registeredClient) {
       const err: AuthError = new Error(`Unknown client_id: ${normalized.client.client_id}`);
       err.code = "invalid_client";
@@ -4140,7 +4170,7 @@ function asSingleEntryRequestSlice(batchRequest: StagedBatchRequest, entry: Batc
 
 async function initiateStagedGrantBatch(
   input: Record<string, unknown>,
-  opts: { scenarioId?: string; baseUrl?: string; nativeManifest?: DbRow | null; issuerBase?: string } = {}
+  opts: InitiateGrantOptions = {}
 ): Promise<Record<string, unknown>> {
   const batch = normalizeStagedGrantRequestBatch(input, opts);
   const traceContext = getRequestTraceContext(
@@ -4151,7 +4181,11 @@ async function initiateStagedGrantBatch(
   const firstSource = batch.entries[0]?.source_binding || null;
 
   try {
-    const registeredClient = await resolveOAuthClient(batch.client.client_id, opts);
+    const registeredClient = await resolveOAuthClient(batch.client.client_id, {
+      ...opts,
+      requestId: traceContext.request_id,
+      traceId: traceContext.trace_id,
+    });
     if (!registeredClient) {
       const err: AuthError = new Error(`Unknown client_id: ${batch.client.client_id}`);
       err.code = "invalid_client";

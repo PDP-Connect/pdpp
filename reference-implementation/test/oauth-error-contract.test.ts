@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import type { CimdTransportFailureEvent } from "../server/cimd.ts";
 import { startServer } from "../server/index.ts";
 
 interface CloseableServer {
@@ -93,6 +94,125 @@ test("OAuth device authorization errors include request ids", async () => {
     assert.equal(resp.status, 400);
     assert.equal(body.error, "invalid_request");
     assertOAuthErrorHasRequestId(resp, body);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("MCP device authorization emits one CIMD transport event without changing its OAuth error", async () => {
+  const events: CimdTransportFailureEvent[] = [];
+  const logger = {
+    child: () => logger,
+    debug: () => undefined,
+    error: () => undefined,
+    fatal: () => undefined,
+    info: () => undefined,
+    trace: () => undefined,
+    warn: (event: unknown) => {
+      if (
+        event &&
+        typeof event === "object" &&
+        (event as { event_type?: string }).event_type === "cimd.transport_failure"
+      ) {
+        events.push(event as CimdTransportFailureEvent);
+      }
+    },
+  };
+  const server = (await startServer({
+    asPort: 0,
+    cimdFetchDependencies: {
+      dnsLookupImpl: async () => [{ address: "93.184.216.34", family: 4 }],
+      fetchImpl: async () => Promise.reject(Object.assign(new TypeError("fetch failed"), { code: "UND_ERR_CONNECT" })),
+      isGlobalUnicastAddressImpl: () => true,
+    },
+    dbPath: ":memory:",
+    logger: logger as never,
+    quiet: true,
+    rsPort: 0,
+  })) as StartedServer;
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    const { resp, body } = await postForm(`${asUrl}/oauth/device_authorization`, {
+      authorization_details: JSON.stringify([
+        {
+          access_mode: "single_use",
+          purpose_code: "https://pdpp.org/purpose/personal_assistant",
+          source: { id: "connector-test", kind: "connector" },
+          streams: [{ name: "*" }],
+          type: "https://pdpp.org/data-access",
+        },
+      ]),
+      client_id: "https://client.example/oauth/client.json",
+      resource: `http://localhost:${server.rsPort}/mcp`,
+    });
+
+    assert.equal(resp.status, 400);
+    assert.equal(body.error, "cimd_fetch_failed");
+    assertOAuthErrorHasRequestId(resp, body);
+    assert.equal(events.length, 1);
+    assert.equal(events[0]?.event_type, "cimd.transport_failure");
+    assert.equal(events[0]?.request_id, body.request_id);
+    assert.equal(typeof events[0]?.trace_id, "string");
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("OAuth authorize transport event joins the route Request-Id without changing its OAuth error", async () => {
+  const events: CimdTransportFailureEvent[] = [];
+  const logger = {
+    child: () => logger,
+    debug: () => undefined,
+    error: () => undefined,
+    fatal: () => undefined,
+    info: () => undefined,
+    trace: () => undefined,
+    warn: (event: unknown) => {
+      if (
+        event &&
+        typeof event === "object" &&
+        (event as { event_type?: string }).event_type === "cimd.transport_failure"
+      ) {
+        events.push(event as CimdTransportFailureEvent);
+      }
+    },
+  };
+  const server = (await startServer({
+    asPort: 0,
+    cimdFetchDependencies: {
+      dnsLookupImpl: async () => [{ address: "93.184.216.34", family: 4 }],
+      fetchImpl: async () => Promise.reject(Object.assign(new TypeError("fetch failed"), { code: "UND_ERR_CONNECT" })),
+      isGlobalUnicastAddressImpl: () => true,
+    },
+    dbPath: ":memory:",
+    logger: logger as never,
+    ownerAuthPassword: "",
+    quiet: true,
+    rsPort: 0,
+  })) as StartedServer;
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    const query = new URLSearchParams({
+      client_id: "https://client.example/oauth/client.json",
+      code_challenge: "a".repeat(43),
+      code_challenge_method: "S256",
+      redirect_uri: "https://client.example/callback",
+      response_type: "code",
+    });
+    const resp = await fetch(`${asUrl}/oauth/authorize?${query}`, {
+      headers: { "Request-Id": "req_authorize_join" },
+    });
+    const body = (await resp.json()) as OAuthErrorBody;
+
+    assert.equal(resp.status, 400);
+    assert.equal(body.error, "cimd_fetch_failed");
+    assertOAuthErrorHasRequestId(resp, body);
+    assert.equal(body.request_id, "req_authorize_join");
+    assert.equal(events.length, 1);
+    assert.equal(events[0]?.request_id, body.request_id);
+    assert.equal(events[0]?.trace_id, null);
   } finally {
     await closeServer(server);
   }
