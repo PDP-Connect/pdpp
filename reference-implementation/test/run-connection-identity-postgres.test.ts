@@ -73,7 +73,7 @@ test("Postgres preserves new run identity and rejects an unbound writer", { skip
     );
     const timeline = await listSpineEventsPage("run", "run_historical_postgres", { limit: 10 });
     assert.equal(timeline.events.length, 1, "historical Postgres row remains visible through the public run timeline");
-    const projection = (await listSpineCorrelations("run", { limit: 10 })).summaries.find(
+    const projection = (await listSpineCorrelations("run", { limit: 10, q: "run_historical_postgres" })).summaries.find(
       (summary) => summary.run_id === "run_historical_postgres"
     );
     assert.ok(projection, "historical Postgres row remains visible through the public run projection");
