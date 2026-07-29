@@ -53,7 +53,7 @@
     "@huggingface/transformers": "^4.2.0",
     "@pdpp/mcp-server": "workspace:*",
     "@pdpp/reference-contract": "workspace:*",
-    "better-sqlite3": "^12.9.0",
+    "better-sqlite3": "^13.0.1",
     "express": "^5.2.1",
     "fastify": "^5.6.1",
     "ipaddr.js": "2.3.0",
