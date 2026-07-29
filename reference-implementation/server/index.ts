@@ -239,8 +239,8 @@ import {
   getConnectorSummaryForRoute,
   getOwnerConnectionDiagnostics,
   invalidateConnectorSummariesCache,
-  listConnectorSummaryPage,
   listConnectorSummaries,
+  listConnectorSummaryPage,
   listOwnerVisibleConnectorInstances,
   listPendingApprovals,
 } from "./ref-control.ts";
@@ -4763,7 +4763,7 @@ export function buildAsApp(opts: ServerOpts = {}) {
     listConnectorSummaries: () => listConnectorSummaries(controller, { includeRunSummaries: "singleton-active" }),
     listConnectorSummaryPage: (ownerSubjectId: string, page: { cursor: unknown; limit: number }) =>
       listConnectorSummaryPage(controller, {
-        after: page.cursor as Parameters<typeof listConnectorSummaryPage>[1]["after"],
+        after: (page.cursor as Parameters<typeof listConnectorSummaryPage>[1]["after"]) ?? null,
         includeRunSummaries: "singleton-active",
         limit: page.limit,
         ownerSubjectId,
@@ -7292,7 +7292,6 @@ function createReferenceSchedulerManager({
       return;
     }
     type RunManagedFn = import("../runtime/scheduler-domain-types.ts").RunManagedConnectorViaController;
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     const runManagedConnectorViaController: RunManagedFn | null = controller?.browserSurfaceLeaseManager
       ? // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This protocol transition owns ordered state invariants that must remain local.
         ((async (connectorId: string, opts: Parameters<RunManagedFn>[1]) => {
@@ -7547,7 +7546,6 @@ function createReferenceSchedulerManager({
       // failure deepening the back-off (the live wedge). Mirrors the predicate
       // controller.runNow uses to decide whether to acquire a managed surface.
       isManagedConnector: (connectorId) =>
-        // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
         Boolean(controller?.browserSurfaceLeaseManager?.isManagedConnector?.(connectorId)),
       isNeedsHuman: (connectorId, connectorInstanceId) =>
         (connectorInstanceId === null || connectorInstanceId === undefined
@@ -7578,7 +7576,7 @@ function createReferenceSchedulerManager({
           if (summary) {
             connectorDisplayName = summary.display_name || summary.connector_display_name || connectorId;
             connectionUrl = `/sources/${encodeURIComponent(summary.connection_id || routeId)}`;
-            renderedVerdict = summary.rendered_verdict ?? null;
+            renderedVerdict = summary.rendered_verdict;
           }
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);

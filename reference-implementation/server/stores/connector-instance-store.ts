@@ -35,6 +35,11 @@ interface ConnectorInstanceRow extends Record<string, unknown> {
   updated_at: string;
 }
 
+interface ActiveConnectorCountRow extends Record<string, unknown> {
+  active_count: number | string;
+  connector_id: string;
+}
+
 // Raw row shape for `controller_active_runs`, as selected by
 // `server/queries/controller/list-active-runs.sql`.
 interface ActiveRunRow {
@@ -864,6 +869,23 @@ export function createSqliteConnectorInstanceStore() {
       });
     },
 
+    // Page-scoped aggregate for the legacy connector-wide run fallback. This
+    // intentionally receives only connector ids occurring in one identity
+    // page: it must never enumerate the owner's connection inventory.
+    countActiveByOwnerConnectorIds(ownerSubjectId: string, connectorIds: readonly string[]): Map<string, number> {
+      const ids = [...new Set(connectorIds.filter((id) => id.length > 0))];
+      if (ids.length === 0) {
+        return new Map();
+      }
+      assertConnectorIdentityPageLimit(ids.length);
+      const { rows } = getMany<ActiveConnectorCountRow>(
+        referenceQueries.connectorInstancesCountActiveByOwnerConnectorIds,
+        [JSON.stringify(ids), ownerSubjectId],
+        { limit: ids.length }
+      );
+      return new Map(rows.map((row) => [row.connector_id, Number(row.active_count)]));
+    },
+
     // Connection-scoped destructive delete of ONE connection, keyed strictly on
     // connector_instance_id. Erases the connection's records/history/blobs/
     // attention/search, its schedule, clears its device source-instance
@@ -1130,32 +1152,6 @@ export function createSqliteConnectorInstanceStore() {
       ).rows.map(mapInstance);
     },
 
-    // REVIEWED-DYNAMIC: the reusable keyset boundary needs an optional
-    // three-column continuation tuple; the generic `getMany` cursor is
-    // intentionally limited to `(cursor_field, rowid)` and cannot represent
-    // this identity contract. SQL remains fixed and every value is bound.
-    listOwnerVisibleIdentityPage(
-      ownerSubjectId: string,
-      { after = null, limit }: { after?: ConnectorIdentityPageBoundary | null; limit: number }
-    ): ConnectorInstanceIdentityPage {
-      assertConnectorIdentityPageLimit(limit);
-      const rows = Array.from(
-        iterateDynamicSqlAcknowledged<ConnectorInstanceRow>(SQLITE_OWNER_VISIBLE_IDENTITY_PAGE_SQL, [
-          ownerSubjectId,
-          after?.connectorId ?? null,
-          after?.connectorId ?? null,
-          after?.connectorId ?? null,
-          after?.createdAt ?? null,
-          after?.connectorId ?? null,
-          after?.createdAt ?? null,
-          after?.connectorInstanceId ?? null,
-          limit + 1,
-        ])
-      );
-      const hasMore = rows.length > limit;
-      return { hasMore, rows: rows.slice(0, limit).map(mapInstance) };
-    },
-
     // Returns all browser-enrollment shells (any owner). Used by the TTL
     // retirement sweep to find shells whose enrollment_expires_at has passed.
     // Historical method/query name says "Draft", but active shell rows are
@@ -1171,6 +1167,35 @@ export function createSqliteConnectorInstanceStore() {
         return instances.filter((i) => i.ownerSubjectId === ownerSubjectId);
       }
       return instances;
+    },
+
+    // REVIEWED-DYNAMIC: the reusable keyset boundary needs an optional
+    // three-column continuation tuple; the generic `getMany` cursor is
+    // intentionally limited to `(cursor_field, rowid)` and cannot represent
+    // this identity contract. SQL remains fixed and every value is bound.
+    listOwnerVisibleIdentityPage(
+      ownerSubjectId: string,
+      { after = null, limit }: { after?: ConnectorIdentityPageBoundary | null; limit: number }
+    ): ConnectorInstanceIdentityPage {
+      assertConnectorIdentityPageLimit(limit);
+      const cursorConnectorId = after ? after.connectorId : null;
+      const cursorCreatedAt = after ? after.createdAt : null;
+      const cursorInstanceId = after ? after.connectorInstanceId : null;
+      const rows = Array.from(
+        iterateDynamicSqlAcknowledged<ConnectorInstanceRow>(SQLITE_OWNER_VISIBLE_IDENTITY_PAGE_SQL, [
+          ownerSubjectId,
+          cursorConnectorId,
+          cursorConnectorId,
+          cursorConnectorId,
+          cursorCreatedAt,
+          cursorConnectorId,
+          cursorCreatedAt,
+          cursorInstanceId,
+          limit + 1,
+        ])
+      );
+      const hasMore = rows.length > limit;
+      return { hasMore, rows: rows.slice(0, limit).map(mapInstance) };
     },
 
     resolveActiveByConnector(ownerSubjectId: string, connectorId: string): ConnectorInstance {
@@ -1389,6 +1414,33 @@ export function createPostgresConnectorInstanceStore() {
       return await this.get(connectorInstanceId);
     },
 
+    // Postgres peer of the SQLite page-scoped aggregate above. `unnest` is
+    // bounded by the one page's distinct connector ids; the result is bounded
+    // again by that same cardinality.
+    async countActiveByOwnerConnectorIds(
+      ownerSubjectId: string,
+      connectorIds: readonly string[]
+    ): Promise<Map<string, number>> {
+      const ids = [...new Set(connectorIds.filter((id) => id.length > 0))];
+      if (ids.length === 0) {
+        return new Map();
+      }
+      assertConnectorIdentityPageLimit(ids.length);
+      const result = await postgresQuery<ActiveConnectorCountRow>(
+        `SELECT ci.connector_id, COUNT(*)::integer AS active_count
+         FROM connector_instances AS ci
+         JOIN unnest($2::text[]) AS page_connector_ids(connector_id)
+           ON page_connector_ids.connector_id = ci.connector_id
+         WHERE ci.owner_subject_id = $1
+           AND ci.status = 'active'
+         GROUP BY ci.connector_id
+         ORDER BY ci.connector_id ASC
+         LIMIT $3`,
+        [ownerSubjectId, ids, ids.length]
+      );
+      return new Map(result.rows.map((row) => [row.connector_id, Number(row.active_count)]));
+    },
+
     // Postgres connection-scoped delete. Mirrors the SQLite arm exactly: resolve
     // + verify ownership, refuse active-run (I7) and default-account (I6/Decision
     // 1), enumerate streams, then erase the record-family rows AND the schedule +
@@ -1460,10 +1512,8 @@ export function createPostgresConnectorInstanceStore() {
           await client.query("DELETE FROM connector_instances WHERE connector_instance_id = $1", [connectorInstanceId]);
           return {
             deletedRecordCount: recordCount,
-            // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
-            deviceRefsCleared: device?.rowCount ?? 0,
-            // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
-            scheduleDeleted: (schedule?.rowCount ?? 0) > 0,
+            deviceRefsCleared: device.rowCount,
+            scheduleDeleted: Number(schedule.rowCount ?? 0) > 0,
           };
         }
       );
@@ -1479,7 +1529,7 @@ export function createPostgresConnectorInstanceStore() {
       return buildDeleteSummary(instance, {
         deletedRecordCount,
         deletedStreamCount: streams.length,
-        deviceRefsCleared,
+        deviceRefsCleared: Number(deviceRefsCleared ?? 0),
         scheduleDeleted,
       });
     },
@@ -1652,49 +1702,6 @@ export function createPostgresConnectorInstanceStore() {
       return (result.rows as ConnectorInstanceRow[]).map(mapInstance);
     },
 
-    async listOwnerVisibleIdentityPage(
-      ownerSubjectId: string,
-      { after = null, limit }: { after?: ConnectorIdentityPageBoundary | null; limit: number }
-    ): Promise<ConnectorInstanceIdentityPage> {
-      assertConnectorIdentityPageLimit(limit);
-      const result = await postgresQuery(
-        `SELECT connector_instance_id, owner_subject_id, connector_id, display_name, status,
-                source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
-         FROM connector_instances
-         WHERE owner_subject_id = $1
-           AND connector_id NOT LIKE '%manual_action_stub%'
-           AND connector_id NOT LIKE '%manual-action-stub%'
-           AND connector_id NOT LIKE '%stream-test-stub%'
-           AND connector_id NOT LIKE '%pg_runtime_%'
-           AND connector_id NOT LIKE '%pg_canonical_%'
-           AND connector_id NOT LIKE '%pg_expand_%'
-           AND connector_id NOT LIKE '%pg_lexical_backfill_%'
-           AND (status <> 'revoked' OR COALESCE(source_binding_json->>'kind', '') NOT IN ('browser_enrollment_shell', 'static_secret_draft', 'manual_upload_draft'))
-           AND (
-             $2::text IS NULL
-             OR connector_id > $3
-             OR (connector_id = $4 AND created_at > $5)
-             OR (connector_id = $6 AND created_at = $7 AND connector_instance_id > $8)
-           )
-         ORDER BY connector_id ASC, created_at ASC, connector_instance_id ASC
-         LIMIT $9`,
-        [
-          ownerSubjectId,
-          after?.connectorId ?? null,
-          after?.connectorId ?? null,
-          after?.connectorId ?? null,
-          after?.createdAt ?? null,
-          after?.connectorId ?? null,
-          after?.createdAt ?? null,
-          after?.connectorInstanceId ?? null,
-          limit + 1,
-        ]
-      );
-      const rows = result.rows as ConnectorInstanceRow[];
-      const hasMore = rows.length > limit;
-      return { hasMore, rows: rows.slice(0, limit).map(mapInstance) };
-    },
-
     // Returns all browser-enrollment shells (any owner, or filtered by
     // ownerSubjectId). Used by the TTL retirement sweep. Historical method
     // name says "Draft", but active shell rows are still incomplete until
@@ -1720,6 +1727,52 @@ export function createPostgresConnectorInstanceStore() {
              LIMIT 256`
           );
       return (result.rows as ConnectorInstanceRow[]).map(mapInstance);
+    },
+
+    async listOwnerVisibleIdentityPage(
+      ownerSubjectId: string,
+      { after = null, limit }: { after?: ConnectorIdentityPageBoundary | null; limit: number }
+    ): Promise<ConnectorInstanceIdentityPage> {
+      assertConnectorIdentityPageLimit(limit);
+      const cursorConnectorId = after ? after.connectorId : null;
+      const cursorCreatedAt = after ? after.createdAt : null;
+      const cursorInstanceId = after ? after.connectorInstanceId : null;
+      const result = await postgresQuery(
+        `SELECT connector_instance_id, owner_subject_id, connector_id, display_name, status,
+                source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
+         FROM connector_instances
+         WHERE owner_subject_id = $1
+           AND connector_id NOT LIKE '%manual_action_stub%'
+           AND connector_id NOT LIKE '%manual-action-stub%'
+           AND connector_id NOT LIKE '%stream-test-stub%'
+           AND connector_id NOT LIKE '%pg_runtime_%'
+           AND connector_id NOT LIKE '%pg_canonical_%'
+           AND connector_id NOT LIKE '%pg_expand_%'
+           AND connector_id NOT LIKE '%pg_lexical_backfill_%'
+           AND (status <> 'revoked' OR COALESCE(source_binding_json->>'kind', '') NOT IN ('browser_enrollment_shell', 'static_secret_draft', 'manual_upload_draft'))
+           AND (
+             $2::text IS NULL
+             OR connector_id > $3
+             OR (connector_id = $4 AND created_at > $5)
+             OR (connector_id = $6 AND created_at = $7 AND connector_instance_id > $8)
+           )
+         ORDER BY connector_id ASC, created_at ASC, connector_instance_id ASC
+         LIMIT $9`,
+        [
+          ownerSubjectId,
+          cursorConnectorId,
+          cursorConnectorId,
+          cursorConnectorId,
+          cursorCreatedAt,
+          cursorConnectorId,
+          cursorCreatedAt,
+          cursorInstanceId,
+          limit + 1,
+        ]
+      );
+      const rows = result.rows as ConnectorInstanceRow[];
+      const hasMore = rows.length > limit;
+      return { hasMore, rows: rows.slice(0, limit).map(mapInstance) };
     },
 
     async resolveActiveByConnector(ownerSubjectId: string, connectorId: string): Promise<ConnectorInstance> {

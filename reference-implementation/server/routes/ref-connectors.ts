@@ -32,13 +32,14 @@ import {
 } from "../../operations/ref-connectors-detail/index.ts";
 import {
   executeRefConnectorsList,
+  type RefConnectorsListItem,
   type RefConnectorsListPage,
   type RefConnectorsRuntimeStatus,
 } from "../../operations/ref-connectors-list/index.ts";
 import {
+  type ConnectorSummaryPageRequest,
   ConnectorSummaryPageRequestError,
   parseConnectorSummaryPageRequest,
-  type ConnectorSummaryPageRequest,
 } from "../../operations/ref-connectors-list/pagination.ts";
 import type { FleetHealthVerdict } from "../fleet-health.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
@@ -178,7 +179,9 @@ export interface MountRefConnectorsContext {
   listConnectorSummaryPage?: (
     ownerSubjectId: string,
     request: ConnectorSummaryPageRequest
-  ) => Promise<{ readonly data: readonly unknown[]; readonly has_more: boolean; readonly next_cursor: string | null }>;
+  ) =>
+    | Promise<{ readonly data: readonly unknown[]; readonly has_more: boolean; readonly next_cursor: string | null }>
+    | { readonly data: readonly unknown[]; readonly has_more: boolean; readonly next_cursor: string | null };
   listSchedules: () => Promise<ScheduleRow[]> | ScheduleRow[];
   // Marks the maintained connector-summary read-model evidence for exactly one
   // connection dirty after a cookie-authed `/_ref` mutation (run / schedule /
@@ -329,6 +332,32 @@ async function sendRefConnectionDetail(
 // response writing, and dependency wiring (the substrate read still lives
 // in `server/ref-control.ts`). Despite the historical route name, list items
 // are configured connection summaries, not addable catalog connectors.
+async function sendConnectionScopedConnectorSummary(
+  ctx: MountRefConnectorsContext,
+  req: RouteRequest,
+  res: RouteResponse
+): Promise<boolean> {
+  const connectionSelector = ctx.resolveSingleConnectorIdQueryValue(req.query.connection);
+  if (!connectionSelector) {
+    return false;
+  }
+  if (req.query.limit !== undefined || req.query.cursor !== undefined) {
+    throw new ConnectorSummaryPageRequestError(
+      req.query.limit === undefined ? "cursor" : "limit",
+      "limit and cursor are available only on the unscoped connector-summary list"
+    );
+  }
+  const envelope = await executeRefConnectorsList({
+    getRuntimeStatus: ctx.getRuntimeStatus,
+    listConnectorSummaries: async () => {
+      const summary = await ctx.getConnectorSummaryForRoute(connectionSelector);
+      return summary === null || summary === undefined ? [] : [summary as RefConnectorsListItem];
+    },
+  });
+  res.json(envelope);
+  return true;
+}
+
 export function mountRefConnectorsList(app: AppLike, ctx: MountRefConnectorsContext): void {
   app.get(
     "/_ref/connectors",
@@ -350,36 +379,22 @@ export function mountRefConnectorsList(app: AppLike, ctx: MountRefConnectorsCont
         // configured connection exactly as before. The scoped read goes through
         // the same per-connection projection (`ref-control.ts`), so a
         // single-connection summary cannot diverge from its entry in the list.
-        const connectionSelector = ctx.resolveSingleConnectorIdQueryValue(req.query.connection);
-        if (connectionSelector) {
-          if (req.query.limit !== undefined || req.query.cursor !== undefined) {
-            throw new ConnectorSummaryPageRequestError(
-              req.query.limit !== undefined ? "limit" : "cursor",
-              "limit and cursor are available only on the unscoped connector-summary list"
-            );
-          }
-          const envelope = await executeRefConnectorsList({
-            getRuntimeStatus: ctx.getRuntimeStatus,
-            listConnectorSummaries: async () => {
-              const summary = await ctx.getConnectorSummaryForRoute(connectionSelector);
-              return summary === null || summary === undefined ? [] : [summary];
-            },
-          });
-          res.json(envelope);
+        if (await sendConnectionScopedConnectorSummary(ctx, req, res)) {
           return;
         }
         const hasPaginationParameter = req.query.limit !== undefined || req.query.cursor !== undefined;
         const ownerSubjectId = hasPaginationParameter ? ctx.getOwnerSubjectId(req) : null;
         const pageRequest = ownerSubjectId ? parseConnectorSummaryPageRequest(req.query, ownerSubjectId) : null;
         if (pageRequest && ownerSubjectId) {
-          if (!ctx.listConnectorSummaryPage) {
+          const { listConnectorSummaryPage } = ctx;
+          if (!listConnectorSummaryPage) {
             throw new Error("Connector summary page capability is not configured.");
           }
           const envelope = await executeRefConnectorsList({
             getRuntimeStatus: ctx.getRuntimeStatus,
             listConnectorSummaries: () => [],
             listConnectorSummariesPage: () =>
-              ctx.listConnectorSummaryPage!(ownerSubjectId, pageRequest) as unknown as RefConnectorsListPage,
+              listConnectorSummaryPage(ownerSubjectId, pageRequest) as unknown as RefConnectorsListPage,
           });
           res.json(envelope);
           return;

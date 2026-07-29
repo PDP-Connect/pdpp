@@ -17,19 +17,31 @@ const boundary = {
   connectorInstanceId: "conn_work",
   createdAt: "2026-07-29T12:00:00.000Z",
 };
+const cursorKey = process.env.PDPP_CREDENTIAL_ENCRYPTION_KEY ?? "test connector-summary cursor key";
+const CURSOR_PREFIX_PATTERN = /^rcs1\./;
+const CURSOR_SECRET_PATTERN = /github|conn_work|owner_a/;
+process.env.PDPP_CREDENTIAL_ENCRYPTION_KEY ??= cursorKey;
 
 test("connector summary cursor is versioned, opaque, and owner-scope bound", () => {
-  const cursor = encodeConnectorSummaryPageCursor(boundary, "owner_a");
-  assert.match(cursor, /^rcs1\./);
-  assert.doesNotMatch(cursor, /github|conn_work|owner_a/);
-  assert.deepEqual(decodeConnectorSummaryPageCursor(cursor, "owner_a"), boundary);
-  assert.throws(() => decodeConnectorSummaryPageCursor(cursor, "owner_b"), ConnectorSummaryPageCursorError);
+  const cursor = encodeConnectorSummaryPageCursor(boundary, "owner_a", cursorKey);
+  assert.match(cursor, CURSOR_PREFIX_PATTERN);
+  assert.doesNotMatch(cursor, CURSOR_SECRET_PATTERN);
+  assert.deepEqual(decodeConnectorSummaryPageCursor(cursor, "owner_a", cursorKey), boundary);
+  assert.throws(() => decodeConnectorSummaryPageCursor(cursor, "owner_b", cursorKey), ConnectorSummaryPageCursorError);
   assert.throws(
-    () => decodeConnectorSummaryPageCursor(`${cursor.slice(0, -1)}${cursor.endsWith("A") ? "B" : "A"}`, "owner_a"),
+    () =>
+      decodeConnectorSummaryPageCursor(
+        `${cursor.slice(0, -1)}${cursor.endsWith("A") ? "B" : "A"}`,
+        "owner_a",
+        cursorKey
+      ),
     ConnectorSummaryPageCursorError
   );
-  assert.throws(() => decodeConnectorSummaryPageCursor("bad", "owner_a"), ConnectorSummaryPageCursorError);
-  assert.throws(() => decodeConnectorSummaryPageCursor("rcs1.e30", "owner_a"), ConnectorSummaryPageCursorError);
+  assert.throws(() => decodeConnectorSummaryPageCursor("bad", "owner_a", cursorKey), ConnectorSummaryPageCursorError);
+  assert.throws(
+    () => decodeConnectorSummaryPageCursor("rcs1.e30", "owner_a", cursorKey),
+    ConnectorSummaryPageCursorError
+  );
 });
 
 test("connector summary page request requires an explicit bounded limit", () => {
@@ -44,7 +56,8 @@ test("connector summary page request requires an explicit bounded limit", () => 
 });
 
 test("connector summary page request decodes the issued continuation", () => {
-  const cursor = encodeConnectorSummaryPageCursor(boundary, "owner_a");
+  const cursor = encodeConnectorSummaryPageCursor(boundary, "owner_a", cursorKey);
+  assert.deepEqual(decodeConnectorSummaryPageCursor(cursor, "owner_a", cursorKey), boundary);
   assert.deepEqual(parseConnectorSummaryPageRequest({ cursor, limit: "7" }, "owner_a"), {
     cursor: boundary,
     limit: 7,

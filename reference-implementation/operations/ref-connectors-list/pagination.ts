@@ -9,16 +9,16 @@
  */
 
 import { createCipheriv, createDecipheriv, createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { resolveCredentialEncryptionKey } from "../../server/stores/credential-encryption.ts";
 
 export const CONNECTOR_SUMMARY_PAGE_LIMIT_MAX = 100;
 const CONNECTOR_SUMMARY_CURSOR_VERSION = 1;
 const CONNECTOR_SUMMARY_CURSOR_PREFIX = "rcs1.";
 const CURSOR_IV_BYTES = 12;
 const CURSOR_TAG_BYTES = 16;
-// The cursor is intentionally only process-resumable. It represents a
-// keyset boundary, not a durable snapshot; a restart invalidates it rather
-// than accepting a token whose confidentiality/integrity cannot be proved.
-const cursorEncryptionKey = randomBytes(32);
+const CURSOR_KEY_DOMAIN = "pdpp.ref-connectors-page.cursor.v1";
+const BASE64URL = /^[A-Za-z0-9_-]+$/;
+const POSITIVE_INTEGER = /^[1-9][0-9]*$/;
 
 export interface ConnectorIdentityPageBoundary {
   readonly connectorId: string;
@@ -46,14 +46,36 @@ export class ConnectorSummaryPageCursorError extends Error {
   readonly code = "invalid_cursor";
   readonly param = "cursor";
 
-  constructor(message = "Connector summary cursor is invalid") {
-    super(message);
+  constructor(message = "Connector summary cursor is invalid", options?: ErrorOptions) {
+    super(message, options);
     this.name = "ConnectorSummaryPageCursorError";
   }
 }
 
 function scopeDigest(ownerSubjectId: string): Buffer {
   return createHash("sha256").update(`pdpp-ref-connectors-page-v1:${ownerSubjectId}`).digest();
+}
+
+function cursorEncryptionKey(keyMaterial?: string): Buffer {
+  const configured = keyMaterial ?? resolveCredentialEncryptionKey();
+  if (!configured) {
+    throw new ConnectorSummaryPageCursorError("Connector summary cursor key is not configured");
+  }
+  // Credential storage and pagination deliberately share the operator's key
+  // provider, but never cipher bytes. Domain separation makes a compromise of
+  // one protocol artifact unusable as the other.
+  return createHash("sha256").update(`${CURSOR_KEY_DOMAIN}\n${configured}`).digest();
+}
+
+function decodeCanonicalBase64Url(value: unknown): Buffer {
+  if (typeof value !== "string" || value.length === 0 || !BASE64URL.test(value)) {
+    throw new ConnectorSummaryPageCursorError();
+  }
+  const decoded = Buffer.from(value, "base64url");
+  if (decoded.length === 0 || decoded.toString("base64url") !== value) {
+    throw new ConnectorSummaryPageCursorError();
+  }
+  return decoded;
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -69,13 +91,13 @@ export function parseConnectorSummaryPageRequest(
   const rawCursor = query.cursor;
   const hasLimit = rawLimit !== undefined;
   const hasCursor = rawCursor !== undefined;
-  if (!hasLimit && !hasCursor) {
+  if (!(hasLimit || hasCursor)) {
     return null;
   }
   if (!hasLimit) {
     throw new ConnectorSummaryPageRequestError("limit", "limit is required when cursor is supplied");
   }
-  if (typeof rawLimit !== "string" || !/^[1-9][0-9]*$/.test(rawLimit)) {
+  if (typeof rawLimit !== "string" || !POSITIVE_INTEGER.test(rawLimit)) {
     throw new ConnectorSummaryPageRequestError("limit", "limit must be a positive integer");
   }
   const limit = Number(rawLimit);
@@ -97,17 +119,20 @@ export function parseConnectorSummaryPageRequest(
 /** Encode an opaque, versioned continuation for one owner and identity tuple. */
 export function encodeConnectorSummaryPageCursor(
   boundary: ConnectorIdentityPageBoundary,
-  ownerSubjectId: string
+  ownerSubjectId: string,
+  keyMaterial?: string
 ): string {
-  const payload = Buffer.from(JSON.stringify({
-    c: boundary.connectorId,
-    i: boundary.connectorInstanceId,
-    s: scopeDigest(ownerSubjectId).toString("base64url"),
-    t: boundary.createdAt,
-    v: CONNECTOR_SUMMARY_CURSOR_VERSION,
-  }));
+  const payload = Buffer.from(
+    JSON.stringify({
+      c: boundary.connectorId,
+      i: boundary.connectorInstanceId,
+      s: scopeDigest(ownerSubjectId).toString("base64url"),
+      t: boundary.createdAt,
+      v: CONNECTOR_SUMMARY_CURSOR_VERSION,
+    })
+  );
   const iv = randomBytes(CURSOR_IV_BYTES);
-  const cipher = createCipheriv("aes-256-gcm", cursorEncryptionKey, iv);
+  const cipher = createCipheriv("aes-256-gcm", cursorEncryptionKey(keyMaterial), iv);
   const ciphertext = Buffer.concat([cipher.update(payload), cipher.final()]);
   return `${CONNECTOR_SUMMARY_CURSOR_PREFIX}${Buffer.concat([iv, cipher.getAuthTag(), ciphertext]).toString("base64url")}`;
 }
@@ -115,25 +140,26 @@ export function encodeConnectorSummaryPageCursor(
 /** Decode and scope-check a connector-summary continuation without logging it. */
 export function decodeConnectorSummaryPageCursor(
   cursor: string,
-  ownerSubjectId: string
+  ownerSubjectId: string,
+  keyMaterial?: string
 ): ConnectorIdentityPageBoundary {
   if (!cursor.startsWith(CONNECTOR_SUMMARY_CURSOR_PREFIX)) {
     throw new ConnectorSummaryPageCursorError();
   }
   let parsed: unknown;
   try {
-    const encoded = Buffer.from(cursor.slice(CONNECTOR_SUMMARY_CURSOR_PREFIX.length), "base64url");
+    const encoded = decodeCanonicalBase64Url(cursor.slice(CONNECTOR_SUMMARY_CURSOR_PREFIX.length));
     if (encoded.length <= CURSOR_IV_BYTES + CURSOR_TAG_BYTES) {
       throw new Error("short cursor");
     }
     const iv = encoded.subarray(0, CURSOR_IV_BYTES);
     const tag = encoded.subarray(CURSOR_IV_BYTES, CURSOR_IV_BYTES + CURSOR_TAG_BYTES);
     const ciphertext = encoded.subarray(CURSOR_IV_BYTES + CURSOR_TAG_BYTES);
-    const decipher = createDecipheriv("aes-256-gcm", cursorEncryptionKey, iv);
+    const decipher = createDecipheriv("aes-256-gcm", cursorEncryptionKey(keyMaterial), iv);
     decipher.setAuthTag(tag);
     parsed = JSON.parse(Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8"));
-  } catch {
-    throw new ConnectorSummaryPageCursorError();
+  } catch (cause) {
+    throw new ConnectorSummaryPageCursorError(undefined, { cause });
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new ConnectorSummaryPageCursorError();
@@ -150,9 +176,9 @@ export function decodeConnectorSummaryPageCursor(
   }
   let suppliedScope: Buffer;
   try {
-    suppliedScope = Buffer.from(payload.s, "base64url");
-  } catch {
-    throw new ConnectorSummaryPageCursorError();
+    suppliedScope = decodeCanonicalBase64Url(payload.s);
+  } catch (cause) {
+    throw new ConnectorSummaryPageCursorError(undefined, { cause });
   }
   const expectedScope = scopeDigest(ownerSubjectId);
   if (suppliedScope.length !== expectedScope.length || !timingSafeEqual(suppliedScope, expectedScope)) {

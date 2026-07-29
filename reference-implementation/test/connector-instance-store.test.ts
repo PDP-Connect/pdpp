@@ -174,6 +174,10 @@ interface ConformanceStoreLike {
     connectorInstanceId: string,
     args: { now?: string }
   ) => (ConnectorInstanceLike | null) | Promise<ConnectorInstanceLike | null>;
+  countActiveByOwnerConnectorIds: (
+    ownerSubjectId: string,
+    connectorIds: readonly string[]
+  ) => Map<string, number> | Promise<Map<string, number>>;
   deleteConnection: (
     connectorInstanceId: string,
     args: { ownerSubjectId: string; now: string; purge: ConnectorInstanceDeletePurgeLike }
@@ -342,13 +346,41 @@ async function runConformance({
     },
     limit: 1,
   });
-  assert.deepEqual(duplicateConnectorSecondPage.rows.map((row) => row.connectorInstanceId), ["cin_gmail_work"]);
+  assert.deepEqual(
+    duplicateConnectorSecondPage.rows.map((row) => row.connectorInstanceId),
+    ["cin_gmail_work"]
+  );
   assert.equal(duplicateConnectorSecondPage.hasMore, false, "last page has no continuation");
   const emptyIdentityPage = await driver.call("listOwnerVisibleIdentityPage", "owner_empty", { limit: 1 });
   assert.deepEqual(emptyIdentityPage.rows, [], "empty owner has an empty identity page");
   assert.equal(emptyIdentityPage.hasMore, false);
   await assert.rejects(() => driver.call("listOwnerVisibleIdentityPage", "owner_2", { limit: 0 }), RangeError);
   await assert.rejects(() => driver.call("listOwnerVisibleIdentityPage", "owner_2", { limit: 101 }), RangeError);
+  const ownerTwoReddit = await driver.call("upsert", {
+    connectorId: "reddit",
+    connectorInstanceId: "cin_reddit_owner_two",
+    createdAt: NOW,
+    displayName: "Reddit",
+    ownerSubjectId: "owner_2",
+    sourceBinding: { account_hint: "owner-two@example.test" },
+    sourceBindingKey: "acct_owner_two",
+    sourceKind: "account",
+    updatedAt: NOW,
+  });
+  assert.ok(ownerTwoReddit, "upsert must return the other active connector");
+  assert.deepEqual(
+    [...(await driver.call("countActiveByOwnerConnectorIds", "owner_2", ["gmail"]))],
+    [["gmail", 2]],
+    "the page aggregate returns only requested connector ids, not the owner's full active inventory"
+  );
+  assert.deepEqual(
+    [...(await driver.call("countActiveByOwnerConnectorIds", "owner_2", ["gmail", "reddit"]))],
+    [
+      ["gmail", 2],
+      ["reddit", 1],
+    ],
+    "the aggregate preserves exact active sibling cardinality for each page connector"
+  );
   const workByBinding = await driver.call("getByBinding", {
     connectorId: "gmail",
     ownerSubjectId: "owner_2",

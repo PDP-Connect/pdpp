@@ -238,6 +238,7 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly connectorInstanceCredentialsGetByInstance: ReadOneQuery;
   readonly connectorInstanceCredentialsRevokeByInstance: MutationQuery;
   readonly connectorInstanceCredentialsUpsert: MutationQuery;
+  readonly connectorInstancesCountActiveByOwnerConnectorIds: ReadManyQuery;
   readonly connectorInstancesDeleteById: MutationQuery;
   readonly connectorInstancesDeleteManifestWriteViolationsByConnectorInstance: MutationQuery;
   readonly connectorInstancesDeleteSummaryEvidenceByConnectorInstance: MutationQuery;

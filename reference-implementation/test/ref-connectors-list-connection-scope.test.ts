@@ -40,6 +40,9 @@ import {
   ConnectorSummaryPageRequestError,
   encodeConnectorSummaryPageCursor,
 } from "../operations/ref-connectors-list/pagination.ts";
+
+process.env.PDPP_CREDENTIAL_ENCRYPTION_KEY ??= "test connector-summary cursor key";
+
 import type { MiddlewareHandler } from "../server/routes/_route-contract.ts";
 import { type MountRefConnectorsContext, mountRefConnectorsList } from "../server/routes/ref-connectors.ts";
 
@@ -89,7 +92,11 @@ function buildHarness({
 }: {
   allConnections: readonly RefConnectorsListItem[];
   page?:
-    | { readonly data: readonly RefConnectorsListItem[]; readonly has_more: boolean; readonly next_cursor: string | null }
+    | {
+        readonly data: readonly RefConnectorsListItem[];
+        readonly has_more: boolean;
+        readonly next_cursor: string | null;
+      }
     | ((request: { readonly cursor: unknown; readonly limit: number }) => {
         readonly data: readonly RefConnectorsListItem[];
         readonly has_more: boolean;
@@ -328,7 +335,7 @@ test("explicit unscoped limit uses the bounded page capability and emits continu
   const all = [summaryItem("gmail", "conn-work"), summaryItem("github", "conn-gh")];
   const harness = buildHarness({
     allConnections: all,
-    page: { data: [all[0]!], has_more: true, next_cursor: "rcs1.next" },
+    page: { data: all.slice(0, 1), has_more: true, next_cursor: "rcs1.next" },
     summaryForRoute: () => assert.fail("unscoped page must not resolve a single connection"),
   });
 
@@ -336,7 +343,10 @@ test("explicit unscoped limit uses the bounded page capability and emits continu
 
   assert.equal(harness.calls.listConnectorSummaries, 0);
   assert.equal(harness.calls.listConnectorSummaryPage, 1);
-  assert.deepEqual(envelope.data.map((item) => item.connection_id), ["conn-work"]);
+  assert.deepEqual(
+    envelope.data.map((item) => item.connection_id),
+    ["conn-work"]
+  );
   assert.equal(envelope.has_more, true);
   assert.equal(envelope.next_cursor, "rcs1.next");
 });
@@ -351,7 +361,7 @@ test("explicit cursor forwards the decoded immutable boundary to the next page",
         connectorInstanceId: "conn-work",
         createdAt: "2026-07-29T12:00:00.000Z",
       });
-      return { data: [all[1]!], has_more: false, next_cursor: null };
+      return { data: all.slice(1, 2), has_more: false, next_cursor: null };
     },
     summaryForRoute: () => assert.fail("unscoped page must not resolve a single connection"),
   });
@@ -363,7 +373,10 @@ test("explicit cursor forwards the decoded immutable boundary to the next page",
     "owner_test"
   );
   const envelope = await harness.invoke({ cursor, limit: "1" });
-  assert.deepEqual(envelope.data.map((item) => item.connection_id), ["conn-gh"]);
+  assert.deepEqual(
+    envelope.data.map((item) => item.connection_id),
+    ["conn-gh"]
+  );
   assert.equal(envelope.has_more, false);
 });
 
@@ -375,7 +388,8 @@ test("scoped connection requests remain unpaginated", async () => {
   });
   await assert.rejects(
     () => harness.invoke({ connection: "conn-work", limit: "1" }),
-    (error) => error instanceof ConnectorSummaryPageRequestError && error.code === "invalid_request" && error.param === "limit"
+    (error) =>
+      error instanceof ConnectorSummaryPageRequestError && error.code === "invalid_request" && error.param === "limit"
   );
   assert.equal(harness.calls.getConnectorSummaryForRoute.length, 0);
 });
