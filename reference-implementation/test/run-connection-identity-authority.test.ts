@@ -9,17 +9,13 @@ import { emitSpineEvent, listSpineCorrelations, listSpineEventsPage } from "../l
 import { closeDb, initDb } from "../server/db.ts";
 import { makeTemporaryDbPath } from "./helpers/temp-dir.ts";
 
-const RUN_WRITERS = [
+const RUN_START_WRITERS = [
   { eventType: "run.started", name: "manual", stamp: { boot_epoch: "boot-manual", seq: 1 } },
   { eventType: "run.started", name: "scheduler", stamp: { boot_epoch: "boot-scheduler", seq: 1 } },
-  { eventType: "run.cancel_requested", name: "direct-runtime-cancellation", stamp: {} },
-  { eventType: "run.browser_surface_leased", name: "browser-surface", stamp: {} },
-  { eventType: "run.completed", name: "local-device", stamp: {} },
-  { eventType: "run.failed", name: "recovery", stamp: {} },
 ] as const;
-const RE_UNBOUND_RUN_WRITER = /new run\.\* events require data\.connector_instance_id/;
+const RE_UNBOUND_RUN_START_WRITER = /new run\.started events require data\.connector_instance_id/;
 
-function eventFor(writer: (typeof RUN_WRITERS)[number], connectorInstanceId?: string) {
+function eventFor(writer: (typeof RUN_START_WRITERS)[number], connectorInstanceId?: string) {
   return {
     actor_id: "test_connector",
     actor_type: "runtime",
@@ -38,25 +34,42 @@ function eventFor(writer: (typeof RUN_WRITERS)[number], connectorInstanceId?: st
   };
 }
 
-test("run identity authority rejects every named new-run writer without an immutable connector instance", async () => {
+test("run identity authority rejects every named run starter without an immutable connector instance", async () => {
   const dbPath = makeTemporaryDbPath("pdpp-run-identity-authority-");
   initDb(dbPath);
   try {
-    for (const writer of RUN_WRITERS) {
+    for (const writer of RUN_START_WRITERS) {
       // biome-ignore lint/performance/noAwaitInLoops: Each writer must prove its own failed-closed boundary.
       await assert.rejects(
         () => emitSpineEvent(eventFor(writer)),
-        RE_UNBOUND_RUN_WRITER,
-        `${writer.name} must not create an unbound run event`
+        RE_UNBOUND_RUN_START_WRITER,
+        `${writer.name} must not create an unbound run`
       );
     }
 
-    for (const writer of RUN_WRITERS) {
+    for (const writer of RUN_START_WRITERS) {
       const connectorInstanceId = `cin_${writer.name.replaceAll("-", "_")}`;
       // biome-ignore lint/performance/noAwaitInLoops: Each writer must prove its own persisted identity.
       const event = await emitSpineEvent(eventFor(writer, connectorInstanceId));
       assert.ok(event, `${writer.name} event must persist once explicitly bound`);
     }
+  } finally {
+    closeDb();
+  }
+});
+
+test("non-start run events remain compatible when they have no connection identity", async () => {
+  const dbPath = makeTemporaryDbPath("pdpp-run-identity-non-start-");
+  initDb(dbPath);
+  try {
+    const event = await emitSpineEvent({
+      event_type: "run.stream_session_resolved",
+      object_id: "stream_session_legacy",
+      object_type: "stream_session",
+      run_id: "run_legacy_stream_session",
+      status: "completed",
+    });
+    assert.equal(event?.event_type, "run.stream_session_resolved");
   } finally {
     closeDb();
   }

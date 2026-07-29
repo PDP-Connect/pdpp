@@ -178,6 +178,7 @@ async function emitStarted(
     actor_type: "runtime",
     data: {
       boot_epoch: "boot_1",
+      connector_instance_id: "cin_run_status_test",
       controller_id: "ctrl_test",
       seq: 1,
       source: { id: CONNECTOR_ID, kind: "connector" },

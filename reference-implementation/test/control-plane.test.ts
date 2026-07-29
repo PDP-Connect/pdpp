@@ -190,6 +190,13 @@ async function withHarness(fn: (ctx: HarnessContext) => Promise<void>): Promise<
       method: "POST",
     });
     assert.equal(registerResp.status, 201);
+    const connectorId = canonicalManifestConnectorId(spotifyManifest);
+    createSqliteConnectorInstanceStore().ensureDefaultAccountConnection({
+      connectorId,
+      displayName: connectorId,
+      now: "2026-04-24T00:00:00.000Z",
+      ownerSubjectId: "owner_local",
+    });
     await fn({ asUrl, rsUrl, spotifyManifest });
   } finally {
     await closeServer(server);
@@ -534,7 +541,7 @@ test("_ref listing helpers", async (t) => {
 
       await emitSpineEvent({
         ...base,
-        data: { source, ...runStartedStamp },
+        data: { connector_instance_id: instance.connectorInstanceId, source, ...runStartedStamp },
         event_type: "run.started",
         object_id: "run_pending_input",
         occurred_at: "2026-04-24T00:00:00.000Z",
@@ -553,7 +560,7 @@ test("_ref listing helpers", async (t) => {
       });
       await emitSpineEvent({
         ...base,
-        data: { source, ...runStartedStamp },
+        data: { connector_instance_id: instance.connectorInstanceId, source, ...runStartedStamp },
         event_type: "run.started",
         object_id: "run_terminal_stale_input",
         occurred_at: "2026-04-24T00:01:00.000Z",
@@ -581,7 +588,7 @@ test("_ref listing helpers", async (t) => {
       });
       await emitSpineEvent({
         ...base,
-        data: { source, ...runStartedStamp },
+        data: { connector_instance_id: secondInstance.connectorInstanceId, source, ...runStartedStamp },
         event_type: "run.started",
         object_id: "run_second_input",
         occurred_at: "2026-04-24T00:02:00.000Z",

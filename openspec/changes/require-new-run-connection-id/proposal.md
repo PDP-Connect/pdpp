@@ -4,9 +4,9 @@ New run timeline rows can be persisted without a connector-instance identity. Th
 
 ## What Changes
 
-- Require every newly persisted `run.*` spine event to carry the immutable `connector_instance_id` for the configured connection.
+- Require every newly persisted `run.started` spine event to carry the immutable `connector_instance_id` for the configured connection.
 - Keep historical unbound spine rows readable as explicitly unknown; do not infer or backfill their identity.
-- Cover scheduler, manual, browser-surface, local-device, recovery, and future typed run writers with the shared persistence guard.
+- Cover scheduler, manual, and future typed run starters with the shared persistence guard; later lifecycle and sub-resource facts remain compatible with historical unknown identity.
 
 ## Impact
 

@@ -1,6 +1,6 @@
 ## Decision
 
-`emitSpineEvent` is the shared typed run-timeline write boundary. Before either SQLite or PostgreSQL persistence, it rejects a new `run.*` event whose payload lacks a non-empty `connector_instance_id`. The guard does not derive identity from connector type, a browser profile, event history, or a timeline.
+`emitSpineEvent` is the shared typed run-creation boundary. Before either SQLite or PostgreSQL persistence, it rejects a new `run.started` event whose payload lacks a non-empty `connector_instance_id`. The guard does not derive identity from connector type, a browser profile, event history, or a timeline. Later lifecycle and sub-resource facts remain compatible with historical rows that have unknown identity.
 
 The `spine_events.connector_instance_id` column remains nullable. Existing rows remain readable with `null`, which is the explicit unknown state. No migration updates historical rows and no database `NOT NULL` constraint is added.
 

@@ -259,6 +259,7 @@ async function emitSyntheticRun({
     actor_id: connectorId,
     actor_type: "runtime",
     data: {
+      connector_instance_id: `cin_synthetic_${connectorId}`,
       scope: { streams: [{ name: "top_artists" }] },
       scope_streams: ["top_artists"],
       source: { id: connectorId, kind: "connector" },

@@ -363,6 +363,7 @@ async function emitStartedRunEvent(
     actor_type: "runtime",
     data: {
       boot_epoch: "11111111-1111-4111-8111-111111111111",
+      connector_instance_id: `cin_${connectorId}`,
       seq: 1,
       source: { id: connectorId, kind: "connector" },
     },
