@@ -60,6 +60,7 @@ export const POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS: readonly string[] = [
   "Postgres WebPushSubscriptionStore conforms when PDPP_TEST_POSTGRES_URL is set",
   "Postgres bootstrap widens a legacy connector_instances status CHECK to draft",
   "Postgres browser generation hash upsert preserves same-container state and clears on container replacement",
+  "Postgres clears stale profile provenance on a profile-key change and accepts an explicit replacement",
   "Postgres connector-summary evidence reaches the same rebuild/dirty/reconcile shape",
   "Postgres ground-truth streams + for-keys produce the same shaped facts as SQLite",
   "Postgres introspection fails closed on an unexpected manifest-storage fault",
