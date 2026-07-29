@@ -132,7 +132,9 @@ import {
   markConnectorSummaryEvidenceDirty,
   reconcileDirtyConnectorSummaryEvidence,
   runBoundedSummaryEvidenceSweep,
+  setConnectorSummaryReconcileObservationSink,
 } from "./connector-summary-read-model.ts";
+import { createConnectorSummaryReconcileObservationSink } from "./connector-summary-reconcile-observability.ts";
 import {
   applyDatasetSummaryBlobDelta,
   getDatasetSummaryProjection,
@@ -6150,6 +6152,7 @@ function buildRsApp(opts: ServerOpts = {}) {
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This protocol transition owns ordered state invariants that must remain local.
 export async function startServer(opts: ServerOpts = {}) {
   const logger = opts.logger ?? buildLogger({ quiet: !!opts.quiet });
+  setConnectorSummaryReconcileObservationSink(createConnectorSummaryReconcileObservationSink(logger));
   const nativeConfig = validateNativeConfiguration(opts);
   const storageBackend = (resolveStorageBackend as (...args: unknown[]) => { backend: string; databaseUrl?: string })({
     opts,

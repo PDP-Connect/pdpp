@@ -1451,6 +1451,11 @@ function terminalFactsForRepair(existing: Row | undefined, row: Row, manifestGen
 // ---------------------------------------------------------------------------
 
 export interface ReconcileResult {
+  /** Safe, finite classification labels and their candidate counts. */
+  readonly candidateReasonCounts: Readonly<Record<RepairCandidateReason, number>>;
+  /** Number of canonical connection rows inspected during discovery. */
+  readonly candidatesInspected: number;
+  /** Candidates whose repair attempted but failed. */
   readonly discovered: number;
   readonly failed: number;
   /**
@@ -1516,6 +1521,10 @@ export async function reconcileConnectorSummaryEvidence(
   const { instanceRows, candidates } = await discoverCandidates(connectorInstanceIds);
 
   const candidateEntries = [...candidates];
+  const candidateReasonCounts = {} as Record<RepairCandidateReason, number>;
+  for (const [, reason] of candidateEntries) {
+    candidateReasonCounts[reason] = (candidateReasonCounts[reason] ?? 0) + 1;
+  }
   const countBounded = typeof options.maxCandidates === "number" && options.maxCandidates >= 0;
   const timeBounded = typeof options.maxDurationMs === "number" && options.maxDurationMs >= 0;
   const countLimited = countBounded ? candidateEntries.slice(0, options.maxCandidates) : candidateEntries;
@@ -1553,7 +1562,15 @@ export async function reconcileConnectorSummaryEvidence(
       ? await pruneOrphanedEvidenceComplete(instanceRows)
       : await pruneOrphanedEvidenceScoped(connectorInstanceIds, instanceRows);
 
-  return { discovered: instanceRows.length, failed, failedRows, repaired: repaired + dropped, skipped };
+  return {
+    candidateReasonCounts,
+    candidatesInspected: instanceRows.length,
+    discovered: instanceRows.length,
+    failed,
+    failedRows,
+    repaired: repaired + dropped,
+    skipped,
+  };
 }
 
 // ---------------------------------------------------------------------------
