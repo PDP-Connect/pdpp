@@ -511,9 +511,10 @@ function assertRunEventHasConnectorInstanceId(input: SpineEventInput): void {
   if (!input.event_type?.startsWith("run.")) {
     return;
   }
-  const data = input.data && typeof input.data === "object" && !Array.isArray(input.data)
-    ? (input.data as Record<string, unknown>)
-    : null;
+  const data =
+    input.data && typeof input.data === "object" && !Array.isArray(input.data)
+      ? (input.data as Record<string, unknown>)
+      : null;
   const connectorInstanceId = data?.connector_instance_id;
   if (typeof connectorInstanceId !== "string" || connectorInstanceId.trim().length === 0) {
     throw new Error(

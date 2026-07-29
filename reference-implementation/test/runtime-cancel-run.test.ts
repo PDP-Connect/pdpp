@@ -167,7 +167,9 @@ function asStructuredOutcome(value: unknown): StructuredCancelOutcome {
 function spineEventsForRun(runId: string): SpineEventRow[] {
   const db = getDb();
   return db
-    .prepare("SELECT connector_instance_id, event_type, status FROM spine_events WHERE run_id = ? ORDER BY event_seq ASC")
+    .prepare(
+      "SELECT connector_instance_id, event_type, status FROM spine_events WHERE run_id = ? ORDER BY event_seq ASC"
+    )
     .all(runId) as SpineEventRow[];
 }
 

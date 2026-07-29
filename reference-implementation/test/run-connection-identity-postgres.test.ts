@@ -10,6 +10,7 @@ const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 const EVENT_ID = "evt_run_connection_identity_postgres";
 const HISTORICAL_EVENT_ID = "evt_run_connection_identity_historical_postgres";
 const CONNECTOR_INSTANCE_ID = "cin_run_connection_identity_postgres";
+const RE_UNBOUND_RUN_WRITER = /new run\.\* events require data\.connector_instance_id/;
 
 test("Postgres preserves new run identity and rejects an unbound writer", { skip: !POSTGRES_URL }, async () => {
   assert.ok(POSTGRES_URL, "Postgres URL is configured when this test runs");
@@ -27,7 +28,7 @@ test("Postgres preserves new run identity and rejects an unbound writer", { skip
           object_type: "run",
           run_id: "run_unbound_postgres",
         }),
-      /new run\.\* events require data\.connector_instance_id/
+      RE_UNBOUND_RUN_WRITER
     );
 
     await emitSpineEvent({

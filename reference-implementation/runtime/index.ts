@@ -14,9 +14,9 @@ import type { SpineEventInput, SpineEventRecord } from "../lib/spine.ts";
 import { createTraceContext, emitSpineEvent, getCurrentBootEpoch } from "../lib/spine.ts";
 import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from "../server/owner-auth.ts";
-import { makeDefaultAccountConnectorInstanceId } from "../server/stores/connector-instance-store.ts";
 import { getDefaultConnectorAttentionStore } from "../server/stores/connector-attention-store.ts";
 import { getDefaultConnectorDetailGapStore } from "../server/stores/connector-detail-gap-store.ts";
+import { makeDefaultAccountConnectorInstanceId } from "../server/stores/connector-instance-store.ts";
 import {
   classifyRecoveryError,
   maybeQuarantineGap,
@@ -96,8 +96,8 @@ interface ManifestStream {
 
 interface ConnectorManifest {
   runtime_requirements?: { bindings?: Record<string, { required?: boolean }> } | null;
-  streams?: ManifestStream[] | null;
   storage_binding?: { connector_instance_id?: string | null } | null;
+  streams?: ManifestStream[] | null;
   [key: string]: unknown;
 }
 

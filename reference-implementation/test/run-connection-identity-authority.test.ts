@@ -17,6 +17,7 @@ const RUN_WRITERS = [
   { eventType: "run.completed", name: "local-device", stamp: {} },
   { eventType: "run.failed", name: "recovery", stamp: {} },
 ] as const;
+const RE_UNBOUND_RUN_WRITER = /new run\.\* events require data\.connector_instance_id/;
 
 function eventFor(writer: (typeof RUN_WRITERS)[number], connectorInstanceId?: string) {
   return {
@@ -24,7 +25,9 @@ function eventFor(writer: (typeof RUN_WRITERS)[number], connectorInstanceId?: st
     actor_type: "runtime",
     data: {
       ...writer.stamp,
-      ...(connectorInstanceId ? { connection_id: connectorInstanceId, connector_instance_id: connectorInstanceId } : {}),
+      ...(connectorInstanceId
+        ? { connection_id: connectorInstanceId, connector_instance_id: connectorInstanceId }
+        : {}),
       source: { id: "test_connector", kind: "connector" },
     },
     event_id: `evt_${writer.name}_${connectorInstanceId ? "bound" : "unbound"}`,
@@ -43,7 +46,7 @@ test("run identity authority rejects every named new-run writer without an immut
       // biome-ignore lint/performance/noAwaitInLoops: Each writer must prove its own failed-closed boundary.
       await assert.rejects(
         () => emitSpineEvent(eventFor(writer)),
-        /new run\.\* events require data\.connector_instance_id/,
+        RE_UNBOUND_RUN_WRITER,
         `${writer.name} must not create an unbound run event`
       );
     }
@@ -66,28 +69,32 @@ test("historical null spine identity remains readable and unknown", async () => 
   const raw = new Database(dbPath);
   let rawClosed = false;
   try {
-    raw.prepare(
-      `INSERT INTO spine_events(
+    raw
+      .prepare(
+        `INSERT INTO spine_events(
         event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
         actor_type, actor_id, object_type, object_id, status, run_id, data_json, version
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(
-      "evt_historical_unknown",
-      "run.completed",
-      "2025-01-01T00:00:00.000Z",
-      "2025-01-01T00:00:00.000Z",
-      "scn_historical",
-      "trc_historical",
-      "runtime",
-      "legacy_connector",
-      "run",
-      "run_historical",
-      "succeeded",
-      "run_historical",
-      "{}",
-      "reference.spine.v1"
-    );
-    const row = raw.prepare("SELECT connector_instance_id FROM spine_events WHERE event_id = ?").get("evt_historical_unknown") as {
+      )
+      .run(
+        "evt_historical_unknown",
+        "run.completed",
+        "2025-01-01T00:00:00.000Z",
+        "2025-01-01T00:00:00.000Z",
+        "scn_historical",
+        "trc_historical",
+        "runtime",
+        "legacy_connector",
+        "run",
+        "run_historical",
+        "succeeded",
+        "run_historical",
+        "{}",
+        "reference.spine.v1"
+      );
+    const row = raw
+      .prepare("SELECT connector_instance_id FROM spine_events WHERE event_id = ?")
+      .get("evt_historical_unknown") as {
       connector_instance_id: string | null;
     };
     assert.equal(row.connector_instance_id, null, "historical identity remains explicitly unknown");

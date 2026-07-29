@@ -4,13 +4,12 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-
+import { makeDefaultAccountConnectorInstanceId } from "../../server/stores/connector-instance-store.ts";
 import type { CliFlags } from "../lib/args.ts";
 import { parseArgs } from "../lib/args.ts";
 import { resolveAsUrl, resolveRsUrl } from "../lib/common.ts";
 import { PdppCliError, PdppUsageError } from "../lib/errors.ts";
 import { ownerSessionHeaders } from "../lib/fetch.ts";
-import { makeDefaultAccountConnectorInstanceId } from "../../server/stores/connector-instance-store.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REF_ROOT = join(__dirname, "..", "..");
