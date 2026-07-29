@@ -46,7 +46,7 @@ test("emitSpineEvent rejects run.started without boot_epoch", async () => {
         emitSpineEvent({
           actor_id: "test_connector",
           actor_type: "runtime",
-          data: { source: { id: "test_connector", kind: "connector" } },
+          data: { connector_instance_id: "cin_test_connector", source: { id: "test_connector", kind: "connector" } },
           event_type: "run.started",
           run_id: "run_test_unstamped",
         }),
@@ -72,7 +72,7 @@ test("emitSpineEvent rejects run.started with non-string boot_epoch", async () =
         emitSpineEvent({
           actor_id: "c",
           actor_type: "runtime",
-          data: { boot_epoch: 12_345, seq: 1 },
+          data: { boot_epoch: 12_345, connector_instance_id: "cin_test", seq: 1 },
           event_type: "run.started",
           run_id: "run_1",
         }),
@@ -92,7 +92,7 @@ test("emitSpineEvent rejects run.started without seq", async () => {
         emitSpineEvent({
           actor_id: "c",
           actor_type: "runtime",
-          data: { boot_epoch: "abc-123" },
+          data: { boot_epoch: "abc-123", connector_instance_id: "cin_test" },
           event_type: "run.started",
           run_id: "run_1",
         }),
@@ -112,7 +112,7 @@ test("emitSpineEvent rejects run.started with seq=0 (must be positive)", async (
         emitSpineEvent({
           actor_id: "c",
           actor_type: "runtime",
-          data: { boot_epoch: "abc-123", seq: 0 },
+          data: { boot_epoch: "abc-123", connector_instance_id: "cin_test", seq: 0 },
           event_type: "run.started",
           run_id: "run_1",
         }),
@@ -130,7 +130,7 @@ test("emitSpineEvent accepts run.started with valid boot_epoch + seq", async () 
     const ev = await emitSpineEvent({
       actor_id: "c",
       actor_type: "runtime",
-      data: { boot_epoch: "abc-uuid-123", seq: 1 },
+      data: { boot_epoch: "abc-uuid-123", connector_instance_id: "cin_test", seq: 1 },
       event_type: "run.started",
       run_id: "run_1",
     });
@@ -162,7 +162,7 @@ test("emitSpineEvent does NOT check stamping on non-run.started events", async (
     const ev2 = await emitSpineEvent({
       actor_id: "c",
       actor_type: "runtime",
-      data: {},
+      data: { connector_instance_id: "cin_test" },
       event_type: "run.completed",
       run_id: "run_1",
     });

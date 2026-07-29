@@ -128,7 +128,9 @@ export interface BrowserSurfaceManagerDeps {
   /** Delay between reclaim retry attempts. Defaults to 250ms. Tests inject 0. */
   readonly browserSurfaceReclaimRetryDelayMs?: number;
   readonly browserSurfaceReplacementReceiptStore: BrowserSurfaceReplacementReceiptStore | null;
-  readonly listPersistedActiveRuns: () => Promise<ReadonlyArray<{ run_id: string }>>;
+  readonly listPersistedActiveRuns: () => Promise<
+    ReadonlyArray<{ readonly connector_instance_id?: string | null; readonly run_id: string }>
+  >;
   readonly log: ControllerLogger;
   readonly pendingBrowserSurfaceLaunches: Map<string, RunNowOptions>;
   /**
@@ -243,6 +245,7 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     receiptStore: browserSurfaceReplacementReceiptStore,
   });
   const { allocator: replacementAwareAllocator } = replacementHooks;
+  const connectorInstanceIdByRunId = new Map<string, string>();
   let browserSurfaceSweepInFlight = false;
   const windowSettleReconciliation = createWindowSettleReconciliation({
     invalidateDeferredLease: invalidateBrowserSurfaceAfterProbeFailure,
@@ -293,11 +296,14 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     lease: BrowserSurfaceLease
   ): Promise<void> {
     try {
+      const connectorInstanceId = await requireConnectorInstanceIdForRun(runId);
       await emitSpineEvent({
         actor_id: connectorId,
         actor_type: "runtime",
         data: {
           browser_surface: projectBrowserSurfaceLease(lease),
+          connection_id: connectorInstanceId,
+          connector_instance_id: connectorInstanceId,
           source: buildRunSource(connectorId),
         },
         event_type: eventType,
@@ -314,6 +320,22 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     }
   }
 
+  async function requireConnectorInstanceIdForRun(runId: string): Promise<string> {
+    const known = connectorInstanceIdByRunId.get(runId);
+    if (known) {
+      return known;
+    }
+    const row = (await listPersistedActiveRuns()).find((candidate) => candidate.run_id === runId);
+    const connectorInstanceId = row?.connector_instance_id;
+    if (typeof connectorInstanceId !== "string" || connectorInstanceId.length === 0) {
+      throw new Error(
+        `browser-surface run ${runId} has no persisted connector_instance_id; refusing to persist an unbound run event.`
+      );
+    }
+    connectorInstanceIdByRunId.set(runId, connectorInstanceId);
+    return connectorInstanceId;
+  }
+
   async function emitBrowserSurfaceReadyEvent(
     lease: BrowserSurfaceLease,
     connectorId: string,
@@ -322,12 +344,15 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     result: Extract<BrowserSurfaceReadinessProbeResult, { ok: true }>
   ): Promise<void> {
     try {
+      const connectorInstanceId = await requireConnectorInstanceIdForRun(runId);
       await emitSpineEvent({
         actor_id: connectorId,
         actor_type: "runtime",
         data: {
           browser_surface: projectBrowserSurfaceLease(lease),
           browser_surface_probe: buildReadyProbePayload(result),
+          connection_id: connectorInstanceId,
+          connector_instance_id: connectorInstanceId,
           source: buildRunSource(connectorId),
         },
         event_type: "run.browser_surface_ready",
@@ -352,6 +377,7 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     result: Extract<BrowserSurfaceReadinessProbeResult, { ok: false }>
   ): Promise<void> {
     try {
+      const connectorInstanceId = await requireConnectorInstanceIdForRun(runId);
       await emitSpineEvent({
         actor_id: connectorId,
         actor_type: "runtime",
@@ -362,6 +388,8 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
             detail: result.detail,
             ok: false,
           },
+          connection_id: connectorInstanceId,
+          connector_instance_id: connectorInstanceId,
           source: buildRunSource(connectorId),
         },
         event_type: "run.browser_surface_probe_failed",
@@ -388,6 +416,7 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     readonly traceContext: SpineTraceContext;
   }): Promise<void> {
     try {
+      const connectorInstanceId = await requireConnectorInstanceIdForRun(input.runId);
       await emitSpineEvent({
         actor_id: input.connectorId,
         actor_type: "runtime",
@@ -399,6 +428,8 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
           },
           interaction_id: input.interactionId,
           kind: input.interactionKind,
+          connection_id: connectorInstanceId,
+          connector_instance_id: connectorInstanceId,
           source: buildRunSource(input.connectorId),
         },
         event_type: "run.browser_surface_lost",
@@ -433,6 +464,7 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     readonly traceContext: SpineTraceContext;
   }): Promise<void> {
     try {
+      const connectorInstanceId = await requireConnectorInstanceIdForRun(input.runId);
       await emitSpineEvent({
         actor_id: input.connectorId,
         actor_type: "runtime",
@@ -443,6 +475,8 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
             detail: input.probeDetail,
             ok: false,
           },
+          connection_id: connectorInstanceId,
+          connector_instance_id: connectorInstanceId,
           source: buildRunSource(input.connectorId),
         },
         event_type: "run.browser_surface_invalidated",
@@ -1312,6 +1346,7 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
   }
 
   async function acquireManagedBrowserSurfaceForRun(ctx: ManagedSurfaceContext): Promise<ManagedSurfaceAcquireResult> {
+    connectorInstanceIdByRunId.set(ctx.runId, ctx.connectorInstanceId);
     if (!browserSurfaceLeaseManager) {
       return { env: null, kind: "ready", lease: null };
     }

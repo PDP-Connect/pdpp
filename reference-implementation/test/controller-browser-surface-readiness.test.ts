@@ -856,7 +856,7 @@ test("typed browser_surface_attach_exhausted code on a dynamic surface after rea
       await emitSpineEvent({
         actor_id: opts.connectorId,
         actor_type: "runtime",
-        data: { records_emitted: 0 },
+        data: { connector_instance_id: "managed", records_emitted: 0 },
         event_type: "run.failed",
         object_id: opts.runId ?? null,
         object_type: "run",
@@ -876,6 +876,7 @@ test("typed browser_surface_attach_exhausted code on a dynamic surface after rea
   });
 
   const first = await controller.runNow("managed", {
+    connectorInstanceId: "managed",
     manifest: MANIFEST,
     ownerToken: "owner-token",
     runId: "run_attach_exhausted_first",

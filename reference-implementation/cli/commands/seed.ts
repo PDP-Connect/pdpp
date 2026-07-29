@@ -10,6 +10,7 @@ import { parseArgs } from "../lib/args.ts";
 import { resolveAsUrl, resolveRsUrl } from "../lib/common.ts";
 import { PdppCliError, PdppUsageError } from "../lib/errors.ts";
 import { ownerSessionHeaders } from "../lib/fetch.ts";
+import { makeDefaultAccountConnectorInstanceId } from "../../server/stores/connector-instance-store.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REF_ROOT = join(__dirname, "..", "..");
@@ -40,6 +41,7 @@ interface RunConnectorResult {
 type RunConnectorFn = (args: {
   connectorPath: string;
   connectorId: string;
+  connectorInstanceId: string;
   ownerToken: string;
   manifest: SeedManifest;
   state: null;
@@ -91,6 +93,7 @@ async function seedOneConnector(
   asUrl: string | true,
   rsUrl: string | true,
   ownerToken: string,
+  ownerSubjectId: string,
   runConnector: RunConnectorFn
 ): Promise<SeedOutcome> {
   process.stdout.write(`  · ${name} … `);
@@ -103,6 +106,7 @@ async function seedOneConnector(
     const result = await runConnector({
       collectionMode: "full_refresh",
       connectorId: manifest.connector_id,
+      connectorInstanceId: makeDefaultAccountConnectorInstanceId(ownerSubjectId, manifest.connector_id),
       connectorPath: SEED_CONNECTOR_PATH,
       manifest,
       ownerToken,
@@ -191,7 +195,7 @@ export async function runSeed(argv: string[]): Promise<void> {
     // order, and later connectors can rely on earlier ones having
     // finished registering against the shared reference server.
     // biome-ignore lint/performance/noAwaitInLoops: see comment above
-    const outcome = await seedOneConnector(name, asUrl, rsUrl, ownerToken, runConnector);
+    const outcome = await seedOneConnector(name, asUrl, rsUrl, ownerToken, String(subjectId), runConnector);
     results.push(outcome);
   }
 
