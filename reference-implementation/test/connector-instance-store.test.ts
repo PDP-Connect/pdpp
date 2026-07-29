@@ -1722,6 +1722,7 @@ const CONFORMANCE_TEST_OWNER_SUBJECT_IDS = [
   "owner_6",
   "owner_alice",
   "owner_bob",
+  "owner_direct_runtime",
   "owner_local",
 ];
 const CONFORMANCE_TEST_CONNECTOR_IDS = ["gmail", "claude-code", "reddit", "github", "spotify", "codex"];

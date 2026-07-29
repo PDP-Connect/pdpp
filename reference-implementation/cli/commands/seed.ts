@@ -38,6 +38,11 @@ interface RunConnectorResult {
   [key: string]: unknown;
 }
 type RunConnectorFn = (args: {
+  admitRunConnection: (input: {
+    connectorId: string;
+    connectorInstanceId: string | null;
+    ownerSubjectId: string | null;
+  }) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }>;
   connectorPath: string;
   connectorId: string;
   connectorInstanceId: string;
@@ -103,6 +108,13 @@ async function seedOneConnector(
     await registerManifest(asUrl, manifest);
 
     const result = await runConnector({
+      admitRunConnection: ({ connectorId, connectorInstanceId, ownerSubjectId: admittedOwnerSubjectId }) => {
+        const exactId = makeDefaultAccountConnectorInstanceId(ownerSubjectId, connectorId);
+        if (connectorInstanceId !== exactId || admittedOwnerSubjectId !== ownerSubjectId) {
+          throw new PdppUsageError("seed run admission identity mismatch");
+        }
+        return Promise.resolve({ connectorId, connectorInstanceId: exactId, ownerSubjectId });
+      },
       collectionMode: "full_refresh",
       connectorId: manifest.connector_id,
       connectorInstanceId: makeDefaultAccountConnectorInstanceId(ownerSubjectId, manifest.connector_id),

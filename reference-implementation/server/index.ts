@@ -6447,6 +6447,8 @@ export async function startServer(opts: ServerOpts = {}) {
       return { connectorId: namespace.connectorId, connectorInstanceId: namespace.connectorInstanceId };
     },
     ownerSubjectId: ownerAuthSubjectId,
+    resolveOwnerSubjectIdForConnectorInstance: async (connectorInstanceId) =>
+      (await createRequestConnectorInstanceStore().get(connectorInstanceId))?.ownerSubjectId ?? null,
     ...(opts.connectorPathResolver === null
       ? {}
       : {
@@ -7288,7 +7290,8 @@ function createReferenceSchedulerManager({
           connectorPath,
           intervalMs: Math.max(1, schedule.interval_seconds) * 1000,
           manifest,
-          ownerToken: await controller.issueRuntimeOwnerToken(),
+          ownerSubjectId,
+          ownerToken: await controller.issueRuntimeOwnerToken(ownerSubjectId),
         });
       } catch (err) {
         logger?.warn?.(
@@ -7358,6 +7361,19 @@ function createReferenceSchedulerManager({
       connectors,
       ...(runtimeContext.rsUrl === null ? {} : { rsUrl: runtimeContext.rsUrl }),
       ...(runtimeContext.referenceBaseUrl === null ? {} : { referenceBaseUrl: runtimeContext.referenceBaseUrl }),
+      admitRunConnection: async ({ connectorId, connectorInstanceId, ownerSubjectId: admittedOwnerSubjectId }) => {
+        const namespace = await admitOwnerRunConnection({
+          connectorId,
+          connectorInstanceId,
+          connectorInstanceStore: createRequestConnectorInstanceStore(),
+          ownerSubjectId: admittedOwnerSubjectId ?? ownerSubjectId,
+        });
+        return {
+          connectorId: namespace.connectorId,
+          connectorInstanceId: namespace.connectorInstanceId,
+          ownerSubjectId: admittedOwnerSubjectId ?? ownerSubjectId,
+        };
+      },
       getForwardEvidenceDebt: async (connectorId, connectorInstanceId, scheduleIntervalMs) => {
         // Forward-evidence-debt bound for recovery-first selection
         // (fix-pre-provenance-terminal-generation-semantics): bounds the

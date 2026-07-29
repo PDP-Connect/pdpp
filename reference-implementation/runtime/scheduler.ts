@@ -300,6 +300,7 @@ import { defaultReadinessChecker } from "./scheduler-readiness.ts";
  */
 export function createScheduler(opts: SchedulerOptions): Scheduler {
   const {
+    admitRunConnection = null,
     connectors,
     rsUrl = process.env.RS_URL || "http://localhost:7663",
     referenceBaseUrl = null,
@@ -400,6 +401,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
   });
 
   const runExecutor = createRunExecutor({
+    admitRunConnection,
     getState,
     handleGrantFailureDisable,
     isManagedConnector,

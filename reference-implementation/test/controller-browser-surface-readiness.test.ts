@@ -61,6 +61,27 @@ const MANIFEST = {
   version: "1.0.0",
 };
 
+const FIXTURE_CONNECTION_IDS = new Set([
+  "managed",
+  "cin_managed_fixture",
+  "other-managed-instance-2",
+  "live-instance-from-memory",
+]);
+
+function admitManagedFixtureRun({
+  connectorId,
+  connectorInstanceId,
+}: {
+  connectorId: string;
+  connectorInstanceId: string | null;
+}) {
+  const exactId = connectorInstanceId ?? "managed";
+  if (connectorId !== "managed" || !FIXTURE_CONNECTION_IDS.has(exactId)) {
+    throw new Error(`fixture admission rejected ${connectorId}/${exactId}`);
+  }
+  return Promise.resolve({ connectorId, connectorInstanceId: exactId });
+}
+
 function tempDbPath() {
   return makeTemporaryDbPath("pdpp-controller-rdy-");
 }
@@ -272,12 +293,15 @@ function setup(
 
   const runConnectorCalls: RuntimeRunConnectorOptions[] = [];
   const controller = createController({
+    admitRunConnection: admitManagedFixtureRun,
     ...(browserSurfaceAllocator ? { browserSurfaceAllocator } : {}),
     ...(browserSurfaceLeaseStore ? { browserSurfaceLeaseStore } : {}),
     browserSurfaceLeaseManager: leaseManager || createManagerWithReadySurface(),
     ...(probe ? { browserSurfaceReadinessProbe: probe } : {}),
     connectorPathResolver: () => "/tmp/connector.js",
     logger: { error: () => undefined, warn: () => undefined },
+    resolveOwnerSubjectIdForConnectorInstance: async (connectorInstanceId) =>
+      FIXTURE_CONNECTION_IDS.has(connectorInstanceId) ? "owner_local" : null,
     runConnectorImpl: async (opts) => {
       runConnectorCalls.push(opts);
       if (runConnectorImpl) {
@@ -648,11 +672,14 @@ test("readiness probe failure calls allocator.stopSurface(reason: surface_failed
 
   const otherCalls: RuntimeRunConnectorOptions[] = [];
   const c2 = createController({
+    admitRunConnection: admitManagedFixtureRun,
     browserSurfaceAllocator: allocator,
     browserSurfaceLeaseManager: leaseManager,
     browserSurfaceReadinessProbe: probe,
     connectorPathResolver: () => "/tmp/connector.js",
     logger: { error: () => undefined, warn: () => undefined },
+    resolveOwnerSubjectIdForConnectorInstance: async (connectorInstanceId) =>
+      FIXTURE_CONNECTION_IDS.has(connectorInstanceId) ? "owner_local" : null,
     runConnectorImpl: (opts) => {
       otherCalls.push(opts);
       return Promise.resolve({
@@ -1181,6 +1208,10 @@ function setupPromotionHarness({
     listPersistedActiveRuns: async () => [],
     log: { error: () => undefined, warn: () => undefined },
     pendingBrowserSurfaceLaunches,
+    resolveOwnerSubjectIdForConnectorInstance: async (connectorInstanceId) =>
+      new Set([connectorId, surfaceSubjectId, "live-instance-from-memory"]).has(connectorInstanceId)
+        ? "owner_restart_fixture"
+        : null,
     scheduleRun: (schedConnectorId, options) => {
       calls.push({ connectorId: schedConnectorId, options });
     },
@@ -1202,6 +1233,7 @@ test("restart promotion restores connectorInstanceId from the persisted lease's 
   const firstCall = at(calls, 0);
   assert.equal(firstCall.connectorId, "other-managed");
   assert.equal(firstCall.options.runId, "run_after_restart");
+  assert.equal(firstCall.options.ownerSubjectId, "owner_restart_fixture");
   assert.equal(
     firstCall.options.connectorInstanceId,
     "other-managed-instance-2",

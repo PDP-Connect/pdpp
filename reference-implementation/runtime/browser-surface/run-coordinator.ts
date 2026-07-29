@@ -134,6 +134,12 @@ export interface BrowserSurfaceManagerDeps {
   readonly log: ControllerLogger;
   readonly pendingBrowserSurfaceLaunches: Map<string, RunNowOptions>;
   /**
+   * Resolves the durable owner of an admitted connection when a process restart
+   * has discarded the in-memory launch options. A persisted lease records the
+   * exact connection but deliberately not an owner-token-derived guess.
+   */
+  readonly resolveOwnerSubjectIdForConnectorInstance?: (connectorInstanceId: string) => Promise<string | null>;
+  /**
    * Fire-and-forget: schedule a run via the controller. The controller
    * implements this as detachControllerTask(runNow(connectorId, options).catch(onFailure)).
    * The onFailure callback is invoked when the runNow throws so the
@@ -235,6 +241,7 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     listPersistedActiveRuns,
     log,
     pendingBrowserSurfaceLaunches,
+    resolveOwnerSubjectIdForConnectorInstance = async () => null,
     scheduleRun,
     startupControllerRunReconciliation,
   } = deps;
@@ -852,7 +859,7 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     return buildCapacityPressureReclaimResult(lease, reclaimed);
   }
 
-  function promoteBrowserSurfaceLease(lease: BrowserSurfaceLease, reason: string): void {
+  async function promoteBrowserSurfaceLease(lease: BrowserSurfaceLease, reason: string): Promise<void> {
     const promotedOptions = pendingBrowserSurfaceLaunches.get(lease.run_id);
     pendingBrowserSurfaceLaunches.delete(lease.run_id);
     // Mirrors the inverse encoding in acquireInitialBrowserSurfaceLease
@@ -862,11 +869,17 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     // surface_subject_id instead of letting it silently default to the
     // connector-wide connector_id.
     const connectorInstanceId = promotedOptions?.connectorInstanceId ?? lease.surface_subject_id ?? lease.connector_id;
+    const ownerSubjectId =
+      promotedOptions?.ownerSubjectId ?? (await resolveOwnerSubjectIdForConnectorInstance(connectorInstanceId));
+    if (!ownerSubjectId) {
+      throw new Error(`browser-surface promotion has no owner for admitted connection ${connectorInstanceId}`);
+    }
     scheduleRun(
       lease.connector_id,
       {
         ...promotedOptions,
         connectorInstanceId,
+        ownerSubjectId,
         priorityClass: lease.priority_class,
         runId: lease.run_id,
       },
@@ -930,7 +943,7 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
         lease,
         lease.surface_id ? browserSurfaceLeaseManager.getSurface(lease.surface_id) : undefined
       );
-      promoteBrowserSurfaceLease(lease, reason);
+      await promoteBrowserSurfaceLease(lease, reason);
     }
   }
 
@@ -1456,7 +1469,7 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     }
     await persistBrowserSurfaceLeaseMutation(reclaimedResult.lease, reclaimedResult.surface);
     if (reclaimedResult.lease.status !== "waiting_for_browser_surface") {
-      promoteBrowserSurfaceLease(reclaimedResult.lease, "browser-surface periodic sweep");
+      await promoteBrowserSurfaceLease(reclaimedResult.lease, "browser-surface periodic sweep");
     }
   }
 

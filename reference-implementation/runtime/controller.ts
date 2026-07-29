@@ -481,6 +481,8 @@ export interface ControllerOptions {
   maxRunWallClockMs?: number;
   ownerClientId?: string;
   ownerSubjectId?: string;
+  /** Resolves the persisted owner of an exact admitted connection after restart. */
+  resolveOwnerSubjectIdForConnectorInstance?: (connectorInstanceId: string) => Promise<string | null>;
   /**
    * Optional connection-scoped static-secret resolver. When present, the
    * controller calls it before each run to obtain the env fragment carrying
@@ -543,13 +545,10 @@ function resolveAdmittedRunConnection(
       ownerSubjectId,
     });
   }
-  if (!connectorInstanceId) {
-    throw new ControllerError(
-      "connectorInstanceId is required when no run-connection authority resolver is installed.",
-      "connector_instance_selector_required"
-    );
-  }
-  return Promise.resolve({ connectorId, connectorInstanceId });
+  throw new ControllerError(
+    "run-connection authority resolver is required before a run can be created.",
+    "connector_instance_store_required"
+  );
 }
 
 function createInteractionTimeoutTerminalHandler(
@@ -683,7 +682,7 @@ export interface Controller {
   getPendingInteraction: (runId: string) => PendingInteractionProjection | null;
   getSchedule: (connectorId: string, options?: ConnectorInstanceOptions) => Promise<ScheduleApi | null>;
   isNeedsHuman: (connectorId: string, options?: ConnectorInstanceOptions) => boolean;
-  issueRuntimeOwnerToken: () => Promise<string>;
+  issueRuntimeOwnerToken: (ownerSubjectId?: string) => Promise<string>;
   listBrowserSurfaceRunProjections: () => BrowserSurfaceRunProjection[];
   listSchedules: () => Promise<ScheduleApi[]>;
   markNeedsHuman: (connectorId: string, options?: ConnectorInstanceOptions) => void;
@@ -2490,6 +2489,8 @@ export function createController(opts: ControllerOptions = {}): Controller {
     listPersistedActiveRuns,
     log,
     pendingBrowserSurfaceLaunches,
+    resolveOwnerSubjectIdForConnectorInstance: async (connectorInstanceId) =>
+      (await opts.resolveOwnerSubjectIdForConnectorInstance?.(connectorInstanceId)) ?? null,
     scheduleRun(connectorId, options, onFailure) {
       detachControllerTask(runNow(connectorId, options).catch(onFailure));
     },
@@ -3508,7 +3509,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       brokerInteraction(runId, connectorId, readRuntimeInteraction(interaction), {
         connectorDisplayName,
         log,
-        ownerSubjectId,
+        ownerSubjectId: runOwnerSubjectId,
       });
     const interactionHandler = browserSurface.wrapInteractionHandlerWithSurfaceLossDetection(
       runId,
@@ -3528,7 +3529,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
             assistance: msg as Record<string, unknown>,
             connectorDisplayName,
             log,
-            ownerSubjectId,
+            ownerSubjectId: runOwnerSubjectId,
             runId,
           })
         );
@@ -3633,7 +3634,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
             await opts.markStaticSecretCredentialRejected({
               connectorId,
               connectorInstanceId,
-              ownerSubjectId,
+              ownerSubjectId: runOwnerSubjectId,
               reason: typeof result.connector_error.message === "string" ? result.connector_error.message : null,
               rejectedAt: nowIso(),
               runId,
