@@ -3941,6 +3941,7 @@ function normalizeCimdRegisteredClient(value: unknown): RegisteredClient {
   };
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This protocol boundary retains its existing ordered local/self-hosted/external resolution branches; observability only forwards an optional sink.
 async function resolveCimdClientForGrant(
   clientId: string,
   opts: {
@@ -3950,6 +3951,7 @@ async function resolveCimdClientForGrant(
     request_id?: string | null;
     traceId?: string | null;
     trace_id?: string | null;
+    onCimdTransportFailure?: (event: import("./cimd.ts").CimdTransportFailureEvent) => void;
   } = {}
 ): Promise<RegisteredClient | null> {
   const { isCimdClientId, validateCimdUrl, fetchCimdDocument, buildCimdRegisteredClient } = await import("./cimd.ts");
@@ -3996,13 +3998,24 @@ async function resolveCimdClientForGrant(
   // External fetch with SSRF guards, timeout, size cap
   const { doc } = await fetchCimdDocument(clientId, {
     onSecurityRelevantMetadataChange: (event) => revokeCimdClientAccessForSecurityMetadataChange(event, opts),
+    ...(opts.onCimdTransportFailure ? { onTransportFailure: opts.onCimdTransportFailure } : {}),
+    ...((opts.requestId ?? opts.request_id) === undefined ? {} : { requestId: opts.requestId ?? opts.request_id }),
+    ...((opts.traceId ?? opts.trace_id) === undefined ? {} : { traceId: opts.traceId ?? opts.trace_id }),
   });
   return normalizeCimdRegisteredClient(buildCimdRegisteredClient(clientId, doc));
 }
 
 export async function resolveOAuthClient(
   clientId: unknown,
-  opts: { issuerBase?: string; baseUrl?: string } = {}
+  opts: {
+    issuerBase?: string;
+    baseUrl?: string;
+    onCimdTransportFailure?: (event: import("./cimd.ts").CimdTransportFailureEvent) => void;
+    requestId?: string | null;
+    request_id?: string | null;
+    traceId?: string | null;
+    trace_id?: string | null;
+  } = {}
 ): Promise<RegisteredClient | null> {
   let registeredClient = await getRegisteredClient(clientId);
   if (registeredClient) {

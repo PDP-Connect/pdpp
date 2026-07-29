@@ -53,6 +53,24 @@ export interface SecurityMetadataChange {
   previousDoc: CimdDocument;
   previousSecurityHash: string;
 }
+export interface CimdTransportFailureEvent {
+  address_count: number;
+  address_families: Array<4 | 6>;
+  attempt: 1;
+  cause: CimdTransportErrorDetail | null;
+  elapsed_ms: number;
+  error: CimdTransportErrorDetail;
+  event_type: "cimd.transport_failure";
+  phase: "connect" | "dns" | "request" | "tls" | "unknown";
+  request_id: string | null;
+  timeout_aborted: boolean;
+  trace_id: string | null;
+}
+interface CimdTransportErrorDetail {
+  code: string | null;
+  message: string;
+  name: string;
+}
 // Keep the injectable seam limited to the response surface CIMD consumes.
 // Undici 8's Response adds members that Node's ambient Response does not have,
 // so `typeof undiciFetch` would reject test fetches backed by global fetch.
@@ -67,7 +85,10 @@ export interface FetchCimdOptions {
   isGlobalUnicastAddressImpl?: (ip: string) => boolean;
   nowMs?: number;
   onSecurityRelevantMetadataChange?: (change: SecurityMetadataChange) => void | Promise<void>;
+  onTransportFailure?: (event: CimdTransportFailureEvent) => void;
+  requestId?: string | null;
   timeoutMs?: number;
+  traceId?: string | null;
 }
 
 export interface FetchCimdResult {
@@ -90,6 +111,14 @@ class CimdError extends Error {
 
 const cimdCache = new Map<string, CachedCimdDocument>();
 const textEncoder = new TextEncoder();
+const MAX_TRANSPORT_ERROR_MESSAGE_LENGTH = 240;
+const TRANSPORT_ERROR_CODE_PATTERN = /^[A-Za-z0-9_.-]{1,64}$/;
+const TRANSPORT_ERROR_TLS_PATTERN = /\b(cert|tls)\b/i;
+const TRANSPORT_ERROR_URL_PATTERN = /[a-z][a-z\d+.-]*:\/\/[^\s"']+/gi;
+const TRANSPORT_ERROR_SECRET_PATTERN =
+  /\b(authorization|api[_-]?key|cookie|password|passwd|secret|token)\s*([=:])\s*[^,;\s]+/gi;
+const TRANSPORT_ERROR_IPV4_PATTERN = /\b(?:\d{1,3}\.){3}\d{1,3}\b/g;
+const TRANSPORT_ERROR_IPV6_PATTERN = /\b(?:[\da-f]{0,4}:){2,}[\da-f:]+\b/gi;
 
 function rawPathFromUrlString(value: string): string {
   // biome-ignore lint/performance/useTopLevelRegex: This parser-local expression intentionally avoids shared regular-expression state.
@@ -226,6 +255,54 @@ function cimdFetchFailure(clientId: string, message: string): CimdError {
   return new CimdError("cimd_fetch_failed", message, hostname);
 }
 
+function sanitizeTransportMessage(value: unknown): string {
+  const text = typeof value === "string" ? value : "";
+  const sanitized = text
+    .replace(TRANSPORT_ERROR_URL_PATTERN, "<url>")
+    .replace(
+      TRANSPORT_ERROR_SECRET_PATTERN,
+      (_match, field: string, separator: string) => `${field}${separator}<redacted>`
+    )
+    .replace(TRANSPORT_ERROR_IPV4_PATTERN, "<ip>")
+    .replace(TRANSPORT_ERROR_IPV6_PATTERN, "<ip>")
+    .trim();
+  return (sanitized || "transport error").slice(0, MAX_TRANSPORT_ERROR_MESSAGE_LENGTH);
+}
+
+function transportErrorDetail(value: unknown): CimdTransportErrorDetail {
+  const error = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const code = typeof error.code === "string" && TRANSPORT_ERROR_CODE_PATTERN.test(error.code) ? error.code : null;
+  const name = typeof error.name === "string" && TRANSPORT_ERROR_CODE_PATTERN.test(error.name) ? error.name : "Error";
+  return { code, message: sanitizeTransportMessage(error.message), name };
+}
+
+function classifyTransportFailure(
+  error: CimdTransportErrorDetail,
+  timeoutAborted: boolean
+): CimdTransportFailureEvent["phase"] {
+  if (timeoutAborted || error.name === "AbortError" || error.code === "ABORT_ERR") {
+    return "request";
+  }
+  if (
+    error.code?.startsWith("ERR_TLS_") ||
+    error.code?.startsWith("DEPTH_") ||
+    TRANSPORT_ERROR_TLS_PATTERN.test(error.message)
+  ) {
+    return "tls";
+  }
+  if (error.code === "ENOTFOUND" || error.code?.startsWith("EAI_")) {
+    return "dns";
+  }
+  if (error.code?.startsWith("ECONN") || error.code === "EHOSTUNREACH" || error.code === "ENETUNREACH") {
+    return "connect";
+  }
+  return "unknown";
+}
+
+function addressFamilies(addresses: readonly string[]): Array<4 | 6> {
+  return addresses.map((address) => (address.includes(":") ? 6 : 4));
+}
+
 /**
  * Resolve a CIMD document from cache or via network fetch.
  * For same-origin client_ids (PDPP-hosted), callers should use
@@ -242,8 +319,11 @@ export async function fetchCimdDocument(
     dnsLookupImpl = async (hostname, options) => dnsLookup(hostname, options),
     isGlobalUnicastAddressImpl = isGlobalUnicastAddress,
     onSecurityRelevantMetadataChange,
+    onTransportFailure,
     nowMs = Date.now(),
+    requestId = null,
     timeoutMs = CIMD_FETCH_TIMEOUT_MS,
+    traceId = null,
   }: FetchCimdOptions = {}
 ): Promise<FetchCimdResult> {
   const now = nowMs;
@@ -260,6 +340,7 @@ export async function fetchCimdDocument(
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  const startedAt = Date.now();
 
   let response: CimdResponse;
   let dispatcher: ReturnType<typeof createPinnedDispatcher> | null = null;
@@ -300,12 +381,37 @@ export async function fetchCimdDocument(
     // ignores this option, same as it already ignores `signal`/`redirect`.
     dispatcher = createPinnedDispatcher(resolved.addresses);
 
-    response = await fetchImpl(clientId, {
-      dispatcher,
-      headers: { Accept: "application/json" },
-      redirect: "manual", // CIMD §6.6: do not follow redirects
-      signal: controller.signal,
-    });
+    try {
+      response = await fetchImpl(clientId, {
+        dispatcher,
+        headers: { Accept: "application/json" },
+        redirect: "manual", // CIMD §6.6: do not follow redirects
+        signal: controller.signal,
+      });
+    } catch (error: unknown) {
+      const detail = transportErrorDetail(error);
+      const cause = error && typeof error === "object" ? (error as { cause?: unknown }).cause : undefined;
+      const causeDetail = cause === undefined ? null : transportErrorDetail(cause);
+      const event: CimdTransportFailureEvent = {
+        address_count: resolved.addresses.length,
+        address_families: addressFamilies(resolved.addresses),
+        attempt: 1,
+        cause: causeDetail,
+        elapsed_ms: Math.max(0, Date.now() - startedAt),
+        error: detail,
+        event_type: "cimd.transport_failure",
+        phase: classifyTransportFailure(causeDetail ?? detail, controller.signal.aborted),
+        request_id: requestId,
+        timeout_aborted: controller.signal.aborted,
+        trace_id: traceId,
+      };
+      try {
+        onTransportFailure?.(event);
+      } catch {
+        // Observability cannot change the established OAuth failure path.
+      }
+      throw error;
+    }
   } catch (err: unknown) {
     clearTimeout(timeoutId);
     if (err instanceof CimdError) {

@@ -7,6 +7,7 @@ import tls from "node:tls";
 
 import {
   CIMD_MAX_BODY_BYTES,
+  type CimdTransportFailureEvent,
   type FetchCimdOptions,
   type FetchCimdResult,
   fetchCimdDocument,
@@ -30,6 +31,10 @@ const TOP_LEVEL_REGEX_11 = /not valid JSON/;
 const TOP_LEVEL_REGEX_12 = /client_id mismatch/;
 const TOP_LEVEL_REGEX_13 = /unsupported token_endpoint_auth_method/;
 const TOP_LEVEL_REGEX_14 = /CIMD fetch failed/;
+const TRANSPORT_IP_REDACTED_REGEX = /<ip>/;
+const TRANSPORT_TCP_SECRET_REGEX = /super-secret|203\.0\.113\.9/;
+const TRANSPORT_DNS_SECRET_REGEX = /top-secret|198\.51\.100\.20|client-dns\.json\?token/;
+const TRANSPORT_URL_REDACTED_REGEX = /<url>/;
 
 const publicDns: NonNullable<FetchCimdOptions["dnsLookupImpl"]> = () => Promise.resolve([{ address: "93.184.216.34" }]);
 
@@ -50,6 +55,18 @@ function jsonResponse(body: unknown, init: ResponseInit & { headers?: Record<str
     status: 200,
     ...init,
   });
+}
+
+function transportFailure(message: string, code: string, cause?: Error): Error & { code: string; cause?: Error } {
+  return Object.assign(new TypeError(message), { code, ...(cause ? { cause } : {}) });
+}
+
+function captureTransportFailures() {
+  const events: CimdTransportFailureEvent[] = [];
+  return {
+    events,
+    onTransportFailure: (event: CimdTransportFailureEvent) => events.push(event),
+  };
 }
 
 test("CIMD URL classification and prefetch validation reject unsafe client_ids", () => {
@@ -215,6 +232,7 @@ test("fetchCimdDocument blocks forbidden DNS resolutions before issuing HTTP", a
 
 test("fetchCimdDocument aborts slow metadata fetches", async () => {
   const clientId = "https://client.example/oauth/client-timeout.json";
+  const captured = captureTransportFailures();
   await assert.rejects(
     () =>
       fetchCimd(clientId, {
@@ -222,12 +240,105 @@ test("fetchCimdDocument aborts slow metadata fetches", async () => {
         fetchImpl: (_url, init) =>
           new Promise((_resolve, reject) => {
             assert.ok(init?.signal, "fetchImpl must receive an abort signal");
-            init.signal.addEventListener("abort", () => reject(new Error("aborted by test timeout")));
+            init.signal.addEventListener("abort", () => {
+              reject(Object.assign(new Error("aborted by test timeout"), { code: "ABORT_ERR", name: "AbortError" }));
+            });
           }),
+        onTransportFailure: captured.onTransportFailure,
         timeoutMs: 1,
       }),
     TOP_LEVEL_REGEX_9
   );
+  assert.equal(captured.events.length, 1);
+  assert.equal(captured.events[0]?.phase, "request");
+  assert.equal(captured.events[0]?.timeout_aborted, true);
+  assert.equal(captured.events[0]?.attempt, 1);
+});
+
+test("fetchCimdDocument logs one bounded TCP refusal event without changing its error", async () => {
+  const clientId = "https://client.example/oauth/client-tcp-refusal.json";
+  const captured = captureTransportFailures();
+  const cause = Object.assign(new Error("connect ECONNREFUSED 203.0.113.9:443 token=super-secret"), {
+    code: "ECONNREFUSED",
+  });
+  const failure = transportFailure("fetch failed", "UND_ERR_CONNECT", cause);
+
+  await assert.rejects(
+    () =>
+      fetchCimd(clientId, {
+        dnsLookupImpl: async () => [
+          { address: "2606:2800:220:1:248:1893:25c8:1946", family: 6 },
+          { address: "93.184.216.34", family: 4 },
+        ],
+        fetchImpl: async () => Promise.reject(failure),
+        isGlobalUnicastAddressImpl: () => true,
+        onTransportFailure: captured.onTransportFailure,
+        requestId: "req_cimd_test",
+        traceId: "trace_cimd_test",
+      }),
+    (error: Error & { code?: string }) =>
+      error.code === "cimd_fetch_failed" && error.message === `CIMD fetch failed for ${clientId}: fetch failed`
+  );
+
+  assert.equal(captured.events.length, 1);
+  assert.deepEqual(captured.events[0]?.address_families, [6, 4]);
+  assert.equal(captured.events[0]?.phase, "connect");
+  assert.equal(captured.events[0]?.request_id, "req_cimd_test");
+  assert.equal(captured.events[0]?.trace_id, "trace_cimd_test");
+  assert.equal(captured.events[0]?.cause?.code, "ECONNREFUSED");
+  assert.match(captured.events[0]?.cause?.message || "", TRANSPORT_IP_REDACTED_REGEX);
+  assert.doesNotMatch(JSON.stringify(captured.events[0]), TRANSPORT_TCP_SECRET_REGEX);
+});
+
+test("fetchCimdDocument logs one bounded TLS failure event without changing its error", async () => {
+  const clientId = "https://client.example/oauth/client-tls.json";
+  const captured = captureTransportFailures();
+  const cause = Object.assign(new Error("self signed certificate in certificate chain"), {
+    code: "DEPTH_ZERO_SELF_SIGNED_CERT",
+  });
+  const failure = transportFailure("fetch failed", "UND_ERR_CONNECT", cause);
+
+  await assert.rejects(
+    () =>
+      fetchCimd(clientId, {
+        dnsLookupImpl: publicDns,
+        fetchImpl: async () => Promise.reject(failure),
+        onTransportFailure: captured.onTransportFailure,
+      }),
+    (error: Error & { code?: string }) =>
+      error.code === "cimd_fetch_failed" && error.message === `CIMD fetch failed for ${clientId}: fetch failed`
+  );
+
+  assert.equal(captured.events.length, 1);
+  assert.equal(captured.events[0]?.phase, "tls");
+  assert.equal(captured.events[0]?.cause?.code, "DEPTH_ZERO_SELF_SIGNED_CERT");
+});
+
+test("fetchCimdDocument sanitizes a DNS-shaped transport failure event", async () => {
+  const clientId = "https://client.example/oauth/client-dns.json";
+  const captured = captureTransportFailures();
+  const cause = Object.assign(
+    new Error("getaddrinfo EAI_AGAIN https://client.example/oauth/client-dns.json?token=top-secret 198.51.100.20"),
+    { code: "EAI_AGAIN" }
+  );
+  const failure = transportFailure("fetch failed", "UND_ERR_CONNECT", cause);
+
+  await assert.rejects(
+    () =>
+      fetchCimd(clientId, {
+        dnsLookupImpl: publicDns,
+        fetchImpl: async () => Promise.reject(failure),
+        onTransportFailure: captured.onTransportFailure,
+      }),
+    (error: Error & { code?: string }) =>
+      error.code === "cimd_fetch_failed" && error.message === `CIMD fetch failed for ${clientId}: fetch failed`
+  );
+
+  assert.equal(captured.events.length, 1);
+  assert.equal(captured.events[0]?.phase, "dns");
+  const serialized = JSON.stringify(captured.events[0]);
+  assert.doesNotMatch(serialized, TRANSPORT_DNS_SECRET_REGEX);
+  assert.match(captured.events[0]?.cause?.message || "", TRANSPORT_URL_REDACTED_REGEX);
 });
 
 test("fetchCimdDocument rejects redirects, malformed JSON, client_id mismatch, and unsupported auth", async () => {

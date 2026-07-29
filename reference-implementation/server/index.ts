@@ -3959,9 +3959,10 @@ export function buildAsApp(opts: ServerOpts = {}) {
     >[1]["createHostedMcpGrantPackage"],
     ensureCsrfToken: ownerAuth.ensureCsrfToken as unknown as Parameters<typeof mountAsAuthorize>[1]["ensureCsrfToken"],
     getRegisteredClient: ((clientId: string) =>
-      resolveOAuthClient(clientId, explicitAsBaseUrl ? { baseUrl: explicitAsBaseUrl } : {})) as unknown as Parameters<
-      typeof mountAsAuthorize
-    >[1]["getRegisteredClient"],
+      resolveOAuthClient(clientId, {
+        ...(explicitAsBaseUrl ? { baseUrl: explicitAsBaseUrl } : {}),
+        onCimdTransportFailure: (event) => opts.logger?.warn?.(event, "CIMD transport failure"),
+      })) as unknown as Parameters<typeof mountAsAuthorize>[1]["getRegisteredClient"],
     ignoreAmbientPublicUrls: !!opts.ignoreAmbientPublicUrls,
     issueOAuthAuthorizationCodeForPackageDeviceCode:
       issueOAuthAuthorizationCodeForPackageDeviceCode as unknown as Parameters<
