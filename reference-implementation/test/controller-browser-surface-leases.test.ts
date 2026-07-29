@@ -1900,7 +1900,7 @@ test("sweep DOES reconcile a leased run whose surface the allocator confirms is 
   await controller.drainActiveRuns(1000);
 });
 
-test("boot ignores historical unhealthy surfaces without masking failed successors, then resolves one live loss", async (t) => {
+test("boot coalesces duplicate ready scope loss while preserving historical failed successors", async (t) => {
   const historicalProfiles = [
     { count: 52, profileKey: "managed-profile:acct-a", subjectId: "acct-a" },
     { count: 38, profileKey: "managed-profile:acct-b", subjectId: "acct-b" },
@@ -1945,6 +1945,13 @@ test("boot ignores historical unhealthy surfaces without masking failed successo
     surface_id: "acct-live-current",
     surface_subject_id: "acct-live",
   };
+  const duplicateReadyLiveSurface: BrowserSurface = {
+    ...liveSurface,
+    cdp_url: "http://acct-live-redundant:9222",
+    container_id: "acct-live-redundant-container",
+    stream_base_url: "http://acct-live-redundant:8080",
+    surface_id: "acct-live-redundant",
+  };
   const manager = new BrowserSurfaceLeaseManager({
     config: {
       defaultPriorityClass: "background",
@@ -1955,7 +1962,7 @@ test("boot ignores historical unhealthy surfaces without masking failed successo
       surfaceCap: 100,
       surfaceMode: "dynamic",
     },
-    initialSurfaces: [...historicalSurfaces, ...stoppingHistory, liveSurface],
+    initialSurfaces: [...historicalSurfaces, ...stoppingHistory, liveSurface, duplicateReadyLiveSurface],
     makeLeaseId: () => "live-successor-lease",
     makeSurfaceId: () => "acct-live-successor",
     nextFencingToken: () => 1,
@@ -1993,7 +2000,9 @@ test("boot ignores historical unhealthy surfaces without masking failed successo
     runConnectorImpl: async () => ({ checkpoint_summary: null, records_emitted: 0, state: null, status: "succeeded" }),
   });
   await Promise.all(
-    [...historicalSurfaces, ...stoppingHistory, liveSurface].map((surface) => leaseStore.upsertSurface(surface))
+    [...historicalSurfaces, ...stoppingHistory, liveSurface, duplicateReadyLiveSurface].map((surface) =>
+      leaseStore.upsertSurface(surface)
+    )
   );
   const receiptStore = getDefaultBrowserSurfaceReplacementReceiptStore();
   const historyLedger = createBrowserSurfaceReplacementLedger({ now: () => "2026-07-29T20:30:00.000Z" });
@@ -2027,9 +2036,25 @@ test("boot ignores historical unhealthy surfaces without masking failed successo
 
   const afterBoot = await receiptStore.list();
   assert.equal(
-    afterBoot.filter((receipt) => receipt.phase === "started" && receipt.surface_id === liveSurface.surface_id).length,
+    afterBoot.filter(
+      (receipt) =>
+        receipt.phase === "started" &&
+        receipt.connection_id === "acct-live" &&
+        receipt.profile_key === "managed-profile:acct-live" &&
+        receipt.surface_subject_id === "acct-live"
+    ).length,
     1,
-    "the one ready live surface creates one replacement boundary"
+    "duplicate ready rows in one scope create one replacement boundary"
+  );
+  assert.equal(
+    afterBoot.find(
+      (receipt) =>
+        receipt.phase === "started" &&
+        receipt.connection_id === "acct-live" &&
+        receipt.profile_key === "managed-profile:acct-live"
+    )?.surface_id,
+    liveSurface.surface_id,
+    "the lexical surface id deterministically represents the coalesced boundary"
   );
   assert.equal(
     afterBoot.filter((receipt) => receipt.phase === "started" && receipt.surface_id?.includes("historical")).length,
@@ -2060,7 +2085,7 @@ test("boot ignores historical unhealthy surfaces without masking failed successo
   assert.ok(
     (
       await Promise.all(
-        [...historicalSurfaces, ...stoppingHistory].map(
+        [...historicalSurfaces, ...stoppingHistory, liveSurface, duplicateReadyLiveSurface].map(
           async (surface) => (await leaseStore.getSurface(surface.surface_id))?.health
         )
       )
@@ -2071,7 +2096,10 @@ test("boot ignores historical unhealthy surfaces without masking failed successo
   await controller.reconcileBrowserSurfaceLeasesAfterBoot();
   assert.equal(
     (await receiptStore.list()).filter(
-      (receipt) => receipt.phase === "started" && receipt.surface_id === liveSurface.surface_id
+      (receipt) =>
+        receipt.phase === "started" &&
+        receipt.connection_id === "acct-live" &&
+        receipt.profile_key === "managed-profile:acct-live"
     ).length,
     1,
     "a second boot reconciliation cannot duplicate the live loss boundary"
@@ -2086,11 +2114,13 @@ test("boot ignores historical unhealthy surfaces without masking failed successo
   await controller.drainActiveRuns(1000);
   assert.equal(result.status, "started");
   assert.equal(ensureCalls, 1, "the live loss receives exactly one successor ensure attempt");
-  const liveReceipts = (await receiptStore.list()).filter((receipt) => receipt.surface_id === liveSurface.surface_id);
+  const liveReceipts = (await receiptStore.list()).filter(
+    (receipt) => receipt.connection_id === "acct-live" && receipt.profile_key === "managed-profile:acct-live"
+  );
   assert.deepEqual(
     liveReceipts.filter((receipt) => receipt.cause === "external_or_host_loss").map((receipt) => receipt.phase),
     ["started", "completed"],
-    "the one live loss resolves only when its same-profile successor proves readiness"
+    "the one coalesced live loss resolves only when its same-profile successor proves readiness"
   );
 });
 

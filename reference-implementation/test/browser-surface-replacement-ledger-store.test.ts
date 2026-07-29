@@ -2,6 +2,7 @@ const TOP_LEVEL_REGEX_1 = /CREATE UNIQUE INDEX IF NOT EXISTS .*one_resolution/;
 const TOP_LEVEL_REGEX_2 = /CREATE UNIQUE INDEX IF NOT EXISTS .*one_resolution/;
 const TOP_LEVEL_REGEX_3 = /surface_subject_id IS NOT DISTINCT FROM/;
 const TOP_LEVEL_REGEX_4 = /profile_key = \$3/;
+const SELECTION_OVERRIDE_ERROR = /selection override requires/;
 
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
@@ -430,6 +431,216 @@ async function assertStoreContract(store: BrowserSurfaceReplacementReceiptStore)
     () => store.append(terminalFirst.completed),
     ReplacementReplayConflictError,
     "a terminal receipt is final and cannot gain a completed row"
+  );
+
+  await assertSelectionOverrideContract(store, id);
+}
+
+async function assertSelectionOverrideContract(
+  store: BrowserSurfaceReplacementReceiptStore,
+  id: (value: string) => string
+): Promise<void> {
+  const ledger = createBrowserSurfaceReplacementLedger({ idPrefix: "selection-override", now: () => NOW });
+  const connectionId = id("selection-override-connection");
+  const profileKey = id("selection-override-profile");
+  const subjectId = id("selection-override-subject");
+  const olderStarted = ledger.start({
+    cause: "external_or_host_loss",
+    connection_id: connectionId,
+    connector_id: "chatgpt",
+    idempotency_key: id("selection-override-older"),
+    observed_at: NOW,
+    profile_key: profileKey,
+    surface_id: id("selection-override-older-surface"),
+    surface_subject_id: subjectId,
+  });
+  const olderFailed = ledger.terminate({
+    cause: olderStarted.cause,
+    connection_id: olderStarted.connection_id,
+    outcome: "failed",
+    profile_key: olderStarted.profile_key,
+    replacement_id: olderStarted.replacement_id,
+    surface_id: mustExist(olderStarted.surface_id, "older failed receipt has surface id"),
+    surface_subject_id: subjectId,
+  });
+  const priorStarted = ledger.start({
+    cause: "external_or_host_loss",
+    connection_id: connectionId,
+    connector_id: "chatgpt",
+    idempotency_key: id("selection-override-prior"),
+    observed_at: NOW,
+    profile_key: profileKey,
+    surface_id: id("selection-override-prior-surface"),
+    surface_subject_id: subjectId,
+  });
+  const priorFailed = ledger.terminate({
+    cause: priorStarted.cause,
+    connection_id: priorStarted.connection_id,
+    outcome: "failed",
+    profile_key: priorStarted.profile_key,
+    replacement_id: priorStarted.replacement_id,
+    surface_id: mustExist(priorStarted.surface_id, "prior failed receipt has surface id"),
+    surface_subject_id: subjectId,
+  });
+  const syntheticStarted = ledger.start({
+    cause: "external_or_host_loss",
+    connection_id: connectionId,
+    connector_id: "chatgpt",
+    idempotency_key: id("selection-override-synthetic"),
+    observed_at: "2026-07-29T21:07:59.000Z",
+    profile_key: profileKey,
+    surface_id: id("selection-override-synthetic-surface"),
+    surface_subject_id: subjectId,
+  });
+  await store.append(olderStarted);
+  await store.append(olderFailed);
+  await store.append(priorStarted);
+  await store.append(priorFailed);
+  await store.append(syntheticStarted);
+
+  const selectorInput = {
+    connection_id: connectionId,
+    profile_key: profileKey,
+    surface_subject_id: subjectId,
+  };
+  assert.equal(
+    await store.selectSystemActionable(selectorInput),
+    null,
+    "before the reviewed override, a newer pending boundary masks the older failed successor"
+  );
+  await assert.rejects(
+    () =>
+      store.applySelectionOverride({
+        applied_at: NOW,
+        connection_id: connectionId,
+        connector_id: "chatgpt",
+        idempotency_key: syntheticStarted.idempotency_key,
+        observed_at: "2026-07-29T21:08:00.000Z",
+        prior_failed_replacement_id: priorStarted.replacement_id,
+        profile_key: profileKey,
+        replacement_id: syntheticStarted.replacement_id,
+        surface_id: syntheticStarted.surface_id ?? "",
+        surface_subject_id: subjectId,
+      }),
+    SELECTION_OVERRIDE_ERROR,
+    "a correction must match the exact receipt fingerprint; a nearby boot timestamp is not enough"
+  );
+  await assert.rejects(
+    () =>
+      store.applySelectionOverride({
+        applied_at: NOW,
+        connection_id: connectionId,
+        connector_id: "chatgpt",
+        idempotency_key: syntheticStarted.idempotency_key,
+        observed_at: syntheticStarted.observed_at,
+        prior_failed_replacement_id: olderStarted.replacement_id,
+        profile_key: profileKey,
+        replacement_id: syntheticStarted.replacement_id,
+        surface_id: syntheticStarted.surface_id ?? "",
+        surface_subject_id: subjectId,
+      }),
+    SELECTION_OVERRIDE_ERROR,
+    "a correction must name the failed receipt the selector will actually restore"
+  );
+  await store.applySelectionOverride({
+    applied_at: NOW,
+    connection_id: connectionId,
+    connector_id: "chatgpt",
+    idempotency_key: syntheticStarted.idempotency_key,
+    observed_at: syntheticStarted.observed_at,
+    prior_failed_replacement_id: priorStarted.replacement_id,
+    profile_key: profileKey,
+    replacement_id: syntheticStarted.replacement_id,
+    surface_id: syntheticStarted.surface_id ?? "",
+    surface_subject_id: subjectId,
+  });
+  assert.equal(
+    (await store.selectSystemActionable(selectorInput))?.replacement_id,
+    priorStarted.replacement_id,
+    "after the exact reviewed override, the prior failed successor is selected again"
+  );
+  await store.applySelectionOverride({
+    applied_at: NOW,
+    connection_id: connectionId,
+    connector_id: "chatgpt",
+    idempotency_key: syntheticStarted.idempotency_key,
+    observed_at: syntheticStarted.observed_at,
+    prior_failed_replacement_id: priorStarted.replacement_id,
+    profile_key: profileKey,
+    replacement_id: syntheticStarted.replacement_id,
+    surface_id: syntheticStarted.surface_id ?? "",
+    surface_subject_id: subjectId,
+  });
+  const syntheticTerminal = ledger.terminate({
+    cause: syntheticStarted.cause,
+    connection_id: syntheticStarted.connection_id,
+    outcome: "abandoned",
+    profile_key: syntheticStarted.profile_key,
+    replacement_id: syntheticStarted.replacement_id,
+    surface_id: mustExist(syntheticStarted.surface_id, "synthetic receipt has surface id"),
+    surface_subject_id: subjectId,
+  });
+  await store.append(syntheticTerminal);
+  await store.applySelectionOverride({
+    applied_at: NOW,
+    connection_id: connectionId,
+    connector_id: "chatgpt",
+    idempotency_key: syntheticStarted.idempotency_key,
+    observed_at: syntheticStarted.observed_at,
+    prior_failed_replacement_id: priorStarted.replacement_id,
+    profile_key: profileKey,
+    replacement_id: syntheticStarted.replacement_id,
+    surface_id: syntheticStarted.surface_id ?? "",
+    surface_subject_id: subjectId,
+  });
+
+  const otherStarted = ledger.start({
+    cause: "external_or_host_loss",
+    connection_id: id("other-connector-connection"),
+    connector_id: "reddit",
+    idempotency_key: id("other-connector-prior"),
+    observed_at: NOW,
+    profile_key: id("other-connector-profile"),
+    surface_id: id("other-connector-prior-surface"),
+    surface_subject_id: id("other-connector-subject"),
+  });
+  const otherFailed = ledger.terminate({
+    cause: otherStarted.cause,
+    connection_id: otherStarted.connection_id,
+    outcome: "failed",
+    profile_key: otherStarted.profile_key,
+    replacement_id: otherStarted.replacement_id,
+    surface_id: mustExist(otherStarted.surface_id, "other prior receipt has surface id"),
+    surface_subject_id: mustExist(otherStarted.surface_subject_id, "other prior receipt has subject id"),
+  });
+  const otherPending = ledger.start({
+    cause: "external_or_host_loss",
+    connection_id: otherStarted.connection_id,
+    connector_id: "reddit",
+    idempotency_key: id("other-connector-pending"),
+    observed_at: syntheticStarted.observed_at,
+    profile_key: otherStarted.profile_key,
+    surface_id: id("other-connector-pending-surface"),
+    surface_subject_id: mustExist(otherStarted.surface_subject_id, "other pending receipt has subject id"),
+  });
+  await store.append(otherStarted);
+  await store.append(otherFailed);
+  await store.append(otherPending);
+  assert.equal(
+    await store.selectSystemActionable({
+      connection_id: otherStarted.connection_id,
+      profile_key: otherStarted.profile_key,
+      ...(otherStarted.surface_subject_id ? { surface_subject_id: otherStarted.surface_subject_id } : {}),
+    }),
+    null,
+    "an analogous non-ChatGPT pending row remains untouched without its own exact reviewed override"
+  );
+
+  await store.revokeSelectionOverride(syntheticStarted.replacement_id, "2026-07-30T00:00:00.000Z");
+  assert.equal(
+    await store.selectSystemActionable(selectorInput),
+    null,
+    "revoking the correction restores ordinary latest-start selection without deleting any receipt"
   );
 }
 
