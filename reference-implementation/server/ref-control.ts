@@ -5906,7 +5906,10 @@ async function computeConnectorSummaries(
   });
   const schedulesByInstanceId = await loadSummaryScheduleSnapshot(controller, rows);
   const summaryDeps = schedulesByInstanceId === null ? deps : { ...deps, schedulesByInstanceId };
-  const activeVisibleConnectionCounts = countActiveVisibleConnectionsByConnectorId(rows, summaryDeps.manifestsByConnectorId);
+  const activeVisibleConnectionCounts = countActiveVisibleConnectionsByConnectorId(
+    rows,
+    summaryDeps.manifestsByConnectorId
+  );
   const summaries = await runWithConcurrency(
     rows,
     options.concurrency ?? LIST_CONNECTOR_SUMMARIES_CONCURRENCY,

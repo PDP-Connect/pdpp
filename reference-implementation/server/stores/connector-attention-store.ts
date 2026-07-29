@@ -148,7 +148,9 @@ function exactConnectorInstanceIds(values: readonly (string | null | undefined)[
 
 function chunked<T>(values: readonly T[], size: number): T[][] {
   const chunks: T[][] = [];
-  for (let start = 0; start < values.length; start += size) chunks.push(values.slice(start, start + size));
+  for (let start = 0; start < values.length; start += size) {
+    chunks.push(values.slice(start, start + size));
+  }
   return chunks;
 }
 
@@ -300,38 +302,6 @@ function applyNotificationOutcomeToRecord(
 export function createSqliteConnectorAttentionStore(): ConnectorAttentionStore {
   return {
     // biome-ignore lint/suspicious/useAwait: sync sqlite driver; async satisfies the shared ConnectorAttentionStore contract.
-    async listOpenAttentionByConnectorInstanceIds(
-      connectorInstanceIds,
-      { limit, now }: { limit?: number | null; now?: string | null } = {}
-    ): Promise<Map<string, AttentionRecord[]>> {
-      const ids = exactConnectorInstanceIds(connectorInstanceIds);
-      if (!ids.length) return new Map();
-      const bounded = clampLimit(limit);
-      const readAt = nonEmptyString(now) || nowIso();
-      const result = new Map<string, AttentionRecord[]>();
-      for (const chunk of chunked(ids, SQLITE_BATCH_INSTANCE_ID_CHUNK_SIZE)) {
-        const rows = [...iterateDynamicSqlAcknowledged<AttentionListRow & { connector_instance_id: string }>(
-          `WITH ranked AS (
-             SELECT connector_instance_id, attention_id, record_json,
-                    ROW_NUMBER() OVER (PARTITION BY connector_instance_id ORDER BY updated_at DESC) AS row_number
-             FROM connector_attention_records
-             WHERE connector_instance_id IN (${chunk.map(() => "?").join(", ")})
-               AND ${buildSqliteOpenPredicate(OPEN_LIFECYCLES)}
-           ) SELECT connector_instance_id, attention_id, record_json FROM ranked WHERE row_number <= ? ORDER BY connector_instance_id, row_number`,
-          [...chunk, ...OPEN_LIFECYCLES, readAt, bounded]
-        )];
-        for (const row of rows) {
-          const record = rowToRecord(row);
-          if (!record) continue;
-          const records = result.get(row.connector_instance_id) ?? [];
-          records.push(record);
-          result.set(row.connector_instance_id, records);
-        }
-      }
-      return result;
-    },
-
-    // biome-ignore lint/suspicious/useAwait: sync sqlite driver; async satisfies the shared ConnectorAttentionStore contract.
     async cancelOpenAttentionForTerminalRuns({
       now,
       limit,
@@ -413,6 +383,43 @@ export function createSqliteConnectorAttentionStore(): ConnectorAttentionStore {
         expired.push(next);
       }
       return expired;
+    },
+    // biome-ignore lint/suspicious/useAwait: sync sqlite driver; async satisfies the shared ConnectorAttentionStore contract.
+    async listOpenAttentionByConnectorInstanceIds(
+      connectorInstanceIds,
+      { limit, now }: { limit?: number | null; now?: string | null } = {}
+    ): Promise<Map<string, AttentionRecord[]>> {
+      const ids = exactConnectorInstanceIds(connectorInstanceIds);
+      if (!ids.length) {
+        return new Map();
+      }
+      const bounded = clampLimit(limit);
+      const readAt = nonEmptyString(now) || nowIso();
+      const result = new Map<string, AttentionRecord[]>();
+      for (const chunk of chunked(ids, SQLITE_BATCH_INSTANCE_ID_CHUNK_SIZE)) {
+        const rows = [
+          ...iterateDynamicSqlAcknowledged<AttentionListRow & { connector_instance_id: string }>(
+            `WITH ranked AS (
+             SELECT connector_instance_id, attention_id, record_json,
+                    ROW_NUMBER() OVER (PARTITION BY connector_instance_id ORDER BY updated_at DESC) AS row_number
+             FROM connector_attention_records
+             WHERE connector_instance_id IN (${chunk.map(() => "?").join(", ")})
+               AND ${buildSqliteOpenPredicate(OPEN_LIFECYCLES)}
+           ) SELECT connector_instance_id, attention_id, record_json FROM ranked WHERE row_number <= ? ORDER BY connector_instance_id, row_number`,
+            [...chunk, ...OPEN_LIFECYCLES, readAt, bounded]
+          ),
+        ];
+        for (const row of rows) {
+          const record = rowToRecord(row);
+          if (!record) {
+            continue;
+          }
+          const records = result.get(row.connector_instance_id) ?? [];
+          records.push(record);
+          result.set(row.connector_instance_id, records);
+        }
+      }
+      return result;
     },
 
     // biome-ignore lint/suspicious/useAwait: sync sqlite driver; async satisfies the shared ConnectorAttentionStore contract.
@@ -572,36 +579,6 @@ export function createSqliteConnectorAttentionStore(): ConnectorAttentionStore {
 
 export function createPostgresConnectorAttentionStore(): ConnectorAttentionStore {
   return {
-    async listOpenAttentionByConnectorInstanceIds(
-      connectorInstanceIds,
-      { limit, now }: { limit?: number | null; now?: string | null } = {}
-    ): Promise<Map<string, AttentionRecord[]>> {
-      const ids = exactConnectorInstanceIds(connectorInstanceIds);
-      if (!ids.length) return new Map();
-      const bounded = clampLimit(limit);
-      const readAt = nonEmptyString(now) || nowIso();
-      const query = await postgresQuery<AttentionListRow & { connector_instance_id: string }>(
-        `WITH ranked AS (
-           SELECT connector_instance_id, attention_id, record_json,
-                  ROW_NUMBER() OVER (PARTITION BY connector_instance_id ORDER BY updated_at DESC) AS row_number
-           FROM connector_attention_records
-           WHERE connector_instance_id = ANY($1::text[])
-             AND lifecycle = ANY($2::text[])
-             AND (expires_at IS NULL OR expires_at > $3)
-         ) SELECT connector_instance_id, attention_id, record_json FROM ranked WHERE row_number <= $4 ORDER BY connector_instance_id, row_number`,
-        [ids, OPEN_LIFECYCLES, readAt, bounded]
-      );
-      const result = new Map<string, AttentionRecord[]>();
-      for (const row of query.rows) {
-        const record = rowToRecord(row);
-        if (!record) continue;
-        const records = result.get(row.connector_instance_id) ?? [];
-        records.push(record);
-        result.set(row.connector_instance_id, records);
-      }
-      return result;
-    },
-
     async cancelOpenAttentionForTerminalRuns({
       now,
       limit,
@@ -680,6 +657,39 @@ export function createPostgresConnectorAttentionStore(): ConnectorAttentionStore
         expired.push(next);
       }
       return expired;
+    },
+    async listOpenAttentionByConnectorInstanceIds(
+      connectorInstanceIds,
+      { limit, now }: { limit?: number | null; now?: string | null } = {}
+    ): Promise<Map<string, AttentionRecord[]>> {
+      const ids = exactConnectorInstanceIds(connectorInstanceIds);
+      if (!ids.length) {
+        return new Map();
+      }
+      const bounded = clampLimit(limit);
+      const readAt = nonEmptyString(now) || nowIso();
+      const query = await postgresQuery<AttentionListRow & { connector_instance_id: string }>(
+        `WITH ranked AS (
+           SELECT connector_instance_id, attention_id, record_json,
+                  ROW_NUMBER() OVER (PARTITION BY connector_instance_id ORDER BY updated_at DESC) AS row_number
+           FROM connector_attention_records
+           WHERE connector_instance_id = ANY($1::text[])
+             AND lifecycle = ANY($2::text[])
+             AND (expires_at IS NULL OR expires_at > $3)
+         ) SELECT connector_instance_id, attention_id, record_json FROM ranked WHERE row_number <= $4 ORDER BY connector_instance_id, row_number`,
+        [ids, OPEN_LIFECYCLES, readAt, bounded]
+      );
+      const result = new Map<string, AttentionRecord[]>();
+      for (const row of query.rows) {
+        const record = rowToRecord(row);
+        if (!record) {
+          continue;
+        }
+        const records = result.get(row.connector_instance_id) ?? [];
+        records.push(record);
+        result.set(row.connector_instance_id, records);
+      }
+      return result;
     },
 
     async listOpenAttentionForConnection({
