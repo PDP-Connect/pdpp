@@ -369,14 +369,16 @@ test("SQLite mounted bounded connector-summary route covers N=1/N=100/above-cap,
   await withMountedRoute(null, assertMountedRouteParity);
 });
 
-test("PostgreSQL mounted bounded connector-summary route has identical durable page semantics", async () => {
-  assert.ok(POSTGRES_URL, "PDPP_TEST_POSTGRES_URL must target the disposable PostgreSQL proof service");
-  await withTemporaryPostgresDatabase(
-    {
-      closeConnections: closePostgresStorage,
-      connectionString: POSTGRES_URL,
-      databaseName: `pdpp_route_page_${process.pid}_${Date.now()}`,
-    },
-    async (url) => await withMountedRoute(url, assertMountedRouteParity)
-  );
-});
+if (POSTGRES_URL) {
+  test("PostgreSQL mounted bounded connector-summary route has identical durable page semantics", async () => {
+    assert.ok(POSTGRES_URL, "PDPP_TEST_POSTGRES_URL must target the disposable PostgreSQL proof service");
+    await withTemporaryPostgresDatabase(
+      {
+        closeConnections: closePostgresStorage,
+        connectionString: POSTGRES_URL,
+        databaseName: `pdpp_route_page_${process.pid}_${Date.now()}`,
+      },
+      async (url) => await withMountedRoute(url, assertMountedRouteParity)
+    );
+  });
+}

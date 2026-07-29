@@ -2562,9 +2562,12 @@ export function refineConnectionHealthWithCollectionReport(
 
 function applyCoverageOverride(
   resolvedCoverage: { axis: CoverageAxis; requiredButAccepted: boolean },
-  coverageOverride: { readonly axis: CoverageAxis; readonly requiredButAccepted?: boolean } | null | undefined
+  coverageOverride:
+    | { readonly axis: CoverageAxis | undefined; readonly requiredButAccepted?: boolean }
+    | null
+    | undefined
 ): { axis: CoverageAxis; requiredButAccepted: boolean } {
-  if (!coverageOverride) {
+  if (!coverageOverride || coverageOverride.axis === undefined) {
     return resolvedCoverage;
   }
   return {
@@ -3546,11 +3549,14 @@ function evidenceUnreliableSources(
   evidence: ConnectorSummaryEvidenceRow | null,
   evidenceReadFailed = false
 ): readonly string[] {
+  if (evidenceReadFailed) {
+    return ["summary_evidence_read_failed"];
+  }
   if (!evidence) {
     // A total read failure is distinct from a genuine "no evidence row
     // exists yet" (design.md task 5.4): both read `evidence === null` here,
     // but only the former means the read itself could not be trusted.
-    return evidenceReadFailed ? ["summary_evidence_read_failed"] : ["summary_missing"];
+    return ["summary_missing"];
   }
   const sources: string[] = [];
   if (evidence.record_snapshot.state !== "current") {
