@@ -243,6 +243,8 @@ export interface RunNowOptions {
    */
   force?: boolean;
   manifest?: ConnectorManifest;
+  /** Authenticated subject used by the server admission boundary. */
+  ownerSubjectId?: string;
   ownerToken?: string;
   priorityClass?: "interactive" | "background";
   recoveryContinuationDepth?: number;
@@ -398,6 +400,15 @@ export interface RunTargetNonceHooks {
 }
 
 export interface ControllerOptions {
+  /**
+   * Resolves an exact configured connection before runtime can emit a new
+   * run fact. Production installs this against the connector-instance store.
+   */
+  admitRunConnection?: (input: {
+    connectorId: string;
+    connectorInstanceId: string | null;
+    ownerSubjectId: string;
+  }) => Promise<{ connectorId: string; connectorInstanceId: string }>;
   asPublicUrl?: string;
   /** Awaited before a managed surface lease becomes reusable after run cleanup. */
   beforeBrowserSurfaceLeaseRelease?: (args: { readonly runId: string }) => Promise<void> | void;
@@ -517,6 +528,28 @@ export interface ControllerOptions {
    *   reference-implementation/server/streaming/run-target-registry.js
    */
   streamingTargetNonceHooks?: RunTargetNonceHooks;
+}
+
+function resolveAdmittedRunConnection(
+  controllerOptions: ControllerOptions,
+  connectorId: string,
+  connectorInstanceId: string | undefined,
+  ownerSubjectId: string
+): Promise<{ connectorId: string; connectorInstanceId: string }> {
+  if (controllerOptions.admitRunConnection) {
+    return controllerOptions.admitRunConnection({
+      connectorId,
+      connectorInstanceId: connectorInstanceId ?? null,
+      ownerSubjectId,
+    });
+  }
+  if (!connectorInstanceId) {
+    throw new ControllerError(
+      "connectorInstanceId is required when no run-connection authority resolver is installed.",
+      "connector_instance_selector_required"
+    );
+  }
+  return Promise.resolve({ connectorId, connectorInstanceId });
 }
 
 function createInteractionTimeoutTerminalHandler(
@@ -3178,7 +3211,10 @@ export function createController(opts: ControllerOptions = {}): Controller {
     if (options.force) {
       return;
     }
-    const connectorInstanceId = options.connectorInstanceId || connectorId;
+    const { connectorInstanceId } = options;
+    if (!connectorInstanceId) {
+      throw new ControllerError("connectorInstanceId is required for source-pressure evaluation.", "invalid_request");
+    }
     const pendingPressureGaps = await collectPendingPressureGaps(connectorId, connectorInstanceId);
     if (pendingPressureGaps.length === 0) {
       return;
@@ -3339,13 +3375,24 @@ export function createController(opts: ControllerOptions = {}): Controller {
   }
 
   async function runNow(connectorId: string, options: RunNowOptions = {}): Promise<RunNowResult> {
-    const connectorInstanceId = options.connectorInstanceId || connectorId;
-    const key = runtimeKey(connectorId, connectorInstanceId);
-    const { manifest, connectorPath } = await validateRunNowPreconditions(connectorId, options, key);
+    const runOwnerSubjectId = options.ownerSubjectId || ownerSubjectId;
+    const admittedConnection = await resolveAdmittedRunConnection(
+      opts,
+      connectorId,
+      options.connectorInstanceId,
+      runOwnerSubjectId
+    );
+    const { connectorId: admittedConnectorId, connectorInstanceId } = admittedConnection;
+    const key = runtimeKey(admittedConnectorId, connectorInstanceId);
+    const { manifest, connectorPath } = await validateRunNowPreconditions(
+      admittedConnectorId,
+      { ...options, connectorInstanceId },
+      key
+    );
 
     const scopedResources = normalizeRunNowResources(options.resources);
     const effectiveRecoveryOnly = await resolveEffectiveRecoveryOnly(
-      connectorId,
+      admittedConnectorId,
       connectorInstanceId,
       options,
       scopedResources !== null
@@ -3366,7 +3413,11 @@ export function createController(opts: ControllerOptions = {}): Controller {
     // connector is not static-secret-backed or this browser-session source has
     // no optional stored login credential.
     const staticSecretEnv = opts.resolveStaticSecretRunEnv
-      ? await opts.resolveStaticSecretRunEnv({ connectorId, connectorInstanceId, ownerSubjectId })
+      ? await opts.resolveStaticSecretRunEnv({
+          connectorId: admittedConnectorId,
+          connectorInstanceId,
+          ownerSubjectId: runOwnerSubjectId,
+        })
       : null;
     // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     const usedStaticSecret = Boolean(staticSecretEnv && Object.keys(staticSecretEnv).length > 0);
@@ -3380,7 +3431,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     // incremental when that state is non-empty.
     const { state, collectionMode } = deriveCollectionState(
       (await getSyncState({
-        connector_id: connectorId,
+        connector_id: admittedConnectorId,
         connector_instance_id: connectorInstanceId,
       })) as { state?: unknown } | null
     );
@@ -3495,10 +3546,11 @@ export function createController(opts: ControllerOptions = {}): Controller {
     const runPromise = Promise.resolve()
       .then(() =>
         runConnectorImpl({
-          connectorId,
+          connectorId: admittedConnectorId,
           connectorInstanceId,
           connectorPath,
           manifest,
+          ownerSubjectId: runOwnerSubjectId,
           ownerToken,
           state,
           ...(scopedResources ? { scope: { streams: scopedResources } } : {}),

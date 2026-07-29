@@ -778,6 +778,7 @@ async function executeRunNow(
   const started = await ctx.runNow(namespace.connectorId, {
     connectorInstanceId: namespace.connectorInstanceId,
     force: audit.force,
+    ...(audit.ownerSubjectId ? { ownerSubjectId: audit.ownerSubjectId } : {}),
     ...(resources ? { resources } : {}),
   });
   ctx.invalidateConnectorSummariesCache?.();

@@ -424,7 +424,10 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     isManual = false,
     options: { recoveryOnly?: boolean } = {}
   ): Promise<RunRecord | null> {
-    const { connectorId, connectorInstanceId = connectorId, manifest, grantAccessMode = "continuous" } = schedule;
+    const { connectorId, connectorInstanceId, manifest, grantAccessMode = "continuous" } = schedule;
+    if (!connectorInstanceId) {
+      throw new Error("scheduler requires an admitted connectorInstanceId before creating a run");
+    }
     const key = connectorInstanceId;
     const recoveryOnly = options.recoveryOnly === true;
     const triggerKind: RunTriggerKind = isManual ? "manual" : "scheduled";

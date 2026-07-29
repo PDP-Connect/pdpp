@@ -13,10 +13,8 @@ import { emitControllerBootedAndStashEpoch } from "../lib/controller-boot.ts";
 import type { SpineEventInput, SpineEventRecord } from "../lib/spine.ts";
 import { createTraceContext, emitSpineEvent, getCurrentBootEpoch } from "../lib/spine.ts";
 import { canonicalConnectorKey } from "../server/connector-key.ts";
-import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from "../server/owner-auth.ts";
 import { getDefaultConnectorAttentionStore } from "../server/stores/connector-attention-store.ts";
 import { getDefaultConnectorDetailGapStore } from "../server/stores/connector-detail-gap-store.ts";
-import { makeDefaultAccountConnectorInstanceId } from "../server/stores/connector-instance-store.ts";
 import {
   classifyRecoveryError,
   maybeQuarantineGap,
@@ -428,6 +426,8 @@ export interface RuntimeRunConnectorOptions {
   onInteractionTerminal?: ((info: { interactionId: string; status: string }) => unknown) | null;
   onProgress?: (message: unknown) => void;
   onStarted?: ((info: { run_id: string; scenario_id?: string; trace_id: string }) => void) | null;
+  /** Authenticated owner for standalone default-account resolution. */
+  ownerSubjectId?: string | null;
   ownerToken: string;
   persistState?: boolean;
   /**
@@ -662,11 +662,9 @@ function resolveRuntimeConnectorInstanceId(input: {
   if (manifestBinding) {
     return manifestBinding;
   }
-  // Standalone runtime callers predate the controller's explicit connection
-  // argument. They address the reference default-account binding, whose
-  // immutable ID is defined by the connector-instance store — not by a
-  // connector-id fallback at the spine write boundary.
-  return makeDefaultAccountConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, input.connectorId);
+  throw new Error(
+    "runConnector: connectorInstanceId is required; server callers must admit an authenticated owner connection first."
+  );
 }
 
 function appendUniqueFields(fields: string[], extraFields: string[]): string[] {
