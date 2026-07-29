@@ -1713,7 +1713,17 @@ test("SQLite deleteConnection is all-or-nothing: a schedule/device/row failure A
   }
 });
 
-const CONFORMANCE_TEST_OWNER_SUBJECT_IDS = ["owner_1", "owner_2", "owner_3", "owner_4", "owner_5", "owner_6"];
+const CONFORMANCE_TEST_OWNER_SUBJECT_IDS = [
+  "owner_1",
+  "owner_2",
+  "owner_3",
+  "owner_4",
+  "owner_5",
+  "owner_6",
+  "owner_alice",
+  "owner_bob",
+  "owner_local",
+];
 const CONFORMANCE_TEST_CONNECTOR_IDS = ["gmail", "claude-code", "reddit", "github", "spotify", "codex"];
 
 async function cleanConformanceFixtures() {

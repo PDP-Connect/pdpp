@@ -2467,10 +2467,10 @@ export function createController(opts: ControllerOptions = {}): Controller {
     return null;
   }
 
-  async function issueRuntimeOwnerToken(): Promise<string> {
+  async function issueRuntimeOwnerToken(subjectId = ownerSubjectId): Promise<string> {
     const baseUrl = opts.asPublicUrl || process.env.AS_PUBLIC_URL;
     const device = await initiateOwnerDeviceAuthorization(ownerClientId, baseUrl ? { baseUrl } : {});
-    const approved = await approveOwnerDeviceAuthorization(device.user_code, ownerSubjectId);
+    const approved = await approveOwnerDeviceAuthorization(device.user_code, subjectId);
     if (typeof approved.access_token !== "string") {
       throw new TypeError("owner device approval did not return an access token");
     }
@@ -3157,6 +3157,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     readonly connectorInstanceId: string;
     readonly manifest: ConnectorManifest;
     readonly options: RunNowOptions;
+    readonly ownerSubjectId: string;
     readonly ownerToken: string;
     readonly result: Awaited<ReturnType<RunConnectorFn>> | undefined;
     readonly rsUrl?: string;
@@ -3182,6 +3183,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       const continuationOptions: RunNowOptions = {
         connectorInstanceId: input.connectorInstanceId,
         manifest: input.manifest,
+        ownerSubjectId: input.ownerSubjectId,
         ownerToken: input.ownerToken,
         recoveryContinuationDepth: depth + 1,
         recoveryOnly: true,
@@ -3435,7 +3437,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
         connector_instance_id: connectorInstanceId,
       })) as { state?: unknown } | null
     );
-    const ownerToken = options.ownerToken || (await issueRuntimeOwnerToken());
+    const ownerToken = options.ownerToken || (await issueRuntimeOwnerToken(runOwnerSubjectId));
 
     // Manual owner gestures clear any pending human-attention flag so the
     // scheduler can resume after the owner resolves the issue. Webhook
@@ -3546,6 +3548,21 @@ export function createController(opts: ControllerOptions = {}): Controller {
     const runPromise = Promise.resolve()
       .then(() =>
         runConnectorImpl({
+          admitRunConnection: async (candidate) => {
+            await Promise.resolve();
+            if (
+              candidate.connectorId !== admittedConnectorId ||
+              candidate.connectorInstanceId !== connectorInstanceId ||
+              candidate.ownerSubjectId !== runOwnerSubjectId
+            ) {
+              throw new ControllerError("runtime run admission identity mismatch", "invalid_request");
+            }
+            return {
+              connectorId: admittedConnectorId,
+              connectorInstanceId,
+              ownerSubjectId: runOwnerSubjectId,
+            };
+          },
           connectorId: admittedConnectorId,
           connectorInstanceId,
           connectorPath,
@@ -3697,6 +3714,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
           connectorInstanceId: string;
           manifest: ConnectorManifest;
           options: RunNowOptions;
+          ownerSubjectId: string;
           ownerToken: string;
           result: Awaited<ReturnType<RunConnectorFn>> | undefined;
           rsUrl?: string;
@@ -3705,6 +3723,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
           connectorInstanceId,
           manifest,
           options,
+          ownerSubjectId: runOwnerSubjectId,
           ownerToken,
           result: runResult,
           ...(options.rsUrl ? { rsUrl: options.rsUrl } : {}),

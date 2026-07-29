@@ -6,7 +6,8 @@ import test from "node:test";
 // biome-ignore lint/correctness/noUnresolvedImports: Biome resolver cannot model this installed package export
 import Database from "better-sqlite3";
 import { emitSpineEvent, listSpineCorrelations, listSpineEventsPage } from "../lib/spine.ts";
-import { closeDb, initDb } from "../server/db.ts";
+import { runConnector } from "../runtime/index.ts";
+import { closeDb, getDb, initDb } from "../server/db.ts";
 import { makeTemporaryDbPath } from "./helpers/temp-dir.ts";
 
 const RUN_START_WRITERS = [
@@ -14,6 +15,7 @@ const RUN_START_WRITERS = [
   { eventType: "run.started", name: "scheduler", stamp: { boot_epoch: "boot-scheduler", seq: 1 } },
 ] as const;
 const RE_UNBOUND_RUN_START_WRITER = /new run\.started events require data\.connector_instance_id/;
+const RE_ADMITTED_RUN_CONNECTION_REQUIRED = /admitted run connection is required/;
 
 function eventFor(writer: (typeof RUN_START_WRITERS)[number], connectorInstanceId?: string) {
   return {
@@ -70,6 +72,37 @@ test("non-start run events remain compatible when they have no connection identi
       status: "completed",
     });
     assert.equal(event?.event_type, "run.stream_session_resolved");
+  } finally {
+    closeDb();
+  }
+});
+
+test("direct runtime rejects arbitrary and connector-type claims before any spine fact", async () => {
+  const dbPath = makeTemporaryDbPath("pdpp-run-identity-direct-admission-");
+  initDb(dbPath);
+  try {
+    for (const connectorInstanceId of ["cin_arbitrary_missing", "reddit"]) {
+      // biome-ignore lint/performance/noAwaitInLoops: Each hostile claim independently proves the pre-spine boundary.
+      await assert.rejects(
+        () =>
+          runConnector({
+            collectionMode: "full_refresh",
+            connectorId: "reddit",
+            connectorInstanceId,
+            connectorPath: "/does/not/run.ts",
+            manifest: { connector_id: "reddit", streams: [] },
+            ownerSubjectId: "owner_alice",
+            ownerToken: "test-token",
+            rsUrl: "http://127.0.0.1:1",
+            state: null,
+          }),
+        RE_ADMITTED_RUN_CONNECTION_REQUIRED
+      );
+    }
+    const count = getDb().prepare("SELECT COUNT(*) AS count FROM spine_events").get() as {
+      count: number;
+    };
+    assert.equal(count.count, 0, "rejected direct claims create no spine facts");
   } finally {
     closeDb();
   }

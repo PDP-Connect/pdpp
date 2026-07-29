@@ -31,6 +31,7 @@ export interface RunNowOptions {
    */
   force?: boolean;
   manifest?: ConnectorManifest;
+  ownerSubjectId?: string;
   ownerToken?: string;
   priorityClass?: "interactive" | "background";
   resources?: Readonly<Record<string, readonly string[]>>;

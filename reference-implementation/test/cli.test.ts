@@ -16,6 +16,7 @@ import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { getDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
 import { ingestRecord } from "../server/records.ts";
+import { makeDefaultAccountConnectorInstanceId } from "../server/stores/connector-instance-store.ts";
 
 const TOP_LEVEL_REGEX_1 = /Reference trace ID: (trc_[A-Za-z0-9]+)/;
 const TOP_LEVEL_REGEX_2 = /^warning: "pdpp trace show" is deprecated; use "pdpp ref trace show" instead\.$/m;
@@ -609,13 +610,21 @@ function readPendingConsentTraceContext(requestUri: string): Promise<PendingCons
   return Promise.resolve(firstRow);
 }
 
-function seedSpotify(rsUrl: string, manifest: TestManifest, ownerToken: string) {
+function seedSpotify(rsUrl: string, manifest: TestManifest, ownerToken: string, ownerSubjectId = "cli_owner") {
   const connectorPath = join(REFERENCE_IMPL_DIR, "connectors/seed/index.ts");
   return runConnector({
+    admitRunConnection: async ({ connectorId, connectorInstanceId, ownerSubjectId: admittedOwnerSubjectId }) => {
+      await Promise.resolve();
+      const exactId = makeDefaultAccountConnectorInstanceId(ownerSubjectId, connectorId);
+      assert.ok(connectorInstanceId === null || connectorInstanceId === exactId);
+      assert.equal(admittedOwnerSubjectId, ownerSubjectId);
+      return { connectorId, connectorInstanceId: exactId, ownerSubjectId };
+    },
     collectionMode: "full_refresh",
     connectorId: manifest.connector_id,
     connectorPath,
     manifest,
+    ownerSubjectId,
     ownerToken,
     rsUrl,
     state: null,

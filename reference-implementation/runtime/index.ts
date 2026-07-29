@@ -384,6 +384,15 @@ export interface RuntimeBrowserSurfaceEnv {
 }
 
 export interface RuntimeRunConnectorOptions {
+  /**
+   * Trusted run-creation admission. It must validate or materialize one exact
+   * owner-owned configured instance before this runtime emits `run.started`.
+   */
+  admitRunConnection?: (input: {
+    connectorId: string;
+    connectorInstanceId: string | null;
+    ownerSubjectId: string | null;
+  }) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }>;
   automationMode?: RuntimeRunAutomationMode | null;
   /**
    * Explicit browser-surface child env override for tests and integration
@@ -653,7 +662,7 @@ function resolveRuntimeConnectorInstanceId(input: {
   connectorId: string;
   connectorInstanceId: string | null;
   manifest: ConnectorManifest;
-}): string {
+}): string | null {
   const explicit = optionalNonEmptyEnv(input.connectorInstanceId);
   if (explicit) {
     return explicit;
@@ -662,9 +671,25 @@ function resolveRuntimeConnectorInstanceId(input: {
   if (manifestBinding) {
     return manifestBinding;
   }
-  throw new Error(
-    "runConnector: connectorInstanceId is required; server callers must admit an authenticated owner connection first."
-  );
+  return null;
+}
+
+async function admitRuntimeRunConnection(
+  admitRunConnection: RuntimeRunConnectorOptions["admitRunConnection"],
+  input: { connectorId: string; connectorInstanceId: string | null; ownerSubjectId: string | null }
+): Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }> {
+  if (!admitRunConnection) {
+    throw new Error("runConnector: an admitted run connection is required before run.started.");
+  }
+  const admittedConnection = await admitRunConnection(input);
+  if (
+    admittedConnection.connectorId !== input.connectorId ||
+    (input.connectorInstanceId !== null && admittedConnection.connectorInstanceId !== input.connectorInstanceId) ||
+    (input.ownerSubjectId !== null && admittedConnection.ownerSubjectId !== input.ownerSubjectId)
+  ) {
+    throw new Error("runConnector: admission did not authorize the claimed owner connection.");
+  }
+  return admittedConnection;
 }
 
 function appendUniqueFields(fields: string[], extraFields: string[]): string[] {
@@ -1856,9 +1881,11 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         }
       : (msg: unknown) => safeStderrWrite(`[runtime] ${JSON.stringify(msg)}\n`);
   const {
+    admitRunConnection,
     connectorPath,
     connectorId: rawConnectorId,
     connectorInstanceId = null,
+    ownerSubjectId = null,
     ownerToken,
     manifest,
     scope: providedScope = null,
@@ -1911,11 +1938,17 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     recoveryOnly = false,
   } = opts;
   const connectorId = canonicalConnectorKey(rawConnectorId) ?? rawConnectorId;
-  const resolvedConnectorInstanceId = resolveRuntimeConnectorInstanceId({
+  const claimedConnectorInstanceId = resolveRuntimeConnectorInstanceId({
     connectorId,
     connectorInstanceId,
     manifest,
   });
+  const admittedConnection = await admitRuntimeRunConnection(admitRunConnection, {
+    connectorId,
+    connectorInstanceId: claimedConnectorInstanceId,
+    ownerSubjectId,
+  });
+  const resolvedConnectorInstanceId = admittedConnection.connectorInstanceId;
 
   // Check binding requirements
   const requiredBindings = manifest.runtime_requirements?.bindings || {};

@@ -208,6 +208,13 @@ async function runCancelScenario(t: TestContext, { ignoreSigterm, runId }: { ign
   let outcomeError: unknown = null;
   try {
     outcome = await runConnector({
+      admitRunConnection: async ({ connectorId, connectorInstanceId, ownerSubjectId }) => {
+        await Promise.resolve();
+        const exactId = makeDefaultAccountConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
+        assert.ok(connectorInstanceId === null || connectorInstanceId === exactId);
+        assert.equal(ownerSubjectId, OWNER_AUTH_DEFAULT_SUBJECT_ID);
+        return { connectorId, connectorInstanceId: exactId, ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID };
+      },
       cancelSignal: controller.signal,
       collectionMode: "full_refresh",
       connectorId: MANIFEST.connector_id,
@@ -230,6 +237,7 @@ async function runCancelScenario(t: TestContext, { ignoreSigterm, runId }: { ign
       onInteraction: () => ({ status: "cancelled", type: "INTERACTION_RESPONSE" }),
       // biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op test double represents an optional side effect.
       onProgress: () => {},
+      ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
       ownerToken: "test-owner-token",
       persistState: true,
       rsUrl,

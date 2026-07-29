@@ -1268,6 +1268,7 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
       runId,
       traceContext,
       ...(options.ownerToken ? { ownerToken: options.ownerToken } : {}),
+      ...(options.ownerSubjectId ? { ownerSubjectId: options.ownerSubjectId } : {}),
       ...(options.rsUrl ? { rsUrl: options.rsUrl } : {}),
     });
   }
