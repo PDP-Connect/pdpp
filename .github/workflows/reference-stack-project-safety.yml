@@ -1,0 +1,54 @@
+name: reference-stack-project-safety
+
+# Fail-closed regression gate for the canonical deploy wrapper's Compose
+# project-name default and paired-identity guard (scripts/reference-stack.sh).
+#
+# A prior incident: running the wrapper from a worktree whose directory
+# basename wasn't "pdpp" let Compose derive its project name from that
+# basename, silently starting a second, parallel stack. The follow-up fix
+# also found that overriding COMPOSE_PROJECT_NAME alone (without a paired
+# PDPP_NEKO_DEPLOYMENT_ID) is a split-identity risk for the n.eko allocator's
+# ownership check — see scripts/reference-stack.project-name.test.sh's own
+# header for the full incident and threat model.
+#
+# Path-scoped like spec-check.yml/test-accounting.yml: this only needs to run
+# when the wrapper or its regression tests change, not on every PR. Pure bash,
+# stubs `docker` on PATH, and never touches a real Docker daemon — no
+# dependency install required.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/reference-stack-project-safety.yml"
+      - "scripts/reference-stack.sh"
+      - "scripts/reference-stack.*.test.sh"
+  pull_request:
+    paths:
+      - ".github/workflows/reference-stack-project-safety.yml"
+      - "scripts/reference-stack.sh"
+      - "scripts/reference-stack.*.test.sh"
+  workflow_dispatch: {}
+
+concurrency:
+  group: reference-stack-project-safety-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  project-safety:
+    name: reference-stack.sh project-name + paired-identity guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Syntax check
+        run: bash -n scripts/reference-stack.sh scripts/reference-stack.project-name.test.sh scripts/reference-stack.dirty-guard.test.sh
+
+      - name: Project-name default + paired-identity guard tests
+        run: bash scripts/reference-stack.project-name.test.sh
+
+      - name: Dirty-tree build guard tests (adjacent wrapper regression)
+        run: bash scripts/reference-stack.dirty-guard.test.sh
