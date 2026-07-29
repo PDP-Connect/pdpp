@@ -540,6 +540,23 @@ function optionalSqlPlaceholders(values: readonly unknown[] | null | undefined):
   return values?.length ? values.map(() => "?").join(", ") : null;
 }
 
+// Stay below SQLite's historical 999-variable floor after reserving values
+// for eligibility, ordering, and the per-connection limit.
+const SQLITE_BATCH_INSTANCE_ID_CHUNK_SIZE = 900;
+const SQLITE_BATCH_REASON_CHUNK_SIZE = 98;
+
+function exactConnectorInstanceIds(values: readonly (string | null | undefined)[]): string[] {
+  return [...new Set(values.map(nonEmptyString).filter((value): value is string => value !== null))];
+}
+
+function chunked<T>(values: readonly T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let start = 0; start < values.length; start += size) {
+    chunks.push(values.slice(start, start + size));
+  }
+  return chunks;
+}
+
 // `NULLIF(last_attempt_at, '')` normalizes an empty-string last_attempt_at to
 // NULL before the COALESCE fallback to created_at, on BOTH engines. Not
 // reachable today (last_attempt_at is only ever NULL or a non-empty ISO
@@ -874,6 +891,35 @@ export function createSqliteConnectorDetailGapStore() {
       return rows.map((row) => ({ count: coerceCount(row.gap_count ?? 0), stream: row.stream }));
     },
 
+    countGapsByStatusByStreamForConnectorInstanceIds(
+      connectorInstanceIds: readonly (string | null | undefined)[],
+      { status }: { status: string }
+    ): Promise<Map<string, Map<string, number>>> {
+      assertValidGapStatus(status);
+      const ids = exactConnectorInstanceIds(connectorInstanceIds);
+      if (!ids.length) {
+        return Promise.resolve(new Map());
+      }
+      const result = new Map<string, Map<string, number>>();
+      for (const chunk of chunked(ids, SQLITE_BATCH_INSTANCE_ID_CHUNK_SIZE)) {
+        const placeholders = chunk.map(() => "?").join(", ");
+        const rows = [
+          ...iterateDynamicSqlAcknowledged<{ connector_instance_id: string; stream: string; gap_count: number }>(
+            `SELECT connector_instance_id, stream, COUNT(*) AS gap_count FROM connector_detail_gaps
+           WHERE connector_instance_id IN (${placeholders}) AND status = ?
+           GROUP BY connector_instance_id, stream`,
+            [...chunk, status]
+          ),
+        ];
+        for (const row of rows) {
+          const counts = result.get(row.connector_instance_id) ?? new Map<string, number>();
+          counts.set(row.stream, coerceCount(row.gap_count));
+          result.set(row.connector_instance_id, counts);
+        }
+      }
+      return Promise.resolve(result);
+    },
+
     // Exact reason-scoped count-by-status across every connector instance for a
     // connector type. The operator-console source-pressure backlog rollup uses
     // this for its optional `recovered` count: a single bounded aggregate that
@@ -910,6 +956,47 @@ export function createSqliteConnectorDetailGapStore() {
         [connectorId, status, scopedConnectorInstanceId, scopedConnectorInstanceId, ...(reasonScope ?? [])]
       );
       return coerceCount((row as unknown as { gap_count?: number } | null)?.gap_count ?? 0);
+    },
+
+    countGapsByStatusForConnectorInstanceIds(
+      connectorInstanceIds: readonly (string | null | undefined)[],
+      { reasons = null, status }: { reasons?: readonly string[] | null; status: string }
+    ): Promise<Map<string, number>> {
+      assertValidGapStatus(status);
+      const ids = exactConnectorInstanceIds(connectorInstanceIds);
+      if (!ids.length) {
+        return Promise.resolve(new Map());
+      }
+      const result = new Map<string, number>();
+      const reasonValues = [
+        ...new Set((reasons ?? []).filter((reason): reason is string => typeof reason === "string")),
+      ];
+      // 900 instance ids + status + at most 98 reason values stays at the
+      // historical SQLite 999-bind floor. Summing disjoint reason chunks
+      // preserves the count for an arbitrarily long caller-supplied filter.
+      const reasonChunks = reasonValues.length ? chunked(reasonValues, SQLITE_BATCH_REASON_CHUNK_SIZE) : [null];
+      for (const chunk of chunked(ids, SQLITE_BATCH_INSTANCE_ID_CHUNK_SIZE)) {
+        const placeholders = chunk.map(() => "?").join(", ");
+        for (const reasonChunk of reasonChunks) {
+          const reasonPlaceholders = optionalSqlPlaceholders(reasonChunk);
+          const rows = [
+            ...iterateDynamicSqlAcknowledged<{ connector_instance_id: string; gap_count: number }>(
+              `SELECT connector_instance_id, COUNT(*) AS gap_count FROM connector_detail_gaps
+             WHERE connector_instance_id IN (${placeholders}) AND status = ?
+             ${reasonPlaceholders ? `AND reason IN (${reasonPlaceholders})` : ""}
+             GROUP BY connector_instance_id`,
+              [...chunk, status, ...(reasonChunk ?? [])]
+            ),
+          ];
+          for (const row of rows) {
+            result.set(
+              row.connector_instance_id,
+              (result.get(row.connector_instance_id) ?? 0) + coerceCount(row.gap_count)
+            );
+          }
+        }
+      }
+      return Promise.resolve(result);
     },
 
     // Single-row read by gap id, or null if absent. Used by the §10-A terminal
@@ -973,6 +1060,45 @@ export function createSqliteConnectorDetailGapStore() {
         ),
       ];
       return rows.map((row) => rowToGap(row) as DetailGap);
+    },
+    // Page-scoped summary evidence. Each map is keyed only by the durable
+    // connection identity; callers must not fall back to connector_id.
+    listPendingGapsByConnectorInstanceIds(
+      connectorInstanceIds: readonly (string | null | undefined)[],
+      { limit = 100, now = nowIso() }: { limit?: number; now?: string } = {}
+    ): Promise<Map<string, DetailGap[]>> {
+      const ids = exactConnectorInstanceIds(connectorInstanceIds);
+      if (!ids.length) {
+        return Promise.resolve(new Map());
+      }
+      const bounded = Math.max(1, Math.min(limit, 500));
+      const eligibleAt = nonEmptyString(now) || nowIso();
+      const result = new Map<string, DetailGap[]>();
+      for (const chunk of chunked(ids, SQLITE_BATCH_INSTANCE_ID_CHUNK_SIZE)) {
+        const placeholders = chunk.map(() => "?").join(", ");
+        const rows = [
+          ...iterateDynamicSqlAcknowledged<DetailGapRow>(
+            `WITH ranked AS (
+               SELECT connector_detail_gaps.*, ROW_NUMBER() OVER (
+                 PARTITION BY connector_instance_id
+                 ORDER BY ${pendingGapOrderBySql(false)}
+               ) AS row_number
+               FROM connector_detail_gaps
+               WHERE connector_instance_id IN (${placeholders})
+                 AND status = 'pending'
+                 AND (next_attempt_after IS NULL OR next_attempt_after <= ?)
+             ) SELECT * FROM ranked WHERE row_number <= ? ORDER BY connector_instance_id, row_number`,
+            [eligibleAt, ...chunk, eligibleAt, bounded]
+          ),
+        ];
+        for (const row of rows) {
+          const gap = rowToGap(row) as DetailGap;
+          const gaps = result.get(gap.connector_instance_id) ?? [];
+          gaps.push(gap);
+          result.set(gap.connector_instance_id, gaps);
+        }
+      }
+      return Promise.resolve(result);
     },
 
     // Diagnostic listing across all connector instances for a connector type.
@@ -1447,6 +1573,30 @@ export function createPostgresConnectorDetailGapStore() {
       }));
     },
 
+    async countGapsByStatusByStreamForConnectorInstanceIds(
+      connectorInstanceIds: readonly (string | null | undefined)[],
+      { status }: { status: string }
+    ): Promise<Map<string, Map<string, number>>> {
+      assertValidGapStatus(status);
+      const ids = exactConnectorInstanceIds(connectorInstanceIds);
+      if (!ids.length) {
+        return new Map();
+      }
+      const query = await postgresQuery<{ connector_instance_id: string; stream: string; gap_count: number }>(
+        `SELECT connector_instance_id, stream, COUNT(*) AS gap_count FROM connector_detail_gaps
+         WHERE connector_instance_id = ANY($1::text[]) AND status = $2
+         GROUP BY connector_instance_id, stream`,
+        [ids, status]
+      );
+      const result = new Map<string, Map<string, number>>();
+      for (const row of query.rows) {
+        const counts = result.get(row.connector_instance_id) ?? new Map<string, number>();
+        counts.set(row.stream, coerceCount(row.gap_count));
+        result.set(row.connector_instance_id, counts);
+      }
+      return result;
+    },
+
     async countGapsByStatusForConnector(
       connectorId: string,
       {
@@ -1477,6 +1627,25 @@ export function createPostgresConnectorDetailGapStore() {
         [connectorId, status, reasonScope, scopedConnectorInstanceId]
       );
       return coerceCount(result.rows[0]?.gap_count ?? 0);
+    },
+
+    async countGapsByStatusForConnectorInstanceIds(
+      connectorInstanceIds: readonly (string | null | undefined)[],
+      { reasons = null, status }: { reasons?: readonly string[] | null; status: string }
+    ): Promise<Map<string, number>> {
+      assertValidGapStatus(status);
+      const ids = exactConnectorInstanceIds(connectorInstanceIds);
+      if (!ids.length) {
+        return new Map();
+      }
+      const query = await postgresQuery<{ connector_instance_id: string; gap_count: number }>(
+        `SELECT connector_instance_id, COUNT(*) AS gap_count FROM connector_detail_gaps
+         WHERE connector_instance_id = ANY($1::text[]) AND status = $2
+           AND ($3::text[] IS NULL OR reason = ANY($3::text[]))
+         GROUP BY connector_instance_id`,
+        [ids, status, reasons?.length ? reasons : null]
+      );
+      return new Map(query.rows.map((row) => [row.connector_instance_id, coerceCount(row.gap_count)] as const));
     },
 
     // Single-row read by gap id, or null if absent. See the SQLite path for the
@@ -1530,6 +1699,38 @@ export function createPostgresConnectorDetailGapStore() {
         ]
       );
       return (result.rows as DetailGapRow[]).map((row) => rowToGap(row) as DetailGap);
+    },
+    async listPendingGapsByConnectorInstanceIds(
+      connectorInstanceIds: readonly (string | null | undefined)[],
+      { limit = 100, now = nowIso() }: { limit?: number; now?: string } = {}
+    ): Promise<Map<string, DetailGap[]>> {
+      const ids = exactConnectorInstanceIds(connectorInstanceIds);
+      if (!ids.length) {
+        return new Map();
+      }
+      const bounded = Math.max(1, Math.min(limit, 500));
+      const eligibleAt = nonEmptyString(now) || nowIso();
+      const query = await postgresQuery<DetailGapRow>(
+        `WITH ranked AS (
+           SELECT connector_detail_gaps.*, ROW_NUMBER() OVER (
+             PARTITION BY connector_instance_id
+             ORDER BY ${pendingGapOrderBySql(true)}
+           ) AS row_number
+           FROM connector_detail_gaps
+           WHERE connector_instance_id = ANY($1::text[])
+             AND status = 'pending'
+             AND (next_attempt_after IS NULL OR next_attempt_after <= $2)
+         ) SELECT * FROM ranked WHERE row_number <= $3 ORDER BY connector_instance_id, row_number`,
+        [ids, eligibleAt, bounded, eligibleAt]
+      );
+      const result = new Map<string, DetailGap[]>();
+      for (const row of query.rows as DetailGapRow[]) {
+        const gap = rowToGap(row) as DetailGap;
+        const gaps = result.get(gap.connector_instance_id) ?? [];
+        gaps.push(gap);
+        result.set(gap.connector_instance_id, gaps);
+      }
+      return result;
     },
 
     async listPendingGapsForConnector(

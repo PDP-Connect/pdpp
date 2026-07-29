@@ -27,12 +27,26 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+// biome-ignore lint/correctness/noUnresolvedImports: test-only SQLite statement counter.
+import Database from "better-sqlite3";
 import { registerConnector } from "../server/auth.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
+import {
+  closePostgresStorage,
+  getPostgresPool,
+  initPostgresStorage,
+  postgresQuery,
+} from "../server/postgres-storage.ts";
 import { makeDefaultAccountConnectorInstanceId } from "../server/stores/connector-instance-store.ts";
-import { createSqliteSchedulerStore, type SchedulerStore } from "../server/stores/scheduler-store.ts";
+import {
+  createPostgresSchedulerStore,
+  createSqliteSchedulerStore,
+  type SchedulerStore,
+} from "../server/stores/scheduler-store.ts";
+import { dedicatedPostgresTestUrl } from "./helpers/dedicated-postgres-test-url.ts";
 
 const SEMANTIC_CONNECTOR = "https://test.pdpp.org/connectors/semantic-surface";
+const POSTGRES_URL = dedicatedPostgresTestUrl(process.env.PDPP_TEST_POSTGRES_URL);
 
 const SEMANTIC_MANIFEST = {
   connector_id: SEMANTIC_CONNECTOR,
@@ -65,6 +79,34 @@ function propertyAt(target: object, name: string): unknown {
   return (target as Record<string, unknown>)[name];
 }
 
+type SchedulerBatchStore = Required<
+  Pick<
+    SchedulerStore,
+    "listLastRunTimesByConnectionIds" | "listLatestRunHistoryByConnectionIds" | "listSchedulesByConnectionIds"
+  >
+>;
+
+function schedulerBatches(store: SchedulerStore): SchedulerBatchStore {
+  assert.ok(store.listLastRunTimesByConnectionIds);
+  assert.ok(store.listLatestRunHistoryByConnectionIds);
+  assert.ok(store.listSchedulesByConnectionIds);
+  return store as SchedulerBatchStore;
+}
+
+async function countRawPrepareCalls<T>(fn: () => Promise<T>): Promise<{ readonly calls: number; readonly result: T }> {
+  let calls = 0;
+  const original = Database.prototype.prepare;
+  Database.prototype.prepare = function patchedPrepare(this: InstanceType<typeof Database>, sql: string) {
+    calls += 1;
+    return original.call<InstanceType<typeof Database>, [string], ReturnType<typeof original>>(this, sql);
+  } as typeof original;
+  try {
+    return { calls, result: await fn() };
+  } finally {
+    Database.prototype.prepare = original;
+  }
+}
+
 test("SchedulerStore exposes only semantic schedule lifecycle methods", () => {
   const store = createSqliteSchedulerStore();
   const expected = [
@@ -73,12 +115,15 @@ test("SchedulerStore exposes only semantic schedule lifecycle methods", () => {
     "deleteSchedule",
     "getSchedule",
     "listSchedules",
+    "listSchedulesByConnectionIds",
+    "listLatestRunHistoryByConnectionIds",
     "setScheduleEnabled",
     "updateSchedule",
     "deleteActiveRun",
     "listActiveRuns",
     "getLatestRunHistoryForConnection",
     "listLastRunTimes",
+    "listLastRunTimesByConnectionIds",
     "listRunHistory",
     "upsertLastRunTime",
     "upsertActiveRun",
@@ -439,4 +484,278 @@ test("listSchedules entries each surface enabled as a boolean", async () => {
       assert.equal(typeof record.enabled, "boolean", "every listSchedules() entry must carry enabled as a boolean");
     }
   });
+});
+
+test("page-scoped scheduler batches preserve exact instance history and schedule ordering", async () => {
+  await withFreshStore(async (store) => {
+    const batches = schedulerBatches(store);
+    const now = "2026-04-29T04:00:00.000Z";
+    const work = "cin_batch_work";
+    const personal = "cin_batch_personal";
+    const absent = "cin_batch_absent";
+    for (const [connectorInstanceId, enabled] of [
+      [work, true],
+      [personal, false],
+    ] as const) {
+      // biome-ignore lint/performance/noAwaitInLoops: ordered fixture writes preserve each instance's history tie-breaker.
+      await store.createSchedule({
+        connector_id: SEMANTIC_CONNECTOR,
+        connector_instance_id: connectorInstanceId,
+        created_at: now,
+        enabled,
+        interval_seconds: 600,
+        jitter_seconds: 0,
+        updated_at: now,
+      });
+      await store.upsertLastRunTime(connectorInstanceId, enabled ? 20 : 10, now, SEMANTIC_CONNECTOR);
+      await store.appendRunHistory({
+        attempt: 1,
+        checkpointSummary: null,
+        completedAt: "2026-04-29T04:00:01.000Z",
+        connectorId: SEMANTIC_CONNECTOR,
+        connectorInstanceId,
+        knownGaps: [],
+        recordsEmitted: 1,
+        source: { id: SEMANTIC_CONNECTOR, kind: "connector" },
+        startedAt: now,
+        status: "failed",
+      });
+      await store.appendRunHistory({
+        attempt: 2,
+        checkpointSummary: null,
+        completedAt: "2026-04-29T04:00:02.000Z",
+        connectorId: SEMANTIC_CONNECTOR,
+        connectorInstanceId,
+        knownGaps: [],
+        recordsEmitted: 2,
+        runId: `run_${connectorInstanceId}`,
+        source: { id: SEMANTIC_CONNECTOR, kind: "connector" },
+        startedAt: now,
+        status: "succeeded",
+      });
+    }
+
+    const ids = [work, absent, personal, work];
+    assert.deepEqual(
+      (await batches.listSchedulesByConnectionIds(ids)).map((row) => row.connector_instance_id),
+      [personal, work],
+      "schedule batches retain listSchedules ordering, omit absent ids, and do not duplicate duplicate inputs"
+    );
+    assert.deepEqual(
+      (await batches.listLastRunTimesByConnectionIds(ids)).map((row) => row.connector_instance_id),
+      [personal, work]
+    );
+    assert.deepEqual(
+      (await batches.listLatestRunHistoryByConnectionIds(ids)).map((row) => [row.connectorInstanceId, row.status]),
+      [
+        [personal, "succeeded"],
+        [work, "succeeded"],
+      ]
+    );
+    assert.deepEqual(
+      (await batches.listLatestRunHistoryByConnectionIds(ids, "succeeded")).map((row) => row.runId),
+      [`run_${personal}`, `run_${work}`],
+      "successful-only batches preserve singleton latest-successful semantics"
+    );
+  });
+});
+
+test("SQLite page-scoped scheduler batches short-circuit empty input and stay page-bounded across a 1,000-connection fleet", async () => {
+  await withFreshStore(async (store) => {
+    const batches = schedulerBatches(store);
+    const now = "2026-04-29T05:00:00.000Z";
+    const pageIds = Array.from({ length: 100 }, (_, index) => `cin_batch_page_${index}`);
+    const unrelatedIds = Array.from({ length: 900 }, (_, index) => `cin_batch_unrelated_${index}`);
+    for (const connectorInstanceId of [...pageIds, ...unrelatedIds]) {
+      // biome-ignore lint/performance/noAwaitInLoops: deterministic bulk fixture setup keeps SQLite statement counting reproducible.
+      await store.createSchedule({
+        connector_id: SEMANTIC_CONNECTOR,
+        connector_instance_id: connectorInstanceId,
+        created_at: now,
+        enabled: true,
+        interval_seconds: 600,
+        jitter_seconds: 0,
+        updated_at: now,
+      });
+      await store.upsertLastRunTime(connectorInstanceId, 1, now, SEMANTIC_CONNECTOR);
+      await store.appendRunHistory({
+        attempt: 1,
+        checkpointSummary: null,
+        completedAt: now,
+        connectorId: SEMANTIC_CONNECTOR,
+        connectorInstanceId,
+        knownGaps: [],
+        recordsEmitted: 0,
+        source: { id: SEMANTIC_CONNECTOR, kind: "connector" },
+        startedAt: now,
+        status: "succeeded",
+      });
+    }
+
+    const empty = await countRawPrepareCalls(async () => ({
+      history: await batches.listLatestRunHistoryByConnectionIds([]),
+      rates: await batches.listLastRunTimesByConnectionIds([]),
+      schedules: await batches.listSchedulesByConnectionIds([]),
+    }));
+    assert.equal(empty.calls, 0, "an empty page must not issue a SQLite membership query");
+    assert.deepEqual(empty.result, { history: [], rates: [], schedules: [] });
+
+    const scopedPageIds = pageIds.slice(0, 99);
+    const scheduleRead = await countRawPrepareCalls(() =>
+      Promise.resolve(batches.listSchedulesByConnectionIds(scopedPageIds))
+    );
+    const historyRead = await countRawPrepareCalls(() =>
+      Promise.resolve(batches.listLatestRunHistoryByConnectionIds(scopedPageIds))
+    );
+    const rateRead = await countRawPrepareCalls(() =>
+      Promise.resolve(batches.listLastRunTimesByConnectionIds(scopedPageIds))
+    );
+    assert.equal(scheduleRead.result.length, scopedPageIds.length);
+    assert.equal(historyRead.result.length, scopedPageIds.length);
+    assert.equal(rateRead.result.length, scopedPageIds.length);
+
+    const chunkedSchedules = await countRawPrepareCalls(() =>
+      Promise.resolve(batches.listSchedulesByConnectionIds([...pageIds, ...unrelatedIds]))
+    );
+    assert.equal(chunkedSchedules.result.length, 1000);
+  });
+});
+
+test("SQLite scheduler page batches issue one statement per page axis and two safely chunked statements for 1,000 ids", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pdpp-scheduler-batch-count-"));
+  const dbPath = join(dir, "reference.sqlite");
+  const ids = Array.from({ length: 1000 }, (_, index) => `cin_count_${index}`);
+  try {
+    initDb(dbPath);
+    const seeded = createSqliteSchedulerStore();
+    for (const connectorInstanceId of ids) {
+      // biome-ignore lint/performance/noAwaitInLoops: deterministic bulk fixture setup keeps the reopened database exact.
+      await seeded.createSchedule({
+        connector_id: SEMANTIC_CONNECTOR,
+        connector_instance_id: connectorInstanceId,
+        created_at: "2026-04-29T07:00:00.000Z",
+        enabled: true,
+        interval_seconds: 600,
+        jitter_seconds: 0,
+        updated_at: "2026-04-29T07:00:00.000Z",
+      });
+    }
+    closeDb();
+
+    let calls = 0;
+    const original = Database.prototype.prepare;
+    Database.prototype.prepare = function patchedPrepare(this: InstanceType<typeof Database>, sql: string) {
+      calls += 1;
+      return original.call<InstanceType<typeof Database>, [string], ReturnType<typeof original>>(this, sql);
+    } as typeof original;
+    try {
+      initDb(dbPath);
+      calls = 0; // exclude database bootstrap; this cache is fresh for the batch SQL below.
+      const store = createSqliteSchedulerStore();
+      const batches = schedulerBatches(store);
+      await batches.listSchedulesByConnectionIds(ids.slice(0, 99));
+      assert.equal(calls, 1, "a page below the 100-item cap is one SQLite schedule statement");
+      calls = 0;
+      await batches.listSchedulesByConnectionIds(ids);
+      assert.equal(calls, 2, "1,000 ids split into 900 + 100 bound SQLite statements");
+    } finally {
+      Database.prototype.prepare = original;
+      closeDb();
+    }
+  } finally {
+    await rm(dir, { force: true, recursive: true });
+  }
+});
+
+test("PostgreSQL scheduler page batches match SQLite semantics and use one typed-array query per non-empty axis", {
+  skip: !POSTGRES_URL,
+}, async () => {
+  assert.ok(POSTGRES_URL, "Postgres URL is configured when this test runs");
+  const fixtures = [
+    { connectorId: "connector-alpha", connectorInstanceId: "cin_batch_pg_z", enabled: true, rate: 2 },
+    { connectorId: "connector-beta", connectorInstanceId: "cin_batch_pg_a", enabled: false, rate: 1 },
+  ] as const;
+  const ids = fixtures.map((fixture) => fixture.connectorInstanceId);
+  await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
+  try {
+    await postgresQuery("DELETE FROM scheduler_run_history WHERE connector_instance_id = ANY($1::text[])", [ids]);
+    await postgresQuery("DELETE FROM scheduler_last_run_times WHERE connector_instance_id = ANY($1::text[])", [ids]);
+    await postgresQuery("DELETE FROM connector_schedules WHERE connector_instance_id = ANY($1::text[])", [ids]);
+    const store = createPostgresSchedulerStore();
+    const batches = schedulerBatches(store);
+    const now = "2026-04-29T06:00:00.000Z";
+    for (const { connectorId, connectorInstanceId, enabled, rate } of fixtures) {
+      // biome-ignore lint/performance/noAwaitInLoops: ordered fixture writes prove connector/id ordering with explicit causal setup.
+      await store.createSchedule({
+        connector_id: connectorId,
+        connector_instance_id: connectorInstanceId,
+        created_at: now,
+        enabled,
+        interval_seconds: 600,
+        jitter_seconds: 0,
+        updated_at: now,
+      });
+      await store.upsertLastRunTime(connectorInstanceId, rate, now, connectorId);
+      await store.appendRunHistory({
+        attempt: 1,
+        checkpointSummary: null,
+        completedAt: now,
+        connectorId,
+        connectorInstanceId,
+        knownGaps: [],
+        recordsEmitted: 0,
+        runId: `run_${connectorId}`,
+        source: { id: connectorId, kind: "connector" },
+        startedAt: now,
+        status: "succeeded",
+      });
+    }
+
+    const pool = getPostgresPool();
+    const originalQuery = pool.query.bind(pool);
+    let calls = 0;
+    pool.query = ((...args: Parameters<typeof originalQuery>) => {
+      calls += 1;
+      return originalQuery(...args);
+    }) as typeof pool.query;
+    try {
+      assert.deepEqual(await batches.listSchedulesByConnectionIds([]), []);
+      assert.deepEqual(await batches.listLatestRunHistoryByConnectionIds([], "succeeded"), []);
+      assert.deepEqual(await batches.listLastRunTimesByConnectionIds([]), []);
+      assert.equal(calls, 0, "empty PostgreSQL scopes must not issue typed-array queries");
+
+      assert.deepEqual(
+        (await batches.listSchedulesByConnectionIds([...ids].reverse())).map((row) => row.connector_id),
+        ["connector-alpha", "connector-beta"],
+        "PostgreSQL preserves the same connector/id list ordering as SQLite"
+      );
+      assert.deepEqual(
+        (await batches.listLatestRunHistoryByConnectionIds(ids, "succeeded")).map((row) => [
+          row.connectorId,
+          row.runId,
+        ]),
+        [
+          ["connector-alpha", "run_connector-alpha"],
+          ["connector-beta", "run_connector-beta"],
+        ],
+        "PostgreSQL latest-successful history uses established connector_id/connector_instance_id ordering"
+      );
+      assert.deepEqual(
+        (await batches.listLastRunTimesByConnectionIds(ids)).map((row) => row.last_run_time_ms),
+        [2, 1]
+      );
+      assert.equal(calls, 3, "each non-empty PostgreSQL axis uses one bounded typed-array join");
+      calls = 0;
+      const overCapIds = [...ids, ...Array.from({ length: 99 }, (_, index) => `cin_batch_pg_absent_${index}`)];
+      assert.equal((await batches.listSchedulesByConnectionIds(overCapIds)).length, 2);
+      assert.equal(calls, 2, "a 101-id scope is split into two page-bounded typed-array joins");
+    } finally {
+      pool.query = originalQuery;
+    }
+  } finally {
+    await postgresQuery("DELETE FROM scheduler_run_history WHERE connector_instance_id = ANY($1::text[])", [ids]);
+    await postgresQuery("DELETE FROM scheduler_last_run_times WHERE connector_instance_id = ANY($1::text[])", [ids]);
+    await postgresQuery("DELETE FROM connector_schedules WHERE connector_instance_id = ANY($1::text[])", [ids]);
+    await closePostgresStorage();
+  }
 });

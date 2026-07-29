@@ -9,6 +9,7 @@ import { buildPeekRelationships, hasPeekRelationships } from "./explore-peek-rel
 
 // A minimal data source stub exposing only the three reads the helper calls.
 function stubDataSource(over: {
+  onListConnectorSummaries?: (options: { connectionRouteId?: string } | undefined) => void;
   manifests?: ConnectorManifest[];
   streamMetadata?: Record<string, StreamMetadata>;
   summaries?: Array<{ connection_id: string; connector_id: string; connector_instance_id?: string }>;
@@ -23,7 +24,10 @@ function stubDataSource(over: {
       return Promise.resolve(meta);
     },
     listConnectorManifests: () => Promise.resolve(over.manifests ?? []),
-    listConnectorSummaries: () => Promise.resolve({ data: summaries, has_more: false, object: "list" } as never),
+    listConnectorSummaries: (options?: { connectionRouteId?: string }) => {
+      over.onListConnectorSummaries?.(options);
+      return Promise.resolve({ data: summaries, has_more: false, object: "list" } as never);
+    },
   } as unknown as DashboardDataSource;
 }
 
@@ -109,4 +113,52 @@ test("buildPeekRelationships returns empty (never throws) when no declared edge 
   );
   assert.deepEqual(rels, { parentBackLinks: [], relatedLinks: [], reverseChildListLinks: [] });
   assert.equal(hasPeekRelationships(rels), false);
+});
+
+test("buildPeekRelationships scopes its summary lookup to the inspected connection", async () => {
+  const calls: Array<{ connectionRouteId?: string } | undefined> = [];
+  const metadataInstanceIds: Array<string | null | undefined> = [];
+  const allGmailConnections = [
+    { connection_id: "conn_mail_personal", connector_id: "gmail", connector_instance_id: "cin_mail_personal" },
+    { connection_id: "conn_mail_work", connector_id: "gmail", connector_instance_id: "cin_mail_work" },
+  ];
+  const rels = await buildPeekRelationships(
+    {
+      connectionId: "conn_mail_work",
+      connectorId: "gmail",
+      data: { thread_id: "thread_1" },
+      recordId: "rec_work_1",
+      stream: "messages",
+    },
+    {
+      getStreamMetadata: (
+        _connectorId: string,
+        stream: string,
+        options?: { connectorInstanceId?: string | null }
+      ) => {
+        metadataInstanceIds.push(options?.connectorInstanceId);
+        return Promise.resolve({ name: stream } as StreamMetadata);
+      },
+      listConnectorManifests: () => Promise.resolve([]),
+      listConnectorSummaries: (options?: { connectionRouteId?: string }) => {
+        calls.push(options);
+        assert.deepEqual(options, { connectionRouteId: "conn_mail_work" });
+        const scoped = allGmailConnections.filter((summary) => summary.connection_id === options?.connectionRouteId);
+        assert.deepEqual(
+          scoped.map((summary) => summary.connection_id),
+          ["conn_mail_work"],
+          "the same-type personal connection must not be selected"
+        );
+        return Promise.resolve({
+          data: scoped,
+          has_more: false,
+          object: "list",
+        } as never);
+      },
+    } as unknown as DashboardDataSource
+  );
+
+  assert.deepEqual(rels, { parentBackLinks: [], relatedLinks: [], reverseChildListLinks: [] });
+  assert.deepEqual(calls, [{ connectionRouteId: "conn_mail_work" }]);
+  assert.deepEqual(metadataInstanceIds, ["cin_mail_work"]);
 });

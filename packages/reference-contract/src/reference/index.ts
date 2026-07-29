@@ -71,6 +71,8 @@ const ConnectorListResponseSchema = {
   additionalProperties: false,
   properties: {
     data: { items: ConnectorSummarySchema, type: "array" },
+    has_more: { type: "boolean" },
+    next_cursor: { type: ["string", "null"] },
     object: { const: "list" },
   },
   required: ["object", "data"],
@@ -183,6 +185,8 @@ const ConnectorListQuerySchema = {
   additionalProperties: false,
   properties: {
     connection: { minLength: 1, type: "string" },
+    cursor: { minLength: 1, type: "string" },
+    limit: { maximum: 100, minimum: 1, type: "integer" },
   },
   type: "object",
 };

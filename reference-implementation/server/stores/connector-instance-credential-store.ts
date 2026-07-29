@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { exec, getOne, type MutationQuery, type RegisteredQuery, referenceQueries } from "../../lib/db.ts";
+import { getDb } from "../db.ts";
 import { postgresQuery } from "../postgres-storage.ts";
 import {
   CredentialEncryptionError as CredentialEncryptionErrorClass,
@@ -20,7 +21,7 @@ interface CredentialRow {
   rejection_reason: string | null;
   revoked_at: string | null;
   rotated_at: string | null;
-  sealed_secret: string;
+  sealed_secret?: string;
   status: string;
 }
 
@@ -28,7 +29,7 @@ function isMutationQuery(query: RegisteredQuery): query is MutationQuery {
   return query.terminator === "exec";
 }
 
-interface CredentialMetadata {
+export interface CredentialMetadata {
   capturedAt: string;
   connectorInstanceId: string;
   credentialKind: string;
@@ -67,6 +68,7 @@ interface CredentialWriteRecord {
 
 interface CredentialStoreRead {
   getRaw: (connectorInstanceId: string) => Promise<CredentialRow | null>;
+  getRawByInstanceIds?: (connectorInstanceIds: readonly string[]) => Promise<CredentialRow[]>;
 }
 
 interface CredentialStoreRun {
@@ -80,6 +82,8 @@ export interface ConnectorInstanceCredentialStore {
   capture: (args: CaptureCredentialArgs) => Promise<CredentialMetadata | null>;
   delete: (connectorInstanceId: string) => Promise<boolean>;
   getMetadata: (connectorInstanceId: string) => Promise<CredentialMetadata | null>;
+  /** Non-secret metadata keyed by exact instance id. Empty input performs no SQL. */
+  getMetadataByInstanceIds: (connectorInstanceIds: readonly string[]) => Promise<Map<string, CredentialMetadata>>;
   hasActiveCredential: (connectorInstanceId: string) => Promise<boolean>;
   markRejected: (args: {
     connectorInstanceId: string;
@@ -259,6 +263,26 @@ function buildStore({
       return projectMetadata(await read.getRaw(connectorInstanceId));
     },
 
+    async getMetadataByInstanceIds(connectorInstanceIds: readonly string[]) {
+      const ids = [...new Set(connectorInstanceIds.filter((id) => typeof id === "string" && id.length > 0))];
+      if (ids.length === 0) {
+        return new Map<string, CredentialMetadata>();
+      }
+      const rows = read.getRawByInstanceIds
+        ? await read.getRawByInstanceIds(ids)
+        : await Promise.all(ids.map((id) => read.getRaw(id))).then((values) =>
+            values.filter((row): row is CredentialRow => row !== null)
+          );
+      const result = new Map<string, CredentialMetadata>();
+      for (const row of rows) {
+        const metadata = projectMetadata(row);
+        if (metadata) {
+          result.set(metadata.connectorInstanceId, metadata);
+        }
+      }
+      return result;
+    },
+
     /** True when an active credential exists for the instance. */
     async hasActiveCredential(connectorInstanceId: string) {
       const row = await read.getRaw(connectorInstanceId);
@@ -329,6 +353,12 @@ function buildStore({
             "the owner must re-capture a valid credential before runs can authenticate."
         );
       }
+      if (!row.sealed_secret) {
+        throw new ConnectorInstanceCredentialError(
+          "credential_secret_unavailable",
+          `Stored credential secret for connection '${connectorInstanceId}' is unavailable.`
+        );
+      }
       const plaintext = cipher().open(row.sealed_secret);
       return { credentialKind: row.credential_kind, secret: plaintext };
     },
@@ -361,6 +391,23 @@ export function createSqliteConnectorInstanceCredentialStore({
         return Promise.resolve(
           getOne(referenceQueries.connectorInstanceCredentialsGetByInstance, [connectorInstanceId])
         );
+      },
+      getRawByInstanceIds(connectorInstanceIds: readonly string[]): Promise<CredentialRow[]> {
+        const rows: CredentialRow[] = [];
+        for (let start = 0; start < connectorInstanceIds.length; start += 900) {
+          const chunk = connectorInstanceIds.slice(start, start + 900);
+          rows.push(
+            ...(getDb()
+              .prepare(
+                `SELECT connector_instance_id, owner_subject_id, credential_kind, fingerprint,
+                        status, captured_at, rotated_at, revoked_at, rejected_at, rejection_reason
+                   FROM connector_instance_credentials
+                  WHERE connector_instance_id IN (${chunk.map(() => "?").join(", ")})`
+              )
+              .all(...chunk) as CredentialRow[])
+          );
+        }
+        return Promise.resolve(rows);
       },
     },
     run: {
@@ -425,6 +472,16 @@ export function createPostgresConnectorInstanceCredentialStore({
           [connectorInstanceId]
         );
         return result.rows[0] ?? null;
+      },
+      async getRawByInstanceIds(connectorInstanceIds: readonly string[]): Promise<CredentialRow[]> {
+        const result = await postgresQuery<CredentialRow>(
+          `SELECT connector_instance_id, owner_subject_id, credential_kind, fingerprint,
+                  status, captured_at, rotated_at, revoked_at, rejected_at, rejection_reason
+             FROM connector_instance_credentials
+            WHERE connector_instance_id = ANY($1::text[])`,
+          [connectorInstanceIds]
+        );
+        return result.rows;
       },
     },
     run: {

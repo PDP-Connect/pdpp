@@ -35,7 +35,7 @@
  */
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -62,6 +62,7 @@ const COMPARE_PATH = compareIdx >= 0 ? process.argv[compareIdx + 1] : null;
 interface Target {
   group: "api" | "page";
   headers: Record<string, string>;
+  marker?: string;
   name: string;
   url: string;
 }
@@ -108,8 +109,8 @@ function apiTargets(): Target[] {
 }
 
 /** Fetch an owner-session cookie via PDPP_OWNER_PASSWORD so authed page profiling
- *  is a one-liner (`--login`). Returns "" if unavailable; pages then measure the
- *  unauthenticated shell/redirect instead. */
+ *  is a one-liner (`--login`). Returns "" if unavailable; page validation then
+ *  fails instead of recording an unauthenticated redirect as a page result. */
 async function fetchOwnerCookie(): Promise<string> {
   const password = process.env.PDPP_OWNER_PASSWORD;
   if (!password) {
@@ -130,20 +131,47 @@ async function fetchOwnerCookie(): Promise<string> {
   }
 }
 
-/** Console page targets. Measured unauthenticated (TTFB of the shell/redirect) by
- *  default; pass a cookie (auto via --login, or PDPP_BENCH_COOKIE) for authed
- *  timings — the real owner experience. */
-function pageTargets(cookieOverride: string): Target[] {
+/** Current public owner-console routes and their route-specific HTML evidence.
+ * A successful HTTP response alone is insufficient: a login redirect, not-found
+ * page, or error shell can otherwise produce a deceptively quick page benchmark. */
+export const PAGE_TARGETS = [
+  { route: "/", marker: 'class="rr-stand"' },
+  { route: "/sources", marker: '<h1 class="pdpp-heading text-foreground">Sources</h1>' },
+  { route: "/sources/add", marker: '<h1 class="pdpp-heading break-words text-foreground">Add source</h1>' },
+  { route: "/explore", marker: 'aria-label="Search or filter"' },
+  { route: "/syncs", marker: '<h1 class="rr-sync__title">Syncs</h1>' },
+  { route: "/grants", marker: '<h1 class="pdpp-heading break-words text-foreground">Grants</h1>' },
+  { route: "/connect", marker: '<h1 class="pdpp-heading break-words text-foreground">Connect AI apps</h1>' },
+  { route: "/search", marker: '<h1 class="pdpp-heading break-words text-foreground">Jump to artifact</h1>' },
+] as const;
+
+const ERROR_SHELL_PATTERNS = [
+  /<h1[^>]*>\s*Something went wrong\s*<\/h1>/i,
+  /<p[^>]*>\s*Read error\s*<\/p>/i,
+  /Reference server unreachable/i,
+  /This page could not be found/i,
+  /this is a display failure, not a change/i,
+];
+
+/** Console page targets require an owner session so measurements represent the
+ * real owner page rather than a login redirect. */
+export function pageTargets(cookieOverride: string): Target[] {
   const cookie = cookieOverride || process.env.PDPP_BENCH_COOKIE || "";
   const headers = cookie ? { Cookie: cookie } : {};
-  const routes = ["/", "/sources", "/sources/add", "/explore", "/syncs", "/grants", "/connect", "/search"];
-  return routes.map((r) => ({ group: "page" as const, name: r, url: `${BASE}${r}`, headers }));
+  return PAGE_TARGETS.map(({ route, marker }) => ({
+    group: "page" as const,
+    headers,
+    marker,
+    name: route,
+    url: `${BASE}${route}`,
+  }));
 }
 
 // ── measurement ──────────────────────────────────────────────────────────────
 
 interface SampleResult {
   bytes: number;
+  failure: string | null;
   status: number;
   totalMs: number;
   ttfbMs: number | null;
@@ -155,6 +183,7 @@ async function timeOnce(target: Target): Promise<SampleResult> {
   const t0 = performance.now();
   let status = 0;
   let bytes = 0;
+  let failure: string | null = null;
   let ttfbMs: number | null = null;
   try {
     const resp = await fetch(target.url, {
@@ -166,15 +195,42 @@ async function timeOnce(target: Target): Promise<SampleResult> {
     // TTFB ≈ time to headers; we approximate by marking now (fetch resolves on
     // headers received for the body stream).
     ttfbMs = performance.now() - t0;
-    const body = await resp.arrayBuffer();
-    bytes = body.byteLength;
+    if (target.group === "page") {
+      const body = await resp.text();
+      bytes = Buffer.byteLength(body);
+      failure = validatePageResponse(target, { body, contentType: resp.headers.get("content-type"), status });
+    } else {
+      const body = await resp.arrayBuffer();
+      bytes = body.byteLength;
+    }
   } catch {
     status = -1;
+    failure = "request failed or timed out";
   } finally {
     clearTimeout(to);
   }
   const totalMs = performance.now() - t0;
-  return { totalMs, ttfbMs, status, bytes };
+  return { totalMs, ttfbMs, status, bytes, failure };
+}
+
+/** Returns why a page response is not usable performance evidence, or null. */
+export function validatePageResponse(
+  target: Pick<Target, "marker">,
+  { body, contentType, status }: { readonly body: string; readonly contentType: string | null; readonly status: number }
+): string | null {
+  if (status !== 200) {
+    return `expected HTTP 200, received ${status}`;
+  }
+  if (!contentType?.includes("text/html")) {
+    return `expected HTML, received ${contentType || "no content type"}`;
+  }
+  if (ERROR_SHELL_PATTERNS.some((pattern) => pattern.test(body))) {
+    return "received an error shell";
+  }
+  if (!(target.marker && body.includes(target.marker))) {
+    return `missing page marker ${JSON.stringify(target.marker)}`;
+  }
+  return null;
 }
 
 function pct(sorted: number[], p: number): number | null {
@@ -215,7 +271,7 @@ function stats(samples: SampleResult[]): Stats {
 
 const round = (n: number | null): number | null => (n === null ? null : Math.round(n * 10) / 10);
 
-type BenchResult = { group: string; name: string; url: string } & Stats;
+type BenchResult = { failures: string[]; group: string; name: string; ok: boolean; url: string } & Stats;
 
 async function benchTarget(target: Target): Promise<BenchResult> {
   for (let i = 0; i < WARMUP; i += 1) {
@@ -227,7 +283,17 @@ async function benchTarget(target: Target): Promise<BenchResult> {
     // biome-ignore lint/performance/noAwaitInLoops: see the warmup loop above — sequential by design.
     samples.push(await timeOnce(target));
   }
-  return { group: target.group, name: target.name, url: target.url, ...stats(samples) };
+  const failures = [
+    ...new Set(samples.map((sample) => sample.failure).filter((failure): failure is string => failure !== null)),
+  ];
+  return {
+    group: target.group,
+    name: target.name,
+    ok: failures.length === 0 && samples.every((sample) => sample.status >= 200 && sample.status < 400),
+    url: target.url,
+    failures,
+    ...stats(samples),
+  };
 }
 
 // ── main ─────────────────────────────────────────────────────────────────────
@@ -246,7 +312,7 @@ async function main(): Promise<void> {
   // authed experience without manual cookie extraction.
   const cookie = args.has("--login") ? await fetchOwnerCookie() : "";
   if (args.has("--login") && !cookie) {
-    console.error("# --login: no cookie (set PDPP_OWNER_PASSWORD) — pages measured unauthenticated");
+    console.error("# --login: no cookie (set PDPP_OWNER_PASSWORD) — page validation will fail");
   }
   const targets: Target[] = [...(PAGES_ONLY ? [] : apiTargets()), ...(API_ONLY ? [] : pageTargets(cookie))];
   if (targets.length === 0) {
@@ -265,7 +331,7 @@ async function main(): Promise<void> {
     const r = await benchTarget(t);
     results.push(r);
     console.error(
-      `  ${pad(r.group, 5)} ${pad(r.name, 26)} p50=${pad(r.p50, 7)}ms p95=${pad(r.p95, 7)}ms max=${pad(r.max, 7)}ms  [${r.statuses.join(",")}] ${fmtBytes(r.bytes)}`
+      `  ${pad(r.group, 5)} ${pad(r.name, 26)} ${r.ok ? "OK  " : "FAIL"} p50=${pad(r.p50, 7)}ms p95=${pad(r.p95, 7)}ms max=${pad(r.max, 7)}ms  [${r.statuses.join(",")}] ${fmtBytes(r.bytes)}${r.failures.length ? ` — ${r.failures.join("; ")}` : ""}`
     );
   }
 
@@ -289,6 +355,10 @@ async function main(): Promise<void> {
 
   if (COMPARE_PATH) {
     compare(out, COMPARE_PATH);
+  }
+
+  if (results.some((result) => !result.ok)) {
+    process.exitCode = 1;
   }
 
   // Machine-readable to stdout for piping.
@@ -336,7 +406,9 @@ function fmtBytes(b: number): string {
   return `${(b / 1024 / 1024).toFixed(1)}MB`;
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}

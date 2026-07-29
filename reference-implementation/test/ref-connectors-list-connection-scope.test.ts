@@ -36,6 +36,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { RefConnectorsListEnvelope, RefConnectorsListItem } from "../operations/ref-connectors-list/index.ts";
+import {
+  ConnectorSummaryPageRequestError,
+  encodeConnectorSummaryPageCursor,
+} from "../operations/ref-connectors-list/pagination.ts";
+
+process.env.PDPP_CREDENTIAL_ENCRYPTION_KEY ??= "test connector-summary cursor key";
+
 import type { MiddlewareHandler } from "../server/routes/_route-contract.ts";
 import { type MountRefConnectorsContext, mountRefConnectorsList } from "../server/routes/ref-connectors.ts";
 
@@ -80,14 +87,28 @@ function summaryItem(connectorId: string, connectionId: string = connectorId): R
 // elsewhere. The ctx spies record which projection dependency the route used.
 function buildHarness({
   allConnections,
+  page = null,
   summaryForRoute,
 }: {
   allConnections: readonly RefConnectorsListItem[];
+  page?:
+    | {
+        readonly data: readonly RefConnectorsListItem[];
+        readonly has_more: boolean;
+        readonly next_cursor: string | null;
+      }
+    | ((request: { readonly cursor: unknown; readonly limit: number }) => {
+        readonly data: readonly RefConnectorsListItem[];
+        readonly has_more: boolean;
+        readonly next_cursor: string | null;
+      })
+    | null;
   summaryForRoute: (routeId: string) => RefConnectorsListItem | null;
 }) {
   const calls = {
     getConnectorSummaryForRoute: [] as string[],
     listConnectorSummaries: 0,
+    listConnectorSummaryPage: 0,
     reconcileDirtyConnectorSummaryEvidence: 0,
   };
   // mountRefConnectorsList only reads the six members through the end of this
@@ -113,7 +134,7 @@ function buildHarness({
       return summaryForRoute(routeId);
     },
     getFleetHealthVerdict: () => unusedByThisRoute("getFleetHealthVerdict"),
-    getOwnerSubjectId: () => unusedByThisRoute("getOwnerSubjectId"),
+    getOwnerSubjectId: () => "owner_test",
     // Unlike the other stubs above, this route DOES call getRuntimeStatus —
     // executeRefConnectorsList reads it unconditionally to build the optional
     // `runtime` envelope field. A steady "ok" verdict keeps every test's
@@ -134,6 +155,14 @@ function buildHarness({
       calls.listConnectorSummaries += 1;
       return allConnections;
     },
+    ...(page
+      ? {
+          listConnectorSummaryPage(_ownerSubjectId, request) {
+            calls.listConnectorSummaryPage += 1;
+            return typeof page === "function" ? page(request) : page;
+          },
+        }
+      : {}),
     listSchedules: () => unusedByThisRoute("listSchedules"),
     pdppError: () => unusedByThisRoute("pdppError"),
     requireOwnerSession: (_req: unknown, _res: unknown, next: unknown) =>
@@ -174,8 +203,11 @@ function buildHarness({
   };
   mountRefConnectorsList(app, ctx);
 
+  const headers = new Map<string, string>();
+
   return {
     calls,
+    headers,
     async invoke(query: Readonly<Record<string, unknown>> = {}): Promise<RefConnectorsListEnvelope> {
       // The route always responds via res.json(envelope) with the
       // executeRefConnectorsList envelope (see mountRefConnectorsList); the
@@ -188,7 +220,12 @@ function buildHarness({
           recorded = body as RefConnectorsListEnvelope;
           return body;
         },
-        setHeader: () => unusedByThisRoute("res.setHeader"),
+        // Compatibility-mode list responses now emit a migration hint. The
+        // focused assertions below remain about projection selection, so the
+        // recorder accepts headers without widening their scope.
+        setHeader: (name: string, value: string) => {
+          headers.set(name, value);
+        },
         status: () => unusedByThisRoute("res.status"),
       };
       if (!handler) {
@@ -272,6 +309,7 @@ test("unscoped request lists every connection exactly as before", async () => {
     envelope.data.map((item) => item.connection_id),
     ["conn-work", "conn-gh"]
   );
+  assert.equal(harness.headers.get("PDPP-Warning"), "deprecated_unbounded_connector_summary_list: supply limit");
 });
 
 test('empty/blank selector is treated as absent (full list), never as a connector named ""', async () => {
@@ -291,4 +329,67 @@ test('empty/blank selector is treated as absent (full list), never as a connecto
   );
   assert.equal(harness.calls.getConnectorSummaryForRoute.length, 0);
   assert.equal(envelope.data.length, 1);
+});
+
+test("explicit unscoped limit uses the bounded page capability and emits continuation fields", async () => {
+  const all = [summaryItem("gmail", "conn-work"), summaryItem("github", "conn-gh")];
+  const harness = buildHarness({
+    allConnections: all,
+    page: { data: all.slice(0, 1), has_more: true, next_cursor: "rcs1.next" },
+    summaryForRoute: () => assert.fail("unscoped page must not resolve a single connection"),
+  });
+
+  const envelope = await harness.invoke({ limit: "1" });
+
+  assert.equal(harness.calls.listConnectorSummaries, 0);
+  assert.equal(harness.calls.listConnectorSummaryPage, 1);
+  assert.deepEqual(
+    envelope.data.map((item) => item.connection_id),
+    ["conn-work"]
+  );
+  assert.equal(envelope.has_more, true);
+  assert.equal(envelope.next_cursor, "rcs1.next");
+});
+
+test("explicit cursor forwards the decoded immutable boundary to the next page", async () => {
+  const all = [summaryItem("gmail", "conn-work"), summaryItem("github", "conn-gh")];
+  const harness = buildHarness({
+    allConnections: all,
+    page: (request) => {
+      assert.deepEqual(request.cursor, {
+        connectorId: "gmail",
+        connectorInstanceId: "conn-work",
+        createdAt: "2026-07-29T12:00:00.000Z",
+      });
+      return { data: all.slice(1, 2), has_more: false, next_cursor: null };
+    },
+    summaryForRoute: () => assert.fail("unscoped page must not resolve a single connection"),
+  });
+
+  // Use a real issued cursor so the route decoder, scope binding, and adapter
+  // are exercised together rather than merely passing a sentinel through.
+  const cursor = encodeConnectorSummaryPageCursor(
+    { connectorId: "gmail", connectorInstanceId: "conn-work", createdAt: "2026-07-29T12:00:00.000Z" },
+    "owner_test"
+  );
+  const envelope = await harness.invoke({ cursor, limit: "1" });
+  assert.deepEqual(
+    envelope.data.map((item) => item.connection_id),
+    ["conn-gh"]
+  );
+  assert.equal(envelope.has_more, false);
+});
+
+test("scoped connection requests remain unpaginated", async () => {
+  const all = [summaryItem("gmail", "conn-work")];
+  const harness = buildHarness({
+    allConnections: all,
+    summaryForRoute: (routeId) => all.find((item) => item.connection_id === routeId) ?? null,
+  });
+  await assert.rejects(
+    () => harness.invoke({ connection: "conn-work", limit: "1" }),
+    (error) =>
+      error instanceof ConnectorSummaryPageRequestError && error.code === "invalid_request" && error.param === "limit"
+  );
+  assert.equal(harness.calls.getConnectorSummaryForRoute.length, 0);
 });

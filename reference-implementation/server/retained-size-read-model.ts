@@ -127,6 +127,7 @@ const GLOBAL_KEY = "global";
 // useful "what's eating my dataset" question without becoming a query
 // builder.
 const MAX_TOP_LIMIT = 25;
+const SQLITE_INSTANCE_ID_CHUNK_SIZE = 900;
 const DEFAULT_TOP_LIMIT = 10;
 const VALID_TOP_SCOPES = new Set<RetainedSizeScope>(["connection", "stream", "record", "blob"]);
 const VALID_TOP_MEASURES = new Set<RetainedSizeMeasure>([
@@ -605,6 +606,49 @@ export async function listRetainedSizeConnections({ connectorInstanceId }: Conne
   return (rows as RetainedSizeRow[]).map(shapeConnectionRow);
 }
 
+/** Page-scoped retained connection facts, keyed only by exact instance id. */
+export async function listRetainedSizeConnectionsByInstanceIds(connectorInstanceIds: readonly string[]) {
+  const ids = [...new Set(connectorInstanceIds.filter((id) => typeof id === "string" && id.length > 0))];
+  if (ids.length === 0) {
+    return new Map<string, ReturnType<typeof shapeConnectionRow>>();
+  }
+  const rows: RetainedSizeRow[] = [];
+  if (isPostgresStorageBackend()) {
+    const result = await postgresQuery<RetainedSizeRow>(
+      `SELECT connector_instance_id, connector_id,
+              current_record_json_bytes, record_history_json_bytes, blob_bytes,
+              record_count, record_history_count, blob_count, dirty, computed_at
+         FROM retained_size_connection
+        WHERE connector_instance_id = ANY($1::text[])
+        ORDER BY connector_instance_id ASC`,
+      [ids]
+    );
+    rows.push(...result.rows);
+  } else {
+    for (let start = 0; start < ids.length; start += SQLITE_INSTANCE_ID_CHUNK_SIZE) {
+      const chunk = ids.slice(start, start + SQLITE_INSTANCE_ID_CHUNK_SIZE);
+      rows.push(
+        ...(getDb()
+          .prepare(
+            `SELECT connector_instance_id, connector_id,
+                    current_record_json_bytes, record_history_json_bytes, blob_bytes,
+                    record_count, record_history_count, blob_count, dirty, computed_at
+               FROM retained_size_connection
+              WHERE connector_instance_id IN (${chunk.map(() => "?").join(", ")})
+              ORDER BY connector_instance_id ASC`
+          )
+          .all(...chunk) as RetainedSizeRow[])
+      );
+    }
+  }
+  return new Map(
+    rows.map((row) => {
+      const shaped = shapeConnectionRow(row);
+      return [String(shaped.connector_instance_id), shaped] as const;
+    })
+  );
+}
+
 function shapeConnectionRow(row: RetainedSizeRow) {
   const measures = numericMeasures(row);
   return {
@@ -621,6 +665,52 @@ function shapeConnectionRow(row: RetainedSizeRow) {
 export async function listRetainedSizeStreams({ connectorInstanceId, connectorId, stream }: StreamFilter = {}) {
   const rows = await getRetainedSizeStore().listStreamRows({ connectorId, connectorInstanceId, stream });
   return (rows as RetainedSizeRow[]).map(shapeStreamRow);
+}
+
+/** Page-scoped retained stream facts, grouped by exact instance id. */
+export async function listRetainedSizeStreamsByInstanceIds(connectorInstanceIds: readonly string[]) {
+  const ids = [...new Set(connectorInstanceIds.filter((id) => typeof id === "string" && id.length > 0))];
+  if (ids.length === 0) {
+    return new Map<string, ReturnType<typeof shapeStreamRow>[]>();
+  }
+  const rows: RetainedSizeRow[] = [];
+  if (isPostgresStorageBackend()) {
+    const result = await postgresQuery<RetainedSizeRow>(
+      `SELECT connector_instance_id, connector_id, stream,
+              current_record_json_bytes, record_history_json_bytes, blob_bytes,
+              record_count, record_history_count, blob_count, dirty, computed_at
+         FROM retained_size_stream
+        WHERE connector_instance_id = ANY($1::text[])
+        ORDER BY connector_instance_id ASC, stream ASC`,
+      [ids]
+    );
+    rows.push(...result.rows);
+  } else {
+    for (let start = 0; start < ids.length; start += SQLITE_INSTANCE_ID_CHUNK_SIZE) {
+      const chunk = ids.slice(start, start + SQLITE_INSTANCE_ID_CHUNK_SIZE);
+      rows.push(
+        ...(getDb()
+          .prepare(
+            `SELECT connector_instance_id, connector_id, stream,
+                    current_record_json_bytes, record_history_json_bytes, blob_bytes,
+                    record_count, record_history_count, blob_count, dirty, computed_at
+               FROM retained_size_stream
+              WHERE connector_instance_id IN (${chunk.map(() => "?").join(", ")})
+              ORDER BY connector_instance_id ASC, stream ASC`
+          )
+          .all(...chunk) as RetainedSizeRow[])
+      );
+    }
+  }
+  const result = new Map<string, ReturnType<typeof shapeStreamRow>[]>();
+  for (const row of rows) {
+    const shaped = shapeStreamRow(row);
+    const id = String(shaped.connector_instance_id);
+    const values = result.get(id) ?? [];
+    values.push(shaped);
+    result.set(id, values);
+  }
+  return result;
 }
 
 export async function listRetainedSizeRecordFamilies({

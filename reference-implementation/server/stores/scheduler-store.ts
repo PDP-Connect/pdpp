@@ -24,7 +24,14 @@
 // `wasRunMarkedFailed` accessor stay in the controller. The store is
 // the persistence seam only.
 
-import { allowUnboundedReadAcknowledged, exec, getMany, getOne, referenceQueries } from "../../lib/db.ts";
+import {
+  allowUnboundedReadAcknowledged,
+  exec,
+  getMany,
+  getOne,
+  iterateDynamicSqlAcknowledged,
+  referenceQueries,
+} from "../../lib/db.ts";
 import { getStorageBackendKind, isPostgresStorageBackend, postgresQuery } from "../postgres-storage.ts";
 
 // ─── Domain records (public, semantic) ──────────────────────────────────────
@@ -113,10 +120,20 @@ export interface SchedulerStore {
   getSchedule: (connectorInstanceId: string) => Promise<ScheduleRecord | null> | ScheduleRecord | null;
   listActiveRuns: () => Promise<readonly ActiveRunRecord[]> | readonly ActiveRunRecord[];
   listLastRunTimes: () => Promise<readonly SchedulerLastRunTimeRecord[]> | readonly SchedulerLastRunTimeRecord[];
+  listLastRunTimesByConnectionIds?: (
+    connectorInstanceIds: readonly string[]
+  ) => Promise<readonly SchedulerLastRunTimeRecord[]> | readonly SchedulerLastRunTimeRecord[];
+  listLatestRunHistoryByConnectionIds?: (
+    connectorInstanceIds: readonly string[],
+    status?: string | null
+  ) => Promise<readonly SchedulerRunHistoryRecord[]> | readonly SchedulerRunHistoryRecord[];
   listRunHistory: (
     limit: number
   ) => Promise<readonly SchedulerRunHistoryRecord[]> | readonly SchedulerRunHistoryRecord[];
   listSchedules: () => Promise<readonly ScheduleRecord[]> | readonly ScheduleRecord[];
+  listSchedulesByConnectionIds?: (
+    connectorInstanceIds: readonly string[]
+  ) => Promise<readonly ScheduleRecord[]> | readonly ScheduleRecord[];
   setScheduleEnabled: (connectorInstanceId: string, enabled: boolean, updatedAt: string) => Promise<void> | void;
   updateSchedule: (connectorInstanceId: string, patch: ScheduleUpdate) => Promise<void> | void;
   upsertActiveRun: (record: ActiveRunRecord) => Promise<boolean> | boolean;
@@ -127,6 +144,58 @@ export interface SchedulerStore {
     connectorId?: string
   ) => Promise<void> | void;
 }
+
+// SQLite's variable limit is configurable. Keep the page batch well below its
+// historical 999 floor so a future query can add a small fixed bind set without
+// coupling correctness to a deployment-specific compile option.
+const SQLITE_CONNECTION_ID_BATCH_SIZE = 900;
+// The summary page contract caps identity pages at 100. Keep PostgreSQL arrays
+// at that accepted bound even if a future caller supplies a larger set.
+const POSTGRES_CONNECTION_ID_BATCH_SIZE = 100;
+
+function uniqueConnectionIds(connectorInstanceIds: readonly string[]): readonly string[] {
+  return [...new Set(connectorInstanceIds)];
+}
+
+function connectionIdChunks(connectorInstanceIds: readonly string[]): readonly (readonly string[])[] {
+  return connectionIdChunksOfSize(connectorInstanceIds, SQLITE_CONNECTION_ID_BATCH_SIZE);
+}
+
+function connectionIdChunksOfSize(
+  connectorInstanceIds: readonly string[],
+  chunkSize: number
+): readonly (readonly string[])[] {
+  const ids = uniqueConnectionIds(connectorInstanceIds);
+  const chunks: string[][] = [];
+  for (let index = 0; index < ids.length; index += chunkSize) {
+    chunks.push(ids.slice(index, index + chunkSize));
+  }
+  return chunks;
+}
+
+function sqliteMembershipPlaceholders(ids: readonly string[]): string {
+  return ids.map(() => "?").join(", ");
+}
+
+const SCHEDULER_RUN_HISTORY_COLUMNS = `
+  id,
+  connector_instance_id,
+  connector_id,
+  source_json,
+  status,
+  records_emitted,
+  reported_records_emitted,
+  checkpoint_summary_json,
+  known_gaps_json,
+  connector_error_json,
+  run_id,
+  trace_id,
+  failure_reason,
+  terminal_reason,
+  started_at,
+  completed_at,
+  error,
+  attempt`;
 
 // ─── SQLite implementation ──────────────────────────────────────────────────
 
@@ -301,6 +370,69 @@ export function createSqliteSchedulerStore(): SchedulerStore {
       );
     },
 
+    listLastRunTimesByConnectionIds(connectorInstanceIds) {
+      const chunks = connectionIdChunks(connectorInstanceIds);
+      if (chunks.length === 0) {
+        return [];
+      }
+      const rows: SchedulerLastRunTimeRecord[] = [];
+      for (const ids of chunks) {
+        // REVIEWED-DYNAMIC: SQLite has no bound array type; membership is a
+        // page-scoped, fixed-fragment IN list with every connection id bound.
+        rows.push(
+          ...iterateDynamicSqlAcknowledged<SchedulerLastRunTimeRecord>(
+            `SELECT connector_instance_id, connector_id, last_run_time_ms, updated_at
+             FROM scheduler_last_run_times
+             WHERE connector_instance_id IN (${sqliteMembershipPlaceholders(ids)})
+             ORDER BY connector_id ASC, connector_instance_id ASC`,
+            ids
+          )
+        );
+      }
+      return rows.sort(
+        (left, right) =>
+          left.connector_id.localeCompare(right.connector_id) ||
+          left.connector_instance_id.localeCompare(right.connector_instance_id)
+      );
+    },
+
+    listLatestRunHistoryByConnectionIds(connectorInstanceIds, status = null) {
+      const chunks = connectionIdChunks(connectorInstanceIds);
+      if (chunks.length === 0) {
+        return [];
+      }
+      const rows: SchedulerRunHistoryRecord[] = [];
+      for (const ids of chunks) {
+        // REVIEWED-DYNAMIC: SQLite has no bound array type; this ranks one
+        // terminal/skip history row per bound page connection id.
+        rows.push(
+          ...[
+            ...iterateDynamicSqlAcknowledged<SchedulerRunHistoryRow>(
+              `SELECT ${SCHEDULER_RUN_HISTORY_COLUMNS}
+             FROM (
+               SELECT ${SCHEDULER_RUN_HISTORY_COLUMNS},
+                 ROW_NUMBER() OVER (
+                   PARTITION BY connector_instance_id
+                   ORDER BY completed_at DESC, id DESC
+                 ) AS row_rank
+               FROM scheduler_run_history
+               WHERE connector_instance_id IN (${sqliteMembershipPlaceholders(ids)})
+                 AND (? IS NULL OR status = ?)
+            ) ranked
+             WHERE row_rank = 1
+             ORDER BY connector_id ASC, connector_instance_id ASC`,
+              [...ids, status, status]
+            ),
+          ].map(rowToRunHistoryRecord)
+        );
+      }
+      return rows.sort(
+        (left, right) =>
+          left.connectorId.localeCompare(right.connectorId) ||
+          (left.connectorInstanceId ?? left.connectorId).localeCompare(right.connectorInstanceId ?? right.connectorId)
+      );
+    },
+
     listRunHistory(limit) {
       return getMany<SchedulerRunHistoryRow>(referenceQueries.controllerListSchedulerRunHistory, [], {
         limit,
@@ -312,6 +444,34 @@ export function createSqliteSchedulerStore(): SchedulerStore {
       // configured connector instance; scan is bounded by instance count.
       const rows = allowUnboundedReadAcknowledged<ScheduleSqliteRow>(referenceQueries.controllerListSchedules);
       return rows.map(rowToScheduleRecord);
+    },
+
+    listSchedulesByConnectionIds(connectorInstanceIds) {
+      const chunks = connectionIdChunks(connectorInstanceIds);
+      if (chunks.length === 0) {
+        return [];
+      }
+      const rows: ScheduleRecord[] = [];
+      for (const ids of chunks) {
+        // REVIEWED-DYNAMIC: SQLite has no bound array type; membership is a
+        // page-scoped, fixed-fragment IN list with every connection id bound.
+        rows.push(
+          ...[
+            ...iterateDynamicSqlAcknowledged<ScheduleSqliteRow>(
+              `SELECT connector_instance_id, connector_id, interval_seconds, jitter_seconds, enabled, created_at, updated_at
+             FROM connector_schedules
+             WHERE connector_instance_id IN (${sqliteMembershipPlaceholders(ids)})
+             ORDER BY connector_id ASC, connector_instance_id ASC`,
+              ids
+            ),
+          ].map(rowToScheduleRecord)
+        );
+      }
+      return rows.sort(
+        (left, right) =>
+          left.connector_id.localeCompare(right.connector_id) ||
+          left.connector_instance_id.localeCompare(right.connector_instance_id)
+      );
     },
 
     setScheduleEnabled(connectorInstanceId, enabled, updatedAt) {
@@ -503,6 +663,86 @@ export function createPostgresSchedulerStore(): SchedulerStore {
       return result.rows as SchedulerLastRunTimeRecord[];
     },
 
+    async listLastRunTimesByConnectionIds(connectorInstanceIds) {
+      const chunks = connectionIdChunksOfSize(connectorInstanceIds, POSTGRES_CONNECTION_ID_BATCH_SIZE);
+      if (chunks.length === 0) {
+        return [];
+      }
+      const rows: SchedulerLastRunTimeRecord[] = [];
+      for (const ids of chunks) {
+        // biome-ignore lint/performance/noAwaitInLoops: bounded chunks preserve deterministic result order.
+        const result = await postgresQuery(
+          `SELECT times.connector_instance_id, times.connector_id, times.last_run_time_ms, times.updated_at
+         FROM unnest($1::text[]) AS input(connector_instance_id)
+         JOIN scheduler_last_run_times AS times USING (connector_instance_id)
+         ORDER BY times.connector_id ASC, times.connector_instance_id ASC`,
+          [ids]
+        );
+        rows.push(
+          ...(result.rows as SchedulerLastRunTimeRecord[]).map((row) => ({
+            ...row,
+            last_run_time_ms: Number(row.last_run_time_ms),
+          }))
+        );
+      }
+      return rows.sort(
+        (left, right) =>
+          left.connector_id.localeCompare(right.connector_id) ||
+          left.connector_instance_id.localeCompare(right.connector_instance_id)
+      );
+    },
+
+    async listLatestRunHistoryByConnectionIds(connectorInstanceIds, status = null) {
+      const chunks = connectionIdChunksOfSize(connectorInstanceIds, POSTGRES_CONNECTION_ID_BATCH_SIZE);
+      if (chunks.length === 0) {
+        return [];
+      }
+      const rows: SchedulerRunHistoryRecord[] = [];
+      for (const ids of chunks) {
+        // biome-ignore lint/performance/noAwaitInLoops: bounded chunks preserve deterministic result order.
+        const result = await postgresQuery(
+          `WITH scoped_history AS (
+           SELECT history.id,
+                  history.connector_instance_id,
+                  history.connector_id,
+                  history.source_json,
+                  history.status,
+                  history.records_emitted,
+                  history.reported_records_emitted,
+                  history.checkpoint_summary_json,
+                  history.known_gaps_json,
+                  history.connector_error_json,
+                  history.run_id,
+                  history.trace_id,
+                  history.failure_reason,
+                  history.terminal_reason,
+                  history.started_at,
+                  history.completed_at,
+                  history.error,
+                  history.attempt,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY history.connector_instance_id
+                    ORDER BY history.completed_at DESC, history.id DESC
+                  ) AS row_rank
+           FROM unnest($1::text[]) AS input(connector_instance_id)
+           JOIN scheduler_run_history AS history USING (connector_instance_id)
+           WHERE $2::text IS NULL OR history.status = $2
+         )
+         SELECT ${SCHEDULER_RUN_HISTORY_COLUMNS}
+         FROM scoped_history
+         WHERE row_rank = 1
+         ORDER BY connector_id ASC, connector_instance_id ASC`,
+          [ids, status]
+        );
+        rows.push(...(result.rows as SchedulerRunHistoryRow[]).map(rowToRunHistoryRecord));
+      }
+      return rows.sort(
+        (left, right) =>
+          left.connectorId.localeCompare(right.connectorId) ||
+          (left.connectorInstanceId ?? left.connectorId).localeCompare(right.connectorInstanceId ?? right.connectorId)
+      );
+    },
+
     async listRunHistory(limit) {
       const boundedLimit = Math.max(1, Math.min(5000, Math.trunc(limit)));
       const result = await postgresQuery(
@@ -544,6 +784,32 @@ export function createPostgresSchedulerStore(): SchedulerStore {
          ORDER BY connector_id, connector_instance_id`
       );
       return (result.rows as ScheduleSqliteRow[]).map(rowToScheduleRecord);
+    },
+
+    async listSchedulesByConnectionIds(connectorInstanceIds) {
+      const chunks = connectionIdChunksOfSize(connectorInstanceIds, POSTGRES_CONNECTION_ID_BATCH_SIZE);
+      if (chunks.length === 0) {
+        return [];
+      }
+      const rows: ScheduleRecord[] = [];
+      for (const ids of chunks) {
+        // biome-ignore lint/performance/noAwaitInLoops: bounded chunks preserve deterministic result order.
+        const result = await postgresQuery(
+          `SELECT schedules.connector_instance_id, schedules.connector_id,
+                schedules.interval_seconds, schedules.jitter_seconds, schedules.enabled,
+                schedules.created_at, schedules.updated_at
+         FROM unnest($1::text[]) AS input(connector_instance_id)
+         JOIN connector_schedules AS schedules USING (connector_instance_id)
+         ORDER BY schedules.connector_id ASC, schedules.connector_instance_id ASC`,
+          [ids]
+        );
+        rows.push(...(result.rows as ScheduleSqliteRow[]).map(rowToScheduleRecord));
+      }
+      return rows.sort(
+        (left, right) =>
+          left.connector_id.localeCompare(right.connector_id) ||
+          left.connector_instance_id.localeCompare(right.connector_instance_id)
+      );
     },
 
     async setScheduleEnabled(connectorInstanceId, enabled, updatedAt) {

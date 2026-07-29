@@ -95,7 +95,7 @@ export async function buildPeekRelationships(
   // connection — the same binding the records route and the feed fan-out use.
   let connectorInstanceId: string | null = connectionId;
   try {
-    const summaries = await dataSource.listConnectorSummaries();
+    const summaries = await dataSource.listConnectorSummaries({ connectionRouteId: connectionId });
     const match = summaries.data.find((s) => s.connection_id === connectionId);
     connectorInstanceId = match?.connector_instance_id ?? match?.connection_id ?? connectionId;
   } catch {

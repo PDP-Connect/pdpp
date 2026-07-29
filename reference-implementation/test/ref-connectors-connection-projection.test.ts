@@ -1826,3 +1826,65 @@ test(
     });
   })
 );
+
+test(
+  "listConnectorSummaries replays one schedule-list snapshot with output equivalent to direct per-connection reads",
+  withTmpDb(async () => {
+    seedConnector();
+    await seedInstances({ sourceKind: "account" });
+
+    const schedules = [
+      {
+        connector_id: CONNECTOR_ID,
+        connector_instance_id: WORK_INSTANCE_ID,
+        enabled: true,
+        interval_seconds: 3600,
+      },
+      {
+        connector_id: CONNECTOR_ID,
+        connector_instance_id: PERSONAL_INSTANCE_ID,
+        enabled: false,
+        interval_seconds: 7200,
+      },
+    ];
+    const directCalls = { getSchedule: 0 };
+    const directController = {
+      getSchedule(_connectorId: string, options?: { connectorInstanceId?: string }) {
+        directCalls.getSchedule += 1;
+        return Promise.resolve(
+          schedules.find((schedule) => schedule.connector_instance_id === options?.connectorInstanceId) ?? null
+        );
+      },
+    };
+
+    const originalToISOString = Date.prototype.toISOString;
+    Date.prototype.toISOString = () => NOW;
+    try {
+      const before = await listConnectorSummaries(directController);
+      assert.equal(directCalls.getSchedule, 2, "before: one direct schedule read per connection");
+
+      const batchedCalls = { getSchedule: 0, listSchedules: 0 };
+      const batchedController = {
+        getSchedule() {
+          batchedCalls.getSchedule += 1;
+          return Promise.reject(new Error("the batched list projection must not call getSchedule"));
+        },
+        listSchedules() {
+          batchedCalls.listSchedules += 1;
+          return Promise.resolve(schedules);
+        },
+      };
+
+      const after = await listConnectorSummaries(batchedController);
+
+      assert.deepEqual(after, before, "the batched schedule snapshot preserves every summary byte-for-byte");
+      assert.deepEqual(
+        batchedCalls,
+        { getSchedule: 0, listSchedules: 1 },
+        "after: one existing list read replays schedule evidence for both connections (2 -> 1)"
+      );
+    } finally {
+      Date.prototype.toISOString = originalToISOString;
+    }
+  })
+);

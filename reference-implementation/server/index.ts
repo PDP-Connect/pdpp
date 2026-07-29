@@ -132,7 +132,9 @@ import {
   markConnectorSummaryEvidenceDirty,
   reconcileDirtyConnectorSummaryEvidence,
   runBoundedSummaryEvidenceSweep,
+  setConnectorSummaryReconcileObservationSink,
 } from "./connector-summary-read-model.ts";
+import { createConnectorSummaryReconcileObservationSink } from "./connector-summary-reconcile-observability.ts";
 import {
   applyDatasetSummaryBlobDelta,
   getDatasetSummaryProjection,
@@ -238,6 +240,7 @@ import {
   getOwnerConnectionDiagnostics,
   invalidateConnectorSummariesCache,
   listConnectorSummaries,
+  listConnectorSummaryPage,
   listOwnerVisibleConnectorInstances,
   listPendingApprovals,
 } from "./ref-control.ts";
@@ -4758,6 +4761,13 @@ export function buildAsApp(opts: ServerOpts = {}) {
     handleError,
     invalidateConnectorSummariesCache,
     listConnectorSummaries: () => listConnectorSummaries(controller, { includeRunSummaries: "singleton-active" }),
+    listConnectorSummaryPage: (ownerSubjectId: string, page: { cursor: unknown; limit: number }) =>
+      listConnectorSummaryPage(controller, {
+        after: (page.cursor as Parameters<typeof listConnectorSummaryPage>[1]["after"]) ?? null,
+        includeRunSummaries: "singleton-active",
+        limit: page.limit,
+        ownerSubjectId,
+      }),
     listSchedules: async () => (controller ? await controller.listSchedules() : []),
     markConnectorSummaryEvidenceDirty,
     onScheduleMutation: opts.onScheduleMutation,
@@ -6150,6 +6160,7 @@ function buildRsApp(opts: ServerOpts = {}) {
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This protocol transition owns ordered state invariants that must remain local.
 export async function startServer(opts: ServerOpts = {}) {
   const logger = opts.logger ?? buildLogger({ quiet: !!opts.quiet });
+  setConnectorSummaryReconcileObservationSink(createConnectorSummaryReconcileObservationSink(logger));
   const nativeConfig = validateNativeConfiguration(opts);
   const storageBackend = (resolveStorageBackend as (...args: unknown[]) => { backend: string; databaseUrl?: string })({
     opts,
@@ -7281,7 +7292,6 @@ function createReferenceSchedulerManager({
       return;
     }
     type RunManagedFn = import("../runtime/scheduler-domain-types.ts").RunManagedConnectorViaController;
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     const runManagedConnectorViaController: RunManagedFn | null = controller?.browserSurfaceLeaseManager
       ? // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This protocol transition owns ordered state invariants that must remain local.
         ((async (connectorId: string, opts: Parameters<RunManagedFn>[1]) => {
@@ -7536,7 +7546,6 @@ function createReferenceSchedulerManager({
       // failure deepening the back-off (the live wedge). Mirrors the predicate
       // controller.runNow uses to decide whether to acquire a managed surface.
       isManagedConnector: (connectorId) =>
-        // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
         Boolean(controller?.browserSurfaceLeaseManager?.isManagedConnector?.(connectorId)),
       isNeedsHuman: (connectorId, connectorInstanceId) =>
         (connectorInstanceId === null || connectorInstanceId === undefined
@@ -7567,7 +7576,7 @@ function createReferenceSchedulerManager({
           if (summary) {
             connectorDisplayName = summary.display_name || summary.connector_display_name || connectorId;
             connectionUrl = `/sources/${encodeURIComponent(summary.connection_id || routeId)}`;
-            renderedVerdict = summary.rendered_verdict ?? null;
+            renderedVerdict = summary.rendered_verdict;
           }
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);

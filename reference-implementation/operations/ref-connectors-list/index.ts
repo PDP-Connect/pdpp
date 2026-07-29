@@ -112,10 +112,24 @@ export interface RefConnectorsListDependencies {
    * canonical sort.
    */
   listConnectorSummaries: () => Promise<readonly RefConnectorsListItem[]> | readonly RefConnectorsListItem[];
+  /**
+   * Explicit keyset-page mode for the unscoped summary feed. Compatibility
+   * callers keep using `listConnectorSummaries`, preserving their historical
+   * envelope until they migrate to a bounded request.
+   */
+  listConnectorSummariesPage?: () => Promise<RefConnectorsListPage> | RefConnectorsListPage;
+}
+
+export interface RefConnectorsListPage {
+  readonly data: readonly RefConnectorsListItem[];
+  readonly has_more: boolean;
+  readonly next_cursor: string | null;
 }
 
 export interface RefConnectorsListEnvelope {
   readonly data: RefConnectorsListItem[];
+  readonly has_more?: boolean;
+  readonly next_cursor?: string | null;
   readonly object: "list";
   readonly runtime?: RefConnectorsRuntimeStatus;
 }
@@ -131,13 +145,18 @@ export interface RefConnectorsListEnvelope {
 export async function executeRefConnectorsList(
   dependencies: RefConnectorsListDependencies
 ): Promise<RefConnectorsListEnvelope> {
-  const [summaries, runtime] = await Promise.all([
-    dependencies.listConnectorSummaries(),
+  const [result, runtime] = await Promise.all([
+    dependencies.listConnectorSummariesPage
+      ? dependencies.listConnectorSummariesPage()
+      : dependencies.listConnectorSummaries(),
     dependencies.getRuntimeStatus ? dependencies.getRuntimeStatus() : Promise.resolve(undefined),
   ]);
+  const page = dependencies.listConnectorSummariesPage ? (result as RefConnectorsListPage) : null;
+  const summaries = page ? page.data : (result as readonly RefConnectorsListItem[]);
   const envelope: RefConnectorsListEnvelope = {
     data: [...summaries],
     object: "list",
+    ...(page ? { has_more: page.has_more, next_cursor: page.next_cursor } : {}),
   };
   return runtime ? { ...envelope, runtime } : envelope;
 }

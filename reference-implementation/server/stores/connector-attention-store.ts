@@ -125,6 +125,11 @@ interface ReconcileTerminalRunsInput {
 export interface ConnectorAttentionStore {
   cancelOpenAttentionForTerminalRuns: (input?: ReconcileTerminalRunsInput) => Promise<AttentionRecord[]>;
   expireDueAttentionForConnection: (input?: ExpireDueInput) => Promise<AttentionRecord[]>;
+  /** Page-scoped durable evidence keyed by exact connector_instance_id. */
+  listOpenAttentionByConnectorInstanceIds: (
+    connectorInstanceIds: readonly (string | null | undefined)[],
+    input?: { limit?: number | null; now?: string | null }
+  ) => Promise<Map<string, AttentionRecord[]>>;
   listOpenAttentionForConnection: (input?: ListInput) => Promise<(AttentionRecord | null)[]>;
   recordNotificationOutcomeById: (input: NotificationOutcomeInput) => Promise<AttentionRecord | null>;
   transitionAttention: (input: TransitionInput) => Promise<AttentionRecord | null>;
@@ -133,6 +138,20 @@ export interface ConnectorAttentionStore {
 
 function nonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+const SQLITE_BATCH_INSTANCE_ID_CHUNK_SIZE = 900;
+
+function exactConnectorInstanceIds(values: readonly (string | null | undefined)[]): string[] {
+  return [...new Set(values.map(nonEmptyString).filter((value): value is string => value !== null))];
+}
+
+function chunked<T>(values: readonly T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let start = 0; start < values.length; start += size) {
+    chunks.push(values.slice(start, start + size));
+  }
+  return chunks;
 }
 
 function defaultConnectorInstanceId(connectorId: string): string {
@@ -364,6 +383,43 @@ export function createSqliteConnectorAttentionStore(): ConnectorAttentionStore {
         expired.push(next);
       }
       return expired;
+    },
+    // biome-ignore lint/suspicious/useAwait: sync sqlite driver; async satisfies the shared ConnectorAttentionStore contract.
+    async listOpenAttentionByConnectorInstanceIds(
+      connectorInstanceIds,
+      { limit, now }: { limit?: number | null; now?: string | null } = {}
+    ): Promise<Map<string, AttentionRecord[]>> {
+      const ids = exactConnectorInstanceIds(connectorInstanceIds);
+      if (!ids.length) {
+        return new Map();
+      }
+      const bounded = clampLimit(limit);
+      const readAt = nonEmptyString(now) || nowIso();
+      const result = new Map<string, AttentionRecord[]>();
+      for (const chunk of chunked(ids, SQLITE_BATCH_INSTANCE_ID_CHUNK_SIZE)) {
+        const rows = [
+          ...iterateDynamicSqlAcknowledged<AttentionListRow & { connector_instance_id: string }>(
+            `WITH ranked AS (
+             SELECT connector_instance_id, attention_id, record_json,
+                    ROW_NUMBER() OVER (PARTITION BY connector_instance_id ORDER BY updated_at DESC) AS row_number
+             FROM connector_attention_records
+             WHERE connector_instance_id IN (${chunk.map(() => "?").join(", ")})
+               AND ${buildSqliteOpenPredicate(OPEN_LIFECYCLES)}
+           ) SELECT connector_instance_id, attention_id, record_json FROM ranked WHERE row_number <= ? ORDER BY connector_instance_id, row_number`,
+            [...chunk, ...OPEN_LIFECYCLES, readAt, bounded]
+          ),
+        ];
+        for (const row of rows) {
+          const record = rowToRecord(row);
+          if (!record) {
+            continue;
+          }
+          const records = result.get(row.connector_instance_id) ?? [];
+          records.push(record);
+          result.set(row.connector_instance_id, records);
+        }
+      }
+      return result;
     },
 
     // biome-ignore lint/suspicious/useAwait: sync sqlite driver; async satisfies the shared ConnectorAttentionStore contract.
@@ -601,6 +657,39 @@ export function createPostgresConnectorAttentionStore(): ConnectorAttentionStore
         expired.push(next);
       }
       return expired;
+    },
+    async listOpenAttentionByConnectorInstanceIds(
+      connectorInstanceIds,
+      { limit, now }: { limit?: number | null; now?: string | null } = {}
+    ): Promise<Map<string, AttentionRecord[]>> {
+      const ids = exactConnectorInstanceIds(connectorInstanceIds);
+      if (!ids.length) {
+        return new Map();
+      }
+      const bounded = clampLimit(limit);
+      const readAt = nonEmptyString(now) || nowIso();
+      const query = await postgresQuery<AttentionListRow & { connector_instance_id: string }>(
+        `WITH ranked AS (
+           SELECT connector_instance_id, attention_id, record_json,
+                  ROW_NUMBER() OVER (PARTITION BY connector_instance_id ORDER BY updated_at DESC) AS row_number
+           FROM connector_attention_records
+           WHERE connector_instance_id = ANY($1::text[])
+             AND lifecycle = ANY($2::text[])
+             AND (expires_at IS NULL OR expires_at > $3)
+         ) SELECT connector_instance_id, attention_id, record_json FROM ranked WHERE row_number <= $4 ORDER BY connector_instance_id, row_number`,
+        [ids, OPEN_LIFECYCLES, readAt, bounded]
+      );
+      const result = new Map<string, AttentionRecord[]>();
+      for (const row of query.rows) {
+        const record = rowToRecord(row);
+        if (!record) {
+          continue;
+        }
+        const records = result.get(row.connector_instance_id) ?? [];
+        records.push(record);
+        result.set(row.connector_instance_id, records);
+      }
+      return result;
     },
 
     async listOpenAttentionForConnection({

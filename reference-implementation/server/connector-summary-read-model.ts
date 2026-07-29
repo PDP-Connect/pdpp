@@ -40,11 +40,31 @@ import {
   readInstanceIdPage,
   reconcileConnectorSummaryEvidence,
 } from "./connector-summary-evidence-engine.ts";
+import type { ConnectorSummaryReconcileObservation } from "./connector-summary-reconcile-observability.ts";
 import { getDb } from "./db.ts";
 import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.ts";
 
 /** A raw database row (column-keyed) crossing the untyped storage boundary. */
 type Row = Record<string, unknown>;
+
+type ConnectorSummaryReconcileObservationSink = (observation: ConnectorSummaryReconcileObservation) => void;
+
+let connectorSummaryReconcileObservationSink: ConnectorSummaryReconcileObservationSink | null = null;
+
+/** Configure best-effort process-local telemetry; no persisted read-model state changes. */
+export function setConnectorSummaryReconcileObservationSink(
+  sink: ConnectorSummaryReconcileObservationSink | null
+): void {
+  connectorSummaryReconcileObservationSink = sink;
+}
+
+function emitConnectorSummaryReconcileObservation(observation: ConnectorSummaryReconcileObservation): void {
+  try {
+    connectorSummaryReconcileObservationSink?.(observation);
+  } catch {
+    // Observability must not affect reconciliation or its caller's result.
+  }
+}
 
 /**
  * Strip anything that looks like a credential/token (long base64-ish runs)
@@ -1994,6 +2014,10 @@ async function observeConnectorSummaryEvidence(
   connectorInstanceIds: readonly string[] | null = null,
   options: { readonly maxCandidates?: number; readonly maxDurationMs?: number; readonly maxEvents?: number } = {}
 ): Promise<{
+  candidateReasonCounts: Readonly<Record<string, number>>;
+  candidatesInspected: number;
+  failed: number;
+  failureClasses: readonly string[];
   reconciled: number;
   skipped: number;
   failedRows: ReadonlyMap<string, Row>;
@@ -2001,7 +2025,14 @@ async function observeConnectorSummaryEvidence(
   resumeAfterSeq: number | null;
 }> {
   const overallDeadline = typeof options.maxDurationMs === "number" ? Date.now() + options.maxDurationMs : null;
-  let result: { repaired: number; skipped: number; failedRows: ReadonlyMap<string, Row> };
+  let result: {
+    candidateReasonCounts: Readonly<Record<string, number>>;
+    candidatesInspected: number;
+    failed: number;
+    repaired: number;
+    skipped: number;
+    failedRows: ReadonlyMap<string, Row>;
+  };
   try {
     result = await reconcileConnectorSummaryEvidence(connectorInstanceIds, options);
   } catch (err) {
@@ -2022,7 +2053,17 @@ async function observeConnectorSummaryEvidence(
     // `failedRows` result surfaces them even though nothing durable
     // reflects the failure.
     const failedRows = await markAllConnectorSummaryEvidenceDiscoveryFailed(err, connectorInstanceIds);
-    return { failedRows, incomplete: false, reconciled: 0, resumeAfterSeq: null, skipped: 0 };
+    return {
+      candidateReasonCounts: {},
+      candidatesInspected: 0,
+      failed: failedRows.size,
+      failedRows,
+      failureClasses: ["discovery"],
+      incomplete: false,
+      reconciled: 0,
+      resumeAfterSeq: null,
+      skipped: 0,
+    };
   }
   // The fold's own in-memory overlay (Sol P1.1) is merged in alongside the
   // repair engine's: both are keyed by connector_instance_id and represent
@@ -2048,7 +2089,11 @@ async function observeConnectorSummaryEvidence(
   const failedRows =
     foldOutcome.failedRows.size === 0 ? result.failedRows : new Map([...result.failedRows, ...foldOutcome.failedRows]);
   return {
+    candidateReasonCounts: result.candidateReasonCounts,
+    candidatesInspected: result.candidatesInspected,
+    failed: result.failed + foldOutcome.failedRows.size,
     failedRows,
+    failureClasses: foldOutcome.ok ? [] : ["terminal_facts"],
     incomplete: foldOutcome.incomplete,
     reconciled: result.repaired,
     resumeAfterSeq: foldOutcome.resumeAfterSeq,
@@ -2124,12 +2169,43 @@ export async function rebuildConnectorSummaryEvidence() {
  *
  * Spec: openspec/changes/reconcile-active-summary-evidence/design.md
  */
-// biome-ignore lint/suspicious/useAwait: The async signature is part of this caller-facing contract.
 export async function reconcileDirtyConnectorSummaryEvidence(
   connectorInstanceIds: readonly string[] | null = null,
   options: { readonly maxCandidates?: number; readonly maxDurationMs?: number; readonly maxEvents?: number } = {}
 ) {
-  return observeConnectorSummaryEvidence(connectorInstanceIds, options);
+  const startedAt = Date.now();
+  try {
+    const outcome = await observeConnectorSummaryEvidence(connectorInstanceIds, options);
+    emitConnectorSummaryReconcileObservation({
+      candidateReasonCounts: outcome.candidateReasonCounts,
+      candidatesInspected: outcome.candidatesInspected,
+      durationMs: Date.now() - startedAt,
+      failed: outcome.failed,
+      failureClasses: outcome.failureClasses,
+      incomplete: outcome.incomplete,
+      repaired: outcome.reconciled,
+      resumePending: outcome.resumeAfterSeq !== null,
+      scopeKind: connectorInstanceIds === null ? "complete" : "scoped",
+      scopeSize: connectorInstanceIds === null ? outcome.candidatesInspected : connectorInstanceIds.length,
+      skipped: outcome.skipped,
+    });
+    return outcome;
+  } catch (err) {
+    emitConnectorSummaryReconcileObservation({
+      candidateReasonCounts: {},
+      candidatesInspected: 0,
+      durationMs: Date.now() - startedAt,
+      failed: 0,
+      failureClasses: ["discovery"],
+      incomplete: false,
+      repaired: 0,
+      resumePending: false,
+      scopeKind: connectorInstanceIds === null ? "complete" : "scoped",
+      scopeSize: connectorInstanceIds?.length ?? 0,
+      skipped: 0,
+    });
+    throw err;
+  }
 }
 
 // ---------------------------------------------------------------------------

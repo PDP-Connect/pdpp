@@ -3408,14 +3408,17 @@ test("two stream sessions in one cookie jar retain session-scoped controller aut
       const controllerAbortB = new AbortController();
       const observerAbortA = new AbortController();
       try {
-        const [streamA, streamB, observerA] = await Promise.all([
-          fetch(`${asUrl}${mintA.viewer_path}`, { signal: controllerAbortA.signal }),
-          fetch(`${asUrl}${mintB.viewer_path}`, { signal: controllerAbortB.signal }),
-          fetch(`${asUrl}${mintA.viewer_path}`, { signal: observerAbortA.signal }),
-        ]);
+        // Attachment authority belongs to the first attachment for each session.
+        // Establish each intended controller before attaching the session-A observer;
+        // starting all three requests together races the test's own setup, not the
+        // session-scoped cookie contract under test.
+        const streamA = await fetch(`${asUrl}${mintA.viewer_path}`, { signal: controllerAbortA.signal });
+        const streamB = await fetch(`${asUrl}${mintB.viewer_path}`, { signal: controllerAbortB.signal });
+        const observerA = await fetch(`${asUrl}${mintA.viewer_path}`, { signal: observerAbortA.signal });
         assert.equal(streamA.status, 200);
         assert.equal(streamB.status, 200);
         assert.equal(observerA.status, 200);
+        assert.equal(observerA.headers.get("set-cookie"), null, "observer must not receive controller authority");
         const cookieA = presentationAttachmentCookie(streamA);
         const cookieB = presentationAttachmentCookie(streamB);
         assert.notEqual(cookieA.split("=", 1)[0], cookieB.split("=", 1)[0]);

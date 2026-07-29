@@ -7,6 +7,9 @@ import { execDynamicSqlAcknowledged, iterateDynamicSqlAcknowledged } from "../..
 import { postgresQuery } from "../postgres-storage.ts";
 
 const DEFAULT_LIST_LIMIT = 25;
+// Keep comfortably below SQLite's historical 999 bind floor. The public page
+// is smaller, but this store is also usable by maintenance callers.
+const SQLITE_INSTANCE_ID_CHUNK_SIZE = 900;
 
 /** Raw `acquisition_batches` row as returned by the storage backends. */
 interface AcquisitionBatchRow {
@@ -145,6 +148,7 @@ export interface SqliteAcquisitionBatchStore {
   get: (batchId: string) => AcquisitionBatch | null;
   insertOwnerArtifactBatch: (record: AcquisitionBatchInsert) => AcquisitionBatch | null;
   listByConnection: (connectorInstanceId: string, opts?: ListOptions) => (AcquisitionBatch | null)[];
+  listByConnectionIds: (connectorInstanceIds: readonly string[], opts?: ListOptions) => Map<string, AcquisitionBatch[]>;
   markCommittedForConnection: (connectorInstanceId: string, opts?: MarkCommittedOptions) => AcquisitionBatch | null;
   recordRecordProvenance: (input: RecordProvenanceInput) => RecordProvenanceResult;
 }
@@ -158,6 +162,10 @@ export interface PostgresAcquisitionBatchStore {
   get: (batchId: string) => Promise<AcquisitionBatch | null>;
   insertOwnerArtifactBatch: (record: AcquisitionBatchInsert) => Promise<AcquisitionBatch | null>;
   listByConnection: (connectorInstanceId: string, opts?: ListOptions) => Promise<(AcquisitionBatch | null)[]>;
+  listByConnectionIds: (
+    connectorInstanceIds: readonly string[],
+    opts?: ListOptions
+  ) => Promise<Map<string, AcquisitionBatch[]>>;
   markCommittedForConnection: (
     connectorInstanceId: string,
     opts?: MarkCommittedOptions
@@ -238,6 +246,23 @@ function sqliteGetOne(sql: string, params: readonly (string | number | null)[] =
 
 function sqliteList(sql: string, params: readonly (string | number | null)[] = []): AcquisitionBatchRow[] {
   return [...iterateDynamicSqlAcknowledged<AcquisitionBatchRow>(sql, params)];
+}
+
+function uniqueIds(ids: readonly string[]): string[] {
+  return [...new Set(ids.filter((id) => typeof id === "string" && id.length > 0))];
+}
+
+function batchMap(rows: readonly AcquisitionBatchRow[]): Map<string, AcquisitionBatch[]> {
+  const result = new Map<string, AcquisitionBatch[]>();
+  for (const row of rows) {
+    const batch = mapRow(row);
+    if (batch?.connectorInstanceId) {
+      const values = result.get(batch.connectorInstanceId) ?? [];
+      values.push(batch);
+      result.set(batch.connectorInstanceId, values);
+    }
+  }
+  return result;
 }
 
 interface RequiredInsertFields {
@@ -381,6 +406,32 @@ export function createSqliteAcquisitionBatchStore(): SqliteAcquisitionBatchStore
       return rows.map(mapRow);
     },
 
+    listByConnectionIds(connectorInstanceIds: readonly string[], { limit = DEFAULT_LIST_LIMIT }: ListOptions = {}) {
+      const ids = uniqueIds(connectorInstanceIds);
+      if (ids.length === 0) {
+        return new Map<string, AcquisitionBatch[]>();
+      }
+      const rows: AcquisitionBatchRow[] = [];
+      for (let start = 0; start < ids.length; start += SQLITE_INSTANCE_ID_CHUNK_SIZE) {
+        const chunk = ids.slice(start, start + SQLITE_INSTANCE_ID_CHUNK_SIZE);
+        const placeholders = chunk.map(() => "?").join(", ");
+        rows.push(
+          ...sqliteList(
+            `SELECT * FROM (
+               SELECT acquisition_batches.*, ROW_NUMBER() OVER (
+                 PARTITION BY connector_instance_id ORDER BY created_at DESC, batch_id DESC
+               ) AS row_number
+               FROM acquisition_batches
+               WHERE connector_instance_id IN (${placeholders})
+             ) WHERE row_number <= ?
+             ORDER BY connector_instance_id ASC, created_at DESC, batch_id DESC`,
+            [...chunk, limit]
+          )
+        );
+      }
+      return batchMap(rows);
+    },
+
     markCommittedForConnection(
       connectorInstanceId: string,
       { acceptedCount = 0, failedCount = 0, updatedAt }: MarkCommittedOptions = {}
@@ -511,6 +562,28 @@ export function createPostgresAcquisitionBatchStore(): PostgresAcquisitionBatchS
         [connectorInstanceId, limit]
       );
       return result.rows.map(mapRow);
+    },
+
+    async listByConnectionIds(
+      connectorInstanceIds: readonly string[],
+      { limit = DEFAULT_LIST_LIMIT }: ListOptions = {}
+    ) {
+      const ids = uniqueIds(connectorInstanceIds);
+      if (ids.length === 0) {
+        return new Map<string, AcquisitionBatch[]>();
+      }
+      const result = await postgresQuery<AcquisitionBatchRow>(
+        `SELECT * FROM (
+           SELECT acquisition_batches.*, ROW_NUMBER() OVER (
+             PARTITION BY connector_instance_id ORDER BY created_at DESC, batch_id DESC
+           ) AS row_number
+           FROM acquisition_batches
+           WHERE connector_instance_id = ANY($1::text[])
+         ) ranked WHERE row_number <= $2
+         ORDER BY connector_instance_id ASC, created_at DESC, batch_id DESC`,
+        [ids, limit]
+      );
+      return batchMap(result.rows);
     },
 
     async markCommittedForConnection(
