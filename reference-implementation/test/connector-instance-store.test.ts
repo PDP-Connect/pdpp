@@ -192,6 +192,15 @@ interface ConformanceStoreLike {
     sourceBindingKey: string;
   }) => (ConnectorInstanceLike | null) | Promise<ConnectorInstanceLike | null>;
   listByOwner: (ownerSubjectId: string) => ConnectorInstanceLike[] | Promise<ConnectorInstanceLike[]>;
+  listOwnerVisibleIdentityPage: (
+    ownerSubjectId: string,
+    args: {
+      after?: { connectorId: string; connectorInstanceId: string; createdAt: string } | null;
+      limit: number;
+    }
+  ) =>
+    | { hasMore: boolean; rows: readonly ConnectorInstanceLike[] }
+    | Promise<{ hasMore: boolean; rows: readonly ConnectorInstanceLike[] }>;
   resolveActiveByConnector: (
     ownerSubjectId: string,
     connectorId: string
@@ -318,6 +327,28 @@ async function runConformance({
     ownerInstances.map((row) => row.connectorInstanceId),
     ["cin_gmail_personal", "cin_gmail_work"]
   );
+  const duplicateConnectorFirstPage = await driver.call("listOwnerVisibleIdentityPage", "owner_2", { limit: 1 });
+  assert.deepEqual(
+    duplicateConnectorFirstPage.rows.map((row) => row.connectorInstanceId),
+    ["cin_gmail_personal"],
+    "identity pagination uses connector_instance_id as the tied tuple's final key"
+  );
+  assert.equal(duplicateConnectorFirstPage.hasMore, true);
+  const duplicateConnectorSecondPage = await driver.call("listOwnerVisibleIdentityPage", "owner_2", {
+    after: {
+      connectorId: "gmail",
+      connectorInstanceId: "cin_gmail_personal",
+      createdAt: NOW,
+    },
+    limit: 1,
+  });
+  assert.deepEqual(duplicateConnectorSecondPage.rows.map((row) => row.connectorInstanceId), ["cin_gmail_work"]);
+  assert.equal(duplicateConnectorSecondPage.hasMore, false, "last page has no continuation");
+  const emptyIdentityPage = await driver.call("listOwnerVisibleIdentityPage", "owner_empty", { limit: 1 });
+  assert.deepEqual(emptyIdentityPage.rows, [], "empty owner has an empty identity page");
+  assert.equal(emptyIdentityPage.hasMore, false);
+  await assert.rejects(() => driver.call("listOwnerVisibleIdentityPage", "owner_2", { limit: 0 }), RangeError);
+  await assert.rejects(() => driver.call("listOwnerVisibleIdentityPage", "owner_2", { limit: 101 }), RangeError);
   const workByBinding = await driver.call("getByBinding", {
     connectorId: "gmail",
     ownerSubjectId: "owner_2",
@@ -395,6 +426,12 @@ async function runConformance({
   });
   assert.ok(draft, "upsert must return the written row");
   assert.equal(draft.status, "draft");
+  const draftIdentityPage = await driver.call("listOwnerVisibleIdentityPage", "owner_4", { limit: 1 });
+  assert.deepEqual(
+    draftIdentityPage.rows.map((row) => row.connectorInstanceId),
+    ["cin_gmail_draft"],
+    "owner-visible identity pages retain drafts"
+  );
   assert.deepEqual(
     (await driver.call("listByOwner", "owner_4")).map((row) => row.connectorInstanceId),
     [],
@@ -566,6 +603,12 @@ async function runConformance({
   const ghAfterReEnsure = await driver.call("get", ghDefault.connectorInstanceId);
   assert.ok(ghAfterReEnsure, "get must return the row");
   assert.equal(ghAfterReEnsure.status, "revoked");
+  const revokedIdentityPage = await driver.call("listOwnerVisibleIdentityPage", "owner_5", { limit: 1 });
+  assert.deepEqual(
+    revokedIdentityPage.rows.map((row) => row.connectorInstanceId),
+    [ghDefault.connectorInstanceId],
+    "owner-visible identity pages retain ordinary revoked connections"
+  );
 
   // The owner resolution path (read/ingest, allowDefaultAccount: true) fails
   // closed with connector_instance_not_found instead of binding to / writing

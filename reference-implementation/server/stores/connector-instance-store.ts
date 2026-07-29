@@ -145,6 +145,7 @@ import {
   exec,
   getMany,
   getOne,
+  iterateDynamicSqlAcknowledged,
   referenceQueries,
   writeTransaction,
 } from "../../lib/db.ts";
@@ -157,6 +158,49 @@ import { postgresQuery, withPostgresTransaction } from "../postgres-storage.ts";
 const ACTIVE_RESOLUTION_LIMIT = 2;
 const ACTIVE_FANIN_LIMIT = 64;
 const LIST_LIMIT = 500;
+const CONNECTOR_IDENTITY_PAGE_LIMIT_MAX = 100;
+
+export interface ConnectorIdentityPageBoundary {
+  readonly connectorId: string;
+  readonly connectorInstanceId: string;
+  readonly createdAt: string;
+}
+
+export interface ConnectorInstanceIdentityPage {
+  readonly hasMore: boolean;
+  readonly rows: readonly ConnectorInstance[];
+}
+
+function assertConnectorIdentityPageLimit(limit: number): void {
+  if (!Number.isInteger(limit) || limit < 1 || limit > CONNECTOR_IDENTITY_PAGE_LIMIT_MAX) {
+    throw new RangeError(`Connector identity page limit must be 1..${CONNECTOR_IDENTITY_PAGE_LIMIT_MAX}.`);
+  }
+}
+
+// This is an owner-facing dashboard visibility policy, not a generic status
+// filter: drafts and ordinary revoked connections remain visible, while
+// retired setup shells and system-only connectors do not consume page slots.
+const SQLITE_OWNER_VISIBLE_IDENTITY_PAGE_SQL = `
+SELECT connector_instance_id, owner_subject_id, connector_id, display_name, status,
+       source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
+FROM connector_instances
+WHERE owner_subject_id = ?
+  AND connector_id NOT LIKE '%manual_action_stub%'
+  AND connector_id NOT LIKE '%manual-action-stub%'
+  AND connector_id NOT LIKE '%stream-test-stub%'
+  AND connector_id NOT LIKE '%pg_runtime_%'
+  AND connector_id NOT LIKE '%pg_canonical_%'
+  AND connector_id NOT LIKE '%pg_expand_%'
+  AND connector_id NOT LIKE '%pg_lexical_backfill_%'
+  AND (status <> 'revoked' OR COALESCE(json_extract(source_binding_json, '$.kind'), '') NOT IN ('browser_enrollment_shell', 'static_secret_draft', 'manual_upload_draft'))
+  AND (
+    ? IS NULL
+    OR connector_id > ?
+    OR (connector_id = ? AND created_at > ?)
+    OR (connector_id = ? AND created_at = ? AND connector_instance_id > ?)
+  )
+ORDER BY connector_id ASC, created_at ASC, connector_instance_id ASC
+LIMIT ?`;
 // `draft` is reserved for static-secret owner-session connection setup: a real
 // connector_instances row that is excluded from every connection read surface
 // until its first successful ingest flips it to `active`. Only the owner-session
@@ -1086,6 +1130,32 @@ export function createSqliteConnectorInstanceStore() {
       ).rows.map(mapInstance);
     },
 
+    // REVIEWED-DYNAMIC: the reusable keyset boundary needs an optional
+    // three-column continuation tuple; the generic `getMany` cursor is
+    // intentionally limited to `(cursor_field, rowid)` and cannot represent
+    // this identity contract. SQL remains fixed and every value is bound.
+    listOwnerVisibleIdentityPage(
+      ownerSubjectId: string,
+      { after = null, limit }: { after?: ConnectorIdentityPageBoundary | null; limit: number }
+    ): ConnectorInstanceIdentityPage {
+      assertConnectorIdentityPageLimit(limit);
+      const rows = Array.from(
+        iterateDynamicSqlAcknowledged<ConnectorInstanceRow>(SQLITE_OWNER_VISIBLE_IDENTITY_PAGE_SQL, [
+          ownerSubjectId,
+          after?.connectorId ?? null,
+          after?.connectorId ?? null,
+          after?.connectorId ?? null,
+          after?.createdAt ?? null,
+          after?.connectorId ?? null,
+          after?.createdAt ?? null,
+          after?.connectorInstanceId ?? null,
+          limit + 1,
+        ])
+      );
+      const hasMore = rows.length > limit;
+      return { hasMore, rows: rows.slice(0, limit).map(mapInstance) };
+    },
+
     // Returns all browser-enrollment shells (any owner). Used by the TTL
     // retirement sweep to find shells whose enrollment_expires_at has passed.
     // Historical method/query name says "Draft", but active shell rows are
@@ -1580,6 +1650,49 @@ export function createPostgresConnectorInstanceStore() {
         [ownerSubjectId, limit]
       );
       return (result.rows as ConnectorInstanceRow[]).map(mapInstance);
+    },
+
+    async listOwnerVisibleIdentityPage(
+      ownerSubjectId: string,
+      { after = null, limit }: { after?: ConnectorIdentityPageBoundary | null; limit: number }
+    ): Promise<ConnectorInstanceIdentityPage> {
+      assertConnectorIdentityPageLimit(limit);
+      const result = await postgresQuery(
+        `SELECT connector_instance_id, owner_subject_id, connector_id, display_name, status,
+                source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
+         FROM connector_instances
+         WHERE owner_subject_id = $1
+           AND connector_id NOT LIKE '%manual_action_stub%'
+           AND connector_id NOT LIKE '%manual-action-stub%'
+           AND connector_id NOT LIKE '%stream-test-stub%'
+           AND connector_id NOT LIKE '%pg_runtime_%'
+           AND connector_id NOT LIKE '%pg_canonical_%'
+           AND connector_id NOT LIKE '%pg_expand_%'
+           AND connector_id NOT LIKE '%pg_lexical_backfill_%'
+           AND (status <> 'revoked' OR COALESCE(source_binding_json->>'kind', '') NOT IN ('browser_enrollment_shell', 'static_secret_draft', 'manual_upload_draft'))
+           AND (
+             $2::text IS NULL
+             OR connector_id > $3
+             OR (connector_id = $4 AND created_at > $5)
+             OR (connector_id = $6 AND created_at = $7 AND connector_instance_id > $8)
+           )
+         ORDER BY connector_id ASC, created_at ASC, connector_instance_id ASC
+         LIMIT $9`,
+        [
+          ownerSubjectId,
+          after?.connectorId ?? null,
+          after?.connectorId ?? null,
+          after?.connectorId ?? null,
+          after?.createdAt ?? null,
+          after?.connectorId ?? null,
+          after?.createdAt ?? null,
+          after?.connectorInstanceId ?? null,
+          limit + 1,
+        ]
+      );
+      const rows = result.rows as ConnectorInstanceRow[];
+      const hasMore = rows.length > limit;
+      return { hasMore, rows: rows.slice(0, limit).map(mapInstance) };
     },
 
     // Returns all browser-enrollment shells (any owner, or filtered by

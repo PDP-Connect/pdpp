@@ -239,6 +239,7 @@ import {
   getConnectorSummaryForRoute,
   getOwnerConnectionDiagnostics,
   invalidateConnectorSummariesCache,
+  listConnectorSummaryPage,
   listConnectorSummaries,
   listOwnerVisibleConnectorInstances,
   listPendingApprovals,
@@ -4760,6 +4761,13 @@ export function buildAsApp(opts: ServerOpts = {}) {
     handleError,
     invalidateConnectorSummariesCache,
     listConnectorSummaries: () => listConnectorSummaries(controller, { includeRunSummaries: "singleton-active" }),
+    listConnectorSummaryPage: (ownerSubjectId: string, page: { cursor: unknown; limit: number }) =>
+      listConnectorSummaryPage(controller, {
+        after: page.cursor as Parameters<typeof listConnectorSummaryPage>[1]["after"],
+        includeRunSummaries: "singleton-active",
+        limit: page.limit,
+        ownerSubjectId,
+      }),
     listSchedules: async () => (controller ? await controller.listSchedules() : []),
     markConnectorSummaryEvidenceDirty,
     onScheduleMutation: opts.onScheduleMutation,

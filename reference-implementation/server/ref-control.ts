@@ -14,6 +14,10 @@
 
 // biome-ignore lint/correctness/noUnresolvedImports: Biome cannot resolve this installed package export; Node and TypeScript resolve it.
 import type { BrowserSurface, BrowserSurfaceLease } from "@opendatalabs/remote-surface/leases";
+import {
+  encodeConnectorSummaryPageCursor,
+  type ConnectorIdentityPageBoundary,
+} from "../operations/ref-connectors-list/pagination.ts";
 import { allowUnboundedReadAcknowledged, getOne, iterateDynamicSqlAcknowledged, referenceQueries } from "../lib/db.ts";
 import { isNullish } from "../lib/nullish.ts";
 import { listSpineCorrelations, type SpineSummary } from "../lib/spine.ts";
@@ -1808,30 +1812,36 @@ export async function listOwnerVisibleConnectorInstances(
   // reads as healthy/configured.
   await retireExpiredBrowserEnrollmentShellsForDashboard(new Date().toISOString(), ownerSubjectId);
   const store = getConnectorInstanceStore();
-  const instances = await store.listByOwnerIncludingDrafts(ownerSubjectId);
-  // Filter out system-internal connector_instances (backfill jobs, runtime
-  // stubs, etc.) that are never owner-created and must not appear on the
-  // owner-facing source list. Same pattern list as isPublicReferenceConnector.
-  return instances.filter(
-    (instance: ConnectorInstanceRow) =>
-      !(
-        NON_PUBLIC_CONNECTOR_ID_PARTS.some((part) => instance.connectorId.includes(part)) ||
-        isRetiredSetupAttempt(instance)
-      )
-  );
+  const rows: ConnectorInstanceRow[] = [];
+  let after: ConnectorIdentityPageBoundary | null = null;
+  do {
+    const page = await store.listOwnerVisibleIdentityPage(ownerSubjectId, { after, limit: 100 });
+    rows.push(...page.rows);
+    const last = page.rows.at(-1);
+    after = last
+      ? {
+          connectorId: last.connectorId,
+          connectorInstanceId: last.connectorInstanceId,
+          createdAt: last.createdAt,
+        }
+      : null;
+    if (!page.hasMore) {
+      return rows;
+    }
+    if (!last) {
+      throw new Error("Owner-visible connector identity page reported continuation without a row.");
+    }
+  } while (after);
+  return rows;
 }
 
-function isRetiredSetupAttempt(instance: ConnectorInstanceRow): boolean {
-  if (instance.status !== "revoked") {
-    return false;
-  }
-  const binding = instance.sourceBinding;
-  if (!binding || typeof binding !== "object" || Array.isArray(binding)) {
-    return false;
-  }
-  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
-  const kind = (binding as { readonly kind?: unknown }).kind;
-  return kind === "browser_enrollment_shell" || kind === "static_secret_draft" || kind === "manual_upload_draft";
+/** Read one bounded owner-visible identity page before summary evidence. */
+export async function listOwnerVisibleConnectorInstancePage(
+  ownerSubjectId: string,
+  { after = null, limit }: { after?: ConnectorIdentityPageBoundary | null; limit: number }
+): Promise<{ readonly hasMore: boolean; readonly rows: readonly ConnectorInstanceRow[] }> {
+  await retireExpiredBrowserEnrollmentShellsForDashboard(new Date().toISOString(), ownerSubjectId);
+  return await getConnectorInstanceStore().listOwnerVisibleIdentityPage(ownerSubjectId, { after, limit });
 }
 
 function retireExpiredBrowserEnrollmentShellsForDashboard(
@@ -5654,11 +5664,12 @@ async function computeConnectorSummaries(
   options: ListConnectorSummariesOptions = {}
 ): Promise<ConnectorSummary[]> {
   const ownerSubjectId = options.ownerSubjectId ?? REFERENCE_OWNER_SUBJECT_ID;
+  const rows = options.visibleConnections ?? (await listOwnerVisibleConnectorInstances(ownerSubjectId));
   const deps = await loadConnectorSummaryProjectionDeps(controller, {
+    connectorInstanceIds: rows.map((row) => row.connectorInstanceId),
     includeRetainedSizeSnapshot: true,
     includeRunSummaries: options.includeRunSummaries ?? true,
   });
-  const rows = options.visibleConnections ?? (await listOwnerVisibleConnectorInstances(ownerSubjectId));
   const schedulesByInstanceId = await loadSummaryScheduleSnapshot(controller, rows);
   const summaryDeps = schedulesByInstanceId === null ? deps : { ...deps, schedulesByInstanceId };
   const activeVisibleConnectionCounts = countActiveVisibleConnectionsByConnectorId(rows, summaryDeps.manifestsByConnectorId);
@@ -5672,6 +5683,49 @@ async function computeConnectorSummaries(
     options.onInFlightChange ? { onInFlightChange: options.onInFlightChange } : {}
   );
   return summaries.filter((summary): summary is ConnectorSummary => summary !== null);
+}
+
+/**
+ * Page summary synthesis starts from immutable owner-visible identities. The
+ * existing projection loader then receives exactly that page's ids; this adds
+ * no new evidence reader or cache.
+ */
+export async function listConnectorSummaryPage(
+  controller: ControllerLike | null | undefined,
+  {
+    after = null,
+    includeRunSummaries = "singleton-active",
+    limit,
+    ownerSubjectId,
+  }: {
+    readonly after?: ConnectorIdentityPageBoundary | null;
+    readonly includeRunSummaries?: ConnectorRunSummaryInclusion;
+    readonly limit: number;
+    readonly ownerSubjectId: string;
+  }
+): Promise<{ readonly data: readonly ConnectorSummary[]; readonly has_more: boolean; readonly next_cursor: string | null }> {
+  const identityPage = await listOwnerVisibleConnectorInstancePage(ownerSubjectId, { after, limit });
+  const data = await computeConnectorSummaries(controller, {
+    includeRunSummaries,
+    ownerSubjectId,
+    visibleConnections: identityPage.rows,
+  });
+  const last = identityPage.rows.at(-1);
+  return {
+    data,
+    has_more: identityPage.hasMore,
+    next_cursor:
+      identityPage.hasMore && last
+        ? encodeConnectorSummaryPageCursor(
+            {
+              connectorId: last.connectorId,
+              connectorInstanceId: last.connectorInstanceId,
+              createdAt: last.createdAt,
+            },
+            ownerSubjectId
+          )
+        : null,
+  };
 }
 
 /**

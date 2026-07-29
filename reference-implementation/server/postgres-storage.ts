@@ -640,6 +640,8 @@ export async function bootstrapPostgresSchema({
       );
       CREATE INDEX IF NOT EXISTS idx_pg_connector_instances_owner_connector_status
         ON connector_instances(owner_subject_id, connector_id, status);
+      CREATE INDEX IF NOT EXISTS idx_pg_connector_instances_owner_identity_page
+        ON connector_instances(owner_subject_id, connector_id, created_at, connector_instance_id);
 
       -- Durable record that a connector-instance IDENTITY was owner-deleted.
       -- See the SQLite arm (server/db.js) for the full rationale: the

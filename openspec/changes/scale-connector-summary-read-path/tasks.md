@@ -1,9 +1,9 @@
 ## 1. Contract and identity page
 
-- [ ] Add the reference-contract request/response pagination fields and typed
+- [x] Add the reference-contract request/response pagination fields and typed
   cursor validation for unscoped `GET /_ref/connectors`; keep `connection`
   behavior unchanged.
-- [ ] Add one owner-visible connection-instance keyset-page store method with
+- [x] Add one owner-visible connection-instance keyset-page store method with
   the immutable current-order tuple and `limit + 1` lookahead, in SQLite and
   PostgreSQL.
 - [ ] Add cursor encode/decode scope binding and migration telemetry/
