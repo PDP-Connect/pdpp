@@ -13,6 +13,15 @@ The reference implementation SHALL record every managed browser-process replacem
 - **THEN** the original external-loss receipt SHALL complete with that successor generation hash
 - **AND** the persisted surface projection SHALL retain the allocator profile bind path.
 
+#### Scenario: Historical reconciliation cannot mint a new external-loss boundary
+
+- **WHEN** boot or periodic reconciliation evicts a persisted managed surface that was already `unhealthy` or `stopping`
+- **THEN** the implementation SHALL persist its unhealthy projection without appending a new `external_or_host_loss` receipt
+- **AND** it SHALL preserve any prior failed scoped successor as selectable system-runtime evidence.
+- **WHEN** reconciliation evicts a managed surface that was `ready` immediately before the allocator loss observation
+- **THEN** it SHALL append exactly one scoped `external_or_host_loss` receipt
+- **AND** a same-profile successor readiness observation SHALL complete that receipt.
+
 #### Scenario: Profile-key replacement cannot inherit prior provenance
 
 - **WHEN** a surface ID is upserted with a different profile key and no replacement directory/volume pair

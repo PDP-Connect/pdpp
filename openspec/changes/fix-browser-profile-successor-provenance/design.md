@@ -9,6 +9,13 @@ An observed external loss is a replacement boundary, not proof that replacement 
 - readiness observes a successor browser generation in the same connection, surface-subject, and profile-key scope; or
 - the allocator reports that an actual scoped successor ensure attempt failed.
 
+Boot and periodic reconciliation still evict every allocator-dead surface so
+historical capacity cannot be reused. They create a new external-loss receipt
+only when the evicted projection was `ready` immediately before reconciliation.
+Already `unhealthy` or `stopping` rows are historical evidence, not a fresh
+loss observation; re-emitting a pending successor for them would mask an older
+failed successor in the same connection/profile scope.
+
 A terminal successor receipt is not a current browser generation; it is separate system-actionable runtime evidence. It degrades continuity and remains available through idle scale-to-zero, but it does not mint or repeat a browser-session owner repair. Only provider invalidation proof remains repair authority.
 
 The reference copies the allocator's stable profile bind path into `browser_surfaces.profile_dir`. It does not create a second cookie/token store or browser hibernation mechanism.

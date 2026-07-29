@@ -15,6 +15,7 @@
 - [x] 3.2 Run reference typecheck and lint.
 - [x] 3.3 Run `openspec validate fix-browser-profile-successor-provenance --strict` and `openspec validate --all --strict`.
 - [x] 3.4 Prove failed idle/operator retirements do not become successor runtime evidence.
+- [x] 3.5 Prevent historical unhealthy/stopping reconciliation rows from minting or masking external-loss successor receipts; prove the production topology and a genuine ready-loss successor.
 
 ## 4. Deploy/UAT (owner, after merge and deployment)
 
