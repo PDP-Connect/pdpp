@@ -185,6 +185,64 @@ test("idle dynamic health reads a matching failed successor but ignores an obsol
   assert.equal(obsolete.receipt, null, "a stale profile's failure cannot degrade the replacement binding");
 });
 
+test("idle dynamic health ignores failed idle and operator stop history", async (t) => {
+  closeDb();
+  initDb(makeTemporaryDbPath("pdpp-stop-history-receipt-"));
+  t.after(closeDb);
+  const { projectEphemeralBrowserSurfaceHealth } = await import(
+    "../runtime/browser-surface/ephemeral-health-projection.ts"
+  );
+  const { readProcessBoundCurrentReplacementReceipt } = await import(
+    "../runtime/browser-surface/health-summary-adapter.ts"
+  );
+  const ledger = createBrowserSurfaceReplacementLedger();
+  const store = getDefaultBrowserSurfaceReplacementReceiptStore();
+  const failedStops = (["idle_ttl", "operator_requested"] as const).flatMap((cause) => {
+    const started = ledger.start({
+      cause,
+      connection_id: "chatgpt:connection-a",
+      idempotency_key: `failed-stop-${cause}`,
+      profile_key: "chatgpt:connection-a",
+      surface_id: `surface-${cause}`,
+      surface_subject_id: "chatgpt:connection-a",
+    });
+    return [
+      started,
+      ledger.terminate({
+        cause: started.cause,
+        connection_id: started.connection_id,
+        outcome: "failed",
+        profile_key: started.profile_key,
+        replacement_id: started.replacement_id,
+        ...(started.surface_id ? { surface_id: started.surface_id } : {}),
+        ...(started.surface_subject_id ? { surface_subject_id: started.surface_subject_id } : {}),
+      }),
+    ];
+  });
+  await Promise.all(failedStops.map((failedStop) => store.append(failedStop)));
+  const read = await readProcessBoundCurrentReplacementReceipt({
+    connectionId: "chatgpt:connection-a",
+    connectorId: "chatgpt",
+    demand: "none",
+    inventory: null,
+    profileKey: "chatgpt:connection-a",
+    reader: { listLeases: async () => [], listSurfaces: async () => [] },
+    remoteSurface: null,
+    surfaceMode: "dynamic-managed",
+  });
+  assert.equal(read.receipt, null);
+  assert.equal(
+    projectEphemeralBrowserSurfaceHealth({
+      connection_id: "chatgpt:connection-a",
+      connection_kind: "browser-runtime",
+      current_replacement_receipt: read.receipt,
+      demand: "none",
+      surface_mode: "dynamic-managed",
+    }).credential_continuity,
+    "not_applicable"
+  );
+});
+
 test("Luna reader failure fails closed while an ordinary no-replacement selection remains available", async () => {
   const { readCurrentReplacementReceipt } = await import("../runtime/browser-surface/replacement-receipt-reader.ts");
   const { projectEphemeralBrowserSurfaceHealth } = await import(

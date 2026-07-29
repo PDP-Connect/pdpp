@@ -830,17 +830,21 @@ function lifecyclePersistence(initialSurface: BrowserSurfaceWithPersistenceMetad
     list: async () => receipts.slice(),
     listForScope: async () => notImplementedInLifecycleFake("listForScope"),
     selectCurrent: async () => notImplementedInLifecycleFake("selectCurrent"),
-    selectSystemActionable: async ({ connection_id, profile_key, surface_subject_id }) =>
-      receipts
-        .filter(
-          (receipt) =>
-            receipt.connection_id === connection_id &&
-            receipt.profile_key === profile_key &&
-            (receipt.surface_subject_id ?? undefined) === surface_subject_id &&
-            receipt.phase === "terminal" &&
-            receipt.terminal_outcome === "failed"
-        )
-        .at(-1) ?? null,
+    selectSystemActionable: ({ connection_id, profile_key, surface_subject_id }) => {
+      const scoped = receipts.filter(
+        (receipt) =>
+          receipt.connection_id === connection_id &&
+          receipt.profile_key === profile_key &&
+          (receipt.surface_subject_id ?? undefined) === surface_subject_id
+      );
+      const latestStarted = scoped.filter((receipt) => receipt.phase === "started").at(-1);
+      const latest = scoped.filter((receipt) => receipt.replacement_id === latestStarted?.replacement_id).at(-1);
+      return Promise.resolve(
+        latest?.phase === "terminal" && latest.terminal_outcome === "failed" && latest.cause === "external_or_host_loss"
+          ? latest
+          : null
+      );
+    },
   };
   return {
     getSurface: () => surface,
@@ -1022,6 +1026,15 @@ test("a failed successor terminalizes the scoped external-loss receipt", async (
     persistence.receipts.at(-1)?.phase,
     "completed",
     "a later confirmed successor supersedes the failed runtime boundary"
+  );
+  assert.equal(
+    await persistence.receiptStore.selectSystemActionable({
+      connection_id: previous.surface_subject_id ?? previous.connector_id,
+      profile_key: previous.profile_key,
+      ...(previous.surface_subject_id ? { surface_subject_id: previous.surface_subject_id } : {}),
+    }),
+    null,
+    "the confirming successor clears the failed external-loss runtime boundary"
   );
 
   await hooks.recordExternalSurfaceLoss({

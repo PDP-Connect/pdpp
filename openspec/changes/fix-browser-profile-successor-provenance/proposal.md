@@ -8,6 +8,8 @@ An externally lost managed browser surface is recorded as terminal before a succ
 - Correlate a successor with the durable connection, surface subject, and profile key when its surface ID changes.
 - Project a failed successor as system-actionable runtime continuity evidence with no new owner credential action.
 - Persist the allocator's connection-scoped profile bind path into the reference surface projection.
+- Keep profile key, profile path, and profile volume coupled across partial surface reconciliation.
+- Restrict failed-successor runtime evidence to terminal external-loss successor boundaries, excluding failed retirements.
 
 ## Capabilities
 

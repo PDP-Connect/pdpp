@@ -377,7 +377,11 @@ export function selectSystemActionableReplacementReceipt(
     .filter((receipt) => receipt.replacement_id === latestStarted.replacement_id)
     .sort(compareReceiptsAscending)
     .at(-1);
-  return latest?.phase === "terminal" && latest.terminal_outcome === "failed" ? latest : null;
+  return latest?.phase === "terminal" &&
+    latest.terminal_outcome === "failed" &&
+    latest.cause === "external_or_host_loss"
+    ? latest
+    : null;
 }
 
 function compareReceiptsAscending(left: ReplacementReceipt, right: ReplacementReceipt): number {

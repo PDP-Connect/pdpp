@@ -7,12 +7,14 @@
 ## 2. Profile provenance
 
 - [x] 2.1 Persist allocator profile bind paths in the browser-surface projection.
+- [x] 2.2 Treat profile key, path, and volume as one compatibility boundary during partial upserts.
 
 ## 3. Verification
 
 - [x] 3.1 Run focused lifecycle, persistence, and health tests.
 - [x] 3.2 Run reference typecheck and lint.
 - [x] 3.3 Run `openspec validate fix-browser-profile-successor-provenance --strict` and `openspec validate --all --strict`.
+- [x] 3.4 Prove failed idle/operator retirements do not become successor runtime evidence.
 
 ## 4. Deploy/UAT (owner, after merge and deployment)
 

@@ -275,8 +275,20 @@ class SqliteBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
         health = excluded.health,
         container_id = excluded.container_id,
         container_name = excluded.container_name,
-        profile_dir = COALESCE(excluded.profile_dir, browser_surfaces.profile_dir),
-        profile_volume = COALESCE(excluded.profile_volume, browser_surfaces.profile_volume),
+        profile_dir = CASE
+          WHEN excluded.profile_key = browser_surfaces.profile_key
+            THEN COALESCE(excluded.profile_dir, browser_surfaces.profile_dir)
+          WHEN excluded.profile_dir IS NOT NULL AND excluded.profile_volume IS NOT NULL
+            THEN excluded.profile_dir
+          ELSE NULL
+        END,
+        profile_volume = CASE
+          WHEN excluded.profile_key = browser_surfaces.profile_key
+            THEN COALESCE(excluded.profile_volume, browser_surfaces.profile_volume)
+          WHEN excluded.profile_dir IS NOT NULL AND excluded.profile_volume IS NOT NULL
+            THEN excluded.profile_volume
+          ELSE NULL
+        END,
         browser_generation_hash = CASE
           WHEN excluded.container_id IS browser_surfaces.container_id
             THEN COALESCE(excluded.browser_generation_hash, browser_surfaces.browser_generation_hash)
@@ -476,8 +488,20 @@ class PostgresBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
         health = EXCLUDED.health,
         container_id = EXCLUDED.container_id,
         container_name = EXCLUDED.container_name,
-        profile_dir = COALESCE(EXCLUDED.profile_dir, browser_surfaces.profile_dir),
-        profile_volume = COALESCE(EXCLUDED.profile_volume, browser_surfaces.profile_volume),
+        profile_dir = CASE
+          WHEN EXCLUDED.profile_key = browser_surfaces.profile_key
+            THEN COALESCE(EXCLUDED.profile_dir, browser_surfaces.profile_dir)
+          WHEN EXCLUDED.profile_dir IS NOT NULL AND EXCLUDED.profile_volume IS NOT NULL
+            THEN EXCLUDED.profile_dir
+          ELSE NULL
+        END,
+        profile_volume = CASE
+          WHEN EXCLUDED.profile_key = browser_surfaces.profile_key
+            THEN COALESCE(EXCLUDED.profile_volume, browser_surfaces.profile_volume)
+          WHEN EXCLUDED.profile_dir IS NOT NULL AND EXCLUDED.profile_volume IS NOT NULL
+            THEN EXCLUDED.profile_volume
+          ELSE NULL
+        END,
         browser_generation_hash = CASE
           WHEN EXCLUDED.container_id IS NOT DISTINCT FROM browser_surfaces.container_id
             THEN COALESCE(EXCLUDED.browser_generation_hash, browser_surfaces.browser_generation_hash)

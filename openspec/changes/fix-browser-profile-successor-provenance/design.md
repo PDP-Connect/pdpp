@@ -13,6 +13,8 @@ A terminal successor receipt is not a current browser generation; it is separate
 
 The reference copies the allocator's stable profile bind path into `browser_surfaces.profile_dir`. It does not create a second cookie/token store or browser hibernation mechanism.
 
+The profile key and persisted path/volume form one compatibility boundary: health-only updates may retain omitted provenance only for the same profile key. A changed key clears both fields unless it supplies a complete replacement pair. Failed stop/retirement lifecycle receipts remain historical; only a failed terminal receipt whose original boundary is `external_or_host_loss` is actionable successor evidence.
+
 ## Alternatives
 
 - Terminalize on observation of loss: rejected because no successor can later prove the causal chain.
