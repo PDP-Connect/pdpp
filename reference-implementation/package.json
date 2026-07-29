@@ -68,7 +68,7 @@
   "devDependencies": {
     "@biomejs/biome": "2.5.6",
     "@types/pg": "8.20.0",
-    "jsdom": "^29.1.1",
+    "jsdom": "^30.0.0",
     "pino-pretty": "^13.0.0",
     "ultracite": "7.9.4"
   },
