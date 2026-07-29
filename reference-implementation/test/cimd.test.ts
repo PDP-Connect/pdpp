@@ -31,13 +31,6 @@ const TOP_LEVEL_REGEX_11 = /not valid JSON/;
 const TOP_LEVEL_REGEX_12 = /client_id mismatch/;
 const TOP_LEVEL_REGEX_13 = /unsupported token_endpoint_auth_method/;
 const TOP_LEVEL_REGEX_14 = /CIMD fetch failed/;
-const TRANSPORT_IP_REDACTED_REGEX = /<ip>/;
-const TRANSPORT_TCP_SECRET_REGEX = /bearer-marker|super-secret|203\.0\.113\.9/;
-const TRANSPORT_DNS_SECRET_REGEX = /top-secret|198\.51\.100\.20|client-dns\.json\?token/;
-const TRANSPORT_JSON_SECRET_REGEX =
-  /gate-json-token|refresh-json-token|id-json-token|client-json-token|authorization-json-token|escaped-json-token/;
-const TRANSPORT_JSON_REDACTED_REGEX = /"access_token":"<redacted>"/;
-const TRANSPORT_URL_REDACTED_REGEX = /<url>/;
 const TRANSPORT_TRACE_MARKER_REGEX = /trace-marker/;
 
 const publicDns: NonNullable<FetchCimdOptions["dnsLookupImpl"]> = () => Promise.resolve([{ address: "93.184.216.34" }]);
@@ -71,6 +64,44 @@ function captureTransportFailures() {
     events,
     onTransportFailure: (event: CimdTransportFailureEvent) => events.push(event),
   };
+}
+
+function assertTransportEventHasTaxonomyOnly(event: CimdTransportFailureEvent): void {
+  assert.deepEqual(Object.keys(event).sort(), [
+    "address_count",
+    "address_families",
+    "attempt",
+    "cause",
+    "elapsed_ms",
+    "error",
+    "event_type",
+    "phase",
+    "request_id",
+    "timeout_aborted",
+    "trace_id",
+  ]);
+  assert.deepEqual(Object.keys(event.error).sort(), ["code", "name"]);
+  if (event.cause) {
+    assert.deepEqual(Object.keys(event.cause).sort(), ["code", "name"]);
+  }
+}
+
+async function captureCredentialTransportFailure(failure: Error): Promise<CimdTransportFailureEvent> {
+  const captured = captureTransportFailures();
+  await assert.rejects(
+    () =>
+      fetchCimd("https://client.example/oauth/client-credential.json", {
+        dnsLookupImpl: publicDns,
+        fetchImpl: async () => Promise.reject(failure),
+        onTransportFailure: captured.onTransportFailure,
+      }),
+    (error: Error & { code?: string }) => error.code === "cimd_fetch_failed"
+  );
+  assert.equal(captured.events.length, 1);
+  const [event] = captured.events;
+  assert.ok(event, "the transport failure event is present");
+  assertTransportEventHasTaxonomyOnly(event);
+  return event;
 }
 
 test("CIMD URL classification and prefetch validation reject unsafe client_ids", () => {
@@ -293,34 +324,45 @@ test("fetchCimdDocument logs one bounded TCP refusal event without changing its 
   assert.equal(event.trace_id, "trace_cimd_test");
   assert.equal(event.error.code, null);
   assert.equal(event.cause?.code, "ECONNREFUSED");
-  assert.match(event.cause?.message || "", TRANSPORT_IP_REDACTED_REGEX);
-  assert.doesNotMatch(JSON.stringify(event), TRANSPORT_TCP_SECRET_REGEX);
+  assertTransportEventHasTaxonomyOnly(event);
 });
 
-test("fetchCimdDocument redacts quoted JSON credential values in transport events", async () => {
-  const captured = captureTransportFailures();
-  const cause = Object.assign(
-    new Error(
-      String.raw`upstream credentials {"access_token":"gate-json-token", "refresh_token" : "refresh-json-token", "id_token":"id-json-token", "client_secret":"client-json-token", "authorization":"Bearer authorization-json-token", "token":"escaped\\\"json-token"}`
-    ),
-    { code: "ECONNREFUSED" }
+test("fetchCimdDocument omits escaped JSON-key credentials from transport events", async () => {
+  const marker = "gate_escaped_json_credential";
+  const event = await captureCredentialTransportFailure(
+    transportFailure(String.raw`upstream {"access\u005ftoken":"${marker}"}`, "UND_ERR_CONNECT")
   );
-  const failure = transportFailure("fetch failed", "UND_ERR_CONNECT", cause);
+  assert.equal(JSON.stringify(event).includes(marker), false);
+});
 
-  await assert.rejects(
-    () =>
-      fetchCimd("https://client.example/oauth/client-json-secret.json", {
-        dnsLookupImpl: publicDns,
-        fetchImpl: async () => Promise.reject(failure),
-        onTransportFailure: captured.onTransportFailure,
-      }),
-    (error: Error & { code?: string }) => error.code === "cimd_fetch_failed"
+test("fetchCimdDocument omits bare PAT-shaped credentials from transport events", async () => {
+  const marker = "ghp_gatepatcredentialvalue";
+  const event = await captureCredentialTransportFailure(transportFailure(marker, "UND_ERR_CONNECT"));
+  assert.equal(JSON.stringify(event).includes(marker), false);
+});
+
+test("fetchCimdDocument omits bare bearer-like and delimiter-free token values from transport events", async () => {
+  const bearerMarker = "mF_9.B5f-4.1JqM";
+  const tokenMarker = "gate_delimiter_free_access_token";
+  const event = await captureCredentialTransportFailure(
+    transportFailure(`upstream ${bearerMarker} access_token ${tokenMarker}`, "UND_ERR_CONNECT")
   );
+  const serialized = JSON.stringify(event);
+  assert.equal(serialized.includes(bearerMarker), false);
+  assert.equal(serialized.includes(tokenMarker), false);
+});
 
-  assert.equal(captured.events.length, 1);
-  const serialized = JSON.stringify(captured.events[0]);
-  assert.doesNotMatch(serialized, TRANSPORT_JSON_SECRET_REGEX);
-  assert.match(captured.events[0]?.cause?.message || "", TRANSPORT_JSON_REDACTED_REGEX);
+test("fetchCimdDocument omits split top-level and immediate-cause credentials from transport events", async () => {
+  const immediateMarker = "gate_immediate_cause_credential";
+  const deeperMarker = "gate_deeper_cause_credential";
+  const deeperCause = new Error(deeperMarker);
+  const immediateCause = Object.assign(new Error(immediateMarker), { cause: deeperCause });
+  const event = await captureCredentialTransportFailure(
+    transportFailure("Authorization: Bearer", "UND_ERR_CONNECT", immediateCause)
+  );
+  const serialized = JSON.stringify(event);
+  assert.equal(serialized.includes(immediateMarker), false);
+  assert.equal(serialized.includes(deeperMarker), false);
 });
 
 test("fetchCimdDocument drops oversized and adversarial correlation identifiers", async () => {
@@ -367,6 +409,7 @@ test("fetchCimdDocument logs one bounded TLS failure event without changing its 
   assert.equal(captured.events.length, 1);
   assert.equal(captured.events[0]?.phase, "tls");
   assert.equal(captured.events[0]?.cause?.code, "DEPTH_ZERO_SELF_SIGNED_CERT");
+  assertTransportEventHasTaxonomyOnly(captured.events[0] as CimdTransportFailureEvent);
 });
 
 test("fetchCimdDocument sanitizes a DNS-shaped transport failure event", async () => {
@@ -391,9 +434,7 @@ test("fetchCimdDocument sanitizes a DNS-shaped transport failure event", async (
 
   assert.equal(captured.events.length, 1);
   assert.equal(captured.events[0]?.phase, "dns");
-  const serialized = JSON.stringify(captured.events[0]);
-  assert.doesNotMatch(serialized, TRANSPORT_DNS_SECRET_REGEX);
-  assert.match(captured.events[0]?.cause?.message || "", TRANSPORT_URL_REDACTED_REGEX);
+  assertTransportEventHasTaxonomyOnly(captured.events[0] as CimdTransportFailureEvent);
 });
 
 test("fetchCimdDocument rejects redirects, malformed JSON, client_id mismatch, and unsupported auth", async () => {

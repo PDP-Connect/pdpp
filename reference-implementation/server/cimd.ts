@@ -68,7 +68,6 @@ export interface CimdTransportFailureEvent {
 }
 interface CimdTransportErrorDetail {
   code: string | null;
-  message: string;
   name: string;
 }
 // Keep the injectable seam limited to the response surface CIMD consumes.
@@ -115,18 +114,38 @@ class CimdError extends Error {
 
 const cimdCache = new Map<string, CachedCimdDocument>();
 const textEncoder = new TextEncoder();
-const MAX_TRANSPORT_ERROR_MESSAGE_LENGTH = 240;
 const MAX_CORRELATION_ID_LENGTH = 128;
-const TRANSPORT_ERROR_CODE_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;
-const TRANSPORT_ERROR_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
-const TRANSPORT_ERROR_TLS_PATTERN = /\b(cert|tls)\b/i;
-const TRANSPORT_ERROR_URL_PATTERN = /[a-z][a-z\d+.-]*:\/\/[^\s"']+/gi;
-const TRANSPORT_ERROR_SECRET_PATTERN =
-  /\b(authorization|proxy-authorization|api[_-]?key|cookie|password|passwd|secret|token)\s*([=:])\s*(?:[a-z]+\s+)?[^,;\s]+/gi;
-const TRANSPORT_ERROR_JSON_SECRET_PATTERN =
-  /"(access_token|refresh_token|id_token|client_secret|authorization|proxy-authorization|api[_-]?key|cookie|password|passwd|secret|token)"\s*:\s*"(?:\\.|[^"\\])*"/gi;
-const TRANSPORT_ERROR_IPV4_PATTERN = /\b(?:\d{1,3}\.){3}\d{1,3}\b/g;
-const TRANSPORT_ERROR_IPV6_PATTERN = /\b(?:[\da-f]{0,4}:){2,}[\da-f:]+\b/gi;
+const SAFE_TRANSPORT_ERROR_CODES = new Set([
+  "ABORT_ERR",
+  "CERT_HAS_EXPIRED",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "EAI_AGAIN",
+  "EAI_BADFLAGS",
+  "EAI_FAIL",
+  "EAI_FAMILY",
+  "EAI_MEMORY",
+  "EAI_NONAME",
+  "EAI_OVERFLOW",
+  "EAI_SERVICE",
+  "EAI_SOCKTYPE",
+  "ECONNABORTED",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ENOTFOUND",
+  "ERR_TLS_CERT_ALTNAME_INVALID",
+  "ERR_TLS_CERT_SIGNATURE_ALGORITHM_UNSUPPORTED",
+  "SELF_SIGNED_CERT_IN_CHAIN",
+  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "UND_ERR_ABORTED",
+  "UND_ERR_BODY_TIMEOUT",
+  "UND_ERR_CONNECT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
+const SAFE_TRANSPORT_ERROR_NAMES = new Set(["AbortError", "Error", "TypeError"]);
 const CORRELATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 
 function rawPathFromUrlString(value: string): string {
@@ -264,26 +283,11 @@ function cimdFetchFailure(clientId: string, message: string): CimdError {
   return new CimdError("cimd_fetch_failed", message, hostname);
 }
 
-function sanitizeTransportMessage(value: unknown): string {
-  const text = typeof value === "string" ? value : "";
-  const sanitized = text
-    .replace(TRANSPORT_ERROR_URL_PATTERN, "<url>")
-    .replace(TRANSPORT_ERROR_JSON_SECRET_PATTERN, (_match, field: string) => `"${field}":"<redacted>"`)
-    .replace(
-      TRANSPORT_ERROR_SECRET_PATTERN,
-      (_match, field: string, separator: string) => `${field}${separator}<redacted>`
-    )
-    .replace(TRANSPORT_ERROR_IPV4_PATTERN, "<ip>")
-    .replace(TRANSPORT_ERROR_IPV6_PATTERN, "<ip>")
-    .trim();
-  return (sanitized || "transport error").slice(0, MAX_TRANSPORT_ERROR_MESSAGE_LENGTH);
-}
-
 function transportErrorDetail(value: unknown): CimdTransportErrorDetail {
   const error = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-  const code = typeof error.code === "string" && TRANSPORT_ERROR_CODE_PATTERN.test(error.code) ? error.code : null;
-  const name = typeof error.name === "string" && TRANSPORT_ERROR_NAME_PATTERN.test(error.name) ? error.name : "Error";
-  return { code, message: sanitizeTransportMessage(error.message), name };
+  const code = typeof error.code === "string" && SAFE_TRANSPORT_ERROR_CODES.has(error.code) ? error.code : null;
+  const name = typeof error.name === "string" && SAFE_TRANSPORT_ERROR_NAMES.has(error.name) ? error.name : "Error";
+  return { code, name };
 }
 
 function sanitizeCorrelationId(value: unknown): string | null {
@@ -300,9 +304,13 @@ function classifyTransportFailure(
     return "request";
   }
   if (
-    error.code?.startsWith("ERR_TLS_") ||
-    error.code?.startsWith("DEPTH_") ||
-    TRANSPORT_ERROR_TLS_PATTERN.test(error.message)
+    error.code === "CERT_HAS_EXPIRED" ||
+    error.code === "DEPTH_ZERO_SELF_SIGNED_CERT" ||
+    error.code === "ERR_TLS_CERT_ALTNAME_INVALID" ||
+    error.code === "ERR_TLS_CERT_SIGNATURE_ALGORITHM_UNSUPPORTED" ||
+    error.code === "SELF_SIGNED_CERT_IN_CHAIN" ||
+    error.code === "UNABLE_TO_GET_ISSUER_CERT_LOCALLY" ||
+    error.code === "UNABLE_TO_VERIFY_LEAF_SIGNATURE"
   ) {
     return "tls";
   }
