@@ -5,13 +5,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 // biome-ignore lint/correctness/noUnresolvedImports: Biome resolver cannot model this installed package export
 import Database from "better-sqlite3";
-import { emitSpineEvent } from "../lib/spine.ts";
+import { emitSpineEvent, listSpineCorrelations, listSpineEventsPage } from "../lib/spine.ts";
 import { closeDb, initDb } from "../server/db.ts";
 import { makeTemporaryDbPath } from "./helpers/temp-dir.ts";
 
 const RUN_WRITERS = [
   { eventType: "run.started", name: "manual", stamp: { boot_epoch: "boot-manual", seq: 1 } },
   { eventType: "run.started", name: "scheduler", stamp: { boot_epoch: "boot-scheduler", seq: 1 } },
+  { eventType: "run.cancel_requested", name: "direct-runtime-cancellation", stamp: {} },
   { eventType: "run.browser_surface_leased", name: "browser-surface", stamp: {} },
   { eventType: "run.completed", name: "local-device", stamp: {} },
   { eventType: "run.failed", name: "recovery", stamp: {} },
@@ -63,6 +64,7 @@ test("historical null spine identity remains readable and unknown", async () => 
   initDb(dbPath);
   closeDb();
   const raw = new Database(dbPath);
+  let rawClosed = false;
   try {
     raw.prepare(
       `INSERT INTO spine_events(
@@ -89,7 +91,22 @@ test("historical null spine identity remains readable and unknown", async () => 
       connector_instance_id: string | null;
     };
     assert.equal(row.connector_instance_id, null, "historical identity remains explicitly unknown");
-  } finally {
     raw.close();
+    rawClosed = true;
+    initDb(dbPath);
+
+    const timeline = listSpineEventsPage("run", "run_historical", { limit: 10 });
+    assert.equal(timeline.events.length, 1, "historical row remains visible through the public run timeline");
+    const projection = (await listSpineCorrelations("run", { limit: 10 })).summaries.find(
+      (summary) => summary.run_id === "run_historical"
+    );
+    assert.ok(projection, "historical row remains visible through the public run projection");
+    assert.equal(projection.connection_id, undefined, "run projection must not invent a connection identity");
+    assert.equal(projection.connector_instance_id, undefined, "run projection keeps historical identity unknown");
+  } finally {
+    if (!rawClosed) {
+      raw.close();
+    }
+    closeDb();
   }
 });

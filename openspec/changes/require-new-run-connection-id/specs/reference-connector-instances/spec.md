@@ -1,14 +1,19 @@
 ## ADDED Requirements
 
-### Requirement: New persisted run timeline events SHALL retain connector-instance identity
+### Requirement: New persisted connection-owned run facts SHALL retain source-instance identity
 
-The reference implementation SHALL persist every newly created `run.*` spine event with the exact immutable `connector_instance_id` of the configured connector instance that owns the run. The shared typed spine write boundary SHALL reject a new run event that omits that identity. It SHALL NOT infer the identity from a connector type, browser profile, schedule, or event timeline.
+The reference implementation SHALL bind every newly persisted connection-owned `run.*` fact to the exact immutable `connector_instance_id` of its configured source instance. The shared typed spine write boundary SHALL reject a new run fact that omits that binding. It SHALL NOT infer the binding from a connector type, browser profile, schedule, or event timeline.
 
-#### Scenario: A scheduler, manual, browser-surface, local-device, or recovery run writes a lifecycle event
+#### Scenario: A new connection-owned run fact is persisted
 
-- **WHEN** one of those run paths persists a `run.*` spine event
-- **THEN** the event SHALL retain the owning connector instance's exact `connector_instance_id`
+- **WHEN** a source instance persists a `run.*` fact
+- **THEN** the fact SHALL retain its owning source instance's exact `connector_instance_id`
 - **AND** SQLite and PostgreSQL persistence SHALL retain the same identity.
+
+#### Scenario: Reference runtime acceptance paths
+
+- **WHEN** the reference scheduler, direct runtime, managed browser-surface, local-device, or recovery path persists a `run.*` fact
+- **THEN** each path SHALL meet the shared connection-owned run-fact binding requirement.
 
 #### Scenario: A future run writer omits identity
 

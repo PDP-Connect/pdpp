@@ -4,7 +4,7 @@
 
 The `spine_events.connector_instance_id` column remains nullable. Existing rows remain readable with `null`, which is the explicit unknown state. No migration updates historical rows and no database `NOT NULL` constraint is added.
 
-Creators carry the resolved connection identity to that boundary. Runtime collection events use the run's resolved connector instance. Browser-surface lifecycle events receive the same identity from their managed-run context. Local-device terminal collection continues to use the authorized source binding. Recovery events use the persisted active-run identity.
+The reusable contract is a connection-owned run fact, not a scheduler or browser feature: any source-instance runtime resolves its exact configured binding before creating its first run fact and carries it through every later fact. The direct runtime preserves its optional caller argument by resolving an omitted value to its declared default-account binding before `run.started`; an explicit argument or manifest binding wins. Browser-surface lifecycle events receive the same identity from the active-run record. Local-device terminal collection uses the authorized source binding. Recovery events use the persisted active-run identity. These are reference-implementation acceptance examples, not protocol requirements for scheduler or browser mechanics.
 
 ## Alternatives rejected
 

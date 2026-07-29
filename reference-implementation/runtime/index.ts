@@ -13,6 +13,8 @@ import { emitControllerBootedAndStashEpoch } from "../lib/controller-boot.ts";
 import type { SpineEventInput, SpineEventRecord } from "../lib/spine.ts";
 import { createTraceContext, emitSpineEvent, getCurrentBootEpoch } from "../lib/spine.ts";
 import { canonicalConnectorKey } from "../server/connector-key.ts";
+import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from "../server/owner-auth.ts";
+import { makeDefaultAccountConnectorInstanceId } from "../server/stores/connector-instance-store.ts";
 import { getDefaultConnectorAttentionStore } from "../server/stores/connector-attention-store.ts";
 import { getDefaultConnectorDetailGapStore } from "../server/stores/connector-detail-gap-store.ts";
 import {
@@ -95,6 +97,7 @@ interface ManifestStream {
 interface ConnectorManifest {
   runtime_requirements?: { bindings?: Record<string, { required?: boolean }> } | null;
   streams?: ManifestStream[] | null;
+  storage_binding?: { connector_instance_id?: string | null } | null;
   [key: string]: unknown;
 }
 
@@ -644,6 +647,26 @@ function buildRunConnectionIdentity(connectorInstanceId: string | null): Record<
         connector_instance_id: connectorInstanceId,
       }
     : {};
+}
+
+function resolveRuntimeConnectorInstanceId(input: {
+  connectorId: string;
+  connectorInstanceId: string | null;
+  manifest: ConnectorManifest;
+}): string {
+  const explicit = optionalNonEmptyEnv(input.connectorInstanceId);
+  if (explicit) {
+    return explicit;
+  }
+  const manifestBinding = optionalNonEmptyEnv(input.manifest.storage_binding?.connector_instance_id);
+  if (manifestBinding) {
+    return manifestBinding;
+  }
+  // Standalone runtime callers predate the controller's explicit connection
+  // argument. They address the reference default-account binding, whose
+  // immutable ID is defined by the connector-instance store — not by a
+  // connector-id fallback at the spine write boundary.
+  return makeDefaultAccountConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, input.connectorId);
 }
 
 function appendUniqueFields(fields: string[], extraFields: string[]): string[] {
@@ -1890,6 +1913,11 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     recoveryOnly = false,
   } = opts;
   const connectorId = canonicalConnectorKey(rawConnectorId) ?? rawConnectorId;
+  const resolvedConnectorInstanceId = resolveRuntimeConnectorInstanceId({
+    connectorId,
+    connectorInstanceId,
+    manifest,
+  });
 
   // Check binding requirements
   const requiredBindings = manifest.runtime_requirements?.bindings || {};
@@ -1936,7 +1964,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     automationMode,
     browserSurfaceEnv,
     browserSurfaceLease,
-    connectorInstanceId,
+    connectorInstanceId: resolvedConnectorInstanceId,
     connectorPath,
     referenceBaseUrl,
     runId: spawnRunId,
@@ -3195,7 +3223,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         ownerCancelRequested = true;
         // Emit the audit marker without blocking the terminate path; the terminal
         // `run.cancelled` event is emitted later by the close handler.
-        emitSpineEvent({
+        emitRunSpineEvent({
           actor_id: connectorId,
           actor_type: "owner",
           data: { source: runSource, ...(triggerKind ? { trigger_kind: triggerKind } : {}) },
