@@ -306,7 +306,7 @@ async function assertStoreContract(store: BrowserSurfaceReplacementReceiptStore)
 
   const newestTerminalStarted = selectionLedger.start(
     omitUndefined<ReplacementStartInput>({
-      cause: "readiness_invalidated",
+      cause: "external_or_host_loss",
       connection_id: olderPending.connection_id,
       idempotency_key: id("selection-newest-terminal"),
       observed_at: NOW,
@@ -326,7 +326,37 @@ async function assertStoreContract(store: BrowserSurfaceReplacementReceiptStore)
       })
     ),
     null,
-    "a newer terminal boundary cannot revive an older completed generation"
+    "a terminal receipt is not a current browser generation"
+  );
+  const selectedTerminal = await store.selectSystemActionable({
+    connection_id: olderPending.connection_id,
+    profile_key: olderPending.profile_key,
+    ...(olderPending.surface_subject_id ? { surface_subject_id: olderPending.surface_subject_id } : {}),
+  });
+  assert.equal(selectedTerminal?.phase, "terminal", "a failed terminal boundary remains system evidence");
+  assert.equal(selectedTerminal?.terminal_outcome, "failed");
+
+  const failedRetirement = selectionLedger.start(
+    omitUndefined<ReplacementStartInput>({
+      cause: "idle_ttl",
+      connection_id: olderPending.connection_id,
+      idempotency_key: id("selection-failed-retirement"),
+      observed_at: NOW,
+      profile_key: olderPending.profile_key,
+      surface_id: id("surface-idle-retirement"),
+      surface_subject_id: olderPending.surface_subject_id,
+    })
+  );
+  await store.append(failedRetirement);
+  await store.append(terminalReceipt(failedRetirement));
+  assert.equal(
+    await store.selectSystemActionable({
+      connection_id: olderPending.connection_id,
+      profile_key: olderPending.profile_key,
+      ...(olderPending.surface_subject_id ? { surface_subject_id: olderPending.surface_subject_id } : {}),
+    }),
+    null,
+    "a failed idle retirement is historical stop evidence, not a failed successor"
   );
 
   const interleavingLedger = createBrowserSurfaceReplacementLedger({ idPrefix: "interleaving-test", now: () => NOW });

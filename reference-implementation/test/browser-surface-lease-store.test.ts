@@ -15,6 +15,7 @@ import { Pool } from "pg";
 import { closeDb, getDb, initDb } from "../server/db.ts";
 import { closePostgresStorage, initPostgresStorage, postgresQuery } from "../server/postgres-storage.ts";
 import {
+  type BrowserSurfaceLeaseStore,
   type BrowserSurfaceWithPersistenceMetadata,
   createPostgresBrowserSurfaceLeaseStore,
   createSqliteBrowserSurfaceLeaseStore,
@@ -88,6 +89,50 @@ function setup() {
 
 function teardown() {
   closeDb();
+}
+
+async function assertProfileProvenanceCompatibility(
+  store: Pick<BrowserSurfaceLeaseStore, "getSurface" | "upsertSurface">,
+  surfaceId: string
+): Promise<void> {
+  await store.upsertSurface(
+    surface({
+      profile_dir: "/var/lib/pdpp/neko-profiles/connection-a",
+      profile_key: "connection-a",
+      profile_volume: "neko-profile-connection-a",
+      surface_id: surfaceId,
+    })
+  );
+  await store.upsertSurface(surface({ health: "unhealthy", profile_key: "connection-b", surface_id: surfaceId }));
+  const cleared = mustExist(await store.getSurface(surfaceId), "changed-key surface exists");
+  assert.equal(cleared.profile_key, "connection-b");
+  assert.equal(cleared.profile_dir, undefined, "a changed profile key cannot retain the old profile path");
+  assert.equal(cleared.profile_volume, undefined, "a changed profile key cannot retain the old profile volume");
+
+  await store.upsertSurface(
+    surface({
+      health: "unhealthy",
+      profile_dir: "/var/lib/pdpp/neko-profiles/connection-b-partial",
+      profile_key: "connection-b-partial",
+      surface_id: surfaceId,
+    })
+  );
+  const partial = mustExist(await store.getSurface(surfaceId), "partial replacement surface exists");
+  assert.equal(partial.profile_dir, undefined, "a changed key needs a complete replacement provenance pair");
+  assert.equal(partial.profile_volume, undefined, "partial replacement provenance cannot cross-bind volume");
+
+  await store.upsertSurface(
+    surface({
+      profile_dir: "/var/lib/pdpp/neko-profiles/connection-c",
+      profile_key: "connection-c",
+      profile_volume: "neko-profile-connection-c",
+      surface_id: surfaceId,
+    })
+  );
+  const replaced = mustExist(await store.getSurface(surfaceId), "explicit replacement surface exists");
+  assert.equal(replaced.profile_key, "connection-c");
+  assert.equal(replaced.profile_dir, "/var/lib/pdpp/neko-profiles/connection-c");
+  assert.equal(replaced.profile_volume, "neko-profile-connection-c");
 }
 
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
@@ -254,6 +299,47 @@ test("persists starting dynamic surface metadata for allocator reconciliation", 
     assert.deepEqual(await store.getLease("lease_starting"), startingLease);
     assert.deepEqual(await store.listSurfaces(), [startingSurface]);
     assert.deepEqual(await store.listNonTerminalLeases(), [startingLease]);
+  } finally {
+    teardown();
+  }
+});
+
+test("persists and retains allocator profile-path provenance across surface health updates", async () => {
+  const store = setup();
+  try {
+    const allocated = surface({
+      allocator_metadata: { profile_path: "/var/lib/pdpp/neko-profiles/chatgpt-connection" },
+      container_id: "container_profile_provenance",
+      profile_volume: "neko-profile-chatgpt-connection",
+      surface_id: "surface_profile_provenance",
+    });
+    await store.upsertSurface(allocated);
+    assert.equal(
+      (await store.getSurface(allocated.surface_id))?.profile_dir,
+      "/var/lib/pdpp/neko-profiles/chatgpt-connection"
+    );
+
+    const { allocator_metadata: _allocatorMetadata, ...healthUpdate } = allocated;
+    await store.upsertSurface({ ...healthUpdate, health: "unhealthy" });
+    assert.equal(
+      (await store.getSurface(allocated.surface_id))?.profile_dir,
+      "/var/lib/pdpp/neko-profiles/chatgpt-connection",
+      "health reconciliation must not erase durable profile provenance"
+    );
+    assert.equal(
+      (await store.getSurface(allocated.surface_id))?.profile_volume,
+      "neko-profile-chatgpt-connection",
+      "same-key health reconciliation must retain profile volume with its path"
+    );
+  } finally {
+    teardown();
+  }
+});
+
+test("SQLite clears stale profile provenance on a profile-key change and accepts an explicit replacement", async () => {
+  const store = setup();
+  try {
+    await assertProfileProvenanceCompatibility(store, "surface_profile_compatibility_sqlite");
   } finally {
     teardown();
   }
@@ -1342,6 +1428,21 @@ test("Postgres browser generation hash upsert preserves same-container state and
     assert.equal(mustExist(await store.getSurface(id), "surface exists").browser_generation_hash, "a".repeat(64));
     await store.upsertSurface(surface({ container_id: "pg-container-2", surface_id: id }));
     assert.equal(mustExist(await store.getSurface(id), "surface exists").browser_generation_hash, undefined);
+  } finally {
+    await postgresQuery("DELETE FROM browser_surfaces WHERE surface_id = $1", [id]);
+    await closePostgresStorage();
+  }
+});
+
+test("Postgres clears stale profile provenance on a profile-key change and accepts an explicit replacement", {
+  skip: !POSTGRES_URL,
+}, async () => {
+  const postgresUrl = mustExist(POSTGRES_URL ?? null, "PDPP_TEST_POSTGRES_URL is set (test is skipped otherwise)");
+  await initPostgresStorage({ backend: "postgres", databaseUrl: postgresUrl });
+  const store = createPostgresBrowserSurfaceLeaseStore();
+  const id = `surface_profile_compatibility_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  try {
+    await assertProfileProvenanceCompatibility(store, id);
   } finally {
     await postgresQuery("DELETE FROM browser_surfaces WHERE surface_id = $1", [id]);
     await closePostgresStorage();

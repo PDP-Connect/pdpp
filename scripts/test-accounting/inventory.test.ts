@@ -499,12 +499,12 @@ test("rejects selection, assertion, skip, profile, and full-tree mutations in an
 });
 test("accepts a complete named profile skip baseline and rejects an added skip", async () => {
   const counts: Receipt["counts"] = {
-    assertions: 45,
+    assertions: 46,
     passed: 0,
     failed: 0,
-    skipped: 45,
+    skipped: 46,
     skip_reasons: {
-      "PDPP_TEST_POSTGRES_URL unset": 43,
+      "PDPP_TEST_POSTGRES_URL unset": 44,
       "dedicated disposable URL not selected": 1,
       "set PDPP_TEST_LIVE_NEKO_CAP=1 inside the Docker reference service": 1,
     },
@@ -534,8 +534,8 @@ test("accepts a complete named profile skip baseline and rejects an added skip",
     ...value.receipt,
     counts: {
       ...counts,
-      assertions: 46,
-      skipped: 46,
+      assertions: 47,
+      skipped: 47,
       skip_reasons: { ...counts.skip_reasons, "unexpected backend": 1 },
     },
     binding_sha256: "",
@@ -794,7 +794,7 @@ test("the current inventory has exact one-owner coverage and site is a real acco
   const manifestValue = await readManifest(join(root, "test-accounting.manifest.json"), { root });
   const tracked = trackedFiles(root);
   const result = checkInventory(manifestValue, tracked, [], { failOnUnknown: true, failOnEmpty: true });
-  const excluded = manifestValue.exclusions?.length ?? 0;
+  const excluded = manifestValue.exclusions.length;
   const planned = Object.values(result.plans).reduce((sum, paths) => sum + paths.length, 0);
   assert.equal(result.executable.length, planned + excluded);
   const site = manifestValue.suites.find((suite) => suite.id === "site");

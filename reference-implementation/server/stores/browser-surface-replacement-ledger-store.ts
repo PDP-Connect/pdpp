@@ -6,6 +6,7 @@ import {
   type ReplacementReceipt,
   ReplacementReplayConflictError,
   selectCurrentReplacementReceipt,
+  selectSystemActionableReplacementReceipt,
 } from "../../runtime/browser-surface/replacement-receipt-ledger.ts";
 import { getStorageBackendKind, isPostgresStorageBackend, postgresQuery } from "../postgres-storage.ts";
 
@@ -27,6 +28,11 @@ export interface BrowserSurfaceReplacementReceiptStore {
     readonly connection_id: string;
     readonly surface_subject_id?: string;
     readonly current_generation_hash?: string;
+  }) => Promise<ReplacementReceipt | null>;
+  selectSystemActionable: (input: {
+    readonly connection_id: string;
+    readonly profile_key: string;
+    readonly surface_subject_id?: string;
   }) => Promise<ReplacementReceipt | null>;
 }
 
@@ -354,6 +360,14 @@ class SqliteBrowserSurfaceReplacementReceiptStore implements BrowserSurfaceRepla
     }
     return selectCurrentReplacementReceipt(rows, input.current_generation_hash ?? null);
   }
+
+  async selectSystemActionable(input: {
+    readonly connection_id: string;
+    readonly profile_key: string;
+    readonly surface_subject_id?: string;
+  }): Promise<ReplacementReceipt | null> {
+    return selectSystemActionableForScope(await this.listForScope(input), input.profile_key);
+  }
 }
 
 class PostgresBrowserSurfaceReplacementReceiptStore implements BrowserSurfaceReplacementReceiptStore {
@@ -498,6 +512,24 @@ class PostgresBrowserSurfaceReplacementReceiptStore implements BrowserSurfaceRep
     }
     return selectCurrentReplacementReceipt(rows, input.current_generation_hash ?? null);
   }
+
+  async selectSystemActionable(input: {
+    readonly connection_id: string;
+    readonly profile_key: string;
+    readonly surface_subject_id?: string;
+  }): Promise<ReplacementReceipt | null> {
+    return selectSystemActionableForScope(await this.listForScope(input), input.profile_key);
+  }
+}
+
+function selectSystemActionableForScope(
+  receipts: readonly ReplacementReceipt[],
+  profileKey: string
+): ReplacementReceipt | null {
+  if (new Set(receipts.map((receipt) => receipt.scope)).size > 1) {
+    return null;
+  }
+  return selectSystemActionableReplacementReceipt(receipts.filter((receipt) => receipt.profile_key === profileKey));
 }
 
 function assertSameEventIdentity(previous: ReplacementReceipt, incoming: ReplacementReceipt): void {

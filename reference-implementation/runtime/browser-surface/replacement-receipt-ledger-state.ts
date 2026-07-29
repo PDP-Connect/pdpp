@@ -357,6 +357,33 @@ export function selectCurrentReplacementReceipt(
   return latest.next_generation_hash === currentGenerationHash ? latest : null;
 }
 
+/**
+ * A failed successor is not a current browser process, but it is durable
+ * system evidence. Keep that projection separate from current-generation
+ * selection so ordinary terminal lifecycle history cannot masquerade as a
+ * provider credential verdict.
+ */
+export function selectSystemActionableReplacementReceipt(
+  receipts: readonly ReplacementReceipt[]
+): ReplacementReceipt | null {
+  const latestStarted = receipts
+    .filter((receipt) => receipt.phase === "started")
+    .sort(compareReceiptsAscending)
+    .at(-1);
+  if (!latestStarted) {
+    return null;
+  }
+  const latest = receipts
+    .filter((receipt) => receipt.replacement_id === latestStarted.replacement_id)
+    .sort(compareReceiptsAscending)
+    .at(-1);
+  return latest?.phase === "terminal" &&
+    latest.terminal_outcome === "failed" &&
+    latest.cause === "external_or_host_loss"
+    ? latest
+    : null;
+}
+
 function compareReceiptsAscending(left: ReplacementReceipt, right: ReplacementReceipt): number {
   return left.event_seq - right.event_seq || left.idempotency_key.localeCompare(right.idempotency_key);
 }

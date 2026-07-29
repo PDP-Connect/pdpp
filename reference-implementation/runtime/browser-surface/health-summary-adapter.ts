@@ -25,6 +25,7 @@ import {
   type CurrentReplacementReceiptRead,
   loadDefaultCurrentReplacementReceiptReaderFactory,
   readCurrentReplacementReceipt,
+  readSystemActionableReplacementReceipt,
 } from "./replacement-receipt-reader.ts";
 import { connectorRetainsSurfaceProcess } from "./retained-surface-connectors.ts";
 import {
@@ -239,9 +240,11 @@ function replacementReceiptSelectionInput(input: {
 }
 
 /**
- * Does not query Luna for a dormant dynamic scale-to-zero connection. A store
- * failure is explicitly returned as unavailable so the caller can fail closed
- * only for the managed process-bound runtime it is projecting.
+ * A dormant dynamic scale-to-zero connection does not query current-process
+ * history, but it does read a failed scoped successor as durable system
+ * evidence. A store failure is explicitly returned as unavailable so the
+ * caller can fail closed only for the managed process-bound runtime it is
+ * projecting.
  */
 export async function readProcessBoundCurrentReplacementReceipt(input: {
   readonly connectionId: string;
@@ -350,6 +353,8 @@ async function selectProcessBoundCurrentReplacementReceipt(
     profile_key: input.profileKey,
     remote_surface_id: input.remoteSurface?.surfaceId ?? null,
   });
+  const factory = await loadDefaultCurrentReplacementReceiptReaderFactory();
+  const replacementReader = factory?.() ?? null;
   if (
     !shouldJoinCurrentReplacementReceipt({
       current_surface_ids: currentSurfaceIds,
@@ -357,9 +362,19 @@ async function selectProcessBoundCurrentReplacementReceipt(
       surface_mode: input.surfaceMode,
     })
   ) {
-    return { receipt: null, state: "available" };
+    // A scale-to-zero dynamic runtime must not revive a normal pending
+    // replacement, but a failed successor remains durable runtime evidence
+    // until the system observes a subsequent successful generation.
+    return await readSystemActionableReplacementReceipt({
+      ...replacementReceiptSelectionInput({
+        connectionId: input.connectionId,
+        connectorId: input.connectorId,
+        currentGenerationHash: null,
+      }),
+      profile_key: input.profileKey,
+      reader: replacementReader,
+    });
   }
-  const factory = await loadDefaultCurrentReplacementReceiptReaderFactory();
   const currentGenerationHash = selectCurrentBrowserGenerationHash({
     connection_id: input.connectionId,
     connector_id: input.connectorId,
@@ -373,7 +388,7 @@ async function selectProcessBoundCurrentReplacementReceipt(
       connectorId: input.connectorId,
       currentGenerationHash,
     }),
-    reader: factory?.() ?? null,
+    reader: replacementReader,
   });
 }
 
