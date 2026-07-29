@@ -74,7 +74,7 @@ import type { Duplex } from "node:stream";
 import tls from "node:tls";
 // biome-ignore lint/correctness/noUnresolvedImports: Biome cannot resolve this installed package export; Node and TypeScript resolve it.
 import ipaddr from "ipaddr.js";
-import { buildConnector, Agent as UndiciAgent } from "undici";
+import { buildConnector, Dispatcher1Wrapper, Agent as UndiciAgent } from "undici";
 import { IPV4_SPECIAL_PURPOSE_ROWS, IPV6_SPECIAL_PURPOSE_ROWS } from "./iana-special-purpose-registry.ts";
 
 /**
@@ -430,10 +430,14 @@ function createUndiciConnector(validatedAddresses: readonly string[]): typeof ra
   };
 }
 
-export function createPinnedDispatcher(validatedAddresses: readonly string[]): UndiciAgent {
-  return new UndiciAgent({
+export function createPinnedDispatcher(validatedAddresses: readonly string[]): Dispatcher1Wrapper {
+  const dispatcher = new UndiciAgent({
     connect: createUndiciConnector(validatedAddresses),
   });
+  // Node's global fetch still supplies the legacy dispatcher handler shape.
+  // Undici 8 requires its v2 handler shape, so bridge that boundary while
+  // retaining the pinned Agent and its HTTP/1.1 behavior.
+  return new Dispatcher1Wrapper(dispatcher);
 }
 
 /**

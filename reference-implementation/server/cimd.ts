@@ -53,7 +53,14 @@ export interface SecurityMetadataChange {
   previousDoc: CimdDocument;
   previousSecurityHash: string;
 }
-type CimdFetch = typeof undiciFetch;
+// Keep the injectable seam limited to the response surface CIMD consumes.
+// Undici 8's Response adds members that Node's ambient Response does not have,
+// so `typeof undiciFetch` would reject test fetches backed by global fetch.
+type CimdResponse = Pick<Response, "body" | "headers" | "ok" | "status" | "text">;
+type CimdFetch = (
+  input: Parameters<typeof undiciFetch>[0],
+  init?: Parameters<typeof undiciFetch>[1]
+) => Promise<CimdResponse>;
 export interface FetchCimdOptions {
   dnsLookupImpl?: DnsLookupAll;
   fetchImpl?: CimdFetch;
@@ -254,7 +261,7 @@ export async function fetchCimdDocument(
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-  let response: Response;
+  let response: CimdResponse;
   let dispatcher: ReturnType<typeof createPinnedDispatcher> | null = null;
   try {
     // Validate URL and check IP before fetching
