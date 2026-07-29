@@ -31,13 +31,13 @@ import test from "node:test";
 import Database from "better-sqlite3";
 import { registerConnector } from "../server/auth.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
-import { makeDefaultAccountConnectorInstanceId } from "../server/stores/connector-instance-store.ts";
 import {
   closePostgresStorage,
   getPostgresPool,
   initPostgresStorage,
   postgresQuery,
 } from "../server/postgres-storage.ts";
+import { makeDefaultAccountConnectorInstanceId } from "../server/stores/connector-instance-store.ts";
 import {
   createPostgresSchedulerStore,
   createSqliteSchedulerStore,
@@ -497,6 +497,7 @@ test("page-scoped scheduler batches preserve exact instance history and schedule
       [work, true],
       [personal, false],
     ] as const) {
+      // biome-ignore lint/performance/noAwaitInLoops: ordered fixture writes preserve each instance's history tie-breaker.
       await store.createSchedule({
         connector_id: SEMANTIC_CONNECTOR,
         connector_instance_id: connectorInstanceId,
@@ -566,6 +567,7 @@ test("SQLite page-scoped scheduler batches short-circuit empty input and stay pa
     const pageIds = Array.from({ length: 100 }, (_, index) => `cin_batch_page_${index}`);
     const unrelatedIds = Array.from({ length: 900 }, (_, index) => `cin_batch_unrelated_${index}`);
     for (const connectorInstanceId of [...pageIds, ...unrelatedIds]) {
+      // biome-ignore lint/performance/noAwaitInLoops: deterministic bulk fixture setup keeps SQLite statement counting reproducible.
       await store.createSchedule({
         connector_id: SEMANTIC_CONNECTOR,
         connector_instance_id: connectorInstanceId,
@@ -615,18 +617,19 @@ test("SQLite page-scoped scheduler batches short-circuit empty input and stay pa
     const chunkedSchedules = await countRawPrepareCalls(() =>
       Promise.resolve(batches.listSchedulesByConnectionIds([...pageIds, ...unrelatedIds]))
     );
-    assert.equal(chunkedSchedules.result.length, 1_000);
+    assert.equal(chunkedSchedules.result.length, 1000);
   });
 });
 
 test("SQLite scheduler page batches issue one statement per page axis and two safely chunked statements for 1,000 ids", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pdpp-scheduler-batch-count-"));
   const dbPath = join(dir, "reference.sqlite");
-  const ids = Array.from({ length: 1_000 }, (_, index) => `cin_count_${index}`);
+  const ids = Array.from({ length: 1000 }, (_, index) => `cin_count_${index}`);
   try {
     initDb(dbPath);
     const seeded = createSqliteSchedulerStore();
     for (const connectorInstanceId of ids) {
+      // biome-ignore lint/performance/noAwaitInLoops: deterministic bulk fixture setup keeps the reopened database exact.
       await seeded.createSchedule({
         connector_id: SEMANTIC_CONNECTOR,
         connector_instance_id: connectorInstanceId,
@@ -668,7 +671,11 @@ test("PostgreSQL scheduler page batches match SQLite semantics and use one typed
   skip: !POSTGRES_URL,
 }, async () => {
   assert.ok(POSTGRES_URL, "Postgres URL is configured when this test runs");
-  const ids = ["cin_batch_pg_work", "cin_batch_pg_personal"] as const;
+  const fixtures = [
+    { connectorId: "connector-alpha", connectorInstanceId: "cin_batch_pg_z", enabled: true, rate: 2 },
+    { connectorId: "connector-beta", connectorInstanceId: "cin_batch_pg_a", enabled: false, rate: 1 },
+  ] as const;
+  const ids = fixtures.map((fixture) => fixture.connectorInstanceId);
   await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
   try {
     await postgresQuery("DELETE FROM scheduler_run_history WHERE connector_instance_id = ANY($1::text[])", [ids]);
@@ -677,12 +684,10 @@ test("PostgreSQL scheduler page batches match SQLite semantics and use one typed
     const store = createPostgresSchedulerStore();
     const batches = schedulerBatches(store);
     const now = "2026-04-29T06:00:00.000Z";
-    for (const [connectorInstanceId, enabled] of [
-      [ids[0], true],
-      [ids[1], false],
-    ] as const) {
+    for (const { connectorId, connectorInstanceId, enabled, rate } of fixtures) {
+      // biome-ignore lint/performance/noAwaitInLoops: ordered fixture writes prove connector/id ordering with explicit causal setup.
       await store.createSchedule({
-        connector_id: SEMANTIC_CONNECTOR,
+        connector_id: connectorId,
         connector_instance_id: connectorInstanceId,
         created_at: now,
         enabled,
@@ -690,17 +695,17 @@ test("PostgreSQL scheduler page batches match SQLite semantics and use one typed
         jitter_seconds: 0,
         updated_at: now,
       });
-      await store.upsertLastRunTime(connectorInstanceId, enabled ? 2 : 1, now, SEMANTIC_CONNECTOR);
+      await store.upsertLastRunTime(connectorInstanceId, rate, now, connectorId);
       await store.appendRunHistory({
         attempt: 1,
         checkpointSummary: null,
         completedAt: now,
-        connectorId: SEMANTIC_CONNECTOR,
+        connectorId,
         connectorInstanceId,
         knownGaps: [],
         recordsEmitted: 0,
-        runId: `run_${connectorInstanceId}`,
-        source: { id: SEMANTIC_CONNECTOR, kind: "connector" },
+        runId: `run_${connectorId}`,
+        source: { id: connectorId, kind: "connector" },
         startedAt: now,
         status: "succeeded",
       });
@@ -720,20 +725,30 @@ test("PostgreSQL scheduler page batches match SQLite semantics and use one typed
       assert.equal(calls, 0, "empty PostgreSQL scopes must not issue typed-array queries");
 
       assert.deepEqual(
-        (await batches.listSchedulesByConnectionIds([...ids].reverse())).map((row) => row.connector_instance_id),
-        [...ids].sort(),
+        (await batches.listSchedulesByConnectionIds([...ids].reverse())).map((row) => row.connector_id),
+        ["connector-alpha", "connector-beta"],
         "PostgreSQL preserves the same connector/id list ordering as SQLite"
       );
       assert.deepEqual(
-        (await batches.listLatestRunHistoryByConnectionIds(ids, "succeeded")).map((row) => row.runId),
-        ids.map((id) => `run_${id}`),
-        "PostgreSQL latest-successful history remains exact-connection scoped"
+        (await batches.listLatestRunHistoryByConnectionIds(ids, "succeeded")).map((row) => [
+          row.connectorId,
+          row.runId,
+        ]),
+        [
+          ["connector-alpha", "run_connector-alpha"],
+          ["connector-beta", "run_connector-beta"],
+        ],
+        "PostgreSQL latest-successful history uses established connector_id/connector_instance_id ordering"
       );
       assert.deepEqual(
         (await batches.listLastRunTimesByConnectionIds(ids)).map((row) => row.last_run_time_ms),
         [2, 1]
       );
       assert.equal(calls, 3, "each non-empty PostgreSQL axis uses one bounded typed-array join");
+      calls = 0;
+      const overCapIds = [...ids, ...Array.from({ length: 99 }, (_, index) => `cin_batch_pg_absent_${index}`)];
+      assert.equal((await batches.listSchedulesByConnectionIds(overCapIds)).length, 2);
+      assert.equal(calls, 2, "a 101-id scope is split into two page-bounded typed-array joins");
     } finally {
       pool.query = originalQuery;
     }
