@@ -3698,6 +3698,72 @@ export async function readCommittedLocalCoverageDiagnostics(storageTarget: Recor
 }
 
 /**
+ * Page-scoped form of committed local coverage evidence. It reads the same
+ * connection-state and manifest-generation facts as the singleton API, but
+ * never resolves through connector id (which is not a connection identity).
+ */
+export async function readCommittedLocalCoverageDiagnosticsByConnectionIds(connectorInstanceIds: readonly string[]) {
+  const ids = [...new Set(connectorInstanceIds.filter((id) => typeof id === "string" && id.length > 0))];
+  const result = new Map<
+    string,
+    ReturnType<typeof parseCoverageDiagnosticsStateSnapshot> & {
+      manifestGeneration: number | null;
+      state: unknown;
+      stateManifestGeneration: number | null;
+      updatedAt: string | null;
+    }
+  >();
+  if (ids.length === 0) {
+    return result;
+  }
+  interface Row {
+    connector_id: string;
+    connector_instance_id: string;
+    current_generation: number | string | null;
+    state_generation: number | string | null;
+    state_json: unknown;
+    updated_at: string | null;
+  }
+  const rows: Row[] = [];
+  const projection = `SELECT ci.connector_id, ci.connector_instance_id,
+                              ci.manifest_generation AS current_generation,
+                              cs.manifest_generation AS state_generation,
+                              cs.state_json, cs.updated_at
+                         FROM connector_instances ci
+                         LEFT JOIN connector_state cs
+                           ON cs.connector_instance_id = ci.connector_instance_id
+                          AND cs.stream = '${LOCAL_COVERAGE_DIAGNOSTICS_STREAM}'`;
+  if (isPostgresStorageBackend()) {
+    const query = await postgresQuery<Row>(`${projection} WHERE ci.connector_instance_id = ANY($1::text[])`, [ids]);
+    rows.push(...query.rows);
+  } else {
+    for (let start = 0; start < ids.length; start += 900) {
+      const chunk = ids.slice(start, start + 900);
+      rows.push(
+        ...(getDb()
+          .prepare(`${projection} WHERE ci.connector_instance_id IN (${chunk.map(() => "?").join(", ")})`)
+          .all(...chunk) as Row[])
+      );
+    }
+  }
+  for (const row of rows) {
+    const stateJson = typeof row.state_json === "string" ? JSON.parse(row.state_json) : row.state_json;
+    const state =
+      stateJson && typeof stateJson === "object"
+        ? ((stateJson as Record<string, unknown>)[LOCAL_COVERAGE_DIAGNOSTICS_STREAM] ?? null)
+        : null;
+    result.set(row.connector_instance_id, {
+      ...parseCoverageDiagnosticsStateSnapshot(row.connector_id, state),
+      manifestGeneration: row.current_generation === null ? null : Number(row.current_generation),
+      state,
+      stateManifestGeneration: row.state_generation === null ? null : Number(row.state_generation),
+      updatedAt: row.updated_at ?? null,
+    });
+  }
+  return result;
+}
+
+/**
  * Persist explicit provenance for a rejected internal write against the
  * current manifest generation. It never writes a record: retained history is
  * diagnostic/dormant unless this independent signal says otherwise.

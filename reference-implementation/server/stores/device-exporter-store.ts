@@ -12,6 +12,7 @@ import {
   writeTransaction,
 } from "../../lib/db.ts";
 import { isNullish } from "../../lib/nullish.ts";
+import { getDb } from "../db.ts";
 import { fingerprintDeviceAttemptManifest } from "../device-ingest-attempt-context.ts";
 import {
   getStorageBackendKind,
@@ -220,6 +221,62 @@ function mapSourceInstanceHeartbeatRow(row: Row | null | undefined) {
 }
 
 const HEARTBEAT_STATUS_VALUES = new Set(["starting", "healthy", "retrying", "blocked", "stopped"]);
+
+/**
+ * Read device heartbeat/outbox evidence for an exact page of connection
+ * instances. This deliberately does not accept connector ids: siblings may
+ * share a catalog connector while having independent device evidence.
+ */
+export async function listSourceInstanceHeartbeatsByConnectionIds(connectorInstanceIds: readonly string[]) {
+  const ids = [...new Set(connectorInstanceIds.filter((id) => typeof id === "string" && id.length > 0))];
+  if (ids.length === 0) {
+    return new Map<string, ReturnType<typeof mapSourceInstanceHeartbeatRow>[]>();
+  }
+  const rows: Row[] = [];
+  const select = `SELECT dsi.source_instance_id, dsi.device_id, dsi.connector_id, dsi.connector_instance_id,
+                         dsi.status AS source_status, dsi.last_error_json, dsi.last_heartbeat_at,
+                         dsi.last_heartbeat_status, dsi.records_pending, dsi.outbox_diagnostics_json,
+                         dsi.manifest_generation, dsi.updated_at, dio.last_ingest_at,
+                         de.status AS device_status, de.revoked_at AS device_revoked_at
+                    FROM device_source_instances dsi
+                    JOIN device_exporters de ON de.device_id = dsi.device_id
+                    LEFT JOIN (
+                      SELECT device_id, source_instance_id, MAX(accepted_at) AS last_ingest_at
+                        FROM device_ingest_batch_outcomes WHERE status = 'accepted'
+                       GROUP BY device_id, source_instance_id
+                    ) dio ON dio.device_id = dsi.device_id AND dio.source_instance_id = dsi.source_instance_id`;
+  if (isPostgresStorageBackend()) {
+    const result = await postgresQuery<Row>(
+      `${select} WHERE dsi.connector_instance_id = ANY($1::text[])
+       ORDER BY dsi.connector_instance_id ASC, (dsi.last_heartbeat_at IS NULL), dsi.last_heartbeat_at DESC NULLS LAST, dsi.device_id ASC, dsi.source_instance_id ASC`,
+      [ids]
+    );
+    rows.push(...result.rows);
+  } else {
+    for (let start = 0; start < ids.length; start += 900) {
+      const chunk = ids.slice(start, start + 900);
+      rows.push(
+        ...(getDb()
+          .prepare(
+            `${select} WHERE dsi.connector_instance_id IN (${chunk.map(() => "?").join(", ")})
+             ORDER BY dsi.connector_instance_id ASC, (dsi.last_heartbeat_at IS NULL), dsi.last_heartbeat_at DESC, dsi.device_id ASC, dsi.source_instance_id ASC`
+          )
+          .all(...chunk) as Row[])
+      );
+    }
+  }
+  const result = new Map<string, ReturnType<typeof mapSourceInstanceHeartbeatRow>[]>();
+  for (const row of rows) {
+    const heartbeat = mapSourceInstanceHeartbeatRow(row);
+    if (!heartbeat?.connectorInstanceId) {
+      continue;
+    }
+    const values = result.get(heartbeat.connectorInstanceId) ?? [];
+    values.push(heartbeat);
+    result.set(heartbeat.connectorInstanceId, values);
+  }
+  return result;
+}
 
 function normalizeHeartbeatStatus(value: unknown): string | null {
   if (typeof value !== "string") {
