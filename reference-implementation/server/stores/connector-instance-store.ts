@@ -635,9 +635,10 @@ const FALL_THROUGH_TO_CONNECTOR_ID = Symbol("fall-through-to-connector-id");
 // Resolves the explicit `connector_instance_id` selector: fetches the row and
 // runs its full validation chain (owner-mismatch, connector-mismatch,
 // status-inactive) UNCHANGED. Returns a namespace on a valid hit, or
-// `FALL_THROUGH_TO_CONNECTOR_ID` when the instance is missing but doubles as
-// a legacy default-account connector_id hint (see Decision 3 note at the
-// caller). Throws connector_instance_not_found otherwise.
+// `FALL_THROUGH_TO_CONNECTOR_ID` when the instance is missing but is either a
+// legacy connector_id hint or a deterministic default-account identity (see
+// Decision 3 note at the caller). Throws connector_instance_not_found
+// otherwise.
 function resolveByExplicitInstanceId(
   instance: ConnectorInstance | null,
   {
@@ -678,11 +679,20 @@ function resolveByExplicitInstanceId(
     }
     return namespaceFromInstance(instance, { selector: "connector_instance_id" });
   }
-  // Older grant/storage bindings can use connector_id as a default account
-  // instance hint. When the instance is missing but this hint applies, we
-  // fall through past this whole block to the connector_id resolution path
-  // below instead of treating the missing id as a hard not-found.
-  const isDefaultAccountHint = allowDefaultAccount && connectorId && connectorInstanceId === connectorId;
+  // Older grant/storage bindings use connector_id as a default-account hint;
+  // direct runtime writers use the deterministic default-account identity.
+  // Both are safe fall-through selectors only when they match the current
+  // owner or the standalone runtime's default owner and connector's exact
+  // default binding. The latter is needed because the runtime has an opaque
+  // owner token and therefore uses the reference default identity; admission
+  // still materializes the requesting owner's binding. Arbitrary missing
+  // instance IDs remain a typed not-found and are never materialized.
+  const isDefaultAccountHint =
+    allowDefaultAccount &&
+    connectorId &&
+    (connectorInstanceId === connectorId ||
+      connectorInstanceId === makeDefaultAccountConnectorInstanceId(ownerSubjectId, connectorId) ||
+      connectorInstanceId === makeDefaultAccountConnectorInstanceId("owner_local", connectorId));
   if (!isDefaultAccountHint) {
     throw new ConnectorInstanceResolutionError(
       "connector_instance_not_found",

@@ -580,6 +580,21 @@ async function runConformance({
   assert.equal(defaultHint.connectorInstanceId, makeDefaultAccountConnectorInstanceId("owner_4", "reddit"));
   assert.equal(defaultHint.createdDefaultAccount, true);
   assert.equal(defaultHint.selector, "connector_id");
+  const deterministicDefaultHint = await resolveOwnerConnectorInstanceNamespace({
+    allowDefaultAccount: true,
+    connectorId: "reddit",
+    connectorInstanceId: makeDefaultAccountConnectorInstanceId("owner_direct_runtime", "reddit"),
+    connectorInstanceStore: store,
+    displayName: "Reddit",
+    now: NOW,
+    ownerSubjectId: "owner_direct_runtime",
+  });
+  assert.equal(
+    deterministicDefaultHint.connectorInstanceId,
+    makeDefaultAccountConnectorInstanceId("owner_direct_runtime", "reddit")
+  );
+  assert.equal(deterministicDefaultHint.createdDefaultAccount, true);
+  assert.equal(deterministicDefaultHint.selector, "connector_id");
   await assert.rejects(
     () =>
       resolveOwnerConnectorInstanceNamespace({
