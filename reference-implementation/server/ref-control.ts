@@ -551,6 +551,12 @@ interface ControllerLike {
   getBrowserSurfaceRuntimeAllocatorScopeId?: () => string | null;
   getBrowserSurfaceRuntimeManagement?: (connectorId: string) => BrowserSurfaceRuntimeManagement;
   getSchedule?: (connectorId: string) => Promise<unknown>;
+  /**
+   * The controller's existing owner-wide schedule projection. When available,
+   * the summaries list reads it once and replays each connection's unchanged
+   * schedule object from the resulting instance-id index.
+   */
+  listSchedules?: () => Promise<readonly unknown[]>;
   observeBrowserSurfaceRuntimeInventory?: () => Promise<BrowserSurfaceRuntimeInventorySnapshot>;
 }
 
@@ -4432,7 +4438,27 @@ interface ConnectorSummaryProjectionDeps {
   /** One dynamic allocator inventory for this entire connection-summary refresh. */
   readonly runtimeInventory: BrowserSurfaceRuntimeInventorySnapshot | null;
   readonly runtimeOk: boolean;
+  /**
+   * `null` retains the direct single-connection controller read. A map is a
+   * request-scoped replay of the controller's existing `listSchedules()`
+   * projection, keyed by stable connection identity.
+   */
+  readonly schedulesByInstanceId: ReadonlyMap<string, unknown> | null;
   readonly sharedBrowserSurfaceReader: BrowserSurfaceLeaseStoreReader;
+}
+
+function indexSchedulesByConnectionId(schedules: readonly unknown[]): ReadonlyMap<string, unknown> {
+  const byInstanceId = new Map<string, unknown>();
+  for (const schedule of schedules) {
+    if (!schedule || typeof schedule !== "object" || Array.isArray(schedule)) {
+      continue;
+    }
+    const connectorInstanceId = (schedule as { connector_instance_id?: unknown }).connector_instance_id;
+    if (typeof connectorInstanceId === "string" && connectorInstanceId.length > 0) {
+      byInstanceId.set(connectorInstanceId, schedule);
+    }
+  }
+  return byInstanceId;
 }
 
 function isActiveVisibleConnectorInstance(
@@ -5199,6 +5225,14 @@ async function projectConnectorSummaryForInstance(
   const staticSecretCapable = staticSecretCredentialCaptureFromManifest(manifest) !== null;
   const staticSecretBound = connectionIsStaticSecretBound(instance, staticSecretCapable);
   const nowIso = new Date().toISOString();
+  let schedulePromise: Promise<unknown>;
+  if (localDeviceBacked) {
+    schedulePromise = Promise.resolve(null);
+  } else if (deps.schedulesByInstanceId === null) {
+    schedulePromise = getScheduleFrom(controller, connectorId, { connectorInstanceId });
+  } else {
+    schedulePromise = Promise.resolve(deps.schedulesByInstanceId.get(connectorInstanceId) ?? null);
+  }
   const [
     schedule,
     lastRun,
@@ -5211,7 +5245,7 @@ async function projectConnectorSummaryForInstance(
     acquisitionCoverage,
     credentialMetadata,
   ] = await Promise.all([
-    localDeviceBacked ? Promise.resolve(null) : getScheduleFrom(controller, connectorId, { connectorInstanceId }),
+    schedulePromise,
     hydrateRunSummaries
       ? getLatestRunSummaryForConnection({
           activeVisibleConnectionCount,
@@ -5461,8 +5495,22 @@ async function loadConnectorSummaryProjectionDeps(
     ...(retainedSizeSnapshot ? { retainedSizeSnapshot } : {}),
     runtimeInventory,
     runtimeOk: !isNullish(controller),
+    schedulesByInstanceId: null,
     sharedBrowserSurfaceReader,
   };
+}
+
+function loadSummaryScheduleSnapshot(
+  controller: ControllerLike | null | undefined,
+  rows: readonly ConnectorInstanceRow[]
+): Promise<ReadonlyMap<string, unknown> | null> {
+  // A local-device connection never reads scheduler evidence in its
+  // per-connection projection. Avoid replacing zero reads with an owner-wide
+  // schedule list for an all-local-device summary request.
+  if (!rows.some((row) => row.sourceKind !== "local_device") || typeof controller?.listSchedules !== "function") {
+    return Promise.resolve(null);
+  }
+  return controller.listSchedules().then(indexSchedulesByConnectionId);
 }
 
 /** Untyped read-model row shape crossing the module boundary. */
@@ -5611,12 +5659,14 @@ async function computeConnectorSummaries(
     includeRunSummaries: options.includeRunSummaries ?? true,
   });
   const rows = options.visibleConnections ?? (await listOwnerVisibleConnectorInstances(ownerSubjectId));
-  const activeVisibleConnectionCounts = countActiveVisibleConnectionsByConnectorId(rows, deps.manifestsByConnectorId);
+  const schedulesByInstanceId = await loadSummaryScheduleSnapshot(controller, rows);
+  const summaryDeps = schedulesByInstanceId === null ? deps : { ...deps, schedulesByInstanceId };
+  const activeVisibleConnectionCounts = countActiveVisibleConnectionsByConnectorId(rows, summaryDeps.manifestsByConnectorId);
   const summaries = await runWithConcurrency(
     rows,
     options.concurrency ?? LIST_CONNECTOR_SUMMARIES_CONCURRENCY,
     (instance): Promise<ConnectorSummary | null> =>
-      projectConnectorSummaryForInstance(instance, deps, {
+      projectConnectorSummaryForInstance(instance, summaryDeps, {
         activeVisibleConnectionCount: activeVisibleConnectionCounts.get(instance.connectorId) ?? 0,
       }),
     options.onInFlightChange ? { onInFlightChange: options.onInFlightChange } : {}
