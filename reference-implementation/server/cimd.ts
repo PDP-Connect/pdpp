@@ -90,6 +90,10 @@ export interface FetchCimdOptions {
   timeoutMs?: number;
   traceId?: string | null;
 }
+export type CimdFetchDependencies = Pick<
+  FetchCimdOptions,
+  "dnsLookupImpl" | "fetchImpl" | "isGlobalUnicastAddressImpl" | "nowMs"
+>;
 
 export interface FetchCimdResult {
   doc: CimdDocument;
@@ -112,13 +116,16 @@ class CimdError extends Error {
 const cimdCache = new Map<string, CachedCimdDocument>();
 const textEncoder = new TextEncoder();
 const MAX_TRANSPORT_ERROR_MESSAGE_LENGTH = 240;
-const TRANSPORT_ERROR_CODE_PATTERN = /^[A-Za-z0-9_.-]{1,64}$/;
+const MAX_CORRELATION_ID_LENGTH = 128;
+const TRANSPORT_ERROR_CODE_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;
+const TRANSPORT_ERROR_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
 const TRANSPORT_ERROR_TLS_PATTERN = /\b(cert|tls)\b/i;
 const TRANSPORT_ERROR_URL_PATTERN = /[a-z][a-z\d+.-]*:\/\/[^\s"']+/gi;
 const TRANSPORT_ERROR_SECRET_PATTERN =
-  /\b(authorization|api[_-]?key|cookie|password|passwd|secret|token)\s*([=:])\s*[^,;\s]+/gi;
+  /\b(authorization|proxy-authorization|api[_-]?key|cookie|password|passwd|secret|token)\s*([=:])\s*(?:[a-z]+\s+)?[^,;\s]+/gi;
 const TRANSPORT_ERROR_IPV4_PATTERN = /\b(?:\d{1,3}\.){3}\d{1,3}\b/g;
 const TRANSPORT_ERROR_IPV6_PATTERN = /\b(?:[\da-f]{0,4}:){2,}[\da-f:]+\b/gi;
+const CORRELATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 
 function rawPathFromUrlString(value: string): string {
   // biome-ignore lint/performance/useTopLevelRegex: This parser-local expression intentionally avoids shared regular-expression state.
@@ -272,8 +279,14 @@ function sanitizeTransportMessage(value: unknown): string {
 function transportErrorDetail(value: unknown): CimdTransportErrorDetail {
   const error = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
   const code = typeof error.code === "string" && TRANSPORT_ERROR_CODE_PATTERN.test(error.code) ? error.code : null;
-  const name = typeof error.name === "string" && TRANSPORT_ERROR_CODE_PATTERN.test(error.name) ? error.name : "Error";
+  const name = typeof error.name === "string" && TRANSPORT_ERROR_NAME_PATTERN.test(error.name) ? error.name : "Error";
   return { code, message: sanitizeTransportMessage(error.message), name };
+}
+
+function sanitizeCorrelationId(value: unknown): string | null {
+  return typeof value === "string" && value.length <= MAX_CORRELATION_ID_LENGTH && CORRELATION_ID_PATTERN.test(value)
+    ? value
+    : null;
 }
 
 function classifyTransportFailure(
@@ -401,9 +414,9 @@ export async function fetchCimdDocument(
         error: detail,
         event_type: "cimd.transport_failure",
         phase: classifyTransportFailure(causeDetail ?? detail, controller.signal.aborted),
-        request_id: requestId,
+        request_id: sanitizeCorrelationId(requestId),
         timeout_aborted: controller.signal.aborted,
-        trace_id: traceId,
+        trace_id: sanitizeCorrelationId(traceId),
       };
       try {
         onTransportFailure?.(event);

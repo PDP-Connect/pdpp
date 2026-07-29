@@ -32,9 +32,10 @@ const TOP_LEVEL_REGEX_12 = /client_id mismatch/;
 const TOP_LEVEL_REGEX_13 = /unsupported token_endpoint_auth_method/;
 const TOP_LEVEL_REGEX_14 = /CIMD fetch failed/;
 const TRANSPORT_IP_REDACTED_REGEX = /<ip>/;
-const TRANSPORT_TCP_SECRET_REGEX = /super-secret|203\.0\.113\.9/;
+const TRANSPORT_TCP_SECRET_REGEX = /bearer-marker|super-secret|203\.0\.113\.9/;
 const TRANSPORT_DNS_SECRET_REGEX = /top-secret|198\.51\.100\.20|client-dns\.json\?token/;
 const TRANSPORT_URL_REDACTED_REGEX = /<url>/;
+const TRANSPORT_TRACE_MARKER_REGEX = /trace-marker/;
 
 const publicDns: NonNullable<FetchCimdOptions["dnsLookupImpl"]> = () => Promise.resolve([{ address: "93.184.216.34" }]);
 
@@ -258,10 +259,10 @@ test("fetchCimdDocument aborts slow metadata fetches", async () => {
 test("fetchCimdDocument logs one bounded TCP refusal event without changing its error", async () => {
   const clientId = "https://client.example/oauth/client-tcp-refusal.json";
   const captured = captureTransportFailures();
-  const cause = Object.assign(new Error("connect ECONNREFUSED 203.0.113.9:443 token=super-secret"), {
+  const cause = Object.assign(new Error("connect ECONNREFUSED 203.0.113.9:443 Authorization: Bearer bearer-marker"), {
     code: "ECONNREFUSED",
   });
-  const failure = transportFailure("fetch failed", "UND_ERR_CONNECT", cause);
+  const failure = transportFailure("fetch failed", "203.0.113.9", cause);
 
   await assert.rejects(
     () =>
@@ -281,13 +282,38 @@ test("fetchCimdDocument logs one bounded TCP refusal event without changing its 
   );
 
   assert.equal(captured.events.length, 1);
-  assert.deepEqual(captured.events[0]?.address_families, [6, 4]);
-  assert.equal(captured.events[0]?.phase, "connect");
-  assert.equal(captured.events[0]?.request_id, "req_cimd_test");
-  assert.equal(captured.events[0]?.trace_id, "trace_cimd_test");
-  assert.equal(captured.events[0]?.cause?.code, "ECONNREFUSED");
-  assert.match(captured.events[0]?.cause?.message || "", TRANSPORT_IP_REDACTED_REGEX);
-  assert.doesNotMatch(JSON.stringify(captured.events[0]), TRANSPORT_TCP_SECRET_REGEX);
+  const [event] = captured.events;
+  assert.ok(event, "the transport failure event is present");
+  assert.deepEqual(event.address_families, [6, 4]);
+  assert.equal(event.phase, "connect");
+  assert.equal(event.request_id, "req_cimd_test");
+  assert.equal(event.trace_id, "trace_cimd_test");
+  assert.equal(event.error.code, null);
+  assert.equal(event.cause?.code, "ECONNREFUSED");
+  assert.match(event.cause?.message || "", TRANSPORT_IP_REDACTED_REGEX);
+  assert.doesNotMatch(JSON.stringify(event), TRANSPORT_TCP_SECRET_REGEX);
+});
+
+test("fetchCimdDocument drops oversized and adversarial correlation identifiers", async () => {
+  const captured = captureTransportFailures();
+  const failure = transportFailure("fetch failed", "UND_ERR_CONNECT");
+
+  await assert.rejects(
+    () =>
+      fetchCimd("https://client.example/oauth/client-correlation.json", {
+        dnsLookupImpl: publicDns,
+        fetchImpl: async () => Promise.reject(failure),
+        onTransportFailure: captured.onTransportFailure,
+        requestId: "r".repeat(100_000),
+        traceId: "Authorization: Bearer trace-marker",
+      }),
+    (error: Error & { code?: string }) => error.code === "cimd_fetch_failed"
+  );
+
+  assert.equal(captured.events.length, 1);
+  assert.equal(captured.events[0]?.request_id, null);
+  assert.equal(captured.events[0]?.trace_id, null);
+  assert.doesNotMatch(JSON.stringify(captured.events[0]), TRANSPORT_TRACE_MARKER_REGEX);
 });
 
 test("fetchCimdDocument logs one bounded TLS failure event without changing its error", async () => {

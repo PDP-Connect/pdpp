@@ -26,6 +26,7 @@ import {
   transaction,
 } from "../lib/db.ts";
 import { createTraceContext, emitSpineEvent as emitRawSpineEvent, type SpineEventInput } from "../lib/spine.ts";
+import type { CimdFetchDependencies, CimdTransportFailureEvent } from "./cimd.ts";
 import { listActiveBindingsForGrant, projectBindingForWire } from "./connection-identity.ts";
 import { canonicalConnectorKey, canonicalConnectorKeyFromManifest } from "./connector-key.ts";
 import {
@@ -60,6 +61,15 @@ interface TraceContext {
   request_id: string;
   scenario_id?: string;
   trace_id: string;
+}
+
+interface InitiateGrantOptions {
+  baseUrl?: string;
+  cimdFetchDependencies?: CimdFetchDependencies;
+  issuerBase?: string;
+  nativeManifest?: DbRow | null;
+  onCimdTransportFailure?: (event: CimdTransportFailureEvent) => void;
+  scenarioId?: string;
 }
 
 interface SourceBinding extends Record<string, unknown> {
@@ -3951,7 +3961,8 @@ async function resolveCimdClientForGrant(
     request_id?: string | null;
     traceId?: string | null;
     trace_id?: string | null;
-    onCimdTransportFailure?: (event: import("./cimd.ts").CimdTransportFailureEvent) => void;
+    cimdFetchDependencies?: CimdFetchDependencies;
+    onCimdTransportFailure?: (event: CimdTransportFailureEvent) => void;
   } = {}
 ): Promise<RegisteredClient | null> {
   const { isCimdClientId, validateCimdUrl, fetchCimdDocument, buildCimdRegisteredClient } = await import("./cimd.ts");
@@ -3997,6 +4008,7 @@ async function resolveCimdClientForGrant(
 
   // External fetch with SSRF guards, timeout, size cap
   const { doc } = await fetchCimdDocument(clientId, {
+    ...opts.cimdFetchDependencies,
     onSecurityRelevantMetadataChange: (event) => revokeCimdClientAccessForSecurityMetadataChange(event, opts),
     ...(opts.onCimdTransportFailure ? { onTransportFailure: opts.onCimdTransportFailure } : {}),
     ...((opts.requestId ?? opts.request_id) === undefined ? {} : { requestId: opts.requestId ?? opts.request_id }),
@@ -4010,7 +4022,8 @@ export async function resolveOAuthClient(
   opts: {
     issuerBase?: string;
     baseUrl?: string;
-    onCimdTransportFailure?: (event: import("./cimd.ts").CimdTransportFailureEvent) => void;
+    cimdFetchDependencies?: CimdFetchDependencies;
+    onCimdTransportFailure?: (event: CimdTransportFailureEvent) => void;
     requestId?: string | null;
     request_id?: string | null;
     traceId?: string | null;
@@ -4039,7 +4052,7 @@ function requiresStagedGrantBatch(input: Record<string, unknown>): boolean {
  */
 export async function initiateGrant(
   input: Record<string, unknown>,
-  opts: { scenarioId?: string; baseUrl?: string; nativeManifest?: DbRow | null; issuerBase?: string } = {}
+  opts: InitiateGrantOptions = {}
 ): Promise<Record<string, unknown>> {
   if (requiresStagedGrantBatch(input)) {
     return initiateStagedGrantBatch(input, opts);
@@ -4054,7 +4067,11 @@ export async function initiateGrant(
   const sourceBinding = getRequestSourceBinding(normalized);
 
   try {
-    const registeredClient = await resolveOAuthClient(normalized.client.client_id, opts);
+    const registeredClient = await resolveOAuthClient(normalized.client.client_id, {
+      ...opts,
+      requestId: traceContext.request_id,
+      traceId: traceContext.trace_id,
+    });
     if (!registeredClient) {
       const err: AuthError = new Error(`Unknown client_id: ${normalized.client.client_id}`);
       err.code = "invalid_client";
@@ -4153,7 +4170,7 @@ function asSingleEntryRequestSlice(batchRequest: StagedBatchRequest, entry: Batc
 
 async function initiateStagedGrantBatch(
   input: Record<string, unknown>,
-  opts: { scenarioId?: string; baseUrl?: string; nativeManifest?: DbRow | null; issuerBase?: string } = {}
+  opts: InitiateGrantOptions = {}
 ): Promise<Record<string, unknown>> {
   const batch = normalizeStagedGrantRequestBatch(input, opts);
   const traceContext = getRequestTraceContext(
@@ -4164,7 +4181,11 @@ async function initiateStagedGrantBatch(
   const firstSource = batch.entries[0]?.source_binding || null;
 
   try {
-    const registeredClient = await resolveOAuthClient(batch.client.client_id, opts);
+    const registeredClient = await resolveOAuthClient(batch.client.client_id, {
+      ...opts,
+      requestId: traceContext.request_id,
+      traceId: traceContext.trace_id,
+    });
     if (!registeredClient) {
       const err: AuthError = new Error(`Unknown client_id: ${batch.client.client_id}`);
       err.code = "invalid_client";
