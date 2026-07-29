@@ -24,6 +24,8 @@ import { createSqliteBrowserSurfaceLeaseStore } from "../server/stores/browser-s
 import type { BrowserSurfaceReplacementReceiptStore } from "../server/stores/browser-surface-replacement-ledger-store.ts";
 import { createSqliteBrowserSurfaceReplacementReceiptStore } from "../server/stores/browser-surface-replacement-ledger-store.ts";
 
+const ALLOCATOR_UNAVAILABLE = /allocator unavailable/;
+
 const surface: BrowserSurface = {
   backend: "neko",
   cdp_url: "http://neko:9222",
@@ -828,6 +830,17 @@ function lifecyclePersistence(initialSurface: BrowserSurfaceWithPersistenceMetad
     list: async () => receipts.slice(),
     listForScope: async () => notImplementedInLifecycleFake("listForScope"),
     selectCurrent: async () => notImplementedInLifecycleFake("selectCurrent"),
+    selectSystemActionable: async ({ connection_id, profile_key, surface_subject_id }) =>
+      receipts
+        .filter(
+          (receipt) =>
+            receipt.connection_id === connection_id &&
+            receipt.profile_key === profile_key &&
+            (receipt.surface_subject_id ?? undefined) === surface_subject_id &&
+            receipt.phase === "terminal" &&
+            receipt.terminal_outcome === "failed"
+        )
+        .at(-1) ?? null,
   };
   return {
     getSurface: () => surface,
@@ -926,6 +939,102 @@ test("readiness completes a durable pending stop after cleanup rotates the surfa
   assert.ok(completedReceipt, "expected a completed receipt after readiness recordBrowserGeneration");
   assert.equal(completedReceipt.replacement_id, oldPending.replacement_id);
   assert.equal(completedReceipt.surface_id, "surface-old");
+});
+
+test("external loss stays pending until a scoped successor proves its generation", async () => {
+  const previous = lifecycleSurface({ surface_id: "surface-lost" });
+  const persistence = lifecyclePersistence(previous);
+  const hooks = createReplacementLifecycleHooks({
+    allocator: null,
+    leaseStore: persistence.leaseStore,
+    log: {},
+    receiptStore: persistence.receiptStore,
+  });
+
+  await hooks.recordExternalSurfaceLoss(previous);
+  assert.deepEqual(
+    persistence.receipts.map((receipt) => receipt.phase),
+    ["started"]
+  );
+
+  await hooks.recordBrowserGeneration(
+    minimalLease("lease-successor"),
+    { ...previous, container_id: "container-successor", surface_id: "surface-successor" },
+    previous.connector_id,
+    "run-confirming",
+    { browserGenerationHash: "b".repeat(64), ok: true, pageTargetCount: 1 }
+  );
+
+  assert.deepEqual(
+    persistence.receipts.map((receipt) => receipt.phase),
+    ["started", "completed"]
+  );
+  const completed = persistence.receipts.at(-1);
+  assert.ok(completed);
+  assert.equal(completed.cause, "external_or_host_loss");
+  assert.equal(completed.next_generation_hash, "b".repeat(64));
+  assert.equal(completed.surface_id, "surface-lost", "the receipt retains the replaced surface provenance");
+});
+
+test("a failed successor terminalizes the scoped external-loss receipt", async () => {
+  const previous = lifecycleSurface({ surface_id: "surface-lost" });
+  const persistence = lifecyclePersistence(previous);
+  const hooks = createReplacementLifecycleHooks({
+    allocator: {
+      ensureSurface: async () => Promise.reject(new Error("allocator unavailable")),
+      getSurfaceStatus: async () => null,
+      listSurfaces: async () => [],
+      stopSurface: async () => null,
+    },
+    leaseStore: persistence.leaseStore,
+    log: {},
+    receiptStore: persistence.receiptStore,
+  });
+
+  await hooks.recordExternalSurfaceLoss(previous);
+  await assert.rejects(
+    () =>
+      hooks.allocator?.ensureSurface({
+        connectorId: previous.connector_id,
+        profileKey: previous.profile_key,
+        surfaceId: "surface-successor",
+        ...(previous.surface_subject_id ? { surfaceSubjectId: previous.surface_subject_id } : {}),
+      }) ?? Promise.reject(new Error("allocator wrapper missing")),
+    ALLOCATOR_UNAVAILABLE
+  );
+
+  assert.deepEqual(
+    persistence.receipts.map((receipt) => [receipt.phase, receipt.terminal_outcome]),
+    [
+      ["started", undefined],
+      ["terminal", "failed"],
+    ]
+  );
+
+  await hooks.recordBrowserGeneration(
+    minimalLease("lease-recovered"),
+    { ...previous, container_id: "container-recovered", surface_id: "surface-recovered" },
+    previous.connector_id,
+    "run-recovered",
+    { browserGenerationHash: "a".repeat(64), ok: true, pageTargetCount: 1 }
+  );
+  assert.equal(
+    persistence.receipts.at(-1)?.phase,
+    "completed",
+    "a later confirmed successor supersedes the failed runtime boundary"
+  );
+
+  await hooks.recordExternalSurfaceLoss({
+    ...previous,
+    last_used_at: "2026-07-16T13:00:00.000Z",
+  });
+  const repeatedLoss = persistence.receipts.at(-1);
+  assert.equal(repeatedLoss?.phase, "started");
+  assert.notEqual(
+    repeatedLoss?.replacement_id,
+    persistence.receipts[0]?.replacement_id,
+    "a later host-loss observation creates a new durable replacement boundary"
+  );
 });
 
 test("current selection never revives an older pending boundary", () => {

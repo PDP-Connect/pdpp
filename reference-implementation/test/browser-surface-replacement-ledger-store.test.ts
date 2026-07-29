@@ -326,8 +326,15 @@ async function assertStoreContract(store: BrowserSurfaceReplacementReceiptStore)
       })
     ),
     null,
-    "a newer terminal boundary cannot revive an older completed generation"
+    "a terminal receipt is not a current browser generation"
   );
+  const selectedTerminal = await store.selectSystemActionable({
+    connection_id: olderPending.connection_id,
+    profile_key: olderPending.profile_key,
+    ...(olderPending.surface_subject_id ? { surface_subject_id: olderPending.surface_subject_id } : {}),
+  });
+  assert.equal(selectedTerminal?.phase, "terminal", "a failed terminal boundary remains system evidence");
+  assert.equal(selectedTerminal?.terminal_outcome, "failed");
 
   const interleavingLedger = createBrowserSurfaceReplacementLedger({ idPrefix: "interleaving-test", now: () => NOW });
   const interleavedFirst = interleavingLedger.start({

@@ -75,6 +75,17 @@ function wrapAllocator(
   return createReplacementObservingAllocator(input.allocator, {
     // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     findPending: (surfaceId) => input.receiptStore?.findPendingForSurface(surfaceId) ?? Promise.resolve(null),
+    findPendingForScope: (scope) => {
+      if (!input.receiptStore) {
+        return Promise.resolve(null);
+      }
+      return input.receiptStore.findPendingForScope({
+        connection_id: scope.connectionId,
+        preferred_surface_id: scope.preferredSurfaceId,
+        profile_key: scope.profileKey,
+        surface_subject_id: scope.surfaceSubjectId,
+      });
+    },
     ledger,
     onPersistenceError: (error) => logReplacementPersistenceError(input.log, error),
     persist: (receipt) => persistReplacementReceipt(input.receiptStore, receipt),
@@ -104,7 +115,6 @@ async function recordExternalSurfaceLoss(
   const previousGenerationHash = surface.container_id ? deriveOpaqueGenerationHash(surface.container_id) : undefined;
   const started = ledger.start(externalLossStartInput(surface, previousGenerationHash));
   await persistReplacementReceipt(store, started);
-  await persistReplacementReceipt(store, ledger.terminate(terminalInput(started, "failed")));
 }
 
 function externalLossStartInput(
@@ -115,7 +125,7 @@ function externalLossStartInput(
     cause: "external_or_host_loss",
     connection_id: surface.surface_subject_id ?? surface.connector_id,
     connector_id: surface.connector_id,
-    idempotency_key: `external-loss:${surface.surface_id}:${previousGenerationHash ?? "unknown"}`,
+    idempotency_key: `external-loss:${surface.surface_id}:${previousGenerationHash ?? "unknown"}:${surface.last_used_at}`,
     profile_key: surface.profile_key,
     surface_id: surface.surface_id,
   } as ReplacementStartInput;
@@ -216,9 +226,11 @@ async function recordCurrentGeneration(
 ): Promise<void> {
   const previousGenerationHash = persistedSurface?.browser_generation_hash;
   if (previousGenerationHash === generationHash) {
+    await recordRecoveredFailedSuccessor(input, generationHash);
     return;
   }
   if (!previousGenerationHash) {
+    await recordRecoveredFailedSuccessor(input, generationHash);
     await input.leaseStore.updateBrowserGenerationHash(input.surface.surface_id, generationHash);
     return;
   }
@@ -229,6 +241,39 @@ async function recordCurrentGeneration(
   await persistReplacementReceipt(input.receiptStore, started);
   await persistReplacementReceipt(input.receiptStore, input.ledger.complete(completionInput(started, generationHash)));
   await input.leaseStore.updateBrowserGenerationHash(input.surface.surface_id, generationHash);
+}
+
+async function recordRecoveredFailedSuccessor(
+  input: {
+    readonly receiptStore: BrowserSurfaceReplacementReceiptStore | null;
+    readonly ledger: BrowserSurfaceReplacementLedger;
+    readonly surface: BrowserSurface;
+  },
+  generationHash: string
+): Promise<void> {
+  const store = input.receiptStore;
+  if (!store) {
+    return;
+  }
+  const failed = await store.selectSystemActionable({
+    connection_id: input.surface.surface_subject_id ?? input.surface.connector_id,
+    profile_key: input.surface.profile_key,
+    ...(input.surface.surface_subject_id ? { surface_subject_id: input.surface.surface_subject_id } : {}),
+  });
+  if (!failed) {
+    return;
+  }
+  const started = input.ledger.start({
+    cause: "allocator_internal_ensure_surface",
+    connection_id: failed.connection_id,
+    connector_id: input.surface.connector_id,
+    idempotency_key: `successor-recovered:${failed.replacement_id}:${input.surface.surface_id}:${generationHash}`,
+    profile_key: input.surface.profile_key,
+    surface_id: input.surface.surface_id,
+    ...(input.surface.surface_subject_id ? { surface_subject_id: input.surface.surface_subject_id } : {}),
+  });
+  await persistReplacementReceipt(store, started);
+  await persistReplacementReceipt(store, input.ledger.complete(pendingCompletionInput(started, generationHash)));
 }
 
 function stableContainerIdentity(current: BrowserSurface, persisted: BrowserSurface | null): boolean {
@@ -269,18 +314,6 @@ function completionInput(started: ReplacementReceipt, generationHash: string): R
     profile_key: started.profile_key,
     replacement_id: started.replacement_id,
   } as ReplacementCompletionInput;
-  copyOptionalReceiptFields(result, started);
-  return result;
-}
-
-function terminalInput(started: ReplacementReceipt, outcome: "failed" | "abandoned"): ReplacementTerminalInput {
-  const result = {
-    cause: started.cause,
-    connection_id: started.connection_id,
-    outcome,
-    profile_key: started.profile_key,
-    replacement_id: started.replacement_id,
-  } as ReplacementTerminalInput;
   copyOptionalReceiptFields(result, started);
   return result;
 }

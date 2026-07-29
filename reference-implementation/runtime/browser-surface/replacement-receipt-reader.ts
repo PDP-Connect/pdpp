@@ -10,6 +10,11 @@ export interface CurrentReplacementReceiptReader {
     readonly surface_subject_id?: string;
     readonly current_generation_hash?: string;
   }) => CurrentReplacementReceipt | null | Promise<CurrentReplacementReceipt | null>;
+  selectSystemActionable?: (input: {
+    readonly connection_id: string;
+    readonly profile_key: string;
+    readonly surface_subject_id?: string;
+  }) => CurrentReplacementReceipt | null | Promise<CurrentReplacementReceipt | null>;
 }
 
 export type CurrentReplacementReceiptRead =
@@ -78,6 +83,30 @@ export async function readCurrentReplacementReceipt(input: {
       connection_id: input.connection_id,
       ...(input.surface_subject_id ? { surface_subject_id: input.surface_subject_id } : {}),
       ...(input.current_generation_hash ? { current_generation_hash: input.current_generation_hash } : {}),
+    });
+    return isScopedCurrentReceipt(receipt, input.connection_id, input.surface_subject_id)
+      ? { receipt, state: "available" }
+      : { receipt: null, state: "available" };
+  } catch {
+    return { receipt: null, state: "unavailable" };
+  }
+}
+
+export async function readSystemActionableReplacementReceipt(input: {
+  readonly connection_id: string;
+  readonly profile_key: string;
+  readonly reader: CurrentReplacementReceiptReader | null;
+  readonly surface_subject_id?: string;
+}): Promise<CurrentReplacementReceiptRead> {
+  const { reader } = input;
+  if (!reader?.selectSystemActionable) {
+    return { receipt: null, state: reader ? "available" : "unavailable" };
+  }
+  try {
+    const receipt = await reader.selectSystemActionable({
+      connection_id: input.connection_id,
+      profile_key: input.profile_key,
+      ...(input.surface_subject_id ? { surface_subject_id: input.surface_subject_id } : {}),
     });
     return isScopedCurrentReceipt(receipt, input.connection_id, input.surface_subject_id)
       ? { receipt, state: "available" }

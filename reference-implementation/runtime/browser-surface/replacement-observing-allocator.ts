@@ -21,6 +21,16 @@ export interface ReplacementObservingAllocatorOptions {
   readonly createEnsureAttemptId?: (request: EnsureBrowserSurfaceRequest) => string;
   readonly createStopAttemptId?: (request: StopBrowserSurfaceRequest) => string;
   readonly findPending?: (surfaceId: string) => Promise<ReplacementReceipt | null>;
+  /**
+   * A replacement may receive a new surface ID after allocator or host loss.
+   * Scope binds that successor attempt to the durable connection profile.
+   */
+  readonly findPendingForScope?: (input: {
+    readonly connectionId: string;
+    readonly profileKey: string;
+    readonly surfaceSubjectId: string | null;
+    readonly preferredSurfaceId: string;
+  }) => Promise<ReplacementReceipt | null>;
   readonly ledger: BrowserSurfaceReplacementLedger;
   readonly onPersistenceError?: (error: unknown) => void;
   readonly persist?: (receipt: ReplacementReceipt) => Promise<ReplacementReceipt>;
@@ -62,8 +72,24 @@ async function prepareEnsureObservation(
 ): Promise<EnsureObservation> {
   const before = await allocator.getSurfaceStatus(request.surfaceId);
   const attemptId = options.createEnsureAttemptId?.(request) ?? randomUUID();
-  const preclaimed = await startAdvertisedReplacement(options, request, before, attemptId);
+  const advertisedReplacement = await startAdvertisedReplacement(options, request, before, attemptId);
+  const preclaimed = advertisedReplacement ?? (await pendingReplacementForRequest(options, request));
   return { attemptId, before, preclaimed };
+}
+
+function pendingReplacementForRequest(
+  options: ReplacementObservingAllocatorOptions,
+  request: EnsureBrowserSurfaceRequest
+): Promise<ReplacementReceipt | null> {
+  if (!options.findPendingForScope) {
+    return Promise.resolve(null);
+  }
+  return options.findPendingForScope({
+    connectionId: request.surfaceSubjectId ?? request.connectorId,
+    preferredSurfaceId: request.surfaceId,
+    profileKey: request.profileKey,
+    surfaceSubjectId: request.surfaceSubjectId ?? null,
+  });
 }
 
 async function performEnsureEffect(

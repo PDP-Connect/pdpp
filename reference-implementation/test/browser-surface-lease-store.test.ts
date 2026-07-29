@@ -259,6 +259,32 @@ test("persists starting dynamic surface metadata for allocator reconciliation", 
   }
 });
 
+test("persists and retains allocator profile-path provenance across surface health updates", async () => {
+  const store = setup();
+  try {
+    const allocated = surface({
+      allocator_metadata: { profile_path: "/var/lib/pdpp/neko-profiles/chatgpt-connection" },
+      container_id: "container_profile_provenance",
+      surface_id: "surface_profile_provenance",
+    });
+    await store.upsertSurface(allocated);
+    assert.equal(
+      (await store.getSurface(allocated.surface_id))?.profile_dir,
+      "/var/lib/pdpp/neko-profiles/chatgpt-connection"
+    );
+
+    const { allocator_metadata: _allocatorMetadata, ...healthUpdate } = allocated;
+    await store.upsertSurface({ ...healthUpdate, health: "unhealthy" });
+    assert.equal(
+      (await store.getSurface(allocated.surface_id))?.profile_dir,
+      "/var/lib/pdpp/neko-profiles/chatgpt-connection",
+      "health reconciliation must not erase durable profile provenance"
+    );
+  } finally {
+    teardown();
+  }
+});
+
 test("SQLite repair clears active surface pointers whose leases are terminal or missing", async () => {
   const store = setup();
   try {
