@@ -7,19 +7,116 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+fail() {
+  echo "reference-stack: $*" >&2
+  exit 1
+}
+
+# Compose has no config-file way to pin a project name, so it derives one from
+# the current directory's basename whenever COMPOSE_PROJECT_NAME is unset.
+# Every canonical up/down/verify path MUST target the one configured
+# deployment ("pdpp" — matching PDPP_NEKO_DEPLOYMENT_ID's own default and
+# .env.docker.example's documented contract, see docker-compose.neko.yml)
+# regardless of which worktree basename this script happens to run from.
+# Without this default, running from a differently-named worktree (a fresh
+# deploy checkout, a second clone) silently starts a second, parallel stack —
+# new network, new volumes, new containers — instead of erroring immediately.
+#
+# A caller MAY still export COMPOSE_PROJECT_NAME to something else on
+# purpose: that is the existing, documented escape hatch the smoke scripts
+# use (docker-smoke.sh, docker-neko-dynamic-allocator-smoke.sh,
+# docker-neko-network-migration-smoke.sh, railway-sqlite-restart-smoke.sh)
+# for throwaway/parallel instances, so we only supply a default, never
+# override an explicit value.
+export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-pdpp}"
+
+# The Compose project name alone is NOT a safe ownership boundary for the
+# dynamic n.eko allocator. neko-surface-allocator-server.ts's
+# #isOwnedByThisDeployment treats any container whose deployment_id label
+# equals this instance's PDPP_NEKO_DEPLOYMENT_ID as owned by it, checked
+# BEFORE any Compose-project fallback — so the one invariant that actually
+# matters is unconditional: the EFFECTIVE PDPP_NEKO_DEPLOYMENT_ID (the value
+# Compose will actually interpolate, after --env-file .env.docker
+# precedence) must equal COMPOSE_PROJECT_NAME, for the canonical "pdpp"
+# project exactly as much as for any alternate. Branching this check on
+# "is the project non-canonical" (an earlier version of this guard) leaves
+# the canonical path unchecked: a stray inherited shell
+# PDPP_NEKO_DEPLOYMENT_ID=foreign-deployment (leftover from another
+# session), or a foreign value persisted in .env.docker itself (Compose's
+# --env-file is a lower-priority fallback for ${VAR} interpolation, so an
+# unset shell var lets a foreign .env.docker value reach the container
+# unnoticed), would both sail through under COMPOSE_PROJECT_NAME=pdpp and
+# let this "canonical" allocator legacy-adopt a different deployment's
+# dynamic browser-surface containers.
+#
+# Two cases, one invariant:
+#
+#   canonical (COMPOSE_PROJECT_NAME == "pdpp", whether by default or by an
+#   explicit `pdpp` export): PDPP_NEKO_DEPLOYMENT_ID must resolve to "pdpp"
+#   too. An explicitly inherited MISMATCHED shell value is rejected outright
+#   (it can only mean stale state from another deployment's session) rather
+#   than silently overridden — silently correcting it would hide exactly the
+#   kind of leftover-env mistake this guard exists to catch. Otherwise
+#   (unset, or already "pdpp") we force-export PDPP_NEKO_DEPLOYMENT_ID=pdpp
+#   ourselves: Compose's shell-env-beats-env-file precedence for ${VAR}
+#   interpolation (verified empirically: an exported shell value always wins
+#   over the same var's --env-file value) makes this the one deterministic
+#   way to neutralize a foreign value persisted in .env.docker, without
+#   requiring every operator to hand-edit that file.
+#
+#   alternate (COMPOSE_PROJECT_NAME explicitly overridden away from "pdpp"):
+#   unchanged from the prior revision — PDPP_NEKO_DEPLOYMENT_ID must be
+#   explicitly exported and exactly equal to COMPOSE_PROJECT_NAME. This is
+#   the existing, documented escape hatch the smoke scripts use
+#   (docker-neko-network-migration-smoke.sh, docker-neko-network-durability-smoke.sh
+#   both export a matching generated value to each variable).
+#
+# Either branch fails closed before any Compose invocation is built below.
+CANONICAL_COMPOSE_PROJECT_NAME="pdpp"
+if [[ "$COMPOSE_PROJECT_NAME" == "$CANONICAL_COMPOSE_PROJECT_NAME" ]]; then
+  if [[ -n "${PDPP_NEKO_DEPLOYMENT_ID:-}" && "$PDPP_NEKO_DEPLOYMENT_ID" != "$CANONICAL_COMPOSE_PROJECT_NAME" ]]; then
+    fail "COMPOSE_PROJECT_NAME is the canonical '$CANONICAL_COMPOSE_PROJECT_NAME'," \
+      "but the shell already has PDPP_NEKO_DEPLOYMENT_ID='$PDPP_NEKO_DEPLOYMENT_ID'" \
+      "inherited from somewhere else (another deployment's session, a" \
+      "leftover export). That is a split identity: the allocator's" \
+      "ownership check uses only the deployment id, so a foreign id here" \
+      "would let this canonical deployment's allocator legacy-adopt a" \
+      "different deployment's dynamic browser-surface containers. Unset" \
+      "PDPP_NEKO_DEPLOYMENT_ID (or set it to '$CANONICAL_COMPOSE_PROJECT_NAME') before running the canonical stack."
+  fi
+  # Force the canonical value into the shell env so it deterministically
+  # overrides any foreign value persisted in .env.docker via Compose's
+  # shell-env-beats-env-file interpolation precedence — never leave this to
+  # chance for the canonical path.
+  export PDPP_NEKO_DEPLOYMENT_ID="$CANONICAL_COMPOSE_PROJECT_NAME"
+else
+  if [[ -z "${PDPP_NEKO_DEPLOYMENT_ID:-}" ]]; then
+    fail "COMPOSE_PROJECT_NAME='$COMPOSE_PROJECT_NAME' overrides the canonical" \
+      "project, but PDPP_NEKO_DEPLOYMENT_ID is not set. A mismatched or" \
+      "missing deployment id lets the allocator legacy-adopt containers" \
+      "from a different deployment. Export PDPP_NEKO_DEPLOYMENT_ID equal to" \
+      "the exact same value as COMPOSE_PROJECT_NAME ('$COMPOSE_PROJECT_NAME')."
+  fi
+  if [[ "$PDPP_NEKO_DEPLOYMENT_ID" != "$COMPOSE_PROJECT_NAME" ]]; then
+    fail "COMPOSE_PROJECT_NAME='$COMPOSE_PROJECT_NAME' and" \
+      "PDPP_NEKO_DEPLOYMENT_ID='$PDPP_NEKO_DEPLOYMENT_ID' must be identical." \
+      "A mismatched pair is a split identity: the allocator's ownership" \
+      "check uses only the deployment id, so a distinct Compose project with" \
+      "the wrong (e.g. inherited/default) deployment id can enumerate and" \
+      "mutate a different deployment's browser-surface containers."
+  fi
+  export PDPP_NEKO_DEPLOYMENT_ID
+fi
+
 COMPOSE=(
   docker compose
+  -p "$COMPOSE_PROJECT_NAME"
   --env-file .env.docker
   -f docker-compose.yml
   -f docker-compose.neko.yml
   --profile neko-dynamic
 )
 SERVICES=(postgres neko neko-allocator reference web)
-
-fail() {
-  echo "reference-stack: $*" >&2
-  exit 1
-}
 
 usage() {
   cat <<'USAGE'
@@ -40,6 +137,29 @@ up --build-app and up --build-all refuse to run when the working tree has
 uncommitted tracked changes, so a deployed image reflects a reviewed commit.
 Untracked/ignored scratch (e.g. tmp/) does not block. Set
 PDPP_ALLOW_DIRTY_REFERENCE_BUILD=1 to build a dirty tree anyway.
+
+Every command targets the Compose project "pdpp" by default, independent of
+the worktree directory name, so this script always converges the one
+canonical deployment instead of silently starting a parallel stack.
+
+COMPOSE_PROJECT_NAME and PDPP_NEKO_DEPLOYMENT_ID are one identity, not two
+independent knobs: the allocator's ownership check trusts
+PDPP_NEKO_DEPLOYMENT_ID alone, so any mismatch between the two lets one
+project's allocator adopt and mutate a DIFFERENT deployment's containers.
+This script enforces equality unconditionally, before any Compose call:
+
+  - Canonical (COMPOSE_PROJECT_NAME left at "pdpp"): PDPP_NEKO_DEPLOYMENT_ID
+    is force-set to "pdpp" too, overriding any stale value a .env.docker
+    file might carry. An inherited shell PDPP_NEKO_DEPLOYMENT_ID that
+    already disagrees with "pdpp" is rejected outright rather than
+    silently corrected.
+  - Alternate (COMPOSE_PROJECT_NAME exported to something else on purpose,
+    e.g. a throwaway/smoke instance): PDPP_NEKO_DEPLOYMENT_ID must ALSO be
+    explicitly exported, set to the EXACT SAME value. Setting only
+    COMPOSE_PROJECT_NAME fails closed with an explicit error instead of
+    silently rendering a mismatched pair. See
+    docker-neko-network-migration-smoke.sh / docker-neko-network-durability-smoke.sh
+    for the pattern (both export a matching generated value to each variable).
 USAGE
 }
 
