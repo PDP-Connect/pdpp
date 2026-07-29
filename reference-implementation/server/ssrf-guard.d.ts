@@ -39,8 +39,8 @@ export function resolveAllowedAddresses(
 ): Promise<ResolveAllowedAddressesResult>;
 
 /**
- * An `undici.Agent`-shaped dispatcher pinned to `validatedAddresses`. Typed as
- * `unknown` here (not `undici.Agent`) because Node's global `fetch` types come
+ * An `undici.Dispatcher`-shaped dispatcher pinned to `validatedAddresses`. Typed as
+ * `unknown` here (not `undici.Dispatcher`) because Node's global `fetch` types come
  * from a separate `undici-types` package instance than the `undici` npm
  * dependency this is built from — structurally identical at runtime, nominally
  * distinct in TypeScript. Callers cast at the `fetch({ dispatcher })` boundary.
