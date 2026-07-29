@@ -130,14 +130,17 @@ async function fetchOwnerCookie(): Promise<string> {
   }
 }
 
+// Console routes live directly under `(console)/`; there is no `/dashboard`
+// prefix. Keep this list aligned with apps/console/src/app/(console)/.
+export const PAGE_ROUTES = ["/", "/sources", "/sources/add", "/explore", "/syncs", "/grants", "/connect", "/search"];
+
 /** Console page targets. Measured unauthenticated (TTFB of the shell/redirect) by
  *  default; pass a cookie (auto via --login, or PDPP_BENCH_COOKIE) for authed
  *  timings — the real owner experience. */
 function pageTargets(cookieOverride: string): Target[] {
   const cookie = cookieOverride || process.env.PDPP_BENCH_COOKIE || "";
   const headers = cookie ? { Cookie: cookie } : {};
-  const routes = ["/", "/sources", "/sources/add", "/explore", "/syncs", "/grants", "/connect", "/search"];
-  return routes.map((r) => ({ group: "page" as const, name: r, url: `${BASE}${r}`, headers }));
+  return PAGE_ROUTES.map((route) => ({ group: "page" as const, name: route, url: `${BASE}${route}`, headers }));
 }
 
 // ── measurement ──────────────────────────────────────────────────────────────
@@ -336,7 +339,9 @@ function fmtBytes(b: number): string {
   return `${(b / 1024 / 1024).toFixed(1)}MB`;
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}
