@@ -18,6 +18,7 @@ import { closeDb, getDb, initDb } from "../server/db.ts";
 
 const MISSING_REASON_PATTERN = /"missing":1/;
 const PRIVATE_DATA_PATTERN = /owner@example\.test|secret-token-value|opaque-cursor|raw failure text/;
+const SAMPLE_RATE_ERROR_PATTERN = /finite positive integer/;
 
 const CLEAN: ConnectorSummaryReconcileObservation = {
   candidateReasonCounts: {},
@@ -53,6 +54,7 @@ test("reconcile telemetry samples successful zero-repair barriers at the configu
     {
       candidate_reason_counts: {},
       candidates_inspected: 41,
+      clean_barriers_since_epoch_lower_bound: 2,
       duration_ms: 23,
       failed: 0,
       failure_classes: [],
@@ -60,12 +62,51 @@ test("reconcile telemetry samples successful zero-repair barriers at the configu
       observation: "connector_summary_reconcile",
       repaired: 0,
       resume_state: "none",
+      sampling_epoch_started_at: records[0]?.sampling_epoch_started_at,
       scope_kind: "complete",
       scope_size: 41,
       skipped: 0,
       zero_repair_sample_every: 2,
     },
   ]);
+});
+
+test("reconcile telemetry rejects non-finite and non-positive clean sample rates", () => {
+  const { logger } = captureRecords();
+  for (const invalidRate of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, 1.5]) {
+    assert.throws(
+      () => createConnectorSummaryReconcileObservationSink(logger, { zeroRepairSampleEvery: invalidRate }),
+      SAMPLE_RATE_ERROR_PATTERN
+    );
+  }
+});
+
+test("clean lower bounds reach the decision floor only after complete sample blocks and reset per epoch", () => {
+  const firstEpoch = captureRecords();
+  const observeFirstEpoch = createConnectorSummaryReconcileObservationSink(firstEpoch.logger, {
+    zeroRepairSampleEvery: 100,
+  });
+  for (let index = 0; index < 5999; index += 1) {
+    observeFirstEpoch(CLEAN);
+  }
+  assert.equal(firstEpoch.records.length, 59, "5,999 barriers produce only 59 emitted clean latency samples");
+  observeFirstEpoch(CLEAN);
+  assert.equal(firstEpoch.records.length, 60, "the 6,000th barrier reaches the 60-sample decision floor");
+  assert.equal(firstEpoch.records.at(-1)?.clean_barriers_since_epoch_lower_bound, 6000);
+
+  const restartedEpoch = captureRecords();
+  const observeRestartedEpoch = createConnectorSummaryReconcileObservationSink(restartedEpoch.logger, {
+    zeroRepairSampleEvery: 100,
+  });
+  for (let index = 0; index < 100; index += 1) {
+    observeRestartedEpoch(CLEAN);
+  }
+  assert.equal(restartedEpoch.records.length, 1);
+  assert.equal(
+    restartedEpoch.records[0]?.clean_barriers_since_epoch_lower_bound,
+    100,
+    "a process restart starts a fresh lower bound instead of carrying prior volume"
+  );
 });
 
 test("reconcile telemetry always reports an actual repair with its sanitized candidate reason", () => {

@@ -60,6 +60,14 @@ function sanitizedFailureClasses(input: readonly string[]): string[] {
   return [...new Set(input.filter((reason) => FAILURE_CLASSES.has(reason)))].sort();
 }
 
+function readZeroRepairSampleEvery(value: number | undefined): number {
+  const sampleEvery = value ?? ZERO_REPAIR_SAMPLE_EVERY;
+  if (!(Number.isFinite(sampleEvery) && Number.isInteger(sampleEvery)) || sampleEvery < 1) {
+    throw new RangeError("zeroRepairSampleEvery must be a finite positive integer");
+  }
+  return sampleEvery;
+}
+
 /**
  * Create the server-owned observation sink. Every repair/failure/deferred
  * barrier is reported; clean zero-repair barriers are sampled one-in-N so
@@ -69,7 +77,11 @@ export function createConnectorSummaryReconcileObservationSink(
   logger: StructuredLogger,
   options: { readonly zeroRepairSampleEvery?: number } = {}
 ): (observation: ConnectorSummaryReconcileObservation) => void {
-  const zeroRepairSampleEvery = Math.max(1, Math.floor(options.zeroRepairSampleEvery ?? ZERO_REPAIR_SAMPLE_EVERY));
+  const zeroRepairSampleEvery = readZeroRepairSampleEvery(options.zeroRepairSampleEvery);
+  // This timestamp is a process-local sampling epoch, not an owner or
+  // connection identifier. It lets analysis group cumulative lower bounds
+  // without inventing volume from clean barriers lost at process restart.
+  const samplingEpochStartedAt = new Date().toISOString();
   let cleanBarrierCount = 0;
 
   return (observation) => {
@@ -97,10 +109,16 @@ export function createConnectorSummaryReconcileObservationSink(
           observation: "connector_summary_reconcile",
           repaired: nonNegativeInteger(observation.repaired),
           resume_state: observation.resumePending ? "pending" : "none",
+          sampling_epoch_started_at: samplingEpochStartedAt,
           scope_kind: observation.scopeKind === "scoped" ? "scoped" : "complete",
           scope_size: nonNegativeInteger(observation.scopeSize),
           skipped: nonNegativeInteger(observation.skipped),
-          ...(exceptional ? {} : { zero_repair_sample_every: zeroRepairSampleEvery }),
+          ...(exceptional
+            ? {}
+            : {
+                clean_barriers_since_epoch_lower_bound: cleanBarrierCount,
+                zero_repair_sample_every: zeroRepairSampleEvery,
+              }),
         },
         "connector summary reconcile observation"
       );
