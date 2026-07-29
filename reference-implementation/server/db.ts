@@ -1096,6 +1096,20 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_browser_surface_replacement_one_resolution
   ON browser_surface_replacement_receipts(replacement_id)
   WHERE phase IN ('completed', 'terminal');
 
+CREATE TABLE IF NOT EXISTS browser_surface_replacement_selection_overrides (
+  replacement_id TEXT PRIMARY KEY,
+  idempotency_key TEXT NOT NULL,
+  connection_id TEXT NOT NULL,
+  connector_id TEXT,
+  profile_key TEXT NOT NULL,
+  surface_subject_id TEXT,
+  surface_id TEXT NOT NULL,
+  observed_at TEXT NOT NULL,
+  prior_failed_replacement_id TEXT NOT NULL,
+  applied_at TEXT NOT NULL,
+  revoked_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS scheduler_run_history (
   id                         INTEGER PRIMARY KEY AUTOINCREMENT,
   connector_instance_id      TEXT NOT NULL,

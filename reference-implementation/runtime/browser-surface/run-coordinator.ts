@@ -939,9 +939,12 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
       return;
     }
     await browserSurfaceLeaseStore.withLeaseTransaction(async (store) => {
-      for (const surface of allocatorReconcile.evicted) {
-        // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
+      for (const surface of externalLossBoundaryRepresentatives(allocatorReconcile.evicted)) {
+        // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve receipt and projection ordering.
         await replacementHooks.recordExternalSurfaceLoss(surface);
+      }
+      for (const surface of allocatorReconcile.evicted) {
+        // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve receipt and projection ordering.
         await store.upsertSurface({ ...surface, health: "unhealthy" });
       }
       for (const surface of allocatorReconcile.downgraded) {
@@ -949,6 +952,40 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
         await store.upsertSurface(surface);
       }
     });
+  }
+
+  function isLiveExternalLossCandidate(surface: BrowserSurface): boolean {
+    // Boot and periodic reconciliation must still evict every allocator-dead
+    // row so historical capacity cannot be reused. Only a surface that was
+    // ready immediately before that eviction is a fresh, observable host-loss
+    // boundary. Re-emitting a receipt for already unhealthy or stopping
+    // history would manufacture a pending successor and hide its prior
+    // terminal evidence.
+    return surface.health === "ready";
+  }
+
+  function externalLossBoundaryRepresentatives(surfaces: readonly BrowserSurface[]): BrowserSurface[] {
+    // Allocator reconciliation can return duplicate persisted rows for one
+    // connection/profile scope. Those rows describe one observed loss
+    // boundary, not independent replacements. Electing the lexical first
+    // surface ID makes that durable receipt identity stable across allocator
+    // enumeration order while every evicted row is still persisted unhealthy.
+    const elected = new Map<string, BrowserSurface>();
+    for (const surface of surfaces) {
+      if (!isLiveExternalLossCandidate(surface)) {
+        continue;
+      }
+      const scope = JSON.stringify([
+        surface.surface_subject_id ?? surface.connector_id,
+        surface.surface_subject_id ?? null,
+        surface.profile_key,
+      ]);
+      const current = elected.get(scope);
+      if (!current || surface.surface_id.localeCompare(current.surface_id) < 0) {
+        elected.set(scope, surface);
+      }
+    }
+    return [...elected.values()].sort((left, right) => left.surface_id.localeCompare(right.surface_id));
   }
 
   async function reconcileBrowserSurfacesWithAllocatorAtBoot(): Promise<void> {

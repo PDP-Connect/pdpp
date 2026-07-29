@@ -13,6 +13,36 @@ The reference implementation SHALL record every managed browser-process replacem
 - **THEN** the original external-loss receipt SHALL complete with that successor generation hash
 - **AND** the persisted surface projection SHALL retain the allocator profile bind path.
 
+#### Scenario: Historical reconciliation cannot mint a new external-loss boundary
+
+- **WHEN** boot or periodic reconciliation evicts a persisted managed surface that was already `unhealthy` or `stopping`
+- **THEN** the implementation SHALL persist its unhealthy projection without appending a new `external_or_host_loss` receipt
+- **AND** it SHALL preserve any prior failed scoped successor as selectable system-runtime evidence.
+- **WHEN** reconciliation evicts a managed surface that was `ready` immediately before the allocator loss observation
+- **THEN** it SHALL append exactly one scoped `external_or_host_loss` receipt
+- **AND** a same-profile successor readiness observation SHALL complete that receipt.
+
+#### Scenario: Duplicate ready projections coalesce to one loss boundary
+
+- **WHEN** allocator reconciliation evicts multiple `ready` projections with
+  the same connection identity, nullable surface subject, and profile key
+- **THEN** it SHALL append exactly one `external_or_host_loss` receipt for
+  that scope, using the lexical first surface ID as its deterministic subject
+- **AND** it SHALL still persist every evicted projection unhealthy
+- **AND** one same-profile successor readiness observation SHALL append exactly
+  one completion for that boundary.
+
+#### Scenario: A reviewed historical selector correction preserves the ledger
+
+- **WHEN** a reviewed correction supplies a synthetic start's exact immutable
+  receipt fingerprint and an earlier failed `external_or_host_loss` receipt in
+  the same scope
+- **THEN** the implementation MAY exclude only that named active start from
+  system-actionable selection without deleting or terminalizing any receipt
+- **AND** it SHALL reject a correction whose fingerprint or earlier failed
+  receipt does not match durable history
+- **AND** revoking the correction SHALL restore ordinary receipt selection.
+
 #### Scenario: Profile-key replacement cannot inherit prior provenance
 
 - **WHEN** a surface ID is upserted with a different profile key and no replacement directory/volume pair

@@ -12,6 +12,7 @@ import { getStorageBackendKind, isPostgresStorageBackend, postgresQuery } from "
 
 export interface BrowserSurfaceReplacementReceiptStore {
   append: (receipt: ReplacementReceipt) => Promise<ReplacementReceipt>;
+  applySelectionOverride: (input: ReplacementReceiptSelectionOverrideInput) => Promise<void>;
   findPendingForScope: (input: {
     readonly connection_id: string;
     readonly surface_subject_id: string | null;
@@ -24,6 +25,7 @@ export interface BrowserSurfaceReplacementReceiptStore {
     readonly connection_id: string;
     readonly surface_subject_id?: string;
   }) => Promise<readonly ReplacementReceipt[]>;
+  revokeSelectionOverride: (replacementId: string, revokedAt: string) => Promise<void>;
   selectCurrent: (input: {
     readonly connection_id: string;
     readonly surface_subject_id?: string;
@@ -34,6 +36,24 @@ export interface BrowserSurfaceReplacementReceiptStore {
     readonly profile_key: string;
     readonly surface_subject_id?: string;
   }) => Promise<ReplacementReceipt | null>;
+}
+
+/**
+ * A reviewed correction must name the immutable receipt it excludes and the
+ * earlier failed successor it restores. The store rechecks every field before
+ * accepting it; a clock window alone is intentionally not provenance.
+ */
+export interface ReplacementReceiptSelectionOverrideInput {
+  readonly applied_at: string;
+  readonly connection_id: string;
+  readonly connector_id: string | null;
+  readonly idempotency_key: string;
+  readonly observed_at: string;
+  readonly prior_failed_replacement_id: string;
+  readonly profile_key: string;
+  readonly replacement_id: string;
+  readonly surface_id: string;
+  readonly surface_subject_id: string | null;
 }
 
 interface ReplacementReceiptRow {
@@ -96,6 +116,19 @@ CREATE INDEX IF NOT EXISTS idx_browser_surface_replacement_surface_order
 CREATE UNIQUE INDEX IF NOT EXISTS idx_browser_surface_replacement_one_resolution
   ON browser_surface_replacement_receipts(replacement_id)
   WHERE phase IN ('completed', 'terminal');
+CREATE TABLE IF NOT EXISTS browser_surface_replacement_selection_overrides (
+  replacement_id TEXT PRIMARY KEY,
+  idempotency_key TEXT NOT NULL,
+  connection_id TEXT NOT NULL,
+  connector_id TEXT,
+  profile_key TEXT NOT NULL,
+  surface_subject_id TEXT,
+  surface_id TEXT NOT NULL,
+  observed_at TEXT NOT NULL,
+  prior_failed_replacement_id TEXT NOT NULL,
+  applied_at TEXT NOT NULL,
+  revoked_at TEXT
+);
 `;
 
 export const POSTGRES_BROWSER_SURFACE_REPLACEMENT_LEDGER_SCHEMA = `
@@ -138,6 +171,19 @@ CREATE INDEX IF NOT EXISTS idx_pg_browser_surface_replacement_surface_order
 CREATE UNIQUE INDEX IF NOT EXISTS idx_pg_browser_surface_replacement_one_resolution
   ON browser_surface_replacement_receipts(replacement_id)
   WHERE phase IN ('completed', 'terminal');
+CREATE TABLE IF NOT EXISTS browser_surface_replacement_selection_overrides (
+  replacement_id TEXT PRIMARY KEY,
+  idempotency_key TEXT NOT NULL,
+  connection_id TEXT NOT NULL,
+  connector_id TEXT,
+  profile_key TEXT NOT NULL,
+  surface_subject_id TEXT,
+  surface_id TEXT NOT NULL,
+  observed_at TEXT NOT NULL,
+  prior_failed_replacement_id TEXT NOT NULL,
+  applied_at TEXT NOT NULL,
+  revoked_at TEXT
+);
 `;
 
 function mapRow(row: ReplacementReceiptRow): ReplacementReceipt {
@@ -221,6 +267,190 @@ function nullable(value: string | undefined): string | null {
   return value ?? null;
 }
 
+interface SelectionOverrideRow {
+  readonly applied_at: string;
+  readonly connection_id: string;
+  readonly connector_id: string | null;
+  readonly idempotency_key: string;
+  readonly observed_at: string;
+  readonly prior_failed_replacement_id: string;
+  readonly profile_key: string;
+  readonly replacement_id: string;
+  readonly revoked_at: string | null;
+  readonly surface_id: string;
+  readonly surface_subject_id: string | null;
+}
+
+function overrideParams(input: ReplacementReceiptSelectionOverrideInput): readonly (string | null)[] {
+  return [
+    input.replacement_id,
+    input.idempotency_key,
+    input.connection_id,
+    input.connector_id,
+    input.profile_key,
+    input.surface_subject_id,
+    input.surface_id,
+    input.observed_at,
+    input.prior_failed_replacement_id,
+    input.applied_at,
+  ];
+}
+
+function assertOverrideReplay(row: SelectionOverrideRow, input: ReplacementReceiptSelectionOverrideInput): void {
+  const expected: Omit<SelectionOverrideRow, "revoked_at"> = {
+    applied_at: input.applied_at,
+    connection_id: input.connection_id,
+    connector_id: input.connector_id,
+    idempotency_key: input.idempotency_key,
+    observed_at: input.observed_at,
+    prior_failed_replacement_id: input.prior_failed_replacement_id,
+    profile_key: input.profile_key,
+    replacement_id: input.replacement_id,
+    surface_id: input.surface_id,
+    surface_subject_id: input.surface_subject_id,
+  };
+  for (const key of Object.keys(expected) as Array<keyof typeof expected>) {
+    if (row[key] !== expected[key]) {
+      throw new ReplacementReplayConflictError(`selection override changed immutable field ${key}`);
+    }
+  }
+}
+
+function assertOverrideTarget(row: ReplacementReceiptRow | undefined): void {
+  if (!row) {
+    throw new Error("selection override requires an unresolved external-loss receipt and its earlier failed successor");
+  }
+}
+
+function sqliteOverrideTarget(input: ReplacementReceiptSelectionOverrideInput): ReplacementReceiptRow | undefined {
+  return dbRow(
+    `SELECT started.* FROM browser_surface_replacement_receipts AS started
+     JOIN browser_surface_replacement_receipts AS prior
+       ON prior.replacement_id = ?
+      AND prior.phase = 'terminal'
+      AND prior.cause = 'external_or_host_loss'
+      AND prior.terminal_outcome = 'failed'
+      AND prior.connection_id = started.connection_id
+      AND prior.profile_key = started.profile_key
+      AND prior.surface_subject_id IS started.surface_subject_id
+      AND prior.event_seq < started.event_seq
+     JOIN browser_surface_replacement_receipts AS prior_started
+       ON prior_started.replacement_id = prior.replacement_id
+      AND prior_started.phase = 'started'
+      AND prior_started.event_seq < started.event_seq
+     WHERE started.replacement_id = ?
+       AND started.idempotency_key = ?
+       AND started.connection_id = ?
+       AND started.connector_id IS ?
+       AND started.profile_key = ?
+       AND started.surface_subject_id IS ?
+       AND started.surface_id = ?
+       AND started.observed_at = ?
+       AND started.cause = 'external_or_host_loss'
+       AND started.phase = 'started'
+       AND NOT EXISTS (
+         SELECT 1 FROM browser_surface_replacement_receipts AS resolved
+         WHERE resolved.replacement_id = started.replacement_id
+           AND resolved.phase IN ('completed', 'terminal')
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM browser_surface_replacement_receipts AS later_started
+         WHERE later_started.connection_id = started.connection_id
+           AND later_started.profile_key = started.profile_key
+           AND later_started.surface_subject_id IS started.surface_subject_id
+           AND later_started.phase = 'started'
+           AND later_started.replacement_id != started.replacement_id
+           AND later_started.event_seq > prior_started.event_seq
+       )`,
+    [
+      input.prior_failed_replacement_id,
+      input.replacement_id,
+      input.idempotency_key,
+      input.connection_id,
+      input.connector_id,
+      input.profile_key,
+      input.surface_subject_id,
+      input.surface_id,
+      input.observed_at,
+    ]
+  );
+}
+
+async function postgresOverrideTarget(
+  query: (sql: string, values?: readonly unknown[]) => Promise<{ rows: ReplacementReceiptRow[] }>,
+  input: ReplacementReceiptSelectionOverrideInput
+): Promise<ReplacementReceiptRow | undefined> {
+  const result = await query(
+    `SELECT started.* FROM browser_surface_replacement_receipts AS started
+     JOIN browser_surface_replacement_receipts AS prior
+       ON prior.replacement_id = $1
+      AND prior.phase = 'terminal'
+      AND prior.cause = 'external_or_host_loss'
+      AND prior.terminal_outcome = 'failed'
+      AND prior.connection_id = started.connection_id
+      AND prior.profile_key = started.profile_key
+      AND prior.surface_subject_id IS NOT DISTINCT FROM started.surface_subject_id
+      AND prior.event_seq < started.event_seq
+     JOIN browser_surface_replacement_receipts AS prior_started
+       ON prior_started.replacement_id = prior.replacement_id
+      AND prior_started.phase = 'started'
+      AND prior_started.event_seq < started.event_seq
+     WHERE started.replacement_id = $2
+       AND started.idempotency_key = $3
+       AND started.connection_id = $4
+       AND started.connector_id IS NOT DISTINCT FROM $5
+       AND started.profile_key = $6
+       AND started.surface_subject_id IS NOT DISTINCT FROM $7
+       AND started.surface_id = $8
+       AND started.observed_at = $9
+       AND started.cause = 'external_or_host_loss'
+       AND started.phase = 'started'
+       AND NOT EXISTS (
+         SELECT 1 FROM browser_surface_replacement_receipts AS resolved
+         WHERE resolved.replacement_id = started.replacement_id
+           AND resolved.phase IN ('completed', 'terminal')
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM browser_surface_replacement_receipts AS later_started
+         WHERE later_started.connection_id = started.connection_id
+           AND later_started.profile_key = started.profile_key
+           AND later_started.surface_subject_id IS NOT DISTINCT FROM started.surface_subject_id
+           AND later_started.phase = 'started'
+           AND later_started.replacement_id <> started.replacement_id
+           AND later_started.event_seq > prior_started.event_seq
+       )`,
+    [
+      input.prior_failed_replacement_id,
+      input.replacement_id,
+      input.idempotency_key,
+      input.connection_id,
+      input.connector_id,
+      input.profile_key,
+      input.surface_subject_id,
+      input.surface_id,
+      input.observed_at,
+    ]
+  );
+  return result.rows[0];
+}
+
+function sqliteActiveOverrideIds(): ReadonlySet<string> {
+  return new Set(
+    dbRows("SELECT replacement_id FROM browser_surface_replacement_selection_overrides WHERE revoked_at IS NULL").map(
+      (row) => row.replacement_id
+    )
+  );
+}
+
+async function postgresActiveOverrideIds(
+  query: (sql: string, values?: readonly unknown[]) => Promise<{ rows: ReplacementReceiptRow[] }>
+): Promise<ReadonlySet<string>> {
+  const result = await query(
+    "SELECT replacement_id FROM browser_surface_replacement_selection_overrides WHERE revoked_at IS NULL"
+  );
+  return new Set(result.rows.map((row) => row.replacement_id));
+}
+
 function setOptionalRowValue(
   target: ReplacementReceipt,
   field: keyof ReplacementReceipt,
@@ -232,6 +462,25 @@ function setOptionalRowValue(
 }
 
 class SqliteBrowserSurfaceReplacementReceiptStore implements BrowserSurfaceReplacementReceiptStore {
+  // biome-ignore lint/suspicious/useAwait: sync sqlite driver; async satisfies the shared replacement ledger contract.
+  async applySelectionOverride(input: ReplacementReceiptSelectionOverrideInput): Promise<void> {
+    const existing = dbRow("SELECT * FROM browser_surface_replacement_selection_overrides WHERE replacement_id = ?", [
+      input.replacement_id,
+    ]);
+    if (existing) {
+      assertOverrideReplay(existing as unknown as SelectionOverrideRow, input);
+      return;
+    }
+    assertOverrideTarget(sqliteOverrideTarget(input));
+    execDynamicSqlAcknowledged(
+      `INSERT INTO browser_surface_replacement_selection_overrides(
+        replacement_id, idempotency_key, connection_id, connector_id, profile_key,
+        surface_subject_id, surface_id, observed_at, prior_failed_replacement_id, applied_at
+      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      overrideParams(input) as BindValue[]
+    );
+  }
+
   // biome-ignore lint/suspicious/useAwait: sync sqlite driver; async satisfies the shared replacement ledger contract.
   async append(receipt: ReplacementReceipt): Promise<ReplacementReceipt> {
     const existing = dbRows(
@@ -366,7 +615,17 @@ class SqliteBrowserSurfaceReplacementReceiptStore implements BrowserSurfaceRepla
     readonly profile_key: string;
     readonly surface_subject_id?: string;
   }): Promise<ReplacementReceipt | null> {
-    return selectSystemActionableForScope(await this.listForScope(input), input.profile_key);
+    return selectSystemActionableForScope(await this.listForScope(input), input.profile_key, sqliteActiveOverrideIds());
+  }
+
+  // biome-ignore lint/suspicious/useAwait: sync sqlite driver; async satisfies the shared replacement ledger contract.
+  async revokeSelectionOverride(replacementId: string, revokedAt: string): Promise<void> {
+    execDynamicSqlAcknowledged(
+      `UPDATE browser_surface_replacement_selection_overrides
+       SET revoked_at = COALESCE(revoked_at, ?)
+       WHERE replacement_id = ?`,
+      [revokedAt, replacementId]
+    );
   }
 }
 
@@ -378,6 +637,26 @@ class PostgresBrowserSurfaceReplacementReceiptStore implements BrowserSurfaceRep
       query ??
       ((sql, values = []) =>
         postgresQuery<ReplacementReceiptRow>(sql, [...values]) as Promise<{ rows: ReplacementReceiptRow[] }>);
+  }
+
+  async applySelectionOverride(input: ReplacementReceiptSelectionOverrideInput): Promise<void> {
+    const existing = await this.#query(
+      "SELECT * FROM browser_surface_replacement_selection_overrides WHERE replacement_id = $1",
+      [input.replacement_id]
+    );
+    const [existingRow] = existing.rows;
+    if (existingRow) {
+      assertOverrideReplay(existingRow as unknown as SelectionOverrideRow, input);
+      return;
+    }
+    assertOverrideTarget(await postgresOverrideTarget((sql, bind) => this.#query(sql, bind), input));
+    await this.#query(
+      `INSERT INTO browser_surface_replacement_selection_overrides(
+        replacement_id, idempotency_key, connection_id, connector_id, profile_key,
+        surface_subject_id, surface_id, observed_at, prior_failed_replacement_id, applied_at
+      ) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      overrideParams(input)
+    );
   }
 
   async append(receipt: ReplacementReceipt): Promise<ReplacementReceipt> {
@@ -518,18 +797,36 @@ class PostgresBrowserSurfaceReplacementReceiptStore implements BrowserSurfaceRep
     readonly profile_key: string;
     readonly surface_subject_id?: string;
   }): Promise<ReplacementReceipt | null> {
-    return selectSystemActionableForScope(await this.listForScope(input), input.profile_key);
+    return selectSystemActionableForScope(
+      await this.listForScope(input),
+      input.profile_key,
+      await postgresActiveOverrideIds((sql, bind) => this.#query(sql, bind))
+    );
+  }
+
+  async revokeSelectionOverride(replacementId: string, revokedAt: string): Promise<void> {
+    await this.#query(
+      `UPDATE browser_surface_replacement_selection_overrides
+       SET revoked_at = COALESCE(revoked_at, $1)
+       WHERE replacement_id = $2`,
+      [revokedAt, replacementId]
+    );
   }
 }
 
 function selectSystemActionableForScope(
   receipts: readonly ReplacementReceipt[],
-  profileKey: string
+  profileKey: string,
+  excludedReplacementIds: ReadonlySet<string>
 ): ReplacementReceipt | null {
   if (new Set(receipts.map((receipt) => receipt.scope)).size > 1) {
     return null;
   }
-  return selectSystemActionableReplacementReceipt(receipts.filter((receipt) => receipt.profile_key === profileKey));
+  return selectSystemActionableReplacementReceipt(
+    receipts.filter(
+      (receipt) => receipt.profile_key === profileKey && !excludedReplacementIds.has(receipt.replacement_id)
+    )
+  );
 }
 
 function assertSameEventIdentity(previous: ReplacementReceipt, incoming: ReplacementReceipt): void {

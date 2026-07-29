@@ -801,6 +801,7 @@ function lifecyclePersistence(initialSurface: BrowserSurfaceWithPersistenceMetad
       receipts.push(receipt);
       return receipt;
     },
+    applySelectionOverride: async () => notImplementedInLifecycleFake("applySelectionOverride"),
     findPendingForScope: async ({ connection_id, surface_subject_id, profile_key }) =>
       receipts
         .filter(
@@ -829,6 +830,7 @@ function lifecyclePersistence(initialSurface: BrowserSurfaceWithPersistenceMetad
       ) ?? null,
     list: async () => receipts.slice(),
     listForScope: async () => notImplementedInLifecycleFake("listForScope"),
+    revokeSelectionOverride: async () => notImplementedInLifecycleFake("revokeSelectionOverride"),
     selectCurrent: async () => notImplementedInLifecycleFake("selectCurrent"),
     selectSystemActionable: ({ connection_id, profile_key, surface_subject_id }) => {
       const scoped = receipts.filter(

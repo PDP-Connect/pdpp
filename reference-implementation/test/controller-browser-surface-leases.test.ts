@@ -15,6 +15,11 @@ import {
   // biome-ignore lint/correctness/noUnresolvedImports: workspace package subpath is available to the test runtime.
 } from "@opendatalabs/remote-surface/leases";
 import {
+  createBrowserSurfaceReplacementLedger,
+  type ReplacementReceipt,
+} from "../runtime/browser-surface/replacement-receipt-ledger.ts";
+import type { BrowserSurfaceReadinessProbe } from "../runtime/browser-surface-readiness.ts";
+import {
   __resetControllerInteractionStateForTests,
   type ConnectorPathResolver,
   createController,
@@ -25,6 +30,8 @@ import type {
   BrowserSurfaceLeaseStore,
   BrowserSurfaceWithPersistenceMetadata,
 } from "../server/stores/browser-surface-lease-store.ts";
+import { createSqliteBrowserSurfaceLeaseStore } from "../server/stores/browser-surface-lease-store.ts";
+import { getDefaultBrowserSurfaceReplacementReceiptStore } from "../server/stores/browser-surface-replacement-ledger-store.ts";
 import type { ActiveRunRecord, SchedulerStore } from "../server/stores/scheduler-store.ts";
 import { makeTemporaryDbPath } from "./helpers/temp-dir.ts";
 
@@ -351,6 +358,7 @@ interface SetupOptions {
   beforeBrowserSurfaceLeaseRelease?: (args: { readonly runId: string }) => Promise<void> | void;
   browserSurfaceAllocator?: BrowserSurfaceAllocator;
   browserSurfaceLeaseStore?: BrowserSurfaceLeaseStore;
+  browserSurfaceReadinessProbe?: BrowserSurfaceReadinessProbe;
   browserSurfaceReadinessTimeoutMs?: number;
   browserSurfaceReclaimRetryAttempts?: number;
   browserSurfaceReclaimRetryDelayMs?: number;
@@ -376,6 +384,7 @@ function setup(
     manager = createManager(),
     browserSurfaceAllocator,
     browserSurfaceLeaseStore,
+    browserSurfaceReadinessProbe,
     browserSurfaceReadinessTimeoutMs,
     browserSurfaceReclaimRetryAttempts,
     browserSurfaceReclaimRetryDelayMs = 0,
@@ -405,6 +414,7 @@ function setup(
     ...(browserSurfaceAllocator ? { browserSurfaceAllocator } : {}),
     browserSurfaceLeaseManager: manager,
     ...(browserSurfaceLeaseStore ? { browserSurfaceLeaseStore } : {}),
+    ...(browserSurfaceReadinessProbe ? { browserSurfaceReadinessProbe } : {}),
     ...(browserSurfaceReadinessTimeoutMs === undefined ? {} : { browserSurfaceReadinessTimeoutMs }),
     ...(beforeBrowserSurfaceLeaseRelease ? { beforeBrowserSurfaceLeaseRelease } : {}),
     ...(browserSurfaceReclaimRetryAttempts === undefined ? {} : { browserSurfaceReclaimRetryAttempts }),
@@ -1888,6 +1898,230 @@ test("sweep DOES reconcile a leased run whose surface the allocator confirms is 
 
   releaseFirst();
   await controller.drainActiveRuns(1000);
+});
+
+test("boot coalesces duplicate ready scope loss while preserving historical failed successors", async (t) => {
+  const historicalProfiles = [
+    { count: 52, profileKey: "managed-profile:acct-a", subjectId: "acct-a" },
+    { count: 38, profileKey: "managed-profile:acct-b", subjectId: "acct-b" },
+  ] as const;
+  const historicalSurfaces: BrowserSurface[] = historicalProfiles.flatMap(({ count, profileKey, subjectId }) =>
+    Array.from({ length: count }, (_, index) => ({
+      backend: "neko" as const,
+      cdp_url: `http://${subjectId}-historical-${index}:9222`,
+      connector_id: "managed",
+      container_id: `${subjectId}-historical-container-${index}`,
+      created_at: "2026-07-29T20:00:00.000Z",
+      health: "unhealthy" as const,
+      last_used_at: "2026-07-29T20:00:00.000Z",
+      profile_key: profileKey,
+      stream_base_url: `http://${subjectId}-historical-${index}:8080`,
+      surface_id: `${subjectId}-historical-${index}`,
+      surface_subject_id: subjectId,
+    }))
+  );
+  const stoppingHistory: BrowserSurface[] = Array.from({ length: 3 }, (_, index) => ({
+    backend: "neko" as const,
+    cdp_url: `http://acct-a-stopping-${index}:9222`,
+    connector_id: "managed",
+    created_at: "2026-07-11T20:00:00.000Z",
+    health: "stopping" as const,
+    last_used_at: "2026-07-29T20:00:00.000Z",
+    profile_key: "managed-profile:acct-a",
+    stream_base_url: `http://acct-a-stopping-${index}:8080`,
+    surface_id: `acct-a-stopping-${index}`,
+    surface_subject_id: "acct-a",
+  }));
+  const liveSurface: BrowserSurface = {
+    backend: "neko",
+    cdp_url: "http://acct-live-current:9222",
+    connector_id: "managed",
+    container_id: "acct-live-current-container",
+    created_at: "2026-07-29T20:00:00.000Z",
+    health: "ready",
+    last_used_at: "2026-07-29T21:00:00.000Z",
+    profile_key: "managed-profile:acct-live",
+    stream_base_url: "http://acct-live-current:8080",
+    surface_id: "acct-live-current",
+    surface_subject_id: "acct-live",
+  };
+  const duplicateReadyLiveSurface: BrowserSurface = {
+    ...liveSurface,
+    cdp_url: "http://acct-live-redundant:9222",
+    container_id: "acct-live-redundant-container",
+    stream_base_url: "http://acct-live-redundant:8080",
+    surface_id: "acct-live-redundant",
+  };
+  const manager = new BrowserSurfaceLeaseManager({
+    config: {
+      defaultPriorityClass: "background",
+      idleTtlMs: 600_000,
+      leaseWaitTimeoutMs: 60_000,
+      managedConnectors: new Set(["managed"]),
+      priorityRanks: DEFAULT_NEKO_PRIORITY_RANKS,
+      surfaceCap: 100,
+      surfaceMode: "dynamic",
+    },
+    initialSurfaces: [...historicalSurfaces, ...stoppingHistory, liveSurface, duplicateReadyLiveSurface],
+    makeLeaseId: () => "live-successor-lease",
+    makeSurfaceId: () => "acct-live-successor",
+    nextFencingToken: () => 1,
+    now: () => new Date("2026-07-29T21:00:00.000Z"),
+  });
+  const leaseStore = createSqliteBrowserSurfaceLeaseStore();
+  let ensureCalls = 0;
+  const allocatorSurfaces = new Map<string, BrowserSurface>();
+  const allocator: BrowserSurfaceAllocator = {
+    ensureSurface: (request) => {
+      ensureCalls += 1;
+      const successor: BrowserSurface = {
+        ...liveSurface,
+        cdp_url: "http://acct-live-successor:9222",
+        container_id: "acct-live-successor-container",
+        health: "ready",
+        last_used_at: "2026-07-29T21:01:00.000Z",
+        stream_base_url: "http://acct-live-successor:8080",
+        surface_id: request.surfaceId,
+      };
+      allocatorSurfaces.set(successor.surface_id, successor);
+      return Promise.resolve(successor);
+    },
+    getSurfaceStatus: async (surfaceId) => allocatorSurfaces.get(surfaceId) ?? null,
+    listSurfaces: async () => [...allocatorSurfaces.values()],
+    stopSurface: async () => null,
+  };
+  const { controller } = setup(t, {
+    browserSurfaceAllocator: allocator,
+    browserSurfaceLeaseStore: leaseStore,
+    browserSurfaceReadinessProbe: {
+      probe: async () => ({ browserGenerationHash: "a".repeat(64), ok: true as const, pageTargetCount: 1 }),
+    },
+    manager,
+    runConnectorImpl: async () => ({ checkpoint_summary: null, records_emitted: 0, state: null, status: "succeeded" }),
+  });
+  await Promise.all(
+    [...historicalSurfaces, ...stoppingHistory, liveSurface, duplicateReadyLiveSurface].map((surface) =>
+      leaseStore.upsertSurface(surface)
+    )
+  );
+  const receiptStore = getDefaultBrowserSurfaceReplacementReceiptStore();
+  const historyLedger = createBrowserSurfaceReplacementLedger({ now: () => "2026-07-29T20:30:00.000Z" });
+  const failedHistory: ReplacementReceipt[] = [];
+  for (const { profileKey, subjectId } of historicalProfiles) {
+    const started = historyLedger.start({
+      cause: "external_or_host_loss",
+      connection_id: subjectId,
+      connector_id: "managed",
+      idempotency_key: `prior-failed:${subjectId}`,
+      profile_key: profileKey,
+      surface_id: `${subjectId}-prior-failed`,
+      surface_subject_id: subjectId,
+    });
+    failedHistory.push(
+      started,
+      historyLedger.terminate({
+        cause: started.cause,
+        connection_id: started.connection_id,
+        outcome: "failed",
+        profile_key: started.profile_key,
+        replacement_id: started.replacement_id,
+        ...(started.surface_id ? { surface_id: started.surface_id } : {}),
+        ...(started.surface_subject_id ? { surface_subject_id: started.surface_subject_id } : {}),
+      })
+    );
+  }
+  await Promise.all(failedHistory.map((receipt) => receiptStore.append(receipt)));
+
+  await controller.reconcileBrowserSurfaceLeasesAfterBoot();
+
+  const afterBoot = await receiptStore.list();
+  assert.equal(
+    afterBoot.filter(
+      (receipt) =>
+        receipt.phase === "started" &&
+        receipt.connection_id === "acct-live" &&
+        receipt.profile_key === "managed-profile:acct-live" &&
+        receipt.surface_subject_id === "acct-live"
+    ).length,
+    1,
+    "duplicate ready rows in one scope create one replacement boundary"
+  );
+  assert.equal(
+    afterBoot.find(
+      (receipt) =>
+        receipt.phase === "started" &&
+        receipt.connection_id === "acct-live" &&
+        receipt.profile_key === "managed-profile:acct-live"
+    )?.surface_id,
+    liveSurface.surface_id,
+    "the lexical surface id deterministically represents the coalesced boundary"
+  );
+  assert.equal(
+    afterBoot.filter((receipt) => receipt.phase === "started" && receipt.surface_id?.includes("historical")).length,
+    0,
+    "historical unhealthy rows cannot create pending successor boundaries"
+  );
+  assert.equal(
+    afterBoot.filter((receipt) => receipt.phase === "started" && receipt.surface_id?.includes("stopping")).length,
+    0,
+    "historical stopping rows cannot create pending successor boundaries"
+  );
+  assert.deepEqual(
+    await Promise.all(
+      historicalProfiles.map(
+        async ({ profileKey, subjectId }) =>
+          (
+            await receiptStore.selectSystemActionable({
+              connection_id: subjectId,
+              profile_key: profileKey,
+              surface_subject_id: subjectId,
+            })
+          )?.terminal_outcome
+      )
+    ),
+    ["failed", "failed"],
+    "historical reconciliation must not mask the prior failed successors"
+  );
+  assert.ok(
+    (
+      await Promise.all(
+        [...historicalSurfaces, ...stoppingHistory, liveSurface, duplicateReadyLiveSurface].map(
+          async (surface) => (await leaseStore.getSurface(surface.surface_id))?.health
+        )
+      )
+    ).every((health) => health === "unhealthy"),
+    "historical rows remain durably unhealthy after reconciliation"
+  );
+
+  await controller.reconcileBrowserSurfaceLeasesAfterBoot();
+  assert.equal(
+    (await receiptStore.list()).filter(
+      (receipt) =>
+        receipt.phase === "started" &&
+        receipt.connection_id === "acct-live" &&
+        receipt.profile_key === "managed-profile:acct-live"
+    ).length,
+    1,
+    "a second boot reconciliation cannot duplicate the live loss boundary"
+  );
+
+  const result = await controller.runNow("managed", {
+    connectorInstanceId: "acct-live",
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_live_successor",
+  });
+  await controller.drainActiveRuns(1000);
+  assert.equal(result.status, "started");
+  assert.equal(ensureCalls, 1, "the live loss receives exactly one successor ensure attempt");
+  const liveReceipts = (await receiptStore.list()).filter(
+    (receipt) => receipt.connection_id === "acct-live" && receipt.profile_key === "managed-profile:acct-live"
+  );
+  assert.deepEqual(
+    liveReceipts.filter((receipt) => receipt.cause === "external_or_host_loss").map((receipt) => receipt.phase),
+    ["started", "completed"],
+    "the one coalesced live loss resolves only when its same-profile successor proves readiness"
+  );
 });
 
 test("overlapping sweep calls: the second is a no-op while the first is in flight", async (t) => {

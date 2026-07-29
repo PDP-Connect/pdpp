@@ -9,6 +9,29 @@ An observed external loss is a replacement boundary, not proof that replacement 
 - readiness observes a successor browser generation in the same connection, surface-subject, and profile-key scope; or
 - the allocator reports that an actual scoped successor ensure attempt failed.
 
+Boot and periodic reconciliation still evict every allocator-dead surface so
+historical capacity cannot be reused. They create a new external-loss receipt
+only when the evicted projection was `ready` immediately before reconciliation.
+Already `unhealthy` or `stopping` rows are historical evidence, not a fresh
+loss observation; re-emitting a pending successor for them would mask an older
+failed successor in the same connection/profile scope.
+
+When more than one allocator-absent `ready` row shares that scope,
+reconciliation records one boundary only. It elects the lexical first surface
+ID as the stable receipt subject, then persists every evicted row unhealthy.
+The receipt represents the scoped external observation rather than a count of
+stale projections.
+
+The 2026-07-29 boot wrote false starts before this rule existed. Their receipt
+fields do not retain the pre-eviction health, so neither a timestamp nor a
+connector filter proves a false loss. The read path therefore supports an
+explicit, reversible selection override only after a reviewed correction names
+the full immutable receipt fingerprint and the earlier failed external-loss
+receipt in the same scope. It preserves every append-only receipt, excludes
+only the named active start from system-actionable selection, and records a
+revocation timestamp to restore ordinary selection. No automatic time-window
+or connector-wide correction is permitted.
+
 A terminal successor receipt is not a current browser generation; it is separate system-actionable runtime evidence. It degrades continuity and remains available through idle scale-to-zero, but it does not mint or repeat a browser-session owner repair. Only provider invalidation proof remains repair authority.
 
 The reference copies the allocator's stable profile bind path into `browser_surfaces.profile_dir`. It does not create a second cookie/token store or browser hibernation mechanism.
@@ -27,3 +50,8 @@ The profile key and persisted path/volume form one compatibility boundary: healt
 2. A scoped successor ensure failure terminalizes that same receipt.
 3. A terminal receipt remains a degraded runtime condition with no owner repair authority.
 4. A persisted dynamic surface includes the allocator profile bind path.
+5. Duplicate ready rows in one scope emit one deterministic boundary and one
+   same-profile successor completion on SQLite and PostgreSQL.
+6. An exact reviewed selector override restores an older failed external-loss
+   receipt; an unmatched fingerprint and analogous connector history remain
+   unchanged, and revocation restores the original selector result.
