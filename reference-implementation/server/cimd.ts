@@ -123,6 +123,8 @@ const TRANSPORT_ERROR_TLS_PATTERN = /\b(cert|tls)\b/i;
 const TRANSPORT_ERROR_URL_PATTERN = /[a-z][a-z\d+.-]*:\/\/[^\s"']+/gi;
 const TRANSPORT_ERROR_SECRET_PATTERN =
   /\b(authorization|proxy-authorization|api[_-]?key|cookie|password|passwd|secret|token)\s*([=:])\s*(?:[a-z]+\s+)?[^,;\s]+/gi;
+const TRANSPORT_ERROR_JSON_SECRET_PATTERN =
+  /"(access_token|refresh_token|id_token|client_secret|authorization|proxy-authorization|api[_-]?key|cookie|password|passwd|secret|token)"\s*:\s*"(?:\\.|[^"\\])*"/gi;
 const TRANSPORT_ERROR_IPV4_PATTERN = /\b(?:\d{1,3}\.){3}\d{1,3}\b/g;
 const TRANSPORT_ERROR_IPV6_PATTERN = /\b(?:[\da-f]{0,4}:){2,}[\da-f:]+\b/gi;
 const CORRELATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
@@ -266,6 +268,7 @@ function sanitizeTransportMessage(value: unknown): string {
   const text = typeof value === "string" ? value : "";
   const sanitized = text
     .replace(TRANSPORT_ERROR_URL_PATTERN, "<url>")
+    .replace(TRANSPORT_ERROR_JSON_SECRET_PATTERN, (_match, field: string) => `"${field}":"<redacted>"`)
     .replace(
       TRANSPORT_ERROR_SECRET_PATTERN,
       (_match, field: string, separator: string) => `${field}${separator}<redacted>`

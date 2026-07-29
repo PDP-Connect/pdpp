@@ -34,6 +34,9 @@ const TOP_LEVEL_REGEX_14 = /CIMD fetch failed/;
 const TRANSPORT_IP_REDACTED_REGEX = /<ip>/;
 const TRANSPORT_TCP_SECRET_REGEX = /bearer-marker|super-secret|203\.0\.113\.9/;
 const TRANSPORT_DNS_SECRET_REGEX = /top-secret|198\.51\.100\.20|client-dns\.json\?token/;
+const TRANSPORT_JSON_SECRET_REGEX =
+  /gate-json-token|refresh-json-token|id-json-token|client-json-token|authorization-json-token|escaped-json-token/;
+const TRANSPORT_JSON_REDACTED_REGEX = /"access_token":"<redacted>"/;
 const TRANSPORT_URL_REDACTED_REGEX = /<url>/;
 const TRANSPORT_TRACE_MARKER_REGEX = /trace-marker/;
 
@@ -292,6 +295,32 @@ test("fetchCimdDocument logs one bounded TCP refusal event without changing its 
   assert.equal(event.cause?.code, "ECONNREFUSED");
   assert.match(event.cause?.message || "", TRANSPORT_IP_REDACTED_REGEX);
   assert.doesNotMatch(JSON.stringify(event), TRANSPORT_TCP_SECRET_REGEX);
+});
+
+test("fetchCimdDocument redacts quoted JSON credential values in transport events", async () => {
+  const captured = captureTransportFailures();
+  const cause = Object.assign(
+    new Error(
+      String.raw`upstream credentials {"access_token":"gate-json-token", "refresh_token" : "refresh-json-token", "id_token":"id-json-token", "client_secret":"client-json-token", "authorization":"Bearer authorization-json-token", "token":"escaped\\\"json-token"}`
+    ),
+    { code: "ECONNREFUSED" }
+  );
+  const failure = transportFailure("fetch failed", "UND_ERR_CONNECT", cause);
+
+  await assert.rejects(
+    () =>
+      fetchCimd("https://client.example/oauth/client-json-secret.json", {
+        dnsLookupImpl: publicDns,
+        fetchImpl: async () => Promise.reject(failure),
+        onTransportFailure: captured.onTransportFailure,
+      }),
+    (error: Error & { code?: string }) => error.code === "cimd_fetch_failed"
+  );
+
+  assert.equal(captured.events.length, 1);
+  const serialized = JSON.stringify(captured.events[0]);
+  assert.doesNotMatch(serialized, TRANSPORT_JSON_SECRET_REGEX);
+  assert.match(captured.events[0]?.cause?.message || "", TRANSPORT_JSON_REDACTED_REGEX);
 });
 
 test("fetchCimdDocument drops oversized and adversarial correlation identifiers", async () => {

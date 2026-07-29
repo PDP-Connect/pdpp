@@ -3962,11 +3962,14 @@ export function buildAsApp(opts: ServerOpts = {}) {
       typeof mountAsAuthorize
     >[1]["createHostedMcpGrantPackage"],
     ensureCsrfToken: ownerAuth.ensureCsrfToken as unknown as Parameters<typeof mountAsAuthorize>[1]["ensureCsrfToken"],
-    getRegisteredClient: ((clientId: string) =>
+    ensureRequestId: ensureRequestId as unknown as Parameters<typeof mountAsAuthorize>[1]["ensureRequestId"],
+    getRegisteredClient: ((clientId: string, correlation: { requestId: string | null; traceId: string | null }) =>
       resolveOAuthClient(clientId, {
         ...(explicitAsBaseUrl ? { baseUrl: explicitAsBaseUrl } : {}),
         ...(opts.cimdFetchDependencies ? { cimdFetchDependencies: opts.cimdFetchDependencies } : {}),
         onCimdTransportFailure,
+        requestId: correlation.requestId,
+        traceId: correlation.traceId,
       })) as unknown as Parameters<typeof mountAsAuthorize>[1]["getRegisteredClient"],
     ignoreAmbientPublicUrls: !!opts.ignoreAmbientPublicUrls,
     issueOAuthAuthorizationCodeForPackageDeviceCode:
