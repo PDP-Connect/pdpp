@@ -6,6 +6,7 @@ import test from "node:test";
 import tls from "node:tls";
 
 import {
+  CIMD_FETCH_MAX_ATTEMPTS,
   CIMD_MAX_BODY_BYTES,
   type FetchCimdOptions,
   type FetchCimdResult,
@@ -197,6 +198,107 @@ test("fetchCimdDocument validates and caches a public-client metadata document",
   assert.equal(first.securityHash, second.securityHash);
 });
 
+test("fetchCimdDocument retries one transient transport failure and succeeds", async () => {
+  const clientId = "https://client.example/oauth/client-transient.json";
+  let fetchCount = 0;
+  const result = await fetchCimd(clientId, {
+    dnsLookupImpl: publicDns,
+    fetchImpl: () => {
+      fetchCount += 1;
+      if (fetchCount === 1) {
+        throw new Error("socket closed before response");
+      }
+      return Promise.resolve(
+        jsonResponse({
+          client_id: clientId,
+          redirect_uris: ["https://client.example/callback"],
+          token_endpoint_auth_method: "none",
+        })
+      );
+    },
+  });
+
+  assert.equal(CIMD_FETCH_MAX_ATTEMPTS, 2);
+  assert.equal(fetchCount, 2);
+  assert.equal(result.fromCache, false);
+  assert.equal(result.doc.client_id, clientId);
+});
+
+test("fetchCimdDocument bounds retryable transport failures to two attempts", async () => {
+  const clientId = "https://client.example/oauth/client-always-transient.json";
+  let fetchCount = 0;
+  await assert.rejects(
+    () =>
+      fetchCimd(clientId, {
+        dnsLookupImpl: publicDns,
+        fetchImpl: () => {
+          fetchCount += 1;
+          throw new Error("temporary upstream connection failure");
+        },
+      }),
+    TOP_LEVEL_REGEX_14
+  );
+  assert.equal(fetchCount, CIMD_FETCH_MAX_ATTEMPTS);
+});
+
+test("fetchCimdDocument never retries validation, SSRF, HTTP, body, redirect, or metadata failures", async () => {
+  const validClientId = "https://client.example/oauth/client-no-retry.json";
+  const cases: Array<{
+    clientId: string;
+    dnsLookupImpl?: FetchCimdOptions["dnsLookupImpl"];
+    fetchImpl: NonNullable<FetchCimdOptions["fetchImpl"]>;
+    name: string;
+  }> = [
+    {
+      clientId: "http://client.example/oauth/client.json",
+      fetchImpl: async () => jsonResponse({}),
+      name: "client_id validation",
+    },
+    {
+      clientId: validClientId,
+      dnsLookupImpl: async () => [{ address: "127.0.0.1" }],
+      fetchImpl: async () => jsonResponse({}),
+      name: "SSRF rejection",
+    },
+    {
+      clientId: validClientId,
+      fetchImpl: async () => new Response(null, { status: 503 }),
+      name: "non-200 response",
+    },
+    {
+      clientId: validClientId,
+      fetchImpl: async () => new Response(null, { status: 302 }),
+      name: "redirect response",
+    },
+    {
+      clientId: validClientId,
+      fetchImpl: async () => new Response(" ".repeat(CIMD_MAX_BODY_BYTES + 1), { status: 200 }),
+      name: "oversized response",
+    },
+    {
+      clientId: validClientId,
+      fetchImpl: async () => new Response("{not json", { status: 200 }),
+      name: "malformed metadata",
+    },
+  ];
+
+  await Promise.all(
+    cases.map(async ({ clientId, dnsLookupImpl = publicDns, fetchImpl, name }) => {
+      let fetchCount = 0;
+      await assert.rejects(() =>
+        fetchCimd(clientId, {
+          dnsLookupImpl,
+          fetchImpl: (...args) => {
+            fetchCount += 1;
+            return fetchImpl(...args);
+          },
+        })
+      );
+      assert.equal(fetchCount, name === "client_id validation" || name === "SSRF rejection" ? 0 : 1, name);
+    })
+  );
+});
+
 test("fetchCimdDocument blocks forbidden DNS resolutions before issuing HTTP", async () => {
   let called = false;
   await assert.rejects(
@@ -372,22 +474,22 @@ test("send-time address binding: fetchCimdDocument connects to the validated add
         }),
       TOP_LEVEL_REGEX_14
     );
-    assert.equal(dialedHosts.length, 1, "tls.connect must be attempted exactly once");
-    const [dialed] = dialedHosts;
-    assert.ok(dialed, "tls.connect was spied on at least once");
-    assert.equal(
-      dialed.host,
-      "127.0.0.1",
-      "tls.connect must be called with the validated IP literal, never the original hostname " +
-        '(a re-resolving implementation would dial "rebind-proof.invalid" and fail before ever ' +
-        "reaching tls.connect, since that hostname cannot resolve — or worse, would resolve to " +
-        "whatever a rebinding attacker returns)"
-    );
-    assert.equal(
-      dialed.servername,
-      "rebind-proof.invalid",
-      "TLS SNI/certificate hostname verification must still use the original hostname, even though the socket dials the pinned IP"
-    );
+    assert.equal(dialedHosts.length, CIMD_FETCH_MAX_ATTEMPTS, "each transport attempt must use the pinned address");
+    for (const dialed of dialedHosts) {
+      assert.equal(
+        dialed.host,
+        "127.0.0.1",
+        "tls.connect must be called with the validated IP literal, never the original hostname " +
+          '(a re-resolving implementation would dial "rebind-proof.invalid" and fail before ever ' +
+          "reaching tls.connect, since that hostname cannot resolve — or worse, would resolve to " +
+          "whatever a rebinding attacker returns)"
+      );
+      assert.equal(
+        dialed.servername,
+        "rebind-proof.invalid",
+        "TLS SNI/certificate hostname verification must still use the original hostname, even though the socket dials the pinned IP"
+      );
+    }
   } finally {
     tls.connect = originalTlsConnect;
   }

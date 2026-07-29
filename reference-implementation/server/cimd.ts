@@ -31,6 +31,7 @@ import {
 export { isForbiddenIp, isGlobalUnicastAddress };
 
 export const CIMD_FETCH_TIMEOUT_MS = 5000;
+export const CIMD_FETCH_MAX_ATTEMPTS = 2;
 export const CIMD_MAX_BODY_BYTES = 5 * 1024; // CIMD-01 recommended maximum.
 const CIMD_CACHE_MIN_TTL_MS = 60_000; // 60 s
 const CIMD_CACHE_MAX_TTL_MS = 24 * 60 * 60 * 1000; // 24 h
@@ -80,11 +81,13 @@ export interface FetchCimdResult {
 class CimdError extends Error {
   readonly code: CimdErrorCode;
   readonly hostname: string | undefined;
+  readonly retryable: boolean;
 
-  constructor(code: CimdErrorCode, message: string, hostname?: string) {
-    super(message);
+  constructor(code: CimdErrorCode, message: string, hostname?: string, retryable = false, cause?: unknown) {
+    super(message, cause === undefined ? undefined : { cause });
     this.code = code;
     this.hostname = hostname;
+    this.retryable = retryable;
   }
 }
 
@@ -226,6 +229,103 @@ function cimdFetchFailure(clientId: string, message: string): CimdError {
   return new CimdError("cimd_fetch_failed", message, hostname);
 }
 
+async function fetchCimdResponseAttempt(
+  clientId: string,
+  {
+    dnsLookupImpl,
+    fetchImpl,
+    isGlobalUnicastAddressImpl,
+    timeoutMs,
+  }: Required<Pick<FetchCimdOptions, "dnsLookupImpl" | "fetchImpl" | "isGlobalUnicastAddressImpl" | "timeoutMs">>
+): Promise<CimdResponse> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  let dispatcher: ReturnType<typeof createPinnedDispatcher> | null = null;
+
+  try {
+    const url = new URL(clientId);
+    // DNS is re-resolved for every attempt and every answer is checked before
+    // use. A transient resolver failure may retry once; a missing, oversized,
+    // or non-public answer remains a fail-closed security failure.
+    const resolved = await resolveAllowedAddresses(url.hostname, { dnsLookupImpl, isGlobalUnicastAddressImpl });
+    if (!resolved.ok) {
+      let message: string;
+      switch (resolved.kind) {
+        case "dns_failed":
+          message = `CIMD fetch failed: DNS resolution failed for ${url.hostname}`;
+          break;
+        case "no_addresses":
+          message = `CIMD fetch failed: DNS resolution returned no addresses for ${url.hostname}`;
+          break;
+        case "too_many_addresses":
+          message = `CIMD fetch blocked: ${url.hostname} resolved to ${resolved.count} addresses, exceeding the bound of ${resolved.max}`;
+          break;
+        case "forbidden_address":
+          message = `CIMD fetch blocked: ${url.hostname} resolves to private/loopback address ${resolved.address}`;
+          break;
+      }
+      throw new CimdError("cimd_fetch_failed", message, url.hostname, resolved.kind === "dns_failed");
+    }
+
+    // Send-time address binding: pin the connection to the exact address(es)
+    // just validated, so `fetchImpl` cannot independently re-resolve the
+    // hostname and race the check above (DNS rebinding). See ssrf-guard.ts.
+    // A test-injected `fetchImpl` stub that returns a canned Response simply
+    // ignores this option, same as it already ignores `signal`/`redirect`.
+    dispatcher = createPinnedDispatcher(resolved.addresses);
+
+    return await fetchImpl(clientId, {
+      dispatcher,
+      headers: { Accept: "application/json" },
+      redirect: "manual", // CIMD §6.6: do not follow redirects
+      signal: controller.signal,
+    });
+  } catch (err: unknown) {
+    if (err instanceof CimdError) {
+      throw err;
+    }
+    const detail = err instanceof Error ? err.message : String(err);
+    const hostname = (() => {
+      try {
+        return new URL(clientId).hostname;
+      } catch {
+        return clientId;
+      }
+    })();
+    // A locally enforced timeout is a terminal failure: it consumes the
+    // caller's complete 5-second fetch budget and is not retried.
+    // biome-ignore lint/style/useErrorCause: CimdError forwards the original transport error through Error.cause while preserving its established OAuth error surface.
+    throw new CimdError(
+      "cimd_fetch_failed",
+      `CIMD fetch failed for ${clientId}: ${detail}`,
+      hostname,
+      !controller.signal.aborted,
+      err
+    );
+  } finally {
+    clearTimeout(timeoutId);
+    // Fire-and-forget: pool teardown is not a fetch outcome.
+    dispatcher?.close().catch(() => {
+      // Pool teardown errors are not fetch failures; nothing to do.
+    });
+  }
+}
+
+async function fetchCimdResponseWithRetry(
+  clientId: string,
+  options: Required<Pick<FetchCimdOptions, "dnsLookupImpl" | "fetchImpl" | "isGlobalUnicastAddressImpl" | "timeoutMs">>,
+  attempt = 1
+): Promise<CimdResponse> {
+  try {
+    return await fetchCimdResponseAttempt(clientId, options);
+  } catch (err: unknown) {
+    if (!(err instanceof CimdError && err.retryable) || attempt === CIMD_FETCH_MAX_ATTEMPTS) {
+      throw err;
+    }
+    return fetchCimdResponseWithRetry(clientId, options, attempt + 1);
+  }
+}
+
 /**
  * Resolve a CIMD document from cache or via network fetch.
  * For same-origin client_ids (PDPP-hosted), callers should use
@@ -258,76 +358,16 @@ export async function fetchCimdDocument(
   }
   const previousCached = cached || null;
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
-  let response: CimdResponse;
-  let dispatcher: ReturnType<typeof createPinnedDispatcher> | null = null;
-  try {
-    // Validate URL and check IP before fetching
-    validateCimdUrl(clientId);
-    const url = new URL(clientId);
-    // DNS lookup + global-unicast allow-list check, so a resolved address is
-    // required before any HTTP request is issued (SSRF guard). Bounded to a
-    // small maximum number of resolved addresses (see MAX_VALIDATED_ADDRESSES
-    // in ssrf-guard.ts) so an attacker-controlled DNS answer cannot force
-    // unbounded connection work; the answer is rejected in full (fail closed)
-    // rather than silently truncated when it exceeds the bound.
-    const resolved = await resolveAllowedAddresses(url.hostname, { dnsLookupImpl, isGlobalUnicastAddressImpl });
-    if (!resolved.ok) {
-      let message: string;
-      switch (resolved.kind) {
-        case "dns_failed":
-          message = `CIMD fetch failed: DNS resolution failed for ${url.hostname}`;
-          break;
-        case "no_addresses":
-          message = `CIMD fetch failed: DNS resolution returned no addresses for ${url.hostname}`;
-          break;
-        case "too_many_addresses":
-          message = `CIMD fetch blocked: ${url.hostname} resolved to ${resolved.count} addresses, exceeding the bound of ${resolved.max}`;
-          break;
-        case "forbidden_address":
-          message = `CIMD fetch blocked: ${url.hostname} resolves to private/loopback address ${resolved.address}`;
-          break;
-      }
-      throw new CimdError("cimd_fetch_failed", message, url.hostname);
-    }
-
-    // Send-time address binding: pin the connection to the exact address(es)
-    // just validated, so `fetchImpl` cannot independently re-resolve the
-    // hostname and race the check above (DNS rebinding). See ssrf-guard.ts.
-    // A test-injected `fetchImpl` stub that returns a canned Response simply
-    // ignores this option, same as it already ignores `signal`/`redirect`.
-    dispatcher = createPinnedDispatcher(resolved.addresses);
-
-    response = await fetchImpl(clientId, {
-      dispatcher,
-      headers: { Accept: "application/json" },
-      redirect: "manual", // CIMD §6.6: do not follow redirects
-      signal: controller.signal,
-    });
-  } catch (err: unknown) {
-    clearTimeout(timeoutId);
-    if (err instanceof CimdError) {
-      throw err;
-    }
-    const detail = err instanceof Error ? err.message : String(err);
-    const hostname = (() => {
-      try {
-        return new URL(clientId).hostname;
-      } catch {
-        return clientId;
-      }
-    })();
-    // biome-ignore lint/style/useErrorCause: This compatibility path preserves the established error shape and propagation.
-    throw new CimdError("cimd_fetch_failed", `CIMD fetch failed for ${clientId}: ${detail}`, hostname);
-  } finally {
-    clearTimeout(timeoutId);
-    // Fire-and-forget: pool teardown is not a fetch outcome.
-    dispatcher?.close().catch(() => {
-      // Pool teardown errors are not fetch failures; nothing to do.
-    });
-  }
+  // URL validation is not a transport concern and is deliberately outside
+  // the retry loop. Each retry independently re-applies DNS/SSRF validation
+  // and pinned-address dispatch before the sole extra HTTP attempt.
+  validateCimdUrl(clientId);
+  const response = await fetchCimdResponseWithRetry(clientId, {
+    dnsLookupImpl,
+    fetchImpl,
+    isGlobalUnicastAddressImpl,
+    timeoutMs,
+  });
 
   if (response.status >= 300 && response.status < 400) {
     throw cimdFetchFailure(clientId, `CIMD fetch rejected redirect for ${clientId}`);
