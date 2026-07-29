@@ -131,12 +131,16 @@ test("buildPeekRelationships scopes its summary lookup to the inspected connecti
       stream: "messages",
     },
     {
-      getStreamMetadata: (_connectorId, stream, options) => {
+      getStreamMetadata: (
+        _connectorId: string,
+        stream: string,
+        options?: { connectorInstanceId?: string | null }
+      ) => {
         metadataInstanceIds.push(options?.connectorInstanceId);
         return Promise.resolve({ name: stream } as StreamMetadata);
       },
       listConnectorManifests: () => Promise.resolve([]),
-      listConnectorSummaries: (options) => {
+      listConnectorSummaries: (options?: { connectionRouteId?: string }) => {
         calls.push(options);
         assert.deepEqual(options, { connectionRouteId: "conn_mail_work" });
         const scoped = allGmailConnections.filter((summary) => summary.connection_id === options?.connectionRouteId);
