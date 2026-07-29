@@ -51,6 +51,93 @@ type DetailGapStoreForTest = ReturnType<typeof createSqliteConnectorDetailGapSto
 // never invents fields the real store does not have.
 type DetailGapForTest = NonNullable<Awaited<ReturnType<DetailGapStoreForTest["upsertPendingGap"]>>>;
 
+test(
+  "detail-gap page batches preserve exact-instance facts, short-circuit empties, and chunk SQLite membership reads",
+  withTempDb(async () => {
+    const store = createSqliteConnectorDetailGapStore();
+    const connectorId = "batch_connector";
+    const first = "cin_batch_first";
+    const second = "cin_batch_second";
+    const now = "2026-07-29T12:00:00.000Z";
+    await store.upsertPendingGap({ connectorId, connectorInstanceId: first, gapId: "gap_first", now, reason: "rate_limited", stream: "files" });
+    await store.upsertPendingGap({ connectorId, connectorInstanceId: second, gapId: "gap_second", now, reason: "other", stream: "messages" });
+    await store.markGapStatus("gap_first", "recovered", { now });
+    await store.upsertPendingGap({ connectorId, connectorInstanceId: first, gapId: "gap_pending", now, reason: "rate_limited", stream: "files" });
+    await store.markGapStatus("gap_second", "terminal", { now });
+
+    const db = getDb();
+    const originalPrepare = db.prepare.bind(db);
+    let membershipStatements = 0;
+    let maximumMembershipPlaceholders = 0;
+    // The empty scope is a hard no-SQL contract, not merely an empty result.
+    db.prepare = ((sql: string) => {
+      if (sql.includes("connector_instance_id IN")) {
+        membershipStatements += 1;
+        maximumMembershipPlaceholders = Math.max(maximumMembershipPlaceholders, (sql.match(/\?/g) ?? []).length);
+      }
+      return originalPrepare(sql);
+    }) as typeof db.prepare;
+    try {
+      assert.deepEqual(await store.listPendingGapsByConnectorInstanceIds([], { now }), new Map());
+      assert.deepEqual(await store.countGapsByStatusForConnectorInstanceIds([], { status: "terminal" }), new Map());
+      assert.equal(membershipStatements, 0);
+
+      const pending = await store.listPendingGapsByConnectorInstanceIds([first, second], { now });
+      assert.deepEqual(pending.get(first)?.map((gap) => gap.gap_id), ["gap_pending"]);
+      assert.deepEqual(pending.get(second), undefined);
+      assert.deepEqual(
+        await store.countGapsByStatusForConnectorInstanceIds([first, second], { reasons: ["rate_limited"], status: "recovered" }),
+        new Map([[first, 1]])
+      );
+      assert.deepEqual(
+        await store.countGapsByStatusByStreamForConnectorInstanceIds([first, second], { status: "terminal" }),
+        new Map([[second, new Map([["messages", 1]])]])
+      );
+      assert.deepEqual(
+        await store.countGapsByStatusForConnectorInstanceIds(
+          [first],
+          { reasons: ["rate_limited", ...Array.from({ length: 100 }, (_, index) => `other_${index}`)], status: "recovered" }
+        ),
+        new Map([[first, 1]])
+      );
+      assert.ok(maximumMembershipPlaceholders <= 999, "SQLite aggregate chunks reason filters below the historical bind floor");
+
+      membershipStatements = 0;
+      await store.listPendingGapsByConnectorInstanceIds([first], { now });
+      const oneConnectionStatements = membershipStatements;
+      membershipStatements = 0;
+      await store.listPendingGapsByConnectorInstanceIds(
+        Array.from({ length: 100 }, (_, index) => `cin_batch_page_${index}`),
+        { now }
+      );
+      assert.equal(membershipStatements, oneConnectionStatements, "a fixed 100-id page has constant pending-gap SQL");
+
+      const pageIds = Array.from({ length: 100 }, (_, index) => `cin_batch_page_${index}`);
+      membershipStatements = 0;
+      await store.countGapsByStatusForConnectorInstanceIds([first], { status: "terminal" });
+      const oneCountStatements = membershipStatements;
+      membershipStatements = 0;
+      await store.countGapsByStatusForConnectorInstanceIds(pageIds, { status: "terminal" });
+      assert.equal(membershipStatements, oneCountStatements, "a fixed 100-id page has constant gap-count SQL");
+      membershipStatements = 0;
+      await store.countGapsByStatusByStreamForConnectorInstanceIds([first], { status: "terminal" });
+      const oneStreamCountStatements = membershipStatements;
+      membershipStatements = 0;
+      await store.countGapsByStatusByStreamForConnectorInstanceIds(pageIds, { status: "terminal" });
+      assert.equal(membershipStatements, oneStreamCountStatements, "a fixed 100-id page has constant stream-count SQL");
+
+      membershipStatements = 0;
+      await store.listPendingGapsByConnectorInstanceIds(
+        Array.from({ length: 901 }, (_, index) => `cin_batch_chunk_${index}`),
+        { now }
+      );
+      assert.equal(membershipStatements, 2, "SQLite batches stay below the bind limit and chunk only at the boundary");
+    } finally {
+      db.prepare = originalPrepare as typeof db.prepare;
+    }
+  })
+);
+
 async function forcePendingForTest(store: DetailGapStoreForTest, gapIds: readonly string[]): Promise<void> {
   for (const gapId of gapIds) {
     // biome-ignore lint/performance/noAwaitInLoops: ordered setup is intentionally sequential because each iteration advances shared test state.
@@ -188,6 +275,7 @@ rl.on('line', (line) => {
   rl.close();
   process.stdout.write('', () => process.exit(${JSON.stringify(exitCode)}));
 });
+
 `,
     "utf8"
   );
@@ -2987,6 +3075,33 @@ test(
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 
 if (POSTGRES_URL) {
+  test("detail-gap page batch preserves exact-instance pending and aggregate facts on Postgres", async () => {
+    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const connectorId = `gap_pg_batch_${suffix}`;
+    const first = `cin_gap_pg_first_${suffix}`;
+    const second = `cin_gap_pg_second_${suffix}`;
+    const now = "2026-07-29T12:00:00.000Z";
+    initDb(":memory:");
+    await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
+    try {
+      const store = createPostgresConnectorDetailGapStore();
+      await store.upsertPendingGap({ connectorId, connectorInstanceId: first, gapId: `gap_pg_pending_${suffix}`, now, reason: "rate_limited", stream: "files" });
+      await store.upsertPendingGap({ connectorId, connectorInstanceId: second, gapId: `gap_pg_terminal_${suffix}`, now, reason: "other", stream: "messages" });
+      await store.markGapStatus(`gap_pg_terminal_${suffix}`, "terminal", { now });
+      const pending = await store.listPendingGapsByConnectorInstanceIds([first, second], { now });
+      assert.deepEqual(pending.get(first)?.map((gap) => gap.gap_id), [`gap_pg_pending_${suffix}`]);
+      assert.equal(pending.get(second), undefined);
+      assert.deepEqual(
+        await store.countGapsByStatusByStreamForConnectorInstanceIds([first, second], { status: "terminal" }),
+        new Map([[second, new Map([["messages", 1]])]])
+      );
+    } finally {
+      await postgresQuery("DELETE FROM connector_detail_gaps WHERE connector_instance_id = ANY($1::text[])", [[first, second]]);
+      await closePostgresStorage();
+      closeDb();
+    }
+  });
+
   test("countGapsByStatusForConnector returns an exact reason-scoped recovered count (Postgres)", async () => {
     const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
     const connectorId = `chatgpt_pg_recovered_${suffix}`;
