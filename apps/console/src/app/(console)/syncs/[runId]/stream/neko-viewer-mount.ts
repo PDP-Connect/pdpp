@@ -6,12 +6,12 @@
  * Keep that split explicit on the readiness-error path as well as teardown.
  */
 export interface NekoViewerMountAdapter {
-  unmount(): Promise<void>;
+  unmount: () => Promise<void>;
 }
 
 export interface NekoViewerMountHandle {
-  mount(container: HTMLElement): Promise<void>;
-  unmount(): void;
+  mount: (container: HTMLElement) => Promise<void>;
+  unmount: () => void;
 }
 
 export async function mountNekoViewer({

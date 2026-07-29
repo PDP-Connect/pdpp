@@ -67,7 +67,7 @@ interface PostSubmitWaitClock {
 async function countUsableCandidates(locator: Locator): Promise<number> {
   const count = await locator.count().catch((): number => 0);
   let usable = 0;
-  for (let i = 0; i < count; i++) {
+  for (let i = 0; i < count; i += 1) {
     const candidate = locator.nth(i);
     const [visible, enabled] = await Promise.all([
       candidate.isVisible().catch((): boolean => false),
@@ -89,7 +89,7 @@ async function fillWhenUsable(
   const start = Date.now();
   while (Date.now() - start < timeout) {
     const count = await locator.count().catch((): number => 0);
-    for (let i = 0; i < count; i++) {
+    for (let i = 0; i < count; i += 1) {
       const candidate = locator.nth(i);
       const [visible, enabled] = await Promise.all([
         candidate.isVisible().catch((): boolean => false),
@@ -113,7 +113,7 @@ async function clickWhenUsable(
   const start = Date.now();
   while (Date.now() - start < timeout) {
     const count = await locator.count().catch((): number => 0);
-    for (let i = 0; i < count; i++) {
+    for (let i = 0; i < count; i += 1) {
       const candidate = locator.nth(i);
       const [visible, enabled] = await Promise.all([
         candidate.isVisible().catch((): boolean => false),
@@ -139,7 +139,7 @@ async function resolveUniqueLoginFormRoot(page: Page): Promise<Locator | null> {
   let resolved: Locator | null = null;
   let viableRoots = 0;
 
-  for (let i = 0; i < count; i++) {
+  for (let i = 0; i < count; i += 1) {
     const root = forms.nth(i);
     const [visible, enabled] = await Promise.all([
       root.isVisible().catch((): boolean => false),
@@ -169,7 +169,7 @@ async function resolveUniqueVerificationCodeFormRoot(page: Page): Promise<Locato
   let resolved: Locator | null = null;
   let viableRoots = 0;
 
-  for (let i = 0; i < count; i++) {
+  for (let i = 0; i < count; i += 1) {
     const root = forms.nth(i);
     const [visible, enabled] = await Promise.all([
       root.isVisible().catch((): boolean => false),

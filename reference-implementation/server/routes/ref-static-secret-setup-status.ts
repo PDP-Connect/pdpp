@@ -40,14 +40,14 @@ interface RouteRequest {
 }
 
 interface RouteResponse {
-  json(body: unknown): unknown;
-  status(code: number): RouteResponse;
+  json: (body: unknown) => unknown;
+  status: (code: number) => RouteResponse;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
 
 interface AppLike {
-  get(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  get: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
 }
 
 interface ConnectorInstanceRow {
@@ -61,10 +61,10 @@ interface ConnectorInstanceRow {
 }
 
 interface ConnectorInstanceStore {
-  get(connectorInstanceId: string): Promise<ConnectorInstanceRow | null> | ConnectorInstanceRow | null;
-  getActiveRun(
+  get: (connectorInstanceId: string) => Promise<ConnectorInstanceRow | null> | ConnectorInstanceRow | null;
+  getActiveRun: (
     connectorInstanceId: string
-  ):
+  ) =>
     | Promise<{ runId: string; connectorId: string; startedAt: string } | null>
     | { runId: string; connectorId: string; startedAt: string }
     | null;
@@ -78,7 +78,7 @@ interface CredentialMetadata {
 }
 
 interface ConnectorInstanceCredentialStore {
-  getMetadata(connectorInstanceId: string): Promise<CredentialMetadata | null> | CredentialMetadata | null;
+  getMetadata: (connectorInstanceId: string) => Promise<CredentialMetadata | null> | CredentialMetadata | null;
 }
 
 interface AcquisitionBatch {
@@ -99,10 +99,10 @@ interface AcquisitionBatch {
 }
 
 interface AcquisitionBatchStore {
-  listByConnection(
+  listByConnection: (
     connectorInstanceId: string,
     options?: { readonly limit?: number }
-  ): Promise<readonly AcquisitionBatch[]> | readonly AcquisitionBatch[];
+  ) => Promise<readonly AcquisitionBatch[]> | readonly AcquisitionBatch[];
 }
 
 interface ConnectorNamespace {
@@ -111,21 +111,21 @@ interface ConnectorNamespace {
 }
 
 export interface MountRefStaticSecretSetupStatusContext {
-  canonicalConnectorKey(value: string | null | undefined): string | null;
-  createRequestAcquisitionBatchStore(): AcquisitionBatchStore;
-  createRequestConnectorInstanceCredentialStore(): ConnectorInstanceCredentialStore;
-  createRequestConnectorInstanceStore(): ConnectorInstanceStore;
-  getOwnerSubjectId(req: unknown): string;
+  canonicalConnectorKey: (value: string | null | undefined) => string | null;
+  createRequestAcquisitionBatchStore: () => AcquisitionBatchStore;
+  createRequestConnectorInstanceCredentialStore: () => ConnectorInstanceCredentialStore;
+  createRequestConnectorInstanceStore: () => ConnectorInstanceStore;
+  getOwnerSubjectId: (req: unknown) => string;
   // Bounded lookup of the run.start event timestamp, used to prove whether a
   // terminal verification run belongs to the current credential rotation.
-  getRunStartedAt(runId: string): Promise<string | null>;
+  getRunStartedAt: (runId: string) => Promise<string | null>;
   // Window-independent terminal status for a run by run_id: "failed" |
   // "completed" | "cancelled" | "abandoned" | null (still running / unknown).
-  getRunTerminalStatus(runId: string): Promise<string | null>;
-  handleError(res: unknown, err: unknown): void;
+  getRunTerminalStatus: (runId: string) => Promise<string | null>;
+  handleError: (res: unknown, err: unknown) => void;
   pdppError: PdppErrorFn;
   requireOwnerSession: MiddlewareHandler;
-  resolveOwnerConnectorNamespace(
+  resolveOwnerConnectorNamespace: (
     req: unknown,
     connectorId: string | null,
     options?: {
@@ -134,8 +134,8 @@ export interface MountRefStaticSecretSetupStatusContext {
       readonly connectorInstanceId?: string | null;
       readonly ownerSubjectId?: string;
     }
-  ): Promise<ConnectorNamespace>;
-  resolveRegisteredConnectorManifest(connectorId: string): Promise<ConnectorManifestLike>;
+  ) => Promise<ConnectorNamespace>;
+  resolveRegisteredConnectorManifest: (connectorId: string) => Promise<ConnectorManifestLike>;
 }
 
 // The non-secret manifest setup field flagged `identity: true` names the account
@@ -169,6 +169,7 @@ function bindingKind(sourceBinding: unknown): string | null {
   if (!sourceBinding || typeof sourceBinding !== "object" || Array.isArray(sourceBinding)) {
     return null;
   }
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const kind = (sourceBinding as { kind?: unknown }).kind;
   return typeof kind === "string" ? kind : null;
 }
@@ -203,21 +204,21 @@ function setupMaterialFromBinding(
         ? (sourceBinding as { uploaded_file_name?: unknown }).uploaded_file_name
         : null;
     return {
+      capturedAt: null,
       kind: "manual_upload",
       label: typeof uploaded === "string" && uploaded.length > 0 ? `Import file (${uploaded})` : "Import file",
       present: true,
-      capturedAt: null,
     };
   }
   if (setupKind === "static_secret") {
     return {
+      capturedAt: credentialMeta?.rotatedAt ?? credentialMeta?.capturedAt ?? null,
       kind: "static_secret",
       label: "Provider credential",
       present: credentialMeta?.present === true,
-      capturedAt: credentialMeta?.rotatedAt ?? credentialMeta?.capturedAt ?? null,
     };
   }
-  return { kind: "unknown", label: "Setup material", present: false, capturedAt: null };
+  return { capturedAt: null, kind: "unknown", label: "Setup material", present: false };
 }
 
 function asStringOrNull(value: unknown): string | null {
@@ -299,12 +300,12 @@ function importReceiptFromBatch(batch: AcquisitionBatch | null): SetupStatusImpo
   }
   const receipt = receiptObject(batch.receipt);
   return {
-    acquisitionMethod: "owner_artifact",
     acceptedCount: asFiniteNumberOrNull(batch.acceptedCount),
+    acquisitionMethod: "owner_artifact",
     batchId: batch.batchId,
     dateRange: {
-      start: asStringOrNull(batch.eventTimeStart),
       end: asStringOrNull(batch.eventTimeEnd),
+      start: asStringOrNull(batch.eventTimeStart),
     },
     detectedFormat: asStringOrNull(batch.sourceFormat) ?? asStringOrNull(receipt.detected_format),
     duplicateCount: asFiniteNumberOrNull(batch.duplicateCount),
@@ -340,7 +341,7 @@ async function resolveRunEvidence(
   const active = await store.getActiveRun(connectorInstanceId);
   if (active) {
     return {
-      activeRun: { runId: active.runId, status: "in_progress", startedAt: active.startedAt },
+      activeRun: { runId: active.runId, startedAt: active.startedAt, status: "in_progress" },
       lastRun: null,
     };
   }
@@ -356,10 +357,10 @@ async function resolveRunEvidence(
   return {
     activeRun: null,
     lastRun: {
-      runId: requestedRunId,
-      status: failed ? "failed" : terminal,
       failureReason: failed ? terminal : null,
+      runId: requestedRunId,
       startedAt,
+      status: failed ? "failed" : terminal,
     },
   };
 }
@@ -391,10 +392,10 @@ async function resolveSetupStatusInstance(
   // visible to the owner; ownership is verified by the resolver. A foreign
   // or unknown id surfaces as connector_instance_not_found (404).
   const namespace = await ctx.resolveOwnerConnectorNamespace(req, null, {
-    ownerSubjectId,
     allowDefaultAccount: false,
     allowStatuses: ["active", "draft", "paused", "revoked"],
     connectorInstanceId,
+    ownerSubjectId,
   });
   const store = ctx.createRequestConnectorInstanceStore();
   const instance = await store.get(namespace.connectorInstanceId);
@@ -405,6 +406,7 @@ async function resolveSetupStatusInstance(
   return { instance, namespace, store };
 }
 
+// biome-ignore lint/suspicious/useAwait: The async signature is part of this caller-facing contract.
 async function readCredentialMetadata(
   setupKind: ConnectionSetupKind,
   credentialStore: ConnectorInstanceCredentialStore,
@@ -439,27 +441,27 @@ function projectSetupStatus(
   setupKind: ConnectionSetupKind
 ) {
   return projectConnectionSetupStatus({
-    instance: {
-      connectorInstanceId: instance.connectorInstanceId,
-      connectorId: ctx.canonicalConnectorKey(instance.connectorId) ?? instance.connectorId,
-      displayName: instance.displayName ?? null,
-      status: instance.status,
-      createdAt: instance.createdAt ?? null,
-      updatedAt: instance.updatedAt ?? null,
-      setupFields: setupFieldsFromBinding(instance.sourceBinding),
-    },
+    activeRun,
     credential: credentialMeta
       ? {
-          present: credentialMeta.present === true,
-          credentialKind: credentialMeta.credentialKind ?? null,
           capturedAt: credentialMeta.capturedAt ?? null,
+          credentialKind: credentialMeta.credentialKind ?? null,
+          present: credentialMeta.present === true,
           rotatedAt: credentialMeta.rotatedAt ?? null,
         }
       : null,
-    activeRun,
-    lastRun,
-    importReceipt: importReceiptFromBatch(latestBatch) ?? importReceiptFromBinding(setupKind, instance.sourceBinding),
     identityFieldName: identityFieldName(manifest),
+    importReceipt: importReceiptFromBatch(latestBatch) ?? importReceiptFromBinding(setupKind, instance.sourceBinding),
+    instance: {
+      connectorId: ctx.canonicalConnectorKey(instance.connectorId) ?? instance.connectorId,
+      connectorInstanceId: instance.connectorInstanceId,
+      createdAt: instance.createdAt ?? null,
+      displayName: instance.displayName ?? null,
+      setupFields: setupFieldsFromBinding(instance.sourceBinding),
+      status: instance.status,
+      updatedAt: instance.updatedAt ?? null,
+    },
+    lastRun,
     setupKind,
     setupMaterial: setupMaterialFromBinding(setupKind, instance.sourceBinding, credentialMeta),
   });
@@ -482,12 +484,7 @@ async function handleRefStaticSecretSetupStatus(
     const setupKind = setupKindForConnection(instance.sourceBinding, manifest);
     const credentialMeta = await readCredentialMetadata(setupKind, credentialStore, namespace.connectorInstanceId);
     const requestedRunId = firstQueryValue(req.query?.run_id);
-    const { activeRun, lastRun } = await resolveRunEvidence(
-      ctx,
-      store,
-      namespace.connectorInstanceId,
-      requestedRunId
-    );
+    const { activeRun, lastRun } = await resolveRunEvidence(ctx, store, namespace.connectorInstanceId, requestedRunId);
     const acquisitionStore = ctx.createRequestAcquisitionBatchStore();
     const latestBatch = await readLatestAcquisitionBatch(setupKind, acquisitionStore, namespace.connectorInstanceId);
 

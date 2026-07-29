@@ -37,12 +37,12 @@ const MERGED_CLASS = /class="pdpp-select__trigger w-40"/;
 test("IcSelect renders the trigger button with Ink Carbon token class", () => {
   const html = renderToStaticMarkup(
     createElement(IcSelect, {
+      defaultValue: "active",
       name: "status",
       options: [
         { label: "active", value: "active" },
         { label: "failed", value: "failed" },
       ],
-      defaultValue: "active",
     })
   );
   assert.match(html, TRIGGER_BTN, "trigger <button> must carry pdpp-select__trigger class");
@@ -52,12 +52,12 @@ test("IcSelect renders the trigger button with Ink Carbon token class", () => {
 test("IcSelect renders a hidden input with name for form submission", () => {
   const html = renderToStaticMarkup(
     createElement(IcSelect, {
+      defaultValue: "active",
       name: "status",
       options: [
         { label: "active", value: "active" },
         { label: "failed", value: "failed" },
       ],
-      defaultValue: "active",
     })
   );
   // base-ui Select.Root renders a hidden <input name={name} value={value}> for
@@ -85,8 +85,8 @@ test("IcSelect popup does not render in static server markup (portal only mounts
 test("IcSelect forwards id and aria-label to the trigger button", () => {
   const html = renderToStaticMarkup(
     createElement(IcSelect, {
-      id: "my-select",
       "aria-label": "Filter by status",
+      id: "my-select",
       name: "status",
       options: [{ label: "all", value: "" }],
     })
@@ -98,8 +98,8 @@ test("IcSelect forwards id and aria-label to the trigger button", () => {
 test("IcSelect accepts declarative options and the hidden input carries defaultValue", () => {
   const html = renderToStaticMarkup(
     createElement(IcSelect, {
-      name: "kind",
       defaultValue: "connector",
+      name: "kind",
       options: [
         { label: "connector", value: "connector" },
         { label: "provider_native", value: "provider_native" },

@@ -49,8 +49,8 @@ const PARTIAL_FAILURE_BRANCH_RE = /err\s+instanceof\s+GrantPackageRevokePartialF
 const REF_REQUEST_BODY_RE = /class RefRequestError[\s\S]*readonly bodyText: string/;
 const PARTIAL_FAILURE_PARSE_RE =
   /parsed\.object\s*!==\s*"grant_package_revoke_result"[\s\S]*parsed\.status\s*!==\s*"partial_failure"/;
-const PARTIAL_FAILURE_THROW_RE = /throw new GrantPackageRevokePartialFailureError\(result\)/;
-const PARTIAL_FAILURE_COPY_RE = /Package remains active/;
+const PARTIAL_FAILURE_THROW_RE = /throw new GrantPackageRevokePartialFailureError\(result(?:, err)?\)/;
+const PARTIAL_FAILURE_COPY_RE = /Access remains active/;
 const CUMULATIVE_FETCH_RE = /getCumulativeClientAccess\(packageId\)/;
 const CUMULATIVE_SECTION_RE = /title="Cumulative client access"/;
 const CUMULATIVE_EXPERIMENTAL_RE = /Reference-experimental/;

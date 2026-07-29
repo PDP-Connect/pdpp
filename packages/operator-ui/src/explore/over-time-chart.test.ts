@@ -87,8 +87,8 @@ test("deriveBucketSeries sums to the TRUE aggregate total (1,183), never the loa
   const series = deriveBucketSeries(
     [
       daySource([
-        { key: "2026-05-01", count: 1000 },
-        { key: "2026-05-03", count: 183 },
+        { count: 1000, key: "2026-05-01" },
+        { count: 183, key: "2026-05-03" },
       ]),
     ],
     "day"
@@ -104,9 +104,9 @@ test("deriveBucketSeries sums to the TRUE aggregate total (1,183), never the loa
 test("deriveBucketSeries fans IN across sources: a bucket count is the UNION total", () => {
   const series = deriveBucketSeries(
     [
-      daySource([{ key: "2026-05-01", count: 10 }]),
-      daySource([{ key: "2026-05-01", count: 5 }]),
-      daySource([{ key: "2026-05-02", count: 7 }]),
+      daySource([{ count: 10, key: "2026-05-01" }]),
+      daySource([{ count: 5, key: "2026-05-01" }]),
+      daySource([{ count: 7, key: "2026-05-02" }]),
     ],
     "day"
   );
@@ -122,8 +122,8 @@ test("deriveBucketSeries zero-fills the gaps (empty buckets present with count 0
   const series = deriveBucketSeries(
     [
       daySource([
-        { key: "2026-05-01", count: 3 },
-        { key: "2026-05-04", count: 2 },
+        { count: 3, key: "2026-05-01" },
+        { count: 2, key: "2026-05-04" },
       ]),
     ],
     "day"
@@ -143,8 +143,8 @@ test("deriveBucketSeries drops the null bucket from the axis (no axis position) 
   const series = deriveBucketSeries(
     [
       daySource([
-        { key: null, count: 9 },
-        { key: "2026-05-01", count: 1 },
+        { count: 9, key: null },
+        { count: 1, key: "2026-05-01" },
       ]),
     ],
     "day"
@@ -160,7 +160,7 @@ test("deriveBucketSeries drops the null bucket from the axis (no axis position) 
 // ── partial source (design §2 / §4.1) ───────────────────────────────────────
 
 test("deriveBucketSeries flags partial when a source is not-ok and never fabricates its counts", () => {
-  const series = deriveBucketSeries([daySource([{ key: "2026-05-01", count: 4 }]), daySource([], false)], "day");
+  const series = deriveBucketSeries([daySource([{ count: 4, key: "2026-05-01" }]), daySource([], false)], "day");
   assert.equal(series.partial, true);
   assert.equal(series.total, 4); // the not-ok source contributes nothing
 });
@@ -168,8 +168,8 @@ test("deriveBucketSeries flags partial when a source is not-ok and never fabrica
 test("deriveBucketSeries flags partial on a granularity mismatch (cannot union honestly)", () => {
   const series = deriveBucketSeries(
     [
-      daySource([{ key: "2026-05-01", count: 4 }]),
-      { granularity: "week", groups: [{ key: "2026-04-27", count: 99 }], ok: true },
+      daySource([{ count: 4, key: "2026-05-01" }]),
+      { granularity: "week", groups: [{ count: 99, key: "2026-04-27" }], ok: true },
     ],
     "day"
   );
@@ -181,7 +181,7 @@ test("deriveBucketSeries flags partial on a granularity mismatch (cannot union h
 
 function dayBucket(key: string, count = 1): Bucket {
   const startMs = Date.parse(`${key}T00:00:00Z`);
-  return { key, count, startMs, endMs: startMs + MS_PER_DAY };
+  return { count, endMs: startMs + MS_PER_DAY, key, startMs };
 }
 
 test("barsToRange yields whole-day-inclusive (since, until) for a contiguous day run", () => {
@@ -203,7 +203,7 @@ test("barsToRange empty selection clears the filter", () => {
 
 test("barsToRange on a week bucket spans the whole week (last day inclusive)", () => {
   const startMs = Date.parse("2026-04-27T00:00:00Z");
-  const weekBucket: Bucket = { key: "2026-04-27", count: 3, startMs, endMs: startMs + 7 * MS_PER_DAY };
+  const weekBucket: Bucket = { count: 3, endMs: startMs + 7 * MS_PER_DAY, key: "2026-04-27", startMs };
   const { since, until } = barsToRange([weekBucket]);
   assert.equal(since, "2026-04-27");
   assert.equal(until, "2026-05-03"); // Sunday of the week, inclusive
@@ -227,7 +227,7 @@ test("rangeToSelectedBars is a PURE function of the URL params (no gesture neede
 
 test("rangeToSelectedBars treats a partially-covered edge bucket as selected", () => {
   const startMs = Date.parse("2026-04-27T00:00:00Z");
-  const weekBucket: Bucket = { key: "2026-04-27", count: 3, startMs, endMs: startMs + 7 * MS_PER_DAY };
+  const weekBucket: Bucket = { count: 3, endMs: startMs + 7 * MS_PER_DAY, key: "2026-04-27", startMs };
   // A window covering only the middle of the week still selects the week bucket.
   assert.deepEqual([...rangeToSelectedBars("2026-04-29", "2026-04-30", [weekBucket])], [0]);
 });

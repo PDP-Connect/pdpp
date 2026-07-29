@@ -37,7 +37,7 @@ function seedSucceededRows(path: string, sourceInstanceId: string, count: number
        ) VALUES (?, ?, 'record_batch', 'succeeded', '{"records":[]}', 'hash', 0, ?, ?, ?, ?)`
     );
     db.exec("BEGIN");
-    for (let index = 0; index < count; index++) {
+    for (let index = 0; index < count; index += 1) {
       insert.run(`${sourceInstanceId}:row:${index}`, sourceInstanceId, ackedAt, ackedAt, ackedAt, ackedAt);
     }
     db.exec("COMMIT");
@@ -159,7 +159,7 @@ test("REGRESSION (incident shape): a 15-day spread of fresh rows is capped on th
     const startMs = Date.parse("2026-05-20T00:00:00.000Z");
     const endMs = Date.parse("2026-06-04T00:00:00.000Z");
     const total = 3000;
-    for (let index = 0; index < total; index++) {
+    for (let index = 0; index < total; index += 1) {
       const ms = startMs + Math.round(((endMs - startMs) * index) / (total - 1));
       const acked = new Date(ms).toISOString();
       insert.run(`${sourceInstanceId}:row:${index}`, sourceInstanceId, acked, acked, acked, acked);
@@ -330,7 +330,7 @@ test("autoPruneSucceededOutbox scopes the prune to one source instance", async (
     );
     const old = "2026-01-01T00:00:00.000Z";
     db.exec("BEGIN");
-    for (let index = 0; index < 20; index++) {
+    for (let index = 0; index < 20; index += 1) {
       insert.run(`src-b:row:${index}`, old, old, old, old);
     }
     db.exec("COMMIT");

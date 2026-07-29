@@ -3,7 +3,7 @@
 
 export type ExploreRange = "today" | "7d" | "30d" | "all";
 
-const RANGE_DAYS: Record<Exclude<ExploreRange, "all">, number> = { today: 0, "7d": 6, "30d": 29 };
+const RANGE_DAYS: Record<Exclude<ExploreRange, "all">, number> = { "7d": 6, "30d": 29, today: 0 };
 const DAY_MS = 86_400_000;
 
 /** ISO `since` for a relative range, or "" for "all". */

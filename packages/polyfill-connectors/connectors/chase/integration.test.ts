@@ -50,6 +50,7 @@ import { fileURLToPath } from "node:url";
 import { parseHTML } from "linkedom";
 import { buildBrowserSurfaceDiagnostic } from "../../src/browser-surface-diagnostic.ts";
 import type { EmittedMessage, StreamScope } from "../../src/connector-runtime.ts";
+import type { CaptureSession } from "../../src/fixture-capture.ts";
 import { savePlaywrightDownload } from "../../src/playwright-download.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import {
@@ -58,7 +59,11 @@ import {
   CHASE_QFX_ACTIVITY_SELECT_SELECTORS,
   CHASE_QFX_FILE_TYPE_SELECT_SELECTOR,
   CHASE_QFX_FILE_TYPE_SELECT_SELECTORS,
+  chaseLocatorProbesForLabel,
+  chaseNoAccountsDiagnosticMessage,
   chaseTimeRangeField,
+  classifyChaseAccountsSurface,
+  collectChaseAccountInventory,
   type EmitDeps,
   emitAccountsStream,
   emitCurrentActivityForAccount,
@@ -74,7 +79,14 @@ import {
   statementRowOutsideTimeRange,
 } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
-import type { ChaseAccount, QfxTransaction, StatementRow, TransactionCursor, TransactionsStateShape } from "./types.ts";
+import type {
+  ChaseAccount,
+  DashboardDiagnostics,
+  QfxTransaction,
+  StatementRow,
+  TransactionCursor,
+  TransactionsStateShape,
+} from "./types.ts";
 
 interface RecordingHarness {
   deps: EmitDeps;
@@ -103,6 +115,154 @@ function htmlMatchesAnySelector(html: string, selectors: readonly string[]): boo
   const { document } = parseHTML(html);
   return selectors.some((selector) => document.querySelector(selector));
 }
+
+function evaluateAgainstFixtureDocument<T>(document: Document, url: string, callback: () => T): T {
+  const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
+  const locationDescriptor = Object.getOwnPropertyDescriptor(globalThis, "location");
+  Object.defineProperty(globalThis, "document", { configurable: true, value: document });
+  Object.defineProperty(globalThis, "location", { configurable: true, value: { href: url } });
+  try {
+    return callback();
+  } finally {
+    if (documentDescriptor) {
+      Object.defineProperty(globalThis, "document", documentDescriptor);
+    } else {
+      Reflect.deleteProperty(globalThis, "document");
+    }
+    if (locationDescriptor) {
+      Object.defineProperty(globalThis, "location", locationDescriptor);
+    } else {
+      Reflect.deleteProperty(globalThis, "location");
+    }
+  }
+}
+
+test("income-capture interstitial is classified only from the observed authenticated checkpoint", () => {
+  const html = readFileSync(join(FIXTURE_DIR, "dashboard-income-capture-interstitial.html"), "utf8");
+  const { document } = parseHTML(html);
+  const diagnostics: DashboardDiagnostics = {
+    body_preview: document.body.textContent.replace(/\s+/gu, " ").trim(),
+    income_capture_description_count: 1,
+    income_capture_heading_count: 1,
+    title: document.title,
+    url: "https://secure.chase.com/web/auth/dashboard#/dashboard/interstitial/income-capture",
+  };
+
+  assert.equal(classifyChaseAccountsSurface(diagnostics), "income_capture_interstitial");
+  assert.match(
+    chaseNoAccountsDiagnosticMessage(classifyChaseAccountsSurface(diagnostics)),
+    /captured action selector/i
+  );
+  assert.equal(
+    classifyChaseAccountsSurface({
+      ...diagnostics,
+      url: "https://secure.chase.com/web/auth/dashboard#/dashboard/overview",
+    }),
+    "unknown",
+    "the income text alone must not classify the accounts overview"
+  );
+  assert.equal(
+    classifyChaseAccountsSurface({
+      ...diagnostics,
+      income_capture_description_count: 0,
+      body_preview: "Update Income Confirm or update your income",
+    }),
+    "unknown",
+    "phrase-substring body text must not substitute for paragraph structure"
+  );
+  for (const url of [
+    "http://secure.chase.com/web/auth/dashboard#/dashboard/interstitial/income-capture",
+    "https://secure.chase.com:8443/web/auth/dashboard#/dashboard/interstitial/income-capture",
+    "https://secure.chase.com/web/auth/dashboard?surface=income#/dashboard/interstitial/income-capture",
+  ]) {
+    assert.equal(classifyChaseAccountsSurface({ ...diagnostics, url }), "unknown", `must reject ${url}`);
+  }
+});
+
+test("zero-account collection captures the interstitial checkpoint before emitting its matching skip", async () => {
+  const html = readFileSync(join(FIXTURE_DIR, "dashboard-income-capture-interstitial.html"), "utf8");
+  const { document } = parseHTML(html);
+  const fixtureUrl = "https://secure.chase.com/web/auth/dashboard#/dashboard/interstitial/income-capture";
+  const events: string[] = [];
+  const messages: EmittedMessage[] = [];
+  const evaluation: { diagnostics: DashboardDiagnostics | null } = { diagnostics: null };
+  const page = {
+    content: async (): Promise<string> => html,
+    evaluate: (
+      callback: (args: { description: string; heading: string }) => DashboardDiagnostics,
+      args: { description: string; heading: string }
+    ): Promise<DashboardDiagnostics> => {
+      const diagnostics = evaluateAgainstFixtureDocument(document, fixtureUrl, () => callback(args));
+      evaluation.diagnostics = diagnostics;
+      return Promise.resolve(diagnostics);
+    },
+    goto: (url: string): Promise<null> => {
+      events.push(`goto:${url}`);
+      return Promise.resolve(null);
+    },
+    locator: (): { first: () => { waitFor: () => Promise<never> } } => ({
+      first: () => ({ waitFor: async (): Promise<never> => Promise.reject(new Error("account selector absent")) }),
+    }),
+  };
+  const capture: CaptureSession = {
+    baseDir: "/tmp/chase-income-capture-test",
+    captureDom: (_page, label): Promise<void> => {
+      events.push(`capture:${label}`);
+      return Promise.resolve();
+    },
+    captureHttp: (): void => undefined,
+    captureLocatorProbe: (_page, label, _probes): Promise<void> => {
+      events.push(`probe:${label}`);
+      return Promise.resolve();
+    },
+    finalize: (): void => undefined,
+    keepOnSuccess: true,
+    markSucceeded: (): void => undefined,
+    recordRecord: (): void => undefined,
+    runId: "test-income-capture",
+  };
+
+  const accounts = await collectChaseAccountInventory({
+    capture,
+    emit: (message): Promise<void> => {
+      events.push(`emit:${message.type}`);
+      messages.push(message);
+      return Promise.resolve();
+    },
+    page: page as never,
+  });
+
+  assert.deepEqual(accounts, []);
+  assert.deepEqual(events, [
+    "goto:https://secure.chase.com/web/auth/dashboard#/dashboard/overview",
+    "capture:dashboard-income-capture-interstitial",
+    "probe:dashboard-income-capture-interstitial",
+    "emit:SKIP_RESULT",
+  ]);
+  const skip = messages.find(
+    (message): message is Extract<EmittedMessage, { type: "SKIP_RESULT" }> =>
+      message.type === "SKIP_RESULT" && message.stream === "accounts"
+  );
+  assert.ok(skip);
+  assert.equal(skip.reason, "selectors_pending");
+  assert.match(skip.message, /income-capture interstitial/i);
+  assert.deepEqual(skip.diagnostics, evaluation.diagnostics);
+  assert.equal(evaluation.diagnostics?.income_capture_heading_count, 1);
+  assert.equal(evaluation.diagnostics?.income_capture_description_count, 1);
+});
+
+test("income-capture checkpoint probes only observed structure and never guesses an action", () => {
+  const probes = chaseLocatorProbesForLabel("dashboard-income-capture-interstitial");
+  assert.deepEqual(
+    probes.map((probe) => probe.id),
+    ["dashboard-account-selector", "income-capture-heading", "income-capture-description"]
+  );
+  assert.deepEqual(
+    probes.filter((probe) => probe.kind === "role" && probe.role === "button"),
+    [],
+    "no button selector is evidence-backed for this interstitial"
+  );
+});
 
 test("QFX dropdown selectors support both observed Chase id families", () => {
   const oldFixture = `

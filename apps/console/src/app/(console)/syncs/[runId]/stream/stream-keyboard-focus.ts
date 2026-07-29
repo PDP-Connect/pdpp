@@ -149,8 +149,8 @@ function transitionPointerMove(
   state: MobileKeyboardFocusState,
   event: Extract<MobileKeyboardFocusEvent, { type: "pointermove" }>
 ): MobileKeyboardFocusTransition {
-  const gesture = state.gesture;
-  if (!gesture || gesture.phase !== "active" || gesture.pointerId !== event.pointerId) {
+  const { gesture } = state;
+  if (gesture?.phase !== "active" || gesture.pointerId !== event.pointerId) {
     return { effect: "none", state };
   }
   return {
@@ -188,10 +188,11 @@ function transitionPointerUp(
   state: MobileKeyboardFocusState,
   event: Extract<MobileKeyboardFocusEvent, { type: "pointerup" }>
 ): MobileKeyboardFocusTransition {
-  const gesture = state.gesture;
-  if (!gesture || gesture.phase !== "active" || gesture.pointerId !== event.pointerId || gesture.moved) {
+  const { gesture } = state;
+  if (gesture?.phase !== "active" || gesture.pointerId !== event.pointerId || gesture.moved) {
     return gesture?.pointerId === event.pointerId && gesture.moved ? clearGesture(state) : { effect: "none", state };
   }
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   if (isPointInsideRect(event.remotePoint, state.editableRectCache?.rect ?? null)) {
     return { effect: "focus-text-input", state: { ...state, affordanceVisible: false, gesture: null } };
   }
@@ -212,7 +213,7 @@ function transitionRemoteFocus(
   state: MobileKeyboardFocusState,
   event: Extract<MobileKeyboardFocusEvent, { type: "remote-focus" }>
 ): MobileKeyboardFocusTransition {
-  const gesture = state.gesture;
+  const { gesture } = state;
   const canMatchLateConfirmation =
     gesture?.phase === "awaiting-confirmation" &&
     !isGestureExpired(gesture, event.atMs) &&

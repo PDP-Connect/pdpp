@@ -30,9 +30,7 @@
           "required": true,
           "secret": true,
           "autocomplete": "username",
-          "env": [
-            "REDDIT_USERNAME"
-          ]
+          "env": ["REDDIT_USERNAME"]
         },
         {
           "name": "password",
@@ -41,18 +39,13 @@
           "required": true,
           "secret": true,
           "autocomplete": "current-password",
-          "env": [
-            "REDDIT_PASSWORD"
-          ]
+          "env": ["REDDIT_PASSWORD"]
         }
       ]
     }
   },
   "capabilities": {
-    "human_interaction": [
-      "manual_action",
-      "otp"
-    ],
+    "human_interaction": ["manual_action", "otp"],
     "refresh_policy": {
       "recommended_mode": "manual",
       "minimum_interval_seconds": 7200,
@@ -85,83 +78,44 @@
             "type": "string"
           },
           "subreddit": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "title": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "permalink": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "url": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "domain": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "selftext": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "selftext_len": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "is_self": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "over_18": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "score": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "num_comments": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "upvote_ratio": {
-            "type": [
-              "number",
-              "null"
-            ]
+            "type": ["number", "null"]
           },
           "gilded": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "created_utc": {
             "type": "string",
@@ -173,14 +127,9 @@
             "x_pdpp_role": "event-time"
           }
         },
-        "required": [
-          "id",
-          "created_utc"
-        ]
+        "required": ["id", "created_utc"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "created_utc",
       "consent_time_field": "created_utc",
       "selection": {
@@ -190,44 +139,18 @@
       "incremental": true,
       "query": {
         "search": {
-          "lexical_fields": [
-            "subreddit",
-            "title",
-            "selftext"
-          ],
-          "semantic_fields": [
-            "title",
-            "selftext"
-          ]
+          "lexical_fields": ["subreddit", "title", "selftext"],
+          "semantic_fields": ["title", "selftext"]
         },
         "range_filters": {
-          "created_utc": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "score": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "num_comments": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "created_utc": ["gte", "gt", "lte", "lt"],
+          "score": ["gte", "gt", "lte", "lt"],
+          "num_comments": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "created_utc"
-          ],
-          "group_by": [
-            "subreddit"
-          ]
+          "group_by_time": ["created_utc"],
+          "group_by": ["subreddit"]
         }
       },
       "coverage_strategy": "checkpoint_window",
@@ -248,59 +171,32 @@
             "type": "string"
           },
           "subreddit": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "body": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "secondary"
           },
           "body_len": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "link_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "parent_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "is_top_level": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "permalink": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "score": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "gilded": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "created_utc": {
             "type": "string",
@@ -312,14 +208,9 @@
             "x_pdpp_role": "event-time"
           }
         },
-        "required": [
-          "id",
-          "created_utc"
-        ]
+        "required": ["id", "created_utc"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "created_utc",
       "consent_time_field": "created_utc",
       "selection": {
@@ -329,36 +220,17 @@
       "incremental": true,
       "query": {
         "search": {
-          "lexical_fields": [
-            "subreddit",
-            "body"
-          ],
-          "semantic_fields": [
-            "body"
-          ]
+          "lexical_fields": ["subreddit", "body"],
+          "semantic_fields": ["body"]
         },
         "range_filters": {
-          "created_utc": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "score": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "created_utc": ["gte", "gt", "lte", "lt"],
+          "score": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "created_utc"
-          ],
-          "group_by": [
-            "subreddit"
-          ]
+          "group_by_time": ["created_utc"],
+          "group_by": ["subreddit"]
         }
       },
       "coverage_strategy": "checkpoint_window",
@@ -385,42 +257,24 @@
             "type": "boolean"
           },
           "subreddit": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "title": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "body": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "secondary"
           },
           "body_len": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "permalink": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "url": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "created_utc": {
             "type": "string",
@@ -432,14 +286,9 @@
             "x_pdpp_role": "event-time"
           }
         },
-        "required": [
-          "id",
-          "created_utc"
-        ]
+        "required": ["id", "created_utc"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "created_utc",
       "consent_time_field": "created_utc",
       "selection": {
@@ -449,32 +298,16 @@
       "incremental": true,
       "query": {
         "search": {
-          "lexical_fields": [
-            "subreddit",
-            "title",
-            "body"
-          ],
-          "semantic_fields": [
-            "title",
-            "body"
-          ]
+          "lexical_fields": ["subreddit", "title", "body"],
+          "semantic_fields": ["title", "body"]
         },
         "range_filters": {
-          "created_utc": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "created_utc": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "created_utc"
-          ],
-          "group_by": [
-            "subreddit"
-          ]
+          "group_by_time": ["created_utc"],
+          "group_by": ["subreddit"]
         }
       },
       "coverage_strategy": "checkpoint_window",
@@ -501,54 +334,30 @@
             "type": "boolean"
           },
           "subreddit": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "title": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "body": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "secondary"
           },
           "body_len": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "url": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "permalink": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "score": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "num_comments": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "created_utc": {
             "type": "string",
@@ -560,14 +369,9 @@
             "x_pdpp_role": "event-time"
           }
         },
-        "required": [
-          "id",
-          "created_utc"
-        ]
+        "required": ["id", "created_utc"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "created_utc",
       "consent_time_field": "created_utc",
       "selection": {
@@ -577,44 +381,18 @@
       "incremental": true,
       "query": {
         "search": {
-          "lexical_fields": [
-            "subreddit",
-            "title",
-            "body"
-          ],
-          "semantic_fields": [
-            "title",
-            "body"
-          ]
+          "lexical_fields": ["subreddit", "title", "body"],
+          "semantic_fields": ["title", "body"]
         },
         "range_filters": {
-          "created_utc": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "score": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "num_comments": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "created_utc": ["gte", "gt", "lte", "lt"],
+          "score": ["gte", "gt", "lte", "lt"],
+          "num_comments": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "created_utc"
-          ],
-          "group_by": [
-            "subreddit"
-          ]
+          "group_by_time": ["created_utc"],
+          "group_by": ["subreddit"]
         }
       },
       "coverage_strategy": "checkpoint_window",
@@ -641,54 +419,30 @@
             "type": "boolean"
           },
           "subreddit": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "title": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "body": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "secondary"
           },
           "body_len": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "url": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "permalink": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "score": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "num_comments": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "created_utc": {
             "type": "string",
@@ -700,14 +454,9 @@
             "x_pdpp_role": "event-time"
           }
         },
-        "required": [
-          "id",
-          "created_utc"
-        ]
+        "required": ["id", "created_utc"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "created_utc",
       "consent_time_field": "created_utc",
       "selection": {
@@ -717,44 +466,18 @@
       "incremental": true,
       "query": {
         "search": {
-          "lexical_fields": [
-            "subreddit",
-            "title",
-            "body"
-          ],
-          "semantic_fields": [
-            "title",
-            "body"
-          ]
+          "lexical_fields": ["subreddit", "title", "body"],
+          "semantic_fields": ["title", "body"]
         },
         "range_filters": {
-          "created_utc": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "score": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "num_comments": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "created_utc": ["gte", "gt", "lte", "lt"],
+          "score": ["gte", "gt", "lte", "lt"],
+          "num_comments": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "created_utc"
-          ],
-          "group_by": [
-            "subreddit"
-          ]
+          "group_by_time": ["created_utc"],
+          "group_by": ["subreddit"]
         }
       },
       "coverage_strategy": "checkpoint_window",
@@ -781,54 +504,30 @@
             "type": "boolean"
           },
           "subreddit": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "title": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "body": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "secondary"
           },
           "body_len": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "url": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "permalink": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "score": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "num_comments": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "created_utc": {
             "type": "string",
@@ -840,14 +539,9 @@
             "x_pdpp_role": "event-time"
           }
         },
-        "required": [
-          "id",
-          "created_utc"
-        ]
+        "required": ["id", "created_utc"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "created_utc",
       "consent_time_field": "created_utc",
       "selection": {
@@ -857,44 +551,18 @@
       "incremental": true,
       "query": {
         "search": {
-          "lexical_fields": [
-            "subreddit",
-            "title",
-            "body"
-          ],
-          "semantic_fields": [
-            "title",
-            "body"
-          ]
+          "lexical_fields": ["subreddit", "title", "body"],
+          "semantic_fields": ["title", "body"]
         },
         "range_filters": {
-          "created_utc": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "score": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "num_comments": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "created_utc": ["gte", "gt", "lte", "lt"],
+          "score": ["gte", "gt", "lte", "lt"],
+          "num_comments": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "created_utc"
-          ],
-          "group_by": [
-            "subreddit"
-          ]
+          "group_by_time": ["created_utc"],
+          "group_by": ["subreddit"]
         }
       },
       "coverage_strategy": "checkpoint_window",

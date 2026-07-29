@@ -14,8 +14,10 @@
  * so callers can rely on a uniform string type.
  */
 
+import type { QueryResultRow } from "pg";
+
 import { iterate, referenceQueries } from "../lib/db.ts";
-import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.js";
+import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.ts";
 
 /**
  * A single row as returned by `listRowsForAggregation`.
@@ -25,6 +27,11 @@ import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.js";
  */
 export interface AggregationRow {
   record_json: string;
+  record_key: string;
+}
+
+interface AggregationDatabaseRow extends QueryResultRow {
+  record_json: unknown;
   record_key: string;
 }
 
@@ -38,7 +45,10 @@ export interface AggregationRow {
  * row array.
  */
 export interface StorageBackend {
-  listRowsForAggregation(params: { connectorInstanceId: string; stream: string }): Promise<Iterable<AggregationRow>>;
+  listRowsForAggregation: (params: {
+    connectorInstanceId: string;
+    stream: string;
+  }) => Promise<Iterable<AggregationRow>>;
 }
 
 /**
@@ -47,7 +57,7 @@ export interface StorageBackend {
 function createPostgresStorageBackend(): StorageBackend {
   return {
     async listRowsForAggregation({ connectorInstanceId, stream }) {
-      const result = await postgresQuery(
+      const result = await postgresQuery<AggregationDatabaseRow>(
         `SELECT record_key, record_json
            FROM records
           WHERE connector_instance_id = $1
@@ -56,9 +66,9 @@ function createPostgresStorageBackend(): StorageBackend {
           ORDER BY record_key ASC`,
         [connectorInstanceId, stream]
       );
-      return result.rows.map((row: { record_key: string; record_json: unknown }) => ({
-        record_key: row.record_key,
+      return result.rows.map((row) => ({
         record_json: typeof row.record_json === "string" ? row.record_json : JSON.stringify(row.record_json),
+        record_key: row.record_key,
       }));
     },
   };
@@ -69,12 +79,13 @@ function createPostgresStorageBackend(): StorageBackend {
  */
 function createSqliteStorageBackend(): StorageBackend {
   return {
-    // biome-ignore lint/suspicious/useAwait: sync sqlite iterator; async satisfies the shared StorageBackend contract.
-    async listRowsForAggregation({ connectorInstanceId, stream }) {
-      return iterate<AggregationRow>(referenceQueries.recordsAggregateIterateStreamRecordsForAggregation, [
-        connectorInstanceId,
-        stream,
-      ]);
+    listRowsForAggregation({ connectorInstanceId, stream }) {
+      return Promise.resolve(
+        iterate<AggregationRow>(referenceQueries.recordsAggregateIterateStreamRecordsForAggregation, [
+          connectorInstanceId,
+          stream,
+        ])
+      );
     },
   };
 }

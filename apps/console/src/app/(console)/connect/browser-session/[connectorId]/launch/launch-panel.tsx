@@ -36,6 +36,10 @@ async function recoverStartedBrowserRun(
 ): Promise<string | null> {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     if (attempt > 0) {
+      // Backoff delay between retries of the same recovery request; the
+      // whole point is to wait between sequential attempts, not run them
+      // concurrently.
+      // biome-ignore lint/performance/noAwaitInLoops: see comment above.
       await delay(400);
     }
     try {
@@ -153,13 +157,13 @@ export function BrowserSessionLaunchPanel({
 
       {state.error ? (
         <div className="flex flex-wrap gap-2">
-          <button className={buttonVariants({ variant: "default", size: "sm" })} onClick={start} type="button">
+          <button className={buttonVariants({ size: "sm", variant: "default" })} onClick={start} type="button">
             Try again
           </button>
-          <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href="/syncs">
+          <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href="/syncs">
             Open Syncs
           </Link>
-          <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href="/sources">
+          <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href="/sources">
             Back to Sources
           </Link>
         </div>

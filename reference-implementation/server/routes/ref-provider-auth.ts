@@ -73,32 +73,32 @@ export interface ProviderAuthExchanger {
    * MUST NOT return tokens to callers — only return a success/failure signal for
    * store wiring; the tokens are passed immediately to `runInventoryOrTest`.
    */
-  exchangeCode(args: {
+  exchangeCode: (args: {
     connectorId: string;
     code: string;
     redirectUri: string;
     state: string;
-  }): Promise<ProviderAuthTokens | null> | ProviderAuthTokens | null;
+  }) => Promise<ProviderAuthTokens | null> | ProviderAuthTokens | null;
   /**
    * Build the provider authorization URL and any accompanying state that needs
    * to survive the round-trip (PKCE, nonce, etc.).
    * Called during the initiate step. MUST NOT perform network I/O in test doubles.
    */
-  initiateAuthorization(args: {
+  initiateAuthorization: (args: {
     connectorId: string;
     redirectUri: string;
     state: string;
-  }): Promise<ProviderAuthInitiateResult> | ProviderAuthInitiateResult;
+  }) => Promise<ProviderAuthInitiateResult> | ProviderAuthInitiateResult;
 
   /**
    * Run an account inventory or connection test using the fresh tokens.
    * Returns one or more accounts on success; throws or returns empty array on
    * failure. The tokens are consumed here and MUST NOT be persisted by this call.
    */
-  runInventoryOrTest(args: {
+  runInventoryOrTest: (args: {
     connectorId: string;
     tokens: ProviderAuthTokens;
-  }): Promise<ProviderAccount[]> | ProviderAccount[];
+  }) => Promise<ProviderAccount[]> | ProviderAccount[];
 
   /**
    * Seal and persist provider tokens for exactly one connection.
@@ -106,12 +106,12 @@ export interface ProviderAuthExchanger {
    * Callers pass the tokens once; after this call returns the tokens are
    * considered consumed (the exchanger is responsible for encrypted storage).
    */
-  storeTokens(args: {
+  storeTokens: (args: {
     connectorInstanceId: string;
     ownerSubjectId: string;
     tokens: ProviderAuthTokens;
     now: string;
-  }): Promise<void> | void;
+  }) => Promise<void> | void;
 }
 
 // ---------------------------------------------------------------------------
@@ -126,23 +126,23 @@ export interface PendingAuthEntry {
 }
 
 export interface PendingAuthStore {
-  delete(stateToken: string): void;
-  get(stateToken: string): PendingAuthEntry | null;
-  put(stateToken: string, entry: PendingAuthEntry): void;
+  delete: (stateToken: string) => void;
+  get: (stateToken: string) => PendingAuthEntry | null;
+  put: (stateToken: string, entry: PendingAuthEntry) => void;
 }
 
 /** Default in-process pending-auth store backed by a plain Map. */
 export function createInProcessPendingAuthStore(): PendingAuthStore {
   const map = new Map<string, PendingAuthEntry>();
   return {
-    put(stateToken, entry) {
-      map.set(stateToken, entry);
+    delete(stateToken) {
+      map.delete(stateToken);
     },
     get(stateToken) {
       return map.get(stateToken) ?? null;
     },
-    delete(stateToken) {
-      map.delete(stateToken);
+    put(stateToken, entry) {
+      map.set(stateToken, entry);
     },
   };
 }
@@ -158,17 +158,17 @@ interface RouteRequest {
 }
 
 interface RouteResponse {
-  json(body: unknown): unknown;
-  redirect(url: string): void;
-  setHeader(name: string, value: string): void;
-  status(code: number): RouteResponse;
+  json: (body: unknown) => unknown;
+  redirect: (url: string) => void;
+  setHeader: (name: string, value: string) => void;
+  status: (code: number) => RouteResponse;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
 
 interface AppLike {
-  get(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
-  post(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  get: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
+  post: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
 }
 
 interface TraceContext {
@@ -185,7 +185,7 @@ interface ConnectorInstance {
 }
 
 interface ConnectorInstanceStore {
-  upsert(record: {
+  upsert: (record: {
     ownerSubjectId: string;
     connectorId: string;
     displayName: string;
@@ -195,7 +195,7 @@ interface ConnectorInstanceStore {
     sourceBinding: Record<string, unknown>;
     createdAt: string;
     updatedAt: string;
-  }): Promise<ConnectorInstance> | ConnectorInstance;
+  }) => Promise<ConnectorInstance> | ConnectorInstance;
 }
 
 interface ConnectorManifestLike {
@@ -225,25 +225,25 @@ interface ConnectorManifestLike {
 // ---------------------------------------------------------------------------
 
 export interface MountRefProviderAuthContext {
-  canonicalConnectorKey(value: string | null | undefined): string | null;
+  canonicalConnectorKey: (value: string | null | undefined) => string | null;
   configuredProviderAuthConnectorKeys?: readonly string[];
-  createRequestConnectorInstanceStore(): ConnectorInstanceStore;
-  createTraceContext(input?: { scenarioId?: string }): TraceContext;
-  emitSpineEvent(event: Record<string, unknown>): Promise<unknown>;
-  ensureRequestId(res: RouteResponse): string;
+  createRequestConnectorInstanceStore: () => ConnectorInstanceStore;
+  createTraceContext: (input?: { scenarioId?: string }) => TraceContext;
+  emitSpineEvent: (event: Record<string, unknown>) => Promise<unknown>;
+  ensureRequestId: (res: RouteResponse) => string;
   exchanger: ProviderAuthExchanger;
   // Generates a cryptographically random state token. Prefix is "pas" (provider auth state).
-  generateReferenceSecret(prefix: string, bytes?: number): string;
-  generateSpineId(prefix: string): string;
-  getOwnerSubjectId(req: unknown): string;
-  handleError(res: unknown, err: unknown): void;
-  now?(): string;
+  generateReferenceSecret: (prefix: string, bytes?: number) => string;
+  generateSpineId: (prefix: string) => string;
+  getOwnerSubjectId: (req: unknown) => string;
+  handleError: (res: unknown, err: unknown) => void;
+  now?: () => string;
   pdppError: PdppErrorFn;
   pendingAuthStore: PendingAuthStore;
   requireOwnerSession: MiddlewareHandler;
-  resolveCallbackBaseUrl(req: unknown): string;
-  resolveRegisteredConnectorManifest(connectorId: string): Promise<ConnectorManifestLike | null>;
-  setReferenceTraceId(res: RouteResponse, traceId: string): void;
+  resolveCallbackBaseUrl: (req: unknown) => string;
+  resolveRegisteredConnectorManifest: (connectorId: string) => Promise<ConnectorManifestLike | null>;
+  setReferenceTraceId: (res: RouteResponse, traceId: string) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -292,8 +292,8 @@ function buildProviderAccountSourceBinding(account: ProviderAccount): Record<str
       : {};
   return {
     ...extra,
-    kind: "provider_auth_account",
     account_id: account.accountId,
+    kind: "provider_auth_account",
   };
 }
 
@@ -317,17 +317,17 @@ async function activateConnectorInstanceForAccount(
   const displayName = account.displayLabel ?? account.accountId;
   const sourceBinding = buildProviderAccountSourceBinding(account);
   const sharedRecord = {
-    ownerSubjectId,
     connectorId,
-    displayName,
-    sourceKind: "account",
-    sourceBindingKey,
-    sourceBinding,
     createdAt: now,
+    displayName,
+    ownerSubjectId,
+    sourceBinding,
+    sourceBindingKey,
+    sourceKind: "account",
     updatedAt: now,
   };
   const draftInstance = await store.upsert({ ...sharedRecord, status: "draft" });
-  await exchanger.storeTokens({ connectorInstanceId: draftInstance.connectorInstanceId, ownerSubjectId, tokens, now });
+  await exchanger.storeTokens({ connectorInstanceId: draftInstance.connectorInstanceId, now, ownerSubjectId, tokens });
   return store.upsert({ ...sharedRecord, status: "active" });
 }
 
@@ -346,17 +346,8 @@ async function emitInitiateAudit(
   const ownerSubjectId = args.ownerSubjectId ?? req.ownerSession?.sub ?? null;
   const code = (args.error as { code?: unknown } | null)?.code;
   await ctx.emitSpineEvent({
-    event_type: "owner.connection.provider_auth.initiate",
-    trace_id: trace.trace_id,
-    scenario_id: trace.scenario_id,
-    request_id: trace.request_id,
-    actor_type: "owner_session",
     actor_id: ownerSubjectId ?? "owner_session",
-    subject_type: "subject",
-    subject_id: ownerSubjectId,
-    object_type: "connection",
-    object_id: args.connectorId ?? "unknown_connector",
-    status: args.outcome,
+    actor_type: "owner_session",
     data: {
       connector_id: args.connectorId ?? null,
       operation: "initiate_provider_auth",
@@ -369,6 +360,15 @@ async function emitInitiateAudit(
           }
         : {}),
     },
+    event_type: "owner.connection.provider_auth.initiate",
+    object_id: args.connectorId ?? "unknown_connector",
+    object_type: "connection",
+    request_id: trace.request_id,
+    scenario_id: trace.scenario_id,
+    status: args.outcome,
+    subject_id: ownerSubjectId,
+    subject_type: "subject",
+    trace_id: trace.trace_id,
   });
 }
 
@@ -388,25 +388,16 @@ async function emitCallbackAudit(
   const trace = buildAuditTrace(ctx, res);
   const code = (args.error as { code?: unknown } | null)?.code;
   await ctx.emitSpineEvent({
-    event_type: "owner.connection.provider_auth.callback",
-    trace_id: trace.trace_id,
-    scenario_id: trace.scenario_id,
-    request_id: trace.request_id,
-    actor_type: "provider_callback",
     actor_id: args.ownerSubjectId ?? "provider_callback",
-    subject_type: "subject",
-    subject_id: args.ownerSubjectId ?? null,
-    object_type: "connection",
-    object_id: args.connectionId ?? args.connectorId ?? "unknown_connection",
-    status: args.outcome,
+    actor_type: "provider_callback",
     data: {
-      connector_id: args.connectorId ?? null,
-      connection_id: args.connectionId ?? null,
       // Number of accounts created, never IDs/emails — no PII in audit events
       account_count: args.accountIds?.length ?? null,
+      connection_id: args.connectionId ?? null,
+      connector_id: args.connectorId ?? null,
+      failure_reason: args.failureReason ?? null,
       operation: "provider_auth_callback",
       outcome: args.outcome,
-      failure_reason: args.failureReason ?? null,
       ...(args.error
         ? {
             error: {
@@ -415,6 +406,15 @@ async function emitCallbackAudit(
           }
         : {}),
     },
+    event_type: "owner.connection.provider_auth.callback",
+    object_id: args.connectionId ?? args.connectorId ?? "unknown_connection",
+    object_type: "connection",
+    request_id: trace.request_id,
+    scenario_id: trace.scenario_id,
+    status: args.outcome,
+    subject_id: args.ownerSubjectId ?? null,
+    subject_type: "subject",
+    trace_id: trace.trace_id,
   });
 }
 
@@ -497,9 +497,9 @@ export function mountRefProviderAuthInitiate(app: AppLike, ctx: MountRefProvider
 
         ctx.pendingAuthStore.put(stateToken, {
           connectorId,
-          ownerSubjectId,
           createdAt: now,
           expiresAt,
+          ownerSubjectId,
         });
 
         const redirectUri = buildCallbackRedirectUri(ctx, req);
@@ -516,19 +516,19 @@ export function mountRefProviderAuthInitiate(app: AppLike, ctx: MountRefProvider
         });
 
         res.status(201).json({
-          object: "provider_auth_initiate",
           connector_id: connectorId,
-          setup_modality: plan.setupModality,
           next_step: {
-            kind: "open_provider_auth",
             authorization_url: initResult.authorizationUrl,
-            redirect_uri: redirectUri,
             expires_at: expiresAt,
+            kind: "open_provider_auth",
             reason:
               "Open the authorization_url in a browser to authorize the provider account. " +
               "The callback will complete setup and activate the connection after authorization " +
               "and account inventory succeed.",
+            redirect_uri: redirectUri,
           },
+          object: "provider_auth_initiate",
+          setup_modality: plan.setupModality,
         });
       } catch (err) {
         await emitInitiateAudit(ctx, req, res, {
@@ -556,9 +556,9 @@ interface CallbackParams {
 function parseCallbackQueryParams(req: RouteRequest): CallbackParams {
   const query = req.query ?? {};
   return {
-    stateToken: typeof query.state === "string" ? query.state.trim() : null,
     code: typeof query.code === "string" ? query.code.trim() : null,
     providerError: typeof query.error === "string" ? query.error.trim() : null,
+    stateToken: typeof query.state === "string" ? query.state.trim() : null,
   };
 }
 
@@ -572,11 +572,13 @@ async function rejectWithProviderError(
     ctx.pendingAuthStore.delete(params.stateToken);
   }
   await emitCallbackAudit(ctx, res, {
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     connectorId: pending?.connectorId ?? null,
-    ownerSubjectId: pending?.ownerSubjectId ?? null,
     error: errWithCode("provider_auth_denied"),
-    outcome: "failed",
     failureReason: "provider_error",
+    outcome: "failed",
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+    ownerSubjectId: pending?.ownerSubjectId ?? null,
   });
   ctx.pdppError(res, 400, "provider_auth_denied", `Provider returned an error: ${params.providerError}.`);
   return "rejected";
@@ -585,10 +587,10 @@ async function rejectWithProviderError(
 async function rejectWithStateInvalid(ctx: MountRefProviderAuthContext, res: RouteResponse): Promise<"rejected"> {
   await emitCallbackAudit(ctx, res, {
     connectorId: null,
-    ownerSubjectId: null,
     error: errWithCode("provider_auth_state_invalid"),
-    outcome: "failed",
     failureReason: "state_invalid_or_missing",
+    outcome: "failed",
+    ownerSubjectId: null,
   });
   ctx.pdppError(
     res,
@@ -609,10 +611,10 @@ async function rejectWithStateExpired(
   ctx.pendingAuthStore.delete(stateToken);
   await emitCallbackAudit(ctx, res, {
     connectorId,
-    ownerSubjectId,
     error: errWithCode("provider_auth_state_expired"),
-    outcome: "failed",
     failureReason: "state_expired",
+    outcome: "failed",
+    ownerSubjectId,
   });
   ctx.pdppError(
     res,
@@ -633,10 +635,10 @@ async function rejectWithCodeMissing(
   ctx.pendingAuthStore.delete(stateToken);
   await emitCallbackAudit(ctx, res, {
     connectorId,
-    ownerSubjectId,
     error: errWithCode("provider_auth_code_missing"),
-    outcome: "failed",
     failureReason: "code_missing",
+    outcome: "failed",
+    ownerSubjectId,
   });
   ctx.pdppError(res, 400, "provider_auth_code_missing", "Authorization code is missing from the callback.");
   return "rejected";
@@ -667,7 +669,9 @@ function validateCallbackStateAndCode(
     return rejectWithStateInvalid(ctx, res);
   }
 
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const connectorId = pending.connectorId;
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const ownerSubjectId = pending.ownerSubjectId;
   const now = ctx.now ? ctx.now() : new Date().toISOString();
 
@@ -679,7 +683,7 @@ function validateCallbackStateAndCode(
     return rejectWithCodeMissing(ctx, res, stateToken, connectorId, ownerSubjectId);
   }
 
-  return Promise.resolve({ stateToken, code, pending, connectorId, ownerSubjectId, now });
+  return Promise.resolve({ code, connectorId, now, ownerSubjectId, pending, stateToken });
 }
 
 async function exchangeCodeAndRunInventory(
@@ -690,15 +694,15 @@ async function exchangeCodeAndRunInventory(
 ): Promise<{ tokens: ProviderAuthTokens; accounts: ProviderAccount[] } | "rejected"> {
   const { stateToken, code, connectorId, ownerSubjectId } = validated;
 
-  const tokens = await ctx.exchanger.exchangeCode({ connectorId, code, redirectUri, state: stateToken });
+  const tokens = await ctx.exchanger.exchangeCode({ code, connectorId, redirectUri, state: stateToken });
 
   if (!tokens) {
     await emitCallbackAudit(ctx, res, {
       connectorId,
-      ownerSubjectId,
       error: errWithCode("provider_auth_code_invalid"),
-      outcome: "failed",
       failureReason: "code_exchange_failed",
+      outcome: "failed",
+      ownerSubjectId,
     });
     ctx.pdppError(
       res,
@@ -716,10 +720,10 @@ async function exchangeCodeAndRunInventory(
     const errCode = providerErrorCode(inventoryErr, "provider_auth_inventory_failed");
     await emitCallbackAudit(ctx, res, {
       connectorId,
-      ownerSubjectId,
       error: inventoryErr,
-      outcome: "failed",
       failureReason: "inventory_test_failed",
+      outcome: "failed",
+      ownerSubjectId,
     });
     ctx.pdppError(
       res,
@@ -733,13 +737,14 @@ async function exchangeCodeAndRunInventory(
     return "rejected";
   }
 
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   if (!accounts || accounts.length === 0) {
     await emitCallbackAudit(ctx, res, {
       connectorId,
-      ownerSubjectId,
       error: errWithCode("provider_auth_no_accounts"),
-      outcome: "failed",
       failureReason: "no_accounts_returned",
+      outcome: "failed",
+      ownerSubjectId,
     });
     ctx.pdppError(
       res,
@@ -750,7 +755,7 @@ async function exchangeCodeAndRunInventory(
     return "rejected";
   }
 
-  return { tokens, accounts };
+  return { accounts, tokens };
 }
 
 async function activateAllAccounts(
@@ -762,12 +767,13 @@ async function activateAllAccounts(
   const store = ctx.createRequestConnectorInstanceStore();
   const activated: ConnectorInstance[] = [];
   for (const account of accounts) {
+    // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
     const instance = await activateConnectorInstanceForAccount(store, ctx.exchanger, {
-      ownerSubjectId: validated.ownerSubjectId,
-      connectorId: validated.connectorId,
       account,
-      tokens,
+      connectorId: validated.connectorId,
       now: validated.now,
+      ownerSubjectId: validated.ownerSubjectId,
+      tokens,
     });
     activated.push(instance);
   }
@@ -805,38 +811,41 @@ export function mountRefProviderAuthCallback(app: AppLike, ctx: MountRefProvider
       const activatedInstances = await activateAllAccounts(ctx, validated, exchanged.tokens, exchanged.accounts);
 
       await emitCallbackAudit(ctx, res, {
-        connectorId: resolvedConnectorId,
-        connectionId: activatedInstances[0]?.connectorInstanceId ?? null,
         accountIds: activatedInstances.map((i) => i.connectorInstanceId),
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+        connectionId: activatedInstances[0]?.connectorInstanceId ?? null,
+        connectorId: resolvedConnectorId,
         outcome: "succeeded",
         ownerSubjectId: resolvedOwnerSubjectId,
       });
 
       res.status(201).json({
-        object: "provider_auth_callback",
-        connector_id: resolvedConnectorId,
         connections: activatedInstances.map((inst) => ({
           connection_id: inst.connectorInstanceId,
-          connector_instance_id: inst.connectorInstanceId,
           connector_id: inst.connectorId,
+          connector_instance_id: inst.connectorInstanceId,
           status: inst.status,
         })),
+        connector_id: resolvedConnectorId,
         next_step: {
           kind: "run_connection",
           reason: "Provider authorization completed and account inventory succeeded. The connection is now active.",
         },
+        object: "provider_auth_callback",
       });
     } catch (err) {
       await emitCallbackAudit(ctx, res, {
         connectorId:
           resolvedConnectorId ||
+          // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
           (params.stateToken ? (ctx.pendingAuthStore.get(params.stateToken)?.connectorId ?? null) : null),
+        error: err,
+        failureReason: "unexpected_error",
+        outcome: "failed",
         ownerSubjectId:
           resolvedOwnerSubjectId ||
+          // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
           (params.stateToken ? (ctx.pendingAuthStore.get(params.stateToken)?.ownerSubjectId ?? null) : null),
-        error: err,
-        outcome: "failed",
-        failureReason: "unexpected_error",
       });
       ctx.handleError(res, err);
     }

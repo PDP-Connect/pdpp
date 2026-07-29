@@ -2,7 +2,7 @@
 
 - [x] 1.1 Add `CONNECTOR_SURFACE_PATH_PREFIXES` / `CI_GATE_SELF_PATHS` and
       `changeTouchesConnectorSurface` / `changeTouchesCiGateSelf` (pure,
-      exported) to `scripts/ci-mode.mjs`.
+      exported) to `scripts/ci-mode.ts`.
 - [x] 1.2 `signoff` diffs `HEAD` against `--base` (default `origin/main`) via
       `git merge-base` + `git diff --no-renames --name-only -z`; throws (fails
       closed) if the diff cannot be computed.
@@ -11,7 +11,7 @@
       `coverage-policy-manifest-honesty.test.ts`, `connector-conformance.test.ts`)
       whenever the connector surface changed OR the gate's own files
       changed (`connectorGateRequired` is an OR of both conditions — a
-      change to `scripts/ci-mode.mjs` alone must still prove the conformance
+      change to `scripts/ci-mode.ts` alone must still prove the conformance
       suite it wraps passes, not just `ci:mode:test`); run `ci:mode:test`
       whenever the gate's own files changed, in addition to (not instead
       of) the conformance suite.
@@ -21,7 +21,7 @@
       description — the status is already SHA-bound via the API path.
 - [x] 1.6 Update `docs/reference/ci-mode.md` to describe the new mechanics.
 - [x] 1.7 Tests: `changeTouchesConnectorSurface`, `connectorGateRequired`
-      (including the gate-self-only case — `connectorGateRequired(['scripts/ci-mode.mjs'])`
+      (including the gate-self-only case — `connectorGateRequired(['scripts/ci-mode.ts'])`
       must be `true` even with no `packages/polyfill-connectors/` path in the
       diff), `changeTouchesCiGateSelf`, `ciModeSelfTestRequired` (all pure).
       Subprocess tests against an isolated temp git repo (bare "origin" +
@@ -33,7 +33,7 @@
       audits that root as well as the bundled polyfill manifests. Regression:
       a reference-manifest-only path makes both `changeTouchesConnectorSurface`
       and `connectorGateRequired` return true.
-- [x] 1.9 Run `stream-evidence-inventory.mjs --check` before local signoff
+- [x] 1.9 Run `stream-evidence-inventory.ts --check` before local signoff
       success whenever either shipped manifest root, the inventory producer,
       or the generated artifact changes. Subprocess regression: a
       reference-only `required` flip with a stale inventory fails before the
@@ -127,7 +127,7 @@
       packages/polyfill-connectors/src/{stream-evidence-strategy-manifest,coverage-policy-manifest-honesty,connector-conformance}.test.ts`
       — 12/12 pass.
 - [x] 5.2 `pnpm --dir packages/polyfill-connectors run typecheck` — clean.
-- [x] 5.3 `node --test scripts/ci-mode.test.mjs` — 18/18 pass, including
+- [x] 5.3 `node --test scripts/ci-mode.test.ts` — 18/18 pass, including
       stale-inventory, Unicode/newline, and both manifest rename-out
       subprocess regressions.
 - [x] 5.4 `pnpm --dir reference-implementation run typecheck` — clean.

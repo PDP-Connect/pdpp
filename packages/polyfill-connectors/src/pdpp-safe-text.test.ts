@@ -44,14 +44,14 @@ test("pdppSafeText rejects U+0000", () => {
   const result = pdppSafeText.safeParse("hello\u0000world");
   assert.equal(result.success, false);
   if (!result.success) {
-    const issue = result.error.issues[0];
+    const [issue] = result.error.issues;
     assert.ok(issue);
     assert.match(issue.message, /PDPP-safe Unicode text/);
   }
 });
 
 test("pdppSafeText rejects C0 controls (U+0001-U+0008)", () => {
-  for (let code = 0x01; code <= 0x08; code++) {
+  for (let code = 0x01; code <= 0x08; code += 1) {
     const char = String.fromCharCode(code);
     const result = pdppSafeText.safeParse(`prefix${char}suffix`);
     assert.equal(result.success, false, `U+${code.toString(16).padStart(4, "0")} should be rejected`);
@@ -64,7 +64,7 @@ test("pdppSafeText rejects U+000B (vertical tab) and U+000C (form feed)", () => 
 });
 
 test("pdppSafeText rejects C0 controls U+000E-U+001F", () => {
-  for (let code = 0x0e; code <= 0x1f; code++) {
+  for (let code = 0x0e; code <= 0x1f; code += 1) {
     const char = String.fromCharCode(code);
     const result = pdppSafeText.safeParse(`prefix${char}suffix`);
     assert.equal(result.success, false, `U+${code.toString(16).padStart(4, "0")} should be rejected`);
@@ -140,7 +140,7 @@ test("error message references blobs table for caller remediation", () => {
   const result = pdppSafeText.safeParse("bad\u0000");
   assert.equal(result.success, false);
   if (!result.success) {
-    const issue = result.error.issues[0];
+    const [issue] = result.error.issues;
     assert.ok(issue);
     assert.match(issue.message, /blobs table/);
   }

@@ -1,0 +1,6 @@
+# Build output is emitted from the existing JavaScript source before packing.
+# npm publishes dist/ through the package files allowlist; git does not track it.
+/dist/
+
+# npm pack output.
+*.tgz

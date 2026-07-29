@@ -82,14 +82,18 @@ async function getPlaygroundSession(
     response = await fetch(
       `${asUrl}/_ref/dev/playground/session${suffix}`,
       await withOwnerSessionCookie({
-        method: "POST",
         cache: "no-store",
+        method: "POST",
         // No body: the endpoint either returns the existing playground
         // session or lazy-launches one. The backend is selected via query so
         // this works through strict JSON body parsers and simple proxies.
       })
     );
   } catch (err) {
+    // ReferenceServerUnreachableError already threads `err` through to
+    // Error's native `cause` (see its constructor in owner-token.ts); Biome's
+    // syntactic check doesn't look inside a custom class to see that.
+    // biome-ignore lint/style/useErrorCause: see comment above.
     throw new ReferenceServerUnreachableError(`Cannot reach authorization server at ${asUrl}`, err);
   }
   if (!response.ok) {

@@ -5,16 +5,38 @@
   "formatter": {
     "lineWidth": 120
   },
+  // Object insertion order is observable through Object.keys, for-in, and
+  // JSON.stringify. Keep authored query/serialization order; this disables
+  // only Biome's source assist, not a linter rule.
+  "assist": {
+    "actions": {
+      "source": {
+        "useSortedKeys": "off"
+      }
+    }
+  },
   "files": {
     "ignoreUnknown": true,
-    // Ink Carbon component library: every .ts/.tsx under src/ is linted and
-    // formatted to the same Ultracite bar as the apps that consume it.
+    // The tracked-source contract includes authored JS/TS/config files and
+    // force-excludes dependency/build output, raw data, and generated or
+    // report artifacts.
     "includes": [
-      "src/**/*.ts",
-      "src/**/*.tsx",
-      "*.jsonc",
-      "*.json",
-      "!node_modules"
+      "!!**/node_modules",
+      "!!**/.git",
+      "!!**/dist",
+      "!!**/build",
+      "!!**/out",
+      "!!**/.next",
+      "!!**/.source",
+      "!!**/coverage",
+      "!!**/reports",
+      "!!**/report",
+      "!!**/*.snap",
+      "!!**/*.har",
+      "!!**/*.jsonl",
+      "!!**/docs/generated",
+      "!!**/next-env.d.ts",
+      "!!**/report.*.json"
     ]
   },
   "overrides": [

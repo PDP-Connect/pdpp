@@ -66,12 +66,13 @@ export function fieldForRole(roles: DeclaredFieldRoles, role: FieldRole): string
       return name;
     }
   }
-  return;
+  // biome-ignore lint/complexity/noUselessUndefined: Explicit undefined is required by noImplicitReturns and documents the public absent-result contract.
+  return undefined;
 }
 
 /** True when the map declares at least one role (i.e. typed slots are available). */
 export function hasDeclaredRoles(roles: DeclaredFieldRoles | null | undefined): boolean {
-  return roles != null && Object.keys(roles).length > 0;
+  return roles !== null && roles !== undefined && Object.keys(roles).length > 0;
 }
 
 /**

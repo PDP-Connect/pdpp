@@ -426,11 +426,11 @@ test("stripForbiddenControlChars: output always satisfies pdppSafeText (cross-co
   // The whole point of the helper: whatever it returns is acceptable to the
   // brand. Exercise every forbidden code point individually plus a mixed run.
   const forbiddenCodes: number[] = [];
-  for (let c = 0x00; c <= 0x1f; c++) {
+  for (let c = 0x00; c <= 0x1f; c += 1) {
     forbiddenCodes.push(c);
   }
   forbiddenCodes.push(0x7f);
-  for (let c = 0x80; c <= 0x9f; c++) {
+  for (let c = 0x80; c <= 0x9f; c += 1) {
     forbiddenCodes.push(c);
   }
   for (const code of forbiddenCodes) {

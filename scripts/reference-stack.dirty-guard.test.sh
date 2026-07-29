@@ -62,6 +62,14 @@ make_fixture() {
     mkdir -p stub-bin
     cat > stub-bin/docker <<STUB
 #!/usr/bin/env bash
+if [[ "\$1" == "network" && "\$2" == "inspect" ]]; then
+  [[ -f .pdpp-test-network-created ]]
+  exit \$?
+fi
+if [[ "\$1" == "network" && "\$2" == "create" ]]; then
+  : > .pdpp-test-network-created
+  exit 0
+fi
 echo "$DOCKER_SENTINEL \$*"
 exit 97
 STUB

@@ -7,7 +7,7 @@
  * The owner reported that heavy dashboard pages had no Next.js route-level
  * loading state. These structural assertions pin that every server-read
  * dashboard segment ships a `loading.tsx`, that the loading UI reuses the
- * shared `DashboardShell` (stable chrome, no bespoke layout), and that the
+ * shared `RecordroomShellWithPalette` (stable chrome, no bespoke layout), and that the
  * shared skeleton stays lightweight (a single `animate-pulse`, an accessible
  * live region) so a loading state never becomes a second source of slowness.
  *
@@ -48,7 +48,7 @@ const LOADING_FILES = [
   "audit/[traceId]/loading.tsx",
 ] as const;
 
-const DASHBOARD_SHELL_RE = /DashboardShell/;
+const DASHBOARD_SHELL_RE = /RecordroomShellWithPalette/;
 // Any relative depth up to the dashboard `components/` directory (one to four
 // `../` hops, since the deepest covered segment is sources/[connector]/[stream]/…).
 const SHARED_SKELETON_IMPORT_RE = /from "(?:\.\.\/)+components\/route-loading\.ts/;
@@ -63,9 +63,10 @@ test("every high-value sources/runs surface ships a route-level loading.tsx", ()
   }
 });
 
-test("each loading.tsx renders inside the shared DashboardShell for stable chrome", async () => {
-  for (const rel of LOADING_FILES) {
-    const src = await readFile(`${DASHBOARD}${rel}`, "utf8");
+test("each loading.tsx renders inside the shared Recordroom shell for stable chrome", async () => {
+  const sources = await Promise.all(LOADING_FILES.map((rel) => readFile(`${DASHBOARD}${rel}`, "utf8")));
+  for (const [index, rel] of LOADING_FILES.entries()) {
+    const src = sources[index] as string;
     assert.match(src, DASHBOARD_SHELL_RE, `${rel} must reuse DashboardShell`);
     assert.match(src, SHARED_SKELETON_IMPORT_RE, `${rel} must use the shared skeleton`);
   }

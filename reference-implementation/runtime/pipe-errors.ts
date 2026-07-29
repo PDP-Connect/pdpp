@@ -28,10 +28,12 @@ export function isClosedPipeWriteError(err: unknown): boolean {
   if (!err || typeof err !== "object") {
     return false;
   }
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const code = (err as { code?: unknown }).code;
   if (typeof code !== "string" || !CLOSED_PIPE_CODES.has(code)) {
     return false;
   }
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const syscall = (err as { syscall?: unknown }).syscall;
   if (syscall && syscall !== "write") {
     return false;

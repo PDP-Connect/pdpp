@@ -28,9 +28,9 @@ import { assembleExplorerData } from "./explore-data-assembler.ts";
 function summary(index: number): RefConnectorSummary {
   const connectorId = `connector_${index}`;
   return {
+    connection_id: `cin_${index}`,
     connector_display_name: `Connector ${index}`,
     connector_id: connectorId,
-    connection_id: `cin_${index}`,
     connector_instance_id: `cin_${index}`,
     display_name: `Source ${index}`,
     freshness: {},
@@ -74,81 +74,90 @@ test("empty-query Explore keeps first-paint endpoint call bounded", async () => 
   const metadataCalls: Array<{ connectorId: string; stream: string }> = [];
 
   const dataSource = {
-    kind: "live",
+    // biome-ignore lint/suspicious/useAwait: Async test callback contract is intentional; changing it would alter node:test completion semantics.
     aggregateRecordsByTime: async () => {
       throw new Error("aggregateRecordsByTime not stubbed");
     },
-    listExploreRecordBuckets: async () => {
-      throw new Error("listExploreRecordBuckets not stubbed");
-    },
-    listConnectorSummaries: async () => ({ object: "list", data: summaries, has_more: false }),
-    listConnectorManifests: async () => summaries.map((_, i) => manifest(i)),
-    listExploreTimeline: async (opts): Promise<ExploreTimelinePage> => {
-      timelineCalls.push({ limit: opts?.limit, cursor: opts?.cursor });
-      // Return a handful of records from two different connectors/streams so the
-      // assembler has real entries to process.
-      return {
-        object: "list",
-        data: [
-          {
-            object: "timeline_record" as const,
-            connector_id: "connector_0",
-            connector_instance_id: "cin_0",
-            stream: "alpha",
-            record_key: "r1",
-            emitted_at: "2026-01-01T00:00:00Z",
-            data: { title: "one" },
-          },
-          {
-            object: "timeline_record" as const,
-            connector_id: "connector_1",
-            connector_instance_id: "cin_1",
-            stream: "beta",
-            record_key: "r2",
-            emitted_at: "2026-01-02T00:00:00Z",
-            data: { title: "two" },
-          },
-        ],
-        has_more: false,
-        next_cursor: null,
-        snapshot_at: "2026-06-19T00:00:00Z",
-        new_since_snapshot: 0,
-      };
-    },
-    getStreamMetadata: async (connectorId: string, stream: string): Promise<StreamMetadata> => {
-      metadataCalls.push({ connectorId, stream });
-      return { name: stream, object: "stream_metadata", field_capabilities: {} };
-    },
-    queryRecords: async (connectorId: string, stream: string): Promise<RecordsPage> => {
-      queryCalls.push({ connectorId, stream });
-      return { data: [], has_more: false, object: "list" };
-    },
+    // biome-ignore lint/suspicious/useAwait: Async test callback contract is intentional; changing it would alter node:test completion semantics.
     getConnectorOverview: async () => {
       throw new Error("not used");
     },
+    // biome-ignore lint/suspicious/useAwait: Async test callback contract is intentional; changing it would alter node:test completion semantics.
     getDatasetSummary: async () => {
       throw new Error("not used");
     },
+    // biome-ignore lint/suspicious/useAwait: Async test callback contract is intentional; changing it would alter node:test completion semantics.
     getDeploymentDiagnostics: async () => {
       throw new Error("not used");
     },
     getGrantTimeline: async () => null,
+    // biome-ignore lint/suspicious/useAwait: Async test callback contract is intentional; changing it would alter node:test completion semantics.
     getRecord: async () => {
       throw new Error("not used");
     },
     getRunTimeline: async () => null,
+    // biome-ignore lint/suspicious/useAwait: Async test callback contract is intentional; changing it would alter node:test completion semantics.
+    getStreamMetadata: async (connectorId: string, stream: string): Promise<StreamMetadata> => {
+      metadataCalls.push({ connectorId, stream });
+      return { field_capabilities: {}, name: stream, object: "stream_metadata" };
+    },
     getTraceTimeline: async () => null,
     isHybridRetrievalAdvertised: async () => false,
     isSemanticRetrievalAdvertised: async () => false,
-    listGrants: async () => ({ object: "list", data: [], has_more: false }),
-    listPendingApprovals: async () => ({ object: "list", data: [], has_more: false }),
-    listRuns: async () => ({ object: "list", data: [], has_more: false }),
+    kind: "live",
+    listConnectorManifests: async () => summaries.map((_, i) => manifest(i)),
+    listConnectorSummaries: async () => ({ data: summaries, has_more: false, object: "list" }),
+    // biome-ignore lint/suspicious/useAwait: Async test callback contract is intentional; changing it would alter node:test completion semantics.
+    listExploreRecordBuckets: async () => {
+      throw new Error("listExploreRecordBuckets not stubbed");
+    },
+    // biome-ignore lint/suspicious/useAwait: Async test callback contract is intentional; changing it would alter node:test completion semantics.
+    listExploreTimeline: async (opts): Promise<ExploreTimelinePage> => {
+      timelineCalls.push({ cursor: opts?.cursor, limit: opts?.limit });
+      // Return a handful of records from two different connectors/streams so the
+      // assembler has real entries to process.
+      return {
+        data: [
+          {
+            connector_id: "connector_0",
+            connector_instance_id: "cin_0",
+            data: { title: "one" },
+            emitted_at: "2026-01-01T00:00:00Z",
+            object: "timeline_record" as const,
+            record_key: "r1",
+            stream: "alpha",
+          },
+          {
+            connector_id: "connector_1",
+            connector_instance_id: "cin_1",
+            data: { title: "two" },
+            emitted_at: "2026-01-02T00:00:00Z",
+            object: "timeline_record" as const,
+            record_key: "r2",
+            stream: "beta",
+          },
+        ],
+        has_more: false,
+        new_since_snapshot: 0,
+        next_cursor: null,
+        object: "list",
+        snapshot_at: "2026-06-19T00:00:00Z",
+      };
+    },
+    listGrants: async () => ({ data: [], has_more: false, object: "list" }),
+    listPendingApprovals: async () => ({ data: [], has_more: false, object: "list" }),
+    listRuns: async () => ({ data: [], has_more: false, object: "list" }),
     listStreams: async () => [],
-    listTraces: async () => ({ object: "list", data: [], has_more: false }),
-    refSearch: async () => ({ object: "search_result", traces: [], grants: [], runs: [], exact: null }),
-    searchRecordsHybrid: async () => ({ object: "list", data: [], has_more: false, warnings: [] }),
-    searchRecordsLexical: async () => ({ object: "list", data: [], has_more: false, warnings: [] }),
-    searchRecordsSemantic: async () => ({ object: "list", data: [], has_more: false, warnings: [] }),
+    listTraces: async () => ({ data: [], has_more: false, object: "list" }),
+    // biome-ignore lint/suspicious/useAwait: Async test callback contract is intentional; changing it would alter node:test completion semantics.
+    queryRecords: async (connectorId: string, stream: string): Promise<RecordsPage> => {
+      queryCalls.push({ connectorId, stream });
+      return { data: [], has_more: false, object: "list" };
+    },
+    refSearch: async () => ({ exact: null, grants: [], object: "search_result", runs: [], traces: [] }),
+    searchRecordsHybrid: async () => ({ data: [], has_more: false, object: "list", warnings: [] }),
+    searchRecordsLexical: async () => ({ data: [], has_more: false, object: "list", warnings: [] }),
+    searchRecordsSemantic: async () => ({ data: [], has_more: false, object: "list", warnings: [] }),
   } satisfies DashboardDataSource;
 
   const data = await assembleExplorerData({}, dataSource, "https://pdpp.example.test");

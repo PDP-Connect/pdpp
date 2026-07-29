@@ -81,12 +81,12 @@ interface AssistanceMessage {
 
 /** Structural view of the connector attention store the writer needs. */
 interface AttentionStore {
-  transitionAttention(args: { attentionId: string; to: AttentionLifecycle; now: string }): Promise<unknown>;
-  upsertAttention(args: {
+  transitionAttention: (args: { attentionId: string; to: AttentionLifecycle; now: string }) => Promise<unknown>;
+  upsertAttention: (args: {
     record: AttentionRecord;
     connectorId: string;
     connectorInstanceId: string | null;
-  }): Promise<unknown>;
+  }) => Promise<unknown>;
 }
 
 interface ConsoleLike {
@@ -244,20 +244,20 @@ function buildAssistanceAttentionRecord({
   runId,
 }: BuildAssistanceAttentionRecordArgs): AttentionRecord {
   return createAttention({
-    id: attentionId,
-    dedupe_key: dedupeKey,
-    connection_id: connectionId,
-    run_id: runId,
-    reason_code: msg.reason_code || msg.kind || "assistance_required",
-    progress_posture: msg.progress_posture || "blocked",
-    owner_action: msg.owner_action,
-    response_contract: msg.response_contract,
-    sensitivity: sensitivityForAssistance(msg),
-    auto_detect: msg.auto_detect === true,
-    now,
-    expires_at: expiresAtFromTimeout(Date.parse(now), msg.timeout_seconds),
     action_target: actionTargetForAssistance(msg),
-    metadata: { stream: msg.stream || null, kind: msg.kind || null },
+    auto_detect: msg.auto_detect === true,
+    connection_id: connectionId,
+    dedupe_key: dedupeKey,
+    expires_at: expiresAtFromTimeout(Date.parse(now), msg.timeout_seconds),
+    id: attentionId,
+    metadata: { kind: msg.kind || null, stream: msg.stream || null },
+    now,
+    owner_action: msg.owner_action,
+    progress_posture: msg.progress_posture || "blocked",
+    reason_code: msg.reason_code || msg.kind || "assistance_required",
+    response_contract: msg.response_contract,
+    run_id: runId,
+    sensitivity: sensitivityForAssistance(msg),
   });
 }
 
@@ -294,6 +294,7 @@ export function createAttentionWriter(opts: AttentionWriterOptions) {
     throw new Error("attention-writer: runId is required");
   }
   const connectionId = String(opts.connectionId || connectorId).trim();
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const store = opts.store;
   if (!store || typeof store.upsertAttention !== "function" || typeof store.transitionAttention !== "function") {
     throw new Error("attention-writer: store must implement upsertAttention and transitionAttention");
@@ -318,7 +319,7 @@ export function createAttentionWriter(opts: AttentionWriterOptions) {
   const byRequestId = new Map<string, string>(); // requestId -> attentionId
 
   function trackOpen(dedupeKey: string, attentionId: string, requestId: string, record: AttentionRecord): void {
-    open.set(attentionId, { dedupeKey, requestId, record });
+    open.set(attentionId, { dedupeKey, record, requestId });
     if (requestId) {
       byRequestId.set(requestId, attentionId);
     }
@@ -335,9 +336,9 @@ export function createAttentionWriter(opts: AttentionWriterOptions) {
   async function safeUpsert(record: AttentionRecord): Promise<AttentionRecord | null> {
     try {
       await store.upsertAttention({
-        record,
         connectorId,
         connectorInstanceId,
+        record,
       });
       return record;
     } catch (err) {
@@ -349,7 +350,7 @@ export function createAttentionWriter(opts: AttentionWriterOptions) {
 
   async function safeTransition(attentionId: string, to: AttentionLifecycle): Promise<unknown> {
     try {
-      return await store.transitionAttention({ attentionId, to, now: nowIso() });
+      return await store.transitionAttention({ attentionId, now: nowIso(), to });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       log.warn?.(`[attention-writer] transition ${attentionId} -> ${to} failed: ${message}`);
@@ -374,50 +375,25 @@ export function createAttentionWriter(opts: AttentionWriterOptions) {
   }
 
   return {
+    /** Test/inspection hook — read-only view of tracked rows. */
+    _trackedForTests() {
+      return {
+        byRequestId: new Map(byRequestId),
+        open: new Map(open),
+      };
+    },
+
     /**
-     * Persist an INTERACTION request as a durable attention row. Called
-     * by the runtime immediately after validation, before the wait for
-     * INTERACTION_RESPONSE. Returns the row id (or null when the store
-     * write failed; the runtime keeps running either way).
+     * Look up the tracked attentionId for a given runtime request id
+     * (interaction request_id or assistance_request_id). The push fanout
+     * seam uses this to address `recordNotificationOutcome` without
+     * having to know the writer's id naming scheme.
      */
-    async recordInteractionRequest(msg: InteractionMessage): Promise<string | null> {
-      const requestId = String(msg.request_id || "").trim();
+    attentionIdForRequest(requestId: string): string | null {
       if (!requestId) {
         return null;
       }
-      const kind = msg.kind;
-      const dedupeKey = dedupeKeyForInteraction(msg);
-      const attentionId = makeAttentionId(requestId);
-      const now = nowIso();
-      let record: AttentionRecord;
-      try {
-        record = createAttention({
-          id: attentionId,
-          dedupe_key: dedupeKey,
-          connection_id: connectionId,
-          run_id: runId,
-          reason_code: reasonCodeForInteractionKind(kind),
-          progress_posture: "blocked",
-          owner_action: ownerActionForInteractionKind(kind),
-          response_contract: "response_required",
-          sensitivity: sensitivityForInteractionKind(kind),
-          auto_detect: false,
-          now,
-          expires_at: expiresAtFromTimeout(Date.parse(now), msg.timeout_seconds),
-          action_target: actionTargetForInteractionKind(kind),
-          metadata: { stream: msg.stream || null, kind },
-        });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        log.warn?.(`[attention-writer] createAttention failed for interaction ${requestId}: ${message}`);
-        return null;
-      }
-      const upserted = await safeUpsert(record);
-      if (upserted) {
-        trackOpen(dedupeKey, attentionId, requestId, upserted);
-        return attentionId;
-      }
-      return null;
+      return byRequestId.get(requestId) || null;
     },
 
     /**
@@ -457,50 +433,51 @@ export function createAttentionWriter(opts: AttentionWriterOptions) {
       }
       return null;
     },
-
     /**
-     * Transition the attention row matching `requestId` (the
-     * connector-supplied INTERACTION request_id or
-     * ASSISTANCE.assistance_request_id) to a terminal lifecycle. Returns
-     * `true` if a tracked row was transitioned, `false` if there was no
-     * tracked row (e.g. the upsert failed earlier or the row was already
-     * drained).
+     * Persist an INTERACTION request as a durable attention row. Called
+     * by the runtime immediately after validation, before the wait for
+     * INTERACTION_RESPONSE. Returns the row id (or null when the store
+     * write failed; the runtime keeps running either way).
      */
-    async resolveByRequestId(requestId: string, status: TerminalStatus): Promise<boolean> {
+    async recordInteractionRequest(msg: InteractionMessage): Promise<string | null> {
+      const requestId = String(msg.request_id || "").trim();
       if (!requestId) {
-        return false;
+        return null;
       }
-      const attentionId = byRequestId.get(requestId);
-      if (!attentionId) {
-        return false;
+      // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
+      const kind = msg.kind;
+      const dedupeKey = dedupeKeyForInteraction(msg);
+      const attentionId = makeAttentionId(requestId);
+      const now = nowIso();
+      let record: AttentionRecord;
+      try {
+        record = createAttention({
+          action_target: actionTargetForInteractionKind(kind),
+          auto_detect: false,
+          connection_id: connectionId,
+          dedupe_key: dedupeKey,
+          expires_at: expiresAtFromTimeout(Date.parse(now), msg.timeout_seconds),
+          id: attentionId,
+          metadata: { kind, stream: msg.stream || null },
+          now,
+          owner_action: ownerActionForInteractionKind(kind),
+          progress_posture: "blocked",
+          reason_code: reasonCodeForInteractionKind(kind),
+          response_contract: "response_required",
+          run_id: runId,
+          sensitivity: sensitivityForInteractionKind(kind),
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        log.warn?.(`[attention-writer] createAttention failed for interaction ${requestId}: ${message}`);
+        return null;
       }
-      const entry = open.get(attentionId);
-      if (!entry) {
-        return false;
+      const upserted = await safeUpsert(record);
+      if (upserted) {
+        trackOpen(dedupeKey, attentionId, requestId, upserted);
+        return attentionId;
       }
-      const lifecycle = lifecycleForTerminalStatus(status);
-      const next = await safeTransition(attentionId, lifecycle);
-      untrack(attentionId);
-      return next !== null;
-    },
-
-    /**
-     * Drain all still-open attention rows on connector exit. Called from
-     * the runtime's `closeOpenStructuredAssistance` so a run that crashes
-     * or is force-cancelled leaves no orphaned `open` rows polluting
-     * `needs_attention` indefinitely.
-     */
-    async resolveAllOpen(status: TerminalStatus): Promise<string[]> {
-      const lifecycle = lifecycleForTerminalStatus(status);
-      const drained: string[] = [];
-      for (const [attentionId] of [...open.entries()]) {
-        const next = await safeTransition(attentionId, lifecycle);
-        untrack(attentionId);
-        if (next) {
-          drained.push(attentionId);
-        }
-      }
-      return drained;
+      return null;
     },
 
     /**
@@ -531,8 +508,8 @@ export function createAttentionWriter(opts: AttentionWriterOptions) {
       let next: AttentionRecord;
       try {
         next = recordNotificationOutcome(entry.record, {
-          outcome,
           now: nowIso(),
+          outcome,
           reason: reason ?? null,
         });
       } catch (err) {
@@ -548,24 +525,49 @@ export function createAttentionWriter(opts: AttentionWriterOptions) {
     },
 
     /**
-     * Look up the tracked attentionId for a given runtime request id
-     * (interaction request_id or assistance_request_id). The push fanout
-     * seam uses this to address `recordNotificationOutcome` without
-     * having to know the writer's id naming scheme.
+     * Drain all still-open attention rows on connector exit. Called from
+     * the runtime's `closeOpenStructuredAssistance` so a run that crashes
+     * or is force-cancelled leaves no orphaned `open` rows polluting
+     * `needs_attention` indefinitely.
      */
-    attentionIdForRequest(requestId: string): string | null {
-      if (!requestId) {
-        return null;
+    async resolveAllOpen(status: TerminalStatus): Promise<string[]> {
+      const lifecycle = lifecycleForTerminalStatus(status);
+      const drained: string[] = [];
+      for (const [attentionId] of [...open.entries()]) {
+        // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
+        const next = await safeTransition(attentionId, lifecycle);
+        untrack(attentionId);
+        if (next) {
+          drained.push(attentionId);
+        }
       }
-      return byRequestId.get(requestId) || null;
+      return drained;
     },
 
-    /** Test/inspection hook — read-only view of tracked rows. */
-    _trackedForTests() {
-      return {
-        open: new Map(open),
-        byRequestId: new Map(byRequestId),
-      };
+    /**
+     * Transition the attention row matching `requestId` (the
+     * connector-supplied INTERACTION request_id or
+     * ASSISTANCE.assistance_request_id) to a terminal lifecycle. Returns
+     * `true` if a tracked row was transitioned, `false` if there was no
+     * tracked row (e.g. the upsert failed earlier or the row was already
+     * drained).
+     */
+    async resolveByRequestId(requestId: string, status: TerminalStatus): Promise<boolean> {
+      if (!requestId) {
+        return false;
+      }
+      const attentionId = byRequestId.get(requestId);
+      if (!attentionId) {
+        return false;
+      }
+      const entry = open.get(attentionId);
+      if (!entry) {
+        return false;
+      }
+      const lifecycle = lifecycleForTerminalStatus(status);
+      const next = await safeTransition(attentionId, lifecycle);
+      untrack(attentionId);
+      return next !== null;
     },
   };
 }

@@ -16,11 +16,11 @@ export default async function SandboxTraceDetailPage({ params }: { params: Promi
   if (!envelope) {
     notFound();
   }
-  const first = envelope.events[0];
+  const [first] = envelope.events;
   return (
     <DashboardShell active="traces" mode="mock-owner">
       <TimelineDetailView
-        breadcrumbs={[{ label: "Traces", href: sandboxRoutes.section.traces }, { label: "Trace" }]}
+        breadcrumbs={[{ href: sandboxRoutes.section.traces, label: "Traces" }, { label: "Trace" }]}
         cliCommand={`pdpp ref trace show ${traceId}`}
         description={
           <>

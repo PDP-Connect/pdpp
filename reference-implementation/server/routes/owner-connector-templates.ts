@@ -22,13 +22,13 @@ interface RouteRequest {
 }
 
 interface RouteResponse {
-  json(body: unknown): unknown;
+  json: (body: unknown) => unknown;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
 
 interface AppLike {
-  get(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  get: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
 }
 
 interface ConnectorManifestLike {
@@ -55,24 +55,24 @@ interface ConnectorInstanceRow {
 }
 
 interface ConnectorInstanceStore {
-  listByOwner(ownerSubjectId: string): Promise<ConnectorInstanceRow[]> | ConnectorInstanceRow[];
+  listByOwner: (ownerSubjectId: string) => Promise<ConnectorInstanceRow[]> | ConnectorInstanceRow[];
 }
 
 export interface MountOwnerConnectorTemplatesContext {
-  canonicalConnectorKey(value: string | null | undefined): string | null;
-  createRequestConnectorInstanceStore(): ConnectorInstanceStore;
-  getConnectorManifest(connectorId: string): Promise<ConnectorManifestLike | null> | ConnectorManifestLike | null;
-  getOwnerTokenSubjectId(req: unknown): string;
-  handleError(res: unknown, err: unknown): void;
-  listReferenceLocalConnectorCatalogManifests(): readonly ConnectorManifestLike[];
-  listRegisteredConnectorIds(): Promise<readonly string[]> | readonly string[];
-  projectStorageDisplayName(
+  canonicalConnectorKey: (value: string | null | undefined) => string | null;
+  createRequestConnectorInstanceStore: () => ConnectorInstanceStore;
+  getConnectorManifest: (connectorId: string) => Promise<ConnectorManifestLike | null> | ConnectorManifestLike | null;
+  getOwnerTokenSubjectId: (req: unknown) => string;
+  handleError: (res: unknown, err: unknown) => void;
+  listReferenceLocalConnectorCatalogManifests: () => readonly ConnectorManifestLike[];
+  listRegisteredConnectorIds: () => Promise<readonly string[]> | readonly string[];
+  projectStorageDisplayName: (
     displayName: string | null | undefined,
     options: { connectorId?: string | null; connectorInstanceId?: string | null }
-  ): string | null;
+  ) => string | null;
   requireOwner: MiddlewareHandler;
   requireToken: MiddlewareHandler;
-  resolveResource(req: unknown): string;
+  resolveResource: (req: unknown) => string;
 }
 
 function stripTrailingSlash(value: string): string {
@@ -106,18 +106,18 @@ function projectConnectionSummary(
     connectorInstanceId: instance.connectorInstanceId,
   });
   return {
-    object: "owner_connection_summary",
     connection_id: instance.connectorInstanceId,
-    connector_instance_id: instance.connectorInstanceId,
     connector_id: connectorKey,
+    connector_instance_id: instance.connectorInstanceId,
     connector_key: connectorKey,
+    created_at: instance.createdAt ?? null,
     display_name: instance.displayName ?? null,
     label_status: ownerMeaningfulName ? "owner_set" : "fallback",
-    status: instance.status ?? null,
-    source_kind: instance.sourceKind ?? null,
-    created_at: instance.createdAt ?? null,
-    updated_at: instance.updatedAt ?? null,
+    object: "owner_connection_summary",
     revoked_at: instance.revokedAt ?? null,
+    source_kind: instance.sourceKind ?? null,
+    status: instance.status ?? null,
+    updated_at: instance.updatedAt ?? null,
   };
 }
 
@@ -131,32 +131,32 @@ function buildTemplateSupportedActions(args: {
     return [
       {
         family: "initiate_connection",
-        status: "supported",
         method: args.plan.ownerAgentIntent.method,
-        url: `${rs}/v1/owner/connections/intents`,
         reason: `${args.plan.ownerAgentIntent.reason} Body: { connector_id, display_name? }.`,
+        status: "supported",
+        url: `${rs}/v1/owner/connections/intents`,
       },
     ];
   }
   return [
     {
       family: "initiate_connection",
-      status: "unsupported",
       method: null,
-      url: null,
       reason: args.plan.ownerAgentIntent.reason,
+      status: "unsupported",
+      url: null,
     },
   ];
 }
 
 function projectSetupPlan(plan: ReturnType<typeof buildConnectionSetupPlan>): Record<string, unknown> {
   return {
-    setup_modality: plan.setupModality,
-    support_state: plan.supportState,
+    deployment_readiness: plan.deploymentReadiness,
     next_step_kind: plan.nextStepKind,
     proof_gate: plan.proofGate,
     runbook_path: plan.runbookPath,
-    deployment_readiness: plan.deploymentReadiness,
+    setup_modality: plan.setupModality,
+    support_state: plan.supportState,
     validation: plan.validationMode,
   };
 }
@@ -177,17 +177,17 @@ function projectTemplate(
     projectConnectionSummary(ctx, instance)
   );
   return {
-    object: "owner_connector_template",
-    connector_id: connectorKey,
-    connector_key: connectorKey,
-    display_name: displayNameForTemplate(connectorKey, manifest),
-    version: manifest.version ?? null,
-    connector_modality: modality,
-    setup_plan: projectSetupPlan(plan),
-    stream_count: Array.isArray(manifest.streams) ? manifest.streams.length : 0,
     connection_count: connections.length,
     connections,
+    connector_id: connectorKey,
+    connector_key: connectorKey,
+    connector_modality: modality,
+    display_name: displayNameForTemplate(connectorKey, manifest),
+    object: "owner_connector_template",
+    setup_plan: projectSetupPlan(plan),
+    stream_count: Array.isArray(manifest.streams) ? manifest.streams.length : 0,
     supported_actions: buildTemplateSupportedActions({ connectorKey, plan, resource }),
+    version: manifest.version ?? null,
   };
 }
 
@@ -202,6 +202,7 @@ async function collectConnectorTemplates(ctx: MountOwnerConnectorTemplatesContex
   for (const connectorId of await ctx.listRegisteredConnectorIds()) {
     const connectorKey = ctx.canonicalConnectorKey(connectorId) ?? connectorId;
     try {
+      // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
       const manifest = await ctx.getConnectorManifest(connectorKey);
       if (manifest) {
         byConnectorKey.set(connectorKey, manifest);
@@ -253,10 +254,10 @@ export function mountOwnerConnectorTemplates(app: AppLike, ctx: MountOwnerConnec
           connectionsByConnectorKey(ctx, ownerSubjectId),
         ]);
         res.json({
-          object: "list",
           data: templates
             .map((manifest) => projectTemplate(ctx, manifest, connections, resource))
             .filter((item): item is Record<string, unknown> => Boolean(item)),
+          object: "list",
         });
       } catch (err) {
         ctx.handleError(res, err);

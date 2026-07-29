@@ -112,42 +112,23 @@
             "type": "number"
           },
           "accuracy_meters": {
-            "type": [
-              "number",
-              "null"
-            ]
+            "type": ["number", "null"]
           },
           "altitude_m": {
-            "type": [
-              "number",
-              "null"
-            ]
+            "type": ["number", "null"]
           },
           "velocity_mps": {
-            "type": [
-              "number",
-              "null"
-            ]
+            "type": ["number", "null"]
           },
           "activity_type": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "segment_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "source_format": {
             "type": "string",
-            "enum": [
-              "legacy_records",
-              "semantic_segments",
-              "timeline_objects"
-            ]
+            "enum": ["legacy_records", "semantic_segments", "timeline_objects"]
           },
           "source_kind": {
             "type": "string",
@@ -169,9 +150,7 @@
           "source_kind"
         ]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "timestamp",
       "consent_time_field": "timestamp",
       "selection": {
@@ -181,21 +160,12 @@
       "incremental": true,
       "query": {
         "range_filters": {
-          "timestamp": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "timestamp": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "timestamp"
-          ],
-          "group_by": [
-            "activity_type"
-          ]
+          "group_by_time": ["timestamp"],
+          "group_by": ["activity_type"]
         }
       },
       "coverage_strategy": "checkpoint_window",
@@ -221,77 +191,41 @@
             "x_pdpp_role": "event-time"
           },
           "end_time": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time"
           },
           "segment_kind": {
             "type": "string",
-            "enum": [
-              "path",
-              "visit",
-              "activity"
-            ],
+            "enum": ["path", "visit", "activity"],
             "x_pdpp_role": "primary-title"
           },
           "source_format": {
             "type": "string",
-            "enum": [
-              "legacy_records",
-              "semantic_segments",
-              "timeline_objects"
-            ]
+            "enum": ["legacy_records", "semantic_segments", "timeline_objects"]
           },
           "latitude": {
-            "type": [
-              "number",
-              "null"
-            ]
+            "type": ["number", "null"]
           },
           "longitude": {
-            "type": [
-              "number",
-              "null"
-            ]
+            "type": ["number", "null"]
           },
           "place_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "semantic_type": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "secondary"
           },
           "activity_type": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "probability": {
-            "type": [
-              "number",
-              "null"
-            ]
+            "type": ["number", "null"]
           }
         },
-        "required": [
-          "id",
-          "start_time",
-          "segment_kind",
-          "source_format"
-        ]
+        "required": ["id", "start_time", "segment_kind", "source_format"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "start_time",
       "consent_time_field": "start_time",
       "selection": {
@@ -301,27 +235,13 @@
       "incremental": true,
       "query": {
         "range_filters": {
-          "start_time": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "end_time": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "start_time": ["gte", "gt", "lte", "lt"],
+          "end_time": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "start_time"
-          ],
-          "group_by": [
-            "segment_kind"
-          ]
+          "group_by_time": ["start_time"],
+          "group_by": ["segment_kind"]
         }
       },
       "coverage_strategy": "checkpoint_window",

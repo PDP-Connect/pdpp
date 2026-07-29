@@ -86,7 +86,7 @@ export function resolveEnrolledSourceKind(args: {
       `Cannot enroll connector '${connectorId}': no registered manifest declares a 'filesystem' or 'browser' binding, so the source kind cannot be resolved.`
     );
   }
-  if (requestedSourceKind != null && requestedSourceKind !== derived) {
+  if (requestedSourceKind !== null && requestedSourceKind !== undefined && requestedSourceKind !== derived) {
     throw new SourceKindResolutionError(
       `source_kind '${requestedSourceKind}' contradicts connector '${connectorId}' manifest bindings (expected '${derived}').`,
       "source_kind"

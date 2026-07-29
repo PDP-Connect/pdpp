@@ -27,8 +27,8 @@ export async function getLatestConnectorRunSummary(
     return null;
   }
   const filters = status
-    ? { sourceKind: "connector", sourceId: connectorId, status, limit: 1 }
-    : { sourceKind: "connector", sourceId: connectorId, limit: 1 };
+    ? { limit: 1, sourceId: connectorId, sourceKind: "connector", status }
+    : { limit: 1, sourceId: connectorId, sourceKind: "connector" };
   const { summaries } = await listSpineCorrelations("run", filters);
   const summary = summaries[0] || null;
   if (!summary) {

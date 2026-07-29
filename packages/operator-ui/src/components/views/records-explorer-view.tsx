@@ -138,10 +138,10 @@ export function RecordsExplorerView({ data, routes }: { data: RecordsExplorerDat
           peek={
             <ExplorerPeek
               closeHref={buildExplorerHref(routes, {
-                query,
                 connectionIds: selectedConnectionIds,
-                streams: selectedStreams,
+                query,
                 since,
+                streams: selectedStreams,
                 until,
               })}
               peek={peek}
@@ -182,58 +182,58 @@ function buildExplorerFilterItems({
     const conn = connections.find((c) => c.connectionId === id);
     filterItems.push({
       label: connectionLabel,
+      // Drop just this connection, preserving query, the other connections,
+      // streams, and the date window.
+      removeHref: buildExplorerHref(routes, {
+        connectionIds: selectedConnectionIds.filter((c) => c !== id),
+        query,
+        since,
+        streams: selectedStreams,
+        until,
+      }),
       value: query
         ? formatConnectorKeyForDisplay(conn?.connectorId ?? id)
         : formatConnectorNameForDisplay({
             connectorId: conn?.connectorId ?? id,
             displayName: conn?.displayName,
           }),
-      // Drop just this connection, preserving query, the other connections,
-      // streams, and the date window.
-      removeHref: buildExplorerHref(routes, {
-        query,
-        connectionIds: selectedConnectionIds.filter((c) => c !== id),
-        streams: selectedStreams,
-        since,
-        until,
-      }),
     });
   }
   for (const stream of selectedStreams) {
     filterItems.push({
       label: "stream",
-      value: stream,
       removeHref: buildExplorerHref(routes, {
-        query,
         connectionIds: selectedConnectionIds,
-        streams: selectedStreams.filter((s) => s !== stream),
+        query,
         since,
+        streams: selectedStreams.filter((s) => s !== stream),
         until,
       }),
+      value: stream,
     });
   }
   if (since) {
     filterItems.push({
       label: "since",
-      value: since,
       removeHref: buildExplorerHref(routes, {
-        query,
         connectionIds: selectedConnectionIds,
+        query,
         streams: selectedStreams,
         until,
       }),
+      value: since,
     });
   }
   if (until) {
     filterItems.push({
       label: "until",
-      value: until,
       removeHref: buildExplorerHref(routes, {
-        query,
         connectionIds: selectedConnectionIds,
-        streams: selectedStreams,
+        query,
         since,
+        streams: selectedStreams,
       }),
+      value: until,
     });
   }
   return filterItems;
@@ -400,12 +400,12 @@ function ExplorerFeedContent({
                   <ExplorerCard
                     entry={entry}
                     peekHref={buildExplorerHref(routes, {
-                      query,
                       connectionIds: selectedConnectionIds,
-                      streams: selectedStreams,
-                      since,
-                      until,
                       peek: key,
+                      query,
+                      since,
+                      streams: selectedStreams,
+                      until,
                     })}
                     recordHref={routes.record(entry.connectionId ?? entry.connectorId, entry.stream, entry.recordId)}
                     selected={peekId === key}
@@ -499,10 +499,10 @@ function ExplorerControls({
         </Button>
         {hasDateWindow ? (
           <Link
-            className={`${buttonVariants({ variant: "ghost", size: "sm" })} mt-5`}
+            className={`${buttonVariants({ size: "sm", variant: "ghost" })} mt-5`}
             href={buildExplorerHref(routes, {
-              query,
               connectionIds: selectedConnectionIds,
+              query,
               streams: selectedStreams,
             })}
           >
@@ -516,10 +516,10 @@ function ExplorerControls({
         {([1, 7, 30, 90] as const).map((d) => {
           const { since: s, until: u } = defaultWindow(d);
           const href = buildExplorerHref(routes, {
-            query,
             connectionIds: selectedConnectionIds,
-            streams: selectedStreams,
+            query,
             since: s,
+            streams: selectedStreams,
             until: u,
           });
           return (
@@ -574,10 +574,10 @@ function ConnectionFacets({
           ? selectedConnectionIds.filter((id) => id !== c.connectionId)
           : [...selectedConnectionIds, c.connectionId];
         const href = buildExplorerHref(routes, {
-          query,
           connectionIds: nextIds,
-          streams: selectedStreams,
+          query,
           since,
+          streams: selectedStreams,
           until,
         });
         return (
@@ -640,10 +640,10 @@ function StreamFacets({
         const isOn = selectedStreams.includes(name);
         const nextStreams = isOn ? selectedStreams.filter((s) => s !== name) : [...selectedStreams, name];
         const href = buildExplorerHref(routes, {
-          query,
           connectionIds: selectedConnectionIds,
-          streams: nextStreams,
+          query,
           since,
+          streams: nextStreams,
           until,
         });
         return (
@@ -727,16 +727,16 @@ function BlobAffordance({ affordance }: { affordance: ExplorerBlobAffordance }) 
 // is introduced. The marker is a true 1px hairline (see ExplorerCard), never a
 // decorative side-stripe.
 const KIND_RULE_TONE: Record<RecordKind, string> = {
-  message: "before:bg-[color:var(--human)]",
-  money: "before:bg-primary",
-  event: "before:bg-primary",
   // Activity and location are surfaces of the person's lived life, so they take
   // the warm copper rule alongside message; reader is content and stays neutral.
   activity: "before:bg-[color:var(--human)]",
+  event: "before:bg-primary",
+  generic: "before:bg-border",
   location: "before:bg-[color:var(--human)]",
+  message: "before:bg-[color:var(--human)]",
+  money: "before:bg-primary",
   reader: "before:bg-border",
   titled: "before:bg-border",
-  generic: "before:bg-border",
 };
 
 // Card eyebrow: connector / stream / connection, shared across every kind so a

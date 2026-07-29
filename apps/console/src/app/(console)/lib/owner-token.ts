@@ -172,12 +172,9 @@ export async function readDashboardOwnerSession() {
 }
 
 export class ReferenceServerUnreachableError extends Error {
-  readonly cause: unknown;
-
   constructor(message: string, cause: unknown) {
-    super(message);
+    super(message, { cause });
     this.name = "ReferenceServerUnreachableError";
-    this.cause = cause;
   }
 }
 
@@ -238,13 +235,17 @@ async function mintOwnerToken(): Promise<string> {
     deviceRes = await fetch(
       `${asUrl}/oauth/device_authorization`,
       await withOwnerSessionCookie({
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ client_id: CLIENT_ID }),
         cache: "no-store",
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
       })
     );
   } catch (err) {
+    // ReferenceServerUnreachableError already threads `err` through to
+    // Error's native `cause` (see its constructor in owner-token.ts); Biome's
+    // syntactic check doesn't look inside a custom class to see that.
+    // biome-ignore lint/style/useErrorCause: see comment above.
     throw new ReferenceServerUnreachableError(`Cannot reach authorization server at ${asUrl}`, err);
   }
   if (!deviceRes.ok) {
@@ -259,10 +260,10 @@ async function mintOwnerToken(): Promise<string> {
   const approveRes = await fetch(
     `${asUrl}/device/approve`,
     await withOwnerSessionCookie({
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ user_code: device.user_code }),
       cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
     })
   );
   if (!approveRes.ok) {
@@ -276,14 +277,14 @@ async function mintOwnerToken(): Promise<string> {
   const tokenRes = await fetch(
     `${asUrl}/oauth/token`,
     await withOwnerSessionCookie({
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-        device_code: device.device_code,
         client_id: CLIENT_ID,
+        device_code: device.device_code,
+        grant_type: "urn:ietf:params:oauth:grant-type:device_code",
       }),
       cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
     })
   );
   if (!tokenRes.ok) {

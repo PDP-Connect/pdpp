@@ -5,6 +5,7 @@ import type {
   BrowserSurface,
   BrowserSurfaceLease,
   BrowserSurfaceLeaseManager,
+  // biome-ignore lint/correctness/noUnresolvedImports: Biome cannot resolve this installed package export; Node and TypeScript resolve it.
 } from "@opendatalabs/remote-surface/leases";
 import type {
   BrowserSurfaceReadinessProbe,
@@ -28,8 +29,8 @@ interface WindowSettleReconciliationDeps {
 }
 
 export interface WindowSettleReconciliation {
-  reconcileAtBoot(activeRunIds: ReadonlySet<string>): Promise<void>;
-  retireDeferredLease(lease: BrowserSurfaceLease): Promise<void>;
+  reconcileAtBoot: (activeRunIds: ReadonlySet<string>) => Promise<void>;
+  retireDeferredLease: (lease: BrowserSurfaceLease) => Promise<void>;
 }
 
 function isWindowSettleUnavailable(
@@ -108,11 +109,13 @@ export function createWindowSettleReconciliation(deps: WindowSettleReconciliatio
 
   return {
     async reconcileAtBoot(activeRunIds) {
+      // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
       const leaseManager = deps.leaseManager;
       if (!(leaseManager && deps.readinessProbe && deps.shouldReconcile())) {
         return;
       }
       for (const surface of leaseManager.listSurfaces()) {
+        // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
         await reconcileSurface(leaseManager, surface, activeRunIds);
       }
     },

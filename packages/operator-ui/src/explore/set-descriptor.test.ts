@@ -45,11 +45,11 @@ import {
 
 test("relevance_bounded: feedHeaderLabel returns 'Top matches', never 'newest first'", () => {
   const descriptor: RelevanceBoundedDescriptor = {
+    completeness: "bounded_sample",
+    cursor: null,
+    has_more: false,
     kind: "relevance_bounded",
     ordering: "relevance",
-    completeness: "bounded_sample",
-    has_more: false,
-    cursor: null,
   };
   const label = feedHeaderLabel(descriptor);
   assert.equal(label, "Top matches");
@@ -64,11 +64,11 @@ test("relevance_bounded: feedHeaderLabel returns 'Top matches', never 'newest fi
 
 test("relevance_bounded: descriptorIsTimeOrdered returns false", () => {
   const descriptor: RelevanceBoundedDescriptor = {
+    completeness: "bounded_sample",
+    cursor: null,
+    has_more: false,
     kind: "relevance_bounded",
     ordering: "relevance",
-    completeness: "bounded_sample",
-    has_more: false,
-    cursor: null,
   };
   assert.equal(descriptorIsTimeOrdered(descriptor), false);
 });
@@ -76,11 +76,11 @@ test("relevance_bounded: descriptorIsTimeOrdered returns false", () => {
 test("relevance_bounded: descriptorHasMore always returns false (no sound deep pagination)", () => {
   // has_more is false: the type enforces this structurally.
   const descriptor: RelevanceBoundedDescriptor = {
+    completeness: "bounded_sample",
+    cursor: null,
+    has_more: false,
     kind: "relevance_bounded",
     ordering: "relevance",
-    completeness: "bounded_sample",
-    has_more: false,
-    cursor: null,
   };
   assert.equal(descriptorHasMore(descriptor), false);
   assert.equal(descriptorNextCursor(descriptor), null);
@@ -91,11 +91,11 @@ test("relevance_bounded: a renderer that bypasses the descriptor would fail thes
   // flag instead of the descriptor. With the descriptor, these properties are
   // structurally false for relevance_bounded, so the UI cannot render a Load-more.
   const descriptor: RelevanceBoundedDescriptor = {
+    completeness: "bounded_sample",
+    cursor: null,
+    has_more: false,
     kind: "relevance_bounded",
     ordering: "relevance",
-    completeness: "bounded_sample",
-    has_more: false,
-    cursor: null,
   };
   // If a renderer ignored the descriptor and rendered Load-more anyway, it would
   // need cursor to be non-null. Prove it's null:
@@ -111,22 +111,22 @@ test("relevance_bounded: a renderer that bypasses the descriptor would fail thes
 
 test("keyword_pageable ordering=time: descriptorIsTimeOrdered returns true", () => {
   const descriptor: KeywordPageableDescriptor = {
+    completeness: "pageable",
+    cursor: "opaque-cursor-abc",
+    has_more: true,
     kind: "keyword_pageable",
     ordering: "time",
-    completeness: "pageable",
-    has_more: true,
-    cursor: "opaque-cursor-abc",
   };
   assert.equal(descriptorIsTimeOrdered(descriptor), true);
 });
 
 test("keyword_pageable ordering=time: feedHeaderLabel claims newest-first", () => {
   const descriptor: KeywordPageableDescriptor = {
+    completeness: "pageable",
+    cursor: null,
+    has_more: false,
     kind: "keyword_pageable",
     ordering: "time",
-    completeness: "pageable",
-    has_more: false,
-    cursor: null,
   };
   const label = feedHeaderLabel(descriptor);
   assert.ok(label.toLowerCase().includes("newest"), `Expected label to include 'newest', got: '${label}'`);
@@ -134,11 +134,11 @@ test("keyword_pageable ordering=time: feedHeaderLabel claims newest-first", () =
 
 test("keyword_pageable ordering=relevance: descriptorIsTimeOrdered returns false", () => {
   const descriptor: KeywordPageableDescriptor = {
+    completeness: "pageable",
+    cursor: "opaque-cursor-xyz",
+    has_more: true,
     kind: "keyword_pageable",
     ordering: "relevance",
-    completeness: "pageable",
-    has_more: true,
-    cursor: "opaque-cursor-xyz",
   };
   assert.equal(descriptorIsTimeOrdered(descriptor), false);
   // Label must NOT claim newest-first for relevance ordering:
@@ -149,11 +149,11 @@ test("keyword_pageable ordering=relevance: descriptorIsTimeOrdered returns false
 test("keyword_pageable: descriptorHasMore and cursor forward correctly", () => {
   const cursor = "cursor-page-2";
   const descriptor: KeywordPageableDescriptor = {
+    completeness: "pageable",
+    cursor,
+    has_more: true,
     kind: "keyword_pageable",
     ordering: "time",
-    completeness: "pageable",
-    has_more: true,
-    cursor,
   };
   assert.equal(descriptorHasMore(descriptor), true);
   assert.equal(descriptorNextCursor(descriptor), cursor);
@@ -161,11 +161,11 @@ test("keyword_pageable: descriptorHasMore and cursor forward correctly", () => {
 
 test("keyword_pageable: when has_more=false, no Load-more is possible", () => {
   const descriptor: KeywordPageableDescriptor = {
+    completeness: "pageable",
+    cursor: null,
+    has_more: false,
     kind: "keyword_pageable",
     ordering: "relevance",
-    completeness: "pageable",
-    has_more: false,
-    cursor: null,
   };
   assert.equal(descriptorHasMore(descriptor), false);
   assert.equal(descriptorNextCursor(descriptor), null);
@@ -175,33 +175,33 @@ test("keyword_pageable: when has_more=false, no Load-more is possible", () => {
 
 test("complete_chronological: feedHeaderLabel is 'Everything, newest first'", () => {
   const descriptor: CompleteChronologicalDescriptor = {
+    completeness: "exhaustive",
+    cursor: null,
+    has_more: false,
     kind: "complete_chronological",
     ordering: "time",
-    completeness: "exhaustive",
-    has_more: false,
-    cursor: null,
   };
   assert.equal(feedHeaderLabel(descriptor), "Everything, newest first");
 });
 
 test("complete_chronological: descriptorIsTimeOrdered returns true", () => {
   const descriptor: CompleteChronologicalDescriptor = {
+    completeness: "exhaustive",
+    cursor: null,
+    has_more: false,
     kind: "complete_chronological",
     ordering: "time",
-    completeness: "exhaustive",
-    has_more: false,
-    cursor: null,
   };
   assert.equal(descriptorIsTimeOrdered(descriptor), true);
 });
 
 test("complete_chronological: when has_more=false and cursor=null, no more pages (last record reached)", () => {
   const descriptor: CompleteChronologicalDescriptor = {
+    completeness: "exhaustive",
+    cursor: null,
+    has_more: false,
     kind: "complete_chronological",
     ordering: "time",
-    completeness: "exhaustive",
-    has_more: false,
-    cursor: null,
   };
   assert.equal(descriptorHasMore(descriptor), false);
   assert.equal(descriptorNextCursor(descriptor), null);
@@ -210,11 +210,11 @@ test("complete_chronological: when has_more=false and cursor=null, no more pages
 test("complete_chronological: when has_more=true, cursor is non-null and Load-more is possible", () => {
   const cursor = "composite-cursor-page-2";
   const descriptor: CompleteChronologicalDescriptor = {
+    completeness: "exhaustive",
+    cursor,
+    has_more: true,
     kind: "complete_chronological",
     ordering: "time",
-    completeness: "exhaustive",
-    has_more: true,
-    cursor,
   };
   assert.equal(descriptorHasMore(descriptor), true);
   assert.equal(descriptorNextCursor(descriptor), cursor);
@@ -224,12 +224,12 @@ test("complete_chronological: when has_more=true, cursor is non-null and Load-mo
 
 test("filtered_exact: descriptorHasTotal returns true and exposes the count", () => {
   const descriptor: FilteredExactDescriptor = {
+    completeness: "exact",
+    cursor: null,
+    has_more: false,
     kind: "filtered_exact",
     ordering: "owner_chosen",
-    completeness: "exact",
     total: 1183,
-    has_more: false,
-    cursor: null,
   };
   assert.equal(descriptorHasTotal(descriptor), true);
   // Type guard: after descriptorHasTotal, total is accessible as number.
@@ -240,12 +240,12 @@ test("filtered_exact: descriptorHasTotal returns true and exposes the count", ()
 
 test("filtered_exact: feedHeaderLabel includes the total count", () => {
   const descriptor: FilteredExactDescriptor = {
+    completeness: "exact",
+    cursor: null,
+    has_more: false,
     kind: "filtered_exact",
     ordering: "owner_chosen",
-    completeness: "exact",
     total: 1183,
-    has_more: false,
-    cursor: null,
   };
   const label = feedHeaderLabel(descriptor);
   assert.ok(
@@ -257,12 +257,12 @@ test("filtered_exact: feedHeaderLabel includes the total count", () => {
 test("filtered_exact: non-exhausted set has_more=true and carries cursor", () => {
   const cursor = "exact-cursor-p2";
   const descriptor: FilteredExactDescriptor = {
+    completeness: "exact",
+    cursor,
+    has_more: true,
     kind: "filtered_exact",
     ordering: "owner_chosen",
-    completeness: "exact",
     total: 42,
-    has_more: true,
-    cursor,
   };
   assert.equal(descriptorHasMore(descriptor), true);
   assert.equal(descriptorNextCursor(descriptor), cursor);
@@ -270,20 +270,20 @@ test("filtered_exact: non-exhausted set has_more=true and carries cursor", () =>
 
 test("filtered_exact: descriptorHasTotal returns false for other kinds", () => {
   const relevant: RelevanceBoundedDescriptor = {
+    completeness: "bounded_sample",
+    cursor: null,
+    has_more: false,
     kind: "relevance_bounded",
     ordering: "relevance",
-    completeness: "bounded_sample",
-    has_more: false,
-    cursor: null,
   };
   assert.equal(descriptorHasTotal(relevant), false);
 
   const chron: CompleteChronologicalDescriptor = {
+    completeness: "exhaustive",
+    cursor: null,
+    has_more: false,
     kind: "complete_chronological",
     ordering: "time",
-    completeness: "exhaustive",
-    has_more: false,
-    cursor: null,
   };
   assert.equal(descriptorHasTotal(chron), false);
 });
@@ -292,17 +292,17 @@ test("filtered_exact: descriptorHasTotal returns false for other kinds", () => {
 
 test("feedHeaderLabel handles all four descriptor kinds without throwing", () => {
   const descriptors: SetDescriptor[] = [
-    { kind: "complete_chronological", ordering: "time", completeness: "exhaustive", has_more: false, cursor: null },
-    { kind: "relevance_bounded", ordering: "relevance", completeness: "bounded_sample", has_more: false, cursor: null },
-    { kind: "keyword_pageable", ordering: "relevance", completeness: "pageable", has_more: false, cursor: null },
-    { kind: "keyword_pageable", ordering: "time", completeness: "pageable", has_more: false, cursor: null },
+    { completeness: "exhaustive", cursor: null, has_more: false, kind: "complete_chronological", ordering: "time" },
+    { completeness: "bounded_sample", cursor: null, has_more: false, kind: "relevance_bounded", ordering: "relevance" },
+    { completeness: "pageable", cursor: null, has_more: false, kind: "keyword_pageable", ordering: "relevance" },
+    { completeness: "pageable", cursor: null, has_more: false, kind: "keyword_pageable", ordering: "time" },
     {
+      completeness: "exact",
+      cursor: null,
+      has_more: false,
       kind: "filtered_exact",
       ordering: "owner_chosen",
-      completeness: "exact",
       total: 10,
-      has_more: false,
-      cursor: null,
     },
   ];
   for (const d of descriptors) {
@@ -323,11 +323,11 @@ test("F2 fix: a relevance_bounded set cannot be rendered with a chronological cl
   //      is relevance_bounded, and labels it honestly as leaving the result set.
   // This test proves all four properties:
   const descriptor: RelevanceBoundedDescriptor = {
+    completeness: "bounded_sample",
+    cursor: null,
+    has_more: false,
     kind: "relevance_bounded",
     ordering: "relevance",
-    completeness: "bounded_sample",
-    has_more: false,
-    cursor: null,
   };
 
   // Property 1: label is "Top matches"
@@ -349,11 +349,11 @@ test("F2 fix: keyword_pageable/time IS allowed to claim newest-first (it is genu
   // so it is genuinely emitted_at DESC within the candidate window. The descriptor
   // reflects this honestly: keyword_pageable with ordering=time.
   const descriptor: KeywordPageableDescriptor = {
+    completeness: "pageable",
+    cursor: "cursor-abc",
+    has_more: true,
     kind: "keyword_pageable",
     ordering: "time",
-    completeness: "pageable",
-    has_more: true,
-    cursor: "cursor-abc",
   };
 
   // Allowed to claim time ordering:
@@ -379,11 +379,11 @@ test("F2 fix: keyword_pageable/time IS allowed to claim newest-first (it is genu
 
 test("T1 legalSortOptions: complete_chronological → time axis {newest, oldest}", () => {
   const descriptor: CompleteChronologicalDescriptor = {
+    completeness: "exhaustive",
+    cursor: "c1",
+    has_more: true,
     kind: "complete_chronological",
     ordering: "time",
-    completeness: "exhaustive",
-    has_more: true,
-    cursor: "c1",
   };
   const sort = legalSortOptions(descriptor);
   assert.equal(sort.axis, "time");
@@ -392,12 +392,12 @@ test("T1 legalSortOptions: complete_chronological → time axis {newest, oldest}
 
 test("T2 legalSortOptions: filtered_exact → time axis {newest, oldest}", () => {
   const descriptor: FilteredExactDescriptor = {
+    completeness: "exact",
+    cursor: null,
+    has_more: false,
     kind: "filtered_exact",
     ordering: "owner_chosen",
-    completeness: "exact",
     total: 42,
-    has_more: false,
-    cursor: null,
   };
   const sort = legalSortOptions(descriptor);
   assert.equal(sort.axis, "time");
@@ -406,11 +406,11 @@ test("T2 legalSortOptions: filtered_exact → time axis {newest, oldest}", () =>
 
 test("T3 legalSortOptions: keyword_pageable → rank axis {relevance, recent}", () => {
   const descriptor: KeywordPageableDescriptor = {
+    completeness: "pageable",
+    cursor: "c1",
+    has_more: true,
     kind: "keyword_pageable",
     ordering: "relevance",
-    completeness: "pageable",
-    has_more: true,
-    cursor: "c1",
   };
   const sort = legalSortOptions(descriptor);
   assert.equal(sort.axis, "rank");
@@ -419,11 +419,11 @@ test("T3 legalSortOptions: keyword_pageable → rank axis {relevance, recent}", 
 
 test("T4 legalSortOptions: relevance_bounded → axis 'none' (escape only, no in-set sort)", () => {
   const descriptor: RelevanceBoundedDescriptor = {
+    completeness: "bounded_sample",
+    cursor: null,
+    has_more: false,
     kind: "relevance_bounded",
     ordering: "relevance",
-    completeness: "bounded_sample",
-    has_more: false,
-    cursor: null,
   };
   const sort = legalSortOptions(descriptor);
   assert.equal(sort.axis, "none");
@@ -438,17 +438,17 @@ test("T5/T6 legalSortOptions reads ONLY the descriptor — no field-name / x_pdp
   // role, not a sort capability) can never produce an "amount" sort. We assert
   // the only surfaced options are the canonical axis vocab — zero field names.
   const kinds: SetDescriptor[] = [
-    { kind: "complete_chronological", ordering: "time", completeness: "exhaustive", has_more: false, cursor: null },
+    { completeness: "exhaustive", cursor: null, has_more: false, kind: "complete_chronological", ordering: "time" },
     {
+      completeness: "exact",
+      cursor: null,
+      has_more: false,
       kind: "filtered_exact",
       ordering: "owner_chosen",
-      completeness: "exact",
       total: 8,
-      has_more: false,
-      cursor: null,
     },
-    { kind: "keyword_pageable", ordering: "time", completeness: "pageable", has_more: false, cursor: null },
-    { kind: "relevance_bounded", ordering: "relevance", completeness: "bounded_sample", has_more: false, cursor: null },
+    { completeness: "pageable", cursor: null, has_more: false, kind: "keyword_pageable", ordering: "time" },
+    { completeness: "bounded_sample", cursor: null, has_more: false, kind: "relevance_bounded", ordering: "relevance" },
   ];
   const allowed = new Set(["newest", "oldest", "relevance", "recent"]);
   const forbidden = ["amount", "name", "sender", "subject", "price", "total"];

@@ -37,6 +37,7 @@ import {
   type HeartbeatLastError,
   type HeartbeatOutboxDiagnostics,
   LocalDeviceClient,
+  type TerminalCollectionFact,
 } from "./local-device-client.ts";
 import {
   buildLocalDeviceIngestBatchRequest,
@@ -763,8 +764,7 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
       policy,
       priorState,
     });
-    const done = streamResult.done;
-    const bufferedState = streamResult.bufferedState;
+    const { done, bufferedState } = streamResult;
     const enqueueResult = {
       enqueuedBatches: streamResult.enqueuedBatches,
       recordsQueued: streamResult.recordsQueued,
@@ -829,6 +829,23 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
     const recordsPending = pendingOutboxWorkCount(finalSummary);
 
     if (!checkpointResult.statePutFailed) {
+      // This is the only point at which a local run may claim terminal
+      // per-stream evidence: its child succeeded, all record work drained,
+      // and the coverage checkpoint was acknowledged. Batches/heartbeats by
+      // themselves deliberately never establish this boundary.
+      if (
+        done?.status === "succeeded" &&
+        !streamResult.scanBudgetExceeded &&
+        Object.hasOwn(checkpointResult.flushedState ?? {}, COVERAGE_DIAGNOSTICS_STREAM) &&
+        streamResult.coverageByStore
+      ) {
+        await client.reportTerminalCollection({
+          connector_id: config.connector.connector_id,
+          run_id: config.runId ?? randomUUID(),
+          source_instance_id: config.sourceInstanceId,
+          streams: buildTerminalCollectionFacts(streamResult.coverageByStore),
+        });
+      }
       const finalDeadLetterError = buildHeartbeatDeadLetterError(outbox, config.sourceInstanceId);
       await client.heartbeat({
         agent_version: COLLECTOR_AGENT_VERSION,
@@ -1035,6 +1052,7 @@ async function readPriorStateOrBlock(input: {
       status: "blocked",
     });
     input.onBlocked?.();
+    // biome-ignore lint/style/useErrorCause: CollectorStateReadError's constructor already forwards `error` into `super(message, { cause })`; biome does not recognize cause-threading through custom Error subclasses.
     throw new CollectorStateReadError(
       `failed to read prior state for ${input.config.sourceInstanceId}: ${error instanceof Error ? error.message : String(error)}`,
       error
@@ -1059,7 +1077,7 @@ interface StreamConnectorIntoOutboxResult {
    * RECORDs seen this pass, or `null` when none were observed. Last write
    * wins per store so a re-emitted store keeps its final status.
    */
-  coverageByStore: Map<string, CollectorCoverageStatus> | null;
+  coverageByStore: Map<string, { status: CollectorCoverageStatus; stream: string | null }> | null;
   done: Extract<EmittedMessage, { type: "DONE" }> | null;
   enqueuedBatches: number;
   recordsQueued: number;
@@ -1081,11 +1099,11 @@ const COVERAGE_DIAGNOSTICS_STREAM = "coverage_diagnostics";
  */
 function coverageEntryFromRecord(
   message: Extract<EmittedMessage, { type: "RECORD" }>
-): { status: CollectorCoverageStatus; store: string } | null {
+): { status: CollectorCoverageStatus; store: string; stream: string | null } | null {
   if (message.stream !== COVERAGE_DIAGNOSTICS_STREAM) {
     return null;
   }
-  const data = message.data;
+  const { data } = message;
   const dataStore = isRecord(data) && typeof data.store === "string" && data.store ? data.store : null;
   const keyStore = typeof message.key === "string" && message.key ? message.key : null;
   const store = dataStore ?? keyStore;
@@ -1099,7 +1117,11 @@ function coverageEntryFromRecord(
   const status = (COLLECTOR_COVERAGE_STATUSES as readonly string[]).includes(rawStatus)
     ? (rawStatus as CollectorCoverageStatus)
     : "unaccounted";
-  return { status, store };
+  return {
+    status,
+    store,
+    stream: isRecord(data) && typeof data.stream === "string" && data.stream ? data.stream : null,
+  };
 }
 
 /**
@@ -1109,7 +1131,7 @@ function coverageEntryFromRecord(
  * absence rather than "complete".
  */
 export function summarizeCollectorCompleteness(
-  coverageByStore: Map<string, CollectorCoverageStatus> | null
+  coverageByStore: Map<string, { status: CollectorCoverageStatus; stream: string | null }> | null
 ): CollectorCompletenessSummary | null {
   if (!coverageByStore || coverageByStore.size === 0) {
     return null;
@@ -1120,7 +1142,7 @@ export function summarizeCollectorCompleteness(
   const unaccountedStores: string[] = [];
   const byStore: Record<string, CollectorCoverageStatus> = {};
   for (const store of [...coverageByStore.keys()].sort()) {
-    const status = coverageByStore.get(store) as CollectorCoverageStatus;
+    const status = coverageByStore.get(store)?.status as CollectorCoverageStatus;
     byStore[store] = status;
     countsByStatus[status] += 1;
     if (status === "unaccounted") {
@@ -1134,6 +1156,28 @@ export function summarizeCollectorCompleteness(
     storeCount: coverageByStore.size,
     unaccountedStores,
   };
+}
+
+/**
+ * Preserve the collector's existing per-store coverage diagnostics at the
+ * terminal handoff. The server's manifest coverage-policy authority decides
+ * whether an observed absence is accepted; the runner must not invent policy.
+ */
+export function buildTerminalCollectionFacts(
+  coverageByStore: ReadonlyMap<string, { status: CollectorCoverageStatus; stream: string | null }>
+): readonly TerminalCollectionFact[] {
+  const statusesByStream = new Map<string, CollectorCoverageStatus[]>();
+  for (const entry of coverageByStore.values()) {
+    if (!entry.stream) {
+      continue;
+    }
+    const statuses = statusesByStream.get(entry.stream) ?? [];
+    statuses.push(entry.status);
+    statusesByStream.set(entry.stream, statuses);
+  }
+  return [...statusesByStream.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([stream, statuses]) => ({ stream, coverage_statuses: [...statuses].sort() }));
 }
 
 /**
@@ -1186,7 +1230,7 @@ async function streamConnectorIntoOutbox(
   // Accumulate coverage diagnostics as we see them so completeness can be
   // summarized without re-reading the durable outbox. Stays null until the
   // first coverage record so an absent diagnostic reads as absent.
-  let coverageByStore: Map<string, CollectorCoverageStatus> | null = null;
+  let coverageByStore: Map<string, { status: CollectorCoverageStatus; stream: string | null }> | null = null;
 
   const flushPendingBatch = (): void => {
     if (pendingRecords.length === 0) {
@@ -1228,8 +1272,8 @@ async function streamConnectorIntoOutbox(
       sourceInstanceId: input.config.sourceInstanceId,
     });
     recordsQueued += envelopes.length;
-    enqueuedBatches++;
-    batchSeq++;
+    enqueuedBatches += 1;
+    batchSeq += 1;
     scanBudgetExceeded = maybeRecordScanBudgetGap({
       enqueuedBatches,
       input,
@@ -1242,8 +1286,8 @@ async function streamConnectorIntoOutbox(
     if (!entry) {
       return;
     }
-    coverageByStore ??= new Map<string, CollectorCoverageStatus>();
-    coverageByStore.set(entry.store, entry.status);
+    coverageByStore ??= new Map<string, { status: CollectorCoverageStatus; stream: string | null }>();
+    coverageByStore.set(entry.store, { status: entry.status, stream: entry.stream });
   };
 
   const handleMessage = (message: EmittedMessage): void => {
@@ -1306,7 +1350,7 @@ async function streamConnectorIntoOutbox(
     const lines = createInterface({ input: child.stdout, terminal: false });
     let lineNumber = 0;
     for await (const line of lines) {
-      lineNumber++;
+      lineNumber += 1;
       if (!line.trim()) {
         continue;
       }
@@ -1356,7 +1400,8 @@ async function streamConnectorIntoOutbox(
       input,
     });
     throw new Error(
-      `${input.config.connector.connector_id} connector failed to start or stream output: ${details || "unknown error"}`
+      `${input.config.connector.connector_id} connector failed to start or stream output: ${details || "unknown error"}`,
+      { cause: error }
     );
   }
   if (input.abortSignal && abortListener) {
@@ -1368,6 +1413,10 @@ async function streamConnectorIntoOutbox(
       ? input.abortSignal.reason
       : new DOMException("Aborted", "AbortError");
   }
+  // `done` is assigned by the nested protocol callback; TypeScript's local
+  // flow analysis cannot observe that closure write, so retain its declared
+  // protocol union at this boundary.
+  const terminalDone = done as Extract<EmittedMessage, { type: "DONE" }> | null;
   throwIfConnectorExitedUncleanly({
     enqueuedBatches,
     exitCode,
@@ -1375,6 +1424,7 @@ async function streamConnectorIntoOutbox(
     input,
     scanBudgetExceeded,
     stderr,
+    terminalDone,
   });
 
   // A zero exit only proves that the process stopped cleanly. It does not
@@ -1382,10 +1432,6 @@ async function streamConnectorIntoOutbox(
   // become a server checkpoint unless the connector explicitly terminally
   // succeeded; failed or missing DONE keeps the prior proof invalidated by a
   // durable recovery gap.
-  // `done` is assigned by the nested protocol callback; TypeScript's local
-  // flow analysis cannot observe that closure write, so retain its declared
-  // protocol union at this boundary.
-  const terminalDone = done as Extract<EmittedMessage, { type: "DONE" }> | null;
   if (!scanBudgetExceeded && terminalDone?.status !== "succeeded") {
     flushPendingBatch();
     const details = terminalDone
@@ -1418,7 +1464,8 @@ function parseConnectorProtocolLine(line: string, lineNumber: number, connectorI
     const debugPath = writeConnectorProtocolDebugLine({ connectorId, error, line, lineNumber });
     const suffix = debugPath ? `; raw line saved to ${debugPath}` : "";
     throw new Error(
-      `${error instanceof Error ? error.message : String(error)} at connector protocol line ${lineNumber} (${line.length} chars)${suffix}`
+      `${error instanceof Error ? error.message : String(error)} at connector protocol line ${lineNumber} (${line.length} chars)${suffix}`,
+      { cause: error }
     );
   }
 }
@@ -1464,12 +1511,22 @@ function throwIfConnectorExitedUncleanly(input: {
   input: StreamConnectorIntoOutboxInput;
   scanBudgetExceeded: boolean;
   stderr: BoundedStderrBuffer;
+  terminalDone: Extract<EmittedMessage, { type: "DONE" }> | null;
 }): void {
   if (input.exitCode === 0 || input.scanBudgetExceeded) {
     return;
   }
   input.flushPendingBatch();
-  const details = sanitizeCollectorGapDetails(`exit ${input.exitCode}: ${input.stderr.toString().trim()}`);
+  // The connector protocol lets a child report its own failure reason via a
+  // terminal DONE{status:"failed", error:{message}} on stdout before it
+  // exits non-zero. That message is the connector's own diagnosis (e.g. a
+  // missing source directory) and is far more useful than an empty stderr
+  // buffer — prefer it when present instead of the generic exit-code/stderr
+  // fallback, which previously discarded it unconditionally.
+  const doneMessage = input.terminalDone?.status === "failed" ? input.terminalDone.error?.message : undefined;
+  const details = sanitizeCollectorGapDetails(
+    doneMessage ? doneMessage : `exit ${input.exitCode}: ${input.stderr.toString().trim()}`
+  );
   recordConnectorChildFailureGap({
     details,
     enqueuedBatches: input.enqueuedBatches,
@@ -1912,7 +1969,7 @@ export async function drainCollectorOutbox(input: DrainCollectorOutboxInput): Pr
     sentByKind,
   };
   const startedAt = Date.now();
-  for (let i = 0; i < input.policy.maxDrainIterations; i++) {
+  for (let i = 0; i < input.policy.maxDrainIterations; i += 1) {
     throwIfAborted(input.abortSignal);
     if (Date.now() - startedAt >= input.policy.maxDrainDurationMs) {
       result.durationBudgetExceeded = true;
@@ -1922,7 +1979,7 @@ export async function drainCollectorOutbox(input: DrainCollectorOutboxInput): Pr
     if (claimed.length === 0) {
       return result;
     }
-    result.iterations++;
+    result.iterations += 1;
     for (const item of claimed) {
       await drainClaimedOutboxItem(input, item, result, sentByKind);
     }
@@ -1978,7 +2035,7 @@ async function drainClaimedOutboxItem(
     });
     await sendOutboxItem(input.client, current);
     input.outbox.acknowledge({ holder: input.holderId, id: current.id, leaseEpoch: current.lease_epoch });
-    result.sent++;
+    result.sent += 1;
     sentByKind[current.kind] = (sentByKind[current.kind] ?? 0) + 1;
   } catch (error) {
     failOutboxItem(input, item, error, result);
@@ -2007,7 +2064,7 @@ function failOutboxItem(
         id: item.id,
         leaseEpoch: item.lease_epoch,
       });
-      result.deadLettered++;
+      result.deadLettered += 1;
       return;
     }
     input.outbox.failRetryable({
@@ -2017,10 +2074,10 @@ function failOutboxItem(
       leaseEpoch: item.lease_epoch,
       retryBackoffMs: input.policy.retryBackoffMs * (item.attempt_count + 1),
     });
-    result.failed++;
+    result.failed += 1;
   } catch (transitionError) {
     if (isLeaseNotCurrentError(transitionError)) {
-      result.failed++;
+      result.failed += 1;
       return;
     }
     throw transitionError;
@@ -2431,7 +2488,7 @@ export async function drainCollectorQueue(input: {
     try {
       await sendQueueItem(input.client, item);
       await input.queue.markSent(item.batch_id);
-      sent++;
+      sent += 1;
     } catch (error) {
       await input.queue.markRetry(item.batch_id, error instanceof Error ? error.message : String(error));
       return sent;
@@ -2471,7 +2528,7 @@ async function sendQueueItem(
   client: Pick<LocalDeviceClient, "ingestBatch">,
   item: LocalDeviceQueueItem
 ): Promise<void> {
-  const firstRecord = item.records[0];
+  const [firstRecord] = item.records;
   if (!firstRecord) {
     throw new Error(`collector batch has no records: ${item.batch_id}`);
   }
@@ -2533,7 +2590,7 @@ class BoundedStderrBuffer {
     this.#chunks.push(chunk);
     this.#size += chunk.length;
     while (this.#size > this.#limit && this.#chunks.length > 0) {
-      const head = this.#chunks[0];
+      const [head] = this.#chunks;
       if (!head) {
         break;
       }

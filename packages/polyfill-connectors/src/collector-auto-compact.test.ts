@@ -38,7 +38,7 @@ function seedFatSucceededRows(path: string, sourceInstanceId: string, count: num
        ) VALUES (?, ?, 'record_batch', 'succeeded', ?, 'hash', 0, ?, ?, ?, ?)`
     );
     db.exec("BEGIN");
-    for (let index = 0; index < count; index++) {
+    for (let index = 0; index < count; index += 1) {
       insert.run(
         `${sourceInstanceId}:fat:${index}`,
         sourceInstanceId,

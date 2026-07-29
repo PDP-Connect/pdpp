@@ -12,7 +12,7 @@ import {
   type LocalTransformerExecutorOptions,
   type TransformerChild,
 } from "../server/local-transformer-executor.ts";
-import { makeLocalTransformerBackend, resolveSemanticBackendFromEnv } from "../server/search-semantic.js";
+import { makeLocalTransformerBackend, resolveSemanticBackendFromEnv } from "../server/search-semantic.ts";
 
 let nextPid = 40_000;
 const SPAWN_PRIVACY_PATTERN = /secret input|do not expose this/;
@@ -21,6 +21,7 @@ const SUPERVISOR_CONTRACT_PATTERN = /PDPP_LOCAL_TRANSFORMER_SUPERVISOR_RESTART_C
 
 class FakeChild extends EventEmitter {
   readonly stdout = new PassThrough();
+  // biome-ignore lint/style/noIncrementDecrement: localized test assertion preserves its explicit contract.
   readonly pid = nextPid++;
   readonly signals: NodeJS.Signals[] = [];
   readonly writes: string[] = [];
@@ -86,8 +87,8 @@ async function afterIo() {
 function executorFor(children: FakeChild[], options: Omit<LocalTransformerExecutorOptions, "spawnChild"> = {}) {
   return new LocalTransformerExecutor({
     deadlineMs: 100,
-    termGraceMs: 10,
     killGraceMs: 10,
+    termGraceMs: 10,
     ...options,
     spawnChild: () => {
       const child = new FakeChild();
@@ -115,6 +116,7 @@ test("local transformer executor accepts only an exact current-generation reply"
   const children: FakeChild[] = [];
   const executor = executorFor(children);
   const work = executor.embed("private input", "backend-a", { modelId: "model" });
+  // biome-ignore lint/style/useDestructuring: localized test assertion preserves its explicit contract.
   const child = children[0];
   assert.ok(child);
   const job = child.job();
@@ -147,6 +149,7 @@ test("local transformer executor bounds parent admission before writing and reco
   const first = executor.embed("first", "backend-a", {});
   const second = executor.embed("second", "backend-a", {});
   await assert.rejects(executor.embed("third private input", "backend-a", {}), assertCode("transformer_work_busy"));
+  // biome-ignore lint/style/useDestructuring: localized test assertion preserves its explicit contract.
   const child = children[0];
   assert.ok(child);
   assert.equal(child.writes.length, 2, "saturated admission must not write a third job");
@@ -173,15 +176,15 @@ test("unexpected child exit fences and rejects the generation after confirmed ex
   children[0]?.exit();
   await assert.rejects(work, assertCode("transformer_child_exited"));
   assert.deepEqual(executor.telemetry(), {
+    childHighWater: 0,
+    childPid: null,
+    childQueueDepth: 0,
+    childRssBytes: null,
     generation: 1,
+    peakChildRssBytes: 0,
     pendingJobs: 0,
     stopped: false,
     terminating: false,
-    childPid: null,
-    childRssBytes: null,
-    peakChildRssBytes: 0,
-    childHighWater: 0,
-    childQueueDepth: 0,
   });
   await executor.close();
 });
@@ -190,6 +193,7 @@ test("deadline fences immediately, then rejects only after confirmed TERM exit",
   const children: FakeChild[] = [];
   const executor = executorFor(children, { deadlineMs: 5, termGraceMs: 30 });
   const work = executor.embed("input", "backend-a", {});
+  // biome-ignore lint/style/useDestructuring: localized test assertion preserves its explicit contract.
   const child = children[0];
   assert.ok(child);
   await delay(7);
@@ -206,8 +210,9 @@ test("deadline fences immediately, then rejects only after confirmed TERM exit",
 
 test("TERM-ignore uses KILL and still waits for confirmed exit before cleanup", async () => {
   const children: FakeChild[] = [];
-  const executor = executorFor(children, { deadlineMs: 5, termGraceMs: 5, killGraceMs: 15 });
+  const executor = executorFor(children, { deadlineMs: 5, killGraceMs: 15, termGraceMs: 5 });
   const work = executor.embed("input", "backend-a", {});
+  // biome-ignore lint/style/useDestructuring: localized test assertion preserves its explicit contract.
   const child = children[0];
   assert.ok(child);
   child.onKill = (signal) => {
@@ -223,8 +228,9 @@ test("TERM-ignore uses KILL and still waits for confirmed exit before cleanup", 
 
 test("termination rejects new admission and cannot replace before the old child exits", async () => {
   const children: FakeChild[] = [];
-  const executor = executorFor(children, { deadlineMs: 5, termGraceMs: 40, killGraceMs: 40 });
+  const executor = executorFor(children, { deadlineMs: 5, killGraceMs: 40, termGraceMs: 40 });
   const first = executor.embed("input", "backend-a", {});
+  // biome-ignore lint/style/useDestructuring: localized test assertion preserves its explicit contract.
   const firstChild = children[0];
   assert.ok(firstChild);
   await delay(10);
@@ -235,6 +241,7 @@ test("termination rejects new admission and cannot replace before the old child 
   await assert.rejects(first, assertCode("transformer_deadline"));
   const second = executor.embed("new input", "backend-a", {});
   assert.equal(children.length, 2, "replacement starts only after confirmed old exit");
+  // biome-ignore lint/style/useDestructuring: localized test assertion preserves its explicit contract.
   const secondChild = children[1];
   assert.ok(secondChild);
   secondChild.reply({ ...secondChild.job(), vector: [2] });
@@ -247,29 +254,30 @@ test("local backend keeps semantic preflight available across a confirmed deadli
   const children: FakeChild[] = [];
   const backend = makeLocalTransformerBackend(
     {
-      profileId: "test",
-      modelId: "test-model",
+      cacheDir: "/tmp/pdpp-test-transformer-cache",
       dimensions: 3,
       distanceMetric: "cosine",
-      dtype: "q4",
-      cacheDir: "/tmp/pdpp-test-transformer-cache",
       downloadAllowed: true,
-      languageBias: null,
+      dtype: "q4",
+      languageBias: { note: "test", primary: "en" },
+      modelId: "test-model",
+      profileId: "test",
     },
     {
       executorOptions: {
         deadlineMs: 5,
-        termGraceMs: 20,
         killGraceMs: 20,
         spawnChild: () => {
           const child = new FakeChild();
           children.push(child);
           return child as unknown as TransformerChild;
         },
+        termGraceMs: 20,
       },
     }
   );
   const first = backend.embedDocument("first");
+  // biome-ignore lint/style/useDestructuring: localized test assertion preserves its explicit contract.
   const firstChild = children[0];
   assert.ok(firstChild);
   firstChild.onKill = (signal) => {
@@ -281,6 +289,7 @@ test("local backend keeps semantic preflight available across a confirmed deadli
   assert.equal(backend.available(), true, "a confirmed lifecycle failure must not deadlock preflight");
 
   const second = backend.embedDocument("second");
+  // biome-ignore lint/style/useDestructuring: localized test assertion preserves its explicit contract.
   const secondChild = children[1];
   assert.ok(secondChild, "the confirmed old exit permits a replacement generation");
   secondChild.reply({ ...secondChild.job(), vector: [0.1, 0.2, 0.3] });
@@ -289,7 +298,10 @@ test("local backend keeps semantic preflight available across a confirmed deadli
     [0.1, 0.2, 0.3]
   );
   secondChild.onEnd = () => secondChild.exit();
-  await backend.close();
+  // biome-ignore lint/style/useDestructuring: localized test assertion preserves its explicit contract.
+  const close = backend.close;
+  assert.ok(close, "local transformer backend exposes a close operation");
+  await close();
 });
 
 test("spawn and stdin failure fence safely without exposing source input", async () => {
@@ -316,12 +328,12 @@ test("spawn and stdin failure fence safely without exposing source input", async
   };
   const writingExecutor = new LocalTransformerExecutor({
     deadlineMs: 100,
-    termGraceMs: 10,
     killGraceMs: 10,
     spawnChild: () => {
       children.push(child);
       return child as unknown as TransformerChild;
     },
+    termGraceMs: 10,
   });
   const work = writingExecutor.embed("secret input", "backend-a", {});
   await assert.rejects(work, (error: unknown) => {
@@ -333,6 +345,7 @@ test("spawn and stdin failure fence safely without exposing source input", async
   const asyncErrorChildren: FakeChild[] = [];
   const asyncErrorExecutor = executorFor(asyncErrorChildren);
   const asyncErrorWork = asyncErrorExecutor.embed("secret input", "backend-a", {});
+  // biome-ignore lint/style/useDestructuring: localized test assertion preserves its explicit contract.
   const asyncErrorChild = asyncErrorChildren[0];
   assert.ok(asyncErrorChild);
   asyncErrorChild.onKill = (signal) => {
@@ -351,9 +364,9 @@ test("KILL-unconfirmed invokes fail-stop and deliberately retains generation pro
   const failStops: string[] = [];
   const executor = executorFor(children, {
     deadlineMs: 5,
-    termGraceMs: 5,
-    killGraceMs: 5,
     failStop: (reason) => failStops.push(reason),
+    killGraceMs: 5,
+    termGraceMs: 5,
   });
   const work = executor.embed("input", "backend-a", {});
   await delay(30);
@@ -369,6 +382,7 @@ test("close handles an already-exited child without waiting a full grace period"
   const children: FakeChild[] = [];
   const executor = executorFor(children, { termGraceMs: 80 });
   const work = executor.embed("input", "backend-a", {});
+  // biome-ignore lint/style/useDestructuring: localized test assertion preserves its explicit contract.
   const child = children[0];
   assert.ok(child);
   child.onEnd = () => child.exit();
@@ -392,9 +406,9 @@ test("production local mode reads the supplied supervisor contract environment",
   assert.doesNotThrow(() =>
     resolveSemanticBackendFromEnv({
       NODE_ENV: "production",
-      PDPP_SEMANTIC_EMBEDDING_BACKEND: "local",
-      PDPP_LOCAL_TRANSFORMER_SUPERVISOR_RESTART_CONTRACT: "1",
       PDPP_EMBEDDING_DOWNLOAD_ALLOWED: "0",
+      PDPP_LOCAL_TRANSFORMER_SUPERVISOR_RESTART_CONTRACT: "1",
+      PDPP_SEMANTIC_EMBEDDING_BACKEND: "local",
     })
   );
 });

@@ -24,7 +24,7 @@ export type EnvelopeTerminalStatus = NonNullable<TimelineEnvelope["terminal_stat
  * any page or `limit` of the same run.
  */
 export function isRunActive(envelopeTerminal: EnvelopeTerminalStatus | null): boolean {
-  return envelopeTerminal == null;
+  return envelopeTerminal === null;
 }
 
 /**
@@ -99,7 +99,7 @@ export function resolveDisplayTerminalStatus({
   envelopeTerminal: EnvelopeTerminalStatus | null;
   inPageTerminalStatus: TerminalRunStatus;
 }): TerminalRunStatus {
-  if (envelopeTerminal == null) {
+  if (envelopeTerminal === null) {
     // Run is active per the envelope — no terminal class to display, even if
     // the page happened to scan a stray terminal-shaped event.
     return null;

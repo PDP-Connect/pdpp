@@ -63,6 +63,7 @@ export function StreamInventory({ connectorName, connectorVersion, streams }: St
               <button
                 aria-expanded={!!expanded[name]}
                 className="flex w-full items-center justify-between gap-2 py-2.5 text-left"
+                // biome-ignore lint/performance/noJsxPropsBind: Handler captures the current row or component state; extracting it would add indirection without a stable consumer boundary.
                 onClick={() => toggleExpand(name)}
                 type="button"
               >

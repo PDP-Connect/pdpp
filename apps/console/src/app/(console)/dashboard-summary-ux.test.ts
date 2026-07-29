@@ -14,10 +14,9 @@ const TEST_FILE = `${HERE}components/views/standing-view-model.test.ts`;
 
 const STANDING_OVERVIEW_RENDER = /<StandingOverview\b/;
 const SHARED_SOURCE_WORK_INPUT = /sourceWork: sourceWorkFromConnectors\(connectors\)/;
-const SHARED_SOURCE_WORK_PRECEDENCE =
-  /function activeSourceWork[\s\S]*if \(sourceWorkHasRows\(input\.sourceWork\)\)[\s\S]*return input\.sourceWork/;
-const SHARED_SOURCE_WORK_HERO_PRECEDENCE =
-  /const sourceWork = activeSourceWork\(input\)[\s\S]*sourceAttentionHeadline\(sourceWork\)\.needsYou > 0[\s\S]*buildFailureHero[\s\S]*projectionState === "stale" \|\| projectionState === "failed"[\s\S]*sourceWork\.review\.length > 0[\s\S]*buildAdvisoryHero/;
+const SHARED_SOURCE_WORK_AUTHORITY = /function activeSourceWork[\s\S]*return input\.sourceWork/;
+const SERVER_FLEET_VERDICT_HERO_PRECEDENCE =
+  /function computeHero\(input: StandingInputs\)[\s\S]*overviewLoadIssues\.length > 0[\s\S]*const fleetHealthHero = input\.fleetHealth \? buildFleetHealthHero\(input\.fleetHealth, input\.hrefs\) : null;[\s\S]*if \(fleetHealthHero\)[\s\S]*return fleetHealthHero/;
 const SOURCE_WORK_SECTIONS_RENDERED =
   /data-row-count=\{rowCount\}[\s\S]*sections\.map\(\(section\)[\s\S]*section\.rows\.map\(\(a\)/;
 const NOTIFICATIONS_BLOCK_RENDERED =
@@ -40,11 +39,11 @@ test("dashboard home renders the active Standing Overview path", async () => {
   assert.match(src, SHARED_SOURCE_WORK_INPUT);
 });
 
-test("Standing Overview prefers shared source work before legacy advisory buckets", async () => {
+test("Standing Overview uses source work for detail while the server fleet verdict owns the aggregate hero", async () => {
   const src = await readFile(MODEL_FILE, "utf8");
 
-  assert.match(src, SHARED_SOURCE_WORK_PRECEDENCE);
-  assert.match(src, SHARED_SOURCE_WORK_HERO_PRECEDENCE);
+  assert.match(src, SHARED_SOURCE_WORK_AUTHORITY);
+  assert.match(src, SERVER_FLEET_VERDICT_HERO_PRECEDENCE);
 });
 
 test("Standing Overview renders sectioned shared source-work rows", async () => {

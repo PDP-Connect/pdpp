@@ -32,7 +32,6 @@ export function Rhythm({ ticks, label }: RhythmProps) {
         <span
           // ticks are positional and have no stable id; index is the identity.
           className={["rr-rhythm__tick", tick === "fail" ? "is-fail" : undefined].filter(Boolean).join(" ")}
-          // biome-ignore lint/suspicious/noArrayIndexKey: positional sparkline ticks have no other identity.
           key={i}
         />
       ))}

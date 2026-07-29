@@ -8,7 +8,7 @@ import {
   ProviderBudgetController,
   RetryBudget,
   retryBudgetCapacityFromRequestCap,
-} from "./provider-budget.js";
+} from "./provider-budget.ts";
 
 test("RetryBudget: consumes retry tokens and refills on successes", () => {
   const budget = new RetryBudget({ capacity: 2, refillPerSuccess: 0.5 });

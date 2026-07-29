@@ -96,7 +96,7 @@ pushbutton prompts.
 Preflight the selected env locally before deploying:
 
 ```sh
-node scripts/check-railway-deploy-env.mjs --core deploy/railway/core.env.example
+node --import tsx scripts/check-railway-deploy-env.ts --core deploy/railway/core.env.example
 ```
 
 The committed example intentionally fails on the empty owner password. A real
@@ -163,7 +163,7 @@ For a live source project or scratch template deploy:
 7. Run the deterministic MCP smoke:
 
    ```sh
-   node scripts/railway-mcp-query-smoke.mjs \
+   node --import tsx scripts/railway-mcp-query-smoke.ts \
      --origin https://<core-domain> \
      --owner-password "$PDPP_OWNER_PASSWORD"
    ```
@@ -196,6 +196,6 @@ backend on the operator's Railway account.
 
 ## Related
 
-- [`scripts/railway-mcp-query-smoke.mjs`](../../scripts/railway-mcp-query-smoke.mjs)
-- [`scripts/check-railway-deploy-env.mjs`](../../scripts/check-railway-deploy-env.mjs)
-- [`scripts/check-railway-ghcr-public.mjs`](../../scripts/check-railway-ghcr-public.mjs)
+- [`scripts/railway-mcp-query-smoke.ts`](../../scripts/railway-mcp-query-smoke.ts)
+- [`scripts/check-railway-deploy-env.ts`](../../scripts/check-railway-deploy-env.ts)
+- [`scripts/check-railway-ghcr-public.ts`](../../scripts/check-railway-ghcr-public.ts)

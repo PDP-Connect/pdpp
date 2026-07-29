@@ -40,9 +40,9 @@ const SNAPSHOT_AT = "2026-12-31T00:00:00Z";
 
 function ynabSummary(): RefConnectorSummary {
   return {
+    connection_id: "cin_ynab",
     connector_display_name: "YNAB",
     connector_id: "ynab",
-    connection_id: "cin_ynab",
     connector_instance_id: "cin_ynab",
     display_name: "YNAB",
     freshness: {},
@@ -76,24 +76,24 @@ function pageRecords(page: string, pageRank: number, count: number): ExploreTime
   // interleave in time: page 0 occupies the newest band, page 1 the next, etc.
   const bandStartDays = pageRank * 100;
   return Array.from({ length: count }, (_, i) => ({
-    object: "timeline_record" as const,
     connector_id: "ynab",
     connector_instance_id: "cin_ynab",
-    stream: "transactions",
-    record_key: `${page}-${i}`,
-    emitted_at: new Date(BASE_MS - (bandStartDays + i) * DAY_MS).toISOString(),
     data: { title: `${page}-${i}` },
+    emitted_at: new Date(BASE_MS - (bandStartDays + i) * DAY_MS).toISOString(),
+    object: "timeline_record" as const,
+    record_key: `${page}-${i}`,
+    stream: "transactions",
   }));
 }
 
 function timelinePage(records: ExploreTimelineRecord[], nextCursor: string | null): ExploreTimelinePage {
   return {
-    object: "list",
     data: records,
     has_more: nextCursor !== null,
-    next_cursor: nextCursor,
-    snapshot_at: SNAPSHOT_AT,
     new_since_snapshot: 0,
+    next_cursor: nextCursor,
+    object: "list",
+    snapshot_at: SNAPSHOT_AT,
   };
 }
 
@@ -105,45 +105,45 @@ function timelinePageWithUpcoming(
   upcomingNextCursor: string | null
 ): ExploreTimelinePage {
   return {
-    object: "list",
     data: records,
     has_more: false,
-    next_cursor: null,
-    snapshot_at: SNAPSHOT_AT,
     new_since_snapshot: 0,
+    next_cursor: null,
+    object: "list",
+    snapshot_at: SNAPSHOT_AT,
     upcoming,
-    upcoming_total: upcomingTotal,
-    upcoming_next_cursor: upcomingNextCursor,
     upcoming_has_more: upcomingNextCursor !== null,
+    upcoming_next_cursor: upcomingNextCursor,
+    upcoming_total: upcomingTotal,
   };
 }
 
 /** An upcoming-only page (the route's response when `upcoming_cursor` is present). */
 function upcomingPage(upcoming: ExploreTimelineRecord[], upcomingNextCursor: string | null): ExploreTimelinePage {
   return {
-    object: "list",
     data: [],
     has_more: false,
-    next_cursor: null,
-    snapshot_at: SNAPSHOT_AT,
     new_since_snapshot: 0,
+    next_cursor: null,
+    object: "list",
+    snapshot_at: SNAPSHOT_AT,
     upcoming,
-    upcoming_total: 0,
-    upcoming_next_cursor: upcomingNextCursor,
     upcoming_has_more: upcomingNextCursor !== null,
+    upcoming_next_cursor: upcomingNextCursor,
+    upcoming_total: 0,
   };
 }
 
 /** Future-dated records (an Upcoming page): keys `${tag}-0..n`. */
 function upcomingRecords(tag: string, count: number): ExploreTimelineRecord[] {
   return Array.from({ length: count }, (_, i) => ({
-    object: "timeline_record" as const,
     connector_id: "ynab",
     connector_instance_id: "cin_ynab",
-    stream: "transactions",
-    record_key: `${tag}-${i}`,
-    emitted_at: new Date(BASE_MS + (1 + i) * DAY_MS).toISOString(), // future-side, ascending
     data: { title: `${tag}-${i}` },
+    emitted_at: new Date(BASE_MS + (1 + i) * DAY_MS).toISOString(), // future-side, ascending
+    object: "timeline_record" as const,
+    record_key: `${tag}-${i}`,
+    stream: "transactions",
   }));
 }
 
@@ -171,11 +171,22 @@ const notStubbed = () => Promise.reject(new Error("not stubbed"));
  */
 function makeTrailDataSource(pages: Map<string, ExploreTimelinePage>, capturedKeys: string[]) {
   return {
-    kind: "live",
     aggregateRecordsByTime: notStubbed,
-    listExploreRecordBuckets: notStubbed,
-    listConnectorSummaries: () => Promise.resolve({ object: "list" as const, data: [ynabSummary()], has_more: false }),
+    getConnectorOverview: notStubbed,
+    getDatasetSummary: notStubbed,
+    getDeploymentDiagnostics: notStubbed,
+    getGrantTimeline: () => Promise.resolve(null),
+    getRecord: notStubbed,
+    getRunTimeline: () => Promise.resolve(null),
+    getStreamMetadata: (_c: string, stream: string): Promise<StreamMetadata> =>
+      Promise.resolve({ field_capabilities: {}, name: stream, object: "stream_metadata" }),
+    getTraceTimeline: () => Promise.resolve(null),
+    isHybridRetrievalAdvertised: () => Promise.resolve(false),
+    isSemanticRetrievalAdvertised: () => Promise.resolve(false),
+    kind: "live",
     listConnectorManifests: () => Promise.resolve([ynabManifest()]),
+    listConnectorSummaries: () => Promise.resolve({ data: [ynabSummary()], has_more: false, object: "list" as const }),
+    listExploreRecordBuckets: notStubbed,
     listExploreTimeline: (opts): Promise<ExploreTimelinePage> => {
       // An upcoming-cursor fetch pages ONLY the future set; key it distinctly.
       const key = opts?.upcomingCursor
@@ -188,34 +199,23 @@ function makeTrailDataSource(pages: Map<string, ExploreTimelinePage>, capturedKe
       }
       return Promise.resolve(page);
     },
-    getStreamMetadata: (_c: string, stream: string): Promise<StreamMetadata> =>
-      Promise.resolve({ name: stream, object: "stream_metadata", field_capabilities: {} }),
-    queryRecords: (): Promise<RecordsPage> => Promise.resolve({ data: [], has_more: false, object: "list" }),
-    getConnectorOverview: notStubbed,
-    getDatasetSummary: notStubbed,
-    getDeploymentDiagnostics: notStubbed,
-    getGrantTimeline: () => Promise.resolve(null),
-    getRecord: notStubbed,
-    getRunTimeline: () => Promise.resolve(null),
-    getTraceTimeline: () => Promise.resolve(null),
-    isHybridRetrievalAdvertised: () => Promise.resolve(false),
-    isSemanticRetrievalAdvertised: () => Promise.resolve(false),
-    listGrants: () => Promise.resolve({ object: "list" as const, data: [], has_more: false }),
-    listPendingApprovals: () => Promise.resolve({ object: "list" as const, data: [], has_more: false }),
-    listRuns: () => Promise.resolve({ object: "list" as const, data: [], has_more: false }),
+    listGrants: () => Promise.resolve({ data: [], has_more: false, object: "list" as const }),
+    listPendingApprovals: () => Promise.resolve({ data: [], has_more: false, object: "list" as const }),
+    listRuns: () => Promise.resolve({ data: [], has_more: false, object: "list" as const }),
     listStreams: () => Promise.resolve([]),
-    listTraces: () => Promise.resolve({ object: "list" as const, data: [], has_more: false }),
+    listTraces: () => Promise.resolve({ data: [], has_more: false, object: "list" as const }),
+    queryRecords: (): Promise<RecordsPage> => Promise.resolve({ data: [], has_more: false, object: "list" }),
     refSearch: () =>
-      Promise.resolve({ object: "search_result" as const, traces: [], grants: [], runs: [], exact: null }),
-    searchRecordsHybrid: () => Promise.resolve({ object: "list" as const, data: [], has_more: false, warnings: [] }),
-    searchRecordsLexical: () => Promise.resolve({ object: "list" as const, data: [], has_more: false, warnings: [] }),
-    searchRecordsSemantic: () => Promise.resolve({ object: "list" as const, data: [], has_more: false, warnings: [] }),
+      Promise.resolve({ exact: null, grants: [], object: "search_result" as const, runs: [], traces: [] }),
+    searchRecordsHybrid: () => Promise.resolve({ data: [], has_more: false, object: "list" as const, warnings: [] }),
+    searchRecordsLexical: () => Promise.resolve({ data: [], has_more: false, object: "list" as const, warnings: [] }),
+    searchRecordsSemantic: () => Promise.resolve({ data: [], has_more: false, object: "list" as const, warnings: [] }),
   } satisfies DashboardDataSource;
 }
 
 function assertNonIncreasing(feed: ReadonlyArray<{ emittedAt: string }>): void {
   const times = feed.map((e) => Date.parse(e.emittedAt));
-  for (let i = 1; i < times.length; i++) {
+  for (let i = 1; i < times.length; i += 1) {
     assert.ok((times[i] ?? 0) <= (times[i - 1] ?? 0), `feed must stay non-increasing emitted_at at index ${i}`);
   }
 }
@@ -239,7 +239,7 @@ test("recent Load-more: single-cursor trail ACCUMULATES page 1 + page 2 (reprodu
   const ds = makeTrailDataSource(pages, capturedKeys);
 
   // Load-more appended `cursor-p2` to the trail. Anchor is the original snapshot.
-  const data = await assembleExplorerData({ cursors: "cursor-p2", anchor: SNAPSHOT_AT }, ds, "https://rs.test");
+  const data = await assembleExplorerData({ anchor: SNAPSHOT_AT, cursors: "cursor-p2" }, ds, "https://rs.test");
 
   // BOTH pages present: 32 (page 1) + 5 (page 2) = 37. Pre-fix code returned only
   // the last page (5) — this assertion FAILS there.
@@ -278,7 +278,7 @@ test("recent Load-more: 2-entry trail ACCUMULATES three pages, ordered and dedup
   const ds = makeTrailDataSource(pages, capturedKeys);
 
   const data = await assembleExplorerData(
-    { cursors: "cursor-p2,cursor-p3", anchor: SNAPSHOT_AT },
+    { anchor: SNAPSHOT_AT, cursors: "cursor-p2,cursor-p3" },
     ds,
     "https://rs.test"
   );
@@ -344,43 +344,43 @@ test("recent Load-more: page 1 is REWOUND to the original snapshot — an after-
   const ANCHOR = "2026-06-10T12:00:00Z"; // original snapshot_at (>= every original)
 
   const rec = (key: string, emitted_at: string): ExploreTimelineRecord => ({
-    object: "timeline_record",
     connector_id: "ynab",
     connector_instance_id: "cin_ynab",
-    stream: "transactions",
-    record_key: key,
-    emitted_at,
     data: { title: key },
+    emitted_at,
+    object: "timeline_record",
+    record_key: key,
+    stream: "transactions",
   });
 
   // REWIND(cursor-p2): the ORIGINAL page 1 of the snapshot — backfill correctly absent.
   const rewoundPage1: ExploreTimelinePage = {
-    object: "list",
     data: [rec("orig-newest", ORIG_NEWEST), rec("orig-tail", ORIG_TAIL)],
     has_more: true,
-    next_cursor: "cursor-p2",
-    snapshot_at: ANCHOR,
     new_since_snapshot: 1,
+    next_cursor: "cursor-p2",
+    object: "list",
+    snapshot_at: ANCHOR,
   };
   // cursor:null would return THIS — a fresh snapshot where the backfill displaced the
   // original tail. If the assembler (wrongly) fetched cursor:null for page 1, this is
   // what it would see; the test must prove it does NOT use this.
   const freshDriftedPage1: ExploreTimelinePage = {
-    object: "list",
     data: [rec("orig-newest", ORIG_NEWEST), rec("backfill", BACKFILL_AT)],
     has_more: true,
-    next_cursor: "cursor-p2",
-    snapshot_at: BACKFILL_AT,
     new_since_snapshot: 0,
+    next_cursor: "cursor-p2",
+    object: "list",
+    snapshot_at: BACKFILL_AT,
   };
   // Page 2 (cursor-p2 verbatim): older originals, snapshotSeq-pinned.
   const page2: ExploreTimelinePage = {
-    object: "list",
     data: [rec("orig-p2-a", "2026-06-08T12:00:00Z"), rec("orig-p2-b", "2026-06-07T12:00:00Z")],
     has_more: false,
-    next_cursor: null,
-    snapshot_at: ANCHOR,
     new_since_snapshot: 1,
+    next_cursor: null,
+    object: "list",
+    snapshot_at: ANCHOR,
   };
 
   const pages = new Map<string, ExploreTimelinePage>([
@@ -391,7 +391,7 @@ test("recent Load-more: page 1 is REWOUND to the original snapshot — an after-
   const capturedKeys: string[] = [];
   const ds = makeTrailDataSource(pages, capturedKeys);
 
-  const data = await assembleExplorerData({ cursors: "cursor-p2", anchor: ANCHOR }, ds, "https://rs.test");
+  const data = await assembleExplorerData({ anchor: ANCHOR, cursors: "cursor-p2" }, ds, "https://rs.test");
 
   // The original page-1 tail row is PRESENT (not displaced).
   assert.ok(
@@ -452,6 +452,7 @@ test("recent Load-more: trail pages are fetched CONCURRENTLY (no serial waterfal
       // Block until every expected fetch is in flight. Serial code never gets here
       // for the 2nd/3rd fetch (it awaits this one first) -> deadlock -> timeout.
       await barrier;
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: The declared public input remains defensive at this boundary; removing the guard would reduce runtime tolerance.
       const page = pages.get(fetchKey(opts?.cursor ?? null, Boolean(opts?.rewindToFirstPage)));
       if (!page) {
         throw new Error("unexpected fetch");
@@ -463,7 +464,7 @@ test("recent Load-more: trail pages are fetched CONCURRENTLY (no serial waterfal
   // If the assembler fetched serially, this await would never resolve (the barrier
   // needs all 3 in flight, but fetch 1 blocks before fetch 2 is dispatched).
   const data = await assembleExplorerData(
-    { cursors: "cursor-p2,cursor-p3", anchor: SNAPSHOT_AT },
+    { anchor: SNAPSHOT_AT, cursors: "cursor-p2,cursor-p3" },
     ds,
     "https://rs.test"
   );
@@ -533,13 +534,13 @@ test("Upcoming dedupe: space-containing keys that COLLIDE under a join are kept 
   // JSON.stringify(["cin_ynab","transactions","x y"]) !=
   // JSON.stringify(["cin_ynab","transactions x","y"]) keeps both.
   const rec = (stream: string, key: string): ExploreTimelineRecord => ({
-    object: "timeline_record",
     connector_id: "ynab",
     connector_instance_id: "cin_ynab",
-    stream,
-    record_key: key,
-    emitted_at: new Date(BASE_MS + DAY_MS).toISOString(),
     data: { title: `${stream}/${key}` },
+    emitted_at: new Date(BASE_MS + DAY_MS).toISOString(),
+    object: "timeline_record",
+    record_key: key,
+    stream,
   });
   const page1 = timelinePageWithUpcoming(pageRecords("p1", 0, 1), [rec("transactions", "x y")], 2, "ucursor-2");
   const up2 = upcomingPage([rec("transactions x", "y")], null);
@@ -572,6 +573,7 @@ test("Upcoming first load: page 1 requests a LARGE upcoming head (not the 32-row
   const ds = {
     ...makeTrailDataSource(new Map([[fetchKey(null, false), page1]]), []),
     listExploreTimeline: (opts: { upcomingLimit?: number; upcomingCursor?: string | null }) => {
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: The declared public input remains defensive at this boundary; removing the guard would reduce runtime tolerance.
       captured.push(opts?.upcomingLimit);
       return Promise.resolve(page1);
     },

@@ -65,8 +65,8 @@ import {
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
+  robots: { follow: false, index: false },
   title: "Ink Carbon — Design showcase",
-  robots: { index: false, follow: false },
 };
 
 // ─── Specimen panel ───────────────────────────────────────────────
@@ -76,15 +76,15 @@ function Section({ title, children }: { title: string; children: React.ReactNode
     <section style={{ marginBottom: "2.5rem" }}>
       <div
         style={{
+          borderBottom: "1px solid var(--border)",
+          color: "var(--muted-foreground)",
           fontFamily: "var(--font-mono)",
           fontSize: "0.625rem",
           fontWeight: 500,
           letterSpacing: "0.1em",
-          textTransform: "uppercase",
-          color: "var(--muted-foreground)",
           marginBottom: "0.75rem",
           paddingBottom: "0.375rem",
-          borderBottom: "1px solid var(--border)",
+          textTransform: "uppercase",
         }}
       >
         {title}
@@ -100,12 +100,12 @@ function ThemePanel({ theme, label }: { theme: "dark" | "light"; label: string }
       className={theme === "dark" ? "dark" : undefined}
       data-theme={theme}
       style={{
-        flex: 1,
-        minWidth: 0,
         background: "var(--background)",
         color: "var(--foreground)",
-        padding: "2rem",
+        flex: 1,
         fontFamily: "var(--font-sans)",
+        minWidth: 0,
+        padding: "2rem",
       }}
     >
       <div style={{ marginBottom: "2rem" }}>
@@ -129,14 +129,14 @@ function ThemePanel({ theme, label }: { theme: "dark" | "light"; label: string }
 
       {/* ─── Endorsements (status badges) ─── */}
       <Section title="Endorsements — spent color">
-        <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ alignItems: "center", display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
           <Endorse status="active" />
           <Endorse status="continuous" />
           <Endorse status="expiring" />
           <Endorse status="revoked" />
           <Endorse status="denied" />
         </div>
-        <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ alignItems: "center", display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
           <Endorse label="recorded" status="active" />
           <Endorse label="expires in 3 days" status="expiring" />
           <Endorse label="open-ended" status="continuous" />
@@ -145,7 +145,7 @@ function ThemePanel({ theme, label }: { theme: "dark" | "light"; label: string }
 
       {/* ─── Tags ─── */}
       <Section title="Tags — taxonomy labels">
-        <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
           <Tag>statements</Tag>
           <Tag>transactions</Tag>
           <Tag>identity</Tag>
@@ -156,13 +156,13 @@ function ThemePanel({ theme, label }: { theme: "dark" | "light"; label: string }
 
       {/* ─── Buttons ─── */}
       <Section title="Buttons">
-        <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ alignItems: "center", display: "flex", flexWrap: "wrap", gap: "0.75rem" }}>
           <IcButton>Default</IcButton>
           <IcButton variant="human">Approve 3 streams</IcButton>
           <IcButton variant="ghost">Cancel</IcButton>
           <IcButton variant="destructive">Revoke</IcButton>
         </div>
-        <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ alignItems: "center", display: "flex", flexWrap: "wrap", gap: "0.75rem" }}>
           <IcButton size="sm">Default sm</IcButton>
           <IcButton size="sm" variant="human">
             Approve
@@ -400,20 +400,20 @@ export default function InkCarbonShowcase() {
   return (
     <div
       style={{
-        minHeight: "100vh",
         display: "flex",
         flexDirection: "column",
+        minHeight: "100vh",
       }}
     >
       {/* Page header */}
       <div
         style={{
-          padding: "1.5rem 2rem",
-          borderBottom: "1px solid var(--border-strong)",
+          alignItems: "baseline",
           background: "var(--card)",
+          borderBottom: "1px solid var(--border-strong)",
           display: "flex",
           justifyContent: "space-between",
-          alignItems: "baseline",
+          padding: "1.5rem 2rem",
         }}
       >
         <span className="pdpp-heading" style={{ fontFamily: "var(--font-sans)", fontSize: "1.25rem", fontWeight: 700 }}>
@@ -421,7 +421,7 @@ export default function InkCarbonShowcase() {
         </span>
         <span
           className="pdpp-typed-sm"
-          style={{ fontFamily: "var(--font-mono)", fontSize: "0.6875rem", color: "var(--muted-foreground)" }}
+          style={{ color: "var(--muted-foreground)", fontFamily: "var(--font-mono)", fontSize: "0.6875rem" }}
         >
           Phase 1 · /design-system
         </span>
@@ -430,7 +430,7 @@ export default function InkCarbonShowcase() {
       {/* Two-column: dark | light */}
       <div style={{ display: "flex", flex: 1 }}>
         <ThemePanel label="Dark — operator console (primary)" theme="dark" />
-        <div style={{ width: 1, background: "var(--border-strong)", flexShrink: 0 }} />
+        <div style={{ background: "var(--border-strong)", flexShrink: 0, width: 1 }} />
         <ThemePanel label="Light — paper mode" theme="light" />
       </div>
     </div>

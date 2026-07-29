@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { connectorRetainsSurfaceProcess as policyRetainsSurfaceProcess } from "../../../packages/polyfill-connectors/src/browser-surface-policy.ts";
-import { canonicalConnectorKey } from "../../server/connector-key.js";
+import { canonicalConnectorKey } from "../../server/connector-key.ts";
 
 /**
  * Reference-side adapter over the shared connector-runtime browser-surface

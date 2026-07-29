@@ -102,8 +102,8 @@ export const CONNECTION_CONDITION_REASONS = Object.freeze({
   COLLECTION_NOT_OBSERVED: "collection_not_observed",
   COLLECTION_SUCCEEDED: "collection_succeeded",
   COLLECTION_SUCCEEDED_LOCAL_DEVICE: "collection_succeeded_local_device",
-  CREDENTIAL_CONTINUITY_UNPROVEN: "credential_continuity_unproven",
   COVERAGE_UNKNOWN: "coverage_unknown",
+  CREDENTIAL_CONTINUITY_UNPROVEN: "credential_continuity_unproven",
   CREDENTIAL_REJECTED: "credential_rejected",
   CREDENTIAL_REQUIRED: "credential_required",
   CREDENTIALS_ACCEPTED: "credentials_accepted",
@@ -139,10 +139,10 @@ export const CONNECTION_CONDITION_REASONS = Object.freeze({
   REMOTE_SURFACE_NOT_REQUIRED: "remote_surface_not_required",
   REMOTE_SURFACE_UNKNOWN: "remote_surface_unknown",
   RUNTIME_AVAILABLE: "runtime_available",
+  RUNTIME_BINDING_MISSING: "runtime_binding_missing",
   RUNTIME_NOT_MANAGED: "runtime_not_managed",
   RUNTIME_STATE_UNKNOWN: "runtime_state_unknown",
   RUNTIME_UNAVAILABLE: "runtime_unavailable",
-  RUNTIME_BINDING_MISSING: "runtime_binding_missing",
   SCHEDULE_ENABLED: "schedule_enabled",
   SCHEDULE_NOT_CONFIGURED: "schedule_not_configured",
   SCHEDULE_PAUSED: "schedule_paused",
@@ -624,12 +624,12 @@ export function deriveSourcePressureBacklog(
       ? Math.floor(evidence.terminal)
       : null;
   return {
+    max_attempt_count: maxAttemptCount,
+    next_attempt_at: nextAttemptAt,
     pending,
     pending_is_floor: pendingIsFloor,
     pending_other: pendingOther,
     pending_other_is_floor: pendingOtherIsFloor,
-    max_attempt_count: maxAttemptCount,
-    next_attempt_at: nextAttemptAt,
     recovered,
     terminal,
   };
@@ -1079,7 +1079,6 @@ export interface ComputeConnectionHealthInput {
   readonly activity: ConnectionActivityEvidence | null;
   readonly attention: ConnectionAttentionEvidence | null;
   readonly backoff: ConnectionBackoffEvidence | null;
-  readonly browserSurfaceRepair?: BrowserSurfaceRepairContext | null;
   /**
    * True when this connection has a browser/session repair path. This is a
    * durable connection/runtime capability, not evidence that a browser surface
@@ -1092,6 +1091,7 @@ export interface ComputeConnectionHealthInput {
    * strings.
    */
   readonly browserSessionRepairCapable?: boolean;
+  readonly browserSurfaceRepair?: BrowserSurfaceRepairContext | null;
   /**
    * Adaptive collection rate controller snapshot. Passed through verbatim from
    * the caller (the reference derives it from run-trace progress events). Pure
@@ -1182,6 +1182,7 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
   const forwardDisposition = deriveConnectionForwardDisposition(input, conditionSet);
   const collectionRate = input.collectionRate ?? null;
   const detailGapBacklog = deriveSourcePressureBacklog(input.detailGapBacklog ?? null);
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const ephemeralBrowserRuntime = input.ephemeralBrowserRuntime;
   const remoteSurface = projectRemoteSurfaceDetail(input.remoteSurface ?? null);
   const lastSuccessAt = input.run?.lastSuccessAt ?? null;
@@ -1191,8 +1192,8 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
   const ctx: ClassificationContext = {
     axes,
     badges,
-    conditions,
     conditionSet,
+    conditions,
     input,
     lastSuccessAt,
     nextAttemptAt,
@@ -1207,8 +1208,8 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
       collectionRate,
       conditions,
       detailGapBacklog,
-      ephemeralBrowserRuntime,
       dominantConditionId,
+      ephemeralBrowserRuntime,
       forwardDisposition,
       supportingConditionIds: pickSupportingConditionIds(conditions, dominantConditionId),
     });
@@ -1222,13 +1223,13 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
   // Fallback -> unknown. Reached when evidence combinations don't line up
   // cleanly (e.g. succeeded run but coverage axis is unknown).
   return finishWith({
-    state: "unknown",
-    reasonCode: null,
-    lastSuccessAt,
-    nextAttemptAt,
     axes,
     badges,
+    lastSuccessAt,
+    nextAttemptAt,
+    reasonCode: null,
     remoteSurface,
+    state: "unknown",
     unknownReasons: ["unclassified"],
   });
 }
@@ -1240,14 +1241,14 @@ function classifyUnreliableProjection(ctx: ClassificationContext): ReturnType<Cl
     return null;
   }
   return {
-    state: "unknown",
-    reasonCode: null,
-    lastSuccessAt: ctx.lastSuccessAt,
-    nextAttemptAt: ctx.nextAttemptAt,
     axes: ctx.axes,
     badges: ctx.badges,
+    lastSuccessAt: ctx.lastSuccessAt,
+    nextAttemptAt: ctx.nextAttemptAt,
+    reasonCode: null,
     remoteSurface: ctx.remoteSurface,
-    unknownReasons: ctx.input.projection?.unreliableSources ?? [],
+    state: "unknown",
+    unknownReasons: canonicalProjectionUnreliableSources(ctx.input.projection?.unreliableSources ?? []),
   };
 }
 
@@ -1259,14 +1260,14 @@ function classifyOpenAttention(ctx: ClassificationContext): ReturnType<Classific
     return null;
   }
   return {
-    state: "needs_attention",
-    reasonCode: attention.reason,
-    lastSuccessAt: ctx.lastSuccessAt,
-    nextAttemptAt: ctx.nextAttemptAt,
     axes: ctx.axes,
     badges: ctx.badges,
-    remoteSurface: ctx.remoteSurface,
+    lastSuccessAt: ctx.lastSuccessAt,
     nextAction: ctx.input.attention ? projectNextAction(ctx.input.attention) : null,
+    nextAttemptAt: ctx.nextAttemptAt,
+    reasonCode: attention.reason,
+    remoteSurface: ctx.remoteSurface,
+    state: "needs_attention",
   };
 }
 
@@ -1277,13 +1278,13 @@ function classifyOwnerPaused(ctx: ClassificationContext): ReturnType<Classificat
     return null;
   }
   return {
-    state: "idle",
-    reasonCode: null,
-    lastSuccessAt: ctx.lastSuccessAt,
-    nextAttemptAt: null,
     axes: ctx.axes,
     badges: ctx.badges,
+    lastSuccessAt: ctx.lastSuccessAt,
+    nextAttemptAt: null,
+    reasonCode: null,
     remoteSurface: ctx.remoteSurface,
+    state: "idle",
   };
 }
 
@@ -1293,13 +1294,13 @@ function classifyReadinessBlocked(ctx: ClassificationContext): ReturnType<Classi
     return null;
   }
   return {
-    state: "blocked",
-    reasonCode: blocker.reason,
-    lastSuccessAt: ctx.lastSuccessAt,
-    nextAttemptAt: ctx.nextAttemptAt,
     axes: ctx.axes,
     badges: ctx.badges,
+    lastSuccessAt: ctx.lastSuccessAt,
+    nextAttemptAt: ctx.nextAttemptAt,
+    reasonCode: blocker.reason,
     remoteSurface: ctx.remoteSurface,
+    state: "blocked",
   };
 }
 
@@ -1310,13 +1311,13 @@ function classifyRetryPolicyExhausted(ctx: ClassificationContext): ReturnType<Cl
     return null;
   }
   return {
-    state: "blocked",
-    reasonCode: retryPolicy.reason,
-    lastSuccessAt: ctx.lastSuccessAt,
-    nextAttemptAt: ctx.nextAttemptAt,
     axes: ctx.axes,
     badges: ctx.badges,
+    lastSuccessAt: ctx.lastSuccessAt,
+    nextAttemptAt: ctx.nextAttemptAt,
+    reasonCode: retryPolicy.reason,
     remoteSurface: ctx.remoteSurface,
+    state: "blocked",
   };
 }
 
@@ -1327,13 +1328,13 @@ function classifyCoolingOff(ctx: ClassificationContext): ReturnType<Classificati
     return null;
   }
   return {
-    state: "cooling_off",
-    reasonCode: retryPolicy.reason,
-    lastSuccessAt: ctx.lastSuccessAt,
-    nextAttemptAt: ctx.nextAttemptAt,
     axes: ctx.axes,
     badges: ctx.badges,
+    lastSuccessAt: ctx.lastSuccessAt,
+    nextAttemptAt: ctx.nextAttemptAt,
+    reasonCode: retryPolicy.reason,
     remoteSurface: ctx.remoteSurface,
+    state: "cooling_off",
   };
 }
 
@@ -1344,13 +1345,13 @@ function classifyDegradedEvidence(ctx: ClassificationContext): ReturnType<Classi
     return null;
   }
   return {
-    state: "degraded",
-    reasonCode: degradedReasonCode(ctx.input),
-    lastSuccessAt: ctx.lastSuccessAt,
-    nextAttemptAt: ctx.nextAttemptAt,
     axes: ctx.axes,
     badges: ctx.badges,
+    lastSuccessAt: ctx.lastSuccessAt,
+    nextAttemptAt: ctx.nextAttemptAt,
+    reasonCode: degradedReasonCode(ctx.input),
     remoteSurface: ctx.remoteSurface,
+    state: "degraded",
   };
 }
 
@@ -1368,13 +1369,13 @@ function classifyCurrentEvidenceWithoutVerdict(ctx: ClassificationContext): Retu
     return null;
   }
   return {
-    state: "unknown",
-    reasonCode: null,
-    lastSuccessAt: null,
-    nextAttemptAt: ctx.nextAttemptAt,
     axes: ctx.axes,
     badges: ctx.badges,
+    lastSuccessAt: null,
+    nextAttemptAt: ctx.nextAttemptAt,
+    reasonCode: null,
     remoteSurface: ctx.remoteSurface,
+    state: "unknown",
     unknownReasons: ["collection"],
   };
 }
@@ -1384,13 +1385,13 @@ function classifyCurrentManagedRemoteSurfaceUnknown(ctx: ClassificationContext):
     return null;
   }
   return {
-    state: "unknown",
-    reasonCode: null,
-    lastSuccessAt: ctx.lastSuccessAt,
-    nextAttemptAt: ctx.nextAttemptAt,
     axes: ctx.axes,
     badges: ctx.badges,
+    lastSuccessAt: ctx.lastSuccessAt,
+    nextAttemptAt: ctx.nextAttemptAt,
+    reasonCode: null,
     remoteSurface: ctx.remoteSurface,
+    state: "unknown",
     unknownReasons: ["remote_surface"],
   };
 }
@@ -1400,13 +1401,13 @@ function classifyCurrentManagedRuntimeUnknown(ctx: ClassificationContext): Retur
     return null;
   }
   return {
-    state: "unknown",
-    reasonCode: null,
-    lastSuccessAt: ctx.lastSuccessAt,
-    nextAttemptAt: ctx.nextAttemptAt,
     axes: ctx.axes,
     badges: ctx.badges,
+    lastSuccessAt: ctx.lastSuccessAt,
+    nextAttemptAt: ctx.nextAttemptAt,
+    reasonCode: null,
     remoteSurface: ctx.remoteSurface,
+    state: "unknown",
     unknownReasons: ["runtime"],
   };
 }
@@ -1414,6 +1415,7 @@ function classifyCurrentManagedRuntimeUnknown(ctx: ClassificationContext): Retur
 function managedRuntimeIsUnknown(ctx: ClassificationContext): boolean {
   const runtime = ctx.input.ephemeralBrowserRuntime;
   return (
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     runtime?.surface_mode !== undefined &&
     runtime.surface_mode !== "none" &&
     ctx.conditionSet.get("RuntimeAvailable")?.status === "unknown"
@@ -1454,13 +1456,13 @@ function classifyStaleAdvisory(
     return null;
   }
   return {
-    state: "idle",
-    reasonCode: expectedReason,
-    lastSuccessAt: ctx.lastSuccessAt,
-    nextAttemptAt: ctx.nextAttemptAt,
     axes: ctx.axes,
     badges: ctx.badges,
+    lastSuccessAt: ctx.lastSuccessAt,
+    nextAttemptAt: ctx.nextAttemptAt,
+    reasonCode: expectedReason,
     remoteSurface: ctx.remoteSurface,
+    state: "idle",
   };
 }
 
@@ -1493,13 +1495,13 @@ function classifyNeverRunIdle(ctx: ClassificationContext): ReturnType<Classifica
     return null;
   }
   return {
-    state: "idle",
-    reasonCode: null,
-    lastSuccessAt: null,
-    nextAttemptAt: ctx.nextAttemptAt,
     axes: ctx.axes,
     badges: ctx.badges,
+    lastSuccessAt: null,
+    nextAttemptAt: ctx.nextAttemptAt,
+    reasonCode: null,
     remoteSurface: ctx.remoteSurface,
+    state: "idle",
   };
 }
 
@@ -1511,13 +1513,13 @@ function classifyHealthy(ctx: ClassificationContext): ReturnType<ClassificationS
     return null;
   }
   return {
-    state: "healthy",
-    reasonCode: null,
-    lastSuccessAt: ctx.lastSuccessAt,
-    nextAttemptAt: ctx.nextAttemptAt,
     axes: ctx.axes,
     badges: ctx.badges,
+    lastSuccessAt: ctx.lastSuccessAt,
+    nextAttemptAt: ctx.nextAttemptAt,
+    reasonCode: null,
     remoteSurface: ctx.remoteSurface,
+    state: "healthy",
   };
 }
 
@@ -1543,10 +1545,14 @@ function hasActiveLocalDeviceProgressWithoutCollectionVerdict(
 
 function projectAxes(input: ComputeConnectionHealthInput): ConnectionAxes {
   return {
-    freshness: input.freshness?.axis ?? "unknown",
-    coverage: input.coverage?.axis ?? "unknown",
     attention: input.attention ? input.attention.lifecycle : "none",
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+    coverage: input.coverage?.axis ?? "unknown",
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+    freshness: input.freshness?.axis ?? "unknown",
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     outbox: input.outbox?.axis ?? "unknown",
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     remote_surface: input.remoteSurface?.axis ?? "none",
   };
 }
@@ -1568,8 +1574,8 @@ function projectRemoteSurfaceDetail(evidence: ConnectionRemoteSurfaceEvidence | 
 
 function projectBadges(input: ComputeConnectionHealthInput, axes: ConnectionAxes): ConnectionBadges {
   return {
-    syncing: Boolean(input.activity?.active),
     stale: axes.freshness === "stale",
+    syncing: Boolean(input.activity?.active),
   };
 }
 
@@ -1653,8 +1659,8 @@ function projectConditions(
     const conditionObservedAt = item.observed_at ?? observedAt;
     return {
       ...item,
-      observed_at: conditionObservedAt,
       current: conditionIsCurrent(item.expires_at, conditionObservedAt),
+      observed_at: conditionObservedAt,
     };
   });
 }
@@ -1673,19 +1679,19 @@ function condition(input: {
   readonly remediation?: ConnectionConditionRemediation | null;
 }): ConnectionHealthCondition {
   return {
+    current: true,
+    expires_at: input.expiresAt ?? null,
     id: `${input.type}:${input.reason}`,
-    type: input.type,
-    status: input.status,
-    severity: input.severity,
+    message: input.message,
+    observed_at: input.observedAt ?? null,
+    origin: input.origin,
     reason: input.reason,
     reason_code: input.reasonCode ?? null,
-    message: input.message,
-    origin: input.origin,
-    observed_at: input.observedAt ?? null,
-    expires_at: input.expiresAt ?? null,
-    current: true,
-    sensitivity: input.sensitivity ?? "owner",
     remediation: input.remediation ?? null,
+    sensitivity: input.sensitivity ?? "owner",
+    severity: input.severity,
+    status: input.status,
+    type: input.type,
   };
 }
 
@@ -1712,134 +1718,141 @@ function conditionExpired(expiresAt: string | null, observedAt: string | null): 
 }
 
 function projectionReliableCondition(input: ComputeConnectionHealthInput): ConnectionHealthCondition {
-  const sources = input.projection?.unreliableSources ?? [];
+  // This is the canonical projection-reliability composition boundary. Several
+  // failed components can share one closed reason code (for example a repair
+  // lock failure); retain first-seen order while exposing each cause once.
+  const sources = canonicalProjectionUnreliableSources(input.projection?.unreliableSources ?? []);
   if (sources.length > 0) {
     return condition({
-      type: "ProjectionReliable",
-      status: "false",
-      severity: "blocked",
+      message: `Projection evidence is unreliable: ${sources.join(", ")}.`,
+      origin: "read_model",
       reason: CONDITION_REASON.PROJECTION_UNRELIABLE,
       // The first unreliable source is surfaced as the machine-readable
       // reason_code; callers that need the complete set still have the full
       // list in `unreliableSources`/the human-readable `message` below.
       reasonCode: sources[0] ?? null,
-      message: `Projection evidence is unreliable: ${sources.join(", ")}.`,
-      origin: "read_model",
       remediation: {
         action: "wait",
         label: "Wait for the reference read model to refresh",
         retryable: true,
         target: null,
       },
+      severity: "blocked",
+      status: "false",
+      type: "ProjectionReliable",
     });
   }
   return condition({
-    type: "ProjectionReliable",
-    status: "true",
-    severity: "info",
-    reason: CONDITION_REASON.PROJECTION_CURRENT,
     message: "Projection evidence is reliable.",
     origin: "read_model",
+    reason: CONDITION_REASON.PROJECTION_CURRENT,
+    severity: "info",
+    status: "true",
+    type: "ProjectionReliable",
   });
+}
+
+function canonicalProjectionUnreliableSources(sources: readonly string[]): readonly string[] {
+  return [...new Set(sources)];
 }
 
 function scheduleEligibleCondition(input: ComputeConnectionHealthInput): ConnectionHealthCondition {
   if (!input.schedule) {
     return condition({
-      type: "ScheduleEligible",
-      status: "unknown",
-      severity: "info",
-      reason: CONDITION_REASON.SCHEDULE_NOT_CONFIGURED,
       message: "No scheduler policy is configured for this connection.",
       origin: "scheduler",
+      reason: CONDITION_REASON.SCHEDULE_NOT_CONFIGURED,
+      severity: "info",
+      status: "unknown",
+      type: "ScheduleEligible",
     });
   }
   if (input.schedule.enabled === false) {
     return condition({
-      type: "ScheduleEligible",
-      status: "false",
-      severity: "info",
-      reason: CONDITION_REASON.SCHEDULE_PAUSED,
       message: "The schedule is paused.",
       origin: "scheduler",
+      reason: CONDITION_REASON.SCHEDULE_PAUSED,
       remediation: {
         action: "wait",
         label: "Resume the schedule when fresh data is needed",
         retryable: false,
         target: "schedule",
       },
+      severity: "info",
+      status: "false",
+      type: "ScheduleEligible",
     });
   }
   return condition({
-    type: "ScheduleEligible",
-    status: "true",
-    severity: "info",
-    reason: CONDITION_REASON.SCHEDULE_ENABLED,
     message: "The schedule is eligible to run.",
     origin: "scheduler",
+    reason: CONDITION_REASON.SCHEDULE_ENABLED,
+    severity: "info",
+    status: "true",
+    type: "ScheduleEligible",
   });
 }
 
 function retryPolicyClearCondition(input: ComputeConnectionHealthInput): ConnectionHealthCondition {
   if (!input.backoff || conditionExpired(input.backoff.nextRunAt, input.observedAt ?? null)) {
     return condition({
-      type: "RetryPolicyClear",
-      status: "true",
-      severity: "info",
-      reason: input.backoff ? CONDITION_REASON.BACKOFF_EXPIRED : CONDITION_REASON.NO_ACTIVE_BACKOFF,
       message: input.backoff
         ? "The previous retry backoff has expired."
         : "No active retry backoff is blocking collection.",
       origin: "scheduler",
+      reason: input.backoff ? CONDITION_REASON.BACKOFF_EXPIRED : CONDITION_REASON.NO_ACTIVE_BACKOFF,
+      severity: "info",
+      status: "true",
+      type: "RetryPolicyClear",
     });
   }
   const blocked = input.backoff.consecutiveFailures >= BLOCKED_PROMOTION_THRESHOLD;
   const retryable = !blocked;
   return condition({
-    type: "RetryPolicyClear",
-    status: "false",
-    severity: blocked ? "blocked" : "warning",
-    reason: stripClassPrefix(input.backoff.reasonClass) ?? CONDITION_REASON.SCHEDULER_BACKOFF_ACTIVE,
+    expiresAt: input.backoff.nextRunAt,
     message: blocked ? "Retry policy has reached the blocked threshold." : "Retry policy is delaying the next attempt.",
     origin: "scheduler",
-    expiresAt: input.backoff.nextRunAt,
+    reason: stripClassPrefix(input.backoff.reasonClass) ?? CONDITION_REASON.SCHEDULER_BACKOFF_ACTIVE,
     remediation: {
       action: retryable ? "retry_by_runtime" : "update_connector",
       label: retryable ? "Wait for the scheduled retry" : "Review the repeated scheduler failure",
       retryable,
       target: "schedule",
     },
+    severity: blocked ? "blocked" : "warning",
+    status: "false",
+    type: "RetryPolicyClear",
   });
 }
 
 function attentionClearCondition(input: ComputeConnectionHealthInput): ConnectionHealthCondition {
   if (!input.attention || conditionExpired(input.attention.expiresAt, input.observedAt ?? null)) {
     return condition({
-      type: "AttentionClear",
-      status: "true",
-      severity: "info",
-      reason: input.attention ? CONDITION_REASON.ATTENTION_EXPIRED : CONDITION_REASON.NO_OPEN_ATTENTION,
       message: input.attention
         ? "The previous owner action request has expired."
         : "No owner action is currently required.",
       origin: "runtime",
+      reason: input.attention ? CONDITION_REASON.ATTENTION_EXPIRED : CONDITION_REASON.NO_OPEN_ATTENTION,
+      severity: "info",
+      status: "true",
+      type: "AttentionClear",
     });
   }
   return condition({
-    type: "AttentionClear",
-    status: "false",
-    severity: "blocked",
-    reason: input.attention.reasonCode ?? CONDITION_REASON.ATTENTION_REQUIRED,
+    expiresAt: input.attention.expiresAt,
     message: "Owner action is required before collection can continue.",
     origin: "runtime",
-    expiresAt: input.attention.expiresAt,
-    sensitivity: input.attention.sensitivity === "secret" ? "secret_redacted" : "owner",
+    reason: input.attention.reasonCode ?? CONDITION_REASON.ATTENTION_REQUIRED,
     remediation: {
       action: "satisfy_attention",
       label: "Open the requested interaction and complete the action",
       retryable: false,
       target: input.attention.actionTarget,
     },
+    sensitivity: input.attention.sensitivity === "secret" ? "secret_redacted" : "owner",
+    severity: "blocked",
+    status: "false",
+    type: "AttentionClear",
   });
 }
 
@@ -1854,43 +1867,43 @@ function collectionSucceededCondition(input: ComputeConnectionHealthInput): Conn
     // a real run is always authoritative.
     if (input.localDeviceCollection?.verdict === "succeeded") {
       return condition({
-        type: "CollectionSucceeded",
-        status: "true",
-        severity: "info",
-        reason: CONDITION_REASON.COLLECTION_SUCCEEDED_LOCAL_DEVICE,
         message: "The local collector drained cleanly with complete coverage.",
-        origin: "local_device",
         observedAt: input.run?.lastSuccessAt ?? null,
+        origin: "local_device",
+        reason: CONDITION_REASON.COLLECTION_SUCCEEDED_LOCAL_DEVICE,
+        severity: "info",
+        status: "true",
+        type: "CollectionSucceeded",
       });
     }
     return condition({
-      type: "CollectionSucceeded",
-      status: "unknown",
-      severity: "info",
-      reason: CONDITION_REASON.COLLECTION_NOT_OBSERVED,
       message: "No terminal collection run has been observed.",
       origin: "connector",
+      reason: CONDITION_REASON.COLLECTION_NOT_OBSERVED,
+      severity: "info",
+      status: "unknown",
+      type: "CollectionSucceeded",
     });
   }
   if (input.run.latestStatus === "succeeded") {
     return condition({
-      type: "CollectionSucceeded",
-      status: "true",
-      severity: "info",
-      reason: CONDITION_REASON.COLLECTION_SUCCEEDED,
       message: "The latest terminal collection run succeeded.",
-      origin: "connector",
       observedAt: input.run.lastSuccessAt,
+      origin: "connector",
+      reason: CONDITION_REASON.COLLECTION_SUCCEEDED,
+      severity: "info",
+      status: "true",
+      type: "CollectionSucceeded",
     });
   }
   return condition({
-    type: "CollectionSucceeded",
-    status: "false",
-    severity: "warning",
-    reason: normalizeConditionReason(input.run.reasonCode, CONDITION_REASON.COLLECTION_FAILED),
     message: "The latest terminal collection run failed.",
     origin: "connector",
+    reason: normalizeConditionReason(input.run.reasonCode, CONDITION_REASON.COLLECTION_FAILED),
     sensitivity: containsSecretLike(input.run.reasonCode) ? "secret_redacted" : "owner",
+    severity: "warning",
+    status: "false",
+    type: "CollectionSucceeded",
   });
 }
 
@@ -1901,13 +1914,9 @@ function collectionSucceededCondition(input: ComputeConnectionHealthInput): Conn
 // existing connection. Still an owner reauth/capture action downstream.
 function credentialRequiredCondition(): ConnectionHealthCondition {
   return condition({
-    type: "CredentialsValid",
-    status: "false",
-    severity: "blocked",
-    reason: CONDITION_REASON.CREDENTIAL_REQUIRED,
     message: "No usable stored credential for this connection.",
     origin: "readiness",
-    sensitivity: "secret_redacted",
+    reason: CONDITION_REASON.CREDENTIAL_REQUIRED,
     remediation: {
       action: "refresh_credentials",
       label: "Reconnect this account",
@@ -1915,6 +1924,10 @@ function credentialRequiredCondition(): ConnectionHealthCondition {
       surface: { kind: "stored_credential" },
       target: "credentials",
     },
+    sensitivity: "secret_redacted",
+    severity: "blocked",
+    status: "false",
+    type: "CredentialsValid",
   });
 }
 
@@ -1927,13 +1940,9 @@ function credentialRequiredCondition(): ConnectionHealthCondition {
 // list … one unified satisfaction contract".
 function credentialRejectedCondition(reason: string | null): ConnectionHealthCondition {
   return condition({
-    type: "CredentialsValid",
-    status: "false",
-    severity: "blocked",
-    reason: normalizeConditionReason(reason, CONDITION_REASON.CREDENTIAL_REJECTED),
     message: "The source rejected the configured credentials.",
     origin: "readiness",
-    sensitivity: "secret_redacted",
+    reason: normalizeConditionReason(reason, CONDITION_REASON.CREDENTIAL_REJECTED),
     remediation: {
       action: "refresh_credentials",
       label: "Reconnect this account",
@@ -1941,18 +1950,18 @@ function credentialRejectedCondition(reason: string | null): ConnectionHealthCon
       surface: { kind: "stored_credential" },
       target: "credentials",
     },
+    sensitivity: "secret_redacted",
+    severity: "blocked",
+    status: "false",
+    type: "CredentialsValid",
   });
 }
 
 function browserSessionRequiredCondition(reason: string | null): ConnectionHealthCondition {
   return condition({
-    type: "CredentialsValid",
-    status: "false",
-    severity: "blocked",
-    reason: normalizeConditionReason(reason, "session_required"),
     message: "The authenticated browser session is not active.",
     origin: "readiness",
-    sensitivity: "secret_redacted",
+    reason: normalizeConditionReason(reason, "session_required"),
     remediation: {
       action: "refresh_credentials",
       label: "Reconnect this account",
@@ -1960,32 +1969,37 @@ function browserSessionRequiredCondition(reason: string | null): ConnectionHealt
       surface: { kind: "browser_session" },
       target: "browser_session",
     },
+    sensitivity: "secret_redacted",
+    severity: "blocked",
+    status: "false",
+    type: "CredentialsValid",
   });
 }
 
 function credentialsNotProvenCondition(): ConnectionHealthCondition {
   return condition({
-    type: "CredentialsValid",
-    status: "unknown",
-    severity: "info",
-    reason: CONDITION_REASON.CREDENTIALS_NOT_PROBED,
     message: "Credential validity has not been proven by current evidence.",
     origin: "readiness",
+    reason: CONDITION_REASON.CREDENTIALS_NOT_PROBED,
+    severity: "info",
+    status: "unknown",
+    type: "CredentialsValid",
   });
 }
 
 function browserSessionRepairCapabilityUnknownCondition(reason: string): ConnectionHealthCondition {
   return condition({
-    type: "CredentialsValid",
-    status: "unknown",
-    severity: "warning",
-    reason: normalizeConditionReason(reason, "session_required"),
     message: "The source requires a session, but this connection has no browser-session repair capability.",
     origin: "readiness",
+    reason: normalizeConditionReason(reason, "session_required"),
     sensitivity: "secret_redacted",
+    severity: "warning",
+    status: "unknown",
+    type: "CredentialsValid",
   });
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This protocol transition owns ordered state invariants that must remain local.
 function credentialsValidCondition(input: ComputeConnectionHealthInput): ConnectionHealthCondition {
   const reason = firstReasonCode(input);
   const credential = input.credential ?? null;
@@ -2036,13 +2050,13 @@ function credentialsValidCondition(input: ComputeConnectionHealthInput): Connect
   }
   if (input.run?.latestStatus === "succeeded") {
     return condition({
-      type: "CredentialsValid",
-      status: "true",
-      severity: "info",
-      reason: CONDITION_REASON.CREDENTIALS_ACCEPTED,
       message: "The latest successful run proved credentials were accepted.",
-      origin: "readiness",
       observedAt: input.run.lastSuccessAt,
+      origin: "readiness",
+      reason: CONDITION_REASON.CREDENTIALS_ACCEPTED,
+      severity: "info",
+      status: "true",
+      type: "CredentialsValid",
     });
   }
   return credentialsNotProvenCondition();
@@ -2050,7 +2064,8 @@ function credentialsValidCondition(input: ComputeConnectionHealthInput): Connect
 
 function browserSessionRepairAuthorized(input: ComputeConnectionHealthInput): boolean {
   const context = input.browserSurfaceRepair;
-  if (!context || context.evidence.kind !== "provider_invalidation_proof") {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+  if (context?.evidence.kind !== "provider_invalidation_proof") {
     return false;
   }
   if (context.evidence.provider !== context.provider) {
@@ -2067,7 +2082,8 @@ function browserSessionRepairAuthorized(input: ComputeConnectionHealthInput): bo
 
 function browserSessionRepairAlreadyRecorded(input: ComputeConnectionHealthInput): boolean {
   const context = input.browserSurfaceRepair;
-  if (!context || context.evidence.kind !== "provider_invalidation_proof") {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+  if (context?.evidence.kind !== "provider_invalidation_proof") {
     return false;
   }
   if (context.evidence.provider !== context.provider) {
@@ -2091,21 +2107,21 @@ function credentialContinuityCondition(input: ComputeConnectionHealthInput): Con
   const continuity = input.ephemeralBrowserRuntime?.credential_continuity;
   if (continuity === "replacement_pending" || continuity === "rehydration_false" || continuity === "indeterminate") {
     return condition({
-      type: "CredentialContinuity",
-      status: "false",
-      severity: "warning",
-      reason: CONDITION_REASON.CREDENTIAL_CONTINUITY_UNPROVEN,
       message: "Browser-session continuity is not currently proven after a process replacement.",
       origin: "runtime",
+      reason: CONDITION_REASON.CREDENTIAL_CONTINUITY_UNPROVEN,
+      severity: "warning",
+      status: "false",
+      type: "CredentialContinuity",
     });
   }
   return condition({
-    type: "CredentialContinuity",
-    status: "unknown",
-    severity: "info",
-    reason: CONDITION_REASON.CREDENTIALS_NOT_PROBED,
     message: "No process-bound credential continuity proof is required or available.",
     origin: "runtime",
+    reason: CONDITION_REASON.CREDENTIALS_NOT_PROBED,
+    severity: "info",
+    status: "unknown",
+    type: "CredentialContinuity",
   });
 }
 
@@ -2124,18 +2140,18 @@ function runtimeDependencyUnavailableCondition(input: ComputeConnectionHealthInp
     return null;
   }
   return condition({
-    type: "RuntimeAvailable",
-    status: "false",
-    severity: "blocked",
-    reason: dependencyReason,
     message: "A required collection runtime dependency is unavailable.",
     origin: "runtime",
+    reason: dependencyReason,
     remediation: {
       action: "check_runtime",
       label: "Configure the required runtime dependency",
       retryable: false,
       target: "runtime",
     },
+    severity: "blocked",
+    status: "false",
+    type: "RuntimeAvailable",
   });
 }
 
@@ -2154,41 +2170,41 @@ function managedRuntimeAvailableCondition(input: ComputeConnectionHealthInput): 
 
 function unmanagedEphemeralRuntimeCondition(): ConnectionHealthCondition {
   return condition({
-    type: "RuntimeAvailable",
-    status: "unknown",
-    severity: "info",
-    reason: CONDITION_REASON.RUNTIME_NOT_MANAGED,
     message: "No managed runtime surface is required for this connection.",
     origin: "runtime",
+    reason: CONDITION_REASON.RUNTIME_NOT_MANAGED,
+    severity: "info",
+    status: "unknown",
+    type: "RuntimeAvailable",
   });
 }
 
 function availableEphemeralRuntimeCondition(runtime: EphemeralBrowserRuntimeProjection): ConnectionHealthCondition {
   return condition({
-    type: "RuntimeAvailable",
-    status: "true",
-    severity: "info",
-    reason: CONDITION_REASON.RUNTIME_AVAILABLE,
-    message: "Current managed browser runtime capability is available.",
-    origin: "runtime",
-    observedAt: runtime.allocator_observation?.observed_at ?? null,
     expiresAt: runtime.allocator_observation?.expires_at ?? null,
+    message: "Current managed browser runtime capability is available.",
+    observedAt: runtime.allocator_observation?.observed_at ?? null,
+    origin: "runtime",
+    reason: CONDITION_REASON.RUNTIME_AVAILABLE,
+    severity: "info",
+    status: "true",
+    type: "RuntimeAvailable",
   });
 }
 
 function unavailableEphemeralRuntimeCondition(runtime: EphemeralBrowserRuntimeProjection): ConnectionHealthCondition {
   const observation = runtime.allocator_observation;
   return condition({
-    type: "RuntimeAvailable",
-    status: observation?.status === "unknown" ? "unknown" : "false",
-    severity: observation?.status === "unknown" ? "warning" : "error",
+    message: "Current managed browser runtime capability is not proven.",
+    origin: "runtime",
     reason:
       observation?.status === "unavailable"
         ? CONDITION_REASON.RUNTIME_UNAVAILABLE
         : CONDITION_REASON.RUNTIME_STATE_UNKNOWN,
-    message: "Current managed browser runtime capability is not proven.",
-    origin: "runtime",
     remediation: unavailableRuntimeRemediation(observation?.status),
+    severity: observation?.status === "unknown" ? "warning" : "error",
+    status: observation?.status === "unknown" ? "unknown" : "false",
+    type: "RuntimeAvailable",
   });
 }
 
@@ -2207,53 +2223,54 @@ function unavailableRuntimeRemediation(
 }
 
 function legacyRuntimeAvailableCondition(input: ComputeConnectionHealthInput): ConnectionHealthCondition {
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const remoteSurface = input.remoteSurface;
   if (!remoteSurface || remoteSurface.axis === "none") {
     return condition({
-      type: "RuntimeAvailable",
-      status: "unknown",
-      severity: "info",
-      reason: CONDITION_REASON.RUNTIME_NOT_MANAGED,
       message: "No managed runtime surface is required or observed for this connection.",
       origin: "runtime",
+      reason: CONDITION_REASON.RUNTIME_NOT_MANAGED,
+      severity: "info",
+      status: "unknown",
+      type: "RuntimeAvailable",
     });
   }
   if (remoteSurface.axis === "failed") {
     return condition({
-      type: "RuntimeAvailable",
-      status: "false",
-      severity: "error",
+      message: "The managed runtime surface is not available.",
+      origin: "remote_surface",
       reason: normalizeConditionReason(
         remoteSurface.waitReason ?? remoteSurface.leaseStatus,
         CONDITION_REASON.RUNTIME_UNAVAILABLE
       ),
-      message: "The managed runtime surface is not available.",
-      origin: "remote_surface",
       remediation: {
         action: "check_runtime",
         label: "Check the browser surface runtime",
         retryable: true,
         target: "remote_surface",
       },
+      severity: "error",
+      status: "false",
+      type: "RuntimeAvailable",
     });
   }
   if (remoteSurface.axis === "unknown") {
     return condition({
-      type: "RuntimeAvailable",
-      status: "unknown",
-      severity: "warning",
-      reason: CONDITION_REASON.RUNTIME_STATE_UNKNOWN,
       message: "Runtime surface evidence is incomplete.",
       origin: "remote_surface",
+      reason: CONDITION_REASON.RUNTIME_STATE_UNKNOWN,
+      severity: "warning",
+      status: "unknown",
+      type: "RuntimeAvailable",
     });
   }
   return condition({
-    type: "RuntimeAvailable",
-    status: "true",
-    severity: "info",
-    reason: CONDITION_REASON.RUNTIME_AVAILABLE,
     message: "Runtime surface evidence is available.",
     origin: "remote_surface",
+    reason: CONDITION_REASON.RUNTIME_AVAILABLE,
+    severity: "info",
+    status: "true",
+    type: "RuntimeAvailable",
   });
 }
 
@@ -2271,12 +2288,12 @@ function idleDynamicRuntimeRemoteSurfaceCondition(
     return null;
   }
   return condition({
-    type: "RemoteSurfaceAvailable",
-    status: "unknown",
-    severity: "info",
-    reason: CONDITION_REASON.REMOTE_SURFACE_NOT_REQUIRED,
     message: "No leased remote browser surface is required while the dynamic runtime is idle.",
     origin: "remote_surface",
+    reason: CONDITION_REASON.REMOTE_SURFACE_NOT_REQUIRED,
+    severity: "info",
+    status: "unknown",
+    type: "RemoteSurfaceAvailable",
   });
 }
 
@@ -2285,53 +2302,54 @@ function isIdleDynamicRuntime(runtime: EphemeralBrowserRuntimeProjection | null 
 }
 
 function legacyRemoteSurfaceAvailableCondition(input: ComputeConnectionHealthInput): ConnectionHealthCondition {
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const remoteSurface = input.remoteSurface;
   if (!remoteSurface || remoteSurface.axis === "none") {
     return condition({
-      type: "RemoteSurfaceAvailable",
-      status: "unknown",
-      severity: "info",
-      reason: CONDITION_REASON.REMOTE_SURFACE_NOT_REQUIRED,
       message: "No managed remote browser surface is required or observed for this connection.",
       origin: "remote_surface",
+      reason: CONDITION_REASON.REMOTE_SURFACE_NOT_REQUIRED,
+      severity: "info",
+      status: "unknown",
+      type: "RemoteSurfaceAvailable",
     });
   }
   if (remoteSurface.axis === "failed") {
     return condition({
-      type: "RemoteSurfaceAvailable",
-      status: "false",
-      severity: "error",
+      message: "The managed remote browser surface is unavailable.",
+      origin: "remote_surface",
       reason: normalizeConditionReason(
         remoteSurface.waitReason ?? remoteSurface.leaseStatus,
         CONDITION_REASON.REMOTE_SURFACE_FAILED
       ),
-      message: "The managed remote browser surface is unavailable.",
-      origin: "remote_surface",
       remediation: {
         action: "check_runtime",
         label: "Check the browser surface runtime",
         retryable: true,
         target: "remote_surface",
       },
+      severity: "error",
+      status: "false",
+      type: "RemoteSurfaceAvailable",
     });
   }
   if (remoteSurface.axis === "unknown") {
     return condition({
-      type: "RemoteSurfaceAvailable",
-      status: "unknown",
-      severity: "warning",
-      reason: CONDITION_REASON.REMOTE_SURFACE_UNKNOWN,
       message: "Remote browser surface evidence is incomplete.",
       origin: "remote_surface",
+      reason: CONDITION_REASON.REMOTE_SURFACE_UNKNOWN,
+      severity: "warning",
+      status: "unknown",
+      type: "RemoteSurfaceAvailable",
     });
   }
   return condition({
-    type: "RemoteSurfaceAvailable",
-    status: "true",
-    severity: "info",
-    reason: CONDITION_REASON.REMOTE_SURFACE_AVAILABLE,
     message: "Remote browser surface evidence is available.",
     origin: "remote_surface",
+    reason: CONDITION_REASON.REMOTE_SURFACE_AVAILABLE,
+    severity: "info",
+    status: "true",
+    type: "RemoteSurfaceAvailable",
   });
 }
 
@@ -2358,65 +2376,65 @@ function stalledCauseCopy(cause: OutboxStalledCause | null): StalledCauseCopy {
     case "state_read_failed":
       return {
         action: "clear_backlog",
+        backlogMessage: "The local collector is blocked reading saved state, not waiting on failed uploads.",
+        backlogReason: CONDITION_REASON.OUTBOX_STATE_READ_FAILED,
         exporterMessage:
           "The local collector cannot read its last saved state. Run it again on the host; there are no failed uploads to retry.",
         exporterReason: CONDITION_REASON.LOCAL_EXPORTER_STATE_READ_FAILED,
-        backlogMessage: "The local collector is blocked reading saved state, not waiting on failed uploads.",
-        backlogReason: CONDITION_REASON.OUTBOX_STATE_READ_FAILED,
         remediationLabel: "Run the local collector again on the host",
         severity: "error",
       };
     case "dead_letter_backlog":
       return {
         action: "clear_backlog",
+        backlogMessage: "The local collector has saved failed uploads waiting to be retried.",
+        backlogReason: CONDITION_REASON.OUTBOX_DEAD_LETTER_BACKLOG,
         exporterMessage:
           "The local collector has saved records that failed to upload. Prepare those uploads for retry, then run the collector again on the host.",
         exporterReason: CONDITION_REASON.LOCAL_EXPORTER_DEAD_LETTER_BACKLOG,
-        backlogMessage: "The local collector has saved failed uploads waiting to be retried.",
-        backlogReason: CONDITION_REASON.OUTBOX_DEAD_LETTER_BACKLOG,
         remediationLabel: "Recover local collector uploads",
         severity: "error",
       };
     case "transient_upload_failure":
       return {
         action: "wait",
+        backlogMessage: "Local-device uploads are waiting for the server or network to recover.",
+        backlogReason: CONDITION_REASON.OUTBOX_TRANSIENT_UPLOAD_FAILURE,
         exporterMessage:
           "The local collector hit temporary server or network errors while uploading. It will retry without owner action.",
         exporterReason: CONDITION_REASON.LOCAL_EXPORTER_TRANSIENT_UPLOAD_FAILURE,
-        backlogMessage: "Local-device uploads are waiting for the server or network to recover.",
-        backlogReason: CONDITION_REASON.OUTBOX_TRANSIENT_UPLOAD_FAILURE,
         remediationLabel: "Wait for upload retry",
         severity: "warning",
       };
     case "stale_pending":
       return {
         action: "clear_backlog",
+        backlogMessage: "The local collector has queued work that stopped moving.",
+        backlogReason: CONDITION_REASON.OUTBOX_STALE_PENDING,
         exporterMessage:
           "The local collector has queued work but stopped checking in. Run it again on the host to resume uploads.",
         exporterReason: CONDITION_REASON.LOCAL_EXPORTER_STALE_PENDING,
-        backlogMessage: "The local collector has queued work that stopped moving.",
-        backlogReason: CONDITION_REASON.OUTBOX_STALE_PENDING,
         remediationLabel: "Run the local collector again on the host",
         severity: "error",
       };
     case "stale_heartbeat":
       return {
         action: "clear_backlog",
+        backlogMessage: "The local collector has not checked in since it last reported starting or retrying.",
+        backlogReason: CONDITION_REASON.OUTBOX_STALE_HEARTBEAT,
         exporterMessage:
           "The local collector reported it was starting or retrying but stopped checking in. Run it again on the host.",
         exporterReason: CONDITION_REASON.LOCAL_EXPORTER_STALE_HEARTBEAT,
-        backlogMessage: "The local collector has not checked in since it last reported starting or retrying.",
-        backlogReason: CONDITION_REASON.OUTBOX_STALE_HEARTBEAT,
         remediationLabel: "Run the local collector again on the host",
         severity: "error",
       };
     default:
       return {
         action: "clear_backlog",
-        exporterMessage: "The local collector is not making progress.",
-        exporterReason: CONDITION_REASON.LOCAL_EXPORTER_STALLED,
         backlogMessage: "The local collector has work that appears stalled.",
         backlogReason: CONDITION_REASON.OUTBOX_STALLED,
+        exporterMessage: "The local collector is not making progress.",
+        exporterReason: CONDITION_REASON.LOCAL_EXPORTER_STALLED,
         remediationLabel: "Check the local collector",
         severity: "error",
       };
@@ -2430,47 +2448,47 @@ function localExporterAvailableCondition(
   switch (axes.outbox) {
     case "idle":
       return condition({
-        type: "LocalExporterAvailable",
-        status: "true",
-        severity: "info",
-        reason: CONDITION_REASON.LOCAL_EXPORTER_IDLE,
         message: "Local exporter evidence is available and idle.",
         origin: "local_device",
+        reason: CONDITION_REASON.LOCAL_EXPORTER_IDLE,
+        severity: "info",
+        status: "true",
+        type: "LocalExporterAvailable",
       });
     case "active":
       return condition({
-        type: "LocalExporterAvailable",
-        status: "true",
-        severity: "info",
-        reason: CONDITION_REASON.LOCAL_EXPORTER_ACTIVE,
         message: "Local exporter is draining queued work normally.",
         origin: "local_device",
+        reason: CONDITION_REASON.LOCAL_EXPORTER_ACTIVE,
+        severity: "info",
+        status: "true",
+        type: "LocalExporterAvailable",
       });
     case "stalled": {
       const copy = stalledCauseCopy(stalledCause);
       return condition({
-        type: "LocalExporterAvailable",
-        status: "false",
-        severity: copy.severity,
-        reason: copy.exporterReason,
         message: copy.exporterMessage,
         origin: "local_device",
+        reason: copy.exporterReason,
         remediation: {
           action: copy.action,
           label: copy.remediationLabel,
           retryable: true,
           target: "local_device",
         },
+        severity: copy.severity,
+        status: "false",
+        type: "LocalExporterAvailable",
       });
     }
     default:
       return condition({
-        type: "LocalExporterAvailable",
-        status: "unknown",
-        severity: "info",
-        reason: CONDITION_REASON.LOCAL_EXPORTER_UNKNOWN,
         message: "No trusted local exporter evidence is available.",
         origin: "local_device",
+        reason: CONDITION_REASON.LOCAL_EXPORTER_UNKNOWN,
+        severity: "info",
+        status: "unknown",
+        type: "LocalExporterAvailable",
       });
   }
 }
@@ -2478,22 +2496,19 @@ function localExporterAvailableCondition(
 function sourceCoverageCondition(input: ComputeConnectionHealthInput, axes: ConnectionAxes): ConnectionHealthCondition {
   if (axes.coverage === "unknown") {
     return condition({
-      type: "SourceCoverageComplete",
-      status: "unknown",
-      severity: "warning",
-      reason: CONDITION_REASON.COVERAGE_UNKNOWN,
       message: "Source coverage evidence is missing.",
       origin: "connector",
+      reason: CONDITION_REASON.COVERAGE_UNKNOWN,
+      severity: "warning",
+      status: "unknown",
+      type: "SourceCoverageComplete",
     });
   }
   if (input.coverage?.requiredButAccepted === true || isDegradingCoverage(axes.coverage)) {
     return condition({
-      type: "SourceCoverageComplete",
-      status: "false",
-      severity: axes.coverage === "terminal_gap" ? "blocked" : "warning",
-      reason: axes.coverage,
       message: "Required source coverage is incomplete.",
       origin: "connector",
+      reason: axes.coverage,
       remediation: {
         action: axes.coverage === "retryable_gap" ? "retry_by_runtime" : "update_connector",
         // A retryable gap is owner-runnable, same as every other
@@ -2507,15 +2522,18 @@ function sourceCoverageCondition(input: ComputeConnectionHealthInput, axes: Conn
         retryable: axes.coverage === "retryable_gap",
         target: "coverage",
       },
+      severity: axes.coverage === "terminal_gap" ? "blocked" : "warning",
+      status: "false",
+      type: "SourceCoverageComplete",
     });
   }
   return condition({
-    type: "SourceCoverageComplete",
-    status: "true",
-    severity: "info",
-    reason: axes.coverage,
     message: "Source coverage is complete or accepted by manifest policy.",
     origin: "connector",
+    reason: axes.coverage,
+    severity: "info",
+    status: "true",
+    type: "SourceCoverageComplete",
   });
 }
 
@@ -2573,13 +2591,13 @@ export function isAssistedRefresh(refresh: ConnectionRefreshEvidence | null | un
 function freshCondition(input: ComputeConnectionHealthInput, axes: ConnectionAxes): ConnectionHealthCondition {
   if (axes.freshness === "fresh") {
     return condition({
-      type: "Fresh",
-      status: "true",
-      severity: "info",
-      reason: CONDITION_REASON.FRESH,
       message: "Retained data satisfies the freshness policy.",
-      origin: "connector",
       observedAt: input.run?.lastSuccessAt ?? null,
+      origin: "connector",
+      reason: CONDITION_REASON.FRESH,
+      severity: "info",
+      status: "true",
+      type: "Fresh",
     });
   }
   if (axes.freshness === "stale") {
@@ -2593,18 +2611,18 @@ function freshCondition(input: ComputeConnectionHealthInput, axes: ConnectionAxe
     // supposed to refresh them and did not.
     if (isManualRefreshOnly(input.refresh) && !isExplicitOwnerScheduledManual(input.refresh, input.schedule)) {
       return condition({
-        type: "Fresh",
-        status: "false",
-        severity: "info",
-        reason: CONDITION_REASON.STALE_MANUAL_REFRESH,
         message: "Retained data is stale; this manual connector needs an owner-initiated run to refresh.",
         origin: "connector",
+        reason: CONDITION_REASON.STALE_MANUAL_REFRESH,
         remediation: {
           action: "retry_by_runtime",
           label: "Run the connector manually",
           retryable: true,
           target: "run",
         },
+        severity: "info",
+        status: "false",
+        type: "Fresh",
       });
     }
     // An assisted-refresh connector refreshes on its own schedule but may need
@@ -2619,33 +2637,33 @@ function freshCondition(input: ComputeConnectionHealthInput, axes: ConnectionAxe
     // it on its own and did not.
     if (isAssistedRefresh(input.refresh)) {
       return condition({
-        type: "Fresh",
-        status: "false",
-        severity: "info",
-        reason: CONDITION_REASON.STALE_ASSISTED_REFRESH,
         message:
           "Retained data is stale; this assisted connector refreshes on schedule and may ask for bounded owner help to catch up.",
         origin: "connector",
+        reason: CONDITION_REASON.STALE_ASSISTED_REFRESH,
         remediation: { action: "retry_by_runtime", label: "Run the connector now", retryable: true, target: "run" },
+        severity: "info",
+        status: "false",
+        type: "Fresh",
       });
     }
     return condition({
-      type: "Fresh",
-      status: "false",
-      severity: "warning",
-      reason: CONDITION_REASON.STALE,
       message: "Retained data is stale for this connection's freshness policy.",
       origin: "connector",
+      reason: CONDITION_REASON.STALE,
       remediation: { action: "retry_by_runtime", label: "Run the connector again", retryable: true, target: "run" },
+      severity: "warning",
+      status: "false",
+      type: "Fresh",
     });
   }
   return condition({
-    type: "Fresh",
-    status: "unknown",
-    severity: "warning",
-    reason: CONDITION_REASON.FRESHNESS_UNKNOWN,
     message: "Freshness evidence is missing.",
     origin: "connector",
+    reason: CONDITION_REASON.FRESHNESS_UNKNOWN,
+    severity: "warning",
+    status: "unknown",
+    type: "Fresh",
   });
 }
 
@@ -2829,12 +2847,14 @@ function deriveConnectionForwardDisposition(
   input: ComputeConnectionHealthInput,
   conditionSet: ReadonlyMap<ConnectionConditionType, ConnectionHealthCondition>
 ): ForwardDisposition {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const coverage: CoverageAxis = input.coverage?.axis ?? "unknown";
   return deriveForwardDisposition({
-    coverage,
-    gapRetryable: coverage === "retryable_gap",
     attentionOpen: conditionIsFalse(conditionSet, "AttentionClear"),
+    coverage,
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     freshness: input.freshness?.axis ?? "unknown",
+    gapRetryable: coverage === "retryable_gap",
     refresh: input.refresh ?? null,
     schedule: input.schedule ?? null,
   });
@@ -2847,53 +2867,53 @@ function backlogClearCondition(
   switch (axes.outbox) {
     case "idle":
       return condition({
-        type: "BacklogClear",
-        status: "true",
-        severity: "info",
-        reason: CONDITION_REASON.OUTBOX_IDLE,
         message: "No local-device outbox backlog is pending.",
         origin: "local_device",
+        reason: CONDITION_REASON.OUTBOX_IDLE,
+        severity: "info",
+        status: "true",
+        type: "BacklogClear",
       });
     case "active":
       return condition({
-        type: "BacklogClear",
-        status: "false",
-        severity: "info",
-        reason: CONDITION_REASON.OUTBOX_ACTIVE,
         message: "Local-device outbox work is currently draining.",
         origin: "local_device",
+        reason: CONDITION_REASON.OUTBOX_ACTIVE,
         remediation: {
           action: "wait",
           label: "Wait for the local-device outbox to drain",
           retryable: true,
           target: "local_device",
         },
+        severity: "info",
+        status: "false",
+        type: "BacklogClear",
       });
     case "stalled": {
       const copy = stalledCauseCopy(stalledCause);
       return condition({
-        type: "BacklogClear",
-        status: "false",
-        severity: copy.severity,
-        reason: copy.backlogReason,
         message: copy.backlogMessage,
         origin: "local_device",
+        reason: copy.backlogReason,
         remediation: {
           action: copy.action,
           label: copy.remediationLabel,
           retryable: true,
           target: "local_device",
         },
+        severity: copy.severity,
+        status: "false",
+        type: "BacklogClear",
       });
     }
     default:
       return condition({
-        type: "BacklogClear",
-        status: "unknown",
-        severity: "info",
-        reason: CONDITION_REASON.OUTBOX_UNKNOWN,
         message: "No trusted local-device outbox evidence is available.",
         origin: "local_device",
+        reason: CONDITION_REASON.OUTBOX_UNKNOWN,
+        severity: "info",
+        status: "unknown",
+        type: "BacklogClear",
       });
   }
 }
@@ -3172,21 +3192,21 @@ interface SnapshotArgs {
 
 function snapshot(args: SnapshotArgs): ConnectionHealthSnapshot {
   return {
-    state: args.state,
-    reason_code: args.reasonCode,
+    axes: args.axes,
+    badges: args.badges,
     collection_rate: args.collectionRate ?? null,
     conditions: args.conditions,
     detail_gap_backlog: args.detailGapBacklog ?? null,
-    ephemeral_browser_runtime: runtimeAnnotationForSnapshot(args.ephemeralBrowserRuntime),
     dominant_condition_id: args.dominantConditionId,
+    ephemeral_browser_runtime: runtimeAnnotationForSnapshot(args.ephemeralBrowserRuntime),
     forward_disposition: args.forwardDisposition,
-    supporting_condition_ids: args.supportingConditionIds,
     last_success_at: args.lastSuccessAt,
     next_action: args.nextAction ?? null,
     next_attempt_at: args.nextAttemptAt,
-    axes: args.axes,
-    badges: args.badges,
+    reason_code: args.reasonCode,
     remote_surface: args.remoteSurface ?? null,
+    state: args.state,
+    supporting_condition_ids: args.supportingConditionIds,
     unknown_reasons: args.unknownReasons ?? [],
   };
 }
@@ -3227,22 +3247,22 @@ function projectNextAction(attention: ConnectionAttentionEvidence): NextAction {
       action_target: null,
       attention_id: attention.id,
       expires_at: attention.expiresAt,
+      notification_state: notificationState,
       owner_action: attention.ownerAction,
       reason_code: attention.reasonCode,
       response_contract: attention.responseContract,
       source,
-      notification_state: notificationState,
     };
   }
   return {
     action_target: attention.actionTarget,
     attention_id: attention.id,
     expires_at: attention.expiresAt,
+    notification_state: notificationState,
     owner_action: attention.ownerAction,
     reason_code: attention.reasonCode,
     response_contract: attention.responseContract,
     source,
-    notification_state: notificationState,
   };
 }
 

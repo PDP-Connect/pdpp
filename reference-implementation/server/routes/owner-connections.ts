@@ -49,18 +49,18 @@ interface RouteRequest {
 }
 
 interface RouteResponse {
-  getHeader(name: string): string | number | string[] | undefined;
-  json(body: unknown): unknown;
-  setHeader(name: string, value: string): void;
-  status(code: number): RouteResponse;
+  getHeader: (name: string) => string | number | string[] | undefined;
+  json: (body: unknown) => unknown;
+  setHeader: (name: string, value: string) => void;
+  status: (code: number) => RouteResponse;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
 type NextFn = () => unknown | Promise<unknown>;
 
 interface AppLike {
-  get(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
-  patch(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  get: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
+  patch: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
 }
 
 // Minimal connector-instance shape this adapter projects. The substrate
@@ -82,12 +82,12 @@ interface ScheduleRow {
 }
 
 interface ConnectorInstanceStore {
-  get(connectorInstanceId: string): Promise<ConnectorInstanceRow | null> | ConnectorInstanceRow | null;
-  listByOwner(ownerSubjectId: string): Promise<ConnectorInstanceRow[]> | ConnectorInstanceRow[];
-  setDisplayName(
+  get: (connectorInstanceId: string) => Promise<ConnectorInstanceRow | null> | ConnectorInstanceRow | null;
+  listByOwner: (ownerSubjectId: string) => Promise<ConnectorInstanceRow[]> | ConnectorInstanceRow[];
+  setDisplayName: (
     connectorInstanceId: string,
     options: { ownerSubjectId: string; displayName: string; updatedAt: string }
-  ): Promise<ConnectorInstanceRow>;
+  ) => Promise<ConnectorInstanceRow>;
 }
 
 export interface MountOwnerConnectionsContext {
@@ -95,43 +95,46 @@ export interface MountOwnerConnectionsContext {
   // one connection, from the same single source of truth `GET /v1/owner/control`
   // reads, so a row's `supported_actions` can never disagree with the control
   // document. Supported instance actions carry the connection's concrete URL.
-  buildOwnerConnectionSupportedActions(input: { connectionId: string; resource: string }): OwnerAgentControlAction[];
-  canonicalConnectorKey(value: string | null | undefined): string | null;
-  createRequestConnectorInstanceStore(): ConnectorInstanceStore;
-  createTraceContext(input?: { scenarioId?: string }): TraceContext;
-  emitSpineEvent(event: Record<string, unknown>): Promise<unknown>;
-  ensureRequestId(res: RouteResponse): string;
-  getOwnerTokenSubjectId(req: unknown): string;
-  handleError(res: unknown, err: unknown): void;
-  invalidateConnectorSummariesCache?(): void;
-  listSchedules(): Promise<ScheduleRow[]> | ScheduleRow[];
+  buildOwnerConnectionSupportedActions: (input: {
+    connectionId: string;
+    resource: string;
+  }) => OwnerAgentControlAction[];
+  canonicalConnectorKey: (value: string | null | undefined) => string | null;
+  createRequestConnectorInstanceStore: () => ConnectorInstanceStore;
+  createTraceContext: (input?: { scenarioId?: string }) => TraceContext;
+  emitSpineEvent: (event: Record<string, unknown>) => Promise<unknown>;
+  ensureRequestId: (res: RouteResponse) => string;
+  getOwnerTokenSubjectId: (req: unknown) => string;
+  handleError: (res: unknown, err: unknown) => void;
+  invalidateConnectorSummariesCache?: () => void;
+  listSchedules: () => Promise<ScheduleRow[]> | ScheduleRow[];
   // Marks the maintained connector-summary read-model evidence for exactly this
   // connection dirty after the rename commits (display_name is durable summary
   // evidence). Injected (not imported) to match the optional
   // `invalidateConnectorSummariesCache` above; awaited, best-effort, and a no-op
   // until the read model is warmed.
-  markConnectorSummaryEvidenceDirty?(input: { connectorInstanceId: string; reason?: string }): Promise<void> | void;
+  markConnectorSummaryEvidenceDirty?: (input: { connectorInstanceId: string; reason?: string }) => Promise<void> | void;
   // Wall-clock stamp for the `updated_at` recorded on rename. Injected so the
   // route stays deterministic under test and so this module does not import a
   // clock. Defaults to `new Date().toISOString()` at the call site.
-  now?(): string;
+  now?: () => string;
   pdppError: PdppErrorFn;
   // Filters a stored `display_name` to an owner-meaningful label, or `null`
   // when the value is a storage-layer placeholder / connector-type fallback.
   // Reused from `server/connection-id-request.js` so this surface agrees
   // with public read on what counts as "label-needed".
-  projectStorageDisplayName(
+  projectStorageDisplayName: (
     displayName: string | null | undefined,
     options: { connectorId?: string | null; connectorInstanceId?: string | null }
-  ): string | null;
+  ) => string | null;
   requireOwner: MiddlewareHandler;
   requireToken: MiddlewareHandler;
   // Resolves the caller-visible trusted RS public base for this request (same
   // forwarded-origin handling as the control entrypoint), so a row's
   // `supported_actions` URLs name the advertised resource exactly.
-  resolveResource(req: unknown): string;
-  resolveSingleConnectorIdQueryValue(raw: unknown): string | null;
-  setReferenceTraceId(res: RouteResponse, traceId: string): void;
+  resolveResource: (req: unknown) => string;
+  resolveSingleConnectorIdQueryValue: (raw: unknown) => string | null;
+  setReferenceTraceId: (res: RouteResponse, traceId: string) => void;
 }
 
 // Owner-agent projection of a connector instance. Standardizes on
@@ -155,24 +158,23 @@ function projectOwnerConnection(
   });
   const labelStatus = ownerMeaningfulName ? "owner_set" : "fallback";
   return {
-    object: "owner_connection",
     connection_id: instance.connectorInstanceId,
+    connector_id: connectorKey,
     // Deprecated alias for the stable `connection_id` selector. Kept for
     // compatibility; agents SHOULD persist `connection_id`.
     connector_instance_id: instance.connectorInstanceId,
-    connector_id: connectorKey,
     connector_key: connectorKey,
+    created_at: instance.createdAt,
     // The raw stored display name (may be a fallback). `label_status`
     // tells the agent whether this is owner-meaningful or label-needed.
     display_name: instance.displayName,
     label_status: labelStatus,
-    status: instance.status,
-    source_kind: instance.sourceKind,
-    source_binding: instance.sourceBinding,
-    created_at: instance.createdAt,
-    updated_at: instance.updatedAt,
+    object: "owner_connection",
     revoked_at: instance.revokedAt,
     schedule: schedulesByInstanceId.get(instance.connectorInstanceId) || null,
+    source_binding: instance.sourceBinding,
+    source_kind: instance.sourceKind,
+    status: instance.status,
     // Capability-advertised, instance-scoped control actions for this exact
     // connection (design.md #5). Projected from the same control catalog
     // `GET /v1/owner/control` reads. Supported actions (`rename_connection`)
@@ -184,6 +186,7 @@ function projectOwnerConnection(
       connectionId: instance.connectorInstanceId,
       resource,
     }),
+    updated_at: instance.updatedAt,
   };
 }
 
@@ -199,6 +202,7 @@ function connectorIdMatchesFilter(
 }
 
 function httpStatusForAuditError(err: unknown): number {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const code = (err as { code?: unknown })?.code;
   if (code === "invalid_request") {
     return 400;
@@ -219,20 +223,21 @@ function stringOrNull(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
-type OwnerConnectionRenameAuditArgs = {
+interface OwnerConnectionRenameAuditArgs {
   connectionId: string;
   connectorKey?: string | null;
   displayNameSupplied?: boolean;
   error?: unknown;
   labelStatus?: string | null;
-  ownerSubjectId?: string | null;
   outcome: "succeeded" | "failed";
-};
+  ownerSubjectId?: string | null;
+}
 
 function buildOwnerConnectionRenameAuditError(error: unknown): Record<string, unknown> {
   if (!error) {
     return {};
   }
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const code = (error as { code?: unknown }).code;
   return {
     error: {
@@ -250,8 +255,8 @@ function buildOwnerConnectionRenameAuditData(
   clientName: string | null
 ): Record<string, unknown> {
   return {
-    auth_token_kind: req.tokenInfo?.pdpp_token_kind ?? null,
     actor_kind: actorKind,
+    auth_token_kind: req.tokenInfo?.pdpp_token_kind ?? null,
     client_id: clientId,
     client_name: clientName,
     connection_id: args.connectionId,
@@ -277,19 +282,19 @@ async function emitOwnerConnectionRenameAudit(
   const actorKind = auditActorKind(req);
   const ownerSubjectId = args.ownerSubjectId ?? stringOrNull(req.tokenInfo?.subject_id);
   await ctx.emitSpineEvent({
-    event_type: "owner_agent.connection.rename",
-    trace_id: trace.trace_id,
-    scenario_id: trace.scenario_id,
-    request_id: trace.request_id,
-    actor_type: actorKind,
     actor_id: clientId ?? ownerSubjectId ?? actorKind,
-    subject_type: "subject",
-    subject_id: ownerSubjectId,
+    actor_type: actorKind,
     client_id: clientId,
-    object_type: "connection",
-    object_id: args.connectionId || "unknown_connection",
-    status: args.outcome,
     data: buildOwnerConnectionRenameAuditData(req, args, actorKind, clientId, clientName),
+    event_type: "owner_agent.connection.rename",
+    object_id: args.connectionId || "unknown_connection",
+    object_type: "connection",
+    request_id: trace.request_id,
+    scenario_id: trace.scenario_id,
+    status: args.outcome,
+    subject_id: ownerSubjectId,
+    subject_type: "subject",
+    trace_id: trace.trace_id,
   });
 }
 
@@ -350,8 +355,8 @@ async function performOwnerConnectionRename(
   const ownerSubjectId = ctx.getOwnerTokenSubjectId(req);
   const store = ctx.createRequestConnectorInstanceStore();
   const updated = await store.setDisplayName(connectionId, {
-    ownerSubjectId,
     displayName,
+    ownerSubjectId,
     updatedAt: ctx.now ? ctx.now() : new Date().toISOString(),
   });
   ctx.invalidateConnectorSummariesCache?.();
@@ -370,7 +375,7 @@ async function performOwnerConnectionRename(
   );
   const resource = ctx.resolveResource(req);
   const projected = projectOwnerConnection(ctx, updated, schedulesByInstanceId, resource);
-  return { projected, ownerSubjectId };
+  return { ownerSubjectId, projected };
 }
 
 // GET /v1/owner/connections — bearer-authed owner-agent listing of every
@@ -409,7 +414,7 @@ export function mountOwnerConnectionsList(app: AppLike, ctx: MountOwnerConnectio
           .filter((instance) => connectorIdMatchesFilter(ctx, instance, connectorId))
           .filter((instance) => !status || instance.status === status)
           .map((instance) => projectOwnerConnection(ctx, instance, schedulesByInstanceId, resource));
-        res.json({ object: "list", data });
+        res.json({ data, object: "list" });
       } catch (err) {
         ctx.handleError(res, err);
       }

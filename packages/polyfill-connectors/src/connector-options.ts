@@ -63,7 +63,7 @@ export function readOptions(
     let raw: unknown;
     if (Object.hasOwn(fromStart, name)) {
       raw = fromStart[name];
-    } else if (process.env[envKey] == null) {
+    } else if (process.env[envKey] === undefined) {
       out[name] = def.default;
       continue;
     } else {
@@ -75,7 +75,7 @@ export function readOptions(
 }
 
 function coerce(raw: unknown, parse: OptionParseKind, fallback: unknown): unknown {
-  if (raw == null) {
+  if (raw === null || raw === undefined) {
     return fallback;
   }
   switch (parse) {

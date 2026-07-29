@@ -157,7 +157,7 @@ runConnector({
     };
     let offset = 0;
     let latest = since || 0;
-    while (true) {
+    for (;;) {
       const items = await fetchPocketPage(body, offset);
       if (!items.length) {
         break;

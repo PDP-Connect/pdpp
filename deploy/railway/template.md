@@ -59,7 +59,7 @@ The probe exits `0` only when `ghcr.io/pdp-connect/pdpp/railway-core:<version-ta
 is anonymously pullable.
 
 The probe's pass/fail logic is unit-tested offline by
-`scripts/check-railway-ghcr-public.test.mjs`.
+`scripts/check-railway-ghcr-public.test.ts`.
 
 ## Variables
 
@@ -122,7 +122,7 @@ stay under the Railway volume mount path.
 6. Run the live smoke:
 
    ```sh
-   node scripts/railway-mcp-query-smoke.mjs \
+   node --import tsx scripts/railway-mcp-query-smoke.ts \
      --origin https://<core-domain> \
      --owner-password "$PDPP_OWNER_PASSWORD"
    ```
@@ -130,7 +130,7 @@ stay under the Railway volume mount path.
 7. Restart `core`, then rerun:
 
    ```sh
-   node scripts/railway-mcp-query-smoke.mjs \
+   node --import tsx scripts/railway-mcp-query-smoke.ts \
      --origin https://<core-domain> \
      --owner-password "$PDPP_OWNER_PASSWORD" \
      --no-seed

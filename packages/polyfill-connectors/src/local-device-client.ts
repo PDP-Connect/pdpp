@@ -8,6 +8,8 @@ export const LOCAL_DEVICE_ENDPOINTS = {
   exchangeEnrollment: "/_ref/device-exporters/enroll",
   heartbeat: (deviceId: string) => `/_ref/device-exporters/${encodeURIComponent(deviceId)}/heartbeat`,
   ingestBatch: (deviceId: string) => `/_ref/device-exporters/${encodeURIComponent(deviceId)}/ingest-batches`,
+  terminalCollection: (deviceId: string, sourceInstanceId: string) =>
+    `/_ref/device-exporters/${encodeURIComponent(deviceId)}/source-instances/${encodeURIComponent(sourceInstanceId)}/terminal-collection`,
   localCollectorGap: (deviceId: string, sourceInstanceId: string) =>
     `/_ref/device-exporters/${encodeURIComponent(deviceId)}/source-instances/${encodeURIComponent(sourceInstanceId)}/local-collector-gaps`,
   localCollectorGapRecovered: (deviceId: string, sourceInstanceId: string) =>
@@ -117,6 +119,19 @@ export interface HeartbeatRequest {
 
 export type IngestBatchRequest = LocalDeviceIngestBatchRequest;
 
+/** Safe, terminal per-stream evidence. Deliberately excludes paths, payloads, and reasons. */
+export interface TerminalCollectionRequest {
+  connector_id: string;
+  run_id: string;
+  source_instance_id: string;
+  streams: readonly TerminalCollectionFact[];
+}
+
+export interface TerminalCollectionFact {
+  coverage_statuses: readonly string[];
+  stream: string;
+}
+
 export interface GetSourceInstanceStateRequest {
   sourceInstanceId: string;
 }
@@ -219,12 +234,13 @@ function parseLocalDeviceErrorEnvelope(
     return null;
   }
   try {
-    const parsed = JSON.parse(body) as { error?: { code?: unknown; message?: unknown; param?: unknown } };
-    if (parsed && typeof parsed === "object" && parsed.error && typeof parsed.error.code === "string") {
+    const parsed = JSON.parse(body) as unknown;
+    const envelope = parsed as { error?: { code?: unknown; message?: unknown; param?: unknown } } | null;
+    if (envelope && typeof envelope === "object" && envelope.error && typeof envelope.error.code === "string") {
       return {
-        code: parsed.error.code,
-        message: typeof parsed.error.message === "string" ? sanitizeErrorDetail(parsed.error.message) : null,
-        param: typeof parsed.error.param === "string" ? sanitizeErrorDetail(parsed.error.param) : null,
+        code: envelope.error.code,
+        message: typeof envelope.error.message === "string" ? sanitizeErrorDetail(envelope.error.message) : null,
+        param: typeof envelope.error.param === "string" ? sanitizeErrorDetail(envelope.error.param) : null,
       };
     }
   } catch {
@@ -311,6 +327,13 @@ export class LocalDeviceClient {
       body: request,
       method: "POST",
     });
+  }
+
+  reportTerminalCollection(request: TerminalCollectionRequest): Promise<{ ok: true }> {
+    return this.#request(
+      LOCAL_DEVICE_ENDPOINTS.terminalCollection(this.#requireDeviceId(), request.source_instance_id),
+      { authenticate: true, body: request, method: "POST" }
+    );
   }
 
   getSourceInstanceState(request: GetSourceInstanceStateRequest): Promise<SourceInstanceStateResponse> {
@@ -405,7 +428,7 @@ export class LocalDeviceClient {
       // Surface the typed timeout regardless of how the runtime reports the
       // abort (DOMException "AbortError", or the abort reason passed through).
       if (controller?.signal.aborted) {
-        const reason = controller.signal.reason;
+        const { reason } = controller.signal;
         throw reason instanceof LocalDeviceRequestTimeoutError
           ? reason
           : new LocalDeviceRequestTimeoutError(this.#requestTimeoutMs);

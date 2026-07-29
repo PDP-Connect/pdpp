@@ -38,9 +38,9 @@ const CLAIMS_COMPLETENESS_RE = /all matching|complete|every match/i;
 
 function summary(): RefConnectorSummary {
   return {
+    connection_id: "ynab-1",
     connector_display_name: "YNAB",
     connector_id: "ynab",
-    connection_id: "ynab-1",
     connector_instance_id: "ynab-1",
     display_name: "YNAB",
     freshness: {},
@@ -63,31 +63,31 @@ function manifest(): ConnectorManifest {
 
 function hit(recordKey: string): SearchResultHit {
   return {
-    connector_id: "ynab",
     connection_id: "ynab-1",
-    stream: "transactions",
-    record_key: recordKey,
+    connector_id: "ynab",
     emitted_at: "2026-01-01T00:00:00Z",
     matched_fields: [],
     object: "search_result",
+    record_key: recordKey,
+    stream: "transactions",
   };
 }
 
 /** A lexical page whose recall is a BOUNDED candidate window (not exhaustive). */
 function boundedCandidateWindowPage(hits: SearchResultHit[]): SearchResultPage {
   return {
-    object: "list",
-    data: hits,
-    has_more: true,
-    next_cursor: "cand-window-next",
     // The recall disclosure that makes this a SAMPLE, not a complete set.
     count: hits.length,
     count_accuracy: "lower_bound",
+    data: hits,
+    has_more: true,
+    next_cursor: "cand-window-next",
+    object: "list",
     recall: {
-      complete: false,
-      ranking_scope: "candidate_window",
       candidate_window_limit: hits.length,
+      complete: false,
       ranked_candidate_count: hits.length,
+      ranking_scope: "candidate_window",
     },
   };
 }
@@ -95,12 +95,12 @@ function boundedCandidateWindowPage(hits: SearchResultHit[]): SearchResultPage {
 /** A lexical page whose recall is PROVEN over the full corpus (exhaustive). */
 function fullCorpusPage(hits: SearchResultHit[]): SearchResultPage {
   return {
-    object: "list",
+    count: hits.length,
+    count_accuracy: "exact",
     data: hits,
     has_more: true,
     next_cursor: "full-corpus-next",
-    count: hits.length,
-    count_accuracy: "exact",
+    object: "list",
     recall: { complete: true, ranking_scope: "all_matches" },
   };
 }
@@ -111,34 +111,34 @@ function dataSource(page: SearchResultPage): DashboardDataSource {
     throw new Error("not used in the search-lens recall-window suite");
   };
   return {
-    kind: "live",
     aggregateRecordsByTime: unused,
-    listExploreRecordBuckets: unused,
-    listConnectorSummaries: (): Promise<ListResponse<RefConnectorSummary>> =>
-      Promise.resolve({ object: "list", data: summaries, has_more: false }),
-    listConnectorManifests: () => Promise.resolve([manifest()]),
-    listExploreTimeline: () => Promise.reject(new Error("not used in search lens")),
-    getStreamMetadata: (_c, stream) =>
-      Promise.resolve({ name: stream, object: "stream_metadata", field_capabilities: {} }),
-    queryRecords: (): Promise<RecordsPage> => Promise.resolve({ data: [], has_more: false, object: "list" }),
     getConnectorOverview: () => Promise.resolve(unused()),
     getDatasetSummary: () => Promise.resolve(unused()),
     getDeploymentDiagnostics: () => Promise.resolve(unused()),
     getGrantTimeline: () => Promise.resolve(null),
     getRecord: () => Promise.resolve(unused()),
     getRunTimeline: () => Promise.resolve(null),
+    getStreamMetadata: (_c, stream) =>
+      Promise.resolve({ field_capabilities: {}, name: stream, object: "stream_metadata" }),
     getTraceTimeline: () => Promise.resolve(null),
     isHybridRetrievalAdvertised: () => Promise.resolve(false),
     isSemanticRetrievalAdvertised: () => Promise.resolve(false),
-    listGrants: () => Promise.resolve({ object: "list", data: [], has_more: false }),
-    listPendingApprovals: () => Promise.resolve({ object: "list", data: [], has_more: false }),
-    listRuns: () => Promise.resolve({ object: "list", data: [], has_more: false }),
+    kind: "live",
+    listConnectorManifests: () => Promise.resolve([manifest()]),
+    listConnectorSummaries: (): Promise<ListResponse<RefConnectorSummary>> =>
+      Promise.resolve({ data: summaries, has_more: false, object: "list" }),
+    listExploreRecordBuckets: unused,
+    listExploreTimeline: () => Promise.reject(new Error("not used in search lens")),
+    listGrants: () => Promise.resolve({ data: [], has_more: false, object: "list" }),
+    listPendingApprovals: () => Promise.resolve({ data: [], has_more: false, object: "list" }),
+    listRuns: () => Promise.resolve({ data: [], has_more: false, object: "list" }),
     listStreams: () => Promise.resolve([]),
-    listTraces: () => Promise.resolve({ object: "list", data: [], has_more: false }),
-    refSearch: () => Promise.resolve({ object: "search_result", traces: [], grants: [], runs: [], exact: null }),
-    searchRecordsHybrid: () => Promise.resolve({ object: "list", data: [], has_more: false, warnings: [] }),
+    listTraces: () => Promise.resolve({ data: [], has_more: false, object: "list" }),
+    queryRecords: (): Promise<RecordsPage> => Promise.resolve({ data: [], has_more: false, object: "list" }),
+    refSearch: () => Promise.resolve({ exact: null, grants: [], object: "search_result", runs: [], traces: [] }),
+    searchRecordsHybrid: () => Promise.resolve({ data: [], has_more: false, object: "list", warnings: [] }),
     searchRecordsLexical: () => Promise.resolve(page),
-    searchRecordsSemantic: () => Promise.resolve({ object: "list", data: [], has_more: false, warnings: [] }),
+    searchRecordsSemantic: () => Promise.resolve({ data: [], has_more: false, object: "list", warnings: [] }),
   } satisfies DashboardDataSource;
 }
 
@@ -164,6 +164,7 @@ test("bounded lexical candidate window is relevance_bounded, NOT pageable-exhaus
   // total.
   assert.equal(data.activitySummary?.source, "bounded_sample");
   assert.doesNotMatch(
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: The declared public input remains defensive at this boundary; removing the guard would reduce runtime tolerance.
     data.activitySummary?.text ?? "",
     CLAIMS_COMPLETENESS_RE,
     "the bounded-window summary must not claim completeness"

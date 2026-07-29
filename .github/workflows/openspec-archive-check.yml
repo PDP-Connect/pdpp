@@ -17,12 +17,12 @@ on:
     paths:
       - ".github/workflows/openspec-archive-check.yml"
       - "openspec/changes/**"
-      - "scripts/openspec-archive-check.mjs"
+      - "scripts/openspec-archive-check.ts"
   pull_request:
     paths:
       - ".github/workflows/openspec-archive-check.yml"
       - "openspec/changes/**"
-      - "scripts/openspec-archive-check.mjs"
+      - "scripts/openspec-archive-check.ts"
   workflow_dispatch: {}
 
 concurrency:
@@ -43,13 +43,23 @@ jobs:
           # read the target tree rather than falling back to the working tree.
           fetch-depth: 0
 
+      - name: Install pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+
       - name: Install Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        env:
+          PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: pnpm install --frozen-lockfile
 
       - name: Run archive-check unit tests
-        run: node --test scripts/openspec-archive-check.test.mjs
+        run: node --test --import tsx scripts/openspec-archive-check.test.ts
 
       - name: Report archive-due changes (non-blocking)
         run: |
@@ -62,8 +72,8 @@ jobs:
             echo '## OpenSpec archive-due report'
             echo
             echo '```'
-            node scripts/openspec-archive-check.mjs --ref "$ref"
+            node --import tsx scripts/openspec-archive-check.ts --ref "$ref"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           # Mirror to the log too, still non-blocking.
-          node scripts/openspec-archive-check.mjs --ref "$ref"
+          node --import tsx scripts/openspec-archive-check.ts --ref "$ref"

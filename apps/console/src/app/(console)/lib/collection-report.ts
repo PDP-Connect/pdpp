@@ -177,38 +177,7 @@ function buildCountsLine(entry: RefCollectionReportEntry): { label: string | nul
     };
   }
   if (typeof entry.considered === "number" && Number.isFinite(entry.considered)) {
-    const considered = entry.considered.toLocaleString();
-    // Honesty clamp: the rendered fraction numerator can never exceed its
-    // denominator. A `collected > considered` input (a connector that
-    // over-reported, or a considered denominator that lagged the collected
-    // count) would otherwise render an impossible tuple like "3 / 2 collected".
-    // We clamp the displayed numerator to the denominator so the fraction
-    // stays well-formed, and the long-form title states the raw collected
-    // count verbatim so the discrepancy is disclosed, never silently dropped.
-    const overReported = collected > entry.considered;
-    const clampedNumerator = Math.min(collected, entry.considered).toLocaleString();
-    if (typeof entry.covered === "number" && Number.isFinite(entry.covered)) {
-      const covered = Math.min(entry.covered, entry.considered).toLocaleString();
-      const overCovered = entry.covered > entry.considered;
-      if (overCovered) {
-        return {
-          label: `${covered} / ${considered} covered · ${collectedText} collected`,
-          title: `This run accounted for ${entry.covered.toLocaleString()} of ${considered} considered records for this stream — more than the considered denominator, so the displayed covered fraction is clamped to ${considered} / ${considered}. It collected ${collectedText}; covered also includes records deliberately suppressed because they were unchanged.`,
-        };
-      }
-      return {
-        label: `${covered} / ${considered} covered · ${collectedText} collected`,
-        title: overReported
-          ? `This run accounted for ${covered} of ${considered} considered records for this stream. It collected ${collectedText}, which is more than the ${considered} it considered; covered also includes records deliberately suppressed because they were unchanged.`
-          : `This run accounted for ${covered} of ${considered} considered records for this stream. It collected ${collectedText}; covered also includes records deliberately suppressed because they were unchanged.`,
-      };
-    }
-    return {
-      label: `${clampedNumerator} / ${considered} collected`,
-      title: overReported
-        ? `This run collected ${collectedText} records for this stream — more than the ${considered} it considered, so the displayed fraction is clamped to ${considered} / ${considered}. The raw collected count is ${collectedText}.`
-        : `This run collected ${collectedText} of ${considered} considered records for this stream.`,
-    };
+    return buildKnownDenominatorCountsLine(entry, entry.considered, collected, collectedText);
   }
   // Unknown considered denominator: never imply a fraction. Show the raw count
   // only, and say the denominator is unknown.
@@ -222,6 +191,41 @@ function buildCountsLine(entry: RefCollectionReportEntry): { label: string | nul
     label: null,
     title:
       "The connector did not declare a considered denominator for this stream, so completeness cannot be derived from the collected count.",
+  };
+}
+
+function buildKnownDenominatorCountsLine(
+  entry: RefCollectionReportEntry,
+  consideredCount: number,
+  collected: number,
+  collectedText: string
+): { label: string; title: string } {
+  const considered = consideredCount.toLocaleString();
+  // Honesty clamp: the rendered fraction numerator can never exceed its
+  // denominator. The title keeps the raw count visible when clamping occurs.
+  const overReported = collected > consideredCount;
+  const clampedNumerator = Math.min(collected, consideredCount).toLocaleString();
+  if (typeof entry.covered === "number" && Number.isFinite(entry.covered)) {
+    const covered = Math.min(entry.covered, consideredCount).toLocaleString();
+    const overCovered = entry.covered > consideredCount;
+    if (overCovered) {
+      return {
+        label: `${covered} / ${considered} covered · ${collectedText} collected`,
+        title: `This run accounted for ${entry.covered.toLocaleString()} of ${considered} considered records for this stream — more than the considered denominator, so the displayed covered fraction is clamped to ${considered} / ${considered}. It collected ${collectedText}; covered also includes records deliberately suppressed because they were unchanged.`,
+      };
+    }
+    return {
+      label: `${covered} / ${considered} covered · ${collectedText} collected`,
+      title: overReported
+        ? `This run accounted for ${covered} of ${considered} considered records for this stream. It collected ${collectedText}, which is more than the ${considered} it considered; covered also includes records deliberately suppressed because they were unchanged.`
+        : `This run accounted for ${covered} of ${considered} considered records for this stream. It collected ${collectedText}; covered also includes records deliberately suppressed because they were unchanged.`,
+    };
+  }
+  return {
+    label: `${clampedNumerator} / ${considered} collected`,
+    title: overReported
+      ? `This run collected ${collectedText} records for this stream — more than the ${considered} it considered, so the displayed fraction is clamped to ${considered} / ${considered}. The raw collected count is ${collectedText}.`
+      : `This run collected ${collectedText} of ${considered} considered records for this stream.`,
   };
 }
 
@@ -241,9 +245,9 @@ function buildSkipLabel(skip: RefCollectionReportEntry["skipped"]): string | nul
 
 const TONE_RANK: Record<EvidenceTone, number> = {
   danger: 3,
-  warning: 2,
-  success: 1,
   neutral: 0,
+  success: 1,
+  warning: 2,
 };
 
 /** The stronger of two tones (danger > warning > success > neutral). */
@@ -285,15 +289,15 @@ export function formatStreamCollectionFacts(entry: RefCollectionReportEntry): St
   }
 
   return {
-    stream: entry.stream,
-    coverage,
-    disposition,
     countsLabel: counts.label,
     countsTitle: counts.title,
+    coverage,
+    disposition,
     pendingDetailGaps,
     pendingDetailGapsIsFloor,
     pendingDetailGapsLabel: formatPendingDetailGapsLabel(pendingDetailGaps, pendingDetailGapsIsFloor),
     skipLabel,
+    stream: entry.stream,
     tone,
   };
 }

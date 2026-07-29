@@ -225,12 +225,12 @@ export function Pager({
 // ─── Surface: meta pill (small inline key/value) ───────────────────────────
 
 const META_PILL_TONE_CLASSES: Record<MetaPillTone, string> = {
-  protocol: "border-primary/25 bg-primary/5 text-foreground",
+  danger: "border-destructive/25 bg-destructive/5 text-destructive",
   human: "border-[color:var(--human)]/25 bg-[color:var(--human-wash)] text-foreground",
+  neutral: "border-border/80 bg-background",
+  protocol: "border-primary/25 bg-primary/5 text-foreground",
   success: "border-[color:var(--success)]/30 bg-[color:var(--success-wash)] text-foreground",
   warning: "border-[color:var(--warning)]/25 bg-[color:var(--warning-wash)] text-foreground",
-  danger: "border-destructive/25 bg-destructive/5 text-destructive",
-  neutral: "border-border/80 bg-background",
 };
 
 export function MetaPill({ label, value, tone = "neutral" }: { label: string; value: ReactNode; tone?: MetaPillTone }) {
@@ -268,9 +268,9 @@ const STATUS_BADGE_TONE_CLASSES: Record<StatusTone, string> = {
   // data-status-tone CSS rules in base.css (higher specificity than
   // .pdpp-eyebrow; see comment there).
   danger: "bg-status-danger-bg",
+  neutral: "bg-status-neutral-bg",
   success: "bg-status-success-bg",
   warning: "bg-status-warning-bg",
-  neutral: "bg-status-neutral-bg",
 };
 
 export function StatusBadge({
@@ -311,6 +311,7 @@ export function StatusBadge({
 // for the styling — callers migrating from faked inline warm callouts should
 // switch to `tone="info"` or `tone="warning"`.
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: The branch structure directly represents the supported data variants; extraction would split one decision table.
 export function Callout({
   title,
   description,

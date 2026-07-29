@@ -10,7 +10,7 @@ import { resolveNoAssistanceEndedTerminalStatus, selectNoAssistanceStreamState }
 const pageSource = readFileSync(fileURLToPath(new URL("./page.tsx", import.meta.url)), "utf8");
 const streamViewerSource = readFileSync(fileURLToPath(new URL("./stream-viewer.tsx", import.meta.url)), "utf8");
 const TERMINAL_STATUS_SELECTOR_RE =
-  /selectNoAssistanceStreamState\(\{\s*runHandleStatus:\s*runStatus\?\.status \?\? null,\s*terminalStatus:\s*envelope\.terminal_status,\s*\}\)/;
+  /selectNoAssistanceStreamState\(\{[\s\S]{0,200}runHandleStatus:\s*runStatus\?\.status \?\? null,\s*terminalStatus:\s*envelope\.terminal_status,\s*\}\)/;
 const RUN_STATUS_FETCH_RE =
   /Promise\.all\(\[\s*getRunTimeline\(runId, \{ cursor: null \}\),\s*getRunStatus\(runId\)\s*\]\)/;
 const RESOLVED_SURFACE_GATE_RE = /noAssistanceState === "resolved"[\s\S]{0,120}<ResolvedSurface/;
@@ -23,8 +23,8 @@ const UNAVAILABLE_STREAM_POLLER_RE =
 const PREPARING_BROWSER_SURFACE_GATE_RE =
   /hasActiveBrowserSurface\(envelope\.events\)[\s\S]{0,120}<PreparingBrowserSurface/;
 const PREPARING_BROWSER_SURFACE_COPY_RE = /Preparing the secure browser\./;
-const EXTERNAL_APPROVAL_COPY_RE =
-  /function ExternalApprovalSurface[\s\S]{0,900}Approve the prompt outside PDPP\.[\s\S]{0,900}No browser controls are waiting/;
+const EXTERNAL_APPROVAL_COPY_RE = /Approve the prompt outside PDPP\./;
+const EXTERNAL_APPROVAL_WAITING_COPY_RE = /No browser controls are\s+waiting/;
 const POLLER_TIMELINE_PROBE_RE = /fetch\(`\/_ref\/runs\/\$\{encodeURIComponent\(runId\)\}\/timeline`/;
 const POLLER_STREAM_READY_RE = /getCurrentBrowserSurfaceAssistance\(timelineEventsFrom\(body\)\) !== null/;
 const POLLER_HARD_RELOAD_RE = /window\.location\.reload\(\)/;
@@ -42,6 +42,8 @@ const DEFERRED_BROWSER_SLOT_COPY_RE = /Secure browser slot unavailable\./;
 const DEFERRED_BROWSER_SLOT_NOT_DANGER_RE = /terminalStatus === "deferred"[\s\S]{0,600}border border-border bg-card/;
 const RESOLVED_SURFACE_ACCEPTS_RUN_ID_RE = /export function ResolvedSurface\(\{ connector, runId \}/;
 const RESOLVED_SURFACE_RUN_LINK_RE = /href=\{`\/syncs\/\$\{encodeURIComponent\(runId\)\}`\}/;
+const WINDOW_CLOSE_RE = /window\.close\(\)/;
+const CLOSE_TAB_COPY_RE = />\s*Close this tab\s*</;
 
 test("no-assistance stream state distinguishes success, terminal failure, and active runs", () => {
   assert.equal(selectNoAssistanceStreamState({ terminalStatus: "completed" }), "resolved");
@@ -98,7 +100,13 @@ test("external provider approval does not render as a browser-session repair", (
     externalApprovalGate < browserPrepGate,
     "external app approval must be handled before the generic active-browser fallback"
   );
-  assert.match(pageSource, EXTERNAL_APPROVAL_COPY_RE);
+  const externalApprovalStart = pageSource.indexOf("function ExternalApprovalSurface(");
+  const externalApprovalEnd = pageSource.indexOf("function UnavailableStreamSurface(", externalApprovalStart);
+  assert.notEqual(externalApprovalStart, -1);
+  assert.ok(externalApprovalEnd > externalApprovalStart, "approval surface must have a stable source boundary");
+  const externalApprovalSource = pageSource.slice(externalApprovalStart, externalApprovalEnd);
+  assert.match(externalApprovalSource, EXTERNAL_APPROVAL_COPY_RE);
+  assert.match(externalApprovalSource, EXTERNAL_APPROVAL_WAITING_COPY_RE);
 });
 
 test("stream page labels multi-account runs by connection instance before connector type", () => {
@@ -129,6 +137,6 @@ test("no-assistance poller explicitly transitions into current browser assistanc
 test("resolved browser stream offers reliable navigation instead of blocked tab close", () => {
   assert.match(streamViewerSource, RESOLVED_SURFACE_ACCEPTS_RUN_ID_RE);
   assert.match(streamViewerSource, RESOLVED_SURFACE_RUN_LINK_RE);
-  assert.doesNotMatch(streamViewerSource, /window\.close\(\)/);
-  assert.doesNotMatch(streamViewerSource, />\s*Close this tab\s*</);
+  assert.doesNotMatch(streamViewerSource, WINDOW_CLOSE_RE);
+  assert.doesNotMatch(streamViewerSource, CLOSE_TAB_COPY_RE);
 });

@@ -9,7 +9,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useState, useTransition } from "react";
 import type { RefConnectorSummary, RefSchedule } from "../lib/ref-client.ts";
-import { formatTotalRecordsLabel } from "../sources/sources-view-model.ts";
+import { formatTotalRecordsLabel } from "../lib/total-records-label.ts";
 import { deleteScheduleAction, pauseScheduleAction, resumeScheduleAction, upsertScheduleAction } from "./actions.ts";
 
 interface ScheduleRowProps {
@@ -58,6 +58,10 @@ function recommendedIntervalLabel(policy: RefConnectorSummary["refresh_policy"])
  * legacy fallback used while a single-instance row still exists.
  */
 function recordsHrefForSummary(summary: RefConnectorSummary): string {
+  // connection_id is non-optional in the current RefConnectorSummary contract,
+  // but connector_instance_id/connector_id are a real legacy-server fallback
+  // (single-instance rows predating connection_id).
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: see comment above.
   const routeId = summary.connection_id ?? summary.connector_instance_id ?? summary.connector_id;
   return `/sources/${encodeURIComponent(routeId)}`;
 }
@@ -109,10 +113,13 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
   const handleSave = useCallback(() => {
     startTransition(async () => {
       const res = await upsertScheduleAction(summary.connector_id, {
+        // connection_id is non-optional in the current contract; connector_instance_id
+        // is a real legacy-server fallback (see recordsHrefForSummary above).
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: see comment above.
         connectionId: summary.connection_id ?? summary.connector_instance_id ?? null,
+        enabled: true,
         every,
         jitter: jitter || undefined,
-        enabled: true,
       });
       if (!res.ok) {
         showToast("error", res.message);
@@ -130,6 +137,9 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
     startTransition(async () => {
       const res = await pauseScheduleAction(
         summary.connector_id,
+        // connection_id is non-optional in the current contract; connector_instance_id
+        // is a real legacy-server fallback (see recordsHrefForSummary above).
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: see comment above.
         summary.connection_id ?? summary.connector_instance_id ?? null
       );
       if (!res.ok) {
@@ -143,6 +153,9 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
     startTransition(async () => {
       const res = await resumeScheduleAction(
         summary.connector_id,
+        // connection_id is non-optional in the current contract; connector_instance_id
+        // is a real legacy-server fallback (see recordsHrefForSummary above).
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: see comment above.
         summary.connection_id ?? summary.connector_instance_id ?? null
       );
       if (!res.ok) {
@@ -156,6 +169,9 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
     startTransition(async () => {
       const res = await deleteScheduleAction(
         summary.connector_id,
+        // connection_id is non-optional in the current contract; connector_instance_id
+        // is a real legacy-server fallback (see recordsHrefForSummary above).
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: see comment above.
         summary.connection_id ?? summary.connector_instance_id ?? null
       );
       if (!res.ok) {
@@ -179,6 +195,10 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
   const connectorKey = formatConnectorKeyForDisplay(summary.connector_id);
   const recordsHref = recordsHrefForSummary(summary);
   const activeRunId = schedule?.active_run_id;
+  // schedule is RefSchedule | null (remoteScheduleFor can return null); tsc
+  // confirms schedule.human_attention_needed errors without the guard when
+  // the fallback is removed. Biome's type-aware pass mis-resolves this one.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: see comment above.
   const needsHuman = schedule?.human_attention_needed ?? false;
   const recInterval = recommendedIntervalLabel(policy);
   const recMode = policy?.recommended_mode;

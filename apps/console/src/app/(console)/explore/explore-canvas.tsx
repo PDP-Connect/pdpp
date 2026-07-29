@@ -248,18 +248,18 @@ function dateNormalizedHref(explorePath: string, state: DateNormalizeState): str
   const dateNav = dateNavFromLift(dateLift.after, dateLift.before);
   return withOrderSuffix(
     buildHref(explorePath, {
-      query: dateLift.rest,
       connectionIds: state.selectedConnectionIds,
       excludeConnectionIds: state.excludeConnectionIds,
-      streams: state.selectedStreams,
       excludeStreams: state.excludeStreams,
+      // Preserve a peeked record from a shared `?q=after:X&peek=Y` link.
+      peek: state.peek,
+      query: dateLift.rest,
+      searchSort: state.searchSort === "recent" ? "recent" : undefined,
       // Only the endpoint the URL actually typed overrides the canonical window; the
       // other side is carried forward from the existing window (never stacks/clears).
       since: dateNav.since ?? state.since,
+      streams: state.selectedStreams,
       until: dateNav.until ?? state.until,
-      searchSort: state.searchSort === "recent" ? "recent" : undefined,
-      // Preserve a peeked record from a shared `?q=after:X&peek=Y` link.
-      peek: state.peek,
     }),
     state.order
   );
@@ -299,9 +299,9 @@ function composeFacetSelection(
   const nextStreams = unionIds(cur.streams, lift.includeStreams);
   return {
     connectionIds: nextInclude,
-    streams: nextStreams,
     excludeConnectionIds: unionIds(cur.excludeConnectionIds, liftedExclude).filter((id) => !nextInclude.includes(id)),
     excludeStreams: unionIds(cur.excludeStreams, lift.excludeStreams).filter((s) => !nextStreams.includes(s)),
+    streams: nextStreams,
   };
 }
 
@@ -541,19 +541,19 @@ function buildFilterChips(args: {
   for (const id of args.selectedConnectionIds) {
     const name = args.connections.find((c) => c.connectionId === id)?.displayName ?? id;
     out.push({
+      canNegate: true,
+      clear: () => args.toggleConnection(id),
       id: `con:${id}`,
       label: name,
-      property: "source",
-      operator: "is",
-      value: name,
-      negated: false,
-      canNegate: true,
       negate: () => {
         // Toggle include → exclude: remove from include, add to exclude
         args.toggleConnection(id);
         args.toggleExcludeConnection(id);
       },
-      clear: () => args.toggleConnection(id),
+      negated: false,
+      operator: "is",
+      property: "source",
+      value: name,
     });
   }
   // EXCLUDE chips render the facet/operator exclusion as a visible chip in the SAME
@@ -562,51 +562,51 @@ function buildFilterChips(args: {
   for (const id of args.excludeConnectionIds) {
     const name = args.connections.find((c) => c.connectionId === id)?.displayName ?? id;
     out.push({
+      canNegate: true,
+      clear: () => args.toggleExcludeConnection(id),
       id: `xcon:${id}`,
       label: `not ${name}`,
-      property: "source",
-      operator: "is not",
-      value: name,
-      negated: true,
-      canNegate: true,
       negate: () => {
         // Toggle exclude → include: remove from exclude, add to include
         args.toggleExcludeConnection(id);
         args.toggleConnection(id);
       },
-      clear: () => args.toggleExcludeConnection(id),
+      negated: true,
+      operator: "is not",
+      property: "source",
+      value: name,
     });
   }
   for (const s of args.selectedStreams) {
     out.push({
+      canNegate: true,
+      clear: () => args.toggleStream(s),
       id: `stream:${s}`,
       label: `stream: ${s}`,
-      property: "stream",
-      operator: "is",
-      value: s,
-      negated: false,
-      canNegate: true,
       negate: () => {
         args.toggleStream(s);
         args.toggleExcludeStream(s);
       },
-      clear: () => args.toggleStream(s),
+      negated: false,
+      operator: "is",
+      property: "stream",
+      value: s,
     });
   }
   for (const s of args.excludeStreams) {
     out.push({
+      canNegate: true,
+      clear: () => args.toggleExcludeStream(s),
       id: `xstream:${s}`,
       label: `not stream: ${s}`,
-      property: "stream",
-      operator: "is not",
-      value: s,
-      negated: true,
-      canNegate: true,
       negate: () => {
         args.toggleExcludeStream(s);
         args.toggleStream(s);
       },
-      clear: () => args.toggleExcludeStream(s),
+      negated: true,
+      operator: "is not",
+      property: "stream",
+      value: s,
     });
   }
   // NB: the active DATE window is NOT pushed here. It is rendered ONCE, by the
@@ -620,24 +620,24 @@ function buildFilterChips(args: {
     // raw shapes: "stream:messages", "-con:abc", "has:link", "before:2026-01-01", or a
     // bare word (free-text search). A leading "-" is the exclude operator. A bare word
     // (no colon) is a free-text search term → property "search".
-    const raw = tk.raw;
+    const { raw } = tk;
     const negated = raw.startsWith("-");
     const body = negated ? raw.slice(1) : raw;
     const colon = body.indexOf(":");
     const property = colon > 0 ? body.slice(0, colon) : "search";
     const value = colon > 0 ? body.slice(colon + 1) : body;
     out.push({
+      canNegate: false,
+      clear: () => args.navigate({ query: removeToken(args.query, tk.raw) }),
       id: `tok:${i}`,
       label: tk.label,
-      property,
-      operator: negated ? "is not" : "is",
-      value,
-      negated,
-      canNegate: false,
       negate: () => {
         // token chips do not support negation toggling (use -operator: in the query)
       },
-      clear: () => args.navigate({ query: removeToken(args.query, tk.raw) }),
+      negated,
+      operator: negated ? "is not" : "is",
+      property,
+      value,
     });
   });
   return out;
@@ -809,7 +809,7 @@ function QueryInput(props: QueryInputProps) {
         return;
       }
       // At this point kind is "has-image" | "has-link" | "date" — all handled by suggestionToken.
-      const kind = s.kind;
+      const { kind } = s;
       if (kind === "has-image" || kind === "has-link" || kind === "date") {
         props.onDraftChange(appendOperatorToken(props.draft, suggestionToken(kind)));
       }
@@ -1495,7 +1495,7 @@ function SearchHeader({
   query: string;
   recordsBasePath: string;
 }) {
-  const descriptor = data.descriptor;
+  const { descriptor } = data;
   // Exhaustive recall is provable only when the descriptor itself pages to the
   // end (keyword_pageable / complete_chronological). A relevance_bounded set is
   // a ranked SAMPLE — never label its escape "all matching records".
@@ -1564,8 +1564,8 @@ function StreamDoorLink({
   recordsBasePath: string;
 }) {
   const streamHref = buildStreamRecordsHref(recordsBasePath, {
-    connectorId: door.connectorId,
     connectionId: door.connectionId,
+    connectorId: door.connectorId,
     stream: door.stream,
   });
   return (
@@ -1577,8 +1577,8 @@ function StreamDoorLink({
 
 function StreamSeeAllLink({ link, recordsBasePath }: { link: ExplorerStreamSeeAllLink; recordsBasePath: string }) {
   const streamHref = buildStreamRecordsHref(recordsBasePath, {
-    connectorId: link.connectorId,
     connectionId: link.connectionId,
+    connectorId: link.connectorId,
     stream: link.stream,
   });
   const totalLabel = typeof link.total === "number" ? ` - ${link.total.toLocaleString()} records` : "";
@@ -1925,12 +1925,10 @@ function FeedRow({
                 {entry.snippetSegments && entry.snippetSegments.length > 0
                   ? entry.snippetSegments.map((seg, i) =>
                       seg.marked ? (
-                        // biome-ignore lint/suspicious/noArrayIndexKey: ordered immutable segment list
                         <strong className="rr-x-snippet-hit" key={i}>
                           {seg.text}
                         </strong>
                       ) : (
-                        // biome-ignore lint/suspicious/noArrayIndexKey: ordered immutable segment list
                         <span key={i}>{seg.text}</span>
                       )
                     )
@@ -2071,8 +2069,9 @@ function BurstRow({
   recordsBasePath: string;
   selectedPeekParam: string | null;
 }) {
-  const rep = burst.entries[0];
+  const [rep] = burst.entries;
   const loaded = burst.entries.length;
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   const streamLabel = `${rep?.connectionDisplayName ?? rep?.connectorId ?? ""}${rep?.stream ? ` / ${rep.stream}` : ""}`;
   // SLVP preview-content-by-default (review-gated 2026-06-22): a burst is NEVER
   // a content-less count header. It always renders its first PREVIEW_COUNT rows
@@ -2737,17 +2736,17 @@ function FeedBody({
         recordsBasePath={recordsBasePath}
         selectedPeekParam={selectedPeekParam}
         zeroResultsProps={{
-          loadedCount: data.feed.length,
           explorePath,
           exploreState: {
-            query: data.query,
             connectionIds: data.selectedConnectionIds,
             excludeConnectionIds: data.excludeConnectionIds,
-            streams: data.selectedStreams,
             excludeStreams: data.excludeStreams,
+            query: data.query,
             since: data.since,
+            streams: data.selectedStreams,
             until: data.until,
           },
+          loadedCount: data.feed.length,
         }}
       />
 
@@ -2936,7 +2935,7 @@ function SavedViewTabs({
   const onSave = useCallback(
     (name: string) => {
       // A stable id; crypto.randomUUID is available in every browser the console targets.
-      persist(addSavedView(views, { id: crypto.randomUUID(), name, href: currentHref }));
+      persist(addSavedView(views, { href: currentHref, id: crypto.randomUUID(), name }));
     },
     [persist, views, currentHref]
   );
@@ -3081,17 +3080,17 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
 
   const [optimisticSelection, setOptimisticSelectionState] = useState({
     connectionIds: data.selectedConnectionIds,
-    streams: data.selectedStreams,
     excludeConnectionIds: data.excludeConnectionIds,
     excludeStreams: data.excludeStreams,
+    streams: data.selectedStreams,
   });
   const optimisticSelectionRef = useRef(optimisticSelection);
   useEffect(() => {
     const next = {
       connectionIds: data.selectedConnectionIds,
-      streams: data.selectedStreams,
       excludeConnectionIds: data.excludeConnectionIds,
       excludeStreams: data.excludeStreams,
+      streams: data.selectedStreams,
     };
     optimisticSelectionRef.current = next;
     setOptimisticSelectionState(next);
@@ -3110,8 +3109,8 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
   );
   const selectedConnectionIds = optimisticSelection.connectionIds;
   const selectedStreams = optimisticSelection.streams;
-  const excludeConnectionIds = optimisticSelection.excludeConnectionIds;
-  const excludeStreams = optimisticSelection.excludeStreams;
+  const { excludeConnectionIds } = optimisticSelection;
+  const { excludeStreams } = optimisticSelection;
 
   const parsed = useMemo(() => parseQuery(draft), [draft]);
   const committedParsed = useMemo(() => parseQuery(data.query), [data.query]);
@@ -3129,16 +3128,16 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
   // date operators via `chipTokens`, so the single render before this settles is honest.)
   useEffect(() => {
     const href = dateNormalizedHref(explorePath, {
-      query: data.query,
-      selectedConnectionIds: data.selectedConnectionIds,
       excludeConnectionIds: data.excludeConnectionIds,
-      selectedStreams: data.selectedStreams,
       excludeStreams: data.excludeStreams,
+      order,
+      peek: data.peek ? explorerPeekParam(data.peek) : undefined,
+      query: data.query,
+      searchSort: data.searchSort === "recent" ? "recent" : "relevance",
+      selectedConnectionIds: data.selectedConnectionIds,
+      selectedStreams: data.selectedStreams,
       since: data.since,
       until: data.until,
-      searchSort: data.searchSort === "recent" ? "recent" : "relevance",
-      peek: data.peek ? explorerPeekParam(data.peek) : undefined,
-      order,
     });
     if (href !== null) {
       // Replace (not push) so the un-normalized URL never traps the back button.
@@ -3213,12 +3212,12 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
   const streamGroups = useMemo(
     () =>
       computeSourceGroupedStreamFacets({
-        feed: data.feed,
         connections: data.connections,
+        excludeStreams,
+        feed: data.feed,
         passes: (e) => passesClientFilter(e, parsed, serverFilterableFields),
         selectedConnectionIds,
         selectedStreams,
-        excludeStreams,
       }),
     [
       data.feed,
@@ -3278,18 +3277,18 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
       const href = buildNavigateHref(
         explorePath,
         {
-          query: data.query,
           connectionIds: optimisticSelectionRef.current.connectionIds,
-          streams: optimisticSelectionRef.current.streams,
+          cursorTrail: data.cursorTrail,
           excludeConnectionIds: optimisticSelectionRef.current.excludeConnectionIds,
           excludeStreams: optimisticSelectionRef.current.excludeStreams,
-          since: data.since,
-          until: data.until,
-          searchSort: data.searchSort === "recent" ? "recent" : "relevance",
-          snapshotAnchor: data.snapshotAnchor,
-          cursorTrail: data.cursorTrail,
-          upcomingTrail: data.upcomingTrail,
           order,
+          query: data.query,
+          searchSort: data.searchSort === "recent" ? "recent" : "relevance",
+          since: data.since,
+          snapshotAnchor: data.snapshotAnchor,
+          streams: optimisticSelectionRef.current.streams,
+          until: data.until,
+          upcomingTrail: data.upcomingTrail,
         },
         opts
       );
@@ -3317,19 +3316,19 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
       const cur = optimisticSelectionRef.current;
       const next = {
         connectionIds: toggleIdSelection(cur.connectionIds, connectionId),
-        streams: [],
         // Including a connection clears any exclusion of the same id (a connection
         // can't be both "only this" and "not this") and clears stream exclusions
         // since the stream facet rescopes when the connection set changes.
         excludeConnectionIds: cur.excludeConnectionIds.filter((id) => id !== connectionId),
         excludeStreams: [],
+        streams: [],
       };
       setOptimisticSelection(next);
       navigate({
         connectionIds: next.connectionIds,
-        streams: next.streams,
         excludeConnectionIds: next.excludeConnectionIds,
         excludeStreams: next.excludeStreams,
+        streams: next.streams,
       });
     },
     [navigate, setOptimisticSelection]
@@ -3341,9 +3340,9 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
       const next = {
         // Excluding a connection clears its inclusion (mutually exclusive per id).
         connectionIds: cur.connectionIds.filter((id) => id !== connectionId),
-        streams: cur.streams,
         excludeConnectionIds: toggleIdSelection(cur.excludeConnectionIds, connectionId),
         excludeStreams: cur.excludeStreams,
+        streams: cur.streams,
       };
       setOptimisticSelection(next);
       navigate({
@@ -3359,12 +3358,12 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
       const cur = optimisticSelectionRef.current;
       const next = {
         connectionIds: cur.connectionIds,
-        streams: toggleIdSelection(cur.streams, stream),
         excludeConnectionIds: cur.excludeConnectionIds,
         excludeStreams: cur.excludeStreams.filter((s) => s !== stream),
+        streams: toggleIdSelection(cur.streams, stream),
       };
       setOptimisticSelection(next);
-      navigate({ streams: next.streams, excludeStreams: next.excludeStreams });
+      navigate({ excludeStreams: next.excludeStreams, streams: next.streams });
     },
     [navigate, setOptimisticSelection]
   );
@@ -3374,12 +3373,12 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
       const cur = optimisticSelectionRef.current;
       const next = {
         connectionIds: cur.connectionIds,
-        streams: cur.streams.filter((s) => s !== stream),
         excludeConnectionIds: cur.excludeConnectionIds,
         excludeStreams: toggleIdSelection(cur.excludeStreams, stream),
+        streams: cur.streams.filter((s) => s !== stream),
       };
       setOptimisticSelection(next);
-      navigate({ streams: next.streams, excludeStreams: next.excludeStreams });
+      navigate({ excludeStreams: next.excludeStreams, streams: next.streams });
     },
     [navigate, setOptimisticSelection]
   );
@@ -3407,11 +3406,11 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
     setOptimisticSelection(next);
     setDraft(lift.rest);
     navigate({
-      query: lift.rest,
       connectionIds: next.connectionIds,
-      streams: next.streams,
       excludeConnectionIds: next.excludeConnectionIds,
       excludeStreams: next.excludeStreams,
+      query: lift.rest,
+      streams: next.streams,
       ...dateNav,
     });
   }, [draft, navigate, data.connections, setOptimisticSelection]);
@@ -3434,7 +3433,7 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
   const setOrder = useCallback((next: SortOrder) => navigate({ order: next }), [navigate]);
 
   const setSearchSort = useCallback(
-    (next: "relevance" | "recent") => navigate({ searchSort: next, cursor: undefined }),
+    (next: "relevance" | "recent") => navigate({ cursor: undefined, searchSort: next }),
     [navigate]
   );
 
@@ -3498,18 +3497,18 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
   const chips = useMemo(
     () =>
       buildFilterChips({
-        selectedConnectionIds,
-        selectedStreams,
+        connections: data.connections,
         excludeConnectionIds,
         excludeStreams,
-        connections: data.connections,
-        tokens: chipTokens(committedParsed.tokens),
+        navigate,
         query: data.query,
+        selectedConnectionIds,
+        selectedStreams,
         toggleConnection,
-        toggleStream,
         toggleExcludeConnection,
         toggleExcludeStream,
-        navigate,
+        toggleStream,
+        tokens: chipTokens(committedParsed.tokens),
       }),
     [
       selectedConnectionIds,
@@ -3576,15 +3575,15 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
   const currentViewHref = useMemo(
     () =>
       buildCurrentViewHref(explorePath, order, {
-        query: data.query,
         connectionIds: selectedConnectionIds,
-        streams: selectedStreams,
         excludeConnectionIds,
         excludeStreams,
-        since: data.since,
-        until: data.until,
         peek: data.peek ? explorerPeekParam(data.peek) : undefined,
+        query: data.query,
         searchSort: data.searchSort === "recent" ? "recent" : undefined,
+        since: data.since,
+        streams: selectedStreams,
+        until: data.until,
       }),
     [
       data.peek,
@@ -3658,10 +3657,10 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
   const buildSearchSortHref = useCallback(
     (searchSort: "relevance" | "recent") =>
       buildHref(explorePath, {
-        query: data.query,
         connectionIds: selectedConnectionIds,
-        streams: selectedStreams,
+        query: data.query,
         since: data.since,
+        streams: selectedStreams,
         until: data.until,
         searchSort,
       }),
@@ -3673,7 +3672,7 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
   // and the feed claims the freed width — no reserved-empty 420px inspector (the
   // dead-canvas + query-bar/inspector-overlap root cause). `data.peek != null` is
   // the single source of selection truth (selectedPeekParam derives from it).
-  const hasSelection = data.peek != null;
+  const hasSelection = data.peek !== null && data.peek !== undefined;
   return (
     <div className={hasSelection ? "rr-x has-selection" : "rr-x"}>
       {/* ── In-page route progress bar ──
@@ -3829,7 +3828,7 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
             Only on the non-search feed when the assembler detected records that
             arrived after the current snapshot anchor. Clicking refreshes to the
             live head (drops anchor + cursor). We do NOT auto-insert rows. */}
-        {!data.fromSearch && data.newSinceAnchor != null && data.newSinceAnchor > 0 ? (
+        {!data.fromSearch && data.newSinceAnchor !== null && data.newSinceAnchor > 0 ? (
           <button className="rr-x-new-pill" onClick={() => navigate({ clearCursor: true })} type="button">
             {data.newSinceAnchor.toLocaleString()} new
           </button>

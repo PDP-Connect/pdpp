@@ -90,7 +90,10 @@ const category = ((): string | null => {
 // Stdin is a terminal here, not a Collection Profile orchestrator, so
 // we implement INTERACTION by reading a 6-digit code from stdin.
 let interactionCounter = 0;
-const nextInteractionId = (): string => `cli_${Date.now()}_${++interactionCounter}`;
+function nextInteractionId(): string {
+  interactionCounter += 1;
+  return `cli_${Date.now()}_${interactionCounter}`;
+}
 
 interface InteractionMessage {
   kind?: string;

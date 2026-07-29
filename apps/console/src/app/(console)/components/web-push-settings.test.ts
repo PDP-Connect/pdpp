@@ -18,7 +18,7 @@ const SERVICE_WORKER_CLIENTS_CLAIM_PATTERN = /self\.clients\.claim\(\)/;
 // The SW allows the overview root plus clean owner-section prefixes at segment
 // boundaries.
 const SERVICE_WORKER_DASHBOARD_URL_ALLOWLIST_PATTERN =
-  /url === "\/"[\s\S]*PDPP_ALLOWED_URL_PREFIXES\.some\(\(prefix\) => url === prefix \|\| url\.startsWith\(prefix \+ "\/"\)\)/;
+  /url === "\/"[\s\S]*PDPP_ALLOWED_URL_PREFIXES\.some\(\(prefix\) => url === prefix \|\| url\.startsWith\(`\$\{prefix\}\/`\)\)/;
 const SERVICE_WORKER_ALLOWLIST_HAS_SOURCES = /"\/sources"/;
 const SERVICE_WORKER_ALLOWLIST_HAS_SYNCS = /"\/syncs"/;
 const SERVICE_WORKER_ALLOWLIST_HAS_NOTIFICATIONS = /"\/notifications"/;
@@ -74,7 +74,7 @@ const SSR_SAFE_DIAGNOSTIC_PUSHMANAGER_PATTERN = /hasWindowFeature\("PushManager"
 const SSR_SAFE_DIAGNOSTIC_NOTIFICATION_PATTERN = /hasWindowFeature\("Notification"\)/;
 const SSR_SAFE_DIAGNOSTIC_SERVICE_WORKER_PATTERN = /hasNavigatorFeature\("serviceWorker"\)/;
 const SVG_CSS_COLOR_FUNCTION_PATTERN = /oklch\(|lab\(|lch\(|color\(/i;
-const SVG_BACKGROUND_PATTERN = /<rect[^>]+width="32"[^>]+height="32"[^>]+fill="#f8f6f0"/;
+const SVG_BACKGROUND_PATTERN = /<rect(?=[^>]*width="32")(?=[^>]*height="32")(?=[^>]*fill="#f8f6f0")[^>]*>/;
 const SVG_BRAND_COPPER_PATTERN = /fill="#a05533"/;
 const SVG_BRAND_BLUE_PATTERN = /fill="#2c73d9"/;
 const ENABLE_CLEARS_TEST_STATUS_PATTERN = /async function enable\(\)[\s\S]*?setBusy\(true\);\s*setTestStatus\(null\);/;

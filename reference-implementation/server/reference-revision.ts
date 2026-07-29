@@ -66,7 +66,7 @@ export function resolveReferenceRevision(opts: { referenceRevision?: string } = 
 }
 
 export function setReferenceRevisionHeader(
-  res: { setHeader(name: string, value: string): void },
+  res: { setHeader: (name: string, value: string) => void },
   referenceRevision: string
 ): void {
   res.setHeader(PDPP_REFERENCE_REVISION_HEADER, referenceRevision);

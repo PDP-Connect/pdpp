@@ -18,24 +18,14 @@ import "./globals.css";
 // range and italic support. The CSS variable --ink-carbon-sans is injected
 // on <html> and @pdpp/brand/ink-carbon.css picks it up via --font-sans override.
 const schibstedGrotesk = Schibsted_Grotesk({
-  subsets: ["latin"],
-  weight: ["400", "500", "600", "700", "800", "900"],
-  style: ["normal", "italic"],
-  variable: "--ink-carbon-sans",
   display: "swap",
+  style: ["normal", "italic"],
+  subsets: ["latin"],
+  variable: "--ink-carbon-sans",
+  weight: ["400", "500", "600", "700", "800", "900"],
 });
 
 export const metadata: Metadata = {
-  title: "PDPP — Personal Data Portability Protocol",
-  description:
-    "An authorization and disclosure protocol for personal data. You decide what to share, with whom, for how long, for what purpose.",
-  metadataBase: new URL("https://pdpp.dev"),
-  icons: {
-    icon: [
-      { url: "/icon.svg", type: "image/svg+xml" },
-      { url: "/brand/pdpp-favicon.svg", type: "image/svg+xml" },
-    ],
-  },
   // iOS home-screen launch. statusBarStyle "default" lets iOS pick the bar
   // treatment per system appearance (light bar on light, dark bar on dark)
   // instead of forcing one — so the launch reads correctly under both themes,
@@ -46,30 +36,40 @@ export const metadata: Metadata = {
     statusBarStyle: "default",
     title: "PDPP",
   },
+  description:
+    "An authorization and disclosure protocol for personal data. You decide what to share, with whom, for how long, for what purpose.",
+  icons: {
+    icon: [
+      { type: "image/svg+xml", url: "/icon.svg" },
+      { type: "image/svg+xml", url: "/brand/pdpp-favicon.svg" },
+    ],
+  },
+  metadataBase: new URL("https://pdpp.dev"),
   openGraph: {
-    title: "PDPP — Personal Data Portability Protocol",
     description:
       "An authorization and disclosure protocol for personal data. You decide what to share, with whom, for how long, for what purpose.",
+    title: "PDPP — Personal Data Portability Protocol",
     type: "website",
   },
+  title: "PDPP — Personal Data Portability Protocol",
   twitter: {
     card: "summary_large_image",
-    title: "PDPP — Personal Data Portability Protocol",
     description: "An authorization and disclosure protocol for personal data.",
+    title: "PDPP — Personal Data Portability Protocol",
   },
 };
 
 export const viewport = {
-  width: "device-width",
   initialScale: 1,
   // Theme-following chrome color: the browser/PWA picks the entry matching the
   // OS scheme, so the splash/chrome never flashes the wrong color before the
   // app paints. Both colors are sourced from LAUNCH_COLORS (the single source
   // of truth derived from the `--background` tokens) — no drifting hex here.
   themeColor: [
-    { media: "(prefers-color-scheme: dark)", color: LAUNCH_COLORS.dark },
-    { media: "(prefers-color-scheme: light)", color: LAUNCH_COLORS.light },
+    { color: LAUNCH_COLORS.dark, media: "(prefers-color-scheme: dark)" },
+    { color: LAUNCH_COLORS.light, media: "(prefers-color-scheme: light)" },
   ],
+  width: "device-width",
 };
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {

@@ -27,8 +27,8 @@ import {
 } from "../../operations/ref-dataset-summary/index.ts";
 import {
   executeRefDatasetSummaryStreams,
-  type RefDatasetSummaryStreamsDependencies,
   type RefDatasetSummaryStreamRow,
+  type RefDatasetSummaryStreamsDependencies,
 } from "../../operations/ref-dataset-summary-streams/index.ts";
 import type { MiddlewareHandler, RouteArg } from "./_route-contract.ts";
 
@@ -42,14 +42,14 @@ interface RouteRequest {
 }
 
 interface RouteResponse {
-  json(body: unknown): unknown;
+  json: (body: unknown) => unknown;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
 
 interface AppLike {
-  get(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
-  post(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  get: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
+  post: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
 }
 
 // Minimal substrate row shapes. Full Postgres/SQLite column sets have
@@ -116,7 +116,7 @@ export function __setRetainedSizeAutoReconcileNowForTest(now: () => number): voi
 
 export interface MountRefDatasetContext {
   // record-version-stats.js
-  buildRecordVersionStatsEnvelope(
+  buildRecordVersionStatsEnvelope: (
     params: {
       connectorInstanceId: string | null;
       stream: string | null;
@@ -124,52 +124,52 @@ export interface MountRefDatasetContext {
       limit: unknown;
     },
     deps: { connectorInstanceStore: unknown }
-  ): Promise<unknown>;
-  createRequestAbortSignal(req: unknown, message: string): { signal: AbortSignal; cleanup(): void };
-  createRequestConnectorInstanceStore(): unknown;
-  getDatasetBlobBytes(): Promise<number>;
-  getDatasetRecordChangesBytes(): Promise<number>;
+  ) => Promise<unknown>;
+  createRequestAbortSignal: (req: unknown, message: string) => { signal: AbortSignal; cleanup: () => void };
+  createRequestConnectorInstanceStore: () => unknown;
+  getDatasetBlobBytes: () => Promise<number>;
+  getDatasetRecordChangesBytes: () => Promise<number>;
 
   // records.js substrate reads
-  getDatasetRecordsAggregate(): Promise<DatasetRecordsAggregate>;
-  getDatasetRecordTimeBounds(): Promise<{ earliest: string | null; latest: string | null }>;
+  getDatasetRecordsAggregate: () => Promise<DatasetRecordsAggregate>;
+  getDatasetRecordTimeBounds: () => Promise<{ earliest: string | null; latest: string | null }>;
 
   // dataset-summary-read-model.js
-  getDatasetSummaryProjection(): RefDatasetSummaryProjection;
-  getDatasetSummaryStreamRecordTimeBounds(
+  getDatasetSummaryProjection: () => RefDatasetSummaryProjection;
+  getDatasetSummaryStreamRecordTimeBounds: (
     connectorId: string,
     stream: string,
     consentTimeField: unknown
-  ): Promise<{ earliest: string | null; latest: string | null }>;
+  ) => Promise<{ earliest: string | null; latest: string | null }>;
 
   // retained-size-read-model.js
-  getRetainedSizeGlobal(): Promise<RetainedSizeGlobalRow>;
-  handleError(res: unknown, err: unknown): void;
+  getRetainedSizeGlobal: () => Promise<RetainedSizeGlobalRow>;
+  handleError: (res: unknown, err: unknown) => void;
 
-  isPostgresStorageBackend(): boolean;
-  listDatasetSummaryStreamProjectionSeeds(): Promise<unknown>;
-  listDatasetTopConnectorCandidates(): Promise<Array<{ connector_id: string; record_count: number }>>;
-  listRetainedSizeConnections(options: { connectorInstanceId?: string }): Promise<RetainedSizeConnectionRow[]>;
-  listRetainedSizeStreams(options: {
+  isPostgresStorageBackend: () => boolean;
+  listDatasetSummaryStreamProjectionSeeds: () => Promise<unknown>;
+  listDatasetTopConnectorCandidates: () => Promise<Array<{ connector_id: string; record_count: number }>>;
+  listRetainedSizeConnections: (options: { connectorInstanceId?: string }) => Promise<RetainedSizeConnectionRow[]>;
+  listRetainedSizeStreams: (options: {
     connectorId?: string;
     connectorInstanceId?: string;
     stream?: string;
-  }): Promise<RetainedSizeStreamRow[]>;
-  listRetainedSizeTop(options: { scope: string; measure: string; limit?: unknown }): Promise<RetainedSizeTopRow[]>;
-  listStreamProjections(options: { connectorId?: string | null }): Promise<RefDatasetSummaryStreamRow[]>;
-  rebuildDatasetSummaryProjection(deps: unknown, options: { signal: AbortSignal }): Promise<unknown>;
-  rebuildRetainedSize(): Promise<unknown>;
-  reconcileDirtyDatasetSummaryRecordTimeBounds(
+  }) => Promise<RetainedSizeStreamRow[]>;
+  listRetainedSizeTop: (options: { scope: string; measure: string; limit?: unknown }) => Promise<RetainedSizeTopRow[]>;
+  listStreamProjections: (options: { connectorId?: string | null }) => Promise<RefDatasetSummaryStreamRow[]>;
+  rebuildDatasetSummaryProjection: (deps: unknown, options: { signal: AbortSignal }) => Promise<unknown>;
+  rebuildRetainedSize: () => Promise<unknown>;
+  reconcileDirtyDatasetSummaryRecordTimeBounds: (
     deps: {
-      getStreamRecordTimeBounds(
+      getStreamRecordTimeBounds: (
         connectorId: string,
         stream: string,
         consentTimeField: unknown
-      ): Promise<{ earliest: string | null; latest: string | null }>;
+      ) => Promise<{ earliest: string | null; latest: string | null }>;
     },
     options: { signal: AbortSignal }
-  ): Promise<{ reconciled: number; deferred: number; residual: number }>;
-  reconcileDirtyRetainedSize(): Promise<{ streams?: number } & Record<string, unknown>>;
+  ) => Promise<{ reconciled: number; deferred: number; residual: number }>;
+  reconcileDirtyRetainedSize: () => Promise<{ streams?: number } & Record<string, unknown>>;
   requireOwnerSession: MiddlewareHandler;
 }
 
@@ -184,7 +184,7 @@ function buildDatasetSummaryDeps(
     projection?: (() => Promise<RefDatasetSummaryProjection | null>) | (() => RefDatasetSummaryProjection | null);
     streamSeeds?: boolean;
   } = {}
-): RefDatasetSummaryDependencies & { listStreamProjectionSeeds?(): unknown } {
+): RefDatasetSummaryDependencies & { listStreamProjectionSeeds?: () => unknown } {
   // `exactOptionalPropertyTypes` forbids `getProjection: undefined` even in
   // an object literal — the optional property must be absent, not set to
   // `undefined`. Conditionally spread it only when provided.
@@ -193,23 +193,10 @@ function buildDatasetSummaryDeps(
       const agg = await aggregate();
       return {
         connector_count: agg.connector_count,
-        stream_count: agg.stream_count,
         record_count: agg.record_count,
+        stream_count: agg.stream_count,
       };
     },
-    getRetainedBytes: async () => {
-      const [agg, recordChangesJsonBytes, blobBytes] = await Promise.all([
-        aggregate(),
-        ctx.getDatasetRecordChangesBytes(),
-        ctx.getDatasetBlobBytes(),
-      ]);
-      return {
-        record_json_bytes: agg.record_json_bytes,
-        record_changes_json_bytes: recordChangesJsonBytes,
-        blob_bytes: blobBytes,
-      };
-    },
-    getRecordTimeBounds: () => ctx.getDatasetRecordTimeBounds(),
     getIngestedTimeBounds: async () => {
       const agg = await aggregate();
       return {
@@ -217,9 +204,22 @@ function buildDatasetSummaryDeps(
         latest: agg.latest_ingested_at,
       };
     },
+    getRecordTimeBounds: () => ctx.getDatasetRecordTimeBounds(),
+    getRetainedBytes: async () => {
+      const [agg, recordChangesJsonBytes, blobBytes] = await Promise.all([
+        aggregate(),
+        ctx.getDatasetRecordChangesBytes(),
+        ctx.getDatasetBlobBytes(),
+      ]);
+      return {
+        blob_bytes: blobBytes,
+        record_changes_json_bytes: recordChangesJsonBytes,
+        record_json_bytes: agg.record_json_bytes,
+      };
+    },
     listTopConnectorCandidates: () => ctx.listDatasetTopConnectorCandidates(),
   };
-  const deps: RefDatasetSummaryDependencies & { listStreamProjectionSeeds?(): unknown } =
+  const deps: RefDatasetSummaryDependencies & { listStreamProjectionSeeds?: () => unknown } =
     options.projection === undefined ? baseDeps : { ...baseDeps, getProjection: options.projection };
   if (options.streamSeeds === true) {
     deps.listStreamProjectionSeeds = () => ctx.listDatasetSummaryStreamProjectionSeeds();
@@ -239,25 +239,26 @@ async function buildRetainedSizeProjection(ctx: MountRefDatasetContext): Promise
   ]);
   const metadata: RefDatasetSummaryProjectionMetadata = {
     computed_at: global.computed_at,
-    state: (global.metadata?.state || (global.dirty ? "stale" : "fresh")) as RefDatasetSummaryProjectionState,
-    stale_since: global.metadata?.stale_since ?? null,
-    rebuild_status: (global.metadata?.rebuild_status ?? "idle") as RefDatasetSummaryRebuildStatus,
     last_error: global.metadata?.last_error ?? null,
+    rebuild_status: (global.metadata?.rebuild_status ?? "idle") as RefDatasetSummaryRebuildStatus,
     source_high_watermark: global.metadata?.source_high_watermark ?? null,
+    stale_since: global.metadata?.stale_since ?? null,
+    state: (global.metadata?.state || (global.dirty ? "stale" : "fresh")) as RefDatasetSummaryProjectionState,
   };
   return {
     counts: {
       connector_count: connections.length,
-      stream_count: streams.length,
       record_count: Number(global.record_count ?? 0),
+      stream_count: streams.length,
     },
-    retained_bytes: {
-      record_json_bytes: Number(global.current_record_json_bytes ?? 0),
-      record_changes_json_bytes: Number(global.record_history_json_bytes ?? 0),
-      blob_bytes: Number(global.blob_bytes ?? 0),
-    },
-    record_time_bounds: { earliest: null, latest: null },
     ingested_time_bounds: { earliest: null, latest: null },
+    metadata,
+    record_time_bounds: { earliest: null, latest: null },
+    retained_bytes: {
+      blob_bytes: Number(global.blob_bytes ?? 0),
+      record_changes_json_bytes: Number(global.record_history_json_bytes ?? 0),
+      record_json_bytes: Number(global.current_record_json_bytes ?? 0),
+    },
     top_connector_candidates: [...connections]
       .sort((a, b) => {
         const byCount = Number(b.record_count ?? 0) - Number(a.record_count ?? 0);
@@ -271,11 +272,11 @@ async function buildRetainedSizeProjection(ctx: MountRefDatasetContext): Promise
         connector_id: row.connector_id ?? "",
         record_count: Number(row.record_count ?? 0),
       })),
-    metadata,
   };
 }
 
 function retainedProjectionNeedsReconcile(projection: RefDatasetSummaryProjection): boolean {
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const state = projection.metadata.state;
   return state === "stale" || state === "failed";
 }
@@ -316,6 +317,20 @@ async function buildAutoReconciledRetainedSizeProjection(
 // makes the backend choice explicit without mixing it into HTTP handling.
 function buildDatasetSummaryStreamsDeps(ctx: MountRefDatasetContext): RefDatasetSummaryStreamsDependencies {
   return {
+    getProjectionMetadata: async () => {
+      if (ctx.isPostgresStorageBackend()) {
+        const global = await ctx.getRetainedSizeGlobal();
+        return {
+          computed_at: global.computed_at ?? null,
+          last_error: global.metadata?.last_error ?? null,
+          rebuild_status: (global.metadata?.rebuild_status ?? "idle") as RefDatasetSummaryRebuildStatus,
+          source_high_watermark: global.metadata?.source_high_watermark ?? null,
+          stale_since: global.metadata?.stale_since ?? null,
+          state: (global.metadata?.state || (global.dirty ? "stale" : "fresh")) as RefDatasetSummaryProjectionState,
+        };
+      }
+      return ctx.getDatasetSummaryProjection().metadata;
+    },
     listStreams: async ({ connectorId }) => {
       if (ctx.isPostgresStorageBackend()) {
         // `connector_id` is the public route filter — it MUST be
@@ -325,35 +340,20 @@ function buildDatasetSummaryStreamsDeps(ctx: MountRefDatasetContext): RefDataset
         // `dataset_summary_stream_projection` filter semantics.
         const rows = await ctx.listRetainedSizeStreams(connectorId === null ? {} : { connectorId });
         return rows.map((row) => ({
+          computed_at: row.computed_at ?? null,
           connector_id: String(row.connector_id ?? ""),
-          stream: String(row.stream ?? ""),
-          record_count: Number(row.record_count ?? 0),
-          record_json_bytes: Number(row.current_record_json_bytes ?? 0),
-          earliest_ingested_at: null,
-          latest_ingested_at: null,
-          earliest_record_time: null,
-          latest_record_time: null,
           consent_time_field: null,
           dirty_record_time_bounds: Boolean(row.dirty),
-          computed_at: row.computed_at ?? null,
+          earliest_ingested_at: null,
+          earliest_record_time: null,
+          latest_ingested_at: null,
+          latest_record_time: null,
+          record_count: Number(row.record_count ?? 0),
+          record_json_bytes: Number(row.current_record_json_bytes ?? 0),
+          stream: String(row.stream ?? ""),
         }));
       }
       return ctx.listStreamProjections({ connectorId });
-    },
-    getProjectionMetadata: async () => {
-      if (ctx.isPostgresStorageBackend()) {
-        const global = await ctx.getRetainedSizeGlobal();
-        return {
-          computed_at: global.computed_at ?? null,
-          state: (global.metadata?.state ||
-            (global.dirty ? "stale" : "fresh")) as RefDatasetSummaryProjectionState,
-          stale_since: global.metadata?.stale_since ?? null,
-          rebuild_status: (global.metadata?.rebuild_status ?? "idle") as RefDatasetSummaryRebuildStatus,
-          last_error: global.metadata?.last_error ?? null,
-          source_high_watermark: global.metadata?.source_high_watermark ?? null,
-        };
-      }
-      return ctx.getDatasetSummaryProjection().metadata;
     },
   };
 }
@@ -399,6 +399,7 @@ export function mountRefDatasetSummaryStreams(app: AppLike, ctx: MountRefDataset
     async (req: RouteRequest, res: RouteResponse) => {
       try {
         const connectorIdFilter =
+          // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
           typeof req.query?.connector_id === "string" && req.query.connector_id.trim()
             ? req.query.connector_id.trim()
             : null;
@@ -444,17 +445,17 @@ export function mountRefDatasetSummaryRebuild(app: AppLike, ctx: MountRefDataset
           { signal: requestAbort.signal }
         );
         const summary = await executeRefDatasetSummary({
-          getProjection: () => projection as RefDatasetSummaryProjection,
           getCounts: () => {
             throw new Error("dataset summary rebuild response must use projection");
           },
-          getRetainedBytes: () => {
+          getIngestedTimeBounds: () => {
             throw new Error("dataset summary rebuild response must use projection");
           },
+          getProjection: () => projection as RefDatasetSummaryProjection,
           getRecordTimeBounds: () => {
             throw new Error("dataset summary rebuild response must use projection");
           },
-          getIngestedTimeBounds: () => {
+          getRetainedBytes: () => {
             throw new Error("dataset summary rebuild response must use projection");
           },
           listTopConnectorCandidates: () => {
@@ -491,9 +492,9 @@ export function mountRefDatasetSummaryReconcile(app: AppLike, ctx: MountRefDatas
             )
           );
           res.json({
+            deferred: 0,
             object: "dataset_summary_reconcile",
             reconciled: result.streams ?? 0,
-            deferred: 0,
             residual: 0,
             summary,
           });
@@ -507,17 +508,17 @@ export function mountRefDatasetSummaryReconcile(app: AppLike, ctx: MountRefDatas
           { signal: requestAbort.signal }
         );
         const summary = await executeRefDatasetSummary({
-          getProjection: () => ctx.getDatasetSummaryProjection(),
           getCounts: () => {
             throw new Error("dataset summary reconcile response must use projection");
           },
-          getRetainedBytes: () => {
+          getIngestedTimeBounds: () => {
             throw new Error("dataset summary reconcile response must use projection");
           },
+          getProjection: () => ctx.getDatasetSummaryProjection(),
           getRecordTimeBounds: () => {
             throw new Error("dataset summary reconcile response must use projection");
           },
-          getIngestedTimeBounds: () => {
+          getRetainedBytes: () => {
             throw new Error("dataset summary reconcile response must use projection");
           },
           listTopConnectorCandidates: () => {
@@ -525,9 +526,9 @@ export function mountRefDatasetSummaryReconcile(app: AppLike, ctx: MountRefDatas
           },
         });
         res.json({
+          deferred: result.deferred,
           object: "dataset_summary_reconcile",
           reconciled: result.reconciled,
-          deferred: result.deferred,
           residual: result.residual,
           summary,
         });
@@ -572,14 +573,14 @@ export function mountRefDatasetSize(app: AppLike, ctx: MountRefDatasetContext): 
         }
         const global = await ctx.getRetainedSizeGlobal();
         res.json({
-          object: "ref_dataset_size",
           grain,
-          rows,
+          object: "ref_dataset_size",
           projection: {
             computed_at: global.computed_at,
             dirty: global.dirty,
             metadata: global.metadata,
           },
+          rows,
         });
       } catch (err) {
         ctx.handleError(res, err);
@@ -599,21 +600,21 @@ export function mountRefDatasetTop(app: AppLike, ctx: MountRefDatasetContext): v
         const measure =
           typeof req.query.measure === "string" && req.query.measure ? req.query.measure : "total_retained_bytes";
         const rows = await ctx.listRetainedSizeTop({
-          scope,
-          measure,
           limit: req.query.limit,
+          measure,
+          scope,
         });
         const global = await ctx.getRetainedSizeGlobal();
         res.json({
-          object: "ref_dataset_top",
-          scope,
           measure,
-          rows,
+          object: "ref_dataset_top",
           projection: {
             computed_at: global.computed_at,
             dirty: Boolean(global.dirty ?? rows.some((row) => row.dirty)),
             metadata: rows[0]?.metadata ?? global.metadata,
           },
+          rows,
+          scope,
         });
       } catch (err) {
         ctx.handleError(res, err);
@@ -636,7 +637,7 @@ export function mountRefRecordsVersionStats(app: AppLike, ctx: MountRefDatasetCo
         const stream = typeof req.query.stream === "string" && req.query.stream.trim() ? req.query.stream.trim() : null;
         const risk = typeof req.query.risk === "string" && req.query.risk.trim() ? req.query.risk.trim() : null;
         const envelope = await ctx.buildRecordVersionStatsEnvelope(
-          { connectorInstanceId, stream, risk, limit: req.query.limit },
+          { connectorInstanceId, limit: req.query.limit, risk, stream },
           { connectorInstanceStore: ctx.createRequestConnectorInstanceStore() }
         );
         res.json(envelope);

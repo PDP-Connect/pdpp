@@ -119,7 +119,7 @@ function readBlockScalar(lines: string[], startIdx: number, marker: string): Blo
     const next = lines[i] ?? "";
     if (CLAUDE_FM_INDENT_RE.test(next) || next === "") {
       collected.push(next.replace(CLAUDE_FM_LEADING_WS_RE, ""));
-      i++;
+      i += 1;
     } else {
       break;
     }
@@ -151,12 +151,12 @@ export function parseFrontmatter(text: string): ParsedFrontmatter {
   while (i < lines.length) {
     const line = lines[i] ?? "";
     if (!line.trim() || CLAUDE_FM_COMMENT_RE.test(line)) {
-      i++;
+      i += 1;
       continue;
     }
     const kv = CLAUDE_FM_LINE_RE.exec(line);
     if (!kv) {
-      i++;
+      i += 1;
       continue;
     }
     const key = kv[1] ?? "";
@@ -167,7 +167,7 @@ export function parseFrontmatter(text: string): ParsedFrontmatter {
       i = nextIndex;
     } else {
       frontmatter[key] = stripQuotes(rawValue);
-      i++;
+      i += 1;
     }
   }
   return { frontmatter, body };

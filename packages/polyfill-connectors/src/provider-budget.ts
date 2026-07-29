@@ -1,9 +1,9 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { type PacingOptions, type PacingSnapshot, ProviderPacing, type ThrottleSignal } from "./provider-pacing.js";
-import { RunBudget, type RunBudgetOptions, type RunBudgetTrip } from "./run-budget.js";
-import type { SendDelayHint } from "./send-governor.js";
+import { type PacingOptions, type PacingSnapshot, ProviderPacing, type ThrottleSignal } from "./provider-pacing.ts";
+import { RunBudget, type RunBudgetOptions, type RunBudgetTrip } from "./run-budget.ts";
+import type { SendDelayHint } from "./send-governor.ts";
 
 export type ProviderBudgetDeferReason = RunBudgetTrip | "circuit_open" | "retry_budget";
 
@@ -128,7 +128,7 @@ export class CircuitBreaker {
     if (this._state !== "open") {
       return { ok: true };
     }
-    const elapsedOpenMs = this.openedAt == null ? 0 : Math.max(0, this.now() - this.openedAt);
+    const elapsedOpenMs = this.openedAt === null ? 0 : Math.max(0, this.now() - this.openedAt);
     if (elapsedOpenMs >= this.resetTimeoutMs) {
       this._state = "half_open";
       return { ok: true };
@@ -184,7 +184,7 @@ export class CircuitBreaker {
    * exhaustion ("stop"). PURE: reads only, never advances state.
    */
   remainingCooldownMs(): number {
-    if (this._state !== "open" || this.openedAt == null) {
+    if (this._state !== "open" || this.openedAt === null) {
       return 0;
     }
     const elapsedOpenMs = Math.max(0, this.now() - this.openedAt);
@@ -473,7 +473,7 @@ function providerBudgetTransitionReason(
 }
 
 function resolveCircuitBreaker(value: ProviderBudgetOptions["circuitBreaker"]): CircuitBreaker | null {
-  if (value === false || value == null) {
+  if (value === false || value === undefined) {
     return null;
   }
   if (value instanceof CircuitBreaker) {
@@ -483,7 +483,7 @@ function resolveCircuitBreaker(value: ProviderBudgetOptions["circuitBreaker"]): 
 }
 
 function resolveProviderPacing(value: ProviderBudgetOptions["pacing"]): ProviderPacing | null {
-  if (value === false || value == null) {
+  if (value === false || value === undefined) {
     return null;
   }
   if (value instanceof ProviderPacing) {
@@ -493,7 +493,7 @@ function resolveProviderPacing(value: ProviderBudgetOptions["pacing"]): Provider
 }
 
 function resolveRetryBudget(value: ProviderBudgetOptions["retryBudget"]): RetryBudget | null {
-  if (value === false || value == null) {
+  if (value === false || value === undefined) {
     return null;
   }
   if (value instanceof RetryBudget) {
@@ -503,7 +503,7 @@ function resolveRetryBudget(value: ProviderBudgetOptions["retryBudget"]): RetryB
 }
 
 function resolveRunBudget(value: ProviderBudgetOptions["runBudget"]): RunBudget | null {
-  if (value === false || value == null) {
+  if (value === false || value === undefined) {
     return null;
   }
   if (value instanceof RunBudget) {

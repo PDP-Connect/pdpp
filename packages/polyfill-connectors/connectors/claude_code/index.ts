@@ -340,15 +340,14 @@ export interface ProcessJsonlLineArgs {
  *   - No uuid → no record (uuid is the emitted record id).
  */
 export async function processJsonlLine({ buildOnly, deps, obj, obs }: ProcessJsonlLineArgs): Promise<void> {
-  const sessionId = obs.sessionId;
+  const { sessionId } = obs;
   if (!sessionId) {
     return;
   }
-  const uuid = obj.uuid;
-  const type = obj.type;
+  const { uuid, type } = obj;
 
   if (isMessageType(type)) {
-    obs.messageCount++;
+    obs.messageCount += 1;
     if (!buildOnly && deps.requested.has("messages") && uuid) {
       await deps.emitRecord("messages", buildMessageRecord(obj, sessionId, uuid));
     }
@@ -557,7 +556,7 @@ function updateSessionAccumulator(
   projectDir: string,
   obs: JsonlObservations
 ): void {
-  const sessionId = obs.sessionId;
+  const { sessionId } = obs;
   if (!sessionId) {
     return;
   }
@@ -595,7 +594,7 @@ async function parseJsonlFile(args: ParseJsonlFileArgs): Promise<string | null> 
   let lineCount = 0;
 
   for await (const obj of iterJsonlLines(path)) {
-    lineCount++;
+    lineCount += 1;
     if (!buildOnly && lineCount % LINE_PROGRESS_INTERVAL === 0) {
       await emit({
         type: "PROGRESS",
@@ -1190,16 +1189,16 @@ function observeLocalJsonlScan(telemetry: LocalJsonlTelemetry, result: LocalJson
   telemetry.tailBytesParsed += result.tail_bytes_parsed;
   switch (result.decision.kind) {
     case "append":
-      telemetry.appendFiles++;
+      telemetry.appendFiles += 1;
       break;
     case "fast_skip":
-      telemetry.fastSkipFiles++;
+      telemetry.fastSkipFiles += 1;
       break;
     case "rebuild":
-      telemetry.rebuildFiles++;
+      telemetry.rebuildFiles += 1;
       break;
     case "verified_noop":
-      telemetry.verifiedNoopFiles++;
+      telemetry.verifiedNoopFiles += 1;
       break;
     default:
       break;
@@ -1332,7 +1331,7 @@ async function scanChildSource(input: {
         buildOnly: !input.emitRecords,
         deps: {
           emitRecord: async (stream, data) => {
-            input.telemetry.transcriptRecordsEmitted++;
+            input.telemetry.transcriptRecordsEmitted += 1;
             await input.emitRecord(stream, data);
           },
           requested: input.requested,
@@ -1470,7 +1469,10 @@ async function emitLocalInventoryStreams(input: {
   state: ClaudeCodeState;
 }): Promise<void> {
   for (const [stream, records] of input.inventory.recordsByStream) {
-    if (!input.requested.has(stream)) {
+    // file_history has both the store-root inventory record and its directory
+    // entries. They must share one fingerprint cursor and one STATE write;
+    // separate gated passes would prune one half of the other pass's cursor.
+    if (stream === "file_history" || !input.requested.has(stream)) {
       continue;
     }
     await emitGatedInventoryStream({
@@ -1482,7 +1484,7 @@ async function emitLocalInventoryStreams(input: {
     });
   }
   if (input.requested.has("file_history")) {
-    const records = await listDirectoryInventory({
+    const entries = await listDirectoryInventory({
       tool: "claude_code",
       sourceHome: input.claudeHome,
       relativeRoot: "file-history",
@@ -1494,7 +1496,7 @@ async function emitLocalInventoryStreams(input: {
       emit: input.emit,
       emitRecord: input.emitRecord,
       priorState: input.state.file_history,
-      records,
+      records: [...(input.inventory.recordsByStream.get("file_history") ?? []), ...entries],
       stream: "file_history",
     });
   }
@@ -1748,7 +1750,7 @@ if (isMainModule(import.meta.url)) {
             }
           }
           if (rebuildAll) {
-            telemetry.sessionRebuildAll++;
+            telemetry.sessionRebuildAll += 1;
           }
           await emitChangedSessions({
             emitRecord,

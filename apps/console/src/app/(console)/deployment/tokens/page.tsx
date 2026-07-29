@@ -81,7 +81,7 @@ function OwnerAgentOnboardingCard({ entrypoint }: { entrypoint: string }) {
             pasted into chat or copied out of the dashboard.
           </p>
         </div>
-        <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href="/deployment">
+        <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href="/deployment">
           Review deployment metadata
         </Link>
       </div>
@@ -191,9 +191,9 @@ function Transcript({ flow }: { flow: FlowState }) {
   const approve = JSON.stringify({ user_code: flow.userCode }, null, 2);
   const exchange = JSON.stringify(
     {
-      grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-      device_code: flow.deviceCode,
       client_id: flow.clientId,
+      device_code: flow.deviceCode,
+      grant_type: "urn:ietf:params:oauth:grant-type:device_code",
     },
     null,
     2
@@ -491,7 +491,7 @@ export default async function DeploymentTokensPage({ searchParams }: { searchPar
   const tokenDetailsByClient = new Map<string, OwnerClientToken[]>();
   try {
     const resp = await listOwnerIssuedClients();
-    tokens = resp.data ?? [];
+    tokens = resp.data;
     // Only clients with more than one active token get a per-token drilldown;
     // a single-token client is fully described by its row.
     const multiTokenClients = tokens.filter((t) => t.active_token_count > 1);
@@ -499,7 +499,7 @@ export default async function DeploymentTokensPage({ searchParams }: { searchPar
       multiTokenClients.map(async (client) => {
         try {
           const detail = await listOwnerClientTokens(client.client_id);
-          tokenDetailsByClient.set(client.client_id, detail.data ?? []);
+          tokenDetailsByClient.set(client.client_id, detail.data);
         } catch {
           // A per-client drilldown failure must not break the whole page; the
           // row still renders its aggregate count without the expansion.
@@ -522,11 +522,11 @@ export default async function DeploymentTokensPage({ searchParams }: { searchPar
     <RecordroomShellWithPalette>
       <PageHeader
         actions={
-          <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href="/deployment">
+          <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href="/deployment">
             Deployment overview
           </Link>
         }
-        breadcrumbs={[{ label: "Deployment", href: "/deployment" }, { label: "Tokens" }]}
+        breadcrumbs={[{ href: "/deployment", label: "Deployment" }, { label: "Tokens" }]}
         description="Set up trusted local owner automation without pasting bearer material. Manual owner bearers stay available below for debugging."
         title="Owner-agent access"
       />
@@ -545,6 +545,7 @@ export default async function DeploymentTokensPage({ searchParams }: { searchPar
       <IssueCard flow={flow} />
 
       <TokensListSection
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
         highlightClientId={flow?.clientId ?? null}
         tokenDetailsByClient={tokenDetailsByClient}
         tokens={tokens}

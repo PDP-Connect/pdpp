@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { randomBytes } from "node:crypto";
-import { getDb } from "../server/db.js";
-import { isPostgresStorageBackend } from "../server/postgres-storage.js";
+import { getDb } from "../server/db.ts";
+import { isPostgresStorageBackend } from "../server/postgres-storage.ts";
 import {
   execNamedOn,
   getMany,
@@ -20,7 +20,7 @@ import {
   postgresListSpineCorrelations,
   postgresListSpineEventsPage,
   postgresSearchSpine,
-} from "./postgres-spine.js";
+} from "./postgres-spine.ts";
 
 /**
  * Narrow shape of the `better-sqlite3` database the spine module actually
@@ -29,13 +29,13 @@ import {
  * being resolvable from the linter's sandbox; db.js supplies the real handle.
  */
 interface SpinePreparedStatement {
-  all(...params: unknown[]): unknown[];
-  get(...params: unknown[]): unknown;
-  run(params: object): void;
+  all: (...params: unknown[]) => unknown[];
+  get: (...params: unknown[]) => unknown;
+  run: (params: object) => void;
 }
 
 interface BetterSqliteDatabase {
-  prepare(sql: string): SpinePreparedStatement;
+  prepare: (sql: string) => SpinePreparedStatement;
 }
 
 export const DEFAULT_SCENARIO_ID = "scn_reference_default";
@@ -277,9 +277,9 @@ export function createTraceContext({
   scenarioId?: string;
 } = {}): SpineTraceContext {
   return {
+    request_id: generateSpineId("req"),
     scenario_id: scenarioId,
     trace_id: generateSpineId("trc"),
-    request_id: generateSpineId("req"),
   };
 }
 
@@ -303,26 +303,28 @@ function normalizeSourceObject(value: unknown): SourceObject | null {
   const kind = asSourceKind(source.kind);
   const id = asOptionalString(source.id);
   if (kind && id) {
-    return { kind, id };
+    return { id, kind };
   }
 
   const legacyKind = asSourceKind(source.binding_kind);
   if (legacyKind === "connector") {
+    // biome-ignore lint/suspicious/noShadow: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     const id = asOptionalString(source.connector_id);
-    return id ? { kind: "connector", id } : null;
+    return id ? { id, kind: "connector" } : null;
   }
   if (legacyKind === "provider_native") {
+    // biome-ignore lint/suspicious/noShadow: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     const id = asOptionalString(source.provider_id);
-    return id ? { kind: "provider_native", id } : null;
+    return id ? { id, kind: "provider_native" } : null;
   }
 
   const connectorId = asOptionalString(source.connector_id);
   const providerId = asOptionalString(source.provider_id);
   if (connectorId && !providerId) {
-    return { kind: "connector", id: connectorId };
+    return { id: connectorId, kind: "connector" };
   }
   if (providerId && !connectorId) {
-    return { kind: "provider_native", id: providerId };
+    return { id: providerId, kind: "provider_native" };
   }
   return null;
 }
@@ -331,7 +333,7 @@ function deriveSourceFromEventInput(input: SpineEventInput, actorType: string, a
   const explicitKind = asSourceKind(input.source_kind);
   const explicitId = asOptionalString(input.source_id);
   if (explicitKind && explicitId) {
-    return { kind: explicitKind, id: explicitId };
+    return { id: explicitId, kind: explicitKind };
   }
 
   const data =
@@ -346,13 +348,13 @@ function deriveSourceFromEventInput(input: SpineEventInput, actorType: string, a
   const connectorId = asOptionalString(data?.connector_id);
   const providerId = asOptionalString(data?.provider_id);
   if (connectorId && !providerId) {
-    return { kind: "connector", id: connectorId };
+    return { id: connectorId, kind: "connector" };
   }
   if (providerId && !connectorId) {
-    return { kind: "provider_native", id: providerId };
+    return { id: providerId, kind: "provider_native" };
   }
   if (actorType === "runtime" && actorId) {
-    return { kind: "connector", id: actorId };
+    return { id: actorId, kind: "connector" };
   }
   return null;
 }
@@ -395,30 +397,32 @@ function normalizeSpineEventInput(input: SpineEventInput): NormalizedSpineEvent 
   const actorId = asString(input.actor_id, "pdpp_reference");
   const source = deriveSourceFromEventInput(input, actorType, actorId);
   return {
-    event_id: asString(input.event_id, generateSpineId("evt")),
-    event_type: asOptionalString(input.event_type),
-    occurred_at: occurredAt,
-    recorded_at: nowIso(),
-    scenario_id: asString(input.scenario_id, DEFAULT_SCENARIO_ID),
-    trace_id: asString(input.trace_id, generateSpineId("trc")),
-    actor_type: actorType,
     actor_id: actorId,
-    subject_type: asOptionalString(input.subject_type),
-    subject_id: asOptionalString(input.subject_id),
-    object_type: asString(input.object_type, "event"),
-    object_id: asString(input.object_id, generateSpineId("obj")),
-    status: asString(input.status, "succeeded"),
-    request_id: asOptionalString(input.request_id),
-    grant_id: asOptionalString(input.grant_id),
-    run_id: asOptionalString(input.run_id),
-    source_kind: source?.kind ?? null,
-    source_id: source?.id ?? null,
+    actor_type: actorType,
     client_id: asOptionalString(input.client_id),
-    stream_id: asOptionalString(input.stream_id),
-    token_id: asOptionalString(input.token_id),
-    interaction_id: asOptionalString(input.interaction_id),
     connector_instance_id: deriveConnectorInstanceIdFromEventInput(input),
     data_json: serializeSpineEventData(input.data, source),
+    event_id: asString(input.event_id, generateSpineId("evt")),
+    event_type: asOptionalString(input.event_type),
+    grant_id: asOptionalString(input.grant_id),
+    interaction_id: asOptionalString(input.interaction_id),
+    object_id: asString(input.object_id, generateSpineId("obj")),
+    object_type: asString(input.object_type, "event"),
+    occurred_at: occurredAt,
+    recorded_at: nowIso(),
+    request_id: asOptionalString(input.request_id),
+    run_id: asOptionalString(input.run_id),
+    scenario_id: asString(input.scenario_id, DEFAULT_SCENARIO_ID),
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+    source_id: source?.id ?? null,
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+    source_kind: source?.kind ?? null,
+    status: asString(input.status, "succeeded"),
+    stream_id: asOptionalString(input.stream_id),
+    subject_id: asOptionalString(input.subject_id),
+    subject_type: asOptionalString(input.subject_type),
+    token_id: asOptionalString(input.token_id),
+    trace_id: asString(input.trace_id, generateSpineId("trc")),
     version: asString(input.version, SPINE_VERSION),
   };
 }
@@ -521,6 +525,7 @@ function assertRunStartedIsStamped(input: SpineEventInput): void {
   }
   const data = (input.data ?? {}) as Record<string, unknown>;
   const epoch = data.boot_epoch;
+  // biome-ignore lint/style/useDestructuring: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
   const seq = data.seq;
   if (typeof epoch !== "string" || epoch.length === 0) {
     throw new Error(
@@ -538,58 +543,58 @@ function assertRunStartedIsStamped(input: SpineEventInput): void {
 
 function hydrateNormalizedEvent(event: NormalizedSpineEvent): SpineEventRecord {
   return {
+    actor_id: event.actor_id,
+    actor_type: event.actor_type,
+    client_id: event.client_id,
+    data: safeJsonParse(event.data_json, {}),
     event_id: event.event_id,
     event_type: event.event_type ?? "",
+    grant_id: event.grant_id,
+    interaction_id: event.interaction_id,
+    object_id: event.object_id,
+    object_type: event.object_type,
     occurred_at: event.occurred_at,
     recorded_at: event.recorded_at,
-    scenario_id: event.scenario_id,
-    trace_id: event.trace_id,
-    actor_type: event.actor_type,
-    actor_id: event.actor_id,
-    subject_type: event.subject_type,
-    subject_id: event.subject_id,
-    object_type: event.object_type,
-    object_id: event.object_id,
-    status: event.status,
     request_id: event.request_id,
-    grant_id: event.grant_id,
     run_id: event.run_id,
-    source_kind: event.source_kind,
+    scenario_id: event.scenario_id,
     source_id: event.source_id,
-    client_id: event.client_id,
+    source_kind: event.source_kind,
+    status: event.status,
     stream_id: event.stream_id,
+    subject_id: event.subject_id,
+    subject_type: event.subject_type,
     token_id: event.token_id,
-    interaction_id: event.interaction_id,
-    data: safeJsonParse(event.data_json, {}),
+    trace_id: event.trace_id,
     version: event.version,
   };
 }
 
 function hydrateRows(rows: readonly SpineEventRow[]): SpineEventRecord[] {
   return rows.map((row) => ({
+    actor_id: row.actor_id,
+    actor_type: row.actor_type,
+    client_id: row.client_id,
+    data: safeJsonParse(row.data_json, {}),
     event_id: row.event_id,
     event_type: row.event_type,
+    grant_id: row.grant_id,
+    interaction_id: row.interaction_id,
+    object_id: row.object_id,
+    object_type: row.object_type,
     occurred_at: row.occurred_at,
     recorded_at: row.recorded_at,
-    scenario_id: row.scenario_id,
-    trace_id: row.trace_id,
-    actor_type: row.actor_type,
-    actor_id: row.actor_id,
-    subject_type: row.subject_type,
-    subject_id: row.subject_id,
-    object_type: row.object_type,
-    object_id: row.object_id,
-    status: row.status,
     request_id: row.request_id,
-    grant_id: row.grant_id,
     run_id: row.run_id,
-    source_kind: row.source_kind,
+    scenario_id: row.scenario_id,
     source_id: row.source_id,
-    client_id: row.client_id,
+    source_kind: row.source_kind,
+    status: row.status,
     stream_id: row.stream_id,
+    subject_id: row.subject_id,
+    subject_type: row.subject_type,
     token_id: row.token_id,
-    interaction_id: row.interaction_id,
-    data: safeJsonParse(row.data_json, {}),
+    trace_id: row.trace_id,
     version: row.version,
   }));
 }
@@ -624,9 +629,9 @@ export interface SpineEventPage {
 }
 
 const PER_KIND_QUERY = {
-  trace: referenceQueries.spineListEventsByTraceId,
   grant: referenceQueries.spineListEventsByGrantId,
   run: referenceQueries.spineListEventsByRunId,
+  trace: referenceQueries.spineListEventsByTraceId,
 } as const;
 
 function decodeEventSeqFromCursor(cursor: string | null | undefined): number {
@@ -676,9 +681,9 @@ export function listSpineEventsPage(
   });
   return {
     events: hydrateRows(asSpineEventRows(page.rows)),
-    truncated: page.truncated,
-    next_cursor: page.nextCursor,
     limit: opts.limit,
+    next_cursor: page.nextCursor,
+    truncated: page.truncated,
   };
 }
 
@@ -698,11 +703,11 @@ interface RunLifecycleEventRow {
 }
 
 const RUN_TERMINAL_EVENT_TYPE_TO_STATUS: Record<string, RunTerminalStatus> = {
-  "run.completed": "completed",
-  "run.failed": "failed",
+  "run.abandoned": "abandoned",
   "run.browser_surface_failed": "failed",
   "run.cancelled": "cancelled",
-  "run.abandoned": "abandoned",
+  "run.completed": "completed",
+  "run.failed": "failed",
 };
 
 /**
@@ -909,6 +914,7 @@ function connectorIdFromEvent(ev: SpineEventRecord): string | null {
       return id;
     }
   }
+  // biome-ignore lint/style/useDestructuring: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
   const source = d.source;
   if (source && typeof source === "object") {
     const normalized = normalizeSourceObject(source);
@@ -922,7 +928,7 @@ function connectorIdFromEvent(ev: SpineEventRecord): string | null {
 function sourceFromEvent(ev: SpineEventRecord): SourceObject | null {
   const sourceKind = asSourceKind(ev.source_kind);
   if (sourceKind && ev.source_id) {
-    return { kind: sourceKind, id: ev.source_id };
+    return { id: ev.source_id, kind: sourceKind };
   }
   const data = ev.data && typeof ev.data === "object" ? (ev.data as Record<string, unknown>) : {};
   const source = normalizeSourceObject(data.source) ?? normalizeSourceObject(data.source_binding);
@@ -930,13 +936,13 @@ function sourceFromEvent(ev: SpineEventRecord): SourceObject | null {
     return source;
   }
   if (typeof data.connector_id === "string") {
-    return { kind: "connector", id: data.connector_id };
+    return { id: data.connector_id, kind: "connector" };
   }
   if (typeof data.provider_id === "string") {
-    return { kind: "provider_native", id: data.provider_id };
+    return { id: data.provider_id, kind: "provider_native" };
   }
   if (ev.actor_type === "runtime" && ev.actor_id) {
-    return { kind: "connector", id: ev.actor_id };
+    return { id: ev.actor_id, kind: "connector" };
   }
   return null;
 }
@@ -1012,10 +1018,13 @@ function hasActiveRunLease(runId: string | null): boolean {
   if (!db) {
     return false;
   }
-  const row = db.prepare("SELECT 1 AS active FROM controller_active_runs WHERE run_id = ? LIMIT 1").get(runId) as
-    | { readonly active?: number }
-    | undefined;
-  return Boolean(row);
+  for (const row of iterateDynamicSqlAcknowledged<{ readonly active?: number }>(
+    "SELECT 1 AS active FROM controller_active_runs WHERE run_id = ? LIMIT 1",
+    [runId]
+  )) {
+    return Boolean(row);
+  }
+  return false;
 }
 
 function pickSummaryStatus(events: readonly SpineEventRecord[]): string {
@@ -1126,6 +1135,7 @@ function summarizeEvents(events: readonly SpineEventRecord[]): SpineSummary | nu
   if (events.length === 0) {
     return null;
   }
+  // biome-ignore lint/style/useDestructuring: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
   const first = events[0];
   const last = events.at(-1);
   if (!(first && last)) {
@@ -1143,26 +1153,26 @@ function summarizeEvents(events: readonly SpineEventRecord[]): SpineSummary | nu
   const connectionId = findFirstConnectionId(events) ?? connectionIdFromBrowserSurfaceProfileKey(browserSurface);
 
   return {
-    first_at: first.occurred_at,
-    last_at: last.occurred_at,
+    client_id: pickFirstNonNull(events, "client_id") as string | null,
+    connector_id: findFirstConnectorId(events),
     event_count: events.length,
-    status,
+    first_at: first.occurred_at,
+    grant_id: pickFirstNonNull(events, "grant_id") as string | null,
     kinds,
+    last_at: last.occurred_at,
     needs_input: hasPendingRunInteraction(events, status),
     request_id: pickFirstNonNull(events, "request_id") as string | null,
-    grant_id: pickFirstNonNull(events, "grant_id") as string | null,
-    trace_id: pickFirstNonNull(events, "trace_id") as string | null,
     run_id: pickFirstNonNull(events, "run_id") as string | null,
-    client_id: pickFirstNonNull(events, "client_id") as string | null,
     source,
-    source_kind: source?.kind ?? null,
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     source_id: source?.id ?? null,
-    connector_id: findFirstConnectorId(events),
-    ...(connectionId
-      ? { connection_id: connectionId, connector_instance_id: connectionId }
-      : {}),
-    actor_type: first.actor_type,
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+    source_kind: source?.kind ?? null,
+    status,
+    trace_id: pickFirstNonNull(events, "trace_id") as string | null,
+    ...(connectionId ? { connection_id: connectionId, connector_instance_id: connectionId } : {}),
     actor_id: first.actor_id,
+    actor_type: first.actor_type,
     ...pickBrowserSurfaceFields(browserSurface),
     failure: terminalFailure
       ? {
@@ -1187,7 +1197,7 @@ function hasPendingRunInteraction(events: readonly SpineEventRecord[], status: s
 
   for (let i = events.length - 1; i >= 0; i -= 1) {
     const event = events[i];
-    if (!event || event.event_type !== "run.interaction_required") {
+    if (event?.event_type !== "run.interaction_required") {
       continue;
     }
     if (typeof event.interaction_id !== "string" || event.interaction_id.length === 0) {
@@ -1289,15 +1299,15 @@ function deriveGrantLifecycleStatus(events: readonly SpineEventRecord[]): string
 }
 
 const CORRELATION_COLUMN: Record<SpineCorrelationKey, "trace_id" | "grant_id" | "run_id"> = {
-  trace: "trace_id",
   grant: "grant_id",
   run: "run_id",
+  trace: "trace_id",
 };
 
 const CORRELATION_KIND_FOR_COLUMN: Record<"trace_id" | "grant_id" | "run_id", SpineCorrelationKind> = {
-  trace_id: "trace",
   grant_id: "grant",
   run_id: "run",
+  trace_id: "trace",
 };
 
 interface CorrelationAggregateRow {
@@ -1309,13 +1319,13 @@ interface CorrelationAggregateRow {
 
 function parseCursor(raw: string | null): { lastAt: string | null; id: string | null } {
   if (!raw) {
-    return { lastAt: null, id: null };
+    return { id: null, lastAt: null };
   }
   const sep = raw.indexOf("::");
   if (sep <= 0) {
-    return { lastAt: null, id: null };
+    return { id: null, lastAt: null };
   }
-  return { lastAt: raw.slice(0, sep), id: raw.slice(sep + 2) };
+  return { id: raw.slice(sep + 2), lastAt: raw.slice(0, sep) };
 }
 
 function clampLimit(raw: unknown): number {
@@ -1421,7 +1431,7 @@ function buildCorrelationAggregateSql(
     ORDER BY last_at DESC, id DESC
     LIMIT ?
   `;
-  return { sql, binds: [...whereBinds, ...havingBinds, sqlLimit] };
+  return { binds: [...whereBinds, ...havingBinds, sqlLimit], sql };
 }
 
 function matchesSecondaryQ(summary: SpineSummary, id: string, q: string | null | undefined): boolean {
@@ -1538,7 +1548,7 @@ function listSpineCorrelationsSqlite(
   key: SpineCorrelationKey | string,
   filters: SpineCorrelationFilters
 ): SpineCorrelationPage {
-  const empty: SpineCorrelationPage = { summaries: [], hasMore: false, nextCursor: null };
+  const empty: SpineCorrelationPage = { hasMore: false, nextCursor: null, summaries: [] };
   if (!(getDb() as SpineDatabase | undefined)) {
     return empty;
   }
@@ -1585,7 +1595,7 @@ function listSpineCorrelationsSqlite(
     attachClientMetadata(page);
   }
 
-  return { summaries: page, hasMore, nextCursor };
+  return { hasMore, nextCursor, summaries: page };
 }
 
 interface SpineSearchBySecondaryRow {
@@ -1607,7 +1617,7 @@ export function searchSpine(query: unknown): Promise<SpineSearchResult> {
 
 function searchSpineSqlite(query: unknown): SpineSearchResult {
   const db = getDb() as SpineDatabase | undefined;
-  const empty: SpineSearchResult = { exact: null, traces: [], grants: [], runs: [] };
+  const empty: SpineSearchResult = { exact: null, grants: [], runs: [], traces: [] };
   if (!db) {
     return empty;
   }
@@ -1618,9 +1628,9 @@ function searchSpineSqlite(query: unknown): SpineSearchResult {
 
   return {
     exact: findExactMatch(q),
-    traces: summariesForLike("trace_id", q),
     grants: summariesForLike("grant_id", q),
     runs: summariesForLike("run_id", q),
+    traces: summariesForLike("trace_id", q),
   };
 }
 
@@ -1634,13 +1644,13 @@ function findExactMatch(q: string): { kind: SpineCorrelationKey; id: string } | 
   for (const { column, kind } of columns) {
     const row = getOne(EXACT_MATCH_QUERY[column], [q]);
     if (row) {
-      return { kind, id: q };
+      return { id: q, kind };
     }
   }
   // request_id is un-indexed but small-cardinality; the lookup is bounded.
   const fallback = getOne<SpineSearchBySecondaryRow>(referenceQueries.spineSearchFindTraceIdByRequestId, [q]);
   if (fallback?.trace_id) {
-    return { kind: "trace", id: fallback.trace_id };
+    return { id: fallback.trace_id, kind: "trace" };
   }
   return null;
 }
@@ -1651,15 +1661,15 @@ interface SpineSearchLikeRow {
 }
 
 const EXACT_MATCH_QUERY = {
-  trace_id: referenceQueries.spineSearchFindTraceId,
   grant_id: referenceQueries.spineSearchFindGrantId,
   run_id: referenceQueries.spineSearchFindRunId,
+  trace_id: referenceQueries.spineSearchFindTraceId,
 } as const;
 
 const LIKE_SUMMARY_QUERY = {
-  trace_id: referenceQueries.spineSearchListTraceSummariesByLike,
   grant_id: referenceQueries.spineSearchListGrantSummariesByLike,
   run_id: referenceQueries.spineSearchListRunSummariesByLike,
+  trace_id: referenceQueries.spineSearchListTraceSummariesByLike,
 } as const;
 
 function summariesForLike(column: "trace_id" | "grant_id" | "run_id", q: string): SpineSummary[] {

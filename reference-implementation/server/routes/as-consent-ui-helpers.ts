@@ -18,8 +18,8 @@
 // Hosted-UI rendering surface (injected to avoid importing .js directly).
 
 export interface ConsentUiRenderer {
-  escapeHtml(input: unknown): string;
-  renderActionRow(
+  escapeHtml: (input: unknown) => string;
+  renderActionRow: (
     actions: Array<{
       label: string;
       variant: string;
@@ -27,32 +27,35 @@ export interface ConsentUiRenderer {
       action: string;
       hidden: Array<{ name: string; value: string }>;
     }>
-  ): string;
-  renderHostedDocument(opts: { title: string; providerName: string; body: string }): string;
-  renderKeyValueList(items: Array<{ label: string; value?: unknown; html?: string }>): string;
-  renderPageIntro(opts: { eyebrow: string; title: string; lede?: string }): string;
-  renderResultState(opts: { tone: string; title: string; body: string }): string;
-  renderSurface(opts: { surface?: string; ariaLabel?: string; children: string }): string;
+  ) => string;
+  renderHostedDocument: (opts: { title: string; providerName: string; body: string }) => string;
+  renderKeyValueList: (items: Array<{ label: string; value?: unknown; html?: string }>) => string;
+  renderPageIntro: (opts: { eyebrow: string; title: string; lede?: string }) => string;
+  renderResultState: (opts: { tone: string; title: string; body: string }) => string;
+  renderSurface: (opts: { surface?: string; ariaLabel?: string; children: string }) => string;
 }
 
 // Picker data capabilities (injected; async store reads).
 
 export interface ConsentPickerCapabilities {
-  canonicalConnectorKey(connectorId: string): string | null;
-  encodeHostedMcpSelection(opts: { connectorId: string; connectionId: string | null }): string;
-  encodeHostedMcpStreamSelection(opts: {
+  canonicalConnectorKey: (connectorId: string) => string | null;
+  encodeHostedMcpSelection: (opts: { connectorId: string; connectionId: string | null }) => string;
+  encodeHostedMcpStreamSelection: (opts: {
     connectorId: string;
     connectionId: string | null;
     streamName: string;
-  }): string;
-  getConnectorManifest(connectorId: string): Promise<ConsentPickerManifest | null>;
-  hostedMcpSourceKey(opts: { connectorId: string; connectionId: string | null }): string;
-  isInternalConnectorId(connectorId: string): boolean;
-  listActiveBindingsForGrant(opts: { ownerSubjectId: string; connectorId: string }): Promise<ConsentPickerBinding[]>;
-  listRegisteredConnectorIds(): Promise<string[]>;
-  projectBindingForWire(
+  }) => string;
+  getConnectorManifest: (connectorId: string) => Promise<ConsentPickerManifest | null>;
+  hostedMcpSourceKey: (opts: { connectorId: string; connectionId: string | null }) => string;
+  isInternalConnectorId: (connectorId: string) => boolean;
+  listActiveBindingsForGrant: (opts: {
+    ownerSubjectId: string;
+    connectorId: string;
+  }) => Promise<ConsentPickerBinding[]>;
+  listRegisteredConnectorIds: () => Promise<string[]>;
+  projectBindingForWire: (
     conn: ConsentPickerBinding
-  ): { display_name?: string | null; connection_id?: string | null } | null;
+  ) => { display_name?: string | null; connection_id?: string | null } | null;
 }
 
 export interface ConsentPickerManifest {
@@ -99,7 +102,7 @@ export function parseAuthorizeAuthorizationDetails(
   query: Record<string, unknown> | null | undefined
 ): unknown[] | null {
   const raw = query?.authorization_details;
-  if (raw == null || raw === "") {
+  if (raw === null || raw === undefined || raw === "") {
     return null;
   }
   if (Array.isArray(raw)) {
@@ -210,7 +213,7 @@ export function requireRegisteredRedirectUri(
   redirectUri: string
 ): void {
   const redirectUris =
-    client?.metadata != null && Array.isArray(client.metadata.redirect_uris)
+    client?.metadata !== null && client?.metadata !== undefined && Array.isArray(client.metadata.redirect_uris)
       ? (client.metadata.redirect_uris as string[])
       : [];
   if (!redirectUris.some((registeredUri) => redirectUriMatchesRegisteredUri(registeredUri, redirectUri))) {
@@ -256,12 +259,12 @@ export function validateAuthorizePkce({ responseType, codeChallenge, codeChallen
 export function buildHostedMcpAuthorizationDetailsForConnector(connectorId: string): unknown[] {
   return [
     {
-      type: "https://pdpp.org/data-access",
-      source: { kind: "connector", id: connectorId },
+      access_mode: "continuous",
       purpose_code: "https://pdpp.org/purpose/personal_ai_assistant",
       purpose_description: "Allow this MCP client to read selected personal data through PDPP.",
-      access_mode: "continuous",
+      source: { id: connectorId, kind: "connector" },
       streams: [{ name: "*" }],
+      type: "https://pdpp.org/data-access",
     },
   ];
 }
@@ -299,7 +302,7 @@ export function buildHostedMcpAuthorizationDetailForConnector(
 } {
   const pinnedConnectionId = typeof connectionId === "string" && connectionId.trim() ? connectionId.trim() : null;
   const withPin = (name: string): { name: string; connection_id?: string } =>
-    pinnedConnectionId ? { name, connection_id: pinnedConnectionId } : { name };
+    pinnedConnectionId ? { connection_id: pinnedConnectionId, name } : { name };
   let streams: Array<{ name: string; connection_id?: string }>;
   if (Array.isArray(streamNames) && streamNames.length > 0) {
     streams = streamNames.map((name) => withPin(name));
@@ -310,12 +313,12 @@ export function buildHostedMcpAuthorizationDetailForConnector(
     ? (accessMode as string)
     : HOSTED_MCP_PICKER_DEFAULT_ACCESS_MODE;
   return {
-    type: "https://pdpp.org/data-access",
-    source: { kind: "connector", id: connectorId },
+    access_mode: resolvedAccessMode,
     purpose_code: HOSTED_MCP_PICKER_PURPOSE_CODE,
     purpose_description: HOSTED_MCP_PICKER_PURPOSE_DESCRIPTION,
-    access_mode: resolvedAccessMode,
+    source: { id: connectorId, kind: "connector" },
     streams,
+    type: "https://pdpp.org/data-access",
   };
 }
 
@@ -340,24 +343,24 @@ async function buildConnectorPickerRows(
   const manifestStreams = Array.isArray(manifest.streams) ? manifest.streams : [];
   const streamCount = manifestStreams.length;
   const streamSummaries = manifestStreams.map((stream) => ({
-    name: stream.name,
     description: typeof stream.description === "string" ? stream.description : null,
+    name: stream.name,
   }));
-  const connections = await caps.listActiveBindingsForGrant({ ownerSubjectId, connectorId }).catch(() => []);
+  const connections = await caps.listActiveBindingsForGrant({ connectorId, ownerSubjectId }).catch(() => []);
   if (connections.length === 0) {
     return [
       {
-        formValue: caps.encodeHostedMcpSelection({ connectorId, connectionId: null }),
-        connectorId,
         connectionId: null,
-        connectorTypeLabel: connectorLabel,
         connectionName: null,
+        connectorId,
+        connectorTypeLabel: connectorLabel,
+        formValue: caps.encodeHostedMcpSelection({ connectionId: null, connectorId }),
         meta: buildPickerRowMeta({
-          connectorLabel,
           connectorKey: connectorMetaToken,
+          connectorLabel,
           streamCount,
         }),
-        sourceKey: caps.hostedMcpSourceKey({ connectorId, connectionId: null }),
+        sourceKey: caps.hostedMcpSourceKey({ connectionId: null, connectorId }),
         streams: streamSummaries,
       },
     ];
@@ -368,17 +371,17 @@ async function buildConnectorPickerRows(
     const connectionId = projected?.connection_id || conn.connectorInstanceId || null;
     const connectionName = ownerFacingConnectionName(displayName, {
       connectorId,
-      connectorLabel,
       connectorKey: connectorMetaToken,
+      connectorLabel,
     });
     return {
-      formValue: caps.encodeHostedMcpSelection({ connectorId, connectionId: connectionId ?? null }),
-      connectorId,
       connectionId: connectionId ?? null,
-      connectorTypeLabel: connectorLabel,
       connectionName,
-      meta: buildPickerRowMeta({ connectorLabel, connectorKey: connectorMetaToken, streamCount }),
-      sourceKey: caps.hostedMcpSourceKey({ connectorId, connectionId: connectionId ?? null }),
+      connectorId,
+      connectorTypeLabel: connectorLabel,
+      formValue: caps.encodeHostedMcpSelection({ connectionId: connectionId ?? null, connectorId }),
+      meta: buildPickerRowMeta({ connectorKey: connectorMetaToken, connectorLabel, streamCount }),
+      sourceKey: caps.hostedMcpSourceKey({ connectionId: connectionId ?? null, connectorId }),
       streams: streamSummaries,
     };
   });
@@ -439,6 +442,7 @@ function ownerFacingConnectionName(
     return null;
   }
   try {
+    // biome-ignore lint/correctness/noUnusedInstantiation: Construction intentionally triggers the compatibility side effect.
     new URL(trimmed);
     return null;
   } catch {
@@ -508,6 +512,7 @@ export async function listHostedMcpPickerRows(
     if (caps.isInternalConnectorId(connectorId)) {
       continue;
     }
+    // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
     rows.push(...(await buildConnectorPickerRows(connectorId, ownerSubjectId, caps)));
   }
   rows.sort((a, b) => {
@@ -528,23 +533,23 @@ export async function listHostedMcpPickerRows(
  */
 export function renderPendingConsentNotFoundHtml(providerName: string, ui: ConsentUiRenderer): string {
   return ui.renderHostedDocument({
-    title: `${providerName} — Consent request expired`,
-    providerName,
     body: [
       ui.renderPageIntro({
         eyebrow: "Data access request",
         title: "This consent request is no longer available",
       }),
       ui.renderSurface({
-        surface: "human",
         ariaLabel: "Consent request expired",
         children: ui.renderResultState({
-          tone: "neutral",
-          title: "Link expired or already used",
           body: "This approval link has expired, was already approved or denied, or was created on a different session. Return to the app that asked for access and start the request again to get a fresh link.",
+          title: "Link expired or already used",
+          tone: "neutral",
         }),
+        surface: "human",
       }),
     ].join("\n"),
+    providerName,
+    title: `${providerName} — Consent request expired`,
   });
 }
 
@@ -696,8 +701,8 @@ function buildConsentClientDisplay(
     // Pre-registered/public client: the "Requesting app" name is whatever the
     // client supplied at registration — a client-authored claim, not a fact.
     return {
-      protocolFacts: [],
       clientFacts: [{ label: "Requesting app", value: clientName }],
+      protocolFacts: [],
       titleName: clientName,
     };
   }
@@ -707,16 +712,16 @@ function buildConsentClientDisplay(
   // app name is a client-authored claim (see the CIMD consent-display spec).
   const identity = clientOriginFromClientId(clientId) || clientId || "Client application";
   const protocolFacts: Array<{ label: string; value?: unknown; html?: string }> = [
-    { label: "Client identity", html: `<code>${ui.escapeHtml(identity)}</code>` },
+    { html: `<code>${ui.escapeHtml(identity)}</code>`, label: "Client identity" },
   ];
   if (clientId) {
-    protocolFacts.push({ label: "Metadata document", html: `<code>${ui.escapeHtml(clientId)}</code>` });
+    protocolFacts.push({ html: `<code>${ui.escapeHtml(clientId)}</code>`, label: "Metadata document" });
   }
   const clientFacts: Array<{ label: string; value?: unknown; html?: string }> = [];
   if (clientName && clientName !== identity) {
     clientFacts.push({ label: "Self-described app name", value: clientName });
   }
-  return { protocolFacts, clientFacts, titleName: identity };
+  return { clientFacts, protocolFacts, titleName: identity };
 }
 
 /**
@@ -824,11 +829,11 @@ function buildBatchRiskHeader(risk: PendingConsentCumulativeRisk | null | undefi
     { label: "Total streams", value: risk?.total_stream_count ?? 0 },
   ];
   return ui.renderSurface({
-    surface: "human",
     ariaLabel: "Cumulative batch risk",
     children: `<span class="pdpp-eyebrow">Reference-experimental batch consent</span>
 <h2 class="pdpp-heading">Cumulative access across this request</h2>
 ${ui.renderKeyValueList(items)}`,
+    surface: "human",
   });
 }
 
@@ -866,11 +871,11 @@ function buildBatchSourceCards(cards: PendingConsentCard[], ui: ConsentUiRendere
       );
       const clientClaimsBlock = buildClientClaimsBlock(streams, ui);
       return ui.renderSurface({
-        surface: "human",
         ariaLabel: `Source ${card.index + 1}`,
         children: `<h3 class="pdpp-title">${ui.escapeHtml(
           sourceLabel
         )}</h3>${clientPurposeBlock}${clientClaimsBlock}${manifestBlock}${protocolBlock}`,
+        surface: "human",
       });
     })
     .join("\n");
@@ -896,6 +901,7 @@ function buildSourceNarrowingControls(card: PendingConsentCard, ui: ConsentUiRen
   if (streams.length === 0) {
     return "";
   }
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const index = card.index;
   const streamRows = streams
     .map((stream) => {
@@ -990,6 +996,7 @@ function renderBatchConsentHtml(
   providerName: string,
   ui: ConsentUiRenderer
 ): string {
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const request = pending.request;
   const client = request.client || {};
   const clientDisplay = buildConsentClientDisplay(client, ui);
@@ -1023,11 +1030,11 @@ function renderBatchConsentHtml(
     : "";
   const denyForm = ui.renderActionRow([
     {
-      label: "Deny",
-      variant: "danger",
-      method: "POST",
       action: "/consent/deny",
       hidden: [...csrfHidden, { name: "request_uri", value: requestUri }],
+      label: "Deny",
+      method: "POST",
+      variant: "danger",
     },
   ]);
   const actions = [
@@ -1042,11 +1049,10 @@ function renderBatchConsentHtml(
   const body = [
     ui.renderPageIntro({
       eyebrow: "Data access request",
-      title: `${clientDisplay.titleName} wants access to several sources`,
       lede: "Review each source. Your server will only issue grants for sources you confirm.",
+      title: `${clientDisplay.titleName} wants access to several sources`,
     }),
     ui.renderSurface({
-      surface: "human",
       ariaLabel: "Client identity",
       children: [
         clientDisplay.protocolFacts.length > 0
@@ -1063,20 +1069,21 @@ function renderBatchConsentHtml(
       ]
         .filter(Boolean)
         .join("\n"),
+      surface: "human",
     }),
     overCapWarning,
     broadWarning,
     buildBatchRiskHeader(pending.cumulativeRisk, ui),
     buildBatchSourceCards(cards, ui),
-    ui.renderSurface({ surface: "human", ariaLabel: "Consent actions", children: actions }),
+    ui.renderSurface({ ariaLabel: "Consent actions", children: actions, surface: "human" }),
   ]
     .filter(Boolean)
     .join("\n");
 
   return ui.renderHostedDocument({
-    title: `${providerName} — Batch consent request`,
-    providerName,
     body,
+    providerName,
+    title: `${providerName} — Batch consent request`,
   });
 }
 
@@ -1097,6 +1104,7 @@ export function renderPendingGrantConsentHtml(
     return renderBatchConsentHtml(pending, requestUri, csrfToken, csrfFieldName, providerName, ui);
   }
 
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const request = pending.request;
   const client = request.client || {};
   const selection = request.selection || {};
@@ -1174,29 +1182,28 @@ export function renderPendingGrantConsentHtml(
   const csrfHidden = csrfToken ? [{ name: csrfFieldName, value: csrfToken }] : [];
   const actions = ui.renderActionRow([
     {
-      label: "Allow access",
-      variant: "primary",
-      method: "POST",
       action: "/consent/approve",
       hidden: [...csrfHidden, { name: "request_uri", value: requestUri }],
+      label: "Allow access",
+      method: "POST",
+      variant: "primary",
     },
     {
-      label: "Deny",
-      variant: "danger",
-      method: "POST",
       action: "/consent/deny",
       hidden: [...csrfHidden, { name: "request_uri", value: requestUri }],
+      label: "Deny",
+      method: "POST",
+      variant: "danger",
     },
   ]);
 
   const body = [
     ui.renderPageIntro({
       eyebrow: "Data access request",
-      title: `${clientDisplay.titleName} wants access to your data`,
       lede: "Review what this app is asking for. Your server will only release what you allow here.",
+      title: `${clientDisplay.titleName} wants access to your data`,
     }),
     ui.renderSurface({
-      surface: "human",
       ariaLabel: "Consent request",
       children: [
         codeBlock,
@@ -1209,13 +1216,14 @@ export function renderPendingGrantConsentHtml(
       ]
         .filter(Boolean)
         .join("\n"),
+      surface: "human",
     }),
   ].join("\n");
 
   return ui.renderHostedDocument({
-    title: `${providerName} — Consent request`,
-    providerName,
     body,
+    providerName,
+    title: `${providerName} — Consent request`,
   });
 }
 
@@ -1272,8 +1280,8 @@ export async function renderHostedMcpSourceSelection(
     const items = row.streams
       .map((stream) => {
         const streamFormValue = caps.encodeHostedMcpStreamSelection({
-          connectorId: row.connectorId,
           connectionId: row.connectionId,
+          connectorId: row.connectorId,
           streamName: stream.name,
         });
         const description = stream.description
@@ -1569,16 +1577,13 @@ export async function renderHostedMcpSourceSelection(
     : "";
 
   return ui.renderHostedDocument({
-    title: `${providerName} — Choose data sources`,
-    providerName,
     body: [
       ui.renderPageIntro({
         eyebrow: "Data access request",
-        title: "Choose what this app can read",
         lede: "Pick the streams this app may read. Anything you leave unchecked stays private.",
+        title: "Choose what this app can read",
       }),
       ui.renderSurface({
-        surface: "human",
         children: `
             ${pickerBehaviorStyles}
             ${riskCopy}
@@ -1593,7 +1598,10 @@ export async function renderHostedMcpSourceSelection(
             </form>
             ${pickerBehaviorScript}
           `,
+        surface: "human",
       }),
     ].join("\n"),
+    providerName,
+    title: `${providerName} — Choose data sources`,
   });
 }

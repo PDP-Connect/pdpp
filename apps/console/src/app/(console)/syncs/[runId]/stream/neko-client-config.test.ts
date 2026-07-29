@@ -21,8 +21,8 @@ test("fetchNekoClientConfigResponse retries transient network failures", async (
       }
       return Promise.resolve(Response.json(payload));
     },
-    sleepImpl: () => Promise.resolve(),
     onObservation: (observation) => observations.push(observation),
+    sleepImpl: () => Promise.resolve(),
   });
 
   assert.equal(attempts, 3);

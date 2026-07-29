@@ -16,9 +16,7 @@
     }
   },
   "capabilities": {
-    "human_interaction": [
-      "manual_action"
-    ],
+    "human_interaction": ["manual_action"],
     "refresh_policy": {
       "recommended_mode": "manual",
       "minimum_interval_seconds": 3600,
@@ -49,88 +47,48 @@
             "type": "string"
           },
           "order_date": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time",
             "x_pdpp_role": "event-time"
           },
           "restaurant_name": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "status": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "subtotal_cents": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "tax_cents": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "tip_cents": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "delivery_fee_cents": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "service_fee_cents": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "total_cents": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "delivery_address": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "payment_method_summary": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "secondary"
           },
           "item_count": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           }
         },
-        "required": [
-          "id"
-        ]
+        "required": ["id"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "order_date",
       "consent_time_field": "order_date",
       "selection": {
@@ -140,26 +98,15 @@
       "incremental": true,
       "query": {
         "search": {
-          "lexical_fields": [
-            "restaurant_name"
-          ]
+          "lexical_fields": ["restaurant_name"]
         },
         "range_filters": {
-          "order_date": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "order_date": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "order_date"
-          ],
-          "group_by": [
-            "status"
-          ]
+          "group_by_time": ["order_date"],
+          "group_by": ["status"]
         }
       },
       "coverage_strategy": "checkpoint_window",
@@ -190,24 +137,15 @@
             "type": "integer"
           },
           "unit_price_cents": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "customizations": {
             "type": "array"
           }
         },
-        "required": [
-          "id",
-          "order_id",
-          "name"
-        ]
+        "required": ["id", "order_id", "name"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "selection": {
         "fields": true,
         "resources": true
@@ -223,9 +161,7 @@
       ],
       "query": {
         "search": {
-          "lexical_fields": [
-            "name"
-          ]
+          "lexical_fields": ["name"]
         }
       },
       "coverage_strategy": "parent_detail_accounting",

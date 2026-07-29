@@ -30,7 +30,7 @@ import {
   politeDelay,
   runConnector,
 } from "../../src/connector-runtime.ts";
-import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
+import { type FingerprintCursor, openFingerprintCursor, recordFingerprint } from "../../src/fingerprint-cursor.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import {
   buildOrderItemRecord,
@@ -58,6 +58,18 @@ interface OrdersStateShape {
    *  run-clock `fetched_at`. Sibling to `years` in the orders STATE
    *  cursor. */
   fingerprints?: Record<string, string>;
+  /** Order ids whose `order_items` detail has been durably hydrated by a
+   *  prior run, each mapped to the LIST-SURFACE fingerprint (see
+   *  `listSurfaceFingerprint`) observed at hydration time. Sibling to
+   *  `years`/`fingerprints` in the orders STATE cursor (order_items has no
+   *  STATE stream of its own — orders is the parent `state_stream`). Proof
+   *  is "detail durably emitted AND the list surface has not moved since" —
+   *  not permanent: an order whose list row changes (delivery status,
+   *  return/refund becoming visible) invalidates its entry and is
+   *  re-hydrated. NOT pruned, for the same partial-scan reason
+   *  `fingerprints` is not pruned: a frozen year's entries must stay valid
+   *  even though that year is no longer (re)visited. */
+  hydratedOrders?: Record<string, string>;
   years?: YearsCursor;
 }
 
@@ -72,6 +84,36 @@ interface OrdersStateShape {
 function readPriorOrderFingerprints(state: Record<string, unknown>): Map<string, string> {
   const streamState = (state.orders ?? {}) as Record<string, unknown>;
   const raw = streamState.fingerprints;
+  const out = new Map<string, string>();
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return out;
+  }
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === "string" && value.length > 0) {
+      out.set(id, value);
+    }
+  }
+  return out;
+}
+
+/**
+ * Parse the prior `orders` STATE cursor's `hydratedOrders` map into a
+ * `Map<orderId, listSurfaceFingerprint>`. Tolerant of every prior shape:
+ *
+ *   - missing / non-object `hydratedOrders`  -> empty map
+ *   - a legacy `hydratedOrderIds: string[]` (pre-fingerprint cursor shape,
+ *     no per-order fingerprint recorded)     -> empty map
+ *   - an entry whose value is not a non-empty string (missing fingerprint)
+ *                                             -> that entry dropped
+ *
+ * In every tolerant case the order is simply absent from the returned map,
+ * which `processListOrder` treats as "unknown list surface" — one honest
+ * re-fetch, self-healing from that run onward. This mirrors the same
+ * legacy-cursor tolerance `readPriorOrderFingerprints` already applies.
+ */
+function readPriorHydratedOrders(state: Record<string, unknown>): Map<string, string> {
+  const streamState = (state.orders ?? {}) as Record<string, unknown>;
+  const raw = streamState.hydratedOrders;
   const out = new Map<string, string>();
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     return out;
@@ -551,7 +593,7 @@ function readRecoverableAmazonOrderDetailGap(
     return null;
   }
   const locator = gap.detail_locator;
-  if (!locator || locator.kind !== "amazon.order_detail") {
+  if (locator?.kind !== "amazon.order_detail") {
     return null;
   }
   const orderId = locator.order_id;
@@ -587,7 +629,7 @@ function resolveOrderDetail(page: Page, flags: RunFlags, orderId: string): Promi
       status: "deferred",
     });
   }
-  flags.detailAttempts++;
+  flags.detailAttempts += 1;
   return fetchOrderDetail(page, orderId);
 }
 
@@ -606,7 +648,7 @@ function recordDetailFailureFlags(flags: RunFlags, result: DetailFetchResult): v
     return;
   }
   if (result.status === "failed" && result.failureKind === "navigation_retry_exhausted") {
-    flags.temporaryDetailFailures++;
+    flags.temporaryDetailFailures += 1;
   }
   if (result.status === "failed" && result.failureKind === "session_repair_required") {
     flags.sessionRepairRequired = true;
@@ -647,7 +689,7 @@ async function recoverPendingOrderItemDetailGapPage(
     const locator = readRecoverableAmazonOrderDetailGap(gap);
     if (!locator) {
       if (gap.stream === "order_items" && gap.status === "pending") {
-        skipped++;
+        skipped += 1;
       }
       continue;
     }
@@ -663,7 +705,12 @@ async function recoverPendingOrderItemDetailGapPage(
         stream: "order_items",
         record_key: locator.recordKey,
       });
-      recovered++;
+      // The recovery path has no list-page row for this order (only the
+      // gap locator's id/date), so it cannot compute a real list-surface
+      // fingerprint (see `listSurfaceFingerprint`) and does not mark the
+      // order known-hydrated here. The next forward walk that lists this
+      // order establishes the proof normally, with a real fingerprint.
+      recovered += 1;
       continue;
     }
     recordDetailFailureFlags(flags, result);
@@ -671,7 +718,7 @@ async function recoverPendingOrderItemDetailGapPage(
       await captureFailedDetailOnce(deps.capture, page, flags, result);
     }
     await deps.emit(buildOrderDetailGap(locator.orderId, result.reason, result.failureKind, locator.orderDate));
-    reDeferred++;
+    reDeferred += 1;
   }
   return { recovered, reDeferred, skipped };
 }
@@ -751,6 +798,20 @@ export interface EmitDeps {
   emit: EmitFn;
   emitRecord: EmitRecordFn;
   emittedAt: string;
+  /** Order ids known to have a durably-hydrated `order_items` detail, mapped
+   *  to the list-surface fingerprint (see `listSurfaceFingerprint`) observed
+   *  at hydration time. Seeded from the PRIOR run's STATE cursor and mutated
+   *  in place as THIS run hydrates more orders (see
+   *  `readPriorHydratedOrders`). Proof is "hydrated AND the list surface has
+   *  not moved since" — an order whose list row changes is treated as
+   *  not-yet-hydrated and re-fetched. The current year is never frozen
+   *  (orders are ongoing), so every unfrozen year is re-listed on every run;
+   *  without this map `processListOrder` would re-attempt detail hydration
+   *  for every already-covered, unchanged order every run, burning the
+   *  per-run detail-attempt budget on repeat work instead of reaching
+   *  genuinely new orders. Optional so legacy callers/tests that don't
+   *  exercise the skip path can omit it. */
+  hydratedOrders?: Map<string, string> | undefined;
   /** Run-level `order_items` detail coverage accumulator. Optional so legacy
    *  callers/tests that only exercise emit ordering can omit it; when present,
    *  processListOrder records each considered order's detail outcome here and
@@ -829,7 +890,7 @@ async function extractAndShapeCheckOrders(page: Page, emit: EmitFn): Promise<Lis
         type: "SKIP_RESULT",
         stream: "orders",
         reason: "list_page_shape_check_failed",
-        message: `list card ${r.orderId ?? "<no id>"}: ${parsed.error.issues
+        message: `list card ${r.orderId}: ${parsed.error.issues
           .map((i) => `${i.path.join(".")}: ${i.message}`)
           .join("; ")}`,
         diagnostics: { card: r, issues: parsed.error.issues },
@@ -972,6 +1033,62 @@ async function scrapeListPage(
  * when the order was processed. We never emit the raw order id here — only the
  * count crosses into operator-visible evidence.
  */
+interface ListOrderDetailResolution {
+  detail: OrderDetail | null;
+  detailFailureKind: DetailFailureKind | null;
+  detailGapReason: AmazonDetailGapReason;
+}
+
+/**
+ * The fingerprint of everything the LIST page alone can prove about an
+ * order — computed the same way as an enriched `orders` record but with
+ * `detail: null`, so detail-only fields (recipient, payment, status_detail,
+ * gift/digital flags) are excluded and only list-observable fields
+ * (delivery status, list total, list item count) participate. Comparing
+ * this against the fingerprint recorded at hydration time is the change
+ * trigger: if the list surface has not moved, the prior enriched detail is
+ * still valid; if it has (delivery progressed, a return appeared), the
+ * order must be re-hydrated.
+ */
+export function listSurfaceFingerprint(listOrder: ListPageOrder, orderDate: string, emittedAt: string): string {
+  return recordFingerprint(buildOrderRecord(listOrder, null, orderDate, emittedAt), ["fetched_at"]);
+}
+
+/**
+ * Resolve one list-page order's detail (or record why it did not resolve),
+ * honoring the explicit `skipDetail` policy. Extracted from `processListOrder`
+ * to keep that function's branching within the cognitive-complexity budget.
+ * Callers that already know the order is already-hydrated-and-unchanged
+ * return early before reaching this function (see `processListOrder`).
+ */
+async function resolveDetailForListOrder(
+  page: Page,
+  deps: EmitDeps,
+  flags: RunFlags,
+  listOrder: ListPageOrder
+): Promise<ListOrderDetailResolution> {
+  const resolution: ListOrderDetailResolution = {
+    detail: null,
+    detailFailureKind: null,
+    detailGapReason: "temporary_unavailable",
+  };
+  if (deps.skipDetail) {
+    return resolution;
+  }
+  const result = await resolveOrderDetail(page, flags, listOrder.orderId);
+  if (result.status === "hydrated") {
+    resolution.detail = result.detail;
+    return resolution;
+  }
+  resolution.detailGapReason = result.reason;
+  resolution.detailFailureKind = result.failureKind;
+  recordDetailFailureFlags(flags, result);
+  if (result.status === "failed") {
+    await captureFailedDetailOnce(deps.capture, page, flags, result);
+  }
+  return resolution;
+}
+
 export async function processListOrder(
   page: Page,
   deps: EmitDeps,
@@ -985,25 +1102,45 @@ export async function processListOrder(
     // it via the bounded per-year drop SKIP_RESULT.
     return false;
   }
-  let detail: OrderDetail | null = null;
-  let detailGapReason: AmazonDetailGapReason = "temporary_unavailable";
-  let detailFailureKind: DetailFailureKind | null = null;
-  if (!deps.skipDetail) {
-    const result = await resolveOrderDetail(page, flags, listOrder.orderId);
-    if (result.status === "hydrated") {
-      detail = result.detail;
-    } else {
-      detailGapReason = result.reason;
-      detailFailureKind = result.failureKind;
-      recordDetailFailureFlags(flags, result);
-      if (result.status === "failed") {
-        await captureFailedDetailOnce(deps.capture, page, flags, result);
-      }
-    }
+  // The current (and previous) year is re-listed on every run — orders are
+  // ongoing, so year-freezing never applies to it (see planIncrementalYears).
+  // An order already known-hydrated AND whose list surface has not moved
+  // since needs no repeat detail fetch or re-emit: its enriched records are
+  // already durable and unchanged. A list-surface change (delivery status
+  // moved, a return/refund became visible) invalidates the entry below and
+  // forces a full re-hydration, so detail-driven fields never go stale.
+  const currentListFingerprint = listSurfaceFingerprint(listOrder, orderDate, deps.emittedAt);
+  const priorFingerprint = deps.hydratedOrders?.get(listOrder.orderId);
+  const alreadyHydrated = !deps.skipDetail && priorFingerprint === currentListFingerprint;
+  if (priorFingerprint !== undefined && priorFingerprint !== currentListFingerprint) {
+    // Stale proof: the list surface moved since hydration. Drop the entry
+    // so this run's real hydration (below) re-establishes it fresh.
+    deps.hydratedOrders?.delete(listOrder.orderId);
   }
+  if (alreadyHydrated) {
+    // Already-hydrated AND unchanged: nothing new to prove or emit on
+    // either stream. Emitting a list-page-only `orders` record here would
+    // silently downgrade the durable enriched record (recipient, payment,
+    // status_detail nulled) even though nothing actually changed.
+    if (deps.orderItemsCoverage) {
+      recordDetailOutcome(deps.orderItemsCoverage, listOrder.orderId, "hydrated");
+    }
+    return true;
+  }
+  const { detail, detailGapReason, detailFailureKind } = await resolveDetailForListOrder(page, deps, flags, listOrder);
   if (deps.capture && !(flags.detailCaptured || deps.skipDetail) && detail) {
     await deps.capture.captureDom(page, `order-detail-${listOrder.orderId}`);
     flags.detailCaptured = true;
+  }
+  // A real hydration this run joins the durable known-hydrated map, keyed to
+  // the list surface observed THIS run, so a later run only skips re-fetch
+  // while that surface stays unchanged. Gated on `wantsItems`: the map's
+  // honest meaning is "order_items durably emitted", so a run scoped to
+  // `orders` only (which may still fetch detail for order enrichment) must
+  // not mark an order hydrated when no order_items record was emitted for
+  // it — a later item-scoped run needs its own real attempt.
+  if (detail && deps.wantsItems) {
+    deps.hydratedOrders?.set(listOrder.orderId, currentListFingerprint);
   }
   if (deps.orderItemsCoverage) {
     // The list-page items still emit in every case; this only records whether
@@ -1070,6 +1207,45 @@ async function applyYearCompletionState({
 }
 
 /**
+ * Build the `orders` STATE cursor: year cursors plus the optional per-order
+ * fingerprint map and known-hydrated order map. Shared by every STATE emit
+ * site in `collect()` so the carry-forward fields are assembled identically
+ * regardless of which site triggers the emit.
+ */
+function buildAmazonOrdersStateCursor(
+  yearsState: YearsCursor,
+  ordersFingerprintCursor: FingerprintCursor | undefined,
+  hydratedOrders: ReadonlyMap<string, string>
+): OrdersStateShape {
+  const cursor: OrdersStateShape = { years: yearsState };
+  if (ordersFingerprintCursor && ordersFingerprintCursor.size() > 0) {
+    cursor.fingerprints = ordersFingerprintCursor.toState();
+  }
+  if (hydratedOrders.size > 0) {
+    cursor.hydratedOrders = Object.fromEntries(hydratedOrders);
+  }
+  return cursor;
+}
+
+/**
+ * Decide whether `collect()` must emit a trailing `orders` STATE after the
+ * year loop, to persist durable progress the loop itself never reached a
+ * STATE emit for. `ordersStateEmitted` (NOT `years.length === 0`) is the
+ * right signal: `planIncrementalYears` always plans the current and
+ * previous year and the previous year CAN be frozen, so the loop runs with
+ * `years.length > 0` while every iteration `continue`s before its STATE
+ * emit. Exported for direct unit coverage of this decision, independent of
+ * a full `collect()` drive (which needs a browser context this repo's other
+ * connector test suites also don't build).
+ */
+export function shouldEmitTrailingOrdersState(
+  ordersStateEmitted: boolean,
+  hydratedOrders: ReadonlyMap<string, string>
+): boolean {
+  return !ordersStateEmitted && hydratedOrders.size > 0;
+}
+
+/**
  * Scrape every list page for one year and emit records. Returns both the total
  * order count seen for the year (used for freeze-once-stable policy) and the
  * count of rows we could not emit because their order date was unparseable.
@@ -1097,10 +1273,11 @@ async function runYear(page: Page, deps: EmitDeps, flags: RunFlags, year: number
       );
       const processed = await processListOrder(page, deps, flags, o);
       if (!processed) {
+        // biome-ignore lint/style/noIncrementDecrement: integration.test.ts asserts this literal `unparseableDateCount++` source text (source-regex oracle); switching to += would fail that pre-existing test for a purely cosmetic change.
         unparseableDateCount++;
       }
     }
-    pageCount++;
+    pageCount += 1;
     startIndex += START_INDEX_STEP;
     await politeDelay(POLITE_DELAY_MS);
   }
@@ -1218,6 +1395,11 @@ if (isMainModule(import.meta.url)) {
         temporaryDetailFailures: 0,
       };
 
+      // Seeded once for the whole run; mutated in place by the forward walk
+      // only (the recovery pass has no list-page row to fingerprint against
+      // — see AmazonDetailRecoveryDeps).
+      const hydratedOrders = readPriorHydratedOrders(state);
+
       const gapRecovery = await recoverPendingOrderItemDetailGapsBeforeForwardRun(
         page,
         {
@@ -1290,6 +1472,7 @@ if (isMainModule(import.meta.url)) {
         emit,
         emitRecord,
         emittedAt,
+        hydratedOrders,
         orderItemsCoverage,
         ordersFingerprintCursor,
         progress,
@@ -1299,6 +1482,17 @@ if (isMainModule(import.meta.url)) {
       };
 
       const newYearsState: YearsCursor = { ...yearsState };
+      const buildOrdersStateCursor = (): OrdersStateShape =>
+        buildAmazonOrdersStateCursor(newYearsState, ordersFingerprintCursor, hydratedOrders);
+
+      // Tracks whether the loop below has emitted STATE at least once, so
+      // the trailing fallback emit (below the loop) fires exactly when the
+      // loop emitted nothing — including "every planned year is frozen",
+      // which `years.length === 0` does not cover: `planIncrementalYears`
+      // always plans the current and previous year, and the previous year
+      // CAN be frozen, so `years.length > 0` while every iteration
+      // `continue`s before reaching the STATE emit.
+      let ordersStateEmitted = false;
 
       for (const year of years) {
         const prior = yearsState[String(year)];
@@ -1318,19 +1512,21 @@ if (isMainModule(import.meta.url)) {
           year,
           yearOrderCount,
         });
-        // Carry the per-order fingerprint map forward alongside the year
-        // cursors so the next run can suppress re-scraped orders whose body
-        // is unchanged modulo the run clock. NOT pruned: orders is a partial
-        // scan (frozen years are skipped, so their ids are never re-seen).
-        const cursor: OrdersStateShape = { years: newYearsState };
-        if (ordersFingerprintCursor && ordersFingerprintCursor.size() > 0) {
-          cursor.fingerprints = ordersFingerprintCursor.toState();
-        }
-        await emit({
-          type: "STATE",
-          stream: "orders",
-          cursor,
-        });
+        // Carry the per-order fingerprint map and known-hydrated order map
+        // forward alongside the year cursors so the next run can suppress
+        // re-scraped orders whose body is unchanged modulo the run clock, and
+        // skip re-fetching detail for orders whose list surface has not
+        // moved. NOT pruned: orders is a partial scan (frozen years are
+        // skipped, so their ids are never re-seen).
+        await emit({ type: "STATE", stream: "orders", cursor: buildOrdersStateCursor() });
+        ordersStateEmitted = true;
+      }
+      // The loop may emit no STATE at all — every planned year frozen, or no
+      // years discovered — even though the recovery pass above hydrated
+      // gaps or a prior run's `hydratedOrders` map is non-empty. Without
+      // this, that durable progress would never reach a STATE emit this run.
+      if (shouldEmitTrailingOrdersState(ordersStateEmitted, hydratedOrders)) {
+        await emit({ type: "STATE", stream: "orders", cursor: buildOrdersStateCursor() });
       }
 
       // After every scraped year settles, emit one run-level `order_items`

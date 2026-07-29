@@ -22,17 +22,17 @@
 }
 .pdpp-sheet__head {
   display: flex;
-  justify-content: space-between;
-  align-items: baseline;
   gap: 14px;
+  align-items: baseline;
+  justify-content: space-between;
   padding: 13px 18px;
   border-bottom: 1px solid var(--border);
 }
 .pdpp-sheet__title {
+  margin: 0;
   font-family: var(--font-sans);
   font-size: 1rem;
   font-weight: 700;
-  margin: 0;
 }
 .pdpp-sheet__serial {
   font-family: var(--font-mono);
@@ -40,13 +40,15 @@
   color: var(--muted-foreground);
   white-space: nowrap;
 }
-.pdpp-sheet__body { padding: 14px 18px; }
+.pdpp-sheet__body {
+  padding: 14px 18px;
+}
 .pdpp-sheet__foot {
   display: flex;
   flex-wrap: wrap;
-  justify-content: space-between;
-  align-items: center;
   gap: 8px 12px;
+  align-items: center;
+  justify-content: space-between;
   padding: 11px 18px;
   border-top: 1px solid var(--border-strong);
 }
@@ -55,26 +57,30 @@
    Wrap a sheet in .pdpp-carbon ONLY when the server retains it on
    the owner's behalf: staged consent, held grant, export in flight.
    Never decoration — if nothing is retained, no carbon. ≤2/screen. */
-.pdpp-carbon { position: relative; }
+.pdpp-carbon {
+  position: relative;
+}
 .pdpp-carbon::before {
-  content: "";
   position: absolute;
   inset: 0;
-  transform: translate(var(--carbon-offset), var(--carbon-offset));
+  pointer-events: none;
+  content: "";
   background: var(--carbon-fill);
   border: 1px solid var(--carbon-outline);
-  pointer-events: none;
+  transform: translate(var(--carbon-offset), var(--carbon-offset));
 }
-.pdpp-carbon > * { position: relative; }
+.pdpp-carbon > * {
+  position: relative;
+}
 
 /* The carbon caption that accompanies a retained object. */
 .pdpp-copyline {
   font-family: var(--font-sans);
   font-size: 0.6rem;
   font-weight: 500;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
   color: var(--primary);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
   white-space: nowrap;
 }
 
@@ -86,29 +92,31 @@
   padding: 11px 18px;
   border-bottom: 1px solid var(--border);
 }
-.pdpp-scope:last-child { border-bottom: 0; }
+.pdpp-scope:last-child {
+  border-bottom: 0;
+}
 .pdpp-scope__name {
   font-family: var(--font-sans);
   font-size: 0.8125rem;
   font-weight: 500;
 }
 .pdpp-scope__terms {
+  align-self: center;
   font-family: var(--font-sans);
   font-size: 0.66rem;
   color: var(--muted-foreground);
   white-space: nowrap;
-  align-self: center;
 }
 .pdpp-scope__desc {
+  grid-column: 1 / -1;
   font-family: var(--font-sans);
   font-size: 0.75rem;
   color: var(--muted-foreground);
-  grid-column: 1 / -1;
 }
 /* Declined scope — struck, not erased */
 .pdpp-scope--off .pdpp-scope__name {
-  color: var(--muted-foreground);
   font-weight: 400;
+  color: var(--muted-foreground);
   text-decoration: line-through;
   text-decoration-thickness: 1px;
 }
@@ -117,7 +125,9 @@
    Every list shares ONE column template via --cols on the wrapper, so
    every cell in a column sits on the same axis in every row. Headers
    are mandatory. Numeric columns use .u-r (right-align, tabular-nums). */
-.pdpp-table { width: 100%; }
+.pdpp-table {
+  width: 100%;
+}
 .pdpp-table__hrow,
 .pdpp-table__row {
   display: grid;
@@ -134,33 +144,50 @@
   font-family: var(--font-sans);
   font-size: 0.625rem;
   font-weight: 500;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
   color: var(--muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
   white-space: nowrap;
 }
-.pdpp-table__row { border-bottom: 1px solid var(--border); position: relative; }
-.pdpp-table .u-r { text-align: right; justify-self: stretch; font-variant-numeric: tabular-nums; }
+.pdpp-table__row {
+  position: relative;
+  border-bottom: 1px solid var(--border);
+}
+.pdpp-table .u-r {
+  justify-self: stretch;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
 
 /* ─── Data list — dense rows for the console ─────────────────────── */
-.pdpp-data-list { width: 100%; }
+.pdpp-data-list {
+  width: 100%;
+}
 .pdpp-data-row {
+  position: relative;
   display: grid;
-  grid-template-columns: var(--cols, 26px minmax(0, 1.25fr) minmax(0, 1.6fr) 112px 128px);
+  grid-template-columns: var(
+      --cols,
+      26px minmax(0, 1.25fr) minmax(0, 1.6fr) 112px 128px
+    );
   gap: 0 18px;
   align-items: center;
   padding: 10px 0;
   border-bottom: 1px solid var(--border);
-  position: relative;
 }
-.pdpp-data-row__who { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.pdpp-data-row__who {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
 .pdpp-data-row__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-family: var(--font-sans);
   font-size: 0.875rem;
   font-weight: 600;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .pdpp-data-row__id {
   font-family: var(--font-mono);
@@ -169,87 +196,99 @@
   white-space: nowrap;
 }
 .pdpp-data-row__detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-family: var(--font-mono);
   font-size: 0.75rem;
   color: var(--muted-foreground);
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .pdpp-data-row__meta {
   font-family: var(--font-mono);
   font-size: 0.72rem;
-  color: var(--muted-foreground);
-  white-space: nowrap;
   font-variant-numeric: tabular-nums;
+  color: var(--muted-foreground);
   text-align: right;
+  white-space: nowrap;
 }
 /* Revoked row — struck, not erased. The record survives revocation. */
 .pdpp-data-row--revoked .pdpp-data-row__title,
 .pdpp-data-row--revoked .pdpp-data-row__detail {
+  color: var(--muted-foreground);
   text-decoration: line-through;
   text-decoration-thickness: 1px;
-  color: var(--muted-foreground);
 }
 
 /* ─── Monogram — 2-letter protocol client mark ───────────────────── */
 .pdpp-monogram {
-  width: 26px;
-  height: 26px;
-  flex-shrink: 0;
   display: inline-flex;
+  flex-shrink: 0;
   align-items: center;
   justify-content: center;
+  width: 26px;
+  height: 26px;
   font-family: var(--font-mono);
   font-size: 0.625rem;
   font-weight: 600;
-  letter-spacing: 0.04em;
   color: var(--muted-foreground);
+  letter-spacing: 0.04em;
   background: var(--card);
   box-shadow: inset 0 0 0 1px var(--border-strong);
 }
 .pdpp-monogram::before {
   content: attr(data-initials);
 }
-.pdpp-data-row--revoked .pdpp-monogram { opacity: 0.5; }
+.pdpp-data-row--revoked .pdpp-monogram {
+  opacity: 0.5;
+}
 
 /* ─── Endorsement — status typed by the protocol ─────────────────
    Spent color lives here. State color must ONLY appear inside .pdpp-endorse.
    The background and border are derived from currentColor so the color
    set by the variant modifier drives the entire badge automatically. */
 .pdpp-endorse {
+  padding: 3px 8px;
   font-family: var(--font-sans);
   font-size: 0.625rem;
   font-weight: 500;
   letter-spacing: 0.06em;
   white-space: nowrap;
-  padding: 3px 8px;
   background: color-mix(in oklab, currentColor 11%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in oklab, currentColor 42%, transparent);
 }
-.pdpp-endorse--active    { color: var(--success); }
-.pdpp-endorse--continuous { color: var(--primary); }
-.pdpp-endorse--expiring  { color: var(--warning); }
+.pdpp-endorse--active {
+  color: var(--success);
+}
+.pdpp-endorse--continuous {
+  color: var(--primary);
+}
+.pdpp-endorse--expiring {
+  color: var(--warning);
+}
 .pdpp-endorse--revoked {
   color: var(--muted-foreground);
   background: transparent;
   box-shadow: inset 0 0 0 1px var(--border-strong);
 }
-.pdpp-endorse--denied    { color: var(--destructive); }
+.pdpp-endorse--denied {
+  color: var(--destructive);
+}
 /* unknown — neutral, no state color spent: indeterminate reads
    indeterminate. Distinct from revoked (which is a definite struck
    state) by keeping the default color-mix fill rather than the
    transparent outline. */
-.pdpp-endorse--unknown   { color: var(--muted-foreground); }
+.pdpp-endorse--unknown {
+  color: var(--muted-foreground);
+}
 
 /* ─── Tag — taxonomy label, neutral, no color spent ─────────────── */
 .pdpp-tag {
+  padding: 3px 8px;
   font-family: var(--font-sans);
   font-size: 0.625rem;
   font-weight: 400;
-  white-space: nowrap;
-  padding: 3px 8px;
   color: var(--muted-foreground);
+  white-space: nowrap;
   box-shadow: inset 0 0 0 1px var(--border);
 }
 
@@ -259,83 +298,105 @@
    Ghost = outline — secondary/cancel/secondary action.
    Destructive = red outline — irreversible acts only. */
 .pdpp-btn {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  padding: 9px 18px;
   font-family: var(--font-sans);
   font-size: 0.84rem;
   font-weight: 700;
-  padding: 9px 18px;
-  border: 1.5px solid var(--foreground);
-  background: var(--foreground);
   color: var(--background);
-  border-radius: var(--radius-control);
   white-space: nowrap;
-  transition: background var(--motion-state), border-color var(--motion-state);
   cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+  background: var(--foreground);
+  border: 1.5px solid var(--foreground);
+  border-radius: var(--radius-control);
+  transition:
+    background var(--motion-state),
+    border-color var(--motion-state);
 }
-.pdpp-btn:focus { outline: none; }
+.pdpp-btn:focus {
+  outline: none;
+}
 .pdpp-btn:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 2px;
 }
 .pdpp-btn:disabled {
-  opacity: 0.45;
-  cursor: default;
   pointer-events: none;
+  cursor: default;
+  opacity: 0.45;
 }
 .pdpp-btn:hover:not(:disabled) {
   background: color-mix(in oklab, var(--foreground) 86%, var(--background));
 }
 /* The owner's act — the one warm element on a protocol surface. */
 .pdpp-btn--human {
+  color: var(--human-foreground);
   background: var(--human);
   border-color: var(--human);
-  color: var(--human-foreground);
 }
 .pdpp-btn--human:hover:not(:disabled) {
   background: color-mix(in oklab, var(--human) 88%, var(--background));
   border-color: color-mix(in oklab, var(--human) 88%, var(--background));
 }
 .pdpp-btn--ghost {
-  background: transparent;
-  color: var(--foreground);
-  border-color: var(--input);
   font-weight: 600;
+  color: var(--foreground);
+  background: transparent;
+  border-color: var(--input);
 }
 .pdpp-btn--ghost:hover:not(:disabled) {
   background: var(--muted);
   border-color: var(--border-strong);
 }
 .pdpp-btn--destructive {
-  background: transparent;
   color: var(--destructive);
+  background: transparent;
   border-color: var(--destructive);
 }
-.pdpp-btn--destructive:hover:not(:disabled) { background: var(--destructive-tint); }
-.pdpp-btn--sm { font-size: 0.75rem; padding: 6px 12px; }
-.pdpp-btn--lg { font-size: 0.92rem; padding: 12px 22px; }
+.pdpp-btn--destructive:hover:not(:disabled) {
+  background: var(--destructive-tint);
+}
+.pdpp-btn--sm {
+  padding: 6px 12px;
+  font-size: 0.75rem;
+}
+.pdpp-btn--lg {
+  padding: 12px 22px;
+  font-size: 0.92rem;
+}
 
 /* ─── Inputs + Fields ─────────────────────────────────────────────── */
 .pdpp-input {
+  width: 100%;
+  padding: 8px 12px;
   font-family: var(--font-mono);
   font-size: 0.8125rem;
-  padding: 8px 12px;
-  background: var(--card);
   color: var(--foreground);
+  background: var(--card);
   border: 1px solid var(--input);
   border-radius: var(--radius-control);
-  width: 100%;
   transition: border-color var(--motion-state);
 }
-.pdpp-input:focus { outline: none; border-color: var(--ring); }
+.pdpp-input:focus {
+  outline: none;
+  border-color: var(--ring);
+}
 .pdpp-input:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 1px;
 }
-.pdpp-input::placeholder { color: var(--muted-foreground); opacity: 0.7; }
+.pdpp-input::placeholder {
+  color: var(--muted-foreground);
+  opacity: 0.7;
+}
 
-.pdpp-field { display: flex; flex-direction: column; gap: 4px; }
+.pdpp-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
 .pdpp-field__label {
   font-family: var(--font-sans);
   font-size: 0.72rem;
@@ -368,22 +429,22 @@
 
 /* ── Trigger button (base-ui renders a <button>) ── */
 .pdpp-select__trigger {
-  font-family: var(--font-mono);
-  font-size: 0.8125rem;
-  text-align: left;
+  width: 100%;
   /* Right padding leaves room for the › caret. */
   padding: 8px 30px 8px 12px;
-  background: var(--card);
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
   color: var(--foreground);
-  border: 1px solid var(--input);
-  border-radius: var(--radius-control);
-  width: 100%;
-  cursor: pointer;
-  transition: border-color var(--motion-state);
+  text-align: left;
+  -webkit-appearance: none;
   /* Reset <button> chrome. */
   appearance: none;
-  -webkit-appearance: none;
+  cursor: pointer;
   outline: none;
+  background: var(--card);
+  border: 1px solid var(--input);
+  border-radius: var(--radius-control);
+  transition: border-color var(--motion-state);
 }
 .pdpp-select__trigger:focus-visible {
   outline: 2px solid var(--ring);
@@ -392,8 +453,8 @@
 }
 .pdpp-select__trigger[data-disabled],
 .pdpp-select__trigger:disabled {
-  opacity: 0.55;
   cursor: default;
+  opacity: 0.55;
 }
 /* Open state: tint the border so the trigger reads as active. */
 .pdpp-select__trigger[data-popup-open] {
@@ -403,16 +464,16 @@
 /* Disclosure caret — a › glyph turned a quarter-turn to point down.
    Painted by the wrapper so it sits over the trigger at the right edge. */
 .pdpp-select::after {
-  content: "›";
   position: absolute;
   top: 50%;
   right: 11px;
-  transform: translateY(-50%) rotate(90deg);
   font-family: var(--font-mono);
   font-size: 0.95rem;
   line-height: 1;
   color: var(--muted-foreground);
   pointer-events: none;
+  content: "›";
+  transform: translateY(-50%) rotate(90deg);
 }
 
 /* ── Positioner: base-ui manages z-index/position; we just anchor it ── */
@@ -423,15 +484,16 @@
 
 /* ── Popup: the win — OS never styled this. radius 0, hairline, menu shadow ── */
 .pdpp-select-popup {
-  background: var(--card);
+  min-width: var(--anchor-width, 120px);
+  padding: 4px 0;
   color: var(--foreground);
+  outline: none;
+  background: var(--card);
   border: 1px solid var(--border-strong);
   border-radius: 0;
   /* Same elevation exception as IcDialog: a floating surface earns one shadow. */
-  box-shadow: 0 8px 24px -6px color-mix(in oklab, var(--foreground) 28%, transparent);
-  outline: none;
-  min-width: var(--anchor-width, 120px);
-  padding: 4px 0;
+  box-shadow: 0 8px 24px -6px
+    color-mix(in oklab, var(--foreground) 28%, transparent);
   /* Fade on open/close (base-ui data attrs). */
   transition: opacity var(--motion-state);
 }
@@ -449,18 +511,18 @@
 
 /* ── Item: mono, hover/highlight = --primary-tint, selected = --primary accent ── */
 .pdpp-select-item {
-  font-family: var(--font-mono);
-  font-size: 0.8125rem;
-  padding: 7px 32px 7px 12px;
-  cursor: pointer;
   position: relative;
   display: flex;
-  align-items: center;
   gap: 6px;
+  align-items: center;
+  padding: 7px 32px 7px 12px;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
   color: var(--foreground);
-  transition: background var(--motion-state);
-  outline: none;
+  cursor: pointer;
   user-select: none;
+  outline: none;
+  transition: background var(--motion-state);
 }
 /* Highlighted (keyboard or pointer hover) */
 .pdpp-select-item[data-highlighted] {
@@ -472,8 +534,8 @@
 }
 /* Disabled item */
 .pdpp-select-item[data-disabled] {
-  opacity: 0.45;
   cursor: default;
+  opacity: 0.45;
 }
 
 /* ── ItemIndicator: the ✓ checkmark shown for the selected item ── */
@@ -522,7 +584,6 @@
   position: fixed;
   top: 50%;
   left: 50%;
-  transform: translate(-50%, -50%);
   z-index: 50;
   display: flex;
   flex-direction: column;
@@ -530,14 +591,18 @@
   width: 100%;
   max-width: 32rem;
   padding: 20px;
-  background: var(--card);
   color: var(--foreground);
+  outline: none;
+  background: var(--card);
   border: 1px solid var(--border-strong);
   border-radius: 0;
   /* The one shadow exception: a floating modal earns soft elevation. */
-  box-shadow: 0 16px 48px -12px color-mix(in oklab, var(--foreground) 40%, transparent);
-  outline: none;
-  transition: opacity var(--motion-state), transform var(--motion-state);
+  box-shadow: 0 16px 48px -12px
+    color-mix(in oklab, var(--foreground) 40%, transparent);
+  transform: translate(-50%, -50%);
+  transition:
+    opacity var(--motion-state),
+    transform var(--motion-state);
 }
 .pdpp-dialog[data-starting-style],
 .pdpp-dialog[data-ending-style] {
@@ -549,9 +614,9 @@
   font-family: var(--font-sans);
   font-size: 0.72rem;
   font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
   color: var(--foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 .pdpp-dialog__desc {
   margin: 0;
@@ -561,13 +626,16 @@
 }
 
 /* ─── KV block — typed record key/value pairs ────────────────────── */
-.pdpp-kv { display: flex; flex-direction: column; }
+.pdpp-kv {
+  display: flex;
+  flex-direction: column;
+}
 .pdpp-kv__row {
   display: grid;
   grid-template-columns: 96px 1fr;
   gap: 14px;
-  padding: 5px 0;
   align-items: baseline;
+  padding: 5px 0;
 }
 .pdpp-kv__k {
   font-family: var(--font-sans);
@@ -585,18 +653,20 @@
 /* ─── Stat band — the dataset summary strip ─────────────────────── */
 .pdpp-band {
   display: grid;
-  grid-auto-flow: column;
   grid-auto-columns: 1fr;
+  grid-auto-flow: column;
   border: 1px solid var(--border);
 }
 .pdpp-band__cell {
-  padding: 12px 14px;
-  border-left: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   gap: 1px;
+  padding: 12px 14px;
+  border-left: 1px solid var(--border);
 }
-.pdpp-band__cell:first-child { border-left: 0; }
+.pdpp-band__cell:first-child {
+  border-left: 0;
+}
 .pdpp-band__v {
   font-family: var(--font-mono);
   font-size: 1.2rem;
@@ -606,31 +676,31 @@
 }
 .pdpp-band__k {
   font-size: 0.66rem;
-  color: var(--muted-foreground);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
   font-weight: 500;
+  color: var(--muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 /* ─── Surface wrappers — flat tints, no accent stripe, no gradient ──
    Temperature surfaces. The author shows in the VOICE (mono vs grotesk),
    not in a colored stripe. */
 [data-surface="human"] {
-  border: 1px solid var(--border);
   background-color: color-mix(in oklab, var(--card) 95%, var(--human));
+  border: 1px solid var(--border);
 }
 [data-surface="protocol"] {
-  border: 1px solid var(--border);
   background-color: color-mix(in oklab, var(--card) 95%, var(--primary));
+  border: 1px solid var(--border);
 }
 /* Legacy class aliases */
 .pdpp-surface-human {
-  border: 1px solid var(--border);
   background-color: color-mix(in oklab, var(--card) 95%, var(--human));
+  border: 1px solid var(--border);
 }
 .pdpp-surface-protocol {
-  border: 1px solid var(--border);
   background-color: color-mix(in oklab, var(--card) 95%, var(--primary));
+  border: 1px solid var(--border);
 }
 
 /* ─── Type scale — utility classes ──────────────────────────────────
@@ -693,29 +763,31 @@
   font-family: var(--font-mono);
   font-size: 0.8125rem;
   font-weight: 500;
-  line-height: 1.55;
   font-variant-numeric: tabular-nums;
+  line-height: 1.55;
 }
 .pdpp-typed-sm {
   font-family: var(--font-mono);
   font-size: 0.6875rem;
   font-weight: 400;
-  line-height: 1.5;
   font-variant-numeric: tabular-nums;
+  line-height: 1.5;
 }
 .pdpp-eyebrow {
   font-family: var(--font-sans);
   font-size: 0.67rem;
   font-weight: 500;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
   color: var(--muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
 }
 
 /* ─── Focus policy — rings only for keyboards ─────────────────────── */
 .pdpp-sheet button:focus,
 .pdpp-table button:focus,
-.pdpp-btn:focus { outline: none; }
+.pdpp-btn:focus {
+  outline: none;
+}
 :is(button, a, input, [tabindex]):focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 1px;
@@ -725,36 +797,67 @@
    RECORD BODY — the one record renderer (record-render.tsx)
    Money hero, derived image, reading region, dual-key field rows.
    ═══════════════════════════════════════════════════════════════════ */
-.rr-recbody { display: flex; flex-direction: column; }
-.rr-recbody__empty { margin: 0; padding: 8px 0; font-size: 0.8rem; font-style: italic; color: var(--muted-foreground); }
+.rr-recbody {
+  display: flex;
+  flex-direction: column;
+}
+.rr-recbody__empty {
+  padding: 8px 0;
+  margin: 0;
+  font-size: 0.8rem;
+  font-style: italic;
+  color: var(--muted-foreground);
+}
 
 /* Money hero — the amount IS the record. */
-.rr-hero { display: flex; flex-direction: column; gap: 3px; padding: 4px 0 14px; }
+.rr-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 4px 0 14px;
+}
 .rr-hero--money .rr-hero__amount {
   font-family: var(--font-mono);
   font-size: 2rem;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
-  letter-spacing: -0.02em;
   line-height: 1;
+  letter-spacing: -0.02em;
 }
-.rr-hero__amount.is-neg { color: var(--foreground); }
-.rr-hero__cap { font-size: 0.8rem; color: var(--foreground); font-weight: 500; }
-.rr-hero__wire { font-size: 0.66rem; color: var(--muted-foreground); }
+.rr-hero__amount.is-neg {
+  color: var(--foreground);
+}
+.rr-hero__cap {
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--foreground);
+}
+.rr-hero__wire {
+  font-size: 0.66rem;
+  color: var(--muted-foreground);
+}
 
 /* Derived image field — heuristic, never declared. */
-.rr-rec-image { margin: 0 0 14px; display: flex; flex-direction: column; gap: 5px; }
+.rr-rec-image {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 0 0 14px;
+}
 .rr-rec-image__img {
+  display: block;
   width: 100%;
   height: 180px;
-  display: block;
   background-color: var(--muted);
-  background-position: center;
   background-repeat: no-repeat;
+  background-position: center;
   background-size: contain;
   border: 1px solid var(--border);
 }
-.rr-rec-image__cap { font-size: 0.66rem; color: var(--muted-foreground); }
+.rr-rec-image__cap {
+  font-size: 0.66rem;
+  color: var(--muted-foreground);
+}
 
 /* Long-text reading region. */
 .rr-bodytext {
@@ -762,15 +865,15 @@
   flex-direction: column;
   gap: 6px;
   padding: 12px 14px;
-  background: var(--muted);
   margin-bottom: 12px;
+  background: var(--muted);
 }
 .rr-bodytext__label {
   font-size: 0.66rem;
   font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
   color: var(--muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 .rr-bodytext__text {
   margin: 0;
@@ -781,7 +884,10 @@
 }
 
 /* Dual-key field rows — human label + the wire key a client receives. */
-.rr-flds { display: flex; flex-direction: column; }
+.rr-flds {
+  display: flex;
+  flex-direction: column;
+}
 .rr-fld {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -792,49 +898,79 @@
   padding: 10px 0;
   border-bottom: 1px solid var(--border);
 }
-.rr-fld:last-child { border-bottom: 0; }
-.rr-fld__id { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.rr-fld__label { font-size: 0.8rem; font-weight: 500; }
-.rr-fld__wire { font-family: var(--font-mono); font-size: 0.62rem; color: var(--muted-foreground); }
+.rr-fld:last-child {
+  border-bottom: 0;
+}
+.rr-fld__id {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.rr-fld__label {
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+.rr-fld__wire {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  color: var(--muted-foreground);
+}
 .rr-fld__val {
+  min-width: 0;
   font-family: var(--font-mono);
   font-size: 0.8rem;
   text-align: right;
   overflow-wrap: anywhere;
-  min-width: 0;
 }
-.rr-fld__val.is-num { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
+.rr-fld__val.is-num {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 /* Empty value — null/undefined/empty token, struck quiet, never blank. */
-.rr-fld__val.is-empty { color: var(--muted-foreground); font-style: italic; }
+.rr-fld__val.is-empty {
+  font-style: italic;
+  color: var(--muted-foreground);
+}
 
 /* ═══════════════════════════════════════════════════════════════════
    RHYTHM — run-history sparkline (rhythm.tsx)
    Oldest → newest. ok = quiet success, fail = louder warning.
    ═══════════════════════════════════════════════════════════════════ */
-.rr-rhythm { display: inline-flex; gap: 3px; align-items: center; }
+.rr-rhythm {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+}
 .rr-rhythm__tick {
   width: 6px;
   height: 14px;
   background: var(--success);
   opacity: 0.7;
 }
-.rr-rhythm__tick.is-fail { background: var(--warning); opacity: 1; }
+.rr-rhythm__tick.is-fail {
+  background: var(--warning);
+  opacity: 1;
+}
 
 /* ═══════════════════════════════════════════════════════════════════
    COPY-MONO — click-to-copy protocol id (copy-mono.tsx)
    ═══════════════════════════════════════════════════════════════════ */
 .rr-copyid {
+  padding: 0;
   font-family: var(--font-mono);
   font-size: 0.66rem;
   color: var(--muted-foreground);
+  white-space: nowrap;
+  cursor: pointer;
   background: none;
   border: 0;
-  padding: 0;
-  cursor: pointer;
-  white-space: nowrap;
   transition: color var(--motion-state);
 }
-.rr-copyid:hover { color: var(--primary); }
+.rr-copyid:hover {
+  color: var(--primary);
+}
 
 /* ═══════════════════════════════════════════════════════════════════
    SYNCS — the Runs route reskin (syncs-view.tsx).
@@ -842,31 +978,59 @@
    Health-first: a failure is a CARD with an action, not a row. All
    state color via tokens (success/warning only), radius 0.
    ═══════════════════════════════════════════════════════════════════ */
-.rr-sync { display: flex; flex-direction: column; gap: 26px; }
+.rr-sync {
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+}
 
-.rr-sync__masthead { display: flex; flex-direction: column; gap: 4px; }
+.rr-sync__masthead {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
 .rr-sync__title {
+  margin: 0;
   font-size: 1.3rem;
   font-weight: 800;
   letter-spacing: -0.02em;
-  margin: 0;
 }
-.rr-sync__sub { font-size: 0.82rem; color: var(--muted-foreground); margin: 0; max-width: 70ch; }
-.rr-sync__seeded { align-self: flex-start; margin-top: 4px; }
+.rr-sync__sub {
+  max-width: 70ch;
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--muted-foreground);
+}
+.rr-sync__seeded {
+  align-self: flex-start;
+  margin-top: 4px;
+}
 
-.rr-sync__fixes { display: flex; flex-direction: column; gap: 12px; }
-.rr-sync__duplicates { display: flex; flex-direction: column; gap: 10px; }
-.rr-sync__groups { display: flex; flex-direction: column; gap: 26px; }
+.rr-sync__fixes {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.rr-sync__duplicates {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.rr-sync__groups {
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+}
 .rr-sync__empty {
   padding: 18px;
   border: 1px solid var(--border);
 }
 .rr-sync__overflow {
+  max-width: 78ch;
   margin: -6px 0 0;
-  color: var(--muted-foreground);
   font-size: 0.74rem;
   line-height: 1.5;
-  max-width: 78ch;
+  color: var(--muted-foreground);
 }
 
 /* The health band holds only real stats (a balanced 2-up of numbers). The
@@ -878,13 +1042,15 @@
   gap: 8px;
 }
 .rr-sync-health__note {
+  max-width: 80ch;
   margin: 0;
   font-size: 0.74rem;
   line-height: 1.5;
   color: var(--muted-foreground);
-  max-width: 80ch;
 }
-.rr-sync-health .pdpp-band__cell.is-warn .pdpp-band__v { color: var(--warning); }
+.rr-sync-health .pdpp-band__cell.is-warn .pdpp-band__v {
+  color: var(--warning);
+}
 
 .rr-sync__fixes {
   display: flex;
@@ -898,18 +1064,18 @@
 }
 .rr-sync__fix-section-head {
   display: flex;
+  gap: 14px;
   align-items: baseline;
   justify-content: space-between;
-  gap: 14px;
-  border-bottom: 1px solid var(--border-strong);
   padding-bottom: 7px;
+  border-bottom: 1px solid var(--border-strong);
 }
 .rr-sync__fix-section-title {
   margin: 0;
   font-size: 0.78rem;
   font-weight: 700;
-  letter-spacing: 0.08em;
   text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 .rr-sync__fix-section-cards {
   display: flex;
@@ -952,23 +1118,49 @@
   border-color: var(--border-strong);
   box-shadow: inset 3px 0 0 var(--border-strong);
 }
-.rr-fix__body { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
-.rr-fix__title { font-size: 0.95rem; font-weight: 700; margin: 0; }
-.rr-fix__expl { font-size: 0.8rem; line-height: 1.55; color: var(--muted-foreground); margin: 0; max-width: 70ch; }
-.rr-fix__meta { font-family: var(--font-mono); font-size: 0.66rem; color: var(--muted-foreground); margin: 0; }
-.rr-fix__act { align-self: center; display: flex; align-items: center; }
+.rr-fix__body {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+.rr-fix__title {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+.rr-fix__expl {
+  max-width: 70ch;
+  margin: 0;
+  font-size: 0.8rem;
+  line-height: 1.55;
+  color: var(--muted-foreground);
+}
+.rr-fix__meta {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  color: var(--muted-foreground);
+}
+.rr-fix__act {
+  display: flex;
+  align-items: center;
+  align-self: center;
+}
 /* The `wait` branch has no button — the status is a quiet eyebrow anchored to
    the top of the card (aligned with the title), not floating mid-card. */
-.rr-fix[data-cta="wait"] .rr-fix__act { align-self: start; }
+.rr-fix[data-cta="wait"] .rr-fix__act {
+  align-self: start;
+}
 .rr-fix__waiting {
-  white-space: nowrap;
+  padding: 3px 8px;
   font-family: var(--font-mono);
   font-size: 0.62rem;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
   color: var(--muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
   box-shadow: inset 0 0 0 1px var(--border-strong);
-  padding: 3px 8px;
 }
 
 .rr-sync-duplicates {
@@ -979,24 +1171,24 @@
 .rr-sync-duplicates__eyebrow {
   display: block;
   margin-bottom: 5px;
-  color: var(--muted-foreground);
   font-family: var(--font-sans);
   font-size: 0.62rem;
-  letter-spacing: 0.06em;
+  color: var(--muted-foreground);
   text-transform: uppercase;
+  letter-spacing: 0.06em;
 }
 .rr-sync-duplicates__head {
   margin: 0;
-  color: var(--foreground);
   font-size: 0.84rem;
   font-weight: 700;
+  color: var(--foreground);
 }
 .rr-sync-duplicates__note {
+  max-width: 72ch;
   margin: 5px 0 0;
-  color: var(--muted-foreground);
   font-size: 0.76rem;
   line-height: 1.55;
-  max-width: 72ch;
+  color: var(--muted-foreground);
 }
 .rr-sync-duplicates__link {
   display: inline-block;
@@ -1022,40 +1214,57 @@
 
 /* Per-connection group. content-visibility skips layout/paint for off-screen
    groups so scroll performance stays fast even at the ~134-row catalogue ceiling. */
-.rr-sync-group { display: flex; flex-direction: column; gap: 8px; content-visibility: auto; contain-intrinsic-size: 0 var(--sync-group-intrinsic, 300px); }
+.rr-sync-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  contain-intrinsic-size: 0 var(--sync-group-intrinsic, 300px);
+  content-visibility: auto;
+}
 .rr-sync-group__head {
   display: flex;
-  align-items: baseline;
   gap: 10px;
+  align-items: baseline;
   padding-bottom: 2px;
 }
 .rr-sync-group__dot {
+  flex-shrink: 0;
+  align-self: center;
   width: 7px;
   height: 7px;
-  align-self: center;
-  flex-shrink: 0;
 }
-.rr-sync-group__dot.is-ok { background: var(--success); }
-.rr-sync-group__dot.is-fail { background: var(--warning); }
-.rr-sync-group__name { font-size: 0.9rem; font-weight: 700; }
+.rr-sync-group__dot.is-ok {
+  background: var(--success);
+}
+.rr-sync-group__dot.is-fail {
+  background: var(--warning);
+}
+.rr-sync-group__name {
+  font-size: 0.9rem;
+  font-weight: 700;
+}
 .rr-sync-group__status {
   font-family: var(--font-sans);
   font-size: 0.61rem;
   font-weight: 700;
-  letter-spacing: 0.06em;
   text-transform: uppercase;
+  letter-spacing: 0.06em;
   white-space: nowrap;
 }
-.rr-sync-group__status.is-ok { color: var(--success); }
-.rr-sync-group__status.is-fail { color: var(--warning); }
+.rr-sync-group__status.is-ok {
+  color: var(--success);
+}
+.rr-sync-group__status.is-fail {
+  color: var(--warning);
+}
 .rr-sync-group__cin {
-  font-family: var(--font-mono);
-  font-size: 0.62rem;
-  color: var(--muted-foreground);
   flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  color: var(--muted-foreground);
   white-space: nowrap;
 }
 .rr-sync-group__count {
@@ -1066,8 +1275,8 @@
 }
 .rr-sync-group__last-run {
   display: flex;
-  align-items: center;
   gap: 8px;
+  align-items: center;
   margin-left: auto;
   font-size: 0.72rem;
   color: var(--muted-foreground);
@@ -1083,28 +1292,44 @@
   white-space: nowrap;
 }
 .rr-sync-group__run-link {
-  color: var(--foreground);
   font-size: 0.68rem;
   font-weight: 700;
+  color: var(--foreground);
   white-space: nowrap;
   text-decoration: none;
 }
-.rr-sync-group__run-link:hover { text-decoration: underline; }
+.rr-sync-group__run-link:hover {
+  text-decoration: underline;
+}
 
 /* Sync row — composed over the kit Table (pdpp-table__row). */
-.rr-sync-row-shell { margin: 0; }
-.rr-sync-row-shell > summary { list-style: none; }
-.rr-sync-row-shell > summary::-webkit-details-marker { display: none; }
-.rr-sync-row-shell[open] .rr-sync-row { border-bottom-color: transparent; }
-.rr-sync-row { cursor: pointer; transition: background var(--motion-state); }
-.rr-sync-row:hover { background: var(--muted); }
+.rr-sync-row-shell {
+  margin: 0;
+}
+.rr-sync-row-shell > summary {
+  list-style: none;
+}
+.rr-sync-row-shell > summary::-webkit-details-marker {
+  display: none;
+}
+.rr-sync-row-shell[open] .rr-sync-row {
+  border-bottom-color: transparent;
+}
+/* biome-ignore lint/style/noDescendingSpecificity: the preceding open-state selector intentionally wins by higher specificity. */
+.rr-sync-row {
+  cursor: pointer;
+  transition: background var(--motion-state);
+}
+.rr-sync-row:hover {
+  background: var(--muted);
+}
 .rr-sync-row__stream {
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-family: var(--font-sans);
   font-size: 0.8125rem;
   font-weight: 500;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .rr-sync-row__cadence {
   font-family: var(--font-mono);
@@ -1116,35 +1341,43 @@
   display: flex;
   flex-direction: column;
   gap: 1px;
+  min-width: 0;
   font-size: 0.78rem;
   font-weight: 500;
-  min-width: 0;
 }
-.rr-sync-row__delta.is-quiet { color: var(--muted-foreground); font-weight: 400; }
-.rr-sync-row__delta.is-failed { color: var(--warning); font-weight: 600; }
+.rr-sync-row__delta.is-quiet {
+  font-weight: 400;
+  color: var(--muted-foreground);
+}
+.rr-sync-row__delta.is-failed {
+  font-weight: 600;
+  color: var(--warning);
+}
 .rr-sync-row__when {
   font-family: var(--font-mono);
   font-size: 0.62rem;
-  color: var(--muted-foreground);
   font-weight: 400;
+  color: var(--muted-foreground);
 }
 .rr-sync-row__empty {
-  color: var(--muted-foreground);
   font-weight: 400;
+  color: var(--muted-foreground);
 }
 .rr-sync-row__coverage {
   font-size: 0.69rem;
-  color: var(--muted-foreground);
   font-weight: 400;
+  color: var(--muted-foreground);
 }
 .rr-sync-row__next {
   font-family: var(--font-mono);
   font-size: 0.69rem;
+  font-variant-numeric: tabular-nums;
   color: var(--muted-foreground);
   white-space: nowrap;
-  font-variant-numeric: tabular-nums;
 }
-.rr-sync-row.is-failed .rr-sync-row__next { color: var(--warning); }
+.rr-sync-row.is-failed .rr-sync-row__next {
+  color: var(--warning);
+}
 
 /* ── Sync table mobile card reflow (≤640px) ──────────────────────────
    The Syncs list is composed over the kit Table (5-column pdpp-table
@@ -1158,25 +1391,26 @@
   .rr-sync .pdpp-table__hrow {
     display: none;
   }
+  /* biome-ignore lint/style/noDescendingSpecificity: the open-state border override must remain more specific across this mobile layout rule. */
   .rr-sync .rr-sync-row {
     display: flex;
     flex-wrap: wrap;
-    align-items: baseline;
     gap: 4px 12px;
+    align-items: baseline;
     padding: 12px 0;
   }
   /* All cells drop their grid sizing in card mode. */
   .rr-sync .rr-sync-row > * {
+    justify-self: auto;
     width: auto;
     text-align: left;
-    justify-self: auto;
   }
   /* Stream leads on its own full-width line. */
   .rr-sync .rr-sync-row__stream {
     flex: 1 0 100%;
     font-size: 0.875rem;
-    white-space: normal;
     overflow-wrap: anywhere;
+    white-space: normal;
   }
   /* Next refresh aligns to the trailing edge of the meta line. */
   .rr-sync .rr-sync-row__next {
@@ -1187,14 +1421,16 @@
 
 /* Expanded detail under a sync row. */
 .rr-sync-detail {
-  padding: 12px 2px 14px;
-  border-bottom: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   gap: 10px;
   align-items: flex-start;
+  padding: 12px 2px 14px;
+  border-bottom: 1px solid var(--border);
 }
-.rr-sync-detail__browse { font-size: 0.72rem; }
+.rr-sync-detail__browse {
+  font-size: 0.72rem;
+}
 
 /* ═══════════════════════════════════════════════════════════════════
    STANDING — the Overview ("home as point of view") view.
@@ -1210,46 +1446,46 @@
 
 /* ─── The hero: the one truth, set large ─── */
 .rr-stand-hero {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 12px;
   padding: 30px 32px 28px;
   border: 1px solid var(--border-strong);
-  position: relative;
 }
 .rr-stand-hero__kicker {
   font-family: var(--font-sans);
   font-size: 0.7rem;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
   color: var(--muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
 }
 .rr-stand-hero__line {
+  max-width: 22ch;
+  margin: 0;
   font-family: var(--font-sans);
   font-size: 2.4rem;
   font-weight: 700;
   line-height: 1.1;
   letter-spacing: -0.025em;
-  margin: 0;
-  max-width: 22ch;
   text-wrap: balance;
 }
 .rr-stand-hero__line em {
   font-style: normal;
 }
 .rr-stand-hero__sub {
+  max-width: 60ch;
+  margin: 2px 0 0;
   font-size: 0.95rem;
   line-height: 1.55;
   color: var(--muted-foreground);
-  margin: 2px 0 0;
-  max-width: 60ch;
 }
 .rr-stand-hero__foot {
   display: flex;
-  align-items: center;
-  gap: 16px;
-  margin-top: 8px;
   flex-wrap: wrap;
+  gap: 16px;
+  align-items: center;
+  margin-top: 8px;
 }
 
 /* Tone: calm — the one place warmth is spent */
@@ -1266,33 +1502,33 @@
   box-shadow: inset 3px 0 0 var(--human);
 }
 .rr-stand-hero.is-decide .rr-stand-hero__line em {
-  color: var(--human);
   font-weight: 700;
+  color: var(--human);
 }
 
 /* Tone: alarm — something needs you */
 .rr-stand-hero.is-alarm {
+  background: var(--warning-tint);
   border-color: var(--warning);
   box-shadow: inset 3px 0 0 var(--warning);
-  background: var(--warning-tint);
 }
 .rr-stand-hero.is-alarm .rr-stand-hero__line em {
-  color: var(--warning);
   font-weight: 700;
+  color: var(--warning);
 }
 
 /* ─── Section link affordance ─── */
 .rr-link {
+  padding: 0;
   font-family: var(--font-sans);
   font-size: 0.78rem;
   font-weight: 600;
   color: var(--primary);
+  white-space: nowrap;
+  text-decoration: none;
+  cursor: pointer;
   background: none;
   border: 0;
-  padding: 0;
-  cursor: pointer;
-  text-decoration: none;
-  white-space: nowrap;
 }
 .rr-link:hover {
   text-decoration: underline;
@@ -1320,67 +1556,66 @@
    WRAPS up to two lines and stays readable; the disposable machine client_id
    is the only part that truncates (full value on hover via title=). */
 .rr-bearer__id {
-  grid-column: 1;
-  grid-row: 1;
   display: flex;
   flex-direction: column;
+  grid-row: 1;
+  grid-column: 1;
   gap: 1px;
   min-width: 0;
 }
 .rr-bearer__who {
-  font-size: 0.95rem;
-  font-weight: 700;
-  min-width: 0;
-  /* The name wins: wrap to at most two lines rather than ellipsis-truncate. */
   display: -webkit-box;
   -webkit-box-orient: vertical;
+  min-width: 0;
+  overflow: hidden;
   -webkit-line-clamp: 2;
   line-clamp: 2;
-  overflow: hidden;
+  font-size: 0.95rem;
+  font-weight: 700;
   overflow-wrap: anywhere;
 }
 .rr-bearer__client {
-  font-family: var(--font-sans);
-  font-size: 0.64rem;
-  color: var(--muted-foreground);
   min-width: 0;
   /* The disposable machine id truncates instead of crowding the row. */
   overflow: hidden;
   text-overflow: ellipsis;
+  font-family: var(--font-sans);
+  font-size: 0.64rem;
+  color: var(--muted-foreground);
   white-space: nowrap;
 }
 .rr-bearer__tag {
-  grid-column: 2;
   grid-row: 1;
+  grid-column: 2;
   align-self: baseline;
+  padding: 2px 7px;
   font-family: var(--font-mono);
   font-size: 0.6rem;
   font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
   color: var(--human);
-  padding: 2px 7px;
-  box-shadow: inset 0 0 0 1px var(--human);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
   white-space: nowrap;
+  box-shadow: inset 0 0 0 1px var(--human);
 }
 .rr-bearer__how {
+  grid-row: 2;
+  grid-column: 1 / 3;
   font-family: var(--font-mono);
   font-size: 0.68rem;
   color: var(--muted-foreground);
-  grid-column: 1 / 3;
-  grid-row: 2;
   overflow-wrap: anywhere;
 }
 .rr-bearer__row .rr-rel__revoke {
   grid-row: 1 / span 2;
   grid-column: 3;
-  opacity: 1;
   align-self: center;
   white-space: nowrap;
+  opacity: 1;
 }
 .rr-bearer__note {
-  margin: 0;
   padding: 11px 16px 13px;
+  margin: 0;
   font-size: 0.78rem;
   line-height: 1.55;
   color: var(--muted-foreground);
@@ -1390,8 +1625,8 @@
 .rr-bearer__more {
   display: block;
   padding: 10px 16px;
-  border-top: 1px solid var(--border);
   white-space: normal;
+  border-top: 1px solid var(--border);
 }
 
 /* ─── Two-question grid ─── */
@@ -1407,27 +1642,27 @@
 }
 .rr-stand-block__head {
   display: flex;
-  justify-content: space-between;
-  align-items: baseline;
   gap: 12px;
-  border-bottom: 1px solid var(--border-strong);
+  align-items: baseline;
+  justify-content: space-between;
   padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-strong);
 }
 .rr-stand-block__title {
+  margin: 0;
   font-family: var(--font-sans);
   font-size: 1.05rem;
   font-weight: 700;
   letter-spacing: -0.01em;
-  margin: 0;
 }
 /* Header links wrapper — lets a block head carry more than one link (e.g. the
    grant-package discovery link beside "all grants →") without breaking the
    space-between layout. */
 .rr-stand-block__links {
   display: inline-flex;
-  align-items: baseline;
-  gap: 14px;
   flex-wrap: wrap;
+  gap: 14px;
+  align-items: baseline;
   justify-content: flex-end;
 }
 
@@ -1440,9 +1675,9 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 2px 12px;
+  align-items: baseline;
   padding: 12px 0;
   border-bottom: 1px solid var(--border);
-  align-items: baseline;
 }
 .rr-rel:last-child {
   border-bottom: 0;
@@ -1454,8 +1689,8 @@
 .rr-rel__reads {
   grid-column: 1;
   font-size: 0.84rem;
-  color: var(--muted-foreground);
   line-height: 1.45;
+  color: var(--muted-foreground);
 }
 .rr-rel__meta {
   grid-column: 1;
@@ -1463,21 +1698,22 @@
   font-size: 0.64rem;
   color: var(--muted-foreground);
 }
+/* biome-ignore lint/style/noDescendingSpecificity: the bearer-row override intentionally retains its more-specific grid placement. */
 .rr-rel__revoke {
   grid-row: 1 / span 2;
   grid-column: 2;
   align-self: center;
+  padding: 4px 2px;
   font-family: var(--font-sans);
   font-size: 0.78rem;
   font-weight: 600;
   color: var(--destructive);
+  text-decoration: none;
+  cursor: pointer;
   background: none;
   border: 0;
-  padding: 4px 2px;
-  cursor: pointer;
   opacity: 0;
   transition: opacity var(--motion-state);
-  text-decoration: none;
 }
 .rr-rel:hover .rr-rel__revoke,
 .rr-rel:focus-within .rr-rel__revoke {
@@ -1497,16 +1733,16 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
+  align-items: baseline;
   padding: 11px 0;
   border-bottom: 1px solid var(--border);
-  align-items: baseline;
 }
 .rr-lately__row:last-child {
   border-bottom: 0;
 }
 .rr-lately__row.is-deny {
-  box-shadow: inset 2px 0 0 var(--warning);
   padding-left: 10px;
+  box-shadow: inset 2px 0 0 var(--warning);
 }
 .rr-lately__text {
   font-size: 0.84rem;
@@ -1531,17 +1767,17 @@
 }
 .rr-attn__section-head {
   display: flex;
+  gap: 12px;
   align-items: baseline;
   justify-content: space-between;
-  gap: 12px;
   padding: 2px 0 6px;
 }
 .rr-attn__section-title {
   margin: 0;
   font-size: 0.78rem;
   font-weight: 700;
-  letter-spacing: 0.06em;
   text-transform: uppercase;
+  letter-spacing: 0.06em;
 }
 .rr-attn__section-count {
   font-family: var(--font-mono);
@@ -1555,9 +1791,9 @@
   gap: 4px 12px;
   align-items: baseline;
   padding: 12px 0;
+  padding-left: 12px;
   border-bottom: 1px solid var(--border);
   box-shadow: inset 2px 0 0 var(--warning);
-  padding-left: 12px;
 }
 .rr-attn__row.is-owner {
   box-shadow: inset 3px 0 0 var(--destructive);
@@ -1582,15 +1818,15 @@
   grid-column: 1;
   font-family: var(--font-mono);
   font-size: 0.68rem;
-  color: var(--muted-foreground);
   line-height: 1.45;
+  color: var(--muted-foreground);
 }
 
 /* All clear */
 .rr-allclear {
   display: flex;
-  align-items: center;
   gap: 12px;
+  align-items: center;
   padding: 16px 18px;
   border: 1px solid var(--border);
   box-shadow: inset 3px 0 0 var(--human);
@@ -1600,9 +1836,9 @@
   color: var(--foreground);
 }
 .rr-stand-empty {
+  margin: 8px 0 0;
   font-size: 0.84rem;
   color: var(--muted-foreground);
-  margin: 8px 0 0;
 }
 
 /* ─── Responsive ─── */
@@ -1631,22 +1867,22 @@
     gap: 6px 10px;
   }
   .rr-bearer__id {
-    grid-column: 1 / -1;
     grid-row: 1;
+    grid-column: 1 / -1;
   }
   .rr-bearer__tag {
-    grid-column: 1;
     grid-row: 2;
+    grid-column: 1;
     align-self: center;
     justify-self: start;
   }
   .rr-bearer__how {
-    grid-column: 1 / -1;
     grid-row: 3;
+    grid-column: 1 / -1;
   }
   .rr-bearer__row .rr-rel__revoke {
-    grid-column: 2;
     grid-row: 2;
+    grid-column: 2;
     align-self: center;
   }
 }
@@ -1731,34 +1967,34 @@
   margin-bottom: 14px;
 }
 .rr-x-views__label {
+  margin-bottom: 4px;
   font-family: var(--font-sans);
   font-size: 10px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
   color: var(--muted-foreground);
-  margin-bottom: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
 }
 .rr-x-views__item {
   display: flex;
+  gap: 8px;
   align-items: baseline;
   justify-content: space-between;
-  gap: 8px;
   padding: 3px 6px;
-  border-radius: var(--radius-control);
   font-family: var(--font-sans);
   font-size: 13px;
   color: var(--foreground);
+  border-radius: var(--radius-control);
 }
 .rr-x-views__item.is-active {
+  font-weight: 500;
   color: var(--primary);
   background: color-mix(in oklab, var(--primary) 8%, transparent);
-  font-weight: 500;
 }
 .rr-x-views__count {
   font-family: var(--font-mono);
   font-size: 11px;
-  color: var(--muted-foreground);
   font-variant-numeric: tabular-nums;
+  color: var(--muted-foreground);
 }
 
 /* ── Saved-view tabs (R5) ──────────────────────────────────────────
@@ -1769,44 +2005,46 @@
    chrome height. */
 .rr-x-views-tabs {
   display: flex;
-  align-items: center;
   gap: 4px;
+  align-items: center;
+  padding: 4px 0 2px;
   overflow-x: auto;
   scrollbar-width: none;
-  padding: 4px 0 2px;
 }
 .rr-x-views-tabs::-webkit-scrollbar {
   display: none;
 }
 .rr-x-views-tab-wrap {
   display: inline-flex;
-  align-items: center;
   flex: 0 0 auto;
+  align-items: center;
 }
 .rr-x-views-tab {
   display: inline-flex;
-  align-items: baseline;
-  gap: 6px;
   flex: 0 0 auto;
+  gap: 6px;
+  align-items: baseline;
   padding: 3px 9px;
-  border: 0;
-  border-radius: var(--radius-control);
-  background: transparent;
-  color: var(--muted-foreground);
   font-family: var(--font-sans);
   font-size: 13px;
+  color: var(--muted-foreground);
   white-space: nowrap;
   cursor: pointer;
-  transition: background var(--motion-state), color var(--motion-state);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-control);
+  transition:
+    background var(--motion-state),
+    color var(--motion-state);
 }
 .rr-x-views-tab:hover {
-  background: var(--muted);
   color: var(--foreground);
+  background: var(--muted);
 }
 .rr-x-views-tab.is-active {
+  font-weight: 500;
   color: var(--primary);
   background: color-mix(in oklab, var(--primary) 8%, transparent);
-  font-weight: 500;
 }
 .rr-x-views-tab__name {
   white-space: nowrap;
@@ -1815,8 +2053,8 @@
 .rr-x-views-tab__count {
   font-family: var(--font-mono);
   font-size: 11px;
-  color: var(--muted-foreground);
   font-variant-numeric: tabular-nums;
+  color: var(--muted-foreground);
 }
 .rr-x-views-tab.is-active .rr-x-views-tab__count {
   color: var(--primary);
@@ -1824,16 +2062,18 @@
 /* Quiet × delete, revealed on hover of the saved-tab wrapper. */
 .rr-x-views-tab__del {
   flex: 0 0 auto;
-  margin-left: -2px;
   padding: 0 4px;
-  border: 0;
-  background: transparent;
-  color: var(--muted-foreground);
+  margin-left: -2px;
   font-size: 13px;
   line-height: 1;
+  color: var(--muted-foreground);
   cursor: pointer;
+  background: transparent;
+  border: 0;
   opacity: 0;
-  transition: opacity var(--motion-state), color var(--motion-state);
+  transition:
+    opacity var(--motion-state),
+    color var(--motion-state);
 }
 .rr-x-views-tab-wrap:hover .rr-x-views-tab__del,
 .rr-x-views-tab__del:focus-visible {
@@ -1850,12 +2090,12 @@
   flex: 0 0 auto;
   width: 7.5rem;
   padding: 2px 8px;
-  border: 1px solid var(--primary);
-  border-radius: var(--radius-control);
-  background: var(--card);
-  color: var(--foreground);
   font-family: var(--font-sans);
   font-size: 13px;
+  color: var(--foreground);
+  background: var(--card);
+  border: 1px solid var(--primary);
+  border-radius: var(--radius-control);
 }
 
 .rr-x-facets {
@@ -1865,27 +2105,27 @@
 }
 .rr-x-facets__label {
   display: flex;
+  gap: 8px;
   align-items: baseline;
   justify-content: space-between;
-  gap: 8px;
-  font-family: var(--font-sans);
-  font-size: 10px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--muted-foreground);
   padding-bottom: 8px;
-  border-bottom: 1px solid var(--border-strong);
   /* Give the section eyebrow real room below before the first facet row. */
   margin-bottom: 8px;
+  font-family: var(--font-sans);
+  font-size: 10px;
+  color: var(--muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  border-bottom: 1px solid var(--border-strong);
 }
 /* F4: the "N in view" magnitude badge beside a facet section eyebrow, so the
    stream rail reads as a bounded, countable set rather than an endless wall. */
 .rr-x-facets__count {
   font-family: var(--font-mono);
   font-size: 9px;
-  letter-spacing: 0.04em;
-  color: var(--muted-foreground);
   font-variant-numeric: tabular-nums;
+  color: var(--muted-foreground);
+  letter-spacing: 0.04em;
   white-space: nowrap;
 }
 /* F4: capped, scrollable facet region. A long stream list (≈70 streams) scrolls
@@ -1902,25 +2142,25 @@
   overflow-y: auto;
 }
 .rr-x-facets__note {
-  font-size: 10.5px;
-  color: var(--muted-foreground);
   padding: 0 0 4px;
+  font-size: 10.5px;
   line-height: 1.4;
+  color: var(--muted-foreground);
 }
 /* W4: "search within filters" box — tames many sources/streams without a flat
    wall (prior art: Datadog/Linear search-in-filter). Reuses the form-control
    tokens (border, radius, ring) so it matches the rest of the console. */
 .rr-x-facets__search {
-  width: 100%;
   box-sizing: border-box;
+  width: 100%;
+  padding: 5px 8px;
+  margin-bottom: 6px;
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--foreground);
   background: var(--input);
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
-  padding: 5px 8px;
-  margin-bottom: 6px;
   transition: border-color var(--motion-state);
 }
 .rr-x-facets__search::placeholder {
@@ -1939,13 +2179,13 @@
 }
 .rr-x-source-group__summary {
   display: flex;
+  gap: 8px;
   align-items: baseline;
   justify-content: space-between;
-  gap: 8px;
-  list-style: none;
-  cursor: pointer;
   padding: 7px 0;
   color: var(--muted-foreground);
+  cursor: pointer;
+  list-style: none;
   transition: color var(--motion-state);
 }
 .rr-x-source-group__summary::-webkit-details-marker {
@@ -1957,9 +2197,9 @@
 /* A quiet disclosure caret (▸ collapsed / ▾ open) so the parent reads as a group
    the owner can fold, without a heavy icon. */
 .rr-x-source-group__summary::before {
-  content: "▸";
   font-size: 9px;
   color: var(--muted-foreground);
+  content: "▸";
   transition: transform var(--motion-state);
 }
 .rr-x-source-group[open] > .rr-x-source-group__summary::before {
@@ -1968,11 +2208,11 @@
 .rr-x-source-group__name {
   flex: 1;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: 12.5px;
   font-weight: 600;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .rr-x-source-group__n {
   font-family: var(--font-sans);
@@ -1990,14 +2230,14 @@
    text affordance, never a heavy button, matching the rail's lens vocabulary. */
 .rr-x-source-group__more {
   align-self: flex-start;
+  padding: 4px 0;
   font-family: var(--font-mono);
   font-size: 10px;
-  letter-spacing: 0.04em;
   color: var(--muted-foreground);
+  letter-spacing: 0.04em;
+  cursor: pointer;
   background: none;
   border: 0;
-  padding: 4px 0;
-  cursor: pointer;
   transition: color var(--motion-state);
 }
 .rr-x-source-group__more:hover {
@@ -2010,25 +2250,25 @@
   align-items: baseline;
   min-height: 34px;
   padding: 6px 0;
-  background: none;
-  border: 0;
   color: var(--muted-foreground);
   text-align: left;
   cursor: pointer;
+  background: none;
+  border: 0;
   transition: color var(--motion-state);
 }
 .rr-x-facet:hover {
   color: var(--foreground);
 }
 .rr-x-facet.is-on {
-  color: var(--foreground);
   font-weight: 600;
+  color: var(--foreground);
 }
 .rr-x-facet__name {
-  font-size: 12.5px;
-  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  font-size: 12.5px;
+  white-space: nowrap;
 }
 .rr-x-facet__name--mono {
   font-family: var(--font-mono);
@@ -2041,9 +2281,9 @@
 .rr-x-facet__flag {
   font-family: var(--font-mono);
   font-size: 9px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
   color: var(--muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
 }
 .rr-x-facet__flag.is-warn {
   color: var(--warning);
@@ -2059,9 +2299,9 @@
 .rr-x-facet__inview {
   font-family: var(--font-mono);
   font-size: 8.5px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
   color: var(--muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
   /* Sidebar count contrast (verifier polish): lifted from 0.75 so the "in view"
      qualifier is legible, not a ghost. */
   opacity: 0.9;
@@ -2071,8 +2311,8 @@
 .rr-x-facet-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  align-items: baseline;
   gap: 6px;
+  align-items: baseline;
 }
 .rr-x-facet-row .rr-x-facet {
   min-width: 0;
@@ -2080,16 +2320,18 @@
 /* The "is not" exclude toggle (⊘). Quiet by default; turns warning-colored when
    active so an exclusion reads as a distinct, intentional negative scope. */
 .rr-x-facet-not {
+  padding: 4px 5px;
   font-family: var(--font-sans);
   font-size: 12px;
   line-height: 1;
   color: var(--muted-foreground);
+  cursor: pointer;
   background: none;
   border: 0;
-  padding: 4px 5px;
-  cursor: pointer;
   opacity: 0.45;
-  transition: opacity var(--motion-state), color var(--motion-state);
+  transition:
+    opacity var(--motion-state),
+    color var(--motion-state);
 }
 .rr-x-facet-row:hover .rr-x-facet-not {
   opacity: 0.8;
@@ -2100,53 +2342,55 @@
 }
 /* An excluded row strikes through the name so "everything except X" is legible. */
 .rr-x-facet-row.is-excluded .rr-x-facet__name {
+  color: var(--warning);
   text-decoration: line-through;
   text-decoration-thickness: 1px;
-  color: var(--warning);
 }
 
 /* ─── Inline marks (image / derived title) ─── */
 .rr-x-mark {
-  font-family: var(--font-sans);
-  font-size: 0.6rem;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--muted-foreground);
-  box-shadow: inset 0 0 0 1px var(--border-strong);
   padding: 1px 5px;
   margin-right: 7px;
+  font-family: var(--font-sans);
+  font-size: 0.6rem;
   vertical-align: 1px;
+  color: var(--muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  box-shadow: inset 0 0 0 1px var(--border-strong);
 }
 
 /* ─── Lens / link controls ─── */
 .rr-lens {
+  padding: 3px 8px;
   font-family: var(--font-sans);
   font-size: 10px;
-  letter-spacing: 0.04em;
   color: var(--muted-foreground);
+  letter-spacing: 0.04em;
+  cursor: pointer;
   background: none;
   border: 1px solid var(--border-strong);
-  padding: 3px 8px;
-  cursor: pointer;
-  transition: color var(--motion-state), border-color var(--motion-state);
+  transition:
+    color var(--motion-state),
+    border-color var(--motion-state);
 }
 .rr-lens:hover {
   color: var(--foreground);
 }
 .rr-lens.is-on {
   color: var(--primary);
-  border-color: var(--primary);
   background: var(--primary-tint);
+  border-color: var(--primary);
 }
 .rr-link {
+  padding: 0;
   font-family: var(--font-sans);
   font-size: 10px;
   color: var(--primary);
+  text-decoration: none;
+  cursor: pointer;
   background: none;
   border: 0;
-  padding: 0;
-  cursor: pointer;
-  text-decoration: none;
 }
 .rr-link:hover {
   text-decoration: underline;
@@ -2154,10 +2398,10 @@
 
 /* ─── Controls ─── */
 .rr-x-main {
-  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 16px;
+  min-width: 0;
 }
 .rr-x-controls {
   display: flex;
@@ -2171,15 +2415,15 @@
 }
 .rr-x-search {
   flex: 1 1 auto;
+  width: auto;
   /* min-width: 280px ensures the placeholder is never truncated on desktop;
      the flex item still shrinks below this on very narrow viewports (mobile
      is governed by the column-direction override in the phone media query). */
   min-width: 280px;
-  width: auto;
 }
 .rr-x-searchcommit {
-  align-self: center;
   flex-shrink: 0;
+  align-self: center;
 }
 /* D12: sort + Options controls sub-row. On desktop this is a transparent flex
    wrapper — sort and Options items sit inline in the parent searchrow. On mobile
@@ -2189,16 +2433,16 @@
 }
 .rr-x-sort {
   display: flex;
-  align-items: center;
-  gap: 6px;
   flex-shrink: 0;
+  gap: 6px;
+  align-items: center;
 }
 .rr-x-sort__label {
   font-family: var(--font-sans);
   font-size: 9px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
   color: var(--muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 /* (.rr-x-ranges removed — the four standalone date buttons were replaced by the
    single Date chip below; the class is no longer rendered.) */
@@ -2221,31 +2465,33 @@
 .rr-x-datechip__chip {
   display: inline-flex;
   align-items: center;
+  white-space: nowrap;
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
-  white-space: nowrap;
-  transition: border-color var(--motion-state), background var(--motion-state);
+  transition:
+    border-color var(--motion-state),
+    background var(--motion-state);
 }
 .rr-x-datechip__chip:hover {
   border-color: var(--border-strong);
 }
 /* Active window: the chip reads as a live filter (primary tint), like a chip. */
 .rr-x-datechip__chip.is-active {
-  border-color: var(--primary);
   background: var(--primary-tint);
+  border-color: var(--primary);
 }
 .rr-x-datechip__trigger {
   display: inline-flex;
-  align-items: center;
   gap: 6px;
+  align-items: center;
+  padding: 4px 8px;
   font-family: var(--font-sans);
   font-size: 12px;
   color: var(--muted-foreground);
+  white-space: nowrap;
+  cursor: pointer;
   background: none;
   border: 0;
-  cursor: pointer;
-  padding: 4px 8px;
-  white-space: nowrap;
   transition: color var(--motion-state);
 }
 .rr-x-datechip__chip:hover .rr-x-datechip__trigger,
@@ -2266,39 +2512,41 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  padding: 4px 6px 4px 2px;
   font-size: 11px;
   line-height: 1;
   color: var(--primary);
+  cursor: pointer;
   background: none;
   border: 0;
-  opacity: 0.7;
-  cursor: pointer;
   border-radius: 2px;
-  padding: 4px 6px 4px 2px;
+  opacity: 0.7;
 }
 .rr-x-datechip__x:hover,
 .rr-x-datechip__x:focus-visible {
-  opacity: 1;
   outline: none;
   background: color-mix(in oklab, var(--primary) 15%, var(--background));
+  opacity: 1;
 }
 /* The popover — same card/elevation grammar as the Options disclosure body. */
 .rr-x-datechip__popover {
   position: absolute;
-  z-index: 50;
   top: calc(100% + 4px);
   left: 0;
-  width: min(280px, calc(100vw - 32px));
-  max-width: min(280px, calc(100vw - 32px));
+  z-index: 50;
   display: flex;
   flex-direction: column;
   gap: 12px;
+  width: min(280px, calc(100vw - 32px));
+  max-width: min(280px, calc(100vw - 32px));
   padding: 12px;
   background: var(--card);
   border: 1px solid var(--border-strong);
-  border-top: 2px solid color-mix(in oklab, var(--primary) 40%, var(--border-strong));
-  box-shadow: 0 4px 16px -2px color-mix(in oklab, var(--foreground) 18%, transparent),
-              0 1px 4px -1px color-mix(in oklab, var(--foreground) 10%, transparent);
+  border-top: 2px solid
+    color-mix(in oklab, var(--primary) 40%, var(--border-strong));
+  box-shadow:
+    0 4px 16px -2px color-mix(in oklab, var(--foreground) 18%, transparent),
+    0 1px 4px -1px color-mix(in oklab, var(--foreground) 10%, transparent);
 }
 .rr-x-datechip__presets {
   display: flex;
@@ -2306,16 +2554,18 @@
   gap: 2px;
 }
 .rr-x-datechip__preset {
+  padding: 6px 8px;
   font-family: var(--font-sans);
   font-size: 13px;
-  text-align: left;
   color: var(--foreground);
+  text-align: left;
+  cursor: pointer;
   background: none;
   border: 0;
   border-radius: var(--radius-control);
-  padding: 6px 8px;
-  cursor: pointer;
-  transition: background var(--motion-state), color var(--motion-state);
+  transition:
+    background var(--motion-state),
+    color var(--motion-state);
 }
 .rr-x-datechip__preset:hover {
   background: color-mix(in oklab, var(--foreground) 5%, transparent);
@@ -2326,9 +2576,9 @@
 }
 /* The active preset reads as selected (the radio's current value). */
 .rr-x-datechip__preset.is-on {
+  font-weight: 500;
   color: var(--primary);
   background: var(--primary-tint);
-  font-weight: 500;
 }
 .rr-x-datechip__custom {
   display: flex;
@@ -2341,9 +2591,9 @@
   font-family: var(--font-sans);
   font-size: 10px;
   font-weight: 600;
+  color: var(--muted-foreground);
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--muted-foreground);
 }
 .rr-x-datechip__fields {
   display: flex;
@@ -2351,9 +2601,9 @@
 }
 .rr-x-datechip__field {
   display: flex;
+  flex: 1 1 0;
   flex-direction: column;
   gap: 3px;
-  flex: 1 1 0;
   min-width: 0;
 }
 .rr-x-datechip__field-label {
@@ -2363,15 +2613,15 @@
 }
 /* The literal date inputs are MACHINE values → mono (the mono-rule). */
 .rr-x-datechip__date {
+  width: 100%;
+  min-width: 0;
+  padding: 5px 6px;
   font-family: var(--font-mono);
   font-size: 12px;
   color: var(--foreground);
   background: var(--background);
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
-  padding: 5px 6px;
-  width: 100%;
-  min-width: 0;
 }
 .rr-x-datechip__date:focus-visible {
   outline: 2px solid color-mix(in oklab, var(--ring) 35%, transparent);
@@ -2380,22 +2630,22 @@
 }
 .rr-x-datechip__apply {
   align-self: flex-end;
+  padding: 5px 12px;
   font-family: var(--font-sans);
   font-size: 12px;
   color: var(--primary-foreground, #fff);
+  cursor: pointer;
   background: var(--primary);
   border: 1px solid var(--primary);
   border-radius: var(--radius-control);
-  padding: 5px 12px;
-  cursor: pointer;
   transition: opacity var(--motion-state);
 }
 .rr-x-datechip__apply:hover:not(:disabled) {
   opacity: 0.9;
 }
 .rr-x-datechip__apply:disabled {
-  opacity: 0.45;
   cursor: not-allowed;
+  opacity: 0.45;
 }
 .rr-x-datechip__apply:focus-visible {
   outline: 2px solid color-mix(in oklab, var(--ring) 35%, transparent);
@@ -2408,9 +2658,9 @@
    action beside it. */
 .rr-x-search-header {
   display: flex;
-  align-items: baseline;
   flex-wrap: wrap;
   gap: 6px 14px;
+  align-items: baseline;
 }
 .rr-x-search-header__title {
   font-weight: 600;
@@ -2428,8 +2678,8 @@
 }
 .rr-x-search-sort {
   display: flex;
-  align-items: center;
   gap: 6px;
+  align-items: center;
 }
 .rr-x-goto {
   display: grid;
@@ -2441,9 +2691,9 @@
 .rr-x-goto__label {
   font-family: var(--font-sans);
   font-size: 9px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
   color: var(--muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
   white-space: nowrap;
 }
 .rr-x-goto__input {
@@ -2451,9 +2701,9 @@
 }
 .rr-x-goto__feedback {
   grid-column: 2 / -1;
-  color: var(--muted-foreground);
   font-size: 11px;
   line-height: 1.35;
+  color: var(--muted-foreground);
 }
 
 /* ─── Unified query input (ONE box: text + chips + id-jump) ─── */
@@ -2467,14 +2717,14 @@
 }
 .rr-x-searchrow__input {
   display: flex;
-  align-items: center;
   gap: 6px;
+  align-items: center;
 }
 .rr-x-queryinput__icon {
   flex: 0 0 auto;
   font-size: 12px;
-  opacity: 0.6;
   user-select: none;
+  opacity: 0.6;
 }
 .rr-x-queryinput .rr-x-search {
   flex: 1 1 auto;
@@ -2489,15 +2739,17 @@
 }
 .rr-x-queryinput__chevron {
   flex: 0 0 auto;
+  padding: 4px 7px;
   font-family: var(--font-mono);
   font-size: 13px;
   line-height: 1;
   color: var(--muted-foreground);
+  cursor: pointer;
   background: none;
   border: 1px solid var(--border-strong);
-  padding: 4px 7px;
-  cursor: pointer;
-  transition: color var(--motion-state), border-color var(--motion-state);
+  transition:
+    color var(--motion-state),
+    border-color var(--motion-state);
 }
 .rr-x-queryinput__chevron:hover {
   color: var(--foreground);
@@ -2505,17 +2757,17 @@
 /* Inline "↵ Jump to record <id>" — command-palette style, NOT a second box. */
 .rr-x-queryinput__jump {
   display: inline-flex;
-  align-items: center;
   gap: 6px;
+  align-items: center;
+  padding: 4px 9px;
   margin-top: 6px;
   font-family: var(--font-sans);
   font-size: 11px;
   color: var(--primary);
+  cursor: pointer;
   background: var(--primary-tint);
   border: 1px solid var(--primary);
   border-radius: var(--radius-control);
-  padding: 4px 9px;
-  cursor: pointer;
 }
 .rr-x-queryinput__jump-id {
   color: var(--foreground);
@@ -2534,24 +2786,26 @@
        fold. SSR-safe (no measurement, no client positioning). */
 .rr-x-typeahead {
   position: absolute;
-  z-index: 60;
   top: calc(100% + 4px);
-  left: 0;
   right: 0;
+  left: 0;
+  z-index: 60;
   display: flex;
   flex-direction: column;
-  margin: 0;
+  max-width: 100vw;
+  max-height: min(280px, 60vh);
   padding: 4px;
+  margin: 0;
+  overflow-y: auto;
   list-style: none;
   background: var(--card);
   border: 1px solid var(--border-strong);
-  border-top: 2px solid color-mix(in oklab, var(--primary) 40%, var(--border-strong));
+  border-top: 2px solid
+    color-mix(in oklab, var(--primary) 40%, var(--border-strong));
   border-radius: 0;
-  box-shadow: 0 4px 16px -2px color-mix(in oklab, var(--foreground) 18%, transparent),
-              0 1px 4px -1px color-mix(in oklab, var(--foreground) 10%, transparent);
-  max-width: 100vw;
-  max-height: min(280px, 60vh);
-  overflow-y: auto;
+  box-shadow:
+    0 4px 16px -2px color-mix(in oklab, var(--foreground) 18%, transparent),
+    0 1px 4px -1px color-mix(in oklab, var(--foreground) 10%, transparent);
 }
 .rr-x-typeahead__item {
   display: block;
@@ -2562,15 +2816,15 @@
 }
 .rr-x-typeahead__btn {
   display: flex;
+  gap: 12px;
   align-items: baseline;
   justify-content: space-between;
-  gap: 12px;
   width: 100%;
+  padding: 6px 8px;
   text-align: left;
+  cursor: pointer;
   background: none;
   border: 0;
-  padding: 6px 8px;
-  cursor: pointer;
 }
 .rr-x-typeahead__label {
   font-size: 12px;
@@ -2586,24 +2840,24 @@
 .rr-x-typeahead__section {
   display: block;
   padding: 6px 8px 2px;
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--muted-foreground);
   /* Separate from the previous group without a visible divider. */
   margin-top: 2px;
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 .rr-x-typeahead__section:first-child {
   margin-top: 0;
 }
 /* Count badge: honest record count shown next to source/stream suggestions. */
 .rr-x-typeahead__count {
+  flex-shrink: 0;
   font-family: var(--font-mono);
   font-size: 10px;
   color: var(--muted-foreground);
   white-space: nowrap;
-  flex-shrink: 0;
 }
 
 .rr-x-see-all-links {
@@ -2615,20 +2869,20 @@
 
 .rr-x-see-all {
   display: inline-flex;
-  max-width: 100%;
-  min-width: 0;
   align-items: center;
-  border: 1px solid var(--border);
+  min-width: 0;
+  max-width: 100%;
   padding: 4px 8px;
-  color: var(--primary);
   font-family: var(--font-mono);
   font-size: 11px;
+  color: var(--primary);
   text-decoration: none;
+  border: 1px solid var(--border);
 }
 
 .rr-x-see-all:hover {
-  background: var(--muted);
   color: var(--foreground);
+  background: var(--muted);
 }
 
 .rr-x-help {
@@ -2639,8 +2893,8 @@
   font-size: 10px;
   color: var(--primary);
   cursor: pointer;
-  list-style: none;
   outline: none;
+  list-style: none;
 }
 .rr-x-help > summary:focus-visible {
   outline: 2px solid color-mix(in oklab, var(--ring) 35%, transparent);
@@ -2652,7 +2906,6 @@
 }
 .rr-x-help__body {
   position: absolute;
-  z-index: 50;
   /* 2px gap — close enough to read as anchored to the trigger, not floating */
   top: calc(100% + 2px);
   /* P1: anchor to the RIGHT edge of the operators link so the popup extends
@@ -2661,6 +2914,7 @@
      .rr-x-help"; the popup grows leftward, staying in the feed column. */
   right: 0;
   left: auto;
+  z-index: 50;
   /* D-6: clamp to viewport width so the popup never escapes on 390px screens */
   width: min(360px, calc(100vw - 32px));
   max-width: min(360px, calc(100vw - 32px));
@@ -2669,26 +2923,27 @@
      border-top uses --primary at low opacity so the card reads visually
      anchored to its trigger (the primary-colored "operators" summary). */
   padding: 14px 16px;
-  background: var(--card);
-  border: 1px solid var(--border-strong);
-  border-top: 2px solid color-mix(in oklab, var(--primary) 40%, var(--border-strong));
-  border-radius: 0;
-  box-shadow: 0 4px 16px -2px color-mix(in oklab, var(--foreground) 18%, transparent),
-              0 1px 4px -1px color-mix(in oklab, var(--foreground) 10%, transparent);
   font-size: 11px;
   line-height: 2;
   color: var(--muted-foreground);
   /* D-12: allow inline code chips to wrap rather than overflow */
   overflow-wrap: break-word;
+  background: var(--card);
+  border: 1px solid var(--border-strong);
+  border-top: 2px solid
+    color-mix(in oklab, var(--primary) 40%, var(--border-strong));
+  border-radius: 0;
+  box-shadow:
+    0 4px 16px -2px color-mix(in oklab, var(--foreground) 18%, transparent),
+    0 1px 4px -1px color-mix(in oklab, var(--foreground) 10%, transparent);
 }
 .rr-x-help__body code {
+  display: inline-block;
+  padding: 1px 5px;
   font-family: var(--font-mono);
   font-size: 10px;
   color: var(--foreground);
   background: var(--muted);
-  padding: 1px 5px;
-  /* inline-block so chips can wrap to the next line */
-  display: inline-block;
 }
 
 /* ─── Options disclosure (SLVP recomposition) ───
@@ -2702,16 +2957,16 @@
   flex: 0 0 auto;
 }
 .rr-x-options__summary {
+  padding: 4px 8px;
   font-family: var(--font-sans);
   font-size: 12px;
   color: var(--muted-foreground);
+  white-space: nowrap;
   cursor: pointer;
-  list-style: none;
   outline: none;
-  padding: 4px 8px;
+  list-style: none;
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
-  white-space: nowrap;
 }
 .rr-x-options__summary:hover {
   color: var(--foreground);
@@ -2725,22 +2980,24 @@
 }
 .rr-x-options__body {
   position: absolute;
-  z-index: 50;
   top: calc(100% + 2px);
   right: 0;
   left: auto;
-  width: min(360px, calc(100vw - 32px));
-  max-width: min(360px, calc(100vw - 32px));
+  z-index: 50;
   display: flex;
   flex-direction: column;
   gap: 12px;
+  width: min(360px, calc(100vw - 32px));
+  max-width: min(360px, calc(100vw - 32px));
   padding: 14px 16px;
   background: var(--card);
   border: 1px solid var(--border-strong);
-  border-top: 2px solid color-mix(in oklab, var(--primary) 40%, var(--border-strong));
+  border-top: 2px solid
+    color-mix(in oklab, var(--primary) 40%, var(--border-strong));
   border-radius: 0;
-  box-shadow: 0 4px 16px -2px color-mix(in oklab, var(--foreground) 18%, transparent),
-              0 1px 4px -1px color-mix(in oklab, var(--foreground) 10%, transparent);
+  box-shadow:
+    0 4px 16px -2px color-mix(in oklab, var(--foreground) 18%, transparent),
+    0 1px 4px -1px color-mix(in oklab, var(--foreground) 10%, transparent);
 }
 .rr-x-options__group {
   display: flex;
@@ -2751,9 +3008,9 @@
   font-family: var(--font-sans);
   font-size: 10px;
   font-weight: 600;
+  color: var(--muted-foreground);
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--muted-foreground);
 }
 
 /* ─── Chip bar ─── */
@@ -2769,86 +3026,94 @@
    property pill → operator pill (click to toggle is/is-not) → value pill → × dismiss */
 .rr-x-chip {
   display: inline-flex;
+  flex-shrink: 0;
   align-items: center;
   overflow: hidden;
-  border: 1px solid var(--primary);
-  border-radius: var(--radius-control);
   font-family: var(--font-sans);
   font-size: 11px;
-  flex-shrink: 0;
-  user-select: none;
   /* keep the legacy color on the container for border/background tinting */
   color: var(--primary);
+  user-select: none;
+  border: 1px solid var(--primary);
+  border-radius: var(--radius-control);
 }
 /* Property zone — muted label so the value leads */
 .rr-x-chip__property {
   padding: 3px 6px;
-  background: var(--primary-tint);
+  font-size: 11px;
   font-weight: 500;
   color: var(--primary);
-  font-size: 11px;
+  background: var(--primary-tint);
   border-right: 1px solid color-mix(in oklab, var(--primary) 30%, transparent);
 }
 /* Operator zone — secondary; click toggles is ↔ is not when canNegate */
 .rr-x-chip__op {
   padding: 3px 5px;
-  background: color-mix(in oklab, var(--primary-tint) 60%, var(--background));
+  font-size: 11px;
   font-weight: 400;
   color: var(--muted-foreground);
-  font-size: 11px;
+  background: color-mix(in oklab, var(--primary-tint) 60%, var(--background));
   border-right: 1px solid color-mix(in oklab, var(--primary) 20%, transparent);
-  transition: background var(--motion-state), color var(--motion-state);
+  transition:
+    background var(--motion-state),
+    color var(--motion-state);
 }
 .rr-x-chip__op[role="button"] {
   cursor: pointer;
 }
 .rr-x-chip__op[role="button"]:hover,
 .rr-x-chip__op[role="button"]:focus-visible {
-  background: color-mix(in oklab, var(--primary) 15%, var(--background));
   color: var(--foreground);
   outline: none;
+  background: color-mix(in oklab, var(--primary) 15%, var(--background));
 }
 /* Negated operator gets a stronger tint so "is not" reads as distinct */
 .rr-x-chip__op--negated {
-  background: color-mix(in oklab, var(--destructive, #dc2626) 10%, var(--background));
   color: var(--destructive, #dc2626);
+  background: color-mix(
+    in oklab,
+    var(--destructive, #dc2626) 10%,
+    var(--background)
+  );
 }
 /* Value zone */
 .rr-x-chip__value {
   padding: 3px 6px;
-  background: var(--primary-tint);
+  font-size: 11px;
   font-weight: 400;
   color: var(--primary);
-  font-size: 11px;
+  background: var(--primary-tint);
   border-right: 1px solid color-mix(in oklab, var(--primary) 20%, transparent);
 }
 /* × dismiss button */
 .rr-x-chip__x {
-  padding: 3px 7px 3px 5px;
-  background: var(--primary-tint);
-  color: var(--primary);
-  border: none;
-  cursor: pointer;
-  font-size: 13px;
-  line-height: 1;
   display: flex;
   align-items: center;
-  opacity: 0.7;
+  padding: 3px 7px 3px 5px;
   font-family: inherit;
-  transition: opacity var(--motion-state), background var(--motion-state);
+  font-size: 13px;
+  line-height: 1;
+  color: var(--primary);
+  cursor: pointer;
+  background: var(--primary-tint);
+  border: none;
+  opacity: 0.7;
+  transition:
+    opacity var(--motion-state),
+    background var(--motion-state);
 }
 .rr-x-chip__x:hover {
-  opacity: 1;
   background: color-mix(in oklab, var(--primary) 15%, var(--background));
+  opacity: 1;
 }
 .rr-x-clearall {
+  padding: 4px;
   font-family: var(--font-sans);
   font-size: 10px;
   color: var(--muted-foreground);
+  cursor: pointer;
   background: none;
   border: 0;
-  cursor: pointer;
-  padding: 4px;
 }
 .rr-x-clearall:hover {
   color: var(--foreground);
@@ -2857,33 +3122,34 @@
 /* ─── Compiled-call line — quiet disclosure, engineers one step away ─── */
 .rr-x-compiled {
   /* <details> element: sits below the feed controls as a calm affordance */
-  border-top: 1px solid var(--border);
   padding-top: 8px;
   margin-top: 4px;
+  /* <details> element: sits below the feed controls as a calm affordance */
+  border-top: 1px solid var(--border);
 }
 .rr-x-compiled__label {
   /* <summary> cursor for the disclosure */
   display: inline-flex;
-  align-items: center;
   gap: 4px;
-  cursor: pointer;
-  list-style: none;
+  align-items: center;
   font-family: var(--font-sans);
   font-size: 9.5px;
-  letter-spacing: 0.04em;
   color: var(--muted-foreground);
-  opacity: 0.7;
-  outline: none;
+  letter-spacing: 0.04em;
+  cursor: pointer;
   user-select: none;
+  outline: none;
+  list-style: none;
+  opacity: 0.7;
 }
 .rr-x-compiled__label::-webkit-details-marker {
   display: none;
 }
 .rr-x-compiled__label::before {
-  content: "›";
-  font-size: 11px;
-  transition: transform 0.15s ease;
   display: inline-block;
+  font-size: 11px;
+  content: "›";
+  transition: transform 0.15s ease;
 }
 .rr-x-compiled[open] .rr-x-compiled__label::before {
   transform: rotate(90deg);
@@ -2895,41 +3161,41 @@
   opacity: 1;
 }
 .rr-x-compiled .rr-copyid {
-  white-space: normal;
-  overflow-wrap: anywhere;
-  text-align: left;
-  color: var(--foreground);
-  margin-top: 6px;
   display: block;
+  margin-top: 6px;
+  color: var(--foreground);
+  text-align: left;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 .rr-x-raw {
   margin-top: 14px;
-  border: 1px solid var(--border);
   background: var(--muted);
+  border: 1px solid var(--border);
 }
 .rr-x-raw > summary {
-  cursor: pointer;
-  color: var(--muted-foreground);
+  padding: 8px 10px;
   font-family: var(--font-mono);
   font-size: 10px;
+  color: var(--muted-foreground);
   letter-spacing: 0.04em;
-  padding: 8px 10px;
+  cursor: pointer;
 }
 .rr-x-raw > summary:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 2px;
 }
 .rr-x-raw > pre {
+  padding: 10px;
   margin: 0;
   overflow-x: auto;
-  border-top: 1px solid var(--border);
-  padding: 10px;
-  white-space: pre-wrap;
-  word-break: break-word;
-  color: var(--foreground);
   font-family: var(--font-mono);
   font-size: 10.5px;
   line-height: 1.45;
+  color: var(--foreground);
+  word-break: break-word;
+  white-space: pre-wrap;
+  border-top: 1px solid var(--border);
 }
 .rr-x-stream-all {
   font-family: var(--font-sans);
@@ -2952,11 +3218,11 @@
   color: var(--muted-foreground);
 }
 .rr-x-feeddesc {
+  max-width: 70ch;
+  margin: 0;
   font-size: 11.5px;
   line-height: 1.5;
   color: var(--muted-foreground);
-  margin: 0;
-  max-width: 70ch;
 }
 /* Mobile chrome recomposition (live re-walk D12): on a phone the default-feed
    description ("Recent across every visible connection…") duplicates the count line
@@ -2983,9 +3249,9 @@
 }
 .rr-x-chart__head {
   display: flex;
+  gap: 12px;
   align-items: baseline;
   justify-content: space-between;
-  gap: 12px;
 }
 .rr-x-chart__caption {
   /* Prose caption (sans) — names the set kind + bucket unit; never a machine wall. */
@@ -3004,30 +3270,31 @@
   color: var(--foreground);
 }
 .rr-x-chart__partial {
-  color: var(--muted-foreground);
   font-style: italic;
+  color: var(--muted-foreground);
 }
 .rr-x-chart__band {
   display: flex;
-  align-items: flex-end;
   gap: 2px;
+  align-items: flex-end;
   height: 48px;
+  touch-action: pan-y;
   /* A faint baseline so an all-empty span still reads as a present time axis. */
   border-bottom: 1px solid var(--border);
-  touch-action: pan-y;
 }
 .rr-x-chart__bar {
   /* Each bar fills its share of the band width; the inner fill carries height. */
+  display: flex;
+  /* Each bar fills its share of the band width; the inner fill carries height. */
   flex: 1 1 0;
+  align-items: flex-end;
   min-width: 3px;
   height: 100%;
-  display: flex;
-  align-items: flex-end;
   padding: 0;
   margin: 0;
-  border: 0;
-  background: none;
   cursor: default;
+  background: none;
+  border: 0;
 }
 .rr-x-chart__band.is-brushable .rr-x-chart__bar {
   cursor: pointer;
@@ -3037,7 +3304,9 @@
   width: 100%;
   background: var(--foreground);
   opacity: 0.82;
-  transition: opacity var(--motion-state), background var(--motion-state);
+  transition:
+    opacity var(--motion-state),
+    background var(--motion-state);
 }
 .rr-x-chart__bar.is-empty .rr-x-chart__bar-fill {
   /* An empty bucket is an explicit faint baseline tick — present, never a gap. */
@@ -3061,8 +3330,8 @@
 .rr-x-chart__readout {
   font-family: var(--font-mono);
   font-size: 10px;
-  letter-spacing: 0.04em;
   color: var(--primary);
+  letter-spacing: 0.04em;
 }
 /* Mobile (≤860px): a compact band; touch = tap-a-bar (drag-brush is a desktop
    enhancement — the Date popover sheet is the precise touch path). */
@@ -3075,12 +3344,13 @@
 /* ─── Warnings — calm product notice, plain language leads ─── */
 .rr-x-warn {
   /* Stripe-style inline notice: hairline border, card background, no state color */
-  border-left: 2px solid var(--border-strong);
-  background: var(--card);
-  padding: 8px 12px;
   display: flex;
   flex-direction: column;
   gap: 2px;
+  padding: 8px 12px;
+  background: var(--card);
+  /* Stripe-style inline notice: hairline border, card background, no state color */
+  border-left: 2px solid var(--border-strong);
 }
 /* The human message is the headline — legible, plain language, sentence-case */
 .rr-x-warn__msg {
@@ -3095,9 +3365,9 @@
   font-family: var(--font-mono);
   font-size: 9.5px;
   font-weight: 400;
-  letter-spacing: 0.04em;
-  text-transform: lowercase;
   color: var(--muted-foreground);
+  text-transform: lowercase;
+  letter-spacing: 0.04em;
   opacity: 0.6;
 }
 
@@ -3113,9 +3383,9 @@
 }
 .rr-x-day__head {
   display: flex;
-  justify-content: space-between;
-  align-items: baseline;
   gap: 12px;
+  align-items: baseline;
+  justify-content: space-between;
   /* Day-header craft (D8, aligned to the approved prototype .day-header): the date
      reads as a calm section marker via WEIGHT + caps + breathing room — NOT a rule
      line. The prototype has no header border (it leans on whitespace + the sticky
@@ -3133,22 +3403,22 @@
      foreground non-caps — that out-competed the row titles; reverted to the gate. */
   font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
   color: var(--muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
   white-space: nowrap;
 }
 .rr-x-day__n {
   font-size: 11px;
-  color: var(--muted-foreground);
   font-variant-numeric: tabular-nums;
+  color: var(--muted-foreground);
 }
 /* "in view" qualifier on the day header — the count is records LOADED for the day,
    not a true day total (review red line: a bare number reads like a total). */
 .rr-x-day__inview {
   font-size: 8.5px;
-  letter-spacing: 0.04em;
   text-transform: uppercase;
+  letter-spacing: 0.04em;
   opacity: 0.7;
 }
 
@@ -3161,17 +3431,17 @@
 }
 .rr-x-upcoming__toggle {
   display: flex;
-  align-items: baseline;
   gap: 8px;
+  align-items: baseline;
   width: 100%;
   padding: 6px 0;
-  border: 0;
-  border-bottom: 1px dashed var(--border-strong);
-  background: transparent;
-  color: var(--muted-foreground);
   font-size: 12px;
+  color: var(--muted-foreground);
   text-align: left;
   cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px dashed var(--border-strong);
 }
 .rr-x-upcoming__toggle:hover {
   color: var(--foreground);
@@ -3181,21 +3451,21 @@
 }
 .rr-x-upcoming__count {
   font-weight: 600;
-  color: var(--foreground);
   font-variant-numeric: tabular-nums;
+  color: var(--foreground);
 }
 .rr-x-upcoming__hint {
   font-size: 10px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
   color: var(--muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 .rr-x-upcoming__body {
   display: flex;
   flex-direction: column;
   gap: 22px;
-  margin-top: 16px;
   padding-left: 12px;
+  margin-top: 16px;
   border-left: 2px solid var(--border);
 }
 /* "Load more upcoming" affordance: walks the future projection to exhaustion so
@@ -3204,14 +3474,14 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  margin-top: 16px;
   padding-left: 12px;
+  margin-top: 16px;
 }
 .rr-x-upcoming__more-note {
   margin: 0;
-  color: var(--muted-foreground);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
+  color: var(--muted-foreground);
 }
 /* ─── Burst (same-stream cluster) ───
    A burst is a (connection, stream) cluster that crossed BURST_THRESHOLD within a
@@ -3230,17 +3500,17 @@
 .rr-x-burst__head {
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
   gap: 0 6px;
-  text-align: left;
+  align-items: baseline;
   padding: 4px 0 2px;
-  color: var(--muted-foreground);
   font-size: 12px;
+  color: var(--muted-foreground);
+  text-align: left;
 }
 .rr-x-burst__count {
   font-weight: 600;
-  color: var(--foreground);
   font-variant-numeric: tabular-nums;
+  color: var(--foreground);
 }
 .rr-x-burst__stream {
   color: var(--primary);
@@ -3249,14 +3519,14 @@
    the Upcoming toggle. Only rendered when hidden rows exist (hiddenCount > 0). */
 .rr-x-burst__toggle {
   align-self: flex-start;
-  margin-top: 2px;
   padding: 4px 0;
-  border: 0;
-  background: transparent;
-  color: var(--muted-foreground);
+  margin-top: 2px;
   font-size: 12px;
+  color: var(--muted-foreground);
   text-align: left;
   cursor: pointer;
+  background: transparent;
+  border: 0;
   transition: color var(--motion-state);
 }
 .rr-x-burst__toggle:hover {
@@ -3266,10 +3536,10 @@
    stream) within the day, not a claimed complete day-total — so it reads "N in
    view", never implying completeness the client can't prove. */
 .rr-x-burst__inview {
-  color: var(--muted-foreground);
   font-size: 10px;
-  letter-spacing: 0.04em;
+  color: var(--muted-foreground);
   text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 /* ─── Record rows ───
@@ -3283,13 +3553,11 @@
 .rr-x-row {
   position: relative;
   display: flex;
-  align-items: flex-start;
   gap: var(--space-3);
+  align-items: flex-start;
   width: 100%;
-  text-align: left;
-  background: none;
-  border: 0;
-  color: inherit;
+  min-width: 0;
+  min-height: 48px;
   /* D6/D11 calibration vs the approved prototype (.record-row): rows are
      SEPARATED BY WHITESPACE, not a per-row table rule. The 1px border-bottom
      read as a ledger/terminal line on every row (the look the redesign exists to
@@ -3297,15 +3565,19 @@
      with hover/selection states. Day groups stay separated by .rr-x-days gap:22px.
      A min-height gives the calm, scannable cadence the border used to imply. */
   padding: 9px 0 10px;
-  min-height: 48px;
+  color: inherit;
+  text-align: left;
   cursor: pointer;
+  background: none;
+  border: 0;
   /* Selection MOTION (Slice 5, #7): the row crossfades background AND its selected
      inset outline via the design-system state token, so becoming the peek row feels
      intentional, not an instant flip. Both animated properties (background, box-
      shadow) are paint-only — zero layout shift, no reflow of the feed. The token
      collapses to an instant cut under reduced-motion (base.css zeroes --duration-*). */
-  transition: background var(--motion-state), box-shadow var(--motion-state);
-  min-width: 0;
+  transition:
+    background var(--motion-state),
+    box-shadow var(--motion-state);
 }
 /* Reset anchor chrome when .rr-x-row is used on an <a> (mobile push nav). */
 a.rr-x-row {
@@ -3323,19 +3595,19 @@ a.rr-x-row {
 .rr-x-row__glyph {
   flex: 0 0 auto;
   width: 1.25rem;
-  text-align: center;
-  color: var(--muted-foreground);
   font-size: 0.8125rem;
   line-height: 1.45;
+  color: var(--muted-foreground);
+  text-align: center;
   user-select: none;
 }
 /* The content column: primary line over the muted secondary/meta line. min-width:0
    so its children can ellipsis-truncate inside the flex track. */
 .rr-x-row__body {
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
   gap: 2px;
-  flex: 1 1 auto;
   min-width: 0;
 }
 /* Line 2 wrapper: the optional snippet then the source/stream/time attribute line,
@@ -3348,8 +3620,8 @@ a.rr-x-row {
 }
 .rr-x-row__attr {
   display: flex;
-  align-items: baseline;
   gap: 8px;
+  align-items: baseline;
   min-width: 0;
 }
 /* Stream name = a quiet label (sans, lightly accented by color). Not a protocol
@@ -3360,13 +3632,13 @@ a.rr-x-row {
   white-space: nowrap;
 }
 .rr-x-row__con {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: 12px;
   color: var(--muted-foreground);
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  flex: 1;
-  min-width: 0;
 }
 /* Per-record time-of-day, right-aligned, abbreviated, recede-able (tertiary tier:
    12px / muted / tabular). The day-group header carries the date; the row carries
@@ -3378,44 +3650,44 @@ a.rr-x-row {
      verified target type scale. tabular-nums keeps the times column-aligned. */
   font-family: var(--font-mono);
   font-size: 11px;
-  color: var(--muted-foreground);
-  white-space: nowrap;
   font-variant-numeric: tabular-nums;
   line-height: 1.45;
+  color: var(--muted-foreground);
+  white-space: nowrap;
 }
 .rr-x-row__action {
   flex: 0 0 auto;
+  padding: 1px 6px;
+  font-size: 9px;
+  color: var(--muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
-  padding: 1px 6px;
-  color: var(--muted-foreground);
-  font-size: 9px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  white-space: nowrap;
 }
 .rr-x-row:hover .rr-x-row__action,
 .rr-x-row:focus-visible .rr-x-row__action {
-  border-color: var(--primary);
   color: var(--primary);
+  border-color: var(--primary);
 }
 .rr-x-row.is-selected .rr-x-row__action {
-  border-color: var(--primary);
-  background: var(--primary-tint);
   color: var(--primary);
+  background: var(--primary-tint);
+  border-color: var(--primary);
 }
 /* Primary tier: content line, 14px / 500 / full foreground, SANS. The 500 weight
    (not 600) matches the verified target type scale (Geist label-14 / Primer
    body-medium): primary by color + a restrained weight step, never heavy. This is
    what flips the list from "terminal" to "product". */
 .rr-x-row__title {
-  font-size: 0.875rem;
-  font-weight: 500;
-  color: var(--foreground);
-  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  font-size: 0.875rem;
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
+  color: var(--foreground);
+  white-space: nowrap;
 }
 /* Neutral-fallback primary (no declared content): still SANS, just quieter by weight
    and color so a content-bearing row reads at full strength. NOT mono — the terminal
@@ -3426,18 +3698,18 @@ a.rr-x-row {
 }
 /* Secondary tier: snippet, 13px / 400 / foreground. */
 .rr-x-row__snippet {
+  display: flex;
+  gap: 7px;
+  align-items: baseline;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: 13px;
   /* Secondary text reads QUIETER than the title — muted, not full foreground — so
      the title clearly leads (the two-tier hierarchy the benchmarks converge on).
      Was --foreground (same darkness as the title); now muted. */
   color: var(--muted-foreground);
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: flex;
-  align-items: baseline;
-  gap: 7px;
-  min-width: 0;
 }
 /* F3 (mobile 390 right-edge clip): the snippet line is a flex row, so the
    container's text-overflow:ellipsis cannot truncate the bare text child. The
@@ -3446,8 +3718,8 @@ a.rr-x-row {
 .rr-x-row__snippet-text {
   min-width: 0;
   overflow: hidden;
-  white-space: nowrap;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 /* The matched terms inside a search excerpt — bold + foreground so the user sees
    WHAT matched at a glance (the rest of the excerpt stays muted via the parent). */
@@ -3464,8 +3736,8 @@ a.rr-x-row {
    key is the only mono token; weight steps with declaration. */
 .rr-x-identity {
   display: flex;
-  align-items: baseline;
   gap: 9px;
+  align-items: baseline;
   min-width: 0;
 }
 /* Leading kind-glyph in a fixed slot (Primer leadingVisual): a quiet category cue,
@@ -3473,31 +3745,31 @@ a.rr-x-row {
 .rr-x-identity__glyph {
   flex: 0 0 auto;
   width: 1.25rem;
-  text-align: center;
-  color: var(--muted-foreground);
   font-size: 0.8125rem;
   line-height: 1.45;
+  color: var(--muted-foreground);
+  text-align: center;
   user-select: none;
 }
 .rr-x-identity__body {
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
   gap: 2px;
-  flex: 1 1 auto;
   min-width: 0;
 }
 /* Primary tier: content line, 14px / 500 / foreground, SANS (mono is forbidden on
    the title — the SLVP type rule). tabular-nums keeps amounts/digits aligned
    without a mono font. */
 .rr-x-identity__primary {
-  font-size: 0.875rem;
-  font-weight: 500;
-  color: var(--foreground);
-  white-space: nowrap;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  font-size: 0.875rem;
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
-  min-width: 0;
+  color: var(--foreground);
+  white-space: nowrap;
 }
 /* Derived/generic primary (no declared title): SANS still, quieter by weight +
    color so an id/uuid or arbitrary key:value never reads like an authored title. */
@@ -3507,12 +3779,12 @@ a.rr-x-row {
 }
 /* Secondary tier: the next honest slot, muted, below the primary (feed/card). */
 .rr-x-identity__secondary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: 13px;
   color: var(--muted-foreground);
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
 }
 /* The record key: a quiet MONO token (machine value — mono is correct here),
    muted, never the visual lead. */
@@ -3536,12 +3808,12 @@ a.rr-x-row {
    <h1> treatment by inheriting it. A derived/key-fallback primary must NOT inherit
    the heading weight/color (THE-LENS Gate 1: "Raw snake_case/UUID is never an H1").*/
 .rr-x-identity--header .rr-x-identity__primary:not(.is-derived) {
+  overflow: visible;
+  text-overflow: clip;
   font-size: inherit;
   font-weight: inherit;
   color: inherit;
   white-space: normal;
-  overflow: visible;
-  text-overflow: clip;
 }
 /* Derived header primary (no declared title → fell back to the record key): the
    header variant MUST keep the demotion — never the bold-700 foreground H1. Per
@@ -3550,13 +3822,13 @@ a.rr-x-row {
    (.--header + .is-derived) beats the non-derived inherit above, so it overrides
    the heading inheritance and restores the quiet mono key treatment. */
 .rr-x-identity--header .rr-x-identity__primary.is-derived {
+  overflow: visible;
+  text-overflow: clip;
   font-family: var(--font-mono);
   font-size: 13px;
   font-weight: 400;
   color: var(--muted-foreground);
   white-space: normal;
-  overflow: visible;
-  text-overflow: clip;
 }
 
 /* ─── Honest generic key/value card (design.md §5.4) ─────────────────────────
@@ -3575,16 +3847,16 @@ a.rr-x-row {
   display: contents;
 }
 .rr-x-kv__label {
+  min-width: 0;
   font-size: 0.72rem;
   color: var(--muted-foreground);
   overflow-wrap: anywhere;
-  min-width: 0;
 }
 .rr-x-kv__value {
+  min-width: 0;
   font-size: 0.78rem;
   color: var(--foreground);
   overflow-wrap: anywhere;
-  min-width: 0;
 }
 /* ─── In-page navigation loading states ──────────────────────────────────────
    Feedback for soft same-route `router.push` navigations (filters, sort, range,
@@ -3610,12 +3882,12 @@ a.rr-x-row {
 .rr-x-progress {
   position: absolute;
   top: 0;
-  left: 0;
   right: 0;
+  left: 0;
+  z-index: 2;
   height: 2px;
   overflow: hidden;
   background: var(--border);
-  z-index: 2;
   /* Base rule = the static, immediately-visible state (no keyframes). The track
      is already visible; reduced-motion users get a present "loading" mark with
      zero animation. ALL keyframes (the fade-in enter + the bar slide) live under
@@ -3638,7 +3910,8 @@ a.rr-x-row {
     animation: fade-in var(--motion-enter) both;
   }
   .rr-x-progress__bar {
-    animation: rr-x-progress-slide calc(var(--duration-slow) * 3) var(--ease-standard) infinite;
+    animation: rr-x-progress-slide calc(var(--duration-slow) * 3)
+      var(--ease-standard) infinite;
   }
 }
 
@@ -3656,19 +3929,22 @@ a.rr-x-row {
    inline spinner + "Loading…" label (set in JSX). */
 .rr-x-loadmore {
   display: inline-flex;
-  align-items: center;
   gap: 6px;
+  align-items: center;
   align-self: flex-start;
+  padding: 5px 10px;
   font-family: var(--font-mono);
   font-size: 10px;
-  letter-spacing: 0.04em;
   color: var(--muted-foreground);
+  letter-spacing: 0.04em;
+  cursor: pointer;
   background: none;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-control);
-  padding: 5px 10px;
-  cursor: pointer;
-  transition: color var(--motion-state), border-color var(--motion-state), opacity var(--motion-state);
+  transition:
+    color var(--motion-state),
+    border-color var(--motion-state),
+    opacity var(--motion-state);
 }
 .rr-x-loadmore:hover:not(:disabled) {
   color: var(--primary);
@@ -3679,14 +3955,12 @@ a.rr-x-row {
   opacity: 0.7;
 }
 .rr-x-loadmore__spinner {
+  flex-shrink: 0;
   width: 11px;
   height: 11px;
   border: 1.5px solid var(--border-strong);
   border-top-color: var(--primary);
   border-radius: 50%;
-  /* Reduced-motion fallback: a static ring (no spin). Still reads as a busy
-     marker because the label already says "Loading…". */
-  flex-shrink: 0;
 }
 @media (prefers-reduced-motion: no-preference) {
   .rr-x-loadmore__spinner {
@@ -3699,9 +3973,9 @@ a.rr-x-row {
    (aria-hidden in JSX). Fades in (token), sweeps (gated keyframe). */
 .rr-x-row__pending {
   position: absolute;
-  left: 0;
   right: 0;
   bottom: 0;
+  left: 0;
   height: 2px;
   overflow: hidden;
   /* Base rule = static, immediately-visible solid bar (no keyframes). Reduced-
@@ -3712,9 +3986,17 @@ a.rr-x-row {
 @media (prefers-reduced-motion: no-preference) {
   .rr-x-row__pending {
     /* Token-based one-shot fade-in + the brighter sweep across the base. */
-    background: linear-gradient(90deg, var(--primary) 0%, var(--carbon-outline) 50%, var(--primary) 100%);
+    background: linear-gradient(
+      90deg,
+      var(--primary) 0%,
+      var(--carbon-outline) 50%,
+      var(--primary) 100%
+    );
     background-size: 200% 100%;
-    animation: fade-in var(--motion-enter) both, rr-x-row-pending-sweep calc(var(--duration-slow) * 3) var(--ease-standard) infinite;
+    animation:
+      fade-in var(--motion-enter) both,
+      rr-x-row-pending-sweep calc(var(--duration-slow) * 3) var(--ease-standard)
+      infinite;
   }
 }
 
@@ -3746,9 +4028,9 @@ a.rr-x-row {
 }
 .rr-x-skel-bar {
   height: 9px;
-  border-radius: var(--radius-control);
   /* Base (reduced-motion) fallback: a flat muted bar — present, no movement. */
   background: var(--muted);
+  border-radius: var(--radius-control);
 }
 .rr-x-skel-bar--attr {
   width: 38%;
@@ -3770,9 +4052,15 @@ a.rr-x-row {
     /* Reuse the existing brand shimmer sweep keyframe + cadence (the documented
        1.5s skeleton shimmer = --duration-slow * 3). Paint-only (background-position),
        zero layout shift. */
-    background: linear-gradient(90deg, var(--muted) 0%, var(--border) 50%, var(--muted) 100%);
+    background: linear-gradient(
+      90deg,
+      var(--muted) 0%,
+      var(--border) 50%,
+      var(--muted) 100%
+    );
     background-size: 200% 100%;
-    animation: rr-x-row-pending-sweep calc(var(--duration-slow) * 3) var(--ease-standard) infinite;
+    animation: rr-x-row-pending-sweep calc(var(--duration-slow) * 3)
+      var(--ease-standard) infinite;
   }
 }
 
@@ -3908,21 +4196,24 @@ a.rr-x-row {
    add per-row noise the way the removed "view full stream" link did (#11). */
 .rr-x-row-open {
   display: inline-flex;
+  flex-shrink: 0;
   align-items: center;
   align-self: center;
-  flex-shrink: 0;
-  margin-left: 8px;
   padding: 2px 9px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-control);
+  margin-left: 8px;
   font-family: var(--font-mono);
   font-size: 10px;
-  letter-spacing: 0.04em;
   color: var(--muted-foreground);
-  text-decoration: none;
+  letter-spacing: 0.04em;
   white-space: nowrap;
+  text-decoration: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
   opacity: 0;
-  transition: opacity var(--motion-state), color var(--motion-state), border-color var(--motion-state);
+  transition:
+    opacity var(--motion-state),
+    color var(--motion-state),
+    border-color var(--motion-state);
 }
 .rr-x-row-wrap--desktop:hover .rr-x-row-open,
 .rr-x-row-wrap--desktop:focus-within .rr-x-row-open,
@@ -3931,22 +4222,22 @@ a.rr-x-row {
 }
 .rr-x-row-open:hover,
 .rr-x-row-open:focus-visible {
-  opacity: 1;
   color: var(--primary);
   border-color: var(--primary);
+  opacity: 1;
 }
 .rr-x-row-open:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 2px;
 }
 .rr-x-role {
-  font-size: 9px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  padding: 1px 5px;
-  box-shadow: inset 0 0 0 1px var(--border-strong);
-  color: var(--muted-foreground);
   flex-shrink: 0;
+  padding: 1px 5px;
+  font-size: 9px;
+  color: var(--muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  box-shadow: inset 0 0 0 1px var(--border-strong);
 }
 
 /* ─── Empty state ─── */
@@ -3959,26 +4250,26 @@ a.rr-x-row {
 .rr-x-empty__eyebrow {
   font-family: var(--font-sans);
   font-size: 10px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
   color: var(--muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
 }
 .rr-x-empty__line {
-  font-size: 13px;
-  color: var(--muted-foreground);
   max-width: 50ch;
-  line-height: 1.55;
   margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--muted-foreground);
 }
 /* A hairline preview of the three inspector sections — the column reads as an
    intentional empty state that teaches what a selected record will show, not a
    void. Mirrors the real inspector's label/value rhythm. */
 .rr-x-empty__preview {
-  margin: 2px 0 0;
-  width: 100%;
-  border-top: 1px solid var(--border);
   display: flex;
   flex-direction: column;
+  width: 100%;
+  margin: 2px 0 0;
+  border-top: 1px solid var(--border);
 }
 .rr-x-empty__preview-row {
   display: grid;
@@ -3991,9 +4282,9 @@ a.rr-x-row {
 .rr-x-empty__preview-k {
   font-family: var(--font-mono);
   font-size: 10px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
   color: var(--muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
   white-space: nowrap;
 }
 .rr-x-empty__preview-v {
@@ -4027,45 +4318,45 @@ a.rr-x-row {
   letter-spacing: -0.2px;
 }
 .rr-x-zero__desc {
-  font-size: 13px;
-  color: var(--muted-foreground);
-  line-height: 1.55;
   max-width: 58ch;
   margin: -8px 0 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--muted-foreground);
 }
 .rr-x-zero__label {
+  margin-top: 4px;
+  font-family: var(--font-sans);
   font-size: 10px;
   font-weight: 600;
   color: var(--muted-foreground);
-  opacity: 0.7;
   text-transform: uppercase;
   letter-spacing: 0.07em;
-  font-family: var(--font-sans);
-  margin-top: 4px;
+  opacity: 0.7;
 }
 .rr-x-zero__list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
   display: flex;
   flex-direction: column;
   gap: 5px;
   width: 100%;
   max-width: 480px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
 }
 .rr-x-zero__action {
   display: flex;
-  align-items: center;
   gap: 12px;
+  align-items: center;
   /* Lighter, Raycast-style list-item escape actions (verifier polish): no filled
      card/border at rest — just a quiet row that tints on hover. Less heavy than
      a stack of bordered cards. */
   padding: 9px 10px;
+  text-decoration: none;
+  cursor: pointer;
   background: transparent;
   border: 0;
   border-radius: var(--radius-control);
-  cursor: pointer;
-  text-decoration: none;
   transition: background var(--motion-state);
 }
 .rr-x-zero__action:hover {
@@ -4077,9 +4368,9 @@ a.rr-x-row {
 }
 .rr-x-zero__action-text {
   display: flex;
+  flex: 1;
   flex-direction: column;
   gap: 2px;
-  flex: 1;
   min-width: 0;
 }
 .rr-x-zero__action-title {
@@ -4092,18 +4383,19 @@ a.rr-x-row {
   color: var(--muted-foreground);
 }
 .rr-x-zero__action-count {
+  flex-shrink: 0;
   font-family: var(--font-mono);
   font-size: 10px;
   color: var(--muted-foreground);
-  flex-shrink: 0;
   opacity: 0.8;
 }
 .rr-x-zero__clearall {
-  font-size: 12px;
   margin-top: -4px;
+  font-size: 12px;
 }
 
 /* ─── Record inspector (right column) ─── */
+/* biome-ignore lint/style/noDescendingSpecificity: the earlier no-selection selector intentionally hides the empty inspector. */
 .rr-inspector {
   position: sticky;
   top: 8px;
@@ -4123,34 +4415,34 @@ a.rr-x-row {
 
 /* Grant lens selector — read this record AS a watcher. */
 .rr-ex-lens {
-  margin-bottom: 12px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   gap: 6px;
+  padding-bottom: 12px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
 }
 .rr-ex-lens__label {
-  font-size: 9px;
   font-family: var(--font-sans);
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+  font-size: 9px;
   color: var(--muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
 }
 .rr-ex-lens__row {
   display: flex;
-  gap: 6px;
   flex-wrap: wrap;
+  gap: 6px;
 }
 
 /* Withheld fields — "Stays with you". */
 .rr-ex-keep {
-  margin-top: 12px;
-  border-top: 1px solid var(--border);
-  padding-top: 12px;
   display: flex;
   flex-direction: column;
   gap: 4px;
+  padding-top: 12px;
+  margin-top: 12px;
+  border-top: 1px solid var(--border);
 }
 .rr-ex-keep__label {
   font-size: 11.5px;
@@ -4169,12 +4461,12 @@ a.rr-x-row {
 
 /* Relationship rail — bidirectional, derived app-side. */
 .rr-x-rel {
-  margin-top: 12px;
-  border-top: 1px solid var(--border);
-  padding-top: 12px;
   display: flex;
   flex-direction: column;
   gap: 6px;
+  padding-top: 12px;
+  margin-top: 12px;
+  border-top: 1px solid var(--border);
 }
 .rr-x-rel__row {
   display: grid;
@@ -4182,12 +4474,12 @@ a.rr-x-row {
   gap: 10px;
   align-items: baseline;
   width: 100%;
+  padding: 4px 0;
+  color: inherit;
   text-align: left;
+  cursor: pointer;
   background: none;
   border: 0;
-  color: inherit;
-  padding: 4px 0;
-  cursor: pointer;
 }
 .rr-x-rel__row:hover .rr-x-rel__v {
   color: var(--primary);
@@ -4198,10 +4490,11 @@ a.rr-x-row {
   color: var(--muted-foreground);
   white-space: nowrap;
 }
+/* biome-ignore lint/style/noDescendingSpecificity: hover state intentionally outranks the base value color. */
 .rr-x-rel__v {
-  font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
+  font-size: 12px;
   white-space: nowrap;
 }
 /* Navigable relation → protocol link (anchor); inert advisory → muted text. */
@@ -4216,22 +4509,23 @@ a.rr-x-row {
 .rr-x-rel__row--inert {
   cursor: default;
 }
+/* biome-ignore lint/style/noDescendingSpecificity: hover remains the visual priority when an inert row is hovered. */
 .rr-x-rel__row--inert .rr-x-rel__v {
   color: var(--muted-foreground);
 }
 
 /* ─── Record blob affordance (server-declared) ─── */
 .rr-x-blob {
-  margin-top: 10px;
   display: flex;
   flex-direction: column;
   gap: 6px;
+  margin-top: 10px;
 }
 .rr-x-blob__img {
+  display: block;
   width: 100%;
   max-height: 220px;
   object-fit: contain;
-  display: block;
   background-color: var(--muted);
   border: 1px solid var(--border);
 }
@@ -4246,14 +4540,14 @@ a.rr-x-row {
   text-decoration: underline;
 }
 .rr-x-blob--off {
+  align-self: flex-start;
+  padding: 2px 8px;
   font-family: var(--font-mono);
   font-size: 10px;
-  letter-spacing: 0.04em;
   color: var(--muted-foreground);
-  box-shadow: inset 0 0 0 1px var(--border);
-  padding: 2px 8px;
+  letter-spacing: 0.04em;
   border-radius: 999px;
-  align-self: flex-start;
+  box-shadow: inset 0 0 0 1px var(--border);
 }
 
 /* ─── Responsive ─── */
@@ -4268,9 +4562,10 @@ a.rr-x-row {
   .rr-x.has-selection {
     grid-template-columns: 200px minmax(0, 1fr);
   }
+  /* biome-ignore lint/style/noDescendingSpecificity: the no-selection rule remains more specific while this breakpoint changes placement. */
   .rr-x .rr-inspector {
-    grid-column: 2;
     position: static;
+    grid-column: 2;
   }
 }
 @media (max-width: 980px) {
@@ -4278,6 +4573,7 @@ a.rr-x-row {
   .rr-x.has-selection {
     grid-template-columns: minmax(0, 1fr);
   }
+  /* biome-ignore lint/style/noDescendingSpecificity: the no-selection rule remains more specific while this breakpoint changes placement. */
   .rr-x .rr-inspector {
     grid-column: 1;
   }
@@ -4312,8 +4608,8 @@ a.rr-x-row {
   .rr-x-progress {
     position: fixed;
     top: 0;
-    left: 0;
     right: 0;
+    left: 0;
   }
   /* D12 mobile: collapse the 2-column grid to a single column so the rail
      stacks above the feed. The rail's 230px column at 390px viewport left
@@ -4331,27 +4627,27 @@ a.rr-x-row {
      It becomes a transparent container whose only visible chrome is the
      quiet toggle button and the open body — no background slab. */
   .rr-x-rail {
-    border: none;
     background: transparent;
+    border: none;
   }
   /* D12 mobile: the Filters toggle becomes a small, compact control —
      matches the Options button appearance (border + radius + muted text).
      Not a full-width heavy bar; a quiet inline affordance. */
   .rr-x-rail__toggle {
     display: inline-flex;
-    align-items: center;
     gap: 5px;
+    align-items: center;
     padding: 4px 8px;
-    cursor: pointer;
-    list-style: none;
     font-family: var(--font-sans);
     font-size: 12px;
     color: var(--muted-foreground);
+    white-space: nowrap;
+    cursor: pointer;
     user-select: none;
     outline: none;
+    list-style: none;
     border: 1px solid var(--border);
     border-radius: var(--radius-control);
-    white-space: nowrap;
   }
   .rr-x-rail__toggle:hover {
     color: var(--foreground);
@@ -4374,8 +4670,8 @@ a.rr-x-row {
   .rr-x-rail__toggle-n {
     font-family: var(--font-mono);
     font-size: 10px;
-    color: var(--primary);
     font-variant-numeric: tabular-nums;
+    color: var(--primary);
   }
   /* D12 mobile: when the rail is open, its body renders as a card below the toggle row,
      with a top border for separation. Compact padding — not the desktop sidebar spacing. */
@@ -4383,10 +4679,11 @@ a.rr-x-row {
     flex-direction: column;
     gap: 18px;
     padding: 12px 16px 14px;
-    border: 1px solid var(--border);
-    border-top: 2px solid color-mix(in oklab, var(--primary) 40%, var(--border-strong));
-    background: var(--card);
     margin-top: 4px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-top: 2px solid
+      color-mix(in oklab, var(--primary) 40%, var(--border-strong));
   }
   /* F4: on mobile the whole rail is already a scrollable <details> disclosure, so
      the desktop inner-scroll cap on the stream list would nest a second scroll
@@ -4414,9 +4711,9 @@ a.rr-x-row {
   .rr-x-searchrow__controls {
     display: flex;
     flex-direction: row;
-    align-items: center;
-    gap: 10px;
     flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
   }
   /* Sort + Options sub-row: keep them on one horizontal strip, not stacked. */
   .rr-x-sort {
@@ -4432,8 +4729,8 @@ a.rr-x-row {
      so the From/To inputs and presets have room at 390px (matches the mobile filter
      sheet grammar — a card that spans the column, not a clipped 280px float). */
   .rr-x-datechip__popover {
-    left: 0;
     right: 0;
+    left: 0;
     width: auto;
     max-width: none;
   }
@@ -4453,8 +4750,8 @@ a.rr-x-row {
      chips/typeahead survive (Gmail mobile parity). The typeahead is already clamped
      to left:0/right:0 of the input, so it stays within the viewport. */
   .rr-x-queryinput {
-    min-width: 0;
     width: 100%;
+    min-width: 0;
   }
   .rr-x-goto {
     grid-template-columns: minmax(0, 1fr);
@@ -4480,6 +4777,7 @@ a.rr-x-row {
      record detail route, so the inspector is never populated here. This
      eliminates dead scroll depth from both the empty placeholder and any
      previously-selected filled inspector. */
+  /* biome-ignore lint/style/noDescendingSpecificity: the no-selection rule remains more specific while mobile hides every inspector. */
   .rr-x .rr-inspector {
     display: none;
   }
@@ -4492,11 +4790,11 @@ a.rr-x-row {
      scrollbar-width:none / -webkit-scrollbar hides the system scrollbar (prototype §gap-fix #1). */
   .rr-x-active {
     flex-wrap: nowrap;
+    gap: 6px;
+    padding: 6px 0;
     overflow-x: auto;
     overflow-y: hidden;
     scrollbar-width: none;
-    padding: 6px 0;
-    gap: 6px;
     /* Ensure strip is visible and doesn't collapse when empty — handled by
        the parent not rendering it when chips.length === 0 */
   }
@@ -4536,22 +4834,22 @@ a.rr-x-row {
     display: flex;
     flex-direction: column;
     gap: 5px;
-    padding: 10px 0;
     align-items: stretch;
+    padding: 10px 0;
   }
   /* Subject cell (second child in source order — status is first) */
   .rr-traces-table-scroll .pdpp-table__row > *:nth-child(2) {
     order: -1; /* Subject first */
   }
   .rr-traces-table-scroll .pdpp-table__row > *:nth-child(1) {
-    order: 0;  /* Status below subject */
+    order: 0; /* Status below subject */
   }
   /* Meta row: kinds + events + time wrap inline */
   .rr-traces-table-scroll .pdpp-table__row > *:nth-child(3),
   .rr-traces-table-scroll .pdpp-table__row > *:nth-child(4),
   .rr-traces-table-scroll .pdpp-table__row > *:nth-child(5) {
-    order: 1;
     display: inline;
+    order: 1;
   }
   /* Wrap the trailing three cells into one flex meta line */
   .rr-traces-table-scroll .pdpp-table__row {
@@ -4559,9 +4857,9 @@ a.rr-x-row {
   }
   /* All cells lose their grid sizing in card mode */
   .rr-traces-table-scroll .pdpp-table__row > * {
+    justify-self: auto;
     width: auto;
     text-align: left;
-    justify-self: auto;
   }
   /* D-9: collapse the peek split to single column; hide the list, show only
      the detail panel full-width (detail panel is the second child). */
@@ -4577,8 +4875,8 @@ a.rr-x-row {
 .rr-traces-meta {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
   gap: 6px 10px;
+  align-items: center;
 }
 
 /* ─── P0-3: Null / empty / bracket token de-emphasis ───────────────
@@ -4590,8 +4888,8 @@ a.rr-x-row {
 .rr-field-empty,
 [data-field-null="true"],
 [data-field-empty="true"] {
-  color: var(--muted-foreground);
   font-size: 0.8em;
+  color: var(--muted-foreground);
   opacity: 0.7;
 }
 
@@ -4618,16 +4916,15 @@ a.rr-x-row {
     position: relative;
   }
   .rr-x-rail__close {
+    position: sticky;
+    bottom: 0;
+    z-index: 2;
     display: flex;
     align-items: center;
     justify-content: flex-end;
     padding: 10px 14px 12px;
-    border-top: 1px solid var(--border);
     background: var(--card);
-    /* Sticky inside the open <details> — sticks to bottom of the element */
-    position: sticky;
-    bottom: 0;
-    z-index: 2;
+    border-top: 1px solid var(--border);
   }
 }
 /* Hide the close button on desktop (rail is always open, no toggle) */
@@ -4650,18 +4947,19 @@ a.rr-x-row {
   }
   /* Wrapping mono text: normal whitespace, tighter padding than desktop */
   .rr-copy-row__text {
-    white-space: normal;
-    overflow-x: hidden;
     padding-top: 8px;
     padding-bottom: 8px;
+    overflow-x: hidden;
     line-height: 1.45;
     word-break: break-all;
+    white-space: normal;
   }
   /* Copy icon stays attached on right; shrink-0 keeps it from squishing */
   .rr-copy-row__btn {
     /* Keep left border (vertical divider) — button stays side-attached */
-    align-self: stretch;
     align-items: center;
+    /* Keep left border (vertical divider) — button stays side-attached */
+    align-self: stretch;
     min-width: 44px;
     /* 44px touch target via padding instead of fixed height so it scales with text */
     padding: 0 10px;
@@ -4671,11 +4969,11 @@ a.rr-x-row {
 /* D-14: Copy-ID buttons — expand the tap zone to ≥44×44px without
    changing the visible icon size. The padding creates invisible touch area. */
 .rr-copyid {
-  min-width: 44px;
-  min-height: 44px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
   padding: 10px 8px;
 }
 
@@ -4732,10 +5030,10 @@ a.rr-x-row {
 
 /* B-2 — unified active / selected treatment */
 .rr-nav-item.is-active {
+  font-weight: 600;
+  color: var(--primary);
   background: var(--primary-tint);
   box-shadow: inset 2px 0 0 var(--primary);
-  color: var(--primary);
-  font-weight: 600;
 }
 .rr-x-row.is-selected {
   background: var(--primary-tint);
@@ -4750,14 +5048,16 @@ a.rr-x-row {
   flex-direction: column;
   gap: 2px;
   width: 100%;
-  text-align: left;
   padding: 9px 10px 9px 12px;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
   background: none;
   border: 0;
   border-bottom: 1px solid var(--border);
-  color: inherit;
-  cursor: pointer;
-  transition: background var(--motion-state), box-shadow var(--motion-state);
+  transition:
+    background var(--motion-state),
+    box-shadow var(--motion-state);
 }
 .rr-s-item:hover {
   background: var(--muted);
@@ -4775,21 +5075,21 @@ a.rr-x-row {
   opacity: 0.5;
 }
 .rr-s-item__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: 0.84rem;
   font-weight: 600;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .rr-s-item__line {
   display: flex;
-  align-items: baseline;
   gap: 6px;
+  align-items: baseline;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: 0.75rem;
   color: var(--muted-foreground);
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .rr-s-item__kind {
   font-family: var(--font-mono);
@@ -4798,8 +5098,8 @@ a.rr-x-row {
 }
 .rr-s-item__flag {
   display: flex;
-  align-items: center;
   gap: 4px;
+  align-items: center;
   margin-top: 1px;
 }
 .rr-s-dot {
@@ -4813,7 +5113,7 @@ a.rr-x-row {
   .pdpp-table__h,
   .pdpp-copyline,
   .rr-stand-hero__kicker {
-    letter-spacing: 0.07em;
     font-size: 0.63rem;
+    letter-spacing: 0.07em;
   }
 }

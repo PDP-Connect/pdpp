@@ -44,6 +44,8 @@
 //        #"Owner-agent control mutations SHALL be auditable and secret-safe"
 //         → "Mutation fails")
 
+import { isNullish } from "../../lib/nullish.ts";
+
 import {
   auditActorKind,
   buildAuditTrace,
@@ -81,18 +83,18 @@ interface RouteRequest {
 }
 
 interface RouteResponse {
-  end(): unknown;
-  getHeader(name: string): string | number | string[] | undefined;
-  json(body: unknown): unknown;
-  setHeader(name: string, value: string): void;
-  status(code: number): RouteResponse;
+  end: () => unknown;
+  getHeader: (name: string) => string | number | string[] | undefined;
+  json: (body: unknown) => unknown;
+  setHeader: (name: string, value: string) => void;
+  status: (code: number) => RouteResponse;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
 type NextFn = () => unknown | Promise<unknown>;
 
 interface AppLike {
-  post(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  post: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
 }
 
 export interface MountOwnerConnectionRunContext {
@@ -104,35 +106,35 @@ export interface MountOwnerConnectionRunContext {
     message: string,
     availableConnections: WireConnection[]
   ) => AmbiguousConnectionErrorLike;
-  canonicalConnectorKey(value: string | null | undefined): string | null;
-  createTraceContext(input?: { scenarioId?: string }): TraceContext;
-  emitSpineEvent(event: Record<string, unknown>): Promise<unknown>;
-  ensureRequestId(res: RouteResponse): string;
-  getOwnerTokenSubjectId(req: unknown): string;
-  handleError(res: unknown, err: unknown): void;
-  invalidateConnectorSummariesCache?(): void;
+  canonicalConnectorKey: (value: string | null | undefined) => string | null;
+  createTraceContext: (input?: { scenarioId?: string }) => TraceContext;
+  emitSpineEvent: (event: Record<string, unknown>) => Promise<unknown>;
+  ensureRequestId: (res: RouteResponse) => string;
+  getOwnerTokenSubjectId: (req: unknown) => string;
+  handleError: (res: unknown, err: unknown) => void;
+  invalidateConnectorSummariesCache?: () => void;
   // Lists the owner's active connection bindings for a connector. Used to
   // populate `available_connections` on the typed ambiguity error.
-  listActiveBindingsForGrant(input: {
+  listActiveBindingsForGrant: (input: {
     ownerSubjectId: string;
     connectorId: string;
-  }): Promise<ActiveBinding[]> | ActiveBinding[];
+  }) => Promise<ActiveBinding[]> | ActiveBinding[];
   // Marks the maintained connector-summary read-model evidence for exactly this
   // connection dirty after the run starts. Injected (not imported) to match the
   // optional `invalidateConnectorSummariesCache` above; awaited at the call site
   // so ordering is explicit, best-effort, and a no-op until the read model is
   // warmed.
-  markConnectorSummaryEvidenceDirty?(input: { connectorInstanceId: string; reason?: string }): Promise<void> | void;
+  markConnectorSummaryEvidenceDirty?: (input: { connectorInstanceId: string; reason?: string }) => Promise<void> | void;
   pdppError: PdppErrorFn;
   // Projects one active binding to the wire `{ connection_id, display_name? }`
   // shape used in `available_connections` (placeholder labels suppressed).
-  projectBindingForWire(instance: ActiveBinding): WireConnection | null;
+  projectBindingForWire: (instance: ActiveBinding) => WireConnection | null;
   requireOwner: MiddlewareHandler;
   requireToken: MiddlewareHandler;
   // Owner-scoped connector-instance namespace resolution. Throws
   // `ConnectorInstanceResolutionError` with code `ambiguous_connector_instance`
   // when a connector-only address resolves to more than one active connection.
-  resolveOwnerConnectorNamespace(
+  resolveOwnerConnectorNamespace: (
     req: unknown,
     connectorId: string | null,
     options?: {
@@ -140,7 +142,7 @@ export interface MountOwnerConnectionRunContext {
       readonly connectorInstanceId?: string | null;
       readonly ownerSubjectId?: string;
     }
-  ): Promise<ConnectorNamespace>;
+  ) => Promise<ConnectorNamespace>;
   // Controller run-now. Owner-scoped because the namespace was already resolved
   // owner-side; the controller starts a run for the resolved instance and
   // returns the run handle (`{ run_id, trace_id, ... }`) immediately.
@@ -148,18 +150,18 @@ export interface MountOwnerConnectionRunContext {
   // `force: true` bypasses the provider-pressure cooldown gate. Callers MUST
   // NOT pass force for the ordinary `Sync now` path; it is reserved for an
   // explicitly-named "force run despite pressure" action.
-  runNow(
+  runNow: (
     connectorId: string,
     options: {
       connectorInstanceId?: string | null;
       force?: boolean;
       resources?: Readonly<Record<string, readonly string[]>>;
     }
-  ): Promise<unknown>;
-  setReferenceTraceId(res: RouteResponse, traceId: string): void;
+  ) => Promise<unknown>;
+  setReferenceTraceId: (res: RouteResponse, traceId: string) => void;
 }
 
-type RunAuditArgs = {
+interface RunAuditArgs {
   connectionId?: string | null;
   connectorKey?: string | null;
   error?: unknown;
@@ -168,7 +170,7 @@ type RunAuditArgs = {
   ownerSubjectId?: string | null;
   runId?: string | null;
   selector: "connection_id" | "connector_id";
-};
+}
 
 function projectRunAuditData(
   req: RouteRequest,
@@ -179,17 +181,17 @@ function projectRunAuditData(
   code: unknown
 ): Record<string, unknown> {
   return {
-    auth_token_kind: req.tokenInfo?.pdpp_token_kind ?? null,
     actor_kind: actorKind,
+    auth_token_kind: req.tokenInfo?.pdpp_token_kind ?? null,
     client_id: clientId,
     client_name: clientName,
     connection_id: args.connectionId ?? null,
     connector_key: args.connectorKey ?? null,
-    selector: args.selector,
+    forced: args.force === true,
     operation: "run_now",
     outcome: args.outcome,
-    forced: args.force === true,
     run_id: args.runId ?? null,
+    selector: args.selector,
     target_resource: "connection_run",
     ...(args.error
       ? {
@@ -220,19 +222,19 @@ async function emitRunAudit(
     args.ownerSubjectId ?? (typeof req.tokenInfo?.subject_id === "string" ? req.tokenInfo.subject_id : null);
   const code = (args.error as { code?: unknown } | null)?.code;
   await ctx.emitSpineEvent({
-    event_type: "owner_agent.connection.run",
-    trace_id: trace.trace_id,
-    scenario_id: trace.scenario_id,
-    request_id: trace.request_id,
-    actor_type: actorKind,
     actor_id: clientId ?? ownerSubjectId ?? actorKind,
-    subject_type: "subject",
-    subject_id: ownerSubjectId,
+    actor_type: actorKind,
     client_id: clientId,
-    object_type: "connection",
-    object_id: args.connectionId || args.connectorKey || "unknown_connection",
-    status: args.outcome,
     data: projectRunAuditData(req, args, clientId, clientName, actorKind, code),
+    event_type: "owner_agent.connection.run",
+    object_id: args.connectionId || args.connectorKey || "unknown_connection",
+    object_type: "connection",
+    request_id: trace.request_id,
+    scenario_id: trace.scenario_id,
+    status: args.outcome,
+    subject_id: ownerSubjectId,
+    subject_type: "subject",
+    trace_id: trace.trace_id,
   });
 }
 
@@ -274,12 +276,13 @@ function isSafeResourceStreamName(stream: string): boolean {
 }
 
 function readRunResources(req: RouteRequest): Readonly<Record<string, readonly string[]>> | undefined {
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const body = req.body;
   if (!(body && typeof body === "object" && !Array.isArray(body))) {
     return;
   }
   const raw = (body as { resources?: unknown }).resources;
-  if (raw == null) {
+  if (isNullish(raw)) {
     return;
   }
   if (!(typeof raw === "object" && !Array.isArray(raw))) {
@@ -343,9 +346,9 @@ function buildRunHandler(
         // verifies the connection belongs to this owner and is active; a
         // foreign or unknown id surfaces as connector_instance_not_found (404).
         namespace = await ctx.resolveOwnerConnectorNamespace(req, null, {
-          ownerSubjectId,
           allowDefaultAccount: false,
           connectorInstanceId: addressed,
+          ownerSubjectId,
         });
       } else {
         const rawConnectorId = decodeURIComponent(req.params.connectorId as string);
@@ -354,8 +357,8 @@ function buildRunHandler(
           // connector-only addressing: auto-select the single active
           // connection, or throw ambiguity when more than one exists.
           namespace = await ctx.resolveOwnerConnectorNamespace(req, rawConnectorId, {
-            ownerSubjectId,
             allowDefaultAccount: false,
+            ownerSubjectId,
           });
         } catch (resolveErr) {
           await rethrowAsAmbiguousConnection(ctx, resolveErr, ownerSubjectId, connectorKey);

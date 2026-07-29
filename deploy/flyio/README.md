@@ -129,7 +129,7 @@ Fly app. The `platform-core` image owns those values internally.
 Preflight a local env file before a live deploy:
 
 ```sh
-node scripts/check-flyio-deploy-env.mjs --core deploy/flyio/core.env.example
+node --import tsx scripts/check-flyio-deploy-env.ts --core deploy/flyio/core.env.example
 ```
 
 The committed example intentionally fails until the app origin, owner password,
@@ -195,5 +195,5 @@ you need to keep.
 
 ## Related
 
-- [`scripts/check-flyio-deploy-env.mjs`](../../scripts/check-flyio-deploy-env.mjs)
-- [`scripts/railway-mcp-query-smoke.mjs`](../../scripts/railway-mcp-query-smoke.mjs)
+- [`scripts/check-flyio-deploy-env.ts`](../../scripts/check-flyio-deploy-env.ts)
+- [`scripts/railway-mcp-query-smoke.ts`](../../scripts/railway-mcp-query-smoke.ts)

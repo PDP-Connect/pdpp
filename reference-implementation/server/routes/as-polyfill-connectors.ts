@@ -41,15 +41,15 @@ interface RouteRequest {
 }
 
 interface RouteResponse {
-  json(body: unknown): unknown;
-  status(code: number): RouteResponse;
+  json: (body: unknown) => unknown;
+  status: (code: number) => RouteResponse;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => Promise<void>;
 
 interface AppLike {
-  get(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
-  post(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  get: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
+  post: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
 }
 
 export interface MountAsPolyfillConnectorsContext {
@@ -57,16 +57,16 @@ export interface MountAsPolyfillConnectorsContext {
    * Retrieves a registered connector manifest by connector ID.
    * Delegated to `getConnectorManifest` in the `buildAsApp` closure.
    */
-  getConnectorManifest(
+  getConnectorManifest: (
     connectorId: string
-  ): Promise<Record<string, unknown> | null | undefined> | Record<string, unknown> | null | undefined;
-  handleError(res: unknown, err: unknown): void;
+  ) => Promise<Record<string, unknown> | null | undefined> | Record<string, unknown> | null | undefined;
+  handleError: (res: unknown, err: unknown) => void;
   pdppError: PdppErrorFn;
   /**
    * Registers a connector manifest in the polyfill store.
    * Delegated to `registerConnector` in the `buildAsApp` closure.
    */
-  registerConnector(manifest: Record<string, unknown>): Promise<unknown> | unknown;
+  registerConnector: (manifest: Record<string, unknown>) => Promise<unknown> | unknown;
   /**
    * Owner-session middleware to gate `POST /connectors`, or `null`/`undefined`
    * to leave the register route unauthenticated (local-dev posture). The host
@@ -109,6 +109,7 @@ export function mountAsPolyfillConnectorRegister(app: AppLike, ctx: MountAsPolyf
 export function mountAsPolyfillConnectorDetail(app: AppLike, ctx: MountAsPolyfillConnectorsContext): void {
   const handler: RouteHandler = async (req, res) => {
     try {
+      // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
       const connectorId = req.params.connectorId;
       if (!connectorId) {
         ctx.pdppError(res, 400, "invalid_request", "connectorId is required");

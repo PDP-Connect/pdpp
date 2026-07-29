@@ -62,14 +62,14 @@ import { type RecordPreview, rowPrimary, rowSecondary } from "../lib/record-prev
  * glyph map, not two (the design's §5 consolidation: "one glyph source").
  */
 export const KIND_GLYPHS: Record<RecordKind, string> = {
+  activity: "▣",
+  event: "◷",
+  generic: "•",
+  location: "⌖",
   message: "✉",
   money: "$",
-  event: "◷",
-  activity: "▣",
   reader: "¶",
-  location: "⌖",
   titled: "▤",
-  generic: "•",
 };
 
 /** The leading glyph for a record kind. Unknown/absent kind → a neutral dot. */
@@ -107,6 +107,7 @@ export function recordIdentityView(preview: RecordPreview | null, recordKey: str
   const declaredTitle = preview?.title ?? preview?.body ?? preview?.amount ?? preview?.author;
   return {
     isDerived: !declaredTitle,
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: The declared public input remains defensive at this boundary; removing the guard would reduce runtime tolerance.
     kind: preview?.kind ?? "generic",
     primary: rowPrimary(preview, recordKey),
     secondary: rowSecondary(preview),

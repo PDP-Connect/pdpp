@@ -14,7 +14,7 @@ import { isDashboardEnabled } from "./lib/dashboard-flag.ts";
 // metadata export is defense in depth for the case where the dashboard
 // layout does render to completion.
 export const metadata: Metadata = {
-  robots: { index: false, follow: false, nocache: true },
+  robots: { follow: false, index: false, nocache: true },
 };
 
 // Auth gating intentionally lives in two layers, not here:

@@ -21,6 +21,7 @@ import type {
   OwnerIssuedClient,
   PendingApproval,
   RefConnectorSummary,
+  RefFleetHealthVerdict,
   RunSummary,
   TraceSummary,
 } from "../../lib/ref-client.ts";
@@ -28,7 +29,6 @@ import {
   SOURCE_WORK_GROUP_COPY,
   type SourceWorkGroups,
   type SourceWorkItem,
-  sourceAttentionHeadline,
   sourceWorkFromConnectors,
 } from "../../lib/source-actionability.ts";
 
@@ -41,31 +41,31 @@ import {
 // back to its own prettified name. We never invent a meaning we can't justify.
 
 const SCOPE_HUMAN: Record<string, string> = {
+  browser_history: "your browsing",
+  browsing: "your browsing",
+  "consent.approved": "grant decisions",
+  conversations: "your conversations",
+  current_activity: "your spending",
+  "disclosure.served": "data disclosures",
+  emails: "your email",
+  employment: "your employment history",
+  health: "your health records",
+  income: "your pay",
+  listening_history: "what you listen to",
+  location: "where you've been",
+  messages: "your messages",
+  orders: "your orders",
   pay_statements: "your pay",
   paystubs: "your pay",
-  income: "your pay",
-  employment: "your employment history",
-  listening_history: "what you listen to",
-  watch_history: "what you watch",
-  transactions: "your spending",
-  current_activity: "your spending",
+  purchases: "your purchases",
+  "query.received": "read requests",
+  "query.rejected": "rejected reads",
   statements: "your statements",
   tax_docs: "your tax documents",
   tax_documents: "your tax documents",
-  browsing: "your browsing",
-  browser_history: "your browsing",
-  messages: "your messages",
-  conversations: "your conversations",
-  emails: "your email",
-  orders: "your orders",
-  purchases: "your purchases",
-  health: "your health records",
-  location: "where you've been",
-  "consent.approved": "grant decisions",
-  "disclosure.served": "data disclosures",
-  "query.received": "read requests",
-  "query.rejected": "rejected reads",
   "token.issued": "token activity",
+  transactions: "your spending",
+  watch_history: "what you watch",
 };
 
 const READ_SUFFIX_RE = /\.read$/;
@@ -100,15 +100,15 @@ export function joinHuman(parts: readonly string[]): string {
 }
 
 const STREAM_RECORD_NOUN: Record<string, string> = {
-  pay_statements: "pay records",
+  current_activity: "transactions",
+  emails: "emails",
   employment: "employment records",
   listening_history: "listening records",
+  messages: "messages",
+  orders: "orders",
+  pay_statements: "pay records",
   tax_docs: "tax records",
   transactions: "transactions",
-  current_activity: "transactions",
-  messages: "messages",
-  emails: "emails",
-  orders: "orders",
 };
 
 /** "transactions" / "pay records" — the plural noun for a stream of records. */
@@ -227,6 +227,8 @@ export interface StandingData {
   bearers: BearerView[];
   /** Active bearer credentials beyond the preview cap; 0 means none hidden. */
   bearersOverflow: number;
+  /** Aggregate server verdict; source rows retain their existing detail contract. */
+  fleetHealth: RefFleetHealthVerdict | null;
   grantPackages: GrantPackagesView | null;
   hero: StandingHero;
   lately: LatelyView[];
@@ -246,14 +248,16 @@ export interface StandingInputs {
   advisoryOwnerActions: AdvisoryOwnerActionConnection[];
   /**
    * Connections the owner genuinely needs to act on, derived from the rendered
-   * verdict attention channel (the SAME source `/runs` uses). This — not failed
-   * runs/traces — drives the hero alarm, its count, its CTA, and the "anything
-   * wrong" list, so all four agree with `/runs`.
+   * verdict attention channel (the SAME source `/runs` uses). These rows drive
+   * connection detail and the "anything wrong" list; the aggregate hero is
+   * owned by the server fleet verdict so the two layers cannot disagree.
    */
   attentionConnections: AttentionConnection[];
   bearerClients: OwnerIssuedClient[];
   failedRuns: RunSummary[];
   failedTraces: TraceSummary[];
+  /** Server-owned aggregate source-health contract. */
+  fleetHealth: RefFleetHealthVerdict | null;
   /**
    * Authoritative total grant-package count from `GET /_ref/grant-packages/count`,
    * so the overview shows package presence/count without paging the full grants
@@ -309,10 +313,11 @@ export interface StandingHrefs {
 }
 
 /**
- * A connection the owner genuinely needs to act on — the SINGLE source of
- * attention truth shared by the dashboard hero and `/runs`. Derived from the
- * rendered verdict's attention channel (an owner-satisfiable required action),
- * NOT from failed runs/traces. See {@link attentionConnectionsFromConnectors}.
+ * A connection the owner genuinely needs to act on. Derived from the rendered
+ * verdict's attention channel (an owner-satisfiable required action), NOT from
+ * failed runs/traces. It powers connection rows and `/runs`; the aggregate
+ * dashboard hero instead follows the server fleet verdict. See
+ * {@link attentionConnectionsFromConnectors}.
  */
 export interface AttentionConnection {
   /** The owner-resolvable action label (the CTA verb). */
@@ -528,13 +533,13 @@ function toBearers(clients: OwnerIssuedClient[], hrefs: StandingHrefs): BearerVi
     const tokenWord = count === 1 ? "token" : "tokens";
     return {
       clientId: c.client_id,
-      who: clientLabel(c.client_name, c.client_id),
       how: `owner token · ${count} active ${tokenWord}`,
+      issuedAt: c.created_at,
       // A client with more than one active token registered before the newest
       // token was issued, so `created_at` is a "first issued", not "issued".
       issuedLabel: count > 1 ? "first issued" : "issued",
-      issuedAt: c.created_at,
       revokeHref: hrefs.deploymentTokens,
+      who: clientLabel(c.client_name, c.client_id),
     };
   });
 }
@@ -741,18 +746,18 @@ function toLately(traces: TraceSummary[], now: Date): LatelyView[] {
     let row: LatelyView;
     if (isDeny) {
       row = {
-        id: tr.trace_id,
-        when: relDay(tr.last_at, now),
         deny: true,
-        text: { who, rest: `tried to read — turned away, ${denyReason(tr.failure?.reason ?? null)}.` },
+        id: tr.trace_id,
+        text: { rest: `tried to read — turned away, ${denyReason(tr.failure?.reason ?? null)}.`, who },
+        when: relDay(tr.last_at, now),
       };
     } else {
       const noun = tr.event_count === 1 ? "record" : "records";
       row = {
-        id: tr.trace_id,
-        when: relDay(tr.last_at, now),
         deny: false,
-        text: { who, rest: `read ${fmtInt(tr.event_count)} ${noun}.` },
+        id: tr.trace_id,
+        text: { rest: `read ${fmtInt(tr.event_count)} ${noun}.`, who },
+        when: relDay(tr.last_at, now),
       };
     }
     const key = `${row.deny ? "deny" : "read"}|${row.when}|${row.text.who}|${row.text.rest}`;
@@ -774,15 +779,16 @@ function toLately(traces: TraceSummary[], now: Date): LatelyView[] {
   }));
 }
 
-// ─── Attention truth (shared with /runs) ──────────────────────────────────
+// ─── Attention truth (connection rows and /runs) ──────────────────────────
 
 /**
  * The SINGLE source of attention truth: connections whose rendered verdict is
  * on the `attention` channel with an owner-satisfiable required action. This is
- * the same predicate `/runs` uses, so the hero, its count, its CTA, and the
- * "anything wrong" list all agree with the syncs surface — no more counting
- * failed runs/traces (which surfaced healthy connections as "broken" and missed
- * the genuinely-attention ones). Revoked connections are excluded.
+ * the same predicate `/runs` uses, so connection rows and sync triage agree —
+ * no more counting failed runs/traces (which surfaced healthy connections as
+ * "broken" and missed the genuinely-attention ones). The aggregate dashboard
+ * hero intentionally follows the server fleet verdict. Revoked connections are
+ * excluded.
  */
 export function attentionConnectionsFromConnectors(connectors: readonly RefConnectorSummary[]): AttentionConnection[] {
   return sourceWorkFromConnectors(connectors).needsOwner.map((item) => ({
@@ -829,19 +835,19 @@ export function advisoryOwnerActionsFromConnectors(
 
 function toAttention(attention: AttentionConnection[], hrefs: StandingHrefs): AttentionRowView[] {
   return attention.map((a) => ({
+    href: hrefs.connection(a.routeId),
     id: `connection:${a.routeId}`,
     what: `${a.label} needs you`,
     why: a.what,
-    href: hrefs.connection(a.routeId),
   }));
 }
 
 function toSourceIssues(sourceIssues: SourceIssueConnection[], hrefs: StandingHrefs): AttentionRowView[] {
   return sourceIssues.map((issue) => ({
+    href: hrefs.connection(issue.routeId),
     id: `source-issue:${issue.routeId}`,
     what: `${issue.label} ${issue.status}`,
     why: issue.what,
-    href: hrefs.connection(issue.routeId),
   }));
 }
 
@@ -850,10 +856,10 @@ function toAdvisoryOwnerActions(
   hrefs: StandingHrefs
 ): AttentionRowView[] {
   return advisoryOwnerActions.map((action) => ({
+    href: hrefs.connection(action.routeId),
     id: `advisory-owner-action:${action.routeId}`,
     what: `${action.label} has an action to review`,
     why: action.what,
-    href: hrefs.connection(action.routeId),
   }));
 }
 
@@ -864,82 +870,19 @@ function toOverviewIssues(loadIssues: readonly string[], hrefs: StandingHrefs): 
   const count = loadIssues.length;
   return [
     {
+      href: hrefs.deployment,
       id: "overview:partial-data",
       what: "Overview could not check everything",
       why:
         count === 1
           ? "One dashboard check did not load. Refresh this page; if it keeps happening, check deployment."
           : `${count} dashboard checks did not load. Refresh this page; if it keeps happening, check deployment.`,
-      href: hrefs.deployment,
     },
   ];
 }
 
-function workItemFromAttention(item: AttentionConnection): SourceWorkItem {
-  return {
-    actionLabel: item.actionLabel,
-    connectorKey: item.connectorKey,
-    deviceLocal: item.deviceLocal,
-    group: "needsOwner",
-    id: `needsOwner:${item.routeId}`,
-    label: item.label,
-    routeId: item.routeId,
-    statusLabel: "needs you",
-    what: item.what,
-  };
-}
-
-function workItemFromReview(item: AdvisoryOwnerActionConnection): SourceWorkItem {
-  return {
-    actionLabel: item.actionLabel,
-    connectorKey: item.connectorKey ?? item.routeId,
-    deviceLocal: false,
-    group: "review",
-    id: `review:${item.routeId}`,
-    label: item.label,
-    routeId: item.routeId,
-    // The concrete action is the row copy; statusLabel mirrors it as a neutral
-    // fallback rather than the "ready for review" taxonomy phrasing.
-    statusLabel: item.actionLabel,
-    what: item.what,
-  };
-}
-
-function workItemFromSourceIssue(item: SourceIssueConnection): SourceWorkItem {
-  return {
-    actionLabel: null,
-    connectorKey: item.connectorKey ?? item.routeId,
-    deviceLocal: false,
-    group: "systemIssue",
-    id: `systemIssue:${item.routeId}`,
-    label: item.label,
-    routeId: item.routeId,
-    statusLabel: item.status,
-    what: item.what,
-  };
-}
-
-function sourceWorkHasRows(groups: SourceWorkGroups): boolean {
-  return (
-    groups.needsOwner.length > 0 ||
-    groups.review.length > 0 ||
-    groups.systemIssues.length > 0 ||
-    groups.working.length > 0 ||
-    groups.notMeasured.length > 0
-  );
-}
-
 function activeSourceWork(input: StandingInputs): SourceWorkGroups {
-  if (sourceWorkHasRows(input.sourceWork)) {
-    return input.sourceWork;
-  }
-  return {
-    needsOwner: input.attentionConnections.map(workItemFromAttention),
-    notMeasured: [],
-    review: input.advisoryOwnerActions.map(workItemFromReview),
-    systemIssues: input.sourceIssues.map(workItemFromSourceIssue),
-    working: [],
-  };
+  return input.sourceWork;
 }
 
 function sourceWorkRow(item: SourceWorkItem, hrefs: StandingHrefs): AttentionRowView {
@@ -958,10 +901,10 @@ function sourceWorkRow(item: SourceWorkItem, hrefs: StandingHrefs): AttentionRow
     what = `${item.label} ${item.statusLabel}`;
   }
   return {
+    href: hrefs.connection(item.routeId),
     id: item.id,
     what,
     why: item.group === "working" || item.group === "notMeasured" ? item.statusLabel : item.what,
-    href: hrefs.connection(item.routeId),
   };
 }
 
@@ -977,52 +920,52 @@ function toSourceWorkSections(
   const sections: SourceWorkSectionView[] = [];
   if (groups.needsOwner.length > 0) {
     sections.push({
-      id: "needsOwner",
-      title: SOURCE_WORK_GROUP_COPY.needsOwner.label,
-      note: SOURCE_WORK_GROUP_COPY.needsOwner.note,
       countLabel: pluralSource(groups.needsOwner.length),
-      tone: "owner",
+      id: "needsOwner",
+      note: SOURCE_WORK_GROUP_COPY.needsOwner.note,
       rows: groups.needsOwner.map((item) => sourceWorkRow(item, hrefs)),
+      title: SOURCE_WORK_GROUP_COPY.needsOwner.label,
+      tone: "owner",
     });
   }
   if (groups.review.length > 0) {
     sections.push({
-      id: "review",
-      title: SOURCE_WORK_GROUP_COPY.review.label,
-      note: SOURCE_WORK_GROUP_COPY.review.note,
       countLabel: pluralSource(groups.review.length),
-      tone: "review",
+      id: "review",
+      note: SOURCE_WORK_GROUP_COPY.review.note,
       rows: groups.review.map((item) => sourceWorkRow(item, hrefs)),
+      title: SOURCE_WORK_GROUP_COPY.review.label,
+      tone: "review",
     });
   }
   if (groups.systemIssues.length > 0 || overviewIssues.length > 0) {
     sections.push({
-      id: "systemIssue",
-      title: SOURCE_WORK_GROUP_COPY.systemIssue.label,
-      note: SOURCE_WORK_GROUP_COPY.systemIssue.note,
       countLabel: pluralSource(groups.systemIssues.length + overviewIssues.length),
-      tone: "system",
+      id: "systemIssue",
+      note: SOURCE_WORK_GROUP_COPY.systemIssue.note,
       rows: [...groups.systemIssues.map((item) => sourceWorkRow(item, hrefs)), ...overviewIssues],
+      title: SOURCE_WORK_GROUP_COPY.systemIssue.label,
+      tone: "system",
     });
   }
   if (groups.working.length > 0) {
     sections.push({
-      id: "working",
-      title: SOURCE_WORK_GROUP_COPY.working.label,
-      note: SOURCE_WORK_GROUP_COPY.working.note,
       countLabel: pluralSource(groups.working.length),
-      tone: "muted",
+      id: "working",
+      note: SOURCE_WORK_GROUP_COPY.working.note,
       rows: groups.working.map((item) => sourceWorkRow(item, hrefs)),
+      title: SOURCE_WORK_GROUP_COPY.working.label,
+      tone: "muted",
     });
   }
   if (groups.notMeasured.length > 0) {
     sections.push({
-      id: "notMeasured",
-      title: SOURCE_WORK_GROUP_COPY.notMeasured.label,
-      note: SOURCE_WORK_GROUP_COPY.notMeasured.note,
       countLabel: pluralSource(groups.notMeasured.length),
-      tone: "muted",
+      id: "notMeasured",
+      note: SOURCE_WORK_GROUP_COPY.notMeasured.note,
       rows: groups.notMeasured.map((item) => sourceWorkRow(item, hrefs)),
+      title: SOURCE_WORK_GROUP_COPY.notMeasured.label,
+      tone: "muted",
     });
   }
   return sections;
@@ -1032,50 +975,17 @@ function toSourceWorkSections(
 
 /** DECIDE — a request is waiting on the owner. */
 function buildDecideHero(pending: PendingApproval[], hrefs: StandingHrefs): StandingHero {
-  const first = pending[0];
+  const [first] = pending;
   const more = pending.length - 1;
   const who = first ? clientLabel(first.client_id ?? null, first.approval_id) : "An app";
   const reads = first ? approvalReads(first) : "parts of your data";
   const moreSub = `Nothing leaves until you say so — review each request one at a time. ${more} more after this one.`;
   return {
-    tone: "decide",
+    cta: { href: hrefs.grants, human: true, label: "Review the request" },
     kicker: pending.length === 1 ? "A request is waiting on you" : `${pending.length} requests are waiting`,
-    line: { text: `${who} wants to read `, emphasis: reads, tail: "." },
+    line: { emphasis: reads, tail: ".", text: `${who} wants to read ` },
     sub: more > 0 ? moreSub : "Nothing leaves until you say so — approve it one piece at a time.",
-    cta: { label: "Review the request", href: hrefs.grants, human: true },
-  };
-}
-
-/** ALARM — one or more connections need the owner. Derived from the attention
- *  truth, so the count, the line, and the CTA all name the SAME connections the
- *  "anything wrong" list and `/runs` show. The CTA lands on the focused recovery
- *  panel (single connection) or the syncs triage list (several) — never /traces. */
-function buildFailureHero(attention: AttentionConnection[], hrefs: StandingHrefs): StandingHero {
-  const count = attention.length;
-  const [only] = attention;
-  if (count === 1 && only) {
-    return {
-      tone: "alarm",
-      kicker: "One thing needs you",
-      line: { text: `${only.label} `, emphasis: "needs you", tail: "." },
-      sub: only.what,
-      // A device-local recovery is not performed by clicking — the CTA only
-      // navigates to where the commands are. Use a navigation label ("See what
-      // to do") so the owner doesn't click expecting the dashboard to run it.
-      // A dashboard-actionable verdict (reauth, refresh) keeps its action verb.
-      cta: {
-        label: only.deviceLocal ? "See what to do" : only.actionLabel,
-        href: hrefs.connection(only.routeId),
-        human: true,
-      },
-    };
-  }
-  return {
-    tone: "alarm",
-    kicker: `${count} things need you`,
-    line: { text: `${count} connections `, emphasis: "need a look", tail: "." },
-    sub: "Nothing you already have is lost — open each one to see what it needs.",
-    cta: { label: "See what needs you", href: hrefs.runs },
+    tone: "decide",
   };
 }
 
@@ -1084,55 +994,63 @@ function buildStaleHero(summary: DatasetSummary | null, hrefs: StandingHrefs): S
   const projectionState = summary?.projection?.state;
   const isFailed = projectionState === "failed";
   return {
-    tone: "alarm",
+    cta: { href: hrefs.deployment, label: "View status" },
     kicker: isFailed ? "Totals update delayed" : "Totals updating",
     line: {
-      text: "Records ",
       emphasis: "are still available",
       tail: ".",
+      text: "Records ",
     },
     sub: isFailed
       ? "Dashboard totals are using the last completed update."
       : "Dashboard totals may use the last completed update for a few minutes.",
-    cta: { label: "View status", href: hrefs.deployment },
+    tone: "alarm",
   };
 }
 
 function buildPartialDataHero(loadIssues: readonly string[], hrefs: StandingHrefs): StandingHero {
   const count = loadIssues.length;
   return {
-    tone: "alarm",
+    cta: { href: hrefs.deployment, label: "Check deployment" },
     kicker: "Overview is incomplete",
     line: {
-      text: count === 1 ? "One dashboard check " : `${count} dashboard checks `,
       emphasis: "did not load",
       tail: ".",
+      text: count === 1 ? "One dashboard check " : `${count} dashboard checks `,
     },
     sub: "Refresh this page; if it keeps happening, check deployment. This page will not claim all-clear from partial data.",
-    cta: { label: "Check deployment", href: hrefs.deployment },
+    tone: "alarm",
   };
 }
 
-function buildAdvisoryHero(actions: AdvisoryOwnerActionConnection[], hrefs: StandingHrefs): StandingHero {
-  const [only] = actions;
-  if (actions.length === 1 && only) {
-    // Lead with the CONCRETE action the owner can run ("Refresh now" / "Retry
-    // now"), not the "ready for review" taxonomy phrasing.
-    const action = only.actionLabel ?? "Run the available action";
+function buildFleetHealthHero(fleetHealth: RefFleetHealthVerdict, hrefs: StandingHrefs): StandingHero | null {
+  if (fleetHealth.state === "healthy") {
+    return null;
+  }
+  if (fleetHealth.state === "healthy_with_advisories") {
     return {
       tone: "decide",
-      kicker: "One optional action is available",
-      line: { text: `${only.label}: `, emphasis: action, tail: "." },
-      sub: only.what,
-      cta: { label: action, href: hrefs.connection(only.routeId), human: true },
+      kicker: "Sources need a refresh",
+      line: { text: "Source health has ", emphasis: "advisories", tail: "." },
+      sub: "Some sources are intentionally manual or paused and are no longer current.",
+      cta: { label: "Review sources", href: hrefs.sources },
+    };
+  }
+  if (fleetHealth.state === "indeterminate") {
+    return {
+      tone: "alarm",
+      kicker: "Source health is not settled",
+      line: { text: "PDPP cannot yet confirm that every source is ", emphasis: "healthy", tail: "." },
+      sub: "Collection or assessment is still in progress. This overview will not claim all-clear.",
+      cta: { label: "Review sources", href: hrefs.sources },
     };
   }
   return {
-    tone: "decide",
-    kicker: `${actions.length} optional actions are available`,
-    line: { text: "Refreshes and retries ", emphasis: "are available", tail: "." },
-    sub: "Nothing is broken — run these refreshes and retries when you like. Records remain available.",
-    cta: { label: "See available actions", href: hrefs.sources },
+    tone: "alarm",
+    kicker: "Source fleet needs attention",
+    line: { text: "One or more sources are ", emphasis: "not healthy", tail: "." },
+    sub: "Review source status to see the typed cause and the next available action.",
+    cta: { label: "Review sources", href: hrefs.sources },
   };
 }
 
@@ -1143,6 +1061,7 @@ function buildCalmHero(input: StandingInputs): StandingHero {
   const activeTokenCount = activeOwnerTokenCount(activeClients);
   const liveGrants = input.grants.filter(isLiveGrant);
   const records = summary ? fmtInt(summary.record_count) : "0";
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   const sources = summary?.connector_count ?? 0;
   const sourceWord = sources === 1 ? "source" : "sources";
   const grantWord = liveGrants.length === 1 ? "app reads" : "apps read";
@@ -1151,58 +1070,33 @@ function buildCalmHero(input: StandingInputs): StandingHero {
   const withBearers = `${activeClients.length} ${clientWord} ${fmtInt(activeTokenCount)} active owner ${tokenWord} with full access. ${liveGrants.length} ${grantWord} only the slices you granted. Revoke any of them instantly.`;
   const noBearers = `No owner token can act as you yet. ${liveGrants.length} ${grantWord} only the slices you granted. Revoke any of them instantly.`;
   return {
-    tone: "calm",
     kicker: "Where you stand",
-    line: { text: `${records} records from ${sources} ${sourceWord} — `, emphasis: "all yours to read", tail: "." },
+    line: { emphasis: "all yours to read", tail: ".", text: `${records} records from ${sources} ${sourceWord} — ` },
     sub: activeTokenCount > 0 ? withBearers : noBearers,
+    tone: "calm",
   };
 }
 
 /**
  * Compute the hero. Precedence: a pending approval is a DECIDE (it needs a
- * yes/no), a failure is an ALARM (something broke), a stale projection is a
- * soft ALARM (so we never claim the overview is current when the summary is
- * stale), otherwise CALM with the reassurance line.
+ * yes/no), stale/failed or incomplete dashboard reads are ALARMs, then the
+ * server fleet verdict owns aggregate source health. Only a healthy server
+ * verdict falls through to the calm reassurance line.
  */
 export function computeHero(input: StandingInputs): StandingHero {
-  const sourceWork = activeSourceWork(input);
   if (input.pendingApprovals.length > 0) {
     return buildDecideHero(input.pendingApprovals, input.hrefs);
-  }
-  // The hero headline "needs you" number is the SHARED attention headline — the
-  // same derivation the Runs band uses — so the dashboard and Runs can never
-  // disagree on how many sources need the owner. It counts ONLY the needs-you
-  // group; review/system/checking render as clearly-secondary rows below.
-  if (sourceAttentionHeadline(sourceWork).needsYou > 0) {
-    return buildFailureHero(
-      sourceWork.needsOwner.map((item) => ({
-        actionLabel: item.actionLabel ?? "Review source",
-        connectorKey: "",
-        routeId: item.routeId,
-        deviceLocal: item.deviceLocal,
-        label: item.label,
-        what: item.what,
-      })),
-      input.hrefs
-    );
   }
   const projectionState = input.summary?.projection?.state;
   if (projectionState === "stale" || projectionState === "failed") {
     return buildStaleHero(input.summary, input.hrefs);
   }
-  if (sourceWork.review.length > 0) {
-    return buildAdvisoryHero(
-      sourceWork.review.map((item) => ({
-        actionLabel: item.actionLabel ?? "Run available action",
-        label: item.label,
-        routeId: item.routeId,
-        what: item.what,
-      })),
-      input.hrefs
-    );
-  }
   if (input.overviewLoadIssues.length > 0) {
     return buildPartialDataHero(input.overviewLoadIssues, input.hrefs);
+  }
+  const fleetHealthHero = input.fleetHealth ? buildFleetHealthHero(input.fleetHealth, input.hrefs) : null;
+  if (fleetHealthHero) {
+    return fleetHealthHero;
   }
   return buildCalmHero(input);
 }
@@ -1215,16 +1109,17 @@ export function buildStandingData(input: StandingInputs): StandingData {
   const allBearers = toBearers(input.bearerClients, input.hrefs);
   const bearers = allBearers.slice(0, BEARER_PREVIEW_LIMIT);
   return {
-    hero: computeHero(input),
+    advisoryOwnerActions: toAdvisoryOwnerActions(input.advisoryOwnerActions, input.hrefs),
+    attention: toAttention(input.attentionConnections, input.hrefs),
     bearers,
     bearersOverflow: allBearers.length - bearers.length,
     grantPackages: toGrantPackages(input.grants, input.hrefs, input.grantPackageCount),
-    relationships: toRelationships(input.grants, input.hrefs, input.now, clientNamesById(input.bearerClients)),
+    hero: computeHero(input),
     lately: toLately(input.traces, input.now),
-    advisoryOwnerActions: toAdvisoryOwnerActions(input.advisoryOwnerActions, input.hrefs),
-    attention: toAttention(input.attentionConnections, input.hrefs),
     overviewIssues,
+    relationships: toRelationships(input.grants, input.hrefs, input.now, clientNamesById(input.bearerClients)),
     sourceIssues: toSourceIssues(input.sourceIssues, input.hrefs),
+    fleetHealth: input.fleetHealth,
     sourceWorkSections: toSourceWorkSections(sourceWork, overviewIssues, input.hrefs),
   };
 }

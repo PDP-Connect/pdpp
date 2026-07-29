@@ -760,7 +760,7 @@ test("M24: Claude mtime touch queues no transcript records while advancing its d
         response.end(JSON.stringify({ state: persistedState }));
       } else {
         persistedState = { ...persistedState, ...(body?.state as Record<string, unknown>) };
-        statePuts++;
+        statePuts += 1;
         response.end(JSON.stringify({ state: persistedState }));
       }
       return;

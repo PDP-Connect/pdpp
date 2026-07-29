@@ -328,7 +328,9 @@ function normalizeStaticSecretFieldType(raw: StaticSecretSetupFieldLike): Static
 }
 
 function normalizeStaticSecretField(raw: StaticSecretSetupFieldLike): StaticSecretSetupField | null {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const name = cleanString(raw?.name);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const label = cleanString(raw?.label);
   if (!(name && label)) {
     return null;
@@ -417,9 +419,9 @@ export function manualUploadSetupFromManifest(
       ? meta.validation.max_file_bytes
       : null;
   return {
-    acquisitionMethods,
     acceptedFileExtensions,
     acceptedFileNames,
+    acquisitionMethods,
     description: cleanString(meta?.description),
     helpText: cleanString(meta?.help_text),
     helpUrl: cleanString(meta?.help_url),
@@ -437,6 +439,7 @@ export function expectedStaticSecretCredentialKind(
   _connectorId: string,
   manifest?: ConnectorManifestLike | null
 ): string | null {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   return staticSecretCredentialCaptureFromManifest(manifest)?.kind ?? null;
 }
 

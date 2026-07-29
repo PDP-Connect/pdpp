@@ -127,7 +127,7 @@ export function attributeSearchHit(
     null;
 
   return {
-    connectionId: resolved?.connection_id ?? hitConnectionId ?? null,
     connectionDisplayName: displayName,
+    connectionId: resolved?.connection_id ?? hitConnectionId ?? null,
   };
 }

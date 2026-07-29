@@ -30,14 +30,14 @@ interface RouteRequest {
 }
 
 interface RouteResponse {
-  json(body: unknown): unknown;
-  status(code: number): RouteResponse;
+  json: (body: unknown) => unknown;
+  status: (code: number) => RouteResponse;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
 
 interface AppLike {
-  post(path: string, ...handlers: RouteHandler[]): AppLike;
+  post: (path: string, ...handlers: RouteHandler[]) => AppLike;
 }
 
 export interface SourceWebhookSecret {
@@ -52,27 +52,27 @@ interface ConnectorManifestLike {
 }
 
 export interface SourceWebhookSchedulerStore {
-  upsertLastRunTime(connectorId: string, timestampMs: number, timestampIso: string): unknown | Promise<unknown>;
+  upsertLastRunTime: (connectorId: string, timestampMs: number, timestampIso: string) => unknown | Promise<unknown>;
 }
 
 export interface SourceWebhookEventStoreLike {
-  claimEvent(event: {
+  claimEvent: (event: {
     readonly sourceId: string;
     readonly eventId: string;
     readonly bodyHash: string;
     readonly receivedAt: string;
-  }): boolean | Promise<boolean>;
+  }) => boolean | Promise<boolean>;
 }
 
 export interface SourceWebhookController {
-  runNow(
+  runNow: (
     connectorId: string,
     input: {
       readonly manifest: ConnectorManifestLike;
       readonly priorityClass: "background";
       readonly triggerKind: "webhook";
     }
-  ): RunNowResult | Promise<RunNowResult>;
+  ) => RunNowResult | Promise<RunNowResult>;
 }
 
 export interface SourceWebhookAutomationPolicy {
@@ -84,18 +84,18 @@ export interface SourceWebhookAutomationPolicy {
 
 export interface MountRefSourceWebhooksContext {
   readonly controller: SourceWebhookController | null | undefined;
-  getManifestRefreshPolicy(manifest: ConnectorManifestLike): unknown;
-  getSchedulerStore(): SourceWebhookSchedulerStore;
-  getSourceWebhookEventStore(): SourceWebhookEventStoreLike;
-  handleError(res: unknown, err: unknown): void;
-  ingestRecord(connectorId: string, record: Record<string, unknown>): unknown | Promise<unknown>;
-  parseSourceWebhookSecrets(): SourceWebhookSecretsMap;
-  pdppError(res: unknown, status: number, code: string, message: string | undefined): unknown;
-  projectRunAutomationPolicy(input: {
+  getManifestRefreshPolicy: (manifest: ConnectorManifestLike) => unknown;
+  getSchedulerStore: () => SourceWebhookSchedulerStore;
+  getSourceWebhookEventStore: () => SourceWebhookEventStoreLike;
+  handleError: (res: unknown, err: unknown) => void;
+  ingestRecord: (connectorId: string, record: Record<string, unknown>) => unknown | Promise<unknown>;
+  parseSourceWebhookSecrets: () => SourceWebhookSecretsMap;
+  pdppError: (res: unknown, status: number, code: string, message: string | undefined) => unknown;
+  projectRunAutomationPolicy: (input: {
     readonly triggerKind: "webhook";
     readonly refreshPolicy: unknown;
-  }): SourceWebhookAutomationPolicy;
-  resolveRegisteredConnectorManifest(connectorId: string): Promise<ConnectorManifestLike>;
+  }) => SourceWebhookAutomationPolicy;
+  resolveRegisteredConnectorManifest: (connectorId: string) => Promise<ConnectorManifestLike>;
 }
 
 function readHeader(
@@ -126,20 +126,17 @@ export function mountRefSourceWebhooks(app: AppLike, ctx: MountRefSourceWebhooks
     try {
       const result: SourceWebhookResult = await executeSourceWebhook(
         {
-          sourceId: req.params.sourceId,
           body,
-          timestamp: readHeader(req.headers, "pdpp-webhook-timestamp"),
           eventId: readHeader(req.headers, "pdpp-webhook-event-id"),
           signature: readHeader(req.headers, "pdpp-webhook-signature"),
+          sourceId: req.params.sourceId,
+          timestamp: readHeader(req.headers, "pdpp-webhook-timestamp"),
         },
         {
-          nowMs: () => Date.now(),
-          resolveSecret: (sourceId) => secrets.get(sourceId)?.secret,
-          resolveConnectorId: (sourceId) => secrets.get(sourceId)?.connectorId,
           claimEvent: (event) => ctx.getSourceWebhookEventStore().claimEvent(event),
           ingestRecords: async ({ connectorId, streamName, body: ingestBody }) => {
             const output = await executeRecordsIngest(
-              { connectorId, streamName, body: ingestBody },
+              { body: ingestBody, connectorId, streamName },
               {
                 hasManifestStream: async (cid, name) => {
                   const manifest = await ctx.resolveRegisteredConnectorManifest(cid);
@@ -150,14 +147,12 @@ export function mountRefSourceWebhooks(app: AppLike, ctx: MountRefSourceWebhooks
             );
             return output.envelope;
           },
-          signalScheduler: async ({ connectorId, receivedAt }) => {
-            await ctx.getSchedulerStore().upsertLastRunTime(connectorId, Date.parse(receivedAt), receivedAt);
-          },
+          nowMs: () => Date.now(),
           projectAutomationPolicy: async ({ connectorId, triggerKind }) => {
             const manifest = await ctx.resolveRegisteredConnectorManifest(connectorId);
             return ctx.projectRunAutomationPolicy({
-              triggerKind,
               refreshPolicy: ctx.getManifestRefreshPolicy(manifest),
+              triggerKind,
             });
           },
           requestRun: async ({ connectorId, triggerKind }) => {
@@ -176,10 +171,14 @@ export function mountRefSourceWebhooks(app: AppLike, ctx: MountRefSourceWebhooks
               triggerKind,
             });
           },
+          resolveConnectorId: (sourceId) => secrets.get(sourceId)?.connectorId,
+          resolveSecret: (sourceId) => secrets.get(sourceId)?.secret,
+          signalScheduler: async ({ connectorId, receivedAt }) => {
+            await ctx.getSchedulerStore().upsertLastRunTime(connectorId, Date.parse(receivedAt), receivedAt);
+          },
         }
       );
       res.status(result.duplicate ? 202 : 200).json(result);
-      return;
     } catch (err) {
       if (err instanceof SourceWebhookError) {
         ctx.pdppError(res, err.status, err.code, err.message);

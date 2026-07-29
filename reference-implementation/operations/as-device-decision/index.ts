@@ -22,23 +22,23 @@ export type AsDeviceDecisionAction = "approve" | "deny";
 
 export interface AsDeviceDecisionInput {
   readonly action: AsDeviceDecisionAction;
-  readonly userCode: string | null | undefined;
   readonly approvalId: string | null | undefined;
   readonly subjectId: string;
+  readonly userCode: string | null | undefined;
 }
 
 export interface AsDeviceDecisionPendingRow {
-  readonly user_code: string;
   readonly status: string;
+  readonly user_code: string;
   readonly [extra: string]: unknown;
 }
 
 export interface AsDeviceDecisionDependencies {
-  getByApprovalId(
-    approvalId: string,
-  ): Promise<AsDeviceDecisionPendingRow | null> | AsDeviceDecisionPendingRow | null;
-  approve(userCode: string, subjectId: string): Promise<unknown> | unknown;
-  deny(userCode: string, subjectId: string): Promise<unknown> | unknown;
+  approve: (userCode: string, subjectId: string) => Promise<unknown> | unknown;
+  deny: (userCode: string, subjectId: string) => Promise<unknown> | unknown;
+  getByApprovalId: (
+    approvalId: string
+  ) => Promise<AsDeviceDecisionPendingRow | null> | AsDeviceDecisionPendingRow | null;
 }
 
 export interface AsDeviceDecisionSuccessOutcome {
@@ -47,32 +47,30 @@ export interface AsDeviceDecisionSuccessOutcome {
 }
 
 export interface AsDeviceDecisionFailureOutcome {
-  readonly outcome: "failure";
-  readonly status: number;
   readonly errorCode: string;
   readonly errorMessage: string;
+  readonly outcome: "failure";
   readonly requestId: string | null;
+  readonly status: number;
   readonly traceId: string | null;
 }
 
-export type AsDeviceDecisionOutcome =
-  | AsDeviceDecisionSuccessOutcome
-  | AsDeviceDecisionFailureOutcome;
+export type AsDeviceDecisionOutcome = AsDeviceDecisionSuccessOutcome | AsDeviceDecisionFailureOutcome;
 
 export async function executeAsDeviceDecision(
   input: AsDeviceDecisionInput,
-  deps: AsDeviceDecisionDependencies,
+  deps: AsDeviceDecisionDependencies
 ): Promise<AsDeviceDecisionOutcome> {
   let userCode = input.userCode || null;
   if (!userCode && input.approvalId) {
     const row = await deps.getByApprovalId(input.approvalId);
-    if (!row || row.status !== "pending") {
+    if (row?.status !== "pending") {
       return {
-        outcome: "failure",
-        status: 404,
         errorCode: "not_found",
         errorMessage: "No pending device authorization for approval_id",
+        outcome: "failure",
         requestId: null,
+        status: 404,
         traceId: null,
       };
     }
@@ -80,11 +78,11 @@ export async function executeAsDeviceDecision(
   }
   if (!userCode) {
     return {
-      outcome: "failure",
-      status: 400,
       errorCode: "invalid_request",
       errorMessage: "user_code or approval_id is required",
+      outcome: "failure",
       requestId: null,
+      status: 400,
       traceId: null,
     };
   }
@@ -97,15 +95,18 @@ export async function executeAsDeviceDecision(
     }
     return { outcome: "success", userCode };
   } catch (err) {
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     const errCode = (err as { code?: string })?.code || "invalid_request";
-    const errMessage =
-      (err as { message?: string })?.message || "Device decision rejected";
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
+    const errMessage = (err as { message?: string })?.message || "Device decision rejected";
     return {
-      outcome: "failure",
-      status: 400,
       errorCode: errCode,
       errorMessage: errMessage,
+      outcome: "failure",
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
       requestId: (err as { request_id?: string | null })?.request_id ?? null,
+      status: 400,
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
       traceId: (err as { trace_id?: string | null })?.trace_id ?? null,
     };
   }

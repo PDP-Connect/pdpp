@@ -18,8 +18,8 @@
     "generate:openapi": "node ./src/openapi/generate.ts",
     "generate:docs": "node ./src/docs/generate.ts",
     "generate:all": "node ./src/openapi/generate.ts && node ./src/docs/generate.ts",
-    "check:generated": "pnpm run generate:all && node ./scripts/check-generated.js",
-    "test": "node --test --test-force-exit test/*.test.js",
+    "check:generated": "pnpm run generate:all && node ./scripts/check-generated.ts",
+    "test": "node --test --import tsx \"test/*.test.ts\"",
     "typecheck": "tsc --noEmit",
     "check": "ultracite check",
     "fix": "ultracite fix",
@@ -30,8 +30,8 @@
     "ajv-formats": "^3.0.1"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.4.12",
-    "ultracite": "7.6.0"
+    "@biomejs/biome": "2.5.5",
+    "ultracite": "7.9.4"
   },
   "license": "Apache-2.0"
 }

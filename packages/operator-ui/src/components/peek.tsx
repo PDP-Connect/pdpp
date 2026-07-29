@@ -113,7 +113,7 @@ export function pivotsFromEnvelope(envelope: TimelineEnvelope): Array<{
         continue;
       }
       seen.add(tag);
-      pivots.push({ kind, id });
+      pivots.push({ id, kind });
     }
   }
   return pivots;

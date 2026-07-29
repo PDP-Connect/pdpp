@@ -13,9 +13,9 @@ test("NekoClientApi.start rejection reaches the console inline-error boundary an
   let viewerUnmounts = 0;
 
   const viewer = {
-    async mount(_container: HTMLElement): Promise<void> {
+    mount(_container: HTMLElement): Promise<void> {
       viewerMounted = true;
-      throw new Error("NekoClientApi.start failed");
+      return Promise.reject(new Error("NekoClientApi.start failed"));
     },
     unmount(): void {
       viewerMounted = false;
@@ -25,8 +25,9 @@ test("NekoClientApi.start rejection reaches the console inline-error boundary an
 
   await mountNekoViewer({
     adapter: {
-      async unmount(): Promise<void> {
+      unmount(): Promise<void> {
         adapterUnmounts += 1;
+        return Promise.resolve();
       },
     },
     container: {} as HTMLElement,

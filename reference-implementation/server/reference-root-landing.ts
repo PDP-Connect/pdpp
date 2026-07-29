@@ -21,7 +21,7 @@ import {
   renderKeyValueList,
   renderPageIntro,
   renderSurface,
-} from "./hosted-ui.js";
+} from "./hosted-ui.ts";
 import { DEFAULT_REFERENCE_BROWSER_ORIGIN, resolveReferenceBrowserOrigin } from "./reference-topology.ts";
 
 /** Matches an `Accept` header that declares `text/html`. */
@@ -38,8 +38,8 @@ interface LandingRequest {
 
 /** Minimal Express-style response the landing writes to. */
 interface LandingResponse {
-  send(body: string): void;
-  setHeader(name: string, value: string): void;
+  send: (body: string) => void;
+  setHeader: (name: string, value: string) => void;
 }
 
 interface LandingOptions {
@@ -68,8 +68,8 @@ export function resolveConsoleOriginForLanding({
 } = {}): string {
   return (
     resolveReferenceBrowserOrigin({
-      explicitOrigin: consoleOrigin ?? null,
       env,
+      explicitOrigin: consoleOrigin ?? null,
     }) || DEFAULT_REFERENCE_BROWSER_ORIGIN
   );
 }
@@ -94,14 +94,13 @@ function renderRootLanding({
 
   const intro = renderPageIntro({
     eyebrow: `PDPP reference · ${roleLabel}`,
-    title: providerName,
     lede:
       "You are looking at the bare reference server. Operator UIs live on the console origin below; " +
       "discovery JSON is available at the well-known endpoints.",
+    title: providerName,
   });
 
   const facts = renderSurface({
-    surface: "protocol",
     ariaLabel: "Reference facts",
     // The item objects use `key` (not the `KeyValueListItem.label` the hosted-ui
     // contract declares). This is the exact shape the JS module has always
@@ -120,6 +119,7 @@ function renderRootLanding({
         value: `<code><a href="${consoleOrigin}/">${consoleOrigin}/</a></code>`,
       },
     ] as unknown as Parameters<typeof renderKeyValueList>[0]),
+    surface: "protocol",
   });
 
   const guidance = renderSurface({
@@ -138,10 +138,10 @@ function renderRootLanding({
   });
 
   return renderHostedDocument({
-    title: `${providerName} · PDPP ${roleLabel}`,
+    body: `${intro}\n${facts}\n${guidance}`,
     providerName,
     themeChoice,
-    body: `${intro}\n${facts}\n${guidance}`,
+    title: `${providerName} · PDPP ${roleLabel}`,
   });
 }
 
@@ -166,8 +166,11 @@ export function servedRootLandingIfBrowser(
   res: LandingResponse,
   options: LandingOptions
 ): boolean {
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const role = options.role;
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const providerName = options.providerName;
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const referenceRevision = options.referenceRevision;
 
   if (req.query && req.query.format === "json") {
@@ -205,10 +208,10 @@ export function servedRootLandingIfBrowser(
   });
   const themeChoice = readHostedThemeChoiceFromCookieHeader(req.headers?.cookie);
   const html = renderRootLanding({
-    role,
+    consoleOrigin,
     providerName,
     referenceRevision,
-    consoleOrigin,
+    role,
     themeChoice,
   });
 

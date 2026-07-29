@@ -50,82 +50,47 @@
             "type": "string"
           },
           "title": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "author": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "actor"
           },
           "time_added": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time",
             "x_pdpp_role": "event-time"
           },
           "time_updated": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time"
           },
           "time_read": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "time_favorited": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "tags": {
             "type": "array"
           },
           "archived": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "favorite": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "word_count": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "reading_time_minutes": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           }
         },
-        "required": [
-          "id",
-          "url"
-        ]
+        "required": ["id", "url"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "time_updated",
       "consent_time_field": "time_added",
       "selection": {
@@ -135,27 +100,15 @@
       "incremental": true,
       "query": {
         "search": {
-          "lexical_fields": [
-            "title",
-            "author"
-          ],
-          "semantic_fields": [
-            "title"
-          ]
+          "lexical_fields": ["title", "author"],
+          "semantic_fields": ["title"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "time_added"
-          ]
+          "group_by_time": ["time_added"]
         },
         "range_filters": {
-          "time_added": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "time_added": ["gte", "gt", "lte", "lt"]
         }
       },
       "coverage_strategy": "checkpoint_window",

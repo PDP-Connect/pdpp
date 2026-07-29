@@ -99,10 +99,10 @@ export interface SchedulerSummary {
 }
 
 export interface PolyfillSchedulerHandle {
-  notifySummary(): Promise<SchedulerSummary>;
+  notifySummary: () => Promise<SchedulerSummary>;
   scheduler: Scheduler;
   stop: () => void;
-  summarize(): Promise<SchedulerSummary>;
+  summarize: () => Promise<SchedulerSummary>;
 }
 
 type SummaryNotifier = (summary: SchedulerSummary) => Promise<unknown>;
@@ -234,7 +234,7 @@ export async function startPolyfillScheduler({
   const { createScheduler } = (await import(join(REFERENCE_IMPL_DIR, "runtime/scheduler.js"))) as {
     createScheduler: (args: CreateSchedulerArgs) => Scheduler;
   };
-  const { loadSyncState } = (await import(join(REFERENCE_IMPL_DIR, "runtime/index.js"))) as {
+  const { loadSyncState } = (await import(join(REFERENCE_IMPL_DIR, "runtime/index.ts"))) as {
     loadSyncState: (args: {
       connectorId: string;
       ownerToken: string;

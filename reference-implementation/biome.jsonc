@@ -7,23 +7,31 @@
   },
   "files": {
     "ignoreUnknown": true,
-    // During the JS → TS migration, Biome lints and formats only the
-    // TypeScript modules that have already landed in that form. Every
-    // remaining .js file (server/, lib/, runtime/, cli/, examples/,
-    // test/, scripts/) is exempt until its own slice upgrades it.
-    // Renaming a file to .ts immediately pulls it under the strict bar.
+    // The tracked-source contract includes authored JS/TS/config files;
+    // generated, build, raw data, and report artifacts are force-excluded.
+    // Legacy JS and executable runtime fixtures remain in scope.
     "includes": [
-      "server/**/*.ts",
-      "lib/**/*.ts",
-      "runtime/**/*.ts",
-      "cli/**/*.ts",
-      "test/**/*.ts",
-      "scripts/**/*.ts",
-      "examples/**/*.ts",
-      "*.jsonc",
-      "*.json",
-      "!report.*.json",
-      "!node_modules"
+      "!!**/node_modules",
+      "!!**/.git",
+      "!!**/dist",
+      "!!**/build",
+      "!!**/out",
+      "!!**/.next",
+      "!!**/.source",
+      "!!**/coverage",
+      "!!**/reports",
+      "!!**/report",
+      "!!**/*.snap",
+      "!!**/*.har",
+      "!!**/*.jsonl",
+      "!!docs/generated",
+      // OpenAPI JSON is canonical generator output and is byte-checked by
+      // reference-contract:check-generated. Keep it out of formatter input;
+      // reference-full.openapi.json also exceeds Biome's source-size ceiling.
+      "!!openapi",
+      "!!test/fixtures/*.json",
+      "!!**/next-env.d.ts",
+      "!!**/report.*.json"
     ]
   },
   "linter": {
@@ -38,5 +46,51 @@
         "useExhaustiveSwitchCases": "error"
       }
     }
-  }
+  },
+  "overrides": [
+    {
+      // server/records.ts TypeScript migration (2026-07-27). Line 120 is a
+      // deliberate single re-export (`export { resolveRecordIdentityForBinding }
+      // from "./connection-identity.ts"`) at the server package boundary — not
+      // a barrel re-export of a directory. Same class as the mcp-server override
+      // in the root biome.jsonc.
+      "includes": ["server/records.ts"],
+      "linter": {
+        "rules": {
+          "performance": {
+            "noBarrelFile": "off"
+          }
+        }
+      }
+    },
+    {
+      // server/local-transformer-child.ts (Lane C3c TypeScript migration,
+      // 2026-07-26). Same confirmed resolver-gap class as the
+      // packages/mcp-server SDK/tsx overrides in the root biome.jsonc, not
+      // real debt: `@huggingface/transformers` ships a package.json
+      // `exports` map (dist/transformers.node.mjs) that both
+      // `npx tsc --noEmit -p tsconfig.json` and
+      // `node --input-type=module -e
+      // "console.log(import.meta.resolve('@huggingface/transformers'))"`
+      // resolve cleanly; Biome's resolver reports "found directory without
+      // index" for this package's dist layout instead. `useAwait` is also
+      // disabled here: the `async ({ env, LogLevel, pipeline }) => {...}`
+      // callback passed to the dynamic `import(...)`'s `.then(...)`
+      // predates this migration (byte-identical logic to the original
+      // `.js`, only newly typed) and returns the `pipeline(...)` call's own
+      // Promise without an internal `await`; preserved as-is rather than
+      // refactored during a type-only migration.
+      "includes": ["server/local-transformer-child.ts"],
+      "linter": {
+        "rules": {
+          "correctness": {
+            "noUnresolvedImports": "off"
+          },
+          "suspicious": {
+            "useAwait": "off"
+          }
+        }
+      }
+    }
+  ]
 }

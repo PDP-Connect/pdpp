@@ -24,8 +24,8 @@
  */
 
 export interface StreamsAggregateSourceDescriptor {
-  kind: "connector" | "provider_native";
   id: string;
+  kind: "connector" | "provider_native";
   [extra: string]: unknown;
 }
 
@@ -44,11 +44,11 @@ export type StreamsAggregateActor =
  * shape stays additive without churning this module.
  */
 export interface StreamsAggregateResult {
-  readonly metric?: string | null;
   readonly field?: string | null;
-  readonly group_by?: string | null;
   readonly filtered_record_count?: number | null;
+  readonly group_by?: string | null;
   readonly groups?: readonly unknown[];
+  readonly metric?: string | null;
   readonly [extra: string]: unknown;
 }
 
@@ -60,44 +60,52 @@ export type StreamsAggregateRequestParams = Record<string, unknown>;
 
 export interface StreamsAggregateDependencies {
   /**
+   * Execute the aggregate against the resolved storage binding. Hosts wire
+   * the existing `aggregateRecords` here with `(storageBinding, stream,
+   * grant, requestParams, manifest)` already bound, exposing only
+   * `(requestParams)` to the operation.
+   */
+  aggregate: (requestParams: StreamsAggregateRequestParams) => Promise<StreamsAggregateResult>;
+  /**
    * Source descriptor for instrumentation events. Hosts compute this once.
    */
-  getSourceDescriptor(): StreamsAggregateSourceDescriptor | null;
+  getSourceDescriptor: () => StreamsAggregateSourceDescriptor | null;
   /**
    * Owner-branch manifest visibility. Returns true when the stream is
    * declared in the actor's manifest scope. Only consulted for owner actors;
    * client actors rely on the underlying `aggregate` capability to throw the
    * existing `not_found` / `grant_stream_not_allowed` errors.
    */
-  hasManifestStream(streamName: string): boolean | Promise<boolean>;
+  hasManifestStream: (streamName: string) => boolean | Promise<boolean>;
   /**
    * Validate request params against the manifest stream. Hosts wire the
    * existing `validateRequestedQueryFieldParams` here. Throws on invalid
    * params; the operation does not re-derive the rule.
    */
-  validateRequest(requestParams: StreamsAggregateRequestParams): void | Promise<void>;
-  /**
-   * Execute the aggregate against the resolved storage binding. Hosts wire
-   * the existing `aggregateRecords` here with `(storageBinding, stream,
-   * grant, requestParams, manifest)` already bound, exposing only
-   * `(requestParams)` to the operation.
-   */
-  aggregate(requestParams: StreamsAggregateRequestParams): Promise<StreamsAggregateResult>;
+  validateRequest: (requestParams: StreamsAggregateRequestParams) => void | Promise<void>;
 }
 
 export interface StreamsAggregateInput {
   actor: StreamsAggregateActor;
-  /** Stream name from the request path. */
-  streamName: string;
   /** Raw request query params. */
   requestParams: StreamsAggregateRequestParams;
+  /** Stream name from the request path. */
+  streamName: string;
 }
 
 export interface StreamsAggregateOutput {
-  /** Aggregate result returned verbatim from the dependency. */
-  result: StreamsAggregateResult;
-  /** Echoed for instrumentation parity with the native route. */
-  sourceDescriptor: StreamsAggregateSourceDescriptor | null;
+  /**
+   * `disclosure.served`-shaped totals derived from the aggregate result.
+   * Hosts merge these into the disclosure data block alongside the source
+   * descriptor.
+   */
+  disclosureTotals: {
+    metric: string | null;
+    field: string | null;
+    group_by: string | null;
+    filtered_record_count: number | null;
+    group_count: number | null;
+  };
   /**
    * `query.received`-shaped data block, populated from the request params
    * the same way the previous native route did.
@@ -111,18 +119,10 @@ export interface StreamsAggregateOutput {
     granularity: string | null;
     limit: number | null;
   };
-  /**
-   * `disclosure.served`-shaped totals derived from the aggregate result.
-   * Hosts merge these into the disclosure data block alongside the source
-   * descriptor.
-   */
-  disclosureTotals: {
-    metric: string | null;
-    field: string | null;
-    group_by: string | null;
-    filtered_record_count: number | null;
-    group_count: number | null;
-  };
+  /** Aggregate result returned verbatim from the dependency. */
+  result: StreamsAggregateResult;
+  /** Echoed for instrumentation parity with the native route. */
+  sourceDescriptor: StreamsAggregateSourceDescriptor | null;
 }
 
 /**
@@ -145,7 +145,9 @@ function readStringOrNull(value: unknown): string | null {
 }
 
 function readLimitOrNull(value: unknown): number | null {
-  if (value === undefined || value === null || value === "") return null;
+  if (value === undefined || value === null || value === "") {
+    return null;
+  }
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
 }
@@ -162,26 +164,24 @@ function readLimitOrNull(value: unknown): number | null {
  */
 export async function executeStreamsAggregate(
   input: StreamsAggregateInput,
-  dependencies: StreamsAggregateDependencies,
+  dependencies: StreamsAggregateDependencies
 ): Promise<StreamsAggregateOutput> {
   const sourceDescriptor = dependencies.getSourceDescriptor();
 
   const queryData: StreamsAggregateOutput["queryData"] = {
-    query_shape: "stream_aggregate",
-    metric: readStringOrNull(input.requestParams.metric),
     field: readStringOrNull(input.requestParams.field),
+    granularity: readStringOrNull(input.requestParams.granularity),
     group_by: readStringOrNull(input.requestParams.group_by),
     group_by_time: readStringOrNull(input.requestParams.group_by_time),
-    granularity: readStringOrNull(input.requestParams.granularity),
     limit: readLimitOrNull(input.requestParams.limit),
+    metric: readStringOrNull(input.requestParams.metric),
+    query_shape: "stream_aggregate",
   };
 
   if (input.actor.kind === "owner") {
     const visible = await dependencies.hasManifestStream(input.streamName);
     if (!visible) {
-      throw new StreamsAggregateVisibilityError(
-        `Stream '${input.streamName}' not found`,
-      );
+      throw new StreamsAggregateVisibilityError(`Stream '${input.streamName}' not found`);
     }
   }
 
@@ -190,20 +190,20 @@ export async function executeStreamsAggregate(
   const result = await dependencies.aggregate(input.requestParams);
 
   const disclosureTotals: StreamsAggregateOutput["disclosureTotals"] = {
-    metric: typeof result.metric === "string" ? result.metric : (result.metric ?? null) as string | null,
-    field: typeof result.field === "string" ? result.field : (result.field ?? null) as string | null,
-    group_by: typeof result.group_by === "string" ? result.group_by : (result.group_by ?? null) as string | null,
+    field: typeof result.field === "string" ? result.field : ((result.field ?? null) as string | null),
     filtered_record_count:
       typeof result.filtered_record_count === "number"
         ? result.filtered_record_count
-        : (result.filtered_record_count ?? null) as number | null,
+        : ((result.filtered_record_count ?? null) as number | null),
+    group_by: typeof result.group_by === "string" ? result.group_by : ((result.group_by ?? null) as string | null),
     group_count: Array.isArray(result.groups) ? result.groups.length : null,
+    metric: typeof result.metric === "string" ? result.metric : ((result.metric ?? null) as string | null),
   };
 
   return {
+    disclosureTotals,
+    queryData,
     result,
     sourceDescriptor,
-    queryData,
-    disclosureTotals,
   };
 }

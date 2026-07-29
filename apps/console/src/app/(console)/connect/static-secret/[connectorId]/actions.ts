@@ -74,7 +74,7 @@ function autoResumeRunId(capture: StaticSecretCaptureResult): string | null {
 
 function shouldStartRunAfterCapture(capture: StaticSecretCaptureResult): boolean {
   const autoResume = capture.auto_resume;
-  return autoResume == null || autoResume.status === "no_satisfied_action";
+  return autoResume === null || autoResume === undefined || autoResume.status === "no_satisfied_action";
 }
 
 async function runIdAfterCapture(connectionId: string, capture: StaticSecretCaptureResult): Promise<string | null> {
@@ -133,6 +133,7 @@ export async function replaceStaticSecretCredentialAction(formData: FormData) {
     });
     const runId = await runIdAfterCapture(connectionId, captured);
     revalidatePath("/sources");
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
     target = statusHref(connectionId, runId, captured.identity?.account_identity ?? null);
   } catch (err) {
     if (err instanceof StaticSecretValidationError) {
@@ -200,6 +201,7 @@ export async function createStaticSecretConnectionAction(formData: FormData) {
     // Land on the durable setup-status surface, not a transient form notice. The
     // status page reads the connection's projected setup_state and, for a
     // synchronous-probe connector, surfaces the echoed account identity.
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
     target = statusHref(draft.connection_id, runId, captured.identity?.account_identity ?? null);
   } catch (err) {
     if (err instanceof StaticSecretValidationError) {

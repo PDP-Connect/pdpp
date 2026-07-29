@@ -4,6 +4,7 @@
 import { CopyButton } from "./copy-button.tsx";
 
 function trimTrailingSlash(value: string): string {
+  // biome-ignore lint/performance/useTopLevelRegex: This component-level parsing helper is not a hot path; moving the regex would not alter allocation behavior materially.
   return value.replace(/\/+$/, "");
 }
 

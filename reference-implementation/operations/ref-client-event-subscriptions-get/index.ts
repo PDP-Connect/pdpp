@@ -21,8 +21,8 @@ import type {
   SubscriptionAttemptRow,
   SubscriptionSummaryRow,
 } from "../../server/stores/client-event-subscription-store.ts";
-import type { SubscriptionScope } from "../rs-client-event-derive/index.ts";
 import type { SubscriptionAuthorityKind, SubscriptionStatus } from "../as-client-event-subscriptions/index.ts";
+import type { SubscriptionScope } from "../rs-client-event-derive/index.ts";
 
 export const REF_CLIENT_EVENT_SUBSCRIPTIONS_ATTEMPT_CAP = 25;
 
@@ -37,47 +37,47 @@ export class RefClientEventSubscriptionsNotFoundError extends Error {
 
 export interface RefClientEventSubscriptionAttempt {
   readonly attempt_id: number;
-  readonly queue_id: number;
+  readonly attempted_at: string;
+  readonly error: string | null;
   readonly event_id: string;
   readonly event_type: string;
-  readonly attempted_at: string;
-  readonly status_code: number | null;
-  readonly ok: boolean;
   readonly latency_ms: number | null;
-  readonly error: string | null;
+  readonly ok: boolean;
+  readonly queue_id: number;
   readonly response_snippet: string | null;
+  readonly status_code: number | null;
 }
 
 export interface RefClientEventSubscriptionDetail {
-  readonly subscription_id: string;
   readonly authority_kind: SubscriptionAuthorityKind;
-  readonly client_id: string;
-  readonly grant_id: string | null;
-  readonly subject_id: string;
-  readonly status: SubscriptionStatus;
-  readonly disabled_reason: string | null;
-  readonly callback_url: string;
   readonly callback_host: string;
-  readonly scope: SubscriptionScope;
+  readonly callback_url: string;
+  readonly client_id: string;
   readonly created_at: string;
-  readonly updated_at: string;
   readonly disabled_at: string | null;
-  readonly pending_queue_count: number;
+  readonly disabled_reason: string | null;
   readonly final_failure_count: number;
-  readonly last_attempted_at: string | null;
+  readonly grant_id: string | null;
   readonly last_attempt_ok: boolean | null;
   readonly last_attempt_status_code: number | null;
+  readonly last_attempted_at: string | null;
+  readonly pending_queue_count: number;
   readonly recent_attempts: RefClientEventSubscriptionAttempt[];
+  readonly scope: SubscriptionScope;
+  readonly status: SubscriptionStatus;
+  readonly subject_id: string;
+  readonly subscription_id: string;
+  readonly updated_at: string;
 }
 
 export interface RefClientEventSubscriptionsGetDependencies {
-  getSubscriptionSummary(
+  getSubscriptionSummary: (
+    subscriptionId: string
+  ) => Promise<SubscriptionSummaryRow | null> | SubscriptionSummaryRow | null;
+  listAttemptsForSubscription: (
     subscriptionId: string,
-  ): Promise<SubscriptionSummaryRow | null> | SubscriptionSummaryRow | null;
-  listAttemptsForSubscription(
-    subscriptionId: string,
-    limit: number,
-  ): Promise<readonly SubscriptionAttemptRow[]> | readonly SubscriptionAttemptRow[];
+    limit: number
+  ) => Promise<readonly SubscriptionAttemptRow[]> | readonly SubscriptionAttemptRow[];
 }
 
 function extractHost(callbackUrl: string): string {
@@ -100,7 +100,7 @@ function parseScope(json: string): SubscriptionScope {
 
 export async function executeRefClientEventSubscriptionsGet(
   subscriptionId: string,
-  dependencies: RefClientEventSubscriptionsGetDependencies,
+  dependencies: RefClientEventSubscriptionsGetDependencies
 ): Promise<RefClientEventSubscriptionDetail> {
   const summary = await dependencies.getSubscriptionSummary(subscriptionId);
   if (!summary) {
@@ -108,41 +108,39 @@ export async function executeRefClientEventSubscriptionsGet(
   }
   const attempts = await dependencies.listAttemptsForSubscription(
     subscriptionId,
-    REF_CLIENT_EVENT_SUBSCRIPTIONS_ATTEMPT_CAP,
+    REF_CLIENT_EVENT_SUBSCRIPTIONS_ATTEMPT_CAP
   );
   return {
-    subscription_id: summary.subscription_id,
     authority_kind: summary.authority_kind,
-    client_id: summary.client_id,
-    grant_id: summary.grant_id,
-    subject_id: summary.subject_id,
-    status: summary.status,
-    disabled_reason: summary.disabled_reason,
-    callback_url: summary.callback_url,
     callback_host: extractHost(summary.callback_url),
-    scope: parseScope(summary.scope_json),
+    callback_url: summary.callback_url,
+    client_id: summary.client_id,
     created_at: summary.created_at,
-    updated_at: summary.updated_at,
     disabled_at: summary.disabled_at,
-    pending_queue_count: summary.pending_queue_count,
+    disabled_reason: summary.disabled_reason,
     final_failure_count: summary.final_failure_count,
-    last_attempted_at: summary.last_attempted_at,
+    grant_id: summary.grant_id,
     last_attempt_ok:
-      summary.last_attempt_ok === null || summary.last_attempt_ok === undefined
-        ? null
-        : summary.last_attempt_ok !== 0,
+      summary.last_attempt_ok === null || summary.last_attempt_ok === undefined ? null : summary.last_attempt_ok !== 0,
     last_attempt_status_code: summary.last_attempt_status_code,
+    last_attempted_at: summary.last_attempted_at,
+    pending_queue_count: summary.pending_queue_count,
     recent_attempts: attempts.slice(0, REF_CLIENT_EVENT_SUBSCRIPTIONS_ATTEMPT_CAP).map((a) => ({
       attempt_id: a.attempt_id,
-      queue_id: a.queue_id,
+      attempted_at: a.attempted_at,
+      error: a.error,
       event_id: a.event_id,
       event_type: a.event_type,
-      attempted_at: a.attempted_at,
-      status_code: a.status_code,
-      ok: a.ok !== 0,
       latency_ms: a.latency_ms,
-      error: a.error,
+      ok: a.ok !== 0,
+      queue_id: a.queue_id,
       response_snippet: a.response_snippet,
+      status_code: a.status_code,
     })),
+    scope: parseScope(summary.scope_json),
+    status: summary.status,
+    subject_id: summary.subject_id,
+    subscription_id: summary.subscription_id,
+    updated_at: summary.updated_at,
   };
 }

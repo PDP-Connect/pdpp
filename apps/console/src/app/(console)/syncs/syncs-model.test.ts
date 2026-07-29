@@ -185,18 +185,18 @@ function schedule(overrides: Partial<RefSchedule> = {}): RefSchedule {
 
 test("source-pressure cooldown produces a WAIT card, never a reconnect prompt", () => {
   const coolingHealth = health({
-    state: "cooling_off",
-    reason_code: "source_pressure",
-    next_attempt_at: "2026-06-13T09:00:00Z",
     axes: { attention: "none", coverage: "partial", freshness: "fresh", outbox: "idle" },
+    next_attempt_at: "2026-06-13T09:00:00Z",
+    reason_code: "source_pressure",
+    state: "cooling_off",
   });
   const model = buildSyncsViewModel({
     connectors: [connector({ connection_health: coolingHealth, display_name: "ChatGPT — personal" })],
-    runs: [run({ status: "succeeded", event_count: 34 })],
+    runs: [run({ event_count: 34, status: "succeeded" })],
   });
 
   assert.equal(model.failureCards.length, 1, "a cooling connection still gets an honest card");
-  const card = model.failureCards[0];
+  const [card] = model.failureCards;
   if (!card) {
     throw new Error("expected a failure card");
   }
@@ -214,9 +214,6 @@ test("a blocked connection with a source-pressure backlog still gets the WAIT ca
   // A `blocked` raw state that carries a scheduled next attempt + pending backlog
   // is a deferral, not a terminal stop — the guard must suppress the reconnect.
   const blockedButThrottled = health({
-    state: "blocked",
-    reason_code: "blocked_threshold",
-    next_attempt_at: "2026-06-13T09:00:00Z",
     detail_gap_backlog: {
       max_attempt_count: 5,
       next_attempt_at: "2026-06-13T09:00:00Z",
@@ -224,25 +221,30 @@ test("a blocked connection with a source-pressure backlog still gets the WAIT ca
       pending_is_floor: true,
       recovered: 100,
     },
+    next_attempt_at: "2026-06-13T09:00:00Z",
+    reason_code: "blocked_threshold",
+    state: "blocked",
   });
   const model = buildSyncsViewModel({
     connectors: [connector({ connection_health: blockedButThrottled })],
     runs: [],
   });
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome does not honor that tsconfig flag here).
   assert.equal(model.failureCards[0]?.summary.cta, "wait");
 });
 
 test("a genuine blocked connection (no backlog, no next attempt) DOES prompt reconnect", () => {
   const reallyBlocked = health({
-    state: "blocked",
-    reason_code: "credentials_expired",
     next_attempt_at: null,
+    reason_code: "credentials_expired",
+    state: "blocked",
   });
   const model = buildSyncsViewModel({
     connectors: [connector({ connection_health: reallyBlocked })],
     runs: [],
   });
-  const card = model.failureCards[0];
+  const [card] = model.failureCards;
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome does not honor that tsconfig flag here).
   assert.equal(card?.summary.cta, "reconnect", "genuine credential failure keeps the reconnect CTA");
   assert.equal(model.band.needYourHand, 1, "a genuine block counts under need-your-hand");
 });
@@ -259,6 +261,7 @@ test("healthy connections produce no card and count their streams on schedule", 
   assert.equal(model.band.needsReview, 0);
   assert.equal(model.band.allClear, true);
   assert.equal(model.groups[0]?.health, "ok");
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(model.groups[0]?.streams.length, 3);
 });
 
@@ -538,7 +541,7 @@ test("a draft connection produces a PendingSetupCard, not a SyncGroup or Failure
   assert.equal(model.groups.length, 0, "a draft has no run/schedule/stream evidence to form a SyncGroup");
   assert.equal(model.failureCards.length, 0, "a draft is not a rendered-verdict-derived defect");
   assert.equal(model.pendingSetupCards.length, 1);
-  const card = model.pendingSetupCards[0];
+  const [card] = model.pendingSetupCards;
   assert.ok(card);
   assert.equal(card.connectionId, "cin_draft");
   assert.equal(card.connectorId, "gmail");
@@ -564,13 +567,14 @@ test("a draft connection counts toward needYourHand and inflates onSchedule by z
 });
 
 test("a draft connection's needs-you count matches sourceWorkFromConnectors' needsOwner group (shared attention headline)", () => {
-  // `sourceWorkFromConnectors` is the same shared projection the Sources
-  // dashboard hero uses, and it independently classifies a draft as
-  // needsOwner too (`source-actionability.test.ts`). The syncs band's
-  // needYourHand must equal that SAME count for the identical connector
-  // list — proving `buildHealthBand`'s explicit `pendingSetupWork` union
-  // does not double-count the draft that `pendingSetupCards` already
-  // special-cased out of `projections`.
+  // `sourceWorkFromConnectors` drives source rows and sync triage, and it
+  // independently classifies a draft as needsOwner too
+  // (`source-actionability.test.ts`). The syncs band's needYourHand must equal
+  // that SAME count for the identical connector list — proving
+  // `buildHealthBand`'s explicit `pendingSetupWork` union does not double-count
+  // the draft that `pendingSetupCards` already special-cased out of
+  // `projections`. The aggregate dashboard hero follows the server fleet
+  // verdict separately.
   const connectors = [draftConnector(), connector({ connection_id: "cin_healthy" })];
   const model = buildSyncsViewModel({ connectors, runs: [] });
   const sourceGroups = sourceWorkFromConnectors(connectors);
@@ -625,15 +629,15 @@ test("describeCadence humanizes the schedule interval", () => {
   assert.equal(describeCadence(schedule({ interval_seconds: 900 })), "every 15 min");
   assert.equal(describeCadence(schedule({ interval_seconds: 86_400 })), "daily");
   assert.equal(describeCadence(schedule({ effective_mode: "manual" })), "manual");
-  assert.equal(describeCadence(schedule({ enabled: false, effective_mode: "paused" })), "paused");
+  assert.equal(describeCadence(schedule({ effective_mode: "paused", enabled: false })), "paused");
   assert.equal(describeCadence(null), "on demand");
 });
 
 test("describeDelta reads records, no change, and failure honestly", () => {
-  assert.equal(describeDelta({ failed: false, eventCount: 38 }), "+38 records");
-  assert.equal(describeDelta({ failed: false, eventCount: 1 }), "+1 record");
-  assert.equal(describeDelta({ failed: false, eventCount: 0 }), "no change");
-  assert.equal(describeDelta({ failed: true, eventCount: 5 }), "sync failed");
+  assert.equal(describeDelta({ eventCount: 38, failed: false }), "+38 records");
+  assert.equal(describeDelta({ eventCount: 1, failed: false }), "+1 record");
+  assert.equal(describeDelta({ eventCount: 0, failed: false }), "no change");
+  assert.equal(describeDelta({ eventCount: 5, failed: true }), "sync failed");
 });
 
 test("describeDuration formats sub-minute and minute spans", () => {
@@ -643,12 +647,12 @@ test("describeDuration formats sub-minute and minute spans", () => {
 });
 
 test("a failing connection holds its next and marks rows failed", () => {
-  const failHealth = health({ state: "blocked", reason_code: "credentials_expired" });
+  const failHealth = health({ reason_code: "credentials_expired", state: "blocked" });
   const model = buildSyncsViewModel({
     connectors: [connector({ connection_health: failHealth, schedule: schedule() })],
     runs: [run({ connection_id: "cin_test", status: "failed" })],
   });
-  const group = model.groups[0];
+  const [group] = model.groups;
   assert.equal(group?.health, "failing");
   assert.equal(group?.streams[0]?.failed, true);
   assert.equal(group?.streams[0]?.next, "held");
@@ -686,7 +690,7 @@ test("a broken connector does not rewrite a successful last run into sync failed
     runs: [],
   });
 
-  const group = model.groups[0];
+  const [group] = model.groups;
   assert.equal(group?.health, "failing", "the group still shows the current connector state");
   assert.equal(group?.lastRunDelta, "+52 records", "last result remains the successful run fact");
   assert.equal(
@@ -730,12 +734,14 @@ test("failure cards bind terminal gaps to rendered verdict copy, never retryable
     runs: [],
   });
 
-  const card = model.failureCards[0];
+  const [card] = model.failureCards;
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome does not honor that tsconfig flag here).
   assert.equal(card?.summary.prose, "This connector needs a code fix before it can collect again.");
-  assert.equal(card?.summary.cta, "wait");
-  assert.equal(card?.summary.actionLabel, "Connector code needs a fix");
-  assert.equal(card?.summary.ownerActionRequired, false);
-  assert.doesNotMatch(card?.summary.prose ?? "", RESUME_FALSE_REASSURANCE_RE);
+  assert.equal(card.summary.cta, "wait");
+  assert.equal(card.summary.actionLabel, "Connector code needs a fix");
+  assert.equal(card.summary.ownerActionRequired, false);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome does not honor that tsconfig flag here).
+  assert.doesNotMatch(card?.summary.prose, RESUME_FALSE_REASSURANCE_RE);
   assert.equal(model.band.needYourHand, 0);
   assert.equal(model.band.needsReview, 1);
   assert.equal(model.band.allClear, false);
@@ -762,11 +768,12 @@ test("failure cards bind retryable gaps to the rendered Retry now action", () =>
     runs: [],
   });
 
-  const card = model.failureCards[0];
+  const [card] = model.failureCards;
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome does not honor that tsconfig flag here).
   assert.equal(card?.summary.prose, "Retry now to give the recoverable gap another run.");
-  assert.equal(card?.summary.cta, "connection_detail");
-  assert.equal(card?.summary.actionLabel, "Retry now");
-  assert.equal(card?.summary.ownerActionRequired, false, "retry is an advisory accelerant, not attention");
+  assert.equal(card.summary.cta, "connection_detail");
+  assert.equal(card.summary.actionLabel, "Retry now");
+  assert.equal(card.summary.ownerActionRequired, false, "retry is an advisory accelerant, not attention");
   assert.equal(model.band.needYourHand, 0);
   assert.equal(model.band.needsReview, 1);
   assert.equal(model.band.allClear, false);
@@ -801,10 +808,11 @@ test("failure cards bind stale manual refresh to Refresh now without marking hea
     runs: [],
   });
 
-  const card = model.failureCards[0];
+  const [card] = model.failureCards;
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome does not honor that tsconfig flag here).
   assert.equal(card?.summary.prose, "Run a refresh to bring this up to date.");
-  assert.equal(card?.summary.actionLabel, "Refresh now");
-  assert.equal(card?.summary.ownerActionRequired, false);
+  assert.equal(card.summary.actionLabel, "Refresh now");
+  assert.equal(card.summary.ownerActionRequired, false);
   assert.equal(card?.work?.group, "review");
   assert.equal(model.band.needYourHand, 0);
   assert.equal(model.band.needsReview, 1);
@@ -839,12 +847,14 @@ test("failure cards bind dead-letter backlog to collector action, not resume-nor
     runs: [],
   });
 
-  const card = model.failureCards[0];
+  const [card] = model.failureCards;
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome does not honor that tsconfig flag here).
   assert.equal(card?.summary.prose, "Check the collector before this source can make progress.");
-  assert.equal(card?.summary.cta, "connection_detail");
-  assert.equal(card?.summary.actionLabel, "Check the collector");
-  assert.equal(card?.summary.ownerActionRequired, true);
-  assert.doesNotMatch(card?.summary.prose ?? "", RESUME_NORMALLY_RE);
+  assert.equal(card.summary.cta, "connection_detail");
+  assert.equal(card.summary.actionLabel, "Check the collector");
+  assert.equal(card.summary.ownerActionRequired, true);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome does not honor that tsconfig flag here).
+  assert.doesNotMatch(card?.summary.prose, RESUME_NORMALLY_RE);
   assert.equal(model.band.needYourHand, 1);
   assert.equal(model.band.needsReview, 1);
   assert.equal(model.band.allClear, false);
@@ -885,10 +895,11 @@ test("device-local recovery counts as need-your-hand while navigating to recover
     runs: [],
   });
 
-  const card = model.failureCards[0];
+  const [card] = model.failureCards;
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome does not honor that tsconfig flag here).
   assert.equal(card?.summary.cta, "connection_detail");
-  assert.equal(card?.summary.actionLabel, "See recovery steps");
-  assert.equal(card?.summary.ownerActionRequired, true);
+  assert.equal(card.summary.actionLabel, "See recovery steps");
+  assert.equal(card.summary.ownerActionRequired, true);
   assert.equal(card?.work?.group, "needsOwner");
   assert.equal(model.band.needYourHand, 1);
   assert.equal(model.band.needsReview, 1);
@@ -1159,6 +1170,7 @@ test("syncs overview shows ALL streams with no truncation", () => {
     runs: [],
   });
 
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(model.groups[0]?.streams.length, 7, "all 7 streams render — no cap");
   assert.equal(model.groups[0]?.totalStreamCount, 7);
   assert.equal(model.totalStreamCount, 7);
@@ -1289,9 +1301,6 @@ test("syncs cross-surface: an inactive queued recovery card is passive progress,
   const model = buildSyncsViewModel({
     connectors: [
       connector({
-        connection_id: "cin_amazon",
-        connector_id: "amazon",
-        display_name: "Amazon",
         connection_health: health({
           axes: { attention: "none", coverage: "deferred", freshness: "fresh", outbox: "idle" },
           badges: { stale: false, syncing: false },
@@ -1307,6 +1316,9 @@ test("syncs cross-surface: an inactive queued recovery card is passive progress,
           },
           state: "degraded",
         }),
+        connection_id: "cin_amazon",
+        connector_id: "amazon",
+        display_name: "Amazon",
         rendered_verdict: deferredRecoveryVerdict,
         streams: ["orders"],
       }),
@@ -1342,9 +1354,11 @@ test("all streams in a group are present with no truncation", () => {
     runs: [],
   });
 
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(model.groups[0]?.streams.length, 7, "all 7 stream rows are present");
   assert.equal(model.groups[0]?.totalStreamCount, 7);
   assert.equal(model.totalStreamCount, 7);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   const streamNames = model.groups[0]?.streams.map((r) => r.stream);
   assert.deepEqual(streamNames, ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta"]);
 });
@@ -1375,20 +1389,20 @@ test("per-stream collectedThisRun is populated from collection_report when prese
   const model = buildSyncsViewModel({
     connectors: [
       connector({
+        collection_report: [
+          collectionEntry({ collected: 120, coverage_condition: "complete", stream: "commits" }),
+          collectionEntry({ collected: 8, coverage_condition: "partial", stream: "pull_requests" }),
+        ],
         connection_id: "cin_gh",
         connector_id: "github",
         display_name: "GitHub",
         streams: ["commits", "pull_requests"],
-        collection_report: [
-          collectionEntry({ stream: "commits", collected: 120, coverage_condition: "complete" }),
-          collectionEntry({ stream: "pull_requests", collected: 8, coverage_condition: "partial" }),
-        ],
       }),
     ],
     runs: [],
   });
 
-  const group = model.groups[0];
+  const [group] = model.groups;
   assert.ok(group, "group must exist");
   const byStream = new Map(group.streams.map((r) => [r.stream, r]));
 
@@ -1406,20 +1420,20 @@ test("two streams with different collection_report entries show DIFFERENT values
   const model = buildSyncsViewModel({
     connectors: [
       connector({
+        collection_report: [
+          collectionEntry({ collected: 42, stream: "messages" }),
+          collectionEntry({ collected: 0, stream: "attachments" }),
+        ],
         connection_id: "cin_multi",
         connector_id: "gmail",
         display_name: "Gmail",
         streams: ["messages", "attachments"],
-        collection_report: [
-          collectionEntry({ stream: "messages", collected: 42 }),
-          collectionEntry({ stream: "attachments", collected: 0 }),
-        ],
       }),
     ],
     runs: [run({ connection_id: "cin_multi", event_count: 42, status: "succeeded" })],
   });
 
-  const group = model.groups[0];
+  const [group] = model.groups;
   assert.ok(group, "group must exist");
   const byStream = new Map(group.streams.map((r) => [r.stream, r]));
 
@@ -1442,9 +1456,9 @@ test("connection-level last-run facts live on the group, not on each stream row"
         display_name: "Chase",
         last_run: connectorRun({
           event_count: 99,
-          status: "succeeded",
           first_at: "2026-06-13T04:00:00Z",
           last_at: "2026-06-13T04:00:06Z",
+          status: "succeeded",
         }),
         streams: ["transactions", "balances"],
       }),
@@ -1452,7 +1466,7 @@ test("connection-level last-run facts live on the group, not on each stream row"
     runs: [],
   });
 
-  const group = model.groups[0];
+  const [group] = model.groups;
   assert.ok(group, "group must exist");
 
   // Connection-level facts on the group header.
@@ -1514,20 +1528,20 @@ test("streamSkipped is true only when collection_report entry has a skip", () =>
   const model = buildSyncsViewModel({
     connectors: [
       connector({
+        collection_report: [
+          collectionEntry({ collected: 0, skipped: { reason: "rate_limited" }, stream: "transactions" }),
+          collectionEntry({ collected: 5, stream: "balances" }),
+        ],
         connection_id: "cin_skip",
         connector_id: "plaid",
         display_name: "Plaid",
         streams: ["transactions", "balances"],
-        collection_report: [
-          collectionEntry({ stream: "transactions", collected: 0, skipped: { reason: "rate_limited" } }),
-          collectionEntry({ stream: "balances", collected: 5 }),
-        ],
       }),
     ],
     runs: [],
   });
 
-  const group = model.groups[0];
+  const [group] = model.groups;
   assert.ok(group);
   const byStream = new Map(group.streams.map((r) => [r.stream, r]));
   assert.equal(byStream.get("transactions")?.streamSkipped, true, "skipped stream is marked");
@@ -1542,29 +1556,30 @@ test("a stream with a real collected count keeps its per-stream truth when the c
   const model = buildSyncsViewModel({
     connectors: [
       connector({
-        connection_id: "cin_partial",
-        connector_instance_id: "cin_partial",
-        connector_id: "gmail",
-        display_name: "Gmail",
-        streams: ["messages", "labels"],
         collection_report: [
-          collectionEntry({ stream: "messages", collected: 500 }),
+          collectionEntry({ collected: 500, stream: "messages" }),
           // labels has no report entry, so it falls back to connection failure.
         ],
+        connection_id: "cin_partial",
+        connector_id: "gmail",
+        connector_instance_id: "cin_partial",
+        display_name: "Gmail",
+        streams: ["messages", "labels"],
       }),
     ],
     runs: [
       run({
         connection_id: "cin_partial",
-        connector_instance_id: "cin_partial",
         connector_id: "gmail",
+        connector_instance_id: "cin_partial",
         event_count: 500,
         status: "failed",
       }),
     ],
   });
 
-  const group = model.groups[0];
+  const [group] = model.groups;
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   const byStream = new Map((group?.streams ?? []).map((r) => [r.stream, r]));
 
   // The core assertion: a stream with its own collection_report entry shows

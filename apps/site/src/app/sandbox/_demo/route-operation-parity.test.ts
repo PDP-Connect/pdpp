@@ -73,25 +73,25 @@ interface RouteSource {
 
 async function collectRouteSources(dir = SANDBOX_DIR): Promise<RouteSource[]> {
   const entries = await readdir(dir, { withFileTypes: true });
-  const routes: RouteSource[] = [];
-  for (const entry of entries) {
-    const full = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      routes.push(...(await collectRouteSources(full)));
-      continue;
-    }
-    if (entry.name !== ROUTE_FILE) {
-      continue;
-    }
-    const src = await readFile(full, "utf8");
-    routes.push({
-      rel: relative(SANDBOX_DIR, full).split(sep).join("/"),
-      src,
-      operations: [...src.matchAll(OPERATIONS_IMPORT_RE)]
-        .map((match) => match[1])
-        .filter((operation): operation is string => typeof operation === "string"),
-    });
-  }
+  const nested = await Promise.all(
+    entries.filter((entry) => entry.isDirectory()).map((entry) => collectRouteSources(join(dir, entry.name)))
+  );
+  const routes: RouteSource[] = nested.flat();
+  const routeFileEntries = entries.filter((entry) => !entry.isDirectory() && entry.name === ROUTE_FILE);
+  const routeFiles = await Promise.all(
+    routeFileEntries.map(async (entry) => {
+      const full = join(dir, entry.name);
+      const src = await readFile(full, "utf8");
+      return {
+        operations: [...src.matchAll(OPERATIONS_IMPORT_RE)]
+          .map((match) => match[1])
+          .filter((operation): operation is string => typeof operation === "string"),
+        rel: relative(SANDBOX_DIR, full).split(sep).join("/"),
+        src,
+      };
+    })
+  );
+  routes.push(...routeFiles);
   return routes.sort((a, b) => a.rel.localeCompare(b.rel));
 }
 

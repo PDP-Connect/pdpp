@@ -175,6 +175,10 @@ export interface EmitDeps {
     page: Page;
     sendInteraction: BrowserCollectContext["sendInteraction"];
   }) => Promise<void>;
+  /** Pending USAA account transaction gaps served by the runtime this run.
+   * A reached account emits recovery for its supplied gap id; this prevents a
+   * successful later export from leaving the durable gap pending forever. */
+  servedAccountTransactionGaps?: ReadonlyMap<string, string>;
 }
 
 /** Aggregate shape from the PDF hydration pass. Exposed so the emit-
@@ -558,7 +562,7 @@ function sanitizeDiagnosticInfo(diag: DiagnosticInfo): DiagnosticInfo {
 }
 
 function summarizeArtifactDiagnostics(diag: DiagnosticInfo): string | null {
-  const artifact = diag.artifact;
+  const { artifact } = diag;
   if (!artifact) {
     return null;
   }
@@ -571,7 +575,7 @@ function summarizeArtifactDiagnostics(diag: DiagnosticInfo): string | null {
   if (artifact.cdpError) {
     parts.push(`cdpError=${artifact.cdpError.slice(0, ID_TEXT_SNIP)}`);
   }
-  const firstCandidate = artifact.candidates[0];
+  const [firstCandidate] = artifact.candidates;
   if (firstCandidate) {
     const firstParts = [
       firstCandidate.source,
@@ -897,7 +901,7 @@ async function extractAccounts(page: Page): Promise<DashboardAccount[]> {
       const amounts = [...text.matchAll(DOLLAR_RE)]
         .map((m) => (m[1] ? m[1] : null))
         .filter((v): v is string => Boolean(v));
-      const firstAmount = amounts[0];
+      const [firstAmount] = amounts;
       const balanceCents = firstAmount ? Math.round(Number(firstAmount.replace(COMMA_RE_LOCAL, "")) * 100) : null;
       out.push({
         account_id_raw: accountId,
@@ -1126,11 +1130,8 @@ async function emitDialogUnexpectedShapeDiagnostic(
 }
 
 /** Click Export, then confirm the date-range selector rendered. */
-async function openExportDialog(
-  page: Page,
-  located: LocatedExportPage,
-  onDiagnostics: DriveExportOptions["onDiagnostics"]
-): Promise<boolean> {
+async function openExportDialog(page: Page, located: LocatedExportPage, options: DriveExportOptions): Promise<boolean> {
+  const { onDiagnostics } = options;
   try {
     await located.export.click({ timeout: EXPORT_CLICK_TIMEOUT_MS });
   } catch (err) {
@@ -1147,6 +1148,9 @@ async function openExportDialog(
     if (onDiagnostics) {
       await emitDialogUnexpectedShapeDiagnostic(page, onDiagnostics);
     }
+    // Capture before Escape: the keypress below can dismiss/mutate the
+    // dialog surface, so the checkpoint must run on the still-intact page.
+    await captureExportCheckpoint(page, options, "dialog-not-open");
     await page.keyboard.press("Escape").catch((): undefined => undefined);
     return false;
   }
@@ -1197,8 +1201,8 @@ type ExportSubmitOutcome =
  */
 class CsvArtifactError extends Error {
   readonly download: DownloadDiagnostics | null;
-  constructor(message: string, download: DownloadDiagnostics | null) {
-    super(message);
+  constructor(message: string, download: DownloadDiagnostics | null, cause?: unknown) {
+    super(message, cause === undefined ? undefined : { cause });
     this.name = "CsvArtifactError";
     this.download = download;
   }
@@ -1280,12 +1284,12 @@ async function waitForCsvArtifact(
   const downloadPromise = downloadQueue.waitForNextDownload({ timeoutMs: DOWNLOAD_TIMEOUT_MS });
   const result = await Promise.any([
     responsePromise.then((response) => ({ kind: "response" as const, response })),
-    downloadPromise.then((download) => ({ download, kind: "download" as const })),
+    downloadPromise.then((downloadResult) => ({ download: downloadResult, kind: "download" as const })),
   ]);
   if (result.kind === "response") {
     return { buffer: result.response.body, suggestedFilename: result.response.suggestedFilename };
   }
-  const download = result.download;
+  const { download } = result;
   try {
     const { buffer, outcome } = await readPlaywrightDownloadBufferDetailed(download);
     if (buffer.length > 0) {
@@ -1321,7 +1325,8 @@ async function waitForCsvArtifact(
     if (response) {
       return { buffer: response.body, suggestedFilename: response.suggestedFilename };
     }
-    throw new CsvArtifactError(err instanceof Error ? err.message : String(err), downloadDiag);
+    // biome-ignore lint/style/useErrorCause: CsvArtifactError's 3rd constructor arg forwards to super(message, { cause })
+    throw new CsvArtifactError(err instanceof Error ? err.message : String(err), downloadDiag, err);
   }
 }
 
@@ -1336,14 +1341,15 @@ async function submitExportAndAwait(page: Page): Promise<ExportSubmitOutcome> {
     await submit.click().catch((): undefined => undefined);
 
     const dialogMessage = page.locator(EXPORT_DIALOG_MESSAGE_SELECTOR).first();
+    const readDialogOutcome = async (): Promise<ExportSubmitOutcome> => {
+      const message = ((await dialogMessage.textContent().catch((): string | null => null)) ?? "").trim();
+      return isNoDataExportMessage(message) ? { kind: "empty", message } : { kind: "dialog_error", message };
+    };
     const errorPromise = page
       .locator(EXPORT_DIALOG_MESSAGE_SELECTOR)
       .first()
       .waitFor({ state: "visible", timeout: DOWNLOAD_TIMEOUT_MS })
-      .then(async (): Promise<ExportSubmitOutcome> => {
-        const message = ((await dialogMessage.textContent().catch((): string | null => null)) ?? "").trim();
-        return isNoDataExportMessage(message) ? { kind: "empty", message } : { kind: "dialog_error", message };
-      })
+      .then(readDialogOutcome)
       .catch((): Promise<never> => new Promise((): void => undefined));
 
     return await Promise.race<ExportSubmitOutcome>([
@@ -1389,9 +1395,8 @@ export async function driveExport(
     return noExportAffordanceFailure(page, options);
   }
 
-  const dialogOpen = await openExportDialog(page, located, onDiagnostics);
+  const dialogOpen = await openExportDialog(page, located, options);
   if (!dialogOpen) {
-    await captureExportCheckpoint(page, options, "dialog-not-open");
     return { kind: "failed" };
   }
 
@@ -1601,7 +1606,7 @@ async function tryExportLadder(
   const onDiagnostics = (info: DiagnosticInfo): void => {
     diagBox.current = info;
   };
-  for (let i = 0; i < candidateStarts.length; i++) {
+  for (let i = 0; i < candidateStarts.length; i += 1) {
     const sinceDate = candidateStarts[i];
     if (!sinceDate) {
       continue;
@@ -1799,6 +1804,74 @@ export function buildAccountTransactionDetailGap(outcome: {
 }
 
 /**
+ * Keep only USAA account-level transaction gaps the runtime actually served
+ * this run. The connector may recover only these supplied ids: synthesizing
+ * one, or accepting a foreign/malformed locator, could close unrelated work.
+ */
+export function buildServedAccountTransactionGapLookup(
+  detailGaps: readonly BrowserCollectContext["detailGaps"][number][]
+): Map<string, string> {
+  const lookup = new Map<string, string>();
+  for (const gap of detailGaps) {
+    if (gap.stream !== "transactions" || gap.status !== "pending") {
+      continue;
+    }
+    const locator = gap.detail_locator;
+    if (locator?.kind !== "usaa.account") {
+      continue;
+    }
+    const accountId = locator.account_id;
+    const recordKey = gap.record_key;
+    if (
+      typeof accountId !== "string" ||
+      accountId.length === 0 ||
+      typeof recordKey !== "string" ||
+      recordKey.length === 0 ||
+      recordKey !== accountId ||
+      typeof gap.gap_id !== "string" ||
+      !gap.gap_id
+    ) {
+      continue;
+    }
+    if (!lookup.has(accountId)) {
+      lookup.set(accountId, gap.gap_id);
+    }
+  }
+  return lookup;
+}
+
+/**
+ * A served account gap is recovered only after this run reaches that same
+ * account. `hydrated` and source-limited `no_activity` are both complete
+ * account coverage; a fresh `gap` is deliberately re-deferred instead.
+ */
+export async function recoverServedAccountTransactionGaps(
+  deps: EmitDeps,
+  outcomes: readonly AccountTransactionOutcome[]
+): Promise<void> {
+  const served = deps.servedAccountTransactionGaps;
+  if (!served || served.size === 0) {
+    return;
+  }
+  for (const outcome of outcomes) {
+    if (outcome.kind !== "hydrated" && outcome.kind !== "no_activity") {
+      continue;
+    }
+    const gapId = served.get(outcome.accountId);
+    if (!gapId) {
+      continue;
+    }
+    await deps.emit({
+      type: "DETAIL_GAP_RECOVERED",
+      reference_only: true,
+      gap_id: gapId,
+      stream: "transactions",
+      record_key: outcome.accountId,
+    });
+  }
+}
+
+/**
  * Emit the per-run DETAIL_COVERAGE for the account -> transactions detail
  * fan-out, mirroring chase's `emitTransactionsDetailCoverage`. `outcomes` is
  * built from the accounts this run actually attempted (session-dead
@@ -1990,7 +2063,7 @@ async function runTransactionsStream(
 
   const transactionAccounts = accounts.filter((a) => TRANSACTION_ACCOUNT_TYPE_RE.test(a.account_type));
   const outcomes: AccountTransactionOutcome[] = [];
-  for (let i = 0; i < transactionAccounts.length; i++) {
+  for (let i = 0; i < transactionAccounts.length; i += 1) {
     const a = transactionAccounts[i];
     if (!a) {
       continue;
@@ -2047,6 +2120,7 @@ async function runTransactionsStream(
   // one means every transaction-eligible account was attempted (including
   // the zero-eligible-accounts case, where the loop body never ran at all),
   // so the denominator this run enumerated is genuinely complete.
+  await recoverServedAccountTransactionGaps(deps, outcomes);
   await emitTransactionsDetailCoverage(deps, outcomes, !streamState.sessionDeadMidRun);
   return transactionsCursor;
 }
@@ -2087,9 +2161,7 @@ function scrapeStatementsIndex(page: Page): Promise<DocRow[]> {
     }
     return [...t.querySelectorAll("tbody tr")].map((tr: El, rowIndex: number) => {
       const cells = [...tr.querySelectorAll("td")] as El[];
-      const c0 = cells[0];
-      const c1 = cells[1];
-      const c2 = cells[2];
+      const [c0, c1, c2] = cells;
       return {
         rowIndex,
         title: (c0?.innerText || "").replace(WS_RE, " ").trim(),
@@ -2136,7 +2208,7 @@ async function hydratePdfsForIndex(deps: StatementsSubDeps, indexRows: readonly 
       },
     });
     for (const h of hydrated) {
-      successes++;
+      successes += 1;
       results.set(h.statement.rowIndex, {
         pdfPath: h.pdfPath,
         pdfSha256: h.pdfSha256,
@@ -2185,7 +2257,7 @@ async function processPdfStatementRow(
       period,
     });
     if (!txns.length) {
-      counters.unknownTemplates++;
+      counters.unknownTemplates += 1;
       await deps.emit({
         type: "SKIP_RESULT",
         stream: "transactions",
@@ -2209,9 +2281,9 @@ async function processPdfStatementRow(
       if (!fingerprintCursor || fingerprintCursor.shouldEmit({ ...t })) {
         await deps.emitRecord("transactions", { ...t });
       }
-      counters.pdfTxnCount++;
+      counters.pdfTxnCount += 1;
     }
-    counters.parsedStatements++;
+    counters.parsedStatements += 1;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     await deps.emit({
@@ -2326,9 +2398,7 @@ function scrapeInboxRows(page: Page): Promise<InboxRow[]> {
     }
     return [...t.querySelectorAll("tbody tr")].map((tr: El) => {
       const cells = [...tr.querySelectorAll("td")] as El[];
-      const c0 = cells[0];
-      const c1 = cells[1];
-      const c2 = cells[2];
+      const [c0, c1, c2] = cells;
       return {
         status: (c0?.innerText || "").replace(WS_RE, " ").trim(),
         date_short: (c1?.innerText || "").replace(WS_RE, " ").trim(),
@@ -2628,6 +2698,7 @@ if (isMainModule(import.meta.url)) {
         capture,
         emit,
         emitRecord,
+        servedAccountTransactionGaps: buildServedAccountTransactionGapLookup(ctx.detailGaps),
       };
 
       // ACCOUNTS — extract from dashboard; emit optionally based on requested.

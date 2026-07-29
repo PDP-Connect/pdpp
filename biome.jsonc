@@ -5,74 +5,70 @@
   "formatter": {
     "lineWidth": 120
   },
+  "assist": {
+    "actions": {
+      "source": {
+        "useSortedKeys": "off"
+      }
+    }
+  },
   "files": {
     "ignoreUnknown": true,
-    // During the JS→TS migration, Biome only lints/formats .ts files plus
-    // config. Legacy .js files are exempt until migrated — renaming to .ts
-    // automatically brings them under the strict bar. Flip this to include
-    // *.js once the migration is complete and delete the note.
+    // The tracked-source contract starts with all files Biome recognizes.
+    // Force-ignore patterns exclude dependency/build output, raw data, and
+    // generated/report artifacts; authored JS and executable fixtures remain.
     "includes": [
-      "src/**/*.ts",
-      "connectors/**/*.ts",
-      "bin/**/*.ts",
-      "packages/remote-surface/src/**/*.ts",
-      "packages/remote-surface/*.json",
-      "*.jsonc",
-      "*.json",
-      "!node_modules",
-      "!fixtures",
-      "!dist",
-      "!**/*.test.*"
+      "!!**/node_modules",
+      "!!**/.git",
+      "!!**/dist",
+      "!!**/build",
+      "!!**/out",
+      "!!**/.next",
+      "!!**/.source",
+      "!!**/coverage",
+      "!!**/reports",
+      "!!**/report",
+      "!!**/*.snap",
+      "!!**/*.har",
+      "!!**/*.jsonl",
+      "!!**/docs/generated",
+      // OpenAPI JSON is generator-owned and byte-checked by
+      // reference-contract:check-generated. Formatting it here would create
+      // drift from the canonical generator and the full artifact exceeds
+      // Biome's source-file size ceiling.
+      "!!reference-implementation/openapi",
+      "!!packages/polyfill-connectors/fixtures/**/*.json",
+      "!!packages/polyfill-connectors/fixtures/**/*.html",
+      "!!packages/polyfill-connectors/fixtures/**/*.csv",
+      "!!packages/polyfill-connectors/fixtures/**/*.md",
+      "!!packages/polyfill-connectors/fixtures/**/*.log",
+      "!!packages/polyfill-connectors/fixtures/**/*.dat",
+      "!!packages/polyfill-connectors/connectors/**/__fixtures__/**/*.html",
+      "!!packages/polyfill-connectors/connectors/**/__fixtures__/**/*.json",
+      "!!packages/polyfill-connectors/connectors/**/__fixtures__/**/*.csv",
+      // Twitter archive exports are provider-captured JavaScript data, not
+      // executable fixture helpers. Keep the archive subtree byte-faithful.
+      "!!packages/polyfill-connectors/connectors/twitter_archive/__fixtures__/archive-files/**/*.js",
+      "!!reference-implementation/test/fixtures/*.json",
+      "!!**/next-env.d.ts",
+      "!!**/report.*.json"
     ]
   },
   "overrides": [
     {
-      // Remote-surface was previously outside the workspace check set, so
-      // `pnpm --filter @opendatalabs/remote-surface check` was a false green. Keep
-      // the package under Biome analysis now, but waive the pre-existing
-      // Ultracite migration debt that surfaced when the files became visible.
-      //
-      // This is intentionally scoped to packages/remote-surface/src/**/*.ts:
-      // new syntax/configuration problems and any non-waived Ultracite rules
-      // still fail the package check, while style/assist cleanup can land in a
-      // separate product-code-only tranche.
-      "includes": ["packages/remote-surface/src/**/*.ts"],
-      "formatter": {
-        "enabled": false
-      },
-      "assist": {
-        "actions": {
-          "source": {
-            "organizeImports": "off",
-            "useSortedInterfaceMembers": "off"
-          }
-        }
-      },
-      "linter": {
-        "rules": {
-          "complexity": {
-            "noExcessiveCognitiveComplexity": "off",
-            "noUselessUndefined": "off",
-            "noVoid": "off",
-            "useSimplifiedLogicExpression": "off"
-          },
-          "correctness": {
-            "noUnresolvedImports": "off"
-          },
-          "performance": {
-            "noBarrelFile": "off"
-          },
-          "style": {
-            "useBlockStatements": "off",
-            "useConsistentTypeDefinitions": "off",
-            "useExportType": "off",
-            "useNumericSeparators": "off"
-          },
-          "suspicious": {
-            "useAwait": "off"
-          }
-        }
-      }
+      // These six classic-script files are emitted from the adjacent TypeScript
+      // sources. They remain selected so inventory coverage cannot shrink, but
+      // their formatter/linter output is judged by generated-artifacts:check.
+      "includes": [
+        "docs/design-system/ink-carbon/project/explorer/data.js",
+        "docs/design-system/ink-carbon/project/explorer/dispatch.js",
+        "docs/design-system/ink-carbon/project/explorer/query.js",
+        "docs/design-system/ink-carbon/project/recordroom/image-slot.js",
+        "docs/design-system/ink-carbon/project/recordroom/rr-data.js",
+        "docs/design-system/ink-carbon/project/recordroom/rr-explore-data.js"
+      ],
+      "formatter": { "enabled": false },
+      "linter": { "enabled": false }
     },
     {
       // Connector-specific override. As of 2026-04-22 only
@@ -106,6 +102,143 @@
         "rules": {
           "complexity": {
             "noExcessiveCognitiveComplexity": "off"
+          }
+        }
+      }
+    },
+    {
+      // reference-implementation/server/records.ts TypeScript migration
+      // (2026-07-27). Line 120 is a deliberate single re-export at the package
+      // boundary (`export { resolveRecordIdentityForBinding } from
+      // "./connection-identity.ts"`). This is not a barrel of a directory —
+      // it re-exports exactly one symbol so callers outside the server/ subtree
+      // can import via the canonical records entry point rather than navigating
+      // into an internal helper. Same class of deliberate single re-export as
+      // the mcp-server override above.
+      "includes": ["reference-implementation/server/records.ts"],
+      "linter": {
+        "rules": {
+          "performance": {
+            "noBarrelFile": "off"
+          }
+        }
+      }
+    },
+    {
+      // @pdpp/mcp-server TypeScript migration (2026-07-25). Two rules are
+      // confirmed Biome-resolver false positives here, not real debt:
+      //
+      // - noUnresolvedImports: fires on `@modelcontextprotocol/sdk/server/*.js`
+      //   subpath imports. Both `tsc` and `node --input-type=module -e
+      //   "import.meta.resolve(...)"` resolve these correctly through the
+      //   SDK's package.json `exports` map; Biome's resolver does not walk
+      //   pnpm's nested node_modules layout for scoped-package subpath
+      //   exports. No other package in the workspace imports this SDK yet,
+      //   so this is the first time the gap has surfaced.
+      // - noBarrelFile: `server.ts`/`index.ts` each have exactly one
+      //   deliberate `export { X } from './y.js'` line re-exporting a
+      //   downstream module's public symbol at the package's public
+      //   boundary (not a full barrel re-export of a directory) — the same
+      //   pattern the MCP SDK and this package's own public API already
+      //   rely on for `@pdpp/mcp-server` and `@pdpp/mcp-server/server`.
+      "includes": [
+        "packages/mcp-server/src/server.ts",
+        "packages/mcp-server/src/index.ts"
+      ],
+      "linter": {
+        "rules": {
+          "correctness": {
+            "noUnresolvedImports": "off"
+          },
+          "performance": {
+            "noBarrelFile": "off"
+          }
+        }
+      }
+    },
+    {
+      // @pdpp/mcp-server test suite (2026-07-25 REVISE 4). Every test file
+      // below imports `@modelcontextprotocol/sdk/client/index.js` and/or
+      // `@modelcontextprotocol/sdk/inMemory.js` — the identical confirmed
+      // Biome-resolver false positive documented above for src/server.ts and
+      // src/index.ts (same SDK, same subpath-exports gap in Biome's resolver,
+      // not tsc's or Node's). Verified per file that noUnresolvedImports is
+      // the SDK subpath import and not some other unresolved specifier before
+      // adding it here. schema-token-budget.test.ts also carries a second,
+      // independent noUnresolvedImports finding for `import "tsx"` (see the
+      // separate tsx-scoped override below); this block covers the SDK cause.
+      "includes": [
+        "packages/mcp-server/test/aggregate-tool.test.ts",
+        "packages/mcp-server/test/canonical-mirror.test.ts",
+        "packages/mcp-server/test/connection-id-forwarding.test.ts",
+        "packages/mcp-server/test/expand-gate.test.ts",
+        "packages/mcp-server/test/fetch-id-form-contract.test.ts",
+        "packages/mcp-server/test/hostile-client-read-evidence.test.ts",
+        "packages/mcp-server/test/read-record-field-selector-contract.test.ts",
+        "packages/mcp-server/test/record-payload-token-budget.test.ts",
+        "packages/mcp-server/test/schema-token-budget.test.ts",
+        "packages/mcp-server/test/self-contained-result-id.test.ts",
+        "packages/mcp-server/test/server.integration.test.ts",
+        "packages/mcp-server/test/tool-footprint.test.ts",
+        "packages/mcp-server/test/typed-filter.test.ts"
+      ],
+      "linter": {
+        "rules": {
+          "correctness": {
+            "noUnresolvedImports": "off"
+          }
+        }
+      }
+    },
+    {
+      // @pdpp/mcp-server test suite (2026-07-25 REVISE 4). Both files use the
+      // `import "tsx";` side-effect import (registers tsx as this process's
+      // own dynamic-import loader, load-bearing for a later `await
+      // import(".../compact-view.ts")` call; predates this migration). Biome
+      // cannot resolve tsx's package.json exports map for a bare specifier
+      // with no subpath ("found directory without index"); both `tsc
+      // --noEmit` and `node --input-type=module -e
+      // "console.log(import.meta.resolve('tsx'))"` resolve it correctly to
+      // node_modules/.pnpm/tsx@.../dist/loader.mjs. Confirmed false positive,
+      // same resolver-gap class as the SDK override above, not real debt.
+      "includes": [
+        "packages/mcp-server/test/hosted-schema-token-budget.test.ts",
+        "packages/mcp-server/test/schema-token-budget.test.ts"
+      ],
+      "linter": {
+        "rules": {
+          "correctness": {
+            "noUnresolvedImports": "off"
+          }
+        }
+      }
+    },
+    {
+      // scripts/test-migration (T1-BUILD, 2026-07-25). These modules parse
+      // JS/TS source with @babel/parser (a root devDependency, pinned
+      // 7.29.2, already resolved in the lockfile as a transitive dep of
+      // several existing tools before being declared direct here) rather
+      // than TypeScript 7's own compiler API, which no longer exposes a
+      // lightweight `createSourceFile`-style parser via `require("typescript")`
+      // (only an `unstable/ast` project/checker surface). Same confirmed
+      // resolver-gap class as the SDK/tsx overrides above, not real debt:
+      // `tsc --noEmit -p tsconfig.json` resolves it cleanly and
+      // `node --input-type=module -e "console.log(import.meta.resolve('@babel/parser'))"`
+      // resolves to node_modules/.pnpm/@babel+parser@7.29.2/node_modules/@babel/parser/lib/index.js.
+      "includes": [
+        "scripts/test-migration/babel-ast-walk.test.ts",
+        "scripts/test-migration/catch-clause-narrowing.ts",
+        "scripts/test-migration/helper-family.ts",
+        "scripts/test-migration/import-resolution.ts",
+        "scripts/test-migration/importer-scan.ts",
+        "scripts/test-migration/literal-path-scan.ts",
+        "scripts/test-migration/stage-b.ts",
+        "scripts/test-migration/static-test-inventory.ts"
+      ],
+      "linter": {
+        "rules": {
+          "correctness": {
+            "noUnresolvedImports": "off"
           }
         }
       }

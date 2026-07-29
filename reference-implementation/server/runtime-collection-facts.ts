@@ -39,6 +39,7 @@ export function readRuntimeCollectionFact(raw: unknown): RuntimeCollectionFact |
   if (typeof entry.stream !== "string" || !entry.stream) {
     return null;
   }
+  const coverageStatuses = readCoverageStatuses(entry.coverage_statuses);
   return {
     checkpoint: typeof entry.checkpoint === "string" ? entry.checkpoint : null,
     collected: readFiniteNumber(entry.collected, 0),
@@ -48,9 +49,17 @@ export function readRuntimeCollectionFact(raw: unknown): RuntimeCollectionFact |
     considered: readSafeNonNegativeInteger(entry.considered),
     covered: readSafeNonNegativeInteger(entry.covered),
     pending_detail_gaps: readFiniteNumber(entry.pending_detail_gaps, 0),
+    ...(coverageStatuses ? { coverage_statuses: coverageStatuses } : {}),
     skipped: readCollectionFactSkip(entry.skipped),
     stream: entry.stream,
   };
+}
+
+function readCoverageStatuses(value: unknown): readonly string[] | undefined {
+  if (!Array.isArray(value) || value.length === 0 || value.some((status) => typeof status !== "string" || !status)) {
+    return;
+  }
+  return [...new Set(value)].sort();
 }
 
 /**
@@ -73,6 +82,7 @@ export function readCollectionFactsFromTerminalData(
   if (!block || typeof block !== "object" || Array.isArray(block)) {
     return null;
   }
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const streams = (block as { streams?: unknown }).streams;
   if (!Array.isArray(streams)) {
     return null;
@@ -109,7 +119,7 @@ function readCollectionRateNumbers(entry: Record<string, unknown>): CollectionRa
 }
 
 function readCollectionRateLastBackoff(entry: Record<string, unknown>): CollectionRateSnapshot["last_backoff"] {
-  if (entry.last_backoff == null) {
+  if (entry.last_backoff === null) {
     return null;
   }
   const backoff = entry.last_backoff as Record<string, unknown>;

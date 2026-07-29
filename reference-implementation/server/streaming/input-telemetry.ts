@@ -43,9 +43,9 @@ interface ReadSinceResult {
 }
 
 export interface InputTelemetry {
-  drop(browser_session_id: string): void;
-  push(browser_session_id: string, record: TelemetryRecord): StampedRecord | undefined;
-  readSince(browser_session_id: string, since?: number): ReadSinceResult;
+  drop: (browser_session_id: string) => void;
+  push: (browser_session_id: string, record: TelemetryRecord) => StampedRecord | undefined;
+  readSince: (browser_session_id: string, since?: number) => ReadSinceResult;
 }
 
 /**
@@ -62,7 +62,7 @@ export function createInputTelemetry({
   function getOrCreate(browser_session_id: string): BufferEntry {
     let entry = buffers.get(browser_session_id);
     if (!entry) {
-      entry = { seq: 0, records: [] };
+      entry = { records: [], seq: 0 };
       buffers.set(browser_session_id, entry);
     }
     return entry;
@@ -105,16 +105,16 @@ export function createInputTelemetry({
   function readSince(browser_session_id: string, since = 0): ReadSinceResult {
     const entry = buffers.get(browser_session_id);
     if (!entry) {
-      return { seq: 0, records: [] };
+      return { records: [], seq: 0 };
     }
     const sinceNum = Number.isFinite(since) ? Number(since) : 0;
     const records = entry.records.filter((r) => r.seq > sinceNum);
-    return { seq: entry.seq, records };
+    return { records, seq: entry.seq };
   }
 
   function drop(browser_session_id: string): void {
     buffers.delete(browser_session_id);
   }
 
-  return { push, readSince, drop };
+  return { drop, push, readSince };
 }

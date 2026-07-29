@@ -52,7 +52,7 @@ function persistDensity(next: Density): void {
   document.cookie = buildDensityCookie(next, secure);
 }
 
-export function DensityProvider({ children, initialDensity }: { children: ReactNode; initialDensity?: Density }) {
+function DensityProvider({ children, initialDensity }: { children: ReactNode; initialDensity?: Density }) {
   const [density, setDensityState] = useState<Density>(() => initialDensity ?? readStoredDensity());
 
   useEffect(() => {

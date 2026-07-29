@@ -168,7 +168,7 @@ export const coverageRows = [
     status: "partial",
     evidence: [
       docs("spec-semantic-retrieval-extension", "Semantic retrieval extension"),
-      referenceTest("semantic-retrieval.test.js", "Semantic retrieval tests"),
+      referenceTest("semantic-retrieval.test.ts", "Semantic retrieval tests"),
       referenceDocs("reference-implementation", "Reference implementation notes"),
     ],
     notes: "The extension is intentionally experimental; coverage is honest about index and connector-field limits.",
@@ -185,7 +185,7 @@ export const coverageRows = [
     evidence: [
       docs("spec-collection-profile", "Collection Profile"),
       referenceTest("collection-profile.test.js", "Collection profile tests"),
-      referenceTest("scheduler.test.js", "Scheduler tests"),
+      referenceTest("scheduler.test.ts", "Scheduler tests"),
     ],
     notes: "Reference connectors exercise seeded, native, and polyfill-backed collection paths.",
   },

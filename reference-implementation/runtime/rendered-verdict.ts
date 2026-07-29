@@ -382,12 +382,12 @@ export interface ScheduleEvidence {
 
 // ─── Tone (worst-wins) ──────────────────────────────────────────────────────
 
-const TONE_RANK: Record<VerdictTone, number> = { green: 0, grey: 1, amber: 2, red: 3 };
+const TONE_RANK: Record<VerdictTone, number> = { amber: 2, green: 0, grey: 1, red: 3 };
 
 const TONE_TO_LABEL: Record<VerdictTone, VerdictLabel> = {
+  amber: "Degraded",
   green: "Healthy",
   grey: "Not measured",
-  amber: "Degraded",
   red: "Can't collect",
 };
 
@@ -685,10 +685,10 @@ function streamDisposition(
 ): ForwardDisposition {
   const schedule = scheduleEvidenceToRecord(scheduleEvidence);
   return deriveForwardDisposition({
-    coverage: stream.coverage,
-    gapRetryable: stream.gap_retryable,
     attentionOpen: stream.attention_open,
+    coverage: stream.coverage,
     freshness: snapshot.axes.freshness,
+    gapRetryable: stream.gap_retryable,
     refresh,
     schedule,
   });
@@ -844,7 +844,7 @@ function shouldOfferRetryGapAction(
   if (progress?.mode === "deferred" || progress?.mode === "scheduled") {
     return false;
   }
-  if (snapshot.state === "cooling_off" || Boolean(snapshot.next_attempt_at)) {
+  if (snapshot.state === "cooling_off" || snapshot.next_attempt_at) {
     return false;
   }
   if (snapshot.axes.coverage === "retryable_gap") {
@@ -859,31 +859,31 @@ const LOCAL_COLLECTOR_RECOVER_APPLY_COMMAND =
   "npx -y @pdpp/local-collector recover --source-instance-id <source-instance-id> --apply";
 const LOCAL_COLLECTOR_DOCTOR_COMMAND = "npx -y @pdpp/local-collector doctor --source-instance-id <source-instance-id>";
 const LOCAL_COLLECTOR_REMEDIATION_TARGET: ActionRemediationTarget = {
-  kind: "local_device",
   identity_source: "source_instance_bindings",
+  kind: "local_device",
 };
 
 function localCollectorRecoverPreviewCommand(): ActionRemediationCommand {
   return {
+    command_template: LOCAL_COLLECTOR_RECOVER_COMMAND,
     kind: "local_collector_recover_preview",
     label: "Preview recovery",
-    command_template: LOCAL_COLLECTOR_RECOVER_COMMAND,
   };
 }
 
 function localCollectorRecoverApplyCommand(): ActionRemediationCommand {
   return {
+    command_template: LOCAL_COLLECTOR_RECOVER_APPLY_COMMAND,
     kind: "local_collector_recover_apply",
     label: "Recover and run the collector",
-    command_template: LOCAL_COLLECTOR_RECOVER_APPLY_COMMAND,
   };
 }
 
 function localCollectorDoctorCommand(): ActionRemediationCommand {
   return {
+    command_template: LOCAL_COLLECTOR_DOCTOR_COMMAND,
     kind: "local_collector_doctor",
     label: "Check local collector health",
-    command_template: LOCAL_COLLECTOR_DOCTOR_COMMAND,
   };
 }
 
@@ -937,60 +937,60 @@ function stalledOutboxRemediation(snapshot: ConnectionHealthSnapshot): ActionRem
   switch (cause) {
     case "state_read_failed":
       return {
-        kind: "local_collector_recovery",
         cause,
+        commands: [localCollectorRecoverApplyCommand()],
+        kind: "local_collector_recovery",
         label: "Run the local collector again",
         summary:
           "The server cannot read the collector's last state from that host. Run the local collector again there.",
         target: LOCAL_COLLECTOR_REMEDIATION_TARGET,
-        commands: [localCollectorRecoverApplyCommand()],
       };
     case "dead_letter_backlog":
       return {
-        kind: "local_collector_recovery",
         cause,
+        commands: [localCollectorRecoverPreviewCommand(), localCollectorRecoverApplyCommand()],
+        kind: "local_collector_recovery",
         label: "Recover local collector uploads",
         summary: "The local collector has saved records on its host that did not upload to this server.",
         target: LOCAL_COLLECTOR_REMEDIATION_TARGET,
-        commands: [localCollectorRecoverPreviewCommand(), localCollectorRecoverApplyCommand()],
       };
     case "transient_upload_failure":
       return {
-        kind: "local_collector_recovery",
         cause,
+        commands: [],
+        kind: "local_collector_recovery",
         label: "Wait for upload retry",
         summary:
           "The local collector hit temporary server or network errors while uploading. It will retry without owner action.",
         target: LOCAL_COLLECTOR_REMEDIATION_TARGET,
-        commands: [],
       };
     case "stale_pending":
       return {
-        kind: "local_collector_recovery",
         cause,
+        commands: [localCollectorRecoverApplyCommand()],
+        kind: "local_collector_recovery",
         label: "Run the local collector again",
         summary: "The local collector has queued work that stopped moving. Run it again on that host.",
         target: LOCAL_COLLECTOR_REMEDIATION_TARGET,
-        commands: [localCollectorRecoverApplyCommand()],
       };
     case "stale_heartbeat":
       return {
-        kind: "local_collector_recovery",
         cause,
+        commands: [localCollectorRecoverApplyCommand()],
+        kind: "local_collector_recovery",
         label: "Run the local collector again",
         summary:
           "The local collector reported starting or retrying but stopped checking in. Run it again on that host.",
         target: LOCAL_COLLECTOR_REMEDIATION_TARGET,
-        commands: [localCollectorRecoverApplyCommand()],
       };
     default:
       return {
-        kind: "local_collector_recovery",
         cause,
+        commands: [localCollectorDoctorCommand()],
+        kind: "local_collector_recovery",
         label: "Check the local collector",
         summary: "The local collector is not making progress. Check it on the host that holds the data.",
         target: LOCAL_COLLECTOR_REMEDIATION_TARGET,
-        commands: [localCollectorDoctorCommand()],
       };
   }
 }
@@ -1018,14 +1018,14 @@ function buildRequiredActions(
   // "code fix" the primary story for a source the owner can repair by reconnecting.
   if (terminal && !hasCredentialFailure(snapshot)) {
     actions.push({
-      kind: "code_fix",
-      audience: "maintainer",
-      urgency: "soon",
       affects: terminalStreamIds(streams),
+      audience: "maintainer",
       cta: terminalCoverageCta(snapshot, disposition),
+      kind: "code_fix",
+      satisfied_when: { kind: "none" },
       surface: { kind: "maintainer" },
       terminal: true,
-      satisfied_when: { kind: "none" },
+      urgency: "soon",
     });
   }
 
@@ -1043,14 +1043,14 @@ function buildRequiredActions(
   // invented defect claim.
   if (disposition === "unmeasured" && latestCollectionSucceeded(snapshot) && !hasCredentialFailure(snapshot)) {
     actions.push({
-      kind: "code_fix",
-      audience: "maintainer",
-      urgency: "soon",
       affects: unmeasuredRequiredStreamIds(streams),
+      audience: "maintainer",
       cta: "Coverage for this source's streams is not being measured; a connector update is needed",
+      kind: "code_fix",
+      satisfied_when: { kind: "none" },
       surface: { kind: "maintainer" },
       terminal: false,
-      satisfied_when: { kind: "none" },
+      urgency: "soon",
     });
   }
 
@@ -1058,19 +1058,19 @@ function buildRequiredActions(
   if (hasCredentialFailure(snapshot)) {
     const surface = credentialRepairSurface(snapshot);
     actions.push({
-      kind: "reauth",
-      audience: "owner",
-      urgency: "now",
       affects: [],
+      audience: "owner",
       cta: "Reconnect this account",
-      surface,
-      terminal,
+      kind: "reauth",
       // The satisfaction contract must match the repair mechanism. A
       // browser-session repair may have NO stored credential — the owner
       // re-establishes the live session — so it is satisfied by a confirming run
       // succeeding, not by a stored credential becoming present. Only a
       // stored-credential repair is satisfied by the credential itself.
       satisfied_when: reauthSatisfaction(surface),
+      surface,
+      terminal,
+      urgency: "now",
     });
   }
 
@@ -1078,13 +1078,13 @@ function buildRequiredActions(
   if (hasOpenAttention(snapshot) && !hasCredentialFailure(snapshot)) {
     const target = exactSyncTargetFromAttention(attention);
     actions.push({
-      kind: "add_info",
-      audience: "owner",
-      urgency: "now",
       affects: [],
+      audience: "owner",
       cta: "Complete the requested action",
+      kind: "add_info",
       surface: { kind: "provider_interaction" },
       terminal,
+      urgency: "now",
       ...(target ? { target } : {}),
       satisfied_when: { kind: "attention_resolved" },
     });
@@ -1096,30 +1096,30 @@ function buildRequiredActions(
   if (isStalledOutboxActionable(snapshot, disposition, actions) && hasTransientUploadFailure(snapshot)) {
     const remediation = stalledOutboxRemediation(snapshot);
     actions.push({
-      kind: "wait",
-      audience: "none",
-      urgency: "verifying",
       affects: [],
+      audience: "none",
       cta: "Retrying local uploads — no action needed",
+      kind: "wait",
       remediation,
+      satisfied_when: { kind: "none" },
       surface: { kind: "local_device" },
       terminal: false,
-      satisfied_when: { kind: "none" },
+      urgency: "verifying",
     });
   }
 
   if (isStalledOutboxActionable(snapshot, disposition, actions) && !hasTransientUploadFailure(snapshot)) {
     const remediation = stalledOutboxRemediation(snapshot);
     actions.push({
-      kind: "add_info",
-      audience: "owner",
-      urgency: "now",
       affects: [],
+      audience: "owner",
       cta: remediation.label,
+      kind: "add_info",
       remediation,
+      satisfied_when: { kind: "attention_resolved" },
       surface: { kind: "local_device" },
       terminal: false,
-      satisfied_when: { kind: "attention_resolved" },
+      urgency: "now",
     });
   }
 
@@ -1132,11 +1132,11 @@ function buildRequiredActions(
   // false while the schedule is off. See `isOwnerPausedScheduleEligible`.
   if (isOwnerPausedScheduleEligible(scheduleEvidence, actions)) {
     actions.push({
-      kind: "reattach_schedule",
-      audience: "owner",
-      urgency: "soon",
       affects: [],
+      audience: "owner",
       cta: "Resume schedule",
+      kind: "reattach_schedule",
+      satisfied_when: { kind: "schedule_attached_and_enabled" },
       // `{ kind: "schedule" }` (`OwnerActionSurfaceKind`, connection-health.ts)
       // — NOT `runtime_retry`, which means "run this once now." Resuming a
       // paused schedule is a distinct affordance from a one-off retry; a
@@ -1144,7 +1144,7 @@ function buildRequiredActions(
       // schedule-management control, not a run-now button.
       surface: { kind: "schedule" },
       terminal: false,
-      satisfied_when: { kind: "schedule_attached_and_enabled" },
+      urgency: "soon",
     });
   }
 
@@ -1153,14 +1153,14 @@ function buildRequiredActions(
   // schedule, active run, and manual/assisted refresh policy).
   if (shouldOfferRefreshNowAction(snapshot, disposition, refresh, scheduleEvidence)) {
     actions.push({
-      kind: "refresh_now",
-      audience: "owner",
-      urgency: "soon",
       affects: [],
+      audience: "owner",
       cta: "Refresh now",
+      kind: "refresh_now",
+      satisfied_when: { kind: "confirming_run_succeeded" },
       surface: { kind: "runtime_retry" },
       terminal: false,
-      satisfied_when: { kind: "confirming_run_succeeded" },
+      urgency: "soon",
     });
   }
 
@@ -1174,14 +1174,14 @@ function buildRequiredActions(
   ) {
     const affects = resumableStreamIds(streams);
     actions.push({
-      kind: "retry_gap",
-      audience: "owner",
-      urgency: "verifying",
       affects,
+      audience: "owner",
       cta: "Retry now",
+      kind: "retry_gap",
+      satisfied_when: { kind: "gap_recovered" },
       surface: { kind: "runtime_retry" },
       terminal: false,
-      satisfied_when: { kind: "gap_recovered" },
+      urgency: "verifying",
     });
   }
 
@@ -1190,14 +1190,14 @@ function buildRequiredActions(
   // already covers the work, so a `wait` never competes with a real owner action.
   if (disposition === "resumable" && actions.length === 0) {
     actions.push({
-      kind: "wait",
-      audience: "none",
-      urgency: "verifying",
       affects: resumableStreamIds(streams),
+      audience: "none",
       cta: "Collecting — no action needed",
+      kind: "wait",
+      satisfied_when: { kind: "none" },
       surface: { kind: "none" },
       terminal: false,
-      satisfied_when: { kind: "none" },
+      urgency: "verifying",
     });
   }
 
@@ -1286,7 +1286,7 @@ function computeChannel(actions: readonly RequiredAction[]): RenderedChannel {
   return channel;
 }
 
-const CHANNEL_RANK: Record<RenderedChannel, number> = { calm: 0, advisory: 1, attention: 2 };
+const CHANNEL_RANK: Record<RenderedChannel, number> = { advisory: 1, attention: 2, calm: 0 };
 
 function raise(current: RenderedChannel, to: RenderedChannel): RenderedChannel {
   return CHANNEL_RANK[to] > CHANNEL_RANK[current] ? to : current;
@@ -1609,6 +1609,7 @@ function buildProgress(
   disposition: ForwardDisposition,
   actions: readonly RequiredAction[]
 ): RenderedProgress {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const mode: ProgressMode = evidence?.mode ?? "scheduled";
   const gapsDrained = evidence?.gaps_drained_last_run ?? null;
   const committed = evidence?.records_committed_last_run ?? null;
@@ -1616,12 +1617,12 @@ function buildProgress(
   const refreshedAt = evidence?.last_refreshed_at ?? null;
 
   return {
-    mode,
     gaps_drained_last_run: null,
+    headline: progressHeadline(mode, gapsDrained, committed, retained, refreshedAt, disposition, actions),
+    last_refreshed_at: refreshedAt,
+    mode,
     records_committed_last_run: mode === "scheduled" ? committed : null,
     retained_records: retained,
-    last_refreshed_at: refreshedAt,
-    headline: progressHeadline(mode, gapsDrained, committed, retained, refreshedAt, disposition, actions),
   };
 }
 
@@ -1642,13 +1643,13 @@ function buildStreamRows(
         ? Math.min(stream.collected, stream.considered)
         : stream.collected;
     return {
-      stream_id: stream.stream_id,
-      coverage: stream.coverage,
-      disposition,
+      action_ref: actionRefFor(stream, disposition, actions),
       collected,
       considered: stream.considered,
-      action_ref: actionRefFor(stream, disposition, actions),
+      coverage: stream.coverage,
+      disposition,
       statement: streamStatement(disposition, snapshot.badges.syncing),
+      stream_id: stream.stream_id,
     };
   });
 }
@@ -1713,27 +1714,27 @@ function buildSuppressed(
   // detail and never to the dashboard (the 2,532-gaps acid test).
   if (snapshot.detail_gap_backlog) {
     suppressed.push({
+      detail_field: "detail_gap_backlog",
       kind: "drain",
       reason: "detail-gap backlog is system-handled; counts kept off the attention layer",
-      detail_field: "detail_gap_backlog",
     });
   }
 
   // Cooling-off / next-attempt floor is a self-handled wait.
   if (snapshot.state === "cooling_off" || snapshot.next_attempt_at) {
     suppressed.push({
+      detail_field: "next_attempt_at",
       kind: "cooldown",
       reason: "next-attempt floor is system-managed",
-      detail_field: "next_attempt_at",
     });
   }
 
   // An in-flight run is self-handled syncing.
   if (snapshot.badges.syncing) {
     suppressed.push({
+      detail_field: "state",
       kind: "syncing",
       reason: "a run is in flight; syncing is self-handled",
-      detail_field: "state",
     });
   }
 
@@ -1741,9 +1742,9 @@ function buildSuppressed(
   // indicator, never to a per-connection attention pull.
   if (!runtimeOk && channel === "calm") {
     suppressed.push({
+      detail_field: "state",
       kind: "runtime_fault",
       reason: "runtime is the fault; per-connection attention capped to calm",
-      detail_field: "state",
     });
   }
 
@@ -1756,8 +1757,9 @@ function buildDetail(
   suppressed: readonly SuppressedSignal[]
 ): VerdictDetail {
   return {
-    state: snapshot.state,
-    reason_code: snapshot.reason_code,
+    collection_rate: snapshot.collection_rate,
+    conditions: snapshot.conditions,
+    detail_gap_backlog: snapshot.detail_gap_backlog,
     dominant_condition_id: snapshot.dominant_condition_id,
     // The synthesizer's oracle-derived connection disposition (worst-wins over the
     // supplied per-stream rollups through `deriveForwardDisposition`, or the
@@ -1766,10 +1768,9 @@ function buildDetail(
     // actions' terminality, the forward statement, and the invariant gate all read
     // the same single disposition.
     forward_disposition: disposition,
-    conditions: snapshot.conditions,
-    detail_gap_backlog: snapshot.detail_gap_backlog,
     next_attempt_at: snapshot.next_attempt_at,
-    collection_rate: snapshot.collection_rate,
+    reason_code: snapshot.reason_code,
+    state: snapshot.state,
     suppressed,
   };
 }
@@ -1942,23 +1943,23 @@ function assertInvariants(verdict: RenderedVerdict, snapshot: ConnectionHealthSn
 /** A minimal, honest grey verdict used as the prod fallback on an invariant failure. */
 function safeGreyVerdict(snapshot: ConnectionHealthSnapshot): RenderedVerdict {
   return {
-    pill: { tone: "grey", label: "Not measured" },
-    channel: "calm",
     annotations: [],
+    channel: "calm",
+    detail: buildDetail(snapshot, "complete", []),
     forward_statement: "Status could not be classified.",
+    pill: { label: "Not measured", tone: "grey" },
+    progress: buildProgress(null, "checking", []),
     required_actions: [],
     streams: [],
-    progress: buildProgress(null, "checking", []),
-    detail: buildDetail(snapshot, "complete", []),
     trace: {
-      tone_cause: "grey",
-      tone_inputs: [],
       channel_cause: "invariant_fallback",
-      suppressed_evidence: [],
       detail_destinations: [],
       primary_action_kind: null,
-      satisfied_when: null,
       runtime_capped: false,
+      satisfied_when: null,
+      suppressed_evidence: [],
+      tone_cause: "grey",
+      tone_inputs: [],
     },
   };
 }
@@ -1999,7 +2000,7 @@ export function synthesizeRenderedVerdict(
     { axis: "outbox", tone: outboxTone(snapshot) },
   ];
   const tone = toneInputs.reduce<VerdictTone>((acc, input) => worse(acc, input.tone), "green");
-  const pill: VerdictPill = { tone, label: labelForPill(tone, snapshot, disposition, toneInputs) };
+  const pill: VerdictPill = { label: labelForPill(tone, snapshot, disposition, toneInputs), tone };
 
   // ── required actions (terminality derived from the sole oracle) ──
   const actions = buildRequiredActions(snapshot, streams, refresh, disposition, progress, scheduleEvidence, attention);
@@ -2023,25 +2024,27 @@ export function synthesizeRenderedVerdict(
 
   const primary = actions[0] ?? null;
   const trace: CalibrationTrace = {
+    channel_cause: channelCause(channel, runtimeCapped, primary),
+    detail_destinations: suppressed.map((s) => s.detail_field),
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+    primary_action_kind: primary?.kind ?? null,
+    runtime_capped: runtimeCapped,
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+    satisfied_when: primary?.satisfied_when ?? null,
+    suppressed_evidence: suppressed,
     tone_cause: tone,
     tone_inputs: toneInputs,
-    channel_cause: channelCause(channel, runtimeCapped, primary),
-    suppressed_evidence: suppressed,
-    detail_destinations: suppressed.map((s) => s.detail_field),
-    primary_action_kind: primary?.kind ?? null,
-    satisfied_when: primary?.satisfied_when ?? null,
-    runtime_capped: runtimeCapped,
   };
 
   const verdict: RenderedVerdict = {
-    pill,
-    channel,
     annotations,
+    channel,
+    detail,
     forward_statement: forwardStatement,
+    pill,
+    progress: renderedProgress,
     required_actions: actions,
     streams: streamRows,
-    progress: renderedProgress,
-    detail,
     trace,
   };
 
@@ -2060,9 +2063,11 @@ function channelCause(channel: RenderedChannel, runtimeCapped: boolean, primary:
     return "runtime_fault_capped_to_calm";
   }
   if (channel === "attention") {
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     return `owner_sole_resolution:${primary?.kind ?? "unknown"}`;
   }
   if (channel === "advisory") {
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     return `owner_optional_or_status:${primary?.kind ?? "unknown"}`;
   }
   return "self_handled_calm";

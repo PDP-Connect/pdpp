@@ -4,7 +4,7 @@
 // Calendar-aware instant-bucketing cluster extracted from records.ts.
 // Owns the pure time-math stack for group_by_time aggregation.
 // See openspec/changes/add-aggregate-time-buckets-and-distinct.
-import { invalidQueryError } from "./record-expand-helpers.js";
+import { invalidQueryError } from "./record-expand-helpers.ts";
 
 // Calendar `date_trunc` granularity set for `group_by_time` (weeks start
 // Monday). See openspec/changes/add-aggregate-time-buckets-and-distinct.
@@ -25,9 +25,11 @@ export function resolveAggregateTimeZone(rawZone: string | null | undefined): st
   }
   try {
     // Throws RangeError for an unknown IANA zone.
+    // biome-ignore lint/correctness/noUnusedInstantiation: Construction intentionally triggers the compatibility side effect.
     new Intl.DateTimeFormat("en-US", { timeZone: rawZone });
     return rawZone;
   } catch {
+    // biome-ignore lint/style/useErrorCause: This compatibility path preserves the established error shape and propagation.
     throw invalidQueryError(`Unknown time_zone: '${rawZone}'`);
   }
 }
@@ -44,14 +46,14 @@ interface ZonedParts {
 // Decompose an absolute instant into wall-clock parts for the given IANA zone.
 function zonedParts(epochMs: number, timeZone: string): ZonedParts {
   const fmt = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    hour12: false,
-    year: "numeric",
-    month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
+    hour12: false,
     minute: "2-digit",
+    month: "2-digit",
     second: "2-digit",
+    timeZone,
+    year: "numeric",
   });
   const parts: Record<string, string> = {};
   for (const p of fmt.formatToParts(new Date(epochMs))) {
@@ -94,7 +96,7 @@ export function bucketStartForGranularity(
   granularity: AggregateGranularity,
   timeZone: string
 ): string | null {
-  if (epochMs == null) {
+  if (epochMs === null) {
     return null;
   }
   const { year, month, day, hour, minute } = zonedParts(epochMs, timeZone);

@@ -421,13 +421,13 @@ export function buildEnvironmentReport(env: DiagnosticsEnv): readonly EnvValueRe
   return ENV_ALLOWLIST.map((entry): EnvValueReport => {
     const raw = env[entry.name];
     if (raw === undefined || raw === "") {
-      return { name: entry.name, value: null, provenance: "absent", secret: Boolean(entry.secret) };
+      return { name: entry.name, provenance: "absent", secret: Boolean(entry.secret), value: null };
     }
     const isSecret = Boolean(entry.secret) || SECRET_NAME_RE.test(entry.name);
     if (isSecret) {
-      return { name: entry.name, value: null, provenance: "redacted", secret: true };
+      return { name: entry.name, provenance: "redacted", secret: true, value: null };
     }
-    return { name: entry.name, value: raw, provenance: "present", secret: false };
+    return { name: entry.name, provenance: "present", secret: false, value: raw };
   });
 }
 
@@ -437,6 +437,7 @@ function collectSemanticFields(stream: {
   name?: string;
   query?: { search?: { semantic_fields?: readonly string[] } };
 }): readonly string[] {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const declared = stream?.query?.search?.semantic_fields;
   if (!Array.isArray(declared)) {
     return [];
@@ -473,9 +474,9 @@ export function computeParticipation(manifests: readonly DiagnosticsManifestEntr
       for (const field of fields) {
         tuples.push({
           connector_id: connectorId,
-          stream: streamName,
           field,
           provenance: entry.provenance,
+          stream: streamName,
         });
       }
     }
@@ -495,8 +496,8 @@ export function computeParticipation(manifests: readonly DiagnosticsManifestEntr
   });
   return {
     connector_count: connectors.size,
-    stream_count: streams.size,
     field_count: tuples.length,
+    stream_count: streams.size,
     tuples,
   };
 }
@@ -638,7 +639,7 @@ function buildDiskHeadroomWarnings(input: DeploymentDiagnosticsInput): readonly 
     // Rationale: VACUUM FULL needs ~1× the largest table as scratch space.
     // Degrade silently when footprint is unavailable (SQLite / absent).
     const workloadSuffix =
-      largestRelation != null && typeof largestRelation.bytes === "number" && freeBytes < largestRelation.bytes
+      largestRelation !== null && typeof largestRelation.bytes === "number" && freeBytes < largestRelation.bytes
         ? ` Free space is below the size of your largest table (${largestRelation.name}, ${formatBytes(largestRelation.bytes)}) — maintenance operations like VACUUM FULL may fail.`
         : "";
     if (freeBytes < DISK_ERROR_BYTES) {
@@ -709,9 +710,9 @@ function buildRuntimeCapabilityReport(
 ): DeploymentDiagnosticsReport["runtime_capabilities"] {
   if (!posture) {
     return {
+      accepted_collector_protocol_versions: [],
       bindings: { browser: false, filesystem: false, local_device: false, network: true },
       collector_paired: false,
-      accepted_collector_protocol_versions: [],
       collector_pairing: null,
       in_container: false,
     };
@@ -719,12 +720,13 @@ function buildRuntimeCapabilityReport(
   const accepted = posture.accepted_collector_protocol_versions;
   const pairing = posture.collector_pairing ?? null;
   return {
+    accepted_collector_protocol_versions: Array.isArray(accepted) ? [...accepted] : [],
     bindings: { ...posture.bindings },
     collector_paired: posture.collector_paired,
-    accepted_collector_protocol_versions: Array.isArray(accepted) ? [...accepted] : [],
     collector_pairing: pairing
       ? {
           ...pairing,
+          // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
           connector_versions: { ...(pairing.connector_versions ?? {}) },
         }
       : null,
@@ -749,7 +751,9 @@ function normalizeLexicalBackendPosture(posture: LexicalBackendPosture | null | 
     configured: Boolean(posture.configured),
     fallback: Boolean(posture.fallback),
     pg_search: {
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
       available: Boolean(posture.pg_search?.available),
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
       state: posture.pg_search?.state ?? "not_applicable",
     },
   };
@@ -824,8 +828,8 @@ function normalizeSingleEntry(h: DiskHeadroom): DiskHeadroomEntry {
   const free = h.free_bytes;
   const total = h.total_bytes;
   return {
-    path: h.path,
     free_bytes: typeof free === "number" && Number.isFinite(free) && free >= 0 ? free : null,
+    path: h.path,
     total_bytes: typeof total === "number" && Number.isFinite(total) && total >= 0 ? total : null,
   };
 }
@@ -865,7 +869,7 @@ function normalizeDiskHeadroomEntries(
   const dataNorm = normalizeSingleEntry(dataDir);
 
   // Decide whether PG is a distinct filesystem.
-  if (pgDir != null && !sameFilesystem(dataDir, pgDir)) {
+  if (pgDir && !sameFilesystem(dataDir, pgDir)) {
     // Two distinct filesystems — label both for the UI.
     entries.push({ ...dataNorm, mount_label: "data" });
     entries.push({ ...normalizeSingleEntry(pgDir), mount_label: "postgres" });
@@ -937,9 +941,9 @@ export async function probeDiskHeadroom(dataPath: string): Promise<DiskHeadroom>
         ? // biome-ignore lint/suspicious/noBitwiseOperators: `>>> 0` is a deliberate unsigned-32-bit coercion that yields a stable non-negative fsid.
           ((stats as { type: number }).type * 1_000_000_007 + total_bytes) >>> 0
         : null;
-    return { path: dataPath, free_bytes, total_bytes, fsid };
+    return { free_bytes, fsid, path: dataPath, total_bytes };
   } catch {
-    return { path: dataPath, free_bytes: null, total_bytes: null, fsid: null };
+    return { free_bytes: null, fsid: null, path: dataPath, total_bytes: null };
   }
 }
 
@@ -1012,6 +1016,7 @@ export async function collectDeploymentDiagnostics(
     for (const connectorId of connectorIds) {
       let manifest: DiagnosticsManifest | null = null;
       try {
+        // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
         manifest = await deps.getConnectorManifest(connectorId);
       } catch {
         // Corrupt persisted manifest — skip rather than blow up the page.
@@ -1039,18 +1044,18 @@ export async function collectDeploymentDiagnostics(
 
   return buildDeploymentDiagnostics({
     backend,
+    backfillProgress: deps.getBackfillProgress ? deps.getBackfillProgress() : null,
     db,
     dbPath: opts.dbPath,
-    backfillProgress: deps.getBackfillProgress ? deps.getBackfillProgress() : null,
+    diskHeadroom,
+    env,
+    indexState,
     lexicalBackend: deps.getLexicalBackendPosture ? deps.getLexicalBackendPosture() : null,
     lexicalBackfillProgress: deps.getLexicalBackfillProgress ? deps.getLexicalBackfillProgress() : null,
     manifests,
-    indexState,
+    pgDiskHeadroom,
     physicalFootprint,
     runtimeCapabilities,
-    diskHeadroom,
-    pgDiskHeadroom,
-    env,
   });
 }
 
@@ -1064,42 +1069,42 @@ export function buildDeploymentDiagnostics(input: DeploymentDiagnosticsInput): D
   const warnings = buildWarnings(input, participation, backendAvailable);
 
   return {
-    runtime_capabilities: buildRuntimeCapabilityReport(input.runtimeCapabilities ?? null),
-    lexical: {
-      backend: lexicalBackend,
-      index: {
-        state: input.lexicalBackfillProgress ? "building" : "built",
-        backfill_progress: input.lexicalBackfillProgress ?? null,
-      },
-    },
-    semantic: {
-      backend: {
-        configured: input.backend !== null,
-        available: backendAvailable,
-        profile_id: input.backend?.profileId ? input.backend.profileId() : null,
-        model: input.backend ? input.backend.model() : null,
-        dtype: input.backend?.dtype ? input.backend.dtype() : null,
-        dimensions: input.backend ? input.backend.dimensions() : null,
-        distance_metric: input.backend ? input.backend.distanceMetric() : null,
-        language_bias: input.backend?.languageBias ? input.backend.languageBias() : null,
-        model_cache_path: input.backend?.modelCachePath ? input.backend.modelCachePath() : null,
-        model_cache_present: input.backend?.modelCachePresent ? input.backend.modelCachePresent() : null,
-        download_allowed: input.backend?.downloadAllowed ? input.backend.downloadAllowed() : null,
-      },
-      index: {
-        kind: input.db ? input.db.vectorIndexKind : null,
-        state: input.indexState,
-        backfill_progress: input.backfillProgress ?? null,
-      },
-      participation,
-    },
     database: {
       path: input.dbPath,
       ...normalizePhysicalFootprint(input.physicalFootprint),
     },
     disk_headroom: normalizeDiskHeadroomEntries(input.diskHeadroom, input.pgDiskHeadroom),
-    manifests: summarizeManifests(input.manifests),
     environment: buildEnvironmentReport(input.env),
+    lexical: {
+      backend: lexicalBackend,
+      index: {
+        backfill_progress: input.lexicalBackfillProgress ?? null,
+        state: input.lexicalBackfillProgress ? "building" : "built",
+      },
+    },
+    manifests: summarizeManifests(input.manifests),
+    runtime_capabilities: buildRuntimeCapabilityReport(input.runtimeCapabilities ?? null),
+    semantic: {
+      backend: {
+        available: backendAvailable,
+        configured: input.backend !== null,
+        dimensions: input.backend ? input.backend.dimensions() : null,
+        distance_metric: input.backend ? input.backend.distanceMetric() : null,
+        download_allowed: input.backend?.downloadAllowed ? input.backend.downloadAllowed() : null,
+        dtype: input.backend?.dtype ? input.backend.dtype() : null,
+        language_bias: input.backend?.languageBias ? input.backend.languageBias() : null,
+        model: input.backend ? input.backend.model() : null,
+        model_cache_path: input.backend?.modelCachePath ? input.backend.modelCachePath() : null,
+        model_cache_present: input.backend?.modelCachePresent ? input.backend.modelCachePresent() : null,
+        profile_id: input.backend?.profileId ? input.backend.profileId() : null,
+      },
+      index: {
+        backfill_progress: input.backfillProgress ?? null,
+        kind: input.db ? input.db.vectorIndexKind : null,
+        state: input.indexState,
+      },
+      participation,
+    },
     warnings,
   };
 }

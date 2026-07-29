@@ -55,7 +55,8 @@ const LIST_PAGE = `${HERE}page.tsx`;
 // account -> transactions to an unfiltered list.
 const LIST_DEFINES_FILTER_RE = /FILTER_PARAM_RE = \/\^filter\\\[\(\.\+\)\\\]\$\//;
 const LIST_PARSES_FILTERS = /const exactFilters = readExactFilters\(/;
-const LIST_PASSES_FILTERS_TO_QUERY = /Object\.keys\(exactFilters\)\.length > 0 \? \{ filter: exactFilters \} : \{\}/;
+const LIST_PASSES_FILTERS_TO_QUERY = /filter: filterParamForQuery\(filtered, exactFilters\)/;
+const LIST_FILTER_HELPER_GUARDS_EMPTY_FILTERS = /return filtered \? filters : undefined/;
 
 // Byte-faithful replica of the page's `readExactFilters` + `FILTER_PARAM_RE`
 // (page.tsx). The real function is a non-exported local in an RSC module that
@@ -71,7 +72,7 @@ function readExactFiltersReplica(searchParams: Record<string, string | string[] 
     if (!match) {
       continue;
     }
-    const field = match[1];
+    const [_, field] = match;
     const raw = Array.isArray(value) ? value[0] : value;
     if (field && typeof raw === "string" && raw.length > 0) {
       filters[field] = raw;
@@ -96,8 +97,8 @@ test("BEHAVIOR a non-filter search param (cursors/columns) is ignored", () => {
   // The page also receives pagination/column params; only `filter[...]` keys feed
   // the exact-filter map. Mixing them must not fabricate a filter.
   const filters = readExactFiltersReplica({
-    cursors: "abc,def",
     columns: "amount,description",
+    cursors: "abc,def",
     "filter[account_id]": "acc1",
   });
   assert.deepEqual(filters, { account_id: "acc1" }, "only filter[...] keys contribute; cursors/columns are ignored");
@@ -148,6 +149,7 @@ test("WIRING list page passes the parsed filters to queryRecords only when prese
   assert.match(
     src,
     LIST_PASSES_FILTERS_TO_QUERY,
-    "list page must spread { filter: exactFilters } into queryRecords only when at least one filter is present"
+    "list page must pass exactFilters to queryRecords through the empty-filter guard"
   );
+  assert.match(src, LIST_FILTER_HELPER_GUARDS_EMPTY_FILTERS, "empty filter maps must not be sent to queryRecords");
 });

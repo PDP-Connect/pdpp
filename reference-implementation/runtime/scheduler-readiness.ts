@@ -6,7 +6,7 @@ import { access } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { canonicalConnectorKey } from "../server/connector-key.js";
+import { canonicalConnectorKey } from "../server/connector-key.ts";
 import type { ConnectorSchedule, SchedulerManifest, SchedulerReadinessResult } from "./scheduler-domain-types.ts";
 
 // ─── Automatic-run readiness checks ────────────────────────────────────────
@@ -150,6 +150,7 @@ async function checkFirstPartyLocalSourceReadiness(
 export async function defaultReadinessChecker(schedule: ConnectorSchedule): Promise<SchedulerReadinessResult> {
   const requirements = getRuntimeRequirements(schedule.manifest);
   for (const tool of requirements.external_tools || []) {
+    // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
     if (!(await runDetectCommand(tool))) {
       return { ready: false, reason: formatMissingToolReason(tool) };
     }

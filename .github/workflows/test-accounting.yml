@@ -1,0 +1,72 @@
+name: test-accounting
+
+# Fail-closed gate for the test-accounting inventory: every tracked file that
+# classifies as an executable test must be planned by exactly one suite or
+# explicitly (and non-expired) excluded. This is the same invariant
+# `runAuthority` now enforces on every real `--run` (see authority.ts), run
+# here independently so a discovery gap is caught on PRs that touch the
+# accounting scripts or the manifest directly, without requiring a full
+# `--suite all` run (which would spawn every package's real test suite,
+# including PostgreSQL-gated reference-implementation profiles this
+# workflow has no business depending on).
+#
+# Path-scoped like spec-check.yml/openspec-archive-check.yml: this only
+# needs to run when the accounting scripts or the manifest itself change.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/test-accounting.yml"
+      - "scripts/test-accounting/**"
+      - "test-accounting.manifest.json"
+  pull_request:
+    paths:
+      - ".github/workflows/test-accounting.yml"
+      - "scripts/test-accounting/**"
+      - "test-accounting.manifest.json"
+  workflow_dispatch: {}
+
+concurrency:
+  group: test-accounting-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  inventory:
+    name: inventory closure + unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # inventory_base_sha must resolve as an ancestor of HEAD.
+          fetch-depth: 0
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      - name: Fetch inventory baseline
+        run: |
+          base_sha="$(node -p 'require("./test-accounting.manifest.json").inventory_base_sha')"
+          git fetch --no-tags origin "$base_sha"
+          git merge-base --is-ancestor "$base_sha" HEAD
+
+      - name: Install dependencies
+        env:
+          PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: pnpm install --frozen-lockfile
+
+      - name: Check inventory closure (every executable test planned or excluded)
+        run: pnpm test-accounting:inventory
+
+      - name: Test the accounting scripts themselves
+        run: pnpm test-accounting:test

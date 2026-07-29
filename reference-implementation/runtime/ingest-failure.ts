@@ -43,12 +43,12 @@ function buildIngestFailureDetails({
   stream: string;
 }): IngestFailureDetails {
   return {
-    stream,
     batch_size: batchSize,
     http_status: status,
     phase,
-    response_content_type: contentType || null,
     response_body_bytes: responseBodyBytes(bodyText),
+    response_content_type: contentType || null,
+    stream,
   };
 }
 

@@ -6,13 +6,13 @@ The PDPP marketing + reference site kit. Every surface here is a high-fidelity c
 
 | File | Role | Source reference |
 |------|------|------------------|
-| `SiteHeader.jsx` | Sticky top nav with logo, section links, GitHub CTA | `components/SiteHeader.tsx` |
-| `Hero.jsx` | Cross-quadrant hero with copper left rule + 3-up rail | `components/Hero.tsx` |
-| `ConsentCard.jsx` | **Human** surface — user-facing grant approval | `components/pdpp/consent-card.tsx` |
-| `GrantInspector.jsx` | **Protocol** surface — grant as machine-readable artifact | `components/pdpp/grant-inspector.tsx` |
-| `StreamInventory.jsx` | Declared streams, shapes, modes | `components/pdpp/stream-inventory.tsx` |
-| `GrantsList.jsx` | Owner dashboard — active / expiring / revoked grants | `app/design/page.tsx` |
-| `Teaching.jsx` | `CodeBlock` + `FlowDiagram` — reusable teaching units | `components/pdpp/*` |
+| `site-header.jsx` | Sticky top nav with logo, section links, GitHub CTA | `components/SiteHeader.tsx` |
+| `hero.jsx` | Cross-quadrant hero with copper left rule + 3-up rail | `components/Hero.tsx` |
+| `consent-card.jsx` | **Human** surface — user-facing grant approval | `components/pdpp/consent-card.tsx` |
+| `grant-inspector.jsx` | **Protocol** surface — grant as machine-readable artifact | `components/pdpp/grant-inspector.tsx` |
+| `stream-inventory.jsx` | Declared streams, shapes, modes | `components/pdpp/stream-inventory.tsx` |
+| `grants-list.jsx` | Owner dashboard — active / expiring / revoked grants | `app/design/page.tsx` |
+| `teaching.jsx` | `CodeBlock` + `FlowDiagram` — reusable teaching units | `components/pdpp/*` |
 
 ## Usage
 

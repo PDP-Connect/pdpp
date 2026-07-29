@@ -29,10 +29,10 @@ export default function DashboardError({ error, reset }: { error: Error & { dige
         sign back in if the problem persists.
       </p>
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        <button className={buttonVariants({ variant: "default", size: "sm" })} onClick={() => reset()} type="button">
+        <button className={buttonVariants({ size: "sm", variant: "default" })} onClick={() => reset()} type="button">
           Try again
         </button>
-        <a className={buttonVariants({ variant: "ghost", size: "sm" })} href="/owner/login?return_to=%2F">
+        <a className={buttonVariants({ size: "sm", variant: "ghost" })} href="/owner/login?return_to=%2F">
           Sign in again
         </a>
       </div>

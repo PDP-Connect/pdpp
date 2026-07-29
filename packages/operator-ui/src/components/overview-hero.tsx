@@ -266,14 +266,14 @@ function DistributionRow({
               <span aria-hidden className="hidden h-1.5 flex-1 overflow-hidden rounded-full bg-muted sm:block">
                 <span
                   className="block h-full rounded-full"
-                  style={{ width: `${relative}%`, backgroundColor: distributionBarColor(c.record_count, top) }}
+                  style={{ backgroundColor: distributionBarColor(c.record_count, top), width: `${relative}%` }}
                 />
               </span>
               <span className="pdpp-caption ml-auto flex shrink-0 items-baseline justify-end gap-2 tabular-nums">
                 <span className="font-medium text-foreground" style={{ minWidth: "4.5rem", textAlign: "right" }}>
                   {formatInteger(c.record_count)}
                 </span>
-                <span className="text-muted-foreground" style={{ width: "2.5rem", textAlign: "right" }}>
+                <span className="text-muted-foreground" style={{ textAlign: "right", width: "2.5rem" }}>
                   {formatShare(share)}
                 </span>
               </span>
@@ -338,7 +338,7 @@ function EmptyHero({
       </p>
       {addSourceHref ? (
         <p className="mt-4">
-          <Link className={buttonVariants({ variant: "default", size: "sm" })} href={addSourceHref}>
+          <Link className={buttonVariants({ size: "sm", variant: "default" })} href={addSourceHref}>
             Add a data source →
           </Link>
         </p>
@@ -471,9 +471,9 @@ function formatCompactInteger(n: number): string {
     return formatInteger(n);
   }
   const units: Array<{ suffix: string; divisor: number }> = [
-    { suffix: "B", divisor: 1_000_000_000 },
-    { suffix: "M", divisor: 1_000_000 },
-    { suffix: "K", divisor: 1000 },
+    { divisor: 1_000_000_000, suffix: "B" },
+    { divisor: 1_000_000, suffix: "M" },
+    { divisor: 1000, suffix: "K" },
   ];
   for (const { suffix, divisor } of units) {
     if (n >= divisor) {
@@ -493,7 +493,7 @@ function formatCompactInteger(n: number): string {
  */
 function splitBytes(bytes: number): { value: string; unit: string } {
   if (!Number.isFinite(bytes) || bytes <= 0) {
-    return { value: "0", unit: "B" };
+    return { unit: "B", value: "0" };
   }
   const units = ["B", "KB", "MB", "GB", "TB"];
   let value = bytes;
@@ -508,7 +508,7 @@ function splitBytes(bytes: number): { value: string; unit: string } {
   } else if (value >= 10) {
     rounded = value.toFixed(1);
   }
-  return { value: String(rounded), unit: units[unitIndex] ?? "B" };
+  return { unit: units[unitIndex] ?? "B", value: String(rounded) };
 }
 
 /**

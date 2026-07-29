@@ -51,6 +51,7 @@ import {
   type SourcePrimaryVerdictAction,
   type SourceStatusFlag,
 } from "../lib/source-actionability.ts";
+import { formatTotalRecordsLabel, isTotalRecordsAuthoritative } from "../lib/total-records-label.ts";
 import { summarizeVersionChurn } from "../lib/version-churn-summary.ts";
 
 /**
@@ -217,50 +218,9 @@ function formatInterval(seconds: number): string {
   return `${seconds}s`;
 }
 
-/**
- * Single centralized predicate for "is this total_records value an
- * authoritative exact count?" (reconcile-active-summary-evidence design.md
- * "Health boundary", Sol fourth-verdict P1.3: "centralize state-aware count
- * formatting... route every owner-console total_records consumer through
- * it"). Every renderer of a `total_records`/`totalRecords` value — the
- * connector detail-page header, the reactivate-confirmation copy, the
- * SOURCE LIST account line, and the passport's "records" row — MUST check
- * this (directly or via `formatTotalRecordsLabel` below) before treating
- * the number as a proven exact count. `undefined` (a reference predating
- * this field) is treated as authoritative, preserving the exact prior
- * always-numeric rendering for every existing caller.
- */
-export function isTotalRecordsAuthoritative(totalRecordsState?: RefCountState): boolean {
-  return totalRecordsState === undefined || totalRecordsState === "known" || totalRecordsState === "known_zero";
-}
-
-/**
- * Centralized state-aware label for a `total_records` count value, shared
- * by every owner-console surface that renders it as prose (Sol fourth-
- * verdict P1.3). Non-authoritative states never render the number as a
- * confident count:
- *   - `"stale"`: the evidence exists but is not current — the carried-over
- *     number (including a carried-over ZERO — the exact case Sol
- *     reproduced on the primary source-list surface) renders as an
- *     explicitly unverified hint, never bare.
- *   - `"unobserved"`/`"unknown"`: no trustworthy value exists at all — the
- *     unit noun itself (not a number) is rendered as unavailable.
- *   - `"known"`/`"known_zero"`/omitted: the exact prior always-numeric
- *     rendering.
- */
-export function formatTotalRecordsLabel(
-  totalRecords: number,
-  totalRecordsState: RefCountState | undefined,
-  unit: string
-): string {
-  if (totalRecordsState === "stale") {
-    return `${totalRecords.toLocaleString()} ${unit} (unverified)`;
-  }
-  if (totalRecordsState === "unobserved" || totalRecordsState === "unknown") {
-    return `${unit} unavailable`;
-  }
-  return `${totalRecords.toLocaleString()} ${unit}`;
-}
+// isTotalRecordsAuthoritative / formatTotalRecordsLabel moved to
+// ../lib/total-records-label.ts (imported above) to break a real import
+// cycle with ../lib/connection-evidence.ts.
 
 /**
  * Connector detail-page header count. A failed/never-observed record
@@ -400,7 +360,11 @@ export function manualUploadHrefForSource(
   summary: Pick<RefConnectorSummary, "connection_id" | "connector_id" | "connector_instance_id">,
   manifests: readonly SourceManifestLike[] | undefined
 ): string | null {
-  const connectionId = summary.connection_id ?? summary.connector_instance_id ?? null;
+  // connection_id is non-optional in the current contract; connector_instance_id
+  // is a real legacy-server fallback (see schedule-row.tsx's
+  // recordsHrefForSummary for the same documented pattern).
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: see comment above.
+  const connectionId = summary.connection_id ?? summary.connector_instance_id;
   if (!(connectionId && manifests)) {
     return null;
   }
@@ -488,15 +452,19 @@ export function toSourceInstanceView(
   options: { fallbackDisambiguator?: string | null; manifests?: readonly SourceManifestLike[] } = {}
 ): SourceInstanceView {
   const connectorId = summary.connector_id;
-  const connectionId = summary.connection_id ?? null;
+  const connectionId = summary.connection_id;
   const connectorInstanceId = summary.connector_instance_id ?? null;
   const actionability = projectSourceActionability(summary);
+  // connectionId (summary.connection_id) is non-optional in the current
+  // contract; connectorInstanceId is a real legacy-server fallback (see
+  // schedule-row.tsx's recordsHrefForSummary for the same documented pattern).
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: see comment above.
   const routeId = connectionId ?? connectorInstanceId ?? actionability.routeId;
   const revoked = isRevokedConnector(summary);
   // Modality is persisted server authority. A missing heartbeat must not
   // resurrect remote Sync controls for a local-device connection.
   const isLocalDevicePush = summary.source_kind === "local_device";
-  const isRunning = summary.last_run != null && isActiveConnectorRunSummaryStatus(summary.last_run.status);
+  const isRunning = summary.last_run !== null && isActiveConnectorRunSummaryStatus(summary.last_run.status);
   const manualUploadHref = manualUploadHrefForSource(summary, options.manifests);
   const collectionFactsByStream = new Map(
     [...indexCollectionReportByStream(summary.collection_report)].map(([stream, entry]) => [
@@ -533,22 +501,15 @@ export function toSourceInstanceView(
   } else {
     accountLine = formatSourceListFacts(summary, sourceStreamNames.length);
   }
-  const primaryVerdictAction = actionability.primaryVerdictAction;
+  const { primaryVerdictAction } = actionability;
   const nextAction = primaryVerdictAction?.ownerRunnable ? null : actionability.nextAction;
-  const ownerActionCue = actionability.ownerActionCue;
+  const { ownerActionCue } = actionability;
   const status = actionability.renderedStatus;
 
   const streams: SourceStreamManifestRow[] = sourceStreamNames.map((name) => {
     const facts = collectionFactsByStream.get(name) ?? null;
     const retained = streamRecordsByStream.get(name) ?? null;
     return {
-      name,
-      recordCount: retained ? retained.record_count : null,
-      // The index summary exposes no cursor or searchable flag per stream;
-      // render them as unknown rather than guessing. Collection-report facts
-      // are server-owned and safe to show here without another read.
-      cursor: null,
-      searchable: null,
       collection: facts
         ? {
             countsLabel: facts.countsLabel,
@@ -564,18 +525,26 @@ export function toSourceInstanceView(
             tone: facts.tone,
           }
         : null,
+      // The index summary exposes no cursor or searchable flag per stream;
+      // render them as unknown rather than guessing. Collection-report facts
+      // are server-owned and safe to show here without another read.
+      cursor: null,
       exploreHref: exploreHrefFor(routeId, name),
+      name,
+      recordCount: retained ? retained.record_count : null,
+      searchable: null,
     };
   });
 
   const passportFields: SourcePassportField[] = [
-    ...(listKind ? [{ k: "type", value: kind, mono: false } satisfies SourcePassportField] : []),
-    { k: "config", value: `${sourceStreamNames.length} streams`, mono: true },
+    ...(listKind ? [{ k: "type", mono: false, value: kind } satisfies SourcePassportField] : []),
+    { k: "config", mono: true, value: `${sourceStreamNames.length} streams` },
     { k: "auth", value: deriveAuthLine(primaryVerdictAction, isLocalDevicePush, manualUploadHref) },
-    { k: "schedule", value: formatSchedule(summary.schedule), mono: true },
-    { k: "last run", value: formatLastRun(summary.last_run), mono: true },
+    { k: "schedule", mono: true, value: formatSchedule(summary.schedule) },
+    { k: "last run", mono: true, value: formatLastRun(summary.last_run) },
     {
       k: "records",
+      mono: true,
       // Sol fourth-verdict P1.3: the passport independently rendered the
       // raw number, bypassing `total_records_state` entirely — the second
       // of the two concrete authoritative-zero-rendering sites the verdict
@@ -583,34 +552,34 @@ export function toSourceInstanceView(
       value: isTotalRecordsAuthoritative(summary.total_records_state)
         ? summary.total_records.toLocaleString()
         : formatTotalRecordsLabel(summary.total_records, summary.total_records_state, "records"),
-      mono: true,
     },
-    { k: "added", value: summary.last_successful_run?.first_at ?? null, mono: true },
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: normalizes first_at's `undefined` (from the optional chain) to `null`, which SourcePassportField's type requires; tsc rejects removing this.
+    { k: "added", mono: true, value: summary.last_successful_run?.first_at ?? null },
   ];
 
   return {
-    id: routeId,
-    connectorId,
+    accountLine,
     connectionId,
+    connectorId,
     connectorInstanceId,
     detailHref: sourceDetailHrefFor(routeId, summary),
     displayName,
-    kind,
-    listKind,
-    accountLine,
-    revoked,
+    id: routeId,
     isLocalDevicePush,
     isRunning,
+    kind,
+    listKind,
     manualUploadHref,
     needsOwnerLabel: hasFallbackLabel,
-    status,
     nextAction,
     ownerActionCue,
+    passportFields,
     primaryVerdictAction,
+    revoked,
+    status,
     streams,
     totalRecords: summary.total_records,
     totalRecordsState: summary.total_records_state,
-    passportFields,
   };
 }
 

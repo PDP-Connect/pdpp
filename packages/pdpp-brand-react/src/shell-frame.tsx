@@ -261,10 +261,11 @@ export function RecordroomShell({
   build = "pdpp 0.1.0",
   onJump,
 }: RecordroomShellProps) {
-  const pathname = usePathname() ?? "/";
+  const pathname = usePathname();
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
+  const openDrawer = useCallback(() => setDrawerOpen(true), []);
 
   // Escape closes the mobile drawer. The ⌘K / Ctrl+K palette shortcut is owned
   // by EXACTLY ONE listener — the command-palette provider that wraps the
@@ -315,16 +316,11 @@ export function RecordroomShell({
                 provider, not this shell. Pages that mount a command palette
                 pass onJump so the button and the shortcut open the same one. */}
             {onJump ? (
-              <button className="rr-chrome-btn" onClick={() => onJump()} type="button">
+              <button className="rr-chrome-btn" onClick={onJump} type="button">
                 Jump <span className="rr-kbd">⌘K</span>
               </button>
             ) : null}
-            <button
-              aria-expanded={drawerOpen}
-              className="rr-chrome-btn rr-menu-btn"
-              onClick={() => setDrawerOpen(true)}
-              type="button"
-            >
+            <button aria-expanded={drawerOpen} className="rr-chrome-btn rr-menu-btn" onClick={openDrawer} type="button">
               Menu
             </button>
           </div>

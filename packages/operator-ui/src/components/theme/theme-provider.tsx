@@ -99,7 +99,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo<ThemeContextValue>(
-    () => ({ theme, resolvedTheme, setTheme }),
+    () => ({ resolvedTheme, setTheme, theme }),
     [theme, resolvedTheme, setTheme]
   );
 

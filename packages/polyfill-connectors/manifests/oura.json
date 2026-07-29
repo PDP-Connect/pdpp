@@ -29,9 +29,7 @@
           "autocomplete": "off",
           "help_url": "https://cloud.ouraring.com/personal-access-tokens",
           "help_text": "Create a personal access token in your Oura account developer settings, then paste it here.",
-          "env": [
-            "OURA_PERSONAL_ACCESS_TOKEN"
-          ]
+          "env": ["OURA_PERSONAL_ACCESS_TOKEN"]
         }
       ]
     }
@@ -55,9 +53,7 @@
     },
     "auth": {
       "kind": "env",
-      "required": [
-        "OURA_PERSONAL_ACCESS_TOKEN"
-      ]
+      "required": ["OURA_PERSONAL_ACCESS_TOKEN"]
     }
   },
   "streams": [
@@ -81,93 +77,49 @@
             "x_pdpp_role": "event-time"
           },
           "bedtime_start": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "bedtime_end": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "total_sleep_duration": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "rem_sleep_duration": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "deep_sleep_duration": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "light_sleep_duration": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "efficiency": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "latency": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "average_heart_rate": {
-            "type": [
-              "number",
-              "null"
-            ]
+            "type": ["number", "null"]
           },
           "lowest_heart_rate": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "average_hrv": {
-            "type": [
-              "number",
-              "null"
-            ]
+            "type": ["number", "null"]
           },
           "temperature_delta": {
-            "type": [
-              "number",
-              "null"
-            ]
+            "type": ["number", "null"]
           },
           "sleep_score": {
-            "type": [
-              "integer",
-              "null"
-            ],
+            "type": ["integer", "null"],
             "x_pdpp_role": "amount"
           }
         },
-        "required": [
-          "id",
-          "day"
-        ]
+        "required": ["id", "day"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "day",
       "consent_time_field": "day",
       "selection": {
@@ -177,18 +129,11 @@
       "incremental": true,
       "query": {
         "range_filters": {
-          "day": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "day": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "day"
-          ]
+          "group_by_time": ["day"]
         }
       },
       "coverage_strategy": "checkpoint_window",
@@ -214,36 +159,22 @@
             "x_pdpp_role": "event-time"
           },
           "score": {
-            "type": [
-              "integer",
-              "null"
-            ],
+            "type": ["integer", "null"],
             "x_pdpp_role": "amount"
           },
           "temperature_deviation": {
-            "type": [
-              "number",
-              "null"
-            ]
+            "type": ["number", "null"]
           },
           "temperature_trend_deviation": {
-            "type": [
-              "number",
-              "null"
-            ]
+            "type": ["number", "null"]
           },
           "contributors": {
             "type": "object"
           }
         },
-        "required": [
-          "id",
-          "day"
-        ]
+        "required": ["id", "day"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "day",
       "consent_time_field": "day",
       "selection": {
@@ -253,18 +184,11 @@
       "incremental": true,
       "query": {
         "range_filters": {
-          "day": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "day": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "day"
-          ]
+          "group_by_time": ["day"]
         }
       },
       "coverage_strategy": "checkpoint_window",
@@ -290,51 +214,28 @@
             "x_pdpp_role": "event-time"
           },
           "score": {
-            "type": [
-              "integer",
-              "null"
-            ],
+            "type": ["integer", "null"],
             "x_pdpp_role": "amount"
           },
           "active_calories": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "total_calories": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "steps": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "target_calories": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "equivalent_walking_distance": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           }
         },
-        "required": [
-          "id",
-          "day"
-        ]
+        "required": ["id", "day"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "day",
       "consent_time_field": "day",
       "selection": {
@@ -344,18 +245,11 @@
       "incremental": true,
       "query": {
         "range_filters": {
-          "day": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "day": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "day"
-          ]
+          "group_by_time": ["day"]
         }
       },
       "coverage_strategy": "checkpoint_window",

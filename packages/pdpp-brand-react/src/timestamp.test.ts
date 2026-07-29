@@ -54,6 +54,6 @@ test("parseTimestampValue returns null for unparseable input and a Date for vali
   assert.equal(parseTimestampValue("not-a-date"), null);
   const parsed = parseTimestampValue("2024-01-02T03:04:05Z");
   assert.ok(parsed);
-  assert.equal(parsed?.kind, "instant");
-  assert.equal(parsed?.date.toISOString(), "2024-01-02T03:04:05.000Z");
+  assert.equal(parsed.kind, "instant");
+  assert.equal(parsed.date.toISOString(), "2024-01-02T03:04:05.000Z");
 });

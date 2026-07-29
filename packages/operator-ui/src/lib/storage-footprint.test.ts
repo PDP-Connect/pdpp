@@ -30,9 +30,9 @@ function pgDatabase(overrides: Partial<DatabaseBlock> = {}): DatabaseBlock {
     path: "/var/lib/postgresql/data",
     physical_bytes: 51_000_000_000, // ~51 GB → "51.0 GB"
     top_relations: [
-      { name: "lexical_search_fts", bytes: 21_000_000_000 },
-      { name: "records", bytes: 9_000_000_000 },
-      { name: "spine_events", bytes: 4_000_000_000 },
+      { bytes: 21_000_000_000, name: "lexical_search_fts" },
+      { bytes: 9_000_000_000, name: "records" },
+      { bytes: 4_000_000_000, name: "spine_events" },
     ],
     ...overrides,
   };
@@ -78,7 +78,7 @@ test("measured model never sums physical with retained", () => {
 test("measured model carries ordered relation rows with only name + size", () => {
   const model = buildStorageFootprintModel(pgDatabase(), 1000);
   assert.equal(model.relations.length, 3);
-  const first = model.relations[0];
+  const [first] = model.relations;
   if (!first) {
     throw new Error("expected at least one relation row");
   }
@@ -98,9 +98,9 @@ test("measured model drops malformed relation rows defensively", () => {
   // typed as the real row shape — the runtime defends against a stale/broken
   // catalog read, so the test exercises the same runtime path.
   const malformed: NonNullable<DatabaseBlock["top_relations"]> = [
-    { name: "records", bytes: 1000 },
-    { name: "", bytes: 5 },
-    { name: "bad", bytes: Number.NaN },
+    { bytes: 1000, name: "records" },
+    { bytes: 5, name: "" },
+    { bytes: Number.NaN, name: "bad" },
   ];
   const model = buildStorageFootprintModel(pgDatabase({ top_relations: malformed }), null);
   assert.equal(model.relations.length, 1, "empty-name and NaN-size rows are dropped");

@@ -87,7 +87,7 @@ interface CredentialProperty {
 /** Resolve one `required` entry (string or alias-array) against process.env. */
 function resolveEnvEntry(entry: string | readonly string[]): { primary: string; value: string | undefined } | null {
   const aliases = Array.isArray(entry) ? entry : [entry];
-  const primary = aliases[0];
+  const [primary] = aliases;
   if (!primary) {
     return null;
   }

@@ -52,14 +52,14 @@ type FailureSection = (typeof FAILURE_SECTION_ORDER)[number];
 // category copy. Only "other" is local to this surface.
 const FAILURE_SECTION_COPY: Record<FailureSection, { label: string; note: string }> = {
   needsOwner: SOURCE_WORK_GROUP_COPY.needsOwner,
-  review: SOURCE_WORK_GROUP_COPY.review,
-  systemIssue: SOURCE_WORK_GROUP_COPY.systemIssue,
-  working: SOURCE_WORK_GROUP_COPY.working,
   notMeasured: SOURCE_WORK_GROUP_COPY.notMeasured,
   other: {
     label: "Other source work",
     note: "Worth a look when you have a moment.",
   },
+  review: SOURCE_WORK_GROUP_COPY.review,
+  systemIssue: SOURCE_WORK_GROUP_COPY.systemIssue,
+  working: SOURCE_WORK_GROUP_COPY.working,
 };
 
 // ─── Health stat band ─────────────────────────────────────────────────────────
@@ -99,8 +99,10 @@ function HealthBandStrip({ band }: { band: SyncsViewModel["band"] }) {
 function FailureCardPanel({ card }: { card: FailureCard }) {
   const { summary } = card;
   const ownerActionLabel = summary.actionLabel ?? (summary.cta === "reconnect" ? "Reconnect" : "Open source");
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: card.work is SourceWorkItem | null; tsc rejects removing this guard.
+  const sourceWorkGroup = card.work?.group ?? "other";
   return (
-    <section className="rr-fix" data-cta={summary.cta} data-source-work={card.work?.group ?? "other"}>
+    <section className="rr-fix" data-cta={summary.cta} data-source-work={sourceWorkGroup}>
       <div className="rr-fix__body">
         <h3 className="rr-fix__title">
           {card.name} — {summary.triggerLabel}

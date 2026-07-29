@@ -51,50 +51,27 @@
             "x_pdpp_role": "event-time"
           },
           "latitude": {
-            "type": [
-              "number",
-              "null"
-            ]
+            "type": ["number", "null"]
           },
           "longitude": {
-            "type": [
-              "number",
-              "null"
-            ]
+            "type": ["number", "null"]
           },
           "accuracy_meters": {
-            "type": [
-              "number",
-              "null"
-            ]
+            "type": ["number", "null"]
           },
           "activity_type": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "velocity_mps": {
-            "type": [
-              "number",
-              "null"
-            ]
+            "type": ["number", "null"]
           },
           "altitude_m": {
-            "type": [
-              "number",
-              "null"
-            ]
+            "type": ["number", "null"]
           }
         },
-        "required": [
-          "id",
-          "timestamp"
-        ]
+        "required": ["id", "timestamp"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "timestamp",
       "consent_time_field": "timestamp",
       "selection": {
@@ -104,18 +81,11 @@
       "incremental": true,
       "query": {
         "range_filters": {
-          "timestamp": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "timestamp": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "timestamp"
-          ]
+          "group_by_time": ["timestamp"]
         }
       },
       "coverage_strategy": "snapshot_import_receipt",
@@ -141,40 +111,23 @@
             "x_pdpp_role": "event-time"
           },
           "video_url": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "video_title": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "channel_name": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "actor"
           },
           "channel_url": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           }
         },
-        "required": [
-          "id",
-          "watched_at"
-        ]
+        "required": ["id", "watched_at"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "watched_at",
       "consent_time_field": "watched_at",
       "selection": {
@@ -184,24 +137,14 @@
       "incremental": true,
       "query": {
         "range_filters": {
-          "watched_at": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "watched_at": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "watched_at"
-          ]
+          "group_by_time": ["watched_at"]
         },
         "search": {
-          "lexical_fields": [
-            "video_title",
-            "channel_name"
-          ]
+          "lexical_fields": ["video_title", "channel_name"]
         }
       },
       "coverage_strategy": "snapshot_import_receipt",
@@ -227,27 +170,16 @@
             "x_pdpp_role": "event-time"
           },
           "query": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "product": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           }
         },
-        "required": [
-          "id",
-          "timestamp"
-        ]
+        "required": ["id", "timestamp"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "timestamp",
       "consent_time_field": "timestamp",
       "selection": {
@@ -257,26 +189,15 @@
       "incremental": true,
       "query": {
         "range_filters": {
-          "timestamp": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "timestamp": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "timestamp"
-          ]
+          "group_by_time": ["timestamp"]
         },
         "search": {
-          "lexical_fields": [
-            "query"
-          ],
-          "semantic_fields": [
-            "query"
-          ]
+          "lexical_fields": ["query"],
+          "semantic_fields": ["query"]
         }
       },
       "coverage_strategy": "snapshot_import_receipt",

@@ -109,21 +109,26 @@ test("BROWSER_BOUND_CONNECTORS exactly matches the canonical keys of browser-bin
   const repoRoot = new URL("../../../../../../", import.meta.url);
   const manifestsDir = new URL("packages/polyfill-connectors/manifests/", repoRoot);
   const files = await readdir(fileURLToPath(manifestsDir));
+  const jsonFiles = files.filter((file) => file.endsWith(".json"));
+  const manifests = await Promise.all(
+    jsonFiles.map(async (file) => {
+      const raw = await readFile(fileURLToPath(new URL(file, manifestsDir)), "utf8");
+      return JSON.parse(raw) as {
+        connector_id?: string;
+        runtime_requirements?: { bindings?: Record<string, unknown> | null } | null;
+      };
+    })
+  );
   const browserBoundFromManifests: string[] = [];
-  for (const file of files) {
-    if (!file.endsWith(".json")) {
-      continue;
-    }
-    const raw = await readFile(fileURLToPath(new URL(file, manifestsDir)), "utf8");
-    const manifest = JSON.parse(raw) as {
-      connector_id?: string;
-      runtime_requirements?: { bindings?: Record<string, unknown> | null } | null;
-    };
+  for (const manifest of manifests) {
     const bindings = manifest.runtime_requirements?.bindings;
     if (manifest.connector_id && bindings && Object.hasOwn(bindings, "browser")) {
       browserBoundFromManifests.push(canonicalKeyFromManifestId(manifest.connector_id));
     }
   }
+  // Both arrays hold plain connector-key strings for a set-equality check;
+  // default lexicographic sort is unambiguous for arbitrary string keys.
+  // biome-ignore lint/suspicious/useArraySortCompare: see comment above.
   assert.deepEqual([...BROWSER_BOUND_CONNECTORS].sort(), browserBoundFromManifests.sort());
 });
 

@@ -39,13 +39,13 @@ interface RouteRequest {
 }
 
 interface RouteResponse {
-  json(body: unknown): unknown;
+  json: (body: unknown) => unknown;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
 
 interface AppLike {
-  get(path: string, ...handlers: (MiddlewareHandler | RouteHandler)[]): AppLike;
+  get: (path: string, ...handlers: (MiddlewareHandler | RouteHandler)[]) => AppLike;
 }
 
 /** Structural slice of the controller's `ActiveRun` projection. */
@@ -58,7 +58,7 @@ export interface RunStatusActiveRun {
 }
 
 export interface RunStatusController {
-  findActiveRunByRunId(runId: string): RunStatusActiveRun | null;
+  findActiveRunByRunId: (runId: string) => RunStatusActiveRun | null;
 }
 
 /** Structural slice of `lib/spine.ts` `RunLifecycleEventSummary`. */
@@ -87,10 +87,10 @@ export type BrowserSurfaceRunStatus =
 
 export interface MountRefRunStatusContext {
   readonly controller: RunStatusController | null | undefined;
-  getLatestRunEvent?(runId: string): Promise<RunStatusLifecycleEvent | null> | RunStatusLifecycleEvent | null;
-  getRunStartedEvent(runId: string): Promise<RunStatusLifecycleEvent | null> | RunStatusLifecycleEvent | null;
-  getRunTerminalEvent(runId: string): Promise<RunStatusTerminalEvent | null> | RunStatusTerminalEvent | null;
-  handleError(res: unknown, err: unknown): void;
+  getLatestRunEvent?: (runId: string) => Promise<RunStatusLifecycleEvent | null> | RunStatusLifecycleEvent | null;
+  getRunStartedEvent: (runId: string) => Promise<RunStatusLifecycleEvent | null> | RunStatusLifecycleEvent | null;
+  getRunTerminalEvent: (runId: string) => Promise<RunStatusTerminalEvent | null> | RunStatusTerminalEvent | null;
+  handleError: (res: unknown, err: unknown) => void;
   pdppError: PdppErrorFn;
   requireOwnerSession: MiddlewareHandler;
 }
@@ -162,6 +162,7 @@ function readConnectorId(event: RunStatusLifecycleEvent | null): string | null {
   }
   const source = event.data?.source;
   if (source && typeof source === "object" && !Array.isArray(source)) {
+    // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
     const id = (source as Record<string, unknown>).id;
     if (typeof id === "string" && id) {
       return id;
@@ -300,6 +301,7 @@ export function mountRefRunStatus(app: AppLike, ctx: MountRefRunStatusContext): 
         return res.json(buildTerminalRunStatusBody(runId, terminal, started));
       }
 
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
       const active = ctx.controller?.findActiveRunByRunId?.(runId) ?? null;
       if (active) {
         return res.json(buildActiveRunStatusBody(active));

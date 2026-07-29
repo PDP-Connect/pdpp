@@ -27,9 +27,9 @@ test("falls back to a generic field table when no presentation roles are declare
 test("builds a role-backed money preview and formats declared currency cents", () => {
   const preview = buildRecordPreview(
     "money",
-    { amount: -1245, currency: "USD", merchant: "Bluebird Bakery", memo: "Lunch" },
+    { amount: -1245, currency: "USD", memo: "Lunch", merchant: "Bluebird Bakery" },
     { amount: "currency" },
-    { amount: "amount", merchant: "primary-title", memo: "secondary" }
+    { amount: "amount", memo: "secondary", merchant: "primary-title" }
   );
 
   assert.deepEqual(
@@ -62,10 +62,10 @@ test("an explicit declared milliunits type divides by 1000", () => {
 });
 
 test("builds a role-backed message preview", () => {
-  const preview = buildRecordPreview("message", { sender: "Ada", subject: "Thread", content: "Hello" }, null, {
+  const preview = buildRecordPreview("message", { content: "Hello", sender: "Ada", subject: "Thread" }, null, {
+    content: "secondary",
     sender: "actor",
     subject: "primary-title",
-    content: "secondary",
   });
 
   assert.deepEqual(
@@ -77,9 +77,9 @@ test("builds a role-backed message preview", () => {
 test("builds a role-backed event preview with a UTC time label", () => {
   const preview = buildRecordPreview(
     "event",
-    { title: "Launch", starts_at: "2026-05-22T18:00:00Z", notes: "Room 1" },
+    { notes: "Room 1", starts_at: "2026-05-22T18:00:00Z", title: "Launch" },
     null,
-    { title: "primary-title", starts_at: "event-time", notes: "secondary" }
+    { notes: "secondary", starts_at: "event-time", title: "primary-title" }
   );
 
   assert.deepEqual(
@@ -94,9 +94,9 @@ test("an event-kind record with a declared-but-EMPTY primary-title renders a pla
   // through title-less to the row's identity-key (bare-UUID) fallback.
   const preview = buildRecordPreview(
     "event",
-    { id: "019dfeb4-...:208455", content: "", timestamp: "2026-06-25T17:00:00Z" },
+    { content: "", id: "019dfeb4-...:208455", timestamp: "2026-06-25T17:00:00Z" },
     null,
-    { content: "primary-title", timestamp: "event-time", role: "actor" }
+    { content: "primary-title", role: "actor", timestamp: "event-time" }
   );
 
   assert.equal(preview?.kind, "event");
@@ -105,10 +105,10 @@ test("an event-kind record with a declared-but-EMPTY primary-title renders a pla
 });
 
 test("builds a role-backed titled preview", () => {
-  const preview = buildRecordPreview("titled", { title: "On Protocols", body: "Long form", author: "Ada" }, null, {
-    title: "primary-title",
-    body: "secondary",
+  const preview = buildRecordPreview("titled", { author: "Ada", body: "Long form", title: "On Protocols" }, null, {
     author: "actor",
+    body: "secondary",
+    title: "primary-title",
   });
 
   assert.deepEqual(
@@ -120,7 +120,7 @@ test("builds a role-backed titled preview", () => {
 test("generic preview uses declared title and body roles only", () => {
   const preview = buildRecordPreview(
     "generic",
-    { id: "rec_1", name: "Opaque record", summary: "Declared summary", amount_cents: 1245 },
+    { amount_cents: 1245, id: "rec_1", name: "Opaque record", summary: "Declared summary" },
     null,
     { name: "primary-title", summary: "secondary" }
   );
@@ -141,16 +141,16 @@ test("declared stream with null content renders a placeholder, NOT an operationa
   const preview = buildRecordPreview(
     "message",
     {
-      id: "rec_1",
-      subject: null,
-      snippet: null,
       from_name: null,
-      labels: ["\\Inbox"],
-      is_seen: false,
+      id: "rec_1",
       is_draft: false,
+      is_seen: false,
+      labels: ["\\Inbox"],
+      snippet: null,
+      subject: null,
     },
     null,
-    { subject: "primary-title", snippet: "secondary", from_name: "actor" }
+    { from_name: "actor", snippet: "secondary", subject: "primary-title" }
   );
   assert.equal(preview?.kind, "generic");
   assert.equal(preview?.title, "(no subject)");
@@ -165,16 +165,16 @@ test("declared stream with null content renders a placeholder, NOT an operationa
   const preview = buildRecordPreview(
     "message",
     {
-      id: "rec_1",
-      subject: null,
-      snippet: null,
       from_name: null,
-      labels: ["\\Inbox"],
-      is_seen: false,
+      id: "rec_1",
       is_draft: false,
+      is_seen: false,
+      labels: ["\\Inbox"],
+      snippet: null,
+      subject: null,
     },
     null,
-    { subject: "primary-title", snippet: "secondary", from_name: "actor" }
+    { from_name: "actor", snippet: "secondary", subject: "primary-title" }
   );
   assert.equal(preview?.kind, "generic");
   assert.equal(preview?.title, "(no subject)");
@@ -184,7 +184,7 @@ test("declared stream with null content renders a placeholder, NOT an operationa
 
 test("kinds without role-backed card slots render as generic previews", () => {
   for (const kind of ["activity", "location", "reader"] as const) {
-    const preview = buildRecordPreview(kind, { name: "Run", distance: 5000, lat: 37.77, lng: -122.41 });
+    const preview = buildRecordPreview(kind, { distance: 5000, lat: 37.77, lng: -122.41, name: "Run" });
 
     assert.equal(preview?.kind, "generic");
     assert.equal(preview?.coordinates, undefined);

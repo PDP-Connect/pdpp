@@ -124,13 +124,14 @@ function formatMediaCoverage(value: unknown): string | null {
   if (!value || typeof value !== "object") {
     return null;
   }
-  const status = (value as { status?: unknown }).status;
+  const { status } = value as { status?: unknown };
   return typeof status === "string" && status.length > 0 ? status.replaceAll("_", " ") : null;
 }
 
 function formatBytes(bytes: number): string {
   const units = ["B", "KB", "MB", "GB"];
   let value = bytes;
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   let unit = units[0] ?? "B";
   for (const nextUnit of units) {
     unit = nextUnit;
@@ -226,12 +227,13 @@ function ProgressCard({ progress }: { progress: NonNullable<UploadState["progres
 }
 
 function validationToPreview(preview: ManualUploadValidationPreviewWire): UploadState {
-  const validation = preview.validation;
+  const { validation } = preview;
   return {
     ok: true,
     preview: {
       dateRange: validation?.date_range ?? null,
       detectedFormat: validation?.detected_format ?? null,
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
       duplicateConnectionId: preview.duplicate?.connection_id ?? null,
       estimatedAttachments: validation?.estimated_attachments ?? null,
       estimatedChats: validation?.estimated_chats ?? null,
@@ -243,7 +245,7 @@ function validationToPreview(preview: ManualUploadValidationPreviewWire): Upload
       mediaCoverage: validation?.media_coverage ?? null,
       nextStep: preview.next_step.kind,
       remediation: validation?.remediation ?? null,
-      sourceDisplayName: preview.display_name ?? null,
+      sourceDisplayName: preview.display_name,
       status: validation?.status ?? null,
       uploadedFileName: preview.uploaded_file_name,
       warnings: validation?.warnings ?? [],
@@ -336,7 +338,7 @@ function sendRawFile<T>(
     connectionId?: string | null;
     contentType?: string;
     displayName?: string | null;
-    onProgress(percent: number | null): void;
+    onProgress: (percent: number | null) => void;
   }
 ): Promise<T> {
   const url = new URL(path, window.location.origin);
@@ -386,10 +388,14 @@ async function pollArtifactStatus(
     currentFile: number;
     fileName: string;
     totalFiles: number;
-    update(progress: NonNullable<UploadState["progress"]>): void;
+    update: (progress: NonNullable<UploadState["progress"]>) => void;
   }
 ): Promise<ManualUploadArtifactWire> {
   for (let attempt = 0; attempt < 180; attempt += 1) {
+    // Status polling: each attempt reads the artifact's current processing
+    // status, which only advances between requests, so parallel attempts
+    // would just poll the same in-flight state repeatedly.
+    // biome-ignore lint/performance/noAwaitInLoops: see comment above.
     const res = await fetch(`/_ref/manual-upload/artifacts/${encodeURIComponent(artifactId)}`, {
       credentials: "same-origin",
       headers: { Accept: "application/json" },
@@ -456,7 +462,7 @@ interface PreparedSubmission {
 }
 
 function submitIntent(event: FormEvent<HTMLFormElement>): PreparedSubmission["intent"] {
-  const submitter = (event.nativeEvent as SubmitEvent).submitter;
+  const { submitter } = event.nativeEvent as SubmitEvent;
   return submitter instanceof HTMLButtonElement && submitter.value === "preview" ? "preview" : "import";
 }
 
@@ -552,8 +558,8 @@ async function stageManualUploadFile(
     `/_ref/connectors/${encodeURIComponent(setup.connector_id)}/manual-upload-staged-artifact`,
     file,
     {
-      contentType: "application/vnd.pdpp.manual-upload",
       connectionId: args.connectionId,
+      contentType: "application/vnd.pdpp.manual-upload",
       displayName: args.connectionId ? null : args.displayName,
       onProgress: (percent) =>
         args.setState(uploadProgress(file, { currentFile, percent, phase: "uploading", totalFiles: args.totalFiles })),
@@ -573,11 +579,15 @@ async function importManualUploads(
   target: UploadTarget,
   setState: SetUploadState
 ): Promise<string> {
-  let connectionId = target.connectionId;
+  let { connectionId } = target;
   let lastConnectionId: string | null = target.connectionId;
   let shouldRun = false;
   for (let index = 0; index < files.length; index += 1) {
     const file = files[index] as File;
+    // Sequential by necessity: the connectionId resolved from staging file N
+    // (below) is passed into staging file N+1, so files can't upload in
+    // parallel without racing which upload creates the connection.
+    // biome-ignore lint/performance/noAwaitInLoops: see comment above.
     const artifact = await stageManualUploadFile(setup, file, {
       connectionId,
       displayName: target.displayName,
@@ -645,7 +655,7 @@ export function ManualUploadForm({
     }
     const submission = prepareSubmission(event, setup);
     if ("error" in submission) {
-      setState({ ok: false, message: submission.error });
+      setState({ message: submission.error, ok: false });
       return;
     }
 
@@ -657,7 +667,7 @@ export function ManualUploadForm({
       }
       window.location.href = await importManualUploads(setup, submission.files, submission.target, setState);
     } catch (err) {
-      setState({ ok: false, message: err instanceof Error ? err.message : "Manual upload setup failed." });
+      setState({ message: err instanceof Error ? err.message : "Manual upload setup failed.", ok: false });
     } finally {
       setPending(false);
     }

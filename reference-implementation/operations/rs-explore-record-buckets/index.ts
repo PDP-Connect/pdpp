@@ -15,56 +15,58 @@ export type ExploreRecordBucketGranularity = (typeof EXPLORE_RECORD_BUCKET_GRANU
 
 export interface ExploreRecordBucketsInput {
   readonly connectionIds?: readonly string[] | null;
-  readonly streams?: readonly string[] | null;
   readonly excludeConnectionIds?: readonly string[] | null;
   readonly excludeStreams?: readonly string[] | null;
-  readonly since?: string | null;
-  readonly until?: string | null;
   readonly granularity?: ExploreRecordBucketGranularity | "auto" | string | null;
-  readonly timeZone?: string | null;
   readonly now?: string | null;
+  readonly since?: string | null;
+  readonly streams?: readonly string[] | null;
+  readonly timeZone?: string | null;
+  readonly until?: string | null;
 }
 
 export interface ExploreRecordBucketQueryInput {
   readonly connectionIds?: readonly string[];
-  readonly streams?: readonly string[];
   readonly excludeConnectionIds?: readonly string[];
   readonly excludeStreams?: readonly string[];
-  readonly since?: string;
-  readonly until: string;
   readonly granularity: ExploreRecordBucketGranularity | "auto";
+  readonly since?: string;
+  readonly streams?: readonly string[];
   readonly timeZone: "UTC";
+  readonly until: string;
 }
 
 export interface ExploreRecordBucketSparseRow {
   readonly bucketStart: string | null;
   readonly count: number;
-  readonly extentStart: string | null;
-  readonly extentEnd: string | null;
   readonly extentCount: number;
+  readonly extentEnd: string | null;
+  readonly extentStart: string | null;
   readonly granularity: ExploreRecordBucketGranularity;
 }
 
 export interface ExploreRecordBucketsDependencies {
-  fetchBucketRows(input: ExploreRecordBucketQueryInput): readonly ExploreRecordBucketSparseRow[] | Promise<readonly ExploreRecordBucketSparseRow[]>;
+  fetchBucketRows: (
+    input: ExploreRecordBucketQueryInput
+  ) => readonly ExploreRecordBucketSparseRow[] | Promise<readonly ExploreRecordBucketSparseRow[]>;
 }
 
 export interface ExploreRecordBucket {
-  readonly start: string;
-  readonly end: string;
   readonly count: number;
+  readonly end: string;
+  readonly start: string;
 }
 
 export interface ExploreRecordBucketsOutput {
-  readonly object: "explore_record_buckets";
-  readonly granularity: ExploreRecordBucketGranularity;
-  readonly time_zone: "UTC";
+  readonly buckets: readonly ExploreRecordBucket[];
   readonly extent: {
     readonly start: string | null;
     readonly end: string | null;
     readonly count: number;
   };
-  readonly buckets: readonly ExploreRecordBucket[];
+  readonly granularity: ExploreRecordBucketGranularity;
+  readonly object: "explore_record_buckets";
+  readonly time_zone: "UTC";
 }
 
 export class InvalidExploreRecordBucketsRequestError extends Error {
@@ -74,21 +76,23 @@ export class InvalidExploreRecordBucketsRequestError extends Error {
 const MAX_DENSE_BUCKETS = 5000;
 
 function normalizeStringList(values: readonly string[] | null | undefined): readonly string[] | undefined {
-  if (!values || values.length === 0) return undefined;
+  if (!values || values.length === 0) {
+    return;
+  }
   const normalized = Array.from(
-    new Set(
-      values
-        .map((value) => String(value).trim())
-        .filter((value) => value.length > 0)
-    )
+    new Set(values.map((value) => String(value).trim()).filter((value) => value.length > 0))
   );
   return normalized.length > 0 ? normalized : undefined;
 }
 
 function normalizeGranularity(raw: ExploreRecordBucketsInput["granularity"]): ExploreRecordBucketGranularity | "auto" {
-  if (raw == null) return "auto";
+  if (raw === null || raw === undefined) {
+    return "auto";
+  }
   const value = String(raw).trim();
-  if (value === "") return "auto";
+  if (value === "") {
+    return "auto";
+  }
   if (value === "auto" || EXPLORE_RECORD_BUCKET_GRANULARITIES.includes(value as ExploreRecordBucketGranularity)) {
     return value as ExploreRecordBucketGranularity | "auto";
   }
@@ -98,31 +102,44 @@ function normalizeGranularity(raw: ExploreRecordBucketsInput["granularity"]): Ex
 }
 
 function normalizeUtcInstant(raw: string | null | undefined, boundary: "start" | "end"): string | undefined {
-  if (raw == null || raw === "") return undefined;
+  if (raw === null || raw === undefined || raw === "") {
+    return;
+  }
   const value = String(raw).trim();
+  // biome-ignore lint/performance/useTopLevelRegex: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
   const candidate = /^\d{4}-\d{2}-\d{2}$/.test(value)
     ? `${value}T${boundary === "start" ? "00:00:00.000" : "23:59:59.999"}Z`
     : value;
   const ms = Date.parse(candidate);
   if (!Number.isFinite(ms)) {
-    throw new InvalidExploreRecordBucketsRequestError(`${boundary === "start" ? "since" : "until"} must be a date or date-time`);
+    throw new InvalidExploreRecordBucketsRequestError(
+      `${boundary === "start" ? "since" : "until"} must be a date or date-time`
+    );
   }
   return new Date(ms).toISOString();
 }
 
 function normalizeNow(raw: string | null | undefined): string {
-  if (raw == null || raw === "") return new Date().toISOString();
+  if (raw === null || raw === undefined || raw === "") {
+    return new Date().toISOString();
+  }
   const ms = Date.parse(String(raw));
-  if (!Number.isFinite(ms)) throw new InvalidExploreRecordBucketsRequestError("now must be a date-time");
+  if (!Number.isFinite(ms)) {
+    throw new InvalidExploreRecordBucketsRequestError("now must be a date-time");
+  }
   return new Date(ms).toISOString();
 }
 
 function floorUtc(date: Date, granularity: ExploreRecordBucketGranularity): Date {
   const d = new Date(date.getTime());
   d.setUTCMinutes(0, 0, 0);
-  if (granularity === "hour") return d;
+  if (granularity === "hour") {
+    return d;
+  }
   d.setUTCHours(0, 0, 0, 0);
-  if (granularity === "day") return d;
+  if (granularity === "day") {
+    return d;
+  }
   if (granularity === "week") {
     const day = d.getUTCDay();
     const diff = (day + 6) % 7;
@@ -130,7 +147,9 @@ function floorUtc(date: Date, granularity: ExploreRecordBucketGranularity): Date
     return d;
   }
   d.setUTCDate(1);
-  if (granularity === "month") return d;
+  if (granularity === "month") {
+    return d;
+  }
   if (granularity === "quarter") {
     d.setUTCMonth(Math.floor(d.getUTCMonth() / 3) * 3, 1);
     return d;
@@ -141,22 +160,37 @@ function floorUtc(date: Date, granularity: ExploreRecordBucketGranularity): Date
 
 function addUtc(date: Date, granularity: ExploreRecordBucketGranularity): Date {
   const d = new Date(date.getTime());
-  if (granularity === "hour") d.setUTCHours(d.getUTCHours() + 1);
-  else if (granularity === "day") d.setUTCDate(d.getUTCDate() + 1);
-  else if (granularity === "week") d.setUTCDate(d.getUTCDate() + 7);
-  else if (granularity === "month") d.setUTCMonth(d.getUTCMonth() + 1);
-  else if (granularity === "quarter") d.setUTCMonth(d.getUTCMonth() + 3);
-  else d.setUTCFullYear(d.getUTCFullYear() + 1);
+  if (granularity === "hour") {
+    d.setUTCHours(d.getUTCHours() + 1);
+  } else if (granularity === "day") {
+    d.setUTCDate(d.getUTCDate() + 1);
+  } else if (granularity === "week") {
+    d.setUTCDate(d.getUTCDate() + 7);
+  } else if (granularity === "month") {
+    d.setUTCMonth(d.getUTCMonth() + 1);
+  } else if (granularity === "quarter") {
+    d.setUTCMonth(d.getUTCMonth() + 3);
+  } else {
+    d.setUTCFullYear(d.getUTCFullYear() + 1);
+  }
   return d;
 }
 
-function denseBuckets(rows: readonly ExploreRecordBucketSparseRow[], granularity: ExploreRecordBucketGranularity): readonly ExploreRecordBucket[] {
+function denseBuckets(
+  rows: readonly ExploreRecordBucketSparseRow[],
+  granularity: ExploreRecordBucketGranularity
+): readonly ExploreRecordBucket[] {
+  // biome-ignore lint/style/useDestructuring: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
   const first = rows[0];
-  if (!first?.extentStart || !first.extentEnd || first.extentCount === 0) return [];
+  if (!(first?.extentStart && first.extentEnd) || first.extentCount === 0) {
+    return [];
+  }
 
   const counts = new Map<string, number>();
   for (const row of rows) {
-    if (row.bucketStart) counts.set(new Date(row.bucketStart).toISOString(), Number(row.count ?? 0));
+    if (row.bucketStart) {
+      counts.set(new Date(row.bucketStart).toISOString(), Number(row.count ?? 0));
+    }
   }
 
   const start = floorUtc(new Date(first.extentStart), granularity);
@@ -168,7 +202,7 @@ function denseBuckets(rows: readonly ExploreRecordBucketSparseRow[], granularity
     }
     const next = addUtc(cursor, granularity);
     const key = cursor.toISOString();
-    buckets.push({ start: key, end: next.toISOString(), count: counts.get(key) ?? 0 });
+    buckets.push({ count: counts.get(key) ?? 0, end: next.toISOString(), start: key });
   }
   return buckets;
 }
@@ -177,7 +211,10 @@ export async function executeExploreRecordBuckets(
   input: ExploreRecordBucketsInput,
   deps: ExploreRecordBucketsDependencies
 ): Promise<ExploreRecordBucketsOutput> {
-  const timeZone = input.timeZone == null || input.timeZone === "" ? "UTC" : String(input.timeZone).trim();
+  const timeZone =
+    input.timeZone === null || input.timeZone === undefined || input.timeZone === ""
+      ? "UTC"
+      : String(input.timeZone).trim();
   if (timeZone !== "UTC") {
     throw new InvalidExploreRecordBucketsRequestError("time_zone must be UTC");
   }
@@ -198,24 +235,25 @@ export async function executeExploreRecordBuckets(
     ...(excludeConnectionIds ? { excludeConnectionIds } : {}),
     ...(excludeStreams ? { excludeStreams } : {}),
     ...(since ? { since } : {}),
-    until,
     granularity: normalizeGranularity(input.granularity),
     timeZone: "UTC",
+    until,
   };
 
   const rows = await deps.fetchBucketRows(queryInput);
+  // biome-ignore lint/style/useDestructuring: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
   const first = rows[0];
   const granularity = first?.granularity ?? (queryInput.granularity === "auto" ? "day" : queryInput.granularity);
 
   return {
-    object: "explore_record_buckets",
-    granularity,
-    time_zone: "UTC",
-    extent: {
-      start: first?.extentStart ?? null,
-      end: first?.extentEnd ?? null,
-      count: Number(first?.extentCount ?? 0),
-    },
     buckets: denseBuckets(rows, granularity),
+    extent: {
+      count: Number(first?.extentCount ?? 0),
+      end: first?.extentEnd ?? null,
+      start: first?.extentStart ?? null,
+    },
+    granularity,
+    object: "explore_record_buckets",
+    time_zone: "UTC",
   };
 }

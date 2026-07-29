@@ -39,9 +39,8 @@ COPY packages/operator-ui/package.json packages/operator-ui/package.json
 COPY packages/pdpp-brand/package.json packages/pdpp-brand/package.json
 COPY packages/mcp-server/package.json packages/mcp-server/package.json
 COPY packages/polyfill-connectors/package.json packages/polyfill-connectors/package.json
-COPY packages/polyfill-connectors/scripts/install-patchright-browser.mjs packages/polyfill-connectors/scripts/install-patchright-browser.mjs
+COPY packages/polyfill-connectors/scripts/install-patchright-browser.ts packages/polyfill-connectors/scripts/install-patchright-browser.ts
 COPY packages/reference-contract/package.json packages/reference-contract/package.json
-COPY packages/remote-surface/package.json packages/remote-surface/package.json
 COPY reference-implementation/package.json reference-implementation/package.json
 
 RUN pnpm install --frozen-lockfile
@@ -73,4 +72,4 @@ COPY --from=source /app /app
 
 EXPOSE 7662 7663
 
-CMD ["sh", "-c", "export AS_PORT=\"${PORT:-${AS_PORT:-7662}}\"; export PDPP_RS_URL=\"${PDPP_RS_URL:-http://127.0.0.1:${RS_PORT:-7663}}\"; exec node reference-implementation/server/index.js"]
+CMD ["sh", "-c", "export AS_PORT=\"${PORT:-${AS_PORT:-7662}}\"; export PDPP_RS_URL=\"${PDPP_RS_URL:-http://127.0.0.1:${RS_PORT:-7663}}\"; exec node reference-implementation/server/index.ts"]

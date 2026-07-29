@@ -80,11 +80,11 @@ export interface ExploreTimelinePartition {
  */
 export interface PartitionCursorPosition {
   readonly connectorId: string;
-  readonly stream: string;
-  /** Last `semantic_time` returned for this partition; null = not yet started. */
-  readonly lastSemanticTime: string | null;
   /** Last `record_key` returned (tiebreaker); null = not yet started. */
   readonly lastRecordKey: string | null;
+  /** Last `semantic_time` returned for this partition; null = not yet started. */
+  readonly lastSemanticTime: string | null;
+  readonly stream: string;
 }
 
 /**
@@ -109,20 +109,16 @@ export interface PartitionCursorPosition {
  *       re-anchor a fresh snapshot rather than mis-seek.
  */
 export interface CompositeCursorPayload {
-  readonly version: 4;
   /**
-   * The snapshot anchor: MAX(id) (ingest sequence — BIGSERIAL in Postgres,
-   * AUTOINCREMENT rowid in SQLite) captured at first-page load time. Rows with
-   * id > snapshotSeq were ingested after the snapshot and must not appear in
-   * paginated results, regardless of their emitted_at.
+   * The PINNED scan direction for this traversal. "asc" = oldest-first
+   * (`order=oldest`), "desc" = newest-first (default browse). Carried so every
+   * page of an oldest-first walk keeps paging ascending (and the keyset seek
+   * predicate stays correct). Direction is feed-defining, so a flip starts a
+   * fresh cursor — it never changes mid-traversal. OPTIONAL for backward
+   * compatibility: a cursor minted before this field decodes as "desc", so no
+   * version bump is needed (the keyset key, snapshot, and ceiling are unchanged).
    */
-  readonly snapshotSeq: number;
-  /**
-   * ISO-8601 display timestamp corresponding to the snapshot (MAX(emitted_at) at
-   * snapshot time). Exposed as `snapshot_at` in the response for display only;
-   * NOT used as the membership filter (snapshotSeq gates membership).
-   */
-  readonly snapshotAt: string;
+  readonly direction?: "asc" | "desc";
   /**
    * The PINNED past/future boundary: real wall-clock now (ISO-8601) captured at
    * first-page load. The MAIN feed includes only records with semantic time <=
@@ -136,20 +132,24 @@ export interface CompositeCursorPayload {
    */
   readonly nowCeiling: string;
   /**
-   * The PINNED scan direction for this traversal. "asc" = oldest-first
-   * (`order=oldest`), "desc" = newest-first (default browse). Carried so every
-   * page of an oldest-first walk keeps paging ascending (and the keyset seek
-   * predicate stays correct). Direction is feed-defining, so a flip starts a
-   * fresh cursor — it never changes mid-traversal. OPTIONAL for backward
-   * compatibility: a cursor minted before this field decodes as "desc", so no
-   * version bump is needed (the keyset key, snapshot, and ceiling are unchanged).
-   */
-  readonly direction?: "asc" | "desc";
-  /**
    * Per-partition positions. Partitions that have been exhausted are omitted
    * (no point carrying them; they contribute nothing to future pages).
    */
   readonly partitions: readonly PartitionCursorPosition[];
+  /**
+   * ISO-8601 display timestamp corresponding to the snapshot (MAX(emitted_at) at
+   * snapshot time). Exposed as `snapshot_at` in the response for display only;
+   * NOT used as the membership filter (snapshotSeq gates membership).
+   */
+  readonly snapshotAt: string;
+  /**
+   * The snapshot anchor: MAX(id) (ingest sequence — BIGSERIAL in Postgres,
+   * AUTOINCREMENT rowid in SQLite) captured at first-page load time. Rows with
+   * id > snapshotSeq were ingested after the snapshot and must not appear in
+   * paginated results, regardless of their emitted_at.
+   */
+  readonly snapshotSeq: number;
+  readonly version: 4;
 }
 
 /**
@@ -165,14 +165,14 @@ export interface CompositeCursorPayload {
  * resolve the human label via `connector_id` against the connector registry.
  */
 export interface ExploreTimelineRecord {
-  readonly object: "timeline_record";
   /** Connector TYPE id (e.g. "amazon"). Use for display labels and manifest lookup. */
   readonly connector_id: string;
   /** Connection INSTANCE id (e.g. "cin_..."). Use for per-connection API reads. */
   readonly connector_instance_id: string;
-  readonly stream: string;
-  readonly record_key: string;
+  readonly data: unknown;
   readonly emitted_at: string;
+  readonly object: "timeline_record";
+  readonly record_key: string;
   /**
    * The SEMANTIC time this record is ORDERED by — COALESCE(NULLIF(semantic_time,
    * ''), emitted_at). This is the authoritative display/sort key the server already
@@ -182,24 +182,28 @@ export interface ExploreTimelineRecord {
    * metadata lookup missed — see the canonical-connector-key fix). Always present.
    */
   readonly semantic_time: string;
-  readonly data: unknown;
+  readonly stream: string;
 }
 
 /**
  * Input for a per-partition keyset page fetch.
  */
 export interface PartitionPageInput {
-  readonly connectorId: string;
-  readonly stream: string;
-  /**
-   * Ingest sequence bound (MAX(id) at snapshot time). Include only records
-   * with id <= snapshotSeq (point-in-time stability via ingest sequence).
-   * This correctly excludes backfilled rows whose emitted_at is old but whose
-   * ingest id is newer than the snapshot.
-   */
-  readonly snapshotSeq: number;
   /** Fetch records strictly before this position (null = start from snapshot). */
   readonly afterPosition: PartitionCursorPosition | null;
+  readonly connectorId: string;
+  /**
+   * Scan DIRECTION over the partition's semantic-time order. "desc" (default) =
+   * newest-first (the standard browse feed); "asc" = oldest-first — the
+   * `order=oldest` re-page that walks from the partition's EARLIEST record
+   * forward. Both directions keep the `nowCeiling` upper-bound clamp, so "asc"
+   * pages the PAST partition from the floor up to the ceiling and never surfaces
+   * the future partition into the main feed. The keyset seek predicate flips with
+   * the direction (`<` for desc, `>` for asc). Display key == cursor key ==
+   * semantic_time in BOTH directions (display == sort by construction), so an
+   * oldest-first page is monotone across page boundaries exactly like newest-first.
+   */
+  readonly direction?: "asc" | "desc";
   /** Maximum rows to fetch from this partition. */
   readonly limit: number;
   /**
@@ -213,17 +217,13 @@ export interface PartitionPageInput {
    */
   readonly nowCeiling?: string | null;
   /**
-   * Scan DIRECTION over the partition's semantic-time order. "desc" (default) =
-   * newest-first (the standard browse feed); "asc" = oldest-first — the
-   * `order=oldest` re-page that walks from the partition's EARLIEST record
-   * forward. Both directions keep the `nowCeiling` upper-bound clamp, so "asc"
-   * pages the PAST partition from the floor up to the ceiling and never surfaces
-   * the future partition into the main feed. The keyset seek predicate flips with
-   * the direction (`<` for desc, `>` for asc). Display key == cursor key ==
-   * semantic_time in BOTH directions (display == sort by construction), so an
-   * oldest-first page is monotone across page boundaries exactly like newest-first.
+   * Ingest sequence bound (MAX(id) at snapshot time). Include only records
+   * with id <= snapshotSeq (point-in-time stability via ingest sequence).
+   * This correctly excludes backfilled rows whose emitted_at is old but whose
+   * ingest id is newer than the snapshot.
    */
-  readonly direction?: "asc" | "desc";
+  readonly snapshotSeq: number;
+  readonly stream: string;
 }
 
 /**
@@ -234,76 +234,45 @@ export interface PartitionRow {
   readonly connectorId: string;
   /** Connector type id (connector_id in records table). */
   readonly connectorType: string;
-  readonly stream: string;
-  readonly recordKey: string;
+  readonly data: unknown;
   /** Ingest time (when the runtime wrote the row). Surfaced on the response. */
   readonly emittedAt: string;
+  readonly recordKey: string;
   /**
    * SEMANTIC time (when the thing happened): the substrate's
    * COALESCE(NULLIF(semantic_time, ''), emitted_at). This is the ORDER BY /
    * keyset key for the merged timeline. Never empty.
    */
   readonly semanticTime: string;
-  readonly data: unknown;
+  readonly stream: string;
 }
 
 /**
  * Result of a per-partition page fetch.
  */
 export interface PartitionPageResult {
-  readonly rows: readonly PartitionRow[];
   /** True if there are more rows in this partition after these rows. */
   readonly hasMore: boolean;
+  readonly rows: readonly PartitionRow[];
 }
 
 /**
  * Input for counting records ingested after the snapshot anchor.
  */
 export interface CountNewSinceSnapshotInput {
-  /** Ingest sequence anchor (MAX(id) at snapshot time). Count rows with id > snapshotSeq. */
-  readonly snapshotSeq: number;
   /** Optional connection-instance scope for filtered owner timelines. */
   readonly connectionIds?: readonly string[];
+  /** Ingest sequence anchor (MAX(id) at snapshot time). Count rows with id > snapshotSeq. */
+  readonly snapshotSeq: number;
   /** Optional stream-name scope for filtered owner timelines. */
   readonly streams?: readonly string[];
 }
 
 export interface ExploreTimelineInput {
-  /** Page size. Defaults to 50 if omitted or invalid. */
-  readonly limit?: number | null;
-  /** Opaque composite cursor from a prior page. Null/omitted = first page. */
-  readonly cursor?: string | null;
-  /**
-   * REWIND: when true AND `cursor` is set, re-fetch PAGE 1 pinned to the cursor's
-   * ORIGINAL snapshot (`snapshotSeq`/`snapshotAt`), ignoring the cursor's partition
-   * positions and re-enumerating all partitions from the start. Used by the console
-   * accumulator to re-render page 1 against the SAME snapshot as later pages, so an
-   * after-snapshot backfill can never displace an original page-1 row. The snapshot
-   * is NOT re-captured (membership stays `id <= snapshotSeq`).
-   */
-  readonly rewindToFirstPage?: boolean | null;
   /** Optional connection-instance scope. Empty/omitted means every visible connection. */
   readonly connectionIds?: readonly string[] | null;
-  /** Optional stream-name scope. Empty/omitted means every visible stream. */
-  readonly streams?: readonly string[] | null;
-  /**
-   * Optional EXCLUDE scope — connection ids to omit ("is not" facet / `-con:`). Applied
-   * at partition enumeration so excluded partitions never enter the feed, the Upcoming
-   * projection, the counts, OR the cursor — counts stay EXACT (no client-side shrinking).
-   * Empty/omitted = exclude nothing. Re-passed by the client on every page (like the
-   * include scope; the cursor carries positions only for the surviving partitions).
-   */
-  readonly excludeConnectionIds?: readonly string[] | null;
-  /** Optional EXCLUDE scope — stream names to omit ("is not" facet / `-stream:`). */
-  readonly excludeStreams?: readonly string[] | null;
-  /**
-   * Page size for the page-1 UPCOMING (future) head, independent of the main feed
-   * `limit`. The future set is BOUNDED (its count is exact because it is cheap to
-   * count), so the head can be large — the owner sees the whole common-case set on
-   * first expand instead of a 32-row slice needing repeated load-more. Defaults to
-   * `limit` when omitted (legacy). Normalized to the same [MIN, MAX] bounds.
-   */
-  readonly upcomingLimit?: number | null;
+  /** Opaque composite cursor from a prior page. Null/omitted = first page. */
+  readonly cursor?: string | null;
   /**
    * Sort DIRECTION for the main feed over its semantic-time order. "desc"
    * (default) = newest-first browse; "asc" = the `order=oldest` re-page that
@@ -318,12 +287,47 @@ export interface ExploreTimelineInput {
    * direction field and decode as "desc").
    */
   readonly direction?: "asc" | "desc" | null;
+  /**
+   * Optional EXCLUDE scope — connection ids to omit ("is not" facet / `-con:`). Applied
+   * at partition enumeration so excluded partitions never enter the feed, the Upcoming
+   * projection, the counts, OR the cursor — counts stay EXACT (no client-side shrinking).
+   * Empty/omitted = exclude nothing. Re-passed by the client on every page (like the
+   * include scope; the cursor carries positions only for the surviving partitions).
+   */
+  readonly excludeConnectionIds?: readonly string[] | null;
+  /** Optional EXCLUDE scope — stream names to omit ("is not" facet / `-stream:`). */
+  readonly excludeStreams?: readonly string[] | null;
+  /** Page size. Defaults to 50 if omitted or invalid. */
+  readonly limit?: number | null;
+  /**
+   * REWIND: when true AND `cursor` is set, re-fetch PAGE 1 pinned to the cursor's
+   * ORIGINAL snapshot (`snapshotSeq`/`snapshotAt`), ignoring the cursor's partition
+   * positions and re-enumerating all partitions from the start. Used by the console
+   * accumulator to re-render page 1 against the SAME snapshot as later pages, so an
+   * after-snapshot backfill can never displace an original page-1 row. The snapshot
+   * is NOT re-captured (membership stays `id <= snapshotSeq`).
+   */
+  readonly rewindToFirstPage?: boolean | null;
+  /** Optional stream-name scope. Empty/omitted means every visible stream. */
+  readonly streams?: readonly string[] | null;
+  /**
+   * Page size for the page-1 UPCOMING (future) head, independent of the main feed
+   * `limit`. The future set is BOUNDED (its count is exact because it is cheap to
+   * count), so the head can be large — the owner sees the whole common-case set on
+   * first expand instead of a 32-row slice needing repeated load-more. Defaults to
+   * `limit` when omitted (legacy). Normalized to the same [MIN, MAX] bounds.
+   */
+  readonly upcomingLimit?: number | null;
 }
 
 export interface ExploreTimelineOutput {
-  readonly object: "list";
   readonly data: readonly ExploreTimelineRecord[];
   readonly has_more: boolean;
+  /**
+   * Count of records ingested (across all partitions) after `snapshot_at`.
+   * UI can show an "N new" pill and refresh on click.
+   */
+  readonly new_since_snapshot: number;
   /**
    * Opaque cursor for the next page. Null when exhausted. Clients MUST treat it
    * as opaque and pass it back verbatim. When a cursor store is wired this is a
@@ -331,16 +335,12 @@ export interface ExploreTimelineOutput {
    * no store is wired (e.g. unit tests) it is the raw base64url composite blob.
    */
   readonly next_cursor: string | null;
+  readonly object: "list";
   /**
    * ISO-8601 timestamp at which this result set was anchored.
    * Records with `emitted_at` after this value are "new" and not included.
    */
   readonly snapshot_at: string;
-  /**
-   * Count of records ingested (across all partitions) after `snapshot_at`.
-   * UI can show an "N new" pill and refresh on click.
-   */
-  readonly new_since_snapshot: number;
   /**
    * FUTURE-dated records (semantic time > the pinned past/future boundary),
    * FORWARD-chronological (soonest first), capped — for the separate "Upcoming"
@@ -348,11 +348,8 @@ export interface ExploreTimelineOutput {
    * Empty when no future records or when the dep doesn't implement fetchUpcoming.
    */
   readonly upcoming: readonly ExploreTimelineRecord[];
-  /**
-   * TRUE server-side count of ALL future records (not just the `upcoming` head),
-   * for the collapsed "N upcoming" pill. 0 when none.
-   */
-  readonly upcoming_total: number;
+  /** True when more future records exist after `upcoming` (i.e. `upcoming_next_cursor` is set). */
+  readonly upcoming_has_more: boolean;
   /**
    * Opaque cursor for the NEXT page of Upcoming (future) records, independent of
    * `next_cursor` (which pages the main past feed). Null when the upcoming set is
@@ -361,33 +358,20 @@ export interface ExploreTimelineOutput {
    * upcoming but only 32 shown". Backed by an UpcomingCursorPayload.
    */
   readonly upcoming_next_cursor: string | null;
-  /** True when more future records exist after `upcoming` (i.e. `upcoming_next_cursor` is set). */
-  readonly upcoming_has_more: boolean;
+  /**
+   * TRUE server-side count of ALL future records (not just the `upcoming` head),
+   * for the collapsed "N upcoming" pill. 0 when none.
+   */
+  readonly upcoming_total: number;
 }
 
 export interface ExploreTimelineDependencies {
   /**
-   * List ALL distinct (connector_instance_id, stream) partitions visible to the
-   * owner, with no limit. Returns an empty array when no records exist yet.
-   *
-   * IMPORTANT: implementations MUST NOT apply any LIMIT / cap to this query.
-   * A cap silently hides records in overflow partitions, violating the contract.
+   * Count records with `id > snapshotSeq` across all visible partitions.
+   * Used for the "N new" pill. May return 0 if the feature is expensive and
+   * the caller prefers a best-effort / deferred count.
    */
-  listPartitions(input?: {
-    readonly connectionIds?: readonly string[];
-    readonly streams?: readonly string[];
-    /** Connection ids to EXCLUDE (NOT IN); applied alongside the include scope. */
-    readonly excludeConnectionIds?: readonly string[];
-    /** Stream names to EXCLUDE (NOT IN); applied alongside the include scope. */
-    readonly excludeStreams?: readonly string[];
-  }): Promise<readonly ExploreTimelinePartition[]>;
-
-  /**
-   * Fetch the current maximum ingest sequence (MAX(id)) across all records
-   * visible to the owner, together with the corresponding MAX(emitted_at) for
-   * display. Returns null for both if no records exist (empty corpus).
-   */
-  fetchSnapshotAnchor(): Promise<{ snapshotSeq: number; snapshotAt: string } | null>;
+  countNewSinceSnapshot: (input: CountNewSinceSnapshotInput) => Promise<number>;
 
   /**
    * Fetch a bounded page of records from a single (connector_instance_id, stream)
@@ -396,14 +380,48 @@ export interface ExploreTimelineDependencies {
    * (which carries `lastSemanticTime`). Only include records with
    * `id <= snapshotSeq` (membership stays anchored on the ingest sequence).
    */
-  fetchPartitionPage(input: PartitionPageInput): Promise<PartitionPageResult>;
+  fetchPartitionPage: (input: PartitionPageInput) => Promise<PartitionPageResult>;
 
   /**
-   * Count records with `id > snapshotSeq` across all visible partitions.
-   * Used for the "N new" pill. May return 0 if the feature is expensive and
-   * the caller prefers a best-effort / deferred count.
+   * Fetch the current maximum ingest sequence (MAX(id)) across all records
+   * visible to the owner, together with the corresponding MAX(emitted_at) for
+   * display. Returns null for both if no records exist (empty corpus).
    */
-  countNewSinceSnapshot(input: CountNewSinceSnapshotInput): Promise<number>;
+  fetchSnapshotAnchor: () => Promise<{ snapshotSeq: number; snapshotAt: string } | null>;
+
+  /**
+   * OPTIONAL: fetch the FUTURE-dated set — records whose semantic time is strictly
+   * AFTER `nowCeiling` — for the separate "Upcoming" projection, plus a true
+   * server-side total COUNT of all such records (the Relay `totalCount` pattern;
+   * the set is bounded so the count is cheap). Records come back FORWARD-
+   * chronological (soonest future first), capped at `limit`. Membership stays
+   * `id <= snapshotSeq` (same snapshot as the main feed). When ABSENT, the
+   * operation returns an empty upcoming set (legacy: no future/past split).
+   */
+  fetchUpcoming?: (input: UpcomingFetchInput) => Promise<UpcomingFetchResult>;
+  /**
+   * List ALL distinct (connector_instance_id, stream) partitions visible to the
+   * owner, with no limit. Returns an empty array when no records exist yet.
+   *
+   * IMPORTANT: implementations MUST NOT apply any LIMIT / cap to this query.
+   * A cap silently hides records in overflow partitions, violating the contract.
+   */
+  listPartitions: (input?: {
+    readonly connectionIds?: readonly string[];
+    readonly streams?: readonly string[];
+    /** Connection ids to EXCLUDE (NOT IN); applied alongside the include scope. */
+    readonly excludeConnectionIds?: readonly string[];
+    /** Stream names to EXCLUDE (NOT IN); applied alongside the include scope. */
+    readonly excludeStreams?: readonly string[];
+  }) => Promise<readonly ExploreTimelinePartition[]>;
+  loadCursorBlob?: (handle: string) => Promise<string | null>;
+
+  /**
+   * OPTIONAL injectable clock for the PINNED past/future boundary (nowCeiling).
+   * Production omits it (real wall clock); tests provide a fixed instant so the
+   * past/future split is deterministic. Returns an ISO-8601 string.
+   */
+  now?: () => string;
 
   /**
    * OPTIONAL server-side cursor store. When provided, the composite cursor blob
@@ -416,45 +434,11 @@ export interface ExploreTimelineDependencies {
    * back to emitting the raw base64url blob inline, preserving the prior contract.
    * `loadCursorBlob` returns null for an unknown/expired handle.
    */
-  saveCursorBlob?(blob: string): Promise<string>;
-  loadCursorBlob?(handle: string): Promise<string | null>;
-
-  /**
-   * OPTIONAL injectable clock for the PINNED past/future boundary (nowCeiling).
-   * Production omits it (real wall clock); tests provide a fixed instant so the
-   * past/future split is deterministic. Returns an ISO-8601 string.
-   */
-  now?(): string;
-
-  /**
-   * OPTIONAL: fetch the FUTURE-dated set — records whose semantic time is strictly
-   * AFTER `nowCeiling` — for the separate "Upcoming" projection, plus a true
-   * server-side total COUNT of all such records (the Relay `totalCount` pattern;
-   * the set is bounded so the count is cheap). Records come back FORWARD-
-   * chronological (soonest future first), capped at `limit`. Membership stays
-   * `id <= snapshotSeq` (same snapshot as the main feed). When ABSENT, the
-   * operation returns an empty upcoming set (legacy: no future/past split).
-   */
-  fetchUpcoming?(input: UpcomingFetchInput): Promise<UpcomingFetchResult>;
+  saveCursorBlob?: (blob: string) => Promise<string>;
 }
 
 /** Input for the separate future/upcoming projection. */
 export interface UpcomingFetchInput {
-  /**
-   * The SCOPED partition list (already enumerated by the operation). The upcoming
-   * fetch probes each (connector_instance_id, stream) partition INDIVIDUALLY so the
-   * partition-prefixed `idx_*_records_semantic_time` index serves it — a single
-   * GLOBAL `semantic_time > now` query Seq-Scans the whole table (cost ~472K on the
-   * live 2.8M corpus; the index is keyed by connector_instance_id, stream FIRST).
-   * The per-partition heads are merged + counts summed.
-   */
-  readonly partitions: readonly ExploreTimelinePartition[];
-  /** Snapshot membership bound (id <= snapshotSeq), same as the main feed. */
-  readonly snapshotSeq: number;
-  /** Pinned past/future boundary: include records with semantic time > this. */
-  readonly nowCeiling: string;
-  /** Max future rows to return (the merged soonest-first head). */
-  readonly limit: number;
   /**
    * Per-partition ASC seek positions from a prior upcoming page (the upcoming
    * composite cursor). Null/omitted = first upcoming page (start each partition
@@ -471,18 +455,25 @@ export interface UpcomingFetchInput {
    * per-partition COUNT(*) work. Default true (first page).
    */
   readonly computeTotal?: boolean;
+  /** Max future rows to return (the merged soonest-first head). */
+  readonly limit: number;
+  /** Pinned past/future boundary: include records with semantic time > this. */
+  readonly nowCeiling: string;
+  /**
+   * The SCOPED partition list (already enumerated by the operation). The upcoming
+   * fetch probes each (connector_instance_id, stream) partition INDIVIDUALLY so the
+   * partition-prefixed `idx_*_records_semantic_time` index serves it — a single
+   * GLOBAL `semantic_time > now` query Seq-Scans the whole table (cost ~472K on the
+   * live 2.8M corpus; the index is keyed by connector_instance_id, stream FIRST).
+   * The per-partition heads are merged + counts summed.
+   */
+  readonly partitions: readonly ExploreTimelinePartition[];
+  /** Snapshot membership bound (id <= snapshotSeq), same as the main feed. */
+  readonly snapshotSeq: number;
 }
 
 /** Result of the future/upcoming projection. */
 export interface UpcomingFetchResult {
-  /** Future rows, FORWARD-chronological (soonest first), capped at `limit`. */
-  readonly rows: readonly PartitionRow[];
-  /**
-   * TRUE server-side count of ALL future records (not just the returned page).
-   * Only meaningful when the input requested it (`computeTotal !== false`);
-   * otherwise 0 and the caller carries the total from the first page.
-   */
-  readonly total: number;
   /**
    * True if at least one partition has more future rows after this page. Drives
    * `upcoming_has_more` and whether a next upcoming cursor is issued.
@@ -495,6 +486,14 @@ export interface UpcomingFetchResult {
    * paged (no future rows) — the caller then issues no next cursor.
    */
   readonly nextPositions: readonly UpcomingPartitionPosition[];
+  /** Future rows, FORWARD-chronological (soonest first), capped at `limit`. */
+  readonly rows: readonly PartitionRow[];
+  /**
+   * TRUE server-side count of ALL future records (not just the returned page).
+   * Only meaningful when the input requested it (`computeTotal !== false`);
+   * otherwise 0 and the caller carries the total from the first page.
+   */
+  readonly total: number;
 }
 
 /**
@@ -528,12 +527,14 @@ export function decodeCompositeCursor(cursor: string): CompositeCursorPayload {
   try {
     raw = Buffer.from(cursor, "base64url").toString("utf8");
   } catch {
+    // biome-ignore lint/style/useErrorCause: This compatibility path preserves the established error shape and propagation.
     throw new InvalidCompositeCursorError("Composite cursor is not base64url-encoded.");
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
+    // biome-ignore lint/style/useErrorCause: This compatibility path preserves the established error shape and propagation.
     throw new InvalidCompositeCursorError("Composite cursor payload is not valid JSON.");
   }
   if (
@@ -562,21 +563,21 @@ export function decodeCompositeCursor(cursor: string): CompositeCursorPayload {
     const part = p as Record<string, unknown>;
     return {
       connectorId: part.connectorId as string,
-      stream: part.stream as string,
-      lastSemanticTime: typeof part.lastSemanticTime === "string" ? part.lastSemanticTime : null,
       lastRecordKey: typeof part.lastRecordKey === "string" ? part.lastRecordKey : null,
+      lastSemanticTime: typeof part.lastSemanticTime === "string" ? part.lastSemanticTime : null,
+      stream: part.stream as string,
     };
   });
   // Direction is OPTIONAL: a cursor minted before the field decodes as "desc"
   // (the prior newest-first-only behavior), so no version bump is required.
   const direction = obj.direction === "asc" ? "asc" : "desc";
   return {
-    version: CURSOR_VERSION,
-    snapshotSeq: obj.snapshotSeq as number,
-    snapshotAt: obj.snapshotAt as string,
-    nowCeiling: obj.nowCeiling as string,
     direction,
+    nowCeiling: obj.nowCeiling as string,
     partitions,
+    snapshotAt: obj.snapshotAt as string,
+    snapshotSeq: obj.snapshotSeq as number,
+    version: CURSOR_VERSION,
   };
 }
 
@@ -606,19 +607,14 @@ export interface UpcomingPartitionPosition {
   readonly connectorId: string;
   /** connector_id / connector TYPE (carried so the page can rebuild the partition). */
   readonly connectorType: string;
-  readonly stream: string;
-  /** Last `semantic_time` emitted for this partition; seek strictly after. */
-  readonly lastSemanticTime: string | null;
   /** Last `record_key` emitted (tiebreaker); seek strictly after. */
   readonly lastRecordKey: string | null;
+  /** Last `semantic_time` emitted for this partition; seek strictly after. */
+  readonly lastSemanticTime: string | null;
+  readonly stream: string;
 }
 
 export interface UpcomingCursorPayload {
-  readonly version: 1;
-  /** Same ingest-sequence membership bound as the main feed (id <= snapshotSeq). */
-  readonly snapshotSeq: number;
-  /** Display-only snapshot timestamp (carried so a future page can echo it). */
-  readonly snapshotAt: string;
   /** Same pinned past/future boundary as the main feed (include semantic time > this). */
   readonly nowCeiling: string;
   /**
@@ -627,6 +623,11 @@ export interface UpcomingCursorPayload {
    * the last row emitted FOR THAT PARTITION; the next page seeks strictly after.
    */
   readonly partitions: readonly UpcomingPartitionPosition[];
+  /** Display-only snapshot timestamp (carried so a future page can echo it). */
+  readonly snapshotAt: string;
+  /** Same ingest-sequence membership bound as the main feed (id <= snapshotSeq). */
+  readonly snapshotSeq: number;
+  readonly version: 1;
 }
 
 export function encodeUpcomingCursor(payload: UpcomingCursorPayload): string {
@@ -638,12 +639,14 @@ export function decodeUpcomingCursor(cursor: string): UpcomingCursorPayload {
   try {
     raw = Buffer.from(cursor, "base64url").toString("utf8");
   } catch {
+    // biome-ignore lint/style/useErrorCause: This compatibility path preserves the established error shape and propagation.
     throw new InvalidCompositeCursorError("Upcoming cursor is not base64url-encoded.");
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
+    // biome-ignore lint/style/useErrorCause: This compatibility path preserves the established error shape and propagation.
     throw new InvalidCompositeCursorError("Upcoming cursor payload is not valid JSON.");
   }
   if (
@@ -674,17 +677,17 @@ export function decodeUpcomingCursor(cursor: string): UpcomingCursorPayload {
     return {
       connectorId: part.connectorId as string,
       connectorType: part.connectorType as string,
-      stream: part.stream as string,
-      lastSemanticTime: typeof part.lastSemanticTime === "string" ? part.lastSemanticTime : null,
       lastRecordKey: typeof part.lastRecordKey === "string" ? part.lastRecordKey : null,
+      lastSemanticTime: typeof part.lastSemanticTime === "string" ? part.lastSemanticTime : null,
+      stream: part.stream as string,
     };
   });
   return {
-    version: UPCOMING_CURSOR_VERSION,
-    snapshotSeq: obj.snapshotSeq as number,
-    snapshotAt: obj.snapshotAt as string,
     nowCeiling: obj.nowCeiling as string,
     partitions,
+    snapshotAt: obj.snapshotAt as string,
+    snapshotSeq: obj.snapshotSeq as number,
+    version: UPCOMING_CURSOR_VERSION,
   };
 }
 
@@ -731,12 +734,12 @@ function normalizeScope(raw: readonly string[] | null | undefined): readonly str
  * A per-partition bucket in the k-way merge heap.
  */
 interface PartitionBucket {
-  readonly partition: ExploreTimelinePartition;
-  cursorPosition: PartitionCursorPosition | null;
   /** Buffered rows not yet emitted, newest-first order. */
   buffer: PartitionRow[];
+  cursorPosition: PartitionCursorPosition | null;
   /** Whether this partition has been fully drained. */
   exhausted: boolean;
+  readonly partition: ExploreTimelinePartition;
 }
 
 /**
@@ -750,11 +753,19 @@ interface PartitionBucket {
  */
 function compareRowsDesc(a: PartitionRow, b: PartitionRow): number {
   // ISO 8601 timestamps compare lexicographically = chronologically (for UTC).
-  if (a.semanticTime > b.semanticTime) return -1;
-  if (a.semanticTime < b.semanticTime) return 1;
+  if (a.semanticTime > b.semanticTime) {
+    return -1;
+  }
+  if (a.semanticTime < b.semanticTime) {
+    return 1;
+  }
   // Tiebreak by record_key descending for total stable order.
-  if (a.recordKey > b.recordKey) return -1;
-  if (a.recordKey < b.recordKey) return 1;
+  if (a.recordKey > b.recordKey) {
+    return -1;
+  }
+  if (a.recordKey < b.recordKey) {
+    return 1;
+  }
   return 0;
 }
 
@@ -767,10 +778,18 @@ function compareRowsDesc(a: PartitionRow, b: PartitionRow): number {
  * different key and is not compared here — direction only changes ORDER.
  */
 function compareRowsAsc(a: PartitionRow, b: PartitionRow): number {
-  if (a.semanticTime < b.semanticTime) return -1;
-  if (a.semanticTime > b.semanticTime) return 1;
-  if (a.recordKey < b.recordKey) return -1;
-  if (a.recordKey > b.recordKey) return 1;
+  if (a.semanticTime < b.semanticTime) {
+    return -1;
+  }
+  if (a.semanticTime > b.semanticTime) {
+    return 1;
+  }
+  if (a.recordKey < b.recordKey) {
+    return -1;
+  }
+  if (a.recordKey > b.recordKey) {
+    return 1;
+  }
   return 0;
 }
 
@@ -787,14 +806,14 @@ function compareRowsForDirection(direction: "asc" | "desc"): (a: PartitionRow, b
  *  feed (k-way merge emit) and the separate upcoming projection. */
 function partitionRowToRecord(row: PartitionRow): ExploreTimelineRecord {
   return {
-    object: "timeline_record",
     connector_id: row.connectorType,
     connector_instance_id: row.connectorId,
-    stream: row.stream,
-    record_key: row.recordKey,
-    emitted_at: row.emittedAt,
-    semantic_time: row.semanticTime,
     data: row.data,
+    emitted_at: row.emittedAt,
+    object: "timeline_record",
+    record_key: row.recordKey,
+    semantic_time: row.semanticTime,
+    stream: row.stream,
   };
 }
 
@@ -806,16 +825,18 @@ async function refillBucket(
   nowCeiling: string | null,
   direction: "asc" | "desc"
 ): Promise<void> {
-  if (bucket.exhausted) return;
+  if (bucket.exhausted) {
+    return;
+  }
 
   const result = await deps.fetchPartitionPage({
-    connectorId: bucket.partition.connectorId,
-    stream: bucket.partition.stream,
-    snapshotSeq,
     afterPosition: bucket.cursorPosition,
+    connectorId: bucket.partition.connectorId,
+    direction,
     limit: fetchSize,
     nowCeiling,
-    direction,
+    snapshotSeq,
+    stream: bucket.partition.stream,
   });
 
   if (result.rows.length === 0) {
@@ -848,6 +869,7 @@ async function refillBucket(
  *   5. Emit `limit` records, build next composite cursor from final bucket positions.
  *   6. Count "new" records above the snapshot anchor.
  */
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This protocol transition owns ordered state invariants that must remain local.
 export async function executeExploreTimeline(
   input: ExploreTimelineInput,
   deps: ExploreTimelineDependencies
@@ -910,8 +932,11 @@ export async function executeExploreTimeline(
       }
       throw err;
     }
+    // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
     snapshotSeq = decoded.snapshotSeq;
+    // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
     snapshotAt = decoded.snapshotAt;
+    // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
     nowCeiling = decoded.nowCeiling;
     // The cursor's direction is authoritative on resume (a cursor without the
     // field decodes as "desc"). A flip is feed-defining and resets the cursor
@@ -936,7 +961,9 @@ export async function executeExploreTimeline(
       snapshotSeq = 0;
       snapshotAt = "1970-01-01T00:00:00.000Z";
     } else {
+      // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
       snapshotSeq = anchor.snapshotSeq;
+      // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
       snapshotAt = anchor.snapshotAt;
     }
     // PIN the past/future boundary at first-page capture. `deps.now` is injectable
@@ -952,9 +979,9 @@ export async function executeExploreTimeline(
 
   const allPartitions = await deps.listPartitions({
     connectionIds,
-    streams,
     excludeConnectionIds,
     excludeStreams,
+    streams,
   });
 
   // When resuming from a cursor, only consider partitions that had data at
@@ -964,16 +991,17 @@ export async function executeExploreTimeline(
   // On first page — and on a REWIND (which re-renders page 1 of the original
   // snapshot) — use all partitions; new-since-snapshot partitions contribute
   // nothing because their rows are all id > snapshotSeq.
-  const activePartitions = input.cursor && !rewindToFirstPage
-    ? allPartitions.filter((p) => {
-        const key = `${p.connectorId}\0${p.stream}`;
-        // Include partitions that were in the cursor (even if now exhausted
-        // — we check exhaustion lazily). Partitions in the cursor with a
-        // position are still live; partitions not in the cursor are new
-        // since snapshot and excluded.
-        return initialPositions.has(key);
-      })
-    : allPartitions;
+  const activePartitions =
+    input.cursor && !rewindToFirstPage
+      ? allPartitions.filter((p) => {
+          const key = `${p.connectorId}\0${p.stream}`;
+          // Include partitions that were in the cursor (even if now exhausted
+          // — we check exhaustion lazily). Partitions in the cursor with a
+          // position are still live; partitions not in the cursor are new
+          // since snapshot and excluded.
+          return initialPositions.has(key);
+        })
+      : allPartitions;
 
   // Per-partition fetch size: pull enough to have good merge candidates.
   // Fetch limit+1 per partition so we can detect has_more.
@@ -983,10 +1011,10 @@ export async function executeExploreTimeline(
     const key = `${partition.connectorId}\0${partition.stream}`;
     const priorPosition = initialPositions.get(key) ?? null;
     return {
-      partition,
-      cursorPosition: priorPosition,
       buffer: [],
+      cursorPosition: priorPosition,
       exhausted: false,
+      partition,
     };
   });
 
@@ -1018,12 +1046,14 @@ export async function executeExploreTimeline(
       if (bucket.buffer.length === 0 && !bucket.exhausted) {
         // This is the sequential refill path: we exhaust the previous batch
         // before fetching the next one for this bucket.
+        // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
         await refillBucket(bucket, snapshotSeq, fetchSize, deps, nowCeiling, direction);
       }
       if (bucket.buffer.length === 0) {
         // Truly exhausted.
         continue;
       }
+      // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
       const head = bucket.buffer[0];
       if (head !== undefined && (bestRow === null || compareRows(head, bestRow) < 0)) {
         bestBucket = bucket;
@@ -1044,9 +1074,9 @@ export async function executeExploreTimeline(
     // (the merge/ORDER BY key), not the ingest time.
     bucket.cursorPosition = {
       connectorId: bestRow.connectorId,
-      stream: bestRow.stream,
-      lastSemanticTime: bestRow.semanticTime,
       lastRecordKey: bestRow.recordKey,
+      lastSemanticTime: bestRow.semanticTime,
+      stream: bestRow.stream,
     };
 
     emitted.push(partitionRowToRecord(bestRow));
@@ -1075,16 +1105,7 @@ export async function executeExploreTimeline(
     // pinned snapshot, so there is no later reachable row for the cursor to preserve.
     const partitionPositions: PartitionCursorPosition[] = [];
     for (const bucket of buckets) {
-      if (bucket.cursorPosition !== null) {
-        // This bucket contributed at least one row to a prior page.
-        if (!bucket.exhausted || bucket.buffer.length > 0) {
-          // Still has rows left: include position so we continue from where we stopped.
-          partitionPositions.push(bucket.cursorPosition);
-        }
-        // else: exhausted after contributing, no buffered rows left. This is
-        // snapshot-safe to omit: `exhausted` means a snapshotSeq-bounded refill
-        // returned no further rows for this partition.
-      } else {
+      if (bucket.cursorPosition === null) {
         // This bucket has not yet contributed any row to any page.
         if (bucket.buffer.length > 0 || !bucket.exhausted) {
           // Has buffered rows waiting to be emitted (or un-drained pages remaining):
@@ -1093,19 +1114,25 @@ export async function executeExploreTimeline(
           // buffer are still within the snapshot so they will be returned again.
           partitionPositions.push({
             connectorId: bucket.partition.connectorId,
-            stream: bucket.partition.stream,
-            lastSemanticTime: null,
             lastRecordKey: null,
+            lastSemanticTime: null,
+            stream: bucket.partition.stream,
           });
         }
         // else: no buffer and exhausted (empty partition in this snapshot) — omit.
+      } else if (!bucket.exhausted || bucket.buffer.length > 0) {
+        // This bucket contributed at least one row to a prior page and still has rows left.
+        partitionPositions.push(bucket.cursorPosition);
+        // else: exhausted after contributing, no buffered rows left. This is
+        // snapshot-safe to omit: `exhausted` means a snapshotSeq-bounded refill
+        // returned no further rows for this partition.
       }
     }
     const blob = encodeCompositeCursor({
-      version: CURSOR_VERSION,
-      snapshotSeq,
-      snapshotAt,
       nowCeiling,
+      snapshotAt,
+      snapshotSeq,
+      version: CURSOR_VERSION,
       // Carry direction only for an oldest-first walk so the next page keeps
       // paging ascending; the default "desc" is omitted so existing newest-first
       // cursors stay byte-identical (backward compatible).
@@ -1120,7 +1147,7 @@ export async function executeExploreTimeline(
 
   // ── Phase 5: Count new records above the snapshot anchor ────────────────
 
-  const newSinceSnapshot = await deps.countNewSinceSnapshot({ snapshotSeq, connectionIds, streams });
+  const newSinceSnapshot = await deps.countNewSinceSnapshot({ connectionIds, snapshotSeq, streams });
 
   // The separate FUTURE projection (Upcoming), probed PER-PARTITION (index-backed;
   // a global query Seq-Scans) over the same scoped partition list, snapshot-bound,
@@ -1132,32 +1159,32 @@ export async function executeExploreTimeline(
   // dep → empty (legacy).
   const upcomingResult: UpcomingFetchResult = deps.fetchUpcoming
     ? await deps.fetchUpcoming({
-        partitions: allPartitions,
-        snapshotSeq,
-        nowCeiling,
-        limit: upcomingLimit,
         afterPositions: null,
         computeTotal: true,
+        limit: upcomingLimit,
+        nowCeiling,
+        partitions: allPartitions,
+        snapshotSeq,
       })
-    : { rows: [], total: 0, hasMore: false, nextPositions: [] };
+    : { hasMore: false, nextPositions: [], rows: [], total: 0 };
 
   const upcomingNextCursor = await buildUpcomingNextCursor(
     upcomingResult,
-    { snapshotSeq, snapshotAt, nowCeiling },
+    { nowCeiling, snapshotAt, snapshotSeq },
     deps
   );
 
   return {
-    object: "list",
     data: emitted,
     has_more: hasMore,
-    next_cursor: nextCursor,
-    snapshot_at: snapshotAt,
     new_since_snapshot: newSinceSnapshot,
+    next_cursor: nextCursor,
+    object: "list",
+    snapshot_at: snapshotAt,
     upcoming: upcomingResult.rows.map(partitionRowToRecord),
-    upcoming_total: upcomingResult.total,
-    upcoming_next_cursor: upcomingNextCursor,
     upcoming_has_more: upcomingNextCursor !== null,
+    upcoming_next_cursor: upcomingNextCursor,
+    upcoming_total: upcomingResult.total,
   };
 }
 
@@ -1183,11 +1210,11 @@ async function buildUpcomingNextCursor(
     return null;
   }
   const blob = encodeUpcomingCursor({
-    version: UPCOMING_CURSOR_VERSION,
-    snapshotSeq: anchor.snapshotSeq,
-    snapshotAt: anchor.snapshotAt,
     nowCeiling: anchor.nowCeiling,
     partitions: result.nextPositions,
+    snapshotAt: anchor.snapshotAt,
+    snapshotSeq: anchor.snapshotSeq,
+    version: UPCOMING_CURSOR_VERSION,
   });
   return deps.saveCursorBlob ? await deps.saveCursorBlob(blob) : blob;
 }
@@ -1218,10 +1245,10 @@ export async function executeExploreUpcoming(
     // Legacy dep without the future projection: nothing to page.
     return {
       object: "list",
-      upcoming: [],
-      upcoming_next_cursor: null,
-      upcoming_has_more: false,
       snapshot_at: new Date(0).toISOString(),
+      upcoming: [],
+      upcoming_has_more: false,
+      upcoming_next_cursor: null,
     };
   }
   // Resolve the incoming cursor: a short opaque handle (`ecr1_…`) is loaded from the
@@ -1249,23 +1276,23 @@ export async function executeExploreUpcoming(
     stream: p.stream,
   }));
   const result = await deps.fetchUpcoming({
-    partitions,
-    snapshotSeq: cursor.snapshotSeq,
-    nowCeiling: cursor.nowCeiling,
-    limit,
     afterPositions: cursor.partitions,
     computeTotal: false,
+    limit,
+    nowCeiling: cursor.nowCeiling,
+    partitions,
+    snapshotSeq: cursor.snapshotSeq,
   });
   const nextCursor = await buildUpcomingNextCursor(
     result,
-    { snapshotSeq: cursor.snapshotSeq, snapshotAt: cursor.snapshotAt, nowCeiling: cursor.nowCeiling },
+    { nowCeiling: cursor.nowCeiling, snapshotAt: cursor.snapshotAt, snapshotSeq: cursor.snapshotSeq },
     deps
   );
   return {
     object: "list",
-    upcoming: result.rows.map(partitionRowToRecord),
-    upcoming_next_cursor: nextCursor,
-    upcoming_has_more: nextCursor !== null,
     snapshot_at: cursor.snapshotAt,
+    upcoming: result.rows.map(partitionRowToRecord),
+    upcoming_has_more: nextCursor !== null,
+    upcoming_next_cursor: nextCursor,
   };
 }

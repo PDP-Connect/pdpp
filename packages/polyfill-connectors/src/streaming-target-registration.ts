@@ -50,7 +50,7 @@ export interface RegistrationLogger {
    * Best-effort warn channel; we keep the surface intentionally tiny so
    * `console` and pino-style loggers both satisfy the type.
    */
-  warn(message: string, data?: Record<string, unknown>): void;
+  warn: (message: string, data?: Record<string, unknown>) => void;
 }
 
 export interface CreateRegistrationClientOptions {
@@ -152,13 +152,13 @@ export interface RegistrationClient {
    * diagnostic warn). Returns true on 2xx, false on any failure
    * (network, HTTP, validation). Never throws.
    */
-  register(args: StreamingTargetRegisterArgs): Promise<boolean>;
+  register: (args: StreamingTargetRegisterArgs) => Promise<boolean>;
   /**
    * DELETE /admin/runs/:runId/interactions/:interactionId/streaming-target
    * Returns true on 2xx, false on any failure. Never throws. Cleanup is
    * best-effort; a stale record will be evicted by the server's TTL.
    */
-  unregister(args: UnregisterArgs): Promise<boolean>;
+  unregister: (args: UnregisterArgs) => Promise<boolean>;
 }
 
 const defaultLogger: RegistrationLogger = {
@@ -359,9 +359,9 @@ const STREAMING_REGISTRATION_TOKEN_ENV = "PDPP_STREAMING_REGISTRATION_TOKEN";
 const LOCAL_DEVICE_TOKEN_ENV = "PDPP_LOCAL_DEVICE_TOKEN";
 
 export interface StreamingTargetRegistrationHooks {
-  register(args: StreamingTargetRegisterArgs): Promise<boolean>;
+  register: (args: StreamingTargetRegisterArgs) => Promise<boolean>;
   readonly runId: string;
-  unregister(args: UnregisterArgs): Promise<boolean>;
+  unregister: (args: UnregisterArgs) => Promise<boolean>;
 }
 
 /**

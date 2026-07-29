@@ -13,6 +13,7 @@ import {
   type BrowserSurfaceHealth,
   type EnsureBrowserSurfaceRequest,
   type StopBrowserSurfaceRequest,
+  // biome-ignore lint/correctness/noUnresolvedImports: Biome cannot resolve this installed package export; Node and TypeScript resolve it.
 } from "@opendatalabs/remote-surface/leases";
 
 const DEFAULT_DOCKER_SOCKET_PATH = "/var/run/docker.sock";
@@ -79,7 +80,7 @@ interface DockerPortBinding {
 }
 
 export interface DockerEngineTransport {
-  requestJson(path: string, init?: DockerEngineRequestInit): Promise<unknown>;
+  requestJson: (path: string, init?: DockerEngineRequestInit) => Promise<unknown>;
 }
 
 export interface DockerEngineRequestInit {
@@ -90,9 +91,9 @@ export interface DockerEngineRequestInit {
 }
 
 export interface ProfileFilesystem {
-  chmod(path: string, mode: number): Promise<void>;
-  chown(path: string, uid: number, gid: number): Promise<void>;
-  mkdir(path: string, options: { mode: number; recursive: true }): Promise<void>;
+  chmod: (path: string, mode: number) => Promise<void>;
+  chown: (path: string, uid: number, gid: number) => Promise<void>;
+  mkdir: (path: string, options: { mode: number; recursive: true }) => Promise<void>;
 }
 
 export interface NekoSurfaceAllocatorServerOptions {
@@ -144,6 +145,7 @@ function deriveWindowSettleEndpoint(cdpUrl: string): string {
   try {
     return new URL("/pdpp/window-settle", cdpUrl).toString();
   } catch (cause) {
+    // biome-ignore lint/style/useErrorCause: This compatibility path preserves the established error shape and propagation.
     throw new NekoSurfaceAllocatorServiceError(
       "readiness_failed",
       "managed n.eko surface has an invalid CDP URL for its window-settle endpoint",
@@ -186,13 +188,13 @@ export class DockerEngineHttpClient implements DockerEngineTransport {
     return new Promise((resolve, reject) => {
       const req = httpRequest(
         {
-          socketPath: this.#socketPath,
-          path: requestPath,
-          method,
           headers:
             body === undefined
               ? undefined
-              : { "content-type": "application/json", "content-length": Buffer.byteLength(body) },
+              : { "content-length": Buffer.byteLength(body), "content-type": "application/json" },
+          method,
+          path: requestPath,
+          socketPath: this.#socketPath,
         },
         (res) => {
           const chunks: Buffer[] = [];
@@ -293,16 +295,16 @@ export class NekoSurfaceAllocatorService {
     assertAllocatorOptions(options);
     this.#options = {
       ...options,
+      cdpVersionPath: options.cdpVersionPath ?? DEFAULT_CDP_VERSION_PATH,
       containerCdpPort: options.containerCdpPort ?? DEFAULT_CONTAINER_CDP_PORT,
       containerHttpPort: options.containerHttpPort ?? DEFAULT_CONTAINER_HTTP_PORT,
       fetchImpl: options.fetchImpl ?? globalThis.fetch.bind(globalThis),
       labelNamespace: options.labelNamespace ?? DEFAULT_LABEL_NAMESPACE,
       nekoHealthPath: options.nekoHealthPath ?? DEFAULT_NEKO_HEALTH_PATH,
+      now: options.now ?? (() => new Date()),
       profileFilesystem: options.profileFilesystem ?? nodeProfileFilesystem,
       profileOwnerGid: options.profileOwnerGid ?? DEFAULT_NEKO_PROFILE_GID,
       profileOwnerUid: options.profileOwnerUid ?? DEFAULT_NEKO_PROFILE_UID,
-      cdpVersionPath: options.cdpVersionPath ?? DEFAULT_CDP_VERSION_PATH,
-      now: options.now ?? (() => new Date()),
     };
     this.#docker =
       options.docker ??
@@ -356,24 +358,21 @@ export class NekoSurfaceAllocatorService {
 
     const skippedPorts = new Set<number>();
     for (;;) {
+      // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
       const port = await this.#allocateHostPort(skippedPorts);
       const names = this.#resourceNames(request);
       await this.#prepareProfileDirectory(names.profilePath);
       const labels = this.#labelsForRequest(request, names, port);
       const created = await this.#docker.requestJson("/containers/create", {
-        method: "POST",
-        query: { name: names.containerName },
         body: {
-          Image: this.#options.image,
-          Labels: labels,
           Env: this.#containerEnv(request, port),
-          Healthcheck: this.#containerHealthcheck(),
           ExposedPorts: {
             [`${String(this.#options.containerHttpPort)}/tcp`]: {},
             [`${String(this.#options.containerCdpPort)}/tcp`]: {},
             [`${String(port)}/tcp`]: {},
             [`${String(port)}/udp`]: {},
           },
+          Healthcheck: this.#containerHealthcheck(),
           HostConfig: {
             Binds: [`${names.profilePath}:/home/user/.config/chromium`],
             NetworkMode: this.#options.network,
@@ -382,8 +381,12 @@ export class NekoSurfaceAllocatorService {
               [`${String(port)}/udp`]: [{ HostPort: String(port) }],
             },
           },
+          Image: this.#options.image,
+          Labels: labels,
         },
+        method: "POST",
         okStatuses: [201],
+        query: { name: names.containerName },
       });
       const containerId = readCreatedContainerId(created);
       try {
@@ -492,23 +495,12 @@ export class NekoSurfaceAllocatorService {
     const cdpUrl = this.#expandTemplate(this.#options.cdpBaseUrlTemplate, surfaceId, hostPort, containerName);
     const streamBaseUrl = this.#expandTemplate(this.#options.streamBaseUrlTemplate, surfaceId, hostPort, containerName);
     const windowSettleEndpoint = deriveWindowSettleEndpoint(cdpUrl);
-    const readiness = options.readiness ?? (await this.#readiness({ inspect, cdpUrl, streamBaseUrl }));
+    const readiness = options.readiness ?? (await this.#readiness({ cdpUrl, inspect, streamBaseUrl }));
     const now = this.#options.now().toISOString();
     const accountKey = options.request?.accountKey ?? labels[`${this.#options.labelNamespace}.account_key`];
     const surfaceSubjectId =
       options.request?.surfaceSubjectId ?? labels[`${this.#options.labelNamespace}.surface_subject_id`];
     const surface: BrowserSurface & { readonly window_settle_endpoint: string } = {
-      surface_id: surfaceId,
-      backend: BROWSER_SURFACE_BACKEND_NEKO,
-      profile_key: profileKey,
-      connector_id: connectorId,
-      cdp_url: cdpUrl,
-      stream_base_url: streamBaseUrl,
-      window_settle_endpoint: windowSettleEndpoint,
-      health: readiness.health,
-      created_at: labels[`${this.#options.labelNamespace}.created_at`] ?? now,
-      last_used_at: now,
-      container_id: inspect.Id,
       allocator_metadata: {
         container_name: containerName,
         host_port: String(hostPort),
@@ -520,6 +512,17 @@ export class NekoSurfaceAllocatorService {
         resource_owner: "pdpp-reference",
         window_settle_endpoint: windowSettleEndpoint,
       },
+      backend: BROWSER_SURFACE_BACKEND_NEKO,
+      cdp_url: cdpUrl,
+      connector_id: connectorId,
+      container_id: inspect.Id,
+      created_at: labels[`${this.#options.labelNamespace}.created_at`] ?? now,
+      health: readiness.health,
+      last_used_at: now,
+      profile_key: profileKey,
+      stream_base_url: streamBaseUrl,
+      surface_id: surfaceId,
+      window_settle_endpoint: windowSettleEndpoint,
     };
     if (surfaceSubjectId !== undefined) {
       return {
@@ -587,6 +590,7 @@ export class NekoSurfaceAllocatorService {
     if (matches.length === 0) {
       return null;
     }
+    // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
     const first = matches[0];
     if (first === undefined) {
       return null;
@@ -671,8 +675,8 @@ export class NekoSurfaceAllocatorService {
   async #removeContainer(containerId: string): Promise<void> {
     await this.#docker.requestJson(`/containers/${encodeURIComponent(containerId)}`, {
       method: "DELETE",
-      query: { force: "true", v: "false" },
       okStatuses: [204, 404, 409],
+      query: { force: "true", v: "false" },
     });
   }
 
@@ -695,8 +699,8 @@ export class NekoSurfaceAllocatorService {
       }
     }
     await this.#docker.requestJson("/networks/create", {
+      body: { CheckDuplicate: true, Driver: "bridge", Name: this.#options.network },
       method: "POST",
-      body: { Name: this.#options.network, Driver: "bridge", CheckDuplicate: true },
       okStatuses: [201, 409],
     });
   }
@@ -754,6 +758,7 @@ export class NekoSurfaceAllocatorService {
     // is idempotent and re-run on every access) while a legacy detach
     // attempt still failed and needs retrying — so the detach check runs
     // independently of whether an attach just happened above.
+    // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
     const legacyNetwork = this.#options.legacyNetwork;
     if (legacyNetwork === undefined || legacyNetwork === this.#options.network) {
       return "migrated";
@@ -807,8 +812,8 @@ export class NekoSurfaceAllocatorService {
 
   async #connectContainerToNetwork(network: string, containerId: string): Promise<void> {
     await this.#docker.requestJson(`/networks/${encodeURIComponent(network)}/connect`, {
-      method: "POST",
       body: { Container: containerId },
+      method: "POST",
       // 403 here means Docker already considers the container attached
       // (e.g. a concurrent migration attempt won the race) — treat that
       // exactly like success, matching the create-then-tolerate-conflict
@@ -819,8 +824,8 @@ export class NekoSurfaceAllocatorService {
 
   async #disconnectContainerFromNetwork(network: string, containerId: string): Promise<void> {
     await this.#docker.requestJson(`/networks/${encodeURIComponent(network)}/disconnect`, {
-      method: "POST",
       body: { Container: containerId, Force: false },
+      method: "POST",
       okStatuses: [200, 204, 404],
     });
   }
@@ -856,6 +861,7 @@ export class NekoSurfaceAllocatorService {
         continue;
       }
       for (const containerId of occupancy.reclaimable.get(port) ?? []) {
+        // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
         await this.#removeContainer(containerId);
       }
       return port;
@@ -906,9 +912,9 @@ export class NekoSurfaceAllocatorService {
     const profileSlug = `${sanitizeResourceSegment(request.connectorId)}-${profileHash}`;
     return {
       containerName: `pdpp-neko-${sanitizeResourceSegment(request.connectorId)}-${surfaceHash}`,
+      profileHash,
       profilePath: `${this.#options.profileRoot.replace(TRAILING_SLASHES_RE, "")}/${profileSlug}`,
       profileSlug,
-      profileHash,
     };
   }
 
@@ -937,17 +943,17 @@ export class NekoSurfaceAllocatorService {
 
   #containerEnv(request: SurfaceRequest, hostPort: number): string[] {
     const env = {
+      NEKO_MEMBER_PROVIDER: "noauth",
       NEKO_SERVER_BIND: `0.0.0.0:${String(this.#options.containerHttpPort)}`,
       NEKO_SERVER_PATH_PREFIX: "/neko",
       NEKO_SERVER_PROXY: "true",
-      NEKO_MEMBER_PROVIDER: "noauth",
       NEKO_SESSION_IMPLICIT_HOSTING: "true",
-      NEKO_WEBRTC_UDPMUX: String(hostPort),
-      NEKO_WEBRTC_TCPMUX: String(hostPort),
       NEKO_WEBRTC_ICELITE: "1",
+      NEKO_WEBRTC_TCPMUX: String(hostPort),
+      NEKO_WEBRTC_UDPMUX: String(hostPort),
       PDPP_NEKO_CDP_PROXY_PORT: String(this.#options.containerCdpPort),
-      PDPP_NEKO_SURFACE_ID: request.surfaceId,
       PDPP_NEKO_PROFILE_KEY_HASH: createHash("sha256").update(request.profileKey).digest("hex"),
+      PDPP_NEKO_SURFACE_ID: request.surfaceId,
       PDPP_NEKO_WEBRTC_HOST_PORT: String(hostPort),
       ...(this.#options.extraEnv ?? {}),
     };
@@ -964,6 +970,9 @@ export class NekoSurfaceAllocatorService {
     const healthPath = `/${this.#options.nekoHealthPath.replace(LEADING_SLASH_RE, "")}`;
     const cdpVersionPath = `/${this.#options.cdpVersionPath.replace(LEADING_SLASH_RE, "")}`;
     return {
+      Interval: 10_000_000_000,
+      Retries: 12,
+      StartPeriod: 20_000_000_000,
       Test: [
         "CMD-SHELL",
         [
@@ -972,10 +981,7 @@ export class NekoSurfaceAllocatorService {
           "supervisorctl status chromium | grep -q RUNNING",
         ].join(" && "),
       ],
-      Interval: 10_000_000_000,
       Timeout: 5_000_000_000,
-      StartPeriod: 20_000_000_000,
-      Retries: 12,
     };
   }
 
@@ -1045,7 +1051,7 @@ async function routeSurfaceMember(
   }
   if (req.method === "DELETE") {
     const body = await readJsonBody(req);
-    await sendSurfaceOrNotFound(res, await service.stopSurface({ surfaceId, reason: parseStopReason(body) }));
+    await sendSurfaceOrNotFound(res, await service.stopSurface({ reason: parseStopReason(body), surfaceId }));
     return;
   }
   sendJson(res, 404, { error: "not_found" });
@@ -1074,11 +1080,11 @@ export async function startNekoSurfaceAllocatorServer(
       const address = server.address() as AddressInfo;
       const urlHost = listenHost === "0.0.0.0" ? "127.0.0.1" : listenHost;
       resolve({
-        url: `http://${urlHost}:${String(address.port)}/`,
         close: () =>
           new Promise<void>((closeResolve, closeReject) => {
             server.close((error) => (error === undefined ? closeResolve() : closeReject(error)));
           }),
+        url: `http://${urlHost}:${String(address.port)}/`,
       });
     });
   });
@@ -1133,9 +1139,9 @@ function parseEnsureBody(value: unknown): SurfaceRequest {
     throw new NekoSurfaceAllocatorServiceError("bad_request", "request body must be an object");
   }
   const request: SurfaceRequest = {
-    surfaceId: requiredBodyString(value, "surface_id"),
     connectorId: requiredBodyString(value, "connector_id"),
     profileKey: requiredBodyString(value, "profile_key"),
+    surfaceId: requiredBodyString(value, "surface_id"),
   };
   const accountKey = optionalBodyString(value, "account_key");
   const surfaceSubjectId = optionalBodyString(value, "surface_subject_id");
@@ -1188,6 +1194,7 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   try {
     return JSON.parse(body) as unknown;
   } catch (cause) {
+    // biome-ignore lint/style/useErrorCause: This compatibility path preserves the established error shape and propagation.
     throw new NekoSurfaceAllocatorServiceError("bad_request", "request body must be JSON", { cause });
   }
 }
@@ -1412,39 +1419,39 @@ export function readNekoSurfaceAllocatorOptionsFromEnv(
   const hostPortStart = readIntegerEnv(env, "PDPP_NEKO_WEBRTC_HOST_PORT_START", 59_000);
   const hostPortEnd = readIntegerEnv(env, "PDPP_NEKO_WEBRTC_HOST_PORT_END", 59_010);
   return {
-    image: readRequiredEnv(env, "NEKO_IMAGE"),
-    network: readRequiredEnv(env, "PDPP_NEKO_DOCKER_NETWORK"),
+    cdpBaseUrlTemplate: env.PDPP_NEKO_CDP_BASE_URL_TEMPLATE ?? "http://{container_name}:9223/",
     // Required, no default: two independently configured allocator
     // instances on the same Docker host must never be able to collide by
     // omission. Deliberately the same identity as this instance's Compose
     // project (COMPOSE_PROJECT_NAME). See
     // NekoSurfaceAllocatorServerOptions#deploymentId.
     deploymentId: readRequiredEnv(env, "PDPP_NEKO_DEPLOYMENT_ID"),
+    extraEnv: compactEnv({
+      NEKO_DESKTOP_SCREEN: env.NEKO_DESKTOP_SCREEN,
+      NEKO_MEMBER_MULTIUSER_ADMIN_PASSWORD: env.NEKO_MEMBER_MULTIUSER_ADMIN_PASSWORD,
+      NEKO_MEMBER_MULTIUSER_USER_PASSWORD: env.NEKO_MEMBER_MULTIUSER_USER_PASSWORD,
+      NEKO_MEMBER_PROVIDER: env.NEKO_MEMBER_PROVIDER,
+      NEKO_PASSWORD: env.NEKO_PASSWORD,
+      NEKO_PASSWORD_ADMIN: env.NEKO_PASSWORD_ADMIN,
+      NEKO_USERNAME: env.NEKO_USERNAME,
+      NEKO_WEBRTC_ICESERVERS: env.NEKO_WEBRTC_ICESERVERS,
+      NEKO_WEBRTC_NAT1TO1: env.NEKO_WEBRTC_NAT1TO1,
+    }),
+    image: readRequiredEnv(env, "NEKO_IMAGE"),
     // Explicit, not inferred: only ever detach the one legacy network an
     // operator configures (or the exact default this repo's own Compose
     // files used before pdpp_neko_dynamic existed). The allocator must never
     // guess at or detach a network it did not create/was not told about.
     legacyNetwork: readOptionalEnv(env, "PDPP_NEKO_LEGACY_DOCKER_NETWORK") ?? legacyComposeDefaultNetwork(env),
-    profileRoot,
-    webrtcHostPortStart: hostPortStart,
-    webrtcHostPortEnd: hostPortEnd,
-    streamBaseUrlTemplate: env.PDPP_NEKO_STREAM_BASE_URL_TEMPLATE ?? "http://{container_name}:8080/neko",
-    cdpBaseUrlTemplate: env.PDPP_NEKO_CDP_BASE_URL_TEMPLATE ?? "http://{container_name}:9223/",
     listenHost: env.PDPP_NEKO_ALLOCATOR_HOST ?? DEFAULT_ALLOCATOR_HOST,
     listenPort: readIntegerEnv(env, "PDPP_NEKO_ALLOCATOR_PORT", DEFAULT_ALLOCATOR_PORT),
-    profileOwnerUid: readIntegerEnv(env, "PDPP_NEKO_PROFILE_OWNER_UID", DEFAULT_NEKO_PROFILE_UID),
+    network: readRequiredEnv(env, "PDPP_NEKO_DOCKER_NETWORK"),
     profileOwnerGid: readIntegerEnv(env, "PDPP_NEKO_PROFILE_OWNER_GID", DEFAULT_NEKO_PROFILE_GID),
-    extraEnv: compactEnv({
-      NEKO_DESKTOP_SCREEN: env.NEKO_DESKTOP_SCREEN,
-      NEKO_MEMBER_PROVIDER: env.NEKO_MEMBER_PROVIDER,
-      NEKO_MEMBER_MULTIUSER_ADMIN_PASSWORD: env.NEKO_MEMBER_MULTIUSER_ADMIN_PASSWORD,
-      NEKO_MEMBER_MULTIUSER_USER_PASSWORD: env.NEKO_MEMBER_MULTIUSER_USER_PASSWORD,
-      NEKO_PASSWORD_ADMIN: env.NEKO_PASSWORD_ADMIN,
-      NEKO_WEBRTC_NAT1TO1: env.NEKO_WEBRTC_NAT1TO1,
-      NEKO_WEBRTC_ICESERVERS: env.NEKO_WEBRTC_ICESERVERS,
-      NEKO_PASSWORD: env.NEKO_PASSWORD,
-      NEKO_USERNAME: env.NEKO_USERNAME,
-    }),
+    profileOwnerUid: readIntegerEnv(env, "PDPP_NEKO_PROFILE_OWNER_UID", DEFAULT_NEKO_PROFILE_UID),
+    profileRoot,
+    streamBaseUrlTemplate: env.PDPP_NEKO_STREAM_BASE_URL_TEMPLATE ?? "http://{container_name}:8080/neko",
+    webrtcHostPortEnd: hostPortEnd,
+    webrtcHostPortStart: hostPortStart,
   };
 }
 

@@ -9,20 +9,20 @@ import { useTheme } from "./theme-provider.tsx";
 import type { ThemeChoice } from "./theme-state.ts";
 
 const NEXT: Record<ThemeChoice, ThemeChoice> = {
-  light: "dark",
   dark: "system",
+  light: "dark",
   system: "light",
 };
 
 const NEXT_LABEL: Record<ThemeChoice, string> = {
-  light: "Switch to dark theme",
   dark: "Switch to system theme",
+  light: "Switch to dark theme",
   system: "Switch to light theme",
 };
 
 const CURRENT_LABEL: Record<ThemeChoice, string> = {
-  light: "Theme: light",
   dark: "Theme: dark",
+  light: "Theme: light",
   system: "Theme: system",
 };
 
@@ -48,6 +48,7 @@ export function ThemeToggle({ className }: { className?: string }) {
       aria-label={mounted ? `${CURRENT_LABEL[theme]}. ${NEXT_LABEL[theme]}.` : "Theme toggle"}
       className={className}
       data-testid="theme-toggle"
+      // biome-ignore lint/performance/noJsxPropsBind: Handler captures the current row or component state; extracting it would add indirection without a stable consumer boundary.
       onClick={onClick}
       size="icon-sm"
       title={mounted ? `${CURRENT_LABEL[theme]} — click to ${NEXT_LABEL[theme].toLowerCase()}` : "Theme"}

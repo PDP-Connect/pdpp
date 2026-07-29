@@ -93,9 +93,9 @@ function StreamHealthReport({
     <RecordroomShellWithPalette>
       <PageHeader
         breadcrumbs={[
-          { label: "Sources", href: "/sources" },
-          { label: connectionId, href: `/sources/${encodeURIComponent(connectionId)}` },
-          { label: streamName, href: streamPath },
+          { href: "/sources", label: "Sources" },
+          { href: `/sources/${encodeURIComponent(connectionId)}`, label: connectionId },
+          { href: streamPath, label: streamName },
           { label: "health" },
         ]}
         count={
@@ -241,8 +241,8 @@ function StreamHealthUnavailable({ connectionId, streamName }: { connectionId: s
     <RecordroomShellWithPalette>
       <PageHeader
         breadcrumbs={[
-          { label: "Sources", href: "/sources" },
-          { label: connectionId, href: `/sources/${encodeURIComponent(connectionId)}` },
+          { href: "/sources", label: "Sources" },
+          { href: `/sources/${encodeURIComponent(connectionId)}`, label: connectionId },
           { label: streamName },
           { label: "health" },
         ]}

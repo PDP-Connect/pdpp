@@ -344,11 +344,11 @@ export class ProviderPacing {
     minIntervalMs: number,
     now: () => number
   ): number {
-    if (options.restoredIntervalMs == null) {
+    if (options.restoredIntervalMs === undefined) {
       return initialIntervalMs;
     }
     // Apply staleness guard only when both staleness fields are provided.
-    if (options.restoredAtMs != null && options.maxWarmStartAgeMs != null) {
+    if (options.restoredAtMs !== undefined && options.maxWarmStartAgeMs !== undefined) {
       const ageMs = now() - options.restoredAtMs;
       if (ageMs > options.maxWarmStartAgeMs) {
         // Stale: cold-start so the pacer does not burst into a potentially
@@ -516,7 +516,7 @@ export class ProviderPacing {
     // Elapsed since the last real success tick. On the very first success (null)
     // treat elapsed as one normal-cadence interval (weight = 1, backward-compat).
     const elapsedMs =
-      this.lastSuccessAtMs == null ? this.initialIntervalMs : Math.max(0, this.now() - this.lastSuccessAtMs);
+      this.lastSuccessAtMs === null ? this.initialIntervalMs : Math.max(0, this.now() - this.lastSuccessAtMs);
     // Normalize by initialIntervalMs: one normal-cadence success → weight 1.
     // A long throttled wait → up to elapsedRecoveryCap× the over-backoff term.
     // The rate-space base step is NOT multiplied — it stays gentle near the ceiling.
@@ -544,7 +544,7 @@ export class ProviderPacing {
    * unquantified slow-down with bounded blast radius.
    */
   recordThrottle(signal?: ThrottleSignal): void {
-    const hasRetryAfter = signal?.retryAfterMs != null;
+    const hasRetryAfter = signal?.retryAfterMs !== undefined;
     const reason: PacingBackoffReason = hasRetryAfter ? "retry_after" : "throttle";
     if (hasRetryAfter) {
       // One-shot wait only: honor it exactly on the next admit(), but do NOT

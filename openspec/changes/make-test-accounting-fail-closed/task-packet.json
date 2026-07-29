@@ -1,0 +1,100 @@
+{
+  "schema": "pdpp.test-accounting.task-packet/v3",
+  "base_sha": "62350a898274a3452a82af37bd1e3799dbbc7720",
+  "packet_path": "openspec/changes/make-test-accounting-fail-closed/task-packet.json",
+  "retired_paths": [
+    "scripts/test-accounting/run.mjs",
+    "scripts/test-accounting/authority.mjs",
+    "scripts/test-accounting/execute.mjs",
+    "scripts/test-accounting/inventory.mjs",
+    "scripts/test-accounting/inventory.test.mjs",
+    "scripts/test-accounting/node-reporter.mjs",
+    "scripts/test-accounting/packet.mjs",
+    "scripts/test-accounting/packet.test.mjs",
+    "scripts/test-accounting/receipt.mjs",
+    "scripts/test-accounting/runner.mjs"
+  ],
+  "owned_paths": [
+    "apps/console/package.json",
+    "openspec/changes/make-test-accounting-fail-closed/design.md",
+    "openspec/changes/make-test-accounting-fail-closed/specs/test-accounting/spec.md",
+    "openspec/changes/make-test-accounting-fail-closed/tasks.md",
+    "package.json",
+    "packages/cli/package.json",
+    "packages/local-collector/package.json",
+    "packages/mcp-server/package.json",
+    "packages/operator-ui/package.json",
+    "packages/pdpp-brand-react/package.json",
+    "packages/polyfill-connectors/package.json",
+    "packages/read-core/package.json",
+    "packages/reference-contract/package.json",
+    "reference-implementation/package.json",
+    "reference-implementation/scripts/test-profile-env.js",
+    "reference-implementation/scripts/run-tests.js",
+    "scripts/test-accounting/authority.ts",
+    "scripts/test-accounting/inventory.ts",
+    "scripts/test-accounting/inventory.test.ts",
+    "scripts/test-accounting/node-reporter.ts",
+    "scripts/test-accounting/packet.ts",
+    "scripts/test-accounting/packet.test.ts",
+    "scripts/test-accounting/receipt.ts",
+    "test-accounting.manifest.json"
+  ],
+  "forbidden_paths": [
+    "reference-implementation/server",
+    "reference-implementation/test"
+  ],
+  "runtime_edges": [
+    {
+      "from": "scripts/test-accounting/authority.ts",
+      "target": "scripts/test-accounting/inventory.ts",
+      "kind": "literal"
+    },
+    {
+      "from": "scripts/test-accounting/authority.ts",
+      "target": "scripts/test-accounting/receipt.ts",
+      "kind": "literal"
+    },
+    {
+      "from": "scripts/test-accounting/node-reporter.ts",
+      "target": "scripts/test-accounting/receipt.ts",
+      "kind": "literal"
+    },
+    {
+      "from": "scripts/test-accounting/packet.ts",
+      "target": "scripts/test-accounting/inventory.ts",
+      "kind": "literal"
+    },
+    {
+      "from": "reference-implementation/scripts/run-tests.js",
+      "target": "scripts/test-accounting/receipt.ts",
+      "kind": "literal"
+    },
+    {
+      "from": "reference-implementation/scripts/run-tests.js",
+      "target": "scripts/test-accounting/inventory.ts",
+      "kind": "literal"
+    },
+    {
+      "from": "reference-implementation/scripts/run-tests.js",
+      "target": "reference-implementation/scripts/test-profile-env.js",
+      "kind": "literal"
+    },
+    {
+      "from": "scripts/test-accounting/authority.ts",
+      "target": "reference-implementation/scripts/run-tests.js",
+      "kind": "manifest-command",
+      "declaration": "ri-default"
+    }
+  ],
+  "generated_artifacts": [],
+  "test_manifest": {
+    "path": "test-accounting.manifest.json",
+    "sha256": "74eb2c24c175e29919b0f3fc5c51f9016988b6e90342c82d56defd055e4b3210"
+  },
+  "closure_sha256": "408c7b01d93a1fd27a7510dd3da73c374cdfb76356fec9cd9fc5a4f7c495934f",
+  "lease_receipt": {
+    "id": "62350a898274a3452a82af37bd1e3799dbbc7720-408c7b01d93a1fd27a7510dd3da73c374cdfb76356fec9cd9fc5a4f7c495934f",
+    "nonce": "98a44663-a56d-4fe8-a8e3-ace8758e8e2f"
+  }
+}

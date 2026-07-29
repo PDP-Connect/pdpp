@@ -123,7 +123,7 @@ export interface GmailProbeTransport {
    * any error when it does not (the orchestration maps that to a typed,
    * owner-voiced rejection). Implementations MUST close the session.
    */
-  imapLogin(args: { address: string; password: string }): Promise<void>;
+  imapLogin: (args: { address: string; password: string }) => Promise<void>;
 }
 
 function gmailAddressFromContext(context: CredentialProbeContext): string | null {
@@ -155,7 +155,9 @@ const gmailProbe: ConnectorCredentialProbe = async ({ context, secret, transport
   } catch {
     // imapflow surfaces a bad app password as an authentication failure. The
     // owner-causal reading is "Google rejected this app password" — never the
-    // raw IMAP error, never the secret.
+    // raw IMAP error, never the secret. Deliberately no `cause`: attaching
+    // the raw error would leak it back out through the error chain.
+    // biome-ignore lint/style/useErrorCause: intentional — the raw IMAP error must not be attached (it can carry the secret)
     throw new CredentialProbeError(
       "gmail_credential_rejected",
       "Google rejected this app password for that mailbox. Check the Gmail address and create a fresh app password, then try again."
@@ -179,7 +181,7 @@ export interface GithubProbeResponse {
 
 export interface GithubProbeTransport {
   /** Perform an authenticated `GET /user`. Returns status + parsed login. */
-  getUser(args: { token: string }): Promise<GithubProbeResponse>;
+  getUser: (args: { token: string }) => Promise<GithubProbeResponse>;
 }
 
 const githubProbe: ConnectorCredentialProbe = async ({ secret, transport }) => {
@@ -194,6 +196,7 @@ const githubProbe: ConnectorCredentialProbe = async ({ secret, transport }) => {
   try {
     response = await ghTransport.getUser({ token: secret });
   } catch {
+    // biome-ignore lint/style/useErrorCause: intentional — the raw transport error can echo the request (including the token) and must not be attached
     throw new CredentialProbeError(
       "github_unreachable",
       "Could not reach GitHub to check this token. Try again in a moment.",

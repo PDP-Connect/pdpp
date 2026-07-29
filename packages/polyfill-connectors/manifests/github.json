@@ -29,10 +29,7 @@
           "autocomplete": "off",
           "help_url": "https://github.com/settings/tokens",
           "help_text": "Create a token in GitHub developer settings, then paste it here.",
-          "env": [
-            "GITHUB_PERSONAL_ACCESS_TOKEN",
-            "GITHUB_TOKEN"
-          ]
+          "env": ["GITHUB_PERSONAL_ACCESS_TOKEN", "GITHUB_TOKEN"]
         }
       ]
     }
@@ -74,79 +71,44 @@
             "type": "string"
           },
           "name": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "email": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "bio": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "company": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "actor"
           },
           "location": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "blog": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "twitter_username": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "created_at": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time",
             "x_pdpp_role": "event-time"
           },
           "updated_at": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time"
           },
           "avatar_url": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           }
         },
-        "required": [
-          "id",
-          "login"
-        ]
+        "required": ["id", "login"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "updated_at",
       "consent_time_field": "created_at",
       "selection": {
@@ -165,23 +127,11 @@
             "blog",
             "twitter_username"
           ],
-          "semantic_fields": [
-            "bio"
-          ]
+          "semantic_fields": ["bio"]
         },
         "range_filters": {
-          "created_at": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "updated_at": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "created_at": ["gte", "gt", "lte", "lt"],
+          "updated_at": ["gte", "gt", "lte", "lt"]
         },
         "expand": [
           {
@@ -192,10 +142,7 @@
         ],
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "updated_at",
-            "created_at"
-          ]
+          "group_by_time": ["updated_at", "created_at"]
         }
       },
       "relationships": [
@@ -232,39 +179,21 @@
             "format": "date"
           },
           "public_repos": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "public_gists": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "followers": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "following": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           }
         },
-        "required": [
-          "id",
-          "user_id",
-          "observed_on"
-        ]
+        "required": ["id", "user_id", "observed_on"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "observed_on",
       "consent_time_field": "observed_on",
       "selection": {
@@ -275,42 +204,15 @@
       "query": {
         "search": {},
         "range_filters": {
-          "observed_on": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "followers": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "following": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "public_repos": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "public_gists": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "observed_on": ["gte", "gt", "lte", "lt"],
+          "followers": ["gte", "gt", "lte", "lt"],
+          "following": ["gte", "gt", "lte", "lt"],
+          "public_repos": ["gte", "gt", "lte", "lt"],
+          "public_gists": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "observed_on"
-          ]
+          "group_by_time": ["observed_on"]
         }
       },
       "coverage_strategy": "singleton_presence",
@@ -338,16 +240,10 @@
             "type": "string"
           },
           "owner_login": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "description": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "secondary"
           },
           "private": {
@@ -363,99 +259,55 @@
             "type": "boolean"
           },
           "default_branch": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "language": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "topics": {
             "type": "array"
           },
           "stargazers_count": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "forks_count": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "open_issues_count": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "watchers_count": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "size_kb": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "license_key": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "html_url": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "homepage": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "created_at": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time",
             "x_pdpp_role": "event-time"
           },
           "updated_at": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time"
           },
           "pushed_at": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time"
           }
         },
-        "required": [
-          "id",
-          "full_name"
-        ]
+        "required": ["id", "full_name"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "pushed_at",
       "consent_time_field": "created_at",
       "selection": {
@@ -475,66 +327,21 @@
             "license_key",
             "homepage"
           ],
-          "semantic_fields": [
-            "description"
-          ]
+          "semantic_fields": ["description"]
         },
         "range_filters": {
-          "created_at": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "updated_at": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "pushed_at": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "stargazers_count": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "forks_count": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "open_issues_count": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "watchers_count": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "size_kb": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "created_at": ["gte", "gt", "lte", "lt"],
+          "updated_at": ["gte", "gt", "lte", "lt"],
+          "pushed_at": ["gte", "gt", "lte", "lt"],
+          "stargazers_count": ["gte", "gt", "lte", "lt"],
+          "forks_count": ["gte", "gt", "lte", "lt"],
+          "open_issues_count": ["gte", "gt", "lte", "lt"],
+          "watchers_count": ["gte", "gt", "lte", "lt"],
+          "size_kb": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "pushed_at",
-            "created_at"
-          ]
+          "group_by_time": ["pushed_at", "created_at"]
         }
       },
       "coverage_strategy": "full_inventory",
@@ -559,47 +366,27 @@
             "x_pdpp_role": "primary-title"
           },
           "description": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "secondary"
           },
           "language": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "stargazers_count": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "html_url": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "starred_at": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time",
             "x_pdpp_role": "event-time"
           }
         },
-        "required": [
-          "id",
-          "full_name"
-        ]
+        "required": ["id", "full_name"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "starred_at",
       "consent_time_field": "starred_at",
       "selection": {
@@ -609,34 +396,16 @@
       "incremental": true,
       "query": {
         "search": {
-          "lexical_fields": [
-            "full_name",
-            "description",
-            "language"
-          ],
-          "semantic_fields": [
-            "description"
-          ]
+          "lexical_fields": ["full_name", "description", "language"],
+          "semantic_fields": ["description"]
         },
         "range_filters": {
-          "starred_at": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "stargazers_count": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "starred_at": ["gte", "gt", "lte", "lt"],
+          "stargazers_count": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "starred_at"
-          ]
+          "group_by_time": ["starred_at"]
         }
       },
       "coverage_strategy": "full_inventory",
@@ -657,49 +426,28 @@
             "type": "string"
           },
           "number": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "title": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "body": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "secondary"
           },
           "state": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "state_reason": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "user_login": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "actor"
           },
           "user_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "assignees": {
             "type": "array",
@@ -714,86 +462,49 @@
             }
           },
           "milestone_title": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "repository_full_name": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "repository_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "html_url": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "comments": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "reactions_total_count": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "created_at": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time",
             "x_pdpp_role": "event-time"
           },
           "updated_at": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time"
           },
           "closed_at": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time"
           },
           "is_pull_request": {
             "type": "boolean"
           },
           "pull_request_url": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "draft": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           }
         },
-        "required": [
-          "id"
-        ]
+        "required": ["id"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "updated_at",
       "consent_time_field": "created_at",
       "selection": {
@@ -811,49 +522,18 @@
             "milestone_title",
             "repository_full_name"
           ],
-          "semantic_fields": [
-            "title",
-            "body"
-          ]
+          "semantic_fields": ["title", "body"]
         },
         "range_filters": {
-          "created_at": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "updated_at": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "closed_at": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "comments": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "reactions_total_count": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "created_at": ["gte", "gt", "lte", "lt"],
+          "updated_at": ["gte", "gt", "lte", "lt"],
+          "closed_at": ["gte", "gt", "lte", "lt"],
+          "comments": ["gte", "gt", "lte", "lt"],
+          "reactions_total_count": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "updated_at",
-            "created_at"
-          ]
+          "group_by_time": ["updated_at", "created_at"]
         }
       },
       "coverage_strategy": "checkpoint_window",
@@ -874,49 +554,28 @@
             "type": "string"
           },
           "number": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "title": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "body": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "secondary"
           },
           "state": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "state_reason": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "user_login": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "actor"
           },
           "user_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "assignees": {
             "type": "array",
@@ -931,117 +590,63 @@
             }
           },
           "milestone_title": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "repository_full_name": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "repository_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "html_url": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "comments": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "reactions_total_count": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "created_at": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time",
             "x_pdpp_role": "event-time"
           },
           "updated_at": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time"
           },
           "closed_at": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time"
           },
           "draft": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "merged_at": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time"
           },
           "merged_by_login": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "commits_count": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "additions": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "deletions": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "changed_files": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "base_ref": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "head_ref": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "requested_reviewers": {
             "type": "array",
@@ -1050,19 +655,12 @@
             }
           },
           "review_comments_count": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           }
         },
-        "required": [
-          "id"
-        ]
+        "required": ["id"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "updated_at",
       "consent_time_field": "created_at",
       "selection": {
@@ -1083,85 +681,24 @@
             "head_ref",
             "merged_by_login"
           ],
-          "semantic_fields": [
-            "title",
-            "body"
-          ]
+          "semantic_fields": ["title", "body"]
         },
         "range_filters": {
-          "created_at": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "updated_at": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "closed_at": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "merged_at": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "comments": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "reactions_total_count": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "commits_count": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "additions": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "deletions": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "changed_files": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "review_comments_count": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "created_at": ["gte", "gt", "lte", "lt"],
+          "updated_at": ["gte", "gt", "lte", "lt"],
+          "closed_at": ["gte", "gt", "lte", "lt"],
+          "merged_at": ["gte", "gt", "lte", "lt"],
+          "comments": ["gte", "gt", "lte", "lt"],
+          "reactions_total_count": ["gte", "gt", "lte", "lt"],
+          "commits_count": ["gte", "gt", "lte", "lt"],
+          "additions": ["gte", "gt", "lte", "lt"],
+          "deletions": ["gte", "gt", "lte", "lt"],
+          "changed_files": ["gte", "gt", "lte", "lt"],
+          "review_comments_count": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "updated_at",
-            "created_at"
-          ]
+          "group_by_time": ["updated_at", "created_at"]
         }
       },
       "coverage_strategy": "checkpoint_window",
@@ -1182,20 +719,14 @@
             "type": "string"
           },
           "description": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "public": {
             "type": "boolean"
           },
           "html_url": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "files": {
             "type": "array",
@@ -1203,28 +734,16 @@
               "type": "object",
               "properties": {
                 "filename": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
+                  "type": ["string", "null"]
                 },
                 "language": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
+                  "type": ["string", "null"]
                 },
                 "size": {
-                  "type": [
-                    "integer",
-                    "null"
-                  ]
+                  "type": ["integer", "null"]
                 },
                 "raw_url": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
+                  "type": ["string", "null"]
                 }
               }
             }
@@ -1233,40 +752,24 @@
             "type": "boolean"
           },
           "files_total_count": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "comments_count": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "created_at": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time",
             "x_pdpp_role": "event-time"
           },
           "updated_at": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time"
           }
         },
-        "required": [
-          "id"
-        ]
+        "required": ["id"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "updated_at",
       "consent_time_field": "created_at",
       "selection": {
@@ -1276,45 +779,18 @@
       "incremental": true,
       "query": {
         "search": {
-          "lexical_fields": [
-            "description"
-          ],
-          "semantic_fields": [
-            "description"
-          ]
+          "lexical_fields": ["description"],
+          "semantic_fields": ["description"]
         },
         "range_filters": {
-          "created_at": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "updated_at": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "files_total_count": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "comments_count": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "created_at": ["gte", "gt", "lte", "lt"],
+          "updated_at": ["gte", "gt", "lte", "lt"],
+          "files_total_count": ["gte", "gt", "lte", "lt"],
+          "comments_count": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "updated_at",
-            "created_at"
-          ]
+          "group_by_time": ["updated_at", "created_at"]
         }
       },
       "coverage_strategy": "full_inventory",

@@ -191,7 +191,7 @@ test("push-approval poll checkpoints each tick so a long wait does NOT trip the 
     const page = makePushApprovalPage({
       sessionActive: () => polls >= 6,
       onWaitTimeout: async () => {
-        polls++;
+        polls += 1;
         clock.advance(80); // each gap < deadline only because checkpoint resets it
         await realTick();
       },
@@ -269,13 +269,13 @@ test("readiness during the non-blocking poll resolves the assistance and emits N
     const page = makePushApprovalPage({
       sessionActive: () => polls >= 2,
       onWaitTimeout: () => {
-        polls++;
+        polls += 1;
       },
     });
 
     const result = await handlePushApproval({
       assist: () => {
-        assistCalls++;
+        assistCalls += 1;
         return Promise.resolve("asst_1");
       },
       checkpoint: () => Promise.resolve(),
@@ -312,7 +312,7 @@ test("push-approval poll checks ChatGPT origin when approval page does not redir
       context: makeProbeContext({
         ...chatGptProbePage,
         close: () => {
-          probeOpened++;
+          probeOpened += 1;
           return Promise.resolve();
         },
       } as Page),
@@ -433,7 +433,7 @@ test("browser-login assistance resolves when readiness appears and emits NO inte
     const page = makePushApprovalPage({
       sessionActive: () => polls >= 2,
       onWaitTimeout: () => {
-        polls++;
+        polls += 1;
       },
     });
 

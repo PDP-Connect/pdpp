@@ -148,7 +148,7 @@ export function isUsablePdfBuffer(buf: Buffer | Uint8Array): boolean {
   if (buf.length < PDF_MAGIC.length) {
     return false;
   }
-  for (let i = 0; i < PDF_MAGIC.length; i++) {
+  for (let i = 0; i < PDF_MAGIC.length; i += 1) {
     if (buf[i] !== PDF_MAGIC[i]) {
       return false;
     }
@@ -225,7 +225,7 @@ export function ofxGet(v: OfxValue, key: string): OfxValue {
 }
 
 export function ofxString(v: OfxValue): string | null {
-  if (v == null) {
+  if (v === null || v === undefined) {
     return null;
   }
   if (typeof v === "string") {
@@ -238,7 +238,7 @@ export function ofxString(v: OfxValue): string | null {
 }
 
 export function ofxNumber(v: OfxValue): number | null {
-  if (v == null) {
+  if (v === null || v === undefined) {
     return null;
   }
   let s: string;
@@ -355,7 +355,7 @@ function parseVisibleAmount(text: string): number | null {
   if (!match?.[0]) {
     return null;
   }
-  const raw = match[0];
+  const [raw] = match;
   const sign = ACTIVITY_DEBIT_RE.test(text) ? -1 : 1;
   const normalized = raw.replace(/[$,\s+-]/g, "");
   const n = Number(normalized);
@@ -411,7 +411,7 @@ function normalizeDescription(text: string): string {
 }
 
 function firstVisibleAmountIndex(parts: readonly string[]): number {
-  for (let i = parts.length - 1; i >= 0; i--) {
+  for (let i = parts.length - 1; i >= 0; i -= 1) {
     if (AMOUNT_RE.test(parts[i] ?? "")) {
       return i;
     }
@@ -738,8 +738,8 @@ function extractBalance(stmt: OfxValue): QfxBalance | null {
   const availAmt = ofxNumber(ofxGet(availBal, "BALAMT"));
   return {
     as_of: asOf,
-    ledger_cents: ledgerAmt == null ? null : Math.round(ledgerAmt * CENTS_MULTIPLIER),
-    available_cents: availAmt == null ? null : Math.round(availAmt * CENTS_MULTIPLIER),
+    ledger_cents: ledgerAmt === null ? null : Math.round(ledgerAmt * CENTS_MULTIPLIER),
+    available_cents: availAmt === null ? null : Math.round(availAmt * CENTS_MULTIPLIER),
   };
 }
 

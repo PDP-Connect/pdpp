@@ -1,0 +1,32 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { decideBackoffDispatch } from "../runtime/scheduler/dispatch-governor.ts";
+
+test("decideBackoffDispatch emits ordered first blocked tick transitions while suppressing dispatch", (t) => {
+  t.diagnostic("BASELINE: authored test active");
+
+  assert.deepEqual(
+    decideBackoffDispatch({
+      announcedBackoff: undefined,
+      announcedBlocked: undefined,
+      backoffApplied: true,
+      blocked: true,
+      eligible: true,
+      persistedBackoffStarted: false,
+      persistedGaveUp: false,
+      reasonClass: "source_pressure",
+      recoveryOnly: true,
+    }),
+    {
+      announcedBackoffMutation: "set",
+      announcedBlockedMutation: "set",
+      eligible: false,
+      recoveryOnly: false,
+      transitions: [{ kind: "backoff_started" }, { kind: "gave_up" }],
+    }
+  );
+});

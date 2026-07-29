@@ -34,13 +34,13 @@ interface AccessTypeSnapshot {
 
 interface GoogleDataPortabilityProviderAuthOptions {
   readonly credentialStoreFactory: () => {
-    capture(args: {
+    capture: (args: {
       connectorInstanceId: string;
       credentialKind: "secret_bundle";
       now: string;
       ownerSubjectId: string;
       secret: string;
-    }): Promise<unknown> | unknown;
+    }) => Promise<unknown> | unknown;
   };
   readonly env?: GoogleDataPortabilityEnv;
   readonly fetch?: FetchLike;
@@ -182,16 +182,16 @@ function buildAccessTypeSnapshot(
 function accessTypeSnapshotToSecretBundle(tokens: ProviderAuthTokens, snapshot: AccessTypeSnapshot): string {
   return JSON.stringify({
     google_dataportability_access_token: tokens.accessToken,
-    google_dataportability_refresh_token: tokens.refreshToken ?? "",
-    google_dataportability_token_kind: tokens.tokenKind,
-    google_dataportability_expires_at: tokens.expiresAt ?? "",
     google_dataportability_authorized_resource_groups: [
       ...snapshot.oneTimeResourceGroups,
       ...snapshot.timeBasedResourceGroups,
     ].join(","),
-    google_dataportability_one_time_resource_groups: snapshot.oneTimeResourceGroups.join(","),
-    google_dataportability_time_based_resource_groups: snapshot.timeBasedResourceGroups.join(","),
     google_dataportability_denied_resource_groups: snapshot.deniedResourceGroups.join(","),
+    google_dataportability_expires_at: tokens.expiresAt ?? "",
+    google_dataportability_one_time_resource_groups: snapshot.oneTimeResourceGroups.join(","),
+    google_dataportability_refresh_token: tokens.refreshToken ?? "",
+    google_dataportability_time_based_resource_groups: snapshot.timeBasedResourceGroups.join(","),
+    google_dataportability_token_kind: tokens.tokenKind,
   });
 }
 
@@ -230,9 +230,9 @@ async function exchangeGoogleCode({
   }
   return {
     accessToken,
+    expiresAt: nowPlusSeconds(body.expires_in),
     refreshToken: asString(body.refresh_token),
     tokenKind: asString(body.token_type) ?? "Bearer",
-    expiresAt: nowPlusSeconds(body.expires_in),
   };
 }
 
@@ -244,6 +244,24 @@ export function createGoogleDataPortabilityProviderAuthExchanger({
   const accessByToken = new Map<string, AccessTypeSnapshot>();
 
   return {
+    exchangeCode({ code, connectorId, redirectUri }) {
+      assertConnector(connectorId);
+      const configuredRedirectUri = requireConfiguredValue(env, "GOOGLE_DATAPORTABILITY_REDIRECT_URI");
+      if (redirectUri !== configuredRedirectUri) {
+        throw new GoogleDataPortabilityProviderAuthError(
+          "google_dataportability_redirect_uri_mismatch",
+          "Google Data Portability redirect URI does not match GOOGLE_DATAPORTABILITY_REDIRECT_URI.",
+          500
+        );
+      }
+      return exchangeGoogleCode({
+        clientId: requireConfiguredValue(env, "GOOGLE_DATAPORTABILITY_CLIENT_ID"),
+        clientSecret: requireConfiguredValue(env, "GOOGLE_DATAPORTABILITY_CLIENT_SECRET"),
+        code,
+        fetchImpl,
+        redirectUri,
+      });
+    },
     initiateAuthorization({ connectorId, redirectUri, state }) {
       assertConnector(connectorId);
       const clientId = requireConfiguredValue(env, "GOOGLE_DATAPORTABILITY_CLIENT_ID");
@@ -266,25 +284,6 @@ export function createGoogleDataPortabilityProviderAuthExchanger({
       url.searchParams.set("prompt", "consent");
       url.searchParams.set("include_granted_scopes", "false");
       return { authorizationUrl: url.toString() };
-    },
-
-    exchangeCode({ code, connectorId, redirectUri }) {
-      assertConnector(connectorId);
-      const configuredRedirectUri = requireConfiguredValue(env, "GOOGLE_DATAPORTABILITY_REDIRECT_URI");
-      if (redirectUri !== configuredRedirectUri) {
-        throw new GoogleDataPortabilityProviderAuthError(
-          "google_dataportability_redirect_uri_mismatch",
-          "Google Data Portability redirect URI does not match GOOGLE_DATAPORTABILITY_REDIRECT_URI.",
-          500
-        );
-      }
-      return exchangeGoogleCode({
-        clientId: requireConfiguredValue(env, "GOOGLE_DATAPORTABILITY_CLIENT_ID"),
-        clientSecret: requireConfiguredValue(env, "GOOGLE_DATAPORTABILITY_CLIENT_SECRET"),
-        code,
-        fetchImpl,
-        redirectUri,
-      });
     },
 
     async runInventoryOrTest({ connectorId, tokens }): Promise<ProviderAccount[]> {
@@ -310,11 +309,11 @@ export function createGoogleDataPortabilityProviderAuthExchanger({
           accountId: `google_dataportability_${fingerprint}`,
           displayLabel: `Google Data Portability authorization ${fingerprint.slice(0, 8)}`,
           sourceBinding: {
-            provider: "google_data_portability",
             account_id_verified: false,
             authorized_resource_groups: authorizedResourceGroups,
             denied_resource_groups: snapshot.deniedResourceGroups,
             one_time_resource_groups: snapshot.oneTimeResourceGroups,
+            provider: "google_data_portability",
             time_based_resource_groups: snapshot.timeBasedResourceGroups,
           },
         },
@@ -332,10 +331,10 @@ export function createGoogleDataPortabilityProviderAuthExchanger({
       }
       await credentialStoreFactory().capture({
         connectorInstanceId,
-        ownerSubjectId,
         credentialKind: "secret_bundle",
-        secret: accessTypeSnapshotToSecretBundle(tokens, snapshot),
         now,
+        ownerSubjectId,
+        secret: accessTypeSnapshotToSecretBundle(tokens, snapshot),
       });
     },
   };

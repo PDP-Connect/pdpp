@@ -20,7 +20,7 @@ import {
   type RefSpineCorrelationKind,
   type RefSpineCorrelationPage,
 } from "../../operations/ref-spine-correlations-list/index.ts";
-import { isInternalConnectorId } from "../connector-key.js";
+import { isInternalConnectorId } from "../connector-key.ts";
 import type { MiddlewareHandler } from "./_route-contract.ts";
 
 // Express-shaped surface, structurally typed to avoid pulling in the
@@ -32,13 +32,13 @@ interface RouteRequest {
 }
 
 interface RouteResponse {
-  json(body: unknown): unknown;
+  json: (body: unknown) => unknown;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown;
 
 interface AppLike {
-  get(path: string, ...handlers: (MiddlewareHandler | RouteHandler)[]): AppLike;
+  get: (path: string, ...handlers: (MiddlewareHandler | RouteHandler)[]) => AppLike;
 }
 
 export interface MountRefSpineCorrelationsContext {
@@ -46,12 +46,12 @@ export interface MountRefSpineCorrelationsContext {
   // alias) to the canonical connector key the spine stores `source_id`
   // under. Returns `null` for unrecognized ids; callers fall back to the
   // raw value. Mirrors the threading in `server/routes/ref-connectors.ts`.
-  canonicalConnectorKey(value: string | null | undefined): string | null;
-  handleError(res: unknown, err: unknown): void;
-  listSpineCorrelations(
+  canonicalConnectorKey: (value: string | null | undefined) => string | null;
+  handleError: (res: unknown, err: unknown) => void;
+  listSpineCorrelations: (
     kind: RefSpineCorrelationKind,
     filters: RefSpineCorrelationFilters
-  ): Promise<RefSpineCorrelationPage> | RefSpineCorrelationPage;
+  ) => Promise<RefSpineCorrelationPage> | RefSpineCorrelationPage;
   requireOwnerSession: MiddlewareHandler;
 }
 
@@ -76,16 +76,16 @@ function parseListFilters(
     ? (canonicalConnectorKey(trimmedConnectorId) ?? trimmedConnectorId)
     : null;
   return {
-    limit: query.limit,
-    cursor: query.cursor,
-    since: query.since,
-    until: query.until,
-    status: query.status,
     clientId: query.client_id,
-    sourceKind: query.source_kind || (legacyConnectorId ? "connector" : undefined),
-    sourceId: query.source_id || legacyConnectorId || undefined,
+    cursor: query.cursor,
     grantId: query.grant_id,
+    limit: query.limit,
     q: query.q,
+    since: query.since,
+    sourceId: query.source_id || legacyConnectorId || undefined,
+    sourceKind: query.source_kind || (legacyConnectorId ? "connector" : undefined),
+    status: query.status,
+    until: query.until,
   };
 }
 
@@ -102,7 +102,7 @@ function mountKind(
   app.get(path, ctx.requireOwnerSession, async (req: RouteRequest, res: RouteResponse) => {
     try {
       const envelope = await executeRefSpineCorrelationsList(
-        { kind, filters: parseListFilters(req.query, ctx.canonicalConnectorKey) },
+        { filters: parseListFilters(req.query, ctx.canonicalConnectorKey), kind },
         { ...deps, isInternalConnectorId }
       );
       res.json(envelope);

@@ -70,9 +70,9 @@ interface StreamListEntry {
  * registry-URL form (`https://registry.pdpp.org/connectors/github`).
  */
 export const POINT_IN_TIME_REAL_FIELD_STREAMS = Object.freeze([
-  Object.freeze({ connector: "github", stream: "user", realField: "follower / repo / gist counts" }),
-  Object.freeze({ connector: "slack", stream: "channels", realField: "num_members" }),
-  Object.freeze({ connector: "ynab", stream: "accounts", realField: "balance / cleared_balance / uncleared_balance" }),
+  Object.freeze({ connector: "github", realField: "follower / repo / gist counts", stream: "user" }),
+  Object.freeze({ connector: "slack", realField: "num_members", stream: "channels" }),
+  Object.freeze({ connector: "ynab", realField: "balance / cleared_balance / uncleared_balance", stream: "accounts" }),
 ]);
 
 /**

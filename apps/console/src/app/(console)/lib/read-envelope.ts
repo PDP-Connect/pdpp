@@ -66,8 +66,7 @@ function extractMeta(value: unknown): CanonicalEnvelopeMeta {
     : [];
   let count: CanonicalCountMeta | null = null;
   if (isPlainObject(meta.count)) {
-    const kind = (meta.count as { kind?: unknown }).kind;
-    const rawValue = (meta.count as { value?: unknown }).value;
+    const { kind, value: rawValue } = meta.count as { kind?: unknown; value?: unknown };
     if (kind === "exact" || kind === "estimated" || kind === "none") {
       count = {
         kind,
@@ -108,9 +107,9 @@ export function adaptListEnvelope<T>(body: unknown): CanonicalListEnvelope<T> {
   return {
     data,
     has_more: hasMore,
-    next_cursor: nextCursor,
     links: extractLinks((root as { links?: unknown }).links),
     meta: extractMeta((root as { meta?: unknown }).meta),
+    next_cursor: nextCursor,
   };
 }
 

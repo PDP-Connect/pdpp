@@ -32,12 +32,12 @@ export interface RefSchedulesListDependencies {
    * unchanged so a future projection-shape change does not require a
    * coordinated operation rev.
    */
-  listSchedules(): Promise<readonly unknown[]> | readonly unknown[];
+  listSchedules: () => Promise<readonly unknown[]> | readonly unknown[];
 }
 
 export interface RefSchedulesListEnvelope {
-  readonly object: "list";
   readonly data: unknown[];
+  readonly object: "list";
 }
 
 /**
@@ -49,11 +49,11 @@ export interface RefSchedulesListEnvelope {
  * the host write the response.
  */
 export async function executeRefSchedulesList(
-  dependencies: RefSchedulesListDependencies,
+  dependencies: RefSchedulesListDependencies
 ): Promise<RefSchedulesListEnvelope> {
   const schedules = await dependencies.listSchedules();
   return {
-    object: "list",
     data: [...schedules],
+    object: "list",
   };
 }

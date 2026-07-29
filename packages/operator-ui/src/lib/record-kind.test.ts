@@ -22,7 +22,7 @@ test("manifest fields: lone content field without author does not force message"
 test("falls back to generic when the body has no declared type", () => {
   assert.equal(classifyRecordKind("opaque", { amount_cents: 100 }).kind, "generic");
   assert.equal(classifyRecordKind("opaque", { lat: 37.77, lng: -122.41 }).kind, "generic");
-  assert.equal(classifyRecordKind("notes", { title: "t", body: "z".repeat(400) }).kind, "generic");
+  assert.equal(classifyRecordKind("notes", { body: "z".repeat(400), title: "t" }).kind, "generic");
 });
 
 test("a lone content field without an author does not force message", () => {
@@ -38,7 +38,7 @@ test("declared types: a currency field dispatches money", () => {
 });
 
 test("declared types: a person and text pair dispatches message", () => {
-  assert.deepEqual(classifyRecordKind("entries", { who: "Ada", what: "Hi" }, { who: "person", what: "text" }), {
+  assert.deepEqual(classifyRecordKind("entries", { what: "Hi", who: "Ada" }, { what: "text", who: "person" }), {
     kind: "message",
     label: "message",
   });
@@ -76,8 +76,8 @@ test("declared types: money beats weaker declared signals", () => {
   assert.deepEqual(
     classifyRecordKind(
       "opaque",
-      { amount: 100, distance: 5000, coords: "37.77,-122.41", occurred_at: "2026-05-29T15:30:00Z" },
-      { amount: "currency", distance: "distance", coords: "coordinates", occurred_at: "timestamp" }
+      { amount: 100, coords: "37.77,-122.41", distance: 5000, occurred_at: "2026-05-29T15:30:00Z" },
+      { amount: "currency", coords: "coordinates", distance: "distance", occurred_at: "timestamp" }
     ),
     { kind: "money", label: "money" }
   );
@@ -91,7 +91,7 @@ test("declared types: unrecognized declarations fall back to generic", () => {
 });
 
 test("declared types: an empty declaration map falls back to generic", () => {
-  assert.deepEqual(classifyRecordKind("sessions", { started_at: "2026-05-29T00:00:00Z", duration_cents: 12 }, {}), {
+  assert.deepEqual(classifyRecordKind("sessions", { duration_cents: 12, started_at: "2026-05-29T00:00:00Z" }, {}), {
     kind: "generic",
     label: "record",
   });

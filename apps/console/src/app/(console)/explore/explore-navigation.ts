@@ -264,23 +264,23 @@ export function buildNavigateHref(explorePath: string, state: NavigateState, opt
   // clearCursor resets it to the head.
   const nextUpcomingTrail = nextAccumulatingTrail(resetFeed, state.upcomingTrail, opts.appendUpcomingCursor);
   const href = buildHref(explorePath, {
-    query: opts.query ?? state.query,
+    // Anchor survives ONLY for non-feed-defining moves (Load-more, peek, order);
+    // forwardAnchor is already undefined when the feed is reset.
+    anchor: forwardAnchor,
     connectionIds: opts.connectionIds ?? state.connectionIds,
-    excludeConnectionIds: opts.excludeConnectionIds ?? state.excludeConnectionIds,
-    streams: opts.streams ?? state.streams,
-    excludeStreams: opts.excludeStreams ?? state.excludeStreams,
-    since: opts.since ?? state.since,
-    until: opts.until ?? state.until,
-    peek: opts.peek,
-    searchSort: opts.searchSort ?? (state.searchSort === "recent" ? "recent" : undefined),
     cursor: opts.clearCursor ? undefined : opts.cursor,
     // Trail is preserved ONLY for Load-more (appendCursor); every other navigation
     // leaves nextTrail undefined → the `cursors` param is dropped (reset to page 1).
     cursors: nextTrail,
+    excludeConnectionIds: opts.excludeConnectionIds ?? state.excludeConnectionIds,
+    excludeStreams: opts.excludeStreams ?? state.excludeStreams,
+    peek: opts.peek,
+    query: opts.query ?? state.query,
+    searchSort: opts.searchSort ?? (state.searchSort === "recent" ? "recent" : undefined),
+    since: opts.since ?? state.since,
+    streams: opts.streams ?? state.streams,
+    until: opts.until ?? state.until,
     upcomingCursors: nextUpcomingTrail,
-    // Anchor survives ONLY for non-feed-defining moves (Load-more, peek, order);
-    // forwardAnchor is already undefined when the feed is reset.
-    anchor: forwardAnchor,
   });
   const nextOrder = opts.order ?? state.order;
   return nextOrder === "oldest" ? `${href}${href.includes("?") ? "&" : "?"}order=oldest` : href;

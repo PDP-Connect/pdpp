@@ -7,10 +7,10 @@ import { summarize } from "./timeline-summaries.ts";
 
 test("a transactions record surfaces amount + merchant, not a bare timestamp", () => {
   const line = summarize("fabrikam_bank_demo", "transactions", {
-    posted_at: "2026-04-22T13:42:00Z",
-    merchant: "Bluebird Bakery",
     amount_cents: -1245,
     currency: "USD",
+    merchant: "Bluebird Bakery",
+    posted_at: "2026-04-22T13:42:00Z",
   });
   assert.ok(line.includes("-$12.45"), line);
   assert.ok(line.includes("Bluebird Bakery"), line);
@@ -21,9 +21,9 @@ test("a chase transaction formats its bare integer-cents amount, not as dollars"
   // Chase `amount` is signed integer cents. -1245 must render as -$12.45, not
   // -$1245.00 (the milliunit-straddling formatAmount mistake on live data).
   const line = summarize("chase", "transactions", {
-    date: "2026-04-22",
     amount: -1245,
     currency: "USD",
+    date: "2026-04-22",
     name: "Bluebird Bakery",
   });
   assert.ok(line.includes("-$12.45"), line);
@@ -33,10 +33,10 @@ test("a chase transaction formats its bare integer-cents amount, not as dollars"
 
 test("a pay-statement record formats its cents amount", () => {
   const line = summarize("acme_payroll_demo", "pay_statements", {
-    period_end: "2026-03-31",
     employer: "Northwind Studios",
     gross_pay_cents: 612_500,
     net_pay_cents: 438_120,
+    period_end: "2026-03-31",
   });
   assert.ok(line.includes("$6125.00"), line);
   assert.ok(line.includes("Northwind Studios"), line);
@@ -45,8 +45,8 @@ test("a pay-statement record formats its cents amount", () => {
 
 test("a tax-document record surfaces its document kind", () => {
   const line = summarize("acme_payroll_demo", "tax_documents", {
-    issued_at: "2026-01-31T00:00:00Z",
     document_kind: "W2",
+    issued_at: "2026-01-31T00:00:00Z",
     year: 2025,
   });
   assert.ok(line.includes("W2"), line);
@@ -54,8 +54,8 @@ test("a tax-document record surfaces its document kind", () => {
 
 test("a clinical-visit record surfaces the provider name", () => {
   const line = summarize("northwind_health_demo", "clinical_visits", {
-    visit_at: "2026-02-14T15:30:00Z",
     provider_name: "Dr. Avery Hale",
+    visit_at: "2026-02-14T15:30:00Z",
   });
   assert.ok(line.includes("Dr. Avery Hale"), line);
 });
@@ -70,6 +70,6 @@ test("explicit per-stream summaries still win over the broadened fallback", () =
 });
 
 test("a record with no human-identifying field degrades to a placeholder", () => {
-  const line = summarize("opaque", "blobs", { id: "abc", checksum_sha: "deadbeef" });
+  const line = summarize("opaque", "blobs", { checksum_sha: "deadbeef", id: "abc" });
   assert.equal(line, "(no summary)");
 });

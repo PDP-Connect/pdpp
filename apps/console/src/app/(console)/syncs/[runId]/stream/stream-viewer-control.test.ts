@@ -33,34 +33,34 @@ function viewportEvent({
   return {
     observation: {
       editableFocused: false,
-      layout: { width, height },
+      layout: { height, width },
       timestampMs,
       visual: {
-        width,
         height: visualHeight,
         offsetLeft: 0,
         offsetTop: 0,
         pageLeft: 0,
         pageTop: 0,
         scale: 1,
+        width,
       },
     },
     source,
     type: "viewport.observed",
     viewport: {
-      width,
-      height,
       deviceScaleFactor: 1,
       hasTouch: true,
+      height,
       mobile: true,
       userAgent: "test",
+      width,
     },
   };
 }
 
 test("replay holds remote resize for keyboard-shaped visual occlusion", () => {
-  const opened = viewportEvent({ width: 390, height: 844, source: "initial" });
-  const keyboard = viewportEvent({ width: 390, height: 844, visualHeight: 560, source: "visualViewport.resize" });
+  const opened = viewportEvent({ height: 844, source: "initial", width: 390 });
+  const keyboard = viewportEvent({ height: 844, source: "visualViewport.resize", visualHeight: 560, width: 390 });
   keyboard.observation.editableFocused = true;
 
   const result = replayStreamViewerControl([opened, keyboard]);
@@ -77,10 +77,10 @@ test("replay holds remote resize for keyboard-shaped visual occlusion", () => {
 
 test("replay holds orientation transients until a stable settled sample", () => {
   const result = replayStreamViewerControl([
-    viewportEvent({ width: 390, height: 844, source: "initial", timestampMs: 0 }),
-    viewportEvent({ width: 810, height: 390, source: "orientationchange", timestampMs: 10 }),
-    viewportEvent({ width: 844, height: 390, source: "orientationchange.settle", timestampMs: 180 }),
-    viewportEvent({ width: 844, height: 390, source: "orientationchange.settle", timestampMs: 360 }),
+    viewportEvent({ height: 844, source: "initial", timestampMs: 0, width: 390 }),
+    viewportEvent({ height: 390, source: "orientationchange", timestampMs: 10, width: 810 }),
+    viewportEvent({ height: 390, source: "orientationchange.settle", timestampMs: 180, width: 844 }),
+    viewportEvent({ height: 390, source: "orientationchange.settle", timestampMs: 360, width: 844 }),
   ]);
 
   assert.deepEqual(
@@ -93,9 +93,9 @@ test("replay holds orientation transients until a stable settled sample", () => 
 
 test("replay treats non-transposed mobile aspect flips as orientation settling", () => {
   const result = replayStreamViewerControl([
-    viewportEvent({ width: 412, height: 915, source: "initial", timestampMs: 0 }),
-    viewportEvent({ width: 916, height: 448, source: "ResizeObserver", timestampMs: 20 }),
-    viewportEvent({ width: 916, height: 448, source: "ResizeObserver", timestampMs: 360 }),
+    viewportEvent({ height: 915, source: "initial", timestampMs: 0, width: 412 }),
+    viewportEvent({ height: 448, source: "ResizeObserver", timestampMs: 20, width: 916 }),
+    viewportEvent({ height: 448, source: "ResizeObserver", timestampMs: 360, width: 916 }),
   ]);
 
   assert.deepEqual(
@@ -106,34 +106,34 @@ test("replay treats non-transposed mobile aspect flips as orientation settling",
 });
 
 test("replay emits media settled after consecutive matching samples", () => {
-  const requested = { width: 390, height: 844 };
+  const requested = { height: 844, width: 390 };
   const result = replayStreamViewerControl([
     {
-      type: "media.sampled",
       sample: {
+        inbound: { frameHeight: 844, framesDecoded: 1, frameWidth: 390 },
+        media: requested,
         requested,
         screen: requested,
-        media: requested,
-        inbound: { frameWidth: 390, frameHeight: 844, framesDecoded: 1 },
       },
+      type: "media.sampled",
     },
     {
-      type: "media.sampled",
       sample: {
+        inbound: { frameHeight: 844, framesDecoded: 2, frameWidth: 390 },
+        media: requested,
         requested,
         screen: requested,
-        media: requested,
-        inbound: { frameWidth: 390, frameHeight: 844, framesDecoded: 2 },
       },
+      type: "media.sampled",
     },
     {
-      type: "media.sampled",
       sample: {
+        inbound: { frameHeight: 844, framesDecoded: 3, frameWidth: 390 },
+        media: requested,
         requested,
         screen: requested,
-        media: requested,
-        inbound: { frameWidth: 390, frameHeight: 844, framesDecoded: 3 },
       },
+      type: "media.sampled",
     },
   ]);
 
@@ -177,8 +177,8 @@ test("presentation viewport updates debounce orientation bursts only", () => {
 });
 
 test("presentation viewport equality ignores sub-pixel rounding churn", () => {
-  assert.equal(presentationViewportsMatch({ width: 390, height: 844 }, { width: 391, height: 843 }), true);
-  assert.equal(presentationViewportsMatch({ width: 390, height: 844 }, { width: 393, height: 844 }), false);
+  assert.equal(presentationViewportsMatch({ height: 844, width: 390 }, { height: 843, width: 391 }), true);
+  assert.equal(presentationViewportsMatch({ height: 844, width: 390 }, { height: 844, width: 393 }), false);
 });
 
 test("presentation viewport holds mobile keyboard churn without blocking orientation", () => {
@@ -233,17 +233,17 @@ test("presentation viewport holds mobile keyboard churn without blocking orienta
 });
 
 test("held mobile height-only changes can keep displaying the stable presentation viewport", () => {
-  const stable = { width: 448, height: 771, screenWidth: 1008, screenHeight: 1736 };
-  const addressBarCollapsed = { width: 448, height: 891, screenWidth: 1008, screenHeight: 2008 };
+  const stable = { height: 771, screenHeight: 1736, screenWidth: 1008, width: 448 };
+  const addressBarCollapsed = { height: 891, screenHeight: 2008, screenWidth: 1008, width: 448 };
 
   assert.equal(localSurfaceCanDisplayPresentation(addressBarCollapsed, stable), true);
-  assert.deepEqual(stablePresentationContainerRect({ width: 448, height: 891 }, stable), { width: 448, height: 771 });
+  assert.deepEqual(stablePresentationContainerRect({ height: 891, width: 448 }, stable), { height: 771, width: 448 });
 });
 
 test("held orientation changes do not display stale presentation viewport as ready", () => {
-  const portrait = { width: 448, height: 771, screenWidth: 1008, screenHeight: 1736 };
-  const landscape = { width: 947, height: 364, screenWidth: 2128, screenHeight: 816 };
+  const portrait = { height: 771, screenHeight: 1736, screenWidth: 1008, width: 448 };
+  const landscape = { height: 364, screenHeight: 816, screenWidth: 2128, width: 947 };
 
   assert.equal(localSurfaceCanDisplayPresentation(landscape, portrait), false);
-  assert.deepEqual(stablePresentationContainerRect({ width: 947, height: 364 }, portrait), { width: 448, height: 771 });
+  assert.deepEqual(stablePresentationContainerRect({ height: 364, width: 947 }, portrait), { height: 771, width: 448 });
 });

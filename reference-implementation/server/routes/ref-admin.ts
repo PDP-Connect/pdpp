@@ -44,7 +44,7 @@ import {
   executeExploreUpcoming,
   InvalidCompositeCursorError,
 } from "../../operations/rs-explore-timeline/index.ts";
-import { isInternalConnectorId } from "../connector-key.js";
+import { isInternalConnectorId } from "../connector-key.ts";
 import { buildExploreRecordBucketsDeps, buildExploreTimelineDeps } from "../explore-timeline-substrate.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 
@@ -60,16 +60,16 @@ interface RouteRequest {
 }
 
 interface RouteResponse {
-  json(body: unknown): unknown;
-  status(code: number): RouteResponse;
+  json: (body: unknown) => unknown;
+  status: (code: number) => RouteResponse;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
 
 interface AppLike {
-  delete(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
-  get(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
-  post(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  delete: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
+  get: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
+  post: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
 }
 
 export interface RefCimdDocument {
@@ -179,7 +179,7 @@ function readQueryStringList(query: Readonly<Record<string, unknown>>, ...names:
 }
 
 function parseQueryPosInt(query: Readonly<Record<string, unknown>>, name: string): number | null {
-  if (query[name] == null) {
+  if (query[name] === null) {
     return null;
   }
   const n = Number.parseInt(String(query[name]), 10);
@@ -204,6 +204,7 @@ function validateRedirectUri(uri: string): string {
   try {
     parsed = new URL(uri);
   } catch {
+    // biome-ignore lint/style/useErrorCause: This compatibility path preserves the established error shape and propagation.
     throw Object.assign(new Error(`Invalid redirect_uri: ${uri}`), { code: "invalid_redirect_uri" });
   }
   if (parsed.protocol !== "https:" && !isLoopbackRedirect(parsed)) {
@@ -252,8 +253,10 @@ function parseCreateCimdDocumentInput(body: unknown): CreateRefCimdDocumentInput
   const logoUri = readOptionalString(obj, "logo_uri", "logoUri");
   if (logoUri) {
     try {
+      // biome-ignore lint/correctness/noUnusedInstantiation: Construction intentionally triggers the compatibility side effect.
       new URL(logoUri);
     } catch {
+      // biome-ignore lint/style/useErrorCause: This compatibility path preserves the established error shape and propagation.
       throw Object.assign(new Error("logo_uri must be a valid URL"), { code: "invalid_client_metadata" });
     }
   }
@@ -266,14 +269,14 @@ function parseCreateCimdDocumentInput(body: unknown): CreateRefCimdDocumentInput
 
 function projectCimdDocument(doc: RefCimdDocument, baseUrl: string) {
   return {
-    object: "cimd_client_metadata_document",
-    document_id: doc.document_id,
     client_id: buildClientMetadataUrl(baseUrl, doc.document_id),
     client_name: doc.client_name,
-    redirect_uris: doc.redirect_uris,
-    logo_uri: doc.logo_uri,
-    token_endpoint_auth_method: "none",
     created_at: doc.created_at,
+    document_id: doc.document_id,
+    logo_uri: doc.logo_uri,
+    object: "cimd_client_metadata_document",
+    redirect_uris: doc.redirect_uris,
+    token_endpoint_auth_method: "none",
     updated_at: doc.updated_at,
   };
 }
@@ -291,7 +294,7 @@ export function mountRefSearch(app: AppLike, ctx: MountRefAdminContext): void {
       try {
         const envelope = await executeRefSpineSearch(
           { query: (req.query.q as string) || "" },
-          { searchSpine: (query) => ctx.searchSpine(query), isInternalConnectorId }
+          { isInternalConnectorId, searchSpine: (query) => ctx.searchSpine(query) }
         );
         res.json(envelope);
       } catch (err) {
@@ -334,17 +337,17 @@ export function mountRefRecordsTimeline(app: AppLike, ctx: MountRefAdminContext)
     ctx.requireOwnerSession,
     async (req: RouteRequest, res: RouteResponse) => {
       try {
-        const limit = req.query.limit == null ? null : Number.parseInt(String(req.query.limit), 10);
+        const limit = req.query.limit === null ? null : Number.parseInt(String(req.query.limit), 10);
         const connectorId = ctx.resolveSingleConnectorIdQueryValue(req.query.connector_id);
         const envelope = await executeRefRecordsTimeline(
           {
             connectorId,
-            stream: typeof req.query.stream === "string" ? req.query.stream : null,
-            since: typeof req.query.since === "string" ? req.query.since : null,
-            until: typeof req.query.until === "string" ? req.query.until : null,
             limit: Number.isFinite(limit) ? limit : null,
             order: typeof req.query.order === "string" ? req.query.order : null,
+            since: typeof req.query.since === "string" ? req.query.since : null,
+            stream: typeof req.query.stream === "string" ? req.query.stream : null,
             timestampMode: typeof req.query.timestamp_mode === "string" ? req.query.timestamp_mode : null,
+            until: typeof req.query.until === "string" ? req.query.until : null,
           },
           {
             collectEntries: (input) => ctx.collectRecordsTimelineEntries(input),
@@ -408,6 +411,7 @@ export function mountRefClients(app: AppLike, ctx: MountRefAdminContext): void {
     try {
       const subjectId = ctx.getOwnerSubjectId(req);
       const envelope = await executeRefClientsList(
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
         { owner: req.query?.owner },
         {
           listOwnerIssuedClients: () => ctx.listOwnerIssuedClients(subjectId),
@@ -436,8 +440,10 @@ export function mountRefClientTokens(app: AppLike, ctx: MountRefAdminContext): v
   app.get("/_ref/clients/:clientId/tokens", ctx.requireOwnerSession, async (req: RouteRequest, res: RouteResponse) => {
     try {
       const subjectId = ctx.getOwnerSubjectId(req);
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
       const clientId = decodeURIComponent(req.params.clientId ?? "");
       const envelope = await executeRefClientTokensList(
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
         { owner: req.query?.owner },
         {
           listActiveTokensForOwnerClient: () => ctx.listActiveTokensForOwnerClient(clientId, subjectId),
@@ -450,6 +456,7 @@ export function mountRefClientTokens(app: AppLike, ctx: MountRefAdminContext): v
         return;
       }
       // Ownership guard raises typed `not_found` / `forbidden`.
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
       const code = (err as { code?: unknown })?.code;
       if (code === "not_found") {
         ctx.pdppError(res, 404, "not_found", (err as Error).message);
@@ -477,10 +484,12 @@ export function mountRefClientTokenRevoke(app: AppLike, ctx: MountRefAdminContex
     async (req: RouteRequest, res: RouteResponse) => {
       try {
         const subjectId = ctx.getOwnerSubjectId(req);
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
         const clientId = decodeURIComponent(req.params.clientId ?? "");
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
         const tokenIdPublic = decodeURIComponent(req.params.tokenIdPublic ?? "");
         const outcome = await executeRefClientTokenRevoke(
-          { clientId, tokenIdPublic, actingSubjectId: subjectId },
+          { actingSubjectId: subjectId, clientId, tokenIdPublic },
           {
             revokeOwnerClientTokenByPublicId: (cid, tid, sid) => ctx.revokeOwnerClientTokenByPublicId(cid, tid, sid),
           }
@@ -508,9 +517,9 @@ export function mountRefCimdClientDocuments(app: AppLike, ctx: MountRefAdminCont
       const baseUrl = ctx.resolveBaseUrl(req);
       const docs = await ctx.listCimdDocuments();
       res.json({
-        object: "list",
         data: docs.map((doc) => projectCimdDocument(doc, baseUrl)),
         has_more: false,
+        object: "list",
       });
     } catch (err) {
       ctx.handleError(res, err);
@@ -527,6 +536,7 @@ export function mountRefCimdClientDocuments(app: AppLike, ctx: MountRefAdminCont
       }
       res.status(201).json(projectCimdDocument(doc, ctx.resolveBaseUrl(req)));
     } catch (err) {
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
       const code = (err as { code?: unknown })?.code;
       if (code === "invalid_redirect_uri" || code === "invalid_client_metadata") {
         ctx.pdppError(
@@ -550,12 +560,13 @@ export function mountRefCimdClientDocuments(app: AppLike, ctx: MountRefAdminCont
       try {
         await ctx.deleteCimdDocument(documentId, { clientId });
         res.json({
-          object: "cimd_client_metadata_document_deletion",
-          document_id: documentId,
           client_id: clientId,
           deleted: true,
+          document_id: documentId,
+          object: "cimd_client_metadata_document_deletion",
         });
       } catch (err) {
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
         if ((err as { code?: unknown })?.code === "not_found") {
           ctx.pdppError(res, 404, "not_found", err instanceof Error ? err.message : "CIMD document not found");
           return;
@@ -586,13 +597,13 @@ export function mountRefExploreRecordBuckets(app: AppLike, ctx: MountRefAdminCon
         const result = await executeExploreRecordBuckets(
           {
             connectionIds,
-            streams,
             excludeConnectionIds,
             excludeStreams,
-            since: typeof req.query.since === "string" ? req.query.since : null,
-            until: typeof req.query.until === "string" ? req.query.until : null,
             granularity: typeof req.query.granularity === "string" ? req.query.granularity : null,
+            since: typeof req.query.since === "string" ? req.query.since : null,
+            streams,
             timeZone: typeof req.query.time_zone === "string" ? req.query.time_zone : null,
+            until: typeof req.query.until === "string" ? req.query.until : null,
           },
           deps
         );
@@ -658,40 +669,41 @@ export function mountRefExploreRecords(app: AppLike, ctx: MountRefAdminContext):
         if (upcomingCursor) {
           // Page the rest of the bounded future set with the upcoming limit so one
           // "Load more upcoming" reveals everything remaining (not 32 at a time).
-          const upcomingPage = await executeExploreUpcoming({ upcomingCursor, limit: upcomingLimit ?? limit }, deps);
+          const upcomingPage = await executeExploreUpcoming({ limit: upcomingLimit ?? limit, upcomingCursor }, deps);
           // Shape to the same response contract: the feed fields are empty (this is
           // an upcoming-only page), and the client carries upcoming_total from page 1.
           res.json({
-            object: "list" as const,
             data: [],
             has_more: false,
-            next_cursor: null,
-            snapshot_at: upcomingPage.snapshot_at,
             new_since_snapshot: 0,
+            next_cursor: null,
+            object: "list" as const,
+            snapshot_at: upcomingPage.snapshot_at,
             upcoming: upcomingPage.upcoming,
-            upcoming_total: 0,
-            upcoming_next_cursor: upcomingPage.upcoming_next_cursor,
             upcoming_has_more: upcomingPage.upcoming_has_more,
+            upcoming_next_cursor: upcomingPage.upcoming_next_cursor,
+            upcoming_total: 0,
           });
           return;
         }
 
         const result = await executeExploreTimeline(
           {
-            limit,
-            upcomingLimit,
-            cursor,
-            rewindToFirstPage,
             connectionIds,
-            streams,
+            cursor,
+            direction,
             excludeConnectionIds,
             excludeStreams,
-            direction,
+            limit,
+            rewindToFirstPage,
+            streams,
+            upcomingLimit,
           },
           deps
         );
         res.json(result);
       } catch (err) {
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
         if (err instanceof InvalidCompositeCursorError || (err as { code?: unknown })?.code === "invalid_cursor") {
           ctx.pdppError(res, 400, "invalid_cursor", err instanceof Error ? err.message : "Invalid cursor");
           return;

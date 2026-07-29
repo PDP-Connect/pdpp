@@ -43,30 +43,18 @@
             "type": "string"
           },
           "calendar_name": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "summary": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "description": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "secondary"
           },
           "location": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "start": {
             "type": "string",
@@ -74,48 +62,30 @@
             "x_pdpp_role": "event-time"
           },
           "end": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "all_day": {
             "type": "boolean"
           },
           "organizer_email": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "attendees": {
             "type": "array"
           },
           "status": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "rrule": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "uid": {
             "type": "string"
           }
         },
-        "required": [
-          "id",
-          "uid",
-          "start"
-        ]
+        "required": ["id", "uid", "start"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "start",
       "consent_time_field": "start",
       "selection": {
@@ -125,32 +95,16 @@
       "incremental": true,
       "query": {
         "search": {
-          "lexical_fields": [
-            "summary",
-            "description",
-            "location"
-          ],
-          "semantic_fields": [
-            "summary",
-            "description"
-          ]
+          "lexical_fields": ["summary", "description", "location"],
+          "semantic_fields": ["summary", "description"]
         },
         "range_filters": {
-          "start": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "start": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "start"
-          ],
-          "group_by": [
-            "status"
-          ]
+          "group_by_time": ["start"],
+          "group_by": ["status"]
         }
       },
       "coverage_strategy": "snapshot_import_receipt",

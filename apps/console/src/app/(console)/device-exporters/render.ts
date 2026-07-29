@@ -57,8 +57,8 @@ export function formatLastError(error: Record<string, unknown> | null | undefine
   if (!error) {
     return "none";
   }
-  const message = error.message;
-  const code = error.code;
+  const { message } = error;
+  const { code } = error;
   if (typeof message === "string" && message.trim()) {
     return message;
   }

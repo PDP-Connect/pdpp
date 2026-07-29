@@ -501,7 +501,7 @@ test("LocalDeviceOutbox.summary aggregates large queues with one SQL pass", asyn
   try {
     const sourceInstanceId = "src-bulk";
     const futureBackoff = new Date("2026-05-19T13:00:00.000Z");
-    for (let index = 0; index < 250; index++) {
+    for (let index = 0; index < 250; index += 1) {
       outbox.enqueue({
         id: `${sourceInstanceId}:record_batch:${index}`,
         kind: "record_batch",
@@ -510,7 +510,7 @@ test("LocalDeviceOutbox.summary aggregates large queues with one SQL pass", asyn
       });
     }
     // 50 of them get pushed into "retrying" (status=ready, next_attempt_at in the future)
-    for (let index = 0; index < 50; index++) {
+    for (let index = 0; index < 50; index += 1) {
       const [claim] = outbox.claimReady({ holder: "worker-bulk", leaseMs: 60_000, sourceInstanceId });
       assert.ok(claim);
       outbox.failRetryable({
@@ -522,14 +522,14 @@ test("LocalDeviceOutbox.summary aggregates large queues with one SQL pass", asyn
       });
     }
     // 20 succeed.
-    for (let index = 0; index < 20; index++) {
+    for (let index = 0; index < 20; index += 1) {
       const [claim] = outbox.claimReady({ holder: "worker-bulk", leaseMs: 60_000, sourceInstanceId });
       assert.ok(claim);
       outbox.acknowledge({ holder: "worker-bulk", id: claim.id, leaseEpoch: claim.lease_epoch });
     }
     // 5 currently leased; advance clock so 3 of them become stale.
     const longLease: { id: string; epoch: number }[] = [];
-    for (let index = 0; index < 5; index++) {
+    for (let index = 0; index < 5; index += 1) {
       const [claim] = outbox.claimReady({
         holder: "worker-bulk",
         leaseMs: index < 3 ? 1000 : 60_000,
@@ -685,7 +685,7 @@ test("LocalDeviceOutbox preserves gap rows durably with source-instance scoping 
     assert.equal(claimedOther[0]?.id, "src-1:gap:policy-budget");
 
     // Retryable transition: a gap row can be failed retryable like any other kind.
-    const firstClaim = claimedOther[0];
+    const [firstClaim] = claimedOther;
     assert.ok(firstClaim, "expected claimed gap row");
     outbox.failRetryable({
       error: "destination not ready",
@@ -702,7 +702,7 @@ test("LocalDeviceOutbox preserves gap rows durably with source-instance scoping 
     // Dead-letter transition is reachable when terminal (e.g. malformed gap).
     now = new Date("2026-05-19T12:01:01.000Z");
     const reclaimed = outbox.claimReady({ holder: "worker-a", leaseMs: 30_000, sourceInstanceId: "src-1" });
-    const reclaim = reclaimed[0];
+    const [reclaim] = reclaimed;
     assert.ok(reclaim, "expected reclaim of the gap row");
     assert.equal(reclaim.kind, "gap");
     outbox.deadLetter({
@@ -722,7 +722,14 @@ test("LocalDeviceOutbox preserves gap rows durably with source-instance scoping 
     try {
       const items = reopened.list();
       assert.equal(items.length, 2);
-      const kinds = items.map((i) => i.kind).sort();
+      const kinds = items
+        .map((i) => i.kind)
+        .sort((a, b) => {
+          if (a < b) {
+            return -1;
+          }
+          return a > b ? 1 : 0;
+        });
       assert.deepEqual(kinds, ["gap", "gap"]);
       const payload = items.find((i) => i.id === "src-2:gap:other")?.payload as { reason: string };
       assert.equal(payload.reason, "connector_child_failure");
@@ -1007,7 +1014,7 @@ function seedFatSucceededRows(path: string, sourceInstanceId: string, count: num
        ) VALUES (?, ?, 'record_batch', 'succeeded', ?, 'hash', 0, ?, ?, ?, ?)`
     );
     db.exec("BEGIN");
-    for (let index = 0; index < count; index++) {
+    for (let index = 0; index < count; index += 1) {
       insert.run(
         `${sourceInstanceId}:fat:${index}`,
         sourceInstanceId,
@@ -1212,7 +1219,7 @@ function seedSucceededRows(path: string, sourceInstanceId: string, count: number
     );
     const stamp = "2026-05-19T12:00:00.000Z";
     db.exec("BEGIN");
-    for (let index = 0; index < count; index++) {
+    for (let index = 0; index < count; index += 1) {
       insert.run(`${sourceInstanceId}:row:${index}`, sourceInstanceId, stamp, stamp, stamp, stamp);
     }
     db.exec("COMMIT");
@@ -1260,7 +1267,7 @@ test("requeueDeadLetters requeues a backlog larger than the per-statement variab
     );
     const stamp = "2026-05-19T12:00:00.000Z";
     db.exec("BEGIN");
-    for (let index = 0; index < total; index++) {
+    for (let index = 0; index < total; index += 1) {
       insert.run(`${sourceInstanceId}:dl:${index}`, sourceInstanceId, stamp, stamp, stamp);
     }
     db.exec("COMMIT");

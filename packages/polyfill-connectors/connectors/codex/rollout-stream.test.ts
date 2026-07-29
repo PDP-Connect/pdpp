@@ -91,7 +91,7 @@ test("iterJsonlLinesFromOffset: yields each line with the byte offset just past 
 
     // committedOffset is cumulative byte length up to and including each `\n`.
     let expected = 0;
-    for (let i = 0; i < lines.length; i++) {
+    for (let i = 0; i < lines.length; i += 1) {
       expected += byteLen(lines[i] as string) + 1; // +1 for the `\n`
       assert.equal(yielded[i]?.committedOffset, expected, `line ${i} commits at the byte just past its terminator`);
     }
@@ -209,7 +209,7 @@ async function writeManyLines(path: string, lineCount: number, perLineFiller: nu
   const filler = "x".repeat(perLineFiller);
   const ws = createWriteStream(path);
   let bytes = 0;
-  for (let i = 0; i < lineCount; i++) {
+  for (let i = 0; i < lineCount; i += 1) {
     const line = `${JSON.stringify({ type: "response_item", i, payload: { type: "message", t: filler } })}\n`;
     bytes += byteLen(line);
     if (!ws.write(line)) {
@@ -244,7 +244,7 @@ test("iterJsonlLinesFromOffset: resident Buffer memory stays bounded while strea
     let count = 0;
     let lastOffset = 0;
     for await (const { committedOffset } of iterJsonlLinesFromOffset(path, 0)) {
-      count++;
+      count += 1;
       lastOffset = committedOffset;
       // Sample periodically — sampling every line would dominate runtime.
       if (count % 2048 === 0) {

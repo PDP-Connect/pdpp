@@ -22,20 +22,20 @@ export interface AsPolyfillConnectorRegisterInput {
 }
 
 export interface AsPolyfillConnectorRegisterDependencies {
-  registerConnector(manifest: Record<string, unknown>): Promise<unknown> | unknown;
+  registerConnector: (manifest: Record<string, unknown>) => Promise<unknown> | unknown;
 }
 
 export interface AsPolyfillConnectorRegisterSuccessOutcome {
+  readonly envelope: { readonly connector_id: string; readonly connector_key: string };
   readonly outcome: "success";
   readonly status: 201;
-  readonly envelope: { readonly connector_id: string; readonly connector_key: string };
 }
 
 export interface AsPolyfillConnectorRegisterFailureOutcome {
-  readonly outcome: "failure";
-  readonly status: 400;
   readonly errorCode: "invalid_request";
   readonly errorMessage: string;
+  readonly outcome: "failure";
+  readonly status: 400;
 }
 
 export type AsPolyfillConnectorRegisterOutcome =
@@ -44,27 +44,26 @@ export type AsPolyfillConnectorRegisterOutcome =
 
 export async function executeAsPolyfillConnectorRegister(
   input: AsPolyfillConnectorRegisterInput,
-  deps: AsPolyfillConnectorRegisterDependencies,
+  deps: AsPolyfillConnectorRegisterDependencies
 ): Promise<AsPolyfillConnectorRegisterOutcome> {
-  const manifest = input.manifest;
+  const { manifest } = input;
   const connectorKey =
     manifest && typeof manifest === "object" && !Array.isArray(manifest)
-      ? ((manifest as Record<string, unknown>).connector_key
-        ?? (manifest as Record<string, unknown>).connector_id)
+      ? ((manifest as Record<string, unknown>).connector_key ?? (manifest as Record<string, unknown>).connector_id)
       : undefined;
   if (typeof connectorKey !== "string" || !connectorKey) {
     return {
-      outcome: "failure",
-      status: 400,
       errorCode: "invalid_request",
       errorMessage: "Missing connector_key or connector_id",
+      outcome: "failure",
+      status: 400,
     };
   }
   const registered = await deps.registerConnector(manifest as Record<string, unknown>);
   const registeredKey = typeof registered === "string" && registered ? registered : connectorKey;
   return {
+    envelope: { connector_id: registeredKey, connector_key: registeredKey },
     outcome: "success",
     status: 201,
-    envelope: { connector_id: registeredKey, connector_key: registeredKey },
   };
 }

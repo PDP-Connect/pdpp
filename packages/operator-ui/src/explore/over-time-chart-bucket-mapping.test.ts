@@ -18,14 +18,14 @@ import { bucketKeyFromIso, mapBucketsResponseToSeries, toBucketGranularity } fro
 
 function dayResponse(): ExploreRecordBucketsResponse {
   return {
-    object: "explore_record_buckets",
-    granularity: "day",
-    time_zone: "UTC",
-    extent: { start: "2026-06-05T00:00:00.000Z", end: "2026-06-06T00:00:00.000Z", count: 42 },
     buckets: [
-      { start: "2026-06-05T00:00:00.000Z", end: "2026-06-06T00:00:00.000Z", count: 30 },
-      { start: "2026-06-06T00:00:00.000Z", end: "2026-06-07T00:00:00.000Z", count: 12 },
+      { count: 30, end: "2026-06-06T00:00:00.000Z", start: "2026-06-05T00:00:00.000Z" },
+      { count: 12, end: "2026-06-07T00:00:00.000Z", start: "2026-06-06T00:00:00.000Z" },
     ],
+    extent: { count: 42, end: "2026-06-06T00:00:00.000Z", start: "2026-06-05T00:00:00.000Z" },
+    granularity: "day",
+    object: "explore_record_buckets",
+    time_zone: "UTC",
   };
 }
 
@@ -73,14 +73,14 @@ test("quarter/year buckets key on the YYYY-MM-DD prefix (first day of the period
 
 test("a year-granularity response maps to a year series with year keys + total", () => {
   const yearResponse: ExploreRecordBucketsResponse = {
-    object: "explore_record_buckets",
-    granularity: "year",
-    time_zone: "UTC",
-    extent: { start: "2019-01-01T00:00:00.000Z", end: "2021-01-01T00:00:00.000Z", count: 500 },
     buckets: [
-      { start: "2019-01-01T00:00:00.000Z", end: "2020-01-01T00:00:00.000Z", count: 200 },
-      { start: "2020-01-01T00:00:00.000Z", end: "2021-01-01T00:00:00.000Z", count: 300 },
+      { count: 200, end: "2020-01-01T00:00:00.000Z", start: "2019-01-01T00:00:00.000Z" },
+      { count: 300, end: "2021-01-01T00:00:00.000Z", start: "2020-01-01T00:00:00.000Z" },
     ],
+    extent: { count: 500, end: "2021-01-01T00:00:00.000Z", start: "2019-01-01T00:00:00.000Z" },
+    granularity: "year",
+    object: "explore_record_buckets",
+    time_zone: "UTC",
   };
   const series = mapBucketsResponseToSeries(yearResponse, false);
   assert.equal(series.granularity, "year", "year passes through -- not snapped to month");
@@ -93,14 +93,14 @@ test("a year-granularity response maps to a year series with year keys + total",
 
 test("a quarter-granularity response maps to a quarter series", () => {
   const quarterResponse: ExploreRecordBucketsResponse = {
-    object: "explore_record_buckets",
-    granularity: "quarter",
-    time_zone: "UTC",
-    extent: { start: "2019-01-01T00:00:00.000Z", end: "2019-07-01T00:00:00.000Z", count: 90 },
     buckets: [
-      { start: "2019-01-01T00:00:00.000Z", end: "2019-04-01T00:00:00.000Z", count: 40 },
-      { start: "2019-04-01T00:00:00.000Z", end: "2019-07-01T00:00:00.000Z", count: 50 },
+      { count: 40, end: "2019-04-01T00:00:00.000Z", start: "2019-01-01T00:00:00.000Z" },
+      { count: 50, end: "2019-07-01T00:00:00.000Z", start: "2019-04-01T00:00:00.000Z" },
     ],
+    extent: { count: 90, end: "2019-07-01T00:00:00.000Z", start: "2019-01-01T00:00:00.000Z" },
+    granularity: "quarter",
+    object: "explore_record_buckets",
+    time_zone: "UTC",
   };
   const series = mapBucketsResponseToSeries(quarterResponse, false);
   assert.equal(series.granularity, "quarter", "quarter passes through -- not snapped to month");

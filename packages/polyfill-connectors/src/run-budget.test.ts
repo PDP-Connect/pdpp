@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { RunBudget } from "./run-budget.js";
+import { RunBudget } from "./run-budget.ts";
 
 test("RunBudget: no caps — never stops, tripReason always null", () => {
   const budget = new RunBudget();

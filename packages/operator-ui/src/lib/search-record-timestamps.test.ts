@@ -48,7 +48,7 @@ test("pickSearchDisplayTimestamp is non-semantic when the stream declares no tim
   // age, when it is really just-now ingestion time.
   assert.deepEqual(
     pickSearchDisplayTimestamp({
-      data: { name: "Uniwrap", canonical_name: "uniwrap" },
+      data: { canonical_name: "uniwrap", name: "Uniwrap" },
       emittedAt: "2026-07-13T12:00:00Z",
       metadata: null,
     }),

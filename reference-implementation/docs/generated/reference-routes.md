@@ -122,10 +122,10 @@ Stage a PDPP data-access request and receive a pending-consent request_uri plus 
 ### Request body
 
 `application/json`
-- `client_id` (required) — string
-- `client_display` — object
-- `scenario_id` — string
 - `authorization_details` (required) — array
+- `client_display` — object
+- `client_id` (required) — string
+- `scenario_id` — string
 
 ### Responses
 
@@ -142,11 +142,11 @@ Approve a pending data-access request through the JSON consent surface used by t
 ### Request body
 
 `application/json`
-- `request_uri` (required) — string
-- `subject_id` — string
 - `ai_training_consented` — boolean
 - `approved_source_indexes` — any
 - `confirm_approve_all` — any
+- `request_uri` (required) — string
+- `subject_id` — string
 
 ### Responses
 
@@ -259,8 +259,8 @@ Return the caller-visible source/stream capability graph. Use `view=compact` and
 ### Query parameters
 
 - `connector_id` — string · Optional owner-polyfill source hint for runtimes that expose multiple connector templates.
-- `view` — string · Set `view=compact` to return the token-efficient schema projection. Omitted or any other value returns the full schema body.
 - `stream` — string · When used with `view=compact`, narrows the schema document to connectors that contribute this stream.
+- `view` — string · Set `view=compact` to return the token-efficient schema projection. Omitted or any other value returns the full schema body.
 
 ### Responses
 
@@ -278,10 +278,10 @@ List streams available under the current grant or owner scope. Returns stream-le
 
 ### Query parameters
 
-- `connector_id` — string
-- `subject_id` — string
 - `connection_id` — string · Canonical public identifier for a connection (one owner-configured account/device/profile). Prefer this over the deprecated `connector_instance_id` alias.
+- `connector_id` — string
 - `connector_instance_id` — string · Deprecated wire alias for `connection_id`. Emitted alongside `connection_id` during the migration window. New clients SHOULD ignore this field and read `connection_id` instead.
+- `subject_id` — string
 
 ### Responses
 
@@ -299,10 +299,10 @@ Return stream metadata including declared query capabilities and advisory freshn
 
 ### Query parameters
 
-- `connector_id` — string
-- `subject_id` — string
 - `connection_id` — string · Canonical public identifier for a connection (one owner-configured account/device/profile). Prefer this over the deprecated `connector_instance_id` alias.
+- `connector_id` — string
 - `connector_instance_id` — string · Deprecated wire alias for `connection_id`. Emitted alongside `connection_id` during the migration window. New clients SHOULD ignore this field and read `connection_id` instead.
+- `subject_id` — string
 
 ### Path parameters
 
@@ -324,19 +324,19 @@ List records in a stream under grant enforcement. Supports logical-cursor pagina
 
 ### Query parameters
 
-- `limit` — integer · min: 1 · max: 100
-- `cursor` — string · Opaque logical pagination cursor. Encodes (cursor_field, primary_key) position.
-- `order` — enum `asc | desc`
 - `changes_since` — string · `beginning` for initial sync, or an opaque changes-since token from next_changes_since. Distinct from list-page cursors.
-- `fields` — string
-- `view` — string
-- `filter` — object · Per-field filter map. Exact: `filter[field]=value`. Range: `filter[field][op]=value` where `op` is one of the declared `field_capabilities.range_filter.operators` from `GET /v1/schema`.
+- `connection_id` — string · Canonical public identifier for a connection (one owner-configured account/device/profile). Prefer this over the deprecated `connector_instance_id` alias.
+- `connector_id` — string
+- `connector_instance_id` — string · Deprecated wire alias for `connection_id`. Emitted alongside `connection_id` during the migration window. New clients SHOULD ignore this field and read `connection_id` instead.
+- `cursor` — string · Opaque logical pagination cursor. Encodes (cursor_field, primary_key) position.
 - `expand` — array
 - `expand_limit` — object
-- `connector_id` — string
+- `fields` — string
+- `filter` — object · Per-field filter map. Exact: `filter[field]=value`. Range: `filter[field][op]=value` where `op` is one of the declared `field_capabilities.range_filter.operators` from `GET /v1/schema`.
+- `limit` — integer · min: 1 · max: 100
+- `order` — enum `asc | desc`
 - `subject_id` — string
-- `connection_id` — string · Canonical public identifier for a connection (one owner-configured account/device/profile). Prefer this over the deprecated `connector_instance_id` alias.
-- `connector_instance_id` — string · Deprecated wire alias for `connection_id`. Emitted alongside `connection_id` during the migration window. New clients SHOULD ignore this field and read `connection_id` instead.
+- `view` — string
 - `window` — enum `none | exact`
 
 ### Path parameters
@@ -360,18 +360,18 @@ Compute a single-stream grant-safe aggregation. Supports count, numeric sum, num
 
 ### Query parameters
 
-- `metric` — enum `count | sum | min | max | count_distinct`
+- `connection_id` — string · Canonical public identifier for a connection (one owner-configured account/device/profile). Prefer this over the deprecated `connector_instance_id` alias.
+- `connector_id` — string
+- `connector_instance_id` — string · Deprecated wire alias for `connection_id`. Emitted alongside `connection_id` during the migration window. New clients SHOULD ignore this field and read `connection_id` instead.
 - `field` — string
+- `filter` — object
+- `granularity` — enum `minute | hour | day | week | month | quarter | year`
 - `group_by` — string
 - `group_by_time` — string · Group counts into calendar time buckets over a declared date/date-time field. Mutually exclusive with `group_by`. Requires `granularity`.
-- `granularity` — enum `minute | hour | day | week | month | quarter | year`
-- `time_zone` — string · IANA time zone used to compute `group_by_time` bucket boundaries. Defaults to `UTC`; the response echoes the effective zone.
 - `limit` — integer · min: 1 · max: 100
-- `filter` — object
-- `connector_id` — string
+- `metric` — enum `count | sum | min | max | count_distinct`
 - `subject_id` — string
-- `connection_id` — string · Canonical public identifier for a connection (one owner-configured account/device/profile). Prefer this over the deprecated `connector_instance_id` alias.
-- `connector_instance_id` — string · Deprecated wire alias for `connection_id`. Emitted alongside `connection_id` during the migration window. New clients SHOULD ignore this field and read `connection_id` instead.
+- `time_zone` — string · IANA time zone used to compute `group_by_time` bucket boundaries. Defaults to `UTC`; the response echoes the effective zone.
 
 ### Path parameters
 
@@ -393,17 +393,17 @@ Fetch a single record by primary key under grant enforcement, with optional decl
 
 ### Query parameters
 
+- `connection_id` — string · Canonical public identifier for a connection (one owner-configured account/device/profile). Prefer this over the deprecated `connector_instance_id` alias.
+- `connector_id` — string
+- `connector_instance_id` — string · Deprecated wire alias for `connection_id`. Emitted alongside `connection_id` during the migration window. New clients SHOULD ignore this field and read `connection_id` instead.
 - `expand` — array
 - `expand_limit` — object
-- `connector_id` — string
 - `subject_id` — string
-- `connection_id` — string · Canonical public identifier for a connection (one owner-configured account/device/profile). Prefer this over the deprecated `connector_instance_id` alias.
-- `connector_instance_id` — string · Deprecated wire alias for `connection_id`. Emitted alongside `connection_id` during the migration window. New clients SHOULD ignore this field and read `connection_id` instead.
 
 ### Path parameters
 
-- `stream` — string
 - `id` — string
+- `stream` — string
 
 ### Responses
 
@@ -422,13 +422,13 @@ Optional lexical retrieval extension: search records across authorized streams b
 
 ### Query parameters
 
-- `q` — string
-- `limit` — integer · min: 1 · max: 100
-- `cursor` — string · Opaque logical pagination cursor. Encodes (cursor_field, primary_key) position.
-- `streams` — any
-- `filter` — object
 - `connection_id` — string · Canonical public identifier for a connection (one owner-configured account/device/profile). Prefer this over the deprecated `connector_instance_id` alias.
 - `connector_instance_id` — string · Deprecated wire alias for `connection_id`. Emitted alongside `connection_id` during the migration window. New clients SHOULD ignore this field and read `connection_id` instead.
+- `cursor` — string · Opaque logical pagination cursor. Encodes (cursor_field, primary_key) position.
+- `filter` — object
+- `limit` — integer · min: 1 · max: 100
+- `q` — string
+- `streams` — any
 
 ### Responses
 
@@ -446,13 +446,13 @@ Experimental optional extension: semantic retrieval across authorized streams by
 
 ### Query parameters
 
-- `q` — string
-- `limit` — integer · min: 1 · max: 100
-- `cursor` — string · Opaque logical pagination cursor. Encodes (cursor_field, primary_key) position.
-- `streams` — any
-- `filter` — object
 - `connection_id` — string · Canonical public identifier for a connection (one owner-configured account/device/profile). Prefer this over the deprecated `connector_instance_id` alias.
 - `connector_instance_id` — string · Deprecated wire alias for `connection_id`. Emitted alongside `connection_id` during the migration window. New clients SHOULD ignore this field and read `connection_id` instead.
+- `cursor` — string · Opaque logical pagination cursor. Encodes (cursor_field, primary_key) position.
+- `filter` — object
+- `limit` — integer · min: 1 · max: 100
+- `q` — string
+- `streams` — any
 
 ### Responses
 
@@ -470,12 +470,12 @@ Experimental optional extension: hybrid retrieval blending lexical and semantic 
 
 ### Query parameters
 
-- `q` — string
-- `limit` — integer · min: 1 · max: 100
-- `streams` — any
-- `filter` — object
 - `connection_id` — string · Canonical public identifier for a connection (one owner-configured account/device/profile). Prefer this over the deprecated `connector_instance_id` alias.
 - `connector_instance_id` — string · Deprecated wire alias for `connection_id`. Emitted alongside `connection_id` during the migration window. New clients SHOULD ignore this field and read `connection_id` instead.
+- `filter` — object
+- `limit` — integer · min: 1 · max: 100
+- `q` — string
+- `streams` — any
 
 ### Responses
 
@@ -494,8 +494,8 @@ Upload connector/runtime-owned blob bytes for a bound record.
 ### Query parameters
 
 - `connector_id` — string
-- `stream` — string
 - `record_key` — string
+- `stream` — string
 
 ### Request body
 

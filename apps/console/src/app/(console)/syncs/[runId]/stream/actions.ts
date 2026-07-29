@@ -57,7 +57,7 @@ export async function mintStreamSessionAction(input: MintStreamSessionInput): Pr
     });
   } catch (err) {
     if (err instanceof StreamingCompanionUnavailableError) {
-      throw new Error(`${STREAMING_UNAVAILABLE_TAG}${err.message}`);
+      throw new Error(`${STREAMING_UNAVAILABLE_TAG}${err.message}`, { cause: err });
     }
     throw err;
   }
@@ -66,7 +66,7 @@ export async function mintStreamSessionAction(input: MintStreamSessionInput): Pr
     getReferencePublicUrl(minted.input_path),
     getReferencePublicUrl(minted.viewport_path),
   ]);
-  return { ...minted, viewer_url, input_url, viewport_url };
+  return { ...minted, input_url, viewer_url, viewport_url };
 }
 
 export interface StreamReachFailureInput {
@@ -88,8 +88,8 @@ export interface StreamReachFailureInput {
 export async function reportStreamReachFailureAction(input: StreamReachFailureInput): Promise<void> {
   await requireDashboardAccess(`/syncs/${encodeURIComponent(input.runId)}/stream`);
   await reportRunInteractionStreamReachFailure(input.runId, {
+    httpStatus: input.httpStatus,
     interactionId: input.interactionId,
     reason: sanitizeStreamReachReason(input.reason),
-    httpStatus: input.httpStatus,
   });
 }

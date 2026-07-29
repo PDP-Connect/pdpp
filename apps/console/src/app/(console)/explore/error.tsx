@@ -21,8 +21,8 @@ import { useEffect } from "react";
  * error boundaries are Client Components).
  */
 function isInterruptedLoad(error: Error): boolean {
-  const name = error.name ?? "";
-  const message = (error.message ?? "").toLowerCase();
+  const { name, message: rawMessage } = error;
+  const message = rawMessage.toLowerCase();
   return (
     name === "AbortError" ||
     message.includes("aborted") ||
@@ -51,10 +51,10 @@ export default function ExploreError({ error, reset }: { error: Error & { digest
           : "Explore hit an unexpected error while loading your records. Your data is safe — this is a display failure, not a change. Reload to try again."}
       </p>
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        <button className={buttonVariants({ variant: "default", size: "sm" })} onClick={() => reset()} type="button">
+        <button className={buttonVariants({ size: "sm", variant: "default" })} onClick={() => reset()} type="button">
           Reload
         </button>
-        <a className={buttonVariants({ variant: "ghost", size: "sm" })} href="/">
+        <a className={buttonVariants({ size: "sm", variant: "ghost" })} href="/">
           Back to PDPP
         </a>
       </div>

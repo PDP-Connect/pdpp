@@ -135,29 +135,29 @@ export function resolveReferenceTopology({
   env = process.env,
 }: ResolveReferenceTopologyOptions = {}): ReferenceTopology {
   const mode = resolveReferenceMode({
+    asPublicUrl: asPublicUrl ?? null,
+    env,
     explicitMode: explicitMode ?? null,
     ignoreAmbient,
-    env,
-    asPublicUrl: asPublicUrl ?? null,
-    rsPublicUrl: rsPublicUrl ?? null,
     referenceOrigin: referenceOrigin ?? null,
+    rsPublicUrl: rsPublicUrl ?? null,
   });
 
   const browserOrigin =
     mode === REFERENCE_MODE_COMPOSED
       ? resolveReferenceBrowserOrigin({
+          env,
           explicitOrigin: referenceOrigin ?? null,
           requestOrigin: requestOrigin ?? null,
-          env,
         })
       : null;
 
   return {
-    mode,
-    browserOrigin,
     asInternalUrl: stripTrailingSlash(readTrimmedValue(env.PDPP_AS_URL) || DEFAULT_AS_INTERNAL_URL),
-    rsInternalUrl: stripTrailingSlash(readTrimmedValue(env.PDPP_RS_URL) || DEFAULT_RS_INTERNAL_URL),
     asPublicUrl: stripTrailingSlash(readTrimmedValue(asPublicUrl) || browserOrigin || ""),
+    browserOrigin,
+    mode,
+    rsInternalUrl: stripTrailingSlash(readTrimmedValue(env.PDPP_RS_URL) || DEFAULT_RS_INTERNAL_URL),
     rsPublicUrl: stripTrailingSlash(readTrimmedValue(rsPublicUrl) || browserOrigin || ""),
   };
 }

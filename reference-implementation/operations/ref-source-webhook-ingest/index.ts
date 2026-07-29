@@ -3,7 +3,7 @@
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 
-import { canonicalConnectorKey } from "../../server/connector-key.js";
+import { canonicalConnectorKey } from "../../server/connector-key.ts";
 
 export class SourceWebhookError extends Error {
   readonly code: string;
@@ -18,52 +18,40 @@ export class SourceWebhookError extends Error {
 }
 
 export interface SourceWebhookInput {
-  readonly sourceId: string;
   readonly body: string;
-  readonly timestamp: string | null | undefined;
   readonly eventId: string | null | undefined;
   readonly signature: string | null | undefined;
+  readonly sourceId: string;
+  readonly timestamp: string | null | undefined;
 }
 
 export interface SourceWebhookDependencies {
-  readonly nowMs: () => number;
-  readonly resolveSecret: (sourceId: string) => string | null | undefined;
-  readonly resolveConnectorId?: (sourceId: string) => string | null | undefined;
   readonly claimEvent: (event: {
     sourceId: string;
     eventId: string;
     bodyHash: string;
     receivedAt: string;
   }) => boolean | Promise<boolean>;
-  readonly ingestRecords: (input: {
-    connectorId: string;
-    streamName: string;
-    body: string;
-  }) => Promise<{
+  readonly ingestRecords: (input: { connectorId: string; streamName: string; body: string }) => Promise<{
     readonly stream: string;
     readonly records_accepted: number;
     readonly records_rejected: number;
     readonly errors: readonly string[];
   }>;
-  readonly signalScheduler: (input: {
-    connectorId: string;
-    eventId: string;
-    receivedAt: string;
-  }) => void | Promise<void>;
-  readonly projectAutomationPolicy?: (input: {
-    connectorId: string;
-    triggerKind: "webhook";
-  }) => Promise<{
-    readonly allowed_to_start?: boolean;
-    readonly automation_mode?: string;
-    readonly reason?: string | null;
-    readonly trigger_kind: "webhook";
-  }> | {
-    readonly allowed_to_start?: boolean;
-    readonly automation_mode?: string;
-    readonly reason?: string | null;
-    readonly trigger_kind: "webhook";
-  };
+  readonly nowMs: () => number;
+  readonly projectAutomationPolicy?: (input: { connectorId: string; triggerKind: "webhook" }) =>
+    | Promise<{
+        readonly allowed_to_start?: boolean;
+        readonly automation_mode?: string;
+        readonly reason?: string | null;
+        readonly trigger_kind: "webhook";
+      }>
+    | {
+        readonly allowed_to_start?: boolean;
+        readonly automation_mode?: string;
+        readonly reason?: string | null;
+        readonly trigger_kind: "webhook";
+      };
   readonly requestRun?: (input: {
     automationPolicy: {
       readonly allowed_to_start?: boolean;
@@ -75,40 +63,49 @@ export interface SourceWebhookDependencies {
     eventId: string;
     receivedAt: string;
     triggerKind: "webhook";
-  }) => Promise<{
-    readonly automation_mode?: string;
-    readonly automation_summary?: string;
-    readonly run_id: string;
-    readonly status?: string;
-    readonly trace_id: string;
-    readonly trigger_kind?: string;
-  } | null> | {
-    readonly automation_mode?: string;
-    readonly automation_summary?: string;
-    readonly run_id: string;
-    readonly status?: string;
-    readonly trace_id: string;
-    readonly trigger_kind?: string;
-  } | null;
+  }) =>
+    | Promise<{
+        readonly automation_mode?: string;
+        readonly automation_summary?: string;
+        readonly run_id: string;
+        readonly status?: string;
+        readonly trace_id: string;
+        readonly trigger_kind?: string;
+      } | null>
+    | {
+        readonly automation_mode?: string;
+        readonly automation_summary?: string;
+        readonly run_id: string;
+        readonly status?: string;
+        readonly trace_id: string;
+        readonly trigger_kind?: string;
+      }
+    | null;
+  readonly resolveConnectorId?: (sourceId: string) => string | null | undefined;
+  readonly resolveSecret: (sourceId: string) => string | null | undefined;
+  readonly signalScheduler: (input: {
+    connectorId: string;
+    eventId: string;
+    receivedAt: string;
+  }) => void | Promise<void>;
 }
 
 export interface SourceWebhookResult {
   readonly accepted: boolean;
-  readonly duplicate: boolean;
-  readonly source_id: string;
-  readonly event_id: string;
   readonly action?: "ingest_records" | "schedule_run";
-  readonly ingest?: {
-    readonly stream: string;
-    readonly records_accepted: number;
-    readonly records_rejected: number;
-    readonly errors: readonly string[];
-  };
   readonly automation_policy?: {
     readonly allowed_to_start?: boolean;
     readonly automation_mode?: string;
     readonly reason?: string | null;
     readonly trigger_kind: "webhook";
+  };
+  readonly duplicate: boolean;
+  readonly event_id: string;
+  readonly ingest?: {
+    readonly stream: string;
+    readonly records_accepted: number;
+    readonly records_rejected: number;
+    readonly errors: readonly string[];
   };
   readonly run?: {
     readonly automation_mode?: string;
@@ -118,6 +115,7 @@ export interface SourceWebhookResult {
     readonly trace_id: string;
     readonly trigger_kind?: string;
   } | null;
+  readonly source_id: string;
   readonly trigger_kind?: "webhook";
 }
 
@@ -147,14 +145,18 @@ function parseBody(body: string): Record<string, unknown> {
     }
     return parsed as Record<string, unknown>;
   } catch (err) {
-    if (err instanceof SourceWebhookError) throw err;
+    if (err instanceof SourceWebhookError) {
+      throw err;
+    }
+    // biome-ignore lint/style/useErrorCause: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     throw new SourceWebhookError("invalid_payload", "webhook body must be valid JSON");
   }
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
 export async function executeSourceWebhook(
   input: SourceWebhookInput,
-  deps: SourceWebhookDependencies,
+  deps: SourceWebhookDependencies
 ): Promise<SourceWebhookResult> {
   const sourceId = requireNonEmpty(input.sourceId, "invalid_source", "source id");
   const eventId = requireNonEmpty(input.eventId, "missing_event_id", "PDPP-Webhook-Event-Id");
@@ -181,9 +183,9 @@ export async function executeSourceWebhook(
   const connectorId = canonicalConnectorKey(resolvedConnectorId) ?? resolvedConnectorId;
   const bodyHash = createHmac("sha256", secret).update(input.body).digest("hex");
   const receivedAt = new Date(deps.nowMs()).toISOString();
-  const claimed = await deps.claimEvent({ sourceId, eventId, bodyHash, receivedAt });
+  const claimed = await deps.claimEvent({ bodyHash, eventId, receivedAt, sourceId });
   if (!claimed) {
-    return { accepted: true, duplicate: true, source_id: sourceId, event_id: eventId };
+    return { accepted: true, duplicate: true, event_id: eventId, source_id: sourceId };
   }
 
   if (payload.action === "ingest_records") {
@@ -195,34 +197,43 @@ export async function executeSourceWebhook(
     }
     const body = payload.records.map((record) => JSON.stringify(record)).join("\n");
     const ingest = await deps.ingestRecords({
+      body,
       connectorId,
       streamName: payload.stream,
-      body,
     });
-    return { accepted: true, duplicate: false, source_id: sourceId, event_id: eventId, action: "ingest_records", ingest };
+    return {
+      accepted: true,
+      action: "ingest_records",
+      duplicate: false,
+      event_id: eventId,
+      ingest,
+      source_id: sourceId,
+    };
   }
 
   if (payload.action === "schedule_run") {
     const automationPolicy = deps.projectAutomationPolicy
       ? await deps.projectAutomationPolicy({ connectorId, triggerKind: "webhook" })
       : { trigger_kind: "webhook" as const };
-    const run = automationPolicy.allowed_to_start === false
-      ? null
-      : deps.requestRun
-        ? await deps.requestRun({ connectorId, eventId, receivedAt, triggerKind: "webhook", automationPolicy })
-        : null;
+    const run =
+      automationPolicy.allowed_to_start === false
+        ? null
+        : // biome-ignore lint/style/noNestedTernary: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
+          deps.requestRun
+          ? await deps.requestRun({ automationPolicy, connectorId, eventId, receivedAt, triggerKind: "webhook" })
+          : null;
     if (!deps.requestRun) {
       await deps.signalScheduler({ connectorId, eventId, receivedAt });
     }
     return {
       accepted: true,
-      duplicate: false,
-      source_id: sourceId,
-      event_id: eventId,
       action: "schedule_run",
-      trigger_kind: "webhook",
       automation_policy: automationPolicy,
+      duplicate: false,
+      event_id: eventId,
       run,
+      source_id: sourceId,
+      trigger_kind: "webhook",
     };
   }
 

@@ -6,7 +6,7 @@
  *
  * These are shared by db.js (SQLite bootstrap) and postgres-storage.js
  * (Postgres bootstrap) without either importing from the other. A third
- * module (`stores/connector-instance-store.js`) also uses these and
+ * module (`stores/connector-instance-store.ts`) also uses these and
  * re-exports the key-derivation helpers — it cannot import from db.js or
  * postgres-storage.js without creating a circular dependency, so the
  * canonical implementations live here.
@@ -25,7 +25,7 @@ export interface SpineSource {
 }
 
 export function stableJson(value: unknown): string {
-  if (value == null) {
+  if (value === null || value === undefined) {
     return "{}";
   }
   if (Array.isArray(value)) {
@@ -75,30 +75,30 @@ export function parseSpineSourceShape(value: unknown): SpineSource | null {
   const canonicalKind = nonEmptyString(source.kind);
   const canonicalId = nonEmptyString(source.id);
   if (isSourceKind(canonicalKind) && canonicalId) {
-    return { kind: canonicalKind, id: canonicalId };
+    return { id: canonicalId, kind: canonicalKind };
   }
 
   const legacyKind = nonEmptyString(source.binding_kind);
   if (legacyKind === "connector") {
     const id = nonEmptyString(source.connector_id);
     if (id) {
-      return { kind: "connector", id };
+      return { id, kind: "connector" };
     }
   }
   if (legacyKind === "provider_native") {
     const id = nonEmptyString(source.provider_id);
     if (id) {
-      return { kind: "provider_native", id };
+      return { id, kind: "provider_native" };
     }
   }
 
   const connectorId = nonEmptyString(source.connector_id);
   const providerId = nonEmptyString(source.provider_id);
   if (connectorId && !providerId) {
-    return { kind: "connector", id: connectorId };
+    return { id: connectorId, kind: "connector" };
   }
   if (providerId && !connectorId) {
-    return { kind: "provider_native", id: providerId };
+    return { id: providerId, kind: "provider_native" };
   }
 
   return null;
@@ -128,10 +128,10 @@ function deriveSpineSourceFromPayload(payload: unknown): SpineSource | null {
   const connectorId = nonEmptyString(record.connector_id);
   const providerId = nonEmptyString(record.provider_id);
   if (connectorId && !providerId) {
-    return { kind: "connector", id: connectorId };
+    return { id: connectorId, kind: "connector" };
   }
   if (providerId && !connectorId) {
-    return { kind: "provider_native", id: providerId };
+    return { id: providerId, kind: "provider_native" };
   }
   return null;
 }
@@ -145,17 +145,17 @@ export function deriveSpineSource(payload: unknown, row: Record<string, unknown>
   const sourceKind = nonEmptyString(row.source_kind);
   const sourceId = nonEmptyString(row.source_id);
   if (isSourceKind(sourceKind) && sourceId) {
-    return { kind: sourceKind, id: sourceId };
+    return { id: sourceId, kind: sourceKind };
   }
 
   const providerId = nonEmptyString(row.provider_id);
   if (providerId) {
-    return { kind: "provider_native", id: providerId };
+    return { id: providerId, kind: "provider_native" };
   }
 
   const actorId = nonEmptyString(row.actor_id);
   if (row.actor_type === "runtime" && actorId) {
-    return { kind: "connector", id: actorId };
+    return { id: actorId, kind: "connector" };
   }
 
   return null;

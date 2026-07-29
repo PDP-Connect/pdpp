@@ -23,8 +23,8 @@
  */
 
 export interface SchemaGetSourceDescriptor {
-  kind: "connector" | "provider_native";
   id: string;
+  kind: "connector" | "provider_native";
   [extra: string]: unknown;
 }
 
@@ -36,12 +36,12 @@ export interface SchemaGetSourceDescriptor {
  * shape is a host concern.
  */
 export interface ConnectorSchemaItem {
+  connector_id?: string;
+  connector_key?: string;
   object: "connector";
   source: SchemaGetSourceDescriptor;
   stream_count: number;
   streams: Array<{ object: "stream_metadata"; name: string; [extra: string]: unknown }>;
-  connector_id?: string;
-  connector_key?: string;
   [extra: string]: unknown;
 }
 
@@ -56,13 +56,6 @@ export type SchemaGetActor =
 
 export interface SchemaGetDependencies {
   /**
-   * Returns the connector schema items the actor is allowed to see, in the
-   * order the host wants them rendered. Implementations are responsible for
-   * the actor's visibility rules (owner native binding vs owner registered
-   * connectors vs client grant scope vs sandbox fixtures).
-   */
-  listConnectorItems(): Promise<ConnectorSchemaItem[]>;
-  /**
    * Source descriptor that should appear in instrumentation events for this
    * call (`source` field on disclosure.served / query.received). Some owner
    * branches (e.g. owner with multiple registered connectors and no
@@ -70,7 +63,14 @@ export interface SchemaGetDependencies {
    * implementations may return `null` in that case to match the prior
    * native behavior.
    */
-  getSourceDescriptor(): SchemaGetSourceDescriptor | null;
+  getSourceDescriptor: () => SchemaGetSourceDescriptor | null;
+  /**
+   * Returns the connector schema items the actor is allowed to see, in the
+   * order the host wants them rendered. Implementations are responsible for
+   * the actor's visibility rules (owner native binding vs owner registered
+   * connectors vs client grant scope vs sandbox fixtures).
+   */
+  listConnectorItems: () => Promise<ConnectorSchemaItem[]>;
 }
 
 export interface SchemaGetInput {
@@ -79,13 +79,24 @@ export interface SchemaGetInput {
 
 /** `bearer` block on the schema response — bearer projection is operation-owned. */
 export interface SchemaGetBearer {
-  token_kind: "owner" | "client";
-  scope: "owner" | "grant";
-  grant_id?: string;
   client_id?: string;
+  grant_id?: string;
+  scope: "owner" | "grant";
+  token_kind: "owner" | "client";
 }
 
 export interface SchemaGetOutput {
+  /**
+   * Connector and stream counts derived from `response.connectors`. Hosts
+   * use these for the `disclosure.served` data block so the operation does
+   * not require hosts to recompute them from the response shape.
+   */
+  counts: { connector_count: number; stream_count: number };
+  /**
+   * `query.received`-shaped data block. Hosts pass this through to the
+   * disclosure spine; the operation populates the conserved fields.
+   */
+  queryData: { query_shape: "schema" };
   /** Canonical schema response envelope. */
   response: {
     object: "schema";
@@ -99,24 +110,13 @@ export interface SchemaGetOutput {
    * registered connectors).
    */
   sourceDescriptor: SchemaGetSourceDescriptor | null;
-  /**
-   * `query.received`-shaped data block. Hosts pass this through to the
-   * disclosure spine; the operation populates the conserved fields.
-   */
-  queryData: { query_shape: "schema" };
-  /**
-   * Connector and stream counts derived from `response.connectors`. Hosts
-   * use these for the `disclosure.served` data block so the operation does
-   * not require hosts to recompute them from the response shape.
-   */
-  counts: { connector_count: number; stream_count: number };
 }
 
 function projectBearer(actor: SchemaGetActor): SchemaGetBearer {
   if (actor.kind === "owner") {
-    return { token_kind: "owner", scope: "owner" };
+    return { scope: "owner", token_kind: "owner" };
   }
-  const bearer: SchemaGetBearer = { token_kind: "client", scope: "grant" };
+  const bearer: SchemaGetBearer = { scope: "grant", token_kind: "client" };
   if (actor.grant_id) {
     bearer.grant_id = actor.grant_id;
   }
@@ -135,28 +135,25 @@ function projectBearer(actor: SchemaGetActor): SchemaGetBearer {
  */
 export async function executeSchemaGet(
   input: SchemaGetInput,
-  dependencies: SchemaGetDependencies,
+  dependencies: SchemaGetDependencies
 ): Promise<SchemaGetOutput> {
   const sourceDescriptor = dependencies.getSourceDescriptor();
   const connectors = await dependencies.listConnectorItems();
   const bearer = projectBearer(input.actor);
 
-  const stream_count = connectors.reduce(
-    (sum, item) => sum + item.stream_count,
-    0,
-  );
+  const stream_count = connectors.reduce((sum, item) => sum + item.stream_count, 0);
 
   return {
-    response: {
-      object: "schema",
-      bearer,
-      connectors,
-    },
-    sourceDescriptor,
-    queryData: { query_shape: "schema" },
     counts: {
       connector_count: connectors.length,
       stream_count,
     },
+    queryData: { query_shape: "schema" },
+    response: {
+      bearer,
+      connectors,
+      object: "schema",
+    },
+    sourceDescriptor,
   };
 }

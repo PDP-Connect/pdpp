@@ -40,14 +40,14 @@ export interface RecordKindDescriptor {
 }
 
 const KIND_LABELS: Record<RecordKind, string> = {
+  activity: "activity",
+  event: "event",
+  generic: "record",
+  location: "place",
   message: "message",
   money: "money",
-  event: "event",
-  activity: "activity",
   reader: "read",
-  location: "place",
   titled: "item",
-  generic: "record",
 };
 
 // NOTE: the stream-name / field-name guessing engine (MESSAGE_STREAM_RE, MONEY_FIELD_RE,

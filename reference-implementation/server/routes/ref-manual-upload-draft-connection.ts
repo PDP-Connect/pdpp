@@ -35,24 +35,24 @@ const MANUAL_UPLOAD_ROUTE_BODY_LIMIT_BYTES = 1024 * 1024 * 1024;
 
 interface RouteRequest {
   readonly body?: unknown;
-  is?(type: string): string | false;
+  is?: (type: string) => string | false;
   ownerSession?: { readonly sub?: string | null } | null;
   readonly params: Readonly<Record<string, string>>;
   readonly query?: Readonly<Record<string, unknown>>;
 }
 
 interface RouteResponse {
-  getHeader(name: string): string | number | string[] | undefined;
-  json(body: unknown): unknown;
-  setHeader(name: string, value: string): void;
-  status(code: number): RouteResponse;
+  getHeader: (name: string) => string | number | string[] | undefined;
+  json: (body: unknown) => unknown;
+  setHeader: (name: string, value: string) => void;
+  status: (code: number) => RouteResponse;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
 
 interface AppLike {
-  get(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
-  post(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  get: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
+  post: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
 }
 
 interface TraceContext {
@@ -73,8 +73,8 @@ interface ConnectorInstance {
 }
 
 interface ConnectorInstanceStore {
-  get(connectorInstanceId: string): Promise<ConnectorInstance | null> | ConnectorInstance | null;
-  upsert(record: {
+  get: (connectorInstanceId: string) => Promise<ConnectorInstance | null> | ConnectorInstance | null;
+  upsert: (record: {
     ownerSubjectId: string;
     connectorId: string;
     displayName: string;
@@ -84,7 +84,7 @@ interface ConnectorInstanceStore {
     sourceBinding: Record<string, unknown>;
     createdAt: string;
     updatedAt: string;
-  }): Promise<ConnectorInstance> | ConnectorInstance;
+  }) => Promise<ConnectorInstance> | ConnectorInstance;
 }
 
 interface AcquisitionBatch {
@@ -106,12 +106,12 @@ interface AcquisitionBatch {
 }
 
 interface AcquisitionBatchStore {
-  findByArtifactHash(
+  findByArtifactHash: (
     ownerSubjectId: string,
     connectorId: string,
     artifactSha256: string
-  ): Promise<AcquisitionBatch | null> | AcquisitionBatch | null;
-  insertOwnerArtifactBatch(record: {
+  ) => Promise<AcquisitionBatch | null> | AcquisitionBatch | null;
+  insertOwnerArtifactBatch: (record: {
     acquisitionMethod: "owner_artifact";
     artifactSha256: string;
     connectorId: string;
@@ -127,7 +127,7 @@ interface AcquisitionBatchStore {
     status?: string;
     uploadedFileName?: string | null;
     warnings?: readonly string[];
-  }): Promise<AcquisitionBatch> | AcquisitionBatch;
+  }) => Promise<AcquisitionBatch> | AcquisitionBatch;
 }
 
 interface ManualUploadArtifact {
@@ -149,8 +149,8 @@ interface ManualUploadArtifact {
 }
 
 interface ManualUploadArtifactStore {
-  get(artifactId: string): Promise<ManualUploadArtifact | null> | ManualUploadArtifact | null;
-  insert(record: {
+  get: (artifactId: string) => Promise<ManualUploadArtifact | null> | ManualUploadArtifact | null;
+  insert: (record: {
     artifactId: string;
     artifactSha256: string;
     connectorId: string;
@@ -160,12 +160,12 @@ interface ManualUploadArtifactStore {
     ownerSubjectId: string;
     stagingPath: string;
     status?: "uploaded" | "validating" | "staged" | "duplicate" | "failed";
-  }): Promise<ManualUploadArtifact> | ManualUploadArtifact;
-  listByConnection(
+  }) => Promise<ManualUploadArtifact> | ManualUploadArtifact;
+  listByConnection: (
     connectorInstanceId: string,
     options?: { limit?: number }
-  ): Promise<ManualUploadArtifact[]> | ManualUploadArtifact[];
-  update(
+  ) => Promise<ManualUploadArtifact[]> | ManualUploadArtifact[];
+  update: (
     artifactId: string,
     patch: {
       acquisitionBatchId?: string | null;
@@ -177,25 +177,25 @@ interface ManualUploadArtifactStore {
       status?: "uploaded" | "validating" | "staged" | "duplicate" | "failed";
       validation?: ManualUploadValidationResult | null;
     }
-  ): Promise<ManualUploadArtifact | null> | ManualUploadArtifact | null;
+  ) => Promise<ManualUploadArtifact | null> | ManualUploadArtifact | null;
 }
 
 export interface MountRefManualUploadDraftConnectionContext {
-  canonicalConnectorKey(value: string | null | undefined): string | null;
-  createRequestAcquisitionBatchStore(): AcquisitionBatchStore;
-  createRequestConnectorInstanceStore(): ConnectorInstanceStore;
-  createRequestManualUploadArtifactStore(): ManualUploadArtifactStore;
-  createTraceContext(input?: { scenarioId?: string }): TraceContext;
-  emitSpineEvent(event: Record<string, unknown>): Promise<unknown>;
-  ensureRequestId(res: RouteResponse): string;
-  getOwnerSubjectId(req: unknown): string;
-  handleError(res: unknown, err: unknown): void;
+  canonicalConnectorKey: (value: string | null | undefined) => string | null;
+  createRequestAcquisitionBatchStore: () => AcquisitionBatchStore;
+  createRequestConnectorInstanceStore: () => ConnectorInstanceStore;
+  createRequestManualUploadArtifactStore: () => ManualUploadArtifactStore;
+  createTraceContext: (input?: { scenarioId?: string }) => TraceContext;
+  emitSpineEvent: (event: Record<string, unknown>) => Promise<unknown>;
+  ensureRequestId: (res: RouteResponse) => string;
+  getOwnerSubjectId: (req: unknown) => string;
+  handleError: (res: unknown, err: unknown) => void;
   importBaseDir: string;
-  now?(): string;
+  now?: () => string;
   pdppError: PdppErrorFn;
   requireOwnerSession: MiddlewareHandler;
-  resolveRegisteredConnectorManifest(connectorId: string): Promise<ConnectorManifestLike>;
-  setReferenceTraceId(res: RouteResponse, traceId: string): void;
+  resolveRegisteredConnectorManifest: (connectorId: string) => Promise<ConnectorManifestLike>;
+  setReferenceTraceId: (res: RouteResponse, traceId: string) => void;
 }
 
 function buildAuditTrace(ctx: MountRefManualUploadDraftConnectionContext, res: RouteResponse): TraceContext {
@@ -222,17 +222,8 @@ async function emitManualUploadAudit(
   const ownerSubjectId = args.ownerSubjectId ?? req.ownerSession?.sub ?? null;
   const code = (args.error as { code?: unknown } | null)?.code;
   await ctx.emitSpineEvent({
-    event_type: `owner.connection.manual_upload_draft.${args.operation}`,
-    trace_id: trace.trace_id,
-    scenario_id: trace.scenario_id,
-    request_id: trace.request_id,
-    actor_type: "owner_session",
     actor_id: ownerSubjectId ?? "owner_session",
-    subject_type: "subject",
-    subject_id: ownerSubjectId,
-    object_type: "connection",
-    object_id: args.connectionId ?? "unknown_connection",
-    status: args.outcome,
+    actor_type: "owner_session",
     data: {
       connection_id: args.connectionId ?? null,
       connector_id: args.connectorId ?? null,
@@ -240,6 +231,15 @@ async function emitManualUploadAudit(
       outcome: args.outcome,
       ...(args.error ? { error: { code: typeof code === "string" ? code : "api_error" } } : {}),
     },
+    event_type: `owner.connection.manual_upload_draft.${args.operation}`,
+    object_id: args.connectionId ?? "unknown_connection",
+    object_type: "connection",
+    request_id: trace.request_id,
+    scenario_id: trace.scenario_id,
+    status: args.outcome,
+    subject_id: ownerSubjectId,
+    subject_type: "subject",
+    trace_id: trace.trace_id,
   });
 }
 
@@ -422,7 +422,7 @@ async function writeUploadBodyToPath(
     const writeChunk = async (raw: Buffer | Uint8Array | string) => {
       const chunk = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
       fileSizeBytes += chunk.length;
-      if (maxFileBytes != null && fileSizeBytes > maxFileBytes) {
+      if (maxFileBytes !== null && fileSizeBytes > maxFileBytes) {
         throw manualUploadTooLargeError(maxFileBytes);
       }
       hash.update(chunk);
@@ -495,18 +495,18 @@ function manualUploadArtifactNextStep(artifact: ManualUploadArtifact): Record<st
 function publicArtifact(artifact: ManualUploadArtifact): Record<string, unknown> {
   const connectionId = artifact.connectorInstanceId ?? null;
   return {
-    object: "manual_upload_artifact",
     artifact_id: artifact.artifactId,
+    batch_id: artifact.acquisitionBatchId ?? null,
     connection_id: connectionId,
-    connector_instance_id: connectionId,
     connector_id: artifact.connectorId,
+    connector_instance_id: connectionId,
+    error: artifact.error ?? null,
     file_name: artifact.fileName,
+    next_step: manualUploadArtifactNextStep(artifact),
+    object: "manual_upload_artifact",
     size_bytes: artifact.fileSizeBytes ?? null,
     status: artifact.status,
     validation: artifact.validation ?? null,
-    error: artifact.error ?? null,
-    batch_id: artifact.acquisitionBatchId ?? null,
-    next_step: manualUploadArtifactNextStep(artifact),
   };
 }
 
@@ -526,20 +526,20 @@ async function createManualUploadDraftConnection(
   const now = ctx.now ? ctx.now() : new Date().toISOString();
   await mkdir(importDir, { recursive: true });
   const connection = await store.upsert({
-    ownerSubjectId: args.ownerSubjectId,
     connectorId: args.connectorId,
+    createdAt: now,
     displayName: args.displayName,
-    status: "draft",
-    sourceKind: "manual",
-    sourceBindingKey,
+    ownerSubjectId: args.ownerSubjectId,
     sourceBinding: {
-      kind: "manual_upload_draft",
+      acquisition_method: "owner_artifact",
       import_dir: importDir,
       import_dir_env_var: args.setup.importDirEnvVar,
-      acquisition_method: "owner_artifact",
+      kind: "manual_upload_draft",
       staged_upload: true,
     },
-    createdAt: now,
+    sourceBindingKey,
+    sourceKind: "manual",
+    status: "draft",
     updatedAt: now,
   });
   return { connection, importDir, sourceBindingKey };
@@ -564,7 +564,7 @@ async function validateAndStageArtifact(
   if (!artifact) {
     return;
   }
-  await artifactStore.update(args.artifactId, { status: "validating", error: null });
+  await artifactStore.update(args.artifactId, { error: null, status: "validating" });
   try {
     const fileBytes = await readFile(artifact.stagingPath);
     const validation = validateManualUploadArtifact(args.setup.validation?.kind ?? null, fileBytes, {
@@ -573,12 +573,12 @@ async function validateAndStageArtifact(
     });
     if (validation && validation.status !== "valid") {
       await artifactStore.update(args.artifactId, {
-        status: "failed",
-        validation,
         error: {
           code: `import_file_${validation.status}`,
           message: validation.remediation ?? "Choose a supported import file.",
         },
+        status: "failed",
+        validation,
       });
       await rm(artifact.stagingPath, { force: true }).catch(() => undefined);
       return;
@@ -617,7 +617,7 @@ async function validateAndStageArtifact(
         })
       : null;
     const connection =
-      targetConnection == null
+      targetConnection === null
         ? {
             ...(await createManualUploadDraftConnection(ctx, {
               connectorId: args.connectorId,
@@ -669,6 +669,7 @@ async function validateAndStageArtifact(
       : null;
 
     await artifactStore.update(args.artifactId, {
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
       acquisitionBatchId: batch?.batchId ?? null,
       connectorInstanceId: connection.connection.connectorInstanceId,
       finalPath,
@@ -677,11 +678,12 @@ async function validateAndStageArtifact(
     });
   } catch (err) {
     await artifactStore.update(args.artifactId, {
-      status: "failed",
       error: {
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
         code: (err as { code?: unknown })?.code === "manual_upload_too_large" ? "import_file_too_large" : "api_error",
         message: err instanceof Error ? err.message : "Manual upload validation failed.",
       },
+      status: "failed",
     });
   }
 }
@@ -708,6 +710,7 @@ async function sendValidationPreviewResponse(
     );
   }
   await emitManualUploadAudit(ctx, req, res, {
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     connectionId: duplicateBatch?.connectorInstanceId ?? null,
     connectorId: args.connectorId,
     operation: "validate",
@@ -715,20 +718,8 @@ async function sendValidationPreviewResponse(
     ownerSubjectId: args.ownerSubjectId,
   });
   res.status(200).json({
-    object: "manual_upload_validation_preview",
     connector_id: args.connectorId,
     display_name: args.displayName,
-    uploaded_file_name: args.fileName,
-    validation:
-      duplicateBatch && args.validation
-        ? {
-            ...args.validation,
-            remediation:
-              args.validation.remediation ??
-              "This exact file was already imported. Review the existing coverage receipt instead of importing it again.",
-            status: "duplicate",
-          }
-        : args.validation,
     duplicate: duplicateBatch
       ? {
           batch_id: duplicateBatch.batchId,
@@ -741,15 +732,27 @@ async function sendValidationPreviewResponse(
       ? {
           kind: "show_status",
           method: "GET",
-          url: `/_ref/connections/${encodeURIComponent(duplicateBatch.connectorInstanceId)}/setup-status`,
           reason: "This exact artifact is already known. Review the existing coverage receipt.",
+          url: `/_ref/connections/${encodeURIComponent(duplicateBatch.connectorInstanceId)}/setup-status`,
         }
       : {
           kind: "confirm_import",
           method: "POST",
-          url: `/_ref/connectors/${encodeURIComponent(args.connectorId)}/manual-upload-draft-connection`,
           reason: "Review the preview, then import this file if it matches the source you expected.",
+          url: `/_ref/connectors/${encodeURIComponent(args.connectorId)}/manual-upload-draft-connection`,
         },
+    object: "manual_upload_validation_preview",
+    uploaded_file_name: args.fileName,
+    validation:
+      duplicateBatch && args.validation
+        ? {
+            ...args.validation,
+            remediation:
+              args.validation.remediation ??
+              "This exact file was already imported. Review the existing coverage receipt instead of importing it again.",
+            status: "duplicate",
+          }
+        : args.validation,
   });
 }
 
@@ -785,27 +788,27 @@ async function maybeSendKnownArtifactResponse(
     ownerSubjectId: args.ownerSubjectId,
   });
   res.status(200).json({
-    object: "manual_upload_known_artifact",
     batch_id: existingBatch.batchId,
     connection_id: existingBatch.connectorInstanceId,
-    connector_instance_id: existingBatch.connectorInstanceId,
     connector_id: args.connectorId,
+    connector_instance_id: existingBatch.connectorInstanceId,
     display_name: args.displayName,
+    next_step: {
+      kind: "show_status",
+      method: "GET",
+      reason: "This exact artifact is already known. Review the existing coverage receipt.",
+      url: `/_ref/connections/${encodeURIComponent(existingBatch.connectorInstanceId)}/setup-status`,
+    },
+    object: "manual_upload_known_artifact",
+    receipt: publicBatchReceipt(existingBatch),
     status: existingBatch.status,
+    uploaded_file_name: args.fileName,
     validation: {
       ...args.validation,
       remediation:
         args.validation.remediation ??
         "This file was already imported. Review the existing coverage receipt instead of running another import.",
       status: "duplicate",
-    },
-    uploaded_file_name: args.fileName,
-    receipt: publicBatchReceipt(existingBatch),
-    next_step: {
-      kind: "show_status",
-      method: "GET",
-      url: `/_ref/connections/${encodeURIComponent(existingBatch.connectorInstanceId)}/setup-status`,
-      reason: "This exact artifact is already known. Review the existing coverage receipt.",
     },
   });
   return true;
@@ -832,8 +835,8 @@ async function createAndSendDraftResponse(
   const targetConnection = args.targetConnectionId
     ? await resolveManualUploadTargetConnection(ctx, req, res, {
         connectorId: args.connectorId,
-        ownerSubjectId: args.ownerSubjectId,
         operation: "create",
+        ownerSubjectId: args.ownerSubjectId,
         store,
         targetConnectionId: args.targetConnectionId,
       })
@@ -856,21 +859,21 @@ async function createAndSendDraftResponse(
   } else {
     try {
       instance = await store.upsert({
-        ownerSubjectId: args.ownerSubjectId,
         connectorId: args.connectorId,
+        createdAt: now,
         displayName: args.displayName,
-        status: "draft",
-        sourceKind: "manual",
-        sourceBindingKey,
+        ownerSubjectId: args.ownerSubjectId,
         sourceBinding: {
-          kind: "manual_upload_draft",
+          acquisition_method: "owner_artifact",
           import_dir: importDir,
           import_dir_env_var: args.setup.importDirEnvVar,
           import_validation: args.validation,
-          acquisition_method: "owner_artifact",
+          kind: "manual_upload_draft",
           uploaded_file_name: args.fileName,
         },
-        createdAt: now,
+        sourceBindingKey,
+        sourceKind: "manual",
+        status: "draft",
         updatedAt: now,
       });
     } catch (err) {
@@ -909,23 +912,24 @@ async function createAndSendDraftResponse(
     ownerSubjectId: args.ownerSubjectId,
   });
   res.status(201).json({
-    object: "manual_upload_draft_connection",
-    connection_id: connectionId,
-    connector_instance_id: connectionId,
-    connector_id: args.connectorId,
-    display_name: responseDisplayName,
-    status: instance.status,
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     batch_id: acquisitionBatch?.batchId ?? null,
-    validation: args.validation,
-    uploaded_file_name: args.fileName,
+    connection_id: connectionId,
+    connector_id: args.connectorId,
+    connector_instance_id: connectionId,
+    display_name: responseDisplayName,
     next_step: {
       kind: "run_connection",
       method: "POST",
-      url: `/_ref/connections/${encodeURIComponent(connectionId)}/run`,
       reason: targetConnection
         ? "Run this import for the existing manual-upload connection."
         : "Start the first sync for this manual-upload connection. The connection stays invisible until its first successful ingest.",
+      url: `/_ref/connections/${encodeURIComponent(connectionId)}/run`,
     },
+    object: "manual_upload_draft_connection",
+    status: instance.status,
+    uploaded_file_name: args.fileName,
+    validation: args.validation,
   });
 }
 
@@ -1052,9 +1056,8 @@ function mountGetSetup(app: AppLike, ctx: MountRefManualUploadDraftConnectionCon
           return;
         }
         res.status(200).json({
-          object: "manual_upload_setup",
-          connector_id: connectorId,
-          display_name: displayNameForConnector(connectorId, manifest),
+          accepted_file_extensions: setup.acceptedFileExtensions,
+          accepted_file_names: setup.acceptedFileNames,
           acquisition_methods: setup.acquisitionMethods.map((method) => ({
             detail: method.detail,
             help_url: method.helpUrl,
@@ -1062,14 +1065,15 @@ function mountGetSetup(app: AppLike, ctx: MountRefManualUploadDraftConnectionCon
             platform: method.platform,
             posture: method.posture,
           })),
-          accepted_file_extensions: setup.acceptedFileExtensions,
-          accepted_file_names: setup.acceptedFileNames,
-          label: setup.label,
+          connector_id: connectorId,
           description: setup.description,
-          help_url: setup.helpUrl,
+          display_name: displayNameForConnector(connectorId, manifest),
           help_text: setup.helpText,
+          help_url: setup.helpUrl,
+          label: setup.label,
           large_file_fallback: setup.largeFileFallback,
           max_file_bytes: setup.validation?.maxFileBytes ?? null,
+          object: "manual_upload_setup",
           validation_expectations: setup.validationExpectations,
         });
       } catch (err) {
@@ -1114,8 +1118,8 @@ function mountPostValidationPreview(app: AppLike, ctx: MountRefManualUploadDraft
         if (targetConnectionId) {
           targetConnection = await resolveManualUploadTargetConnection(ctx, req, res, {
             connectorId,
-            ownerSubjectId,
             operation: "validate",
+            ownerSubjectId,
             store: ctx.createRequestConnectorInstanceStore(),
             targetConnectionId,
           });
@@ -1238,8 +1242,8 @@ function mountPostStagedArtifact(app: AppLike, ctx: MountRefManualUploadDraftCon
         if (targetConnectionId) {
           targetConnection = await resolveManualUploadTargetConnection(ctx, req, res, {
             connectorId,
-            ownerSubjectId,
             operation: "create",
+            ownerSubjectId,
             store: ctx.createRequestConnectorInstanceStore(),
             targetConnectionId,
           });
@@ -1253,6 +1257,7 @@ function mountPostStagedArtifact(app: AppLike, ctx: MountRefManualUploadDraftCon
           artifactId,
           artifactSha256: written.sha256,
           connectorId,
+          // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
           connectorInstanceId: targetConnection?.connectorInstanceId ?? null,
           fileName,
           fileSizeBytes: written.fileSizeBytes,
@@ -1275,6 +1280,7 @@ function mountPostStagedArtifact(app: AppLike, ctx: MountRefManualUploadDraftCon
         });
 
         await emitManualUploadAudit(ctx, req, res, {
+          // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
           connectionId: targetConnection?.connectorInstanceId ?? null,
           connectorId,
           operation: "create",
@@ -1283,6 +1289,7 @@ function mountPostStagedArtifact(app: AppLike, ctx: MountRefManualUploadDraftCon
         });
         res.status(202).json(publicArtifact(artifact));
       } catch (err) {
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
         if ((err as { code?: unknown })?.code === "manual_upload_too_large" && ownerSubjectId) {
           await rejectManualUploadRequest(ctx, req, res, {
             connectorId,
@@ -1296,6 +1303,7 @@ function mountPostStagedArtifact(app: AppLike, ctx: MountRefManualUploadDraftCon
           });
           return;
         }
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
         if ((err as { code?: unknown })?.code === "import_file_required" && ownerSubjectId) {
           await rejectManualUploadRequest(ctx, req, res, {
             connectorId,
@@ -1454,19 +1462,19 @@ function receiptFromValidation(
 
 function publicBatchReceipt(batch: AcquisitionBatch): Record<string, unknown> {
   return {
-    batch_id: batch.batchId,
+    accepted_count: batch.acceptedCount ?? null,
     acquisition_method: "owner_artifact",
+    batch_id: batch.batchId,
     date_range: {
-      start: batch.eventTimeStart ?? null,
       end: batch.eventTimeEnd ?? null,
+      start: batch.eventTimeStart ?? null,
     },
     detected_format: batch.sourceFormat ?? null,
-    parsed_count: batch.parsedCount ?? null,
-    accepted_count: batch.acceptedCount ?? null,
     duplicate_count: batch.duplicateCount ?? null,
-    skipped_count: batch.skippedCount ?? null,
     failed_count: batch.failedCount ?? null,
     media_coverage: batch.mediaCoverage ?? null,
+    parsed_count: batch.parsedCount ?? null,
+    skipped_count: batch.skippedCount ?? null,
     status: batch.status,
     uploaded_file_name: batch.uploadedFileName ?? null,
     warnings: batch.warnings ?? [],

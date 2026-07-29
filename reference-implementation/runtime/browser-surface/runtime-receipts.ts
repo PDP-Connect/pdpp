@@ -99,9 +99,9 @@ export function evaluateLastSuccessfulRuntimeReceipt(
     receipt.lifecycle.every((phase, index) => phase === REQUIRED_LIFECYCLE[index]) &&
     hasBoundedCompletion(receipt, context);
   if (!valid) {
-    return { valid: false, authority: "historical_only", lifecycle: null, receipt: null };
+    return { authority: "historical_only", lifecycle: null, receipt: null, valid: false };
   }
-  return { valid: true, authority: "historical_only", lifecycle: REQUIRED_LIFECYCLE, receipt };
+  return { authority: "historical_only", lifecycle: REQUIRED_LIFECYCLE, receipt, valid: true };
 }
 
 function eventMatchesContext(event: RuntimeLifecycleEvent, context: RuntimeReceiptContext): boolean {
@@ -135,25 +135,25 @@ export function buildLastSuccessfulRuntimeReceipt(
     completed.succeeded !== true ||
     released?.event_type !== "run.browser_surface_released"
   ) {
-    return { valid: false, authority: "historical_only", lifecycle: null, receipt: null };
+    return { authority: "historical_only", lifecycle: null, receipt: null, valid: false };
   }
   const readyAt = Date.parse(ready.occurred_at);
   const completedAt = Date.parse(completed.occurred_at);
   const releasedAt = Date.parse(released.occurred_at);
   if (!(Number.isFinite(readyAt) && readyAt <= completedAt && completedAt <= releasedAt)) {
-    return { valid: false, authority: "historical_only", lifecycle: null, receipt: null };
+    return { authority: "historical_only", lifecycle: null, receipt: null, valid: false };
   }
   const receipt: LastSuccessfulRuntimeReceipt = {
+    completed_at: completed.occurred_at,
     connection_id: context.connection_id,
     connector_id: context.connector_id,
+    generation: context.generation,
+    lease_id: context.lease_id,
+    lifecycle: REQUIRED_LIFECYCLE,
     profile_key: context.profile_key,
     run_id: context.run_id,
-    surface_subject_id: context.surface_subject_id,
     surface_id: context.surface_id,
-    lease_id: context.lease_id,
-    generation: context.generation,
-    lifecycle: REQUIRED_LIFECYCLE,
-    completed_at: completed.occurred_at,
+    surface_subject_id: context.surface_subject_id,
   };
   return evaluateLastSuccessfulRuntimeReceipt(receipt, context);
 }

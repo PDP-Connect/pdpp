@@ -36,6 +36,10 @@ async function fetchAs(path: string, init: RequestInit): Promise<Response> {
       })
     );
   } catch (err) {
+    // ReferenceServerUnreachableError already threads `err` through to
+    // Error's native `cause` (see its constructor in owner-token.ts); Biome's
+    // syntactic check doesn't look inside a custom class to see that.
+    // biome-ignore lint/style/useErrorCause: see comment above.
     throw new ReferenceServerUnreachableError(`Cannot reach authorization server at ${getAsInternalUrl()}`, err);
   }
 }
@@ -48,12 +52,12 @@ async function fetchAs(path: string, init: RequestInit): Promise<Response> {
  */
 export async function approveConsentRequest(requestUri: string, subjectId = "owner_local") {
   const response = await fetchAs("/consent/approve", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       request_uri: requestUri,
       subject_id: subjectId,
     }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
   });
   const body = await readBody(response);
   if (!response.ok) {
@@ -64,11 +68,11 @@ export async function approveConsentRequest(requestUri: string, subjectId = "own
 
 export async function denyConsentRequest(requestUri: string) {
   const response = await fetchAs("/consent/deny", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       request_uri: requestUri,
     }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
   });
   const body = await readBody(response);
   if (!response.ok) {
@@ -90,12 +94,12 @@ export async function approvePendingApproval(input: {
 
   if (input.kind === "consent") {
     const response = await fetchAs("/consent/approve", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         approval_id: input.approvalId,
         subject_id: subjectId,
       }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
     });
     const body = await readBody(response);
     if (!response.ok) {
@@ -105,12 +109,12 @@ export async function approvePendingApproval(input: {
   }
 
   const response = await fetchAs("/device/approve", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: asForm({
       approval_id: input.approvalId,
       subject_id: subjectId,
     }),
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    method: "POST",
   });
   const body = await readBody(response);
   if (!response.ok) {
@@ -132,11 +136,11 @@ export async function denyPendingApproval(input: {
 
   if (input.kind === "consent") {
     const response = await fetchAs("/consent/deny", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         approval_id: input.approvalId,
       }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
     });
     const body = await readBody(response);
     if (!response.ok) {
@@ -146,12 +150,12 @@ export async function denyPendingApproval(input: {
   }
 
   const response = await fetchAs("/device/deny", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: asForm({
       approval_id: input.approvalId,
       subject_id: subjectId,
     }),
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    method: "POST",
   });
   const body = await readBody(response);
   if (!response.ok) {

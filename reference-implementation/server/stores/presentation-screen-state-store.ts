@@ -1,8 +1,9 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { getDb } from "../db.js";
-import { isPostgresStorageBackend, postgresQuery } from "../postgres-storage.js";
+import { isNullish } from "../../lib/nullish.ts";
+import { getDb } from "../db.ts";
+import { isPostgresStorageBackend, postgresQuery } from "../postgres-storage.ts";
 
 export interface PresentationScreenConfiguration {
   readonly height: number;
@@ -19,10 +20,10 @@ export interface UnrestoredPresentationScreen {
 }
 
 export interface PresentationScreenStateStore {
-  captureBaseline(record: UnrestoredPresentationScreen): Promise<void> | void;
-  listUnrestored(): Promise<readonly UnrestoredPresentationScreen[]> | readonly UnrestoredPresentationScreen[];
-  markRecycled(browserSessionId: string, recycledAt: string): Promise<void> | void;
-  markRestored(browserSessionId: string, restoredAt: string): Promise<void> | void;
+  captureBaseline: (record: UnrestoredPresentationScreen) => Promise<void> | void;
+  listUnrestored: () => Promise<readonly UnrestoredPresentationScreen[]> | readonly UnrestoredPresentationScreen[];
+  markRecycled: (browserSessionId: string, recycledAt: string) => Promise<void> | void;
+  markRestored: (browserSessionId: string, restoredAt: string) => Promise<void> | void;
 }
 
 interface Row {
@@ -40,14 +41,14 @@ function configuration(value: unknown): PresentationScreenConfiguration | null {
   const candidate = value as Record<string, unknown>;
   const width = Number(candidate.width);
   const height = Number(candidate.height);
-  const rate = candidate.rate == null ? undefined : Number(candidate.rate);
+  const rate = isNullish(candidate.rate) ? undefined : Number(candidate.rate);
   if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0) {
     return null;
   }
   if (rate !== undefined && (!Number.isFinite(rate) || rate <= 0)) {
     return null;
   }
-  return { width, height, ...(rate === undefined ? {} : { rate }) };
+  return { height, width, ...(rate === undefined ? {} : { rate }) };
 }
 
 function rowToRecord(row: Row): UnrestoredPresentationScreen | null {
@@ -64,11 +65,11 @@ function rowToRecord(row: Row): UnrestoredPresentationScreen | null {
     return null;
   }
   return {
+    baseline: normalized,
     browserSessionId: row.browser_session_id,
     capturedAt: row.captured_at,
     leaseId: row.lease_id,
     surfaceId: row.surface_id,
-    baseline: normalized,
   };
 }
 
@@ -138,7 +139,7 @@ export function createPresentationScreenStateStore(): PresentationScreenStateSto
           `SELECT browser_session_id, surface_id, lease_id, baseline_json, captured_at
            FROM presentation_screen_states WHERE resolution IS NULL ORDER BY captured_at ASC`
         )
-        .all()
+        .all<Row>()
         .map(rowToRecord)
         .filter((row: UnrestoredPresentationScreen | null): row is UnrestoredPresentationScreen => row !== null);
     },

@@ -91,10 +91,10 @@ export interface SchedulerStats {
 }
 
 export interface Scheduler {
-  getHistory(): RunRecord[];
-  getStats(): SchedulerStats;
-  start(): void;
-  stop(): void;
+  getHistory: () => RunRecord[];
+  getStats: () => SchedulerStats;
+  start: () => void;
+  stop: () => void;
 }
 
 // biome-ignore lint/performance/noBarrelFile: intentional facade — scheduler.ts is the single public entry point and re-exports the retry classifier's public surface so consumers keep one import path.
@@ -197,11 +197,11 @@ function buildRuntime(): SchedulerRuntime {
     exhaustedGrants: new Set(),
     history: [],
     lastRunTime: new Map(),
+    notifiedAttentionSkips: new Map(),
+    notifiedCooldownIdentity: new Map(),
     notifiedDisabledGrantFailures: new Set(),
     notifiedNeedsHumanSkips: new Set(),
     notifiedNotReadySkips: new Map(),
-    notifiedAttentionSkips: new Map(),
-    notifiedCooldownIdentity: new Map(),
     running: false,
     timers: [],
   };
@@ -209,22 +209,22 @@ function buildRuntime(): SchedulerRuntime {
 
 function toStoredRunRecord(record: RunRecord): SchedulerRunHistoryRecord {
   const stored: SchedulerRunHistoryRecord = {
+    attempt: record.attempt,
+    checkpointSummary: record.checkpointSummary,
+    completedAt: record.completedAt,
+    connectorError: record.connectorError ? { ...record.connectorError } : null,
     connectorId: record.connectorId,
     connectorInstanceId: record.connectorInstanceId ?? null,
-    source: { ...record.source },
-    status: record.status,
+    failureReason: record.failureReason ?? null,
+    knownGaps: record.knownGaps,
     recordsEmitted: record.recordsEmitted,
     reportedRecordsEmitted: record.reportedRecordsEmitted ?? null,
-    checkpointSummary: record.checkpointSummary,
-    knownGaps: record.knownGaps,
-    connectorError: record.connectorError ? { ...record.connectorError } : null,
     runId: record.runId ?? null,
-    traceId: record.traceId ?? null,
-    failureReason: record.failureReason ?? null,
-    terminalReason: record.terminalReason ?? null,
+    source: { ...record.source },
     startedAt: record.startedAt,
-    completedAt: record.completedAt,
-    attempt: record.attempt,
+    status: record.status,
+    terminalReason: record.terminalReason ?? null,
+    traceId: record.traceId ?? null,
   };
   if (record.error !== undefined) {
     return { ...stored, error: record.error };
@@ -238,24 +238,24 @@ function fromStoredRunRecord(record: SchedulerRunHistoryRecord): RunRecord {
     sourceId = record.source.id;
   }
   const restored: RunRecord = {
+    attempt: record.attempt,
+    checkpointSummary: record.checkpointSummary,
+    completedAt: record.completedAt,
     connectorId: record.connectorId,
     connectorInstanceId: record.connectorInstanceId ?? null,
-    source: {
-      kind: "connector",
-      id: sourceId,
-    },
-    status: record.status,
+    failureReason: record.failureReason ?? null,
+    knownGaps: record.knownGaps,
     recordsEmitted: record.recordsEmitted,
     reportedRecordsEmitted: record.reportedRecordsEmitted ?? null,
-    checkpointSummary: record.checkpointSummary,
-    knownGaps: record.knownGaps,
     runId: record.runId ?? null,
-    traceId: record.traceId ?? null,
-    failureReason: record.failureReason ?? null,
-    terminalReason: (record.terminalReason ?? null) as TerminalReason | null,
+    source: {
+      id: sourceId,
+      kind: "connector",
+    },
     startedAt: record.startedAt,
-    completedAt: record.completedAt,
-    attempt: record.attempt,
+    status: record.status,
+    terminalReason: (record.terminalReason ?? null) as TerminalReason | null,
+    traceId: record.traceId ?? null,
   };
   return {
     ...restored,
@@ -323,6 +323,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     hasUnresolvedAttention = () => null,
     getSourcePressureGaps = () => [],
     getNonPressureRecoverableCount = async () => 0,
+    getForwardEvidenceDebt = async () => false,
     getLastSuccessfulRunAt = async () => null,
     isManagedConnector = () => false,
     maxRunWallClockMs,
@@ -394,8 +395,8 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     isNeedsHuman,
     onHumanRequiredStateEscalation,
     readinessChecker,
-    runtime,
     recordAndNotify,
+    runtime,
   });
 
   const runExecutor = createRunExecutor({
@@ -412,8 +413,8 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     registerRunCancellation,
     resolveStaticSecretRunEnv,
     rsUrl,
-    runtime,
     runManagedConnectorViaController,
+    runtime,
     schedulerStore,
     setState,
   });
@@ -428,8 +429,8 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     const recoveryOnly = options.recoveryOnly === true;
     const triggerKind: RunTriggerKind = isManual ? "manual" : "scheduled";
     const automationPolicy = projectRunAutomationPolicy({
-      triggerKind,
       refreshPolicy: getManifestRefreshPolicy(manifest),
+      triggerKind,
     });
 
     if (runtime.activeRuns.has(key)) {
@@ -477,6 +478,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
   }
 
   const dispatchGovernor = createDispatchGovernor({
+    getForwardEvidenceDebt,
     getLastSuccessfulRunAt,
     getNonPressureRecoverableCount,
     getSourcePressureGaps,
@@ -577,17 +579,17 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       const key = runtimeKey(schedule);
       const runs = runtime.history.filter((r) => (r.connectorInstanceId || r.connectorId) === key);
       stats[key] = {
-        totalRuns: runs.length,
-        succeeded: runs.filter((r) => r.status === "succeeded").length,
         failed: runs.filter((r) => r.status === "failed").length,
-        totalRecords: runs.reduce((sum, r) => sum + r.recordsEmitted, 0),
         lastRun: runs.at(-1) ?? null,
+        succeeded: runs.filter((r) => r.status === "succeeded").length,
+        totalRecords: runs.reduce((sum, r) => sum + r.recordsEmitted, 0),
+        totalRuns: runs.length,
       };
     }
     return stats;
   }
 
-  return { start, stop, getHistory, getStats };
+  return { getHistory, getStats, start, stop };
 }
 
 // ─── Observations for the post-experiment memo ──────────────────────────────

@@ -191,7 +191,7 @@ export async function scanLocalJsonl({ onLine, path, prior }: ScanLocalJsonlArgs
         // committed prefix the callback observed, including the LF boundary.
         deliveredPrefix.update(pending.subarray(0, lineEnd + 1));
         await onLine(pending.subarray(0, lineEnd));
-        linesDelivered++;
+        linesDelivered += 1;
         committed += lineEnd + 1;
         pending = pending.subarray(lineEnd + 1);
         lineEnd = pending.indexOf(0x0a);

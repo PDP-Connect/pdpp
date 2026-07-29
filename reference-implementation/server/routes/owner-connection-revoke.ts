@@ -97,18 +97,18 @@ interface RouteRequest {
 }
 
 interface RouteResponse {
-  end(): unknown;
-  getHeader(name: string): string | number | string[] | undefined;
-  json(body: unknown): unknown;
-  setHeader(name: string, value: string): void;
-  status(code: number): RouteResponse;
+  end: () => unknown;
+  getHeader: (name: string) => string | number | string[] | undefined;
+  json: (body: unknown) => unknown;
+  setHeader: (name: string, value: string) => void;
+  status: (code: number) => RouteResponse;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
 type NextFn = () => unknown | Promise<unknown>;
 
 interface AppLike {
-  post(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  post: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
 }
 
 interface RevokedInstance {
@@ -126,34 +126,34 @@ export interface MountOwnerConnectionRevokeContext {
     message: string,
     availableConnections: WireConnection[]
   ) => AmbiguousConnectionErrorLike;
-  canonicalConnectorKey(value: string | null | undefined): string | null;
-  createTraceContext(input?: { scenarioId?: string }): TraceContext;
-  emitSpineEvent(event: Record<string, unknown>): Promise<unknown>;
-  ensureRequestId(res: RouteResponse): string;
-  getOwnerTokenSubjectId(req: unknown): string;
-  handleError(res: unknown, err: unknown): void;
-  invalidateConnectorSummariesCache?(): void;
+  canonicalConnectorKey: (value: string | null | undefined) => string | null;
+  createTraceContext: (input?: { scenarioId?: string }) => TraceContext;
+  emitSpineEvent: (event: Record<string, unknown>) => Promise<unknown>;
+  ensureRequestId: (res: RouteResponse) => string;
+  getOwnerTokenSubjectId: (req: unknown) => string;
+  handleError: (res: unknown, err: unknown) => void;
+  invalidateConnectorSummariesCache?: () => void;
   // Lists the owner's active connection bindings for a connector. Used to
   // populate `available_connections` on the typed ambiguity error.
-  listActiveBindingsForGrant(input: {
+  listActiveBindingsForGrant: (input: {
     ownerSubjectId: string;
     connectorId: string;
-  }): Promise<ActiveBinding[]> | ActiveBinding[];
+  }) => Promise<ActiveBinding[]> | ActiveBinding[];
   // Marks the maintained connector-summary read-model evidence for exactly this
   // connection dirty after the revoke mutation commits. Injected (not imported)
   // to match the route-family decoupling pattern and the optional
   // `invalidateConnectorSummariesCache` above. Awaited at the call site so
   // ordering is explicit rather than hidden in a fire-and-forget promise;
   // best-effort and a no-op until the read model is warmed.
-  markConnectorSummaryEvidenceDirty?(input: { connectorInstanceId: string; reason?: string }): Promise<void> | void;
+  markConnectorSummaryEvidenceDirty?: (input: { connectorInstanceId: string; reason?: string }) => Promise<void> | void;
   // Wall-clock stamp for the `updated_at` / `revoked_at` recorded on the soft
   // flip. Injected so the route stays deterministic under test and so this
   // module does not import a clock. Defaults to `new Date().toISOString()`.
-  now?(): string;
+  now?: () => string;
   pdppError: PdppErrorFn;
   // Projects one active binding to the wire `{ connection_id, display_name? }`
   // shape used in `available_connections` (placeholder labels suppressed).
-  projectBindingForWire(instance: ActiveBinding): WireConnection | null;
+  projectBindingForWire: (instance: ActiveBinding) => WireConnection | null;
   requireOwner: MiddlewareHandler;
   requireToken: MiddlewareHandler;
   // Owner-scoped connector-instance namespace resolution. Verifies owner
@@ -161,7 +161,7 @@ export interface MountOwnerConnectionRevokeContext {
   // `ConnectorInstanceResolutionError` with `connector_instance_not_found`
   // (foreign/unknown id → 404), `connector_instance_inactive` (already revoked
   // → 400), or `ambiguous_connector_instance` (connector-only, >1 active).
-  resolveOwnerConnectorNamespace(
+  resolveOwnerConnectorNamespace: (
     req: unknown,
     connectorId: string | null,
     options?: {
@@ -169,17 +169,17 @@ export interface MountOwnerConnectionRevokeContext {
       readonly connectorInstanceId?: string | null;
       readonly ownerSubjectId?: string;
     }
-  ): Promise<ConnectorNamespace>;
-  setReferenceTraceId(res: RouteResponse, traceId: string): void;
+  ) => Promise<ConnectorNamespace>;
+  setReferenceTraceId: (res: RouteResponse, traceId: string) => void;
   // Connection-scoped soft-flip primitive. Owner-scoped because the namespace
   // was already resolved + ownership-verified owner-side; flips exactly one
   // connector_instance to status `revoked`, zero cascade. Returns the updated
   // row. The SAME store primitive the device-collected and default-account
   // classes share — no new destructive semantic is introduced here.
-  updateConnectorInstanceStatus(
+  updateConnectorInstanceStatus: (
     connectorInstanceId: string,
     options: { status: "revoked"; updatedAt: string; revokedAt: string }
-  ): Promise<RevokedInstance> | RevokedInstance;
+  ) => Promise<RevokedInstance> | RevokedInstance;
 }
 
 // Emits one non-secret `owner_agent.connection.revoke` spine event. The
@@ -207,28 +207,19 @@ async function emitRevokeAudit(
     args.ownerSubjectId ?? (typeof req.tokenInfo?.subject_id === "string" ? req.tokenInfo.subject_id : null);
   const code = (args.error as { code?: unknown } | null)?.code;
   await ctx.emitSpineEvent({
-    event_type: "owner_agent.connection.revoke",
-    trace_id: trace.trace_id,
-    scenario_id: trace.scenario_id,
-    request_id: trace.request_id,
-    actor_type: actorKind,
     actor_id: clientId ?? ownerSubjectId ?? actorKind,
-    subject_type: "subject",
-    subject_id: ownerSubjectId,
+    actor_type: actorKind,
     client_id: clientId,
-    object_type: "connection",
-    object_id: args.connectionId || args.connectorKey || "unknown_connection",
-    status: args.outcome,
     data: {
-      auth_token_kind: req.tokenInfo?.pdpp_token_kind ?? null,
       actor_kind: actorKind,
+      auth_token_kind: req.tokenInfo?.pdpp_token_kind ?? null,
       client_id: clientId,
       client_name: clientName,
       connection_id: args.connectionId ?? null,
       connector_key: args.connectorKey ?? null,
-      selector: args.selector,
       operation: "revoke",
       outcome: args.outcome,
+      selector: args.selector,
       target_resource: "connection",
       ...(args.error
         ? {
@@ -239,6 +230,15 @@ async function emitRevokeAudit(
           }
         : {}),
     },
+    event_type: "owner_agent.connection.revoke",
+    object_id: args.connectionId || args.connectorKey || "unknown_connection",
+    object_type: "connection",
+    request_id: trace.request_id,
+    scenario_id: trace.scenario_id,
+    status: args.outcome,
+    subject_id: ownerSubjectId,
+    subject_type: "subject",
+    trace_id: trace.trace_id,
   });
 }
 
@@ -296,9 +296,9 @@ function buildRevokeHandler(
         // typed 4xx. allowDefaultAccount:false so an unmaterialized default
         // account is never created just to revoke it.
         namespace = await ctx.resolveOwnerConnectorNamespace(req, null, {
-          ownerSubjectId,
           allowDefaultAccount: false,
           connectorInstanceId: addressed,
+          ownerSubjectId,
         });
       } else {
         const rawConnectorId = decodeURIComponent(req.params.connectorId as string);
@@ -307,8 +307,8 @@ function buildRevokeHandler(
           // connector-only addressing: auto-select the single active
           // connection, or throw ambiguity when more than one exists.
           namespace = await ctx.resolveOwnerConnectorNamespace(req, rawConnectorId, {
-            ownerSubjectId,
             allowDefaultAccount: false,
+            ownerSubjectId,
           });
         } catch (resolveErr) {
           await rethrowAsAmbiguousConnection(ctx, resolveErr, ownerSubjectId, connectorKey);
@@ -322,9 +322,9 @@ function buildRevokeHandler(
       const stamp = ctx.now ? ctx.now() : new Date().toISOString();
       const revoked = await Promise.resolve(
         ctx.updateConnectorInstanceStatus(namespace.connectorInstanceId, {
+          revokedAt: stamp,
           status: "revoked",
           updatedAt: stamp,
-          revokedAt: stamp,
         })
       );
       ctx.invalidateConnectorSummariesCache?.();
@@ -344,12 +344,12 @@ function buildRevokeHandler(
         selector,
       });
       res.status(200).json({
-        object: "owner_connection_revoke",
         connection_id: connectionId,
         connector_id: connectorKey,
         connector_key: connectorKey,
-        status: revoked.status ?? "revoked",
+        object: "owner_connection_revoke",
         revoked_at: revoked.revokedAt ?? stamp,
+        status: revoked.status ?? "revoked",
       });
     } catch (err) {
       await emitRevokeAudit(ctx, req, res, {

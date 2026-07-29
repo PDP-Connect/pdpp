@@ -10,11 +10,11 @@
  * live in the package.
  *
  * Source of truth for the package identity/specifier is `@pdpp/cli`'s
- * `package-info.js`, imported the same relative way the apps do (the apps do
+ * `package-info.ts`, imported the same relative way the apps do (the apps do
  * not declare `@pdpp/cli` as a named dependency; it resolves through the
  * workspace via this relative path).
  */
-import { createPdppCliCommand, getPdppCliPackageInfo } from "../../../cli/src/package-info.js";
+import { createPdppCliCommand, getPdppCliPackageInfo } from "../../../cli/src/package-info.ts";
 
 export const PDPP_CLI_PROVIDER_PLACEHOLDER = "<provider-url>";
 export const pdppCliPackageInfo = getPdppCliPackageInfo(PDPP_CLI_PROVIDER_PLACEHOLDER);

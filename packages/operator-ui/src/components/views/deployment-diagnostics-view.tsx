@@ -122,17 +122,17 @@ export function isDeploymentIndexing(report: DeploymentDiagnostics): boolean {
 }
 
 const WARNING_TITLES: Record<DeploymentDiagnostics["warnings"][number]["code"], string> = {
-  zero_participation: "Zero semantic participation",
-  lexical_building_index: "Lexical index is rebuilding",
-  building_index: "Semantic index is rebuilding",
-  stale_index: "Semantic index is stale",
   backend_unavailable: "Embedding backend unavailable",
-  missing_model_cache: "Embedding model cache missing",
-  download_disabled: "Model download disabled",
-  vector_index_fallback: "Using blob-flat vector fallback",
   browser_connectors_need_collector: "Browser-backed connectors need a local collector",
+  building_index: "Semantic index is rebuilding",
   collector_protocol_outdated: "Local collector protocol is outdated",
+  download_disabled: "Model download disabled",
+  lexical_building_index: "Lexical index is rebuilding",
   low_disk_headroom: "Disk headroom is low",
+  missing_model_cache: "Embedding model cache missing",
+  stale_index: "Semantic index is stale",
+  vector_index_fallback: "Using blob-flat vector fallback",
+  zero_participation: "Zero semantic participation",
 };
 
 function WarningsSection({ warnings }: { warnings: DeploymentDiagnostics["warnings"] }) {

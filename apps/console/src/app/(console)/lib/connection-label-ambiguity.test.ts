@@ -49,10 +49,10 @@ function overview({
 
 test("a single unnamed connection of a type is NOT label-needed", () => {
   const overviews = [
-    overview({ connectorId: "amazon", displayName: "Amazon", connectionId: "cin_amazon" }),
-    overview({ connectorId: "usaa", connectionId: "cin_usaa" }),
-    overview({ connectorId: "github", displayName: "GitHub", connectionId: "cin_github" }),
-    overview({ connectorId: "ynab", displayName: "YNAB", connectionId: "cin_ynab" }),
+    overview({ connectionId: "cin_amazon", connectorId: "amazon", displayName: "Amazon" }),
+    overview({ connectionId: "cin_usaa", connectorId: "usaa" }),
+    overview({ connectionId: "cin_github", connectorId: "github", displayName: "GitHub" }),
+    overview({ connectionId: "cin_ynab", connectorId: "ynab", displayName: "YNAB" }),
   ];
   const keys = ambiguousFallbackLabelKeys(overviews);
   assert.equal(keys.size, 0, "no single-of-type fallback should be flagged");
@@ -62,10 +62,10 @@ test("a single unnamed connection of a type is NOT label-needed", () => {
 });
 
 test("two unnamed connections of the SAME type are both label-needed", () => {
-  const loneAmazon = overview({ connectorId: "amazon", displayName: "Amazon", connectionId: "cin_amazon" });
+  const loneAmazon = overview({ connectionId: "cin_amazon", connectorId: "amazon", displayName: "Amazon" });
   const overviews = [
-    overview({ connectorId: "gmail", displayName: "Gmail", connectionId: "cin_gmail_a" }),
-    overview({ connectorId: "gmail", connectionId: "cin_gmail_b" }),
+    overview({ connectionId: "cin_gmail_a", connectorId: "gmail", displayName: "Gmail" }),
+    overview({ connectionId: "cin_gmail_b", connectorId: "gmail" }),
     loneAmazon,
   ];
   const keys = ambiguousFallbackLabelKeys(overviews);
@@ -78,8 +78,8 @@ test("a renamed connection is never label-needed, and disambiguates its siblings
   // One Gmail owner-named, one unnamed → the named one is not a fallback at
   // all, so only ONE unnamed Gmail remains. A single unnamed of a type is not
   // ambiguous, so nothing is flagged.
-  const namedGmail = overview({ connectorId: "gmail", displayName: "Personal Gmail", connectionId: "cin_gmail_a" });
-  const unnamedGmail = overview({ connectorId: "gmail", connectionId: "cin_gmail_b" });
+  const namedGmail = overview({ connectionId: "cin_gmail_a", connectorId: "gmail", displayName: "Personal Gmail" });
+  const unnamedGmail = overview({ connectionId: "cin_gmail_b", connectorId: "gmail" });
   const overviews = [namedGmail, unnamedGmail];
   const keys = ambiguousFallbackLabelKeys(overviews);
   assert.equal(keys.size, 0);
@@ -89,17 +89,17 @@ test("a renamed connection is never label-needed, and disambiguates its siblings
 
 test("three unnamed of a type are all label-needed", () => {
   const overviews = [
-    overview({ connectorId: "claude-code", connectionId: "cin_cc_1" }),
-    overview({ connectorId: "claude-code", connectionId: "cin_cc_2" }),
-    overview({ connectorId: "claude-code", connectionId: "cin_cc_3" }),
+    overview({ connectionId: "cin_cc_1", connectorId: "claude-code" }),
+    overview({ connectionId: "cin_cc_2", connectorId: "claude-code" }),
+    overview({ connectionId: "cin_cc_3", connectorId: "claude-code" }),
   ];
   const keys = ambiguousFallbackLabelKeys(overviews);
   assert.equal(keys.size, 3);
 });
 
 test("ambiguity is order-independent", () => {
-  const a = overview({ connectorId: "slack", connectionId: "cin_s1" });
-  const b = overview({ connectorId: "slack", connectionId: "cin_s2" });
+  const a = overview({ connectionId: "cin_s1", connectorId: "slack" });
+  const b = overview({ connectionId: "cin_s2", connectorId: "slack" });
   const forward = ambiguousFallbackLabelKeys([a, b]);
   const reverse = ambiguousFallbackLabelKeys([b, a]);
   assert.deepEqual(new Set(forward), new Set(reverse));

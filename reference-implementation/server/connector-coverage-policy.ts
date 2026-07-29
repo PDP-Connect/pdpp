@@ -218,6 +218,13 @@ function deriveGapFreeStreamCoverageCondition(
   accepted: AcceptedCoveragePolicy | null,
   strategy: CoverageEvidenceStrategy | null
 ): CoverageAxis {
+  // Defensive normalization: the type contract is `number | null`, but a
+  // caller that bypasses `readRuntimeCollectionFact`'s re-validation could
+  // hand this an `undefined` denominator. `undefined !== null` would
+  // otherwise read as a KNOWN denominator below (and `0 < undefined` is
+  // `false`), painting a zero-collected fact `complete` instead of
+  // `unknown`. Normalizing here keeps "no denominator" a single value.
+  const considered = fact.considered ?? null;
   // Some stream strategies establish coverage by committing a bounded source
   // window/inventory/snapshot/singleton boundary. For those streams,
   // `collected` remains only the number of records emitted this run
@@ -225,7 +232,7 @@ function deriveGapFreeStreamCoverageCondition(
   // checkpoint with no skip/gaps proves the stream boundary was covered even
   // when unchanged records were suppressed and `collected < considered`.
   if (
-    fact.considered !== null &&
+    considered !== null &&
     strategyCanProveCoverageWithoutDenominator(strategy) &&
     checkpointProvesCoverage(fact.checkpoint)
   ) {
@@ -241,9 +248,9 @@ function deriveGapFreeStreamCoverageCondition(
   // was unchanged — read `complete` instead of a false `partial`. It cannot
   // mask a dropped record: a weighed-but-dropped item is counted in neither
   // `collected` nor `covered`, so a real shortfall still reads `partial`.
-  if (fact.considered !== null) {
+  if (considered !== null) {
     const satisfied = fact.covered ?? fact.collected;
-    if (satisfied < fact.considered) {
+    if (satisfied < considered) {
       return "partial";
     }
     // The numerator satisfies the considered denominator: covered. A declared
@@ -314,6 +321,14 @@ export function deriveStreamCoverageCondition(
   // 3. A pending recoverable detail gap is a retryable boundary.
   if (fact.pending_detail_gaps > 0) {
     return "retryable_gap";
+  }
+  // Local collectors preserve their observed status set instead of deciding
+  // whether absence is owed at the device boundary. A manifest-declared
+  // accepted policy is authoritative; without one, an observed non-collected
+  // status is honest unknown rather than a manufactured complete claim. This
+  // also leaves `excluded` to its declared manifest policy.
+  if (fact.coverage_statuses?.some((status) => status !== "collected")) {
+    return accepted ?? "unknown";
   }
   const strategy = readCoverageEvidenceStrategy(manifestStream);
   return deriveGapFreeStreamCoverageCondition(fact, accepted, strategy);

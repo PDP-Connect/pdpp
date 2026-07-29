@@ -41,7 +41,7 @@ const NO_LOCAL_STORAGE = /window\.localStorage/;
 const SYSTEM_MEDIA = /@media \(prefers-color-scheme: dark\)[\s\S]*html\[data-theme="system"\]/;
 const EXPLICIT_DARK_SELECTOR = /html\[data-theme="dark"\]/;
 const DATA_THEME_DARK_VARIANT =
-  /@custom-variant dark \(&:where\(\.dark, \.dark \*, \[data-theme=dark\], \[data-theme=dark\] \*\)\)/;
+  /@custom-variant\s+dark\s*\(\s*&:where\(\s*\.dark\s*,\s*\.dark\s+\*\s*,\s*\[data-theme\s*=\s*(?:dark|["']dark["'])\]\s*,\s*\[data-theme\s*=\s*(?:dark|["']dark["'])\]\s+\*\s*\)\s*\)/;
 const STATUS_BADGE_FOREGROUND_TOKENS =
   /--success-badge-foreground:[\s\S]*--warning-badge-foreground:[\s\S]*--danger-badge-foreground:/;
 const STATUS_BADGE_SEMANTIC_COLOR_RULES =

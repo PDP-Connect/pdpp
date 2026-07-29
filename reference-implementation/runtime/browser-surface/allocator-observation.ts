@@ -1,6 +1,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+// biome-ignore lint/correctness/noUnresolvedImports: remote-surface 1.5.1 exports ./leases; Biome 2.5.5 fails to resolve this package export.
 import type { BrowserSurface, BrowserSurfaceAllocator } from "@opendatalabs/remote-surface/leases";
 
 import type { AllocatorObservation } from "./ephemeral-health-projection.ts";
@@ -17,14 +18,15 @@ interface AllocatorObservationWindow {
 
 function observationWindow(now: Date, ttlMs: number): AllocatorObservationWindow {
   return {
-    observed_at: now.toISOString(),
     expires_at: new Date(now.getTime() + Math.max(0, ttlMs)).toISOString(),
+    observed_at: now.toISOString(),
   };
 }
 
 function allocatorFailureReason(
   error: unknown
 ): Exclude<NonNullable<AllocatorObservation["reason"]>, "expired" | "not_observed"> {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const code = typeof (error as { code?: unknown })?.code === "string" ? (error as { code: string }).code : "";
   if (code.includes("http")) {
     return "http";
@@ -40,7 +42,7 @@ function allocatorFailureReason(
 
 function unobservedInventory(window: AllocatorObservationWindow): BrowserSurfaceRuntimeInventorySnapshot {
   return {
-    allocator_observation: { status: "unknown", reason: "not_observed", ...window },
+    allocator_observation: { reason: "not_observed", status: "unknown", ...window },
     surfaces: [],
   };
 }
@@ -50,7 +52,7 @@ function unavailableInventory(
   window: AllocatorObservationWindow
 ): BrowserSurfaceRuntimeInventorySnapshot {
   return {
-    allocator_observation: { status: "unavailable", reason: allocatorFailureReason(error), ...window },
+    allocator_observation: { reason: allocatorFailureReason(error), status: "unavailable", ...window },
     surfaces: [],
   };
 }

@@ -18,7 +18,7 @@ const INLINE_ERROR_PANEL = /The n\.eko WebRTC stream did not attach\./;
 const INLINE_RETRY_BUTTON = /Retry secure browser/;
 const RETRY_RELOADS_CONFIG = /setConfigLoadRetryEpoch\(\(epoch\) => epoch \+ 1\)/;
 const MOUNT_REJECTION_RETHROWS_TO_INLINE_CATCH =
-  /await mountNekoViewer\([\s\S]*?catch \(error\) \{[\s\S]*?throw error;[\s\S]*?\.catch\(\(err: unknown\) => \{\s+if \(!cancelled\) \{\s+setError\(/;
+  /await mountNekoViewer\([\s\S]*?catch \((\w+)\) \{[\s\S]*?throw \1;[\s\S]*?\.catch\(\(err: unknown\) => \{\s+if \(!cancelled\) \{\s+setError\(/;
 
 test("NekoSurface config-load source contract retains inline retry handling", async () => {
   const src = await readFile(VIEWER_FILE, "utf8");

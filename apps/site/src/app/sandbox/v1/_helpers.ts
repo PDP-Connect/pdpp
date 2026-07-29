@@ -10,16 +10,16 @@
  */
 
 const DEMO_HEADERS: HeadersInit = {
-  "content-type": "application/json; charset=utf-8",
   "cache-control": "public, max-age=0, must-revalidate",
+  "content-type": "application/json; charset=utf-8",
   "x-pdpp-demo": "1",
   "x-pdpp-demo-notice": "sandbox-fictional-data-only",
 };
 
 export function jsonResponse(body: unknown, init?: { status?: number }): Response {
   return new Response(JSON.stringify(body, null, 2), {
-    status: init?.status ?? 200,
     headers: DEMO_HEADERS,
+    status: init?.status ?? 200,
   });
 }
 
@@ -27,10 +27,10 @@ export function notFound(message: string): Response {
   return jsonResponse(
     {
       error: {
-        type: "not_found_error",
         code: "not_found",
         message,
         request_id: "req_sandbox_not_found",
+        type: "not_found_error",
       },
     },
     { status: 404 }
@@ -90,7 +90,7 @@ function reassembleHost(hostname: string, suffix: string): string {
 }
 
 export function sandboxIssuerFromRequest(request: Request): string {
-  const headers = request.headers;
+  const { headers } = request;
   const forwardedHost = firstHeaderValue(headers.get("x-forwarded-host"));
   const forwardedProto = firstHeaderValue(headers.get("x-forwarded-proto"));
   const hostHeader = firstHeaderValue(headers.get("host"));
@@ -128,10 +128,10 @@ export function readListParams(url: URL): {
     }
   }
   return {
+    client_id: url.searchParams.get("client_id") ?? undefined,
+    connector_id: url.searchParams.get("connector_id") ?? undefined,
     cursor,
     limit,
     status: url.searchParams.get("status") ?? undefined,
-    client_id: url.searchParams.get("client_id") ?? undefined,
-    connector_id: url.searchParams.get("connector_id") ?? undefined,
   };
 }

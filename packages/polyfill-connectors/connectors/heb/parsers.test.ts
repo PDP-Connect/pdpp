@@ -54,7 +54,7 @@ test("parseOrdersListDom extracts every order card on the list page", () => {
 
 test("parseOrdersListDom parses curbside order fields", () => {
   const orders = parseOrdersListDom(fixture("orders-list.html"));
-  const first = orders[0];
+  const [first] = orders;
   assert.ok(first);
   assert.equal(first.orderId, "HEB1029384756");
   assert.equal(first.orderDateRaw, "Jul 14, 2026");
@@ -67,7 +67,7 @@ test("parseOrdersListDom parses curbside order fields", () => {
 
 test("parseOrdersListDom parses delivery order fields", () => {
   const orders = parseOrdersListDom(fixture("orders-list.html"));
-  const second = orders[1];
+  const [, second] = orders;
   assert.ok(second);
   assert.equal(second.orderId, "HEB1029384700");
   assert.equal(second.fulfillmentMethod, "delivery");
@@ -77,7 +77,7 @@ test("parseOrdersListDom parses delivery order fields", () => {
 
 test("parseOrdersListDom handles a zero-total canceled order", () => {
   const orders = parseOrdersListDom(fixture("orders-list.html"));
-  const third = orders[2];
+  const [, , third] = orders;
   assert.ok(third);
   assert.equal(third.status, "Order canceled");
   assert.equal(third.total, "$0.00");
@@ -95,7 +95,7 @@ test("parseOrdersListDom parses a comma-separated (thousands-grouped) total (S4 
     </div>
   </main></body></html>`;
   const orders = parseOrdersListDom(html);
-  const order = orders[0];
+  const [order] = orders;
   assert.ok(order);
   assert.equal(order.total, "$1,234.56", "a thousands-grouped total must not be dropped to null");
   assert.equal(order.itemCount, 12);
@@ -332,7 +332,7 @@ test("mergeOrdersListPage prefers the structured row's evidenced fields but keep
   ];
   const merged = mergeOrdersListPage(structured, dom);
   assert.equal(merged.length, 1);
-  const row = merged[0];
+  const [row] = merged;
   assert.ok(row);
   assert.equal(row.source, "structured");
   assert.equal(row.statusCode, "PAYMENT_RECEIPTED", "structured-only field is preserved");
@@ -388,7 +388,7 @@ test("mergeOrdersListPage keeps order_date DOM-authoritative for an evening-loca
     },
   ];
   const merged = mergeOrdersListPage(structured, dom);
-  const row = merged[0];
+  const [row] = merged;
   assert.ok(row);
   assert.equal(
     row.orderDateRaw,
@@ -694,7 +694,7 @@ test("orderItemId: two same-name, product-id-null items in one order get distinc
 
 test("buildOrderRecord maps a parsed list order into the emitted orders shape", () => {
   const orders = parseOrdersListDom(fixture("orders-list.html"));
-  const first = orders[0];
+  const [first] = orders;
   assert.ok(first);
   const record = buildOrderRecord(first, "2026-07-14", "2026-07-14T12:00:00.000Z");
   assert.equal(record.id, "HEB1029384756");

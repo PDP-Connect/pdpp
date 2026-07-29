@@ -50,7 +50,15 @@
         {
           "id": "full",
           "label": "Full artist data",
-          "fields": ["id", "name", "genres", "popularity", "followers", "image_url", "source_updated_at"]
+          "fields": [
+            "id",
+            "name",
+            "genres",
+            "popularity",
+            "followers",
+            "image_url",
+            "source_updated_at"
+          ]
         }
       ],
       "coverage_strategy": "full_inventory",
@@ -121,7 +129,17 @@
         {
           "id": "full",
           "label": "Full track data",
-          "fields": ["id", "name", "artist_ids", "artist_names", "album_name", "duration_ms", "popularity", "saved_at", "source_created_at"]
+          "fields": [
+            "id",
+            "name",
+            "artist_ids",
+            "artist_names",
+            "album_name",
+            "duration_ms",
+            "popularity",
+            "saved_at",
+            "source_created_at"
+          ]
         }
       ],
       "coverage_strategy": "full_inventory",

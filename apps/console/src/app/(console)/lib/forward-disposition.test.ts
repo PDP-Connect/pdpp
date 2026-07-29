@@ -78,6 +78,9 @@ test("only the two owner-initiated dispositions flag owner action", () => {
   // complete-but-stale manual-refresh connection) are the only two that require
   // the owner to act; `resumable` and `terminal` do not ask for owner action.
   const needsOwner = ALL_DISPOSITIONS.filter((value) => formatForwardDisposition(value)?.ownerActionNeeded);
+  // needsOwner holds plain disposition-name strings for an order-independent
+  // equality check; default lexicographic sort is unambiguous here.
+  // biome-ignore lint/suspicious/useArraySortCompare: see comment above.
   assert.deepEqual(needsOwner.sort(), ["awaiting_owner", "owner_refresh_due"]);
 });
 

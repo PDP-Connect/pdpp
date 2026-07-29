@@ -1,0 +1,184 @@
+{
+  "description": "Tracked JavaScript/MJS boundaries retained by an owning host, generator, or provider-data contract. Canonical authored implementation files are TypeScript.",
+  "entries": [
+    {
+      "path": "apps/console/next.config.mjs",
+      "owner": "Console application maintainers",
+      "runtimeReason": "Next loads this ESM configuration before its application TypeScript pipeline is available.",
+      "probe": "pnpm --dir apps/console run build",
+      "review": "Re-evaluate when the repository-supported Next configuration loader accepts TypeScript without a bootstrap wrapper."
+    },
+    {
+      "path": "apps/console/postcss.config.mjs",
+      "owner": "Console application maintainers",
+      "runtimeReason": "PostCSS discovers this ESM configuration through its host loader.",
+      "probe": "pnpm --dir apps/console run build",
+      "review": "Re-evaluate when the repository-supported PostCSS loader accepts TypeScript configuration directly."
+    },
+    {
+      "path": "apps/console/public/pdpp-dashboard-sw.js",
+      "owner": "Console application maintainers",
+      "runtimeReason": "Browser service-worker artifact emitted from pdpp-dashboard-sw.ts; browsers execute JavaScript, not source TypeScript.",
+      "probe": "pnpm generated-artifacts:check",
+      "review": "Regenerate and review whenever pdpp-dashboard-sw.ts or the TypeScript emitter changes."
+    },
+    {
+      "path": "apps/site/.source/source.config.mjs",
+      "owner": "Site application maintainers",
+      "runtimeReason": "Fumadocs emits this generated ESM source index for the Next build from apps/site/source.config.ts.",
+      "probe": "pnpm --dir apps/site exec fumadocs-mdx && git diff --exit-code -- apps/site/.source/source.config.mjs",
+      "review": "Regenerate and review on every Fumadocs upgrade or source.config.ts change."
+    },
+    {
+      "path": "apps/site/next.config.mjs",
+      "owner": "Site application maintainers",
+      "runtimeReason": "Next loads this ESM configuration before its application TypeScript pipeline is available.",
+      "probe": "pnpm --dir apps/site run build",
+      "review": "Re-evaluate when the repository-supported Next configuration loader accepts TypeScript without a bootstrap wrapper."
+    },
+    {
+      "path": "apps/site/postcss.config.mjs",
+      "owner": "Site application maintainers",
+      "runtimeReason": "PostCSS discovers this ESM configuration through its host loader.",
+      "probe": "pnpm --dir apps/site run build",
+      "review": "Re-evaluate when the repository-supported PostCSS loader accepts TypeScript configuration directly."
+    },
+    {
+      "path": "apps/site/scripts/sync-spec-docs.mjs",
+      "owner": "Site application maintainers",
+      "runtimeReason": "Node ESM artifact emitted from sync-spec-docs.mts for the repository spec synchronization entrypoint.",
+      "probe": "pnpm generated-artifacts:check",
+      "review": "Regenerate and review whenever sync-spec-docs.mts or the TypeScript emitter changes."
+    },
+    {
+      "path": "docs/design-system/ink-carbon/project/explorer/data.js",
+      "owner": "Design-system maintainers",
+      "runtimeReason": "Classic-script design artifact emitted from adjacent TypeScript for browser-hosted exploration output.",
+      "probe": "pnpm generated-artifacts:check",
+      "review": "Regenerate and review whenever the adjacent data.ts source or TypeScript emitter changes."
+    },
+    {
+      "path": "docs/design-system/ink-carbon/project/explorer/dispatch.js",
+      "owner": "Design-system maintainers",
+      "runtimeReason": "Classic-script design artifact emitted from adjacent TypeScript for browser-hosted exploration output.",
+      "probe": "pnpm generated-artifacts:check",
+      "review": "Regenerate and review whenever the adjacent dispatch.ts source or TypeScript emitter changes."
+    },
+    {
+      "path": "docs/design-system/ink-carbon/project/explorer/query.js",
+      "owner": "Design-system maintainers",
+      "runtimeReason": "Classic-script design artifact emitted from adjacent TypeScript for browser-hosted exploration output.",
+      "probe": "pnpm generated-artifacts:check",
+      "review": "Regenerate and review whenever the adjacent query.ts source or TypeScript emitter changes."
+    },
+    {
+      "path": "docs/design-system/ink-carbon/project/recordroom/image-slot.js",
+      "owner": "Design-system maintainers",
+      "runtimeReason": "Classic-script design artifact emitted from adjacent TypeScript for browser-hosted design output.",
+      "probe": "pnpm generated-artifacts:check",
+      "review": "Regenerate and review whenever the adjacent image-slot.ts source or TypeScript emitter changes."
+    },
+    {
+      "path": "docs/design-system/ink-carbon/project/recordroom/rr-data.js",
+      "owner": "Design-system maintainers",
+      "runtimeReason": "Classic-script design artifact emitted from adjacent TypeScript for browser-hosted design output.",
+      "probe": "pnpm generated-artifacts:check",
+      "review": "Regenerate and review whenever the adjacent rr-data.ts source or TypeScript emitter changes."
+    },
+    {
+      "path": "docs/design-system/ink-carbon/project/recordroom/rr-explore-data.js",
+      "owner": "Design-system maintainers",
+      "runtimeReason": "Classic-script design artifact emitted from adjacent TypeScript for browser-hosted design output.",
+      "probe": "pnpm generated-artifacts:check",
+      "review": "Regenerate and review whenever the adjacent rr-explore-data.ts source or TypeScript emitter changes."
+    },
+    {
+      "path": "packages/polyfill-connectors/connectors/twitter_archive/__fixtures__/archive-files/data/direct-messages.js",
+      "owner": "Polyfill-connectors maintainers",
+      "runtimeReason": "Provider-captured Twitter archive fixture whose window.YTD assignment shape must remain byte-faithful to the browser archive format.",
+      "probe": "pnpm --dir packages/polyfill-connectors test -- connectors/twitter_archive/parsers.test.ts",
+      "sha256": "1dd01fa30c16d538858f647b0ab0be737147ae9f47d1dfb12462d788f5f16466",
+      "review": "Replace only when a newly captured provider archive format and its parser conformance fixtures supersede it."
+    },
+    {
+      "path": "packages/polyfill-connectors/connectors/twitter_archive/__fixtures__/archive-files/data/tweets.js",
+      "owner": "Polyfill-connectors maintainers",
+      "runtimeReason": "Provider-captured Twitter archive fixture whose window.YTD assignment shape must remain byte-faithful to the browser archive format.",
+      "probe": "pnpm --dir packages/polyfill-connectors test -- connectors/twitter_archive/parsers.test.ts",
+      "sha256": "05d68bf68bf0cf04653ccbdb56579cfd154e317040c16c5c0cb3e3a26430eaad",
+      "review": "Replace only when a newly captured provider archive format and its parser conformance fixtures supersede it."
+    },
+    {
+      "path": "packages/polyfill-connectors/connectors/twitter_archive/__fixtures__/archive-files/empty/data/tweets.js",
+      "owner": "Polyfill-connectors maintainers",
+      "runtimeReason": "Provider-captured empty Twitter archive fixture whose window.YTD assignment shape exercises the no-record boundary.",
+      "probe": "pnpm --dir packages/polyfill-connectors test -- connectors/twitter_archive/parsers.test.ts",
+      "sha256": "1291e72651680f5ea383965d0b082428860a4e1b510328bdefe10a9941323530",
+      "review": "Replace only when a newly captured provider archive format and its parser conformance fixtures supersede it."
+    },
+    {
+      "path": "packages/polyfill-connectors/connectors/twitter_archive/__fixtures__/archive-files/legacy/data/tweet.js",
+      "owner": "Polyfill-connectors maintainers",
+      "runtimeReason": "Provider-captured legacy Twitter archive fixture whose window.YTD assignment shape exercises backward-compatible parsing.",
+      "probe": "pnpm --dir packages/polyfill-connectors test -- connectors/twitter_archive/parsers.test.ts",
+      "sha256": "bcacc4e5ea1b71bf1826266836f6a0d72e8e0dbc3289255637f6ed828bee54a6",
+      "review": "Replace only when a newly captured provider archive format and its parser conformance fixtures supersede it."
+    },
+    {
+      "path": "reference-implementation/scripts/quality-ratchet/check-mass-ratchet.test.mjs",
+      "owner": "Reference-implementation maintainers",
+      "runtimeReason": "Generated MJS discovery wrapper imports the canonical check-mass-ratchet.source.ts test source.",
+      "probe": "node --test --import tsx reference-implementation/scripts/quality-ratchet/check-mass-ratchet.test.mjs",
+      "review": "Regenerate and review whenever the source test path or Node test-discovery contract changes."
+    },
+    {
+      "path": "reference-implementation/scripts/quality-ratchet/measure-mass.test.mjs",
+      "owner": "Reference-implementation maintainers",
+      "runtimeReason": "Generated MJS discovery wrapper imports the canonical measure-mass.source.ts test source.",
+      "probe": "node --test --import tsx reference-implementation/scripts/quality-ratchet/measure-mass.test.mjs",
+      "review": "Regenerate and review whenever the source test path or Node test-discovery contract changes."
+    },
+    {
+      "path": "reference-implementation/scripts/quality-ratchet/regenerate-mass-baseline.test.mjs",
+      "owner": "Reference-implementation maintainers",
+      "runtimeReason": "Generated MJS discovery wrapper imports the canonical regenerate-mass-baseline.source.ts test source.",
+      "probe": "node --test --import tsx reference-implementation/scripts/quality-ratchet/regenerate-mass-baseline.test.mjs",
+      "review": "Regenerate and review whenever the source test path or Node test-discovery contract changes."
+    },
+    {
+      "path": "reference-implementation/scripts/requeue-quarantined-detail-gaps.test.mjs",
+      "owner": "Reference-implementation maintainers",
+      "runtimeReason": "Generated MJS discovery wrapper imports the canonical requeue-quarantined-detail-gaps.source.ts test source.",
+      "probe": "node --test --import tsx reference-implementation/scripts/requeue-quarantined-detail-gaps.test.mjs",
+      "review": "Regenerate and review whenever the source test path or Node test-discovery contract changes."
+    },
+    {
+      "path": "reference-implementation/test/fixtures/connector-instance-two-process-race-fixture.mjs",
+      "owner": "Reference-implementation maintainers",
+      "runtimeReason": "Generated executable MJS subprocess wrapper imports the canonical TypeScript race fixture.",
+      "probe": "node --test --import tsx reference-implementation/test/connector-instance-delete-upsert-two-process-race.test.ts",
+      "review": "Regenerate and review whenever the subprocess fixture source or Node loader contract changes."
+    },
+    {
+      "path": "reference-implementation/test/fixtures/device-ingest-failstop-server.mjs",
+      "owner": "Reference-implementation maintainers",
+      "runtimeReason": "Generated executable MJS subprocess wrapper imports the canonical TypeScript fail-stop fixture.",
+      "probe": "PDPP_TEST_POSTGRES=1 PDPP_TEST_POSTGRES_URL=<isolated-pgvector-url> node --test --import tsx reference-implementation/test/device-exporter-postgres-proof.test.ts",
+      "review": "Regenerate and review whenever the subprocess fixture source or Node loader contract changes."
+    },
+    {
+      "path": "reference-implementation/test/fixtures/summary-evidence-two-process-repair-fixture.mjs",
+      "owner": "Reference-implementation maintainers",
+      "runtimeReason": "Generated executable MJS subprocess wrapper imports the canonical TypeScript repair fixture.",
+      "probe": "node --test --import tsx reference-implementation/test/connector-summary-evidence-engine-two-process-interleaving.test.ts",
+      "review": "Regenerate and review whenever the subprocess fixture source or Node loader contract changes."
+    },
+    {
+      "path": "scripts/ri-suite/fixtures/fake-run-tests.mjs",
+      "owner": "Test-accounting maintainers",
+      "runtimeReason": "Generated executable MJS fixture wrapper imports the canonical fake-run-tests.ts completion-oracle source.",
+      "probe": "node --test --import tsx scripts/ri-suite/completion-oracle.test.ts",
+      "review": "Regenerate and review whenever the completion-oracle fixture source or Node loader contract changes."
+    }
+  ]
+}

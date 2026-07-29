@@ -35,10 +35,10 @@ export const metadata = {
 
 const DEVICE_STATUS_VOCABULARY = {
   active: { label: "active", tone: "success" },
+  fresh: { label: "fresh", tone: "success" },
+  never: { label: "no heartbeat", tone: "warning" },
   revoked: { label: "revoked", tone: "danger" },
   stale: { label: "stale", tone: "warning" },
-  never: { label: "no heartbeat", tone: "warning" },
-  fresh: { label: "fresh", tone: "success" },
 } as const;
 
 export default async function DeviceExportersPage({

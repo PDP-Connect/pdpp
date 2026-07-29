@@ -56,7 +56,7 @@ const SOURCE_STATUS_DOT_RE = /data-tone=\{instance\.status\.tone\}/;
 const SOURCE_STATUS_LABEL_SR_RE = /instance\.status\.label/;
 const SOURCE_ACTIONABILITY_PROJECTION_RE = /const actionability = projectSourceActionability\(summary\)/;
 const RENDERED_VERDICT_STATUS_RE = /const status = actionability\.renderedStatus/;
-const RENDERED_VERDICT_PRIMARY_ACTION_RE = /const primaryVerdictAction = actionability\.primaryVerdictAction/;
+const RENDERED_VERDICT_PRIMARY_ACTION_RE = /const \{ primaryVerdictAction \} = actionability/;
 const RENDERED_VERDICT_NEXT_ACTION_RE = /actionability\.nextAction/;
 const RUNTIME_ADVISORY_MODEL_RE = /buildSourcesRuntimeAdvisory\(response\.runtime\)/;
 const RUNTIME_ADVISORY_PROP_RE = /runtimeAdvisory=\{runtimeAdvisory\}/;

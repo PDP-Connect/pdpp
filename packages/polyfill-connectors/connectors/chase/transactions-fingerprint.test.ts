@@ -170,7 +170,9 @@ test("transactions: a genuinely-new transaction (new fitid) still emits", async 
   );
   await emitTransactionsStateIfAny(run2.deps);
   assert.equal(run2.emitted.length, 1, "only the new transaction emits");
-  assert.equal((run2.emitted[0]?.data as { fitid: string }).fitid, "F2");
+  const [row] = run2.emitted;
+  assert.ok(row, "row was captured");
+  assert.equal((row.data as { fitid: string }).fitid, "F2");
 });
 
 test("transactions: a real field move (amount correction) on an existing id re-emits", async () => {

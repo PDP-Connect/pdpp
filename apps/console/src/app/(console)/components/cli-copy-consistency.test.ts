@@ -61,8 +61,9 @@ const PEEK_NO_INSTALL_HOOK = /peek-cli-no-install/;
 const DETAIL_NO_INSTALL_HOOK = /cli-no-install-command/;
 
 test("no surfaced file advertises legacy bare pdpp run/grant/trace aliases", async () => {
-  for (const relPath of SURFACED_FILES) {
-    const src = await read(relPath);
+  const sources = await Promise.all(SURFACED_FILES.map((relPath) => read(relPath)));
+  for (const [index, relPath] of SURFACED_FILES.entries()) {
+    const src = sources[index] as string;
     assert.equal(
       LEGACY_RUN_TIMELINE.test(src),
       false,

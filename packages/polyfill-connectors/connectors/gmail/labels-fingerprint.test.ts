@@ -70,7 +70,16 @@ test("labels: an unchanged mailbox set does not re-emit on the second run", () =
     labelBody({ name: "[Gmail]/Sent Mail", canonical_name: "sent mail", is_system: true }),
   ];
   const run1 = runLabelsPass({}, bodies);
-  assert.deepEqual(run1.emitted.sort(), ["INBOX", "[Gmail]/Sent Mail"], "first run emits every label once");
+  assert.deepEqual(
+    run1.emitted.sort((a, b) => {
+      if (a < b) {
+        return -1;
+      }
+      return a > b ? 1 : 0;
+    }),
+    ["INBOX", "[Gmail]/Sent Mail"],
+    "first run emits every label once"
+  );
 
   // Same mailboxes, same shapes — second run must emit nothing.
   const run2 = runLabelsPass(run1.nextState, bodies);

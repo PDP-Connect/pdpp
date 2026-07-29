@@ -47,35 +47,35 @@ export interface RefClientEventSubscriptionsListInput {
 }
 
 export interface RefClientEventSubscriptionsListItem {
-  readonly subscription_id: string;
   readonly authority_kind: SubscriptionAuthorityKind;
-  readonly client_id: string;
-  readonly grant_id: string | null;
-  readonly status: SubscriptionStatus;
-  readonly disabled_reason: string | null;
   readonly callback_host: string;
+  readonly client_id: string;
   readonly created_at: string;
-  readonly updated_at: string;
   readonly disabled_at: string | null;
-  readonly pending_queue_count: number;
+  readonly disabled_reason: string | null;
   readonly final_failure_count: number;
-  readonly last_attempted_at: string | null;
+  readonly grant_id: string | null;
   readonly last_attempt_ok: boolean | null;
   readonly last_attempt_status_code: number | null;
+  readonly last_attempted_at: string | null;
+  readonly pending_queue_count: number;
+  readonly status: SubscriptionStatus;
+  readonly subscription_id: string;
+  readonly updated_at: string;
 }
 
 export interface RefClientEventSubscriptionsListEnvelope {
-  readonly object: "list";
   readonly data: RefClientEventSubscriptionsListItem[];
+  readonly object: "list";
 }
 
 export interface RefClientEventSubscriptionsListDependencies {
-  listAllSubscriptions(
-    filters: ListAllSubscriptionsFilters,
-  ): Promise<readonly SubscriptionRow[]> | readonly SubscriptionRow[];
-  getSubscriptionSummary(
-    subscriptionId: string,
-  ): Promise<SubscriptionSummaryRow | null> | SubscriptionSummaryRow | null;
+  getSubscriptionSummary: (
+    subscriptionId: string
+  ) => Promise<SubscriptionSummaryRow | null> | SubscriptionSummaryRow | null;
+  listAllSubscriptions: (
+    filters: ListAllSubscriptionsFilters
+  ) => Promise<readonly SubscriptionRow[]> | readonly SubscriptionRow[];
 }
 
 const KNOWN_STATUSES: ReadonlySet<SubscriptionStatus> = new Set([
@@ -88,8 +88,12 @@ const KNOWN_STATUSES: ReadonlySet<SubscriptionStatus> = new Set([
 ]);
 
 function normalizeStatus(value: string | null | undefined): SubscriptionStatus | null {
-  if (!value) return null;
-  if (!KNOWN_STATUSES.has(value as SubscriptionStatus)) return null;
+  if (!value) {
+    return null;
+  }
+  if (!KNOWN_STATUSES.has(value as SubscriptionStatus)) {
+    return null;
+  }
   return value as SubscriptionStatus;
 }
 
@@ -102,13 +106,15 @@ function extractHost(callbackUrl: string): string {
 }
 
 function nullableBool(value: number | null): boolean | null {
-  if (value === null || value === undefined) return null;
+  if (value === null || value === undefined) {
+    return null;
+  }
   return value !== 0;
 }
 
 export async function executeRefClientEventSubscriptionsList(
   input: RefClientEventSubscriptionsListInput,
-  dependencies: RefClientEventSubscriptionsListDependencies,
+  dependencies: RefClientEventSubscriptionsListDependencies
 ): Promise<RefClientEventSubscriptionsListEnvelope> {
   // Reject unknown status values with an empty list — see spec scenario
   // "An operator filters the list by client, grant, or status". An unknown
@@ -116,7 +122,7 @@ export async function executeRefClientEventSubscriptionsList(
   const requestedStatus = input.status ?? null;
   const resolvedStatus = normalizeStatus(requestedStatus);
   if (requestedStatus && !resolvedStatus) {
-    return { object: "list", data: [] };
+    return { data: [], object: "list" };
   }
   const rows = await dependencies.listAllSubscriptions({
     clientId: input.clientId ?? null,
@@ -125,25 +131,28 @@ export async function executeRefClientEventSubscriptionsList(
   });
   const items: RefClientEventSubscriptionsListItem[] = [];
   for (const row of rows) {
+    // biome-ignore lint/performance/noAwaitInLoops: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     const summary = await dependencies.getSubscriptionSummary(row.subscription_id);
-    if (!summary) continue;
+    if (!summary) {
+      continue;
+    }
     items.push({
-      subscription_id: summary.subscription_id,
       authority_kind: summary.authority_kind,
-      client_id: summary.client_id,
-      grant_id: summary.grant_id,
-      status: summary.status,
-      disabled_reason: summary.disabled_reason,
       callback_host: extractHost(summary.callback_url),
+      client_id: summary.client_id,
       created_at: summary.created_at,
-      updated_at: summary.updated_at,
       disabled_at: summary.disabled_at,
-      pending_queue_count: summary.pending_queue_count,
+      disabled_reason: summary.disabled_reason,
       final_failure_count: summary.final_failure_count,
-      last_attempted_at: summary.last_attempted_at,
+      grant_id: summary.grant_id,
       last_attempt_ok: nullableBool(summary.last_attempt_ok),
       last_attempt_status_code: summary.last_attempt_status_code,
+      last_attempted_at: summary.last_attempted_at,
+      pending_queue_count: summary.pending_queue_count,
+      status: summary.status,
+      subscription_id: summary.subscription_id,
+      updated_at: summary.updated_at,
     });
   }
-  return { object: "list", data: items };
+  return { data: items, object: "list" };
 }

@@ -47,26 +47,26 @@ export interface RsProtectedResourceMetadataSemanticCapability {
 }
 
 export interface RsProtectedResourceMetadataHybridCapability {
-  readonly supported?: boolean;
   readonly cursor_supported?: boolean;
+  readonly supported?: boolean;
   readonly [extra: string]: unknown;
 }
 
 export interface RsProtectedResourceMetadataDiscoveryHints {
-  readonly schema_endpoint: "/v1/schema";
-  readonly query_base: "/v1";
-  readonly connectors_endpoint: "/v1/connectors";
-  readonly streams_endpoint_template: "/v1/streams/{stream}";
   readonly aggregate: { readonly endpoint_template: "/v1/streams/{stream}/aggregate" };
-  readonly changes_since_bootstrap: "beginning";
   readonly blob_indirection: "data.blob_ref.fetch_url";
+  readonly changes_since_bootstrap: "beginning";
+  readonly connectors_endpoint: "/v1/connectors";
+  readonly hybrid_pagination_supported?: boolean;
+  readonly owner_polyfill_requires_source_kind_connector?: true;
+  readonly query_base: "/v1";
+  readonly schema_endpoint: "/v1/schema";
   readonly search?: {
     readonly endpoint: string;
     readonly scope_param: "streams[]";
     readonly filter_requires_single_stream: true;
   };
-  readonly hybrid_pagination_supported?: boolean;
-  readonly owner_polyfill_requires_source_kind_connector?: true;
+  readonly streams_endpoint_template: "/v1/streams/{stream}";
 }
 
 export interface RsProtectedResourceMetadataClientEventSubscriptionsCapability {
@@ -75,59 +75,36 @@ export interface RsProtectedResourceMetadataClientEventSubscriptionsCapability {
 }
 
 export interface RsProtectedResourceMetadataCapabilities {
+  client_event_subscriptions?: RsProtectedResourceMetadataClientEventSubscriptionsCapability;
+  hybrid_retrieval?: RsProtectedResourceMetadataHybridCapability;
   lexical_retrieval?: RsProtectedResourceMetadataLexicalCapability;
   semantic_retrieval?: RsProtectedResourceMetadataSemanticCapability;
-  hybrid_retrieval?: RsProtectedResourceMetadataHybridCapability;
-  client_event_subscriptions?: RsProtectedResourceMetadataClientEventSubscriptionsCapability;
 }
 
 export interface RsProtectedResourceMetadataDependencies {
-  /**
-   * Returns the lexical capability the host wants advertised, or `null`
-   * to omit the entry. The operation does not modify the shape; the
-   * host already accounts for `lexicalRetrievalSupported === false` and
-   * `lexicalRetrievalCapability` overrides before calling.
-   */
-  resolveLexicalCapability(): RsProtectedResourceMetadataLexicalCapability | null;
-  /**
-   * Returns the semantic capability the host wants advertised, or
-   * `null` to omit the entry. The host gates this on
-   * `semanticRetrievalSupported`, the embedding backend's
-   * `available()` flag, and any caller override.
-   */
-  resolveSemanticCapability():
-    | RsProtectedResourceMetadataSemanticCapability
-    | null
-    | Promise<RsProtectedResourceMetadataSemanticCapability | null>;
-  /**
-   * Returns the hybrid capability the host has overridden, or `null`
-   * to fall through to the operation's default composition rule
-   * (publish iff lexical AND semantic are both `supported: true`).
-   */
-  resolveHybridCapabilityOverride(): RsProtectedResourceMetadataHybridCapability | null;
   /**
    * Build a hybrid capability advertisement from the live
    * `(lexicalAvailable, semanticAvailable)` flags. Hosts plug in the
    * `metadata.ts` builder; the operation reads back `supported` and
    * `cursor_supported` from the result.
    */
-  buildDefaultHybridCapability(args: {
+  buildDefaultHybridCapability: (args: {
     lexicalAvailable: true;
     semanticAvailable: true;
-  }): RsProtectedResourceMetadataHybridCapability | null;
+  }) => RsProtectedResourceMetadataHybridCapability | null;
   /**
    * Whether the host has suppressed hybrid advertisement entirely
    * (`hybridRetrievalSupported === false`). When `true`, the hybrid
    * capability is omitted regardless of the underlying lexical /
    * semantic state.
    */
-  isHybridSuppressed(): boolean;
+  isHybridSuppressed: () => boolean;
   /**
    * Whether the host is running in native single-source mode. When
    * `false`, the polyfill `owner_polyfill_requires_source_kind_connector`
    * discovery hint is published.
    */
-  isNativeSingleSourceMode(): boolean;
+  isNativeSingleSourceMode: () => boolean;
   /**
    * Returns the client-event-subscriptions extension capability the host
    * wants advertised, or `null` to omit the entry. This is a
@@ -141,7 +118,30 @@ export interface RsProtectedResourceMetadataDependencies {
    *   openspec/changes/add-client-event-subscriptions/specs/
    *   reference-implementation-architecture/spec.md
    */
-  resolveClientEventSubscriptionsCapability(): RsProtectedResourceMetadataClientEventSubscriptionsCapability | null;
+  resolveClientEventSubscriptionsCapability: () => RsProtectedResourceMetadataClientEventSubscriptionsCapability | null;
+  /**
+   * Returns the hybrid capability the host has overridden, or `null`
+   * to fall through to the operation's default composition rule
+   * (publish iff lexical AND semantic are both `supported: true`).
+   */
+  resolveHybridCapabilityOverride: () => RsProtectedResourceMetadataHybridCapability | null;
+  /**
+   * Returns the lexical capability the host wants advertised, or `null`
+   * to omit the entry. The operation does not modify the shape; the
+   * host already accounts for `lexicalRetrievalSupported === false` and
+   * `lexicalRetrievalCapability` overrides before calling.
+   */
+  resolveLexicalCapability: () => RsProtectedResourceMetadataLexicalCapability | null;
+  /**
+   * Returns the semantic capability the host wants advertised, or
+   * `null` to omit the entry. The host gates this on
+   * `semanticRetrievalSupported`, the embedding backend's
+   * `available()` flag, and any caller override.
+   */
+  resolveSemanticCapability: () =>
+    | RsProtectedResourceMetadataSemanticCapability
+    | null
+    | Promise<RsProtectedResourceMetadataSemanticCapability | null>;
 }
 
 export interface RsProtectedResourceMetadataInput {
@@ -160,15 +160,11 @@ export interface RsProtectedResourceMetadataOutput {
   composition: RsProtectedResourceMetadataComposition;
 }
 
-function isLexicalSupported(
-  cap: RsProtectedResourceMetadataLexicalCapability | null,
-): boolean {
+function isLexicalSupported(cap: RsProtectedResourceMetadataLexicalCapability | null): boolean {
   return !!cap && cap.supported === true;
 }
 
-function isSemanticSupported(
-  cap: RsProtectedResourceMetadataSemanticCapability | null,
-): boolean {
+function isSemanticSupported(cap: RsProtectedResourceMetadataSemanticCapability | null): boolean {
   return !!cap && cap.supported === true;
 }
 
@@ -184,15 +180,19 @@ function isSemanticSupported(
  */
 export async function executeRsProtectedResourceMetadata(
   _input: RsProtectedResourceMetadataInput,
-  dependencies: RsProtectedResourceMetadataDependencies,
+  dependencies: RsProtectedResourceMetadataDependencies
 ): Promise<RsProtectedResourceMetadataOutput> {
   const capabilities: RsProtectedResourceMetadataCapabilities = {};
 
   const lexical = dependencies.resolveLexicalCapability();
-  if (lexical) capabilities.lexical_retrieval = lexical;
+  if (lexical) {
+    capabilities.lexical_retrieval = lexical;
+  }
 
   const semantic = await dependencies.resolveSemanticCapability();
-  if (semantic) capabilities.semantic_retrieval = semantic;
+  if (semantic) {
+    capabilities.semantic_retrieval = semantic;
+  }
 
   const lexicalSupported = isLexicalSupported(lexical);
   const semanticSupported = isSemanticSupported(semantic);
@@ -230,30 +230,29 @@ export async function executeRsProtectedResourceMetadata(
     hybrid_pagination_supported?: boolean;
     owner_polyfill_requires_source_kind_connector?: true;
   } = {
-    schema_endpoint: "/v1/schema",
-    query_base: "/v1",
-    connectors_endpoint: "/v1/connectors",
-    streams_endpoint_template: "/v1/streams/{stream}",
     aggregate: { endpoint_template: "/v1/streams/{stream}/aggregate" },
-    changes_since_bootstrap: "beginning",
     blob_indirection: "data.blob_ref.fetch_url",
+    changes_since_bootstrap: "beginning",
+    connectors_endpoint: "/v1/connectors",
+    query_base: "/v1",
+    schema_endpoint: "/v1/schema",
+    streams_endpoint_template: "/v1/streams/{stream}",
   };
 
   if (lexicalSupported) {
     const endpoint =
       typeof (lexical as { endpoint?: unknown } | null)?.endpoint === "string"
-        ? ((lexical as { endpoint: string }).endpoint)
+        ? (lexical as { endpoint: string }).endpoint
         : "/v1/search";
     discoveryHints.search = {
       endpoint,
-      scope_param: "streams[]",
       filter_requires_single_stream: true,
+      scope_param: "streams[]",
     };
   }
 
   if (capabilities.hybrid_retrieval?.supported === true) {
-    discoveryHints.hybrid_pagination_supported =
-      !!capabilities.hybrid_retrieval.cursor_supported;
+    discoveryHints.hybrid_pagination_supported = !!capabilities.hybrid_retrieval.cursor_supported;
   }
 
   if (!dependencies.isNativeSingleSourceMode()) {
@@ -261,7 +260,9 @@ export async function executeRsProtectedResourceMetadata(
   }
 
   const ces = dependencies.resolveClientEventSubscriptionsCapability();
-  if (ces) capabilities.client_event_subscriptions = ces;
+  if (ces) {
+    capabilities.client_event_subscriptions = ces;
+  }
 
   return {
     composition: {

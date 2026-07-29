@@ -60,13 +60,13 @@ function makeManifest(connectorId: string, streams: string[]): ConnectorManifest
 }
 
 const rec = (connector: string, instance: string, stream: string, key: string, day: number) => ({
-  object: "timeline_record" as const,
   connector_id: connector,
   connector_instance_id: instance,
-  stream,
-  record_key: key,
-  emitted_at: `2026-06-0${day}T00:00:00Z`,
   data: {},
+  emitted_at: `2026-06-0${day}T00:00:00Z`,
+  object: "timeline_record" as const,
+  record_key: key,
+  stream,
 });
 
 const ALL_PAST = [
@@ -95,16 +95,16 @@ function serverExcludingPage(opts?: {
   const keep = (r: (typeof ALL_PAST)[number]) => !(xc.has(r.connector_instance_id) || xs.has(r.stream));
   const upcoming = ALL_UPCOMING.filter(keep);
   return {
-    object: "list",
     data: ALL_PAST.filter(keep),
     has_more: false,
-    next_cursor: null,
-    snapshot_at: "2026-06-19T00:00:00Z",
     new_since_snapshot: 0,
+    next_cursor: null,
+    object: "list",
+    snapshot_at: "2026-06-19T00:00:00Z",
     upcoming,
-    upcoming_total: upcoming.length, // EXACT, already post-exclusion (server-side).
     upcoming_has_more: false,
     upcoming_next_cursor: null,
+    upcoming_total: upcoming.length, // EXACT, already post-exclusion (server-side).
   } as ExploreTimelinePage;
 }
 
@@ -115,38 +115,28 @@ function twoConnectorDs(capture?: {
   excludeStreams?: readonly string[];
 }): DashboardDataSource {
   return {
-    kind: "sandbox" as const,
     aggregateRecordsByTime: notStubbed,
-    listExploreRecordBuckets: notStubbed,
+    getConnectorOverview: notStubbed,
+    getDatasetSummary: notStubbed,
+    getDeploymentDiagnostics: notStubbed,
+    getGrantTimeline: notStubbed,
+    getRecord: notStubbed,
+    getRunTimeline: notStubbed,
+    getStreamMetadata: notStubbed,
+    getTraceTimeline: notStubbed,
     isHybridRetrievalAdvertised: () => Promise.resolve(false),
     isSemanticRetrievalAdvertised: () => Promise.resolve(false),
+    kind: "sandbox" as const,
+    listConnectorManifests: async () => [
+      makeManifest("ynab", ["transactions", "budget_months"]),
+      makeManifest("chase", ["transactions"]),
+    ],
     listConnectorSummaries: async () =>
       summaryListResponse([
         makeSummary({ connection_id: "cin_ynab", connector_id: "ynab", streams: ["transactions", "budget_months"] }),
         makeSummary({ connection_id: "cin_chase", connector_id: "chase", streams: ["transactions"] }),
       ]),
-    listConnectorManifests: async () => [
-      makeManifest("ynab", ["transactions", "budget_months"]),
-      makeManifest("chase", ["transactions"]),
-    ],
-    searchRecordsLexical: notStubbed,
-    searchRecordsHybrid: notStubbed,
-    searchRecordsSemantic: notStubbed,
-    queryRecords: notStubbed,
-    getRecord: notStubbed,
-    getConnectorOverview: notStubbed,
-    getStreamMetadata: notStubbed,
-    getTraceTimeline: notStubbed,
-    getGrantTimeline: notStubbed,
-    getRunTimeline: notStubbed,
-    getDatasetSummary: notStubbed,
-    getDeploymentDiagnostics: notStubbed,
-    listGrants: notStubbed,
-    listPendingApprovals: notStubbed,
-    listRuns: notStubbed,
-    listStreams: notStubbed,
-    listTraces: notStubbed,
-    refSearch: notStubbed,
+    listExploreRecordBuckets: notStubbed,
     listExploreTimeline: (o) => {
       // Record the exclude scope the assembler sent (proves server-side exclusion).
       if (capture) {
@@ -161,6 +151,16 @@ function twoConnectorDs(capture?: {
         serverExcludingPage({ excludeConnectionIds: o?.excludeConnectionIds, excludeStreams: o?.excludeStreams })
       );
     },
+    listGrants: notStubbed,
+    listPendingApprovals: notStubbed,
+    listRuns: notStubbed,
+    listStreams: notStubbed,
+    listTraces: notStubbed,
+    queryRecords: notStubbed,
+    refSearch: notStubbed,
+    searchRecordsHybrid: notStubbed,
+    searchRecordsLexical: notStubbed,
+    searchRecordsSemantic: notStubbed,
   } as DashboardDataSource;
 }
 
@@ -286,9 +286,9 @@ function lexicalPage(hits: SearchResultHit[]): SearchResultPage {
  * chase `transactions` stream. Exclusion must carve out of THIS set.
  */
 const SEARCH_HITS: SearchResultHit[] = [
-  makeHit({ connector_id: "ynab", connection_id: "cin_ynab", stream: "transactions", record_key: "y-tx-1" }),
-  makeHit({ connector_id: "ynab", connection_id: "cin_ynab", stream: "budget_months", record_key: "y-bm-1" }),
-  makeHit({ connector_id: "chase", connection_id: "cin_chase", stream: "transactions", record_key: "c-tx-1" }),
+  makeHit({ connection_id: "cin_ynab", connector_id: "ynab", record_key: "y-tx-1", stream: "transactions" }),
+  makeHit({ connection_id: "cin_ynab", connector_id: "ynab", record_key: "y-bm-1", stream: "budget_months" }),
+  makeHit({ connection_id: "cin_chase", connector_id: "chase", record_key: "c-tx-1", stream: "transactions" }),
 ];
 
 /**
@@ -373,7 +373,7 @@ test("SEARCH post-exclusion descriptor/count is the POST-exclusion set (no overs
   assert.equal(result.feed.length, nonExcludedCount, "visible feed count == non-excluded count");
   // A relevance_bounded descriptor carries no total; if a total IS present it must
   // be the post-exclusion count, never the pre-exclusion hit count.
-  const total = (result.descriptor as { total?: number }).total;
+  const { total } = result.descriptor as { total?: number };
   if (typeof total === "number") {
     assert.equal(total, nonExcludedCount, "descriptor total reflects the POST-exclusion set");
   }
@@ -402,21 +402,21 @@ const IN_WINDOW = "2026-06-15T00:00:00Z"; // inside since=2026-06-01 / until=202
 function timedManifest(connectorId: string, streams: string[]): ConnectorManifest {
   return {
     connector_id: connectorId,
-    streams: streams.map((name) => ({ name, consent_time_field: CONSENT_FIELD })),
+    streams: streams.map((name) => ({ consent_time_field: CONSENT_FIELD, name })),
   };
 }
 
 function recordsPage(ids: string[], stream: string): RecordsPage {
   return {
-    object: "list",
-    has_more: false,
     data: ids.map((id) => ({
-      object: "record" as const,
-      id,
-      stream,
-      emitted_at: IN_WINDOW,
       data: { [CONSENT_FIELD]: IN_WINDOW },
+      emitted_at: IN_WINDOW,
+      id,
+      object: "record" as const,
+      stream,
     })),
+    has_more: false,
+    object: "list",
   };
 }
 
@@ -435,11 +435,11 @@ function twoConnectorTimeRangeDs(capture: {
   const base = twoConnectorDs();
   return {
     ...base,
+    getStreamMetadata: (_connectorId: string, stream: string) => Promise.resolve(emptyStreamMetadata(stream)),
     listConnectorManifests: async () => [
       timedManifest("ynab", ["transactions", "budget_months"]),
       timedManifest("chase", ["transactions"]),
     ],
-    getStreamMetadata: (_connectorId: string, stream: string) => Promise.resolve(emptyStreamMetadata(stream)),
     queryRecords: (connectorId: string, stream: string) => {
       capture.queryCalls.push({ connectorId, stream });
       return Promise.resolve(recordsPage([`${connectorId}-${stream}-1`], stream));

@@ -2,7 +2,7 @@
 
 - [x] Add `connector-instances/list-by-owner-including-drafts.sql` (SQLite) and a Postgres `listByOwnerIncludingDrafts` method — same rows as `listByOwner`, no `status <> 'draft'` filter.
 - [x] Register the new query key in `server/queries/index.ts`.
-- [x] Point `listConnectorInstanceRowsForDashboard` (ref-control.ts) at `listByOwnerIncludingDrafts` instead of `listByOwner`.
+- [x] Point `listOwnerVisibleConnectorInstances` (ref-control.ts) at `listByOwnerIncludingDrafts` instead of `listByOwner`.
 - [x] Leave `listByOwner` and every other consumer (`/_ref/connections`, `/_ref/connector-instances`, owner-agent reads, `owner-connector-templates.ts`, device-exporter listings) unchanged.
 
 ## 2. Owner-state: `setup_in_progress` resolver

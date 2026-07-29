@@ -187,8 +187,8 @@ export async function revokeOwnerTokenAction(formData: FormData) {
     const res = await fetch(
       url,
       await withOwnerSessionCookie({
-        method: "DELETE",
         cache: "no-store",
+        method: "DELETE",
       })
     );
     if (res.status !== 204 && res.status !== 404) {

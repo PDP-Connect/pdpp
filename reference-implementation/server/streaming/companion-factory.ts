@@ -1,9 +1,10 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import { isNullish } from "../../lib/nullish.ts";
 import type { PresentationScreenStateStore } from "../stores/presentation-screen-state-store.ts";
-import { createCdpCompanion } from "./cdp-adapter.js";
-import { createNekoCompanion } from "./neko-adapter.js";
+import { createCdpCompanion } from "./cdp-adapter.ts";
+import { createNekoCompanion, type NekoCompanionOptions } from "./neko-adapter.ts";
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 5000;
 const DEFAULT_OPEN_TIMEOUT_MS = 5000;
@@ -13,10 +14,10 @@ type CodedError = Error & { code?: string };
 
 /**
  * The backend companions (`createCdpCompanion` / `createNekoCompanion`) are
- * duck-typed across an untyped `.js` boundary; the factory never depends on
+ * duck-typed across an adapter boundary; the factory never depends on
  * their concrete class, only on a handful of optionally-present methods.
  */
-// biome-ignore lint/suspicious/noExplicitAny: backend companions cross an untyped `.js` boundary and are duck-typed (see comment above).
+// biome-ignore lint/suspicious/noExplicitAny: backend companions are duck-typed across an adapter boundary (see comment above).
 type InnerCompanion = any;
 
 /** Resolved neko target descriptor (origin + passthrough fields). */
@@ -38,21 +39,21 @@ interface PendingRecord {
 
 export interface StreamingCompanion {
   _internal: {
-    hasInner(): boolean;
-    isClosed(): boolean;
-    getBackend(): string | null;
+    hasInner: () => boolean;
+    isClosed: () => boolean;
+    getBackend: () => string | null;
   };
-  ackFrame(sessionId: unknown): Promise<void>;
+  ackFrame: (sessionId: unknown) => Promise<void>;
   readonly backend: string;
   readonly browser_session_id: unknown;
-  dispatch(event: unknown): Promise<void>;
-  getNekoProxyTarget(): { origin: string } | null;
-  onEvent(handler: (...args: unknown[]) => unknown): () => void;
-  onFrame(handler: (...args: unknown[]) => unknown): () => void;
-  queryNekoStatus(): Promise<unknown>;
-  resolveBackend(): Promise<string>;
-  start(viewport: unknown): Promise<void>;
-  stop(): Promise<void>;
+  dispatch: (event: unknown) => Promise<void>;
+  getNekoProxyTarget: () => { origin: string } | null;
+  onEvent: (handler: (...args: unknown[]) => unknown) => () => void;
+  onFrame: (handler: (...args: unknown[]) => unknown) => () => void;
+  queryNekoStatus: () => Promise<unknown>;
+  resolveBackend: () => Promise<string>;
+  start: (viewport: unknown) => Promise<void>;
+  stop: () => Promise<void>;
 }
 
 type ResolveTargetForInteraction = (runId: unknown, interactionId: unknown) => unknown;
@@ -60,7 +61,7 @@ type ResolveTargetForInteraction = (runId: unknown, interactionId: unknown) => u
 interface ResolvedCompanionOptions {
   browser_session_id: unknown;
   commandTimeoutMs?: number | undefined;
-  // biome-ignore lint/suspicious/noExplicitAny: injected `fetch` implementation is passed opaquely to the untyped `.js` adapters.
+  // biome-ignore lint/suspicious/noExplicitAny: injected `fetch` implementation is passed opaquely across the adapter boundary.
   fetchImpl: any;
   interaction_id: unknown;
   logger?: LoggerLike;
@@ -68,7 +69,7 @@ interface ResolvedCompanionOptions {
   openTimeoutMs?: number | undefined;
   resolveTargetForInteraction: ResolveTargetForInteraction;
   run_id: unknown;
-  // biome-ignore lint/suspicious/noExplicitAny: injected WebSocket constructor is passed opaquely to the untyped `.js` adapters.
+  // biome-ignore lint/suspicious/noExplicitAny: injected WebSocket constructor is passed opaquely across the adapter boundary.
   WebSocketCtor: any;
 }
 
@@ -88,18 +89,68 @@ export type StreamingCompanionFactory = (input: StreamingCompanionFactoryInput) 
 
 interface FactoryOptions {
   commandTimeoutMs?: number | undefined;
-  // biome-ignore lint/suspicious/noExplicitAny: injected `fetch` implementation is passed opaquely to the untyped `.js` adapters.
+  // biome-ignore lint/suspicious/noExplicitAny: injected `fetch` implementation is passed opaquely across the adapter boundary.
   fetchImpl?: any;
   logger?: LoggerLike;
   neko?: Record<string, unknown> | undefined;
   openTimeoutMs?: number | undefined;
   presentationScreenStateStore?: PresentationScreenStateStore | null | undefined;
   resolveTargetForInteraction?: ResolveTargetForInteraction;
-  // biome-ignore lint/suspicious/noExplicitAny: injected WebSocket constructor is passed opaquely to the untyped `.js` adapters.
+  // biome-ignore lint/suspicious/noExplicitAny: injected WebSocket constructor is passed opaquely across the adapter boundary.
   WebSocketCtor?: any;
 }
 
-type NekoPresentationLifecycleFactory = (input: { browser_session_id: unknown; target: NekoTarget }) => unknown;
+type NekoPresentationLifecycleFactory = (input: {
+  browser_session_id: unknown;
+  target: NekoTarget;
+}) => NonNullable<NekoCompanionOptions["presentationLifecycle"]>;
+
+function presentationLifecycleFor(
+  factory: NekoPresentationLifecycleFactory | undefined,
+  browserSessionId: unknown,
+  target: NekoTarget
+): NekoCompanionOptions["presentationLifecycle"] | null {
+  if (typeof factory !== "function") {
+    return null;
+  }
+  return factory({ browser_session_id: browserSessionId, target });
+}
+
+function nekoCompanionOptions({
+  browserSessionId,
+  fetchImpl,
+  logger,
+  neko,
+  presentationLifecycle,
+  target,
+  WebSocketCtor,
+}: {
+  browserSessionId: unknown;
+  fetchImpl: ResolvedCompanionOptions["fetchImpl"];
+  logger: LoggerLike;
+  neko: Record<string, unknown>;
+  presentationLifecycle: NekoCompanionOptions["presentationLifecycle"] | null;
+  target: NekoTarget;
+  WebSocketCtor: ResolvedCompanionOptions["WebSocketCtor"];
+}): NekoCompanionOptions {
+  const options: NekoCompanionOptions = {
+    ...neko,
+    fetchImpl,
+    origin: target.origin,
+    target,
+    WebSocketCtor,
+  };
+  if (typeof browserSessionId === "string") {
+    options.browser_session_id = browserSessionId;
+  }
+  if (logger) {
+    options.logger = logger;
+  }
+  if (presentationLifecycle) {
+    options.presentationLifecycle = presentationLifecycle;
+  }
+  return options;
+}
 
 type NekoOptions = Record<string, unknown> & {
   createPresentationLifecycle?: NekoPresentationLifecycleFactory;
@@ -120,7 +171,7 @@ function hasCompanionIds(input: StreamingCompanionFactoryInput): input is Resolv
 }
 
 function resolveStreamingTarget(target: unknown, fallback: ResolveTargetForInteraction): ResolveTargetForInteraction {
-  if (target == null) {
+  if (isNullish(target)) {
     return fallback;
   }
   return () => target;
@@ -173,7 +224,7 @@ function normalizeNekoTarget(target: unknown): NekoTarget | null {
   if (!origin) {
     return null;
   }
-  return { ...source, origin, base_url: origin };
+  return { ...source, base_url: origin, origin };
 }
 
 function explicitNekoTarget(target: unknown): SelectedTarget | null {
@@ -285,33 +336,32 @@ function createResolvedCompanion({
   function createInnerCompanion(selected: SelectedTarget): InnerCompanion {
     if (selected.backend === "neko") {
       nekoTarget = selected.neko;
+      // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
       const createPresentationLifecycle = (neko as NekoOptions).createPresentationLifecycle;
-      return createNekoCompanion({
-        ...neko,
-        target: selected.neko,
-        origin: selected.neko.origin,
-        browser_session_id,
-        fetchImpl,
-        WebSocketCtor,
-        logger,
-        ...(typeof createPresentationLifecycle === "function"
-          ? {
-              presentationLifecycle: createPresentationLifecycle({
-                browser_session_id,
-                target: selected.neko,
-              }),
-            }
-          : {}),
-      });
+      return createNekoCompanion(
+        nekoCompanionOptions({
+          browserSessionId: browser_session_id,
+          fetchImpl,
+          logger,
+          neko,
+          presentationLifecycle: presentationLifecycleFor(
+            createPresentationLifecycle,
+            browser_session_id,
+            selected.neko
+          ),
+          target: selected.neko,
+          WebSocketCtor,
+        })
+      );
     }
     return createCdpCompanion({
-      wsUrl: selected.wsUrl,
       browser_session_id,
-      WebSocketCtor,
-      logger,
       commandTimeoutMs,
+      logger,
       openTimeoutMs,
-      // biome-ignore lint/suspicious/noExplicitAny: cast defeats the untyped `.js` adapter's too-narrow inferred option shape without changing runtime values.
+      WebSocketCtor,
+      wsUrl: selected.wsUrl,
+      // biome-ignore lint/suspicious/noExplicitAny: cast bridges the adapter's narrower option shape without changing runtime values.
     } as any);
   }
 
@@ -325,26 +375,65 @@ function createResolvedCompanion({
     }
 
     const selected = selectBackendTarget(resolved);
+    // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
     backend = selected.backend;
     safeLog(logger, "info", "streaming_backend_selected", {
-      run_id,
-      interaction_id,
-      browser_session_id,
       backend,
+      browser_session_id,
+      interaction_id,
+      run_id,
     });
     bindPending(createInnerCompanion(selected));
     return inner;
   }
 
   return {
+    /** test-only escape hatch */
+    _internal: {
+      getBackend: () => backend,
+      hasInner: () => inner !== null,
+      isClosed: () => closed,
+    },
+    async ackFrame(sessionId) {
+      if (!inner || typeof inner.ackFrame !== "function") {
+        return;
+      }
+      await inner.ackFrame(sessionId);
+    },
     get backend() {
       return backend || inner?.backend || "cdp";
+    },
+    browser_session_id,
+    async dispatch(event) {
+      const companion = await ensureInner();
+      await companion.dispatch(event);
+    },
+    getNekoProxyTarget() {
+      if (inner && typeof inner.getNekoProxyTarget === "function") {
+        return inner.getNekoProxyTarget();
+      }
+      if (!nekoTarget) {
+        return null;
+      }
+      return { origin: nekoTarget.origin };
+    },
+    onEvent(handler) {
+      return subscribe(pendingEvents, "onEvent", handler);
+    },
+    onFrame(handler) {
+      return subscribe(pendingFrames, "onFrame", handler);
+    },
+    async queryNekoStatus() {
+      const companion = await ensureInner();
+      if (typeof companion.queryNekoStatus !== "function") {
+        return null;
+      }
+      return companion.queryNekoStatus();
     },
     async resolveBackend() {
       const companion = await ensureInner();
       return companion.backend || backend || "cdp";
     },
-    browser_session_id,
     async start(viewport) {
       if (closed) {
         const err: CodedError = new Error("Streaming companion is closed");
@@ -364,44 +453,6 @@ function createResolvedCompanion({
       }
       pendingFrames.clear();
       pendingEvents.clear();
-    },
-    onFrame(handler) {
-      return subscribe(pendingFrames, "onFrame", handler);
-    },
-    onEvent(handler) {
-      return subscribe(pendingEvents, "onEvent", handler);
-    },
-    async dispatch(event) {
-      const companion = await ensureInner();
-      await companion.dispatch(event);
-    },
-    async ackFrame(sessionId) {
-      if (!inner || typeof inner.ackFrame !== "function") {
-        return;
-      }
-      await inner.ackFrame(sessionId);
-    },
-    async queryNekoStatus() {
-      const companion = await ensureInner();
-      if (typeof companion.queryNekoStatus !== "function") {
-        return null;
-      }
-      return companion.queryNekoStatus();
-    },
-    getNekoProxyTarget() {
-      if (inner && typeof inner.getNekoProxyTarget === "function") {
-        return inner.getNekoProxyTarget();
-      }
-      if (!nekoTarget) {
-        return null;
-      }
-      return { origin: nekoTarget.origin };
-    },
-    /** test-only escape hatch */
-    _internal: {
-      hasInner: () => inner !== null,
-      isClosed: () => closed,
-      getBackend: () => backend,
     },
   };
 }
@@ -428,15 +479,11 @@ export function createDefaultStreamingCompanionFactory({
       return null;
     }
     return createResolvedCompanion({
-      run_id: input.run_id,
-      interaction_id: input.interaction_id,
       browser_session_id: input.browser_session_id,
-      resolveTargetForInteraction: resolveStreamingTarget(input.target, resolveTargetForInteraction),
-      WebSocketCtor,
-      fetchImpl,
-      logger,
       commandTimeoutMs,
-      openTimeoutMs,
+      fetchImpl,
+      interaction_id: input.interaction_id,
+      logger,
       neko: {
         ...(neko || {}),
         ...(presentationScreenStateStore
@@ -459,11 +506,11 @@ export function createDefaultStreamingCompanionFactory({
                       throw new Error("n.eko baseline configuration is invalid");
                     }
                     return presentationScreenStateStore.captureBaseline({
-                      browserSessionId: String(browser_session_id),
-                      surfaceId,
-                      leaseId: optionalString(target.lease_id),
                       baseline: normalized,
+                      browserSessionId: String(browser_session_id),
                       capturedAt: new Date().toISOString(),
+                      leaseId: optionalString(target.lease_id),
+                      surfaceId,
                     });
                   },
                   markRestored: () =>
@@ -473,6 +520,10 @@ export function createDefaultStreamingCompanionFactory({
             }
           : {}),
       },
+      openTimeoutMs,
+      resolveTargetForInteraction: resolveStreamingTarget(input.target, resolveTargetForInteraction),
+      run_id: input.run_id,
+      WebSocketCtor,
     });
   };
 }
@@ -486,12 +537,12 @@ function configurationForPresentationLifecycle(
   const candidate = value as Record<string, unknown>;
   const width = Number(candidate.width);
   const height = Number(candidate.height);
-  const rate = candidate.rate == null ? undefined : Number(candidate.rate);
+  const rate = candidate.rate === null ? undefined : Number(candidate.rate);
   if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0) {
     return null;
   }
   if (rate !== undefined && (!Number.isFinite(rate) || rate <= 0)) {
     return null;
   }
-  return { width, height, ...(rate === undefined ? {} : { rate }) };
+  return { height, width, ...(rate === undefined ? {} : { rate }) };
 }

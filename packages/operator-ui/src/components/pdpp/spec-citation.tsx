@@ -39,7 +39,7 @@ export function SpecCitationGroup({ citations }: { citations: SpecCitationProps[
   return (
     <span
       className="inline-flex flex-wrap items-baseline gap-2 rounded-md px-2.5 py-1.5"
-      style={{ border: "1px solid var(--border)", backgroundColor: "var(--card)" }}
+      style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}
     >
       {citations.map((c, i) => (
         <React.Fragment key={c.section}>

@@ -61,6 +61,10 @@ export async function fetchNekoClientConfigResponse(
     let httpStatusFailure = false;
     try {
       notifyObservation(options.onObservation, { attempt, outcome: "request_started" });
+      // Retry loop: each attempt is a fresh fetch after the previous one
+      // failed, not independent work — running attempts concurrently would
+      // send duplicate requests instead of a bounded retry sequence.
+      // biome-ignore lint/performance/noAwaitInLoops: see comment above.
       const response = await fetchImpl(clientConfigPath, {
         credentials: "same-origin",
         headers: { Accept: "application/json" },

@@ -125,6 +125,11 @@ function normalizeConnectorId(connectorId: string | null): string | null {
  * row somehow arrives without the field (defensive; the contract requires it).
  */
 export function classifyChurnRow(row: RefRecordVersionStatsRow): ChurnRemediation {
+  // version_disposition is non-optional in the current contract, but this
+  // guards a real legacy-server shape (see version-churn-summary.test.ts
+  // "falls back ... when the field is absent"), reached via an `as` cast
+  // that erases the type guarantee. Not dead code.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: see comment above.
   return row.version_disposition ?? "active_defect_or_unclassified";
 }
 
@@ -138,6 +143,11 @@ export function classifyChurnRow(row: RefRecordVersionStatsRow): ChurnRemediatio
  * contract requires it).
  */
 export function remediationForRow(row: RefRecordVersionStatsRow): RefRecordVersionRemediation {
+  // version_remediation is non-optional in the current contract, but this
+  // guards the same legacy-server shape as classifyChurnRow above (see
+  // version-churn-summary.test.ts "falls back to none when the field is
+  // absent"). Not dead code.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: see comment above.
   return row.version_remediation ?? "none";
 }
 
@@ -285,7 +295,7 @@ export function countChurnDispositions(rows: readonly RefRecordVersionStatsRow[]
         break;
     }
   }
-  return { needsReview: needsReviewCount, compactionCandidates, expectedRetained, reviewedResidueCount };
+  return { compactionCandidates, expectedRetained, needsReview: needsReviewCount, reviewedResidueCount };
 }
 
 function pluralStreams(n: number): string {
@@ -322,7 +332,7 @@ export function summarizeVersionChurn(rows: readonly RefRecordVersionStatsRow[])
   /** Per-disposition counts, for the view's section framing. */
   dispositions: ChurnDispositionCounts;
 } | null {
-  const strongest = rows[0];
+  const [strongest] = rows;
   if (!strongest) {
     return null;
   }
@@ -355,10 +365,10 @@ export function summarizeVersionChurn(rows: readonly RefRecordVersionStatsRow[])
       : `Version churn is classified — no review needed: ${breakdown}.`;
 
   return {
+    dispositions,
     headline,
     highestSignal: `Highest signal: ${churnRowLabel(strongest)} retains ${strongest.versions_per_record.toLocaleString()} versions per current record.`,
     needsReview: dispositions.needsReview > 0,
-    dispositions,
   };
 }
 
@@ -436,7 +446,7 @@ function shellQuote(value: string): string {
 export function churnDryRunCommand(row: RefRecordVersionStatsRow): string {
   const args = [
     "node",
-    "reference-implementation/scripts/compact-record-history.mjs",
+    "reference-implementation/scripts/compact-record-history.ts",
     `--connector-instance-id=${shellQuote(row.connector_instance_id)}`,
     `--stream=${shellQuote(row.stream)}`,
   ];
@@ -461,14 +471,7 @@ export function buildChurnDrilldownRows(rows: readonly RefRecordVersionStatsRow[
     return {
       connectorId: row.connector_id,
       connectorInstanceId: row.connector_instance_id,
-      key: `${row.connector_instance_id}:${row.stream}`,
-      label: churnRowLabel(row),
-      risk: row.risk_level,
-      stream: row.stream,
-      remediation,
-      remediationAction: remediationForRow(row),
-      remediationChip: remediationChipLabel(row),
-      remediationGuidance: remediationGuidance(row),
+      current: countCell(row.current_record_count),
       // Non-compactable rows have no compaction policy the script resolves (it
       // exits 2), so they carry redesign/expected-history guidance instead of a
       // command. Compaction candidates, reviewed residue, and unclassified rows
@@ -476,15 +479,22 @@ export function buildChurnDrilldownRows(rows: readonly RefRecordVersionStatsRow[
       // plan, for reviewed residue `--apply` frees disk, and for an unclassified
       // row it is the safe first diagnostic (it prints whether a policy exists).
       dryRunCommand: notCompactable ? null : churnDryRunCommand(row),
+      history: countCell(row.record_history_count),
+      key: `${row.connector_instance_id}:${row.stream}`,
+      keys: countCell(row.record_key_count),
+      label: churnRowLabel(row),
+      lastHistoryAt: row.last_history_at,
       pointInTimeGuidance: notCompactable ? pointInTimeGuidance(row) : null,
+      reasons: row.risk_reasons.length > 0 ? row.risk_reasons.join("; ") : null,
+      remediation,
+      remediationAction: remediationForRow(row),
+      remediationChip: remediationChipLabel(row),
+      remediationGuidance: remediationGuidance(row),
+      risk: row.risk_level,
+      stream: row.stream,
       versionsPerRecord: {
         label: row.versions_per_record.toLocaleString(undefined, { maximumFractionDigits: 2 }),
       },
-      current: countCell(row.current_record_count),
-      history: countCell(row.record_history_count),
-      keys: countCell(row.record_key_count),
-      lastHistoryAt: row.last_history_at,
-      reasons: row.risk_reasons.length > 0 ? row.risk_reasons.join("; ") : null,
     };
   });
 }

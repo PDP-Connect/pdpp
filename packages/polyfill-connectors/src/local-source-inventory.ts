@@ -61,15 +61,17 @@ export const LOCAL_COVERAGE_STORE_DESCRIPTORS_BY_CONNECTOR = {
   ],
 } as const;
 
-/** Compatibility store-name view of the exact descriptor authority. */
-export const LOCAL_COVERAGE_STORES_BY_CONNECTOR = Object.fromEntries(
-  Object.entries(LOCAL_COVERAGE_STORE_DESCRIPTORS_BY_CONNECTOR).map(([connector, stores]) => [
-    connector,
-    stores.map((store) => store.store),
-  ])
-) as unknown as {
+type LocalCoverageStoreNamesByConnector = {
   readonly [K in keyof typeof LOCAL_COVERAGE_STORE_DESCRIPTORS_BY_CONNECTOR]: readonly string[];
 };
+
+/** Compatibility store-name view of the exact descriptor authority. */
+export const LOCAL_COVERAGE_STORES_BY_CONNECTOR = Object.entries(LOCAL_COVERAGE_STORE_DESCRIPTORS_BY_CONNECTOR).reduce<
+  Record<string, readonly string[]>
+>((acc, [connector, stores]) => {
+  acc[connector] = stores.map((store) => store.store);
+  return acc;
+}, {}) as LocalCoverageStoreNamesByConnector;
 
 export type LocalCoverageConnector = keyof typeof LOCAL_COVERAGE_STORE_DESCRIPTORS_BY_CONNECTOR;
 
@@ -199,7 +201,7 @@ function parseCoverageDiagnosticStateEntry(rawEntry: unknown): {
     return null;
   }
   const store = typeof entry.store === "string" && entry.store ? entry.store : null;
-  const status = entry.status;
+  const { status } = entry;
   if (
     !store ||
     (typeof entry.stream !== "string" && entry.stream !== null) ||
@@ -232,7 +234,7 @@ export function parseCoverageDiagnosticsStateSnapshot(
     unexpectedStores: [] as string[],
   };
   if (!(expected && state) || typeof state !== "object" || Array.isArray(state)) {
-    return { ...empty, malformed: state != null };
+    return { ...empty, malformed: state !== null && state !== undefined };
   }
 
   const rawState = state as Record<string, unknown>;
@@ -245,7 +247,7 @@ export function parseCoverageDiagnosticsStateSnapshot(
   ) {
     return { ...empty, malformed: true };
   }
-  const stores = rawState.stores;
+  const { stores } = rawState;
 
   const expectedByStore = new Map(expected.map((entry) => [entry.store, entry]));
   const rows: SafeCoverageDiagnosticStore[] = [];
@@ -285,13 +287,23 @@ export function parseCoverageDiagnosticsStateSnapshot(
   const hasCommittedSnapshot =
     !malformed && duplicateStores.length === 0 && unexpectedStores.length === 0 && missingStores.length === 0;
   return {
-    duplicateStores: duplicateStores.sort(),
+    duplicateStores: duplicateStores.sort((a, b) => {
+      if (a < b) {
+        return -1;
+      }
+      return a > b ? 1 : 0;
+    }),
     hasAuthoritativeInventory,
     hasCommittedSnapshot,
     malformed,
     missingStores,
     rows: rows.sort((left, right) => left.store.localeCompare(right.store)),
-    unexpectedStores: unexpectedStores.sort(),
+    unexpectedStores: unexpectedStores.sort((a, b) => {
+      if (a < b) {
+        return -1;
+      }
+      return a > b ? 1 : 0;
+    }),
   };
 }
 
@@ -361,9 +373,14 @@ export async function buildLocalSourceInventory(
   const recordsByStream = new Map<string, InventoryRecord[]>();
   const coverage: CoverageRecord[] = [];
 
-  for (const store of stores) {
-    const fullPath = join(sourceHome, store.relativePath);
-    const pathMeta = await statKind(fullPath);
+  const storesWithMeta = await Promise.all(
+    stores.map(async (store) => ({
+      pathMeta: await statKind(join(sourceHome, store.relativePath)),
+      store,
+    }))
+  );
+
+  for (const { pathMeta, store } of storesWithMeta) {
     const status = coverageStatus(store.classification, pathMeta.exists);
     coverage.push({
       // Stable key: upsert on re-run replaces the prior record rather than
@@ -470,7 +487,7 @@ export async function listDirectoryInventory(input: {
 /** Payload keys excluded from inventory-record change detection. Incidental
  *  file-stat metadata that moves on every tool write without changing the
  *  store's inventory meaning. Mirrored by the compaction policy in
- *  `reference-implementation/scripts/compact-record-history.mjs`. */
+ *  `reference-implementation/scripts/compact-record-history.ts`. */
 export const INVENTORY_FINGERPRINT_EXCLUDE_KEYS = ["mtime_epoch", "size_bytes"] as const;
 
 /** Open a fingerprint cursor for an inventory stream, seeded from the prior

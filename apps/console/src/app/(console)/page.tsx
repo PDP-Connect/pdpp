@@ -34,6 +34,7 @@ import { liveDashboardDataSource } from "./lib/data-source.ts";
 import { getReferencePublicOrigin } from "./lib/owner-token.ts";
 import {
   type GrantSummary,
+  getFleetHealthVerdict,
   getGrantPackageCount,
   listConnectorSummaries,
   listOwnerIssuedClients,
@@ -48,18 +49,18 @@ export const dynamic = "force-dynamic";
 const SCHEME_RE = /^https?:\/\//;
 
 const HREFS: StandingHrefs = {
-  grants: dashboardRoutes.section.grants,
-  grantPackages: `${dashboardRoutes.section.grants}/packages`,
-  runs: dashboardRoutes.section.runs,
-  sources: dashboardRoutes.section.records,
-  traces: dashboardRoutes.section.traces,
+  connection: (connectorKey) => dashboardRoutes.connector(connectorKey),
   deployment: dashboardRoutes.section.deployment,
   deploymentTokens: dashboardRoutes.section.deploymentTokens,
-  notifications: dashboardRoutes.section.notifications,
-  connection: (connectorKey) => dashboardRoutes.connector(connectorKey),
   grant: (id) => dashboardRoutes.grant(id),
+  grantPackages: `${dashboardRoutes.section.grants}/packages`,
+  grants: dashboardRoutes.section.grants,
+  notifications: dashboardRoutes.section.notifications,
   run: (id) => dashboardRoutes.run(id),
+  runs: dashboardRoutes.section.runs,
+  sources: dashboardRoutes.section.records,
   trace: (id) => dashboardRoutes.trace(id),
+  traces: dashboardRoutes.section.traces,
 };
 
 interface SafeRead<T> {
@@ -84,56 +85,59 @@ async function safe<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
 
 async function loadStandingInputs(): Promise<StandingInputs> {
   const ds = liveDashboardDataSource;
-  const [summary, grantsRes, tracesRes, pendingRes, clientsRes, connectorsRes, packageCountRes] = await Promise.all([
-    safeRead("dataset_summary", () => ds.getDatasetSummary(), null),
-    safeRead("grants", () => ds.listGrants({ limit: 12 }), {
-      data: [] as GrantSummary[],
-      has_more: false,
-      object: "list" as const,
-    }),
-    safeRead("traces", () => ds.listTraces({ limit: 6 }), {
-      data: [] as TraceSummary[],
-      has_more: false,
-      object: "list" as const,
-    }),
-    safeRead("pending_approvals", () => ds.listPendingApprovals(), {
-      data: [] as PendingApproval[],
-      has_more: false,
-      object: "list" as const,
-    }),
-    safeRead("owner_tokens", () => listOwnerIssuedClients(), {
-      data: [] as OwnerIssuedClient[],
-      has_more: false,
-      object: "list" as const,
-    }),
-    // The SINGLE source of attention truth — same `_ref/connectors` family `/runs` uses.
-    safeRead("source_status", () => listConnectorSummaries(), { data: [], has_more: false, object: "list" as const }),
-    // Authoritative grant-package count so the overview badge need not page the
-    // full grants/packages list. Fails soft to a null count, which makes the
-    // view-model fall back to the loaded-grants floor.
-    safeRead<{ count: number | null }>("grant_package_count", () => getGrantPackageCount(), { count: null }),
-  ]);
-  const overviewLoadIssues = [summary, grantsRes, tracesRes, pendingRes, clientsRes, connectorsRes]
+  const [summary, grantsRes, tracesRes, pendingRes, clientsRes, connectorsRes, fleetHealthRes, packageCountRes] =
+    await Promise.all([
+      safeRead("dataset_summary", () => ds.getDatasetSummary(), null),
+      safeRead("grants", () => ds.listGrants({ limit: 12 }), {
+        data: [] as GrantSummary[],
+        has_more: false,
+        object: "list" as const,
+      }),
+      safeRead("traces", () => ds.listTraces({ limit: 6 }), {
+        data: [] as TraceSummary[],
+        has_more: false,
+        object: "list" as const,
+      }),
+      safeRead("pending_approvals", () => ds.listPendingApprovals(), {
+        data: [] as PendingApproval[],
+        has_more: false,
+        object: "list" as const,
+      }),
+      safeRead("owner_tokens", () => listOwnerIssuedClients(), {
+        data: [] as OwnerIssuedClient[],
+        has_more: false,
+        object: "list" as const,
+      }),
+      // The SINGLE source of attention truth — same `_ref/connectors` family `/runs` uses.
+      safeRead("source_status", () => listConnectorSummaries(), { data: [], has_more: false, object: "list" as const }),
+      safeRead("fleet_health", () => getFleetHealthVerdict(), null),
+      // Authoritative grant-package count so the overview badge need not page the
+      // full grants/packages list. Fails soft to a null count, which makes the
+      // view-model fall back to the loaded-grants floor.
+      safeRead<{ count: number | null }>("grant_package_count", () => getGrantPackageCount(), { count: null }),
+    ]);
+  const overviewLoadIssues = [summary, grantsRes, tracesRes, pendingRes, clientsRes, connectorsRes, fleetHealthRes]
     .map((result) => result.issue)
     .filter((issue): issue is string => issue !== null);
 
   const connectors = connectorsRes.value.data;
   return {
-    now: new Date(),
-    hrefs: HREFS,
-    summary: summary.value,
-    grants: grantsRes.value.data,
-    grantPackageCount: packageCountRes.value.count,
-    traces: tracesRes.value.data,
-    failedTraces: [],
-    failedRuns: [],
-    overviewLoadIssues,
-    pendingApprovals: pendingRes.value.data,
-    bearerClients: clientsRes.value.data,
-    sourceWork: sourceWorkFromConnectors(connectors),
     advisoryOwnerActions: advisoryOwnerActionsFromConnectors(connectors),
     attentionConnections: attentionConnectionsFromConnectors(connectors),
+    bearerClients: clientsRes.value.data,
+    failedRuns: [],
+    failedTraces: [],
+    fleetHealth: fleetHealthRes.value,
+    grantPackageCount: packageCountRes.value.count,
+    grants: grantsRes.value.data,
+    hrefs: HREFS,
+    now: new Date(),
+    overviewLoadIssues,
+    pendingApprovals: pendingRes.value.data,
     sourceIssues: sourceIssueConnectionsFromConnectors(connectors),
+    sourceWork: sourceWorkFromConnectors(connectors),
+    summary: summary.value,
+    traces: tracesRes.value.data,
   };
 }
 

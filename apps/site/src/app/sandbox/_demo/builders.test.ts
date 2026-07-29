@@ -31,7 +31,7 @@ test("paginate returns deterministic envelopes with cursor and total", () => {
   assert.equal(page1.has_more, true);
   assert.equal(page1.next_cursor, "3");
   assert.equal(page1.total, 10);
-  const page2 = paginate(rows, { limit: 3, cursor: page1.next_cursor });
+  const page2 = paginate(rows, { cursor: page1.next_cursor, limit: 3 });
   assert.deepEqual(page2.data, [4, 5, 6]);
   const last = paginate(rows, { limit: 100 });
   assert.equal(last.has_more, false);
@@ -62,17 +62,17 @@ test("streams list and detail return matching shapes", () => {
 
 test("records list returns null for missing stream and pages correctly", () => {
   assert.equal(buildRecordsList({ stream: "does_not_exist" }), null);
-  const page = buildRecordsList({ stream: "pay_statements", limit: 1 });
+  const page = buildRecordsList({ limit: 1, stream: "pay_statements" });
   assert.ok(page);
-  assert.equal(page?.data.length, 1);
-  assert.ok(page?.has_more);
+  assert.equal(page.data.length, 1);
+  assert.ok(page.has_more);
 });
 
 test("record detail returns null for unknown ids and full fields for known ones", () => {
   assert.equal(buildRecordDetail("pay_statements", "rec_does_not_exist"), null);
   const detail = buildRecordDetail("pay_statements", "rec_sb_paystmt_2026_03");
   assert.ok(detail);
-  assert.equal(detail?.fields.currency, "USD");
+  assert.equal(detail.fields.currency, "USD");
 });
 
 test("search returns deterministic hits with snippets and matched_fields", () => {
@@ -132,7 +132,7 @@ test("runs list and timeline behave like grants", () => {
 
 test("traces list and timeline behave like grants", () => {
   const denied = buildTracesList({ status: "denied" });
-  assert.ok(denied.data.every((t) => t.status === "denied"));
+  assert.ok(denied.data.every((trace) => trace.status === "denied"));
   assert.equal(buildTraceTimeline("trace_does_not_exist"), null);
   const t = buildTraceTimeline("trace_sb_quill_paystmt");
   assert.ok(t);

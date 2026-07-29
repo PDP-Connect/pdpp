@@ -11,40 +11,40 @@ import { TooltipProvider } from "@/components/ui/tooltip.tsx";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "PDPP — Personal Data Portability Protocol",
   description:
     "An authorization and disclosure protocol for personal data. You decide what to share, with whom, for how long, for what purpose.",
-  metadataBase: new URL("https://pdpp.dev"),
   // Mirror the console's favicon declaration so pdpp.dev serves the
   // edge-to-edge two-rectangle mark instead of auto-detecting the
   // rounded-plate icon.svg (whose cream plate reads as white padding
   // at favicon scale). /brand/pdpp-favicon.svg is the padding-free mark.
   icons: {
-    icon: [{ url: "/brand/pdpp-favicon.svg", type: "image/svg+xml" }],
+    icon: [{ type: "image/svg+xml", url: "/brand/pdpp-favicon.svg" }],
   },
+  metadataBase: new URL("https://pdpp.dev"),
   openGraph: {
-    title: "PDPP — Personal Data Portability Protocol",
     description:
       "An authorization and disclosure protocol for personal data. You decide what to share, with whom, for how long, for what purpose.",
+    title: "PDPP — Personal Data Portability Protocol",
     type: "website",
   },
+  title: "PDPP — Personal Data Portability Protocol",
   twitter: {
     card: "summary_large_image",
-    title: "PDPP — Personal Data Portability Protocol",
     description: "An authorization and disclosure protocol for personal data.",
+    title: "PDPP — Personal Data Portability Protocol",
   },
 };
 
 export const viewport = {
-  width: "device-width",
   initialScale: 1,
   // Theme-following chrome color, sourced from LAUNCH_COLORS (the single source
   // of truth derived from the `--background` tokens). The browser picks the
   // entry matching the OS scheme, so the chrome never flashes the wrong color.
   themeColor: [
-    { media: "(prefers-color-scheme: dark)", color: LAUNCH_COLORS.dark },
-    { media: "(prefers-color-scheme: light)", color: LAUNCH_COLORS.light },
+    { color: LAUNCH_COLORS.dark, media: "(prefers-color-scheme: dark)" },
+    { color: LAUNCH_COLORS.light, media: "(prefers-color-scheme: light)" },
   ],
+  width: "device-width",
 };
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {

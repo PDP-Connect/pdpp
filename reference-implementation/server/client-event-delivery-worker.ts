@@ -25,7 +25,7 @@ import {
   type DnsLookupAll,
   isGlobalUnicastAddress,
   resolveAllowedAddresses,
-} from "./ssrf-guard.js";
+} from "./ssrf-guard.ts";
 import {
   claimDueQueue,
   getDefaultClientEventSubscriptionStore,
@@ -122,7 +122,7 @@ async function checkSsrfGuard(
         };
     }
   }
-  return { kind: "pinned", addresses: resolved.addresses };
+  return { addresses: resolved.addresses, kind: "pinned" };
 }
 
 export const defaultHttpTransport: HttpTransport = async (
@@ -135,10 +135,10 @@ export const defaultHttpTransport: HttpTransport = async (
   const guard = await checkSsrfGuard(url, dnsLookupImpl, isGlobalUnicastAddressImpl);
   if (guard.kind === "blocked") {
     return {
-      statusCode: null,
       bodyText: null,
       errorMessage: `delivery blocked: ${guard.reason}`,
       latencyMs: Date.now() - start,
+      statusCode: null,
     };
   }
   // For the exempt (sanctioned local-dev) case, no addresses were validated, so
@@ -150,9 +150,9 @@ export const defaultHttpTransport: HttpTransport = async (
     // identical but nominally distinct package from the `undici` npm dependency
     // that provides `Agent` here; the runtime object satisfies the interface.
     const resp = await fetch(url, {
-      method,
-      headers,
       body,
+      headers,
+      method,
       redirect: "manual",
       signal: AbortSignal.timeout(RESPONSE_WINDOW_MS),
       ...(dispatcher ? { dispatcher: dispatcher as unknown as NonNullable<RequestInit["dispatcher"]> } : {}),
@@ -161,22 +161,22 @@ export const defaultHttpTransport: HttpTransport = async (
     // Capture headers the operation layer needs for throttle scheduling.
     const responseHeaders: Record<string, string> = {};
     const retryAfter = resp.headers.get("retry-after");
-    if (retryAfter != null) {
+    if (retryAfter !== null) {
       responseHeaders["retry-after"] = retryAfter;
     }
     return {
-      statusCode: resp.status,
       bodyText: text,
       errorMessage: null,
       latencyMs: Date.now() - start,
       responseHeaders,
+      statusCode: resp.status,
     };
   } catch (err) {
     return {
-      statusCode: null,
       bodyText: null,
       errorMessage: err instanceof Error ? err.message : String(err),
       latencyMs: Date.now() - start,
+      statusCode: null,
     };
   } finally {
     if (dispatcher) {
@@ -197,9 +197,10 @@ export interface DeliveryWorkerOptions {
 }
 
 export interface DeliveryWorker {
-  start(): void;
-  stop(): void;
-  tick(): Promise<{ readonly attempted: number; readonly outcomes: readonly DeliveryOutcome[] }>;
+  readonly isRunning: () => boolean;
+  readonly start: () => void;
+  readonly stop: () => Promise<void>;
+  readonly tick: () => Promise<{ readonly attempted: number; readonly outcomes: readonly DeliveryOutcome[] }>;
 }
 
 export function createDeliveryWorker(opts: DeliveryWorkerOptions = {}): DeliveryWorker {
@@ -208,25 +209,29 @@ export function createDeliveryWorker(opts: DeliveryWorkerOptions = {}): Delivery
   const interval = opts.tickIntervalMs ?? 5000;
   let timer: ReturnType<typeof setInterval> | null = null;
   let inFlight = false;
+  let inFlightDone = Promise.resolve();
+  // biome-ignore lint/suspicious/noEmptyBlockStatements: The empty handler intentionally absorbs this best-effort cleanup failure.
+  let finishInFlight = (): void => {};
+  let stopping = false;
   const store = getDefaultClientEventSubscriptionStore();
 
   async function processOne(row: QueueRow): Promise<DeliveryOutcome> {
     const deliveryDeps: DeliveryDependencies = {
-      nowSeconds: () => Math.floor(nowMs() / 1000),
       nowIso: () => new Date(nowMs()).toISOString(),
+      nowSeconds: () => Math.floor(nowMs() / 1000),
       request: transport,
       ...(opts.randomJitterFactor ? { randomJitterFactor: opts.randomJitterFactor } : {}),
     };
     const outcome = await executeDelivery(
       {
-        queueId: row.queue_id,
-        subscriptionId: row.subscription_id,
+        attemptCount: row.attempt_count,
+        callbackUrl: row.callback_url,
         eventId: row.event_id,
         eventType: row.event_type,
         payloadJson: row.payload_json,
-        attemptCount: row.attempt_count,
-        callbackUrl: row.callback_url,
+        queueId: row.queue_id,
         secret: row.secret_text,
+        subscriptionId: row.subscription_id,
         verificationChallenge: row.verification_challenge,
       },
       deliveryDeps
@@ -246,8 +251,8 @@ export function createDeliveryWorker(opts: DeliveryWorkerOptions = {}): Delivery
       await updateQueueAttempt(row.queue_id, row.attempt_count + 1, attemptedAt, "delivered", null);
       if (outcome.kind === "verified") {
         await executeVerificationOutcome(row.subscription_id, "verified", {
-          store,
           nowIso: () => attemptedAt,
+          store,
         });
       }
     } else if (outcome.kind === "retry") {
@@ -287,8 +292,8 @@ export function createDeliveryWorker(opts: DeliveryWorkerOptions = {}): Delivery
       );
       await updateQueueAttempt(row.queue_id, outcome.attemptCount, attemptedAt, "final_failure", outcome.error);
       await executeRecordDeliveryFailure(row.subscription_id, {
-        store,
         nowIso: () => attemptedAt,
+        store,
       });
     } else {
       await insertAttempt(
@@ -302,8 +307,8 @@ export function createDeliveryWorker(opts: DeliveryWorkerOptions = {}): Delivery
       );
       await updateQueueAttempt(row.queue_id, outcome.attemptCount, attemptedAt, "final_failure", outcome.error);
       await executeRecordDeliveryFailure(row.subscription_id, {
-        store,
         nowIso: () => attemptedAt,
+        store,
       });
     }
     return outcome;
@@ -341,10 +346,13 @@ export function createDeliveryWorker(opts: DeliveryWorkerOptions = {}): Delivery
   }
 
   async function tickInternal(): Promise<{ attempted: number; outcomes: DeliveryOutcome[] }> {
-    if (inFlight) {
+    if ([inFlight, stopping].includes(true)) {
       return { attempted: 0, outcomes: [] };
     }
     inFlight = true;
+    inFlightDone = new Promise<void>((resolve) => {
+      finishInFlight = resolve;
+    });
     try {
       const due = await claimDueQueue(new Date(nowMs()).toISOString());
       const outcomes: DeliveryOutcome[] = [];
@@ -354,6 +362,7 @@ export function createDeliveryWorker(opts: DeliveryWorkerOptions = {}): Delivery
           continue;
         }
         if (disposition.kind === "drop") {
+          // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
           await dropRow(row, disposition.reason);
           continue;
         }
@@ -362,15 +371,17 @@ export function createDeliveryWorker(opts: DeliveryWorkerOptions = {}): Delivery
       return { attempted: outcomes.length, outcomes };
     } finally {
       inFlight = false;
+      finishInFlight();
     }
   }
 
   return {
-    tick: tickInternal,
+    isRunning: () => timer !== null,
     start(): void {
       if (timer) {
         return;
       }
+      stopping = false;
       timer = setInterval(() => {
         tickInternal().catch(() => {
           /* ignored; surfaced via attempt log */
@@ -380,19 +391,51 @@ export function createDeliveryWorker(opts: DeliveryWorkerOptions = {}): Delivery
         (timer as { unref: () => void }).unref();
       }
     },
-    stop(): void {
+    async stop(): Promise<void> {
+      stopping = true;
       if (timer) {
         clearInterval(timer);
         timer = null;
       }
+      await inFlightDone;
     },
+    tick: tickInternal,
   };
 }
 
 let defaultWorker: DeliveryWorker | null = null;
+let defaultWorkerLeaseCount = 0;
+
 export function getDefaultDeliveryWorker(): DeliveryWorker {
   if (!defaultWorker) {
     defaultWorker = createDeliveryWorker();
   }
   return defaultWorker;
+}
+
+export interface DefaultDeliveryWorkerLease {
+  readonly release: () => Promise<void>;
+  readonly worker: DeliveryWorker;
+}
+
+export function acquireDefaultDeliveryWorker(): DefaultDeliveryWorkerLease {
+  const worker = getDefaultDeliveryWorker();
+  defaultWorkerLeaseCount += 1;
+  worker.start();
+  let released = false;
+  let releaseDone = Promise.resolve();
+  return {
+    release(): Promise<void> {
+      if (released) {
+        return releaseDone;
+      }
+      released = true;
+      defaultWorkerLeaseCount -= 1;
+      if (defaultWorkerLeaseCount === 0) {
+        releaseDone = worker.stop();
+      }
+      return releaseDone;
+    },
+    worker,
+  };
 }

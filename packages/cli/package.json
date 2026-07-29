@@ -4,22 +4,36 @@
   "description": "Command-line tools for PDPP providers.",
   "type": "module",
   "bin": {
-    "pdpp": "bin/pdpp.js"
+    "pdpp": "./dist/bin/pdpp.js"
   },
   "exports": {
-    ".": "./src/index.js",
-    "./cache-layout": "./src/cache-layout.js",
-    "./package-info": "./src/package-info.js"
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    },
+    "./cache-layout": {
+      "types": "./dist/src/cache-layout.d.ts",
+      "import": "./dist/src/cache-layout.js"
+    },
+    "./package-info": {
+      "types": "./dist/src/package-info.d.ts",
+      "import": "./dist/src/package-info.js"
+    }
   },
   "files": [
-    "bin/",
-    "src/",
+    "dist/",
     "README.md"
   ],
   "scripts": {
-    "test": "node --test test/*.test.js",
-    "verify": "pnpm test",
-    "pack:dry-run": "pnpm pack --dry-run"
+    "build": "rm -rf dist && tsc -p tsconfig.build.json && node --import tsx scripts/postbuild.ts",
+    "prepare": "pnpm build",
+    "prepack": "pnpm build",
+    "test": "pnpm build && node --import tsx scripts/run-tests.ts",
+    "validate:package": "pnpm build && node --import tsx scripts/validate-package.ts",
+    "pack-install-run": "pnpm build && node --import tsx scripts/pack-install-run.ts",
+    "pack-install-run:node-22.14": "node --import tsx scripts/verify-node-22-14-artifact.ts",
+    "verify": "pnpm test && pnpm validate:package && pnpm pack-install-run",
+    "pack:dry-run": "pnpm build && npm pack --dry-run --ignore-scripts"
   },
   "keywords": [
     "pdpp",
@@ -27,6 +41,9 @@
     "oauth",
     "cli"
   ],
+  "devDependencies": {
+    "@types/node": "^26.1.1"
+  },
   "license": "Apache-2.0",
   "repository": {
     "type": "git",

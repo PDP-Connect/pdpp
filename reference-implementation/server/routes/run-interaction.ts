@@ -19,6 +19,7 @@
 //     PDPP_ENABLE_STREAM_PLAYGROUND=1. Owner-session required when
 //     owner-auth is enabled.
 
+import { isNullish } from "../../lib/nullish.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 
 // Express-shaped surface, structurally typed to avoid pulling in transport
@@ -33,35 +34,36 @@ interface RouteRequest {
 }
 
 interface RouteResponse {
-  json(body: unknown): unknown;
-  status(code: number): RouteResponse;
+  json: (body: unknown) => unknown;
+  status: (code: number) => RouteResponse;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
 
 interface AppLike {
-  post(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  post: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
 }
 
 export interface RunInteractionController {
-  respondToInteraction(
+  respondToInteraction: (
     runId: string,
     input: {
       readonly interaction_id: string;
       readonly status: string;
       readonly data?: Record<string, unknown> | null | undefined;
     }
-  ): { readonly status: string } | Promise<{ readonly status: string }>;
+  ) => { readonly status: string } | Promise<{ readonly status: string }>;
 }
 
 export interface MountRefRunInteractionContext {
   readonly controller: RunInteractionController | null | undefined;
-  handleError(res: unknown, err: unknown): void;
+  handleError: (res: unknown, err: unknown) => void;
   pdppError: PdppErrorFn;
   requireOwnerSession: MiddlewareHandler;
 }
 
 function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   return typeof (value as Promise<T>)?.then === "function";
 }
 
@@ -77,7 +79,7 @@ export function mountRefRunInteraction(app: AppLike, ctx: MountRefRunInteraction
         }
         const runId = decodeURIComponent(req.params.runId as string);
         const body =
-          req.body != null && typeof req.body === "object"
+          req.body !== null && typeof req.body === "object"
             ? (req.body as Record<string, unknown>)
             : ({} as Record<string, unknown>);
         if (typeof body.interaction_id !== "string" || !body.interaction_id.trim()) {
@@ -86,19 +88,19 @@ export function mountRefRunInteraction(app: AppLike, ctx: MountRefRunInteraction
         if (body.status !== "success" && body.status !== "cancelled") {
           return ctx.pdppError(res, 400, "invalid_status", 'status must be "success" or "cancelled"', "status");
         }
-        if (body.data != null && (typeof body.data !== "object" || Array.isArray(body.data))) {
+        if (!isNullish(body.data) && (typeof body.data !== "object" || Array.isArray(body.data))) {
           return ctx.pdppError(res, 400, "invalid_request", "data must be an object if provided", "data");
         }
         const result = ctx.controller.respondToInteraction(runId, {
+          data: body.data as Record<string, unknown> | null | undefined,
           interaction_id: body.interaction_id as string,
           status: body.status as string,
-          data: body.data as Record<string, unknown> | null | undefined,
         });
         const acknowledge = (resolved: { readonly status: string }) =>
           res.status(202).json({
+            interaction_id: body.interaction_id,
             object: "run_interaction_ack",
             run_id: runId,
-            interaction_id: body.interaction_id,
             status: resolved.status,
           });
         if (isPromiseLike(result)) {
@@ -119,14 +121,14 @@ export interface PlaygroundSession {
 }
 
 export interface PlaygroundLike {
-  getOrCreatePlaygroundSession(opts: {
+  getOrCreatePlaygroundSession: (opts: {
     backend?: string | undefined;
     streamDebug?: string | undefined;
-  }): Promise<PlaygroundSession> | PlaygroundSession;
+  }) => Promise<PlaygroundSession> | PlaygroundSession;
 }
 
 interface LoggerLike {
-  warn?(obj: Record<string, unknown>, msg: string): void;
+  warn?: (obj: Record<string, unknown>, msg: string) => void;
 }
 
 export interface MountRefDevPlaygroundSessionContext {
@@ -139,11 +141,13 @@ export interface MountRefDevPlaygroundSessionContext {
 export function mountRefDevPlaygroundSession(app: AppLike, ctx: MountRefDevPlaygroundSessionContext): void {
   app.post("/_ref/dev/playground/session", ctx.requireOwnerSession, async (req: RouteRequest, res: RouteResponse) => {
     try {
-      const body = req.body != null && typeof req.body === "object" ? (req.body as Record<string, unknown>) : null;
+      const body = req.body !== null && typeof req.body === "object" ? (req.body as Record<string, unknown>) : null;
       let backend: string | undefined;
       if (typeof req.query?.backend === "string") {
+        // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
         backend = req.query.backend;
       } else if (body && typeof body.backend === "string") {
+        // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
         backend = body.backend;
       }
       let streamDebug: string | undefined;
@@ -154,10 +158,10 @@ export function mountRefDevPlaygroundSession(app: AppLike, ctx: MountRefDevPlayg
       }
       const session = await ctx.playground.getOrCreatePlaygroundSession({ backend, streamDebug });
       return res.status(200).json({
-        object: "stream_playground_session",
         backend: session.backend,
-        run_id: session.runId,
         interaction_id: session.interactionId,
+        object: "stream_playground_session",
+        run_id: session.runId,
       });
     } catch (err) {
       const message = (err as { message?: string } | null)?.message ?? "playground session failed";

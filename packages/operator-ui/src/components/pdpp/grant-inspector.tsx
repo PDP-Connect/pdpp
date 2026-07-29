@@ -15,7 +15,7 @@ const ISO_DATE_OR_DATETIME_RE = /^\d{4}-\d{2}-\d{2}([T ].+)?$/;
 // strings like 'Apr 15, 2026' pass through untouched while real ISO
 // values get the full treatment.
 function DateLike({ value }: { value: string | null | undefined }) {
-  if (value == null || value === "") {
+  if (value === null || value === undefined || value === "") {
     return <>Never</>;
   }
   const looksISO = ISO_DATE_OR_DATETIME_RE.test(value);
@@ -184,6 +184,7 @@ export function GrantInspector({
               <button
                 aria-expanded={!!expanded[name]}
                 className="flex w-full items-center justify-between gap-2 py-2.5 text-left"
+                // biome-ignore lint/performance/noJsxPropsBind: Handler captures the current row or component state; extracting it would add indirection without a stable consumer boundary.
                 onClick={() => toggleExpand(name)}
                 type="button"
               >
@@ -248,6 +249,7 @@ export function GrantInspector({
           <div className="px-5 py-4">
             <Button
               className="w-full"
+              // biome-ignore lint/performance/noJsxPropsBind: Handler captures the current row or component state; extracting it would add indirection without a stable consumer boundary.
               onClick={() => {
                 setRevoked(true);
                 onRevoke();
@@ -271,6 +273,7 @@ export function GrantInspector({
       {revoked && status !== "revoked" && (
         <button
           className="mt-2 px-0.5 font-mono text-xs"
+          // biome-ignore lint/performance/noJsxPropsBind: Handler captures the current row or component state; extracting it would add indirection without a stable consumer boundary.
           onClick={() => setRevoked(false)}
           style={{ color: "var(--muted-foreground)" }}
           type="button"

@@ -33,14 +33,11 @@
  *     block fields populated from operation inputs and result counts.
  */
 
-import {
-  normalizeProjectionFields,
-  projectRecordEnvelope,
-} from "../read-projection.ts";
+import { normalizeProjectionFields, projectRecordEnvelope } from "../read-projection.ts";
 
 export interface RecordsListSourceDescriptor {
-  kind: "connector" | "provider_native";
   id: string;
+  kind: "connector" | "provider_native";
   [extra: string]: unknown;
 }
 
@@ -60,8 +57,8 @@ export type RecordsListActor =
  */
 export interface RecordsListManifestStream {
   name: string;
-  views?: Array<{ id: string; fields: string[] }>;
   schema?: { properties?: Record<string, unknown> };
+  views?: Array<{ id: string; fields: string[] }>;
   [extra: string]: unknown;
 }
 
@@ -75,8 +72,8 @@ export interface RecordsListManifest {
  * `streams[].name` and `streams[].fields`.
  */
 export interface RecordsListGrantStream {
-  name: string;
   fields?: string[];
+  name: string;
   [extra: string]: unknown;
 }
 
@@ -92,50 +89,50 @@ export interface RecordsListGrant {
  * intervention.
  */
 export interface RecordsListQueryResult {
-  data: Array<Record<string, unknown>>;
+  data: Record<string, unknown>[];
   has_more?: boolean;
-  next_cursor?: string | null;
   next_changes_since?: string | null;
+  next_cursor?: string | null;
   [extra: string]: unknown;
 }
 
 export interface RecordsListDependencies {
-  /**
-   * Source descriptor for instrumentation events (`source` field on
-   * `disclosure.served` / `query.received`). Hosts compute this once.
-   */
-  getSourceDescriptor(): RecordsListSourceDescriptor;
-  /**
-   * Resolved manifest the operation should consult for stream visibility
-   * (owner actor) and field/view validation. The capability returns the
-   * already-resolved manifest the host built from the actor's scope.
-   */
-  getManifest(): Promise<RecordsListManifest> | RecordsListManifest;
-  /**
-   * Resolved grant the host derived for this request. For client actors this
-   * is the token's grant; for owner actors the operation will overwrite this
-   * with an owner read-grant after the manifest visibility check passes.
-   */
-  getGrant(): RecordsListGrant;
-  /**
-   * Run the underlying record query against the resolved manifest, grant,
-   * and request params. The operation does not normalize cursor, projection,
-   * range, `changes_since`, or `expand[]` shape beyond what
-   * `validateRequestFields` requires; capability owns the rest.
-   */
-  queryRecords(
-    stream: string,
-    grant: RecordsListGrant,
-    requestParams: Record<string, unknown>,
-    manifest: RecordsListManifest,
-  ): Promise<RecordsListQueryResult>;
   /**
    * Apply blob-ref URL decoration to a single record. Hosts wire the
    * concrete implementation: native -> `decorateRecordBlobRefs` from
    * `server/index.js`; sandbox -> identity (sandbox demo records do not
    * carry blob refs).
    */
-  decorateRecord(record: Record<string, unknown>): Record<string, unknown>;
+  decorateRecord: (record: Record<string, unknown>) => Record<string, unknown>;
+  /**
+   * Resolved grant the host derived for this request. For client actors this
+   * is the token's grant; for owner actors the operation will overwrite this
+   * with an owner read-grant after the manifest visibility check passes.
+   */
+  getGrant: () => RecordsListGrant;
+  /**
+   * Resolved manifest the operation should consult for stream visibility
+   * (owner actor) and field/view validation. The capability returns the
+   * already-resolved manifest the host built from the actor's scope.
+   */
+  getManifest: () => Promise<RecordsListManifest> | RecordsListManifest;
+  /**
+   * Source descriptor for instrumentation events (`source` field on
+   * `disclosure.served` / `query.received`). Hosts compute this once.
+   */
+  getSourceDescriptor: () => RecordsListSourceDescriptor;
+  /**
+   * Run the underlying record query against the resolved manifest, grant,
+   * and request params. The operation does not normalize cursor, projection,
+   * range, `changes_since`, or `expand[]` shape beyond what
+   * `validateRequestFields` requires; capability owns the rest.
+   */
+  queryRecords: (
+    stream: string,
+    grant: RecordsListGrant,
+    requestParams: Record<string, unknown>,
+    manifest: RecordsListManifest
+  ) => Promise<RecordsListQueryResult>;
   /**
    * Validate request-level field/filter params against the manifest stream.
    * Hosts wire the concrete implementation (native: server-side validator;
@@ -146,23 +143,15 @@ export interface RecordsListDependencies {
    * carrying `code` / `message`) to signal a request-level rejection; hosts
    * map that to their existing error envelopes.
    */
-  validateRequestFields(
+  validateRequestFields: (
     requestParams: Record<string, unknown>,
-    manifestStream: RecordsListManifestStream | null,
-  ): void;
+    manifestStream: RecordsListManifestStream | null
+  ) => void;
 }
 
 export interface RecordsListInput {
   actor: RecordsListActor;
-  /** Stream name from the request path. */
-  streamName: string;
-  /**
-   * Mutable copy of the request params (cursor, limit, fields, filter,
-   * changes_since, view, etc.). The operation may set / delete `fields` /
-   * `view` while resolving views; cursor / pagination semantics flow
-   * through unchanged.
-   */
-  requestParams: Record<string, unknown>;
+  rawQueryFields?: unknown;
   /**
    * Raw `view` / `fields` query values forwarded from the host. Hosts pass
    * the value `qs.parse` / `Request.url` produced — typically a string,
@@ -174,24 +163,18 @@ export interface RecordsListInput {
    * other truthy shape.
    */
   rawQueryView?: unknown;
-  rawQueryFields?: unknown;
+  /**
+   * Mutable copy of the request params (cursor, limit, fields, filter,
+   * changes_since, view, etc.). The operation may set / delete `fields` /
+   * `view` while resolving views; cursor / pagination semantics flow
+   * through unchanged.
+   */
+  requestParams: Record<string, unknown>;
+  /** Stream name from the request path. */
+  streamName: string;
 }
 
 export interface RecordsListOutput {
-  /** Result of the underlying query, with each record blob-ref-decorated. */
-  result: RecordsListQueryResult;
-  /** Echoed for instrumentation parity with the native route. */
-  sourceDescriptor: RecordsListSourceDescriptor;
-  /**
-   * `query.received`-shaped data block (without instrumentation-only fields
-   * the host populates such as `requested_view`).
-   */
-  queryData: {
-    query_shape: "record_list";
-    has_changes_since: boolean;
-    limit: number | null;
-    requested_view?: string;
-  };
   /** `disclosure.served`-shaped data block. Hosts merge in `source`. */
   disclosureData: {
     query_shape: "record_list";
@@ -205,16 +188,27 @@ export interface RecordsListOutput {
    * `queryRecords` capability was called with.
    */
   effectiveGrant: RecordsListGrant;
+  /**
+   * `query.received`-shaped data block (without instrumentation-only fields
+   * the host populates such as `requested_view`).
+   */
+  queryData: {
+    query_shape: "record_list";
+    has_changes_since: boolean;
+    limit: number | null;
+    requested_view?: string;
+  };
+  /** Result of the underlying query, with each record blob-ref-decorated. */
+  result: RecordsListQueryResult;
+  /** Echoed for instrumentation parity with the native route. */
+  sourceDescriptor: RecordsListSourceDescriptor;
 }
 
 /** Error thrown when the request itself is invalid in a host-independent way. */
 export class RecordsListVisibilityError extends Error {
   readonly code: "not_found" | "invalid_request" | "field_not_granted";
 
-  constructor(
-    code: "not_found" | "invalid_request" | "field_not_granted",
-    message: string,
-  ) {
+  constructor(code: "not_found" | "invalid_request" | "field_not_granted", message: string) {
     super(message);
     this.name = "RecordsListVisibilityError";
     this.code = code;
@@ -232,9 +226,11 @@ function buildOwnerReadGrant(streamName: string): RecordsListGrant {
  * `fields`) when resolving a view; hosts pass a fresh copy of the request
  * params per call so this stays explicit.
  */
+
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
 export async function executeRecordsList(
   input: RecordsListInput,
-  dependencies: RecordsListDependencies,
+  dependencies: RecordsListDependencies
 ): Promise<RecordsListOutput> {
   const sourceDescriptor = dependencies.getSourceDescriptor();
   const manifest = await dependencies.getManifest();
@@ -246,10 +242,7 @@ export async function executeRecordsList(
   if (input.actor.kind === "owner") {
     const mStream = manifest.streams.find((s) => s.name === input.streamName);
     if (!mStream) {
-      throw new RecordsListVisibilityError(
-        "not_found",
-        `Stream '${input.streamName}' not found`,
-      );
+      throw new RecordsListVisibilityError("not_found", `Stream '${input.streamName}' not found`);
     }
     grant = buildOwnerReadGrant(input.streamName);
   }
@@ -264,14 +257,10 @@ export async function executeRecordsList(
   const rawView = input.rawQueryView;
   const rawFields = input.rawQueryFields;
   if (rawView && rawFields) {
-    throw new RecordsListVisibilityError(
-      "invalid_request",
-      "view and fields are mutually exclusive",
-    );
+    throw new RecordsListVisibilityError("invalid_request", "view and fields are mutually exclusive");
   }
 
-  const mStream =
-    manifest.streams.find((s) => s.name === input.streamName) ?? null;
+  const mStream = manifest.streams.find((s) => s.name === input.streamName) ?? null;
 
   dependencies.validateRequestFields(input.requestParams, mStream);
 
@@ -283,13 +272,10 @@ export async function executeRecordsList(
   // the "Unknown view" rejection, matching the previous native behavior
   // (which embedded `req.query.view` directly into the template literal,
   // coercing arrays/objects to their default string form).
-  if (rawView && input.requestParams.fields == null) {
+  if (rawView && (input.requestParams.fields === null || input.requestParams.fields === undefined)) {
     const viewDef = (mStream?.views ?? []).find((v) => v.id === rawView);
     if (!viewDef) {
-      throw new RecordsListVisibilityError(
-        "invalid_request",
-        `Unknown view: ${String(rawView)}`,
-      );
+      throw new RecordsListVisibilityError("invalid_request", `Unknown view: ${String(rawView)}`);
     }
     const streamGrant = grant.streams.find((s) => s.name === input.streamName);
     if (streamGrant?.fields) {
@@ -298,24 +284,19 @@ export async function executeRecordsList(
       if (unauthorized.length) {
         throw new RecordsListVisibilityError(
           "field_not_granted",
-          `View includes fields not in grant: ${unauthorized.join(", ")}`,
+          `View includes fields not in grant: ${unauthorized.join(", ")}`
         );
       }
     }
     input.requestParams.fields = viewDef.fields;
-    delete input.requestParams.view;
+    Reflect.deleteProperty(input.requestParams, "view");
   }
 
-  const rawResult = await dependencies.queryRecords(
-    input.streamName,
-    grant,
-    input.requestParams,
-    manifest,
-  );
+  const rawResult = await dependencies.queryRecords(input.streamName, grant, input.requestParams, manifest);
 
   const projectionFields = normalizeProjectionFields(input.requestParams.fields);
   const decoratedData = rawResult.data.map((record) =>
-    projectRecordEnvelope(dependencies.decorateRecord(record), projectionFields),
+    projectRecordEnvelope(dependencies.decorateRecord(record), projectionFields)
   );
   const decoratedResult: RecordsListQueryResult = {
     ...rawResult,
@@ -323,16 +304,16 @@ export async function executeRecordsList(
   };
 
   const limitParam = input.requestParams.limit;
-  const limit =
-    typeof limitParam === "number"
-      ? limitParam
-      : limitParam == null || limitParam === ""
-        ? null
-        : Number(limitParam);
+  let limit: number | null = null;
+  if (typeof limitParam === "number") {
+    limit = limitParam;
+  } else if (limitParam !== null && limitParam !== undefined && limitParam !== "") {
+    limit = Number(limitParam);
+  }
   const queryData: RecordsListOutput["queryData"] = {
-    query_shape: "record_list",
     has_changes_since: !!input.requestParams.changes_since,
-    limit: Number.isFinite(limit as number) ? (limit as number) : null,
+    limit: limit !== null && Number.isFinite(limit) ? limit : null,
+    query_shape: "record_list",
   };
   // Preserve the previous native instrumentation rule: `requested_view` is
   // only emitted when the host supplied a non-empty string view. Non-string
@@ -344,15 +325,15 @@ export async function executeRecordsList(
   }
 
   return {
-    result: decoratedResult,
-    sourceDescriptor,
-    queryData,
     disclosureData: {
-      query_shape: "record_list",
-      record_count: decoratedData.length,
       has_more: !!rawResult.has_more,
       has_next_changes_since: !!rawResult.next_changes_since,
+      query_shape: "record_list",
+      record_count: decoratedData.length,
     },
     effectiveGrant: grant,
+    queryData,
+    result: decoratedResult,
+    sourceDescriptor,
   };
 }

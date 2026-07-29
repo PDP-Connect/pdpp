@@ -343,8 +343,9 @@ async function resolveCdpWsUrlForManualAction(args: {
   readonly page: Page;
   readonly resolveWsUrl: (page: Page, opts: ResolveWsUrlOptions) => Promise<string>;
 }): Promise<string | undefined> {
+  let wsUrl: string | undefined;
   try {
-    return await args.resolveWsUrl(args.page, args.endpoint);
+    wsUrl = await args.resolveWsUrl(args.page, args.endpoint);
   } catch (err) {
     // Most common cause: the page closed between the connector deciding it
     // needed manual_action and us reaching the resolver. Fail closed for
@@ -353,8 +354,8 @@ async function resolveCdpWsUrlForManualAction(args: {
     process.stderr.write(
       `[browser-handoff] could not resolve CDP page-target wsUrl for interaction ${args.interactionId}: ${message}; continuing without streaming.\n`
     );
-    return;
   }
+  return wsUrl;
 }
 
 function registerCdpManualActionTarget(args: {

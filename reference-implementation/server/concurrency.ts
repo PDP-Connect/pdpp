@@ -29,27 +29,29 @@ export async function mapWithConcurrency<T, R>(
   const onChange = options.onInFlightChange;
   const runOne = async (): Promise<void> => {
     while (nextIndex < items.length) {
-      const index = nextIndex++;
-      inFlight++;
+      const index = nextIndex;
+      nextIndex += 1;
+      inFlight += 1;
       onChange?.(inFlight);
       const item = items[index] as T;
       try {
+        // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
         results[index] = await worker(item, index);
       } catch (err) {
         errors[index] = err;
         hasError[index] = true;
       } finally {
-        inFlight--;
+        inFlight -= 1;
         onChange?.(inFlight);
       }
     }
   };
   const workers: Promise<void>[] = [];
-  for (let i = 0; i < effectiveLimit; i++) {
+  for (let i = 0; i < effectiveLimit; i += 1) {
     workers.push(runOne());
   }
   await Promise.all(workers);
-  for (let index = 0; index < errors.length; index++) {
+  for (let index = 0; index < errors.length; index += 1) {
     if (hasError[index]) {
       throw errors[index];
     }

@@ -19,8 +19,8 @@
 import { execDynamicSqlAcknowledged, iterateDynamicSqlAcknowledged } from "../../lib/db.ts";
 import type { AttentionLifecycle, AttentionRecord, NotificationState } from "../../runtime/attention.ts";
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from "../owner-auth.ts";
-import { getStorageBackendKind, isPostgresStorageBackend, postgresQuery } from "../postgres-storage.js";
-import { makeDefaultAccountConnectorInstanceId } from "./connector-instance-store.js";
+import { getStorageBackendKind, isPostgresStorageBackend, postgresQuery } from "../postgres-storage.ts";
+import { makeDefaultAccountConnectorInstanceId } from "./connector-instance-store.ts";
 
 const OPEN_LIFECYCLES = ["open", "acknowledged", "in_progress"];
 const VALID_LIFECYCLES = new Set([
@@ -34,12 +34,12 @@ const VALID_LIFECYCLES = new Set([
 ]);
 const TERMINAL_LIFECYCLES = new Set(["resolved", "expired", "cancelled", "superseded"]);
 const ALLOWED_TRANSITIONS: Record<AttentionLifecycle, Set<string>> = {
-  open: new Set(["acknowledged", "in_progress", "resolved", "expired", "cancelled", "superseded"]),
   acknowledged: new Set(["in_progress", "resolved", "expired", "cancelled", "superseded"]),
-  in_progress: new Set(["resolved", "expired", "cancelled", "superseded"]),
-  resolved: new Set(),
-  expired: new Set(),
   cancelled: new Set(),
+  expired: new Set(),
+  in_progress: new Set(["resolved", "expired", "cancelled", "superseded"]),
+  open: new Set(["acknowledged", "in_progress", "resolved", "expired", "cancelled", "superseded"]),
+  resolved: new Set(),
   superseded: new Set(),
 };
 
@@ -123,12 +123,12 @@ interface ReconcileTerminalRunsInput {
 }
 
 export interface ConnectorAttentionStore {
-  cancelOpenAttentionForTerminalRuns(input?: ReconcileTerminalRunsInput): Promise<AttentionRecord[]>;
-  expireDueAttentionForConnection(input?: ExpireDueInput): Promise<AttentionRecord[]>;
-  listOpenAttentionForConnection(input?: ListInput): Promise<(AttentionRecord | null)[]>;
-  recordNotificationOutcomeById(input: NotificationOutcomeInput): Promise<AttentionRecord | null>;
-  transitionAttention(input: TransitionInput): Promise<AttentionRecord | null>;
-  upsertAttention(input: UpsertInput): Promise<AttentionRecord>;
+  cancelOpenAttentionForTerminalRuns: (input?: ReconcileTerminalRunsInput) => Promise<AttentionRecord[]>;
+  expireDueAttentionForConnection: (input?: ExpireDueInput) => Promise<AttentionRecord[]>;
+  listOpenAttentionForConnection: (input?: ListInput) => Promise<(AttentionRecord | null)[]>;
+  recordNotificationOutcomeById: (input: NotificationOutcomeInput) => Promise<AttentionRecord | null>;
+  transitionAttention: (input: TransitionInput) => Promise<AttentionRecord | null>;
+  upsertAttention: (input: UpsertInput) => Promise<AttentionRecord>;
 }
 
 function nonEmptyString(value: unknown): string | null {
@@ -180,6 +180,7 @@ function rowToRecord(
     parsed = JSON.parse(json) as AttentionRecord;
   } catch {
     const attentionId = "attention_id" in row ? row.attention_id : "";
+    // biome-ignore lint/style/useErrorCause: This compatibility path preserves the established error shape and propagation.
     throw new Error(`connector attention store: malformed record_json for ${attentionId}`);
   }
   // The persisted record_json is authoritative for the AttentionRecord
@@ -194,17 +195,17 @@ function encodeUpsertArgs(record: AttentionRecord, connectorId: string, connecto
   ensureRecordShape(record);
   return {
     attentionId: record.id,
-    dedupeKey: record.dedupe_key,
+    connectionId: record.connection_id,
     connectorId,
     connectorInstanceId,
-    connectionId: record.connection_id,
-    runId: nonEmptyString(record.run_id),
-    reasonCode: record.reason_code,
-    lifecycle: record.lifecycle,
-    sensitivity: record.sensitivity,
-    expiresAt: nonEmptyString(record.expires_at),
-    recordJson: JSON.stringify(record),
     createdAt: record.created_at,
+    dedupeKey: record.dedupe_key,
+    expiresAt: nonEmptyString(record.expires_at),
+    lifecycle: record.lifecycle,
+    reasonCode: record.reason_code,
+    recordJson: JSON.stringify(record),
+    runId: nonEmptyString(record.run_id),
+    sensitivity: record.sensitivity,
     updatedAt: record.updated_at,
   };
 }
@@ -273,90 +274,14 @@ function applyNotificationOutcomeToRecord(
   const trimmedReason = nonEmptyString(reason);
   return {
     ...record,
+    notification_reason: trimmedReason,
     notification_state: outcome as NotificationState,
     notification_updated_at: now,
-    notification_reason: trimmedReason,
   };
 }
 
 export function createSqliteConnectorAttentionStore(): ConnectorAttentionStore {
   return {
-    // biome-ignore lint/suspicious/useAwait: sync sqlite driver; async satisfies the shared ConnectorAttentionStore contract.
-    async upsertAttention({ record, connectorId, connectorInstanceId }: UpsertInput): Promise<AttentionRecord> {
-      const id = nonEmptyString(connectorId);
-      if (!id) {
-        throw new Error("upsertAttention: connectorId is required");
-      }
-      const instance = nonEmptyString(connectorInstanceId) || defaultConnectorInstanceId(id);
-      const args = encodeUpsertArgs(record, id, instance);
-      // REVIEWED-DYNAMIC: connector_attention_records is owned by this store
-      // and is not represented in the static query registry yet.
-      execDynamicSqlAcknowledged(
-        `INSERT INTO connector_attention_records(
-           attention_id, dedupe_key, connector_id, connector_instance_id, connection_id,
-           run_id, reason_code, lifecycle, sensitivity, expires_at, record_json, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(attention_id) DO UPDATE SET
-           dedupe_key = excluded.dedupe_key,
-           connector_id = excluded.connector_id,
-           connector_instance_id = excluded.connector_instance_id,
-           connection_id = excluded.connection_id,
-           run_id = excluded.run_id,
-           reason_code = excluded.reason_code,
-           lifecycle = excluded.lifecycle,
-           sensitivity = excluded.sensitivity,
-           expires_at = excluded.expires_at,
-           record_json = excluded.record_json,
-           updated_at = excluded.updated_at`,
-        [
-          args.attentionId,
-          args.dedupeKey,
-          args.connectorId,
-          args.connectorInstanceId,
-          args.connectionId,
-          args.runId,
-          args.reasonCode,
-          args.lifecycle,
-          args.sensitivity,
-          args.expiresAt,
-          args.recordJson,
-          args.createdAt,
-          args.updatedAt,
-        ]
-      );
-      return record;
-    },
-
-    // biome-ignore lint/suspicious/useAwait: sync sqlite driver; async satisfies the shared ConnectorAttentionStore contract.
-    async listOpenAttentionForConnection({
-      connectorId,
-      connectorInstanceId,
-      limit,
-    }: ListInput = {}): Promise<(AttentionRecord | null)[]> {
-      const id = nonEmptyString(connectorId);
-      if (!id) {
-        throw new Error("listOpenAttentionForConnection: connectorId is required");
-      }
-      const instance = nonEmptyString(connectorInstanceId) || defaultConnectorInstanceId(id);
-      const bounded = clampLimit(limit);
-      // REVIEWED-DYNAMIC: parameterized read over the store-owned table.
-      // Bounded by `limit` (clamped to MAX_LIST_LIMIT) so a connection with
-      // unusual attention churn cannot fan out the dashboard list call.
-      const rows = [
-        ...iterateDynamicSqlAcknowledged<AttentionListRow>(
-          `SELECT attention_id, record_json
-             FROM connector_attention_records
-            WHERE connector_id = ?
-              AND connector_instance_id = ?
-              AND ${buildSqliteOpenPredicate(OPEN_LIFECYCLES)}
-            ORDER BY updated_at DESC
-            LIMIT ?`,
-          [id, instance, ...OPEN_LIFECYCLES, nowIso(), bounded]
-        ),
-      ];
-      return rows.map(rowToRecord);
-    },
-
     // biome-ignore lint/suspicious/useAwait: sync sqlite driver; async satisfies the shared ConnectorAttentionStore contract.
     async cancelOpenAttentionForTerminalRuns({
       now,
@@ -442,34 +367,33 @@ export function createSqliteConnectorAttentionStore(): ConnectorAttentionStore {
     },
 
     // biome-ignore lint/suspicious/useAwait: sync sqlite driver; async satisfies the shared ConnectorAttentionStore contract.
-    async transitionAttention({ attentionId, to, now }: TransitionInput): Promise<AttentionRecord | null> {
-      const id = nonEmptyString(attentionId);
+    async listOpenAttentionForConnection({
+      connectorId,
+      connectorInstanceId,
+      limit,
+    }: ListInput = {}): Promise<(AttentionRecord | null)[]> {
+      const id = nonEmptyString(connectorId);
       if (!id) {
-        throw new Error("transitionAttention: attentionId is required");
+        throw new Error("listOpenAttentionForConnection: connectorId is required");
       }
-      if (!VALID_LIFECYCLES.has(to)) {
-        throw new Error(`transitionAttention: invalid target lifecycle ${to}`);
-      }
-      const updatedAt = nonEmptyString(now) || nowIso();
-      // REVIEWED-DYNAMIC: single-row lookup for the store-owned table.
-      const row = [
-        ...iterateDynamicSqlAcknowledged<AttentionLifecycleRow>(
-          "SELECT record_json, lifecycle FROM connector_attention_records WHERE attention_id = ? LIMIT 1",
-          [id]
+      const instance = nonEmptyString(connectorInstanceId) || defaultConnectorInstanceId(id);
+      const bounded = clampLimit(limit);
+      // REVIEWED-DYNAMIC: parameterized read over the store-owned table.
+      // Bounded by `limit` (clamped to MAX_LIST_LIMIT) so a connection with
+      // unusual attention churn cannot fan out the dashboard list call.
+      const rows = [
+        ...iterateDynamicSqlAcknowledged<AttentionListRow>(
+          `SELECT attention_id, record_json
+             FROM connector_attention_records
+            WHERE connector_id = ?
+              AND connector_instance_id = ?
+              AND ${buildSqliteOpenPredicate(OPEN_LIFECYCLES)}
+            ORDER BY updated_at DESC
+            LIMIT ?`,
+          [id, instance, ...OPEN_LIFECYCLES, nowIso(), bounded]
         ),
-      ][0];
-      if (!row) {
-        return null;
-      }
-      const next = transitionedRecord(row, id, to, updatedAt);
-      // REVIEWED-DYNAMIC: lifecycle mutation for the store-owned table.
-      execDynamicSqlAcknowledged(
-        `UPDATE connector_attention_records
-            SET lifecycle = ?, updated_at = ?, record_json = ?
-          WHERE attention_id = ?`,
-        [to, updatedAt, JSON.stringify(next), id]
-      );
-      return next;
+      ];
+      return rows.map(rowToRecord);
     },
 
     /**
@@ -495,6 +419,7 @@ export function createSqliteConnectorAttentionStore(): ConnectorAttentionStore {
       }
       const updatedAt = nonEmptyString(now) || nowIso();
       // REVIEWED-DYNAMIC: single-row lookup for the store-owned table.
+      // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
       const row = [
         ...iterateDynamicSqlAcknowledged<AttentionLifecycleRow>(
           "SELECT record_json, lifecycle FROM connector_attention_records WHERE attention_id = ? LIMIT 1",
@@ -505,7 +430,7 @@ export function createSqliteConnectorAttentionStore(): ConnectorAttentionStore {
         return null;
       }
       const record = rowToRecord(row) as AttentionRecord;
-      const next = applyNotificationOutcomeToRecord(record, { outcome, reason, now: updatedAt });
+      const next = applyNotificationOutcomeToRecord(record, { now: updatedAt, outcome, reason });
       // REVIEWED-DYNAMIC: notification-axis mutation for the store-owned table.
       // `updated_at` and `lifecycle` columns are intentionally left as-is so
       // an external notification outcome does not look like a lifecycle event
@@ -516,11 +441,39 @@ export function createSqliteConnectorAttentionStore(): ConnectorAttentionStore {
       ]);
       return next;
     },
-  };
-}
 
-export function createPostgresConnectorAttentionStore(): ConnectorAttentionStore {
-  return {
+    // biome-ignore lint/suspicious/useAwait: sync sqlite driver; async satisfies the shared ConnectorAttentionStore contract.
+    async transitionAttention({ attentionId, to, now }: TransitionInput): Promise<AttentionRecord | null> {
+      const id = nonEmptyString(attentionId);
+      if (!id) {
+        throw new Error("transitionAttention: attentionId is required");
+      }
+      if (!VALID_LIFECYCLES.has(to)) {
+        throw new Error(`transitionAttention: invalid target lifecycle ${to}`);
+      }
+      const updatedAt = nonEmptyString(now) || nowIso();
+      // REVIEWED-DYNAMIC: single-row lookup for the store-owned table.
+      // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
+      const row = [
+        ...iterateDynamicSqlAcknowledged<AttentionLifecycleRow>(
+          "SELECT record_json, lifecycle FROM connector_attention_records WHERE attention_id = ? LIMIT 1",
+          [id]
+        ),
+      ][0];
+      if (!row) {
+        return null;
+      }
+      const next = transitionedRecord(row, id, to, updatedAt);
+      // REVIEWED-DYNAMIC: lifecycle mutation for the store-owned table.
+      execDynamicSqlAcknowledged(
+        `UPDATE connector_attention_records
+            SET lifecycle = ?, updated_at = ?, record_json = ?
+          WHERE attention_id = ?`,
+        [to, updatedAt, JSON.stringify(next), id]
+      );
+      return next;
+    },
+    // biome-ignore lint/suspicious/useAwait: sync sqlite driver; async satisfies the shared ConnectorAttentionStore contract.
     async upsertAttention({ record, connectorId, connectorInstanceId }: UpsertInput): Promise<AttentionRecord> {
       const id = nonEmptyString(connectorId);
       if (!id) {
@@ -528,23 +481,25 @@ export function createPostgresConnectorAttentionStore(): ConnectorAttentionStore
       }
       const instance = nonEmptyString(connectorInstanceId) || defaultConnectorInstanceId(id);
       const args = encodeUpsertArgs(record, id, instance);
-      await postgresQuery(
+      // REVIEWED-DYNAMIC: connector_attention_records is owned by this store
+      // and is not represented in the static query registry yet.
+      execDynamicSqlAcknowledged(
         `INSERT INTO connector_attention_records(
            attention_id, dedupe_key, connector_id, connector_instance_id, connection_id,
            run_id, reason_code, lifecycle, sensitivity, expires_at, record_json, created_at, updated_at
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13)
-         ON CONFLICT (attention_id) DO UPDATE SET
-           dedupe_key = EXCLUDED.dedupe_key,
-           connector_id = EXCLUDED.connector_id,
-           connector_instance_id = EXCLUDED.connector_instance_id,
-           connection_id = EXCLUDED.connection_id,
-           run_id = EXCLUDED.run_id,
-           reason_code = EXCLUDED.reason_code,
-           lifecycle = EXCLUDED.lifecycle,
-           sensitivity = EXCLUDED.sensitivity,
-           expires_at = EXCLUDED.expires_at,
-           record_json = EXCLUDED.record_json,
-           updated_at = EXCLUDED.updated_at`,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(attention_id) DO UPDATE SET
+           dedupe_key = excluded.dedupe_key,
+           connector_id = excluded.connector_id,
+           connector_instance_id = excluded.connector_instance_id,
+           connection_id = excluded.connection_id,
+           run_id = excluded.run_id,
+           reason_code = excluded.reason_code,
+           lifecycle = excluded.lifecycle,
+           sensitivity = excluded.sensitivity,
+           expires_at = excluded.expires_at,
+           record_json = excluded.record_json,
+           updated_at = excluded.updated_at`,
         [
           args.attentionId,
           args.dedupeKey,
@@ -563,32 +518,11 @@ export function createPostgresConnectorAttentionStore(): ConnectorAttentionStore
       );
       return record;
     },
+  };
+}
 
-    async listOpenAttentionForConnection({
-      connectorId,
-      connectorInstanceId,
-      limit,
-    }: ListInput = {}): Promise<(AttentionRecord | null)[]> {
-      const id = nonEmptyString(connectorId);
-      if (!id) {
-        throw new Error("listOpenAttentionForConnection: connectorId is required");
-      }
-      const instance = nonEmptyString(connectorInstanceId) || defaultConnectorInstanceId(id);
-      const bounded = clampLimit(limit);
-      const result = await postgresQuery(
-        `SELECT attention_id, record_json
-           FROM connector_attention_records
-          WHERE connector_id = $1
-            AND connector_instance_id = $2
-            AND lifecycle = ANY($3::text[])
-            AND (expires_at IS NULL OR expires_at > $4)
-          ORDER BY updated_at DESC
-          LIMIT $5`,
-        [id, instance, OPEN_LIFECYCLES, nowIso(), bounded]
-      );
-      return (result.rows as AttentionListRow[]).map(rowToRecord);
-    },
-
+export function createPostgresConnectorAttentionStore(): ConnectorAttentionStore {
+  return {
     async cancelOpenAttentionForTerminalRuns({
       now,
       limit,
@@ -614,6 +548,7 @@ export function createPostgresConnectorAttentionStore(): ConnectorAttentionStore
       const cancelled: AttentionRecord[] = [];
       for (const row of result.rows as AttentionListRow[]) {
         const next = cancelledRecord(rowToRecord(row), updatedAt);
+        // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
         await postgresQuery(
           `UPDATE connector_attention_records
               SET lifecycle = $1, updated_at = $2, record_json = $3::jsonb
@@ -656,6 +591,7 @@ export function createPostgresConnectorAttentionStore(): ConnectorAttentionStore
           continue;
         }
         const next = expiredRecord(rowToRecord(row), updatedAt);
+        // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
         await postgresQuery(
           `UPDATE connector_attention_records
               SET lifecycle = $1, updated_at = $2, record_json = $3::jsonb
@@ -665,6 +601,59 @@ export function createPostgresConnectorAttentionStore(): ConnectorAttentionStore
         expired.push(next);
       }
       return expired;
+    },
+
+    async listOpenAttentionForConnection({
+      connectorId,
+      connectorInstanceId,
+      limit,
+    }: ListInput = {}): Promise<(AttentionRecord | null)[]> {
+      const id = nonEmptyString(connectorId);
+      if (!id) {
+        throw new Error("listOpenAttentionForConnection: connectorId is required");
+      }
+      const instance = nonEmptyString(connectorInstanceId) || defaultConnectorInstanceId(id);
+      const bounded = clampLimit(limit);
+      const result = await postgresQuery(
+        `SELECT attention_id, record_json
+           FROM connector_attention_records
+          WHERE connector_id = $1
+            AND connector_instance_id = $2
+            AND lifecycle = ANY($3::text[])
+            AND (expires_at IS NULL OR expires_at > $4)
+          ORDER BY updated_at DESC
+          LIMIT $5`,
+        [id, instance, OPEN_LIFECYCLES, nowIso(), bounded]
+      );
+      return (result.rows as AttentionListRow[]).map(rowToRecord);
+    },
+
+    async recordNotificationOutcomeById({
+      attentionId,
+      outcome,
+      reason,
+      now,
+    }: NotificationOutcomeInput): Promise<AttentionRecord | null> {
+      const id = nonEmptyString(attentionId);
+      if (!id) {
+        throw new Error("recordNotificationOutcomeById: attentionId is required");
+      }
+      const updatedAt = nonEmptyString(now) || nowIso();
+      const lookup = await postgresQuery(
+        "SELECT record_json, lifecycle FROM connector_attention_records WHERE attention_id = $1",
+        [id]
+      );
+      const row = lookup.rows[0] as AttentionLifecycleRow | undefined;
+      if (!row) {
+        return null;
+      }
+      const record = rowToRecord(row) as AttentionRecord;
+      const next = applyNotificationOutcomeToRecord(record, { now: updatedAt, outcome, reason });
+      await postgresQuery("UPDATE connector_attention_records SET record_json = $1::jsonb WHERE attention_id = $2", [
+        JSON.stringify(next),
+        id,
+      ]);
+      return next;
     },
 
     async transitionAttention({ attentionId, to, now }: TransitionInput): Promise<AttentionRecord | null> {
@@ -693,33 +682,47 @@ export function createPostgresConnectorAttentionStore(): ConnectorAttentionStore
       );
       return next;
     },
-
-    async recordNotificationOutcomeById({
-      attentionId,
-      outcome,
-      reason,
-      now,
-    }: NotificationOutcomeInput): Promise<AttentionRecord | null> {
-      const id = nonEmptyString(attentionId);
+    async upsertAttention({ record, connectorId, connectorInstanceId }: UpsertInput): Promise<AttentionRecord> {
+      const id = nonEmptyString(connectorId);
       if (!id) {
-        throw new Error("recordNotificationOutcomeById: attentionId is required");
+        throw new Error("upsertAttention: connectorId is required");
       }
-      const updatedAt = nonEmptyString(now) || nowIso();
-      const lookup = await postgresQuery(
-        "SELECT record_json, lifecycle FROM connector_attention_records WHERE attention_id = $1",
-        [id]
+      const instance = nonEmptyString(connectorInstanceId) || defaultConnectorInstanceId(id);
+      const args = encodeUpsertArgs(record, id, instance);
+      await postgresQuery(
+        `INSERT INTO connector_attention_records(
+           attention_id, dedupe_key, connector_id, connector_instance_id, connection_id,
+           run_id, reason_code, lifecycle, sensitivity, expires_at, record_json, created_at, updated_at
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13)
+         ON CONFLICT (attention_id) DO UPDATE SET
+           dedupe_key = EXCLUDED.dedupe_key,
+           connector_id = EXCLUDED.connector_id,
+           connector_instance_id = EXCLUDED.connector_instance_id,
+           connection_id = EXCLUDED.connection_id,
+           run_id = EXCLUDED.run_id,
+           reason_code = EXCLUDED.reason_code,
+           lifecycle = EXCLUDED.lifecycle,
+           sensitivity = EXCLUDED.sensitivity,
+           expires_at = EXCLUDED.expires_at,
+           record_json = EXCLUDED.record_json,
+           updated_at = EXCLUDED.updated_at`,
+        [
+          args.attentionId,
+          args.dedupeKey,
+          args.connectorId,
+          args.connectorInstanceId,
+          args.connectionId,
+          args.runId,
+          args.reasonCode,
+          args.lifecycle,
+          args.sensitivity,
+          args.expiresAt,
+          args.recordJson,
+          args.createdAt,
+          args.updatedAt,
+        ]
       );
-      const row = lookup.rows[0] as AttentionLifecycleRow | undefined;
-      if (!row) {
-        return null;
-      }
-      const record = rowToRecord(row) as AttentionRecord;
-      const next = applyNotificationOutcomeToRecord(record, { outcome, reason, now: updatedAt });
-      await postgresQuery("UPDATE connector_attention_records SET record_json = $1::jsonb WHERE attention_id = $2", [
-        JSON.stringify(next),
-        id,
-      ]);
-      return next;
+      return record;
     },
   };
 }

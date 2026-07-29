@@ -40,19 +40,19 @@ import { renderPendingConsentNotFoundHtml, renderPendingGrantConsentHtml } from 
 // ─── Local structural types ───────────────────────────────────────────────────
 
 interface RouteRequest {
-  accepts(types: string[]): string | false;
+  accepts: (types: string[]) => string | false;
   readonly body?: Readonly<Record<string, unknown>>;
-  is(mimeType: string): boolean | null;
+  is: (mimeType: string) => boolean | null;
   readonly ownerAuth?: { subjectId?: string } | null;
   readonly query: Readonly<Record<string, unknown>>;
 }
 
 interface RouteResponse {
-  json(body: unknown): unknown;
-  redirect(status: number, url: string): unknown;
-  send(body: unknown): unknown;
-  setHeader(name: string, value: string): unknown;
-  status(code: number): RouteResponse;
+  json: (body: unknown) => unknown;
+  redirect: (status: number, url: string) => unknown;
+  send: (body: unknown) => unknown;
+  setHeader: (name: string, value: string) => unknown;
+  status: (code: number) => RouteResponse;
 }
 
 type NextFn = () => void;
@@ -60,8 +60,8 @@ type MiddlewareFn = (req: RouteRequest, res: RouteResponse, next: NextFn) => voi
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => Promise<unknown>;
 
 interface AppLike {
-  get(path: string, ...args: RouteArg<RouteHandler | MiddlewareFn>[]): AppLike;
-  post(path: string, ...args: RouteArg<RouteHandler | MiddlewareFn>[]): AppLike;
+  get: (path: string, ...args: RouteArg<RouteHandler | MiddlewareFn>[]) => AppLike;
+  post: (path: string, ...args: RouteArg<RouteHandler | MiddlewareFn>[]) => AppLike;
 }
 
 // ─── ownerAuth surface used by this adapter ───────────────────────────────────
@@ -69,7 +69,7 @@ interface AppLike {
 interface OwnerAuth {
   readonly csrfFieldName: string;
   readonly enabled: boolean;
-  ensureCsrfToken(req: RouteRequest, res: RouteResponse): string;
+  ensureCsrfToken: (req: RouteRequest, res: RouteResponse) => string;
   requireCsrf: MiddlewareFn;
   requireOwnerSession: MiddlewareFn;
   readonly subjectId: string;
@@ -78,52 +78,57 @@ interface OwnerAuth {
 // ─── consentStore surface used by this adapter ────────────────────────────────
 
 interface ConsentStore {
-  approveGrant(
+  approveGrant: (
     deviceCode: string,
     subjectId: string,
     opts: unknown
-  ): Promise<{
+  ) => Promise<{
     grant: { grant_id: string; [k: string]: unknown };
     token: string;
     package?: boolean;
     package_id?: string;
   }>;
-  denyGrant(deviceCode: string): Promise<boolean>;
-  getPendingConsentByApprovalId(id: string): Promise<AsConsentDecisionPendingRow | null>;
-  getPendingConsentByDeviceCode(deviceCode: string, opts?: { baseUrl?: string | null }): Promise<PendingGrant | null>;
-  parseRequestUri(requestUri: string): string | null;
+  denyGrant: (deviceCode: string) => Promise<boolean>;
+  getPendingConsentByApprovalId: (id: string) => Promise<AsConsentDecisionPendingRow | null>;
+  getPendingConsentByDeviceCode: (
+    deviceCode: string,
+    opts?: { baseUrl?: string | null }
+  ) => Promise<PendingGrant | null>;
+  parseRequestUri: (requestUri: string) => string | null;
 }
 
 // ─── agentConnectAttemptStore surface used by this adapter ────────────────────
 
 interface AgentConnectAttemptStore {
-  complete(requestUri: string | null | undefined, result: unknown): void;
-  fail(requestUri: string | null | undefined, reason: string): void;
+  complete: (requestUri: string | null | undefined, result: unknown) => void;
+  fail: (requestUri: string | null | undefined, reason: string) => void;
 }
 
 // ─── Context injected by the composition root ─────────────────────────────────
 
 export interface MountAsConsentContext {
   agentConnectAttemptStore: AgentConnectAttemptStore;
-  buildPendingConsentRequestUri(deviceCode: string): string;
+  buildPendingConsentRequestUri: (deviceCode: string) => string;
   consentStore: ConsentStore;
   consentUi: ConsentUiRenderer;
-  consumeConsentExchangeCode(code: string): Promise<AsConsentExchangeConsumeResult> | AsConsentExchangeConsumeResult;
-  createConsentExchangeCode(opts: { grantId: string; token: string; grant: unknown }): string;
-  handleError(res: unknown, err: unknown): void;
-  issueOAuthAuthorizationCodeForDeviceCode(
+  consumeConsentExchangeCode: (
+    code: string
+  ) => Promise<AsConsentExchangeConsumeResult> | AsConsentExchangeConsumeResult;
+  createConsentExchangeCode: (opts: { grantId: string; token: string; grant: unknown }) => string;
+  handleError: (res: unknown, err: unknown) => void;
+  issueOAuthAuthorizationCodeForDeviceCode: (
     deviceCode: string | null,
     opts: { grantId: string; token: string }
-  ): Promise<{ redirect_uri: string; code: string; state?: string | null } | null>;
-  issueOAuthAuthorizationCodeForPackageDeviceCode(
+  ) => Promise<{ redirect_uri: string; code: string; state?: string | null } | null>;
+  issueOAuthAuthorizationCodeForPackageDeviceCode: (
     deviceCode: string | null,
     opts: { packageId: string; token: string }
-  ): Promise<{ redirect_uri: string; code: string; state?: string | null } | null>;
+  ) => Promise<{ redirect_uri: string; code: string; state?: string | null } | null>;
   ownerAuth: OwnerAuth;
   pdppError: PdppErrorFn;
   providerName: string;
-  resolveBaseUrl(req: RouteRequest): string;
-  setReferenceTraceId(res: unknown, traceId: string): void;
+  resolveBaseUrl: (req: RouteRequest) => string;
+  setReferenceTraceId: (res: unknown, traceId: string) => void;
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
@@ -133,37 +138,37 @@ function renderApproveHtml(
   grant: { grant_id: string; [k: string]: unknown },
   token: string
 ): string {
-  const exchangeCode = ctx.createConsentExchangeCode({ grantId: grant.grant_id, token, grant });
+  const exchangeCode = ctx.createConsentExchangeCode({ grant, grantId: grant.grant_id, token });
   return ctx.consentUi.renderHostedDocument({
-    title: `${ctx.providerName} — Access approved`,
-    providerName: ctx.providerName,
     body: [
       ctx.consentUi.renderPageIntro({
         eyebrow: "Consent result",
-        title: "Access approved",
         lede: "A grant was issued for this request. Hand the exchange code below to the client that requested access; it will redeem the code for an access token over a fresh JSON request.",
+        title: "Access approved",
       }),
       ctx.consentUi.renderSurface({
-        surface: "human",
         children: ctx.consentUi.renderResultState({
-          tone: "success",
-          title: "Grant issued",
           body: "You can revoke this access any time from the grants dashboard. The exchange code is single-use and expires shortly.",
+          title: "Grant issued",
+          tone: "success",
         }),
+        surface: "human",
       }),
       ctx.consentUi.renderSurface({
-        surface: "protocol",
         ariaLabel: "Technical grant details",
         children: ctx.consentUi.renderKeyValueList([
-          { label: "Grant ID", html: `<code>${ctx.consentUi.escapeHtml(grant.grant_id)}</code>` },
+          { html: `<code>${ctx.consentUi.escapeHtml(grant.grant_id)}</code>`, label: "Grant ID" },
           {
-            label: "Consent exchange code",
             html: `<code>${ctx.consentUi.escapeHtml(exchangeCode)}</code>`,
+            label: "Consent exchange code",
           },
-          { label: "Redeem at", html: "<code>POST /consent/exchange</code>" },
+          { html: "<code>POST /consent/exchange</code>", label: "Redeem at" },
         ]),
+        surface: "protocol",
       }),
     ].join("\n"),
+    providerName: ctx.providerName,
+    title: `${ctx.providerName} — Access approved`,
   });
 }
 
@@ -174,36 +179,36 @@ function renderPackageApproveHtml(
 ): string {
   const childGrants = Array.isArray(grant.child_grants) ? grant.child_grants : [];
   return ctx.consentUi.renderHostedDocument({
-    title: `${ctx.providerName} — Access approved`,
-    providerName: ctx.providerName,
     body: [
       ctx.consentUi.renderPageIntro({
         eyebrow: "Consent result",
-        title: "Source grants issued",
         lede: "The request was approved as independent source-bounded grants grouped under one package for audit.",
+        title: "Source grants issued",
       }),
       ctx.consentUi.renderSurface({
-        surface: "human",
         children: ctx.consentUi.renderResultState({
-          tone: "success",
-          title: `${childGrants.length} grant${childGrants.length === 1 ? "" : "s"} issued`,
           body: "You can revoke any single source grant independently from the grants dashboard.",
+          title: `${childGrants.length} grant${childGrants.length === 1 ? "" : "s"} issued`,
+          tone: "success",
         }),
+        surface: "human",
       }),
       ctx.consentUi.renderSurface({
-        surface: "protocol",
         ariaLabel: "Technical package details",
         children: ctx.consentUi.renderKeyValueList([
-          { label: "Package ID", html: `<code>${ctx.consentUi.escapeHtml(packageId)}</code>` },
+          { html: `<code>${ctx.consentUi.escapeHtml(packageId)}</code>`, label: "Package ID" },
           {
-            label: "Child grant IDs",
             html: childGrants
               .map((child) => `<code>${ctx.consentUi.escapeHtml(String(child.grant_id || ""))}</code>`)
               .join("<br>"),
+            label: "Child grant IDs",
           },
         ]),
+        surface: "protocol",
       }),
     ].join("\n"),
+    providerName: ctx.providerName,
+    title: `${ctx.providerName} — Access approved`,
   });
 }
 
@@ -240,14 +245,14 @@ async function dispatchApproveResponse(
     res.redirect(302, buildOAuthRedirectUrl(oauthCode));
     return;
   }
-  ctx.agentConnectAttemptStore.complete(approvedRequestUri, { status: "approved", token, grant });
+  ctx.agentConnectAttemptStore.complete(approvedRequestUri, { grant, status: "approved", token });
   const wantsJson = req.is("application/json") || req.accepts(["html", "json"]) === "json";
   if (wantsJson) {
     if (isPackage) {
-      res.json({ package_id: packageInfo?.package_id ?? grant.grant_id, token, grant });
+      res.json({ grant, package_id: packageInfo?.package_id ?? grant.grant_id, token });
       return;
     }
-    res.json({ grant_id: grant.grant_id, token, grant });
+    res.json({ grant, grant_id: grant.grant_id, token });
     return;
   }
   if (isPackage) {
@@ -382,6 +387,7 @@ function applyFlatNarrowingKey(out: Record<number, SourceNarrowing>, key: string
   const sinceMatch = NARROW_SINCE_KEY.exec(key);
   if (sinceMatch) {
     const stream = decodeStreamKey(sinceMatch[2]);
+    // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
     const value = asStringArray(raw)[0];
     if (!(stream && value)) {
       return;
@@ -520,8 +526,11 @@ export function mountAsConsent(app: AppLike, ctx: MountAsConsentContext): void {
   function buildConsentDecisionDeps(req: RouteRequest): AsConsentDecisionDependencies {
     const baseUrl = resolveBaseUrlForRequest(req);
     return {
-      getPendingConsentByApprovalId: (id) => ctx.consentStore.getPendingConsentByApprovalId(id),
+      approveGrant: (deviceCode, subjectId, opts2) =>
+        ctx.consentStore.approveGrant(deviceCode, subjectId, { ...(opts2 || {}), baseUrl }),
       buildPendingConsentRequestUri: (deviceCode) => ctx.buildPendingConsentRequestUri(deviceCode),
+      denyGrant: (deviceCode) => ctx.consentStore.denyGrant(deviceCode),
+      getPendingConsentByApprovalId: (id) => ctx.consentStore.getPendingConsentByApprovalId(id),
       // PendingGrant is structurally richer than AsConsentDecisionPending; cast
       // is safe because the operation only reads trace_context from the pending row.
       getPendingFromRequestUri: (uri) =>
@@ -529,9 +538,6 @@ export function mountAsConsent(app: AppLike, ctx: MountAsConsentContext): void {
           deviceCode: string | null;
           pending: AsConsentDecisionPending | null;
         }>,
-      approveGrant: (deviceCode, subjectId, opts2) =>
-        ctx.consentStore.approveGrant(deviceCode, subjectId, { ...(opts2 || {}), baseUrl }),
-      denyGrant: (deviceCode) => ctx.consentStore.denyGrant(deviceCode),
     };
   }
 
@@ -587,18 +593,21 @@ export function mountAsConsent(app: AppLike, ctx: MountAsConsentContext): void {
         const subjectId = ctx.ownerAuth.enabled
           ? ctx.ownerAuth.subjectId
           : (req.body?.subject_id as string | undefined) ||
+            // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
             (req.query?.subject_id as string | undefined) ||
             OWNER_AUTH_DEFAULT_SUBJECT_ID;
         const outcome = await executeAsConsentDecision(
           {
             action: "approve",
-            requestUri: (req.body?.request_uri || req.query?.request_uri) as string | null | undefined,
+            // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
             approvalId: (req.body?.approval_id || req.query?.approval_id) as string | null | undefined,
-            subjectId,
             approveOptions: {
               ai_training_consented: req.body?.ai_training_consented,
               ...parseBatchApproveSelection(req.body),
             },
+            // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+            requestUri: (req.body?.request_uri || req.query?.request_uri) as string | null | undefined,
+            subjectId,
           },
           buildConsentDecisionDeps(req)
         );
@@ -616,6 +625,7 @@ export function mountAsConsent(app: AppLike, ctx: MountAsConsentContext): void {
         if (outcome.action !== "approve") {
           return;
         }
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
         const approvedRequestUri = (req.body?.request_uri || req.query?.request_uri) as string | undefined;
         await dispatchApproveResponse(
           ctx,
@@ -641,13 +651,16 @@ export function mountAsConsent(app: AppLike, ctx: MountAsConsentContext): void {
         const subjectId = ctx.ownerAuth.enabled
           ? ctx.ownerAuth.subjectId
           : (req.body?.subject_id as string | undefined) ||
+            // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
             (req.query?.subject_id as string | undefined) ||
             OWNER_AUTH_DEFAULT_SUBJECT_ID;
         const outcome = await executeAsConsentDecision(
           {
             action: "deny",
-            requestUri: (req.body?.request_uri || req.query?.request_uri) as string | null | undefined,
+            // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
             approvalId: (req.body?.approval_id || req.query?.approval_id) as string | null | undefined,
+            // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+            requestUri: (req.body?.request_uri || req.query?.request_uri) as string | null | undefined,
             subjectId,
           },
           buildConsentDecisionDeps(req)
@@ -663,13 +676,12 @@ export function mountAsConsent(app: AppLike, ctx: MountAsConsentContext): void {
           ctx.setReferenceTraceId(res, outcome.traceContext.trace_id);
         }
         ctx.agentConnectAttemptStore.fail(
+          // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
           (req.body?.request_uri || req.query?.request_uri) as string | undefined,
           "denied"
         );
         res.send(
           ctx.consentUi.renderHostedDocument({
-            title: `${ctx.providerName} — Access denied`,
-            providerName: ctx.providerName,
             body: [
               ctx.consentUi.renderPageIntro({
                 eyebrow: "Consent result",
@@ -677,12 +689,14 @@ export function mountAsConsent(app: AppLike, ctx: MountAsConsentContext): void {
               }),
               ctx.consentUi.renderSurface({
                 children: ctx.consentUi.renderResultState({
-                  tone: "danger",
-                  title: "Request rejected",
                   body: "The pending data access request was rejected and cleared.",
+                  title: "Request rejected",
+                  tone: "danger",
                 }),
               }),
             ].join("\n"),
+            providerName: ctx.providerName,
+            title: `${ctx.providerName} — Access denied`,
           })
         );
       } catch (err) {

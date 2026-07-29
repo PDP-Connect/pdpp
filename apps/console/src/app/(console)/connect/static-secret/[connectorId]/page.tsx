@@ -55,8 +55,8 @@ export default async function StaticSecretConnectPage({
   });
   const resolvedSearchParams = await searchParams;
   const pageParams: PageSearchParams = {
-    error: firstValue(resolvedSearchParams.error),
     connectionId: firstValue(resolvedSearchParams.connection_id),
+    error: firstValue(resolvedSearchParams.error),
   };
   // Repair/update mode: a connection_id in the query means the owner is
   // replacing the credential on an existing connection, not creating a new one.
@@ -86,7 +86,7 @@ export default async function StaticSecretConnectPage({
     <RecordroomShellWithPalette>
       <PageHeader
         actions={
-          <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href={backHref}>
+          <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href={backHref}>
             {backLabel}
           </Link>
         }

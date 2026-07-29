@@ -13,9 +13,7 @@
     }
   },
   "capabilities": {
-    "human_interaction": [
-      "credentials"
-    ],
+    "human_interaction": ["credentials"],
     "public_listing": {
       "listed": false,
       "status": "unproven",
@@ -53,58 +51,32 @@
             "x_pdpp_role": "primary-title"
           },
           "owner_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "owner_name": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "actor"
           },
           "public": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "collaborative": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           },
           "track_count": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "snapshot_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "description": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "secondary"
           }
         },
-        "required": [
-          "id",
-          "name"
-        ]
+        "required": ["id", "name"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "selection": {
         "fields": true,
         "resources": true
@@ -112,14 +84,8 @@
       "incremental": false,
       "query": {
         "search": {
-          "lexical_fields": [
-            "name",
-            "owner_name",
-            "description"
-          ],
-          "semantic_fields": [
-            "description"
-          ]
+          "lexical_fields": ["name", "owner_name", "description"],
+          "semantic_fields": ["description"]
         }
       },
       "coverage_strategy": "full_inventory",
@@ -147,46 +113,26 @@
             "type": "array"
           },
           "album_name": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "duration_ms": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "popularity": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "added_at": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date-time",
             "x_pdpp_role": "event-time"
           },
           "isrc": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           }
         },
-        "required": [
-          "id",
-          "name"
-        ]
+        "required": ["id", "name"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "added_at",
       "consent_time_field": "added_at",
       "selection": {
@@ -196,24 +142,14 @@
       "incremental": true,
       "query": {
         "search": {
-          "lexical_fields": [
-            "name",
-            "album_name"
-          ]
+          "lexical_fields": ["name", "album_name"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "added_at"
-          ]
+          "group_by_time": ["added_at"]
         },
         "range_filters": {
-          "added_at": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "added_at": ["gte", "gt", "lte", "lt"]
         }
       },
       "coverage_strategy": "checkpoint_window",
@@ -241,30 +177,18 @@
             "type": "array"
           },
           "popularity": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "followers": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "time_range": {
             "type": "string"
           }
         },
-        "required": [
-          "id",
-          "name"
-        ]
+        "required": ["id", "name"]
       },
-      "primary_key": [
-        "id",
-        "time_range"
-      ],
+      "primary_key": ["id", "time_range"],
       "selection": {
         "fields": true,
         "resources": true
@@ -272,9 +196,7 @@
       "incremental": false,
       "query": {
         "search": {
-          "lexical_fields": [
-            "name"
-          ]
+          "lexical_fields": ["name"]
         }
       },
       "coverage_strategy": "full_inventory",
@@ -306,10 +228,7 @@
             "x_pdpp_role": "actor"
           },
           "album_name": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "played_at": {
             "type": "string",
@@ -317,21 +236,12 @@
             "x_pdpp_role": "event-time"
           },
           "context_type": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           }
         },
-        "required": [
-          "id",
-          "track_id",
-          "played_at"
-        ]
+        "required": ["id", "track_id", "played_at"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "played_at",
       "consent_time_field": "played_at",
       "selection": {
@@ -341,24 +251,14 @@
       "incremental": true,
       "query": {
         "search": {
-          "lexical_fields": [
-            "track_name",
-            "album_name"
-          ]
+          "lexical_fields": ["track_name", "album_name"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "played_at"
-          ]
+          "group_by_time": ["played_at"]
         },
         "range_filters": {
-          "played_at": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "played_at": ["gte", "gt", "lte", "lt"]
         }
       },
       "coverage_strategy": "checkpoint_window",

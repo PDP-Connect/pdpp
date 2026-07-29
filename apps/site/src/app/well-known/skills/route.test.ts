@@ -10,7 +10,7 @@ import { GET } from "./[...path]/route.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SKILLS_REWRITE_PAIR =
-  /source:\s*['"]\/\.well-known\/skills\/:path\*['"][\s\S]*?destination:\s*['"]\/well-known\/skills\/:path\*['"]/;
+  /\{[^{}]*(?:source:\s*['"]\/\.well-known\/skills\/:path\*['"][^{}]*destination:\s*['"]\/well-known\/skills\/:path\*['"]|destination:\s*['"]\/well-known\/skills\/:path\*['"][^{}]*source:\s*['"]\/\.well-known\/skills\/:path\*['"])[^{}]*\}/;
 
 const APPLICATION_JSON = /^application\/json/;
 const PDPP_SKILL_FRONTMATTER = /name: pdpp-data-access/;
@@ -18,9 +18,9 @@ const OWNER_AGENT_SKILL_FRONTMATTER = /name: pdpp-owner-agent/;
 const TROUBLESHOOTING_HEADING = /# Troubleshooting/;
 const TEXT_MARKDOWN = /^text\/markdown/;
 
-function callSkillsRoute(path: string[], headers?: HeadersInit): Promise<Response> {
-  return GET(new Request(`http://0.0.0.0:3000/.well-known/skills/${path.join("/")}`, { headers }), {
-    params: Promise.resolve({ path }),
+function callSkillsRoute(skillPath: string[], headers?: HeadersInit): Promise<Response> {
+  return GET(new Request(`http://0.0.0.0:3000/.well-known/skills/${skillPath.join("/")}`, { headers }), {
+    params: Promise.resolve({ path: skillPath }),
   });
 }
 
@@ -41,6 +41,7 @@ test("agent skill .well-known route serves the catalog with forwarded origin", a
   const skills = body.skills as Array<{ files: Array<{ url: string }> }>;
   assert.equal(skills.length, 2);
   assert.ok(
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
     skills[0]?.files.some((file) => file.url === "https://pdpp.dev/.well-known/skills/pdpp-data-access/SKILL.md")
   );
   assert.ok(
@@ -100,9 +101,9 @@ test("agent skill .well-known route serves only allowlisted files", async () => 
   const traversalBody = await jsonOf(traversal);
   assert.deepEqual(traversalBody, {
     error: {
-      type: "not_found_error",
       code: "not_found",
       message: "Skill file not found",
+      type: "not_found_error",
     },
   });
 });

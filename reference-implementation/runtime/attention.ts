@@ -58,12 +58,12 @@ export const TERMINAL_LIFECYCLES: ReadonlySet<AttentionLifecycle> = new Set([
 ]);
 
 const ALLOWED_TRANSITIONS: Readonly<Record<AttentionLifecycle, readonly AttentionLifecycle[]>> = {
-  open: ["acknowledged", "in_progress", "resolved", "expired", "cancelled", "superseded"],
   acknowledged: ["in_progress", "resolved", "expired", "cancelled", "superseded"],
-  in_progress: ["resolved", "expired", "cancelled", "superseded"],
-  resolved: [],
-  expired: [],
   cancelled: [],
+  expired: [],
+  in_progress: ["resolved", "expired", "cancelled", "superseded"],
+  open: ["acknowledged", "in_progress", "resolved", "expired", "cancelled", "superseded"],
+  resolved: [],
   superseded: [],
 };
 
@@ -209,27 +209,27 @@ export interface CreateAttentionInput {
 export function createAttention(input: CreateAttentionInput): AttentionRecord {
   validateAxes(input.progress_posture, input.owner_action, input.response_contract);
   return {
-    id: input.id,
-    dedupe_key: input.dedupe_key,
-    connection_id: input.connection_id,
-    run_id: input.run_id ?? null,
-    reason_code: input.reason_code,
-    progress_posture: input.progress_posture,
-    owner_action: input.owner_action,
-    response_contract: input.response_contract,
-    sensitivity: input.sensitivity ?? "none",
-    auto_detect: input.auto_detect ?? false,
-    lifecycle: "open",
-    created_at: input.now,
-    updated_at: input.now,
-    expires_at: input.expires_at ?? null,
-    owner_copy: input.owner_copy ?? null,
     action_target: input.action_target ?? null,
     attachments: input.attachments ?? [],
+    auto_detect: input.auto_detect ?? false,
+    connection_id: input.connection_id,
+    created_at: input.now,
+    dedupe_key: input.dedupe_key,
+    expires_at: input.expires_at ?? null,
+    id: input.id,
+    lifecycle: "open",
     metadata: Object.freeze({ ...redactMetadata(input.metadata ?? {}) }),
+    notification_reason: null,
     notification_state: "pending",
     notification_updated_at: null,
-    notification_reason: null,
+    owner_action: input.owner_action,
+    owner_copy: input.owner_copy ?? null,
+    progress_posture: input.progress_posture,
+    reason_code: input.reason_code,
+    response_contract: input.response_contract,
+    run_id: input.run_id ?? null,
+    sensitivity: input.sensitivity ?? "none",
+    updated_at: input.now,
   };
 }
 
@@ -269,10 +269,10 @@ export function transition(record: AttentionRecord, input: TransitionInput): Att
   return {
     ...record,
     lifecycle: input.to,
-    updated_at: input.now,
+    notification_reason: promotedNotification ? "owner_acknowledged" : record.notification_reason,
     notification_state: promotedNotification ?? record.notification_state,
     notification_updated_at: promotedNotification ? input.now : record.notification_updated_at,
-    notification_reason: promotedNotification ? "owner_acknowledged" : record.notification_reason,
+    updated_at: input.now,
   };
 }
 
@@ -309,9 +309,9 @@ export function recordNotificationOutcome(record: AttentionRecord, input: Notifi
   const reason = typeof input.reason === "string" && input.reason.trim() ? input.reason.trim() : null;
   return {
     ...record,
+    notification_reason: reason,
     notification_state: input.outcome,
     notification_updated_at: input.now,
-    notification_reason: reason,
   };
 }
 
@@ -355,7 +355,7 @@ export function decideDedupe(input: DedupeDecisionInput): DedupeOutcome {
 
   if (!isTerminal(existing.lifecycle)) {
     if (axesDiffer(existing, proposed)) {
-      return { kind: "supersede", existing_id: existing.id };
+      return { existing_id: existing.id, kind: "supersede" };
     }
     return { kind: "suppress", reason: "active_duplicate" };
   }
@@ -389,7 +389,7 @@ export function isExpired(record: AttentionRecord, now: string): boolean {
 }
 
 export function expireIfDue(record: AttentionRecord, now: string): AttentionRecord {
-  return isExpired(record, now) ? transition(record, { to: "expired", now }) : record;
+  return isExpired(record, now) ? transition(record, { now, to: "expired" }) : record;
 }
 
 // ─── Redaction & push payload shaping ──────────────────────────────────────
@@ -470,13 +470,13 @@ export function pushPayload(record: AttentionRecord, options: PushPayloadOptions
   const url = `${stripTrailingSlash(options.dashboard_origin)}/attention/${encodeURIComponent(record.id)}`;
 
   return {
-    title,
-    body,
-    url,
-    tag: record.dedupe_key,
     attention_id: record.id,
+    body,
     connection_id: record.connection_id,
     reason_code: record.reason_code,
+    tag: record.dedupe_key,
+    title,
+    url,
   };
 }
 
@@ -532,7 +532,7 @@ export function isHealthRelevant(record: AttentionRecord, now: string): boolean 
   if (record.progress_posture === "blocked") {
     return true;
   }
-  if (record.owner_action === "act_elsewhere" && record.expires_at != null) {
+  if (record.owner_action === "act_elsewhere" && record.expires_at !== null) {
     return true;
   }
   if (record.owner_action !== "none" && record.owner_action !== "act_elsewhere") {
@@ -576,7 +576,7 @@ export function classifyAutoDetect(input: AutoDetectInput): AutoDetectOutcome {
   }
   switch (evidence) {
     case "proceeded":
-      return { kind: "resolve", record: transition(record, { to: "resolved", now }) };
+      return { kind: "resolve", record: transition(record, { now, to: "resolved" }) };
     case "still_blocked":
       return { kind: "no_change", reason: "still_blocked" };
     case "unknown":

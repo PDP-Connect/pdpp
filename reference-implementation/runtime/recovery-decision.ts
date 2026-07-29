@@ -114,7 +114,7 @@ export const NON_PRESSURE_RECOVERY_CLASSES: ReadonlySet<RecoveryClass> = new Set
 /**
  * The minimal projection of a `connector_detail_gaps` row this module needs.
  * Matches the snake_case shape `rowToGap` returns
- * (`server/stores/connector-detail-gap-store.js`), so a durable row can be
+ * (`server/stores/connector-detail-gap-store.ts`), so a durable row can be
  * passed straight through. Only the fields that drive a recovery decision are
  * required; the rest of the row (locators, payloads, secrets) is deliberately
  * absent so this pure decision can never leak them.
@@ -179,10 +179,12 @@ export function providerWorkDomainKey(domain: ProviderWorkDomain): string {
  * domain.
  */
 export function providerWorkDomainForGap(row: RecoveryGapRow): ProviderWorkDomain | null {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const connectorId = nonEmpty(row?.connector_id);
   if (!connectorId) {
     return null;
   }
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const connectorInstanceId = nonEmpty(row?.connector_instance_id) ?? connectorId;
   return { connectorId, connectorInstanceId };
 }
@@ -257,20 +259,25 @@ export interface RecoveryGapClassification {
 }
 
 export function classifyRecoveryGap(row: RecoveryGapRow): RecoveryGapClassification {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const connectorClass = nonEmpty(row?.detail_class) ?? nonEmpty(row?.last_error?.class);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const reasonClass = classifyRecoveryReason(row?.reason);
   const recoveryClass = connectorRecoveryClass(connectorClass, reasonClass);
 
   const isSourcePressure = recoveryClass === "provider_pressure";
   return {
-    recoveryClass,
-    isSourcePressure,
-    isNonPressureRecovery: NON_PRESSURE_RECOVERY_CLASSES.has(recoveryClass),
-    workDomain: providerWorkDomainForGap(row),
-    nextEligibleAt: nonEmpty(row?.next_attempt_after),
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     attemptCount: normalizeNonNegativeInteger(row?.attempt_count, 0),
     connectorClass: connectorClass ?? null,
+    isNonPressureRecovery: NON_PRESSURE_RECOVERY_CLASSES.has(recoveryClass),
+    isSourcePressure,
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+    nextEligibleAt: nonEmpty(row?.next_attempt_after),
+    recoveryClass,
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     stream: nonEmpty(row?.stream),
+    workDomain: providerWorkDomainForGap(row),
   };
 }
 
@@ -387,7 +394,7 @@ export function resolveRecoveryAdmission(
     return denyCooldown(nonEmpty(options.domainCooldownUntil));
   }
 
-  return { ok: true, mode: "recover", workDomain };
+  return { mode: "recover", ok: true, workDomain };
 }
 
 /**
@@ -397,7 +404,7 @@ export function resolveRecoveryAdmission(
  * undefined.
  */
 function denyCooldown(nextEligibleAt: string | null): RecoveryAdmission {
-  return nextEligibleAt ? { ok: false, reason: "cooldown", nextEligibleAt } : { ok: false, reason: "cooldown" };
+  return nextEligibleAt ? { nextEligibleAt, ok: false, reason: "cooldown" } : { ok: false, reason: "cooldown" };
 }
 
 // ─── Backlog partitioning (tasks 1.4/1.5 support) ────────────────────────────
@@ -428,7 +435,7 @@ export function partitionRecoveryBacklog(rows: readonly RecoveryGapRow[]): Map<s
     const key = providerWorkDomainKey(workDomain);
     let entry = byDomain.get(key);
     if (!entry) {
-      entry = { domain: workDomain, nonPressure: [], pressure: [], blocked: [] };
+      entry = { blocked: [], domain: workDomain, nonPressure: [], pressure: [] };
       byDomain.set(key, entry);
     }
     if (classification.isSourcePressure) {
@@ -484,6 +491,17 @@ export function hasEligibleNonPressureRecovery(backlog: WorkDomainBacklog | unde
 // channel backfill) has expressed forward work intent by construction; that
 // intent must never be silently reinterpreted as recovery-only.
 export interface RecoveryFirstWorkSelectionInputs {
+  /**
+   * True when the connection's forward (fact-carrying) terminal evidence is
+   * missing, historical, or older than `FORWARD_EVIDENCE_MAX_AGE` — i.e. an
+   * implicit recovery-first choice right now would extend an already-aged
+   * forward-evidence gap rather than merely deferring a fresh one. Bounds the
+   * ELSE-unbounded recovery-first priority below (design: recovery-first
+   * SHALL NOT starve forward evidence). Ignored when the caller made an
+   * explicit `requestedRecoveryOnly` choice or scoped the run — those always
+   * win regardless of debt.
+   */
+  readonly forwardEvidenceDebt?: boolean | undefined;
   /** True when eligible non-pressure recovery work exists for this connection right now. */
   readonly nonPressureRecoveryEligible: boolean;
   /** The caller's own explicit `recoveryOnly` choice, when one was made (`undefined` = no explicit choice). */
@@ -504,9 +522,16 @@ export interface RecoveryFirstWorkSelectionInputs {
  *     recovery-only.
  *   - Otherwise (an implicit, unscoped run with no explicit choice), eligible
  *     non-pressure recovery work wins the default: `recoveryOnly =
- *     nonPressureRecoveryEligible`. This applies regardless of `force`, which
- *     only bypasses the provider-pressure cooldown gate elsewhere and carries
- *     no work-mode meaning.
+ *     nonPressureRecoveryEligible && !forwardEvidenceDebt`. This applies
+ *     regardless of `force`, which only bypasses the provider-pressure
+ *     cooldown gate elsewhere and carries no work-mode meaning.
+ *
+ * `forwardEvidenceDebt` bounds the implicit default only: when the
+ * connection's forward evidence has aged past `FORWARD_EVIDENCE_MAX_AGE` (or
+ * is missing/historical), an otherwise-eligible recovery-only default steps
+ * aside for one forward run so evidence keeps advancing, then recovery-first
+ * resumes once fresh evidence lands. It has no effect when an explicit choice
+ * or scoped intent already resolved the mode above.
  */
 export function resolveRecoveryFirstMode(inputs: RecoveryFirstWorkSelectionInputs): boolean {
   if (inputs.requestedRecoveryOnly !== undefined) {
@@ -515,7 +540,133 @@ export function resolveRecoveryFirstMode(inputs: RecoveryFirstWorkSelectionInput
   if (inputs.scopedToResources) {
     return false;
   }
-  return inputs.nonPressureRecoveryEligible;
+  return inputs.nonPressureRecoveryEligible && !inputs.forwardEvidenceDebt;
+}
+
+// ─── Forward-evidence-debt bound (fix-pre-provenance-terminal-generation-semantics) ──
+//
+// `resolveRecoveryFirstMode`'s implicit-unscoped branch had no forward bound:
+// live evidence showed Gmail's last fact-carrying forward run was 5+ days and
+// ~640 runs ago, with recovery-only winning every tick since, because
+// `hasEligibleNonPressureRecoveryWork` can stay true indefinitely (the
+// backlog re-defers `temporary_unavailable` gaps with no drain guarantee).
+// This section is the connector-neutral, evidence-driven predicate that
+// bounds it: debt exists when the connection's terminal-facts component is
+// not `current`, OR its newest folded fact's OWN `evidence_as_of` (not the
+// projection's observation timestamp) is older than
+// `FORWARD_EVIDENCE_MAX_AGE`, OR its fact map is empty despite `current`
+// state.
+//
+// CORRECTNESS NOTE (fixes a P1 defect in the first version of this
+// predicate): `terminal_facts.as_of` (`connector-summary-read-model.ts`'s
+// `shapeTerminalFacts`/`shapeComponentEnvelope`) is `row.computed_at` — the
+// FOLD/REPAIR's own observation timestamp, refreshed on every reconcile pass
+// regardless of how old the underlying evidence actually is. Reading it here
+// made this predicate measure "how long since we last looked", not "how
+// stale is the evidence" — it could never fire once a connection's terminal
+// facts were healed to `current` (e.g. by Fix A), because every probe call
+// itself reconciles-then-reads, stamping a fresh `computed_at` immediately
+// before the read. The genuine per-stream evidence timestamp is
+// `stream_latest_facts[stream].evidence_as_of` (`StoredStreamFactEntry`,
+// stamped once at FOLD time from the terminal event's own `occurred_at` and
+// never refreshed by a later observation of the same fact) — this predicate
+// now reads the NEWEST such timestamp across every stream in the fact map.
+
+/**
+ * One folded stream fact's provenance timestamp, as stored in
+ * `stream_latest_facts[stream]` (`StoredStreamFactEntry`). `unknown` rather
+ * than nominally typed for the same reason as `TerminalFactsEvidenceLike`
+ * below — durable evidence reads widen raw storage-row values this way.
+ */
+export interface StreamFactEvidenceLike {
+  readonly evidence_as_of?: unknown;
+}
+
+/**
+ * The minimal terminal-facts evidence projection this predicate needs:
+ * the `terminal_facts` component's `state` (still the first gate — a
+ * non-`current` state, e.g. historical/stale/unobserved, is always debt
+ * regardless of any timestamp) plus the `stream_latest_facts` fact map whose
+ * per-stream `evidence_as_of` values this predicate ages against. Shaped so
+ * a durable evidence row (`getConnectorSummaryEvidence`) can be passed
+ * straight through without a reshape.
+ */
+export interface ForwardEvidenceLike {
+  readonly stream_latest_facts?: unknown;
+  readonly terminal_facts?: { readonly state?: unknown } | null;
+}
+
+/**
+ * Default forward-evidence-debt age bound: `max(4 * scheduleIntervalMs, 1h)`.
+ * Grounded in the connector's own already-normalized schedule interval
+ * (`scheduleIntervalMs`, threaded through the scheduler dispatch seam) rather
+ * than an independent governor — four missed ordinary cadences is comfortably
+ * outside normal cadence jitter/backoff, so the bound never fires under
+ * healthy operation, while the 1-hour floor keeps very short intervals from
+ * producing a bound so tight it fires on ordinary recovery-first ticks. No
+ * existing normative contract defines a numeric schedule-interval multiplier
+ * for evidence staleness, so this is a new, explicit, documented policy
+ * constant scoped to this one predicate.
+ */
+export const DEFAULT_FORWARD_EVIDENCE_MAX_AGE_FLOOR_MS = 60 * 60 * 1000;
+
+export function forwardEvidenceMaxAgeMs(scheduleIntervalMs: number): number {
+  const interval = normalizeNonNegativeInteger(scheduleIntervalMs, 0);
+  return Math.max(4 * interval, DEFAULT_FORWARD_EVIDENCE_MAX_AGE_FLOOR_MS);
+}
+
+/**
+ * The newest `evidence_as_of` timestamp (epoch ms) across every stream in a
+ * folded fact map, or `null` when the map is empty/missing/malformed. A
+ * missing or unparseable per-stream timestamp does not itself disqualify the
+ * whole map — it is simply skipped, mirroring how a single bad field must
+ * not hide otherwise-genuine fresher evidence on a sibling stream.
+ */
+function newestFactEvidenceAsOfMs(streamLatestFacts: unknown): number | null {
+  if (!streamLatestFacts || typeof streamLatestFacts !== "object" || Array.isArray(streamLatestFacts)) {
+    return null;
+  }
+  let newest: number | null = null;
+  for (const entry of Object.values(streamLatestFacts as Record<string, unknown>)) {
+    const evidenceAsOf = (entry as StreamFactEvidenceLike | null | undefined)?.evidence_as_of;
+    const parsed = parseIso(typeof evidenceAsOf === "string" ? evidenceAsOf : null);
+    if (parsed !== null && (newest === null || parsed > newest)) {
+      newest = parsed;
+    }
+  }
+  return newest;
+}
+
+/**
+ * True when a connection's forward (fact-carrying) terminal evidence is
+ * missing, historical/stale, or aged past
+ * `forwardEvidenceMaxAgeMs(scheduleIntervalMs)`. Pure: the caller supplies
+ * the connection's durable evidence (terminal-facts state + fact map) and
+ * `now`.
+ *
+ *   - `terminal_facts.state !== "current"` (missing/stale/historical/failed)
+ *     is always debt, regardless of any timestamp.
+ *   - A `current` state with an EMPTY or missing fact map is also debt — a
+ *     genuinely never-collected connection has nothing to measure freshness
+ *     against, so absence is not fresh evidence (mirrors
+ *     `partitionPressureEvidence`'s stance on missing timestamps).
+ *   - Otherwise, debt is whether the NEWEST per-stream `evidence_as_of`
+ *     across the fact map is older than the bound.
+ */
+export function hasForwardEvidenceDebt(
+  evidence: ForwardEvidenceLike | null | undefined,
+  nowMs: number,
+  scheduleIntervalMs: number
+): boolean {
+  if (evidence?.terminal_facts?.state !== "current") {
+    return true;
+  }
+  const newestMs = newestFactEvidenceAsOfMs(evidence.stream_latest_facts);
+  if (newestMs === null) {
+    return true;
+  }
+  const now = normalizeEpochMs(nowMs);
+  return now - newestMs > forwardEvidenceMaxAgeMs(scheduleIntervalMs);
 }
 
 // ─── Fresh-pressure re-arm guard (task 1.5 / design.md D4) ───────────────────
@@ -555,6 +706,7 @@ export const DEFAULT_PRESSURE_EVIDENCE_WINDOW_MS = 6 * 60 * 60 * 1000;
  * so the two agree on what "when was this pressure observed" means.
  */
 export function lastPressureAtForGap(row: RecoveryGapRow): string | null {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   return nonEmpty(row?.last_attempt_at) ?? nonEmpty(row?.updated_at);
 }
 
@@ -724,6 +876,7 @@ export function summarizeRecoveryAdmissionDiagnostics(
       admission.nextEligibleAt &&
       (nextEligibleAt === null || admission.nextEligibleAt < nextEligibleAt)
     ) {
+      // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
       nextEligibleAt = admission.nextEligibleAt;
     }
   }
@@ -736,8 +889,8 @@ export function summarizeRecoveryAdmissionDiagnostics(
     next_eligible_at?: string;
     why_not_now?: RecoveryAdmissionDenialReason;
   } = {
-    candidates: candidateRows.length,
     admitted,
+    candidates: candidateRows.length,
     deferred,
   };
   if (deferred > 0) {
@@ -854,9 +1007,9 @@ export function deriveRecoveryStall(
   }
 
   const stalled = computeStalled({
+    cadenceWindowMs,
     eligibleCandidates,
     newestAttemptMs,
-    cadenceWindowMs,
     nowMs: options.nowMs,
   });
   return { eligibleCandidates, lastAttemptAt: newestAttemptIso, stalled };

@@ -1,19 +1,20 @@
 # syntax=docker/dockerfile:1.7
 
-ARG NODE_VERSION=25-bookworm-slim
+ARG NODE_VERSION=25.8.2-bookworm-slim@sha256:71be4054ee7a5fc8d0b2a66060705988b09a782025d70ba9318b29ff1a931fc0
 ARG PNPM_VERSION=10.33.0
+ARG PNPM_INTEGRITY=sha512-EFaLtKavtYyes2MNqQzJUWQXq+vT+rvmc58K55VyjaFJHp21pUTHatjrdXD1xLs9bGN7LLQb/c20f6gjyGSTGQ==
 
 FROM node:${NODE_VERSION} AS base
 
 ARG PNPM_VERSION
+ARG PNPM_INTEGRITY
 
 # PLAYWRIGHT_BROWSERS_PATH is pinned to a stable, image-wide location so the
 # bundled-Patchright browser tree can be installed once in a dedicated cache
 # stage and copied into browser-enabled final images. Without this, Patchright defaults to
 # $HOME/.cache/ms-playwright which is invisible to inter-stage COPY and forces
 # every reference build to reinstall ~300MB of browsers + their apt deps.
-ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
-    NEXT_TELEMETRY_DISABLED=1 \
+ENV NEXT_TELEMETRY_DISABLED=1 \
     PNPM_HOME=/pnpm \
     PATH=/pnpm:$PATH \
     PLAYWRIGHT_BROWSERS_PATH=/opt/patchright-browsers
@@ -23,9 +24,10 @@ WORKDIR /app
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl g++ make python3 \
   && rm -rf /var/lib/apt/lists/* \
-  && npm install -g --force corepack \
-  && corepack enable \
-  && corepack prepare "pnpm@${PNPM_VERSION}" --activate
+  && npm pack --ignore-scripts --loglevel=error --pack-destination /tmp "pnpm@${PNPM_VERSION}" \
+  && node --input-type=module -e "import { createHash } from 'node:crypto'; import { readFileSync } from 'node:fs'; const [file, expected] = process.argv.slice(1); const actual = 'sha512-' + createHash('sha512').update(readFileSync(file)).digest('base64'); if (actual !== expected) throw new Error('pnpm integrity drift: ' + actual);" "/tmp/pnpm-${PNPM_VERSION}.tgz" "$PNPM_INTEGRITY" \
+  && npm install --global --ignore-scripts --no-audit --no-fund "/tmp/pnpm-${PNPM_VERSION}.tgz" \
+  && test "$(pnpm --version)" = "$PNPM_VERSION"
 
 FROM base AS deps
 
@@ -48,17 +50,28 @@ COPY apps/console/package.json apps/console/package.json
 COPY packages/operator-ui/package.json packages/operator-ui/package.json
 COPY packages/pdpp-brand/package.json packages/pdpp-brand/package.json
 COPY packages/pdpp-brand-react/package.json packages/pdpp-brand-react/package.json
+COPY packages/cli/package.json packages/cli/package.json
 COPY packages/mcp-server/package.json packages/mcp-server/package.json
+COPY packages/read-core/package.json packages/read-core/package.json
 COPY packages/polyfill-connectors/package.json packages/polyfill-connectors/package.json
-COPY packages/polyfill-connectors/scripts/install-patchright-browser.mjs packages/polyfill-connectors/scripts/install-patchright-browser.mjs
+COPY packages/polyfill-connectors/scripts/install-patchright-browser.ts packages/polyfill-connectors/scripts/install-patchright-browser.ts
 COPY packages/reference-contract/package.json packages/reference-contract/package.json
 COPY reference-implementation/package.json reference-implementation/package.json
 
-RUN pnpm install --frozen-lockfile
+# Do not run workspace prepare scripts against this manifest-only tree. Native
+# dependencies still need their approved install hooks before the runtime is
+# assembled; workspace outputs are built from the complete source stage below.
+RUN pnpm install --frozen-lockfile --ignore-scripts \
+  && pnpm -r rebuild better-sqlite3 esbuild onnxruntime-node protobufjs
 
 FROM deps AS source
 
 COPY . .
+
+RUN pnpm --filter @pdpp/polyfill-connectors run postinstall \
+  && pnpm --filter @pdpp/read-core run build \
+  && pnpm --filter @pdpp/cli run build \
+  && pnpm --filter @pdpp/mcp-server run build
 
 FROM source AS console-builder
 
@@ -83,17 +96,14 @@ ENV NODE_ENV=production \
     PDPP_REFERENCE_OPERATIONAL_DEFAULTS=1 \
     PDPP_REFERENCE_REVISION=${PDPP_REFERENCE_REVISION}
 
-# Two-layer copy instead of `COPY --from=source /app /app`: node_modules comes
-# from `deps` (cache key = lockfile + manifests, so it survives source edits)
-# and the source tree is overlaid from the build context (tens of MB). The
-# single-COPY form re-materialized a node_modules-sized layer on every source
-# change — ~1.5GB of builder-cache churn per stage per rebuild.
-COPY --from=deps /app /app
-COPY . .
+# The source stage contains lifecycle-independent, dependency-ordered workspace
+# outputs. Runtime imports must use that completed tree, not a manifest-only
+# dependency stage overlaid with raw source.
+COPY --from=source /app /app
 
 EXPOSE 7662 7663
 
-CMD ["sh", "-c", "export AS_PORT=\"${PORT:-${AS_PORT:-7662}}\"; export PDPP_RS_URL=\"${PDPP_RS_URL:-http://127.0.0.1:${RS_PORT:-7663}}\"; exec node reference-implementation/server/index.js"]
+CMD ["sh", "-c", "export AS_PORT=\"${PORT:-${AS_PORT:-7662}}\"; export PDPP_RS_URL=\"${PDPP_RS_URL:-http://127.0.0.1:${RS_PORT:-7663}}\"; exec node reference-implementation/server/index.ts"]
 
 # Dedicated browsers stage. Patchright + bundled Chromium + (on amd64) Google
 # Chrome stable + their apt deps are baked into a stage whose cache key is
@@ -135,13 +145,12 @@ ENV NODE_ENV=production \
     PDPP_REFERENCE_OPERATIONAL_DEFAULTS=1 \
     PDPP_REFERENCE_REVISION=${PDPP_REFERENCE_REVISION}
 
-# Two-layer copy — see the `reference` stage for rationale.
-COPY --from=deps /app /app
-COPY . .
+# See the `reference` stage: retain built workspace artifacts from source.
+COPY --from=source /app /app
 
 EXPOSE 7662 7663
 
-CMD ["node", "reference-implementation/server/index.js"]
+CMD ["node", "reference-implementation/server/index.ts"]
 
 # Operator console: self-hosted dashboard + BFF proxy to the AS/RS. This is
 # the default target for `docker compose up` (see docker-compose.yml `web`
@@ -173,7 +182,7 @@ CMD ["node", "apps/console/server.js"]
 # deploy: PDPP_REFERENCE_ORIGIN defaults to the published localhost port, and
 # PDPP_DB_PATH defaults onto /var/lib/pdpp so `-v pdpp_data:/var/lib/pdpp`
 # makes the SQLite database (and first-boot credentials, see
-# deploy/railway/core-first-boot.mjs) durable. With a database URL present the
+# deploy/railway/core-first-boot.ts) durable. With a database URL present the
 # runtime selects Postgres and the SQLite default is ignored.
 FROM base AS railway-core
 
@@ -203,16 +212,15 @@ ENV NODE_ENV=production \
     PDPP_LOCAL_TRANSFORMER_SUPERVISOR_RESTART_CONTRACT=1 \
     PDPP_REFERENCE_REVISION=${PDPP_REFERENCE_REVISION}
 
-# Two-layer copy — see the `reference` stage for rationale.
-COPY --from=deps /app /app
-COPY . .
+# See the `reference` stage: retain built workspace artifacts from source.
+COPY --from=source /app /app
 COPY --from=console-builder /app/apps/console/.next/standalone /console
 COPY --from=console-builder /app/apps/console/.next/static /console/apps/console/.next/static
 COPY --from=console-builder /app/apps/console/public /console/apps/console/public
 
 EXPOSE 3000
 
-CMD ["node", "/app/deploy/railway/core-supervisor.mjs"]
+CMD ["node", "--import", "tsx", "/app/deploy/railway/core-supervisor.ts"]
 
 # Generic managed-platform Core alias. It uses the same one-public-service
 # supervisor as the Railway target: console on $PORT, AS/RS on loopback.

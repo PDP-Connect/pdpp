@@ -25,14 +25,14 @@ interface RouteRequest {
 }
 
 interface RouteResponse {
-  json(body: unknown): unknown;
-  status(code: number): RouteResponse;
+  json: (body: unknown) => unknown;
+  status: (code: number) => RouteResponse;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
 
 interface AppLike {
-  post(path: string, ...args: (MiddlewareHandler | RouteHandler)[]): AppLike;
+  post: (path: string, ...args: (MiddlewareHandler | RouteHandler)[]) => AppLike;
 }
 
 export interface RunCancelResult {
@@ -41,13 +41,13 @@ export interface RunCancelResult {
 }
 
 export interface RunCancelController {
-  cancelRun(runId: string): Promise<RunCancelResult> | RunCancelResult;
+  cancelRun: (runId: string) => Promise<RunCancelResult> | RunCancelResult;
 }
 
 export interface MountRefRunCancelContext {
-  cancelRun?(runId: string): Promise<RunCancelResult> | RunCancelResult;
+  cancelRun?: (runId: string) => Promise<RunCancelResult> | RunCancelResult;
   readonly controller: RunCancelController | null | undefined;
-  handleError(res: unknown, err: unknown): void;
+  handleError: (res: unknown, err: unknown) => void;
   pdppError: PdppErrorFn;
   requireOwnerSession: MiddlewareHandler;
 }

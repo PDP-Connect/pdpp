@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 export interface SiteNavLink {
-  readonly text: string;
   readonly link: string;
+  readonly text: string;
 }
 
 // Public-site nav, in narrative order: what it is → the spec → the server you

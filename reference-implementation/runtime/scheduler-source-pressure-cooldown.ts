@@ -215,7 +215,7 @@ export function computeConnectionSourcePressureCooldown(
 /**
  * One pending pressure gap as the governor needs to see it. This is the
  * minimal projection of a `connector_detail_gaps` row (see
- * `reference-implementation/server/stores/connector-detail-gap-store.js`)
+ * `reference-implementation/server/stores/connector-detail-gap-store.ts`)
  * that drives the cooldown. The scheduler probe and the controller projection
  * both map durable rows onto this shape.
  */
@@ -371,11 +371,11 @@ export function computeSourcePressureCooldown(
   if (force || pressureGaps.length === 0) {
     return {
       cooldownApplied: false,
-      pendingPressureGapCount: 0,
-      maxAttemptCount: 0,
       effectiveIntervalMs: force ? 0 : normalizedBaseIntervalMs,
-      nextRunAt: toIsoTimestamp(force ? 0 : normalizedLastRunAtMs + normalizedBaseIntervalMs),
       identity: null,
+      maxAttemptCount: 0,
+      nextRunAt: toIsoTimestamp(force ? 0 : normalizedLastRunAtMs + normalizedBaseIntervalMs),
+      pendingPressureGapCount: 0,
       recommendedHealthState: null,
     };
   }
@@ -417,11 +417,11 @@ export function computeSourcePressureCooldown(
 
   return {
     cooldownApplied: true,
-    pendingPressureGapCount: pressureGaps.length,
-    maxAttemptCount,
     effectiveIntervalMs,
-    nextRunAt: toIsoTimestamp(nextRunMs),
     identity: `source_pressure:${reasonSummary}:gaps=${pressureGaps.length}:attempt=${maxAttemptCount}`,
+    maxAttemptCount,
+    nextRunAt: toIsoTimestamp(nextRunMs),
+    pendingPressureGapCount: pressureGaps.length,
     recommendedHealthState,
   };
 }
@@ -463,7 +463,7 @@ function maxTimestampFieldMs(
   let max = 0;
   for (const gap of gaps) {
     const value = gap[field];
-    const parsed = typeof value === "string" ? Date.parse(value) : NaN;
+    const parsed = typeof value === "string" ? Date.parse(value) : Number.NaN;
     max = Number.isFinite(parsed) ? Math.max(max, parsed) : max;
   }
   return max;

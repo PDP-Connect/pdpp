@@ -186,8 +186,8 @@ export async function runLocalDeviceExporter(config: LocalDeviceRuntimeConfig): 
     );
     await queue.enqueue({ batchId, batchSeq, records: envelopes, sourceInstanceId: config.sourceInstanceId });
     recordsQueued += envelopes.length;
-    enqueuedBatches++;
-    batchSeq++;
+    enqueuedBatches += 1;
+    batchSeq += 1;
   }
 
   const sentBatches = await drainLocalDeviceQueue({ client, queue });
@@ -255,7 +255,7 @@ export async function drainLocalDeviceQueue(input: {
     try {
       await sendQueueItem(input.client, item);
       await input.queue.markSent(item.batch_id);
-      sent++;
+      sent += 1;
     } catch (error) {
       await input.queue.markRetry(item.batch_id, error instanceof Error ? error.message : String(error));
       return sent;
@@ -267,7 +267,7 @@ async function sendQueueItem(
   client: Pick<LocalDeviceClient, "ingestBatch">,
   item: LocalDeviceQueueItem
 ): Promise<void> {
-  const firstRecord = item.records[0];
+  const [firstRecord] = item.records;
   if (!firstRecord) {
     throw new Error(`local device batch has no records: ${item.batch_id}`);
   }
@@ -318,7 +318,8 @@ async function collectConnectorMessages(
     throw new Error(
       `${profile.connectorId} connector failed to start or stream output: ${
         error instanceof Error ? error.message : String(error)
-      }`
+      }`,
+      { cause: error }
     );
   }
   if (exitCode !== 0) {

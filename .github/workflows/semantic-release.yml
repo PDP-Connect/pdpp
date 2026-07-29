@@ -55,7 +55,7 @@ jobs:
         run: |
           set -o pipefail
           pnpm exec semantic-release --dry-run 2>&1 | tee "$RUNNER_TEMP/semantic-release-dry-run.log"
-          node scripts/semantic-release-github-output.mjs dry-run "$RUNNER_TEMP/semantic-release-dry-run.log"
+          node --import tsx scripts/semantic-release-github-output.ts dry-run "$RUNNER_TEMP/semantic-release-dry-run.log"
 
   quality:
     name: release quality checks

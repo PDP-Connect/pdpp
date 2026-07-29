@@ -25,20 +25,15 @@
  *   `process` / `process.env`.
  */
 
-export type DcrUpdateErrorCode =
-  | "not_found"
-  | "forbidden"
-  | "invalid_client_metadata"
-  | "invalid_request"
-  | string;
+export type DcrUpdateErrorCode = "not_found" | "forbidden" | "invalid_client_metadata" | "invalid_request" | string;
 
 export interface DcrUpdateInput {
-  /** Already URL-decoded client id from the path parameter. */
-  readonly clientId: string;
-  /** Raw request body as the host received it. */
-  readonly body: unknown;
   /** Acting subject id (owner session sub or default placeholder). */
   readonly actingSubjectId: string;
+  /** Raw request body as the host received it. */
+  readonly body: unknown;
+  /** Already URL-decoded client id from the path parameter. */
+  readonly clientId: string;
 }
 
 export interface DcrUpdatedClient {
@@ -49,26 +44,26 @@ export interface DcrUpdatedClient {
 }
 
 export interface DcrUpdateDependencies {
-  updateRegisteredClientName(
+  updateRegisteredClientName: (
     clientId: string,
     context: {
       clientName: string;
       actingSubjectId: string;
-    },
-  ): Promise<DcrUpdatedClient> | DcrUpdatedClient;
+    }
+  ) => Promise<DcrUpdatedClient> | DcrUpdatedClient;
 }
 
 export interface DcrUpdateSuccessOutcome {
+  readonly client: DcrUpdatedClient;
   readonly outcome: "success";
   readonly status: 200;
-  readonly client: DcrUpdatedClient;
 }
 
 export interface DcrUpdateFailureOutcome {
-  readonly outcome: "failure";
-  readonly status: number;
   readonly errorCode: string;
   readonly errorMessage: string;
+  readonly outcome: "failure";
+  readonly status: number;
 }
 
 export type DcrUpdateOutcome = DcrUpdateSuccessOutcome | DcrUpdateFailureOutcome;
@@ -78,58 +73,64 @@ export type DcrUpdateOutcome = DcrUpdateSuccessOutcome | DcrUpdateFailureOutcome
 const ALLOWED_UPDATE_FIELDS = new Set(["client_name"]);
 
 function mapErrorStatus(code: string): number {
-  if (code === "not_found") return 404;
-  if (code === "forbidden") return 403;
+  if (code === "not_found") {
+    return 404;
+  }
+  if (code === "forbidden") {
+    return 403;
+  }
   return 400;
 }
 
 export async function executeAsDcrUpdate(
   input: DcrUpdateInput,
-  deps: DcrUpdateDependencies,
+  deps: DcrUpdateDependencies
 ): Promise<DcrUpdateOutcome> {
-  const body = input.body;
+  const { body } = input;
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return {
-      outcome: "failure",
-      status: 400,
       errorCode: "invalid_client_metadata",
       errorMessage: "Request body must be a JSON object with a client_name",
+      outcome: "failure",
+      status: 400,
     };
   }
   const record = body as Record<string, unknown>;
   const unsupported = Object.keys(record).filter((field) => !ALLOWED_UPDATE_FIELDS.has(field));
   if (unsupported.length > 0) {
     return {
-      outcome: "failure",
-      status: 400,
       errorCode: "invalid_client_metadata",
       errorMessage: `Only client_name is editable; unsupported fields: ${unsupported.join(", ")}`,
+      outcome: "failure",
+      status: 400,
     };
   }
   const clientName = record.client_name;
   if (typeof clientName !== "string" || !clientName.trim()) {
     return {
-      outcome: "failure",
-      status: 400,
       errorCode: "invalid_client_metadata",
       errorMessage: "client_name must be a non-empty string",
+      outcome: "failure",
+      status: 400,
     };
   }
 
   try {
     const client = await deps.updateRegisteredClientName(input.clientId, {
-      clientName,
       actingSubjectId: input.actingSubjectId,
+      clientName,
     });
-    return { outcome: "success", status: 200, client };
+    return { client, outcome: "success", status: 200 };
   } catch (err) {
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     const errCode = (err as { code?: string })?.code || "invalid_request";
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     const errMessage = (err as { message?: string })?.message || "Client update rejected";
     return {
-      outcome: "failure",
-      status: mapErrorStatus(errCode),
       errorCode: errCode,
       errorMessage: errMessage,
+      outcome: "failure",
+      status: mapErrorStatus(errCode),
     };
   }
 }

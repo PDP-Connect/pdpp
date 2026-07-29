@@ -11,6 +11,7 @@ import { test } from "node:test";
 import { buildAgentVersion } from "./collector-build-info.ts";
 import {
   buildCollectorStartMessage,
+  buildTerminalCollectionFacts,
   COLLECTOR_STDERR_MAX_BYTES,
   CollectorStateReadError,
   drainCollectorOutbox,
@@ -41,6 +42,20 @@ test("buildCollectorStartMessage can request explicit stream backfills", () => {
     streamsToBackfill: ["attachments"],
     type: "START",
   });
+});
+
+test("buildTerminalCollectionFacts preserves raw coverage statuses without inventing a local policy", () => {
+  const facts = buildTerminalCollectionFacts(
+    new Map([
+      ["messages-store", { stream: "messages", status: "collected" }],
+      ["rules-store", { stream: "rules", status: "deferred" }],
+      ["rules-shadow", { stream: "rules", status: "unaccounted" }],
+    ])
+  );
+  assert.deepEqual(facts, [
+    { stream: "messages", coverage_statuses: ["collected"] },
+    { stream: "rules", coverage_statuses: ["deferred", "unaccounted"] },
+  ]);
 });
 
 test("buildCollectorStartMessage can scope a stream to explicit resources", () => {
@@ -974,11 +989,11 @@ test("runCollectorConnector replays prior STATE into the connector's START.state
     assert.equal(result.sentBatches, 1);
 
     // Connector saw the replayed cursor.
-    const ingest = harness.ingestedBatches[0];
+    const [ingest] = harness.ingestedBatches;
     assert.equal(ingest?.records?.[0]?.data?.prior_cursor, "m-prior");
 
     // State was GET before ingest and PUT after.
-    const stateOps = harness.stateOps;
+    const { stateOps } = harness;
     assert.equal(stateOps[0]?.method, "GET");
     const lastOp = stateOps.at(-1);
     assert.equal(lastOp?.method, "PUT");
@@ -1897,7 +1912,8 @@ async function startCollectorHarness(options: CollectorHarnessOptions): Promise<
     }
     if (url.includes("/heartbeat")) {
       heartbeats.push(parsed as { status: string });
-      const heartbeatStatus = options.heartbeatStatuses?.[heartbeatIndex++] ?? options.heartbeatStatus;
+      const heartbeatStatus = options.heartbeatStatuses?.[heartbeatIndex] ?? options.heartbeatStatus;
+      heartbeatIndex += 1;
       if (heartbeatStatus && heartbeatStatus >= 400) {
         res.writeHead(heartbeatStatus, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: { code: "synthetic_heartbeat_failure" } }));
@@ -3206,7 +3222,7 @@ test("runCollectorConnector drains a prior pass's enqueued backlog before scanni
   const harness = await startTogglableHarness({
     ingestHandler: () => (ingestShouldFail ? "fail" : "ok"),
     onIngestSucceeded: () => {
-      ingestSucceededCount++;
+      ingestSucceededCount += 1;
     },
     priorState: {},
   });
@@ -3339,7 +3355,7 @@ test("runCollectorConnector skips spawn and reports blocked when queue depth cro
     const seedCount = maxQueueDepth + 1;
     const seedOutbox = new LocalDeviceOutbox({ path: queuePath });
     try {
-      for (let i = 0; i < seedCount; i++) {
+      for (let i = 0; i < seedCount; i += 1) {
         const records = transformRecordsToCollectorEnvelopes({
           batchId: `seed-batch-${i}`,
           batchSeq: i + 1,
@@ -3429,7 +3445,7 @@ test("drainCollectorOutbox stops between iterations when the duration budget is 
   const queuePath = await tempQueuePath();
   const outbox = new LocalDeviceOutbox({ path: queuePath });
   try {
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 5; i += 1) {
       const records = transformRecordsToCollectorEnvelopes({
         batchId: `slow-batch-${i}`,
         batchSeq: i + 1,
@@ -3511,7 +3527,7 @@ test("drainCollectorOutbox does not crash when batch-claimed work expires before
   const queuePath = await tempQueuePath();
   const outbox = new LocalDeviceOutbox({ clock: () => now, path: queuePath });
   try {
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 3; i += 1) {
       const records = transformRecordsToCollectorEnvelopes({
         batchId: `lease-batch-${i}`,
         batchSeq: i + 1,
@@ -3751,7 +3767,7 @@ test("runCollectorConnector enqueues a policy-budget gap row when queue depth bl
     const seedCount = maxQueueDepth + 1;
     const seedOutbox = new LocalDeviceOutbox({ path: queuePath });
     try {
-      for (let i = 0; i < seedCount; i++) {
+      for (let i = 0; i < seedCount; i += 1) {
         const records = transformRecordsToCollectorEnvelopes({
           batchId: `seed-batch-${i}`,
           batchSeq: i + 1,
@@ -3823,7 +3839,7 @@ test("runCollectorConnector enqueues a policy-budget gap row when queue depth bl
       const items = verify.list({ sourceInstanceId: "src-gap-policy" });
       const gaps = items.filter((i) => i.kind === "gap");
       assert.equal(gaps.length, 1, `expected exactly one gap row, got ${gaps.length}`);
-      const firstGap = gaps[0];
+      const [firstGap] = gaps;
       assert.ok(firstGap, "expected gap row");
       const payload = firstGap.payload as Record<string, unknown>;
       assert.equal(payload.reason, "policy_budget");
@@ -3946,7 +3962,7 @@ test("runCollectorConnector records a connector_child_failure gap when the child
       const batches = items.filter((i) => i.kind === "record_batch");
       assert.ok(batches.length >= 1, "partial record batches must reach the outbox");
       assert.equal(gaps.length, 1, `expected exactly one gap row, got ${gaps.length}`);
-      const firstGap = gaps[0];
+      const [firstGap] = gaps;
       assert.ok(firstGap, "expected gap row");
       const payload = firstGap.payload as Record<string, unknown>;
       assert.equal(payload.reason, "connector_child_failure");
@@ -3961,6 +3977,106 @@ test("runCollectorConnector records a connector_child_failure gap when the child
       // records + gap row.
       const putOps = harness.stateOps.filter((op) => op.method === "PUT");
       assert.equal(putOps.length, 0);
+    } finally {
+      verify.close();
+    }
+  } finally {
+    await harness.close();
+  }
+});
+
+test("runCollectorConnector surfaces the connector's own terminal DONE error message into the durable connector_child_failure gap, sanitized", async () => {
+  // A connector that detects its own precondition failure (e.g. a missing
+  // source directory) reports it via a terminal DONE{status:"failed",
+  // error:{message}} on stdout, then exits non-zero — it never writes to
+  // stderr. Before this fix, throwIfConnectorExitedUncleanly ran BEFORE the
+  // terminalDone check and only ever looked at stderr, so this diagnosis was
+  // silently discarded and replaced with a useless "unknown error" — both in
+  // the thrown exception AND in the durable connector_child_failure gap row
+  // an operator would otherwise inspect after the fact. Asserting only the
+  // thrown exception is not sufficient proof: the gap row is written by a
+  // separate call (recordConnectorChildFailureGap) that could regress
+  // independently of the thrown message. This test drives the queue itself.
+  //
+  // The DONE message also carries a secret-shaped token
+  // ("token=super-secret-marker-value") to prove the connector's own
+  // message is sanitized the same way the pre-existing stderr path already
+  // is (sanitizeCollectorGapDetails) before it reaches durable storage —
+  // this is real connector-authored diagnostic text, not payload/record
+  // content, but it must still never carry raw secret-shaped substrings
+  // into the queue.
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    const queuePath = await tempQueuePath();
+    const fixture = await writeFixtureConnector({
+      script: `
+        let buf = "";
+        await new Promise((r) => process.stdin.on("data", (c) => {
+          buf += c;
+          if (buf.includes("\\n")) r();
+        }));
+        process.stdout.write(JSON.stringify({
+          type: "DONE",
+          status: "failed",
+          records_emitted: 0,
+          error: { message: "requested source path(s) are missing or unreadable: CODEX_RULES_DIR=/nonexistent token=super-secret-marker-value", retryable: false },
+        }) + "\\n");
+        process.exit(1);
+      `,
+    });
+
+    await assert.rejects(
+      () =>
+        runCollectorConnector({
+          baseUrl: harness.url,
+          connector: {
+            args: [fixture],
+            command: "node",
+            connector_id: "fixture-done-error-message",
+            runtime_requirements: { bindings: {} },
+            streams: ["messages"],
+          },
+          batchSize: 1,
+          deviceId: "device-1",
+          deviceToken: "device-token",
+          queuePath,
+          runId: "run-done-error-1",
+          sourceInstanceId: "src-done-error",
+        }),
+      (error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        assert.match(message, /requested source path\(s\) are missing or unreadable/);
+        assert.match(message, /CODEX_RULES_DIR=/);
+        assert.doesNotMatch(message, /unknown error/);
+        assert.equal(message.includes("super-secret-marker-value"), false);
+        return true;
+      }
+    );
+
+    // The durable gap metadata is the actual operator-facing evidence — the
+    // thrown exception alone is not proof the connector's diagnosis reached
+    // storage. Inspect the queued connector_child_failure gap row directly.
+    const verify = new LocalDeviceOutbox({ path: queuePath });
+    try {
+      const items = verify.list({ sourceInstanceId: "src-done-error" });
+      const gaps = items.filter((i) => i.kind === "gap");
+      assert.equal(gaps.length, 1, `expected exactly one gap row, got ${gaps.length}`);
+      const [firstGap] = gaps;
+      assert.ok(firstGap, "expected gap row");
+      const payload = firstGap.payload as Record<string, unknown>;
+      assert.equal(payload.reason, "connector_child_failure");
+      assert.equal(payload.retryable, true);
+      assert.equal(payload.firstSeenRunId, "run-done-error-1");
+      const details = String(payload.details ?? "");
+      // The connector's own structured diagnosis reached the durable gap —
+      // not a generic "unknown error" / empty-stderr placeholder.
+      assert.match(details, /requested source path\(s\) are missing or unreadable/);
+      assert.match(details, /CODEX_RULES_DIR=/);
+      assert.doesNotMatch(details, /unknown error/);
+      // Sanitized exactly like the pre-existing stderr-derived path: the
+      // secret-shaped marker is redacted, never stored raw.
+      assert.equal(details.includes("super-secret-marker-value"), false);
+      assert.match(details, /\[REDACTED]/);
     } finally {
       verify.close();
     }

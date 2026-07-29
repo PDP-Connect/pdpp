@@ -38,8 +38,8 @@ interface RouteRequest {
 }
 
 interface RouteResponse {
-  json(body: unknown): unknown;
-  setHeader(name: string, value: string): unknown;
+  json: (body: unknown) => unknown;
+  setHeader: (name: string, value: string) => unknown;
 }
 
 type NextFn = () => void;
@@ -47,7 +47,7 @@ type MiddlewareFn = (req: RouteRequest & { tokenInfo?: unknown }, res: RouteResp
 type RouteHandler = (req: RouteRequest & { tokenInfo?: unknown }, res: RouteResponse) => Promise<unknown>;
 
 interface AppLike {
-  post(path: string, ...args: RouteArg<RouteHandler | MiddlewareFn>[]): AppLike;
+  post: (path: string, ...args: RouteArg<RouteHandler | MiddlewareFn>[]) => AppLike;
 }
 
 interface IntrospectInfo {
@@ -59,20 +59,20 @@ interface IntrospectInfo {
 
 export interface MountAsGrantRevokeContext {
   /** Transitions client-event-subscription rows for the revoked grant. */
-  applyGrantRevokeSideEffects(grantId: string): Promise<void>;
+  applyGrantRevokeSideEffects: (grantId: string) => Promise<void>;
   /** Ensures/returns a request-id header on `res`. Delegated to `ensureRequestId`. */
-  ensureRequestId(res: unknown): string;
-  handleError(res: unknown, err: unknown): void;
+  ensureRequestId: (res: unknown) => string;
+  handleError: (res: unknown, err: unknown) => void;
   /** Introspects a bearer token for auth checks in the middleware. */
-  introspect(token: string): Promise<IntrospectInfo>;
-  logger?: { warn?(obj: Record<string, unknown>, msg: string): void };
+  introspect: (token: string) => Promise<IntrospectInfo>;
+  logger?: { warn?: (obj: Record<string, unknown>, msg: string) => void };
   pdppError: PdppErrorFn;
   /** Revokes the grant row, returns trace_id for header propagation. */
-  revokeGrant(
+  revokeGrant: (
     grantId: string,
     context: { request_id: string }
-  ): Promise<{ trace_id?: string | null; [extra: string]: unknown }>;
-  setReferenceTraceId(res: unknown, traceId: string): void;
+  ) => Promise<{ trace_id?: string | null; [extra: string]: unknown }>;
+  setReferenceTraceId: (res: unknown, traceId: string) => void;
 }
 
 // Token-level inactive reasons: the bearer string itself is bad (not just the
@@ -84,10 +84,10 @@ function resolveRevokeAuthDecision(
   grantId: string
 ): { allow: true } | { allow: false; status: number; code: string; message: string } {
   if (!info || (info.active === false && !info.inactive_reason)) {
-    return { allow: false, status: 401, code: "authentication_error", message: "Invalid or expired token" };
+    return { allow: false, code: "authentication_error", message: "Invalid or expired token", status: 401 };
   }
   if (info.active === false && TOKEN_LEVEL_INACTIVE.has(info.inactive_reason ?? "")) {
-    return { allow: false, status: 401, code: "authentication_error", message: "Invalid or expired token" };
+    return { allow: false, code: "authentication_error", message: "Invalid or expired token", status: 401 };
   }
   if (info.pdpp_token_kind === "owner") {
     return { allow: true };
@@ -96,9 +96,9 @@ function resolveRevokeAuthDecision(
     if (info.grant_id && info.grant_id === grantId) {
       return { allow: true };
     }
-    return { allow: false, status: 403, code: "permission_error", message: "Client token is not bound to this grant" };
+    return { allow: false, code: "permission_error", message: "Client token is not bound to this grant", status: 403 };
   }
-  return { allow: false, status: 403, code: "permission_error", message: "Token kind not permitted to revoke" };
+  return { allow: false, code: "permission_error", message: "Token kind not permitted to revoke", status: 403 };
 }
 
 function buildRequireRevokeAuth(ctx: MountAsGrantRevokeContext): MiddlewareFn {
@@ -172,8 +172,8 @@ export function mountAsGrantRevoke(app: AppLike, ctx: MountAsGrantRevokeContext)
 
 /** Builds the `applyGrantRevokeSideEffects` capability for injection into ctx. */
 export function buildApplyGrantRevokeSideEffects(deps: {
-  getDeliveryWorker(): { tick(): Promise<void> };
-  getStore(): {
+  getDeliveryWorker: () => { tick: () => Promise<void> };
+  getStore: () => {
     dropQueuedForSubscription: unknown;
     enqueueEvent: unknown;
     listSubscriptionsByGrant: unknown;
@@ -182,8 +182,8 @@ export function buildApplyGrantRevokeSideEffects(deps: {
 }): (grantId: string) => Promise<void> {
   return async (grantId: string) => {
     await executeApplyGrantRevoke(grantId, {
-      store: deps.getStore() as Parameters<typeof executeApplyGrantRevoke>[1]["store"],
       nowIso: () => new Date().toISOString(),
+      store: deps.getStore() as Parameters<typeof executeApplyGrantRevoke>[1]["store"],
     });
     deps
       .getDeliveryWorker()

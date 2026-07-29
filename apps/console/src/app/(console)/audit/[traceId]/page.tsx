@@ -176,12 +176,12 @@ function groupTimeline(events: SpineEvent[]): TimelineNode[] {
       }
       const runLen = j - i;
       if (runLen >= PROGRESS_GROUP_THRESHOLD) {
-        nodes.push({ kind: "progress-group", events: events.slice(i, j), start: i });
+        nodes.push({ events: events.slice(i, j), kind: "progress-group", start: i });
         i = j;
         continue;
       }
     }
-    nodes.push({ kind: "event", event: current, index: i });
+    nodes.push({ event: current, index: i, kind: "event" });
     i += 1;
   }
   return nodes;
@@ -230,7 +230,7 @@ function EventTableRow({ event, index }: { event: SpineEvent; index: number }) {
               padding: "var(--space-2)",
             }}
           >
-            {JSON.stringify(redactSecrets(event.data || {}), null, 2)}
+            {JSON.stringify(redactSecrets(event.data), null, 2)}
           </pre>
         </details>
       </TableCell>
@@ -239,7 +239,7 @@ function EventTableRow({ event, index }: { event: SpineEvent; index: number }) {
 }
 
 function ProgressGroupTableRow({ events, startIndex }: { events: SpineEvent[]; startIndex: number }) {
-  const first = events[0];
+  const [first] = events;
   const last = events.at(-1);
   if (!(first && last)) {
     return null;
@@ -315,7 +315,7 @@ export default async function TraceDetailPage({
     notFound();
   }
 
-  const events = envelope.events;
+  const { events } = envelope;
   const first = events[0] ?? null;
   const actorLabel = first ? `${first.actor_type}/${first.actor_id}` : null;
 
@@ -413,10 +413,10 @@ export default async function TraceDetailPage({
               href={`/grants/${encodeURIComponent(id)}`}
               key={`grant:${id}`}
               style={{
+                alignItems: "center",
                 border: "1px solid var(--color-border)",
                 color: "var(--color-foreground)",
                 display: "inline-flex",
-                alignItems: "center",
                 padding: "var(--space-1) var(--space-2-5)",
               }}
             >
@@ -433,10 +433,10 @@ export default async function TraceDetailPage({
               href={`/syncs/${encodeURIComponent(id)}`}
               key={`run:${id}`}
               style={{
+                alignItems: "center",
                 border: "1px solid var(--color-border)",
                 color: "var(--color-foreground)",
                 display: "inline-flex",
-                alignItems: "center",
                 padding: "var(--space-1) var(--space-2-5)",
               }}
             >

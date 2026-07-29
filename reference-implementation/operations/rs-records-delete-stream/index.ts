@@ -37,18 +37,18 @@ export interface RecordsDeleteStreamInput {
 
 export interface RecordsDeleteStreamDependencies {
   /**
-   * Manifest visibility check. Returns true when the connector manifest
-   * declares the named stream. Hosts wire the existing
-   * `resolveRegisteredConnectorManifest(connectorId).streams[*].name` lookup.
-   */
-  hasManifestStream(connectorId: string, streamName: string): boolean | Promise<boolean>;
-  /**
    * Delete all records for the connector + stream. Hosts wire the existing
    * `deleteAllRecords` capability, which owns durable atomicity. Returns the
    * number of records deleted, which the operation propagates back to the
    * host for the `mutation.completed` payload.
    */
-  deleteAllRecords(connectorId: string, streamName: string): number | Promise<number>;
+  deleteAllRecords: (connectorId: string, streamName: string) => number | Promise<number>;
+  /**
+   * Manifest visibility check. Returns true when the connector manifest
+   * declares the named stream. Hosts wire the existing
+   * `resolveRegisteredConnectorManifest(connectorId).streams[*].name` lookup.
+   */
+  hasManifestStream: (connectorId: string, streamName: string) => boolean | Promise<boolean>;
 }
 
 export interface RecordsDeleteStreamOutput {
@@ -86,26 +86,19 @@ export class RecordsDeleteStreamNotFoundError extends Error {
  */
 export async function executeRecordsDeleteStream(
   input: RecordsDeleteStreamInput,
-  dependencies: RecordsDeleteStreamDependencies,
+  dependencies: RecordsDeleteStreamDependencies
 ): Promise<RecordsDeleteStreamOutput> {
   const connectorId = typeof input.connectorId === "string" ? input.connectorId : null;
   if (!connectorId) {
-    throw new RecordsDeleteStreamInvalidRequestError(
-      "connector_id must be a single non-empty string",
-    );
+    throw new RecordsDeleteStreamInvalidRequestError("connector_id must be a single non-empty string");
   }
 
   const visible = await dependencies.hasManifestStream(connectorId, input.streamName);
   if (!visible) {
-    throw new RecordsDeleteStreamNotFoundError(
-      `Stream '${input.streamName}' not found for connector ${connectorId}`,
-    );
+    throw new RecordsDeleteStreamNotFoundError(`Stream '${input.streamName}' not found for connector ${connectorId}`);
   }
 
-  const deletedRecordCount = await dependencies.deleteAllRecords(
-    connectorId,
-    input.streamName,
-  );
+  const deletedRecordCount = await dependencies.deleteAllRecords(connectorId, input.streamName);
 
   return { deletedRecordCount };
 }

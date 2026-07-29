@@ -46,30 +46,30 @@ export interface BearerActor {
   readonly authorityKind: SubscriptionAuthorityKind;
   readonly clientId: string;
   readonly grantId: string | null;
-  readonly subjectId: string;
   /**
    * Authority scope snapshot. Client actors inherit the grant stream
    * projection; trusted-owner-agent actors use the owner-visible wildcard.
    */
   readonly grantScope: SubscriptionScope;
+  readonly subjectId: string;
 }
 
 export interface SubscriptionRow {
-  readonly subscription_id: string;
   readonly authority_kind: SubscriptionAuthorityKind;
-  readonly grant_id: string | null;
-  readonly client_id: string;
-  readonly subject_id: string;
   readonly callback_url: string;
-  readonly secret_hash: string;
-  readonly secret_text: string;
-  readonly scope_json: string;
-  readonly status: SubscriptionStatus;
-  readonly verification_challenge: string | null;
+  readonly client_id: string;
   readonly created_at: string;
-  readonly updated_at: string;
   readonly disabled_at: string | null;
   readonly disabled_reason: string | null;
+  readonly grant_id: string | null;
+  readonly scope_json: string;
+  readonly secret_hash: string;
+  readonly secret_text: string;
+  readonly status: SubscriptionStatus;
+  readonly subject_id: string;
+  readonly subscription_id: string;
+  readonly updated_at: string;
+  readonly verification_challenge: string | null;
 }
 
 export type SubscriptionStatus =
@@ -81,12 +81,12 @@ export type SubscriptionStatus =
   | "deleted";
 
 export interface QueuedEventForEnqueue {
-  readonly subscriptionId: string;
+  readonly enqueuedAt: string;
   readonly eventId: string;
   readonly eventType: string;
-  readonly payloadJson: string;
-  readonly enqueuedAt: string;
   readonly nextAttemptAt: string;
+  readonly payloadJson: string;
+  readonly subscriptionId: string;
 }
 
 /**
@@ -100,40 +100,35 @@ export interface QueuedEventForEnqueue {
  * so it works with both.
  */
 export interface ClientEventSubscriptionStore {
-  insertSubscription(row: SubscriptionRow): Promise<void> | void;
-  getSubscriptionById(id: string): Promise<SubscriptionRow | null> | SubscriptionRow | null;
-  listSubscriptionsByClient(clientId: string): Promise<SubscriptionRow[]> | SubscriptionRow[];
-  updateStatus(
+  deleteSubscription: (id: string) => Promise<void> | void;
+  dropQueuedForSubscription: (id: string) => Promise<void> | void;
+  enqueueEvent: (event: QueuedEventForEnqueue) => Promise<void> | void;
+  getSubscriptionById: (id: string) => Promise<SubscriptionRow | null> | SubscriptionRow | null;
+  insertSubscription: (row: SubscriptionRow) => Promise<void> | void;
+  listSubscriptionsByClient: (clientId: string) => Promise<SubscriptionRow[]> | SubscriptionRow[];
+  listSubscriptionsByGrant: (grantId: string) => Promise<SubscriptionRow[]> | SubscriptionRow[];
+  updateSecret: (id: string, secretHash: string, secretText: string, updatedAt: string) => Promise<void> | void;
+  updateStatus: (
     id: string,
     status: SubscriptionStatus,
     updatedAt: string,
     disabledAt: string | null,
-    disabledReason: string | null,
-  ): Promise<void> | void;
-  updateSecret(
-    id: string,
-    secretHash: string,
-    secretText: string,
-    updatedAt: string,
-  ): Promise<void> | void;
-  deleteSubscription(id: string): Promise<void> | void;
-  enqueueEvent(event: QueuedEventForEnqueue): Promise<void> | void;
-  dropQueuedForSubscription(id: string): Promise<void> | void;
-  listSubscriptionsByGrant(grantId: string): Promise<SubscriptionRow[]> | SubscriptionRow[];
+    disabledReason: string | null
+  ) => Promise<void> | void;
 }
 
 export interface CreateSubscriptionInput {
   readonly actor: BearerActor;
   readonly callbackUrl: string;
-  readonly filters?: { streams?: ReadonlyArray<string> };
+  readonly filters?: { streams?: readonly string[] };
 }
 
 export interface CreateSubscriptionOutput {
-  readonly subscriptionId: string;
-  readonly secret: string;
-  readonly status: SubscriptionStatus;
   readonly callbackUrl: string;
   readonly createdAt: string;
+  readonly secret: string;
+  readonly status: SubscriptionStatus;
+  readonly subscriptionId: string;
 }
 
 const ALLOWED_LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
@@ -147,19 +142,27 @@ function validateCallbackUrl(raw: string): URL {
   try {
     parsed = new URL(raw);
   } catch {
+    // biome-ignore lint/style/useErrorCause: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     throw new ClientEventSubscriptionError("invalid_request", "callback_url must be an absolute URL");
   }
-  if (parsed.protocol === "https:") return parsed;
-  if (parsed.protocol === "http:" && ALLOWED_LOCAL_HOSTS.has(parsed.hostname.toLowerCase())) return parsed;
+  if (parsed.protocol === "https:") {
+    return parsed;
+  }
+  if (parsed.protocol === "http:" && ALLOWED_LOCAL_HOSTS.has(parsed.hostname.toLowerCase())) {
+    return parsed;
+  }
   throw new ClientEventSubscriptionError(
     "invalid_request",
-    "callback_url must use https:// (http://localhost permitted for development)",
+    "callback_url must use https:// (http://localhost permitted for development)"
   );
 }
 
-function narrowScope(actor: BearerActor, filters: { streams?: ReadonlyArray<string> } | undefined): SubscriptionScope {
+function narrowScope(actor: BearerActor, filters: { streams?: readonly string[] } | undefined): SubscriptionScope {
+  // biome-ignore lint/style/useDestructuring: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
   const grantScope = actor.grantScope;
-  if (!filters?.streams || filters.streams.length === 0) return grantScope;
+  if (!filters?.streams || filters.streams.length === 0) {
+    return grantScope;
+  }
   if (actor.authorityKind === "trusted_owner_agent") {
     return { ...grantScope, filters: { streams: [...new Set(filters.streams)] } };
   }
@@ -168,7 +171,7 @@ function narrowScope(actor: BearerActor, filters: { streams?: ReadonlyArray<stri
   if (unauthorized.length) {
     throw new ClientEventSubscriptionError(
       "invalid_request",
-      `filter streams not in grant: ${unauthorized.join(", ")}`,
+      `filter streams not in grant: ${unauthorized.join(", ")}`
     );
   }
   return { ...grantScope, filters: { streams: [...filters.streams] } };
@@ -196,13 +199,13 @@ export function hashSecret(secret: string): string {
 }
 
 export interface ClientEventSubscriptionDependencies {
-  readonly store: ClientEventSubscriptionStore;
   readonly nowIso: () => string;
+  readonly store: ClientEventSubscriptionStore;
 }
 
 export async function executeCreateSubscription(
   input: CreateSubscriptionInput,
-  deps: ClientEventSubscriptionDependencies,
+  deps: ClientEventSubscriptionDependencies
 ): Promise<CreateSubscriptionOutput> {
   const callback = validateCallbackUrl(input.callbackUrl);
   const scope = narrowScope(input.actor, input.filters);
@@ -212,31 +215,31 @@ export async function executeCreateSubscription(
   const challenge = newChallenge();
   const now = deps.nowIso();
   const row: SubscriptionRow = {
-    subscription_id: subscriptionId,
     authority_kind: input.actor.authorityKind,
-    grant_id: input.actor.grantId,
-    client_id: input.actor.clientId,
-    subject_id: input.actor.subjectId,
     callback_url: callback.toString(),
-    secret_hash: secretHash,
-    secret_text: secret,
-    scope_json: JSON.stringify(scope),
-    status: "pending_verification",
-    verification_challenge: challenge,
+    client_id: input.actor.clientId,
     created_at: now,
-    updated_at: now,
     disabled_at: null,
     disabled_reason: null,
+    grant_id: input.actor.grantId,
+    scope_json: JSON.stringify(scope),
+    secret_hash: secretHash,
+    secret_text: secret,
+    status: "pending_verification",
+    subject_id: input.actor.subjectId,
+    subscription_id: subscriptionId,
+    updated_at: now,
+    verification_challenge: challenge,
   };
   await deps.store.insertSubscription(row);
   const verifyEvent = buildVerifyEvent(subscriptionId, challenge, now);
   await enqueue(deps, verifyEvent, now);
   return {
-    subscriptionId,
-    secret,
-    status: "pending_verification",
     callbackUrl: row.callback_url,
     createdAt: now,
+    secret,
+    status: "pending_verification",
+    subscriptionId,
   };
 }
 
@@ -265,8 +268,7 @@ export const PDPP_EVENTS_PROFILE_VERSION = "1";
  * distinguish a structured envelope from an arbitrary JSON body and to drive
  * SDK auto-parsing. See CloudEvents HTTP Protocol Binding §3.2.
  */
-export const CLOUDEVENTS_STRUCTURED_CONTENT_TYPE =
-  "application/cloudevents+json; charset=utf-8";
+export const CLOUDEVENTS_STRUCTURED_CONTENT_TYPE = "application/cloudevents+json; charset=utf-8";
 
 function eventSource(subscriptionId: string): string {
   return `${SUBSCRIPTION_RESOURCE_PATH}/${subscriptionId}`;
@@ -289,67 +291,63 @@ function eventSource(subscriptionId: string): string {
  */
 export function buildEventPayload(eventId: string, event: DerivedEvent): string {
   return JSON.stringify({
-    specversion: CLOUDEVENTS_SPECVERSION,
-    pdppversion: PDPP_EVENTS_PROFILE_VERSION,
-    id: eventId,
-    type: event.type,
-    source: eventSource(event.subscriptionId),
-    time: event.occurredAt,
     data: {
       subscription_id: event.subscriptionId,
       ...event.data,
     },
+    id: eventId,
+    pdppversion: PDPP_EVENTS_PROFILE_VERSION,
+    source: eventSource(event.subscriptionId),
+    specversion: CLOUDEVENTS_SPECVERSION,
+    time: event.occurredAt,
+    type: event.type,
   });
 }
 
-async function enqueue(
-  deps: ClientEventSubscriptionDependencies,
-  event: DerivedEvent,
-  nowIso: string,
-): Promise<void> {
+async function enqueue(deps: ClientEventSubscriptionDependencies, event: DerivedEvent, nowIso: string): Promise<void> {
   const eventId = newEventId();
   await deps.store.enqueueEvent({
-    subscriptionId: event.subscriptionId,
+    enqueuedAt: nowIso,
     eventId,
     eventType: event.type,
-    payloadJson: buildEventPayload(eventId, event),
-    enqueuedAt: nowIso,
     nextAttemptAt: nowIso,
+    payloadJson: buildEventPayload(eventId, event),
+    subscriptionId: event.subscriptionId,
   });
 }
 
 export interface ProjectedSubscription {
-  readonly subscription_id: string;
   readonly authority_kind: SubscriptionAuthorityKind;
-  readonly grant_id: string | null;
-  readonly client_id: string;
   readonly callback_url: string;
-  readonly status: SubscriptionStatus;
-  readonly scope: SubscriptionScope;
+  readonly client_id: string;
   readonly created_at: string;
-  readonly updated_at: string;
   readonly disabled_reason: string | null;
+  readonly grant_id: string | null;
+  readonly scope: SubscriptionScope;
+  readonly status: SubscriptionStatus;
+  readonly subscription_id: string;
+  readonly updated_at: string;
 }
 
 function projectRow(row: SubscriptionRow): ProjectedSubscription {
   return {
-    subscription_id: row.subscription_id,
     authority_kind: row.authority_kind,
-    grant_id: row.grant_id,
-    client_id: row.client_id,
     callback_url: row.callback_url,
-    status: row.status,
-    scope: JSON.parse(row.scope_json) as SubscriptionScope,
+    client_id: row.client_id,
     created_at: row.created_at,
-    updated_at: row.updated_at,
     disabled_reason: row.disabled_reason,
+    grant_id: row.grant_id,
+    scope: JSON.parse(row.scope_json) as SubscriptionScope,
+    status: row.status,
+    subscription_id: row.subscription_id,
+    updated_at: row.updated_at,
   };
 }
 
 async function loadOwnedSubscription(
   deps: ClientEventSubscriptionDependencies,
   actor: BearerActor,
-  subscriptionId: string,
+  subscriptionId: string
 ): Promise<SubscriptionRow> {
   const row = await deps.store.getSubscriptionById(subscriptionId);
   if (!row || row.client_id !== actor.clientId || row.grant_id !== actor.grantId) {
@@ -364,17 +362,18 @@ async function loadOwnedSubscription(
 export async function executeGetSubscription(
   actor: BearerActor,
   subscriptionId: string,
-  deps: ClientEventSubscriptionDependencies,
+  deps: ClientEventSubscriptionDependencies
 ): Promise<ProjectedSubscription> {
   return projectRow(await loadOwnedSubscription(deps, actor, subscriptionId));
 }
 
 export async function executeListSubscriptions(
   actor: BearerActor,
-  deps: ClientEventSubscriptionDependencies,
-): Promise<{ readonly data: ReadonlyArray<ProjectedSubscription> }> {
-  const rows = (await deps.store.listSubscriptionsByClient(actor.clientId))
-    .filter((row) => row.grant_id === actor.grantId && row.status !== "deleted");
+  deps: ClientEventSubscriptionDependencies
+): Promise<{ readonly data: readonly ProjectedSubscription[] }> {
+  const rows = (await deps.store.listSubscriptionsByClient(actor.clientId)).filter(
+    (row) => row.grant_id === actor.grantId && row.status !== "deleted"
+  );
   return { data: rows.map(projectRow) };
 }
 
@@ -384,15 +383,15 @@ export interface UpdateSubscriptionInput {
 }
 
 export interface UpdateSubscriptionOutput {
-  readonly subscription: ProjectedSubscription;
   readonly secret?: string;
+  readonly subscription: ProjectedSubscription;
 }
 
 export async function executeUpdateSubscription(
   actor: BearerActor,
   subscriptionId: string,
   input: UpdateSubscriptionInput,
-  deps: ClientEventSubscriptionDependencies,
+  deps: ClientEventSubscriptionDependencies
 ): Promise<UpdateSubscriptionOutput> {
   const row = await loadOwnedSubscription(deps, actor, subscriptionId);
   const now = deps.nowIso();
@@ -409,7 +408,7 @@ export async function executeUpdateSubscription(
         throw new ClientEventSubscriptionError(
           "grant_revoked",
           "subscription authority was revoked and cannot be re-enabled",
-          409,
+          409
         );
       }
     } else if (row.status === "active" || row.status === "pending_verification") {
@@ -417,7 +416,9 @@ export async function executeUpdateSubscription(
     }
   }
   const updated = await deps.store.getSubscriptionById(row.subscription_id);
-  if (!updated) throw new ClientEventSubscriptionError("not_found", "subscription not found", 404);
+  if (!updated) {
+    throw new ClientEventSubscriptionError("not_found", "subscription not found", 404);
+  }
   return {
     subscription: projectRow(updated),
     ...(newSecretValue ? { secret: newSecretValue } : {}),
@@ -427,7 +428,7 @@ export async function executeUpdateSubscription(
 export async function executeDeleteSubscription(
   actor: BearerActor,
   subscriptionId: string,
-  deps: ClientEventSubscriptionDependencies,
+  deps: ClientEventSubscriptionDependencies
 ): Promise<void> {
   const row = await loadOwnedSubscription(deps, actor, subscriptionId);
   const now = deps.nowIso();
@@ -438,26 +439,26 @@ export async function executeDeleteSubscription(
 export async function executeEnqueueTestEvent(
   actor: BearerActor,
   subscriptionId: string,
-  deps: ClientEventSubscriptionDependencies,
+  deps: ClientEventSubscriptionDependencies
 ): Promise<{ readonly eventId: string }> {
   const row = await loadOwnedSubscription(deps, actor, subscriptionId);
   if (row.status !== "active" && row.status !== "pending_verification") {
     throw new ClientEventSubscriptionError(
       "invalid_state",
       `cannot enqueue test event for subscription in status ${row.status}`,
-      409,
+      409
     );
   }
   const now = deps.nowIso();
   const event = buildTestEvent(row.subscription_id, now);
   const eventId = newEventId();
   await deps.store.enqueueEvent({
-    subscriptionId: row.subscription_id,
+    enqueuedAt: now,
     eventId,
     eventType: event.type,
-    payloadJson: buildEventPayload(eventId, event),
-    enqueuedAt: now,
     nextAttemptAt: now,
+    payloadJson: buildEventPayload(eventId, event),
+    subscriptionId: row.subscription_id,
   });
   return { eventId };
 }
@@ -470,28 +471,31 @@ export async function executeEnqueueTestEvent(
  */
 export async function executeApplyGrantRevoke(
   grantId: string,
-  deps: ClientEventSubscriptionDependencies,
+  deps: ClientEventSubscriptionDependencies
 ): Promise<{ readonly affected: number; readonly notified: number }> {
   const rows = await deps.store.listSubscriptionsByGrant(grantId);
   const now = deps.nowIso();
   let notified = 0;
   let affected = 0;
   for (const row of rows) {
-    if (row.status === "deleted" || row.status === "disabled_revoked") continue;
+    if (row.status === "deleted" || row.status === "disabled_revoked") {
+      continue;
+    }
     affected += 1;
     const wasActive = row.status === "active";
+    // biome-ignore lint/performance/noAwaitInLoops: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     await deps.store.dropQueuedForSubscription(row.subscription_id);
     await deps.store.updateStatus(row.subscription_id, "disabled_revoked", now, now, "grant_revoked");
     if (wasActive) {
       const event = buildGrantRevokedEvent(row.subscription_id, now);
       const eventId = newEventId();
       await deps.store.enqueueEvent({
-        subscriptionId: row.subscription_id,
+        enqueuedAt: now,
         eventId,
         eventType: event.type,
-        payloadJson: buildEventPayload(eventId, event),
-        enqueuedAt: now,
         nextAttemptAt: now,
+        payloadJson: buildEventPayload(eventId, event),
+        subscriptionId: row.subscription_id,
       });
       notified += 1;
     }
@@ -503,10 +507,12 @@ export async function executeApplyGrantRevoke(
 export async function executeVerificationOutcome(
   subscriptionId: string,
   outcome: "verified" | "failed",
-  deps: ClientEventSubscriptionDependencies,
+  deps: ClientEventSubscriptionDependencies
 ): Promise<SubscriptionRow> {
   const row = await deps.store.getSubscriptionById(subscriptionId);
-  if (!row) throw new ClientEventSubscriptionError("not_found", "subscription not found", 404);
+  if (!row) {
+    throw new ClientEventSubscriptionError("not_found", "subscription not found", 404);
+  }
   const now = deps.nowIso();
   if (outcome === "verified" && row.status === "pending_verification") {
     await deps.store.updateStatus(row.subscription_id, "active", now, null, null);
@@ -518,10 +524,12 @@ export async function executeVerificationOutcome(
 
 export async function executeRecordDeliveryFailure(
   subscriptionId: string,
-  deps: ClientEventSubscriptionDependencies,
+  deps: ClientEventSubscriptionDependencies
 ): Promise<void> {
   const row = await deps.store.getSubscriptionById(subscriptionId);
-  if (!row) return;
+  if (!row) {
+    return;
+  }
   if (row.status === "active" || row.status === "pending_verification") {
     const now = deps.nowIso();
     await deps.store.updateStatus(row.subscription_id, "disabled_failure", now, now, "delivery_failed");

@@ -25,32 +25,32 @@
 
 export interface BlobsUploadRequestParams {
   readonly connector_id?: unknown;
-  readonly stream?: unknown;
   readonly record_key?: unknown;
+  readonly stream?: unknown;
 }
 
 export interface BlobsUploadInput {
-  /** Raw query parameters as received by the host. */
-  readonly requestParams: BlobsUploadRequestParams;
-  /** Raw `Content-Type` header value as received by the host. */
-  readonly contentType: unknown;
   /** Raw request body as received by the host (Buffer / string / typed array). */
   readonly body: unknown;
+  /** Raw `Content-Type` header value as received by the host. */
+  readonly contentType: unknown;
+  /** Raw query parameters as received by the host. */
+  readonly requestParams: BlobsUploadRequestParams;
 }
 
 export interface BlobsUploadPersistArgs {
   readonly connectorId: string;
-  readonly stream: string;
-  readonly recordKey: string;
-  readonly mimeType: string;
   readonly data: Uint8Array;
+  readonly mimeType: string;
+  readonly recordKey: string;
+  readonly stream: string;
 }
 
 export interface BlobsUploadPersistResult {
   readonly blob_id: string;
+  readonly mime_type: string;
   readonly sha256: string;
   readonly size_bytes: number;
-  readonly mime_type: string;
 }
 
 export interface BlobsUploadDependencies {
@@ -59,13 +59,13 @@ export interface BlobsUploadDependencies {
    * declares the named stream. Hosts wire the existing
    * `resolveRegisteredConnectorManifest(connectorId).streams[*].name` lookup.
    */
-  hasManifestStream(connectorId: string, streamName: string): boolean | Promise<boolean>;
+  hasManifestStream: (connectorId: string, streamName: string) => boolean | Promise<boolean>;
   /**
    * Persist the upload. Hosts wire the existing
    * `persistContentAddressedBlob`, which performs the content-addressed write
    * and the binding insert inside one transaction.
    */
-  persistBlob(args: BlobsUploadPersistArgs): BlobsUploadPersistResult | Promise<BlobsUploadPersistResult>;
+  persistBlob: (args: BlobsUploadPersistArgs) => BlobsUploadPersistResult | Promise<BlobsUploadPersistResult>;
 }
 
 export interface BlobsUploadOutput {
@@ -110,9 +110,7 @@ export class BlobsUploadInvalidRequestError extends Error {
 
 function readSingleNonEmptyString(value: unknown, name: string): string {
   if (typeof value !== "string" || !value.trim()) {
-    throw new BlobsUploadInvalidRequestError(
-      `${name} must be a single non-empty string`,
-    );
+    throw new BlobsUploadInvalidRequestError(`${name} must be a single non-empty string`);
   }
   return value.trim();
 }
@@ -121,24 +119,28 @@ const MEDIA_TYPE_PATTERN = /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i;
 
 function readContentType(value: unknown): string {
   if (typeof value !== "string") {
-    throw new BlobsUploadInvalidRequestError(
-      "Content-Type header is required",
-    );
+    throw new BlobsUploadInvalidRequestError("Content-Type header is required");
   }
   const mediaType = (value.split(";")[0] ?? "").trim().toLowerCase();
-  if (!mediaType || !MEDIA_TYPE_PATTERN.test(mediaType)) {
-    throw new BlobsUploadInvalidRequestError(
-      "Content-Type header must be a valid media type",
-    );
+  if (!(mediaType && MEDIA_TYPE_PATTERN.test(mediaType))) {
+    throw new BlobsUploadInvalidRequestError("Content-Type header must be a valid media type");
   }
   return mediaType;
 }
 
 function coerceBodyToBytes(body: unknown): Uint8Array {
-  if (body instanceof Uint8Array) return body;
-  if (typeof body === "string") return new TextEncoder().encode(body);
-  if (body === undefined || body === null) return new Uint8Array(0);
-  if (body instanceof ArrayBuffer) return new Uint8Array(body);
+  if (body instanceof Uint8Array) {
+    return body;
+  }
+  if (typeof body === "string") {
+    return new TextEncoder().encode(body);
+  }
+  if (body === undefined || body === null) {
+    return new Uint8Array(0);
+  }
+  if (body instanceof ArrayBuffer) {
+    return new Uint8Array(body);
+  }
   if (ArrayBuffer.isView(body)) {
     const view = body as ArrayBufferView;
     return new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
@@ -159,43 +161,35 @@ function coerceBodyToBytes(body: unknown): Uint8Array {
  */
 export async function executeBlobsUpload(
   input: BlobsUploadInput,
-  dependencies: BlobsUploadDependencies,
+  dependencies: BlobsUploadDependencies
 ): Promise<BlobsUploadOutput> {
-  const connectorId = readSingleNonEmptyString(
-    input.requestParams.connector_id,
-    "connector_id",
-  );
+  const connectorId = readSingleNonEmptyString(input.requestParams.connector_id, "connector_id");
   const stream = readSingleNonEmptyString(input.requestParams.stream, "stream");
-  const recordKey = readSingleNonEmptyString(
-    input.requestParams.record_key,
-    "record_key",
-  );
+  const recordKey = readSingleNonEmptyString(input.requestParams.record_key, "record_key");
   const mimeType = readContentType(input.contentType);
 
   const visible = await dependencies.hasManifestStream(connectorId, stream);
   if (!visible) {
-    throw new BlobsUploadStreamNotFoundError(
-      `Stream '${stream}' not found for connector ${connectorId}`,
-    );
+    throw new BlobsUploadStreamNotFoundError(`Stream '${stream}' not found for connector ${connectorId}`);
   }
 
   const data = coerceBodyToBytes(input.body);
 
   const result = await dependencies.persistBlob({
     connectorId,
-    stream,
-    recordKey,
-    mimeType,
     data,
+    mimeType,
+    recordKey,
+    stream,
   });
 
   return {
     envelope: {
-      object: "blob",
       blob_id: result.blob_id,
+      mime_type: result.mime_type,
+      object: "blob",
       sha256: result.sha256,
       size_bytes: result.size_bytes,
-      mime_type: result.mime_type,
     },
   };
 }

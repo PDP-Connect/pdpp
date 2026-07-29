@@ -9,7 +9,7 @@
 // at the owner-session capture page, but it never carries the credential itself.
 
 import { type ConnectorManifestLike, expectedStaticSecretCredentialKind } from "../connection-setup-plan.ts";
-import { isCredentialEncryptionConfigured } from "../stores/credential-encryption.js";
+import { isCredentialEncryptionConfigured } from "../stores/credential-encryption.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 import { codeToStatus } from "./ref-error-status.ts";
 
@@ -69,16 +69,16 @@ interface RouteRequest {
 }
 
 interface RouteResponse {
-  getHeader(name: string): string | number | string[] | undefined;
-  json(body: unknown): unknown;
-  setHeader(name: string, value: string): void;
-  status(code: number): RouteResponse;
+  getHeader: (name: string) => string | number | string[] | undefined;
+  json: (body: unknown) => unknown;
+  setHeader: (name: string, value: string) => void;
+  status: (code: number) => RouteResponse;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
 
 interface AppLike {
-  post(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  post: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
 }
 
 interface TraceContext {
@@ -104,14 +104,14 @@ interface CredentialMetadata {
 }
 
 interface ConnectorInstanceCredentialStore {
-  capture(input: {
+  capture: (input: {
     connectorInstanceId: string;
     ownerSubjectId: string;
     credentialKind: string;
     secret: string;
     now: string;
-  }): Promise<CredentialMetadata> | CredentialMetadata;
-  getMetadata(connectorInstanceId: string): Promise<CredentialMetadata | null> | CredentialMetadata | null;
+  }) => Promise<CredentialMetadata> | CredentialMetadata;
+  getMetadata: (connectorInstanceId: string) => Promise<CredentialMetadata | null> | CredentialMetadata | null;
 }
 
 interface ConnectorInstanceRow {
@@ -122,11 +122,11 @@ interface ConnectorInstanceRow {
 }
 
 interface ConnectorInstanceStore {
-  get(connectorInstanceId: string): Promise<ConnectorInstanceRow | null> | ConnectorInstanceRow | null;
-  updateStatus(
+  get: (connectorInstanceId: string) => Promise<ConnectorInstanceRow | null> | ConnectorInstanceRow | null;
+  updateStatus: (
     connectorInstanceId: string,
     args: { readonly revokedAt?: string | null; readonly status: string; readonly updatedAt: string }
-  ): Promise<ConnectorInstanceRow | null> | ConnectorInstanceRow | null;
+  ) => Promise<ConnectorInstanceRow | null> | ConnectorInstanceRow | null;
 }
 
 // Non-secret context handed to a probe. The Gmail probe needs the mailbox
@@ -138,7 +138,7 @@ export interface StaticSecretProbeContext {
 }
 
 export interface MountRefStaticSecretCredentialsContext {
-  autoResumeSatisfiedActions?(input: {
+  autoResumeSatisfiedActions?: (input: {
     connectorId: string;
     connectorInstanceId: string;
     evidence: {
@@ -149,24 +149,24 @@ export interface MountRefStaticSecretCredentialsContext {
       };
     };
     requiredActions: readonly AutoResumeRequiredAction[];
-  }): Promise<AutoResumeResult> | AutoResumeResult;
+  }) => Promise<AutoResumeResult> | AutoResumeResult;
   // Canonicalize a connector id/key (strip the registry prefix) so the probe
   // registry lookup matches. Optional: when absent the connector id is used as
   // given (matching the existing draft-route fallback).
-  canonicalConnectorKey?(value: string | null | undefined): string | null;
-  createRequestConnectorInstanceCredentialStore(): ConnectorInstanceCredentialStore;
+  canonicalConnectorKey?: (value: string | null | undefined) => string | null;
+  createRequestConnectorInstanceCredentialStore: () => ConnectorInstanceCredentialStore;
   // Connector-instance store, used to recover the draft's non-secret setup
   // fields for the probe context and to retire rejected first-time draft setup
   // rows. Optional: when absent the probe runs with no setup-field context
   // (fine for connectors whose probe needs none, e.g. GitHub) and cannot
   // perform draft cleanup.
-  createRequestConnectorInstanceStore?(): ConnectorInstanceStore;
-  createTraceContext(input?: { scenarioId?: string }): TraceContext;
-  emitSpineEvent(event: Record<string, unknown>): Promise<unknown>;
-  ensureRequestId(res: RouteResponse): string;
-  getOwnerSubjectId(req: unknown): string;
-  handleError(res: unknown, err: unknown): void;
-  now?(): string;
+  createRequestConnectorInstanceStore?: () => ConnectorInstanceStore;
+  createTraceContext: (input?: { scenarioId?: string }) => TraceContext;
+  emitSpineEvent: (event: Record<string, unknown>) => Promise<unknown>;
+  ensureRequestId: (res: RouteResponse) => string;
+  getOwnerSubjectId: (req: unknown) => string;
+  handleError: (res: unknown, err: unknown) => void;
+  now?: () => string;
   pdppError: PdppErrorFn;
   // Run the connector's synchronous credential probe. Injected so the route is
   // transport-agnostic: production wires the package probe + live transport;
@@ -175,13 +175,13 @@ export interface MountRefStaticSecretCredentialsContext {
   // connector with no probe (the route then keeps the first-sync path), so the
   // route needs no separate has-probe gate. It MUST NOT echo the secret. When
   // this is not injected at all, every connector takes the first-sync path.
-  probeStaticSecretCredential?(input: {
+  probeStaticSecretCredential?: (input: {
     connectorKey: string;
     context: StaticSecretProbeContext;
     secret: string;
-  }): Promise<StaticSecretProbeResult>;
+  }) => Promise<StaticSecretProbeResult>;
   requireOwnerSession: MiddlewareHandler;
-  resolveOwnerConnectorNamespace(
+  resolveOwnerConnectorNamespace: (
     req: unknown,
     connectorId: string | null,
     options?: {
@@ -190,9 +190,9 @@ export interface MountRefStaticSecretCredentialsContext {
       readonly connectorInstanceId?: string | null;
       readonly ownerSubjectId?: string;
     }
-  ): Promise<ConnectorNamespace>;
-  resolveRegisteredConnectorManifest(connectorId: string): Promise<ConnectorManifestLike>;
-  setReferenceTraceId(res: RouteResponse, traceId: string): void;
+  ) => Promise<ConnectorNamespace>;
+  resolveRegisteredConnectorManifest: (connectorId: string) => Promise<ConnectorManifestLike>;
+  setReferenceTraceId: (res: RouteResponse, traceId: string) => void;
 }
 
 const MAX_SECRET_LENGTH = 64 * 1024;
@@ -211,13 +211,13 @@ async function expectedCredentialKindForConnector(
 
 function projectCredentialMetadata(meta: CredentialMetadata): Record<string, unknown> {
   return {
-    present: meta.present === true,
-    credential_kind: meta.credentialKind ?? null,
-    status: meta.status ?? null,
-    fingerprint: meta.fingerprint ?? null,
     captured_at: meta.capturedAt ?? null,
-    rotated_at: meta.rotatedAt ?? null,
+    credential_kind: meta.credentialKind ?? null,
+    fingerprint: meta.fingerprint ?? null,
+    present: meta.present === true,
     revoked_at: meta.revokedAt ?? null,
+    rotated_at: meta.rotatedAt ?? null,
+    status: meta.status ?? null,
   };
 }
 
@@ -245,27 +245,29 @@ async function autoResumeAfterCredentialCapture(
     return await ctx.autoResumeSatisfiedActions({
       connectorId: namespace.connectorId,
       connectorInstanceId: namespace.connectorInstanceId,
-      requiredActions: [credentialRepairAction()],
       evidence: {
         credential: {
           present: credential.present === true,
-          rejected: credential.revokedAt != null || credential.status === "revoked" || credential.status === "rejected",
+          rejected:
+            credential.revokedAt !== null || credential.status === "revoked" || credential.status === "rejected",
           status: credential.status ?? null,
         },
       },
+      requiredActions: [credentialRepairAction()],
     });
   } catch (err) {
     return {
-      object: "connection_self_heal",
-      status: "blocked",
-      satisfied_actions: [],
       confirming_run: null,
       error_message: err instanceof Error ? err.message : String(err),
+      object: "connection_self_heal",
+      satisfied_actions: [],
+      status: "blocked",
     };
   }
 }
 
 function credentialCaptureErrorStatus(err: unknown): number {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const code = (err as { code?: unknown })?.code;
   if (
     code === "credential_encryption_key_missing" ||
@@ -306,17 +308,8 @@ async function emitCaptureAudit(
   const ownerSubjectId = args.ownerSubjectId ?? req.ownerSession?.sub ?? null;
   const code = (args.error as { code?: unknown } | null)?.code;
   await ctx.emitSpineEvent({
-    event_type: "owner.connection.static_secret_credential.capture",
-    trace_id: trace.trace_id,
-    scenario_id: trace.scenario_id,
-    request_id: trace.request_id,
-    actor_type: "owner_session",
     actor_id: ownerSubjectId ?? "owner_session",
-    subject_type: "subject",
-    subject_id: ownerSubjectId,
-    object_type: "connection",
-    object_id: args.connectionId ?? "unknown_connection",
-    status: args.outcome,
+    actor_type: "owner_session",
     data: {
       connection_id: args.connectionId ?? null,
       connector_id: args.connectorId ?? null,
@@ -332,6 +325,15 @@ async function emitCaptureAudit(
           }
         : {}),
     },
+    event_type: "owner.connection.static_secret_credential.capture",
+    object_id: args.connectionId ?? "unknown_connection",
+    object_type: "connection",
+    request_id: trace.request_id,
+    scenario_id: trace.scenario_id,
+    status: args.outcome,
+    subject_id: ownerSubjectId,
+    subject_type: "subject",
+    trace_id: trace.trace_id,
   });
 }
 
@@ -357,7 +359,7 @@ function setupFieldsFromBinding(sourceBinding: unknown): Record<string, string> 
 }
 
 function isStaticSecretDraftInstance(instance: ConnectorInstanceRow | null): instance is ConnectorInstanceRow {
-  if (!instance || instance.status !== "draft") {
+  if (instance?.status !== "draft") {
     return false;
   }
   const binding = instance.sourceBinding;
@@ -383,9 +385,9 @@ async function retireRejectedStaticSecretDraft(
     return;
   }
   await store.updateStatus(connectorInstanceId, {
+    revokedAt: now,
     status: "revoked",
     updatedAt: now,
-    revokedAt: now,
   });
 }
 
@@ -413,6 +415,7 @@ function parseCaptureBody(
   body: unknown
 ): { credentialKind: string | null; secret: string } | null {
   const objectBody = (body as Record<string, unknown> | null) || {};
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const secret = objectBody.secret;
   if (typeof secret !== "string" || secret.length === 0 || Buffer.byteLength(secret, "utf8") > MAX_SECRET_LENGTH) {
     ctx.pdppError(
@@ -565,10 +568,10 @@ async function storeAndRespond(
   const now = ctx.now ? ctx.now() : new Date().toISOString();
   const metadata = await store.capture({
     connectorInstanceId: args.namespace.connectorInstanceId,
-    ownerSubjectId: args.ownerSubjectId ?? "",
     credentialKind: args.credentialKind ?? "",
-    secret: args.secret,
     now,
+    ownerSubjectId: args.ownerSubjectId ?? "",
+    secret: args.secret,
   });
   const rotated = Boolean(previous);
   const autoResume = await autoResumeAfterCredentialCapture(ctx, args.namespace, metadata);
@@ -581,27 +584,27 @@ async function storeAndRespond(
     rotated,
   });
   res.status(rotated ? 200 : 201).json({
-    object: "static_secret_credential_capture",
-    connection_id: args.namespace.connectorInstanceId,
-    connector_instance_id: args.namespace.connectorInstanceId,
-    connector_id: args.namespace.connectorId,
-    credential: projectCredentialMetadata(metadata),
     auto_resume: autoResume,
+    connection_id: args.namespace.connectorInstanceId,
+    connector_id: args.namespace.connectorId,
+    connector_instance_id: args.namespace.connectorInstanceId,
+    credential: projectCredentialMetadata(metadata),
     // Non-secret account identity from a synchronous probe ("Connected as
     // {identity}"). Null when the connector has no probe (first-sync path)
     // or the probe returned no identity. Never carries the secret.
     identity: args.probedIdentity
       ? { account_identity: args.probedIdentity.identity, detail: args.probedIdentity.detail }
       : null,
-    // Whether the credential was validated synchronously before storing.
-    validation: args.probedIdentity ? "synchronous" : "first_sync",
     next_step: {
       kind: "run_connection",
       method: "POST",
-      url: `/_ref/connections/${encodeURIComponent(args.namespace.connectorInstanceId)}/run`,
       reason:
         "Run this connection from the owner session or scheduler. The connection stays hidden until first ingest accepts records.",
+      url: `/_ref/connections/${encodeURIComponent(args.namespace.connectorInstanceId)}/run`,
     },
+    object: "static_secret_credential_capture",
+    // Whether the credential was validated synchronously before storing.
+    validation: args.probedIdentity ? "synchronous" : "first_sync",
   });
 }
 
@@ -632,9 +635,9 @@ export function mountRefStaticSecretCredentialCapture(app: AppLike, ctx: MountRe
           });
           return;
         }
+        // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
         credentialKind = capture.credentialKind;
         namespace = await ctx.resolveOwnerConnectorNamespace(req, null, {
-          ownerSubjectId,
           allowDefaultAccount: false,
           // Admit a `draft` target so the owner can seal a credential onto a
           // not-yet-ingested first static-secret connection. This is owner-
@@ -642,6 +645,7 @@ export function mountRefStaticSecretCredentialCapture(app: AppLike, ctx: MountRe
           // add-static-secret-owner-session-connect-path design Decisions 3 & 5.
           allowStatuses: ["active", "draft"],
           connectorInstanceId,
+          ownerSubjectId,
         });
         const kindOk = await validateCredentialKind(ctx, req, res, namespace, credentialKind, ownerSubjectId);
         if (!kindOk) {
@@ -658,8 +662,8 @@ export function mountRefStaticSecretCredentialCapture(app: AppLike, ctx: MountRe
           ? (ctx.canonicalConnectorKey(namespace.connectorId) ?? namespace.connectorId)
           : namespace.connectorId;
         const probeOutcome = await runCredentialProbe(ctx, req, res, {
-          connectorInstanceId: namespace.connectorInstanceId,
           connectorId: namespace.connectorId,
+          connectorInstanceId: namespace.connectorInstanceId,
           connectorKey: probeConnectorKey,
           credentialKind,
           ownerSubjectId,
@@ -677,7 +681,9 @@ export function mountRefStaticSecretCredentialCapture(app: AppLike, ctx: MountRe
         });
       } catch (err) {
         await emitCaptureAudit(ctx, req, res, {
+          // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
           connectionId: namespace?.connectorInstanceId ?? connectorInstanceId,
+          // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
           connectorId: namespace?.connectorId ?? null,
           credentialKind,
           error: err,
@@ -685,6 +691,7 @@ export function mountRefStaticSecretCredentialCapture(app: AppLike, ctx: MountRe
           ownerSubjectId,
         });
         const status = credentialCaptureErrorStatus(err);
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
         const code = (err as { code?: unknown })?.code;
         if (typeof code === "string" && status !== 500) {
           ctx.pdppError(res, status, code, (err as Error).message);

@@ -12,12 +12,12 @@ type ConnectionHealthState = NonNullable<ConnectorOverview["connectionHealth"]>[
 
 function overview(partial: Partial<ConnectorOverview>): ConnectorOverview {
   return {
-    connector: { connector_id: "test", name: "Test", display_name: "Test" },
-    streams: [],
-    totalRecords: 0,
+    connector: { connector_id: "test", display_name: "Test", name: "Test" },
     isRunning: false,
     lastRun: null,
     lastSuccessfulRun: null,
+    streams: [],
+    totalRecords: 0,
     ...partial,
   };
 }
@@ -32,15 +32,15 @@ function withDataInState(
   outbox: "active" | "idle" | "stalled" | "unknown" = "unknown"
 ): ConnectorOverview {
   return overview({
-    totalRecords: 10,
     connectionHealth: {
-      state,
-      reason_code: null,
+      axes: { attention: "none", coverage: "unknown", freshness, outbox, remote_surface: "none" },
+      badges: { stale: freshness === "stale", syncing: false },
       last_success_at: null,
       next_attempt_at: null,
-      axes: { freshness, coverage: "unknown", attention: "none", outbox, remote_surface: "none" },
-      badges: { stale: freshness === "stale", syncing: false },
+      reason_code: null,
+      state,
     } as ConnectorOverview["connectionHealth"],
+    totalRecords: 10,
   });
 }
 
@@ -104,17 +104,17 @@ test("stale is counted only when the freshness axis says stale", () => {
 
 test("running counts active runs and push-mode syncing badges", () => {
   const syncing = overview({
-    totalRecords: 3,
     connectionHealth: {
-      state: "healthy",
-      reason_code: null,
+      axes: { attention: "none", coverage: "complete", freshness: "fresh", outbox: "active", remote_surface: "none" },
+      badges: { stale: false, syncing: true },
       last_success_at: null,
       next_attempt_at: null,
-      axes: { freshness: "fresh", coverage: "complete", attention: "none", outbox: "active", remote_surface: "none" },
-      badges: { stale: false, syncing: true },
+      reason_code: null,
+      state: "healthy",
     } as ConnectorOverview["connectionHealth"],
+    totalRecords: 3,
   });
-  const stats = summarizeConnectionHealth([overview({ totalRecords: 1, isRunning: true }), syncing]);
+  const stats = summarizeConnectionHealth([overview({ isRunning: true, totalRecords: 1 }), syncing]);
   assert.equal(stats.running, 2);
 });
 

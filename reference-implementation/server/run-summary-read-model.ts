@@ -85,7 +85,7 @@ async function readRunTerminalEventData(runId: string): Promise<Record<string, u
     return null;
   }
   const row: RunTerminalEventRow = {
-    data_json: event.data == null ? null : JSON.stringify(event.data),
+    data_json: event.data === null ? null : JSON.stringify(event.data),
     event_type: event.event_type,
   };
   return decodeRunTerminalEventRow(row);
@@ -146,6 +146,7 @@ function readCollectionFactsFromTerminalData(data: Record<string, unknown> | nul
   if (!block || typeof block !== "object" || Array.isArray(block)) {
     return null;
   }
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const streams = (block as { streams?: unknown }).streams;
   if (!Array.isArray(streams)) {
     return null;
@@ -184,16 +185,16 @@ export async function toConnectorRunSummary(summary: SpineSummary | null): Promi
       ? summary.browser_surface_wait_reason || summary.browser_surface_status || "browser_surface_failed"
       : null;
   return {
-    run_id: runId || undefined,
-    status: summary.status,
-    started_at: summary.first_at,
-    finished_at: summary.status === "pending" ? null : summary.last_at,
-    first_at: summary.first_at,
-    last_at: summary.last_at,
+    collection_facts: readCollectionFactsFromTerminalData(terminalData),
     event_count: summary.event_count,
     failure_reason: summary.failure?.reason || browserSurfaceFailureReason,
+    finished_at: summary.status === "pending" ? null : summary.last_at,
+    first_at: summary.first_at,
     known_gaps: readKnownGapsFromTerminalData(terminalData),
-    collection_facts: readCollectionFactsFromTerminalData(terminalData),
+    last_at: summary.last_at,
+    run_id: runId || undefined,
+    started_at: summary.first_at,
+    status: summary.status,
   };
 }
 
@@ -240,8 +241,8 @@ export async function getLatestRunSummary(
   status: string | null = null
 ): Promise<ConnectorRunSummary | null> {
   const filters = status
-    ? { sourceKind: "connector", sourceId: connectorId, status, limit: 1 }
-    : { sourceKind: "connector", sourceId: connectorId, limit: 1 };
+    ? { limit: 1, sourceId: connectorId, sourceKind: "connector", status }
+    : { limit: 1, sourceId: connectorId, sourceKind: "connector" };
   const { summaries } = await listSpineCorrelations("run", filters);
   return toConnectorRunSummary(summaries[0] ?? null);
 }

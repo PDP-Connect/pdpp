@@ -27,6 +27,7 @@ import {
   type BrowserSurfaceLeaseManager,
   type BrowserSurfaceProjection,
   projectBrowserSurfaceLease,
+  // biome-ignore lint/correctness/noUnresolvedImports: Biome cannot resolve this installed package export; Node and TypeScript resolve it.
 } from "@opendatalabs/remote-surface/leases";
 import { getOne, referenceQueries } from "../lib/db.ts";
 import { createTraceContext, emitSpineEvent, getRunTerminalStatus, type SpineTraceContext } from "../lib/spine.ts";
@@ -34,17 +35,21 @@ import {
   approveOwnerDeviceAuthorization,
   getConnectorManifest,
   initiateOwnerDeviceAuthorization,
-} from "../server/auth.js";
-import { canonicalConnectorKey, canonicalConnectorKeyFromManifest } from "../server/connector-key.js";
-import { isPostgresStorageBackend, postgresQuery } from "../server/postgres-storage.js";
-import { getSyncState } from "../server/records.js";
+} from "../server/auth.ts";
+import { canonicalConnectorKey, canonicalConnectorKeyFromManifest } from "../server/connector-key.ts";
+import {
+  getConnectorSummaryEvidence,
+  reconcileDirtyConnectorSummaryEvidence,
+} from "../server/connector-summary-read-model.ts";
+import { isPostgresStorageBackend, postgresQuery } from "../server/postgres-storage.ts";
+import { getSyncState } from "../server/records.ts";
 import type { BrowserSurfaceLeaseStore } from "../server/stores/browser-surface-lease-store.ts";
 import {
   type BrowserSurfaceReplacementReceiptStore,
   getDefaultBrowserSurfaceReplacementReceiptStore,
 } from "../server/stores/browser-surface-replacement-ledger-store.ts";
 import { getDefaultConnectorAttentionStore } from "../server/stores/connector-attention-store.ts";
-import { getDefaultConnectorDetailGapStore } from "../server/stores/connector-detail-gap-store.js";
+import { getDefaultConnectorDetailGapStore } from "../server/stores/connector-detail-gap-store.ts";
 import {
   type ActiveRunRecord,
   getDefaultSchedulerStore,
@@ -62,10 +67,11 @@ import {
   type BrowserSurfaceReadinessProbe,
   createBrowserSurfaceManager,
 } from "./browser-surface/index.ts";
-import { runConnector } from "./index.js";
+import { runConnector } from "./index.ts";
 import {
   classifyRecoveryGap,
   filterFreshPressureRows,
+  hasForwardEvidenceDebt,
   type RecoveryAdmissionDenialReason,
   resolveRecoveryAdmission,
   resolveRecoveryFirstMode,
@@ -94,7 +100,7 @@ import {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
 const REFERENCE_MANIFESTS_DIR = join(REFERENCE_IMPL_DIR, "manifests");
-const SEED_CONNECTOR_PATH = join(REFERENCE_IMPL_DIR, "connectors", "seed", "index.js");
+const SEED_CONNECTOR_PATH = join(REFERENCE_IMPL_DIR, "connectors", "seed", "index.ts");
 const POLYFILL_ROOT = join(REFERENCE_IMPL_DIR, "..", "packages", "polyfill-connectors");
 const POLYFILL_MANIFESTS_DIR = join(POLYFILL_ROOT, "manifests");
 const POLYFILL_CONNECTORS_DIR = join(POLYFILL_ROOT, "connectors");
@@ -327,8 +333,8 @@ function runAutomationMetadata(
   triggerKind: Extract<RunTriggerKind, "manual" | "webhook" | "scheduled">
 ): Pick<RunNowResult, "automation_mode" | "automation_summary" | "trigger_kind"> {
   const projection = projectRunAutomationPolicy({
-    triggerKind,
     refreshPolicy: policy,
+    triggerKind,
   });
   return {
     automation_mode: projection.automation_mode,
@@ -387,8 +393,8 @@ type RunConnectorFn = typeof runConnector;
  * concrete shape so this module does not import the registry directly.
  */
 export interface RunTargetNonceHooks {
-  clearNonce(args: { runId: string }): void;
-  registerNonce(args: { runId: string; nonce: string }): void;
+  clearNonce: (args: { runId: string }) => void;
+  registerNonce: (args: { runId: string; nonce: string }) => void;
 }
 
 export interface ControllerOptions {
@@ -495,7 +501,7 @@ export interface ControllerOptions {
    * `referenceBaseUrl` lazily so it picks up the realized values once
    * the AS server has actually allocated its port.
    */
-  runtimeContext?: { rsUrl?: string; referenceBaseUrl?: string };
+  runtimeContext?: { rsUrl?: string | null; referenceBaseUrl?: string | null };
   scheduler?: unknown;
   // Optional store override; defaults to the configured storage-backed singleton.
   // Tests use this to substitute fakes without touching module-scoped state.
@@ -564,7 +570,7 @@ export type MarkStaticSecretCredentialRejected = (args: {
 }) => Promise<void> | void;
 
 export interface Controller {
-  autoResumeSatisfiedActions(input: AutoResumeSatisfiedActionsInput): Promise<AutoResumeSatisfiedActionsResult>;
+  autoResumeSatisfiedActions: (input: AutoResumeSatisfiedActionsInput) => Promise<AutoResumeSatisfiedActionsResult>;
   /**
    * Run-id-keyed lookup over the in-process active-run bookkeeping.
    * Returns the active-run projection while the run is in flight
@@ -589,7 +595,7 @@ export interface Controller {
    * a synthetic "succeeded" — so the scheduler's failure-streak / back-off
    * machinery fires correctly when the run actually fails.
    */
-  awaitRun(runId: string): Promise<"succeeded" | "failed">;
+  awaitRun: (runId: string) => Promise<"succeeded" | "failed">;
   /**
    * The managed browser-surface lease manager the controller was built with
    * (or `undefined` when browser surfaces are disabled). Re-exported so the
@@ -605,7 +611,7 @@ export interface Controller {
    * closure) succeeds. Exposing it makes scheduled runs lease the warm surface.
    */
   browserSurfaceLeaseManager?: BrowserSurfaceLeaseManager | undefined;
-  cancelBrowserSurfaceRun(runId: string): Promise<BrowserSurfaceProjection | null>;
+  cancelBrowserSurfaceRun: (runId: string) => Promise<BrowserSurfaceProjection | null>;
   /**
    * Owner-only single-run cancellation. Aborts only the targeted run's
    * cooperative-cancel signal so the runtime terminates that connector child
@@ -614,10 +620,10 @@ export interface Controller {
    * run. Never touches sibling active runs.
    * See add-owner-run-cancellation-control.
    */
-  cancelRun(runId: string): Promise<CancelRunResult>;
-  cleanupIdleBrowserSurfaces(): Promise<BrowserSurfaceProjection[]>;
-  clearNeedsHuman(connectorId: string, options?: ConnectorInstanceOptions): void;
-  deleteSchedule(connectorId: string, options?: ConnectorInstanceOptions): Promise<boolean>;
+  cancelRun: (runId: string) => Promise<CancelRunResult>;
+  cleanupIdleBrowserSurfaces: () => Promise<BrowserSurfaceProjection[]>;
+  clearNeedsHuman: (connectorId: string, options?: ConnectorInstanceOptions) => void;
+  deleteSchedule: (connectorId: string, options?: ConnectorInstanceOptions) => Promise<boolean>;
   /**
    * Graceful-shutdown drain: await all in-flight `runConnector` promises,
    * bounded by `timeoutMs`. Returns a summary of which runs finished
@@ -633,36 +639,36 @@ export interface Controller {
    *   - Layer C (`profile-lock.ts`): startup cleanup of any residue from
    *     paths A/B couldn't intercept (SIGKILL, OOM, power loss).
    */
-  drainActiveRuns(timeoutMs: number): Promise<DrainSummary>;
-  expireBrowserSurfaceWaits(): Promise<BrowserSurfaceProjection[]>;
-  findActiveRunByRunId(runId: string): ActiveRun | null;
-  getActiveRun(connectorId: string, options?: ConnectorInstanceOptions): ActiveRun | null;
+  drainActiveRuns: (timeoutMs: number) => Promise<DrainSummary>;
+  expireBrowserSurfaceWaits: () => Promise<BrowserSurfaceProjection[]>;
+  findActiveRunByRunId: (runId: string) => ActiveRun | null;
+  getActiveRun: (connectorId: string, options?: ConnectorInstanceOptions) => ActiveRun | null;
   /** Stable identity for dynamic allocator single-flight; null outside dynamic mode. */
-  getBrowserSurfaceRuntimeAllocatorScopeId(): string | null;
+  getBrowserSurfaceRuntimeAllocatorScopeId: () => string | null;
   /** Classifies connector management without exposing allocator operations. */
-  getBrowserSurfaceRuntimeManagement(connectorId: string): BrowserSurfaceRuntimeManagement;
-  getPendingInteraction(runId: string): PendingInteractionProjection | null;
-  getSchedule(connectorId: string, options?: ConnectorInstanceOptions): Promise<ScheduleApi | null>;
-  isNeedsHuman(connectorId: string, options?: ConnectorInstanceOptions): boolean;
-  issueRuntimeOwnerToken(): Promise<string>;
-  listBrowserSurfaceRunProjections(): BrowserSurfaceRunProjection[];
-  listSchedules(): Promise<ScheduleApi[]>;
-  markNeedsHuman(connectorId: string, options?: ConnectorInstanceOptions): void;
+  getBrowserSurfaceRuntimeManagement: (connectorId: string) => BrowserSurfaceRuntimeManagement;
+  getPendingInteraction: (runId: string) => PendingInteractionProjection | null;
+  getSchedule: (connectorId: string, options?: ConnectorInstanceOptions) => Promise<ScheduleApi | null>;
+  isNeedsHuman: (connectorId: string, options?: ConnectorInstanceOptions) => boolean;
+  issueRuntimeOwnerToken: () => Promise<string>;
+  listBrowserSurfaceRunProjections: () => BrowserSurfaceRunProjection[];
+  listSchedules: () => Promise<ScheduleApi[]>;
+  markNeedsHuman: (connectorId: string, options?: ConnectorInstanceOptions) => void;
   /**
    * Reads one current dynamic allocator inventory. Call once per full health
    * refresh and share its result; static/unmanaged paths make zero allocator
    * calls.
    */
-  observeBrowserSurfaceRuntimeInventory(): Promise<BrowserSurfaceRuntimeInventorySnapshot>;
-  promoteBrowserSurfaceLeasesAfterBoot(): Promise<void>;
-  reconcileBrowserSurfaceLeasesAfterBoot(): Promise<void>;
-  respondToInteraction(runId: string, input?: RunInteractionResponseInput): RunInteractionAck;
-  runNow(connectorId: string, options?: RunNowOptions): Promise<RunNowResult>;
-  setScheduleEnabled(
+  observeBrowserSurfaceRuntimeInventory: () => Promise<BrowserSurfaceRuntimeInventorySnapshot>;
+  promoteBrowserSurfaceLeasesAfterBoot: () => Promise<void>;
+  reconcileBrowserSurfaceLeasesAfterBoot: () => Promise<void>;
+  respondToInteraction: (runId: string, input?: RunInteractionResponseInput) => RunInteractionAck;
+  runNow: (connectorId: string, options?: RunNowOptions) => Promise<RunNowResult>;
+  setScheduleEnabled: (
     connectorId: string,
     enabled: boolean,
     options?: ConnectorInstanceOptions
-  ): Promise<ScheduleApi | null>;
+  ) => Promise<ScheduleApi | null>;
   /**
    * Independent periodic sweep for the managed browser-surface lease
    * lifecycle: reconciles surfaces against the allocator, expires +
@@ -671,12 +677,12 @@ export interface Controller {
    * `sweepBrowserSurfaceLeases` for the composed operations. Intended caller:
    * `server/index.js`'s owned sweep timer.
    */
-  sweepBrowserSurfaceLeases(): Promise<void>;
-  upsertSchedule(
+  sweepBrowserSurfaceLeases: () => Promise<void>;
+  upsertSchedule: (
     connectorId: string,
     input: ConnectorSchedulePatch,
     options?: ConnectorInstanceOptions
-  ): Promise<ScheduleUpsertResult>;
+  ) => Promise<ScheduleUpsertResult>;
 }
 
 export interface DrainSummary {
@@ -692,6 +698,25 @@ interface RuntimeInteraction {
   readonly message?: string;
   readonly request_id: string;
   readonly stream?: string | null;
+}
+
+function readRuntimeInteraction(value: unknown): RuntimeInteraction {
+  if (value === null || typeof value !== "object") {
+    throw new TypeError("runtime interaction must be an object");
+  }
+  const kind = Reflect.get(value, "kind");
+  const requestId = Reflect.get(value, "request_id");
+  if (typeof kind !== "string" || typeof requestId !== "string") {
+    throw new TypeError("runtime interaction requires string kind and request_id");
+  }
+  const message = Reflect.get(value, "message");
+  const stream = Reflect.get(value, "stream");
+  return {
+    kind,
+    request_id: requestId,
+    ...(typeof message === "string" ? { message } : {}),
+    ...(typeof stream === "string" || stream === null ? { stream } : {}),
+  };
 }
 
 interface InteractionResponse {
@@ -844,7 +869,7 @@ function isBrowserSurfaceAttachExhausted(
 }
 
 function buildRunSource(connectorId: string): { kind: "connector"; id: string } {
-  return { kind: "connector", id: connectorId };
+  return { id: connectorId, kind: "connector" };
 }
 
 function buildRunConnectionIdentity(connectorInstanceId: string | null | undefined): {
@@ -885,7 +910,7 @@ export async function drainPromisesWithDeadline(
   const startMs = Date.now();
   const snapshot = Array.from(pending.values());
   if (snapshot.length === 0) {
-    return { drained: 0, timedOut: 0, elapsedMs: 0 };
+    return { drained: 0, elapsedMs: 0, timedOut: 0 };
   }
   let timeoutHandle: NodeJS.Timeout | null = null;
   const deadline = new Promise<"timeout">((resolve) => {
@@ -901,13 +926,13 @@ export async function drainPromisesWithDeadline(
   }
   const elapsedMs = Date.now() - startMs;
   if (outcome === "settled") {
-    return { drained: snapshot.length, timedOut: 0, elapsedMs };
+    return { drained: snapshot.length, elapsedMs, timedOut: 0 };
   }
   const stillPending = pending.size;
   return {
     drained: snapshot.length - stillPending,
-    timedOut: stillPending,
     elapsedMs,
+    timedOut: stillPending,
   };
 }
 
@@ -938,8 +963,9 @@ function fingerprintManifest(manifest: ConnectorManifest | null | undefined): Ma
       }
     }
   }
+  // biome-ignore lint/suspicious/useArraySortCompare: Input ordering is intentionally the runtime’s established default string order.
   streamNames.sort();
-  return { version, streams: streamNames.join(",") };
+  return { streams: streamNames.join(","), version };
 }
 
 function fingerprintsEqual(a: ManifestFingerprint | null, b: ManifestFingerprint | null): boolean {
@@ -1003,6 +1029,7 @@ function readManifestDisplayName(manifest: ConnectorManifest | null | undefined)
   if (typeof display === "string" && display.trim()) {
     return display.trim();
   }
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const name = (manifest as { name?: unknown }).name;
   if (typeof name === "string" && name.trim()) {
     return name.trim();
@@ -1014,6 +1041,7 @@ function readManifestRefreshPolicy(manifest: ConnectorManifest | null | undefine
   if (!manifest || typeof manifest !== "object") {
     return null;
   }
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const capabilities = (manifest as { capabilities?: unknown }).capabilities;
   if (!capabilities || typeof capabilities !== "object" || Array.isArray(capabilities)) {
     return null;
@@ -1127,7 +1155,7 @@ function loadPolyfillManifestFingerprints(): Map<string, ManifestFingerprint> {
 // reference-implementation/manifests/ and the shipped polyfill manifests in
 // packages/polyfill-connectors/manifests/ can share a `connector_id`
 // (for example, GitHub). The reference fixture is served by the seed
-// connector at reference-implementation/connectors/seed/index.js, while
+// connector at reference-implementation/connectors/seed/index.ts, while
 // the shipped polyfill connector lives at
 // packages/polyfill-connectors/connectors/<name>/index.ts. Silently
 // preferring the seed on collision caused a protocol violation: the seed
@@ -1198,7 +1226,7 @@ export function __resetControllerPathResolverCachesForTests(): void {
 /**
  * One pending detail-gap row as the projection consumes it. Mirrors the subset
  * of `connector_detail_gaps` (see
- * `reference-implementation/server/stores/connector-detail-gap-store.js`) that
+ * `reference-implementation/server/stores/connector-detail-gap-store.ts`) that
  * the source-pressure cooldown needs. The store returns more fields; we read
  * only these.
  */
@@ -1221,15 +1249,23 @@ interface PendingDetailGapRow {
  * cooldown projection. Kept to one method so a test fake is trivial.
  */
 interface ConnectorDetailGapReadStore {
-  listPendingGapsForConnector(
+  listPendingGapsForConnector: (
     connectorId: string,
     options?: { limit?: number }
-  ): Promise<readonly PendingDetailGapRow[]> | readonly PendingDetailGapRow[];
-  listPendingGapsForConnectorInstance?(
+  ) => Promise<readonly PendingDetailGapRow[]> | readonly PendingDetailGapRow[];
+  listPendingGapsForConnectorInstance?: (
     connectorId: string,
     connectorInstanceId: string,
     options?: { limit?: number }
-  ): Promise<readonly PendingDetailGapRow[]> | readonly PendingDetailGapRow[];
+  ) => Promise<readonly PendingDetailGapRow[]> | readonly PendingDetailGapRow[];
+}
+
+function isConnectorDetailGapReadStore(value: unknown): value is ConnectorDetailGapReadStore {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    typeof Reflect.get(value, "listPendingGapsForConnector") === "function"
+  );
 }
 
 interface ScheduleHistoryFacts {
@@ -1268,14 +1304,14 @@ interface MutableScheduleHistoryFacts {
 }
 
 const EMPTY_SCHEDULE_HISTORY_FACTS: ScheduleHistoryFacts = {
-  latestStartedAt: null,
+  lastRunTimeMs: null,
+  latestErrorCode: null,
   latestFinishedAt: null,
+  latestStartedAt: null,
   latestStatus: null,
   latestSuccessfulAt: null,
-  latestErrorCode: null,
-  lastRunTimeMs: null,
-  recentRuns: [],
   pendingPressureGaps: [],
+  recentRuns: [],
 };
 
 const SAFE_SCHEDULER_ERROR_PREFIXES = new Set([
@@ -1342,10 +1378,10 @@ function projectPendingPressureGap(row: PendingDetailGapRow, reason: string): Pe
     lastPressureAt = row.updated_at;
   }
   return {
-    reason,
     attemptCount: typeof row.attempt_count === "number" ? row.attempt_count : null,
-    nextAttemptAfter: typeof row.next_attempt_after === "string" ? row.next_attempt_after : null,
     lastPressureAt,
+    nextAttemptAfter: typeof row.next_attempt_after === "string" ? row.next_attempt_after : null,
+    reason,
   };
 }
 
@@ -1370,14 +1406,14 @@ function ensureScheduleHistoryFacts(
   let entry = facts.get(connectorKey);
   if (!entry) {
     entry = {
-      latestStartedAt: null,
+      lastRunTimeMs: null,
+      latestErrorCode: null,
       latestFinishedAt: null,
+      latestStartedAt: null,
       latestStatus: null,
       latestSuccessfulAt: null,
-      latestErrorCode: null,
-      lastRunTimeMs: null,
-      recentRuns: [],
       pendingPressureGaps: [],
+      recentRuns: [],
     };
     facts.set(connectorKey, entry);
   }
@@ -1419,6 +1455,7 @@ function bucketRecentRunsByConnector(history: readonly SchedulerRunHistoryRecord
 // "first sighting wins" semantics for both `latest{Started,Successful}At`
 // so we never overwrite a newer fact with an older one.
 function deriveLatestScheduleFacts(history: readonly SchedulerRunHistoryRecord[], ensure: EnsureScheduleFacts): void {
+  // biome-ignore lint/style/noIncrementDecrement: The explicit counter update preserves this loop’s evaluation order.
   for (let i = history.length - 1; i >= 0; i--) {
     const row = history[i];
     if (!row || typeof row.connectorId !== "string") {
@@ -1481,29 +1518,29 @@ function getRuntimeProjection(
     return {
       active_run_id: null,
       ...(browserSurfaceProjection ?? {}),
+      human_attention_needed: needsHumanAttention.has(key),
+      last_error_code: historyFacts.latestErrorCode,
+      last_finished_at: historyFacts.latestFinishedAt,
       // No active run: durable scheduler history is the source of truth
       // for whether this connector has *ever* run. When history is empty,
       // every field stays null, preserving the "never_ran" classification
       // for genuinely never-fired schedules.
       last_started_at: historyFacts.latestStartedAt,
-      last_finished_at: historyFacts.latestFinishedAt,
-      last_error_code: historyFacts.latestErrorCode,
       last_successful_at: historyFacts.latestSuccessfulAt,
-      human_attention_needed: needsHumanAttention.has(key),
     };
   }
   return {
     active_run_id: active.run_id,
     ...(browserSurfaceProjection ?? {}),
+    human_attention_needed: needsHumanAttention.has(key),
+    last_error_code: historyFacts.latestErrorCode,
+    last_finished_at: historyFacts.latestFinishedAt,
     // In-memory active-run row wins for `last_started_at` (so a freshly
     // dispatched run shows immediately, before history is appended), but
     // we still surface the most recent succeeded/finished facts from
     // durable history so a restart mid-run doesn't lose context.
     last_started_at: active.started_at,
-    last_finished_at: historyFacts.latestFinishedAt,
-    last_error_code: historyFacts.latestErrorCode,
     last_successful_at: historyFacts.latestSuccessfulAt,
-    human_attention_needed: needsHumanAttention.has(key),
   };
 }
 
@@ -1555,11 +1592,11 @@ async function fireNtfy(args: {
         : `${webBaseUrl}/syncs/${encodedRunId}`;
     const tags = interaction.kind === "credentials" || interaction.kind === "otp" ? ["key"] : ["construction"];
     await notify({
-      title: `PDPP ${connectorDisplayName}: ${interaction.kind} needed`,
+      clickUrl,
       message,
       priority: "high",
       tags,
-      clickUrl,
+      title: `PDPP ${connectorDisplayName}: ${interaction.kind} needed`,
     });
   } catch (err) {
     // ntfy is best-effort. A failure here MUST NOT block or fail the
@@ -1570,13 +1607,16 @@ async function fireNtfy(args: {
 }
 
 async function buildAttentionOutcomeRecorder(args: { runId: string; requestId: string | null }) {
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const requestId = args.requestId;
   if (!requestId) {
     return null;
   }
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const runId = args.runId;
   // Lazy import keeps the runtime startup graph small; this module is only
   // loaded when an interaction actually fires push delivery.
+  // biome-ignore lint/suspicious/noShadow: The local name follows the external payload vocabulary at this boundary.
   const { getDefaultConnectorAttentionStore } = await import("../server/stores/connector-attention-store.ts");
   const store = getDefaultConnectorAttentionStore() as {
     recordNotificationOutcomeById?: (input: {
@@ -1589,13 +1629,14 @@ async function buildAttentionOutcomeRecorder(args: { runId: string; requestId: s
   if (typeof store.recordNotificationOutcomeById !== "function") {
     return null;
   }
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const recordNotificationOutcomeById = store.recordNotificationOutcomeById;
   return async ({ state, reason }: { state: string; reason: string | null }) => {
     await recordNotificationOutcomeById({
       attentionId: `att_${runId}_${requestId}`,
+      now: new Date().toISOString(),
       outcome: state,
       reason: reason || null,
-      now: new Date().toISOString(),
     });
   };
 }
@@ -1608,18 +1649,15 @@ async function fireWebPush(args: {
   log: ControllerLogger;
 }): Promise<void> {
   try {
-    const { fanoutPendingInteractionWebPush } = await import("../server/web-push-notifications.js");
-    const requestId =
-      typeof (args.interaction as { request_id?: unknown }).request_id === "string"
-        ? (args.interaction as { request_id: string }).request_id
-        : null;
-    const recordOutcome = await buildAttentionOutcomeRecorder({ runId: args.runId, requestId });
+    const { fanoutPendingInteractionWebPush } = await import("../server/web-push-notifications.ts");
+    const requestId = args.interaction.request_id;
+    const recordOutcome = await buildAttentionOutcomeRecorder({ requestId, runId: args.runId });
     await fanoutPendingInteractionWebPush({
-      interaction: args.interaction,
       connectorDisplayName: args.connectorDisplayName,
+      interaction: { kind: args.interaction.kind, request_id: args.interaction.request_id },
+      log: args.log as Console,
       ownerSubjectId: args.ownerSubjectId,
       runId: args.runId,
-      log: args.log as Console,
       ...(recordOutcome ? { recordOutcome } : {}),
     });
   } catch (err) {
@@ -1636,18 +1674,18 @@ async function fireAssistanceWebPush(args: {
   log: ControllerLogger;
 }): Promise<void> {
   try {
-    const { fanoutAssistanceWebPush } = await import("../server/web-push-notifications.js");
+    const { fanoutAssistanceWebPush } = await import("../server/web-push-notifications.ts");
     const requestId =
       typeof args.assistance.assistance_request_id === "string"
         ? (args.assistance.assistance_request_id as string)
         : null;
-    const recordOutcome = await buildAttentionOutcomeRecorder({ runId: args.runId, requestId });
+    const recordOutcome = await buildAttentionOutcomeRecorder({ requestId, runId: args.runId });
     await fanoutAssistanceWebPush({
       assistance: args.assistance,
       connectorDisplayName: args.connectorDisplayName,
+      log: args.log as Console,
       ownerSubjectId: args.ownerSubjectId,
       runId: args.runId,
-      log: args.log as Console,
       ...(recordOutcome ? { recordOutcome } : {}),
     });
   } catch (err) {
@@ -1693,9 +1731,9 @@ function brokerInteraction(
     const entry = activeRunInteractions.get(runId) ?? { connector_id: connectorId, pending: null };
     if (entry.pending) {
       resolve({
-        type: "INTERACTION_RESPONSE",
         request_id: interaction.request_id,
         status: "cancelled",
+        type: "INTERACTION_RESPONSE",
       });
       return;
     }
@@ -1704,8 +1742,8 @@ function brokerInteraction(
     entry.pending = {
       interaction_id: interaction.request_id,
       kind: interaction.kind,
-      stream: interaction.stream || null,
       resolve,
+      stream: interaction.stream || null,
     };
     activeRunInteractions.set(runId, entry);
 
@@ -1716,19 +1754,19 @@ function brokerInteraction(
     if (notifyArgs) {
       detachControllerTask(
         fireNtfy({
-          interaction,
           connectorDisplayName: notifyArgs.connectorDisplayName,
-          runId,
+          interaction,
           log: notifyArgs.log,
+          runId,
         })
       );
       detachControllerTask(
         fireWebPush({
-          interaction,
           connectorDisplayName: notifyArgs.connectorDisplayName,
+          interaction,
+          log: notifyArgs.log,
           ownerSubjectId: notifyArgs.ownerSubjectId,
           runId,
-          log: notifyArgs.log,
         })
       );
     }
@@ -1757,8 +1795,8 @@ function validateScheduleInput(input: ConnectorSchedulePatch | null | undefined)
   const interval = Number.parseInt(String(input?.interval_seconds), 10);
   if (!Number.isInteger(interval) || interval < 1) {
     errors.push({
-      param: "interval_seconds",
       message: "interval_seconds must be a positive integer",
+      param: "interval_seconds",
     });
   }
 
@@ -1767,8 +1805,8 @@ function validateScheduleInput(input: ConnectorSchedulePatch | null | undefined)
     jitter = Number.parseInt(String(input.jitter_seconds), 10);
     if (!Number.isInteger(jitter) || jitter < 0) {
       errors.push({
-        param: "jitter_seconds",
         message: "jitter_seconds must be a non-negative integer",
+        param: "jitter_seconds",
       });
     }
   }
@@ -1776,16 +1814,17 @@ function validateScheduleInput(input: ConnectorSchedulePatch | null | undefined)
   let enabled = true;
   if (input?.enabled !== undefined) {
     if (input.enabled === true || input.enabled === false) {
+      // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
       enabled = input.enabled;
     } else {
-      errors.push({ param: "enabled", message: "enabled must be a boolean" });
+      errors.push({ message: "enabled must be a boolean", param: "enabled" });
     }
   }
 
   if (errors.length) {
     throw new ControllerError("Invalid schedule body", "invalid_request", { details: errors });
   }
-  return { interval_seconds: interval, jitter_seconds: jitter, enabled };
+  return { enabled, interval_seconds: interval, jitter_seconds: jitter };
 }
 
 function computeEffectiveMode(
@@ -1972,6 +2011,7 @@ function mergeBackoffAndCooldown(
   // Preserve the failure reason class when back-off is engaged; otherwise, when
   // the cooldown is the sole driver, label it so the dashboard/audit can
   // distinguish a source-pressure pause from a failure streak.
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   let reasonClass = decision.reasonClass;
   if (!decision.backoffApplied && cooldownDefersNow) {
     reasonClass = "source_pressure";
@@ -1996,11 +2036,12 @@ function scheduleToApi(
     return null;
   }
   const effectiveMode = computeEffectiveMode(schedule, runtimeProjection);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const humanAttentionNeeded = runtimeProjection?.human_attention_needed ?? false;
   const automationPolicy = projectRunAutomationPolicy({
-    triggerKind: "scheduled",
-    refreshPolicy: policy,
     humanAttentionNeeded,
+    refreshPolicy: policy,
+    triggerKind: "scheduled",
   });
   const minimumIntervalWarning = buildMinimumIntervalWarning(schedule.interval_seconds, policy);
   // If the row is enabled but the connector's current manifest policy makes
@@ -2040,40 +2081,40 @@ function scheduleToApi(
   // has been administratively benched. Suppress it for ineligible rows.
   const lastErrorCode = ineligibilityReason ? null : runtimeProjection?.last_error_code || null;
   return {
-    object: "schedule",
-    connector_id: schedule.connector_id,
-    connector_instance_id: schedule.connector_instance_id,
+    active_run_id: runtimeProjection?.active_run_id || null,
     automation_mode: automationPolicy.automation_mode,
     automation_summary: automationModeCopy(automationPolicy.automation_mode),
+    connector_id: schedule.connector_id,
+    connector_instance_id: schedule.connector_instance_id,
+    created_at: schedule.created_at,
+    enabled: schedule.enabled,
     interval_seconds: schedule.interval_seconds,
     jitter_seconds: schedule.jitter_seconds,
-    enabled: schedule.enabled,
-    created_at: schedule.created_at,
-    updated_at: schedule.updated_at,
     next_due_at: nextDueAt,
     notification_posture: automationPolicy.notification_posture,
-    active_run_id: runtimeProjection?.active_run_id || null,
+    object: "schedule",
+    updated_at: schedule.updated_at,
     ...(runtimeProjection?.browser_surface_status
       ? {
-          browser_surface_status: runtimeProjection.browser_surface_status,
-          pending_run_id: runtimeProjection.pending_run_id,
           browser_surface_lease_id: runtimeProjection.browser_surface_lease_id,
           browser_surface_profile_key: runtimeProjection.browser_surface_profile_key,
+          browser_surface_status: runtimeProjection.browser_surface_status,
+          pending_run_id: runtimeProjection.pending_run_id,
           ...(runtimeProjection.browser_surface_wait_reason
             ? { browser_surface_wait_reason: runtimeProjection.browser_surface_wait_reason }
             : {}),
         }
       : {}),
-    last_started_at: runtimeProjection?.last_started_at || null,
-    last_finished_at: runtimeProjection?.last_finished_at || null,
-    last_error_code: lastErrorCode,
-    last_successful_at: runtimeProjection?.last_successful_at || null,
     effective_mode: effectiveMode,
     human_attention_needed: humanAttentionNeeded,
     ineligibility_reason: ineligibilityReason,
+    last_error_code: lastErrorCode,
+    last_finished_at: runtimeProjection?.last_finished_at || null,
+    last_started_at: runtimeProjection?.last_started_at || null,
+    last_successful_at: runtimeProjection?.last_successful_at || null,
+    minimum_interval_warning: minimumIntervalWarning,
     recommended_policy: policy,
     scheduler_backoff: schedulerBackoff,
-    minimum_interval_warning: minimumIntervalWarning,
     trigger_kind: "scheduled",
   };
 }
@@ -2132,13 +2173,25 @@ export function createController(opts: ControllerOptions = {}): Controller {
   const ownerClientId = opts.ownerClientId || "cli_longview";
   const ownerSubjectId = opts.ownerSubjectId || "owner_local";
   const schedulerStore = opts.schedulerStore || getDefaultSchedulerStore();
-  const detailGapStore: ConnectorDetailGapReadStore = opts.detailGapStore || getDefaultConnectorDetailGapStore();
+  const detailGapStore: ConnectorDetailGapReadStore =
+    opts.detailGapStore ??
+    (() => {
+      const defaultDetailGapStore = getDefaultConnectorDetailGapStore();
+      if (!isConnectorDetailGapReadStore(defaultDetailGapStore)) {
+        throw new TypeError("default connector detail-gap store does not support connector reads");
+      }
+      return defaultDetailGapStore;
+    })();
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const browserSurfaceAllocator = opts.browserSurfaceAllocator;
   const browserSurfaceHealthOptions = browserSurfaceHealthOptionsFor(opts);
   const browserSurfaceAllocatorScopeId = browserSurfaceHealthOptions.allocatorScopeId;
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const browserSurfaceLeaseManager = opts.browserSurfaceLeaseManager;
   const browserSurfaceHealthObservationTtlMs = browserSurfaceHealthOptions.observationTtlMs;
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const browserSurfaceReadinessTimeoutMs = opts.browserSurfaceReadinessTimeoutMs;
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const browserSurfaceLeaseStore = opts.browserSurfaceLeaseStore;
   const browserSurfaceReplacementReceiptStore = browserSurfaceReplacementReceiptStoreFor(
     opts,
@@ -2152,6 +2205,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
   // a fake n.eko url in every controller test.
   const browserSurfaceReadinessProbe: BrowserSurfaceReadinessProbe | null =
     opts.browserSurfaceReadinessProbe === undefined ? null : opts.browserSurfaceReadinessProbe;
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const browserSurfaceMidWaitPollIntervalMs = opts.browserSurfaceMidWaitPollIntervalMs;
   const runConnectorImpl = opts.runConnectorImpl || runConnector;
   // Wall-clock watchdog budget per run. Resolves from opts first, then the
@@ -2272,25 +2326,26 @@ export function createController(opts: ControllerOptions = {}): Controller {
     }
 
     for (const row of rows) {
+      // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
       if (!(await runAlreadyTerminal(row.run_id))) {
         try {
           await emitSpineEvent({
-            event_type: "run.failed",
-            trace_id: row.trace_id,
-            scenario_id: row.scenario_id,
-            actor_type: "runtime",
             actor_id: row.connector_id,
-            object_type: "run",
-            object_id: row.run_id,
-            status: "failed",
-            run_id: row.run_id,
+            actor_type: "runtime",
             data: {
               source: buildRunSource(row.connector_id),
               ...buildRunConnectionIdentity(row.connector_instance_id),
-              reason: ABANDONED_CONTROLLER_RUN_REASON,
               failure_reason: ABANDONED_CONTROLLER_RUN_REASON,
               message: "Reference server restarted while a controller-managed run was still active.",
+              reason: ABANDONED_CONTROLLER_RUN_REASON,
             },
+            event_type: "run.failed",
+            object_id: row.run_id,
+            object_type: "run",
+            run_id: row.run_id,
+            scenario_id: row.scenario_id,
+            status: "failed",
+            trace_id: row.trace_id,
           });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
@@ -2380,10 +2435,12 @@ export function createController(opts: ControllerOptions = {}): Controller {
   }
 
   async function issueRuntimeOwnerToken(): Promise<string> {
-    const device = await initiateOwnerDeviceAuthorization(ownerClientId, {
-      baseUrl: opts.asPublicUrl || process.env.AS_PUBLIC_URL || undefined,
-    });
+    const baseUrl = opts.asPublicUrl || process.env.AS_PUBLIC_URL;
+    const device = await initiateOwnerDeviceAuthorization(ownerClientId, baseUrl ? { baseUrl } : {});
     const approved = await approveOwnerDeviceAuthorization(device.user_code, ownerSubjectId);
+    if (typeof approved.access_token !== "string") {
+      throw new TypeError("owner device approval did not return an access token");
+    }
     return approved.access_token;
   }
 
@@ -2392,10 +2449,10 @@ export function createController(opts: ControllerOptions = {}): Controller {
     browserSurfaceAllocator: browserSurfaceAllocator ?? null,
     browserSurfaceLeaseManager: browserSurfaceLeaseManager ?? null,
     browserSurfaceLeaseStore: browserSurfaceLeaseStore ?? null,
-    browserSurfaceReplacementReceiptStore,
     browserSurfaceMidWaitPollIntervalMs,
     browserSurfaceReadinessProbe,
     browserSurfaceReadinessTimeoutMs,
+    browserSurfaceReplacementReceiptStore,
     ...browserSurfaceReclaimOverridesFor(opts),
     listPersistedActiveRuns,
     log,
@@ -2603,19 +2660,19 @@ export function createController(opts: ControllerOptions = {}): Controller {
     const existing = await getScheduleRecord(connectorInstanceId);
     if (existing) {
       await schedulerStore.updateSchedule(connectorInstanceId, {
+        enabled: validated.enabled,
         interval_seconds: validated.interval_seconds,
         jitter_seconds: validated.jitter_seconds,
-        enabled: validated.enabled,
         updated_at: now,
       });
     } else {
       await schedulerStore.createSchedule({
-        connector_instance_id: connectorInstanceId,
         connector_id: resolvedConnectorId,
+        connector_instance_id: connectorInstanceId,
+        created_at: now,
+        enabled: validated.enabled,
         interval_seconds: validated.interval_seconds,
         jitter_seconds: validated.jitter_seconds,
-        enabled: validated.enabled,
-        created_at: now,
         updated_at: now,
       });
     }
@@ -2633,7 +2690,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       );
     }
     const policy_warning = buildMinimumIntervalWarning(validated.interval_seconds, policy);
-    return { schedule, policy_warning };
+    return { policy_warning, schedule };
   }
 
   async function setScheduleEnabled(
@@ -2730,7 +2787,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     }
     const nonce = randomBytes(32).toString("hex");
     try {
-      opts.streamingTargetNonceHooks.registerNonce({ runId, nonce });
+      opts.streamingTargetNonceHooks.registerNonce({ nonce, runId });
     } catch (err) {
       // Don't fail the run if the registry rejects (e.g. duplicate runId).
       // Streaming will simply be unavailable for this run.
@@ -2754,13 +2811,13 @@ export function createController(opts: ControllerOptions = {}): Controller {
     const prevGeneration = runGenerations.get(input.key) ?? 0;
     const newGeneration = prevGeneration + 1;
     const inserted = await persistActiveRun({
-      connector_instance_id: input.connectorInstanceId,
       connector_id: input.connectorId,
-      run_id: input.runId,
+      connector_instance_id: input.connectorInstanceId,
       run_generation: newGeneration,
-      trace_id: input.traceContext.trace_id,
+      run_id: input.runId,
       scenario_id: input.traceContext.scenario_id,
       started_at: input.startedAt,
+      trace_id: input.traceContext.trace_id,
     });
     if (inserted === false) {
       throw new ControllerError(`Connector already has an active run: ${input.runId}`, "run_already_active", {
@@ -2771,10 +2828,10 @@ export function createController(opts: ControllerOptions = {}): Controller {
     activeRuns.set(input.key, {
       connector_id: input.connectorId,
       connector_instance_id: input.connectorInstanceId,
-      run_id: input.runId,
       run_generation: newGeneration,
-      trace_id: input.traceContext.trace_id,
+      run_id: input.runId,
       started_at: input.startedAt,
+      trace_id: input.traceContext.trace_id,
     });
     activeRunTraceContexts.set(input.runId, input.traceContext);
     activeRunInteractions.set(input.runId, {
@@ -2803,9 +2860,9 @@ export function createController(opts: ControllerOptions = {}): Controller {
     activeRunInteractions.delete(runId);
     if (leftover?.pending) {
       leftover.pending.resolve({
-        type: "INTERACTION_RESPONSE",
         request_id: leftover.pending.interaction_id,
         status: "cancelled",
+        type: "INTERACTION_RESPONSE",
       });
     }
   }
@@ -2923,6 +2980,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       if (!gap || typeof gap !== "object") {
         return false;
       }
+      // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
       const status = (gap as { status?: unknown }).status;
       return status === "recovered" || status === "terminal";
     }).length;
@@ -2984,6 +3042,35 @@ export function createController(opts: ControllerOptions = {}): Controller {
     });
   }
 
+  // Forward-evidence-debt probe for `resolveEffectiveRecoveryOnly` (mirrors
+  // the scheduler dispatch governor's own probe of the same predicate —
+  // `hasForwardEvidenceDebt`, recovery-decision.ts). Reconciles just this one
+  // connection (the same scoped, cheap repair every other single-connection
+  // read in this module uses) so the debt predicate reads a genuinely
+  // current evidence row, then passes the WHOLE row through alongside the
+  // connection's own schedule interval — the predicate itself derives the
+  // newest per-stream `evidence_as_of` from `stream_latest_facts`, never the
+  // observation-timestamp `terminal_facts.as_of`.
+  //
+  // Fail-CLOSED to `false` (no debt) on error: a false positive would divert
+  // this run to forward collection instead of draining recovery, which is a
+  // strictly worse failure mode than occasionally missing one debt-bounded
+  // forward run — the next tick/run re-evaluates.
+  async function probeForwardEvidenceDebt(connectorId: string, connectorInstanceId: string): Promise<boolean> {
+    try {
+      const schedule = await getScheduleRecord(connectorInstanceId);
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+      const scheduleIntervalMs = Math.max(1, schedule?.interval_seconds ?? 1) * 1000;
+      await reconcileDirtyConnectorSummaryEvidence([connectorInstanceId]);
+      const evidence = await getConnectorSummaryEvidence(connectorInstanceId);
+      return hasForwardEvidenceDebt(evidence, Date.now(), scheduleIntervalMs);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log.warn?.(`[controller] forward-evidence-debt probe failed for ${connectorId}: ${message}`);
+      return false;
+    }
+  }
+
   // Recovery-first work selection for `runNow` (shared policy:
   // recovery-decision.ts `resolveRecoveryFirstMode`, also consumed by the
   // scheduler dispatch governor). An IMPLICIT, UNSCOPED manual run — no
@@ -3015,13 +3102,23 @@ export function createController(opts: ControllerOptions = {}): Controller {
       options.recoveryOnly === undefined && !scopedToResources
         ? await hasEligibleNonPressureRecoveryWork(connectorId, connectorInstanceId)
         : false;
+    // Forward-evidence-debt bound (fix-pre-provenance-terminal-generation-
+    // semantics): only probed when recovery would otherwise win, mirroring
+    // the scheduler dispatch governor's same short-circuit. An unbounded
+    // recovery-first default here could starve forward evidence on manual
+    // runs exactly as it could on scheduled ticks.
+    const forwardEvidenceDebt = nonPressureRecoveryEligible
+      ? await probeForwardEvidenceDebt(connectorId, connectorInstanceId)
+      : false;
     return resolveRecoveryFirstMode({
+      forwardEvidenceDebt,
       nonPressureRecoveryEligible,
       requestedRecoveryOnly: options.recoveryOnly,
       scopedToResources,
     });
   }
 
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This protocol transition owns ordered state invariants that must remain local.
   async function maybeContinueRecoveryAfterProgress(input: {
     readonly connectorId: string;
     readonly connectorInstanceId: string;
@@ -3183,23 +3280,23 @@ export function createController(opts: ControllerOptions = {}): Controller {
         try {
           if (!(await runAlreadyTerminal(runId))) {
             await emitSpineEvent({
-              event_type: "run.failed",
-              trace_id: traceContext.trace_id,
-              scenario_id: traceContext.scenario_id,
-              actor_type: "runtime",
               actor_id: connectorId,
-              object_type: "run",
-              object_id: runId,
-              status: "failed",
-              run_id: runId,
+              actor_type: "runtime",
               data: {
                 source: buildRunSource(connectorId),
                 ...buildRunConnectionIdentity(connectorInstanceId),
-                reason: "run_timed_out",
                 failure_reason: "run_timed_out",
-                records_emitted: 0,
                 message: `Run exceeded the ${maxRunWallClockMs}ms wall-clock budget and was force-terminated by the watchdog.`,
+                reason: "run_timed_out",
+                records_emitted: 0,
               },
+              event_type: "run.failed",
+              object_id: runId,
+              object_type: "run",
+              run_id: runId,
+              scenario_id: traceContext.scenario_id,
+              status: "failed",
+              trace_id: traceContext.trace_id,
             });
           }
         } catch (emitErr) {
@@ -3271,6 +3368,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     const staticSecretEnv = opts.resolveStaticSecretRunEnv
       ? await opts.resolveStaticSecretRunEnv({ connectorId, connectorInstanceId, ownerSubjectId })
       : null;
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     const usedStaticSecret = Boolean(staticSecretEnv && Object.keys(staticSecretEnv).length > 0);
 
     // State must be read from the connection-instance namespace, not by
@@ -3316,7 +3414,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
             runId,
             traceContext,
           })
-        : { kind: "ready" as const, lease: null, env: null };
+        : { env: null, kind: "ready" as const, lease: null };
       if (acquireResult.kind === "early_return") {
         await finalizeRunCleanup({
           browserSurfaceLease: null,
@@ -3354,7 +3452,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
 
     const connectorDisplayName = readManifestDisplayName(manifest) ?? connectorId;
     const baseInteractionHandler = (interaction: unknown) =>
-      brokerInteraction(runId, connectorId, interaction as RuntimeInteraction, {
+      brokerInteraction(runId, connectorId, readRuntimeInteraction(interaction), {
         connectorDisplayName,
         log,
         ownerSubjectId,
@@ -3376,9 +3474,9 @@ export function createController(opts: ControllerOptions = {}): Controller {
           fireAssistanceWebPush({
             assistance: msg as Record<string, unknown>,
             connectorDisplayName,
+            log,
             ownerSubjectId,
             runId,
-            log,
           })
         );
       }
@@ -3397,33 +3495,34 @@ export function createController(opts: ControllerOptions = {}): Controller {
     const runPromise = Promise.resolve()
       .then(() =>
         runConnectorImpl({
-          connectorPath,
           connectorId,
           connectorInstanceId,
-          ownerToken,
+          connectorPath,
           manifest,
+          ownerToken,
           state,
           ...(scopedResources ? { scope: { streams: scopedResources } } : {}),
-          collectionMode,
-          rsUrl: currentRsUrl(options.rsUrl),
-          runId,
-          traceContext,
-          triggerKind,
           automationMode: automationMetadata.automation_mode ?? null,
-          recoveryOnly: effectiveRecoveryOnly,
+          browserSurfaceEnv,
+          cancelSignal: cancellation.signal,
+          collectionMode,
           onInteraction: interactionHandler,
           onInteractionTerminal: createInteractionTimeoutTerminalHandler(opts.beforeInteractionTerminal, runId),
           onProgress: handleAssistanceProgress,
+          recoveryOnly: effectiveRecoveryOnly,
+          referenceBaseUrl: currentReferenceBaseUrl(),
+          rsUrl: currentRsUrl(options.rsUrl),
+          runId,
+          staticSecretEnv,
           // Mode-A streaming registration env. Both fields must be present
           // for runConnector to thread them into the spawn env; either
           // omitted is a graceful no-op.
           streamingRegistrationToken: streamingNonce,
-          referenceBaseUrl: currentReferenceBaseUrl(),
-          browserSurfaceEnv,
-          staticSecretEnv,
-          cancelSignal: cancellation.signal,
+          traceContext,
+          triggerKind,
         })
       )
+      // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This protocol transition owns ordered state invariants that must remain local.
       .then(async (result) => {
         runResult = result;
         // A managed dynamic surface can pass pre-flight readiness and still
@@ -3508,23 +3607,23 @@ export function createController(opts: ControllerOptions = {}): Controller {
         try {
           if (!(await runAlreadyTerminal(runId))) {
             await emitSpineEvent({
-              event_type: "run.failed",
-              trace_id: traceContext.trace_id,
-              scenario_id: traceContext.scenario_id,
-              actor_type: "runtime",
               actor_id: connectorId,
-              object_type: "run",
-              object_id: runId,
-              status: "failed",
-              run_id: runId,
+              actor_type: "runtime",
               data: {
                 source: buildRunSource(connectorId),
                 ...buildRunConnectionIdentity(connectorInstanceId),
-                reason: LAUNCH_FAILED_RUN_REASON,
                 failure_reason: LAUNCH_FAILED_RUN_REASON,
-                records_emitted: 0,
                 message: boundedLaunchFailureMessage(message),
+                reason: LAUNCH_FAILED_RUN_REASON,
+                records_emitted: 0,
               },
+              event_type: "run.failed",
+              object_id: runId,
+              object_type: "run",
+              run_id: runId,
+              scenario_id: traceContext.scenario_id,
+              status: "failed",
+              trace_id: traceContext.trace_id,
             });
           }
         } catch (emitErr) {
@@ -3568,7 +3667,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     // expires and is a no-op when maxRunWallClockMs is Infinity or zero.
     armRunWatchdog({ browserSurfaceLease, connectorId, connectorInstanceId, key, runId, traceContext });
 
-    return { run_id: runId, trace_id: traceContext.trace_id, status: "started", ...automationMetadata };
+    return { run_id: runId, status: "started", trace_id: traceContext.trace_id, ...automationMetadata };
   }
 
   // ─── Graceful-shutdown drain ────────────────────────────────────────────
@@ -3611,24 +3710,24 @@ export function createController(opts: ControllerOptions = {}): Controller {
     const satisfied = satisfiedOwnerActions(input.requiredActions, input.evidence);
     if (satisfied.length === 0) {
       return {
-        object: "connection_self_heal",
-        status: "no_satisfied_action",
-        satisfied_actions: [],
         confirming_run: null,
+        object: "connection_self_heal",
+        satisfied_actions: [],
+        status: "no_satisfied_action",
       };
     }
 
     const active = getActiveRun(input.connectorId, { connectorInstanceId });
     if (active) {
       return {
-        object: "connection_self_heal",
-        status: "active_run_exists",
-        satisfied_actions: satisfied,
         confirming_run: {
           run_id: active.run_id,
-          trace_id: active.trace_id,
           status: "started",
+          trace_id: active.trace_id,
         },
+        object: "connection_self_heal",
+        satisfied_actions: satisfied,
+        status: "active_run_exists",
       };
     }
 
@@ -3637,19 +3736,19 @@ export function createController(opts: ControllerOptions = {}): Controller {
       const started = await runNow(input.connectorId, buildAutoResumeRunNowOptions(input, connectorInstanceId));
       const terminalStatus = input.awaitCompletion ? await awaitRun(started.run_id) : undefined;
       return {
-        object: "connection_self_heal",
-        status: "started",
-        satisfied_actions: satisfied,
         confirming_run: started,
+        object: "connection_self_heal",
+        satisfied_actions: satisfied,
+        status: "started",
         ...(terminalStatus ? { terminal_status: terminalStatus } : {}),
       };
     } catch (err) {
       const code = controllerErrorCode(err);
       return {
-        object: "connection_self_heal",
-        status: "blocked",
-        satisfied_actions: satisfied,
         confirming_run: null,
+        object: "connection_self_heal",
+        satisfied_actions: satisfied,
+        status: "blocked",
         ...(code ? { error_code: code } : {}),
         error_message: err instanceof Error ? err.message : String(err),
       };
@@ -3698,10 +3797,11 @@ export function createController(opts: ControllerOptions = {}): Controller {
     }
 
     const response: InteractionResponse = {
-      type: "INTERACTION_RESPONSE",
       request_id: interactionId,
       status: input.status,
+      type: "INTERACTION_RESPONSE",
     };
+    // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
     const data = input.data;
     if (input.status === "success" && data && typeof data === "object" && !Array.isArray(data)) {
       response.data = data as Record<string, unknown>;
@@ -3743,19 +3843,19 @@ export function createController(opts: ControllerOptions = {}): Controller {
       // reached a terminal state (nothing to cancel) from one we never knew
       // about, so the owner gets an honest typed result either way.
       if (await runAlreadyTerminal(runId)) {
-        return { status: "already_terminal", run_id: runId };
+        return { run_id: runId, status: "already_terminal" };
       }
-      return { status: "no_active_run", run_id: runId };
+      return { run_id: runId, status: "no_active_run" };
     }
     if (cancellation.signal.aborted) {
       // Cancellation already requested for this run; the abort is idempotent.
-      return { status: "cancel_requested", run_id: runId };
+      return { run_id: runId, status: "cancel_requested" };
     }
     // Abort only this run's signal. The runtime's abort listener emits
     // run.cancel_requested and terminates the connector child; the terminal
     // run.cancelled event lands when the child exits.
     cancellation.abort();
-    return { status: "cancel_requested", run_id: runId };
+    return { run_id: runId, status: "cancel_requested" };
   }
 
   function getPendingInteraction(runId: string): PendingInteractionProjection | null {
@@ -3764,10 +3864,10 @@ export function createController(opts: ControllerOptions = {}): Controller {
       return null;
     }
     return {
-      run_id: runId,
       connector_id: entry.connector_id,
       interaction_id: entry.pending.interaction_id,
       kind: entry.pending.kind,
+      run_id: runId,
       stream: entry.pending.stream || null,
     };
   }
@@ -3783,40 +3883,40 @@ export function createController(opts: ControllerOptions = {}): Controller {
   }
 
   return {
-    cancelBrowserSurfaceRun: (runId: string) => browserSurface.cancelBrowserSurfaceRun(runId),
-    cleanupIdleBrowserSurfaces: () => browserSurface.cleanupIdleBrowserSurfaces(),
-    listSchedules,
-    getSchedule,
-    upsertSchedule,
-    setScheduleEnabled,
-    deleteSchedule,
     autoResumeSatisfiedActions,
     awaitRun,
-    drainActiveRuns,
-    expireBrowserSurfaceWaits: () => browserSurface.expireBrowserSurfaceWaits(),
-    findActiveRunByRunId,
-    getActiveRun,
-    listBrowserSurfaceRunProjections,
-    promoteBrowserSurfaceLeasesAfterBoot: () => browserSurface.promoteBrowserSurfaceLeasesAfterBoot(),
-    reconcileBrowserSurfaceLeasesAfterBoot: () => browserSurface.reconcileBrowserSurfaceLeasesAfterBoot(),
-    sweepBrowserSurfaceLeases: () => browserSurface.sweepBrowserSurfaceLeases(),
-    getPendingInteraction,
-    isNeedsHuman: (connectorId: string, options: ConnectorInstanceOptions = {}) =>
-      needsHumanAttention.has(runtimeKey(connectorId, options.connectorInstanceId)),
-    issueRuntimeOwnerToken,
-    respondToInteraction,
-    cancelRun,
-    runNow,
-    markNeedsHuman,
-    clearNeedsHuman,
     // Re-exported so the scheduler can route managed-connector runs through the
     // warm browser-surface lease (see the Controller interface doc above). This
     // is the in-scope const from createController's options; exposing it makes
     // server/index.ts's scheduler seam + isManagedConnector predicate live.
     browserSurfaceLeaseManager,
-    getBrowserSurfaceRuntimeManagement: browserSurfaceRuntimeManagement,
+    cancelBrowserSurfaceRun: (runId: string) => browserSurface.cancelBrowserSurfaceRun(runId),
+    cancelRun,
+    cleanupIdleBrowserSurfaces: () => browserSurface.cleanupIdleBrowserSurfaces(),
+    clearNeedsHuman,
+    deleteSchedule,
+    drainActiveRuns,
+    expireBrowserSurfaceWaits: () => browserSurface.expireBrowserSurfaceWaits(),
+    findActiveRunByRunId,
+    getActiveRun,
     getBrowserSurfaceRuntimeAllocatorScopeId: browserSurfaceRuntimeAllocatorScopeId,
+    getBrowserSurfaceRuntimeManagement: browserSurfaceRuntimeManagement,
+    getPendingInteraction,
+    getSchedule,
+    isNeedsHuman: (connectorId: string, options: ConnectorInstanceOptions = {}) =>
+      needsHumanAttention.has(runtimeKey(connectorId, options.connectorInstanceId)),
+    issueRuntimeOwnerToken,
+    listBrowserSurfaceRunProjections,
+    listSchedules,
+    markNeedsHuman,
     observeBrowserSurfaceRuntimeInventory,
+    promoteBrowserSurfaceLeasesAfterBoot: () => browserSurface.promoteBrowserSurfaceLeasesAfterBoot(),
+    reconcileBrowserSurfaceLeasesAfterBoot: () => browserSurface.reconcileBrowserSurfaceLeasesAfterBoot(),
+    respondToInteraction,
+    runNow,
+    setScheduleEnabled,
+    sweepBrowserSurfaceLeases: () => browserSurface.sweepBrowserSurfaceLeases(),
+    upsertSchedule,
     // Approval + connector inventory live in `auth.js`
     // (`listPendingApprovals`, `listConnectors`, `getConnectorManifest`).
     // Route handlers call those helpers directly; the controller does not

@@ -4,28 +4,41 @@
   "description": "Local stdio MCP adapter for grant-scoped PDPP reads and event-subscription management.",
   "type": "module",
   "bin": {
-    "pdpp-mcp-server": "bin/pdpp-mcp-server.js"
+    "pdpp-mcp-server": "./dist/bin/pdpp-mcp-server.js"
   },
   "exports": {
-    ".": "./src/index.js",
-    "./server": "./src/server.js"
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    },
+    "./server": {
+      "types": "./dist/src/server.d.ts",
+      "import": "./dist/src/server.js"
+    }
   },
   "files": [
-    "bin/",
-    "src/",
+    "dist/",
     "README.md"
   ],
   "scripts": {
-    "test": "node --test test/*.test.js",
-    "test:read-surface": "node --test test/hostile-client-read-evidence.test.js test/server.integration.test.js",
-    "verify": "pnpm test && node bin/pdpp-mcp-server.js --help",
-    "pack:dry-run": "pnpm pack --dry-run"
+    "build": "node --import tsx scripts/build.ts",
+    "prepare": "pnpm build",
+    "prepack": "pnpm build",
+    "test": "node --test --import tsx \"test/*.test.ts\" test/smoke-stdio.ts",
+    "test:read-surface": "node --test --import tsx \"test/*.test.ts\" test/smoke-stdio.ts",
+    "validate:package": "pnpm build && node --import tsx scripts/package-contract.ts",
+    "verify:artifact": "pnpm build && node --import tsx scripts/pack-install-run.ts",
+    "verify": "pnpm test && pnpm validate:package",
+    "pack:dry-run": "pnpm build && npm pack --dry-run --ignore-scripts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@pdpp/cli": ">=0.18.11 <1.0.0",
     "@pdpp/read-core": ">=0.18.11 <1.0.0",
     "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "tsx": "^4.21.0"
   },
   "keywords": [
     "pdpp",

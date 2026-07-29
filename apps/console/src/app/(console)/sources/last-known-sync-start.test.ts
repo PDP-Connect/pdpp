@@ -20,11 +20,11 @@ function withFakeSessionStorage(run: (store: Map<string, string>) => void): void
   const fakeWindow = {
     sessionStorage: {
       getItem: (k: string) => (store.has(k) ? (store.get(k) as string) : null),
-      setItem: (k: string, v: string) => {
-        store.set(k, v);
-      },
       removeItem: (k: string) => {
         store.delete(k);
+      },
+      setItem: (k: string, v: string) => {
+        store.set(k, v);
       },
     },
   };
@@ -74,7 +74,7 @@ test("sync-start marker round-trips while unexpired", () => {
 test("expired or corrupt sync-start markers are cleared", () => {
   withFakeSessionStorage((store) => {
     const key = syncStartToastKey("source-a");
-    store.set(key, JSON.stringify({ message: "Sync started.", tone: "info", expiresAt: 1 }));
+    store.set(key, JSON.stringify({ expiresAt: 1, message: "Sync started.", tone: "info" }));
     assert.equal(readSyncStartToast("source-a"), null);
     store.set(key, "not-json");
     assert.equal(readSyncStartToast("source-a"), null);

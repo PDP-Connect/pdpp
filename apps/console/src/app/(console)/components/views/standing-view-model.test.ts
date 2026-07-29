@@ -33,18 +33,18 @@ import {
 } from "./standing-view-model.ts";
 
 const HREFS: StandingHrefs = {
-  grants: "/grants",
-  grantPackages: "/grants/packages",
-  notifications: "/notifications",
-  runs: "/syncs",
-  sources: "/sources",
-  traces: "/audit",
+  connection: (id) => `/sources/${id}`,
   deployment: "/deployment",
   deploymentTokens: "/deployment/tokens",
-  connection: (id) => `/sources/${id}`,
   grant: (id) => `/grants/${id}`,
+  grantPackages: "/grants/packages",
+  grants: "/grants",
+  notifications: "/notifications",
   run: (id) => `/syncs/${id}`,
+  runs: "/syncs",
+  sources: "/sources",
   trace: (id) => `/audit/${id}`,
+  traces: "/audit",
 };
 
 const NOW = new Date("2026-06-13T12:00:00Z");
@@ -62,15 +62,12 @@ const LATELY_READ_RE = /read 412 records/;
 const LATEST_SAVED_POSTS_RE = /latest saved posts/;
 const MAINTAINER_ACTION_RE = /maintainer action/;
 const NO_OWNER_TOKEN_RE = /No owner token can act as you yet/;
-const NOT_ALL_YOURS_RE = /all yours to read/i;
-const NOT_NEEDS_YOU_RE = /needs you/i;
 const OWNER_TOKEN_COUNT_RE = /1 client holds 2 active owner tokens/;
 const PROJECTION_COPY_RE = /projection|rebuild|bulk write|unknown connection/i;
 const PROJECTION_SQL_COPY_RE = /projection|rebuild|bulk write|unknown connection|SQL/i;
 const RAW_ORPHANED_RUN_RE = /orphaned_started_run/;
 const RAW_REASON_CODE_RE = /new_internal_reason_code/;
 const REFRESH_PAGE_RE = /Refresh this page/;
-const SAVED_RECORDS_RE = /saved records/;
 const SQL_FAILED_RE = /SQL failed/;
 const STALE_TOTALS_RE = /last completed update/;
 const TOKEN_OVERCOUNT_RE = /2 tokens can act as you/;
@@ -78,35 +75,36 @@ const WILL_NOT_CLAIM_ALL_CLEAR_RE = /will not claim all-clear from partial data/
 
 function baseInputs(over: Partial<StandingInputs> = {}): StandingInputs {
   return {
-    now: NOW,
-    hrefs: HREFS,
-    summary: {
-      object: "dataset_summary",
-      record_count: 48_120,
-      connector_count: 10,
-      stream_count: 24,
-      total_retained_bytes: 0,
-      blob_bytes: 0,
-      record_json_bytes: 0,
-      record_changes_json_bytes: 0,
-      earliest_record_time: null,
-      latest_record_time: null,
-      earliest_ingested_at: null,
-      latest_ingested_at: null,
-      top_connectors: [],
-      projection: { state: "fresh" },
-    },
-    bearerClients: [],
-    grants: [],
-    traces: [],
-    pendingApprovals: [],
-    failedTraces: [],
-    failedRuns: [],
-    sourceWork: EMPTY_SOURCE_WORK_GROUPS,
     advisoryOwnerActions: [],
     attentionConnections: [],
+    bearerClients: [],
+    failedRuns: [],
+    failedTraces: [],
+    fleetHealth: null,
+    grants: [],
+    hrefs: HREFS,
+    now: NOW,
     overviewLoadIssues: [],
+    pendingApprovals: [],
     sourceIssues: [],
+    sourceWork: EMPTY_SOURCE_WORK_GROUPS,
+    summary: {
+      blob_bytes: 0,
+      connector_count: 10,
+      earliest_ingested_at: null,
+      earliest_record_time: null,
+      latest_ingested_at: null,
+      latest_record_time: null,
+      object: "dataset_summary",
+      projection: { state: "fresh" },
+      record_changes_json_bytes: 0,
+      record_count: 48_120,
+      record_json_bytes: 0,
+      stream_count: 24,
+      top_connectors: [],
+      total_retained_bytes: 0,
+    },
+    traces: [],
     ...over,
   };
 }
@@ -141,18 +139,18 @@ test("grantEndorseStatus collapses the live vocab to active", () => {
 });
 
 test("grantReads humanizes kinds, falls back to connector, then generic", () => {
-  const withKinds = { kinds: ["pay_statements", "transactions"], connector_id: "plaid" } as GrantSummary;
+  const withKinds = { connector_id: "plaid", kinds: ["pay_statements", "transactions"] } as GrantSummary;
   assert.equal(grantReads(withKinds), "reads only your pay and your spending");
-  const onlyConnector = { kinds: ["read"], connector_id: "employment" } as GrantSummary;
+  const onlyConnector = { connector_id: "employment", kinds: ["read"] } as GrantSummary;
   assert.equal(grantReads(onlyConnector), "reads only your employment history");
-  const nothing = { kinds: [], connector_id: null } as unknown as GrantSummary;
+  const nothing = { connector_id: null, kinds: [] } as unknown as GrantSummary;
   assert.equal(grantReads(nothing), "reads a scoped slice of your data");
 });
 
 test("grantReads humanizes protocol audit stream names instead of raw event ids", () => {
   const auditGrant = {
-    kinds: ["consent.approved", "token.issued", "query.received", "disclosure.served", "query.rejected"],
     connector_id: "pdpp",
+    kinds: ["consent.approved", "token.issued", "query.received", "disclosure.served", "query.rejected"],
   } as GrantSummary;
 
   assert.equal(
@@ -175,12 +173,12 @@ test("relDay produces calm relative labels", () => {
 
 test("hero is DECIDE when an approval is pending", () => {
   const pending: PendingApproval = {
-    object: "approval",
     approval_id: "a1",
     client_id: "Atlas Mortgage",
     created_at: NOW.toISOString(),
-    kind: "consent",
     grant_preview: { streams: [{ name: "pay_statements" }, { name: "transactions" }] },
+    kind: "consent",
+    object: "approval",
   };
   const hero = computeHero(baseInputs({ pendingApprovals: [pending] }));
   assert.equal(hero.tone, "decide");
@@ -188,109 +186,98 @@ test("hero is DECIDE when an approval is pending", () => {
   assert.equal(hero.cta?.href, HREFS.grants);
 });
 
-test("hero ALARM for a DEVICE-LOCAL recovery: CTA NAVIGATES (does not restate the action)", () => {
+test("local source rows remain detail when no server fleet verdict is available", () => {
   // Device-local recovery cannot run from the dashboard. The CTA must read as
   // navigation, route to the recovery panel (exact connection), and leave the
   // actual host command in the panel.
-  const alarm = computeHero(
+  const hero = computeHero(
     baseInputs({
       attentionConnections: [
         {
-          connectorKey: "claude-code",
-          routeId: "ci_laptop",
-          deviceLocal: true,
-          label: "laptop Claude Code",
-          what: "The local collector has saved records on its host that did not upload to this server.",
           actionLabel: "Recover local collector uploads",
-        },
-      ],
-    })
-  );
-  assert.equal(alarm.tone, "alarm");
-  assert.equal(alarm.kicker, "One thing needs you");
-  assert.equal(alarm.line.text, "laptop Claude Code ");
-  assert.equal(alarm.cta?.href, HREFS.connection("ci_laptop"));
-  assert.notEqual(alarm.cta?.href, HREFS.traces);
-  // The CTA is a NAVIGATION label, NOT the restated device action.
-  assert.equal(alarm.cta?.label, "See what to do");
-  assert.notEqual(alarm.cta?.label, "Recover local collector uploads");
-  // The real condition still appears in the sub line.
-  assert.match(alarm.sub, SAVED_RECORDS_RE);
-});
-
-test("hero ALARM for a DASHBOARD-ACTIONABLE recovery keeps its action verb", () => {
-  // A reconnect/refresh the dashboard CAN initiate keeps its action label.
-  const alarm = computeHero(
-    baseInputs({
-      attentionConnections: [
-        {
-          connectorKey: "chase",
-          routeId: "cin_chase",
-          deviceLocal: false,
-          label: "Chase - Personal",
-          what: "Reconnect Chase.",
-          actionLabel: "Reconnect",
-        },
-      ],
-    })
-  );
-  assert.equal(alarm.cta?.label, "Reconnect");
-});
-
-test("hero ALARM with several attention connections → CTA routes to the syncs triage list, not /traces", () => {
-  const alarm = computeHero(
-    baseInputs({
-      attentionConnections: [
-        {
           connectorKey: "claude-code",
-          routeId: "ci_laptop",
           deviceLocal: true,
           label: "laptop Claude Code",
-          what: "Check the collector.",
-          actionLabel: "Check the collector",
-        },
-        {
-          connectorKey: "chase",
-          routeId: "cin_chase",
-          deviceLocal: false,
-          label: "Chase - Personal",
-          what: "Reconnect Chase.",
-          actionLabel: "Reconnect",
+          routeId: "ci_laptop",
+          what: "The local collector has saved records on its host that did not upload to this server.",
         },
       ],
     })
   );
-  assert.equal(alarm.tone, "alarm");
-  assert.equal(alarm.kicker, "2 things need you");
-  assert.equal(alarm.cta?.href, HREFS.runs);
-  assert.notEqual(alarm.cta?.href, HREFS.traces);
+  assert.equal(hero.tone, "calm");
+  assert.equal(hero.kicker, "Where you stand");
+});
+
+test("local dashboard-actionable rows remain detail when no fleet verdict is supplied", () => {
+  // A reconnect/refresh the dashboard CAN initiate keeps its action label.
+  const hero = computeHero(
+    baseInputs({
+      attentionConnections: [
+        {
+          actionLabel: "Reconnect",
+          connectorKey: "chase",
+          deviceLocal: false,
+          label: "Chase - Personal",
+          routeId: "cin_chase",
+          what: "Reconnect Chase.",
+        },
+      ],
+    })
+  );
+  assert.equal(hero.tone, "calm");
+});
+
+test("several local attention rows do not synthesize a fleet headline", () => {
+  const hero = computeHero(
+    baseInputs({
+      attentionConnections: [
+        {
+          actionLabel: "Check the collector",
+          connectorKey: "claude-code",
+          deviceLocal: true,
+          label: "laptop Claude Code",
+          routeId: "ci_laptop",
+          what: "Check the collector.",
+        },
+        {
+          actionLabel: "Reconnect",
+          connectorKey: "chase",
+          deviceLocal: false,
+          label: "Chase - Personal",
+          routeId: "cin_chase",
+          what: "Reconnect Chase.",
+        },
+      ],
+    })
+  );
+  assert.equal(hero.tone, "calm");
 });
 
 test("failed syncs/traces alone do NOT drive the alarm — only the rendered-verdict attention set does", () => {
   // The old bug: a failed YNAB trace inflated the alarm while YNAB was healthy.
-  const run = { run_id: "r1", connector_id: "current_activity", failure_reason: "expired" } as RunSummary;
-  const trace = { trace_id: "t1", client_id: "ynab" } as TraceSummary;
-  const hero = computeHero(baseInputs({ failedRuns: [run], failedTraces: [trace], attentionConnections: [] }));
+  const run = { connector_id: "current_activity", failure_reason: "expired", run_id: "r1" } as RunSummary;
+  const trace = { client_id: "ynab", trace_id: "t1" } as TraceSummary;
+  const hero = computeHero(baseInputs({ attentionConnections: [], failedRuns: [run], failedTraces: [trace] }));
   assert.notEqual(hero.tone, "alarm");
 });
 
 test("decide wins over alarm", () => {
   const pending = {
-    object: "approval",
     approval_id: "a1",
     created_at: NOW.toISOString(),
     kind: "consent",
+    object: "approval",
   } as PendingApproval;
   const both = computeHero(
     baseInputs({
       attentionConnections: [
         {
+          actionLabel: "Reconnect",
           connectorKey: "chase",
-          routeId: "cin_chase",
           deviceLocal: false,
           label: "Chase - Personal",
+          routeId: "cin_chase",
           what: "x",
-          actionLabel: "Reconnect",
         },
       ],
       pendingApprovals: [pending],
@@ -299,7 +286,7 @@ test("decide wins over alarm", () => {
   assert.equal(both.tone, "decide");
 });
 
-// ─── attention truth (the single source the hero + /runs share) ───────────
+// ─── attention truth (connection rows and /runs share) ───────────────────
 
 function connector(over: Partial<RefConnectorSummary>): RefConnectorSummary {
   return {
@@ -343,18 +330,17 @@ function verdict(
   over: Partial<NonNullable<RefConnectorSummary["rendered_verdict"]>>
 ): RefConnectorSummary["rendered_verdict"] {
   return {
+    annotations: [],
     channel: "attention",
-    pill: { label: "Can't collect", tone: "red" },
+    detail: undefined,
     forward_statement: "Check the collector before this source can make progress.",
+    pill: { label: "Can't collect", tone: "red" },
     required_actions: [
       {
         affects: [],
         audience: "owner",
         cta: "Check the collector",
         kind: "add_info",
-        satisfied_when: { kind: "attention_resolved" },
-        terminal: false,
-        urgency: "now",
         remediation: {
           cause: "dead_letter_backlog",
           commands: [],
@@ -363,17 +349,18 @@ function verdict(
           summary: "The local collector has saved records on its host that did not upload to this server.",
           target: { identity_source: "source_instance_bindings", kind: "local_device" },
         },
+        satisfied_when: { kind: "attention_resolved" },
+        terminal: false,
+        urgency: "now",
       },
     ],
-    annotations: [],
-    detail: undefined,
     ...over,
   } as RefConnectorSummary["rendered_verdict"];
 }
 
 test("attention truth: only attention-channel connections with an owner-satisfiable action count", () => {
   const connectors: RefConnectorSummary[] = [
-    connector({ connector_id: "claude-code", connection_id: "cin_laptop", rendered_verdict: verdict({}) }), // ✓ attention + owner action
+    connector({ connection_id: "cin_laptop", connector_id: "claude-code", rendered_verdict: verdict({}) }), // ✓ attention + owner action
     connector({ connector_id: "calm-source", rendered_verdict: verdict({ channel: "calm" }) }), // ✗ calm
     connector({ connector_id: "ynab", rendered_verdict: null }), // ✗ no verdict (e.g. healthy)
     connector({
@@ -392,7 +379,7 @@ test("attention truth: only attention-channel connections with an owner-satisfia
         ],
       }),
     }), // ✗ attention but no owner-satisfiable action (S1 — code_fix is the maintainer's, not the owner's)
-    connector({ connector_id: "revoked", revoked_at: "2026-06-01T00:00:00Z", rendered_verdict: verdict({}) }), // ✗ revoked
+    connector({ connector_id: "revoked", rendered_verdict: verdict({}), revoked_at: "2026-06-01T00:00:00Z" }), // ✗ revoked
   ];
   const attention = attentionConnectionsFromConnectors(connectors);
   assert.deepEqual(
@@ -401,17 +388,17 @@ test("attention truth: only attention-channel connections with an owner-satisfia
   );
   assert.equal(attention[0]?.actionLabel, "Check the collector");
   assert.equal(attention[0]?.what, "Check the collector before this source can make progress.");
-  // The local_device remediation target → deviceLocal true → hero/runs use a
-  // navigation CTA instead of restating the action.
+  // The local_device remediation target → deviceLocal true → source rows and
+  // Runs use a navigation CTA instead of restating the action.
   assert.equal(attention[0]?.deviceLocal, true);
 });
 
 test("attention truth falls back to legacy blocked health when rendered verdict is absent", () => {
   const connectors: RefConnectorSummary[] = [
     connector({
-      connector_id: "chase",
-      connection_id: "cin_chase",
       connection_health: legacyHealth("blocked"),
+      connection_id: "cin_chase",
+      connector_id: "chase",
       display_name: "Chase",
       rendered_verdict: null,
     }),
@@ -424,19 +411,19 @@ test("attention truth falls back to legacy blocked health when rendered verdict 
   assert.equal(attention[0]?.actionLabel, "Reconnect");
 
   const hero = computeHero(baseInputs({ attentionConnections: attention }));
-  assert.equal(hero.tone, "alarm");
+  assert.equal(hero.tone, "calm");
 });
 
 test("source issues show non-owner material verdicts without alarming as owner attention", () => {
   const connectors: RefConnectorSummary[] = [
     connector({
-      connector_id: "chase",
       connection_id: "cin_chase",
+      connector_id: "chase",
       display_name: "Chase",
       rendered_verdict: verdict({
         channel: "advisory",
-        pill: { label: "Can't collect", tone: "red" },
         forward_statement: "This connector needs a code fix before it can collect again.",
+        pill: { label: "Can't collect", tone: "red" },
         required_actions: [
           {
             affects: [],
@@ -456,8 +443,8 @@ test("source issues show non-owner material verdicts without alarming as owner a
     }),
     connector({
       connector_id: "revoked",
-      revoked_at: "2026-06-01T00:00:00Z",
       rendered_verdict: verdict({ pill: { label: "Can't collect", tone: "red" } }),
+      revoked_at: "2026-06-01T00:00:00Z",
     }),
   ];
 
@@ -473,19 +460,20 @@ test("source issues show non-owner material verdicts without alarming as owner a
   assert.equal(data.attention.length, 0);
   assert.equal(data.sourceIssues.length, 1);
   assert.equal(data.sourceIssues[0]?.what, "Chase can't collect");
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.match(data.sourceIssues[0]?.why ?? "", CODE_FIX_RE);
 });
 
 test("advisory owner actions surface non-urgent Amazon retry work without calm all-clear copy", () => {
   const connectors: RefConnectorSummary[] = [
     connector({
-      connector_id: "amazon",
       connection_id: "cin_amazon",
+      connector_id: "amazon",
       display_name: "Amazon - Personal",
       rendered_verdict: verdict({
         channel: "advisory",
-        pill: { label: "Degraded", tone: "amber" },
         forward_statement: "Some order detail is still outstanding. Retry this source to collect the missing detail.",
+        pill: { label: "Degraded", tone: "amber" },
         required_actions: [
           {
             affects: ["orders"],
@@ -507,17 +495,7 @@ test("advisory owner actions surface non-urgent Amazon retry work without calm a
   assert.equal(advisoryOwnerActions[0]?.actionLabel, "Retry detail gap");
 
   const data = buildStandingData(baseInputs({ advisoryOwnerActions }));
-  assert.equal(data.hero.tone, "decide");
-  assert.equal(data.hero.kicker, "One optional action is available");
-  assert.equal(data.hero.line.emphasis, "Retry detail gap");
-  assert.equal(data.hero.line.text, "Amazon - Personal: ");
-  assert.equal(data.hero.cta?.label, "Retry detail gap");
-  assert.equal(data.hero.cta?.href, HREFS.connection("cin_amazon"));
-  assert.doesNotMatch(`${data.hero.kicker} ${data.hero.line.text} ${data.hero.line.emphasis}`, NOT_NEEDS_YOU_RE);
-  assert.doesNotMatch(
-    `${data.hero.kicker} ${data.hero.line.text} ${data.hero.line.emphasis ?? ""} ${data.hero.line.tail ?? ""}`,
-    NOT_ALL_YOURS_RE
-  );
+  assert.equal(data.hero.tone, "calm");
   assert.equal(data.advisoryOwnerActions.length, 1);
   assert.equal(data.advisoryOwnerActions[0]?.what, "Amazon - Personal has an action to review");
 });
@@ -525,13 +503,13 @@ test("advisory owner actions surface non-urgent Amazon retry work without calm a
 test("advisory owner actions surface Reddit refresh work in the home summary", () => {
   const connectors: RefConnectorSummary[] = [
     connector({
-      connector_id: "reddit",
       connection_id: "cin_reddit",
+      connector_id: "reddit",
       display_name: "Reddit",
       rendered_verdict: verdict({
         channel: "advisory",
-        pill: { label: "Healthy", tone: "green" },
         forward_statement: "Run a refresh when you want the latest saved posts.",
+        pill: { label: "Healthy", tone: "green" },
         required_actions: [
           {
             affects: [],
@@ -551,20 +529,21 @@ test("advisory owner actions surface Reddit refresh work in the home summary", (
   const data = buildStandingData(baseInputs({ advisoryOwnerActions }));
   assert.equal(data.advisoryOwnerActions.length, 1);
   assert.equal(data.advisoryOwnerActions[0]?.href, HREFS.connection("cin_reddit"));
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.match(data.advisoryOwnerActions[0]?.why ?? "", LATEST_SAVED_POSTS_RE);
-  assert.notEqual(data.hero.tone, "calm");
+  assert.equal(data.hero.tone, "calm");
 });
 
 test("source actionability groups live-shaped rows with scoped counts", () => {
   const connectors: RefConnectorSummary[] = [
     connector({
-      connector_id: "chatgpt",
       connection_id: "cin_chatgpt",
+      connector_id: "chatgpt",
       display_name: "ChatGPT - personal",
       rendered_verdict: verdict({
         channel: "attention",
-        pill: { label: "Can't collect", tone: "red" },
         forward_statement: "Reconnect this account and collection resumes.",
+        pill: { label: "Can't collect", tone: "red" },
         required_actions: [
           {
             affects: [],
@@ -579,13 +558,13 @@ test("source actionability groups live-shaped rows with scoped counts", () => {
       }),
     }),
     connector({
-      connector_id: "usaa",
       connection_id: "cin_usaa",
+      connector_id: "usaa",
       display_name: "USAA - Personal",
       rendered_verdict: verdict({
         channel: "attention",
-        pill: { label: "Can't collect", tone: "red" },
         forward_statement: "Reconnect this account and collection resumes.",
+        pill: { label: "Can't collect", tone: "red" },
         required_actions: [
           {
             affects: [],
@@ -600,19 +579,19 @@ test("source actionability groups live-shaped rows with scoped counts", () => {
       }),
     }),
     connector({
-      connector_id: "claude-code",
       connection_id: "cin_claude",
+      connector_id: "claude-code",
       display_name: "Local Claude Code",
       rendered_verdict: verdict({}),
     }),
     connector({
-      connector_id: "amazon",
       connection_id: "cin_amazon",
+      connector_id: "amazon",
       display_name: "Amazon - Personal",
       rendered_verdict: verdict({
         channel: "advisory",
-        pill: { label: "Degraded", tone: "amber" },
         forward_statement: "Run a refresh to bring this up to date.",
+        pill: { label: "Degraded", tone: "amber" },
         required_actions: [
           {
             affects: [],
@@ -627,13 +606,13 @@ test("source actionability groups live-shaped rows with scoped counts", () => {
       }),
     }),
     connector({
-      connector_id: "chase",
       connection_id: "cin_chase",
+      connector_id: "chase",
       display_name: "Chase - Personal",
       rendered_verdict: verdict({
         channel: "advisory",
-        pill: { label: "Degraded", tone: "amber" },
         forward_statement: "Latest collection completed with known coverage gaps.",
+        pill: { label: "Degraded", tone: "amber" },
         required_actions: [
           {
             affects: [],
@@ -648,13 +627,13 @@ test("source actionability groups live-shaped rows with scoped counts", () => {
       }),
     }),
     connector({
-      connector_id: "github",
       connection_id: "cin_github",
+      connector_id: "github",
       display_name: "GitHub - Personal",
       rendered_verdict: verdict({
         channel: "calm",
-        pill: { label: "Not measured", tone: "grey" },
         forward_statement: "Coverage has not been measured yet.",
+        pill: { label: "Not measured", tone: "grey" },
         required_actions: [],
       }),
     }),
@@ -668,10 +647,10 @@ test("source actionability groups live-shaped rows with scoped counts", () => {
   assert.equal(sourceWork.systemIssues.length, 1);
   assert.equal(sourceWork.notMeasured.length, 1);
   assert.equal(sourceAttentionHeadline(sourceWork).needsYou, sourceWork.needsOwner.length);
-  assert.equal(data.hero.tone, "alarm");
-  assert.equal(data.hero.kicker, "3 things need you");
+  assert.equal(data.hero.tone, "calm");
   assert.equal(data.sourceWorkSections[0]?.title, "Needs you");
   assert.equal(data.sourceWorkSections[0]?.countLabel, "3 sources");
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(data.sourceWorkSections[0]?.rows.length, 3);
   assert.equal(data.sourceWorkSections[1]?.title, "Available actions");
   assert.equal(data.sourceWorkSections[1]?.countLabel, "1 source");
@@ -694,8 +673,8 @@ const DASHBOARD_PASSIVE_RECOVERY_RE = /catching up|syncing details|safe to retry
 function deferredRecoveryVerdict(): RefConnectorSummary["rendered_verdict"] {
   return verdict({
     channel: "calm",
-    pill: { label: "Degraded", tone: "amber" },
     forward_statement: "The next run is expected to fill the remaining data.",
+    pill: { label: "Degraded", tone: "amber" },
     required_actions: [
       {
         affects: [],
@@ -732,13 +711,13 @@ function inactiveRecoveryHealth(): RefConnectorSummary["connection_health"] {
 test("dashboard cross-surface: every source-work section count equals its rendered row count", () => {
   const connectors: RefConnectorSummary[] = [
     connector({
-      connector_id: "chatgpt",
       connection_id: "cin_chatgpt",
+      connector_id: "chatgpt",
       display_name: "ChatGPT - personal",
       rendered_verdict: verdict({
         channel: "attention",
-        pill: { label: "Can't collect", tone: "red" },
         forward_statement: "Reconnect this account and collection resumes.",
+        pill: { label: "Can't collect", tone: "red" },
         required_actions: [
           {
             affects: [],
@@ -753,21 +732,21 @@ test("dashboard cross-surface: every source-work section count equals its render
       }),
     }),
     connector({
-      connector_id: "amazon",
-      connection_id: "cin_amazon",
-      display_name: "Amazon - Personal",
       // Durable, inactive recovery backlog → passive progress ("PDPP is working").
       connection_health: inactiveRecoveryHealth(),
+      connection_id: "cin_amazon",
+      connector_id: "amazon",
+      display_name: "Amazon - Personal",
       rendered_verdict: deferredRecoveryVerdict(),
     }),
     connector({
-      connector_id: "reddit",
       connection_id: "cin_reddit",
+      connector_id: "reddit",
       display_name: "Reddit - Personal",
       rendered_verdict: verdict({
         channel: "advisory",
-        pill: { label: "Degraded", tone: "amber" },
         forward_statement: "Run a refresh to bring this up to date.",
+        pill: { label: "Degraded", tone: "amber" },
         required_actions: [
           {
             affects: [],
@@ -782,13 +761,13 @@ test("dashboard cross-surface: every source-work section count equals its render
       }),
     }),
     connector({
-      connector_id: "chase",
       connection_id: "cin_chase",
+      connector_id: "chase",
       display_name: "Chase - Personal",
       rendered_verdict: verdict({
         channel: "advisory",
-        pill: { label: "Can't collect", tone: "red" },
         forward_statement: "Connector code needs a fix before this can collect again.",
+        pill: { label: "Can't collect", tone: "red" },
         required_actions: [
           {
             affects: [],
@@ -831,10 +810,10 @@ test("dashboard cross-surface: every source-work section count equals its render
 test("dashboard cross-surface: an inactive queued recovery row is passive progress, never a Checking or degraded row", () => {
   const connectors: RefConnectorSummary[] = [
     connector({
-      connector_id: "amazon",
-      connection_id: "cin_amazon",
-      display_name: "Amazon - Personal",
       connection_health: inactiveRecoveryHealth(),
+      connection_id: "cin_amazon",
+      connector_id: "amazon",
+      display_name: "Amazon - Personal",
       rendered_verdict: deferredRecoveryVerdict(),
     }),
   ];
@@ -850,7 +829,7 @@ test("dashboard cross-surface: an inactive queued recovery row is passive progre
 
   const allRows = data.sourceWorkSections.flatMap((section) => section.rows);
   assert.equal(allRows.length, 1);
-  const row = allRows[0];
+  const [row] = allRows;
   assert.ok(row);
   assert.doesNotMatch(row.what, DASHBOARD_CHECKING_RE);
   assert.match(`${row.what} ${row.why ?? ""}`, DASHBOARD_PASSIVE_RECOVERY_RE);
@@ -859,13 +838,13 @@ test("dashboard cross-surface: an inactive queued recovery row is passive progre
 test("reviewable degraded source appears once rather than as review plus source issue", () => {
   const connectors: RefConnectorSummary[] = [
     connector({
-      connector_id: "amazon",
       connection_id: "cin_amazon",
+      connector_id: "amazon",
       display_name: "Amazon - Personal",
       rendered_verdict: verdict({
         channel: "advisory",
-        pill: { label: "Degraded", tone: "amber" },
         forward_statement: "Retry now to give the recoverable gap another run.",
+        pill: { label: "Degraded", tone: "amber" },
         required_actions: [
           {
             affects: [],
@@ -894,13 +873,13 @@ test("reviewable degraded source appears once rather than as review plus source 
 test("source actionability follows primary-action parity with push policy", () => {
   const connectors: RefConnectorSummary[] = [
     connector({
-      connector_id: "mixed",
       connection_id: "cin_mixed",
+      connector_id: "mixed",
       display_name: "Mixed-action source",
       rendered_verdict: verdict({
         channel: "attention",
-        pill: { label: "Can't collect", tone: "red" },
         forward_statement: "Connector code needs a fix before this can collect again.",
+        pill: { label: "Can't collect", tone: "red" },
         required_actions: [
           {
             affects: [],
@@ -935,13 +914,13 @@ test("source actionability follows primary-action parity with push policy", () =
 test("maintainer-only actions are not advisory owner actions", () => {
   const connectors: RefConnectorSummary[] = [
     connector({
-      connector_id: "maintainer-only",
       connection_id: "cin_maintainer",
+      connector_id: "maintainer-only",
       display_name: "Maintainer-only source",
       rendered_verdict: verdict({
         channel: "advisory",
-        pill: { label: "Degraded", tone: "amber" },
         forward_statement: "This source needs a connector code fix before it can make progress.",
+        pill: { label: "Degraded", tone: "amber" },
         required_actions: [
           {
             affects: [],
@@ -965,13 +944,13 @@ test("maintainer-only actions are not advisory owner actions", () => {
 test("source issues omit healthy advisory refresh hints", () => {
   const connectors: RefConnectorSummary[] = [
     connector({
-      connector_id: "reddit",
       connection_id: "cin_reddit",
+      connector_id: "reddit",
       display_name: "Reddit - dondochaka",
       rendered_verdict: verdict({
         channel: "advisory",
-        pill: { label: "Healthy", tone: "green" },
         forward_statement: "Run a refresh to bring this up to date.",
+        pill: { label: "Healthy", tone: "green" },
         required_actions: [
           {
             affects: [],
@@ -998,13 +977,13 @@ test("source issues omit healthy advisory refresh hints", () => {
 test("source issues surface attention verdicts that have no owner action, even with a green pill", () => {
   const connectors: RefConnectorSummary[] = [
     connector({
-      connector_id: "maintainer-only",
       connection_id: "cin_maintainer",
+      connector_id: "maintainer-only",
       display_name: "Maintainer-only source",
       rendered_verdict: verdict({
         channel: "attention",
-        pill: { label: "Healthy", tone: "green" },
         forward_statement: "This source needs a maintainer action before it can make progress.",
+        pill: { label: "Healthy", tone: "green" },
         required_actions: [
           {
             affects: [],
@@ -1027,15 +1006,16 @@ test("source issues surface attention verdicts that have no owner action, even w
   assert.equal(sourceIssues[0]?.label, "Maintainer-only source");
   assert.equal(sourceIssues[0]?.routeId, "cin_maintainer");
   assert.equal(sourceIssues[0]?.status, "is degraded");
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.match(sourceIssues[0]?.what ?? "", MAINTAINER_ACTION_RE);
 });
 
 test("source issues fall back to legacy degraded health when rendered verdict is absent", () => {
   const connectors: RefConnectorSummary[] = [
     connector({
-      connector_id: "usaa",
-      connection_id: "cin_usaa",
       connection_health: legacyHealth("degraded"),
+      connection_id: "cin_usaa",
+      connector_id: "usaa",
       display_name: "USAA - Personal",
       rendered_verdict: null,
     }),
@@ -1048,6 +1028,7 @@ test("source issues fall back to legacy degraded health when rendered verdict is
   assert.equal(sourceIssues[0]?.label, "USAA - Personal");
   assert.equal(sourceIssues[0]?.routeId, "cin_usaa");
   assert.equal(sourceIssues[0]?.status, "is degraded");
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.match(sourceIssues[0]?.what ?? "", INCOMPLETE_OR_GAP_RE);
 
   const data = buildStandingData(baseInputs({ sourceIssues }));
@@ -1064,13 +1045,13 @@ test("attention routeId targets the EXACT connection instance, not the connector
   // the CTA lands on the connection that actually needs the owner.
   const connectors: RefConnectorSummary[] = [
     connector({
-      connector_id: "claude-code",
       connection_id: "cin_simon",
+      connector_id: "claude-code",
       rendered_verdict: verdict({ channel: "calm" }),
     }), // healthy, first
     connector({
-      connector_id: "claude-code",
       connection_id: "cin_laptop",
+      connector_id: "claude-code",
       connector_instance_id: "ci_laptop",
       rendered_verdict: verdict({}),
     }), // the attention one
@@ -1081,9 +1062,10 @@ test("attention routeId targets the EXACT connection instance, not the connector
   // exactly — NOT the shared connector_id "claude-code".
   assert.equal(attention[0]?.routeId, "ci_laptop");
   assert.notEqual(attention[0]?.routeId, "claude-code");
-  // And the hero CTA href uses that exact-connection routeId.
+  // The detail row retains that exact-connection routeId; it no longer drives
+  // the aggregate hero.
   const hero = computeHero(baseInputs({ attentionConnections: attention }));
-  assert.equal(hero.cta?.href, HREFS.connection("ci_laptop"));
+  assert.equal(hero.tone, "calm");
 });
 
 test("hero ALARMs on a stale projection even with no failures", () => {
@@ -1091,17 +1073,17 @@ test("hero ALARMs on a stale projection even with no failures", () => {
   stale.summary = {
     ...stale.summary,
     projection: {
-      state: "stale",
       last_error: "bulk write on unknown connection",
+      state: "stale",
     },
   } as StandingInputs["summary"];
   const hero = computeHero(stale);
   assert.equal(hero.tone, "alarm");
   assert.equal(hero.kicker, "Totals updating");
   assert.equal(hero.line.emphasis, "are still available");
-  assert.match(hero.sub ?? "", STALE_TOTALS_RE);
+  assert.match(hero.sub, STALE_TOTALS_RE);
   assert.equal(hero.cta?.label, "View status");
-  assert.doesNotMatch(hero.sub ?? "", BULK_WRITE_UNKNOWN_CONNECTION_RE);
+  assert.doesNotMatch(hero.sub, BULK_WRITE_UNKNOWN_CONNECTION_RE);
   assert.doesNotMatch(
     `${hero.kicker} ${hero.line.text} ${hero.line.emphasis} ${hero.line.tail} ${hero.sub}`,
     PROJECTION_COPY_RE
@@ -1113,18 +1095,18 @@ test("hero uses owner-safe copy for failed projection details", () => {
   failed.summary = {
     ...failed.summary,
     projection: {
-      state: "failed",
       last_error: "SQL failed: bulk write on unknown connection",
+      state: "failed",
     },
   } as StandingInputs["summary"];
   const hero = computeHero(failed);
   assert.equal(hero.tone, "alarm");
   assert.equal(hero.kicker, "Totals update delayed");
   assert.equal(hero.line.emphasis, "are still available");
-  assert.match(hero.sub ?? "", STALE_TOTALS_RE);
+  assert.match(hero.sub, STALE_TOTALS_RE);
   assert.equal(hero.cta?.label, "View status");
-  assert.doesNotMatch(hero.sub ?? "", BULK_WRITE_UNKNOWN_CONNECTION_RE);
-  assert.doesNotMatch(hero.sub ?? "", SQL_FAILED_RE);
+  assert.doesNotMatch(hero.sub, BULK_WRITE_UNKNOWN_CONNECTION_RE);
+  assert.doesNotMatch(hero.sub, SQL_FAILED_RE);
   assert.doesNotMatch(
     `${hero.kicker} ${hero.line.text} ${hero.line.emphasis} ${hero.line.tail} ${hero.sub}`,
     PROJECTION_SQL_COPY_RE
@@ -1141,12 +1123,83 @@ test("hero ALARMs when dashboard inputs fail instead of claiming all-clear from 
   assert.equal(data.hero.cta?.href, HREFS.deployment);
   assert.equal(data.overviewIssues.length, 1);
   assert.equal(data.overviewIssues[0]?.what, "Overview could not check everything");
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.match(data.overviewIssues[0]?.why ?? "", REFRESH_PAGE_RE);
+});
+
+test("hero consumes the server fleet verdict when no per-connection row supplies the aggregate cause", () => {
+  const fleetHealth = {
+    state: "unhealthy",
+    fully_healthy: false,
+    scope: { configured: 1, assessed: [], intentional_exclusions: [], setup_pending: [], unassessed: [] },
+    dimensions: {
+      runtime: "unhealthy",
+      coverage_audit: "pass",
+      attention: { needs_owner: [] },
+      system: { degraded_or_broken: [] },
+      recovery: { retryable: [], terminal: [] },
+      stalled_work: [],
+      active_work: [],
+      freshness_advisories: [],
+      intentional_policy: { manual: [], paused: [] },
+      unknown_evidence: [],
+    },
+  } as const;
+  const hero = computeHero(baseInputs({ fleetHealth }));
+  assert.equal(hero.tone, "alarm");
+  assert.equal(hero.kicker, "Source fleet needs attention");
+  assert.equal(hero.cta?.href, HREFS.sources);
+});
+
+test("a locally alarming source row cannot override a healthy server fleet verdict", () => {
+  const fleetHealth = {
+    state: "healthy",
+    fully_healthy: true,
+    scope: { configured: 1, assessed: [], intentional_exclusions: [], setup_pending: [], unassessed: [] },
+    dimensions: {
+      runtime: "healthy",
+      coverage_audit: "pass",
+      attention: { needs_owner: [] },
+      system: { degraded_or_broken: [] },
+      recovery: { retryable: [], terminal: [] },
+      stalled_work: [],
+      active_work: [],
+      freshness_advisories: [],
+      intentional_policy: { manual: [], paused: [] },
+      unknown_evidence: [],
+    },
+  } as const;
+  const hero = computeHero(
+    baseInputs({
+      fleetHealth,
+      sourceWork: {
+        needsOwner: [
+          {
+            actionLabel: "Reconnect",
+            connectorKey: "chase",
+            deviceLocal: false,
+            group: "needsOwner",
+            id: "conn_chase",
+            label: "Chase",
+            routeId: "conn_chase",
+            statusLabel: "Needs you",
+            what: "This local row disagrees with the aggregate verdict.",
+          },
+        ],
+        notMeasured: [],
+        review: [],
+        systemIssues: [],
+        working: [],
+      },
+    })
+  );
+  assert.equal(hero.tone, "calm");
+  assert.equal(hero.kicker, "Where you stand");
 });
 
 test("hero is CALM with reassurance when all is well", () => {
   const clients: OwnerIssuedClient[] = [
-    { client_id: "c1", client_name: "Claude Desktop", active_token_count: 1, created_at: NOW.toISOString() },
+    { active_token_count: 1, client_id: "c1", client_name: "Claude Desktop", created_at: NOW.toISOString() },
   ];
   const hero = computeHero(baseInputs({ bearerClients: clients }));
   assert.equal(hero.tone, "calm");
@@ -1156,8 +1209,8 @@ test("hero is CALM with reassurance when all is well", () => {
 
 test("bearer section and hero count only active owner tokens", () => {
   const clients: OwnerIssuedClient[] = [
-    { client_id: "inactive", client_name: "Old smoke client", active_token_count: 0, created_at: NOW.toISOString() },
-    { client_id: "active", client_name: "Claude Desktop", active_token_count: 2, created_at: NOW.toISOString() },
+    { active_token_count: 0, client_id: "inactive", client_name: "Old smoke client", created_at: NOW.toISOString() },
+    { active_token_count: 2, client_id: "active", client_name: "Claude Desktop", created_at: NOW.toISOString() },
   ];
   const data = buildStandingData(baseInputs({ bearerClients: clients }));
 
@@ -1169,7 +1222,7 @@ test("bearer section and hero count only active owner tokens", () => {
 
 test("hero says no owner token can act when all issued clients are inactive", () => {
   const clients: OwnerIssuedClient[] = [
-    { client_id: "inactive", client_name: "Old smoke client", active_token_count: 0, created_at: NOW.toISOString() },
+    { active_token_count: 0, client_id: "inactive", client_name: "Old smoke client", created_at: NOW.toISOString() },
   ];
   const data = buildStandingData(baseInputs({ bearerClients: clients }));
 
@@ -1181,7 +1234,7 @@ test("hero says no owner token can act when all issued clients are inactive", ()
 
 test("bearer row carries the raw created_at for the shared IcTimestamp, not a prebaked date string", () => {
   const clients: OwnerIssuedClient[] = [
-    { client_id: "c1", client_name: "Claude Desktop", active_token_count: 1, created_at: "2026-06-01T00:00:00Z" },
+    { active_token_count: 1, client_id: "c1", client_name: "Claude Desktop", created_at: "2026-06-01T00:00:00Z" },
   ];
   const data = buildStandingData(baseInputs({ bearerClients: clients }));
 
@@ -1191,16 +1244,18 @@ test("bearer row carries the raw created_at for the shared IcTimestamp, not a pr
   assert.equal(data.bearers[0]?.issuedAt, "2026-06-01T00:00:00Z");
   // The `how` line no longer bakes in a relDay date string; the timestamp is
   // rendered separately by the component.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.doesNotMatch(data.bearers[0]?.how ?? "", BEARER_HOW_HAS_ISSUED_RE);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.doesNotMatch(data.bearers[0]?.how ?? "", BEARER_HOW_HAS_DATE_RE);
 });
 
 test('single-token bearer labels created_at "issued"; multi-token bearer degrades to "first issued"', () => {
   const single: OwnerIssuedClient[] = [
-    { client_id: "one", client_name: "Solo", active_token_count: 1, created_at: NOW.toISOString() },
+    { active_token_count: 1, client_id: "one", client_name: "Solo", created_at: NOW.toISOString() },
   ];
   const multi: OwnerIssuedClient[] = [
-    { client_id: "many", client_name: "Legacy", active_token_count: 3, created_at: NOW.toISOString() },
+    { active_token_count: 3, client_id: "many", client_name: "Legacy", created_at: NOW.toISOString() },
   ];
 
   const singleData = buildStandingData(baseInputs({ bearerClients: single }));
@@ -1216,9 +1271,9 @@ test('single-token bearer labels created_at "issued"; multi-token bearer degrade
 
 test("bearer block previews the most-recent few and reports the hidden overflow count", () => {
   const clients: OwnerIssuedClient[] = Array.from({ length: 7 }, (_, i) => ({
+    active_token_count: 1,
     client_id: `c${i}`,
     client_name: `Client ${i}`,
-    active_token_count: 1,
     created_at: NOW.toISOString(),
   }));
   const data = buildStandingData(baseInputs({ bearerClients: clients }));
@@ -1231,7 +1286,7 @@ test("bearer block previews the most-recent few and reports the hidden overflow 
 
 test("bearer overflow is zero when active bearers fit within the preview cap", () => {
   const clients: OwnerIssuedClient[] = [
-    { client_id: "c1", client_name: "Claude Desktop", active_token_count: 1, created_at: NOW.toISOString() },
+    { active_token_count: 1, client_id: "c1", client_name: "Claude Desktop", created_at: NOW.toISOString() },
   ];
   const data = buildStandingData(baseInputs({ bearerClients: clients }));
 
@@ -1244,43 +1299,43 @@ test("bearer overflow is zero when active bearers fit within the preview cap", (
 test("grant packages are surfaced from loaded grants without a count endpoint", () => {
   const grants: GrantSummary[] = [
     {
-      object: "grant_summary",
-      grant_id: "g1",
       client_id: "App A",
       connector_id: "pdpp",
-      status: "active",
-      first_at: "2026-06-01T00:00:00Z",
-      last_at: "2026-06-12T00:00:00Z",
       event_count: 5,
-      kinds: ["query.received"],
       failure: null,
+      first_at: "2026-06-01T00:00:00Z",
+      grant_id: "g1",
       grant_package_id: "pkg_alpha",
+      kinds: ["query.received"],
+      last_at: "2026-06-12T00:00:00Z",
+      object: "grant_summary",
+      status: "active",
     },
     {
-      object: "grant_summary",
-      grant_id: "g2",
       client_id: "App A",
       connector_id: "pdpp",
-      status: "active",
-      first_at: "2026-06-01T00:00:00Z",
-      last_at: "2026-06-12T00:00:00Z",
       event_count: 3,
-      kinds: ["query.received"],
       failure: null,
+      first_at: "2026-06-01T00:00:00Z",
+      grant_id: "g2",
       grant_package_id: "pkg_alpha",
+      kinds: ["query.received"],
+      last_at: "2026-06-12T00:00:00Z",
+      object: "grant_summary",
+      status: "active",
     },
     {
-      object: "grant_summary",
-      grant_id: "g3",
       client_id: "App B",
       connector_id: "pdpp",
-      status: "active",
-      first_at: "2026-06-01T00:00:00Z",
-      last_at: "2026-06-12T00:00:00Z",
       event_count: 1,
-      kinds: ["query.received"],
       failure: null,
+      first_at: "2026-06-01T00:00:00Z",
+      grant_id: "g3",
       grant_package_id: "pkg_beta",
+      kinds: ["query.received"],
+      last_at: "2026-06-12T00:00:00Z",
+      object: "grant_summary",
+      status: "active",
     },
   ];
 
@@ -1300,20 +1355,20 @@ test("the authoritative grant-package count drives the overview badge when prese
   // The overview must trust the endpoint (exact), not the loaded-grants floor,
   // so packages not represented in the preview still surface.
   const grant: GrantSummary = {
-    object: "grant_summary",
-    grant_id: "g1",
     client_id: "App A",
     connector_id: "pdpp",
-    status: "active",
-    first_at: "2026-06-01T00:00:00Z",
-    last_at: "2026-06-12T00:00:00Z",
     event_count: 5,
-    kinds: ["query.received"],
     failure: null,
+    first_at: "2026-06-01T00:00:00Z",
+    grant_id: "g1",
     grant_package_id: "pkg_alpha",
+    kinds: ["query.received"],
+    last_at: "2026-06-12T00:00:00Z",
+    object: "grant_summary",
+    status: "active",
   };
 
-  const data = buildStandingData(baseInputs({ grants: [grant], grantPackageCount: 4 }));
+  const data = buildStandingData(baseInputs({ grantPackageCount: 4, grants: [grant] }));
   assert.equal(data.grantPackages?.count, 4);
   assert.equal(data.grantPackages?.exact, true);
   assert.equal(data.grantPackages?.href, HREFS.grantPackages);
@@ -1321,55 +1376,55 @@ test("the authoritative grant-package count drives the overview badge when prese
 
 test("an authoritative zero grant-package count collapses the badge even if a stale grant carries a package id", () => {
   const grant: GrantSummary = {
-    object: "grant_summary",
-    grant_id: "g1",
     client_id: "App A",
     connector_id: "pdpp",
-    status: "active",
-    first_at: "2026-06-01T00:00:00Z",
-    last_at: "2026-06-12T00:00:00Z",
     event_count: 5,
-    kinds: ["query.received"],
     failure: null,
+    first_at: "2026-06-01T00:00:00Z",
+    grant_id: "g1",
     grant_package_id: "pkg_alpha",
+    kinds: ["query.received"],
+    last_at: "2026-06-12T00:00:00Z",
+    object: "grant_summary",
+    status: "active",
   };
 
-  const data = buildStandingData(baseInputs({ grants: [grant], grantPackageCount: 0 }));
+  const data = buildStandingData(baseInputs({ grantPackageCount: 0, grants: [grant] }));
   assert.equal(data.grantPackages, null);
 });
 
 test("a null grant-package count falls back to the loaded-grants floor", () => {
   const grant: GrantSummary = {
-    object: "grant_summary",
-    grant_id: "g1",
     client_id: "App A",
     connector_id: "pdpp",
-    status: "active",
-    first_at: "2026-06-01T00:00:00Z",
-    last_at: "2026-06-12T00:00:00Z",
     event_count: 5,
-    kinds: ["query.received"],
     failure: null,
+    first_at: "2026-06-01T00:00:00Z",
+    grant_id: "g1",
     grant_package_id: "pkg_alpha",
+    kinds: ["query.received"],
+    last_at: "2026-06-12T00:00:00Z",
+    object: "grant_summary",
+    status: "active",
   };
 
-  const data = buildStandingData(baseInputs({ grants: [grant], grantPackageCount: null }));
+  const data = buildStandingData(baseInputs({ grantPackageCount: null, grants: [grant] }));
   assert.equal(data.grantPackages?.count, 1);
   assert.equal(data.grantPackages?.exact, false);
 });
 
 test("grant packages are absent when no loaded grant carries a package id", () => {
   const grant: GrantSummary = {
-    object: "grant_summary",
-    grant_id: "g1",
     client_id: "App A",
     connector_id: "pdpp",
-    status: "active",
-    first_at: "2026-06-01T00:00:00Z",
-    last_at: "2026-06-12T00:00:00Z",
     event_count: 5,
-    kinds: ["query.received"],
     failure: null,
+    first_at: "2026-06-01T00:00:00Z",
+    grant_id: "g1",
+    kinds: ["query.received"],
+    last_at: "2026-06-12T00:00:00Z",
+    object: "grant_summary",
+    status: "active",
   };
 
   const data = buildStandingData(baseInputs({ grants: [grant] }));
@@ -1378,17 +1433,17 @@ test("grant packages are absent when no loaded grant carries a package id", () =
 
 test("a fully-revoked package does not advertise from the overview", () => {
   const grant: GrantSummary = {
-    object: "grant_summary",
-    grant_id: "g1",
     client_id: "App A",
     connector_id: "pdpp",
-    status: "revoked",
-    first_at: "2026-06-01T00:00:00Z",
-    last_at: "2026-06-12T00:00:00Z",
     event_count: 5,
-    kinds: ["query.received"],
     failure: null,
+    first_at: "2026-06-01T00:00:00Z",
+    grant_id: "g1",
     grant_package_id: "pkg_dead",
+    kinds: ["query.received"],
+    last_at: "2026-06-12T00:00:00Z",
+    object: "grant_summary",
+    status: "revoked",
   };
 
   const data = buildStandingData(baseInputs({ grants: [grant] }));
@@ -1399,38 +1454,39 @@ test("a fully-revoked package does not advertise from the overview", () => {
 
 test("buildStandingData wires bearers, relationships, lately, attention", () => {
   const clients: OwnerIssuedClient[] = [
-    { client_id: "c1", client_name: "Claude Desktop", active_token_count: 2, created_at: "2026-06-01T00:00:00Z" },
+    { active_token_count: 2, client_id: "c1", client_name: "Claude Desktop", created_at: "2026-06-01T00:00:00Z" },
   ];
   const grant: GrantSummary = {
-    object: "grant_summary",
-    grant_id: "g1",
     client_id: "Atlas Mortgage",
     connector_id: "plaid",
-    status: "active",
-    first_at: "2026-06-01T00:00:00Z",
-    last_at: "2026-06-12T00:00:00Z",
     event_count: 5,
-    kinds: ["pay_statements"],
     failure: null,
+    first_at: "2026-06-01T00:00:00Z",
+    grant_id: "g1",
+    kinds: ["pay_statements"],
+    last_at: "2026-06-12T00:00:00Z",
+    object: "grant_summary",
+    status: "active",
   };
   const readTrace: TraceSummary = {
-    object: "trace_summary",
-    trace_id: "t1",
-    status: "succeeded",
     actor_id: "Claude Desktop",
     actor_type: "client",
     client_id: "Claude Desktop",
-    grant_id: null,
-    run_id: null,
-    request_id: null,
-    first_at: "2026-06-13T00:00:00Z",
-    last_at: "2026-06-13T00:00:00Z",
     event_count: 412,
-    kinds: ["transactions"],
     failure: null,
+    first_at: "2026-06-13T00:00:00Z",
+    grant_id: null,
+    kinds: ["transactions"],
+    last_at: "2026-06-13T00:00:00Z",
+    object: "trace_summary",
+    request_id: null,
+    run_id: null,
+    status: "succeeded",
+    trace_id: "t1",
   };
   const data = buildStandingData(baseInputs({ bearerClients: clients, grants: [grant], traces: [readTrace] }));
   assert.equal(data.bearers.length, 1);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.match(data.bearers[0]?.how ?? "", BEARER_HOW_RE);
   assert.equal(data.relationships.length, 1);
   assert.equal(data.relationships[0]?.reads, "reads only your pay");
@@ -1438,135 +1494,142 @@ test("buildStandingData wires bearers, relationships, lately, attention", () => 
   assert.equal(data.relationships[0]?.actionHref, HREFS.grant("g1"));
   assert.equal(data.lately.length, 1);
   assert.equal(data.lately[0]?.deny, false);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.match(data.lately[0]?.text.rest ?? "", LATELY_READ_RE);
   assert.equal(data.attention.length, 0);
 });
 
 test("lately uses trace client metadata instead of raw client ids", () => {
   const trace: TraceSummary = {
-    object: "trace_summary",
-    trace_id: "trc_named",
-    status: "succeeded",
     actor_id: "client",
     actor_type: "client",
-    client_id: "cli_named",
     client: {
       client_id: "cli_named",
       client_name: "Claude",
       registration_mode: "dynamic",
     },
-    grant_id: null,
-    run_id: null,
-    request_id: null,
-    first_at: "2026-06-13T00:00:00Z",
-    last_at: "2026-06-13T00:00:00Z",
+    client_id: "cli_named",
     event_count: 3,
-    kinds: ["query.received"],
     failure: null,
+    first_at: "2026-06-13T00:00:00Z",
+    grant_id: null,
+    kinds: ["query.received"],
+    last_at: "2026-06-13T00:00:00Z",
+    object: "trace_summary",
+    request_id: null,
+    run_id: null,
+    status: "succeeded",
+    trace_id: "trc_named",
   };
 
   const data = buildStandingData(baseInputs({ traces: [trace] }));
 
   assert.equal(data.lately.length, 1);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(data.lately[0]?.text.who, "Claude");
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.notEqual(data.lately[0]?.text.who, "cli_named");
 });
 
 test("lately humanizes live denial reason codes instead of rendering raw diagnostics", () => {
   const trace: TraceSummary = {
-    object: "trace_summary",
-    trace_id: "trc_orphaned",
-    status: "denied",
     actor_id: "slack",
     actor_type: "client",
     client_id: "slack",
-    grant_id: null,
-    run_id: "run_orphaned",
-    request_id: null,
-    first_at: "2026-06-13T00:00:00Z",
-    last_at: "2026-06-13T00:00:00Z",
     event_count: 1,
-    kinds: ["query.rejected"],
     failure: {
       event_type: "run.started",
       reason: "orphaned_started_run",
     },
+    first_at: "2026-06-13T00:00:00Z",
+    grant_id: null,
+    kinds: ["query.rejected"],
+    last_at: "2026-06-13T00:00:00Z",
+    object: "trace_summary",
+    request_id: null,
+    run_id: "run_orphaned",
+    status: "denied",
+    trace_id: "trc_orphaned",
   };
 
   const data = buildStandingData(baseInputs({ traces: [trace] }));
 
   assert.equal(data.lately.length, 1);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(data.lately[0]?.text.rest, "tried to read — turned away, it was not tied to an active run.");
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.doesNotMatch(data.lately[0]?.text.rest ?? "", RAW_ORPHANED_RUN_RE);
 });
 
 test("lately does not fall through to unknown snake-case denial reasons", () => {
   const trace: TraceSummary = {
-    object: "trace_summary",
-    trace_id: "trc_unknown_denial",
-    status: "denied",
     actor_id: "client",
     actor_type: "client",
     client_id: "client",
-    grant_id: null,
-    run_id: null,
-    request_id: null,
-    first_at: "2026-06-13T00:00:00Z",
-    last_at: "2026-06-13T00:00:00Z",
     event_count: 1,
-    kinds: ["query.rejected"],
     failure: {
       event_type: "query.rejected",
       reason: "new_internal_reason_code",
     },
+    first_at: "2026-06-13T00:00:00Z",
+    grant_id: null,
+    kinds: ["query.rejected"],
+    last_at: "2026-06-13T00:00:00Z",
+    object: "trace_summary",
+    request_id: null,
+    run_id: null,
+    status: "denied",
+    trace_id: "trc_unknown_denial",
   };
 
   const data = buildStandingData(baseInputs({ traces: [trace] }));
 
   assert.equal(data.lately.length, 1);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(data.lately[0]?.text.rest, "tried to read — turned away, the server rejected it.");
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.doesNotMatch(data.lately[0]?.text.rest ?? "", RAW_REASON_CODE_RE);
 });
 
 test("lately does not overclaim off-surface expired or credential scope failures", () => {
   const traces: TraceSummary[] = [
     {
-      object: "trace_summary",
-      trace_id: "trc_state_expired",
-      status: "denied",
       actor_id: "state_client",
       actor_type: "client",
       client_id: "state_client",
-      grant_id: null,
-      run_id: null,
-      request_id: null,
-      first_at: "2026-06-13T00:00:00Z",
-      last_at: "2026-06-13T00:00:00Z",
       event_count: 1,
-      kinds: ["query.rejected"],
       failure: {
         event_type: "query.rejected",
         reason: "state_expired",
       },
+      first_at: "2026-06-13T00:00:00Z",
+      grant_id: null,
+      kinds: ["query.rejected"],
+      last_at: "2026-06-13T00:00:00Z",
+      object: "trace_summary",
+      request_id: null,
+      run_id: null,
+      status: "denied",
+      trace_id: "trc_state_expired",
     },
     {
-      object: "trace_summary",
-      trace_id: "trc_credential_scope",
-      status: "denied",
       actor_id: "credential_client",
       actor_type: "client",
       client_id: "credential_client",
-      grant_id: null,
-      run_id: null,
-      request_id: null,
-      first_at: "2026-06-13T00:00:01Z",
-      last_at: "2026-06-13T00:00:01Z",
       event_count: 1,
-      kinds: ["query.rejected"],
       failure: {
         event_type: "query.rejected",
         reason: "github_credential_insufficient_scope",
       },
+      first_at: "2026-06-13T00:00:01Z",
+      grant_id: null,
+      kinds: ["query.rejected"],
+      last_at: "2026-06-13T00:00:01Z",
+      object: "trace_summary",
+      request_id: null,
+      run_id: null,
+      status: "denied",
+      trace_id: "trc_credential_scope",
     },
   ];
 
@@ -1580,52 +1643,56 @@ test("lately does not overclaim off-surface expired or credential scope failures
 
 test("lately does not bold raw technical client ids when metadata is missing", () => {
   const trace: TraceSummary = {
-    object: "trace_summary",
-    trace_id: "trc_raw",
-    status: "succeeded",
     actor_id: "cli_raw",
     actor_type: "client",
     client_id: "cli_raw",
-    grant_id: null,
-    run_id: null,
-    request_id: null,
-    first_at: "2026-06-13T00:00:00Z",
-    last_at: "2026-06-13T00:00:00Z",
     event_count: 3,
-    kinds: ["query.received"],
     failure: null,
+    first_at: "2026-06-13T00:00:00Z",
+    grant_id: null,
+    kinds: ["query.received"],
+    last_at: "2026-06-13T00:00:00Z",
+    object: "trace_summary",
+    request_id: null,
+    run_id: null,
+    status: "succeeded",
+    trace_id: "trc_raw",
   };
 
   const data = buildStandingData(baseInputs({ traces: [trace] }));
 
   assert.equal(data.lately.length, 1);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(data.lately[0]?.text.who, "An app");
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.notEqual(data.lately[0]?.text.who, "cli_raw");
 });
 
 test("lately does not render bare opaque client ids as names", () => {
   const opaqueClientId = "d9f1c1bb7a5c4a6f9e8d7c6b5a4f3210";
   const trace: TraceSummary = {
-    object: "trace_summary",
-    trace_id: "trc_opaque",
-    status: "succeeded",
     actor_id: opaqueClientId,
     actor_type: "unknown",
     client_id: opaqueClientId,
-    grant_id: null,
-    run_id: null,
-    request_id: null,
-    first_at: "2026-06-13T00:00:00Z",
-    last_at: "2026-06-13T00:00:00Z",
     event_count: 3,
-    kinds: ["query.received"],
     failure: null,
+    first_at: "2026-06-13T00:00:00Z",
+    grant_id: null,
+    kinds: ["query.received"],
+    last_at: "2026-06-13T00:00:00Z",
+    object: "trace_summary",
+    request_id: null,
+    run_id: null,
+    status: "succeeded",
+    trace_id: "trc_opaque",
   };
 
   const data = buildStandingData(baseInputs({ traces: [trace] }));
 
   assert.equal(data.lately.length, 1);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(data.lately[0]?.text.who, "Someone");
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.notEqual(data.lately[0]?.text.who, opaqueClientId);
 });
 
@@ -1633,73 +1700,77 @@ test("lately summarizes identical recent reads instead of repeating the same row
   const repeated = Array.from(
     { length: 5 },
     (_, i): TraceSummary => ({
-      object: "trace_summary",
-      trace_id: `trc_longview_${i}`,
-      status: "succeeded",
       actor_id: "client",
       actor_type: "client",
-      client_id: "cli_longview",
       client: {
         client_id: "cli_longview",
         client_name: "Longview CLI",
         registration_mode: "pre_registered_public",
       },
-      grant_id: null,
-      run_id: null,
-      request_id: null,
-      first_at: "2026-06-13T00:00:00Z",
-      last_at: "2026-06-13T00:00:00Z",
+      client_id: "cli_longview",
       event_count: 3,
-      kinds: ["query.received"],
       failure: null,
+      first_at: "2026-06-13T00:00:00Z",
+      grant_id: null,
+      kinds: ["query.received"],
+      last_at: "2026-06-13T00:00:00Z",
+      object: "trace_summary",
+      request_id: null,
+      run_id: null,
+      status: "succeeded",
+      trace_id: `trc_longview_${i}`,
     })
   );
-  const baseRepeated = repeated[0];
+  const [baseRepeated] = repeated;
   assert.ok(baseRepeated);
   const different: TraceSummary = {
     ...baseRepeated,
-    trace_id: "trc_controller",
     actor_id: "controller",
     actor_type: "runtime",
-    client_id: null,
     client: undefined,
+    client_id: null,
     event_count: 1,
+    trace_id: "trc_controller",
   };
 
   const data = buildStandingData(baseInputs({ traces: [...repeated, different] }));
 
   assert.equal(data.lately.length, 2);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(data.lately[0]?.text.who, "Longview CLI");
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(data.lately[0]?.text.rest, "read 3 records 5 times.");
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(data.lately[1]?.text.who, "controller");
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(data.lately[1]?.text.rest, "read 1 record.");
 });
 
 test("relationships summarize grants by client instead of repeating one row per grant", () => {
   const grants: GrantSummary[] = [
     {
-      object: "grant_summary",
-      grant_id: "g1",
       client_id: "CLI agent",
       connector_id: "pdpp",
-      status: "active",
-      first_at: "2026-06-01T00:00:00Z",
-      last_at: "2026-06-10T00:00:00Z",
       event_count: 5,
-      kinds: ["token.issued", "query.received"],
       failure: null,
+      first_at: "2026-06-01T00:00:00Z",
+      grant_id: "g1",
+      kinds: ["token.issued", "query.received"],
+      last_at: "2026-06-10T00:00:00Z",
+      object: "grant_summary",
+      status: "active",
     },
     {
-      object: "grant_summary",
-      grant_id: "g2",
       client_id: "CLI agent",
       connector_id: "pdpp",
-      status: "active",
-      first_at: "2026-06-02T00:00:00Z",
-      last_at: "2026-06-12T12:00:00Z",
       event_count: 7,
-      kinds: ["disclosure.served", "query.rejected"],
       failure: null,
+      first_at: "2026-06-02T00:00:00Z",
+      grant_id: "g2",
+      kinds: ["disclosure.served", "query.rejected"],
+      last_at: "2026-06-12T12:00:00Z",
+      object: "grant_summary",
+      status: "active",
     },
   ];
 
@@ -1719,16 +1790,16 @@ test("relationships summarize grants by client instead of repeating one row per 
 test("relationships use known client names without replacing the verified client id", () => {
   const grants: GrantSummary[] = [
     {
-      object: "grant_summary",
-      grant_id: "g1",
       client_id: "cli_known",
       connector_id: "pdpp",
-      status: "active",
-      first_at: "2026-06-01T00:00:00Z",
-      last_at: "2026-06-12T12:00:00Z",
       event_count: 7,
-      kinds: ["query.received"],
       failure: null,
+      first_at: "2026-06-01T00:00:00Z",
+      grant_id: "g1",
+      kinds: ["query.received"],
+      last_at: "2026-06-12T12:00:00Z",
+      object: "grant_summary",
+      status: "active",
     },
   ];
   const clients: OwnerIssuedClient[] = [
@@ -1751,21 +1822,21 @@ test("relationships use known client names without replacing the verified client
 test("relationships prefer grant client metadata over owner-token labels", () => {
   const grants: GrantSummary[] = [
     {
-      object: "grant_summary",
-      grant_id: "g1",
-      client_id: "cli_known",
       client: {
         client_id: "cli_known",
         client_name: "Claude Code",
         registration_mode: "dynamic",
       },
+      client_id: "cli_known",
       connector_id: "pdpp",
-      status: "active",
-      first_at: "2026-06-01T00:00:00Z",
-      last_at: "2026-06-12T12:00:00Z",
       event_count: 7,
-      kinds: ["query.received"],
       failure: null,
+      first_at: "2026-06-01T00:00:00Z",
+      grant_id: "g1",
+      kinds: ["query.received"],
+      last_at: "2026-06-12T12:00:00Z",
+      object: "grant_summary",
+      status: "active",
     },
   ];
   const clients: OwnerIssuedClient[] = [
@@ -1788,16 +1859,16 @@ test("relationships do not render raw URL client ids as owner-facing names", () 
   const urlClientId = "https://chatgpt.com/oauth/Dyp26IIu2iQg/client.json?token_endpoint_auth_method=none";
   const grants: GrantSummary[] = [
     {
-      object: "grant_summary",
-      grant_id: "g1",
       client_id: urlClientId,
       connector_id: "pdpp",
-      status: "active",
-      first_at: "2026-06-01T00:00:00Z",
-      last_at: "2026-06-12T12:00:00Z",
       event_count: 7,
-      kinds: ["query.received"],
       failure: null,
+      first_at: "2026-06-01T00:00:00Z",
+      grant_id: "g1",
+      kinds: ["query.received"],
+      last_at: "2026-06-12T12:00:00Z",
+      object: "grant_summary",
+      status: "active",
     },
   ];
 
@@ -1813,16 +1884,16 @@ test("relationships do not render bare UUID or opaque client ids as owner-facing
   for (const clientId of ["0b643449-9516-45e0-b375-7feb9ecb7a58", "d9f1c1bb7a5c4a6f9e8d7c6b5a4f3210"]) {
     const grants: GrantSummary[] = [
       {
-        object: "grant_summary",
-        grant_id: "g1",
         client_id: clientId,
         connector_id: "pdpp",
-        status: "active",
-        first_at: "2026-06-01T00:00:00Z",
-        last_at: "2026-06-12T12:00:00Z",
         event_count: 7,
-        kinds: ["query.received"],
         failure: null,
+        first_at: "2026-06-01T00:00:00Z",
+        grant_id: "g1",
+        kinds: ["query.received"],
+        last_at: "2026-06-12T12:00:00Z",
+        object: "grant_summary",
+        status: "active",
       },
     ];
 
@@ -1837,16 +1908,16 @@ test("relationships do not render bare UUID or opaque client ids as owner-facing
 
 test("revoked grants are excluded from relationships", () => {
   const revoked: GrantSummary = {
-    object: "grant_summary",
-    grant_id: "g2",
     client_id: "Old App",
     connector_id: null,
-    status: "revoked",
-    first_at: "2026-05-01T00:00:00Z",
-    last_at: "2026-05-02T00:00:00Z",
     event_count: 0,
-    kinds: [],
     failure: null,
+    first_at: "2026-05-01T00:00:00Z",
+    grant_id: "g2",
+    kinds: [],
+    last_at: "2026-05-02T00:00:00Z",
+    object: "grant_summary",
+    status: "revoked",
   };
   const data = buildStandingData(baseInputs({ grants: [revoked] }));
   assert.equal(data.relationships.length, 0);

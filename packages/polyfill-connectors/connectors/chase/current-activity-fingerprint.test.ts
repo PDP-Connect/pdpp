@@ -170,9 +170,11 @@ test("current_activity: a pending → posted transition on a stable ui_transacti
   await runCurrentActivity(run2.deps, postedHtml(), [ACCOUNT]);
   const reemitted = run2.emitted.filter((r) => r.stream === "current_activity");
   assert.equal(reemitted.length, 1, "only the pending→posted row re-emits; the unchanged payroll row stays silent");
-  assert.equal((reemitted[0]?.data as { id: string }).id, `${ACCOUNT.internal_id}|txn_20260514_A1`);
-  assert.equal((reemitted[0]?.data as { status: string }).status, "posted");
-  assert.equal((reemitted[0]?.data as { posted_date: string }).posted_date, "2026-05-14");
+  const [row] = reemitted;
+  assert.ok(row, "row was captured");
+  assert.equal((row.data as { id: string }).id, `${ACCOUNT.internal_id}|txn_20260514_A1`);
+  assert.equal((row.data as { status: string }).status, "posted");
+  assert.equal((row.data as { posted_date: string }).posted_date, "2026-05-14");
 });
 
 test("current_activity: NO prune — a row dropped from a narrower overview keeps its fingerprint", async () => {

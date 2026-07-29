@@ -12,15 +12,21 @@
     "node": ">=22.14.0"
   },
   "exports": {
-    ".": "./src/index.js"
+    ".": "./dist/index.js"
   },
   "files": [
-    "src/",
+    "dist/",
     "README.md"
   ],
   "scripts": {
-    "test": "node --test test/*.test.js",
-    "verify": "pnpm test"
+    "build": "node --experimental-strip-types scripts/build.ts",
+    "prepare": "pnpm build",
+    "prepack": "pnpm build",
+    "test": "node --experimental-strip-types scripts/run-tests.ts",
+    "validate-package": "pnpm build && node --experimental-strip-types scripts/validate-package.ts",
+    "pack-install-test": "pnpm build && node --experimental-strip-types scripts/pack-install-test.ts",
+    "verify:node-22.14": "pnpm build && node --experimental-strip-types scripts/verify-node-22.14.ts",
+    "verify": "pnpm test && pnpm validate-package && pnpm pack-install-test"
   },
   "keywords": [
     "pdpp",
@@ -34,5 +40,13 @@
     "provenance": false,
     "registry": "https://registry.npmjs.org/",
     "tag": "latest"
-  }
+  },
+  "directories": {
+    "test": "test"
+  },
+  "author": "",
+  "bugs": {
+    "url": "https://github.com/PDP-Connect/pdpp/issues"
+  },
+  "homepage": "https://github.com/PDP-Connect/pdpp#readme"
 }

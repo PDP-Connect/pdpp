@@ -46,10 +46,10 @@ interface RouteRequest {
 }
 
 interface RouteResponse {
-  end(): unknown;
-  json(body: unknown): unknown;
-  setHeader(name: string, value: string): unknown;
-  status(code: number): RouteResponse;
+  end: () => unknown;
+  json: (body: unknown) => unknown;
+  setHeader: (name: string, value: string) => unknown;
+  status: (code: number) => RouteResponse;
 }
 
 type NextFn = () => void;
@@ -57,9 +57,9 @@ type MiddlewareFn = (req: RouteRequest, res: RouteResponse, next: NextFn) => Pro
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => Promise<void>;
 
 interface AppLike {
-  delete(path: string, ...args: RouteArg<RouteHandler | MiddlewareFn>[]): AppLike;
-  patch(path: string, ...args: RouteArg<RouteHandler | MiddlewareFn>[]): AppLike;
-  post(path: string, ...args: RouteArg<RouteHandler | MiddlewareFn>[]): AppLike;
+  delete: (path: string, ...args: RouteArg<RouteHandler | MiddlewareFn>[]) => AppLike;
+  patch: (path: string, ...args: RouteArg<RouteHandler | MiddlewareFn>[]) => AppLike;
+  post: (path: string, ...args: RouteArg<RouteHandler | MiddlewareFn>[]) => AppLike;
 }
 
 // ─── Injected capabilities ───────────────────────────────────────────────────
@@ -67,35 +67,35 @@ interface AppLike {
 /** Thin rate-limiter returned by `createPublicDcrRateLimiter` in index.js. */
 export interface PublicDcrRateLimiter {
   /** Returns the retry-after seconds if the IP is rate-limited, null otherwise. */
-  check(req: RouteRequest): number | null;
+  check: (req: RouteRequest) => number | null;
 }
 
 export interface MountAsDcrContext {
   /** Creates a new trace context `{ request_id, trace_id, scenario_id }`. */
-  createTraceContext(): { request_id: string; trace_id: string; scenario_id?: string };
+  createTraceContext: () => { request_id: string; trace_id: string; scenario_id?: string };
   /** Whether DCR is enabled on this server instance. */
   dcrEnabled: boolean;
   /** Auth-layer capability: delete a registered client and cascade-revoke grants. */
   deleteRegisteredClient: Parameters<typeof executeAsDcrDelete>[1]["deleteRegisteredClient"];
   /** Emits a spine event (fire-and-forget; caller awaits). */
-  emitSpineEvent(event: Record<string, unknown>): Promise<void>;
+  emitSpineEvent: (event: Record<string, unknown>) => Promise<void>;
   /** Writes an OAuth error envelope (`error` / `error_description`). */
-  oauthError(res: unknown, status: number, code: string, message: string): unknown;
+  oauthError: (res: unknown, status: number, code: string, message: string) => unknown;
   /** Subject ID to use for the DELETE actor when the session sub is absent. */
   ownerSubjectId: string;
   pdppError: PdppErrorFn;
   /** IP-keyed rate limiter for public (unauthenticated) registrations. */
   publicDcrRateLimiter: PublicDcrRateLimiter;
   /** Reads the owner session from the request, returns null if absent. */
-  readOwnerSession(req: RouteRequest): { sub?: string } | null;
+  readOwnerSession: (req: RouteRequest) => { sub?: string } | null;
   /** Auth-layer capability: register a new dynamic client. */
   registerDynamicClient: Parameters<typeof executeAsDcrRegister>[1]["registerDynamicClient"];
   /** Owner-session enforcement middleware; rejects the request if not authenticated. */
   requireOwnerSession: MiddlewareFn;
   /** Initial-access-token values accepted for this request; filtered per origin. */
-  resolveInitialAccessTokensForRequest(req: RouteRequest): readonly string[];
+  resolveInitialAccessTokensForRequest: (req: RouteRequest) => readonly string[];
   /** Attaches a trace-id header to the response. */
-  setReferenceTraceId(res: unknown, traceId: string): void;
+  setReferenceTraceId: (res: unknown, traceId: string) => void;
   /** Auth-layer capability: update a registered client's owner-facing label. */
   updateRegisteredClientName: Parameters<typeof executeAsDcrUpdate>[1]["updateRegisteredClientName"];
 }
@@ -125,15 +125,8 @@ export function mountAsDcr(app: AppLike, ctx: MountAsDcrContext): void {
       if (retryAfter) {
         res.setHeader("Retry-After", String(retryAfter));
         await ctx.emitSpineEvent({
-          event_type: "client.register_rejected",
-          trace_id: traceContext.trace_id,
-          scenario_id: traceContext.scenario_id,
-          request_id: traceContext.request_id,
-          actor_type: "client",
           actor_id: "dynamic_registration",
-          object_type: "client_registration",
-          object_id: traceContext.request_id,
-          status: "rejected",
+          actor_type: "client",
           data: {
             ...summarizeDcrRegisterRequest(req.body as Record<string, unknown> | null | undefined),
             error: {
@@ -141,6 +134,13 @@ export function mountAsDcr(app: AppLike, ctx: MountAsDcrContext): void {
               message: "Too many public client registration attempts; retry later",
             },
           },
+          event_type: "client.register_rejected",
+          object_id: traceContext.request_id,
+          object_type: "client_registration",
+          request_id: traceContext.request_id,
+          scenario_id: traceContext.scenario_id,
+          status: "rejected",
+          trace_id: traceContext.trace_id,
         });
         ctx.oauthError(res, 429, "slow_down", "Too many public client registration attempts; retry later");
         return;
@@ -149,8 +149,8 @@ export function mountAsDcr(app: AppLike, ctx: MountAsDcrContext): void {
 
     const outcome = await executeAsDcrRegister(
       {
-        body: req.body as Record<string, unknown> | null | undefined,
         authorizationHeader,
+        body: req.body as Record<string, unknown> | null | undefined,
         dcrEnabled: ctx.dcrEnabled,
         initialAccessTokens: ctx.resolveInitialAccessTokensForRequest(req),
         ownerSessionSubjectId: ownerSession?.sub || null,
@@ -160,33 +160,33 @@ export function mountAsDcr(app: AppLike, ctx: MountAsDcrContext): void {
 
     if (outcome.outcome === "success") {
       await ctx.emitSpineEvent({
-        event_type: "client.registered",
-        trace_id: traceContext.trace_id,
-        scenario_id: traceContext.scenario_id,
-        request_id: traceContext.request_id,
-        actor_type: "client",
         actor_id: outcome.registered.client_id,
-        object_type: "client",
-        object_id: outcome.registered.client_id,
-        status: "succeeded",
+        actor_type: "client",
         client_id: outcome.registered.client_id,
         data: outcome.spineData as unknown as Record<string, unknown>,
+        event_type: "client.registered",
+        object_id: outcome.registered.client_id,
+        object_type: "client",
+        request_id: traceContext.request_id,
+        scenario_id: traceContext.scenario_id,
+        status: "succeeded",
+        trace_id: traceContext.trace_id,
       });
       res.status(outcome.status).json(outcome.registered);
       return;
     }
 
     await ctx.emitSpineEvent({
-      event_type: "client.register_rejected",
-      trace_id: traceContext.trace_id,
-      scenario_id: traceContext.scenario_id,
-      request_id: traceContext.request_id,
-      actor_type: "client",
       actor_id: "dynamic_registration",
-      object_type: "client_registration",
-      object_id: traceContext.request_id,
-      status: "rejected",
+      actor_type: "client",
       data: outcome.spineData as unknown as Record<string, unknown>,
+      event_type: "client.register_rejected",
+      object_id: traceContext.request_id,
+      object_type: "client_registration",
+      request_id: traceContext.request_id,
+      scenario_id: traceContext.scenario_id,
+      status: "rejected",
+      trace_id: traceContext.trace_id,
     });
     ctx.oauthError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
   };
@@ -204,9 +204,9 @@ export function mountAsDcr(app: AppLike, ctx: MountAsDcrContext): void {
     const actingSubjectId: string = req.ownerSession?.sub ?? ctx.ownerSubjectId;
     const outcome = await executeAsDcrUpdate(
       {
-        clientId: decodeURIComponent(req.params.clientId as string),
-        body: req.body,
         actingSubjectId,
+        body: req.body,
+        clientId: decodeURIComponent(req.params.clientId as string),
       },
       { updateRegisteredClientName: ctx.updateRegisteredClientName }
     );
@@ -230,8 +230,8 @@ export function mountAsDcr(app: AppLike, ctx: MountAsDcrContext): void {
     const actingSubjectId: string = req.ownerSession?.sub ?? ctx.ownerSubjectId;
     const outcome = await executeAsDcrDelete(
       {
-        clientId: decodeURIComponent(req.params.clientId as string),
         actingSubjectId,
+        clientId: decodeURIComponent(req.params.clientId as string),
         requestId: traceContext.request_id,
         traceId: traceContext.trace_id,
       },

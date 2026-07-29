@@ -46,7 +46,7 @@ export function resolveAllowedAddresses(
  * distinct in TypeScript. Callers cast at the `fetch({ dispatcher })` boundary.
  */
 export function createPinnedDispatcher(validatedAddresses: readonly string[]): {
-  close(): Promise<void>;
+  close: () => Promise<void>;
 };
 
 /**

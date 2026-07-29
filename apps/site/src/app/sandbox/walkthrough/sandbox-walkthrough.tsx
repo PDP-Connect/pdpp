@@ -29,25 +29,25 @@ import {
 } from "./state.ts";
 
 const STEP_COPY: Record<Exclude<SandboxPhase, "initial">, { eyebrow: string; title: string; body: string }> = {
-  requested: {
-    eyebrow: "Step 1 of 4",
-    title: "Quill Tax asks for scoped pay statements",
-    body: "A fictional tax-prep app stages a request through the authorization endpoint. It names the streams, fields, and connector it needs, plus a short purpose and self-asserted commitments.",
-  },
   granted: {
+    body: "The owner sees exactly what was asked for, prunes anything they don't want shared (no SSN, no bank number), and issues a single-use grant scoped to the requested fields.",
     eyebrow: "Step 2 of 4",
     title: "Sam approves a bounded grant",
-    body: "The owner sees exactly what was asked for, prunes anything they don't want shared (no SSN, no bank number), and issues a single-use grant scoped to the requested fields.",
   },
   queried: {
+    body: "The resource server projects records down to the granted fields and returns them to the client. Nothing outside the scope is reachable through this grant.",
     eyebrow: "Step 3 of 4",
     title: "Quill Tax reads only the granted fields",
-    body: "The resource server projects records down to the granted fields and returns them to the client. Nothing outside the scope is reachable through this grant.",
+  },
+  requested: {
+    body: "A fictional tax-prep app stages a request through the authorization endpoint. It names the streams, fields, and connector it needs, plus a short purpose and self-asserted commitments.",
+    eyebrow: "Step 1 of 4",
+    title: "Quill Tax asks for scoped pay statements",
   },
   revoked: {
+    body: "Revocation tears the grant down. Any further read attempt against the same grant id receives a 403 and a `grant_revoked` error code.",
     eyebrow: "Step 4 of 4",
     title: "Sam revokes; the next read is refused",
-    body: "Revocation tears the grant down. Any further read attempt against the same grant id receives a 403 and a `grant_revoked` error code.",
   },
 };
 
@@ -63,58 +63,58 @@ function nextActions(state: SandboxState): readonly ButtonSpec[] {
     case "initial":
       return [
         {
-          label: state.decision === "denied" ? "Stage a new request" : "Stage the request",
           action: { type: "request" },
-          variant: "default",
           hint: "Simulates a client POST to /par with the proposed scope.",
+          label: state.decision === "denied" ? "Stage a new request" : "Stage the request",
+          variant: "default",
         },
       ];
     case "requested":
       return [
         {
-          label: "Approve as Sam",
           action: { type: "approve" },
-          variant: "default",
           hint: "Issues a grant scoped to the listed fields only.",
+          label: "Approve as Sam",
+          variant: "default",
         },
         {
-          label: "Deny as Sam",
           action: { type: "deny" },
-          variant: "outline",
           hint: "Sends the visitor back to the start. No grant is created.",
+          label: "Deny as Sam",
+          variant: "outline",
         },
       ];
     case "granted":
       return [
         {
-          label: "Run the scoped query",
           action: { type: "query" },
-          variant: "default",
           hint: "GETs records using the new grant; only granted fields come back.",
+          label: "Run the scoped query",
+          variant: "default",
         },
         {
-          label: "Revoke before any read",
           action: { type: "revoke" },
-          variant: "destructive",
           hint: "Owner can revoke at any time, even before the client reads.",
+          label: "Revoke before any read",
+          variant: "destructive",
         },
       ];
     case "queried":
       return [
         {
-          label: "Revoke the grant",
           action: { type: "revoke" },
-          variant: "destructive",
           hint: "Tears the grant down and refuses any further read.",
+          label: "Revoke the grant",
+          variant: "destructive",
         },
       ];
     case "revoked":
       return [
         {
-          label: "Reset and replay",
           action: { type: "reset" },
-          variant: "outline",
           hint: "Clears all sandbox state and returns to step 0.",
+          label: "Reset and replay",
+          variant: "outline",
         },
       ];
     default:

@@ -32,7 +32,7 @@ function exploreWindowFromEnvelope(envelope: TimelineEnvelope): { since: string;
     return null;
   }
   const sorted = timestamps.slice().sort();
-  const firstTimestamp = sorted[0];
+  const [firstTimestamp] = sorted;
   const lastTimestamp = sorted.at(-1);
   if (!(firstTimestamp && lastTimestamp)) {
     return null;
@@ -86,10 +86,10 @@ export function exploreHrefFromEnvelope(routes: Routes, envelope: TimelineEnvelo
     return null;
   }
   return buildExplorerHref(routes, {
-    since: exploreWindow.since,
-    until: exploreWindow.until,
     connectionIds,
+    since: exploreWindow.since,
     streams: streams.length > 0 ? streams : undefined,
+    until: exploreWindow.until,
   });
 }
 
@@ -102,9 +102,9 @@ function pivotsForSubject(envelope: TimelineEnvelope, subject: TimelineSubject):
   const collect = (key: "trace_id" | "grant_id" | "run_id"): string[] =>
     Array.from(new Set(envelope.events.flatMap((e) => (e[key] ? [e[key] as string] : []))));
   const all: PivotKind[] = [
-    { kind: "trace", ids: collect("trace_id") },
-    { kind: "grant", ids: collect("grant_id") },
-    { kind: "run", ids: collect("run_id") },
+    { ids: collect("trace_id"), kind: "trace" },
+    { ids: collect("grant_id"), kind: "grant" },
+    { ids: collect("run_id"), kind: "run" },
   ];
   return all.filter((p) => p.kind !== subject && p.ids.length > 0);
 }

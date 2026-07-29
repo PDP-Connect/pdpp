@@ -66,6 +66,7 @@
  *      `rendered-verdict.test.js`, not just an array-membership assertion.
  */
 
+import { isNullish } from "../lib/nullish.ts";
 import type { ConnectionHealthSnapshot } from "./connection-health.ts";
 import type { RenderedVerdict, ScheduleEvidence } from "./rendered-verdict.ts";
 
@@ -258,13 +259,13 @@ export function ownerStateCausalEvidenceFrom(
   classifiedRun: ClassifiedRunForOwnerState | null,
   freshnessCapturedAt: string | null
 ): { readonly as_of: string | null; readonly source: OwnerStateEvidenceSource } {
-  if (classifiedRun != null) {
+  if (!isNullish(classifiedRun)) {
     return {
       as_of: classifiedRun.last_at,
       source: classifiedRun.succeeded ? "last_successful_freshness" : "latest_terminal_run",
     };
   }
-  if (freshnessCapturedAt != null) {
+  if (!isNullish(freshnessCapturedAt)) {
     return { as_of: freshnessCapturedAt, source: "last_successful_freshness" };
   }
   return { as_of: null, source: "none" };
@@ -435,9 +436,9 @@ export function deriveOwnerState(
 ): OwnerState {
   const resolver = resolveOwnerStateResolver(verdict, snapshot, evidence);
   return {
-    resolver,
-    owner_of_state: RESOLVER_OWNER[resolver],
     evidence_as_of: evidence.as_of,
+    owner_of_state: RESOLVER_OWNER[resolver],
     posture: derivePosture(evidence),
+    resolver,
   };
 }

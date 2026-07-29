@@ -42,12 +42,15 @@ function makeCookie(name: string, value: string): BrowserCookie {
   };
 }
 
-function makeContext(cookieBatches: BrowserCookie[][]): BrowserContext {
+function makeContext(cookieBatches: BrowserCookie[][], isAuthenticated?: () => boolean): BrowserContext {
   let calls = 0;
   const fake: Pick<BrowserContext, "cookies"> = {
     cookies(..._urls: Parameters<BrowserContext["cookies"]>): ReturnType<BrowserContext["cookies"]> {
+      if (isAuthenticated?.()) {
+        return Promise.resolve([makeCookie("UsaaMbWebMemberLoggedIn", "true")]);
+      }
       const batch = cookieBatches[Math.min(calls, Math.max(cookieBatches.length - 1, 0))] ?? [];
-      calls++;
+      calls += 1;
       return Promise.resolve(batch);
     },
   };
@@ -77,13 +80,17 @@ function makePage(loginError: Error, bodyText = "Log Off"): FakePageHarness {
   return { gotoCalls, page: fake as Page };
 }
 
-function makeInteractionHarness(status: InteractionResponse["status"] = "success"): InteractionHarness {
+function makeInteractionHarness(
+  status: InteractionResponse["status"] = "success",
+  data?: InteractionResponse["data"]
+): InteractionHarness {
   const requests: InteractionRequest[] = [];
   return {
     requests,
     sendInteraction(req: InteractionRequest): Promise<InteractionResponse> {
       requests.push(req);
       return Promise.resolve({
+        ...(data ? { data } : {}),
         request_id: req.request_id ?? "test_interaction",
         status,
         type: "INTERACTION_RESPONSE",
@@ -113,6 +120,14 @@ function makePasswordStepFailurePage(bodyText: string, dashboardBodyText?: strin
     { name: "memberId", placeholder: "", type: "text" },
   ]) as Page["evaluate"];
   fake.fill = (): Promise<void> => Promise.resolve();
+  fake.getByRole = (() => {
+    const empty: Pick<Locator, "count" | "isVisible" | "nth"> = {
+      count: (): Promise<number> => Promise.resolve(0),
+      isVisible: (): Promise<boolean> => Promise.resolve(false),
+      nth: (): Locator => empty as Locator,
+    };
+    return empty as Locator;
+  }) as Page["getByRole"];
   fake.goto = ((url: string): ReturnType<Page["goto"]> => {
     currentUrl = url;
     return Promise.resolve(null);
@@ -135,6 +150,150 @@ function makePasswordStepFailurePage(bodyText: string, dashboardBodyText?: strin
   fake.waitForTimeout = (): Promise<void> => Promise.resolve();
   fake.url = (): string => currentUrl;
   return fake as Page;
+}
+
+type SourceUnavailableRecoveryFixture =
+  | "action_error"
+  | "ambiguous"
+  | "foreign_origin"
+  | "member_id_form_missing"
+  | "resume_error"
+  | "selected";
+
+function makeSourceUnavailableRecoveryPage(fixture: SourceUnavailableRecoveryFixture): {
+  actionClicks: number;
+  filledSelectors: string[];
+  otpResponseAuthenticated: boolean;
+  page: Page;
+  roleQueries: Array<{ name: unknown; role: string }>;
+} {
+  let actionClicked = false;
+  let actionClicks = 0;
+  let otpChallengeActive = false;
+  let otpResponseAuthenticated = false;
+  let otpResponse = "";
+  let passwordFieldReady = false;
+  let currentUrl = LOGIN_URL;
+  const filledSelectors: string[] = [];
+  const roleQueries: Array<{ name: unknown; role: string }> = [];
+  const actionCount = fixture === "ambiguous" ? 2 : 1;
+  const memberIdLocator: Pick<Locator, "press"> = {
+    press: (): Promise<void> => Promise.resolve(),
+  };
+  const nextButtonLocator: Pick<Locator, "waitFor"> = {
+    waitFor: (): Promise<void> => Promise.resolve(),
+  };
+  const bodyLocator: Pick<Locator, "innerText"> = {
+    innerText: (): Promise<string> => {
+      if (currentUrl === DASHBOARD_URL) {
+        return Promise.resolve("Log Off");
+      }
+      if (otpChallengeActive) {
+        return Promise.resolve("Text security code");
+      }
+      return Promise.resolve("We are unable to complete your request. Our system is currently unavailable.");
+    },
+  };
+  const otpInputLocator: Pick<Locator, "fill" | "first"> = {
+    fill: (code: string): Promise<void> => {
+      otpResponse = code;
+      return Promise.resolve();
+    },
+    first: (): Locator => otpInputLocator as Locator,
+  };
+  const textCodeChoiceLocator: Pick<Locator, "click" | "first"> = {
+    click: (): Promise<void> => Promise.resolve(),
+    first: (): Locator => textCodeChoiceLocator as Locator,
+  };
+  const actionLocator = (count: number, index: number): Locator => {
+    const locator: Pick<Locator, "click" | "count" | "isVisible" | "nth"> = {
+      click: (): Promise<void> => {
+        if (fixture === "action_error") {
+          return Promise.reject(new Error("action click failed"));
+        }
+        actionClicks += 1;
+        actionClicked = true;
+        currentUrl = fixture === "foreign_origin" ? "https://example.invalid/login" : LOGIN_URL;
+        return Promise.resolve();
+      },
+      count: (): Promise<number> => Promise.resolve(count),
+      isVisible: (): Promise<boolean> => Promise.resolve(index < count),
+      nth: (nextIndex: number): Locator => actionLocator(count, nextIndex),
+    };
+    return locator as Locator;
+  };
+  const fake: Partial<Page> = {};
+  fake.click = ((selector: string): Promise<void> => {
+    if (selector === "#next-button") {
+      if (actionClicked && !passwordFieldReady) {
+        passwordFieldReady = true;
+      } else if (passwordFieldReady) {
+        otpChallengeActive = true;
+      }
+    }
+    if (selector === 'button[type="submit"], #next-button' && otpChallengeActive) {
+      otpResponseAuthenticated = otpResponse === "123456";
+    }
+    return Promise.resolve();
+  }) as Page["click"];
+  fake.evaluate = ((): Promise<Array<{ name: string; placeholder: string; type: string }>> =>
+    Promise.resolve([{ name: "memberId", placeholder: "", type: "text" }])) as Page["evaluate"];
+  fake.fill = ((selector: string): Promise<void> => {
+    filledSelectors.push(selector);
+    if (fixture === "resume_error" && actionClicked && selector === 'input[name="memberId"]') {
+      return Promise.reject(new Error("resumed member-id fill failed"));
+    }
+    return Promise.resolve();
+  }) as Page["fill"];
+  fake.getByRole = ((role: "button" | "link", options: { name?: unknown }): Locator => {
+    roleQueries.push({ name: options.name, role });
+    return actionLocator(role === "button" ? actionCount : 0, 0);
+  }) as Page["getByRole"];
+  fake.goto = ((url: string): ReturnType<Page["goto"]> => {
+    currentUrl = url;
+    return Promise.resolve(null);
+  }) as Page["goto"];
+  fake.locator = ((selector: string): Locator => {
+    if (selector === "#next-button:not([disabled])") {
+      return nextButtonLocator as Locator;
+    }
+    if (selector === 'input[name="memberId"]') {
+      return memberIdLocator as Locator;
+    }
+    if (selector.includes("one-time-code")) {
+      return otpInputLocator as Locator;
+    }
+    if (selector.includes("Text security code to:")) {
+      return textCodeChoiceLocator as Locator;
+    }
+    return bodyLocator as Locator;
+  }) as Page["locator"];
+  fake.waitForLoadState = ((): Promise<void> => Promise.resolve()) as Page["waitForLoadState"];
+  fake.waitForSelector = ((selector: string): Promise<unknown> => {
+    if (selector === 'input[name="password"]' && !passwordFieldReady) {
+      return Promise.reject(new Error("password field unavailable"));
+    }
+    if (selector === 'input[name="memberId"]' && actionClicked && fixture === "member_id_form_missing") {
+      return Promise.reject(new Error("member-id form unavailable"));
+    }
+    if (selector.includes("one-time-code") && !otpChallengeActive) {
+      return Promise.reject(new Error("OTP challenge unavailable"));
+    }
+    return Promise.resolve({});
+  }) as Page["waitForSelector"];
+  fake.waitForTimeout = (): Promise<void> => Promise.resolve();
+  fake.url = (): string => currentUrl;
+  return {
+    get actionClicks(): number {
+      return actionClicks;
+    },
+    filledSelectors,
+    get otpResponseAuthenticated(): boolean {
+      return otpResponseAuthenticated;
+    },
+    page: fake as Page,
+    roleQueries,
+  };
 }
 
 function makePostPasswordSourceUnavailablePage(bodyText: string): Page {
@@ -344,7 +503,103 @@ test("classifyUsaaLoginStepFailure does not treat bare 'try again later' as sour
   );
 });
 
-test("ensureUsaaSession still routes a delayed USAA source-unavailable modal after member-id submit to genuine manual_action, with an owner-visible diagnostic note", async () => {
+test("ensureUsaaSession follows exactly one visible semantic login action, then authenticates through OTP", async () => {
+  await withUsaaCredentials(async () => {
+    const fixturePage = makeSourceUnavailableRecoveryPage("selected");
+    const { filledSelectors, page, roleQueries } = fixturePage;
+    const context = makeContext([[]], () => fixturePage.otpResponseAuthenticated);
+    const interactions = makeInteractionHarness("success", { code: "123456" });
+    const structuralProbeCalls: Array<{ label: string; probeIds: string[] }> = [];
+    const capture: CaptureSession = {
+      baseDir: "/tmp/fake-usaa-capture",
+      captureDom: (): Promise<void> => Promise.resolve(),
+      captureHttp: (): void => {
+        /* no-op */
+      },
+      captureLocatorProbe: (_page, label, probes): Promise<void> => {
+        structuralProbeCalls.push({ label, probeIds: probes.map((probe) => probe.id) });
+        return Promise.resolve();
+      },
+      finalize: (): void => {
+        /* no-op */
+      },
+      keepOnSuccess: false,
+      markSucceeded: (): void => {
+        /* no-op */
+      },
+      recordRecord: (): void => {
+        /* no-op */
+      },
+      runId: "fake-run",
+    };
+
+    const ok = await ensureUsaaSession({
+      capture,
+      context,
+      page,
+      sendInteraction: interactions.sendInteraction,
+    });
+
+    assert.equal(ok, true);
+    assert.equal(fixturePage.actionClicks, 1, "recovery follows the semantic action at most once");
+    assert.deepEqual(
+      roleQueries.map((query) => ({ name: String(query.name), role: query.role })),
+      [
+        { name: "/^(Log in|Log On)$/i", role: "button" },
+        { name: "/^(Log in|Log On)$/i", role: "link" },
+      ]
+    );
+    assert.deepEqual(filledSelectors, ['input[name="memberId"]', 'input[name="memberId"]', 'input[name="password"]']);
+    assert.deepEqual(
+      interactions.requests.map((request) => request.kind),
+      ["otp"]
+    );
+    assert.equal(fixturePage.otpResponseAuthenticated, true, "the OTP response authenticates the recovered session");
+    assert.deepEqual(structuralProbeCalls, [
+      {
+        label: "usaa-source-unavailable-login-action",
+        probeIds: ["exact-login-button", "exact-login-link"],
+      },
+    ]);
+  });
+});
+
+for (const [fixture, expectedOutcome] of [
+  ["ambiguous", "ambiguous"],
+  ["foreign_origin", "foreign_origin"],
+  ["member_id_form_missing", "member_id_form_missing"],
+  ["resume_error", "resume_error"],
+  ["action_error", "action_error"],
+] as const) {
+  test(`ensureUsaaSession preserves manual_action when source-unavailable login recovery is ${fixture}`, async () => {
+    await withUsaaCredentials(async () => {
+      const fixturePage = makeSourceUnavailableRecoveryPage(fixture);
+      const { page } = fixturePage;
+      const context = makeContext([[], [makeCookie("UsaaMbWebMemberLoggedIn", "true")]]);
+      const interactions = makeInteractionHarness();
+
+      const ok = await ensureUsaaSession({
+        context,
+        page,
+        sendInteraction: interactions.sendInteraction,
+      });
+
+      assert.equal(ok, true);
+      assert.equal(interactions.requests.length, 1);
+      assert.deepEqual(
+        interactions.requests.map((request) => request.kind),
+        ["manual_action"]
+      );
+      assert.match(
+        interactions.requests[0]?.message ?? "",
+        new RegExp(`source_unavailable_login_action=${expectedOutcome}`)
+      );
+      assert.equal(fixturePage.actionClicks, fixture === "ambiguous" || fixture === "action_error" ? 0 : 1);
+    });
+  });
+}
+
+test("ensureUsaaSession still routes a delayed USAA source-unavailable page after member-id submit to genuine manual_action, with an owner-visible diagnostic note", async () => {
   // Corrected 2026-07-10: this exact page (source-unavailable copy after the
   // memberId "Next" click, password field never appearing) is the connector's
   // dominant, weeks-long recurring failure mode per prior fixes' own commit
@@ -383,6 +638,7 @@ test("ensureUsaaSession still routes a delayed USAA source-unavailable modal aft
       interactions.requests[0]?.message ?? "",
       /USAA's page reported its own system as unavailable, but this exact failure has recurred/
     );
+    assert.match(interactions.requests[0]?.message ?? "", /source_unavailable_login_action=absent/);
   });
 });
 
@@ -425,7 +681,7 @@ test("ensureUsaaSession captures DOM/screenshot evidence on the password-field s
   await withUsaaCredentials(async () => {
     const prefix = "Member Account Login ".repeat(80);
     const page = makePasswordStepFailurePage(
-      `${prefix}We are unable to complete your request. Our system is currently unavailable. Please try again later.`,
+      `${prefix}Your account has been temporarily locked due to too many failed sign-in attempts. Please try again later.`,
       "Log Off"
     );
     const context = makeContext([[], [makeCookie("UsaaMbWebMemberLoggedIn", "true")]]);

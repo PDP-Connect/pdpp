@@ -45,7 +45,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { getDb } from "../db.js";
+import { getDb } from "../db.ts";
 
 const QUERIES_DIR = dirname(fileURLToPath(import.meta.url));
 const SQL_FILE_SUFFIX = ".sql";
@@ -135,7 +135,6 @@ export type RegisteredQuery =
  * sites. The registry is also indexable as `referenceQueries[key]`
  * with the union type fallback for dynamic dispatch.
  */
-// biome-ignore assist/source/useSortedInterfaceMembers: query declarations stay grouped by subsystem and migration surface.
 export interface ReferenceQueryRegistry extends Readonly<Record<string, RegisteredQuery>> {
   // Approvals — `/_ref/approvals` projection.
   readonly approvalsListPendingConsents: SmallEnumerationQuery;
@@ -151,9 +150,9 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly authGrantPackageMembersListAllByPackage: SmallEnumerationQuery;
   readonly authGrantPackageMembersMarkRevokedByGrant: MutationQuery;
   readonly authGrantPackageMembersMarkRevokedByPackage: MutationQuery;
+  readonly authGrantPackagesCount: ReadOneQuery;
   // Auth — grant_packages (operator-visible read surface)
   readonly authGrantPackagesGetById: ReadOneQuery;
-  readonly authGrantPackagesCount: ReadOneQuery;
   readonly authGrantPackagesInsert: MutationQuery;
   readonly authGrantPackagesListAll: SmallEnumerationQuery;
   readonly authGrantPackagesMarkRevoked: MutationQuery;
@@ -239,13 +238,19 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly connectorInstanceCredentialsGetByInstance: ReadOneQuery;
   readonly connectorInstanceCredentialsRevokeByInstance: MutationQuery;
   readonly connectorInstanceCredentialsUpsert: MutationQuery;
+  readonly connectorInstancesDeleteById: MutationQuery;
+  readonly connectorInstancesDeleteManifestWriteViolationsByConnectorInstance: MutationQuery;
+  readonly connectorInstancesDeleteSummaryEvidenceByConnectorInstance: MutationQuery;
   readonly connectorInstancesGetByBinding: ReadOneQuery;
   readonly connectorInstancesGetById: ReadOneQuery;
+  readonly connectorInstancesGetTombstoneByBinding: ReadOneQuery;
   readonly connectorInstancesInsert: MutationQuery;
+  readonly connectorInstancesInsertTombstone: MutationQuery;
   readonly connectorInstancesListActiveByOwnerConnector: ReadManyQuery;
   readonly connectorInstancesListByOwner: ReadManyQuery;
   readonly connectorInstancesListByOwnerIncludingDrafts: ReadManyQuery;
   readonly connectorInstancesListDraftBrowserEnrollmentShells: SmallEnumerationQuery;
+  readonly connectorInstancesMigrateLegacyBindingKey: MutationQuery;
   readonly connectorInstancesUpdateDisplayName: MutationQuery;
   readonly connectorInstancesUpdateStatus: MutationQuery;
   readonly controllerDeleteActiveRun: MutationQuery;
@@ -264,8 +269,10 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly controllerUpsertActiveRun: MutationQuery;
   readonly controllerUpsertSchedulerLastRunTime: MutationQuery;
   readonly deviceExportersAdvanceProcessingPrefix: MutationQuery;
+  readonly deviceExportersClearSourceInstanceConnectorRef: MutationQuery;
   readonly deviceExportersCompleteProcessingBatch: MutationQuery;
   readonly deviceExportersConsumeEnrollmentCode: MutationQuery;
+  readonly deviceExportersFindOrphanedDeviceForBinding: SmallEnumerationQuery;
   readonly deviceExportersGetBatchOutcomeByBatch: ReadOneQuery;
   readonly deviceExportersGetCredentialByTokenHash: ReadOneQuery;
   readonly deviceExportersGetDevice: ReadOneQuery;
@@ -282,12 +289,12 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly deviceExportersListSourceInstanceHeartbeatsByConnector: SmallEnumerationQuery;
   readonly deviceExportersListSourceInstances: SmallEnumerationQuery;
   readonly deviceExportersMarkCredentialUsed: MutationQuery;
+  readonly deviceExportersRefreshProcessingAttemptContext: MutationQuery;
   readonly deviceExportersRevokeConnectorInstancesForDevice: MutationQuery;
   readonly deviceExportersRevokeCredentialsForDevice: MutationQuery;
   readonly deviceExportersRevokeDevice: MutationQuery;
   readonly deviceExportersRevokeEnrollmentCode: MutationQuery;
   readonly deviceExportersRevokeSourceInstancesForDevice: MutationQuery;
-  readonly deviceExportersRefreshProcessingAttemptContext: MutationQuery;
   readonly deviceExportersUpdateDeviceHeartbeat: MutationQuery;
   readonly deviceExportersUpdateSourceInstanceHeartbeat: MutationQuery;
   readonly deviceExportersUpsertSourceInstance: MutationQuery;
@@ -325,10 +332,10 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly recordsDeleteDeleteVersionCounterByConnector: MutationQuery;
   readonly recordsDeleteDeleteVersionCounterByInstance: MutationQuery;
   readonly recordsDeleteDeleteVersionCounterByStream: MutationQuery;
+  readonly recordsDeleteGetRecordResetGeneration: ReadOneQuery;
   readonly recordsDeleteListDistinctStreamsByConnector: SmallEnumerationQuery;
   readonly recordsDeleteListInstanceStreamsByConnector: SmallEnumerationQuery;
   readonly recordsDeleteListStreamsByInstance: SmallEnumerationQuery;
-  readonly recordsDeleteGetRecordResetGeneration: ReadOneQuery;
   readonly recordsDeleteProbeLiveCanonicalRecord: ReadOneQuery;
   readonly recordsDeleteProbeVersionCounterRow: ReadOneQuery;
   readonly recordsGetFieldWindow: ReadOneQuery;
@@ -340,9 +347,9 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly recordsIngestGetCurrentRecordState: ReadOneQuery;
   readonly recordsIngestGetRecordChangeAnchor: ReadOneQuery;
   readonly recordsIngestGetVersionCounter: ReadOneQuery;
-  readonly recordsIngestListVersionCountersByInstance: SmallEnumerationQuery;
   readonly recordsIngestInsertRecordChangeDeleted: MutationQuery;
   readonly recordsIngestInsertRecordChangeUpsert: MutationQuery;
+  readonly recordsIngestListVersionCountersByInstance: SmallEnumerationQuery;
   readonly recordsIngestMarkRecordDeleted: MutationQuery;
   readonly recordsIngestPruneRecordChanges: MutationQuery;
   readonly recordsIngestRepairCurrentDerivedFacts: MutationQuery;
@@ -508,6 +515,7 @@ function splitFrontmatterAndBody(raw: string): {
   const lines = raw.split(LINE_SEPARATOR_RE);
   const fm: Record<string, string> = {};
   let bodyStart = 0;
+  // biome-ignore lint/style/noIncrementDecrement: The explicit counter update preserves this loop’s evaluation order.
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] ?? "";
     const match = line.match(FRONTMATTER_LINE_RE);
@@ -522,7 +530,7 @@ function splitFrontmatterAndBody(raw: string): {
     }
     break;
   }
-  return { fm, body: lines.slice(bodyStart).join("\n") };
+  return { body: lines.slice(bodyStart).join("\n"), fm };
 }
 
 const VALID_TERMINATORS = new Set(["one", "many", "iterate", "exec", "exec_one"] as const);
@@ -563,12 +571,13 @@ function parseFrontmatter(raw: string, file: string): { frontmatter: ParsedFront
   const { fm, body } = splitFrontmatterAndBody(raw);
   const terminator = validateTerminator(fm.terminator, file);
   const cursorField = typeof fm.cursor_field === "string" && fm.cursor_field.length > 0 ? fm.cursor_field : null;
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const boundedBy = validateBoundedBy(fm.bounded_by ?? null, file);
   const table = typeof fm.table === "string" && fm.table.length > 0 ? fm.table : null;
   const maxRows = validateMaxRows(fm.max_rows, file);
   return {
-    frontmatter: { terminator, cursorField, boundedBy, table, maxRows },
     body,
+    frontmatter: { boundedBy, cursorField, maxRows, table, terminator },
   };
 }
 
@@ -585,8 +594,8 @@ function buildHandle(meta: QueryArtifactMetadata, fm: ParsedFrontmatter): Regist
     }
     return Object.freeze({
       ...meta,
-      terminator: "iterate",
       cursorField: fm.cursorField,
+      terminator: "iterate",
     }) as IterateQuery;
   }
 
@@ -623,10 +632,10 @@ function buildHandle(meta: QueryArtifactMetadata, fm: ParsedFrontmatter): Regist
     }
     return Object.freeze({
       ...meta,
-      terminator: "many",
       boundedBy: "small_enumeration_table",
-      table: fm.table,
       maxRows: fm.maxRows,
+      table: fm.table,
+      terminator: "many",
     }) as SmallEnumerationQuery;
   }
 
@@ -642,8 +651,8 @@ function buildHandle(meta: QueryArtifactMetadata, fm: ParsedFrontmatter): Regist
 
   return Object.freeze({
     ...meta,
-    terminator: "many",
     cursorField: fm.cursorField,
+    terminator: "many",
   }) as ReadManyQuery;
 }
 
@@ -929,6 +938,7 @@ export function loadReferenceQueries(queryDir = QUERIES_DIR): ReferenceQueryRegi
  */
 export function validateReferenceQueries(registry: ReferenceQueryRegistry = referenceQueries): void {
   const db = getDb();
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   if (!db) {
     throw new Error("[queries] validateReferenceQueries called before initDb.");
   }

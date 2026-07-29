@@ -7,4 +7,5 @@ export {
   NekoSurfaceAllocatorClient,
   type NekoSurfaceAllocatorClientOptions,
   NekoSurfaceAllocatorError,
+  // biome-ignore lint/correctness/noUnresolvedImports: Biome cannot resolve this installed package export; Node and TypeScript resolve it.
 } from "@opendatalabs/remote-surface";

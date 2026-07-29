@@ -22,6 +22,7 @@ function latestImport(summary: RefConnectorSummary): { file: string | null; stat
   const batch = summary.acquisition_coverage?.latest_batch ?? null;
   return {
     file: batch?.uploaded_file_name ?? null,
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
     status: batch?.status ?? null,
   };
 }

@@ -40,10 +40,10 @@
  */
 
 export interface RefClientsListClient {
+  readonly active_token_count: number;
   readonly client_id: string;
   readonly client_name: string | null;
   readonly created_at: string;
-  readonly active_token_count: number;
 }
 
 export interface RefClientsListInput {
@@ -67,12 +67,12 @@ export interface RefClientsListDependencies {
    * the requesting owner-session subject so pre-registered seeds never
    * appear here.
    */
-  listOwnerIssuedClients(): Promise<readonly RefClientsListClient[]> | readonly RefClientsListClient[];
+  listOwnerIssuedClients: () => Promise<readonly RefClientsListClient[]> | readonly RefClientsListClient[];
 }
 
 export interface RefClientsListEnvelope {
-  readonly object: "list";
   readonly data: RefClientsListClient[];
+  readonly object: "list";
 }
 
 export class RefClientsListInvalidRequestError extends Error {
@@ -94,14 +94,14 @@ export class RefClientsListInvalidRequestError extends Error {
  */
 export async function executeRefClientsList(
   input: RefClientsListInput,
-  dependencies: RefClientsListDependencies,
+  dependencies: RefClientsListDependencies
 ): Promise<RefClientsListEnvelope> {
   if (input.owner !== "true") {
     throw new RefClientsListInvalidRequestError();
   }
   const clients = await dependencies.listOwnerIssuedClients();
   return {
-    object: "list",
     data: [...clients],
+    object: "list",
   };
 }

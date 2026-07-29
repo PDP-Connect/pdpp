@@ -54,18 +54,14 @@ async function loadCommittedManifests(): Promise<CatalogManifestLike[]> {
   const repoRoot = new URL("../../../../../../", import.meta.url);
   const manifestsDir = new URL("packages/polyfill-connectors/manifests/", repoRoot);
   const files = await readdir(fileURLToPath(manifestsDir));
-  const manifests: CatalogManifestLike[] = [];
-  for (const file of files) {
-    if (!file.endsWith(".json")) {
-      continue;
-    }
-    const raw = await readFile(fileURLToPath(new URL(file, manifestsDir)), "utf8");
-    const m = JSON.parse(raw) as CatalogManifestLike;
-    if (m.connector_id) {
-      manifests.push(m);
-    }
-  }
-  return manifests;
+  const jsonFiles = files.filter((file) => file.endsWith(".json"));
+  const parsed = await Promise.all(
+    jsonFiles.map(async (file) => {
+      const raw = await readFile(fileURLToPath(new URL(file, manifestsDir)), "utf8");
+      return JSON.parse(raw) as CatalogManifestLike;
+    })
+  );
+  return parsed.filter((m) => m.connector_id);
 }
 
 test("catalogModalityFromManifest mirrors the filesystem>browser>network precedence", () => {
@@ -84,7 +80,7 @@ test("catalogModalityFromManifest mirrors the filesystem>browser>network precede
   assert.equal(
     catalogModalityFromManifest({
       connector_id: "x",
-      runtime_requirements: { bindings: { filesystem: {}, browser: {} } },
+      runtime_requirements: { bindings: { browser: {}, filesystem: {} } },
     }),
     "local_collector"
   );
@@ -150,12 +146,12 @@ test("browser-bound static-secret-capable connectors get the same dual choice ge
       display_name: "Browser Sample",
       runtime_requirements: { bindings: { browser: { required: true } } },
       setup: {
-        modality: "static_secret",
         credential_capture: {
+          fields: [{ label: "Provider secret", name: "secret", required: true, secret: true }],
           kind: "username_password",
           label: "Browser sign-in",
-          fields: [{ name: "secret", label: "Provider secret", required: true, secret: true }],
         },
+        modality: "static_secret",
       },
     } as CatalogManifestLike,
   ]);
@@ -176,12 +172,12 @@ test("non-browser static-secret connectors keep the existing single capture path
       display_name: "Gmail",
       runtime_requirements: { bindings: { network: { required: true } } },
       setup: {
-        modality: "static_secret",
         credential_capture: {
+          fields: [{ label: "Provider secret", name: "secret", required: true, secret: true }],
           kind: "app_password",
           label: "Gmail app password",
-          fields: [{ name: "secret", label: "Provider secret", required: true, secret: true }],
         },
+        modality: "static_secret",
       },
     } as CatalogManifestLike,
   ]);
@@ -247,8 +243,8 @@ function manualUploadConnectManifest(connectorId: string): CatalogManifestLike {
   return {
     ...manualUploadManifest(connectorId),
     setup: {
-      modality: "manual_or_upload",
       manual_or_upload: {
+        accepted_file_names: ["Timeline.json"],
         acquisition_methods: [
           {
             detail: "Use the phone export and upload the JSON file.",
@@ -264,10 +260,10 @@ function manualUploadConnectManifest(connectorId: string): CatalogManifestLike {
             posture: "advanced",
           },
         ],
-        accepted_file_names: ["Timeline.json"],
         import_dir_env_var: "GOOGLE_MAPS_TIMELINE_DIR",
         label: "Timeline export",
       },
+      modality: "manual_or_upload",
     },
   };
 }
@@ -381,15 +377,15 @@ test("other network connectors stay flatly api_network_unsupported", async () =>
 test("provider-authorization deployment blockers are separate from unsupported network entries", () => {
   const catalog = buildConnectorCatalog([
     {
+      capabilities: {
+        auth: {
+          deployment_config: ["FITNESS_OAUTH_CLIENT_ID", "FITNESS_OAUTH_CLIENT_SECRET"],
+          kind: "oauth",
+        },
+      },
       connector_id: "fitness_oauth",
       display_name: "Fitness OAuth",
       runtime_requirements: { bindings: { network: { required: true } } },
-      capabilities: {
-        auth: {
-          kind: "oauth",
-          deployment_config: ["FITNESS_OAUTH_CLIENT_ID", "FITNESS_OAUTH_CLIENT_SECRET"],
-        },
-      },
     },
   ]);
   const [entry] = catalog;

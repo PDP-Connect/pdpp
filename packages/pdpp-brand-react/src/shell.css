@@ -17,26 +17,27 @@
   display: grid;
   grid-template-columns: var(--pdpp-sidebar-width) 1fr;
   height: 100vh;
+  /* biome-ignore lint/suspicious/noDuplicateProperties: 100vh is the legacy fallback; 100dvh corrects dynamic mobile viewport height where supported. */
   height: 100dvh;
-  background: var(--background);
-  color: var(--foreground);
-  font-family: var(--font-sans);
   overflow: hidden;
+  font-family: var(--font-sans);
+  color: var(--foreground);
+  background: var(--background);
 }
 
 /* ─── Sidebar — the rack ──────────────────────────────────────────── */
 .rr-side {
-  background: color-mix(in oklab, var(--background) 88%, oklch(0 0 0));
-  border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  padding: 18px 0 14px;
   min-height: 0;
+  padding: 18px 0 14px;
+  background: color-mix(in oklab, var(--background) 88%, oklch(0 0 0));
+  border-right: 1px solid var(--border);
 }
 .rr-side__brand {
   display: flex;
-  align-items: center;
   gap: 12px;
+  align-items: center;
   padding: 2px 18px 16px;
   border-bottom: 1px solid var(--border);
 }
@@ -44,10 +45,10 @@
    half, seamed on the optical vertical. Hues track the active surface via the
    --pdpp-mark-* tokens below (matching operator-ui's PdppLogo). */
 .rr-side__mark {
+  display: block;
+  flex-shrink: 0;
   width: 18px;
   height: 18px;
-  flex-shrink: 0;
-  display: block;
 }
 /* Light surface — standard hues. */
 .rr-app {
@@ -71,10 +72,10 @@
 .rr-side__nav {
   display: flex;
   flex-direction: column;
-  padding: 12px 10px;
   gap: 2px;
-  overflow-y: auto;
   min-height: 0;
+  padding: 12px 10px;
+  overflow-y: auto;
 }
 .rr-nav-group {
   display: flex;
@@ -82,30 +83,33 @@
   gap: 2px;
 }
 .rr-side__group {
+  padding: 14px 10px 4px;
   font-family: var(--font-sans);
   font-size: 9.5px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
   color: var(--muted-foreground);
-  padding: 14px 10px 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
 }
 .rr-nav-item {
   display: grid;
   grid-template-columns: 1fr auto;
-  align-items: center;
   gap: 10px;
+  align-items: center;
   /* Left padding leaves room for the 2px active accent bar so text never
      shifts between resting/hover/active states (the bar paints in the gutter). */
   padding: 9px 10px 9px 12px;
   font-size: 13.5px;
   font-weight: 600;
   color: var(--muted-foreground);
+  text-align: left;
+  text-decoration: none;
   background: transparent;
   border: 0;
   border-radius: var(--radius-control);
-  text-align: left;
-  text-decoration: none;
-  transition: color var(--motion-state), background var(--motion-state), box-shadow var(--motion-state);
+  transition:
+    color var(--motion-state),
+    background var(--motion-state),
+    box-shadow var(--motion-state);
 }
 /* Hover is a QUIET neutral lift — distinct from the protocol-blue active state. */
 .rr-nav-item:hover {
@@ -117,9 +121,9 @@
    square edge), a subtle --primary tint fill, and lifted text weight +
    foreground. Reads clearly as "you are here" in both dark and light. */
 .rr-nav-item.is-active {
+  font-weight: 700;
   color: var(--foreground);
   background: var(--primary-tint);
-  font-weight: 700;
   box-shadow: inset 2px 0 0 0 var(--primary);
 }
 /* Keep the active item legible (not pulled to the quieter neutral) on hover,
@@ -131,26 +135,26 @@
   flex: 1;
 }
 .rr-side__foot {
-  padding: 12px 18px 0;
-  border-top: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   gap: 3px;
+  padding: 12px 18px 0;
+  border-top: 1px solid var(--border);
 }
 .rr-side__host {
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-family: var(--font-sans);
   font-size: 9.5px;
   color: var(--muted-foreground);
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 .rr-side__motto {
+  padding-top: 3px;
   font-family: var(--font-sans);
   font-size: 9.5px;
   color: var(--primary);
   letter-spacing: 0.06em;
-  padding-top: 3px;
 }
 
 /* ─── Main column ─────────────────────────────────────────────────── */
@@ -162,18 +166,18 @@
 }
 .rr-head {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 16px;
-  padding: 10px 32px;
-  border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+  gap: 16px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 32px;
   background: var(--background);
+  border-bottom: 1px solid var(--border);
 }
 .rr-head__brand {
   display: none; /* mobile-only; shown ≤860px */
-  align-items: center;
   gap: 10px;
+  align-items: center;
   font-size: 14px;
   font-weight: 800;
   letter-spacing: -0.01em;
@@ -185,48 +189,51 @@
    shows on the left. */
 .rr-head__actions {
   display: flex;
+  flex-shrink: 0;
+  gap: 8px;
   align-items: center;
   margin-left: auto;
-  gap: 8px;
-  flex-shrink: 0;
 }
 .rr-chrome-btn {
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+  padding: 6px 12px;
   font-family: var(--font-sans);
   font-size: 12px;
   font-weight: 600;
   color: var(--muted-foreground);
+  white-space: nowrap;
+  cursor: pointer;
   background: transparent;
   border: 1px solid var(--input);
   border-radius: var(--radius-control);
-  padding: 6px 12px;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  white-space: nowrap;
-  transition: color var(--motion-state), border-color var(--motion-state), background var(--motion-state);
+  transition:
+    color var(--motion-state),
+    border-color var(--motion-state),
+    background var(--motion-state);
 }
 .rr-chrome-btn:hover {
   color: var(--foreground);
-  border-color: var(--border-strong);
   background: var(--muted);
+  border-color: var(--border-strong);
 }
 .rr-kbd {
+  padding: 1px 4px;
   font-family: var(--font-mono);
   font-size: 10px;
   color: var(--muted-foreground);
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
-  padding: 1px 4px;
 }
 .rr-menu-btn {
   display: none; /* mobile-only */
 }
 .rr-content {
   flex: 1;
-  overflow-y: auto;
-  padding: 28px 32px 56px;
   min-height: 0;
+  padding: 28px 32px 56px;
+  overflow-y: auto;
 }
 
 /* ─── Mobile drawer ───────────────────────────────────────────────── */
@@ -237,12 +244,12 @@
 .rr-drawer-overlay {
   position: fixed;
   top: 0;
-  left: 0;
   right: 0;
   bottom: 0;
+  left: 0;
+  z-index: 70;
   width: 100vw;
   height: 100dvh;
-  z-index: 70;
   overflow: hidden;
 }
 /* The backdrop is a real button (focusable close affordance), filling the
@@ -252,11 +259,11 @@
   inset: 0;
   width: 100%;
   height: 100%;
-  border: 0;
   padding: 0;
   margin: 0;
-  background: oklch(0 0 0 / 0.5);
   cursor: pointer;
+  background: oklch(0 0 0 / 0.5);
+  border: 0;
 }
 @media (prefers-reduced-motion: no-preference) {
   .rr-drawer-scrim {
@@ -265,16 +272,16 @@
 }
 .rr-drawer {
   position: absolute;
-  left: 0;
   top: 0;
   bottom: 0;
-  width: min(300px, 84vw);
-  background: color-mix(in oklab, var(--background) 88%, oklch(0 0 0));
-  border-right: 1px solid var(--border-strong);
-  padding: 18px 0 14px;
+  left: 0;
   display: flex;
   flex-direction: column;
+  width: min(300px, 84vw);
+  padding: 18px 0 14px;
   overflow-y: auto;
+  background: color-mix(in oklab, var(--background) 88%, oklch(0 0 0));
+  border-right: 1px solid var(--border-strong);
 }
 @media (prefers-reduced-motion: no-preference) {
   .rr-drawer {
@@ -283,10 +290,10 @@
 }
 .rr-drawer__nav {
   display: flex;
-  flex-direction: column;
-  padding: 10px;
-  gap: 2px;
   flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px;
 }
 .rr-drawer .rr-nav-item {
   padding: 12px;
@@ -327,11 +334,8 @@
     display: none;
   }
   .rr-content {
-    overflow-x: hidden;
-    /* Bottom padding kept modest on mobile: 56px read as "scrolling into empty
-       space" past the last element. 24px gives breathing room without a dead
-       gap below the content. */
     padding: 20px 16px 24px;
+    overflow-x: hidden;
   }
   .rr-head {
     padding: 10px 16px;

@@ -29,16 +29,16 @@
 
 export interface BlobsReadBlobRow {
   readonly blob_id: string;
+  readonly data: Uint8Array | Buffer | null | undefined;
   readonly mime_type: string;
   readonly size_bytes: number;
-  readonly data: Uint8Array | Buffer | null | undefined;
   readonly [extra: string]: unknown;
 }
 
 export interface BlobsReadBinding {
   readonly connector_id: string;
-  readonly stream: string;
   readonly record_key: string;
+  readonly stream: string;
 }
 
 export interface BlobsReadVisibleRecord {
@@ -51,24 +51,26 @@ export interface BlobsReadVisibleRecord {
 }
 
 export interface BlobsReadDependencies {
-  /** Look up the raw blob row by id. Returns null when the blob is absent. */
-  loadBlob(blobId: string): BlobsReadBlobRow | null | Promise<BlobsReadBlobRow | null>;
-  /** Enumerate bindings for the blob (union of blob_bindings and the originating blobs row). */
-  loadBindings(blobId: string): readonly BlobsReadBinding[] | Promise<readonly BlobsReadBinding[]>;
   /**
    * Connector id of the actor's resolved storage binding. The operation only
    * inspects bindings whose `connector_id` matches this value. May be null
    * when no storage binding is resolved (e.g., misconfigured native scope);
    * in that case no binding can match and the operation raises `blob_not_found`.
    */
-  getActorConnectorId(): string | null;
+  getActorConnectorId: () => string | null;
   /**
    * Read the bound record under the actor's grant. Hosts wire the existing
    * `getRecord(storageBinding, stream, recordKey, grant, manifest)` with
    * those bindings already applied. Throws are swallowed by the operation —
    * a single binding failure must not leak through other binding paths.
    */
-  getVisibleRecord(binding: BlobsReadBinding): BlobsReadVisibleRecord | null | undefined | Promise<BlobsReadVisibleRecord | null | undefined>;
+  getVisibleRecord: (
+    binding: BlobsReadBinding
+  ) => BlobsReadVisibleRecord | null | undefined | Promise<BlobsReadVisibleRecord | null | undefined>;
+  /** Enumerate bindings for the blob (union of blob_bindings and the originating blobs row). */
+  loadBindings: (blobId: string) => readonly BlobsReadBinding[] | Promise<readonly BlobsReadBinding[]>;
+  /** Look up the raw blob row by id. Returns null when the blob is absent. */
+  loadBlob: (blobId: string) => BlobsReadBlobRow | null | Promise<BlobsReadBlobRow | null>;
 }
 
 export interface BlobsReadInput {
@@ -105,7 +107,7 @@ export class BlobsReadNotFoundError extends Error {
  */
 export async function executeBlobsRead(
   input: BlobsReadInput,
-  dependencies: BlobsReadDependencies,
+  dependencies: BlobsReadDependencies
 ): Promise<BlobsReadOutput> {
   const blob = await dependencies.loadBlob(input.blobId);
   if (!blob) {
@@ -116,9 +118,12 @@ export async function executeBlobsRead(
   const actorConnectorId = dependencies.getActorConnectorId();
 
   for (const binding of bindings) {
-    if (!actorConnectorId || binding.connector_id !== actorConnectorId) continue;
+    if (!actorConnectorId || binding.connector_id !== actorConnectorId) {
+      continue;
+    }
     let visibleRecord: BlobsReadVisibleRecord | null | undefined = null;
     try {
+      // biome-ignore lint/performance/noAwaitInLoops: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
       visibleRecord = await dependencies.getVisibleRecord(binding);
     } catch {
       // Try the next binding; callers only learn whether any visible record

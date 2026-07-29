@@ -33,14 +33,15 @@
  *       openspec/changes/define-stream-coverage-freshness-evidence/
  */
 
-import { getDb } from "./db.js";
-import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.js";
+import { iterateDynamicSqlAcknowledged } from "../lib/db.ts";
 import {
   pruneOrphanedEvidenceComplete,
   readAllInstanceIdsForPruning,
   readInstanceIdPage,
   reconcileConnectorSummaryEvidence,
 } from "./connector-summary-evidence-engine.ts";
+import { getDb } from "./db.ts";
+import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.ts";
 
 /** A raw database row (column-keyed) crossing the untyped storage boundary. */
 type Row = Record<string, unknown>;
@@ -63,11 +64,22 @@ function sanitizeProjectionError(err: unknown): string {
  * which correctly leaves component states untouched because nothing failed.
  */
 const REASON_CODES = {
-  TERMINAL_FOLD_FAILED: "terminal_fold_failed",
+  DISCOVERY_FAILED: "summary_discovery_failed",
+  /**
+   * A row's stored `stream_facts_fold_version` is AHEAD of this binary's own
+   * `STREAM_FACTS_FOLD_LOGIC_VERSION` — the row was folded by a newer
+   * deploy's fold contract. An older binary has no way to validate that
+   * output against its own (older) merge semantics, so it must never fold,
+   * replay, or overwrite it; this reason fails the row closed instead.
+   */
+  FOLD_LOGIC_VERSION_INCOMPATIBLE_FUTURE: "fold_logic_version_incompatible_future",
+  // A source-attributed terminal event without a matching durable generation
+  // is historical, never an empty/current fold result.
+  TERMINAL_FACTS_HISTORICAL: "terminal_facts_historical",
   // A bounded replay lost its CAS race on every attempt. The route receives
   // an in-memory stale overlay instead of trusting the competing durable map.
   TERMINAL_FOLD_CONTENTION: "terminal_fold_contention",
-  DISCOVERY_FAILED: "summary_discovery_failed",
+  TERMINAL_FOLD_FAILED: "terminal_fold_failed",
   /**
    * A fold pass wrote this row's terminal facts before its own drain
    * genuinely reached the pass's full high-water mark (`maxSeq`) — the
@@ -80,21 +92,10 @@ const REASON_CODES = {
    * set; a later pass whose drain genuinely converges clears it.
    */
   TERMINAL_FOLD_INCOMPLETE: "terminal_fold_incomplete",
-  /**
-   * A row's stored `stream_facts_fold_version` is AHEAD of this binary's own
-   * `STREAM_FACTS_FOLD_LOGIC_VERSION` — the row was folded by a newer
-   * deploy's fold contract. An older binary has no way to validate that
-   * output against its own (older) merge semantics, so it must never fold,
-   * replay, or overwrite it; this reason fails the row closed instead.
-   */
-  FOLD_LOGIC_VERSION_INCOMPATIBLE_FUTURE: "fold_logic_version_incompatible_future",
-  // A source-attributed terminal event without a matching durable generation
-  // is historical, never an empty/current fold result.
-  TERMINAL_FACTS_HISTORICAL: "terminal_facts_historical",
 } as const;
 
 function parseEvidenceJson(value: unknown, fallback: unknown): unknown {
-  if (value == null) {
+  if (value === null) {
     return fallback;
   }
   if (typeof value === "object") {
@@ -164,55 +165,10 @@ function createConnectorSummaryStore() {
         );
         return result.rows;
       },
-      async markDirty({
-        connectorInstanceId,
-        sanitized,
-        sourceEventSeq,
-      }: {
-        connectorInstanceId?: string | null;
-        sanitized?: string | null;
-        sourceEventSeq?: unknown;
-      }) {
-        await postgresQuery(
-          `UPDATE connector_summary_evidence
-              SET dirty = 1,
-                  state = 'stale',
-                  last_error = $2,
-                  source_event_seq = COALESCE($3, source_event_seq)
-            WHERE connector_instance_id = $1`,
-          [connectorInstanceId, sanitized, sourceEventSeq == null ? null : Number(sourceEventSeq)]
-        );
-      },
       async markAllDirty({ sanitized }: { sanitized?: string | null }) {
         await postgresQuery(`UPDATE connector_summary_evidence SET dirty = 1, state = 'stale', last_error = $1`, [
           sanitized,
         ]);
-      },
-      async markAllTerminalFactsFailed({
-        sanitized,
-        connectorInstanceIds,
-      }: {
-        sanitized?: string | null;
-        connectorInstanceIds?: readonly string[] | null;
-      }) {
-        if (connectorInstanceIds && connectorInstanceIds.length === 0) {
-          return;
-        }
-        const where = connectorInstanceIds ? "WHERE connector_instance_id = ANY($3::text[])" : "";
-        const params: unknown[] = [sanitized, REASON_CODES.TERMINAL_FOLD_FAILED];
-        if (connectorInstanceIds) {
-          params.push(connectorInstanceIds);
-        }
-        await postgresQuery(
-          `UPDATE connector_summary_evidence
-              SET dirty = 1,
-                  state = 'stale',
-                  last_error = $1,
-                  terminal_facts_state = 'failed',
-                  terminal_facts_reason_code = $2
-              ${where}`,
-          params
-        );
       },
       async markAllDiscoveryFailed({
         sanitized,
@@ -240,6 +196,51 @@ function createConnectorSummaryStore() {
                   manifest_declaration_reason_code = $2
               ${where}`,
           params
+        );
+      },
+      async markAllTerminalFactsFailed({
+        sanitized,
+        connectorInstanceIds,
+      }: {
+        sanitized?: string | null;
+        connectorInstanceIds?: readonly string[] | null;
+      }) {
+        if (connectorInstanceIds && connectorInstanceIds.length === 0) {
+          return;
+        }
+        const where = connectorInstanceIds ? "WHERE connector_instance_id = ANY($3::text[])" : "";
+        const params: unknown[] = [sanitized, REASON_CODES.TERMINAL_FOLD_FAILED];
+        if (connectorInstanceIds) {
+          params.push(connectorInstanceIds);
+        }
+        await postgresQuery(
+          `UPDATE connector_summary_evidence
+              SET dirty = 1,
+                  state = 'stale',
+                  last_error = $1,
+                  terminal_facts_state = 'failed',
+                  terminal_facts_reason_code = $2
+              ${where}`,
+          params
+        );
+      },
+      async markDirty({
+        connectorInstanceId,
+        sanitized,
+        sourceEventSeq,
+      }: {
+        connectorInstanceId?: string | null;
+        sanitized?: string | null;
+        sourceEventSeq?: unknown;
+      }) {
+        await postgresQuery(
+          `UPDATE connector_summary_evidence
+              SET dirty = 1,
+                  state = 'stale',
+                  last_error = $2,
+                  source_event_seq = COALESCE($3, source_event_seq)
+            WHERE connector_instance_id = $1`,
+          [connectorInstanceId, sanitized, sourceEventSeq === null ? null : Number(sourceEventSeq)]
         );
       },
     };
@@ -286,57 +287,16 @@ function createConnectorSummaryStore() {
           )
           .all(...connectorInstanceIds);
       }
-      return db.prepare(`SELECT ${columns} FROM connector_summary_evidence ORDER BY connector_instance_id ASC`).all();
-    },
-    markDirty({
-      connectorInstanceId,
-      sanitized,
-      sourceEventSeq,
-    }: {
-      connectorInstanceId?: string | null;
-      sanitized?: string | null;
-      sourceEventSeq?: unknown;
-    }) {
-      getDb()
-        .prepare(
-          `UPDATE connector_summary_evidence
-              SET dirty = 1,
-                  state = 'stale',
-                  last_error = ?,
-                  source_event_seq = COALESCE(?, source_event_seq)
-            WHERE connector_instance_id = ?`
-        )
-        .run(sanitized, sourceEventSeq == null ? null : Number(sourceEventSeq), connectorInstanceId);
+      return [
+        ...iterateDynamicSqlAcknowledged<Row>(
+          `SELECT ${columns} FROM connector_summary_evidence ORDER BY connector_instance_id ASC`
+        ),
+      ];
     },
     markAllDirty({ sanitized }: { sanitized?: string | null }) {
       getDb()
         .prepare(`UPDATE connector_summary_evidence SET dirty = 1, state = 'stale', last_error = ?`)
         .run(sanitized);
-    },
-    markAllTerminalFactsFailed({
-      sanitized,
-      connectorInstanceIds,
-    }: {
-      sanitized?: string | null;
-      connectorInstanceIds?: readonly string[] | null;
-    }) {
-      if (connectorInstanceIds && connectorInstanceIds.length === 0) {
-        return;
-      }
-      const where = connectorInstanceIds
-        ? `WHERE connector_instance_id IN (${connectorInstanceIds.map(() => "?").join(", ")})`
-        : "";
-      getDb()
-        .prepare(
-          `UPDATE connector_summary_evidence
-              SET dirty = 1,
-                  state = 'stale',
-                  last_error = ?,
-                  terminal_facts_state = 'failed',
-                  terminal_facts_reason_code = ?
-              ${where}`
-        )
-        .run(sanitized, REASON_CODES.TERMINAL_FOLD_FAILED, ...(connectorInstanceIds ?? []));
     },
     markAllDiscoveryFailed({
       sanitized,
@@ -364,6 +324,51 @@ function createConnectorSummaryStore() {
               ${where}`
         )
         .run(sanitized, REASON_CODES.DISCOVERY_FAILED, REASON_CODES.DISCOVERY_FAILED, ...(connectorInstanceIds ?? []));
+    },
+    markAllTerminalFactsFailed({
+      sanitized,
+      connectorInstanceIds,
+    }: {
+      sanitized?: string | null;
+      connectorInstanceIds?: readonly string[] | null;
+    }) {
+      if (connectorInstanceIds && connectorInstanceIds.length === 0) {
+        return;
+      }
+      const where = connectorInstanceIds
+        ? `WHERE connector_instance_id IN (${connectorInstanceIds.map(() => "?").join(", ")})`
+        : "";
+      getDb()
+        .prepare(
+          `UPDATE connector_summary_evidence
+              SET dirty = 1,
+                  state = 'stale',
+                  last_error = ?,
+                  terminal_facts_state = 'failed',
+                  terminal_facts_reason_code = ?
+              ${where}`
+        )
+        .run(sanitized, REASON_CODES.TERMINAL_FOLD_FAILED, ...(connectorInstanceIds ?? []));
+    },
+    markDirty({
+      connectorInstanceId,
+      sanitized,
+      sourceEventSeq,
+    }: {
+      connectorInstanceId?: string | null;
+      sanitized?: string | null;
+      sourceEventSeq?: unknown;
+    }) {
+      getDb()
+        .prepare(
+          `UPDATE connector_summary_evidence
+              SET dirty = 1,
+                  state = 'stale',
+                  last_error = ?,
+                  source_event_seq = COALESCE(?, source_event_seq)
+            WHERE connector_instance_id = ?`
+        )
+        .run(sanitized, sourceEventSeq === null ? null : Number(sourceEventSeq), connectorInstanceId);
     },
   };
 }
@@ -416,20 +421,20 @@ export async function getConnectorSummaryEvidence(connectorInstanceId: string | 
  * newer) still reads `terminal_facts_state` exactly as stored: `current`.
  */
 function shapeTerminalFacts(row: Row) {
-  const eventSeq = row.stream_facts_event_seq == null ? null : Number(row.stream_facts_event_seq);
+  const eventSeq = row.stream_facts_event_seq === null ? null : Number(row.stream_facts_event_seq);
   if (rowIsFoldLogicVersionAhead(row)) {
     return {
-      state: "stale",
-      event_seq: eventSeq,
       as_of: row.computed_at || null,
+      event_seq: eventSeq,
       reason_code: REASON_CODES.FOLD_LOGIC_VERSION_INCOMPATIBLE_FUTURE,
+      state: "stale",
     };
   }
   return {
-    state: row.terminal_facts_state || "unobserved",
-    event_seq: eventSeq,
     as_of: row.computed_at || null,
+    event_seq: eventSeq,
     reason_code: row.terminal_facts_reason_code || null,
+    state: row.terminal_facts_state || "unobserved",
   };
 }
 
@@ -453,47 +458,47 @@ function shapeTerminalFacts(row: Row) {
 /** Shared `{state, as_of, reason_code}` envelope shape used by every orthogonal typed component below. */
 function shapeComponentEnvelope(row: Row, state: unknown, reasonCode: unknown) {
   return {
-    state,
     as_of: row.computed_at || null,
     reason_code: reasonCode || null,
+    state,
   };
 }
 
 export function shapeEvidenceRow(row: Row) {
   const retainedBytesState = String(row.retained_bytes_state || "unobserved");
   return {
-    connector_instance_id: row.connector_instance_id,
+    computed_at: row.computed_at || null,
     connector_id: row.connector_id,
+    connector_instance_id: row.connector_instance_id,
+    dirty: Number(row.dirty || 0) !== 0,
     display_name: row.display_name,
-    status: row.status,
-    source_kind: row.source_kind,
-    revoked_at: row.revoked_at || null,
-    total_records: Number(row.total_records || 0),
-    stream_count: Number(row.stream_count || 0),
+    last_error: row.last_error || null,
     last_record_updated_at: row.last_record_updated_at || null,
-    stream_records: parseEvidenceJson(row.stream_records_json, []),
-    stream_latest_facts: parseEvidenceJson(row.stream_latest_facts_json, null),
-    stream_facts_event_seq: row.stream_facts_event_seq == null ? null : Number(row.stream_facts_event_seq),
-    retained_bytes: retainedBytesState === "current" ? parseEvidenceJson(row.retained_bytes_json, null) : null,
-    total_retained_bytes: Number(row.total_retained_bytes || 0),
-    record_snapshot: shapeComponentEnvelope(
-      row,
-      row.record_snapshot_state || "unobserved",
-      row.record_snapshot_reason_code
-    ),
-    terminal_facts: shapeTerminalFacts(row),
     manifest_declaration: shapeComponentEnvelope(
       row,
       row.manifest_declaration_state || "unavailable",
       row.manifest_declaration_reason_code
     ),
-    retained_bytes_evidence: shapeComponentEnvelope(row, retainedBytesState, row.retained_bytes_reason_code),
-    dirty: Number(row.dirty || 0) !== 0,
-    computed_at: row.computed_at || null,
     manifest_generation: Number(row.manifest_generation ?? 0),
-    source_event_seq: row.source_event_seq == null ? null : Number(row.source_event_seq),
+    record_snapshot: shapeComponentEnvelope(
+      row,
+      row.record_snapshot_state || "unobserved",
+      row.record_snapshot_reason_code
+    ),
+    retained_bytes: retainedBytesState === "current" ? parseEvidenceJson(row.retained_bytes_json, null) : null,
+    retained_bytes_evidence: shapeComponentEnvelope(row, retainedBytesState, row.retained_bytes_reason_code),
+    revoked_at: row.revoked_at || null,
+    source_event_seq: row.source_event_seq === null ? null : Number(row.source_event_seq),
+    source_kind: row.source_kind,
     state: row.state || "unknown",
-    last_error: row.last_error || null,
+    status: row.status,
+    stream_count: Number(row.stream_count || 0),
+    stream_facts_event_seq: row.stream_facts_event_seq === null ? null : Number(row.stream_facts_event_seq),
+    stream_latest_facts: parseEvidenceJson(row.stream_latest_facts_json, null),
+    stream_records: parseEvidenceJson(row.stream_records_json, []),
+    terminal_facts: shapeTerminalFacts(row),
+    total_records: Number(row.total_records || 0),
+    total_retained_bytes: Number(row.total_retained_bytes || 0),
   };
 }
 
@@ -613,8 +618,8 @@ function buildComponentFailedRows(
       ...componentFields,
       connector_instance_id: connectorInstanceId,
       dirty: 1,
-      state: "failed",
       last_error: sanitized,
+      state: "failed",
     });
   }
   return failedRows;
@@ -654,7 +659,7 @@ export async function markTerminalFactsFailedForAllRows(
   const effectiveIds = connectorInstanceIds ?? [...existingById.keys()];
   try {
     const store = createConnectorSummaryStore();
-    await store.markAllTerminalFactsFailed({ sanitized, connectorInstanceIds });
+    await store.markAllTerminalFactsFailed({ connectorInstanceIds, sanitized });
     return new Map();
   } catch {
     // The durable marker write itself failed. Carry a typed failed-row
@@ -666,7 +671,7 @@ export async function markTerminalFactsFailedForAllRows(
     return buildComponentFailedRows(
       effectiveIds,
       existingById,
-      { terminal_facts_state: "failed", terminal_facts_reason_code: REASON_CODES.TERMINAL_FOLD_FAILED },
+      { terminal_facts_reason_code: REASON_CODES.TERMINAL_FOLD_FAILED, terminal_facts_state: "failed" },
       sanitized
     );
   }
@@ -706,7 +711,7 @@ export async function markAllConnectorSummaryEvidenceDiscoveryFailed(
   const effectiveIds = connectorInstanceIds ?? [...existingById.keys()];
   try {
     const store = createConnectorSummaryStore();
-    await store.markAllDiscoveryFailed({ sanitized, connectorInstanceIds });
+    await store.markAllDiscoveryFailed({ connectorInstanceIds, sanitized });
     return new Map();
   } catch {
     if (effectiveIds.length === 0) {
@@ -716,10 +721,10 @@ export async function markAllConnectorSummaryEvidenceDiscoveryFailed(
       effectiveIds,
       existingById,
       {
-        record_snapshot_state: "failed",
-        record_snapshot_reason_code: REASON_CODES.DISCOVERY_FAILED,
-        manifest_declaration_state: "failed",
         manifest_declaration_reason_code: REASON_CODES.DISCOVERY_FAILED,
+        manifest_declaration_state: "failed",
+        record_snapshot_reason_code: REASON_CODES.DISCOVERY_FAILED,
+        record_snapshot_state: "failed",
       },
       sanitized
     );
@@ -786,7 +791,16 @@ const STREAM_FACTS_FOLD_BATCH = 2000;
 // contract. A v2 current map may have folded events created before that
 // provenance existed, so it is never a valid baseline after this upgrade:
 // `seedFoldState` replays it from an empty map on the first observation.
-const STREAM_FACTS_FOLD_LOGIC_VERSION = 3;
+//
+// Version 4 refines the v3 generation-match predicate: an unstamped
+// (pre-provenance) terminal event is now accepted as current-generation
+// evidence while the connection's durable generation has never advanced past
+// 0 (see `foldTerminalEventFacts`). A v3 current map may have refused such
+// events outright (treating every NULL stamp as historical regardless of the
+// connection's generation), so it is never a valid baseline after this
+// upgrade either: `seedFoldState` replays it from an empty map on the first
+// observation, exactly like the v2->v3 upgrade.
+const STREAM_FACTS_FOLD_LOGIC_VERSION = 4;
 // A route may retry a replay once after a concurrent writer wins its CAS.
 // This is deliberately small: each retry rereads the durable baseline, and
 // persistent contention fails closed in memory rather than spinning or
@@ -840,18 +854,18 @@ function buildTerminalScopeFragmentPostgres(
   startParamIndex: number
 ): { sql: string; params: unknown[] } {
   if (scope === null || scope.length === 0) {
-    return { sql: "", params: [] };
+    return { params: [], sql: "" };
   }
   const placeholders = scope.map((_, i) => `$${startParamIndex + i}`).join(", ");
-  return { sql: ` AND connector_instance_id IN (${placeholders})`, params: [...scope] };
+  return { params: [...scope], sql: ` AND connector_instance_id IN (${placeholders})` };
 }
 
 function buildTerminalScopeFragmentSqlite(scope: readonly string[] | null): { sql: string; params: unknown[] } {
   if (scope === null || scope.length === 0) {
-    return { sql: "", params: [] };
+    return { params: [], sql: "" };
   }
   const placeholders = scope.map(() => "?").join(", ");
-  return { sql: ` AND connector_instance_id IN (${placeholders})`, params: [...scope] };
+  return { params: [...scope], sql: ` AND connector_instance_id IN (${placeholders})` };
 }
 
 function createStreamFactsFoldStore() {
@@ -864,7 +878,7 @@ function createStreamFactsFoldStore() {
           scopeParams
         );
         const value = (result.rows[0] as Row | undefined)?.max_seq;
-        return value == null ? null : Number(value);
+        return value === null ? null : Number(value);
       },
       async readTerminalFactEvents({
         sinceSeq,
@@ -942,7 +956,7 @@ function createStreamFactsFoldStore() {
         )
         .get(...scopeParams) as Row | undefined;
       const value = row?.max_seq;
-      return value == null ? null : Number(value);
+      return value === null ? null : Number(value);
     },
     readTerminalFactEvents({
       sinceSeq,
@@ -1038,8 +1052,8 @@ export function __testOnlyUpdateStreamFactsCasWrite(args: {
     ...args,
     baselineFoldVersion: args.baselineFoldVersion ?? null,
     foldVersion: args.foldVersion ?? STREAM_FACTS_FOLD_LOGIC_VERSION,
-    terminalFactsState: args.terminalFactsState ?? "current",
     terminalFactsReasonCode: args.terminalFactsReasonCode ?? null,
+    terminalFactsState: args.terminalFactsState ?? "current",
   });
 }
 
@@ -1080,9 +1094,13 @@ function parseTerminalFactEvent(row: Row): { payload: Row; streams: unknown[] } 
  * imported so this read-model module keeps zero dependency on the coverage-
  * derivation module (a raw-facts store must not need to know how coverage is
  * derived); the two are kept in lockstep by
- * `stream-facts-checkpoint-proof-parity.test.js`.
+ * `test/connector-summary-stream-facts.test.js`'s "monotonic guard" cases
+ * (this predicate's `committed`/`disabled` behavior at the store layer) and
+ * `test/connector-coverage-policy.test.js` (the same boundary's behavior at
+ * the coverage-derivation layer).
  */
 function factCheckpointProvesDurableCoverage(fact: Row): boolean {
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const checkpoint = fact.checkpoint;
   return checkpoint === "committed" || checkpoint === "disabled";
 }
@@ -1131,6 +1149,7 @@ function mergeEventStreamFacts(
     if (!rawFact || typeof rawFact !== "object" || Array.isArray(rawFact)) {
       continue;
     }
+    // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
     const stream = (rawFact as Row).stream;
     if (typeof stream !== "string" || !stream) {
       continue;
@@ -1151,10 +1170,10 @@ function mergeEventStreamFacts(
       continue;
     }
     facts[stream] = {
-      fact: rawFact as Row,
-      evidence_as_of: provenance.evidenceAsOf,
-      run_id: provenance.runId,
       event_seq: provenance.eventSeq,
+      evidence_as_of: provenance.evidenceAsOf,
+      fact: rawFact as Row,
+      run_id: provenance.runId,
     };
     counters.folded += 1;
   }
@@ -1186,9 +1205,24 @@ function foldTerminalEventFacts(
     return;
   }
   const eventGeneration = row.manifest_generation;
-  if (eventGeneration == null || Number(eventGeneration) !== generationByInstance.get(instanceId)) {
-    // A missing stamp is legacy/unattributed; an unequal one belongs to a
-    // prior manifest generation. Both are historical, never current proof.
+  const currentGeneration = generationByInstance.get(instanceId);
+  // A NULL stamp means the event predates generation provenance
+  // (`stamp_terminal_manifest_generation`, introduced alongside this gate).
+  // It is safe to treat as generation 0 evidence ONLY while the connection's
+  // durable generation has never advanced past 0 — generation 0 is by
+  // construction the only generation such a connection has ever had, so an
+  // unstamped event cannot belong to any other generation. The moment the
+  // connection's generation advances to >= 1, its NULL rows become
+  // permanently ambiguous (they could predate or postdate any earlier
+  // untracked manifest change) and must stay historical forever, exactly
+  // like a genuinely mismatched non-NULL stamp.
+  const eventGenerationMatches =
+    eventGeneration === null ? currentGeneration === 0 : Number(eventGeneration) === currentGeneration;
+  if (!eventGenerationMatches) {
+    // A missing stamp on a never-advanced connection is handled above; this
+    // is either a missing stamp on an already-advanced connection, or an
+    // unequal stamp belonging to a prior manifest generation. Both are
+    // historical, never current proof.
     generationCurrentByInstance.set(instanceId, false);
     counters.refused += 1;
     return;
@@ -1196,16 +1230,16 @@ function foldTerminalEventFacts(
   generationCurrentByInstance.set(instanceId, true);
   const eventSeq = Number(row.event_seq);
   const checkpoint = checkpointByInstance.get(instanceId);
-  if (!Number.isFinite(eventSeq) || (checkpoint != null && eventSeq <= checkpoint)) {
+  if (!Number.isFinite(eventSeq) || (checkpoint !== null && checkpoint !== undefined && eventSeq <= checkpoint)) {
     return;
   }
   mergeEventStreamFacts(
     facts,
     parsed.streams,
     {
+      eventSeq,
       evidenceAsOf: typeof row.occurred_at === "string" && row.occurred_at ? row.occurred_at : null,
       runId: typeof row.run_id === "string" && row.run_id ? row.run_id : null,
-      eventSeq,
     },
     counters
   );
@@ -1241,8 +1275,8 @@ function foldTerminalEventFacts(
  * branch is needed.
  */
 function rowIsFoldLogicVersionBehind(row: Row): boolean {
-  const version = row.stream_facts_fold_version == null ? null : Number(row.stream_facts_fold_version);
-  return version == null || version < STREAM_FACTS_FOLD_LOGIC_VERSION;
+  const version = row.stream_facts_fold_version === null ? null : Number(row.stream_facts_fold_version);
+  return version === null || version < STREAM_FACTS_FOLD_LOGIC_VERSION;
 }
 
 /**
@@ -1256,8 +1290,8 @@ function rowIsFoldLogicVersionBehind(row: Row): boolean {
  * fail closed instead. Mutually exclusive with `rowIsFoldLogicVersionBehind`.
  */
 function rowIsFoldLogicVersionAhead(row: Row): boolean {
-  const version = row.stream_facts_fold_version == null ? null : Number(row.stream_facts_fold_version);
-  return version != null && version > STREAM_FACTS_FOLD_LOGIC_VERSION;
+  const version = row.stream_facts_fold_version === null ? null : Number(row.stream_facts_fold_version);
+  return version !== null && version > STREAM_FACTS_FOLD_LOGIC_VERSION;
 }
 
 /** A participant row's write-time CAS anchor, captured at seed time. */
@@ -1293,12 +1327,14 @@ function seedFoldState(participants: readonly Row[]): {
   checkpointByInstance: Map<string, number | null>;
   factsByInstance: Map<string, Record<string, StoredStreamFactEntry>>;
   generationByInstance: Map<string, number>;
+  generationCurrentSeedByInstance: Map<string, boolean>;
   sinceSeq: number;
 } {
   const factsByInstance = new Map<string, Record<string, StoredStreamFactEntry>>();
   const checkpointByInstance = new Map<string, number | null>();
   const casBaselineByInstance = new Map<string, FoldCasBaseline>();
   const generationByInstance = new Map<string, number>();
+  const generationCurrentSeedByInstance = new Map<string, boolean>();
   let sinceSeq = Number.POSITIVE_INFINITY;
   for (const row of participants) {
     const instanceId = String(row.connector_instance_id);
@@ -1311,23 +1347,56 @@ function seedFoldState(participants: readonly Row[]): {
         ? { ...(parsed as Record<string, StoredStreamFactEntry>) }
         : {}
     );
-    const checkpoint = versionBehind || row.stream_facts_event_seq == null ? null : Number(row.stream_facts_event_seq);
+    const checkpoint = versionBehind || row.stream_facts_event_seq === null ? null : Number(row.stream_facts_event_seq);
     checkpointByInstance.set(instanceId, checkpoint);
     casBaselineByInstance.set(instanceId, {
-      eventSeq: row.stream_facts_event_seq == null ? null : Number(row.stream_facts_event_seq),
-      foldVersion: row.stream_facts_fold_version == null ? null : Number(row.stream_facts_fold_version),
+      eventSeq: row.stream_facts_event_seq === null ? null : Number(row.stream_facts_event_seq),
+      foldVersion: row.stream_facts_fold_version === null ? null : Number(row.stream_facts_fold_version),
     });
+    // The pass's default verdict for an instance no qualifying event touches
+    // THIS round (e.g. a generation-transition boundary whose checkpoint
+    // already sits at this round's high-water mark, so the drain genuinely
+    // reads zero events for it): inherit the row's OWN incoming generation
+    // verdict, never a blind `true`. A row already refused as historical for
+    // a GENERATION reason (`terminal_facts_historical` — no attributable
+    // event ever matched; or `manifest_generation_changed` — a fresh
+    // transition just cleared it) must stay non-current when nothing new is
+    // found — "no new events" is silence, not proof the source generation is
+    // still current.
+    //
+    // Deliberately NARROW: this must NOT catch every non-`current` state.
+    // `terminal_fold_incomplete` (a still-in-progress BUDGETED replay of a
+    // generation-CURRENT row) is an orthogonal reason — seeding `false` for
+    // it would make `writeParticipantStreamFacts` floor the checkpoint at
+    // its stale baseline every resumption round (`sourceGenerationCurrent ?
+    // writeSeq : checkpointByInstance.get(...)`), which never advances and
+    // starves the bounded-resume contract's own convergence. Only the two
+    // generation-refusal reason codes seed `false`; every other reason
+    // (`terminal_fold_incomplete`, `terminal_fold_failed`,
+    // `terminal_fold_contention`, `unobserved`, or simply `current`) seeds
+    // `true` — the neutral "assume still current, let a real refused event
+    // this round override it" default this predicate always had.
+    generationCurrentSeedByInstance.set(
+      instanceId,
+      row.terminal_facts_reason_code !== REASON_CODES.TERMINAL_FACTS_HISTORICAL &&
+        row.terminal_facts_reason_code !== "manifest_generation_changed"
+    );
     sinceSeq = Math.min(sinceSeq, checkpoint ?? 0);
   }
-  return { casBaselineByInstance, checkpointByInstance, factsByInstance, generationByInstance, sinceSeq };
+  return {
+    casBaselineByInstance,
+    checkpointByInstance,
+    factsByInstance,
+    generationByInstance,
+    generationCurrentSeedByInstance,
+    sinceSeq,
+  };
 }
 
 export interface FoldStreamFactsResult {
   /** Participant ids whose CAS write still lost after the bounded replay attempts. */
   readonly casRejectedInstanceIds: readonly string[];
   readonly folded: number;
-  readonly participants: number;
-  readonly refused: number;
   /**
    * `true` when this call's own work budget (`maxDurationMs`/`maxEvents`)
    * was exhausted before every participant reached the pass's high-water
@@ -1337,6 +1406,8 @@ export interface FoldStreamFactsResult {
    * budgeted call that genuinely finished within its budget.
    */
   readonly incomplete: boolean;
+  readonly participants: number;
+  readonly refused: number;
   /**
    * The event_seq every INCOMPLETE participant's durable checkpoint was
    * left at this call — a genuine resume cursor, not merely "call again
@@ -1405,9 +1476,20 @@ function rowNeedsFoldParticipation(row: Row, maxSeq: number | null): boolean {
   }
   // A manifest fingerprint transition intentionally clears the terminal map
   // while retaining the current event high-water as its generation boundary.
-  // It still needs one converged fold pass to turn that deliberately stale
-  // component into a current, empty post-boundary fact set. The same retry
-  // behavior is correct for other recoverable terminal-fold failures.
+  // It still needs a fold pass to attempt converging: a NEW post-boundary
+  // fact-carrying event (stamped with the connection's new current
+  // generation) DOES turn it current again — but with zero such events since
+  // the boundary, the pass converges to the SAME non-current verdict it
+  // started with (see `seedFoldState`'s `generationCurrentSeedByInstance`,
+  // which seeds `false` from exactly this row's own incoming
+  // `manifest_generation_changed`/`terminal_facts_historical` reason code, so
+  // silence is never misread as proof the source generation is still
+  // current). This is distinct from a genuinely checkpointed-EMPTY history
+  // (`stampZeroCheckpointForBootstrap`'s zero-terminal-events-ever case),
+  // which IS current — a connection that has never had any terminal history
+  // has nothing to be historical ABOUT. The same retry behavior (participate
+  // every pass until genuinely converged) is correct for other recoverable
+  // terminal-fold failures too.
   if (row.terminal_facts_state !== "current") {
     return true;
   }
@@ -1415,7 +1497,7 @@ function rowNeedsFoldParticipation(row: Row, maxSeq: number | null): boolean {
     return true;
   }
   const checkpoint = row.stream_facts_event_seq;
-  return checkpoint == null || (maxSeq != null && Number(checkpoint) < maxSeq);
+  return checkpoint === null || (maxSeq !== null && Number(checkpoint) < maxSeq);
 }
 
 /**
@@ -1441,15 +1523,16 @@ async function stampZeroCheckpointForBootstrap(
   const casRejectedInstanceIds: string[] = [];
   for (const row of participants) {
     const connectorInstanceId = String(row.connector_instance_id);
+    // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
     const accepted = await foldStore.updateStreamFacts({
+      baselineEventSeq: row.stream_facts_event_seq === null ? null : Number(row.stream_facts_event_seq),
+      baselineFoldVersion: row.stream_facts_fold_version === null ? null : Number(row.stream_facts_fold_version),
       connectorInstanceId,
-      factsJson: null,
       eventSeq: 0,
-      baselineEventSeq: row.stream_facts_event_seq == null ? null : Number(row.stream_facts_event_seq),
-      baselineFoldVersion: row.stream_facts_fold_version == null ? null : Number(row.stream_facts_fold_version),
+      factsJson: null,
       foldVersion: STREAM_FACTS_FOLD_LOGIC_VERSION,
-      terminalFactsState: "current",
       terminalFactsReasonCode: null,
+      terminalFactsState: "current",
     });
     if (!accepted) {
       casRejectedInstanceIds.push(connectorInstanceId);
@@ -1527,18 +1610,19 @@ async function drainTerminalEventBatches({
   let eventsProcessed = 0;
   for (;;) {
     if (cursor >= maxSeq) {
-      return { cursor, budgetExhausted: false };
+      return { budgetExhausted: false, cursor };
     }
     if ((deadline !== null && Date.now() >= deadline) || (maxEvents !== null && eventsProcessed >= maxEvents)) {
-      return { cursor, budgetExhausted: true };
+      return { budgetExhausted: true, cursor };
     }
     const limit =
       maxEvents === null ? STREAM_FACTS_FOLD_BATCH : Math.min(STREAM_FACTS_FOLD_BATCH, maxEvents - eventsProcessed);
+    // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
     const batch = await foldStore.readTerminalFactEvents({
-      sinceSeq: cursor,
-      maxSeq,
       limit,
+      maxSeq,
       scope: connectorInstanceIds,
+      sinceSeq: cursor,
     });
     for (const row of batch) {
       foldTerminalEventFacts(
@@ -1555,7 +1639,7 @@ async function drainTerminalEventBatches({
       cursor = Number((batch.at(-1) as Row).event_seq);
     }
     if (batch.length < limit) {
-      return { cursor, budgetExhausted: false };
+      return { budgetExhausted: false, cursor };
     }
   }
 }
@@ -1566,6 +1650,7 @@ export async function foldConnectorSummaryStreamFacts(
 ): Promise<FoldStreamFactsResult> {
   let result: FoldStreamFactsResult | null = null;
   for (let attempt = 0; attempt < STREAM_FACTS_CAS_REPLAY_ATTEMPTS; attempt += 1) {
+    // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
     result = await foldConnectorSummaryStreamFactsOnce(connectorInstanceIds, options);
     if (result.casRejectedInstanceIds.length === 0) {
       return result;
@@ -1574,6 +1659,7 @@ export async function foldConnectorSummaryStreamFacts(
   return result as FoldStreamFactsResult;
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This protocol transition owns ordered state invariants that must remain local.
 async function foldConnectorSummaryStreamFactsOnce(
   connectorInstanceIds: readonly string[] | null,
   options: { readonly maxDurationMs?: number; readonly maxEvents?: number }
@@ -1582,18 +1668,46 @@ async function foldConnectorSummaryStreamFactsOnce(
   const foldStore = createStreamFactsFoldStore();
   const rows = (await store.listEvidence(connectorInstanceIds === null ? {} : { connectorInstanceIds })) as Row[];
   if (rows.length === 0) {
-    return { casRejectedInstanceIds: [], folded: 0, participants: 0, refused: 0, incomplete: false, resumeAfterSeq: null };
+    return {
+      casRejectedInstanceIds: [],
+      folded: 0,
+      incomplete: false,
+      participants: 0,
+      refused: 0,
+      resumeAfterSeq: null,
+    };
   }
   const maxSeq = await foldStore.readMaxTerminalEventSeq(connectorInstanceIds);
   const participants = rows.filter((row) => rowNeedsFoldParticipation(row, maxSeq));
   if (participants.length === 0) {
-    return { casRejectedInstanceIds: [], folded: 0, participants: 0, refused: 0, incomplete: false, resumeAfterSeq: null };
+    return {
+      casRejectedInstanceIds: [],
+      folded: 0,
+      incomplete: false,
+      participants: 0,
+      refused: 0,
+      resumeAfterSeq: null,
+    };
   }
-  if (maxSeq == null) {
+  if (maxSeq === null) {
     const casRejectedInstanceIds = await stampZeroCheckpointForBootstrap(foldStore, participants);
-    return { casRejectedInstanceIds, folded: 0, participants: participants.length, refused: 0, incomplete: false, resumeAfterSeq: null };
+    return {
+      casRejectedInstanceIds,
+      folded: 0,
+      incomplete: false,
+      participants: participants.length,
+      refused: 0,
+      resumeAfterSeq: null,
+    };
   }
-  const { factsByInstance, checkpointByInstance, casBaselineByInstance, generationByInstance, sinceSeq } = seedFoldState(participants);
+  const {
+    factsByInstance,
+    checkpointByInstance,
+    casBaselineByInstance,
+    generationByInstance,
+    generationCurrentSeedByInstance,
+    sinceSeq,
+  } = seedFoldState(participants);
   // Test-only: see `testOnlyFoldPauseHook` — a no-op unless a test installs
   // a hook. Held here, immediately after the baseline (checkpointByInstance)
   // is captured and before this pass's own terminal-event read/CAS write —
@@ -1603,19 +1717,19 @@ async function foldConnectorSummaryStreamFactsOnce(
   // interleave, instead of one pass completing before the next starts.
   await testOnlyFoldPauseHook("after_seed_before_read");
   const counters = { folded: 0, refused: 0 };
-  const generationCurrentByInstance = new Map<string, boolean>();
+  const generationCurrentByInstance = new Map<string, boolean>(generationCurrentSeedByInstance);
   const drain = await drainTerminalEventBatches({
-    foldStore,
-    factsByInstance,
     checkpointByInstance,
+    connectorInstanceIds,
+    counters,
+    deadline: typeof options.maxDurationMs === "number" ? Date.now() + options.maxDurationMs : null,
+    factsByInstance,
+    foldStore,
     generationByInstance,
     generationCurrentByInstance,
-    counters,
-    connectorInstanceIds,
+    maxEvents: typeof options.maxEvents === "number" ? options.maxEvents : null,
     maxSeq,
     startCursor: Number.isFinite(sinceSeq) ? sinceSeq : 0,
-    deadline: typeof options.maxDurationMs === "number" ? Date.now() + options.maxDurationMs : null,
-    maxEvents: typeof options.maxEvents === "number" ? options.maxEvents : null,
   });
   const { cursor, budgetExhausted } = drain;
   // Every participant advances to the pass's max sequence when the drain
@@ -1652,14 +1766,27 @@ async function foldConnectorSummaryStreamFactsOnce(
   const replayConverged = !budgetExhausted;
   const casRejectedInstanceIds: string[] = [];
   for (const [instanceId, facts] of factsByInstance) {
+    // Every participant is seeded above (`generationCurrentSeedByInstance`)
+    // from its OWN incoming `terminal_facts_state`, so this is never an
+    // absent-key default — a row that entered the pass already non-current
+    // (e.g. a fresh generation-transition boundary with zero qualifying
+    // events this round) reads `false` here exactly like a row a real
+    // refused event flipped to `false`, rather than silently healing to
+    // `true` on pure silence.
     const sourceGenerationCurrent = generationCurrentByInstance.get(instanceId) !== false;
     const terminalFactsCurrent = replayConverged && sourceGenerationCurrent;
+    // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
     const accepted = await writeParticipantStreamFacts(
       foldStore,
       instanceId,
       facts,
-      sourceGenerationCurrent ? writeSeq : checkpointByInstance.get(instanceId) ?? 0,
-      terminalFactsCurrent ? null : sourceGenerationCurrent ? REASON_CODES.TERMINAL_FOLD_INCOMPLETE : REASON_CODES.TERMINAL_FACTS_HISTORICAL,
+      sourceGenerationCurrent ? writeSeq : (checkpointByInstance.get(instanceId) ?? 0),
+      terminalFactsCurrent
+        ? null
+        : // biome-ignore lint/style/noNestedTernary: The existing expression mirrors the protocol’s compact value selection contract.
+          sourceGenerationCurrent
+          ? REASON_CODES.TERMINAL_FOLD_INCOMPLETE
+          : REASON_CODES.TERMINAL_FACTS_HISTORICAL,
       terminalFactsCurrent,
       checkpointByInstance,
       casBaselineByInstance
@@ -1671,9 +1798,9 @@ async function foldConnectorSummaryStreamFactsOnce(
   return {
     casRejectedInstanceIds,
     folded: counters.folded,
+    incomplete: budgetExhausted,
     participants: participants.length,
     refused: counters.refused,
-    incomplete: budgetExhausted,
     resumeAfterSeq: budgetExhausted ? writeSeq : null,
   };
 }
@@ -1708,6 +1835,7 @@ async function foldConnectorSummaryStreamFactsOnce(
  * predicate alone already guarantees the row participates again next pass
  * and RESUMES (never restarts) from this exact partial progress.
  */
+// biome-ignore lint/suspicious/useAwait: The async signature is part of this caller-facing contract.
 async function writeParticipantStreamFacts(
   foldStore: ReturnType<typeof createStreamFactsFoldStore>,
   instanceId: string,
@@ -1719,17 +1847,17 @@ async function writeParticipantStreamFacts(
   casBaselineByInstance: Map<string, FoldCasBaseline>
 ): Promise<boolean> {
   const effectiveCheckpoint = checkpointByInstance.get(instanceId) ?? null;
-  const participantEventSeq = effectiveCheckpoint == null ? writeSeq : Math.max(writeSeq, effectiveCheckpoint);
+  const participantEventSeq = effectiveCheckpoint === null ? writeSeq : Math.max(writeSeq, effectiveCheckpoint);
   const casBaseline = casBaselineByInstance.get(instanceId) ?? { eventSeq: null, foldVersion: null };
   return foldStore.updateStreamFacts({
-    connectorInstanceId: instanceId,
-    factsJson: Object.keys(facts).length > 0 ? JSON.stringify(facts) : null,
-    eventSeq: participantEventSeq,
     baselineEventSeq: casBaseline.eventSeq,
     baselineFoldVersion: casBaseline.foldVersion,
+    connectorInstanceId: instanceId,
+    eventSeq: participantEventSeq,
+    factsJson: Object.keys(facts).length > 0 ? JSON.stringify(facts) : null,
     foldVersion: STREAM_FACTS_FOLD_LOGIC_VERSION,
-    terminalFactsState: replayConverged ? "current" : "stale",
     terminalFactsReasonCode,
+    terminalFactsState: replayConverged ? "current" : "stale",
   });
 }
 
@@ -1781,18 +1909,18 @@ async function foldStreamFactsBestEffort(
       // while the next observation retries from its new durable baseline.
       const existingById = await readExistingRowsForFailureOverlay(result.casRejectedInstanceIds);
       return {
-        ok: false,
         failedRows: buildComponentFailedRows(
           result.casRejectedInstanceIds,
           existingById,
-          { terminal_facts_state: "stale", terminal_facts_reason_code: REASON_CODES.TERMINAL_FOLD_CONTENTION },
+          { terminal_facts_reason_code: REASON_CODES.TERMINAL_FOLD_CONTENTION, terminal_facts_state: "stale" },
           null
         ),
         incomplete: false,
+        ok: false,
         resumeAfterSeq: null,
       };
     }
-    return { ok: true, failedRows: new Map(), incomplete: result.incomplete, resumeAfterSeq: result.resumeAfterSeq };
+    return { failedRows: new Map(), incomplete: result.incomplete, ok: true, resumeAfterSeq: result.resumeAfterSeq };
   } catch (err) {
     // A fold failure is specifically a terminal-facts failure: nothing this
     // pass could verify about any row's per-stream latest-attempt facts.
@@ -1802,7 +1930,7 @@ async function foldStreamFactsBestEffort(
     // failure-mark here would degrade every OTHER connection's terminal
     // facts too, which is not what a scoped fold's own failure proves.
     const failedRows = await markTerminalFactsFailedForAllRows(err, connectorInstanceIds);
-    return { ok: false, failedRows, incomplete: false, resumeAfterSeq: null };
+    return { failedRows, incomplete: false, ok: false, resumeAfterSeq: null };
   }
 }
 
@@ -1894,7 +2022,7 @@ async function observeConnectorSummaryEvidence(
     // `failedRows` result surfaces them even though nothing durable
     // reflects the failure.
     const failedRows = await markAllConnectorSummaryEvidenceDiscoveryFailed(err, connectorInstanceIds);
-    return { reconciled: 0, skipped: 0, failedRows, incomplete: false, resumeAfterSeq: null };
+    return { failedRows, incomplete: false, reconciled: 0, resumeAfterSeq: null, skipped: 0 };
   }
   // The fold's own in-memory overlay (Sol P1.1) is merged in alongside the
   // repair engine's: both are keyed by connector_instance_id and represent
@@ -1920,11 +2048,11 @@ async function observeConnectorSummaryEvidence(
   const failedRows =
     foldOutcome.failedRows.size === 0 ? result.failedRows : new Map([...result.failedRows, ...foldOutcome.failedRows]);
   return {
-    reconciled: result.repaired,
-    skipped: result.skipped,
     failedRows,
     incomplete: foldOutcome.incomplete,
+    reconciled: result.repaired,
     resumeAfterSeq: foldOutcome.resumeAfterSeq,
+    skipped: result.skipped,
   };
 }
 
@@ -1996,6 +2124,7 @@ export async function rebuildConnectorSummaryEvidence() {
  *
  * Spec: openspec/changes/reconcile-active-summary-evidence/design.md
  */
+// biome-ignore lint/suspicious/useAwait: The async signature is part of this caller-facing contract.
 export async function reconcileDirtyConnectorSummaryEvidence(
   connectorInstanceIds: readonly string[] | null = null,
   options: { readonly maxCandidates?: number; readonly maxDurationMs?: number; readonly maxEvents?: number } = {}
@@ -2014,8 +2143,6 @@ export async function reconcileDirtyConnectorSummaryEvidence(
 export interface BoundedSweepResult {
   /** Total instances discovered+repaired+considered across every page processed this call. */
   readonly discovered: number;
-  readonly repaired: number;
-  readonly skipped: number;
   /**
    * `true` when the sweep reached the deadline (or the page-count cap)
    * before covering the complete canonical set, OR when a page's OWN fold
@@ -2031,9 +2158,11 @@ export interface BoundedSweepResult {
    * rather than skipping past them.
    */
   readonly incomplete: boolean;
-  readonly resumeAfterId: string | null;
   /** Complete-set orphan pruning only ran when the sweep covered every page AND every page's fold genuinely converged this call (see below). */
   readonly prunedComplete: boolean;
+  readonly repaired: number;
+  readonly resumeAfterId: string | null;
+  readonly skipped: number;
 }
 
 /**
@@ -2115,6 +2244,7 @@ export async function runBoundedSummaryEvidenceSweep(options: {
     if (Date.now() >= deadline || pages >= maxPages) {
       break;
     }
+    // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
     const pageIds = await readInstanceIdPage(cursor, pageSize);
     if (pageIds.length === 0) {
       coveredCompleteSet = true;
@@ -2146,7 +2276,7 @@ export async function runBoundedSummaryEvidenceSweep(options: {
       cursor = cursorBeforeCurrentPage;
       break;
     }
-    cursor = pageIds[pageIds.length - 1] ?? cursor;
+    cursor = pageIds.at(-1) ?? cursor;
     if (pageIds.length < pageSize) {
       // Short page: this was genuinely the last page of the complete set.
       coveredCompleteSet = true;
@@ -2175,10 +2305,10 @@ export async function runBoundedSummaryEvidenceSweep(options: {
   const incomplete = !coveredCompleteSet || anyFoldIncomplete;
   return {
     discovered,
-    repaired,
-    skipped,
     incomplete,
-    resumeAfterId: incomplete ? cursor : null,
     prunedComplete,
+    repaired,
+    resumeAfterId: incomplete ? cursor : null,
+    skipped,
   };
 }

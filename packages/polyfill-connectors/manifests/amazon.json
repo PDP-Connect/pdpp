@@ -30,9 +30,7 @@
           "required": true,
           "secret": true,
           "autocomplete": "username",
-          "env": [
-            "AMAZON_USERNAME"
-          ]
+          "env": ["AMAZON_USERNAME"]
         },
         {
           "name": "password",
@@ -41,18 +39,13 @@
           "required": true,
           "secret": true,
           "autocomplete": "current-password",
-          "env": [
-            "AMAZON_PASSWORD"
-          ]
+          "env": ["AMAZON_PASSWORD"]
         }
       ]
     }
   },
   "capabilities": {
-    "human_interaction": [
-      "manual_action",
-      "otp"
-    ],
+    "human_interaction": ["manual_action", "otp"],
     "refresh_policy": {
       "recommended_mode": "manual",
       "minimum_interval_seconds": 7200,
@@ -90,48 +83,27 @@
             "x_pdpp_role": "event-time"
           },
           "order_total": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "order_total_cents": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "delivery_status": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "status_detail": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "secondary"
           },
           "recipient_name": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "shipping_address_summary": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "payment_method_summary": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "gift_order": {
             "type": "boolean"
@@ -147,14 +119,9 @@
             "format": "date-time"
           }
         },
-        "required": [
-          "id",
-          "order_date"
-        ]
+        "required": ["id", "order_date"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "order_date",
       "consent_time_field": "order_date",
       "selection": {
@@ -206,30 +173,13 @@
           ]
         },
         "range_filters": {
-          "order_date": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "order_total_cents": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "item_count": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "order_date": ["gte", "gt", "lte", "lt"],
+          "order_total_cents": ["gte", "gt", "lte", "lt"],
+          "item_count": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "order_date"
-          ]
+          "group_by_time": ["order_date"]
         }
       },
       "coverage_strategy": "checkpoint_window",
@@ -258,69 +208,41 @@
             "x_pdpp_role": "event-time"
           },
           "asin": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "name": {
             "type": "string",
             "x_pdpp_role": "primary-title"
           },
           "url": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "unit_price": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "unit_price_cents": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "quantity": {
             "type": "integer"
           },
           "seller": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "actor"
           },
           "item_image_url": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "returned": {
             "type": "boolean"
           },
           "refund_status": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           }
         },
-        "required": [
-          "id",
-          "order_id",
-          "order_date",
-          "name"
-        ]
+        "required": ["id", "order_id", "order_date", "name"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "order_date",
       "consent_time_field": "order_date",
       "selection": {
@@ -338,36 +260,16 @@
       ],
       "query": {
         "search": {
-          "lexical_fields": [
-            "name",
-            "seller"
-          ]
+          "lexical_fields": ["name", "seller"]
         },
         "range_filters": {
-          "order_date": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "unit_price_cents": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "quantity": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "order_date": ["gte", "gt", "lte", "lt"],
+          "unit_price_cents": ["gte", "gt", "lte", "lt"],
+          "quantity": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "order_date"
-          ]
+          "group_by_time": ["order_date"]
         }
       },
       "coverage_strategy": "parent_detail_accounting",

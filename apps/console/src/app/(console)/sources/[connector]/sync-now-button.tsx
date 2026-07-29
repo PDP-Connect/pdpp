@@ -9,11 +9,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState, useTransition } from "react";
 import { syncStartFailureLead } from "../../lib/connection-evidence.ts";
 import { type RunNowResult, runConnectorNowAction } from "../actions.ts";
-import {
-  markSyncStartToast,
-  readSyncStartToast,
-  syncStartToastDismissDelayMs,
-} from "../last-known-sync-start.ts";
+import { markSyncStartToast, readSyncStartToast, syncStartToastDismissDelayMs } from "../last-known-sync-start.ts";
 
 const RUNNING_POLL_MS = 3000;
 const TOAST_TTL_MS = 15_000;

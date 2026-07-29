@@ -118,6 +118,8 @@ export interface CurrentActivityRow {
 
 export interface DashboardDiagnostics {
   body_preview: string;
+  income_capture_description_count: number;
+  income_capture_heading_count: number;
   title: string;
   url: string;
 }

@@ -17,8 +17,8 @@
  */
 
 export interface AsParCreateInput {
-  readonly body: Record<string, unknown> | null | undefined;
   readonly baseUrl: string;
+  readonly body: Record<string, unknown> | null | undefined;
   readonly nativeManifest: unknown;
 }
 
@@ -28,45 +28,45 @@ export interface AsParCreateTraceContext {
 }
 
 export interface AsParCreateStoreResult {
-  readonly request_uri: string;
   readonly authorization_url: string;
   readonly expires_in: number;
+  readonly request_uri: string;
   readonly trace_context?: AsParCreateTraceContext | null;
   readonly [extra: string]: unknown;
 }
 
 export interface AsParCreateDependencies {
-  initiateGrant(
+  initiateGrant: (
     body: Record<string, unknown> | null | undefined,
-    opts: { baseUrl: string; nativeManifest: unknown },
-  ): Promise<AsParCreateStoreResult> | AsParCreateStoreResult;
+    opts: { baseUrl: string; nativeManifest: unknown }
+  ) => Promise<AsParCreateStoreResult> | AsParCreateStoreResult;
 }
 
 export interface AsParCreateOutput {
-  readonly status: 201;
-  readonly traceContext: AsParCreateTraceContext | null;
   readonly envelope: {
     readonly request_uri: string;
     readonly authorization_url: string;
     readonly expires_in: number;
   };
+  readonly status: 201;
+  readonly traceContext: AsParCreateTraceContext | null;
 }
 
 export async function executeAsParCreate(
   input: AsParCreateInput,
-  deps: AsParCreateDependencies,
+  deps: AsParCreateDependencies
 ): Promise<AsParCreateOutput> {
   const result = await deps.initiateGrant(input.body, {
     baseUrl: input.baseUrl,
     nativeManifest: input.nativeManifest,
   });
   return {
-    status: 201,
-    traceContext: result.trace_context ?? null,
     envelope: {
-      request_uri: result.request_uri,
       authorization_url: result.authorization_url,
       expires_in: result.expires_in,
+      request_uri: result.request_uri,
     },
+    status: 201,
+    traceContext: result.trace_context ?? null,
   };
 }

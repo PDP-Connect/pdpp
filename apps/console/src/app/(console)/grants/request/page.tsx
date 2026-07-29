@@ -35,10 +35,10 @@ type Examples = NonNullable<Awaited<ReturnType<typeof buildGrantRequestExamples>
 function HeaderActions({ ownerLoginUrl }: { ownerLoginUrl: string }) {
   return (
     <>
-      <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href="/grants#pending-approvals">
+      <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href="/grants#pending-approvals">
         Pending approvals
       </Link>
-      <a className={buttonVariants({ variant: "ghost", size: "sm" })} href={ownerLoginUrl}>
+      <a className={buttonVariants({ size: "sm", variant: "ghost" })} href={ownerLoginUrl}>
         Owner access
       </a>
     </>
@@ -72,8 +72,8 @@ function WorkspaceError({ message }: { message: string }) {
 }
 
 const ACCESS_MODE_OPTIONS = [
-  { value: "single_use", label: "single_use" },
-  { value: "ongoing", label: "ongoing" },
+  { label: "single_use", value: "single_use" },
+  { label: "ongoing", value: "ongoing" },
 ];
 
 function DraftFormFields({ connectionOptions, draft }: { connectionOptions: ConnectionPinOption[]; draft: Draft }) {
@@ -331,6 +331,7 @@ function EquivalentsSection({ examples }: { examples: Examples }) {
 export default async function GrantRequestPage({ searchParams }: { searchParams: Promise<Params> }) {
   const params = await searchParams;
   const workspace = params.workspace ? getGrantRequestWorkspace(params.workspace) : null;
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   const draft = workspace?.draft ?? createDefaultGrantRequestDraft();
   const examples = workspace ? await buildGrantRequestExamples(workspace) : null;
   const connectionOptions = await loadConnectionPinOptions(draft);
@@ -341,7 +342,7 @@ export default async function GrantRequestPage({ searchParams }: { searchParams:
     <RecordroomShellWithPalette>
       <PageHeader
         actions={<HeaderActions ownerLoginUrl={ownerLoginUrl} />}
-        breadcrumbs={[{ label: "Grants", href: "/grants" }, { label: "Grant request" }]}
+        breadcrumbs={[{ href: "/grants", label: "Grants" }, { label: "Grant request" }]}
         description="Register a public client, stage a real PAR request with PDPP authorization details, then drive the resulting consent through the public approval path."
         meta={<HeaderMeta workspace={workspace} />}
         title="Grant request workspace"

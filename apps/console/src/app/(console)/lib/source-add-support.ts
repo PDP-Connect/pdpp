@@ -45,17 +45,17 @@ export interface SourceAddSupport {
 }
 
 const SUPPORT_LABELS: Record<AddAccountSupport, string> = {
-  self_service: "Add another account",
-  packaged_path_pending: "Add path not packaged",
   deployment_prerequisite: "Server setup required to add another account",
   not_self_service: "Add path not available here",
+  packaged_path_pending: "Add path not packaged",
+  self_service: "Add another account",
 };
 
 const SUPPORT_TONES: Record<AddAccountSupport, string> = {
-  self_service: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700",
-  packaged_path_pending: "border-amber-500/30 bg-amber-500/10 text-amber-700",
   deployment_prerequisite: "border-amber-500/30 bg-amber-500/10 text-amber-700",
   not_self_service: "border-border bg-muted/30 text-muted-foreground",
+  packaged_path_pending: "border-amber-500/30 bg-amber-500/10 text-amber-700",
+  self_service: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700",
 };
 
 /**
@@ -91,9 +91,9 @@ export function buildSourceAddSupport(manifests: readonly CatalogManifestLike[])
   for (const entry of catalog) {
     const support = addAccountSupport(entry);
     map.set(entry.connectorKey, {
+      action: addAnotherAccountAction(entry),
       connectorKey: entry.connectorKey,
       support,
-      action: addAnotherAccountAction(entry),
       supportLabel: SUPPORT_LABELS[support],
       supportTone: SUPPORT_TONES[support],
     });

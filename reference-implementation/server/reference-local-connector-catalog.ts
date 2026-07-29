@@ -3,9 +3,9 @@
 
 import { readFileSync } from "node:fs";
 import { exec, referenceQueries } from "../lib/db.ts";
-import { registerConnector } from "./auth.js";
-import { canonicalConnectorKey } from "./connector-key.js";
-import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.js";
+import { registerConnector } from "./auth.ts";
+import { canonicalConnectorKey } from "./connector-key.ts";
+import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.ts";
 
 // Keyed by canonical connector_key. The local-collector manifest files
 // retain their historical snake_case filenames (`claude_code.json`), but the
@@ -13,8 +13,8 @@ import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.js";
 // use the canonical key (`claude-code`, `codex`) so a legacy-alias enroll
 // cannot fork the connector type away from its canonical identity.
 const REFERENCE_LOCAL_CONNECTOR_CATALOG_MANIFESTS = new Map([
-  ["claude-code", { entryName: "claude_code.json", displayName: "Claude Code" }],
-  ["codex", { entryName: "codex.json", displayName: "OpenAI Codex CLI" }],
+  ["claude-code", { displayName: "Claude Code", entryName: "claude_code.json" }],
+  ["codex", { displayName: "OpenAI Codex CLI", entryName: "codex.json" }],
 ]);
 
 export function readReferenceLocalConnectorCatalogManifest(connectorId: string) {
@@ -52,7 +52,12 @@ export function listReferenceLocalConnectorCatalogManifests() {
 export async function ensureReferenceConnectorCatalogEntry(connectorId: string, connectorDisplayName?: string) {
   const localCollectorManifest = readReferenceLocalConnectorCatalogManifest(connectorId);
   if (localCollectorManifest) {
-    await registerConnector(localCollectorManifest);
+    // Persist the catalog row + advance generations, but SKIP retrieval-index
+    // backfill. Enroll is a control-plane op; the backfill enters the
+    // connector-instance writer-admission fence shared with bulk ingest, which
+    // starves enrollment, and is a no-op for a fresh enroll. See
+    // decouple-device-enrollment-from-ingest-writer-admission design D1.
+    await registerConnector(localCollectorManifest, { backfillRetrievalIndexes: false });
     return;
   }
   const connectorKey = canonicalConnectorKey(connectorId) ?? connectorId;

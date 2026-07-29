@@ -97,7 +97,7 @@ export function resolvePartialCoverageCue({
   lastRunKnownGaps: readonly KnownGap[] | null | undefined;
   totalRecords: number;
 }): boolean {
-  if (collectionReport != null) {
+  if (collectionReport !== null && collectionReport !== undefined) {
     return connectorHasPartialCoverageFromReport(collectionReport);
   }
   return connectorHasPartialCoverageHint({ lastRunKnownGaps, totalRecords });
@@ -244,8 +244,8 @@ function summarizeKnownGaps(gaps: readonly KnownGap[]): KnownGapSummary {
     byReason[gap.reason] = (byReason[gap.reason] ?? 0) + 1;
   }
   return {
+    by_reason: byReason,
     count: gaps.length,
     truncated: false,
-    by_reason: byReason,
   };
 }

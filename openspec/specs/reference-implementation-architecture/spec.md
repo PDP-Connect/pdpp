@@ -343,7 +343,7 @@ Structured log output SHALL NOT contain the plaintext of access tokens, refresh 
 
 ### Requirement: The CLI entrypoint SHALL produce a final structured log record on crash or signal
 
-When `reference-implementation/server/index.js` is run as a CLI entrypoint, it SHALL install process-level handlers for `uncaughtException`, `unhandledRejection`, `SIGTERM`, and `SIGINT`. Each handler SHALL emit exactly one log record before the process exits, except that the `uncaughtException` handler SHALL downgrade closed-pipe write errors on owned process stdio (`process.stdout` / `process.stderr`) to a single `warn` record and return without exiting. These handlers SHALL NOT be installed when `server/index.js` is imported as a library (for example, from a test harness); the reference implementation SHALL NOT register global `process.on` listeners from any code path other than the CLI entrypoint block.
+When `reference-implementation/server/index.ts` is run as a CLI entrypoint, it SHALL install process-level handlers for `uncaughtException`, `unhandledRejection`, `SIGTERM`, and `SIGINT`. Each handler SHALL emit exactly one log record before the process exits, except that the `uncaughtException` handler SHALL downgrade closed-pipe write errors on owned process stdio (`process.stdout` / `process.stderr`) to a single `warn` record and return without exiting. These handlers SHALL NOT be installed when `server/index.ts` is imported as a library (for example, from a test harness); the reference implementation SHALL NOT register global `process.on` listeners from any code path other than the CLI entrypoint block.
 
 A "closed-pipe write error" for the purposes of this requirement is an `Error` with `syscall === 'write'` and `code` in the set `{ 'EPIPE', 'ERR_STREAM_DESTROYED', 'ERR_STREAM_WRITE_AFTER_END' }`. Any other error SHALL take the existing fatal-log + non-zero-exit path.
 
@@ -366,7 +366,7 @@ A "closed-pipe write error" for the purposes of this requirement is an `Error` w
 - **THEN** exactly one `info` log record SHALL be emitted on stdout naming the signal before the process performs graceful shutdown and exits
 
 #### Scenario: Library import does not pollute the process
-- **WHEN** a test or another Node program imports `startServer` from `server/index.js` and calls it one or more times
+- **WHEN** a test or another Node program imports `startServer` from `server/index.ts` and calls it one or more times
 - **THEN** the reference implementation SHALL NOT add any listeners to `process` for `uncaughtException`, `unhandledRejection`, `SIGTERM`, or `SIGINT`
 
 ### Requirement: Log shape SHALL be JSON; development output MAY be pretty-printed for the terminal only
@@ -498,7 +498,7 @@ The reference SHALL NOT alias `/_ref/search` to `/v1/search`, SHALL NOT serve th
 - **AND** the response SHALL NOT match the public `search_result` list envelope returned by `/v1/search`
 
 #### Scenario: A reader inspects the reference source
-- **WHEN** a reader reads the source for `/_ref/search` in `reference-implementation/server/index.js`
+- **WHEN** a reader reads the source for `/_ref/search` in `reference-implementation/server/index.ts`
 - **THEN** an inline comment SHALL identify the route as reference-only and SHALL point readers to `GET /v1/search` for the public lexical retrieval surface
 
 ### Requirement: The reference SHALL realize the semantic-retrieval experimental extension over a single internal enforcement path
@@ -785,7 +785,7 @@ The reference SHALL expose pluggable interfaces for the embedding backend and ve
 The reference's source for the public semantic retrieval route SHALL include an inline comment band that identifies the surface as experimental and unstable, and SHALL cross-reference the advertisement's `stability` key and the public docs page. This makes the experimental status visible to any reader of the code, not just the advertisement.
 
 #### Scenario: A reader inspects the semantic retrieval route source
-- **WHEN** a reader reads the source for `app.get('/v1/search/semantic', …)` in `reference-implementation/server/index.js`
+- **WHEN** a reader reads the source for `app.get('/v1/search/semantic', …)` in `reference-implementation/server/index.ts`
 - **THEN** an inline comment SHALL identify the route as experimental and unstable
 - **AND** the comment SHALL cross-reference `capabilities.semantic_retrieval.stability` and the public docs page
 
@@ -1721,7 +1721,7 @@ The reference implementation SHALL serve bearer-scoped connector-discovery list 
 
 - **WHEN** the `rs.connectors.list` operation is implemented
 - **THEN** it SHALL depend on capability-shaped source-descriptor and connector-item-list dependencies
-- **AND** it SHALL NOT import Fastify, Next, SQLite, Postgres, a raw SQL handle, a generic repository, sandbox modules, the Fastify host module (`server/index.js`), the records module (`server/records.js`), or `process` / `process.env`
+- **AND** it SHALL NOT import Fastify, Next, SQLite, Postgres, a raw SQL handle, a generic repository, sandbox modules, the Fastify host module (`server/index.ts`), the records module (`server/records.js`), or `process` / `process.env`
 
 #### Scenario: Existing connector-list semantics are preserved
 
@@ -1995,7 +1995,7 @@ The operation is reference/operator surface, not PDPP protocol. It SHALL NOT be 
 
 - **WHEN** the `ref.dataset.summary` operation is implemented
 - **THEN** it SHALL depend on capability-shaped count, retained-bytes, record-time-bound, ingest-time-bound, and top-connector-candidate dependencies
-- **AND** it SHALL NOT import Fastify, Express, Next, SQLite, Postgres, a raw SQL handle, sandbox modules, `reference-implementation/server/records.js`, `reference-implementation/server/index.js`, or `process` / `process.env`
+- **AND** it SHALL NOT import Fastify, Express, Next, SQLite, Postgres, a raw SQL handle, sandbox modules, `reference-implementation/server/records.js`, `reference-implementation/server/index.ts`, or `process` / `process.env`
 
 #### Scenario: Existing dataset-summary semantics are preserved
 
@@ -2076,7 +2076,7 @@ sandbox UI, concrete database driver, and process environment.
 
 #### Scenario: Final route adapter boundary
 
-- **WHEN** a covered route is mounted in `reference-implementation/server/index.js`
+- **WHEN** a covered route is mounted in `reference-implementation/server/index.ts`
 - **THEN** route-specific code SHALL be limited to HTTP wiring, authentication or
   owner-session checks, request/header adaptation, request id and trace id setup,
   instrumentation dispatch, response writing, and concrete capability wiring
@@ -2088,7 +2088,7 @@ sandbox UI, concrete database driver, and process environment.
 - **WHEN** a new operation module is implemented for this change
 - **THEN** it SHALL depend on explicit capability-shaped dependencies
 - **AND** it SHALL NOT import Fastify, Next, sandbox modules,
-  `reference-implementation/server/index.js`, raw SQL handles, concrete database
+  `reference-implementation/server/index.ts`, raw SQL handles, concrete database
   drivers, generic repository abstractions, or `process` / `process.env`
 
 #### Scenario: Public behavior preservation
@@ -6312,7 +6312,7 @@ runs in long-lived local and Docker deployments.
 
 #### Scenario: Docker runs the same scheduler lifecycle
 - **WHEN** the Docker reference service runs the standard
-  `reference-implementation/server/index.js` entrypoint
+  `reference-implementation/server/index.ts` entrypoint
 - **THEN** enabled persisted schedules SHALL execute through the same server-owned
   scheduler lifecycle as non-Docker long-lived startup
 
@@ -8221,13 +8221,13 @@ The propagated diagnostic SHALL be treated as connector-authored, untrusted evid
 The reference implementation SHALL decompose its HTTP route handlers into per-family adapter modules under `reference-implementation/server/routes/<family>.ts`. Each family adapter SHALL be a TypeScript module that registers a coherent set of routes (e.g. root and discovery, `_ref` operations, RS reads, RS mutations, AS OAuth, run interaction, web push, source webhooks, remote surface). The reference SHALL NOT keep all HTTP route handlers in a single composition module.
 
 #### Scenario: Route adapters live beside other server-only wiring
-- **WHEN** an HTTP route family is extracted from `reference-implementation/server/index.js`
+- **WHEN** an HTTP route family is extracted from `reference-implementation/server/index.ts`
 - **THEN** its adapter module SHALL be placed at `reference-implementation/server/routes/<family>.ts`
 - **AND** the adapter SHALL be a TypeScript module participating in the existing reference-implementation Biome `includes` and `tsconfig.json` `include` globs
 
 #### Scenario: The composition root retains capability wiring
 - **WHEN** a family adapter is mounted into the AS or RS Express-shaped app
-- **THEN** `reference-implementation/server/index.js` SHALL remain the composition root that owns `buildAsApp`, `buildRsApp`, capability construction, store factories, controller wiring, and `app.use(...)` global middleware
+- **THEN** `reference-implementation/server/index.ts` SHALL remain the composition root that owns `buildAsApp`, `buildRsApp`, capability construction, store factories, controller wiring, and `app.use(...)` global middleware
 - **AND** the composition root SHALL call the family adapter's mount function at the same point in the route-registration order as the previous inline registration
 
 ### Requirement: Route-family extractions SHALL preserve observable behaviour

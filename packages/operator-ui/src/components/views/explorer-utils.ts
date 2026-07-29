@@ -442,10 +442,10 @@ export function parseExplorerPeekParam(raw: string | undefined | null): {
     return null;
   }
   return {
-    connectorId,
     connectionId: connectionToken === NO_CONNECTION ? null : connectionToken,
-    stream,
+    connectorId,
     recordId,
+    stream,
   };
 }
 
@@ -459,11 +459,11 @@ export interface ExplorerFeedDayGroup {
 
 // Server-deterministic day label. Locale-pinned so SSR and client agree.
 const DAY_LABEL_FMT = new Intl.DateTimeFormat("en-US", {
-  weekday: "short",
-  month: "short",
   day: "numeric",
-  year: "numeric",
+  month: "short",
   timeZone: "UTC",
+  weekday: "short",
+  year: "numeric",
 });
 
 function dayKeyFromDisplayAt(displayAt: string): string {
@@ -498,7 +498,7 @@ export function groupFeedByDay(entries: ExplorerFeedEntry[]): ExplorerFeedDayGro
   for (const entry of entries) {
     const day = dayKeyFromDisplayAt(entry.displayAt);
     if (!current || current.day !== day) {
-      current = { day, label: labelForDayKey(day), entries: [] };
+      current = { day, entries: [], label: labelForDayKey(day) };
       groups.push(current);
     }
     current.entries.push(entry);
@@ -546,8 +546,8 @@ export function computeActivityStripCells(
   for (let i = days - 1; i >= 0; i -= 1) {
     const dayKey = isoDayFromMs(now - i * MS_PER_DAY);
     cells.push({
-      day: dayKey,
       count: counts.get(dayKey) ?? 0,
+      day: dayKey,
       isToday: dayKey === todayKey,
     });
   }

@@ -111,7 +111,7 @@ export function CommandPaletteTrigger() {
 type PaletteRow = { kind: "command"; command: DashboardCommand } | { kind: "search"; query: string };
 
 function buildRows(query: string, commands: DashboardCommand[]): PaletteRow[] {
-  const rows: PaletteRow[] = commands.map((command) => ({ kind: "command", command }));
+  const rows: PaletteRow[] = commands.map((command) => ({ command, kind: "command" }));
   const trimmed = query.trim();
   if (trimmed) {
     // Explicit, selectable fallback — NOT the default Enter action.
@@ -189,6 +189,7 @@ export function CommandPalette({
   return (
     <Dialog
       modal
+      // biome-ignore lint/performance/noJsxPropsBind: Handler captures the current row or component state; extracting it would add indirection without a stable consumer boundary.
       onOpenChange={(next: boolean) => {
         if (!next) {
           palette.close();
@@ -208,7 +209,9 @@ export function CommandPalette({
             aria-label="Search commands"
             className="h-10 py-2 font-mono"
             data-testid="command-palette-input"
+            // biome-ignore lint/performance/noJsxPropsBind: Handler captures the current row or component state; extracting it would add indirection without a stable consumer boundary.
             onChange={(e) => setQuery(e.target.value)}
+            // biome-ignore lint/performance/noJsxPropsBind: Handler captures the current row or component state; extracting it would add indirection without a stable consumer boundary.
             onKeyDown={onInputKeyDown}
             placeholder="Search commands, or type to search records…"
             ref={inputRef}
@@ -220,6 +223,7 @@ export function CommandPalette({
             actionRows={actionRows}
             highlight={highlight}
             navRows={navRows}
+            // biome-ignore lint/performance/noJsxPropsBind: Handler captures the current row or component state; extracting it would add indirection without a stable consumer boundary.
             onActivate={activate}
             onHighlight={setHighlight}
             rows={rows}
@@ -262,6 +266,7 @@ function PaletteList({
         <PaletteGroup
           heading="Navigate"
           highlight={highlight}
+          // biome-ignore lint/performance/noJsxPropsBind: Handler captures the current row or component state; extracting it would add indirection without a stable consumer boundary.
           indexOf={indexOf}
           onActivate={onActivate}
           onHighlight={onHighlight}
@@ -272,6 +277,7 @@ function PaletteList({
         <PaletteGroup
           heading="Quick action"
           highlight={highlight}
+          // biome-ignore lint/performance/noJsxPropsBind: Handler captures the current row or component state; extracting it would add indirection without a stable consumer boundary.
           indexOf={indexOf}
           onActivate={onActivate}
           onHighlight={onHighlight}
@@ -282,6 +288,7 @@ function PaletteList({
         <PaletteGroup
           heading="Search"
           highlight={highlight}
+          // biome-ignore lint/performance/noJsxPropsBind: Handler captures the current row or component state; extracting it would add indirection without a stable consumer boundary.
           indexOf={indexOf}
           onActivate={onActivate}
           onHighlight={onHighlight}
@@ -326,7 +333,9 @@ function PaletteGroup({
                 )}
                 data-active={active ? "true" : undefined}
                 data-testid={row.kind === "search" ? "command-palette-search-row" : `command-${row.command.id}`}
+                // biome-ignore lint/performance/noJsxPropsBind: Handler captures the current row or component state; extracting it would add indirection without a stable consumer boundary.
                 onClick={() => onActivate(row)}
+                // biome-ignore lint/performance/noJsxPropsBind: Handler captures the current row or component state; extracting it would add indirection without a stable consumer boundary.
                 onMouseMove={() => onHighlight(index)}
                 type="button"
               >

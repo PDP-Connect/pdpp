@@ -84,9 +84,9 @@ function importConnectorInChild(connectorRelPath: string): Promise<ImportResult>
       resolvePromise({ code: null, signal: "SIGKILL", stderr, stdout, timedOut: true });
     }, IMPORT_TIMEOUT_MS);
 
-    child.on("exit", (code, signal) => {
+    child.on("exit", (exitCode, signal) => {
       clearTimeout(timer);
-      resolvePromise({ code, signal, stderr, stdout, timedOut: false });
+      resolvePromise({ code: exitCode, signal, stderr, stdout, timedOut: false });
     });
 
     child.on("error", (err) => {
@@ -131,9 +131,9 @@ function runConnectorEntrypointWithClosedStdin(connectorRelPath: string): Promis
       resolvePromise({ code: null, signal: "SIGKILL", stderr, stdout, timedOut: true });
     }, IMPORT_TIMEOUT_MS);
 
-    child.on("exit", (code, signal) => {
+    child.on("exit", (exitCode, signal) => {
       clearTimeout(timer);
-      resolvePromise({ code, signal, stderr, stdout, timedOut: false });
+      resolvePromise({ code: exitCode, signal, stderr, stdout, timedOut: false });
     });
 
     child.on("error", (err) => {

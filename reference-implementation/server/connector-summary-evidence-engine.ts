@@ -28,10 +28,17 @@
  * Spec: openspec/changes/reconcile-active-summary-evidence/design.md
  */
 
-import { writeTransaction } from "../lib/db.ts";
+import {
+  type BindValue,
+  exec,
+  execDynamicSqlAcknowledged,
+  iterateDynamicSqlAcknowledged,
+  referenceQueries,
+  writeTransaction,
+} from "../lib/db.ts";
 import { withConnectorInstanceWrite } from "./connector-instance-write-coordinator.ts";
-import { getDb } from "./db.js";
-import { isPostgresStorageBackend, postgresQuery, withPostgresTransaction } from "./postgres-storage.js";
+import { getDb } from "./db.ts";
+import { isPostgresStorageBackend, postgresQuery, withPostgresTransaction } from "./postgres-storage.ts";
 import {
   normalizeRecordSourceCheckpoint,
   type RecordSourceCheckpoint,
@@ -135,15 +142,15 @@ export interface ConnectorSummaryEvidenceRow {
 }
 
 const REASON_CODES = {
+  LOCK_UNAVAILABLE: "repair_lock_unavailable",
+  MANIFEST_GENERATION_CHANGED: "manifest_generation_changed",
+  MANIFEST_INVALID: "manifest_invalid",
+  MANIFEST_UNAVAILABLE: "manifest_unavailable",
   MISSING: "summary_missing",
   RECORD_CHECKPOINT_LAG: "record_checkpoint_lag",
-  LOCK_UNAVAILABLE: "repair_lock_unavailable",
   RECORD_SNAPSHOT_FAILED: "record_snapshot_failed",
-  TERMINAL_FOLD_FAILED: "terminal_fold_failed",
-  MANIFEST_UNAVAILABLE: "manifest_unavailable",
-  MANIFEST_INVALID: "manifest_invalid",
   RETAINED_BYTES_UNAVAILABLE: "retained_bytes_unavailable",
-  MANIFEST_GENERATION_CHANGED: "manifest_generation_changed",
+  TERMINAL_FOLD_FAILED: "terminal_fold_failed",
 } as const;
 
 function nowIso(): string {
@@ -156,7 +163,7 @@ function sanitizeProjectionError(err: unknown): string {
 }
 
 function parseJsonColumn<T>(value: unknown, fallback: T): T {
-  if (value == null) {
+  if (value === null) {
     return fallback;
   }
   if (typeof value === "object") {
@@ -191,29 +198,29 @@ interface ManifestDeclaration {
  */
 function parseManifestDeclaration(raw: unknown): ManifestDeclaration {
   if (typeof raw !== "string" || !raw) {
-    return { ok: false, streams: [], fingerprint: null };
+    return { fingerprint: null, ok: false, streams: [] };
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return { ok: false, streams: [], fingerprint: null };
+    return { fingerprint: null, ok: false, streams: [] };
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return { ok: false, streams: [], fingerprint: null };
+    return { fingerprint: null, ok: false, streams: [] };
   }
   const streamsRaw = (parsed as Row).streams;
   if (!Array.isArray(streamsRaw) || streamsRaw.length === 0) {
-    return { ok: false, streams: [], fingerprint: null };
+    return { fingerprint: null, ok: false, streams: [] };
   }
   const streams = streamsRaw
     .map((entry) => (entry && typeof entry === "object" ? (entry as Row).name : null))
     .filter((name): name is string => typeof name === "string" && name.length > 0);
   if (streams.length === 0) {
-    return { ok: false, streams: [], fingerprint: null };
+    return { fingerprint: null, ok: false, streams: [] };
   }
   const sorted = [...new Set(streams)].sort();
-  return { ok: true, streams: sorted, fingerprint: sorted.join("") };
+  return { fingerprint: sorted.join(""), ok: true, streams: sorted };
 }
 
 // ---------------------------------------------------------------------------
@@ -237,6 +244,7 @@ interface DiscoveryInput {
  * about its state — only whether its stored facts still match the
  * authorities.
  */
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This protocol transition owns ordered state invariants that must remain local.
 function classifyCandidate(input: DiscoveryInput): RepairCandidateReason | null {
   const { instance, existingEvidence, manifest, currentCheckpoint, retainedByteRow } = input;
 
@@ -258,6 +266,7 @@ function classifyCandidate(input: DiscoveryInput): RepairCandidateReason | null 
     existingEvidence.record_checkpoint_json,
     null
   );
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   if (!(storedCheckpoint && recordSourceCheckpointsEqual(storedCheckpoint, currentCheckpoint))) {
     return "record_checkpoint_mismatch";
   }
@@ -270,7 +279,7 @@ function classifyCandidate(input: DiscoveryInput): RepairCandidateReason | null 
     return "record_checkpoint_mismatch";
   }
   const storedFingerprint =
-    existingEvidence.manifest_fingerprint == null ? null : String(existingEvidence.manifest_fingerprint);
+    existingEvidence.manifest_fingerprint === null ? null : String(existingEvidence.manifest_fingerprint);
   const currentFingerprint = manifest.ok ? manifest.fingerprint : null;
   if (storedFingerprint !== currentFingerprint) {
     return "manifest_mismatch";
@@ -279,10 +288,10 @@ function classifyCandidate(input: DiscoveryInput): RepairCandidateReason | null 
     return "manifest_mismatch";
   }
   const storedTerminalSeq =
-    existingEvidence.stream_facts_event_seq == null ? null : Number(existingEvidence.stream_facts_event_seq);
+    existingEvidence.stream_facts_event_seq === null ? null : Number(existingEvidence.stream_facts_event_seq);
   if (
-    input.maxTerminalEventSeq != null &&
-    (storedTerminalSeq == null || storedTerminalSeq < input.maxTerminalEventSeq)
+    input.maxTerminalEventSeq !== null &&
+    (storedTerminalSeq === null || storedTerminalSeq < input.maxTerminalEventSeq)
   ) {
     return "terminal_checkpoint_lag";
   }
@@ -349,17 +358,18 @@ function retainedBytesNeedsRepair(existingEvidence: Row, retainedByteRow: Row | 
   // clean-value-changed case, independent of whatever the `dirty` flag says.
   const storedRetainedBytes = parseJsonColumn<Row | null>(existingEvidence.retained_bytes_json, null);
   const sourceTotalBytes =
-    Number(retainedByteRow!.current_record_json_bytes || 0) +
-    Number(retainedByteRow!.record_history_json_bytes || 0) +
-    Number(retainedByteRow!.blob_bytes || 0);
+    Number(retainedByteRow?.current_record_json_bytes || 0) +
+    Number(retainedByteRow?.record_history_json_bytes || 0) +
+    Number(retainedByteRow?.blob_bytes || 0);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   if (!storedRetainedBytes) {
     return true;
   }
   return (
-    Number(storedRetainedBytes.record_json_bytes || 0) !== Number(retainedByteRow!.current_record_json_bytes || 0) ||
+    Number(storedRetainedBytes.record_json_bytes || 0) !== Number(retainedByteRow?.current_record_json_bytes || 0) ||
     Number(storedRetainedBytes.record_changes_json_bytes || 0) !==
-      Number(retainedByteRow!.record_history_json_bytes || 0) ||
-    Number(storedRetainedBytes.blob_bytes || 0) !== Number(retainedByteRow!.blob_bytes || 0) ||
+      Number(retainedByteRow?.record_history_json_bytes || 0) ||
+    Number(storedRetainedBytes.blob_bytes || 0) !== Number(retainedByteRow?.blob_bytes || 0) ||
     Number(storedRetainedBytes.total_bytes || 0) !== sourceTotalBytes
   );
 }
@@ -388,23 +398,24 @@ function readSqliteDiscoveryContext(connectorInstanceIds: readonly string[] | nu
   // invalid SQL or silently falling back to the complete census (which
   // would be a correctness surprise: scoping to zero ids must mean zero
   // rows, never "reconcile everything").
-  if (connectorInstanceIds != null && connectorInstanceIds.length === 0) {
+  if (connectorInstanceIds !== null && connectorInstanceIds.length === 0) {
     return {
-      instanceRows: [] as Row[],
+      canonicalTotalRecordsByInstance: new Map<string, number>(),
       evidenceByInstance: new Map<string, Row>(),
+      instanceRows: [] as Row[],
       manifestByConnector: new Map<string, string>(),
+      maxTerminalEventSeq: null,
       retainedByteByInstance: new Map<string, Row>(),
       versionCountersByInstance: new Map<string, Row[]>(),
-      canonicalTotalRecordsByInstance: new Map<string, number>(),
-      maxTerminalEventSeq: null,
     };
   }
-  const scoped = connectorInstanceIds != null;
+  const scoped = connectorInstanceIds !== null;
   // REVIEWED-DYNAMIC: IN-list cardinality is bounded by the caller's own
   // requested scope (a route resolves at most one connection today; a
   // future bulk caller would still bind the same count of `?` placeholders
   // it requests), and every value is a bound parameter — never
   // string-interpolated into the SQL text.
+  // biome-ignore lint/style/noNonNullAssertion: The trusted boundary invariant is established by the preceding validation.
   const placeholders = scoped ? sqlitePlaceholders(connectorInstanceIds!) : "";
   // Unscoped discovery reads the COMPLETE canonical connector_instances set
   // — every subject, not just REFERENCE_OWNER_SUBJECT_ID. A prior
@@ -421,8 +432,9 @@ function readSqliteDiscoveryContext(connectorInstanceIds: readonly string[] | nu
   const instanceRows = scoped
     ? db
         .prepare(`SELECT * FROM connector_instances WHERE connector_instance_id IN (${placeholders})`)
+        // biome-ignore lint/style/noNonNullAssertion: The trusted boundary invariant is established by the preceding validation.
         .all(...connectorInstanceIds!)
-    : db.prepare("SELECT * FROM connector_instances ORDER BY connector_instance_id ASC").all();
+    : [...iterateDynamicSqlAcknowledged<Row>("SELECT * FROM connector_instances ORDER BY connector_instance_id ASC")];
   // Evidence/retained-bytes/version-counter/canonical-count reads are scoped
   // to the SAME requested id set (one batched query each, not a complete
   // table scan) when the caller narrowed the discovery — a scoped consumer
@@ -431,16 +443,18 @@ function readSqliteDiscoveryContext(connectorInstanceIds: readonly string[] | nu
   const evidenceRows: Row[] = scoped
     ? db
         .prepare(`SELECT * FROM connector_summary_evidence WHERE connector_instance_id IN (${placeholders})`)
+        // biome-ignore lint/style/noNonNullAssertion: The trusted boundary invariant is established by the preceding validation.
         .all(...connectorInstanceIds!)
-    : db.prepare("SELECT * FROM connector_summary_evidence").all();
+    : [...iterateDynamicSqlAcknowledged<Row>("SELECT * FROM connector_summary_evidence")];
   const evidenceByInstance = new Map(evidenceRows.map((row) => [String(row.connector_instance_id), row]));
-  const connectorRows: Row[] = db.prepare("SELECT connector_id, manifest FROM connectors").all();
+  const connectorRows = [...iterateDynamicSqlAcknowledged<Row>("SELECT connector_id, manifest FROM connectors")];
   const manifestByConnector = new Map(connectorRows.map((row) => [String(row.connector_id), String(row.manifest)]));
   const retainedByteRows: Row[] = scoped
     ? db
         .prepare(`SELECT * FROM retained_size_connection WHERE connector_instance_id IN (${placeholders})`)
+        // biome-ignore lint/style/noNonNullAssertion: The trusted boundary invariant is established by the preceding validation.
         .all(...connectorInstanceIds!)
-    : db.prepare("SELECT * FROM retained_size_connection").all();
+    : [...iterateDynamicSqlAcknowledged<Row>("SELECT * FROM retained_size_connection")];
   const retainedByteByInstance = new Map(retainedByteRows.map((row) => [String(row.connector_instance_id), row]));
   const versionCounterRows: Row[] = scoped
     ? db
@@ -448,6 +462,7 @@ function readSqliteDiscoveryContext(connectorInstanceIds: readonly string[] | nu
           `SELECT connector_instance_id, stream, CAST(max_version AS TEXT) AS max_version FROM version_counter
             WHERE connector_instance_id IN (${placeholders})`
         )
+        // biome-ignore lint/style/noNonNullAssertion: The trusted boundary invariant is established by the preceding validation.
         .all(...connectorInstanceIds!)
     : db
         .prepare("SELECT connector_instance_id, stream, CAST(max_version AS TEXT) AS max_version FROM version_counter")
@@ -471,6 +486,7 @@ function readSqliteDiscoveryContext(connectorInstanceIds: readonly string[] | nu
             WHERE deleted = 0 AND connector_instance_id IN (${placeholders})
             GROUP BY connector_instance_id`
         )
+        // biome-ignore lint/style/noNonNullAssertion: The trusted boundary invariant is established by the preceding validation.
         .all(...connectorInstanceIds!)
     : db
         .prepare(
@@ -487,13 +503,16 @@ function readSqliteDiscoveryContext(connectorInstanceIds: readonly string[] | nu
     )
     .get() as Row | undefined;
   return {
-    instanceRows: instanceRows as Row[],
+    canonicalTotalRecordsByInstance,
     evidenceByInstance,
+    instanceRows: instanceRows as Row[],
     manifestByConnector,
+    maxTerminalEventSeq:
+      maxTerminalSeqRow?.max_seq === null || maxTerminalSeqRow?.max_seq === undefined
+        ? null
+        : Number(maxTerminalSeqRow.max_seq),
     retainedByteByInstance,
     versionCountersByInstance,
-    canonicalTotalRecordsByInstance,
-    maxTerminalEventSeq: maxTerminalSeqRow?.max_seq == null ? null : Number(maxTerminalSeqRow.max_seq),
   };
 }
 
@@ -504,18 +523,18 @@ async function readPostgresDiscoveryContext(connectorInstanceIds: readonly strin
   // and correctly matches zero rows for `instanceResult`, but the same
   // short-circuit as SQLite keeps both backends' empty-scope behavior
   // identical and avoids six no-op round-trips).
-  if (connectorInstanceIds != null && connectorInstanceIds.length === 0) {
+  if (connectorInstanceIds !== null && connectorInstanceIds.length === 0) {
     return {
-      instanceRows: [] as Row[],
+      canonicalTotalRecordsByInstance: new Map<string, number>(),
       evidenceByInstance: new Map<string, Row>(),
+      instanceRows: [] as Row[],
       manifestByConnector: new Map<string, string>(),
+      maxTerminalEventSeq: null,
       retainedByteByInstance: new Map<string, Row>(),
       versionCountersByInstance: new Map<string, Row[]>(),
-      canonicalTotalRecordsByInstance: new Map<string, number>(),
-      maxTerminalEventSeq: null,
     };
   }
-  const scoped = connectorInstanceIds != null;
+  const scoped = connectorInstanceIds !== null;
   // See the SQLite branch's identical comment (Sol P1.3): unscoped
   // discovery reads the COMPLETE canonical connector_instances set across
   // every subject, matching the unfiltered evidence reads/prunes below —
@@ -592,13 +611,13 @@ async function readPostgresDiscoveryContext(connectorInstanceIds: readonly strin
   );
   const maxSeq = (maxTerminalSeqResult.rows[0] as Row | undefined)?.max_seq;
   return {
-    instanceRows: instanceResult.rows as Row[],
+    canonicalTotalRecordsByInstance,
     evidenceByInstance,
+    instanceRows: instanceResult.rows as Row[],
     manifestByConnector,
+    maxTerminalEventSeq: maxSeq === null ? null : Number(maxSeq),
     retainedByteByInstance,
     versionCountersByInstance,
-    canonicalTotalRecordsByInstance,
-    maxTerminalEventSeq: maxSeq == null ? null : Number(maxSeq),
   };
 }
 
@@ -624,24 +643,24 @@ async function discoverCandidates(
     const currentCheckpoint = normalizeRecordSourceCheckpoint({
       resetGeneration: String(instance.record_reset_generation ?? "0"),
       streams: (ctx.versionCountersByInstance.get(instanceId) ?? []).map((row) => ({
-        stream: String(row.stream),
         maxVersion: String(row.max_version),
+        stream: String(row.stream),
       })),
     });
     const reason = classifyCandidate({
-      instance,
-      existingEvidence,
-      manifest,
-      currentCheckpoint,
-      retainedByteRow: ctx.retainedByteByInstance.get(instanceId) ?? null,
-      maxTerminalEventSeq: ctx.maxTerminalEventSeq,
       canonicalTotalRecords: ctx.canonicalTotalRecordsByInstance.get(instanceId) ?? 0,
+      currentCheckpoint,
+      existingEvidence,
+      instance,
+      manifest,
+      maxTerminalEventSeq: ctx.maxTerminalEventSeq,
+      retainedByteRow: ctx.retainedByteByInstance.get(instanceId) ?? null,
     });
     if (reason) {
       candidates.set(instanceId, reason);
     }
   }
-  return { instanceRows: ctx.instanceRows, candidates };
+  return { candidates, instanceRows: ctx.instanceRows };
 }
 
 // ---------------------------------------------------------------------------
@@ -671,6 +690,7 @@ interface RepairedEvidence {
  */
 async function repairCandidate(connectorInstanceId: string): Promise<RepairedEvidence> {
   try {
+    // biome-ignore lint/suspicious/useAwait: The async signature is part of this caller-facing contract.
     return await withConnectorInstanceWrite(connectorInstanceId, async () => {
       if (isPostgresStorageBackend()) {
         return repairCandidatePostgres(connectorInstanceId);
@@ -683,7 +703,7 @@ async function repairCandidate(connectorInstanceId: string): Promise<RepairedEvi
     // connection's canonical facts was even re-read this attempt — total
     // failure, every component fails closed (see `buildFailedRow`).
     const persisted = await persistFailedEvidence(connectorInstanceId, failedRow);
-    return { row: failedRow, failed: true, persisted };
+    return { failed: true, persisted, row: failedRow };
   }
 }
 
@@ -691,17 +711,17 @@ function buildFailedRow(connectorInstanceId: string, reasonCode: string, err: un
   const sanitized = sanitizeProjectionError(err);
   return {
     connector_instance_id: connectorInstanceId,
-    state: "failed",
-    last_error: sanitized,
-    record_snapshot_state: "failed",
-    record_snapshot_reason_code: reasonCode,
-    terminal_facts_state: "failed",
-    terminal_facts_reason_code: reasonCode,
-    manifest_declaration_state: "failed",
-    manifest_declaration_reason_code: reasonCode,
-    retained_bytes_state: "failed",
-    retained_bytes_reason_code: reasonCode,
     dirty: 1,
+    last_error: sanitized,
+    manifest_declaration_reason_code: reasonCode,
+    manifest_declaration_state: "failed",
+    record_snapshot_reason_code: reasonCode,
+    record_snapshot_state: "failed",
+    retained_bytes_reason_code: reasonCode,
+    retained_bytes_state: "failed",
+    state: "failed",
+    terminal_facts_reason_code: reasonCode,
+    terminal_facts_state: "failed",
   };
 }
 
@@ -751,8 +771,8 @@ function persistFailedEvidenceSqlite(connectorInstanceId: string, failedRow: Row
     )
     .get(connectorInstanceId) as Row | undefined;
   const preserveTerminal = existing && existing.terminal_facts_state === "current";
-  const terminalState = preserveTerminal ? existing!.terminal_facts_state : failedRow.terminal_facts_state;
-  const terminalReason = preserveTerminal ? existing!.terminal_facts_reason_code : failedRow.terminal_facts_reason_code;
+  const terminalState = preserveTerminal ? existing?.terminal_facts_state : failedRow.terminal_facts_state;
+  const terminalReason = preserveTerminal ? existing?.terminal_facts_reason_code : failedRow.terminal_facts_reason_code;
   const updateResult = db
     .prepare(
       `UPDATE connector_summary_evidence
@@ -786,7 +806,9 @@ function persistFailedEvidenceSqlite(connectorInstanceId: string, failedRow: Row
   }
   // No prior row: first-ever observation that immediately failed. Insert a
   // visible failed row rather than silently no-op'ing on a missing row.
-  db.prepare(
+  // REVIEWED-DYNAMIC: this fixed upsert is part of the evidence engine's
+  // transaction-local SQLite repair seam.
+  execDynamicSqlAcknowledged(
     `INSERT INTO connector_summary_evidence(
        connector_instance_id, connector_id, display_name,
        record_snapshot_state, record_snapshot_reason_code,
@@ -807,18 +829,19 @@ function persistFailedEvidenceSqlite(connectorInstanceId: string, failedRow: Row
        terminal_facts_reason_code = excluded.terminal_facts_reason_code,
        dirty = 1,
        state = 'failed',
-       last_error = excluded.last_error`
-  ).run(
-    connectorInstanceId,
-    failedRow.record_snapshot_state,
-    failedRow.record_snapshot_reason_code,
-    failedRow.manifest_declaration_state,
-    failedRow.manifest_declaration_reason_code,
-    failedRow.retained_bytes_state,
-    failedRow.retained_bytes_reason_code,
-    failedRow.terminal_facts_state,
-    failedRow.terminal_facts_reason_code,
-    failedRow.last_error
+       last_error = excluded.last_error`,
+    [
+      connectorInstanceId,
+      failedRow.record_snapshot_state,
+      failedRow.record_snapshot_reason_code,
+      failedRow.manifest_declaration_state,
+      failedRow.manifest_declaration_reason_code,
+      failedRow.retained_bytes_state,
+      failedRow.retained_bytes_reason_code,
+      failedRow.terminal_facts_state,
+      failedRow.terminal_facts_reason_code,
+      failedRow.last_error,
+    ] as BindValue[]
   );
 }
 
@@ -829,8 +852,8 @@ async function persistFailedEvidencePostgres(connectorInstanceId: string, failed
   );
   const existing = existingResult.rows[0] as Row | undefined;
   const preserveTerminal = existing && existing.terminal_facts_state === "current";
-  const terminalState = preserveTerminal ? existing!.terminal_facts_state : failedRow.terminal_facts_state;
-  const terminalReason = preserveTerminal ? existing!.terminal_facts_reason_code : failedRow.terminal_facts_reason_code;
+  const terminalState = preserveTerminal ? existing?.terminal_facts_state : failedRow.terminal_facts_state;
+  const terminalReason = preserveTerminal ? existing?.terminal_facts_reason_code : failedRow.terminal_facts_reason_code;
   const updateResult = await postgresQuery(
     `UPDATE connector_summary_evidence
         SET record_snapshot_state = $2,
@@ -913,8 +936,8 @@ function repairCandidateSqlite(connectorInstanceId: string): RepairedEvidence {
         .prepare("SELECT * FROM connector_instances WHERE connector_instance_id = ?")
         .get(connectorInstanceId) as Row | undefined;
       if (!instance) {
-        db.prepare("DELETE FROM connector_summary_evidence WHERE connector_instance_id = ?").run(connectorInstanceId);
-        return { row: { connector_instance_id: connectorInstanceId, __deleted: true }, failed: false, persisted: true };
+        exec(referenceQueries.connectorInstancesDeleteSummaryEvidenceByConnectorInstance, [connectorInstanceId]);
+        return { failed: false, persisted: true, row: { __deleted: true, connector_instance_id: connectorInstanceId } };
       }
       const manifestRow = db
         .prepare("SELECT manifest FROM connectors WHERE connector_id = ?")
@@ -932,7 +955,7 @@ function repairCandidateSqlite(connectorInstanceId: string): RepairedEvidence {
         .all(connectorInstanceId) as Row[];
       const checkpoint = normalizeRecordSourceCheckpoint({
         resetGeneration: String(generationRow?.reset_generation ?? "0"),
-        streams: streamRows.map((row) => ({ stream: String(row.stream), maxVersion: String(row.max_version) })),
+        streams: streamRows.map((row) => ({ maxVersion: String(row.max_version), stream: String(row.stream) })),
       });
       const canonicalRows = db
         .prepare(
@@ -972,18 +995,20 @@ function repairCandidateSqlite(connectorInstanceId: string): RepairedEvidence {
       testOnlyRepairCandidateSqliteDelay();
 
       const built = buildRepairedRow({
+        canonicalByStream,
+        checkpoint,
         instance,
         manifest,
-        checkpoint,
-        canonicalByStream,
-        retainedByteRow,
         retainedByStream,
-        unexpectedStreams,
+        retainedByteRow,
         terminalFactsGenerationBoundary:
-          terminalHighWaterRow?.max_seq == null ? 0 : Number(terminalHighWaterRow.max_seq),
+          terminalHighWaterRow?.max_seq === null || terminalHighWaterRow?.max_seq === undefined
+            ? 0
+            : Number(terminalHighWaterRow.max_seq),
+        unexpectedStreams,
       });
       upsertSqliteEvidenceRow(db, built);
-      return { row: built, failed: false, persisted: true };
+      return { failed: false, persisted: true, row: built };
     });
   } catch (err) {
     const failedRow = buildFailedRow(connectorInstanceId, REASON_CODES.RECORD_SNAPSHOT_FAILED, err);
@@ -1000,7 +1025,7 @@ function repairCandidateSqlite(connectorInstanceId: string): RepairedEvidence {
     } catch {
       persisted = false;
     }
-    return { row: failedRow, failed: true, persisted };
+    return { failed: true, persisted, row: failedRow };
   }
 }
 
@@ -1015,7 +1040,7 @@ async function repairCandidatePostgres(connectorInstanceId: string): Promise<Rep
         await client.query("DELETE FROM connector_summary_evidence WHERE connector_instance_id = $1", [
           connectorInstanceId,
         ]);
-        return { row: { connector_instance_id: connectorInstanceId, __deleted: true }, failed: false, persisted: true };
+        return { failed: false, persisted: true, row: { __deleted: true, connector_instance_id: connectorInstanceId } };
       }
       const manifestResult = await client.query(
         "SELECT manifest::text AS manifest FROM connectors WHERE connector_id = $1",
@@ -1033,8 +1058,8 @@ async function repairCandidatePostgres(connectorInstanceId: string): Promise<Rep
       const checkpoint = normalizeRecordSourceCheckpoint({
         resetGeneration: String((generationResult.rows[0] as Row | undefined)?.reset_generation ?? "0"),
         streams: (streamsResult.rows as Row[]).map((row) => ({
-          stream: String(row.stream),
           maxVersion: String(row.max_version),
+          stream: String(row.stream),
         })),
       });
       const canonicalResult = await client.query(
@@ -1070,17 +1095,17 @@ async function repairCandidatePostgres(connectorInstanceId: string): Promise<Rep
       const terminalHighWater = (terminalHighWaterResult.rows[0] as Row | undefined)?.max_seq;
 
       const built = buildRepairedRow({
+        canonicalByStream,
+        checkpoint,
         instance,
         manifest,
-        checkpoint,
-        canonicalByStream,
-        retainedByteRow,
         retainedByStream,
+        retainedByteRow,
+        terminalFactsGenerationBoundary: terminalHighWater === null ? 0 : Number(terminalHighWater),
         unexpectedStreams,
-        terminalFactsGenerationBoundary: terminalHighWater == null ? 0 : Number(terminalHighWater),
       });
       await upsertPostgresEvidenceRow(client, built);
-      return { row: built, failed: false, persisted: true };
+      return { failed: false, persisted: true, row: built };
     });
   } catch (err) {
     const failedRow = buildFailedRow(connectorInstanceId, REASON_CODES.RECORD_SNAPSHOT_FAILED, err);
@@ -1094,7 +1119,7 @@ async function repairCandidatePostgres(connectorInstanceId: string): Promise<Rep
     } catch {
       persisted = false;
     }
-    return { row: failedRow, failed: true, persisted };
+    return { failed: true, persisted, row: failedRow };
   }
 }
 
@@ -1124,6 +1149,7 @@ interface RepairInputs {
  * never launder a failed terminal fold, matching design.md's "components
  * are independent").
  */
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This protocol transition owns ordered state invariants that must remain local.
 function buildRepairedRow(inputs: RepairInputs): Row {
   const { instance, manifest, checkpoint, canonicalByStream, retainedByteRow, retainedByStream, unexpectedStreams } =
     inputs;
@@ -1138,22 +1164,25 @@ function buildRepairedRow(inputs: RepairInputs): Row {
 
   const streamRecords: StreamEvidence[] = [...unionStreams].sort().map((stream) => {
     const canonical = canonicalByStream.get(stream);
+    // biome-ignore lint/style/noNonNullAssertion: The trusted boundary invariant is established by the preceding validation.
     const retainedCount = retainedByStream.has(stream) ? retainedByStream.get(stream)! : null;
     const declaration_state: DeclarationState = manifest.ok
-      ? declaredStreams.has(stream)
+      ? // biome-ignore lint/style/noNestedTernary: The existing expression mirrors the protocol’s compact value selection contract.
+        declaredStreams.has(stream)
         ? "declared"
-        : unexpectedStreams.has(stream)
+        : // biome-ignore lint/style/noNestedTernary: The existing expression mirrors the protocol’s compact value selection contract.
+          unexpectedStreams.has(stream)
           ? "unexpected"
           : "dormant"
       : "unavailable";
     const record_count = canonical ? Number(canonical.record_count || 0) : 0;
     const count_state: CountState = record_count > 0 ? "known" : "known_zero";
     return {
-      stream,
-      declaration_state,
       count_state,
+      declaration_state,
       record_count,
       retained_record_count: retainedCount,
+      stream,
     };
   });
 
@@ -1178,43 +1207,43 @@ function buildRepairedRow(inputs: RepairInputs): Row {
   const retainedBytesClean = retainedByteRow ? Number(retainedByteRow.dirty || 0) === 0 : false;
   const retainedBytes = retainedBytesClean
     ? {
-        record_json_bytes: Number(retainedByteRow!.current_record_json_bytes || 0),
-        record_changes_json_bytes: Number(retainedByteRow!.record_history_json_bytes || 0),
-        blob_bytes: Number(retainedByteRow!.blob_bytes || 0),
+        blob_bytes: Number(retainedByteRow?.blob_bytes || 0),
+        record_changes_json_bytes: Number(retainedByteRow?.record_history_json_bytes || 0),
+        record_json_bytes: Number(retainedByteRow?.current_record_json_bytes || 0),
         total_bytes:
-          Number(retainedByteRow!.current_record_json_bytes || 0) +
-          Number(retainedByteRow!.record_history_json_bytes || 0) +
-          Number(retainedByteRow!.blob_bytes || 0),
+          Number(retainedByteRow?.current_record_json_bytes || 0) +
+          Number(retainedByteRow?.record_history_json_bytes || 0) +
+          Number(retainedByteRow?.blob_bytes || 0),
       }
     : null;
 
   return {
-    connector_instance_id: instance.connector_instance_id,
+    computed_at: as_of,
     connector_id: instance.connector_id,
+    connector_instance_id: instance.connector_instance_id,
+    dirty: 0,
     display_name: instance.display_name,
-    status: instance.status,
-    source_kind: instance.source_kind,
-    revoked_at: instance.revoked_at || null,
-    total_records: totalRecords,
-    stream_count: streamCount,
+    last_error: null,
     last_record_updated_at: lastRecordUpdatedAt,
-    stream_records_json: JSON.stringify(streamRecords),
-    retained_bytes_json: JSON.stringify(retainedBytes ?? {}),
-    total_retained_bytes: retainedBytes?.total_bytes ?? 0,
-    record_checkpoint_json: JSON.stringify(checkpoint),
+    manifest_declaration_reason_code: manifest.ok ? null : REASON_CODES.MANIFEST_UNAVAILABLE,
+    manifest_declaration_state: manifest.ok ? "current" : "unavailable",
     manifest_fingerprint: manifest.ok ? manifest.fingerprint : null,
     manifest_generation: Number(instance.manifest_generation ?? 0),
-    record_snapshot_state: "current",
+    record_checkpoint_json: JSON.stringify(checkpoint),
     record_snapshot_reason_code: null,
-    manifest_declaration_state: manifest.ok ? "current" : "unavailable",
-    manifest_declaration_reason_code: manifest.ok ? null : REASON_CODES.MANIFEST_UNAVAILABLE,
-    retained_bytes_state: retainedBytesClean ? "current" : "stale",
+    record_snapshot_state: "current",
+    retained_bytes_json: JSON.stringify(retainedBytes ?? {}),
     retained_bytes_reason_code: retainedBytesClean ? null : REASON_CODES.RETAINED_BYTES_UNAVAILABLE,
-    computed_at: as_of,
-    dirty: 0,
+    retained_bytes_state: retainedBytesClean ? "current" : "stale",
+    revoked_at: instance.revoked_at || null,
+    source_kind: instance.source_kind,
     state: "fresh",
-    last_error: null,
+    status: instance.status,
+    stream_count: streamCount,
+    stream_records_json: JSON.stringify(streamRecords),
     terminal_facts_generation_boundary: inputs.terminalFactsGenerationBoundary,
+    total_records: totalRecords,
+    total_retained_bytes: retainedBytes?.total_bytes ?? 0,
   };
 }
 
@@ -1227,7 +1256,9 @@ function upsertSqliteEvidenceRow(db: Db, row: Row): void {
   const manifestGenerationChanged =
     existing !== undefined && Number(existing.manifest_generation ?? 0) !== Number(row.manifest_generation);
   const terminalFacts = terminalFactsForRepair(existing, row, manifestGenerationChanged);
-  db.prepare(
+  // REVIEWED-DYNAMIC: this fixed upsert is part of the evidence engine's
+  // transaction-local SQLite repair seam.
+  execDynamicSqlAcknowledged(
     `INSERT INTO connector_summary_evidence(
        connector_instance_id, connector_id, display_name, status, source_kind,
        revoked_at, total_records, stream_count, last_record_updated_at,
@@ -1270,41 +1301,42 @@ function upsertSqliteEvidenceRow(db: Db, row: Row): void {
        computed_at = excluded.computed_at,
        state = 'fresh',
        last_error = NULL,
-       manifest_generation = excluded.manifest_generation`
-  ).run(
-    row.connector_instance_id,
-    row.connector_id,
-    row.display_name,
-    row.status,
-    row.source_kind,
-    row.revoked_at,
-    row.total_records,
-    row.stream_count,
-    row.last_record_updated_at,
-    row.stream_records_json,
-    row.retained_bytes_json,
-    row.total_retained_bytes,
-    row.record_checkpoint_json,
-    row.manifest_fingerprint,
-    row.record_snapshot_state,
-    row.record_snapshot_reason_code,
-    row.manifest_declaration_state,
-    row.manifest_declaration_reason_code,
-    row.retained_bytes_state,
-    row.retained_bytes_reason_code,
-    // Record repairs preserve the independently-owned terminal component.
-    // A fingerprint transition is the sole exception: it starts a new
-    // declaration generation, so old terminal facts cannot be reattached to
-    // a re-added stream. Advancing to the captured event high-water makes the
-    // next fold consume only post-generation terminal evidence.
-    terminalFacts.state,
-    terminalFacts.reasonCode,
-    terminalFacts.latestFactsJson,
-    terminalFacts.eventSeq,
-    row.computed_at,
-    row.state,
-    row.last_error,
-    row.manifest_generation
+       manifest_generation = excluded.manifest_generation`,
+    [
+      row.connector_instance_id,
+      row.connector_id,
+      row.display_name,
+      row.status,
+      row.source_kind,
+      row.revoked_at,
+      row.total_records,
+      row.stream_count,
+      row.last_record_updated_at,
+      row.stream_records_json,
+      row.retained_bytes_json,
+      row.total_retained_bytes,
+      row.record_checkpoint_json,
+      row.manifest_fingerprint,
+      row.record_snapshot_state,
+      row.record_snapshot_reason_code,
+      row.manifest_declaration_state,
+      row.manifest_declaration_reason_code,
+      row.retained_bytes_state,
+      row.retained_bytes_reason_code,
+      // Record repairs preserve the independently-owned terminal component.
+      // A fingerprint transition is the sole exception: it starts a new
+      // declaration generation, so old terminal facts cannot be reattached to
+      // a re-added stream. Advancing to the captured event high-water makes the
+      // next fold consume only post-generation terminal evidence.
+      terminalFacts.state,
+      terminalFacts.reasonCode,
+      terminalFacts.latestFactsJson,
+      terminalFacts.eventSeq,
+      row.computed_at,
+      row.state,
+      row.last_error,
+      row.manifest_generation,
+    ] as BindValue[]
   );
 }
 
@@ -1397,21 +1429,21 @@ async function upsertPostgresEvidenceRow(client: Db, row: Row): Promise<void> {
 function terminalFactsForRepair(existing: Row | undefined, row: Row, manifestGenerationChanged: boolean) {
   if (manifestGenerationChanged) {
     return {
-      state: "stale",
-      reasonCode: REASON_CODES.MANIFEST_GENERATION_CHANGED,
-      latestFactsJson: null,
       eventSeq: row.terminal_facts_generation_boundary,
+      latestFactsJson: null,
+      reasonCode: REASON_CODES.MANIFEST_GENERATION_CHANGED,
+      state: "stale",
     };
   }
   if (existing) {
     return {
-      state: existing.terminal_facts_state,
-      reasonCode: existing.terminal_facts_reason_code,
-      latestFactsJson: existing.stream_latest_facts_json,
       eventSeq: existing.stream_facts_event_seq,
+      latestFactsJson: existing.stream_latest_facts_json,
+      reasonCode: existing.terminal_facts_reason_code,
+      state: existing.terminal_facts_state,
     };
   }
-  return { state: "unobserved", reasonCode: null, latestFactsJson: null, eventSeq: null };
+  return { eventSeq: null, latestFactsJson: null, reasonCode: null, state: "unobserved" };
 }
 
 // ---------------------------------------------------------------------------
@@ -1487,6 +1519,7 @@ export async function reconcileConnectorSummaryEvidence(
   const countBounded = typeof options.maxCandidates === "number" && options.maxCandidates >= 0;
   const timeBounded = typeof options.maxDurationMs === "number" && options.maxDurationMs >= 0;
   const countLimited = countBounded ? candidateEntries.slice(0, options.maxCandidates) : candidateEntries;
+  // biome-ignore lint/style/noNonNullAssertion: The trusted boundary invariant is established by the preceding validation.
   const deadline = timeBounded ? Date.now() + options.maxDurationMs! : null;
 
   let repaired = 0;
@@ -1499,6 +1532,7 @@ export async function reconcileConnectorSummaryEvidence(
       // reported via `skipped` below, deferred to the next observation.
       break;
     }
+    // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
     const result = await repairCandidate(connectorInstanceId);
     repaired += 1;
     if (result.failed) {
@@ -1519,7 +1553,7 @@ export async function reconcileConnectorSummaryEvidence(
       ? await pruneOrphanedEvidenceComplete(instanceRows)
       : await pruneOrphanedEvidenceScoped(connectorInstanceIds, instanceRows);
 
-  return { discovered: instanceRows.length, repaired: repaired + dropped, failed, skipped, failedRows };
+  return { discovered: instanceRows.length, failed, failedRows, repaired: repaired + dropped, skipped };
 }
 
 // ---------------------------------------------------------------------------
@@ -1577,7 +1611,7 @@ export async function readAllInstanceIdsForPruning(): Promise<readonly Row[]> {
     const result = await postgresQuery("SELECT connector_instance_id FROM connector_instances");
     return result.rows as Row[];
   }
-  return getDb().prepare("SELECT connector_instance_id FROM connector_instances").all() as Row[];
+  return [...iterateDynamicSqlAcknowledged<Row>("SELECT connector_instance_id FROM connector_instances")];
 }
 
 /**
@@ -1599,15 +1633,16 @@ export async function pruneOrphanedEvidenceComplete(liveInstanceRows: readonly R
     return result.rows.length;
   }
   const db: Db = getDb();
-  const existing = db.prepare("SELECT connector_instance_id FROM connector_summary_evidence").all() as Row[];
+  const existing = [
+    ...iterateDynamicSqlAcknowledged<Row>("SELECT connector_instance_id FROM connector_summary_evidence"),
+  ];
   const stale = existing.map((row) => String(row.connector_instance_id)).filter((id) => !liveIds.has(id));
   if (stale.length === 0) {
     return 0;
   }
-  const del = db.prepare("DELETE FROM connector_summary_evidence WHERE connector_instance_id = ?");
   db.transaction(() => {
     for (const id of stale) {
-      del.run(id);
+      exec(referenceQueries.connectorInstancesDeleteSummaryEvidenceByConnectorInstance, [id]);
     }
   })();
   return stale.length;

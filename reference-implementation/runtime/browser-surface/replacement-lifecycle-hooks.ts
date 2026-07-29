@@ -1,6 +1,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+// biome-ignore lint/correctness/noUnresolvedImports: remote-surface 1.5.1 exports ./leases; Biome 2.5.5 fails to resolve this package export.
 import type { BrowserSurface, BrowserSurfaceAllocator, BrowserSurfaceLease } from "@opendatalabs/remote-surface/leases";
 import type {
   BrowserSurfaceLeaseStore,
@@ -45,18 +46,18 @@ export function createReplacementLifecycleHooks(input: {
   const allocator = wrapAllocator(input, ledger);
   return {
     allocator,
-    recordExternalSurfaceLoss: (surface) => recordExternalSurfaceLoss(input.receiptStore, ledger, surface),
     recordBrowserGeneration: (lease, surface, connectorId, runId, result) =>
       recordBrowserGeneration({
-        lease,
-        surface,
         connectorId,
-        runId,
-        result,
+        lease,
         leaseStore: input.leaseStore,
-        receiptStore: input.receiptStore,
         ledger,
+        receiptStore: input.receiptStore,
+        result,
+        runId,
+        surface,
       }),
+    recordExternalSurfaceLoss: (surface) => recordExternalSurfaceLoss(input.receiptStore, ledger, surface),
   };
 }
 
@@ -72,10 +73,11 @@ function wrapAllocator(
     return input.allocator;
   }
   return createReplacementObservingAllocator(input.allocator, {
-    ledger,
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     findPending: (surfaceId) => input.receiptStore?.findPendingForSurface(surfaceId) ?? Promise.resolve(null),
-    persist: (receipt) => persistReplacementReceipt(input.receiptStore, receipt),
+    ledger,
     onPersistenceError: (error) => logReplacementPersistenceError(input.log, error),
+    persist: (receipt) => persistReplacementReceipt(input.receiptStore, receipt),
   });
 }
 
@@ -110,12 +112,12 @@ function externalLossStartInput(
   previousGenerationHash: string | undefined
 ): ReplacementStartInput {
   const result = {
+    cause: "external_or_host_loss",
     connection_id: surface.surface_subject_id ?? surface.connector_id,
     connector_id: surface.connector_id,
+    idempotency_key: `external-loss:${surface.surface_id}:${previousGenerationHash ?? "unknown"}`,
     profile_key: surface.profile_key,
     surface_id: surface.surface_id,
-    idempotency_key: `external-loss:${surface.surface_id}:${previousGenerationHash ?? "unknown"}`,
-    cause: "external_or_host_loss",
   } as ReplacementStartInput;
   assignOptional(result, "surface_subject_id", surface.surface_subject_id);
   assignOptional(result, "previous_generation_hash", previousGenerationHash);
@@ -138,7 +140,9 @@ async function recordBrowserGeneration(input: {
   if (!(input.result.ok && input.result.browserGenerationHash)) {
     return;
   }
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const leaseStore = input.leaseStore;
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const surface = input.surface;
   const generationHash = input.result.browserGenerationHash;
   const persistedSurface = await leaseStore.getSurface(surface.surface_id);
@@ -163,9 +167,9 @@ async function pendingForReadiness(
   }
   return store.findPendingForScope({
     connection_id: surface.surface_subject_id ?? surface.connector_id,
-    surface_subject_id: surface.surface_subject_id ?? null,
-    profile_key: surface.profile_key,
     preferred_surface_id: surface.surface_id,
+    profile_key: surface.profile_key,
+    surface_subject_id: surface.surface_subject_id ?? null,
   });
 }
 
@@ -187,11 +191,11 @@ async function completePendingGeneration(
 
 function pendingCompletionInput(pending: ReplacementReceipt, generationHash: string): ReplacementCompletionInput {
   const result = {
-    replacement_id: pending.replacement_id,
-    connection_id: pending.connection_id,
-    profile_key: pending.profile_key,
-    next_generation_hash: generationHash,
     cause: pending.cause,
+    connection_id: pending.connection_id,
+    next_generation_hash: generationHash,
+    profile_key: pending.profile_key,
+    replacement_id: pending.replacement_id,
   } as ReplacementCompletionInput;
   copyOptionalReceiptFields(result, pending);
   return result;
@@ -243,14 +247,14 @@ function currentGenerationStartInput(
   cause: "same_container_browser_generation_change" | "external_or_host_loss"
 ): ReplacementStartInput {
   const result = {
+    cause,
     connection_id: input.surface.surface_subject_id ?? input.connectorId,
     connector_id: input.connectorId,
+    idempotency_key: `browser-generation:${input.surface.surface_id}:${previousGenerationHash}:${generationHash}`,
+    previous_generation_hash: previousGenerationHash,
     profile_key: input.surface.profile_key,
     run_id: input.runId,
     surface_id: input.surface.surface_id,
-    previous_generation_hash: previousGenerationHash,
-    idempotency_key: `browser-generation:${input.surface.surface_id}:${previousGenerationHash}:${generationHash}`,
-    cause,
   } as ReplacementStartInput;
   assignOptional(result, "surface_subject_id", input.surface.surface_subject_id);
   assignOptional(result, "lease_id", input.lease.lease_id);
@@ -259,11 +263,11 @@ function currentGenerationStartInput(
 
 function completionInput(started: ReplacementReceipt, generationHash: string): ReplacementCompletionInput {
   const result = {
-    replacement_id: started.replacement_id,
-    connection_id: started.connection_id,
-    profile_key: started.profile_key,
-    next_generation_hash: generationHash,
     cause: started.cause,
+    connection_id: started.connection_id,
+    next_generation_hash: generationHash,
+    profile_key: started.profile_key,
+    replacement_id: started.replacement_id,
   } as ReplacementCompletionInput;
   copyOptionalReceiptFields(result, started);
   return result;
@@ -271,11 +275,11 @@ function completionInput(started: ReplacementReceipt, generationHash: string): R
 
 function terminalInput(started: ReplacementReceipt, outcome: "failed" | "abandoned"): ReplacementTerminalInput {
   const result = {
-    replacement_id: started.replacement_id,
-    connection_id: started.connection_id,
-    profile_key: started.profile_key,
     cause: started.cause,
+    connection_id: started.connection_id,
     outcome,
+    profile_key: started.profile_key,
+    replacement_id: started.replacement_id,
   } as ReplacementTerminalInput;
   copyOptionalReceiptFields(result, started);
   return result;

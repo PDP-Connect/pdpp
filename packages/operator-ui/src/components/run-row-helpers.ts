@@ -19,19 +19,19 @@ export function browserSurfaceStatusCopy(run: RunSummary): { detail: string; lab
     : "";
   if (run.browser_surface_status === "waiting_for_browser_surface") {
     return {
-      label: "browser queued",
       detail: `Waiting for an available n.eko browser surface. This is runtime resource backpressure, not connector auth or protocol failure.${reason}`,
+      label: "browser queued",
     };
   }
   if (run.browser_surface_status === "deferred") {
     return {
-      label: "browser deferred",
       detail: `Deferred by the n.eko browser-surface lease policy. This is runtime resource backpressure, not connector auth or protocol failure.${reason}`,
+      label: "browser deferred",
     };
   }
   return {
-    label: "browser surface",
     detail: `Browser-surface lease status: ${run.browser_surface_status.replaceAll("_", " ")}.${reason}`,
+    label: "browser surface",
   };
 }
 

@@ -5,32 +5,60 @@
   "formatter": {
     "lineWidth": 120
   },
+  // Object insertion order is observable through Object.keys, for-in, and
+  // JSON.stringify. Keep authored query/serialization order; this disables
+  // only Biome's source assist, not a linter rule.
+  "assist": {
+    "actions": {
+      "source": {
+        "useSortedKeys": "off"
+      }
+    }
+  },
   "files": {
     "ignoreUnknown": true,
-    // Stock Ultracite + lineWidth 120 — no rule overrides beyond the
-    // single upstream-bug waiver below (per doctrine: "for apps/web let's
-    // use stock biome as much as possible"). The includes pattern scopes
-    // Biome to real source code: .ts + .tsx under src/ plus JSON config.
-    // Build outputs (.next/, .source/), generated types (next-env.d.ts),
-    // static assets (public/), authored Markdown (content/, not linted
-    // by Biome), and the .mjs build script are excluded. If a rule
-    // legitimately cannot be satisfied, stop and report with evidence —
-    // do not relax it here.
+    // The tracked-source contract includes authored JS/TS/config files and
+    // force-excludes dependency/build output, raw data, and generated/report
+    // artifacts. Selection is checked against Ultracite in the root script.
     "includes": [
-      "src/**/*.ts",
-      "src/**/*.tsx",
-      "*.jsonc",
-      "*.json",
-      "!node_modules",
-      "!.next",
-      "!.source",
-      "!next-env.d.ts",
-      "!public",
-      "!content",
-      "!scripts"
+      "!!**/node_modules",
+      "!!**/.git",
+      "!!**/dist",
+      "!!**/build",
+      "!!**/out",
+      "!!**/.next",
+      "!!**/.source",
+      "!!**/coverage",
+      "!!**/reports",
+      "!!**/report",
+      "!!**/*.snap",
+      "!!**/*.har",
+      "!!**/*.jsonl",
+      "!!**/docs/generated",
+      "!!**/next-env.d.ts",
+      "!!**/report.*.json"
     ]
   },
   "overrides": [
+    {
+      // Public service-worker JS is a TypeScript-emitted browser artifact.
+      // Keep it in selection; generated-artifacts:check is its byte oracle.
+      "includes": ["public/pdpp-dashboard-sw.js"],
+      "formatter": { "enabled": false },
+      "assist": { "actions": { "source": { "organizeImports": "off" } } },
+      "linter": { "enabled": false }
+    },
+    {
+      // These two console call sites intentionally retain the package export's
+      // emitted `.js` specifier. The source is resolved by the app's tsx/Next
+      // loader and the package build rewrites the same boundary; keep the
+      // files selected while the package's source/runtime contract is split.
+      "includes": [
+        "src/lib/agent-skills/catalog.test.ts",
+        "src/lib/pdpp-cli-command.ts"
+      ],
+      "linter": { "rules": { "correctness": { "useImportExtensions": "off" } } }
+    },
     {
       // Upstream Biome resolver false-positive waiver — NOT a doctrine change.
       //
@@ -101,6 +129,44 @@
         "rules": {
           "performance": {
             "noBarrelFile": "off"
+          }
+        }
+      }
+    },
+    {
+      // noJsxPropsBind policy waiver — NOT a blanket style exemption.
+      //
+      // This app has no React.memo, memoized child, or props-identity-
+      // sensitive consumer anywhere in src/ (verified: `grep -rl
+      // "React.memo|= memo(" src` is empty). Every onX handler this rule
+      // flags is a plain DOM event handler or a callback prop into an
+      // unmemoized function component; wrapping each in useCallback would
+      // not change render behavior or skip any re-render, since nothing
+      // downstream diffs the reference. That is the "unnecessary
+      // memoization" this project's engineering guidance asks agents to
+      // avoid introducing, so the rule is adjudicated as mismatched for
+      // this app's component shape rather than resolved 131 times with
+      // inert useCallback wrappers or per-line biome-ignore boilerplate.
+      //
+      // Handlers that DO feed a memoized child, a dependency array, or a
+      // list row needing referential stability must keep (or gain) a real
+      // useCallback — this override does not exempt those; none currently
+      // exist (see grep above), so none are carved out here.
+      //
+      // Exception ledger: openspec/changes/modernize-biome-policy-and-cleanup,
+      // section 1.3 ("adjudicate every active rule ... as defect, style,
+      // mismatch, or domain exception"). Owner: PDP-Connect app maintainers.
+      // Scope: apps/console/src/**/*.tsx only. Invariant: no React.memo or
+      // props-identity-sensitive consumer is introduced without first
+      // narrowing or removing this override for the affected file(s).
+      // Expiry: re-evaluate if this app adopts React.memo/memoized list
+      // rows/virtualization, or if Ultracite's rule gains a
+      // memoized-consumer-aware heuristic.
+      "includes": ["src/**/*.tsx"],
+      "linter": {
+        "rules": {
+          "performance": {
+            "noJsxPropsBind": "off"
           }
         }
       }

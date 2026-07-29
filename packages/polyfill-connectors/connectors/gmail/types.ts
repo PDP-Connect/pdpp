@@ -5,7 +5,10 @@
 // and tests can import them without pulling in the IMAP runtime entry.
 
 import type {
+  AttachmentHydrationFailureOutcomeProgress,
+  AttachmentRecoveryOutcomeProgress,
   DetailCoverageMessage,
+  DetailGapAttemptedMessage,
   DetailGapMessage,
   DetailGapRecoveredMessage,
   DetailGapStartEntry,
@@ -43,6 +46,8 @@ export interface InteractionMessage {
 }
 
 export interface ProgressMessage {
+  attachment_hydration_failure_outcome?: AttachmentHydrationFailureOutcomeProgress;
+  attachment_recovery_outcome?: AttachmentRecoveryOutcomeProgress;
   count?: number;
   message: string;
   stream?: string;
@@ -100,7 +105,8 @@ export type EmittedMessage =
   // Reference-only recovery acknowledgement for a served pending attachment
   // gap. The Gmail connector emits this only after the matching attachment
   // record actually lands.
-  | DetailGapRecoveredMessage;
+  | DetailGapRecoveredMessage
+  | DetailGapAttemptedMessage;
 
 export interface AttachmentRecord {
   blob_ref: BlobRef | null;

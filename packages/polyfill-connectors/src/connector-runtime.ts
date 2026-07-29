@@ -86,8 +86,11 @@ export type {
   AssistanceRequest,
   AssistanceResponseContract,
   AssistanceSensitivity,
+  AttachmentHydrationFailureOutcomeProgress,
+  AttachmentRecoveryOutcomeProgress,
   CollectionRateProgress,
   DetailCoverageMessage,
+  DetailGapAttemptedMessage,
   DetailGapMessage,
   DetailGapNetworkPressure,
   DetailGapRecoveredMessage,
@@ -242,6 +245,24 @@ interface BaseRunConnectorConfig {
   isTombstone?: (stream: string, data: RecordData) => boolean;
   name: string;
   normalizeTerminalError?: NormalizeTerminalError;
+  /**
+   * Optional post-commit hook. Runs ONLY on a successful run, AFTER the
+   * runtime has acknowledged durable ingest (stdin EOF) and immediately
+   * BEFORE process exit. Use it for local side effects that must not precede
+   * a durable commit — e.g. reclaiming on-disk residue the connector does not
+   * ingest. Never runs on a failed/interrupted run, so no cleanup can outrun
+   * the commit receipt. Errors are swallowed (best-effort): a failed cleanup
+   * must not turn a durably-committed run into a failure.
+   *
+   * MUST NOT call `emit`/`progress`/any stdout-JSONL write. By the time this
+   * hook runs, the runtime has already consumed this run's DONE message and
+   * torn down its message loop for this connector instance; any further
+   * stdout JSONL (including PROGRESS) is parsed as "message after DONE" and
+   * fails the ALREADY-SUCCEEDED run as `connector_protocol_violation` on the
+   * next run's read of this one's exit, not a no-op. Use `logDurableCommit`
+   * (stderr, outside the protocol channel) to report hook activity instead.
+   */
+  onDurableCommit?: (log: (message: string) => void) => void | Promise<void>;
   retryablePattern?: RegExp;
   /** Record field that scope.time_range filters on. Default 'date'. */
   timeRangeField?: string | ((stream: string) => string);
@@ -289,12 +310,12 @@ const TRACE_TIMESTAMP_UNSAFE = /[:.]/g;
 class TerminalError extends Error {
   readonly code?: string;
   readonly retryable: boolean;
-  constructor(message: string, retryable = false, code?: string) {
-    super(message);
+  constructor(message: string, options: { cause?: unknown; code?: string; retryable?: boolean } = {}) {
+    super(message, options.cause === undefined ? undefined : { cause: options.cause });
     this.name = "TerminalError";
-    this.retryable = retryable;
-    if (code !== undefined) {
-      this.code = code;
+    this.retryable = options.retryable ?? false;
+    if (options.code !== undefined) {
+      this.code = options.code;
     }
   }
 }
@@ -526,17 +547,21 @@ export function buildDetailGap(params: DetailGapParams): DetailGapMessage {
   if (error) {
     const sharedBlock = {
       class: error.class,
+      // biome-ignore lint/suspicious/noEqualsToNull: httpStatus is optional (may be undefined, not just null); === null would wrongly include an undefined http_status field
       ...(error.httpStatus == null ? {} : { http_status: error.httpStatus }),
+      // biome-ignore lint/suspicious/noEqualsToNull: networkPressure is optional (may be undefined, not just null); === null would wrongly include an undefined network_pressure field
       ...(error.networkPressure == null ? {} : { network_pressure: error.networkPressure }),
     };
     errorBlocks = {
       detail: sharedBlock,
+      // biome-ignore lint/suspicious/noEqualsToNull: error.message is optional (may be undefined, not just null); === null would miss the undefined case
       last_error: error.message == null ? sharedBlock : { ...sharedBlock, message: error.message },
     };
   }
   return {
     type: "DETAIL_GAP",
     stream,
+    // biome-ignore lint/suspicious/noEqualsToNull: parentStream is optional (may be undefined, not just null); === null would wrongly include an undefined parent_stream field
     ...(parentStream == null ? {} : { parent_stream: parentStream }),
     record_key: recordKey,
     status: "pending",
@@ -590,6 +615,7 @@ export function runConnector(config: RunConnectorConfig): void {
     collect,
     browser,
     normalizeTerminalError = (error: TerminalErrorDetails): TerminalErrorDetails => error,
+    onDurableCommit,
     retryablePattern = DEFAULT_RETRYABLE_PATTERN,
     timeRangeField = "date",
     isTombstone,
@@ -625,6 +651,26 @@ export function runConnector(config: RunConnectorConfig): void {
   }
 
   const flushAndExit = (code: number): void => {
+    // On a successful run, run the optional durable-commit hook after the
+    // runtime acknowledges ingest (the `exit` callback fires post-ack) and
+    // before the real process exit. Best-effort: a hook failure never changes
+    // the already-committed run's outcome.
+    if (code === 0 && onDurableCommit) {
+      const logDurableCommit = (message: string): void => {
+        process.stderr.write(`[onDurableCommit] ${message}\n`);
+      };
+      flushAndExitAfterRuntimeAck(code, {
+        exit: (finalCode: number): void => {
+          Promise.resolve()
+            .then(() => onDurableCommit(logDurableCommit))
+            .catch((): undefined => undefined)
+            .finally((): void => {
+              process.exit(finalCode);
+            });
+        },
+      });
+      return;
+    }
     flushAndExitAfterRuntimeAck(code);
   };
 
@@ -650,11 +696,20 @@ export function runConnector(config: RunConnectorConfig): void {
   };
 
   let interactionCounter = 0;
-  const nextInteractionId = (): string => `int_${Date.now()}_${++interactionCounter}`;
+  const nextInteractionId = (): string => {
+    interactionCounter += 1;
+    return `int_${Date.now()}_${interactionCounter}`;
+  };
   let detailGapPageCounter = 0;
-  const nextDetailGapPageRequestId = (): string => `dgp_${Date.now()}_${++detailGapPageCounter}`;
+  const nextDetailGapPageRequestId = (): string => {
+    detailGapPageCounter += 1;
+    return `dgp_${Date.now()}_${detailGapPageCounter}`;
+  };
   let assistanceCounter = 0;
-  const nextAssistanceId = (): string => `asst_${Date.now()}_${++assistanceCounter}`;
+  const nextAssistanceId = (): string => {
+    assistanceCounter += 1;
+    return `asst_${Date.now()}_${assistanceCounter}`;
+  };
 
   const sendInteraction = (req: InteractionRequest): Promise<InteractionResponse> => {
     const request_id = req.request_id ?? nextInteractionId();
@@ -855,7 +910,7 @@ export function runConnector(config: RunConnectorConfig): void {
 async function parseStart(readStart: () => Promise<StartMessage>): Promise<StartMessage> {
   const startMsg = await readStart();
   if (startMsg.type !== "START") {
-    throw new TerminalError("Expected START message", false);
+    throw new TerminalError("Expected START message");
   }
   return startMsg;
 }
@@ -864,7 +919,7 @@ async function parseStart(readStart: () => Promise<StartMessage>): Promise<Start
 function buildRequested(startMsg: StartMessage): Map<string, StreamScope> {
   const requested = new Map<string, StreamScope>((startMsg.scope.streams ?? []).map((s) => [s.name, s]));
   if (requested.size === 0) {
-    throw new TerminalError("START.scope.streams is required", false);
+    throw new TerminalError("START.scope.streams is required");
   }
   return requested;
 }
@@ -884,7 +939,7 @@ async function resolveCredentials(
     return await resolveAuth(auth, ctx);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    throw new TerminalError(message, false);
+    throw new TerminalError(message, { cause: err });
   }
 }
 
@@ -908,6 +963,7 @@ function makeEmitRecord(deps: {
   }
 
   const emitRecord = (stream: string, data: RecordData, options: EmitRecordOptions = {}): Promise<void> => {
+    // biome-ignore lint/suspicious/noEqualsToNull: data.id is optional (may be undefined, not just null); === null would let undefined ids through
     if (data.id == null) {
       return Promise.resolve();
     }
@@ -917,7 +973,7 @@ function makeEmitRecord(deps: {
     }
 
     if (isTombstone?.(stream, data)) {
-      counters.totalEmitted++;
+      counters.totalEmitted += 1;
       return emit({
         type: "RECORD",
         stream,
@@ -937,11 +993,11 @@ function makeEmitRecord(deps: {
     if (validateRecord) {
       const result = validateRecord(stream, data);
       if (!result.ok) {
-        counters.totalSkipped++;
+        counters.totalSkipped += 1;
         return emit(makeShapeCheckSkip(stream, data, result.issues));
       }
     }
-    counters.totalEmitted++;
+    counters.totalEmitted += 1;
     return emit({
       type: "RECORD",
       stream,
@@ -1175,7 +1231,7 @@ export async function closeBrowserContextPagesExcept(
       continue;
     }
     if (await closeBrowserPage(page, deadlineMs)) {
-      closed++;
+      closed += 1;
     }
   }
   return closed;
@@ -1292,6 +1348,7 @@ async function emitBrowserSurfaceDiagnostic(args: {
   let errorMessage: string | null = null;
   if (error instanceof Error) {
     errorMessage = error.message;
+    // biome-ignore lint/suspicious/noEqualsToNull: error is optional (may be undefined, not just null); === null would wrongly stringify an absent error as "undefined"
   } else if (error != null) {
     errorMessage = String(error);
   }
@@ -1395,7 +1452,7 @@ function startBrowserConnectionKeepalive(
   let disconnectEventCount = 0;
   const browserConnectedAtStart = browser.isConnected();
   const removeDisconnectedListener = attachBrowserDisconnectedDiagnostic(browser, () => {
-    disconnectEventCount++;
+    disconnectEventCount += 1;
     disconnectEventElapsedMs ??= Date.now() - startedAt;
     process.stderr.write(
       `[browser-keepalive] browser disconnected during interaction after ${disconnectEventElapsedMs}ms\n`
@@ -1411,19 +1468,19 @@ function startBrowserConnectionKeepalive(
     }
     if (!browser.isConnected()) {
       firstObservedDisconnectedElapsedMs ??= Date.now() - startedAt;
-      skippedDisconnected++;
+      skippedDisconnected += 1;
       return;
     }
     pingInFlight = true;
-    pingAttempts++;
+    pingAttempts += 1;
     try {
       const session = await sessionFor(browser);
       await session.send("Browser.getVersion");
-      pingSuccesses++;
+      pingSuccesses += 1;
       lastSuccessfulPingElapsedMs = Date.now() - startedAt;
     } catch (err) {
       sessionPromise = null;
-      pingFailures++;
+      pingFailures += 1;
       lastError = normalizeDiagnosticError(err);
       process.stderr.write(`[browser-keepalive] Browser.getVersion failed: ${lastError}\n`);
     } finally {
@@ -1522,8 +1579,7 @@ export function resolveBrowserLaunchSource(
   if (managedRequired) {
     if (!managedRemoteCdpUrl) {
       throw new TerminalError(
-        "browser surface required: PDPP_BROWSER_SURFACE_REQUIRED=neko but PDPP_BROWSER_SURFACE_REMOTE_CDP_URL is missing",
-        false
+        "browser surface required: PDPP_BROWSER_SURFACE_REQUIRED=neko but PDPP_BROWSER_SURFACE_REMOTE_CDP_URL is missing"
       );
     }
     return {
@@ -1620,17 +1676,21 @@ async function acquireBrowser(browser: BrowserConfig, name: string): Promise<Acq
       // Surface the stable code in the terminal-error message so the
       // controller's run-failed copy can render the deployment-config
       // error state rather than a generic browser failure.
-      throw new TerminalError(`[${err.code}] ${err.message}`, false, err.code);
+      throw new TerminalError(`[${err.code}] ${err.message}`, { code: err.code, cause: err });
     }
     if (err instanceof CdpAttachSessionRaceExhaustedError) {
       // The narrow attach-session race (see browser-launch.ts) exhausted its
       // bounded retry budget. Carry the stable code so the reference
       // runtime's managed-surface lifecycle can decide the leased dynamic
       // surface itself needs recycling, without re-parsing this message.
-      throw new TerminalError(`could not open browser profile: ${err.message}`, true, err.code);
+      throw new TerminalError(`could not open browser profile: ${err.message}`, {
+        retryable: true,
+        code: err.code,
+        cause: err,
+      });
     }
     const message = err instanceof Error ? err.message : String(err);
-    throw new TerminalError(`could not open browser profile: ${message}`, false);
+    throw new TerminalError(`could not open browser profile: ${message}`, { cause: err });
   }
 }
 
@@ -1771,12 +1831,12 @@ export function makeSessionEstablishWatchdog(args: {
     // An open interaction means the run is legitimately waiting on the owner;
     // pause the watchdog so a long CAPTCHA/OTP wait is not killed. Reset the
     // deadline on resolve so post-interaction work gets a fresh window.
-    openInteractions++;
+    openInteractions += 1;
     markProgress(null);
     try {
       return await send(req);
     } finally {
-      openInteractions--;
+      openInteractions -= 1;
       markProgress(null);
     }
   };
@@ -1827,7 +1887,7 @@ export function makeSessionEstablishWatchdog(args: {
         throw new TerminalError(
           `${args.name}_session_establish_timeout: no session-establishment progress for ${String(sinceMs)}ms ` +
             `(last checkpoint: ${lastCheckpoint}); failing run closed`,
-          true
+          { retryable: true }
         );
       }
     } finally {
@@ -1923,7 +1983,7 @@ async function establishSession(
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const terminalError = buildSessionEstablishTerminalError(name, message, retryablePattern);
-      throw new TerminalError(terminalError.message, terminalError.retryable);
+      throw new TerminalError(terminalError.message, { retryable: terminalError.retryable, cause: err });
     }
   }
 
@@ -1949,16 +2009,16 @@ async function establishSession(
     return;
   }
 
-  throw new TerminalError(`${name}_session_required`, false);
+  throw new TerminalError(`${name}_session_required`);
 }
 
 // ─── Playwright tracing helper ──────────────────────────────────────────
 
 interface Tracer {
-  checkpoint(label: string): Promise<void>;
-  markSucceeded(): void;
-  start(): Promise<void>;
-  stop(): Promise<void>;
+  checkpoint: (label: string) => Promise<void>;
+  markSucceeded: () => void;
+  start: () => Promise<void>;
+  stop: () => Promise<void>;
 }
 
 /**

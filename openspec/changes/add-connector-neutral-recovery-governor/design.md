@@ -411,6 +411,28 @@ Both of those are corrected here:
    pressure rows) begins draining under the new eligibility rule without manual
    data cleanup — the data stays as the regression proof.
 
+### Revision (Gmail recovery byte capacity, 2026-07-23)
+
+Fixed-shape Gmail recovery telemetry (`served=256`, `attempted=1`,
+`admitted=1`, `admitted_bytes=1889782`, `recovered=1`,
+`metadata_lookups=1`, `run_cap_deferred=255`) proves a connector-local
+attachment-byte limit binds a healthy run. This is not a recovery-admission,
+provider-pacing, metadata-cap, authentication, or hydration failure.
+
+The generic governor exposes the correct eligibility seam but no byte-work
+capacity seam. Its inputs model durable recovery class, provider work domain,
+cooldown, retries, request count, and wall clock; it does not know a Gmail MIME
+part's decoded byte cost. Extending it for this case would turn a
+connector-specific data-work rule into generic rate policy and would neither
+improve pacing nor preserve local reasoning. The governor stays unchanged.
+
+Gmail instead uses its existing local known-byte prefix rule with a 4 MiB
+recovery default, equal to the established safe maximum. This allows two
+1,889,782-byte attachments in a bounded recovery envelope while leaving the
+ordinary 1 MiB historical-backfill default intact. No persistent adaptive state
+is introduced because the observed byte cost is already deterministic at
+admission and the fixed 4 MiB ceiling supplies the required safety bound.
+
 Rollback is safe because the durable substrate remains `connector_detail_gaps`.
 If the new admission layer misbehaves, disable recovery scheduling and leave
 manual connector runs on the pre-change path while retaining the gap rows.

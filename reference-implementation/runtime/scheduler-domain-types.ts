@@ -33,6 +33,7 @@ export type TerminalNonGrantReason =
   | "authentication_error"
   | "connector_protocol_violation"
   | "connector_reported_cancelled"
+  | "connector_reported_failed"
   | "owner_cancel_forced"
   | "owner_cancelled"
   | "run_timed_out"
@@ -206,6 +207,23 @@ export type GetNonPressureRecoverableCountHandler = (
 ) => Promise<number> | number;
 
 /**
+ * Returns whether this connection currently has forward-evidence debt: its
+ * durable terminal-facts evidence is missing, historical, or older than
+ * `forwardEvidenceMaxAgeMs(scheduleIntervalMs)` (`recovery-decision.ts`).
+ * Bounds recovery-first selection (`resolveRecoveryFirstMode`'s
+ * `forwardEvidenceDebt` input) so an unbounded non-pressure recovery backlog
+ * can never starve forward (fact-carrying) collection indefinitely. Defaults
+ * to `() => false` so a host that does not wire it keeps the pre-bound
+ * recovery-first behaviour (never treated as debt, matching the legacy
+ * unbounded default).
+ */
+export type GetForwardEvidenceDebtHandler = (
+  connectorId: string,
+  connectorInstanceId: string,
+  scheduleIntervalMs: number
+) => Promise<boolean> | boolean;
+
+/**
  * Returns the epoch ms of the most recent GENUINELY-SUCCESSFUL run for this
  * connection from a durable cross-path projection (the spine run timeline),
  * regardless of which path dispatched it. The scheduler's own `runtime.history`
@@ -298,6 +316,16 @@ export type HumanRequiredStateEscalationHandler = (info: {
  * Returning null signals that this connector is not managed; launchRun falls
  * through to the direct runConnector path unchanged.
  */
+interface ManagedConnectorRun {
+  readonly connector_error?: ConnectorError | null;
+  readonly failure_reason?: string | null;
+  readonly known_gaps?: readonly Record<string, unknown>[] | null;
+  readonly run_id: string;
+  readonly status: string;
+  readonly terminal_reason?: TerminalReason | null;
+  readonly trace_id: string;
+}
+
 export type RunManagedConnectorViaController = (
   connectorId: string,
   opts: {
@@ -311,15 +339,7 @@ export type RunManagedConnectorViaController = (
     rsUrl?: string;
     referenceBaseUrl?: string | null;
   }
-) => Promise<{
-  readonly connector_error?: ConnectorError | null;
-  readonly failure_reason?: string | null;
-  readonly known_gaps?: readonly Record<string, unknown>[] | null;
-  readonly run_id: string;
-  readonly status: string;
-  readonly terminal_reason?: TerminalReason | null;
-  readonly trace_id: string;
-} | null>;
+) => ManagedConnectorRun | null | Promise<ManagedConnectorRun | null>;
 
 export interface SchedulerOptions {
   connectors: readonly ConnectorSchedule[];
@@ -330,6 +350,7 @@ export interface SchedulerOptions {
    * failure. Optional: defaults to "no external success known" (legacy
    * in-history-only streak walk).
    */
+  getForwardEvidenceDebt?: GetForwardEvidenceDebtHandler;
   getLastSuccessfulRunAt?: GetLastSuccessfulRunAtHandler;
   getNonPressureRecoverableCount?: GetNonPressureRecoverableCountHandler;
   getSourcePressureGaps?: GetSourcePressureGapsHandler;

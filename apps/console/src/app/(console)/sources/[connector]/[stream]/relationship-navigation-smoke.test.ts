@@ -77,9 +77,9 @@ interface ChaseManifest {
 const DETAIL_RESOLVES_META_BACKLINK = /findParentBackLink\(/;
 const DETAIL_RESOLVES_CHILD_BACKLINK = /childHasOneBackLinksFromManifest\(/;
 const DETAIL_MERGES_BACKLINKS = /mergeParentBackLinks\(/;
-const DETAIL_RENDERS_BACKLINKS = /allParentBackLinks\.map\(/;
+const DETAIL_RENDERS_BACKLINKS = /parentBackLinks: allParentBackLinks/;
 const DETAIL_BUILDS_REVERSE_LINKS = /reverseChildListLinksFromManifest\(/;
-const DETAIL_RENDERS_REVERSE_LINKS = /reverseChildListLinks\.map\(/;
+const DETAIL_RENDERS_REVERSE_LINKS = /reverseChildListLinks,/;
 const LIST_COMPUTES_LINK_FIELDS = /childHasOneLinkFields\(/;
 const LIST_RESOLVES_CELL_BACKLINK = /childHasOneBackLinkForField\(/;
 const LIST_APPLIES_CELL_LINK = /parentLinkForCell\(/;
@@ -116,7 +116,7 @@ test("DIRECTION 1 transaction -> account: detail-page chain yields the parent ac
   // (parentStream, field).
   const candidates = candidateParentStreamsForChild(connectorManifest.streams, streamName);
   const parentRelations = parentRelationsForChild(
-    candidates.map((parentStream) => ({ parentStream, expandCapabilities: [] })),
+    candidates.map((parentStream) => ({ expandCapabilities: [], parentStream })),
     streamName
   );
   const parentBackLinkFromMeta = findParentBackLink(streamName, recordData, parentRelations, {
@@ -129,7 +129,7 @@ test("DIRECTION 1 transaction -> account: detail-page chain yields the parent ac
 
   assert.equal(parentBackLinkFromMeta, null, "Chase has no parent expand metadata, so the metadata source is null");
   assert.equal(allParentBackLinks.length, 1, "exactly one transaction -> account back-link must render");
-  const link = allParentBackLinks[0];
+  const [link] = allParentBackLinks;
   assert.equal(link?.parentStream, "accounts");
   assert.equal(link?.childParentKeyField, "account_id");
   assert.equal(
@@ -153,8 +153,8 @@ test("DIRECTION 2 account -> transactions: list-page chain yields the filtered c
 
   const reverseLinks = reverseChildListLinksFromManifest(connectorStreams, {
     connectionId: CONNECTION_ID,
-    parentStream,
     parentRecordKey: ACCOUNT_KEY,
+    parentStream,
   });
   assert.equal(reverseLinks.length, edges.length, "one reverse link per declared child has_one edge");
 
@@ -175,15 +175,11 @@ test("ROUND-TRIP: the account key is the shared join value both directions use",
   const connectorStreams = connectorManifest.streams ?? [];
   const txStream = connectorStreams.find((s) => s.name === "transactions");
 
-  const up = childHasOneBackLinksFromManifest(
-    txStream,
-    { account_id: ACCOUNT_KEY },
-    { connectionId: CONNECTION_ID }
-  )[0];
+  const [up] = childHasOneBackLinksFromManifest(txStream, { account_id: ACCOUNT_KEY }, { connectionId: CONNECTION_ID });
   const down = reverseChildListLinksFromManifest(connectorStreams, {
     connectionId: CONNECTION_ID,
-    parentStream: "accounts",
     parentRecordKey: ACCOUNT_KEY,
+    parentStream: "accounts",
   }).find((l) => l.childStream === "transactions");
 
   assert.ok(up?.href.endsWith(`/accounts/${ACCOUNT_KEY}`), "ascending lands on exactly that account");

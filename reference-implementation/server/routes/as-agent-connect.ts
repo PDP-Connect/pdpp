@@ -48,14 +48,14 @@ export interface AgentConnectAttemptStore {
    * approve handler with `status: 'approved'` (plus token/grant) and by the
    * deny handler with `status: 'denied'`.
    */
-  complete(
+  complete: (
     requestUri: string,
     outcome:
       | { status: "approved"; token: string; grant: Record<string, unknown>; grantId?: string | null }
       | { status: "denied" | "expired" }
-  ): void;
+  ) => void;
   /** Create and register a new pending attempt. Returns the stored attempt. */
-  create(opts: {
+  create: (opts: {
     id: string;
     pollingCode: string;
     requestUri: string;
@@ -63,57 +63,24 @@ export interface AgentConnectAttemptStore {
     expiresAt: number;
     approvalUrl: string;
     tokenUrl: string;
-  }): AgentConnectAttempt;
+  }) => AgentConnectAttempt;
   /** Remove an attempt by id. */
-  delete(id: string): void;
+  delete: (id: string) => void;
   /**
    * Shorthand for `complete(requestUri, { status })` for non-approval outcomes.
    * Called by the consent deny handler.
    */
-  fail(requestUri: string, status: "denied" | "expired"): void;
+  fail: (requestUri: string, status: "denied" | "expired") => void;
   /** Look up an attempt by id. */
-  get(id: string): AgentConnectAttempt | undefined;
+  get: (id: string) => AgentConnectAttempt | undefined;
   /** Evict expired/completed attempts (call before creating new ones). */
-  prune(now?: number): void;
+  prune: (now?: number) => void;
 }
 
 export function createAgentConnectAttemptStore(): AgentConnectAttemptStore {
   const attempts = new Map<string, AgentConnectAttempt>();
 
   return {
-    create(opts): AgentConnectAttempt {
-      const attempt: AgentConnectAttempt = {
-        id: opts.id,
-        pollingCode: opts.pollingCode,
-        requestUri: opts.requestUri,
-        clientId: opts.clientId,
-        status: "pending",
-        createdAt: new Date().toISOString(),
-        expiresAt: opts.expiresAt,
-        interval: 2,
-        approvalUrl: opts.approvalUrl,
-        tokenUrl: opts.tokenUrl,
-      };
-      attempts.set(opts.id, attempt);
-      return attempt;
-    },
-
-    get(id): AgentConnectAttempt | undefined {
-      return attempts.get(id);
-    },
-
-    delete(id): void {
-      attempts.delete(id);
-    },
-
-    prune(now = Date.now()): void {
-      for (const [id, attempt] of attempts) {
-        if (attempt.status !== "pending" || attempt.expiresAt <= now) {
-          attempts.delete(id);
-        }
-      }
-    },
-
     complete(requestUri, outcome): void {
       for (const attempt of attempts.values()) {
         if (attempt.requestUri !== requestUri || attempt.status !== "pending") {
@@ -128,6 +95,26 @@ export function createAgentConnectAttemptStore(): AgentConnectAttemptStore {
         }
       }
     },
+    create(opts): AgentConnectAttempt {
+      const attempt: AgentConnectAttempt = {
+        approvalUrl: opts.approvalUrl,
+        clientId: opts.clientId,
+        createdAt: new Date().toISOString(),
+        expiresAt: opts.expiresAt,
+        id: opts.id,
+        interval: 2,
+        pollingCode: opts.pollingCode,
+        requestUri: opts.requestUri,
+        status: "pending",
+        tokenUrl: opts.tokenUrl,
+      };
+      attempts.set(opts.id, attempt);
+      return attempt;
+    },
+
+    delete(id): void {
+      attempts.delete(id);
+    },
 
     fail(requestUri, status): void {
       for (const attempt of attempts.values()) {
@@ -136,6 +123,18 @@ export function createAgentConnectAttemptStore(): AgentConnectAttemptStore {
         }
         attempt.status = status;
         attempt.completedAt = new Date().toISOString();
+      }
+    },
+
+    get(id): AgentConnectAttempt | undefined {
+      return attempts.get(id);
+    },
+
+    prune(now = Date.now()): void {
+      for (const [id, attempt] of attempts) {
+        if (attempt.status !== "pending" || attempt.expiresAt <= now) {
+          attempts.delete(id);
+        }
       }
     },
   };
@@ -155,14 +154,14 @@ function buildAgentConnectError(status: string): { error: string; error_descript
 
 function publicAttemptEnvelope(attempt: AgentConnectAttempt, now: number): Record<string, unknown> {
   return {
-    id: attempt.id,
-    object: "agent_connect_attempt",
-    status: attempt.status,
     approval_url: attempt.approvalUrl,
-    poll_url: attempt.tokenUrl,
-    token_url: attempt.tokenUrl,
     expires_in: Math.max(Math.ceil((attempt.expiresAt - now) / 1000), 0),
+    id: attempt.id,
     interval: attempt.interval,
+    object: "agent_connect_attempt",
+    poll_url: attempt.tokenUrl,
+    status: attempt.status,
+    token_url: attempt.tokenUrl,
   };
 }
 
@@ -174,14 +173,14 @@ interface RouteRequest {
 }
 
 interface RouteResponse {
-  json(body: unknown): unknown;
-  status(code: number): RouteResponse;
+  json: (body: unknown) => unknown;
+  status: (code: number) => RouteResponse;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
 
 interface AppLike {
-  post(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  post: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
 }
 
 // ─── POST /agent-connect ─────────────────────────────────────────────────────
@@ -200,41 +199,41 @@ export interface MountAsAgentConnectContext {
   /** How long (ms) a pending attempt lives before it expires. */
   agentConnectTtlMs: number;
   /** Build the owner approval URL for a given request_uri and base URL. */
-  buildApprovalUrl(baseUrl: string, requestUri: string): string;
+  buildApprovalUrl: (baseUrl: string, requestUri: string) => string;
   /** Build the token poll URL for a given attempt id and base URL. */
-  buildTokenUrl(baseUrl: string, attemptId: string): string;
+  buildTokenUrl: (baseUrl: string, attemptId: string) => string;
   /** Generate a unique attempt id (e.g. `agc_<hex>`). */
-  generateAttemptId(): string;
+  generateAttemptId: () => string;
   /** Generate an opaque polling code (e.g. `agc_poll_<hex>`). */
-  generatePollingCode(): string;
+  generatePollingCode: () => string;
   /**
    * Looks up the pending consent request for a given request_uri.
    * Returns `{ pendingClientId }` where `pendingClientId` is null if the
    * request is unknown/expired or if no client_id is on the pending record.
    * Returns null if the pending request is not found.
    */
-  getPendingGrantFromRequestUri(
+  getPendingGrantFromRequestUri: (
     requestUri: string,
     opts?: { baseUrl?: string | null }
-  ): Promise<PendingGrantResult | null>;
-  handleError(res: unknown, err: unknown): void;
+  ) => Promise<PendingGrantResult | null>;
+  handleError: (res: unknown, err: unknown) => void;
   /**
    * Initiates a grant for the native-manifest shortcut path (no explicit
    * request_uri). Returns `{ request_uri }`, or null if the server is not
    * in native mode (i.e. no nativeManifest configured).
    */
-  initiateNativeGrant(opts: {
+  initiateNativeGrant: (opts: {
     baseUrl: string;
     clientId: string;
     clientName: string;
-  }): Promise<InitiateNativeGrantResult | null>;
+  }) => Promise<InitiateNativeGrantResult | null>;
   /** Returns the current wall-clock time in ms (for `expiresAt` calculation). */
-  now(): number;
+  now: () => number;
   /** Default client_id for the PDPP CLI. */
   pdppCliDefaultClientId: string;
   pdppError: PdppErrorFn;
   /** Resolve the public base URL for the AS from the inbound request. */
-  resolveBaseUrl(req: RouteRequest): string;
+  resolveBaseUrl: (req: RouteRequest) => string;
 }
 
 async function resolveRequestUri(
@@ -245,7 +244,7 @@ async function resolveRequestUri(
 ): Promise<{ requestUri: string; clientId: string | null } | null> {
   const bodyRequestUri = typeof req.body?.request_uri === "string" ? req.body.request_uri : null;
   if (bodyRequestUri) {
-    return { requestUri: bodyRequestUri, clientId };
+    return { clientId, requestUri: bodyRequestUri };
   }
   const clientName =
     typeof req.body?.client_name === "string" && req.body.client_name.trim() ? req.body.client_name.trim() : "PDPP CLI";
@@ -254,7 +253,7 @@ async function resolveRequestUri(
   if (!staged) {
     return null;
   }
-  return { requestUri: staged.request_uri, clientId: effectiveClientId };
+  return { clientId: effectiveClientId, requestUri: staged.request_uri };
 }
 
 export function mountAsAgentConnect(app: AppLike, ctx: MountAsAgentConnectContext): void {
@@ -296,12 +295,12 @@ export function mountAsAgentConnect(app: AppLike, ctx: MountAsAgentConnectContex
       const pollingCode = ctx.generatePollingCode();
 
       const attempt = ctx.agentConnectAttemptStore.create({
+        approvalUrl: ctx.buildApprovalUrl(baseUrl, requestUri),
+        clientId: pendingClientId ?? clientId,
+        expiresAt: now + ctx.agentConnectTtlMs,
         id,
         pollingCode,
         requestUri,
-        clientId: pendingClientId ?? clientId,
-        expiresAt: now + ctx.agentConnectTtlMs,
-        approvalUrl: ctx.buildApprovalUrl(baseUrl, requestUri),
         tokenUrl: ctx.buildTokenUrl(baseUrl, id),
       });
 
@@ -320,7 +319,7 @@ export function mountAsAgentConnect(app: AppLike, ctx: MountAsAgentConnectContex
 
 export interface MountAsAgentConnectTokenContext {
   agentConnectAttemptStore: AgentConnectAttemptStore;
-  handleError(res: unknown, err: unknown): void;
+  handleError: (res: unknown, err: unknown) => void;
   pdppError: PdppErrorFn;
 }
 
@@ -338,10 +337,10 @@ export function mountAsAgentConnectToken(app: AppLike, ctx: MountAsAgentConnectT
       }
       if (attempt.status === "pending") {
         return res.status(202).json({
-          status: "pending",
           error: "authorization_pending",
           error_description: "Owner approval is still pending",
           interval: attempt.interval,
+          status: "pending",
         });
       }
       if (attempt.status !== "approved") {
@@ -352,9 +351,9 @@ export function mountAsAgentConnectToken(app: AppLike, ctx: MountAsAgentConnectT
       ctx.agentConnectAttemptStore.delete(attempt.id);
       return res.json({
         access_token: attempt.token,
-        token_type: "Bearer",
-        grant_id: attempt.grantId,
         grant: attempt.grant,
+        grant_id: attempt.grantId,
+        token_type: "Bearer",
       });
     } catch (err) {
       return ctx.handleError(res, err);

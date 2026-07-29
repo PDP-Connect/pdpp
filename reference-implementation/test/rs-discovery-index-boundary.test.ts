@@ -1,0 +1,48 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
+/**
+ * Import-boundary guards for the `rs.discovery.index` operation.
+ *
+ * Spec: openspec/changes/complete-reference-operation-refactor
+ *
+ * The shared `operations-boundary.test.js` walks every operation module and
+ * asserts the canonical forbidden-import list. This file pins the
+ * operation-specific assertions: no static import of the host
+ * `server/index.js` module or any host wire-shape builder.
+ */
+
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+
+import { assertOperationBoundary } from "./helpers/operation-boundary.ts";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(here, "..", "..");
+
+function read(rel: string) {
+  return readFileSync(path.join(repoRoot, rel), "utf8");
+}
+
+const OP_REL = "reference-implementation/operations/rs-discovery-index/index.ts";
+
+test("rs.discovery.index operation has no host or storage concretes", () => {
+  assertOperationBoundary(read(OP_REL), OP_REL);
+});
+
+test("rs.discovery.index operation does not import server/index.js", () => {
+  const src = read(OP_REL);
+  // biome-ignore lint/performance/useTopLevelRegex: test assertion patterns remain colocated with the assertion they explain.
+  const fromPattern = /\bfrom\s*['"][^'"]*\/server\/index['"]/;
+  assert.equal(fromPattern.test(src), false, "operation must not import the Fastify host module");
+});
+
+test("rs.discovery.index operation does not import server/metadata", () => {
+  const src = read(OP_REL);
+  // biome-ignore lint/performance/useTopLevelRegex: test assertion patterns remain colocated with the assertion they explain.
+  const fromPattern = /\bfrom\s*['"][^'"]*\/server\/metadata['"]/;
+  assert.equal(fromPattern.test(src), false, "operation must not import the host wire-shape builder");
+});

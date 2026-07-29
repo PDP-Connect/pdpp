@@ -22,13 +22,13 @@
 // separate gate per design.md.
 
 import { allowUnboundedReadAcknowledged, referenceQueries, writeTransaction } from "../../lib/db.ts";
-import { getDb } from "../db.js";
+import { getDb } from "../db.ts";
 import {
   getStorageBackendKind,
   isPostgresStorageBackend,
   postgresQuery,
   withPostgresTransaction,
-} from "../postgres-storage.js";
+} from "../postgres-storage.ts";
 
 export interface ConnectorStateScope {
   readonly connectorId: string;
@@ -52,8 +52,8 @@ export interface ConnectorStateProjection {
 }
 
 export interface ConnectorStateStore {
-  getState(scope: ConnectorStateScope, options?: ConnectorStateReadOptions): Promise<ConnectorStateProjection>;
-  putState(scope: ConnectorStateScope, stateByStream: ConnectorStateMap): Promise<ConnectorStateProjection>;
+  getState: (scope: ConnectorStateScope, options?: ConnectorStateReadOptions) => Promise<ConnectorStateProjection>;
+  putState: (scope: ConnectorStateScope, stateByStream: ConnectorStateMap) => Promise<ConnectorStateProjection>;
 }
 
 interface SyncStateRow {
@@ -64,10 +64,10 @@ interface SyncStateRow {
 }
 
 interface PostgresTransactionClient {
-  query(
+  query: (
     sql: string,
     params: readonly unknown[]
-  ): Promise<{ readonly rows: readonly { readonly manifest_generation?: number }[] }>;
+  ) => Promise<{ readonly rows: readonly { readonly manifest_generation?: number }[] }>;
 }
 
 function normalizeAllowedStreams(allowed: Iterable<string> | null | undefined): Set<string> | null {
@@ -81,6 +81,7 @@ function normalizeAllowedStreams(allowed: Iterable<string> | null | undefined): 
 }
 
 function requireConnectorInstanceId(scope: ConnectorStateScope): string {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const connectorInstanceId = scope.connectorInstanceId?.trim();
   if (!connectorInstanceId) {
     throw new Error("connectorInstanceId is required for connector sync state.");
@@ -121,10 +122,10 @@ export function createSqliteConnectorStateStore(): ConnectorStateStore {
     }
 
     return {
-      object: "stream_state",
       connector_id: connectorId,
       connector_instance_id: connectorInstanceId,
       grant_id: grantId,
+      object: "stream_state",
       state,
       updated_at: updatedAt,
     };
@@ -215,10 +216,10 @@ export function createPostgresConnectorStateStore(): ConnectorStateStore {
     }
 
     return {
-      object: "stream_state",
       connector_id: connectorId,
       connector_instance_id: connectorInstanceId,
       grant_id: grantId,
+      object: "stream_state",
       state,
       updated_at: updatedAt,
     };
@@ -239,6 +240,7 @@ export function createPostgresConnectorStateStore(): ConnectorStateStore {
         const generation = Number(current.rows[0]?.manifest_generation ?? 0);
         for (const [stream, cursor] of Object.entries(stateByStream)) {
           if (grantId) {
+            // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
             await client.query(
               `INSERT INTO grant_connector_state(grant_id, connector_id, connector_instance_id, stream, state_json, updated_at, manifest_generation)
              VALUES($1, $2, $3, $4, $5::jsonb, $6, $7)

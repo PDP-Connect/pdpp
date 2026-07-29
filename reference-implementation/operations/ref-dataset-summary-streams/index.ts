@@ -42,17 +42,17 @@
 import type { RefDatasetSummaryProjectionMetadata } from "../ref-dataset-summary/index.ts";
 
 export interface RefDatasetSummaryStreamRow {
+  computed_at: string | null;
   connector_id: string;
-  stream: string;
-  record_count: number;
-  record_json_bytes: number;
-  earliest_ingested_at: string | null;
-  latest_ingested_at: string | null;
-  earliest_record_time: string | null;
-  latest_record_time: string | null;
   consent_time_field: string | null;
   dirty_record_time_bounds: boolean;
-  computed_at: string | null;
+  earliest_ingested_at: string | null;
+  earliest_record_time: string | null;
+  latest_ingested_at: string | null;
+  latest_record_time: string | null;
+  record_count: number;
+  record_json_bytes: number;
+  stream: string;
 }
 
 export interface RefDatasetSummaryStreamsInput {
@@ -65,6 +65,13 @@ export interface RefDatasetSummaryStreamsListInput {
 
 export interface RefDatasetSummaryStreamsDependencies {
   /**
+   * Resolve the same projection-freshness metadata block the dashboard
+   * already consumes from `ref.dataset.summary`. The operation does not
+   * try to derive freshness from row state; the host returns the
+   * authoritative metadata.
+   */
+  getProjectionMetadata: () => Promise<RefDatasetSummaryProjectionMetadata> | RefDatasetSummaryProjectionMetadata;
+  /**
    * Read the per-`(connector_id, stream)` projection rows. The host
    * implementation reads `dataset_summary_stream_projection` directly
    * (SQLite) or the equivalent Postgres retained-size projection. The
@@ -72,64 +79,57 @@ export interface RefDatasetSummaryStreamsDependencies {
    * substrate read and the deterministic sort by
    * `(connector_id, stream)`.
    */
-  listStreams(
-    input: RefDatasetSummaryStreamsListInput,
-  ):
-    | Promise<readonly RefDatasetSummaryStreamRow[]>
-    | readonly RefDatasetSummaryStreamRow[];
-  /**
-   * Resolve the same projection-freshness metadata block the dashboard
-   * already consumes from `ref.dataset.summary`. The operation does not
-   * try to derive freshness from row state; the host returns the
-   * authoritative metadata.
-   */
-  getProjectionMetadata():
-    | Promise<RefDatasetSummaryProjectionMetadata>
-    | RefDatasetSummaryProjectionMetadata;
+  listStreams: (
+    input: RefDatasetSummaryStreamsListInput
+  ) => Promise<readonly RefDatasetSummaryStreamRow[]> | readonly RefDatasetSummaryStreamRow[];
 }
 
 export interface RefDatasetSummaryStreamsEnvelope {
-  object: "dataset_summary_streams";
-  streams: RefDatasetSummaryStreamRow[];
   filters: {
     connector_id: string | null;
   };
+  object: "dataset_summary_streams";
   projection: RefDatasetSummaryProjectionMetadata;
+  streams: RefDatasetSummaryStreamRow[];
 }
 
 function normalizeConnectorIdFilter(raw: unknown): string | null {
-  if (typeof raw !== "string") return null;
+  if (typeof raw !== "string") {
+    return null;
+  }
   const trimmed = raw.trim();
   return trimmed.length > 0 ? trimmed : null;
 }
 
 function coerceTimeString(value: unknown): string | null {
-  if (typeof value !== "string") return null;
+  if (typeof value !== "string") {
+    return null;
+  }
   return value.length > 0 ? value : null;
 }
 
 function coerceNonNegativeNumber(value: unknown): number {
   const n = Number(value);
-  if (!Number.isFinite(n) || n < 0) return 0;
+  if (!Number.isFinite(n) || n < 0) {
+    return 0;
+  }
   return n;
 }
 
 function coerceRow(row: RefDatasetSummaryStreamRow): RefDatasetSummaryStreamRow {
   return {
+    computed_at: coerceTimeString(row.computed_at),
     connector_id: String(row.connector_id),
-    stream: String(row.stream),
+    consent_time_field:
+      typeof row.consent_time_field === "string" && row.consent_time_field.length > 0 ? row.consent_time_field : null,
+    dirty_record_time_bounds: Boolean(row.dirty_record_time_bounds),
+    earliest_ingested_at: coerceTimeString(row.earliest_ingested_at),
+    earliest_record_time: coerceTimeString(row.earliest_record_time),
+    latest_ingested_at: coerceTimeString(row.latest_ingested_at),
+    latest_record_time: coerceTimeString(row.latest_record_time),
     record_count: coerceNonNegativeNumber(row.record_count),
     record_json_bytes: coerceNonNegativeNumber(row.record_json_bytes),
-    earliest_ingested_at: coerceTimeString(row.earliest_ingested_at),
-    latest_ingested_at: coerceTimeString(row.latest_ingested_at),
-    earliest_record_time: coerceTimeString(row.earliest_record_time),
-    latest_record_time: coerceTimeString(row.latest_record_time),
-    consent_time_field:
-      typeof row.consent_time_field === "string" && row.consent_time_field.length > 0
-        ? row.consent_time_field
-        : null,
-    dirty_record_time_bounds: Boolean(row.dirty_record_time_bounds),
-    computed_at: coerceTimeString(row.computed_at),
+    stream: String(row.stream),
   };
 }
 
@@ -144,8 +144,9 @@ function coerceRow(row: RefDatasetSummaryStreamRow): RefDatasetSummaryStreamRow 
  */
 export async function executeRefDatasetSummaryStreams(
   input: RefDatasetSummaryStreamsInput,
-  dependencies: RefDatasetSummaryStreamsDependencies,
+  dependencies: RefDatasetSummaryStreamsDependencies
 ): Promise<RefDatasetSummaryStreamsEnvelope> {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
   const connectorId = normalizeConnectorIdFilter(input?.connector_id);
   const [rows, metadata] = await Promise.all([
     Promise.resolve(dependencies.listStreams({ connectorId })),
@@ -153,11 +154,11 @@ export async function executeRefDatasetSummaryStreams(
   ]);
   const streams = (rows || []).map(coerceRow);
   return {
-    object: "dataset_summary_streams",
-    streams,
     filters: {
       connector_id: connectorId,
     },
+    object: "dataset_summary_streams",
     projection: metadata,
+    streams,
   };
 }

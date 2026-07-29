@@ -25,20 +25,20 @@ export type StatusVocabulary = Record<string, StatusVocabularyEntry>;
 
 // Run/grant lifecycle: event states of transient operations.
 export const RUN_LIFECYCLE_VOCABULARY: StatusVocabulary = {
-  failed: { label: "failed", tone: "danger" },
-  rejected: { label: "rejected", tone: "danger" },
-  denied: { label: "denied", tone: "danger" },
-  revoked: { label: "revoked", tone: "danger" },
-  cancelled: { label: "cancelled", tone: "danger" },
-  succeeded: { label: "succeeded", tone: "success" },
-  issued: { label: "issued", tone: "success" },
-  token_issued: { label: "token issued", tone: "success" },
   approved: { label: "approved", tone: "success" },
-  started: { label: "started", tone: "warning" },
+  cancelled: { label: "cancelled", tone: "danger" },
+  denied: { label: "denied", tone: "danger" },
+  failed: { label: "failed", tone: "danger" },
+  issued: { label: "issued", tone: "success" },
   pending: { label: "pending", tone: "warning" },
+  rejected: { label: "rejected", tone: "danger" },
+  revoked: { label: "revoked", tone: "danger" },
   staged: { label: "staged", tone: "warning" },
-  verification_pending: { label: "verification pending", tone: "warning" },
+  started: { label: "started", tone: "warning" },
+  succeeded: { label: "succeeded", tone: "success" },
   succeeded_with_gaps: { label: "partial", tone: "warning" },
+  token_issued: { label: "token issued", tone: "success" },
+  verification_pending: { label: "verification pending", tone: "warning" },
 };
 
 /**
@@ -51,18 +51,18 @@ export const RUN_LIFECYCLE_VOCABULARY: StatusVocabulary = {
  * terminal event.
  */
 export const GRANT_LIFECYCLE_VOCABULARY: StatusVocabulary = {
-  succeeded: { label: "active", tone: "success" },
-  issued: { label: "active", tone: "success" },
-  token_issued: { label: "active", tone: "success" },
-  approved: { label: "active", tone: "success" },
   active: { label: "active", tone: "success" },
-  revoked: { label: "revoked", tone: "danger" },
-  denied: { label: "denied", tone: "danger" },
-  rejected: { label: "denied", tone: "danger" },
-  failed: { label: "failed", tone: "danger" },
+  approved: { label: "active", tone: "success" },
   cancelled: { label: "cancelled", tone: "danger" },
+  denied: { label: "denied", tone: "danger" },
+  failed: { label: "failed", tone: "danger" },
+  issued: { label: "active", tone: "success" },
   pending: { label: "pending", tone: "warning" },
+  rejected: { label: "denied", tone: "danger" },
+  revoked: { label: "revoked", tone: "danger" },
   staged: { label: "pending", tone: "warning" },
+  succeeded: { label: "active", tone: "success" },
+  token_issued: { label: "active", tone: "success" },
   // An indeterminate grant state reads neutral, never the `active`/success
   // tone. Pinned explicitly so unknown can never be folded into a definite
   // live state (PDPP honesty: unknown reads unknown).
@@ -72,15 +72,15 @@ export const GRANT_LIFECYCLE_VOCABULARY: StatusVocabulary = {
 // Schedule state: the durable refresh-cadence row's posture.
 export const SCHEDULE_STATE_VOCABULARY: StatusVocabulary = {
   active: { label: "active", tone: "success" },
-  paused: { label: "paused", tone: "neutral" },
   not_runnable: { label: "not runnable", tone: "warning" },
+  paused: { label: "paused", tone: "neutral" },
   unscheduled: { label: "unscheduled", tone: "neutral" },
 };
 
 // Change/spec authoring lifecycle: maturity states of durable artifacts.
 export const ARTIFACT_LIFECYCLE_VOCABULARY: StatusVocabulary = {
-  "in-progress": { label: "in progress", tone: "warning" },
   complete: { label: "complete", tone: "success" },
+  "in-progress": { label: "in progress", tone: "warning" },
   unknown: { label: "no tasks", tone: "neutral" },
 };
 
@@ -100,11 +100,11 @@ export const ARTIFACT_LIFECYCLE_VOCABULARY: StatusVocabulary = {
  *   neutral  → healthy (no data), idle, unknown
  */
 export const CONNECTION_HEALTH_VOCABULARY: StatusVocabulary = {
-  healthy: { label: "healthy", tone: "success" },
-  needs_attention: { label: "needs attention", tone: "warning" },
-  cooling_off: { label: "cooling off", tone: "warning" },
   blocked: { label: "blocked", tone: "danger" },
+  cooling_off: { label: "cooling off", tone: "warning" },
   degraded: { label: "degraded", tone: "warning" },
+  healthy: { label: "healthy", tone: "success" },
   idle: { label: "idle", tone: "neutral" },
+  needs_attention: { label: "needs attention", tone: "warning" },
   unknown: { label: "unknown", tone: "neutral" },
 };

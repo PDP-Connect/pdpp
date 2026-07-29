@@ -37,7 +37,7 @@ const PAGE_FILE = `${HERE}page.tsx`;
 const POLLER_IS_CLIENT_RE = /^"use client";/;
 const POLLER_TAKES_RUNNING_PROP_RE = /export function RecordsPagePoller\(\{ running \}: \{ running: boolean \}\)/;
 const POLLER_IMPORTS_CADENCE_RE = /import \{ recordsPollIntervalMs \} from "\.\/records-poll-interval\.ts"/;
-const POLLER_ARMS_INTERVAL_RE = /setInterval\(\(\) => router\.refresh\(\), recordsPollIntervalMs\(running\)\)/;
+const POLLER_ARMS_INTERVAL_RE = /setInterval\([\s\S]*recordsPollIntervalMs\(running\)\)/;
 const POLLER_CLEANS_UP_RE = /return \(\) => clearInterval\(id\)/;
 const POLLER_DEPS_ON_RUNNING_RE = /\}, \[running, router\]\)/;
 // The defect being fixed: an `enabled` gate that returned early and disabled

@@ -7,11 +7,11 @@ import { buildPeekReadUrl } from "@pdpp/operator-ui/explore/peek-read-url";
 
 test("buildPeekReadUrl matches the canonical record-read URL shape", () => {
   const url = buildPeekReadUrl({
-    rsBaseUrl: "http://rs.test",
     connectorId: "gmail",
-    stream: "messages",
-    recordId: "rec-1",
     connectorInstanceId: "conn-abc",
+    recordId: "rec-1",
+    rsBaseUrl: "http://rs.test",
+    stream: "messages",
   });
   const parsed = new URL(url);
   assert.equal(parsed.pathname, "/v1/streams/messages/records/rec-1");
@@ -21,11 +21,11 @@ test("buildPeekReadUrl matches the canonical record-read URL shape", () => {
 
 test("buildPeekReadUrl encodes path-unsafe stream and record ids", () => {
   const url = buildPeekReadUrl({
-    rsBaseUrl: "http://rs.test",
     connectorId: "github",
-    stream: "issues/comments",
-    recordId: "owner/repo#42",
     connectorInstanceId: null,
+    recordId: "owner/repo#42",
+    rsBaseUrl: "http://rs.test",
+    stream: "issues/comments",
   });
   const parsed = new URL(url);
   assert.equal(parsed.pathname, "/v1/streams/issues%2Fcomments/records/owner%2Frepo%2342");

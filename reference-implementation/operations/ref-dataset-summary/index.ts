@@ -54,30 +54,30 @@ export interface RefDatasetSummaryCounts {
    * connector implementation type.
    */
   connector_count: number;
+  /** Live record count (excludes soft-deleted rows on the native side). */
+  record_count: number;
   /**
    * Distinct `(connector_id, stream)` observations in the live records
    * substrate. Not a manifest-declared count; it reflects what was actually
    * ingested.
    */
   stream_count: number;
-  /** Live record count (excludes soft-deleted rows on the native side). */
-  record_count: number;
 }
 
 export interface RefDatasetSummaryRetainedBytes {
+  /** Sum of `blobs` table bytes (`0` on the sandbox side). */
+  blob_bytes: number;
+  /**
+   * Sum of `record_changes` JSON bytes (historical versions retained for
+   * change tracking on the native side; `0` on the sandbox side).
+   */
+  record_changes_json_bytes: number;
   /**
    * Sum of live record JSON bytes. Adapter-native operator diagnostic; not a
    * PDPP-stable metric. Preserve this label until a future
    * `_ref/dataset/summary` contract change relabels or namespaces it.
    */
   record_json_bytes: number;
-  /**
-   * Sum of `record_changes` JSON bytes (historical versions retained for
-   * change tracking on the native side; `0` on the sandbox side).
-   */
-  record_changes_json_bytes: number;
-  /** Sum of `blobs` table bytes (`0` on the sandbox side). */
-  blob_bytes: number;
 }
 
 export interface RefDatasetSummaryTimeBounds {
@@ -94,42 +94,33 @@ export interface RefDatasetSummaryConnectorCandidate {
 
 export interface RefDatasetSummaryDependencies {
   /**
+   * Aggregate counts (connectors, streams, records) over the live records
+   * substrate. The operation calls this once per execution.
+   */
+  getCounts: () => Promise<RefDatasetSummaryCounts> | RefDatasetSummaryCounts;
+  /**
+   * Substrate ingest-time bounds (`emitted_at`). The operation calls this
+   * only when `record_count > 0`; adapters MAY assume that gate.
+   */
+  getIngestedTimeBounds: () => Promise<RefDatasetSummaryTimeBounds> | RefDatasetSummaryTimeBounds;
+  /**
    * Optional bounded read-model dependency. When present and it returns a
    * projection, the operation MUST assemble the response from that projection
    * and MUST NOT call the raw aggregate dependencies below.
    */
-  getProjection?():
-    | Promise<RefDatasetSummaryProjection | null>
-    | RefDatasetSummaryProjection
-    | null;
-  /**
-   * Aggregate counts (connectors, streams, records) over the live records
-   * substrate. The operation calls this once per execution.
-   */
-  getCounts(): Promise<RefDatasetSummaryCounts> | RefDatasetSummaryCounts;
-  /**
-   * Three byte sums kept separately labeled so the operator can disambiguate
-   * the substrate's storage footprint. The operation calls this once per
-   * execution; the operation derives `total_retained_bytes` from the result.
-   */
-  getRetainedBytes():
-    | Promise<RefDatasetSummaryRetainedBytes>
-    | RefDatasetSummaryRetainedBytes;
+  getProjection?: () => Promise<RefDatasetSummaryProjection | null> | RefDatasetSummaryProjection | null;
   /**
    * Real-world record-time bounds across streams the manifest declares as
    * temporally meaningful (`consent_time_field`). The operation calls this
    * only when `record_count > 0`; adapters MAY assume that gate.
    */
-  getRecordTimeBounds():
-    | Promise<RefDatasetSummaryTimeBounds>
-    | RefDatasetSummaryTimeBounds;
+  getRecordTimeBounds: () => Promise<RefDatasetSummaryTimeBounds> | RefDatasetSummaryTimeBounds;
   /**
-   * Substrate ingest-time bounds (`emitted_at`). The operation calls this
-   * only when `record_count > 0`; adapters MAY assume that gate.
+   * Three byte sums kept separately labeled so the operator can disambiguate
+   * the substrate's storage footprint. The operation calls this once per
+   * execution; the operation derives `total_retained_bytes` from the result.
    */
-  getIngestedTimeBounds():
-    | Promise<RefDatasetSummaryTimeBounds>
-    | RefDatasetSummaryTimeBounds;
+  getRetainedBytes: () => Promise<RefDatasetSummaryRetainedBytes> | RefDatasetSummaryRetainedBytes;
   /**
    * Candidate connectors for the top-N slot. Adapters MAY return more
    * candidates than the operation's emit limit (the operation owns the
@@ -137,65 +128,60 @@ export interface RefDatasetSummaryDependencies {
    * sorts by `record_count` descending with a `connector_id` ascending
    * tiebreak so both adapters cannot drift.
    */
-  listTopConnectorCandidates():
+  listTopConnectorCandidates: () =>
     | Promise<RefDatasetSummaryConnectorCandidate[]>
     | RefDatasetSummaryConnectorCandidate[];
 }
 
 export interface RefDatasetSummaryConnectorEntry {
-  object: "dataset_connector_summary";
   connector_id: string;
+  object: "dataset_connector_summary";
   record_count: number;
 }
 
 export interface RefDatasetSummaryEnvelope {
-  object: "dataset_summary";
+  blob_bytes: number;
   connector_count: number;
-  stream_count: number;
+  earliest_ingested_at: string | null;
+  earliest_record_time: string | null;
+  latest_ingested_at: string | null;
+  latest_record_time: string | null;
+  object: "dataset_summary";
+  projection: RefDatasetSummaryProjectionMetadata;
+  record_changes_json_bytes: number;
   record_count: number;
   record_json_bytes: number;
-  record_changes_json_bytes: number;
-  blob_bytes: number;
-  total_retained_bytes: number;
-  earliest_record_time: string | null;
-  latest_record_time: string | null;
-  earliest_ingested_at: string | null;
-  latest_ingested_at: string | null;
+  stream_count: number;
   top_connectors: RefDatasetSummaryConnectorEntry[];
-  projection: RefDatasetSummaryProjectionMetadata;
+  total_retained_bytes: number;
 }
 
-export type RefDatasetSummaryProjectionState =
-  | "fresh"
-  | "refreshing"
-  | "stale"
-  | "rebuilding"
-  | "failed";
+export type RefDatasetSummaryProjectionState = "fresh" | "refreshing" | "stale" | "rebuilding" | "failed";
 
 export type RefDatasetSummaryRebuildStatus = "idle" | "running" | "failed";
 
 export interface RefDatasetSummaryProjectionMetadata {
   computed_at: string | null;
-  state: RefDatasetSummaryProjectionState;
-  stale_since: string | null;
-  rebuild_status: RefDatasetSummaryRebuildStatus;
   last_error: string | null;
+  rebuild_status: RefDatasetSummaryRebuildStatus;
   source_high_watermark?: string | null;
+  stale_since: string | null;
+  state: RefDatasetSummaryProjectionState;
 }
 
 export interface RefDatasetSummaryProjection {
   counts: RefDatasetSummaryCounts;
-  retained_bytes: RefDatasetSummaryRetainedBytes;
-  record_time_bounds: RefDatasetSummaryTimeBounds;
   ingested_time_bounds: RefDatasetSummaryTimeBounds;
-  top_connector_candidates: RefDatasetSummaryConnectorCandidate[];
   metadata: RefDatasetSummaryProjectionMetadata;
+  record_time_bounds: RefDatasetSummaryTimeBounds;
+  retained_bytes: RefDatasetSummaryRetainedBytes;
+  top_connector_candidates: RefDatasetSummaryConnectorCandidate[];
 }
 
 const TOP_CONNECTOR_LIMIT = 3;
 
 function sortAndLimitTopConnectors(
-  candidates: RefDatasetSummaryConnectorCandidate[],
+  candidates: RefDatasetSummaryConnectorCandidate[]
 ): RefDatasetSummaryConnectorEntry[] {
   const sorted = [...candidates].sort((a, b) => {
     if (b.record_count !== a.record_count) {
@@ -204,8 +190,8 @@ function sortAndLimitTopConnectors(
     return a.connector_id.localeCompare(b.connector_id);
   });
   return sorted.slice(0, TOP_CONNECTOR_LIMIT).map((entry) => ({
-    object: "dataset_connector_summary" as const,
     connector_id: entry.connector_id,
+    object: "dataset_connector_summary" as const,
     record_count: entry.record_count,
   }));
 }
@@ -219,19 +205,17 @@ function sortAndLimitTopConnectors(
  * host write the response.
  */
 export async function executeRefDatasetSummary(
-  dependencies: RefDatasetSummaryDependencies,
+  dependencies: RefDatasetSummaryDependencies
 ): Promise<RefDatasetSummaryEnvelope> {
-  const projection = dependencies.getProjection
-    ? await dependencies.getProjection()
-    : null;
+  const projection = dependencies.getProjection ? await dependencies.getProjection() : null;
   if (projection) {
     return envelopeFromParts({
-      counts: projection.counts,
       bytes: projection.retained_bytes,
-      recordTimeBounds: projection.record_time_bounds,
-      ingestedTimeBounds: projection.ingested_time_bounds,
       candidates: projection.top_connector_candidates,
+      counts: projection.counts,
+      ingestedTimeBounds: projection.ingested_time_bounds,
       metadata: projection.metadata,
+      recordTimeBounds: projection.record_time_bounds,
     });
   }
 
@@ -241,28 +225,24 @@ export async function executeRefDatasetSummary(
 
   const recordCount = counts.record_count;
   const recordTimeBounds: RefDatasetSummaryTimeBounds =
-    recordCount > 0
-      ? await dependencies.getRecordTimeBounds()
-      : { earliest: null, latest: null };
+    recordCount > 0 ? await dependencies.getRecordTimeBounds() : { earliest: null, latest: null };
   const ingestedTimeBounds: RefDatasetSummaryTimeBounds =
-    recordCount > 0
-      ? await dependencies.getIngestedTimeBounds()
-      : { earliest: null, latest: null };
+    recordCount > 0 ? await dependencies.getIngestedTimeBounds() : { earliest: null, latest: null };
 
   return envelopeFromParts({
-    counts,
     bytes,
-    recordTimeBounds,
-    ingestedTimeBounds,
     candidates,
+    counts,
+    ingestedTimeBounds,
     metadata: {
       computed_at: null,
-      state: "fresh",
-      stale_since: null,
-      rebuild_status: "idle",
       last_error: null,
+      rebuild_status: "idle",
       source_high_watermark: null,
+      stale_since: null,
+      state: "fresh",
     },
+    recordTimeBounds,
   });
 }
 
@@ -281,25 +261,22 @@ function envelopeFromParts({
   candidates: RefDatasetSummaryConnectorCandidate[];
   metadata: RefDatasetSummaryProjectionMetadata;
 }): RefDatasetSummaryEnvelope {
-  const totalRetainedBytes =
-    bytes.record_json_bytes +
-    bytes.record_changes_json_bytes +
-    bytes.blob_bytes;
+  const totalRetainedBytes = bytes.record_json_bytes + bytes.record_changes_json_bytes + bytes.blob_bytes;
 
   return {
-    object: "dataset_summary",
+    blob_bytes: bytes.blob_bytes,
     connector_count: counts.connector_count,
-    stream_count: counts.stream_count,
+    earliest_ingested_at: ingestedTimeBounds.earliest,
+    earliest_record_time: recordTimeBounds.earliest,
+    latest_ingested_at: ingestedTimeBounds.latest,
+    latest_record_time: recordTimeBounds.latest,
+    object: "dataset_summary",
+    projection: metadata,
+    record_changes_json_bytes: bytes.record_changes_json_bytes,
     record_count: counts.record_count,
     record_json_bytes: bytes.record_json_bytes,
-    record_changes_json_bytes: bytes.record_changes_json_bytes,
-    blob_bytes: bytes.blob_bytes,
-    total_retained_bytes: totalRetainedBytes,
-    earliest_record_time: recordTimeBounds.earliest,
-    latest_record_time: recordTimeBounds.latest,
-    earliest_ingested_at: ingestedTimeBounds.earliest,
-    latest_ingested_at: ingestedTimeBounds.latest,
+    stream_count: counts.stream_count,
     top_connectors: sortAndLimitTopConnectors(candidates),
-    projection: metadata,
+    total_retained_bytes: totalRetainedBytes,
   };
 }

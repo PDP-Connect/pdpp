@@ -22,8 +22,8 @@
  */
 
 export interface StreamDetailSourceDescriptor {
-  kind: "connector" | "provider_native";
   id: string;
+  kind: "connector" | "provider_native";
   [extra: string]: unknown;
 }
 
@@ -34,8 +34,8 @@ export interface StreamDetailSourceDescriptor {
  * differ today; envelope shape is a host concern.
  */
 export interface StreamMetadataEnvelope {
-  object: "stream_metadata";
   name: string;
+  object: "stream_metadata";
   [extra: string]: unknown;
 }
 
@@ -50,27 +50,27 @@ export type StreamDetailActor =
 
 export interface StreamDetailDependencies {
   /**
+   * Metadata-assembly dependency. Called only after visibility and grant
+   * checks pass. Hosts compute freshness, field/expand capabilities, and any
+   * other envelope fields here. The operation does not introspect the result.
+   */
+  buildStreamMetadata: (streamName: string) => Promise<StreamMetadataEnvelope>;
+  /**
    * Source descriptor for instrumentation events (`source` field on
    * `disclosure.served` / `query.received`). Hosts compute this once.
    */
-  getSourceDescriptor(): StreamDetailSourceDescriptor;
+  getSourceDescriptor: () => StreamDetailSourceDescriptor;
   /**
    * Capability-shaped manifest visibility dependency. Returns true when the
    * stream is declared in the actor's manifest scope (owner-wide for owner
    * actors; grant-resolved for client actors).
    */
-  hasManifestStream(streamName: string): Promise<boolean>;
+  hasManifestStream: (streamName: string) => Promise<boolean>;
   /**
    * Grant-visibility dependency. Only consulted for client actors. Owner
    * actors bypass this check entirely (manifest visibility is sufficient).
    */
-  isStreamInGrant(streamName: string): boolean;
-  /**
-   * Metadata-assembly dependency. Called only after visibility and grant
-   * checks pass. Hosts compute freshness, field/expand capabilities, and any
-   * other envelope fields here. The operation does not introspect the result.
-   */
-  buildStreamMetadata(streamName: string): Promise<StreamMetadataEnvelope>;
+  isStreamInGrant: (streamName: string) => boolean;
 }
 
 export interface StreamDetailInput {
@@ -82,10 +82,10 @@ export interface StreamDetailInput {
 export interface StreamDetailOutput {
   /** Host-shaped `stream_metadata` envelope returned by the dependency. */
   metadata: StreamMetadataEnvelope;
-  /** Echoed for instrumentation parity with the native route. */
-  sourceDescriptor: StreamDetailSourceDescriptor;
   /** `query.received`-shaped data block. Hosts pass this through verbatim. */
   queryData: { query_shape: "stream_metadata" };
+  /** Echoed for instrumentation parity with the native route. */
+  sourceDescriptor: StreamDetailSourceDescriptor;
 }
 
 /**
@@ -117,32 +117,24 @@ export class StreamDetailVisibilityError extends Error {
  */
 export async function executeStreamDetail(
   input: StreamDetailInput,
-  dependencies: StreamDetailDependencies,
+  dependencies: StreamDetailDependencies
 ): Promise<StreamDetailOutput> {
   const sourceDescriptor = dependencies.getSourceDescriptor();
 
   const manifestVisible = await dependencies.hasManifestStream(input.streamName);
   if (!manifestVisible) {
-    throw new StreamDetailVisibilityError(
-      "not_found",
-      `Stream '${input.streamName}' not found`,
-    );
+    throw new StreamDetailVisibilityError("not_found", `Stream '${input.streamName}' not found`);
   }
 
-  if (input.actor.kind === "client") {
-    if (!dependencies.isStreamInGrant(input.streamName)) {
-      throw new StreamDetailVisibilityError(
-        "grant_stream_not_allowed",
-        `Stream '${input.streamName}' not in grant`,
-      );
-    }
+  if (input.actor.kind === "client" && !dependencies.isStreamInGrant(input.streamName)) {
+    throw new StreamDetailVisibilityError("grant_stream_not_allowed", `Stream '${input.streamName}' not in grant`);
   }
 
   const metadata = await dependencies.buildStreamMetadata(input.streamName);
 
   return {
     metadata,
-    sourceDescriptor,
     queryData: { query_shape: "stream_metadata" },
+    sourceDescriptor,
   };
 }

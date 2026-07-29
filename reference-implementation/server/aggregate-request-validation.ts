@@ -3,8 +3,8 @@
 
 import type { AggregateGranularity } from "./aggregate-time-buckets.ts";
 import { resolveAggregateTimeZone, SUPPORTED_AGGREGATE_GRANULARITIES } from "./aggregate-time-buckets.ts";
-import { validateConnectionAlias as validateConnectionAliasShared } from "./connection-id-request.js";
-import { invalidQueryError } from "./record-expand-helpers.js";
+import { validateConnectionAlias as validateConnectionAliasShared } from "./connection-id-request.ts";
+import { invalidQueryError } from "./record-expand-helpers.ts";
 import { type FieldSchema, getFieldSchema, nonNullSchemaTypes } from "./schema-coercion.ts";
 
 interface StreamGrantShape {
@@ -65,6 +65,7 @@ function isScalarAggregateSchema(fieldSchema: FieldSchema | null | undefined): b
   if (types.size !== 1) {
     return false;
   }
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const only = [...types][0];
   return only !== undefined && AGGREGATE_SCALAR_SCHEMA_TYPES.has(only);
 }
@@ -101,14 +102,18 @@ function normalizeAggregateMetric(value: unknown): string {
   return metric;
 }
 
+function isNullish(value: unknown): value is null | undefined {
+  return value === null || value === undefined;
+}
+
 function normalizeAggregateLimit(value: unknown, grouped: boolean): number | null {
   if (!grouped) {
-    if (value != null) {
+    if (!isNullish(value)) {
       throw invalidQueryError("limit is only supported with group_by or group_by_time");
     }
     return null;
   }
-  if (value == null || value === "") {
+  if (isNullish(value) || value === "") {
     return DEFAULT_AGGREGATE_GROUP_LIMIT;
   }
   if (Array.isArray(value) || (typeof value === "object" && value !== null)) {
@@ -302,7 +307,7 @@ function validateGroupByTime(
 }
 
 function toOptionalString(value: unknown): string | null {
-  return value == null || value === "" ? null : String(value).trim();
+  return value === null || value === "" ? null : String(value).trim();
 }
 
 function parseAggregateRequestDimensions(requestParams: AggregateRequestParams): {
@@ -314,9 +319,9 @@ function parseAggregateRequestDimensions(requestParams: AggregateRequestParams):
 } {
   return {
     field: toOptionalString(requestParams.field),
+    granularityRaw: toOptionalString(requestParams.granularity),
     groupBy: toOptionalString(requestParams.group_by),
     groupByTime: toOptionalString(requestParams.group_by_time),
-    granularityRaw: toOptionalString(requestParams.granularity),
     timeZoneRaw: toOptionalString(requestParams.time_zone),
   };
 }
@@ -361,5 +366,5 @@ export function normalizeAggregateRequest(
     validateGroupByTime(groupByTime, metric, streamGrant, manifestStream);
   }
 
-  return { metric, field, groupBy, groupByTime, granularity, timeZone, limit };
+  return { field, granularity, groupBy, groupByTime, limit, metric, timeZone };
 }

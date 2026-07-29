@@ -23,5 +23,5 @@ export function connectorInstanceIdForConnection(summary: RefConnectorSummary): 
 }
 
 export function sourceLabelForConnection(summary: RefConnectorSummary): string {
-  return summary.display_name?.trim() || summary.connector_display_name?.trim() || summary.connection_id;
+  return summary.display_name.trim() || summary.connector_display_name?.trim() || summary.connection_id;
 }

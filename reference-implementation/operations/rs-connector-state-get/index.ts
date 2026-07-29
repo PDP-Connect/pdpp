@@ -30,10 +30,10 @@
  */
 
 export interface RsConnectorStateGetGrantScope {
-  readonly grantId: string;
   readonly grantedStreams: ReadonlySet<string>;
-  readonly traceId?: string | null;
+  readonly grantId: string;
   readonly scenarioId?: string;
+  readonly traceId?: string | null;
   readonly [extra: string]: unknown;
 }
 
@@ -45,40 +45,38 @@ export interface RsConnectorStateGetState {
 
 export interface RsConnectorStateGetDependencies {
   /**
-   * Resolve and validate the connector's manifest. The host throws
-   * a typed error (`code: 'not_found'`) when the connector is not
-   * registered.
+   * Read the persisted sync state for the connector, scoped to the
+   * grant's allowed streams when present.
    */
-  resolveRegisteredConnectorManifest(connectorId: string): Promise<unknown> | unknown;
-  /**
-   * Resolve the grant scope when `grantId` is provided. Returns
-   * `null`-valued result is not allowed; the host throws on
-   * unknown / non-scoped / non-continuous grant.
-   */
-  resolveGrantScope(
+  getSyncState: (
     connectorId: string,
-    grantId: string,
-  ): Promise<RsConnectorStateGetGrantScope> | RsConnectorStateGetGrantScope;
+    args: {
+      grantId: string | null;
+      allowedStreams: ReadonlySet<string> | null;
+    }
+  ) => Promise<RsConnectorStateGetState> | RsConnectorStateGetState;
   /**
    * Notification hook: invoked after grant scope is resolved (or
    * skipped) and before any storage IO, so the host can refresh
    * trace id state and emit `state.requested` on the correlated
    * trace.
    */
-  onGrantResolved(
-    grantScope: RsConnectorStateGetGrantScope | null,
-  ): Promise<void> | void;
+  onGrantResolved: (grantScope: RsConnectorStateGetGrantScope | null) => Promise<void> | void;
   /**
-   * Read the persisted sync state for the connector, scoped to the
-   * grant's allowed streams when present.
+   * Resolve the grant scope when `grantId` is provided. Returns
+   * `null`-valued result is not allowed; the host throws on
+   * unknown / non-scoped / non-continuous grant.
    */
-  getSyncState(
+  resolveGrantScope: (
     connectorId: string,
-    args: {
-      grantId: string | null;
-      allowedStreams: ReadonlySet<string> | null;
-    },
-  ): Promise<RsConnectorStateGetState> | RsConnectorStateGetState;
+    grantId: string
+  ) => Promise<RsConnectorStateGetGrantScope> | RsConnectorStateGetGrantScope;
+  /**
+   * Resolve and validate the connector's manifest. The host throws
+   * a typed error (`code: 'not_found'`) when the connector is not
+   * registered.
+   */
+  resolveRegisteredConnectorManifest: (connectorId: string) => Promise<unknown> | unknown;
 }
 
 export interface RsConnectorStateGetInput {
@@ -87,8 +85,8 @@ export interface RsConnectorStateGetInput {
 }
 
 export interface RsConnectorStateGetOutput {
-  readonly state: RsConnectorStateGetState;
   readonly grantScope: RsConnectorStateGetGrantScope | null;
+  readonly state: RsConnectorStateGetState;
 }
 
 /**
@@ -96,7 +94,7 @@ export interface RsConnectorStateGetOutput {
  */
 export async function executeRsConnectorStateGet(
   input: RsConnectorStateGetInput,
-  dependencies: RsConnectorStateGetDependencies,
+  dependencies: RsConnectorStateGetDependencies
 ): Promise<RsConnectorStateGetOutput> {
   await dependencies.resolveRegisteredConnectorManifest(input.connectorId);
 
@@ -107,9 +105,9 @@ export async function executeRsConnectorStateGet(
   await dependencies.onGrantResolved(grantScope);
 
   const state = await dependencies.getSyncState(input.connectorId, {
-    grantId: input.grantId,
     allowedStreams: grantScope?.grantedStreams ?? null,
+    grantId: input.grantId,
   });
 
-  return { state, grantScope };
+  return { grantScope, state };
 }

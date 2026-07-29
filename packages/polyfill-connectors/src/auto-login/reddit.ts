@@ -122,7 +122,7 @@ async function locatorIsVisible(locator: Locator): Promise<boolean> {
 }
 
 async function clickRedditLoginSubmit(page: Page): Promise<boolean> {
-  const getByRole = (page as Pick<Page, "getByRole">).getByRole;
+  const { getByRole } = page as Pick<Page, "getByRole">;
   if (typeof getByRole === "function") {
     const semantic = getByRole.call(page, "button", { name: SUBMIT_BUTTON_NAME_RE }).first();
     if (await locatorIsVisible(semantic)) {
@@ -231,7 +231,7 @@ export async function ensureRedditSession({
 
   // Poll up to 90s — Reddit may redirect through interstitials before the
   // session cookie is written.
-  for (let attempt = 0; attempt < 18; attempt++) {
+  for (let attempt = 0; attempt < 18; attempt += 1) {
     if ((await hasSessionCookie(context)) && (await isSessionLive(page))) {
       return;
     }

@@ -30,9 +30,7 @@
           "required": true,
           "secret": true,
           "autocomplete": "username",
-          "env": [
-            "USAA_USERNAME"
-          ]
+          "env": ["USAA_USERNAME"]
         },
         {
           "name": "password",
@@ -41,17 +39,13 @@
           "required": true,
           "secret": true,
           "autocomplete": "current-password",
-          "env": [
-            "USAA_PASSWORD"
-          ]
+          "env": ["USAA_PASSWORD"]
         }
       ]
     }
   },
   "capabilities": {
-    "human_interaction": [
-      "manual_action"
-    ],
+    "human_interaction": ["manual_action"],
     "refresh_policy": {
       "recommended_mode": "manual",
       "minimum_interval_seconds": 7200,
@@ -83,29 +77,17 @@
             "type": "string"
           },
           "name": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "type": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "last_four": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "status": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "fetched_at": {
             "type": "string",
@@ -113,13 +95,9 @@
             "x_pdpp_role": "event-time"
           }
         },
-        "required": [
-          "id"
-        ]
+        "required": ["id"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "selection": {
         "fields": true,
         "resources": true
@@ -127,11 +105,7 @@
       "incremental": false,
       "query": {
         "search": {
-          "lexical_fields": [
-            "name",
-            "type",
-            "status"
-          ]
+          "lexical_fields": ["name", "type", "status"]
         },
         "range_filters": {}
       },
@@ -161,28 +135,16 @@
             "x_pdpp_role": "event-time"
           },
           "balance_cents": {
-            "type": [
-              "integer",
-              "null"
-            ],
+            "type": ["integer", "null"],
             "x_pdpp_role": "amount"
           },
           "available_balance_cents": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           }
         },
-        "required": [
-          "id",
-          "account_id",
-          "observed_on"
-        ]
+        "required": ["id", "account_id", "observed_on"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "observed_on",
       "consent_time_field": "observed_on",
       "selection": {
@@ -201,30 +163,13 @@
       "query": {
         "search": {},
         "range_filters": {
-          "observed_on": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "balance_cents": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "available_balance_cents": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "observed_on": ["gte", "gt", "lte", "lt"],
+          "balance_cents": ["gte", "gt", "lte", "lt"],
+          "available_balance_cents": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "observed_on"
-          ]
+          "group_by_time": ["observed_on"]
         }
       },
       "coverage_strategy": "singleton_presence",
@@ -248,10 +193,7 @@
             "type": "string"
           },
           "account_name": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "actor"
           },
           "date": {
@@ -266,35 +208,20 @@
             "type": "string"
           },
           "description": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "original_description": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "category": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "check_number": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "balance_after_cents": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "source": {
             "type": "string"
@@ -304,17 +231,9 @@
             "format": "date-time"
           }
         },
-        "required": [
-          "id",
-          "account_id",
-          "date",
-          "amount",
-          "currency"
-        ]
+        "required": ["id", "account_id", "date", "amount", "currency"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "date",
       "consent_time_field": "date",
       "selection": {
@@ -356,54 +275,20 @@
             "category",
             "source"
           ],
-          "semantic_fields": [
-            "description",
-            "original_description"
-          ]
+          "semantic_fields": ["description", "original_description"]
         },
         "range_filters": {
-          "date": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "amount": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "balance_after_cents": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "date": ["gte", "gt", "lte", "lt"],
+          "amount": ["gte", "gt", "lte", "lt"],
+          "balance_after_cents": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "sum": [
-            "amount",
-            "balance_after_cents"
-          ],
-          "min": [
-            "date",
-            "amount",
-            "balance_after_cents"
-          ],
-          "max": [
-            "date",
-            "amount",
-            "balance_after_cents"
-          ],
-          "group_by": [
-            "currency",
-            "category"
-          ],
-          "group_by_time": [
-            "date"
-          ]
+          "sum": ["amount", "balance_after_cents"],
+          "min": ["date", "amount", "balance_after_cents"],
+          "max": ["date", "amount", "balance_after_cents"],
+          "group_by": ["currency", "category"],
+          "group_by_time": ["date"]
         }
       },
       "coverage_strategy": "parent_detail_accounting",
@@ -424,10 +309,7 @@
             "type": "string"
           },
           "account_id": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "description": "FK to accounts.id. Resolved by matching the document row's account column (last-four first, then account name) back to the accounts stream. Null when neither match succeeds."
           },
           "title": {
@@ -435,51 +317,30 @@
             "x_pdpp_role": "primary-title"
           },
           "date_delivered": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date"
           },
           "account_reference": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "document_url": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "description": "file:// URI for the stored PDF on disk. Populated only after blob hydration; null on index-only scrapes."
           },
           "pdf_path": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "description": "Absolute filesystem path of the downloaded PDF under ~/.pdpp/usaa-statements/. Null until hydrated."
           },
           "pdf_sha256": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "description": "SHA-256 of the downloaded PDF bytes (raw blob content-address, not the content fingerprint — re-encrypted per download, so it churns on no-op re-fetches). Populated only after blob hydration; null on index-only scrapes."
           },
           "pdf_text_sha256": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "description": "Positive content fingerprint: SHA-256 of the statement's extracted PDF text after deterministic normalization (NFC, whitespace collapse, trim). Stable across raw-byte churn so a re-download with unchanged content is provably a no-op. Null when text extraction failed or returned empty text."
           },
           "pdf_page_count": {
-            "type": [
-              "integer",
-              "null"
-            ],
+            "type": ["integer", "null"],
             "description": "Integer page count from the PDF structure. A structural content invariant alongside pdf_text_sha256. Null when extraction failed."
           },
           "fetched_at": {
@@ -488,14 +349,9 @@
             "x_pdpp_role": "event-time"
           }
         },
-        "required": [
-          "id",
-          "title"
-        ]
+        "required": ["id", "title"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "date_delivered",
       "consent_time_field": "date_delivered",
       "selection": {
@@ -513,27 +369,15 @@
       ],
       "query": {
         "search": {
-          "lexical_fields": [
-            "title",
-            "account_reference"
-          ],
-          "semantic_fields": [
-            "title"
-          ]
+          "lexical_fields": ["title", "account_reference"],
+          "semantic_fields": ["title"]
         },
         "range_filters": {
-          "date_delivered": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "date_delivered": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "date_delivered"
-          ]
+          "group_by_time": ["date_delivered"]
         }
       },
       "coverage_strategy": "parent_detail_accounting",
@@ -554,30 +398,18 @@
             "type": "string"
           },
           "date_received": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "format": "date"
           },
           "status": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "subject": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
           },
           "preview": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "fetched_at": {
             "type": "string",
@@ -585,13 +417,9 @@
             "x_pdpp_role": "event-time"
           }
         },
-        "required": [
-          "id"
-        ]
+        "required": ["id"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "date_received",
       "consent_time_field": "date_received",
       "selection": {
@@ -601,29 +429,15 @@
       "incremental": true,
       "query": {
         "search": {
-          "lexical_fields": [
-            "subject",
-            "preview",
-            "status"
-          ],
-          "semantic_fields": [
-            "subject",
-            "preview"
-          ]
+          "lexical_fields": ["subject", "preview", "status"],
+          "semantic_fields": ["subject", "preview"]
         },
         "range_filters": {
-          "date_received": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "date_received": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "date_received"
-          ]
+          "group_by_time": ["date_received"]
         }
       },
       "coverage_strategy": "checkpoint_window",
@@ -644,40 +458,22 @@
             "type": "string"
           },
           "account_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "account_nickname": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "credit_limit_cents": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "annual_percent_rate": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "cash_advance_apr": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "card_holders": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "fetched_at": {
             "type": "string",
@@ -685,13 +481,9 @@
             "x_pdpp_role": "event-time"
           }
         },
-        "required": [
-          "id"
-        ]
+        "required": ["id"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "selection": {
         "fields": true,
         "resources": true
@@ -707,17 +499,10 @@
       ],
       "query": {
         "search": {
-          "lexical_fields": [
-            "account_nickname"
-          ]
+          "lexical_fields": ["account_nickname"]
         },
         "range_filters": {
-          "credit_limit_cents": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "credit_limit_cents": ["gte", "gt", "lte", "lt"]
         }
       },
       "coverage_strategy": "checkpoint_window",
@@ -741,10 +526,7 @@
             "type": "string"
           },
           "account_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "observed_on": {
             "type": "string",
@@ -752,47 +534,26 @@
             "x_pdpp_role": "event-time"
           },
           "current_balance_cents": {
-            "type": [
-              "integer",
-              "null"
-            ],
+            "type": ["integer", "null"],
             "x_pdpp_role": "amount"
           },
           "available_credit_cents": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "cash_rewards_cents": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": ["integer", "null"]
           },
           "billing_status": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "x_pdpp_role": "secondary"
           },
           "minimum_payment_met": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": ["boolean", "null"]
           }
         },
-        "required": [
-          "id",
-          "card_id",
-          "observed_on"
-        ]
+        "required": ["id", "card_id", "observed_on"]
       },
-      "primary_key": [
-        "id"
-      ],
+      "primary_key": ["id"],
       "cursor_field": "observed_on",
       "consent_time_field": "observed_on",
       "selection": {
@@ -816,41 +577,17 @@
       ],
       "query": {
         "search": {
-          "lexical_fields": [
-            "billing_status"
-          ]
+          "lexical_fields": ["billing_status"]
         },
         "range_filters": {
-          "observed_on": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "current_balance_cents": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "available_credit_cents": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ],
-          "cash_rewards_cents": [
-            "gte",
-            "gt",
-            "lte",
-            "lt"
-          ]
+          "observed_on": ["gte", "gt", "lte", "lt"],
+          "current_balance_cents": ["gte", "gt", "lte", "lt"],
+          "available_credit_cents": ["gte", "gt", "lte", "lt"],
+          "cash_rewards_cents": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
-          "group_by_time": [
-            "observed_on"
-          ]
+          "group_by_time": ["observed_on"]
         }
       },
       "coverage_strategy": "singleton_presence",

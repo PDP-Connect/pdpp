@@ -36,57 +36,57 @@ export type DeclaredFieldTypes = Record<string, string>;
 // A small curated set of common keys; everything else is prettified from
 // snake_case. Kept data-driven so leaf views can extend it trivially.
 const FIELD_LABELS: Record<string, string> = {
-  employer: "Employer",
-  period_start: "Period start",
-  period_end: "Period end",
-  gross_pay: "Gross pay",
-  net_pay: "Net pay",
-  taxes_withheld: "Taxes withheld",
-  benefits_detail: "Benefits",
-  bank_routing: "Deposited to",
-  date: "Date",
-  amount: "Amount",
-  merchant: "Merchant",
-  category: "Category",
   account_ref: "Account",
-  memo: "Memo",
-  track: "Track",
+  amount: "Amount",
   artist: "Artist",
-  played_at: "Played",
+  bank_routing: "Deposited to",
+  benefits_detail: "Benefits",
+  bytes: "Size",
+  category: "Category",
+  chars: "Length",
+  charset: "Encoding",
+  commits: "Commits",
+  content: "Message",
+  content_type: "Type",
+  current_activity: "Activity",
+  date: "Date",
   device: "Device",
-  playlist_ref: "Playlist",
+  doc_type: "Document",
+  employer: "Employer",
+  filename: "File",
   from: "From",
-  subject: "Subject",
-  received: "Received",
-  size: "Size",
+  gross_pay: "Gross pay",
   label: "Label",
-  participants: "Participants",
+  memo: "Memo",
+  merchant: "Merchant",
+  message_ref: "Message",
   messages: "Messages",
+  model: "Model",
+  net_pay: "Net pay",
+  open_prs: "Open PRs",
+  participants: "Participants",
+  period_end: "Period end",
+  period_start: "Period start",
+  played_at: "Played",
+  playlist_ref: "Playlist",
+  prompt: "Prompt",
+  prs_opened: "PRs opened",
+  pushed: "Last push",
+  received: "Received",
+  repo: "Repository",
+  reviews: "Reviews",
   role: "Role",
   session: "Session",
-  chars: "Length",
-  content: "Message",
-  model: "Model",
-  charset: "Encoding",
-  bytes: "Size",
-  message_ref: "Message",
-  text: "Body",
-  repo: "Repository",
-  visibility: "Visibility",
-  pushed: "Last push",
-  open_prs: "Open PRs",
-  commits: "Commits",
-  prs_opened: "PRs opened",
-  reviews: "Reviews",
-  title: "Title",
+  size: "Size",
   started: "Started",
-  prompt: "Prompt",
-  turns: "Turns",
-  filename: "File",
-  content_type: "Type",
-  doc_type: "Document",
+  subject: "Subject",
   tax_year: "Tax year",
-  current_activity: "Activity",
+  taxes_withheld: "Taxes withheld",
+  text: "Body",
+  title: "Title",
+  track: "Track",
+  turns: "Turns",
+  visibility: "Visibility",
 };
 
 const UNDERSCORE_RE = /_/g;
@@ -110,25 +110,25 @@ export function labelFor(key: string): string {
 // ─── Stream noun ──────────────────────────────────────────────────
 
 const STREAM_NOUN: Record<string, string> = {
-  messages: "message",
-  message_bodies: "message body",
-  threads: "thread",
   attachments: "attachment",
-  sessions: "session",
-  function_calls: "tool call",
-  conversations: "conversation",
-  repositories: "repository",
-  user_stats: "stats snapshot",
-  pay_statements: "pay statement",
-  transactions: "transaction",
-  listening_history: "play",
-  tax_docs: "document",
-  employment: "record",
   balances: "balance",
-  statements: "statement",
+  conversations: "conversation",
   current_activity: "transaction",
+  employment: "record",
+  function_calls: "tool call",
+  listening_history: "play",
+  message_bodies: "message body",
+  messages: "message",
+  pay_statements: "pay statement",
+  repositories: "repository",
+  sessions: "session",
   skills: "skill",
+  statements: "statement",
+  tax_docs: "document",
+  threads: "thread",
+  transactions: "transaction",
   user: "record",
+  user_stats: "stats snapshot",
 };
 
 /** Singular human noun for a stream, e.g. `pay_statements` → "pay statement". */
@@ -235,7 +235,7 @@ export function displayTitle(record: {
 }): DisplayTitle {
   const named = record.display_name?.trim();
   if (named) {
-    return { primary: named, kicker: null };
+    return { kicker: null, primary: named };
   }
   const f = record.data;
   const noun = nounFor(record.stream);
@@ -244,13 +244,16 @@ export function displayTitle(record: {
     hint = `from ${f.from}`;
   } else if (typeof f.role === "string") {
     hint = `${f.role} turn`;
-  } else if (f.bytes != null || typeof f.charset === "string") {
-    const kb = f.bytes == null ? "" : `${Math.round(Number(String(f.bytes).replace(BYTES_DIGITS_RE, "")) / 1024)} KB`;
+  } else if ((f.bytes !== null && f.bytes !== undefined) || typeof f.charset === "string") {
+    const kb =
+      f.bytes === null || f.bytes === undefined
+        ? ""
+        : `${Math.round(Number(String(f.bytes).replace(BYTES_DIGITS_RE, "")) / 1024)} KB`;
     hint = [typeof f.charset === "string" ? f.charset : "", kb].filter(Boolean).join(" · ");
   } else if (typeof f.date === "string") {
     hint = f.date;
   }
-  return { primary: hint || noun, kicker: `untitled ${noun}` };
+  return { kicker: `untitled ${noun}`, primary: hint || noun };
 }
 
 // ─── Per-field render resolution ──────────────────────────────────
@@ -287,14 +290,14 @@ function stringifyValue(value: unknown): string {
 /** Resolve a single record field value for display. */
 export function resolveFieldValue(value: unknown, declaredType: string | undefined): ResolvedFieldValue {
   if (value === null || value === undefined) {
-    return { text: value === null ? "null" : "—", empty: true, money: false, negative: false };
+    return { empty: true, money: false, negative: false, text: value === null ? "null" : "—" };
   }
   const amount = formatDeclaredAmount(value, declaredType);
   if (amount) {
-    return { text: amount.text, empty: false, money: true, negative: !amount.positive };
+    return { empty: false, money: true, negative: !amount.positive, text: amount.text };
   }
   if (typeof value === "string" && value.length === 0) {
-    return { text: "empty", empty: true, money: false, negative: false };
+    return { empty: true, money: false, negative: false, text: "empty" };
   }
-  return { text: stringifyValue(value), empty: false, money: false, negative: false };
+  return { empty: false, money: false, negative: false, text: stringifyValue(value) };
 }

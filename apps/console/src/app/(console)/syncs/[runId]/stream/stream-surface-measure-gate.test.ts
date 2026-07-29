@@ -32,7 +32,7 @@ test("pure gate: a fresh state defers the first request for any key (nothing att
 });
 
 test("pure gate: an attach for a DIFFERENT key never drains a pending request queued for another key", () => {
-  const state = requestSurfaceMeasure(createSurfaceMeasureGateState(), "neko-backend-ready", SESSION_B).state;
+  const { state } = requestSurfaceMeasure(createSurfaceMeasureGateState(), "neko-backend-ready", SESSION_B);
 
   const wrongKeyAttach = drainSurfaceMeasureOnAttach(state, { tag: "node" }, SESSION_A);
   assert.equal(wrongKeyAttach.measureSource, null);
@@ -44,8 +44,8 @@ test("pure gate: an attach for a DIFFERENT key never drains a pending request qu
 
 test("pure gate: a superseding request for a new key discards the prior one fail-closed", () => {
   let state = createSurfaceMeasureGateState();
-  state = requestSurfaceMeasure(state, "neko-backend-ready", SESSION_A).state;
-  state = requestSurfaceMeasure(state, "neko-backend-ready", SESSION_B).state;
+  ({ state } = requestSurfaceMeasure(state, "neko-backend-ready", SESSION_A));
+  ({ state } = requestSurfaceMeasure(state, "neko-backend-ready", SESSION_B));
 
   const staleAttach = drainSurfaceMeasureOnAttach(state, { tag: "node" }, SESSION_A);
   assert.equal(staleAttach.measureSource, null);
@@ -91,18 +91,18 @@ function harness() {
     }
   });
   return {
-    calls,
-    coordinator,
     attach(node: FakeBox, surfaceKey: string) {
       currentNode = node;
       coordinator.attachSurface(node, surfaceKey);
     },
+    backendReady(surfaceKey: string) {
+      coordinator.requestBackendReady(surfaceKey);
+    },
+    calls,
+    coordinator,
     detach(surfaceKey: string) {
       currentNode = null;
       coordinator.attachSurface(null, surfaceKey);
-    },
-    backendReady(surfaceKey: string) {
-      coordinator.requestBackendReady(surfaceKey);
     },
   };
 }
@@ -113,8 +113,8 @@ test("production-shaped: desktop attach never posts the outgoing CDP placeholder
   // measurements must happen before B's own node attaches. B's node
   // (1400x1005) attaches: exactly one measurement, of B's box.
   const h = harness();
-  const cdpPlaceholder: FakeBox = { width: 448, height: 916 };
-  const desktopStage: FakeBox = { width: 1400, height: 1005 };
+  const cdpPlaceholder: FakeBox = { height: 916, width: 448 };
+  const desktopStage: FakeBox = { height: 1005, width: 1400 };
 
   h.attach(cdpPlaceholder, "cdp");
   assert.deepEqual(h.calls, [], "attaching the initial CDP surface must not itself trigger a measurement");
@@ -136,7 +136,7 @@ test("production-shaped: desktop attach never posts the outgoing CDP placeholder
 
 test("production-shaped: same-session backend_ready replay measures immediately, exactly once, with nothing left pending", () => {
   const h = harness();
-  const desktopStage: FakeBox = { width: 1400, height: 1005 };
+  const desktopStage: FakeBox = { height: 1005, width: 1400 };
 
   h.attach(desktopStage, SESSION_B);
   h.calls.length = 0; // clear the initial-attach noise (nothing was pending, so this was a no-op measurement count anyway)
@@ -161,8 +161,8 @@ test("production-shaped: same-session backend_ready replay measures immediately,
 
 test("production-shaped: wrong-key attach does not drain a pending cross-session request", () => {
   const h = harness();
-  const cdpPlaceholder: FakeBox = { width: 448, height: 916 };
-  const desktopStage: FakeBox = { width: 1400, height: 1005 };
+  const cdpPlaceholder: FakeBox = { height: 916, width: 448 };
+  const desktopStage: FakeBox = { height: 1005, width: 1400 };
 
   h.attach(cdpPlaceholder, "cdp");
   h.backendReady(SESSION_B);
@@ -186,9 +186,9 @@ test("production-shaped: wrong-key attach does not drain a pending cross-session
 
 test("production-shaped: a superseding backend_ready for a new session discards the prior one fail-closed", () => {
   const h = harness();
-  const cdpPlaceholder: FakeBox = { width: 448, height: 916 };
-  const staleDesktopA: FakeBox = { width: 1280, height: 900 };
-  const desktopB: FakeBox = { width: 1400, height: 1005 };
+  const cdpPlaceholder: FakeBox = { height: 916, width: 448 };
+  const staleDesktopA: FakeBox = { height: 900, width: 1280 };
+  const desktopB: FakeBox = { height: 1005, width: 1400 };
 
   h.attach(cdpPlaceholder, "cdp");
   h.backendReady(SESSION_A);
@@ -209,8 +209,8 @@ test("production-shaped: a superseding backend_ready for a new session discards 
 
 test("production-shaped: same-session mobile rotation (same key) measures the rotated box immediately, not deferred", () => {
   const h = harness();
-  const phonePortrait: FakeBox = { width: 390, height: 844 };
-  const phoneLandscape: FakeBox = { width: 844, height: 390 };
+  const phonePortrait: FakeBox = { height: 844, width: 390 };
+  const phoneLandscape: FakeBox = { height: 390, width: 844 };
 
   h.attach(phonePortrait, SESSION_A);
   h.calls.length = 0;

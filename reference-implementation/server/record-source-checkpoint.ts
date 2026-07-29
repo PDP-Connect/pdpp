@@ -29,12 +29,12 @@
  *       "Exact reset-safe record checkpoint"
  */
 
-import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.js";
 import { allowUnboundedReadAcknowledged, getOne, referenceQueries } from "../lib/db.ts";
+import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.ts";
 
 export interface RecordSourceCheckpointStream {
-  readonly stream: string;
   readonly max_version: string;
+  readonly stream: string;
 }
 
 export interface RecordSourceCheckpoint {
@@ -44,6 +44,7 @@ export interface RecordSourceCheckpoint {
 
 /** Strips leading zeros from an unsigned base-10 digit string; "0" for all-zero input. */
 function stripLeadingZeros(digits: string): string {
+  // biome-ignore lint/performance/useTopLevelRegex: This parser-local expression intentionally avoids shared regular-expression state.
   const stripped = digits.replace(/^0+(?=\d)/, "");
   return stripped.length > 0 ? stripped : "0";
 }
@@ -73,8 +74,8 @@ export function normalizeRecordSourceCheckpoint(input: {
 }): RecordSourceCheckpoint {
   const streams = input.streams
     .map((entry) => ({
-      stream: entry.stream,
       max_version: stripLeadingZeros(entry.maxVersion),
+      stream: entry.stream,
     }))
     .sort((a, b) => compareUtf8Bytes(a.stream, b.stream));
   return {
@@ -83,47 +84,60 @@ export function normalizeRecordSourceCheckpoint(input: {
   };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isCheckpointStream(value: unknown): value is RecordSourceCheckpointStream {
+  return isRecord(value) && typeof value.stream === "string" && typeof value.max_version === "string";
+}
+
+function isDenseCheckpointStreams(value: unknown): value is readonly RecordSourceCheckpointStream[] {
+  return Array.isArray(value) && Array.from(value).every(isCheckpointStream);
+}
+
+function isRecordSourceCheckpointShape(value: unknown): value is RecordSourceCheckpoint {
+  return isRecord(value) && typeof value.reset_generation === "string" && isDenseCheckpointStreams(value.streams);
+}
+
 /**
  * Deep-equal comparison of two normalized checkpoints by exact string
- * value — never numeric coercion. Two checkpoints are equal only when the
- * generation string matches exactly and every stream entry matches in the
- * same sorted position.
+ * value — never numeric coercion. Persisted checkpoints cross an untrusted
+ * JSON boundary, so malformed objects, null members, and sparse arrays are
+ * mismatches rather than exceptions or accidental equality.
  */
-export function recordSourceCheckpointsEqual(
-  a: RecordSourceCheckpoint,
-  b: RecordSourceCheckpoint
-): boolean {
-  if (a.reset_generation !== b.reset_generation) {
+export function recordSourceCheckpointsEqual(a: unknown, b: unknown): boolean {
+  if (!(isRecordSourceCheckpointShape(a) && isRecordSourceCheckpointShape(b))) {
     return false;
   }
-  if (a.streams.length !== b.streams.length) {
+  if (a.reset_generation !== b.reset_generation || a.streams.length !== b.streams.length) {
     return false;
   }
-  for (let i = 0; i < a.streams.length; i += 1) {
-    const streamA = a.streams[i];
-    const streamB = b.streams[i];
-    if (!streamA || !streamB || streamA.stream !== streamB.stream || streamA.max_version !== streamB.max_version) {
-      return false;
-    }
-  }
-  return true;
+  return a.streams.every((streamA, index) => {
+    const streamB = b.streams[index];
+    return streamB !== undefined && streamA.stream === streamB.stream && streamA.max_version === streamB.max_version;
+  });
 }
 
 interface Row {
   [key: string]: unknown;
 }
 
+function resetGenerationFromRow(row: Row | null | undefined): string {
+  return String(row?.reset_generation ?? "0");
+}
+
 function readSqliteCheckpoint(connectorInstanceId: string): RecordSourceCheckpoint {
   const generationRow = getOne<Row>(referenceQueries.recordsDeleteGetRecordResetGeneration, [connectorInstanceId]);
-  const resetGeneration = generationRow?.reset_generation != null ? String(generationRow.reset_generation) : "0";
+  const resetGeneration = resetGenerationFromRow(generationRow);
   const streamRows = allowUnboundedReadAcknowledged<Row>(referenceQueries.recordsIngestListVersionCountersByInstance, [
     connectorInstanceId,
   ]);
   return normalizeRecordSourceCheckpoint({
     resetGeneration,
     streams: streamRows.map((row) => ({
-      stream: String(row.stream),
       maxVersion: String(row.max_version),
+      stream: String(row.stream),
     })),
   });
 }
@@ -133,8 +147,8 @@ async function readPostgresCheckpoint(connectorInstanceId: string): Promise<Reco
     "SELECT record_reset_generation::text AS reset_generation FROM connector_instances WHERE connector_instance_id = $1",
     [connectorInstanceId]
   );
-  const resetGeneration =
-    generationResult.rows[0]?.reset_generation != null ? String(generationResult.rows[0].reset_generation) : "0";
+  const [generationRow] = generationResult.rows;
+  const resetGeneration = resetGenerationFromRow(generationRow);
   const streamsResult = await postgresQuery(
     "SELECT stream, max_version::text AS max_version FROM version_counter WHERE connector_instance_id = $1",
     [connectorInstanceId]
@@ -142,8 +156,8 @@ async function readPostgresCheckpoint(connectorInstanceId: string): Promise<Reco
   return normalizeRecordSourceCheckpoint({
     resetGeneration,
     streams: (streamsResult.rows as Row[]).map((row) => ({
-      stream: String(row.stream),
       maxVersion: String(row.max_version),
+      stream: String(row.stream),
     })),
   });
 }
@@ -154,6 +168,7 @@ async function readPostgresCheckpoint(connectorInstanceId: string): Promise<Reco
  * columns as decimal text so the composite never loses precision through
  * JS `Number`.
  */
+// biome-ignore lint/suspicious/useAwait: The async signature is part of this caller-facing contract.
 export async function readRecordSourceCheckpoint(connectorInstanceId: string): Promise<RecordSourceCheckpoint> {
   if (isPostgresStorageBackend()) {
     return readPostgresCheckpoint(connectorInstanceId);

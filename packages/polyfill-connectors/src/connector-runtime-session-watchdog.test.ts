@@ -148,7 +148,7 @@ test("watchdog does NOT trip while establishment keeps checkpointing past the de
   // Five phases, each 80ms apart (< deadline). Total 400ms >> deadline, but no
   // single gap exceeds it, so the watchdog must not trip.
   const work = async (): Promise<void> => {
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 5; i += 1) {
       await watchdog.checkpoint(`phase-${i}`);
       clock.advance(80);
       await tick();

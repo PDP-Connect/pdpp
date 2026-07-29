@@ -23,7 +23,7 @@ const NEXT_LABEL: Record<Density, string> = {
   compact: "Switch to comfortable density",
 };
 
-export function DensityToggle({ className }: { className?: string }) {
+function DensityToggle({ className }: { className?: string }) {
   const { density, setDensity } = useDensity();
   const nextDensity = NEXT_DENSITY[density];
 

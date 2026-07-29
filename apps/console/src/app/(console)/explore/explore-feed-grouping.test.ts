@@ -96,7 +96,9 @@ test("groupFeedWithBursts: single entry produces one day group with one single",
   assert.equal(groups.length, 1);
   assert.equal(groups[0]?.day, TODAY);
   assert.equal(groups[0]?.label, "Today");
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(groups[0]?.singles.length, 1);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(groups[0]?.bursts.length, 0);
 });
 
@@ -118,7 +120,9 @@ test("groupFeedWithBursts: exactly BURST_THRESHOLD-1 entries from one partition 
   );
   const groups = groupFeedWithBursts(entries, NOW_MS);
   assert.equal(groups.length, 1);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(groups[0]?.singles.length, n);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(groups[0]?.bursts.length, 0);
 });
 
@@ -129,8 +133,11 @@ test("groupFeedWithBursts: exactly BURST_THRESHOLD entries from one partition =>
   );
   const groups = groupFeedWithBursts(entries, NOW_MS);
   assert.equal(groups.length, 1);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(groups[0]?.singles.length, 0);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(groups[0]?.bursts.length, 1);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(groups[0]?.bursts[0]?.entries.length, n);
   // Burst group starts collapsed
   assert.equal(groups[0]?.bursts[0]?.expanded, false);
@@ -140,9 +147,9 @@ test("groupFeedWithBursts: burst key uses connectionId when present", () => {
   const n = BURST_THRESHOLD;
   const entries = Array.from({ length: n }, (_, i) =>
     entry({
+      connectionId: "cin_abc",
       displayAt: `${TODAY}T10:00:${String(i).padStart(2, "0")}Z`,
       recordId: `r${i}`,
-      connectionId: "cin_abc",
       stream: "messages",
     })
   );
@@ -154,10 +161,10 @@ test("groupFeedWithBursts: burst key falls back to connectorId when connectionId
   const n = BURST_THRESHOLD;
   const entries = Array.from({ length: n }, (_, i) =>
     entry({
-      displayAt: `${TODAY}T10:00:${String(i).padStart(2, "0")}Z`,
-      recordId: `r${i}`,
       connectionId: null,
       connectorId: "whatsapp",
+      displayAt: `${TODAY}T10:00:${String(i).padStart(2, "0")}Z`,
+      recordId: `r${i}`,
       stream: "chats",
     })
   );
@@ -170,21 +177,23 @@ test("groupFeedWithBursts: burst key falls back to connectorId when connectionId
 test("groupFeedWithBursts: burst partition is separated from singles in same day", () => {
   const burstEntries = Array.from({ length: BURST_THRESHOLD }, (_, i) =>
     entry({
+      connectionId: "cin_wa",
       displayAt: `${TODAY}T10:00:${String(i).padStart(2, "0")}Z`,
       recordId: `burst_${i}`,
-      connectionId: "cin_wa",
       stream: "messages",
     })
   );
   // Two singles from a different (connection, stream) partition
   const singleEntries = [
-    entry({ displayAt: `${TODAY}T11:00:00Z`, recordId: "s1", connectionId: "cin_gmail", stream: "emails" }),
-    entry({ displayAt: `${TODAY}T11:01:00Z`, recordId: "s2", connectionId: "cin_gmail", stream: "emails" }),
+    entry({ connectionId: "cin_gmail", displayAt: `${TODAY}T11:00:00Z`, recordId: "s1", stream: "emails" }),
+    entry({ connectionId: "cin_gmail", displayAt: `${TODAY}T11:01:00Z`, recordId: "s2", stream: "emails" }),
   ];
   const groups = groupFeedWithBursts([...burstEntries, ...singleEntries], NOW_MS);
   assert.equal(groups.length, 1);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(groups[0]?.bursts.length, 1);
   // Singles are the gmail entries (2 < BURST_THRESHOLD)
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(groups[0]?.singles.length, 2);
 });
 
@@ -192,29 +201,31 @@ test("groupFeedWithBursts: two burst partitions in same day produce two burst gr
   const mkBurst = (stream: string, connId: string) =>
     Array.from({ length: BURST_THRESHOLD }, (_, i) =>
       entry({
+        connectionId: connId,
         displayAt: `${TODAY}T10:00:${String(i).padStart(2, "0")}Z`,
         recordId: `${stream}_${i}`,
-        connectionId: connId,
         stream,
       })
     );
   const groups = groupFeedWithBursts([...mkBurst("messages", "cin_wa"), ...mkBurst("calls", "cin_wa")], NOW_MS);
   assert.equal(groups.length, 1);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(groups[0]?.bursts.length, 2);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(groups[0]?.singles.length, 0);
 });
 
 test("groupFeedWithBursts: bursts in one day, singles in another day", () => {
   const burstEntries = Array.from({ length: BURST_THRESHOLD }, (_, i) =>
     entry({
+      connectionId: "cin_wa",
       displayAt: `${TODAY}T10:00:${String(i).padStart(2, "0")}Z`,
       recordId: `b${i}`,
-      connectionId: "cin_wa",
       stream: "messages",
     })
   );
   const singles = [
-    entry({ displayAt: `${YESTERDAY}T09:00:00Z`, recordId: "y1", connectionId: "cin_gmail", stream: "emails" }),
+    entry({ connectionId: "cin_gmail", displayAt: `${YESTERDAY}T09:00:00Z`, recordId: "y1", stream: "emails" }),
   ];
   const groups = groupFeedWithBursts([...burstEntries, ...singles], NOW_MS);
   assert.equal(groups.length, 2);
@@ -256,11 +267,11 @@ test("isFutureDay is true strictly after today, false for today/past/empty", () 
 test("partitionFeedByTime splits future records into Upcoming, leaving today/past in the main feed", () => {
   const feed = [
     // Future (YNAB-shaped budget months), arriving newest-first (farthest-out first)
-    entry({ displayAt: "2026-08-01T00:00:00Z", recordId: "aug", connectorId: "ynab", stream: "months" }),
-    entry({ displayAt: "2026-07-01T00:00:00Z", recordId: "jul", connectorId: "ynab", stream: "months" }),
+    entry({ connectorId: "ynab", displayAt: "2026-08-01T00:00:00Z", recordId: "aug", stream: "months" }),
+    entry({ connectorId: "ynab", displayAt: "2026-07-01T00:00:00Z", recordId: "jul", stream: "months" }),
     // Today + past
-    entry({ displayAt: `${TODAY}T14:00:00Z`, recordId: "t1", connectorId: "claude-code" }),
-    entry({ displayAt: `${YESTERDAY}T09:00:00Z`, recordId: "y1", connectorId: "gmail", stream: "emails" }),
+    entry({ connectorId: "claude-code", displayAt: `${TODAY}T14:00:00Z`, recordId: "t1" }),
+    entry({ connectorId: "gmail", displayAt: `${YESTERDAY}T09:00:00Z`, recordId: "y1", stream: "emails" }),
   ];
   const { upcoming, upcomingCount, past } = partitionFeedByTime(feed, NOW_MS);
 
@@ -311,18 +322,21 @@ test("groupFeedDaysNoBursts: a same-partition day over the burst threshold stays
   // (it is already a collapsed disclosure — a second "expand" inside it is the clunk).
   const day = `${TODAY}T10:00:00Z`;
   const feed = Array.from({ length: BURST_THRESHOLD + 54 }, (_, i) =>
-    entry({ displayAt: day, recordId: `m${i}`, stream: "month_categories", connectionId: "cin_ynab" })
+    entry({ connectionId: "cin_ynab", displayAt: day, recordId: `m${i}`, stream: "month_categories" })
   );
 
   // Control: the normal grouping DOES burst (proving the input is burst-eligible).
   const bursted = groupFeedWithBursts(feed, NOW_MS);
   assert.equal(bursted.length, 1, "one day group");
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(bursted[0]?.bursts.length, 1, "control: normal grouping collapses into a burst");
 
   // The Upcoming variant: zero bursts, every record a flat single.
   const flat = groupFeedDaysNoBursts(feed, NOW_MS);
   assert.equal(flat.length, 1, "one day group");
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(flat[0]?.bursts.length, 0, "Upcoming body must NOT re-burst (no nested expand)");
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(flat[0]?.singles.length, feed.length, "every loaded upcoming record is a flat single");
 });
 
@@ -334,7 +348,9 @@ test("groupFeedDaysNoBursts: still buckets by day, preserving order", () => {
   ];
   const days = groupFeedDaysNoBursts(feed, NOW_MS);
   assert.equal(days.length, 2, "two day buckets (today, tomorrow)");
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(days[0]?.singles.length, 2);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.equal(days[1]?.singles.length, 1);
   assert.ok(
     days.every((d) => d.bursts.length === 0),
@@ -384,7 +400,7 @@ test("8.2: a day-group that crosses BURST_THRESHOLD still yields visible content
   // load-more scenario that previously produced a zero-row collapsed burst.
   const day = `${TODAY}T10:00:00Z`;
   const feed = Array.from({ length: BURST_THRESHOLD + 86 }, (_, i) =>
-    entry({ displayAt: day, recordId: `m${i}`, stream: "messages", connectionId: "cin_wa" })
+    entry({ connectionId: "cin_wa", displayAt: day, recordId: `m${i}`, stream: "messages" })
   );
   const days = groupFeedWithBursts(feed, NOW_MS);
   assert.equal(days.length, 1, "one day group");
@@ -393,6 +409,7 @@ test("8.2: a day-group that crosses BURST_THRESHOLD still yields visible content
   // The render contract: the DEFAULT (collapsed) view renders `burst.preview`. If
   // preview were empty this would be a header-only count wall (the live bug).
   assert.ok(
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
     (burst?.preview.length ?? 0) > 0,
     "default-rendered burst contains visible content rows, not a header-only/zero-row state"
   );
@@ -403,18 +420,22 @@ test("8.3: preview-reachability — the burst count label number == burst.entrie
   const day = `${TODAY}T10:00:00Z`;
   const loaded = BURST_THRESHOLD + 33;
   const feed = Array.from({ length: loaded }, (_, i) =>
-    entry({ displayAt: day, recordId: `m${i}`, stream: "messages", connectionId: "cin_wa" })
+    entry({ connectionId: "cin_wa", displayAt: day, recordId: `m${i}`, stream: "messages" })
   );
   const burst = groupFeedWithBursts(feed, NOW_MS)[0]?.bursts[0];
   assert.ok(burst, "burst exists");
   // The renderer labels the burst `loaded.toLocaleString()` where loaded =
   // burst.entries.length, and "Show all M" reveals exactly burst.entries. So the
   // displayed count == the reachable set; it can never imply a larger hidden total.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   assert.equal(burst?.entries.length, loaded, "count label source == loaded entries");
   // hiddenCount the toggle exposes = loaded - preview; expanding reaches all entries.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   const hiddenCount = (burst?.entries.length ?? 0) - (burst?.preview.length ?? 0);
   assert.equal(
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
     (burst?.preview.length ?? 0) + hiddenCount,
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
     burst?.entries.length,
     "preview + hidden == entries: every counted record is reachable, no phantom total"
   );
@@ -435,9 +456,9 @@ test("8.3: preview-reachability — the burst count label number == burst.entrie
 function burstAt(opts: { stream: string; connectionId: string; isos: string[] }): ExplorerFeedEntry[] {
   return opts.isos.map((iso, i) =>
     entry({
+      connectionId: opts.connectionId,
       displayAt: iso,
       recordId: `${opts.stream}-${i}`,
-      connectionId: opts.connectionId,
       stream: opts.stream,
     })
   );
@@ -447,7 +468,7 @@ function burstAt(opts: { stream: string; connectionId: string; isos: string[] })
  *  burst's latest member matters for ordering. */
 function burstNewestAt(stream: string, connectionId: string, newestIso: string): ExplorerFeedEntry[] {
   // 10 members at the same instant => latestAt = newestIso, crosses BURST_THRESHOLD.
-  return burstAt({ stream, connectionId, isos: Array.from({ length: BURST_THRESHOLD }, () => newestIso) });
+  return burstAt({ connectionId, isos: Array.from({ length: BURST_THRESHOLD }, () => newestIso), stream });
 }
 
 /** The `latestAt` of each unit, in render order. */
@@ -469,6 +490,7 @@ test("burst order: three same-day bursts (newest members 23m/19m/31m ago) sort N
   ];
   const groups = groupFeedWithBursts(feed, NOW_MS);
   assert.equal(groups.length, 1, "one day group");
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   const units = groups[0]?.units ?? [];
   assert.equal(units.length, 3, "three burst units");
   assert.ok(
@@ -497,11 +519,12 @@ test("burst latestAt = NEWEST member even when burst members arrive shuffled (no
     "2026-06-19T14:33:00Z",
     "2026-06-19T14:40:00Z",
   ];
-  const feed = burstAt({ stream: "messages", connectionId: "cin_shuffled", isos });
+  const feed = burstAt({ connectionId: "cin_shuffled", isos, stream: "messages" });
   const groups = groupFeedWithBursts(feed, NOW_MS);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   const units = groups[0]?.units ?? [];
   assert.equal(units.length, 1, "one burst unit");
-  const unit = units[0];
+  const [unit] = units;
   assert.ok(unit && unit.kind === "burst", "the unit is a burst");
   // latestAt is the NEWEST member, not the first array member.
   assert.equal(unit.latestAt, "2026-06-19T14:41:00Z", "latestAt = newest member, not entries[0] of input");
@@ -520,11 +543,12 @@ test("burst order: a single interleaves with bursts by time (single at 25m betwe
   const feed = [
     // Feed order deliberately not display order: the single arrives first, the older
     // burst before the newer one — the fix must still produce strict DESC.
-    entry({ displayAt: ago25, recordId: "single-25", connectionId: "cin_gmail", stream: "emails" }),
+    entry({ connectionId: "cin_gmail", displayAt: ago25, recordId: "single-25", stream: "emails" }),
     ...burstNewestAt("cc_messages", "cin_cc", ago31), // older burst
     ...burstNewestAt("codex_messages", "cin_codex", ago23), // newer burst
   ];
   const groups = groupFeedWithBursts(feed, NOW_MS);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   const units = groups[0]?.units ?? [];
   assert.equal(units.length, 3, "two bursts + one single");
   assert.deepEqual(
@@ -548,7 +572,7 @@ test("burst order: members within a burst stay newest-first (descending input pr
     "2026-06-19T14:33:00Z",
     "2026-06-19T14:32:00Z",
   ];
-  const feed = burstAt({ stream: "messages", connectionId: "cin_wa", isos: isosDesc });
+  const feed = burstAt({ connectionId: "cin_wa", isos: isosDesc, stream: "messages" });
   const burst = groupFeedWithBursts(feed, NOW_MS)[0]?.units[0];
   assert.ok(burst, "the over-threshold partition produced a unit");
   if (burst.kind !== "burst") {
@@ -568,15 +592,17 @@ test("burst order: equal-latestAt units keep deterministic ORIGINAL feed order (
   // order they first appeared in the feed: burstX, single, burstY.
   const feed = [
     ...burstNewestAt("x", "cin_x", sameIso),
-    entry({ displayAt: sameIso, recordId: "tie-single", connectionId: "cin_s", stream: "single" }),
+    entry({ connectionId: "cin_s", displayAt: sameIso, recordId: "tie-single", stream: "single" }),
     ...burstNewestAt("y", "cin_y", sameIso),
   ];
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   const units = groupFeedWithBursts(feed, NOW_MS)[0]?.units ?? [];
   assert.equal(units.length, 3);
   // All same time → original order preserved exactly.
   const shape = units.map((u) => (u.kind === "burst" ? u.burst.key : `single:${u.entry.recordId}`));
   assert.deepEqual(shape, ["cin_x::x", "single:tie-single", "cin_y::y"], "equal-time units keep first-seen order");
   // Run twice: deterministic (no Math.random / Date.now in the sort).
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   const again = groupFeedWithBursts(feed, NOW_MS)[0]?.units ?? [];
   assert.deepEqual(
     again.map((u) => (u.kind === "burst" ? u.burst.key : `single:${u.entry.recordId}`)),
@@ -589,9 +615,9 @@ test("burst order: an undated unit sorts AFTER all dated units within the day (n
   const ago20 = "2026-06-19T14:40:00Z";
   const feed = [
     // Undated single arrives FIRST in the feed but must sink to the bottom of the day.
-    { ...entry({ recordId: "undated", connectionId: "cin_u", stream: "misc" }), displayAt: "" } as ExplorerFeedEntry,
+    { ...entry({ connectionId: "cin_u", recordId: "undated", stream: "misc" }), displayAt: "" } as ExplorerFeedEntry,
     ...burstNewestAt("dated", "cin_d", ago20),
-    entry({ displayAt: ago20, recordId: "dated-single", connectionId: "cin_ds", stream: "emails" }),
+    entry({ connectionId: "cin_ds", displayAt: ago20, recordId: "dated-single", stream: "emails" }),
   ];
   const groups = groupFeedWithBursts(feed, NOW_MS);
   // The undated "" day buckets separately from the 2026-06-19 day. Within the DATED
@@ -606,12 +632,12 @@ test("burst order: an undated unit sorts AFTER all dated units within the day (n
   // Now force an undated unit to share a day with dated units (unparseable displayAt
   // that still slices to a same-day prefix is impossible, so construct directly).
   const mixed = [
-    entry({ displayAt: ago20, recordId: "d1", connectionId: "cin_a", stream: "a" }),
+    entry({ connectionId: "cin_a", displayAt: ago20, recordId: "d1", stream: "a" }),
     {
-      ...entry({ recordId: "u1", connectionId: "cin_b", stream: "b" }),
+      ...entry({ connectionId: "cin_b", recordId: "u1", stream: "b" }),
       displayAt: "2026-06-19TBROKEN",
     } as ExplorerFeedEntry,
-    entry({ displayAt: "2026-06-19T14:41:00Z", recordId: "d2", connectionId: "cin_c", stream: "c" }),
+    entry({ connectionId: "cin_c", displayAt: "2026-06-19T14:41:00Z", recordId: "d2", stream: "c" }),
   ];
   const mixedDay = groupFeedWithBursts(mixed, NOW_MS).find((g) => g.day === "2026-06-19");
   assert.ok(mixedDay, "mixed same-day group exists");
@@ -628,9 +654,9 @@ test("burst order SCOPE GUARD: groupFeedDaysNoBursts (Upcoming path) stays FLAT 
   // Upcoming arrives soonest-first (forward-chron). The units must MIRROR that input
   // order verbatim — never get newest-first re-sorted like the past feed.
   const feed = [
-    entry({ displayAt: "2026-06-20T09:00:00Z", recordId: "soon", connectorId: "ynab", stream: "months" }),
-    entry({ displayAt: "2026-06-20T11:00:00Z", recordId: "later-same-day", connectorId: "ynab", stream: "months" }),
-    entry({ displayAt: "2026-07-01T09:00:00Z", recordId: "next-month", connectorId: "ynab", stream: "months" }),
+    entry({ connectorId: "ynab", displayAt: "2026-06-20T09:00:00Z", recordId: "soon", stream: "months" }),
+    entry({ connectorId: "ynab", displayAt: "2026-06-20T11:00:00Z", recordId: "later-same-day", stream: "months" }),
+    entry({ connectorId: "ynab", displayAt: "2026-07-01T09:00:00Z", recordId: "next-month", stream: "months" }),
   ];
   const days = groupFeedDaysNoBursts(feed, NOW_MS);
   // Days stay in input (forward-chron) order, every unit a single, no bursts.
@@ -660,17 +686,17 @@ test("burst order SCOPE GUARD: groupFeedDaysNoBursts (Upcoming path) stays FLAT 
 test("burst order INVARIANT: scanning units top-to-bottom, latestAt is monotonic non-increasing (dated), undated last", () => {
   // A realistic mixed day: bursts + singles at scattered times, fed in non-display order.
   const feed = [
-    entry({ displayAt: "2026-06-19T10:00:00Z", recordId: "s-10", connectionId: "cin_1a", stream: "a" }),
+    entry({ connectionId: "cin_1a", displayAt: "2026-06-19T10:00:00Z", recordId: "s-10", stream: "a" }),
     ...burstNewestAt("b1", "cin_b1", "2026-06-19T14:00:00Z"),
-    entry({ displayAt: "2026-06-19T12:30:00Z", recordId: "s-1230", connectionId: "cin_2a", stream: "b" }),
+    entry({ connectionId: "cin_2a", displayAt: "2026-06-19T12:30:00Z", recordId: "s-1230", stream: "b" }),
     ...burstNewestAt("b2", "cin_b2", "2026-06-19T08:15:00Z"),
-    { ...entry({ recordId: "u", connectionId: "cin_u", stream: "u" }), displayAt: "" } as ExplorerFeedEntry,
+    { ...entry({ connectionId: "cin_u", recordId: "u", stream: "u" }), displayAt: "" } as ExplorerFeedEntry,
     ...burstNewestAt("b3", "cin_b3", "2026-06-19T13:45:00Z"),
   ];
   // Put the undated entry into the SAME day as the dated ones via a broken-but-prefixed
   // displayAt so it shares the 2026-06-19 bucket.
   feed[4] = {
-    ...entry({ recordId: "u", connectionId: "cin_u", stream: "u" }),
+    ...entry({ connectionId: "cin_u", recordId: "u", stream: "u" }),
     displayAt: "2026-06-19Tnonsense",
   } as ExplorerFeedEntry;
   const day = groupFeedWithBursts(feed, NOW_MS).find((g) => g.day === "2026-06-19");
@@ -684,8 +710,13 @@ test("burst order INVARIANT: scanning units top-to-bottom, latestAt is monotonic
       continue;
     }
     assert.ok(!sawNull, "a dated unit must never follow an undated unit (undated sorts last)");
-    if (prevDated !== null) {
-      assert.ok(at <= prevDated, `monotonic non-increasing: ${at} must be <= previous ${prevDated}`);
+    const previousDated: string = prevDated ?? "";
+    if (previousDated !== "") {
+      const currentDated: string = at;
+      assert.ok(
+        currentDated <= previousDated,
+        `monotonic non-increasing: ${currentDated} must be <= previous ${previousDated}`
+      );
     }
     prevDated = at;
   }

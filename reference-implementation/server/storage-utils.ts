@@ -12,7 +12,7 @@
 //   - resolveStorageConnectorId / resolveStorageConnectorInstanceId accept the
 //     UNION of the shapes the two old copies accepted: a bare string, a
 //     snake_case object ({connector_id, connector_instance_id}), AND a
-//     camelCase object ({connectorId, connectorInstanceId}). connection-identity.js
+//     camelCase object ({connectorId, connectorInstanceId}). connection-identity.ts
 //     produces camelCase records that flow into the Postgres path, so the
 //     camelCase fallback is load-bearing and is preserved for both backends.
 //   - resolveStorageConnectorId returns null on empty input rather than throwing.
@@ -22,9 +22,9 @@
 //     require a connectorId before deriving the default instance id, throwing
 //     invalid_connector_id when absent. This preserves the stronger guard.
 
-import { canonicalConnectorKey } from "./connector-key.js";
+import { canonicalConnectorKey } from "./connector-key.ts";
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from "./owner-auth.ts";
-import { makeDefaultAccountConnectorInstanceId } from "./stores/connector-instance-store.js";
+import { makeDefaultAccountConnectorInstanceId } from "./stores/connector-instance-store.ts";
 
 /**
  * A storage target: a bare connector-id string, or an object carrying the
@@ -83,7 +83,7 @@ export function resolveStorageConnectorId(storageTarget: StorageTarget): string 
  * default; throws invalid_connector_id when neither an explicit instance id nor
  * a connector id is available.
  */
-export function resolveStorageConnectorInstanceId(storageTarget: StorageTarget, connectorId: string): string {
+export function resolveStorageConnectorInstanceId(storageTarget: StorageTarget, connectorId: string | null): string {
   if (storageTarget && typeof storageTarget === "object") {
     const snake = storageTarget.connector_instance_id;
     if (typeof snake === "string" && snake.trim()) {

@@ -247,6 +247,7 @@ function isTerminalRunStatus(status: string): boolean {
 
 /** Stable connector key for a run, used to bucket runs under a connection. */
 function runConnectorKey(run: RunSummary): string | null {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   return run.connector_id ?? run.source?.id ?? null;
 }
 
@@ -403,7 +404,7 @@ export function describeDelta(input: { failed: boolean; eventCount: number | nul
     return "sync failed";
   }
   const count = input.eventCount;
-  if (count == null) {
+  if (count === null) {
     return "no recent run";
   }
   if (count <= 0) {
@@ -480,11 +481,11 @@ function buildSyncRows(input: {
   failing: boolean;
 }): { rows: SyncRow[]; lastFailed: boolean; lastRun: RunSummary | null } {
   const { connector, connectionRuns, failing } = input;
-  const schedule = connector.schedule;
+  const { schedule } = connector;
   const cadence = describeCadence(schedule);
   const lastRun = connectionRuns.find((r) => isTerminalRunStatus(r.status)) ?? connectionRuns[0] ?? null;
   const lastFailed = lastRun ? FAILED_RUN_STATUSES.has(lastRun.status) : false;
-  const { next, nextAt } = describeNext({ schedule, failing });
+  const { next, nextAt } = describeNext({ failing, schedule });
 
   // Index collection_report by stream name for O(1) per-row lookup.
   const reportByStream: Map<string, RefCollectionReportEntry> = indexCollectionReportByStream(
@@ -495,24 +496,24 @@ function buildSyncRows(input: {
   const rows = streams.map((stream): SyncRow => {
     const reportEntry = reportByStream.get(stream) ?? null;
     return {
-      stream,
+      browseHref: browseStreamHref(connector.connection_id, stream),
       cadence,
-      next,
-      nextAt,
+      // Per-stream facts from collection_report. Null when absent (honest
+      // empty state for pre-Tranche-C references).
+      collectedThisRun: reportEntry !== null && Number.isFinite(reportEntry.collected) ? reportEntry.collected : null,
+      coverageCondition: reportEntry === null ? null : reportEntry.coverage_condition,
       // `failed` is the connection-level last-run outcome, used only as a
       // fallback for streams that have NO per-stream report. When a stream
       // has its own collection_report entry, that per-stream truth governs
       // its display, so the connection-level failure must not override it.
       failed: lastFailed && reportEntry === null,
-      browseHref: browseStreamHref(connector.connection_id, stream),
-      // Per-stream facts from collection_report. Null when absent (honest
-      // empty state for pre-Tranche-C references).
-      collectedThisRun: reportEntry !== null && Number.isFinite(reportEntry.collected) ? reportEntry.collected : null,
-      coverageCondition: reportEntry === null ? null : reportEntry.coverage_condition,
+      next,
+      nextAt,
+      stream,
       streamSkipped: reportEntry !== null && reportEntry.skipped !== null,
     };
   });
-  return { rows, lastFailed, lastRun };
+  return { lastFailed, lastRun, rows };
 }
 
 /**
@@ -528,21 +529,21 @@ function buildHealthBand(input: {
   projections: readonly SyncProjection[];
 }): HealthBand {
   const onSchedule = input.groups.filter((g) => g.health === "ok").reduce((sum, g) => sum + g.totalStreamCount, 0);
-  // "Need your hand" is the SHARED attention headline — the same derivation the
-  // dashboard hero uses — so the two surfaces can never disagree on how many
-  // sources need the owner. It counts ONLY the needs-you group, INCLUDING
-  // draft connections awaiting setup (`pendingSetupWork`) — a fresh connection
-  // genuinely needs the owner's hand, same as a reauth prompt.
+  // "Need your hand" is sync triage's shared source-work attention count. It
+  // counts ONLY the needs-you group, INCLUDING draft connections awaiting setup
+  // (`pendingSetupWork`) — a fresh connection genuinely needs the owner's hand,
+  // same as a reauth prompt. The aggregate dashboard hero follows the server
+  // fleet verdict separately.
   const needsOwner = [...input.projections.map((projection) => projection.work), ...input.pendingSetupWork].filter(
     (item): item is SourceWorkItem => item?.group === "needsOwner"
   );
   const needYourHand = sourceAttentionHeadline({ ...EMPTY_SOURCE_WORK_GROUPS, needsOwner }).needsYou;
   const needsReview = input.failureCards.length;
   return {
-    onSchedule,
-    needYourHand,
-    needsReview,
     allClear: needsReview === 0,
+    needsReview,
+    needYourHand,
+    onSchedule,
   };
 }
 
@@ -617,7 +618,7 @@ function collapseDuplicateFallbackProjections(projections: readonly SyncProjecti
     for (const projection of sortedBucket) {
       collapsedIds.add(projection.connector.connection_id);
     }
-    const first = sortedBucket[0];
+    const [first] = sortedBucket;
     if (!first) {
       continue;
     }
@@ -641,9 +642,9 @@ function collapseDuplicateFallbackProjections(projections: readonly SyncProjecti
 /** Maps a SyncProjection to the FailureCard shape used in the view-model. */
 function toFailureCard(projection: SyncProjection): FailureCard {
   return {
-    name: projection.connector.display_name,
     connectionId: projection.connector.connection_id,
     connectorId: projection.connector.connector_id,
+    name: projection.connector.display_name,
     summary: projection.summary as FailureSummary,
     work: projection.work,
   };
@@ -657,17 +658,25 @@ function toFailureCard(projection: SyncProjection): FailureCard {
  * builders (`browseStreamHref`, `exploreHrefFor`).
  */
 function toPendingSetupCard(connector: RefConnectorSummary): PendingSetupCard {
+  // connection_id is non-optional in the current contract; connector_instance_id
+  // /connector_id are a real legacy-server fallback (see schedule-row.tsx's
+  // recordsHrefForSummary for the same documented pattern).
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: see comment above.
   const routeId = connector.connection_id ?? connector.connector_instance_id ?? connector.connector_id;
   return {
-    continueHref: `/connect/status/${encodeURIComponent(routeId)}`,
     connectionId: connector.connection_id,
     connectorId: connector.connector_id,
+    continueHref: `/connect/status/${encodeURIComponent(routeId)}`,
     name: connector.display_name,
   };
 }
 
 /** The shared needs-you work item for a draft connection, for the health band count. */
 function pendingSetupWorkItem(connector: RefConnectorSummary): SourceWorkItem {
+  // connection_id is non-optional in the current contract; connector_instance_id
+  // /connector_id are a real legacy-server fallback (see schedule-row.tsx's
+  // recordsHrefForSummary for the same documented pattern).
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: see comment above.
   const routeId = connector.connection_id ?? connector.connector_instance_id ?? connector.connector_id;
   return {
     actionLabel: SETUP_IN_PROGRESS_CTA_LABEL,
@@ -693,41 +702,43 @@ function projectSyncProjection(input: {
   }
   const actionability = projectSourceActionability(connector);
   const summary = actionability.failureSummary;
-  const work = actionability.work;
+  const { work } = actionability;
   const renderedHealth = connector.rendered_verdict ? renderedStatusGroupHealth(actionability.renderedStatus) : null;
   const failing = (renderedHealth ?? connectionHealth(summary)) === "failing";
   const connectionRuns = connectionRunHistory({ connector, runs });
-  const { rows, lastFailed, lastRun } = buildSyncRows({ connector, connectionRuns, failing });
+  const { rows, lastFailed, lastRun } = buildSyncRows({ connectionRuns, connector, failing });
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   const lastAt = lastRun?.last_at ?? connector.last_run?.last_at ?? connector.last_successful_run?.last_at ?? null;
   const lastAtMs = lastAt ? Date.parse(lastAt) : 0;
   const eventCount = lastRun ? lastRun.event_count : null;
-  const lastRunDelta = lastRun === null ? null : describeDelta({ failed: lastFailed, eventCount });
+  const lastRunDelta = lastRun === null ? null : describeDelta({ eventCount, failed: lastFailed });
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   const lastRunDuration = describeDuration(lastRun?.first_at ?? null, lastRun?.last_at ?? null);
   const lastRunRhythm = deriveConnectionRhythm(connectionRuns);
 
   return {
     connector,
     failing,
-    lastAtMs: Number.isNaN(lastAtMs) ? 0 : lastAtMs,
-    summary,
-    work,
     group: {
       activeRunId:
         connector.schedule?.active_run_id ??
         (connector.last_run && isActiveConnectorRunSummaryStatus(connector.last_run.status)
           ? connector.last_run.run_id
           : null),
-      name: connector.display_name,
       connectionId: connector.connection_id,
       connectorId: connector.connector_id,
       health: failing ? "failing" : "ok",
+      lastRunAt: lastAt,
       lastRunDelta,
       lastRunDuration,
-      lastRunAt: lastAt,
       lastRunRhythm,
+      name: connector.display_name,
       streams: rows,
       totalStreamCount: rows.length,
     },
+    lastAtMs: Number.isNaN(lastAtMs) ? 0 : lastAtMs,
+    summary,
+    work,
   };
 }
 
@@ -784,7 +795,7 @@ export function buildSyncsViewModel(input: {
   // duplicate groups that were collapsed away are surfaced separately through
   // the duplicate-group panel, so counting them here would tell the owner to
   // "review the cards below" when no such card is visible.
-  const band = buildHealthBand({ groups: allGroups, failureCards, pendingSetupWork, projections: ordered });
+  const band = buildHealthBand({ failureCards, groups: allGroups, pendingSetupWork, projections: ordered });
   return {
     band,
     duplicateGroups,

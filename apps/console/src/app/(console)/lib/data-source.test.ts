@@ -47,6 +47,10 @@ async function walk(dir: string, files: string[] = []): Promise<string[]> {
   for (const entry of entries) {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
+      // Recursive directory walk accumulating into the shared `files` array;
+      // parallelizing sibling subdirectories would need a merge step for
+      // no real benefit in this test-only file-discovery helper.
+      // biome-ignore lint/performance/noAwaitInLoops: see comment above.
       await walk(full, files);
     } else if (TS_FILE_RE.test(entry.name)) {
       files.push(full);
@@ -110,21 +114,13 @@ test("sandbox import detector catches static and dynamic imports", () => {
 });
 
 test("/** never imports from /sandbox/**", async () => {
-  const files = await walk(DASHBOARD_DIR);
-  const offenders: string[] = [];
-  for (const file of files) {
-    if (file === SELF) {
-      continue;
-    }
-    const src = await readFile(file, "utf8");
-    // Match Next/TS import statements that resolve to the sandbox tree:
-    //   import ... from "@/app/sandbox/..."
-    //   import ... from "../../sandbox/..."
-    //   import ... from "../sandbox/..."
-    if (hasSandboxImport(src)) {
-      offenders.push(file);
-    }
-  }
+  const files = (await walk(DASHBOARD_DIR)).filter((file) => file !== SELF);
+  const sources = await Promise.all(files.map((file) => readFile(file, "utf8")));
+  // Match Next/TS import statements that resolve to the sandbox tree:
+  //   import ... from "@/app/sandbox/..."
+  //   import ... from "../../sandbox/..."
+  //   import ... from "../sandbox/..."
+  const offenders = files.filter((_file, index) => hasSandboxImport(sources[index] as string));
   assert.deepEqual(
     offenders,
     [],
@@ -186,17 +182,9 @@ test("dashboard owner-session 401s resolve back through owner login", async () =
 });
 
 test("/** never references the sandbox data source binding", async () => {
-  const files = await walk(DASHBOARD_DIR);
-  const offenders: string[] = [];
-  for (const file of files) {
-    if (file === SELF) {
-      continue;
-    }
-    const src = stripComments(await readFile(file, "utf8"));
-    if (src.includes("sandboxDashboardDataSource")) {
-      offenders.push(file);
-    }
-  }
+  const files = (await walk(DASHBOARD_DIR)).filter((file) => file !== SELF);
+  const sources = await Promise.all(files.map(async (file) => stripComments(await readFile(file, "utf8"))));
+  const offenders = files.filter((_file, index) => (sources[index] as string).includes("sandboxDashboardDataSource"));
   assert.deepEqual(
     offenders,
     [],

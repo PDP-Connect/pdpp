@@ -80,7 +80,6 @@ function BlobAffordanceView({
   return (
     <div className="rr-x-blob">
       {isImage ? (
-        // biome-ignore lint/performance/noImgElement: blob fetch_url is a grant-scoped RS URL, not a static asset Next can optimize.
         // biome-ignore lint/correctness/useImageSize: a remote record blob has no known intrinsic dimensions; the CSS box constrains it.
         <img alt={affordance.fieldName} className="rr-x-blob__img" src={affordance.href} />
       ) : null}
@@ -131,8 +130,11 @@ export function RecordInspector({ record, relationships, streamRecordsHref }: Re
   const totalDeclared = record.fields.length;
   const blob = blobAffordance(record);
   const blobMime = blob ? declaredBlobMime(body, blob.fieldName) : undefined;
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   const relatedLinks = relationships?.relatedLinks ?? [];
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   const parentBackLinks = relationships?.parentBackLinks ?? [];
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   const reverseChildListLinks = relationships?.reverseChildListLinks ?? [];
   const hasRelationships = relatedLinks.length > 0 || parentBackLinks.length > 0 || reverseChildListLinks.length > 0;
 

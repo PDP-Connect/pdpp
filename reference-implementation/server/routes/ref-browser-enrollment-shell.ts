@@ -60,16 +60,16 @@ interface RouteRequest {
 }
 
 interface RouteResponse {
-  getHeader(name: string): string | number | string[] | undefined;
-  json(body: unknown): unknown;
-  setHeader(name: string, value: string): void;
-  status(code: number): RouteResponse;
+  getHeader: (name: string) => string | number | string[] | undefined;
+  json: (body: unknown) => unknown;
+  setHeader: (name: string, value: string) => void;
+  status: (code: number) => RouteResponse;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
 
 interface AppLike {
-  post(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  post: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
 }
 
 interface TraceContext {
@@ -88,12 +88,12 @@ interface ConnectorInstance {
 }
 
 interface ConnectorInstanceStore {
-  get(id: string): Promise<ConnectorInstance | null> | ConnectorInstance | null;
-  updateStatus(
+  get: (id: string) => Promise<ConnectorInstance | null> | ConnectorInstance | null;
+  updateStatus: (
     connectorInstanceId: string,
     args: { status: string; updatedAt: string; revokedAt?: string | null }
-  ): Promise<ConnectorInstance | null> | ConnectorInstance | null;
-  upsert(record: {
+  ) => Promise<ConnectorInstance | null> | ConnectorInstance | null;
+  upsert: (record: {
     ownerSubjectId: string;
     connectorId: string;
     displayName: string;
@@ -103,7 +103,7 @@ interface ConnectorInstanceStore {
     sourceBinding: Record<string, unknown>;
     createdAt: string;
     updatedAt: string;
-  }): Promise<ConnectorInstance> | ConnectorInstance;
+  }) => Promise<ConnectorInstance> | ConnectorInstance;
 }
 
 interface BrowserEnrollmentShellCreateBody {
@@ -111,18 +111,18 @@ interface BrowserEnrollmentShellCreateBody {
 }
 
 export interface MountRefBrowserEnrollmentShellContext {
-  canonicalConnectorKey(value: string | null | undefined): string | null;
-  createRequestConnectorInstanceStore(): ConnectorInstanceStore;
-  createTraceContext(input?: { scenarioId?: string }): TraceContext;
-  emitSpineEvent(event: Record<string, unknown>): Promise<unknown>;
-  ensureRequestId(res: RouteResponse): string;
-  getOwnerSubjectId(req: unknown): string;
-  handleError(res: unknown, err: unknown): void;
-  now?(): string;
+  canonicalConnectorKey: (value: string | null | undefined) => string | null;
+  createRequestConnectorInstanceStore: () => ConnectorInstanceStore;
+  createTraceContext: (input?: { scenarioId?: string }) => TraceContext;
+  emitSpineEvent: (event: Record<string, unknown>) => Promise<unknown>;
+  ensureRequestId: (res: RouteResponse) => string;
+  getOwnerSubjectId: (req: unknown) => string;
+  handleError: (res: unknown, err: unknown) => void;
+  now?: () => string;
   pdppError: PdppErrorFn;
   requireOwnerSession: MiddlewareHandler;
-  resolveRegisteredConnectorManifest(connectorId: string): Promise<ConnectorManifestLike>;
-  setReferenceTraceId(res: RouteResponse, traceId: string): void;
+  resolveRegisteredConnectorManifest: (connectorId: string) => Promise<ConnectorManifestLike>;
+  setReferenceTraceId: (res: RouteResponse, traceId: string) => void;
 }
 
 function buildAuditTrace(ctx: MountRefBrowserEnrollmentShellContext, res: RouteResponse): TraceContext {
@@ -149,17 +149,8 @@ async function emitShellAudit(
   const ownerSubjectId = args.ownerSubjectId ?? req.ownerSession?.sub ?? null;
   const code = (args.error as { code?: unknown } | null)?.code;
   await ctx.emitSpineEvent({
-    event_type: `owner.connection.browser_enrollment_shell.${args.operation}`,
-    trace_id: trace.trace_id,
-    scenario_id: trace.scenario_id,
-    request_id: trace.request_id,
-    actor_type: "owner_session",
     actor_id: ownerSubjectId ?? "owner_session",
-    subject_type: "subject",
-    subject_id: ownerSubjectId,
-    object_type: "connection",
-    object_id: args.connectionId ?? "unknown_connection",
-    status: args.outcome,
+    actor_type: "owner_session",
     data: {
       connection_id: args.connectionId ?? null,
       connector_id: args.connectorId ?? null,
@@ -167,6 +158,15 @@ async function emitShellAudit(
       outcome: args.outcome,
       ...(args.error ? { error: { code: typeof code === "string" ? code : "api_error" } } : {}),
     },
+    event_type: `owner.connection.browser_enrollment_shell.${args.operation}`,
+    object_id: args.connectionId ?? "unknown_connection",
+    object_type: "connection",
+    request_id: trace.request_id,
+    scenario_id: trace.scenario_id,
+    status: args.outcome,
+    subject_id: ownerSubjectId,
+    subject_type: "subject",
+    trace_id: trace.trace_id,
   });
 }
 
@@ -282,21 +282,21 @@ export function mountRefBrowserEnrollmentShell(app: AppLike, ctx: MountRefBrowse
         // independent shell rows rather than colliding on one upsert.
         const sourceBindingKey = `browser_shell_${randomBytes(24).toString("hex")}`;
         const sourceBinding: BrowserEnrollmentShellSourceBinding = {
-          kind: "browser_enrollment_shell",
           connector_id: connectorId,
           enrollment_expires_at: expiresAt,
+          kind: "browser_enrollment_shell",
         };
 
         const store = ctx.createRequestConnectorInstanceStore();
         const instance = await store.upsert({
-          ownerSubjectId,
           connectorId,
-          displayName: parsedDisplayName.displayName,
-          status: "draft",
-          sourceKind: "account",
-          sourceBindingKey,
-          sourceBinding: sourceBinding as unknown as Record<string, unknown>,
           createdAt: now,
+          displayName: parsedDisplayName.displayName,
+          ownerSubjectId,
+          sourceBinding: sourceBinding as unknown as Record<string, unknown>,
+          sourceBindingKey,
+          sourceKind: "account",
+          status: "draft",
           updatedAt: now,
         });
 
@@ -309,18 +309,18 @@ export function mountRefBrowserEnrollmentShell(app: AppLike, ctx: MountRefBrowse
         });
 
         res.status(201).json({
-          object: "browser_enrollment_shell",
           connection_id: instance.connectorInstanceId,
-          connector_instance_id: instance.connectorInstanceId,
           connector_id: connectorId,
+          connector_instance_id: instance.connectorInstanceId,
           display_name: parsedDisplayName.displayName,
-          status: instance.status,
           enrollment_expires_at: expiresAt,
           next_step: {
             kind: "browser_enrollment_run",
             reason:
               "Start a bounded enrollment run for this shell. The run embeds the existing browser surface in the dashboard. When the owner completes login and the connector captures the session, the shell transitions to active and first sync begins as a normal run.",
           },
+          object: "browser_enrollment_shell",
+          status: instance.status,
         });
       } catch (err) {
         await emitShellAudit(ctx, req, res, {
@@ -387,9 +387,9 @@ export function mountRefBrowserEnrollmentShell(app: AppLike, ctx: MountRefBrowse
             ownerSubjectId,
           });
           res.status(200).json({
-            object: "enrollment_abandoned",
             connection_id: connectorInstanceId,
             connector_id: instance.connectorId,
+            object: "enrollment_abandoned",
             status: "revoked",
           });
           return;
@@ -397,9 +397,9 @@ export function mountRefBrowserEnrollmentShell(app: AppLike, ctx: MountRefBrowse
 
         const now = ctx.now ? ctx.now() : new Date().toISOString();
         await store.updateStatus(connectorInstanceId, {
+          revokedAt: now,
           status: "revoked",
           updatedAt: now,
-          revokedAt: now,
         });
 
         await emitShellAudit(ctx, req, res, {
@@ -411,15 +411,15 @@ export function mountRefBrowserEnrollmentShell(app: AppLike, ctx: MountRefBrowse
         });
 
         res.status(200).json({
-          object: "enrollment_abandoned",
           connection_id: connectorInstanceId,
           connector_id: instance.connectorId,
+          object: "enrollment_abandoned",
           status: "revoked",
         });
       } catch (err) {
         await emitShellAudit(ctx, req, res, {
-          connectorId: null,
           connectionId: connectorInstanceId,
+          connectorId: null,
           error: err,
           operation: "abandon",
           outcome: "failed",

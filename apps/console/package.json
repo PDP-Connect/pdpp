@@ -10,10 +10,10 @@
     "build": "next build --webpack",
     "start": "next start",
     "types:check": "next typegen && tsc --noEmit",
-    "test:view-models": "node --test --import tsx 'src/app/(console)/components/views/standing-view-model.test.ts' 'src/app/(console)/syncs/syncs-model.test.ts' 'src/app/(console)/sources/sources-view-model.test.ts' 'src/app/(console)/sources/total-records-state-rendering.test.ts' && pnpm exec tsx 'src/app/(console)/sources/last-known-sync-start.test.ts' && pnpm exec tsx 'src/app/(console)/sources/[connector]/sync-now-modality.test.ts'",
-    "//test-stream": "Every *.test.ts under the stream route directory runs via node --test's own recursive discovery (no per-file list to maintain) — new tests added there are picked up automatically. A relative glob from outside this directory does not match its (console)/[runId] path segments, so this cd's in first.",
-    "test:stream": "cd 'src/app/(console)/syncs/[runId]/stream' && node --test",
-    "check": "ultracite check",
+    "test:view-models": "TSX_TSCONFIG_PATH=tsconfig.json node --test --import tsx \"**/*.test.ts\" \"**/*.test.mjs\"",
+    "//test-stream": "The accounting authority owns console discovery and execution, including the stream route's bracketed path segments.",
+    "test:stream": "TSX_TSCONFIG_PATH=tsconfig.json node --test --import tsx \"**/*.test.ts\" \"**/*.test.mjs\"",
+    "check": "ultracite check && pnpm --dir ../.. generated-artifacts:check",
     "fix": "ultracite fix",
     "verify": "pnpm types:check && pnpm test:view-models && pnpm test:stream && pnpm check && pnpm build"
   },
@@ -35,7 +35,7 @@
     "fumadocs-ui": "^16.7.11",
     "imapflow": "^1.2.18",
     "lucide-react": "^1.7.0",
-    "next": "^16.2.2",
+    "next": "16.3.0-canary.93",
     "pdpp-reference-implementation": "workspace:*",
     "postcss": "^8.5.8",
     "react": "^19.2.0",
@@ -52,9 +52,9 @@
   },
   "devDependencies": {
     "@types/mdx": "^2.0.13",
-    "@types/node": "^25.5.2",
+    "@types/node": "^26.1.1",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
-    "typescript": "^6.0.2"
+    "typescript": "^7.0.2"
   }
 }

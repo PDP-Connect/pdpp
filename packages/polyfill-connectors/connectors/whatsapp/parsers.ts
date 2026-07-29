@@ -112,7 +112,7 @@ function parseWhatsAppTimeParts(timeStr: string): { hour: number; minute: number
   }
   let hour = Number(match[1]);
   const minute = Number(match[2]);
-  const second = match[3] == null ? 0 : Number(match[3]);
+  const second = match[3] === undefined ? 0 : Number(match[3]);
   const meridiem = match[4]?.toLowerCase();
   if (!(Number.isInteger(hour) && Number.isInteger(minute) && Number.isInteger(second))) {
     return null;
@@ -179,7 +179,7 @@ export interface ExtractedWhatsAppChatArtifact {
 }
 
 interface ZipEntry {
-  data(): Buffer;
+  data: () => Buffer;
   name: string;
 }
 
@@ -197,7 +197,7 @@ function isProbablyMediaEntry(name: string): boolean {
 
 function findEndOfCentralDirectory(bytes: Buffer): number {
   const min = Math.max(0, bytes.length - ZIP_EOCD_MAX_COMMENT_LENGTH - ZIP_EOCD_MIN_LENGTH);
-  for (let offset = bytes.length - ZIP_EOCD_MIN_LENGTH; offset >= min; offset--) {
+  for (let offset = bytes.length - ZIP_EOCD_MIN_LENGTH; offset >= min; offset -= 1) {
     if (bytes.readUInt32LE(offset) === ZIP_EOCD_SIGNATURE) {
       return offset;
     }
@@ -218,7 +218,7 @@ function readZipEntries(bytes: Buffer): ZipEntry[] {
   const entryCount = bytes.readUInt16LE(eocdOffset + 10);
   let offset = bytes.readUInt32LE(eocdOffset + 16);
   const entries: ZipEntry[] = [];
-  for (let i = 0; i < entryCount; i++) {
+  for (let i = 0; i < entryCount; i += 1) {
     if (offset + 46 > bytes.length || bytes.readUInt32LE(offset) !== ZIP_CENTRAL_DIRECTORY_SIGNATURE) {
       break;
     }

@@ -24,7 +24,7 @@ export type AsIntrospectInfo = Record<string, unknown> & {
 };
 
 export interface AsIntrospectDependencies {
-  introspect(token: string): Promise<AsIntrospectInfo> | AsIntrospectInfo;
+  introspect: (token: string) => Promise<AsIntrospectInfo> | AsIntrospectInfo;
 }
 
 export interface AsIntrospectSuccessOutcome {
@@ -33,36 +33,31 @@ export interface AsIntrospectSuccessOutcome {
 }
 
 export interface AsIntrospectFailureOutcome {
-  readonly outcome: "failure";
-  readonly status: 400;
   readonly errorCode: "invalid_request";
   readonly errorMessage: string;
+  readonly outcome: "failure";
+  readonly status: 400;
 }
 
-export type AsIntrospectOutcome =
-  | AsIntrospectSuccessOutcome
-  | AsIntrospectFailureOutcome;
+export type AsIntrospectOutcome = AsIntrospectSuccessOutcome | AsIntrospectFailureOutcome;
 
 export async function executeAsIntrospect(
   input: AsIntrospectInput,
-  deps: AsIntrospectDependencies,
+  deps: AsIntrospectDependencies
 ): Promise<AsIntrospectOutcome> {
   if (!input.token) {
     return {
-      outcome: "failure",
-      status: 400,
       errorCode: "invalid_request",
       errorMessage: "Missing token parameter",
+      outcome: "failure",
+      status: 400,
     };
   }
   const info = await deps.introspect(input.token);
   // The AS-internal `grant_storage_binding` field is never returned to
   // introspection callers. Redaction lives in the operation so any future
   // host that mounts this surface inherits the rule automatically.
-  const { grant_storage_binding: _redacted, ...publicInfo } = info as Record<
-    string,
-    unknown
-  >;
+  const { grant_storage_binding: _redacted, ...publicInfo } = info as Record<string, unknown>;
   return {
     outcome: "success",
     publicInfo: publicInfo as AsIntrospectInfo,

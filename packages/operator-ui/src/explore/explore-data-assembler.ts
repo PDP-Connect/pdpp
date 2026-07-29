@@ -179,6 +179,7 @@ function toConnectionFacet(summary: RefConnectorSummary): ExplorerConnectionFace
     connectionId: summary.connection_id,
     connectorId: summary.connector_id,
     displayName: connectorSummaryDisplayName(summary),
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: The declared public input remains defensive at this boundary; removing the guard would reduce runtime tolerance.
     streams: [...(summary.streams ?? [])].sort(),
   };
 }
@@ -455,8 +456,8 @@ export function fieldCapabilitiesFromMetadata(metadata: StreamMetadata | null): 
     const role = typeof rawRole === "string" && rawRole.length > 0 ? rawRole : undefined;
     const granted = cap?.granted !== false && cap?.usable !== false;
     return {
-      name,
       granted,
+      name,
       ...(type ? { type } : {}),
       ...(role ? { role } : {}),
     };
@@ -521,8 +522,8 @@ function manifestFieldCapabilities(
   return [...names].map((name) => {
     const type = declaredFieldTypes?.[name];
     return {
-      name,
       granted: true,
+      name,
       ...(type ? { type } : {}),
     };
   });
@@ -676,7 +677,7 @@ function timelineRecordToEntry(
   // generic "Id:" card. The role no longer round-trips through capabilities.)
   // Undeclared streams resolve to EMPTY_DECLARED_FIELD_ROLES → the honest generic card.
   const droles = declaredFieldRoles.get(metaKey) ?? EMPTY_DECLARED_FIELD_ROLES;
-  const kind = classifyRecordKind(rec.stream, data, dtypes, undefined, droles).kind;
+  const { kind } = classifyRecordKind(rec.stream, data, dtypes, undefined, droles);
   // Prefer the server's authoritative SEMANTIC time — the exact value the timeline
   // is ORDERED by — so display == sort by construction. Re-deriving from manifest
   // metadata is the seam that silently showed emitted_at when the per-connector
@@ -714,18 +715,18 @@ function timelineRecordToEntry(
     : formatConnectorNameForDisplay({ connectorId: rec.connector_id });
   return {
     blobAffordance: buildBlobAffordance(data, fieldCapabilities) ?? undefined,
-    connectorId: rec.connector_id,
-    connectionId,
     connectionDisplayName,
-    stream: rec.stream,
-    recordId: rec.record_key,
-    emittedAt: rec.emitted_at,
+    connectionId,
+    connectorId: rec.connector_id,
     displayAt: displayValue,
     displayIsSemantic: serverSemanticTime !== null || localDisplay.isSemantic,
+    emittedAt: rec.emitted_at,
     // No `summary`: a body-backed timeline row renders from declared-role `preview`
     // slots (rowPrimary/rowSecondary), never the old field-name-guessing summarize().
     kind,
     preview: buildRecordPreview(kind, data, dtypes, droles) ?? undefined,
+    recordId: rec.record_key,
+    stream: rec.stream,
   };
 }
 
@@ -933,7 +934,7 @@ function capturePage1Upcoming(
   const nextCursor = typeof page.upcoming_next_cursor === "string" ? page.upcoming_next_cursor : null;
   const hasMore = page.upcoming_has_more === true;
   if (!(Array.isArray(page.upcoming) && page.upcoming.length > 0)) {
-    return { entries: [], total: 0, nextCursor, hasMore };
+    return { entries: [], hasMore, nextCursor, total: 0 };
   }
   const entries = mergedTimelinePageEntries(
     { ...page, data: page.upcoming },
@@ -951,7 +952,7 @@ function capturePage1Upcoming(
   // (exclusion is applied server-side at partition enumeration), so it is used as-is —
   // count==reachability holds at any scale, with no client-side shrinking.
   const total = typeof page.upcoming_total === "number" ? page.upcoming_total : page.upcoming.length;
-  return { entries, total, nextCursor, hasMore };
+  return { entries, hasMore, nextCursor, total };
 }
 
 /**
@@ -1002,8 +1003,8 @@ async function loadUpcomingTrailPages(
   }
   const last = pages.at(-1);
   return {
-    nextCursor: typeof last?.upcoming_next_cursor === "string" ? last.upcoming_next_cursor : null,
     hasMore: last?.upcoming_has_more === true,
+    nextCursor: typeof last?.upcoming_next_cursor === "string" ? last.upcoming_next_cursor : null,
   };
 }
 
@@ -1085,9 +1086,9 @@ async function loadMergedTimelineFeed(
         // the bounded future set is revealed on first expand (the others discard it).
         ...(stepIndex === 0 ? { upcomingLimit: UPCOMING_PAGE_LIMIT } : {}),
         ...(step.rewindToFirstPage ? { rewindToFirstPage: true } : {}),
-        streams: [...filterStreams],
         excludeConnectionIds,
         excludeStreams,
+        streams: [...filterStreams],
         // Direction defines the feed (newest-first vs the order=oldest re-page).
         // Re-passed on every page so an oldest-first walk stays ascending; "desc"
         // is omitted so the default newest-first request URL stays clean.
@@ -1118,15 +1119,15 @@ async function loadMergedTimelineFeed(
 
     if (pageIndex === 0) {
       const head = capturePage1Upcoming(page, {
-        filteredSummaries,
-        declaredFieldTypes,
-        declaredFieldRoles,
-        manifestFieldNames,
-        filterStreams,
-        filterConnections,
         allowedInstanceIds,
-        timestampMetadata,
+        declaredFieldRoles,
+        declaredFieldTypes,
         exclude,
+        filterConnections,
+        filteredSummaries,
+        filterStreams,
+        manifestFieldNames,
+        timestampMetadata,
       });
       upcomingEntries = head.entries;
       upcomingTotal = head.total;
@@ -1157,16 +1158,16 @@ async function loadMergedTimelineFeed(
   // (count==reachability). Updates the reachability handle to the LAST page fetched.
   if (upcomingTrail.length > 0) {
     const walked = await loadUpcomingTrailPages(upcomingTrail, upcomingEntries, {
-      filteredSummaries,
-      declaredFieldTypes,
-      declaredFieldRoles,
-      manifestFieldNames,
-      filterStreams,
-      filterConnections,
       allowedInstanceIds,
-      timestampMetadata,
-      exclude,
       dataSource,
+      declaredFieldRoles,
+      declaredFieldTypes,
+      exclude,
+      filterConnections,
+      filteredSummaries,
+      filterStreams,
+      manifestFieldNames,
+      timestampMetadata,
     });
     upcomingNextCursor = walked.nextCursor;
     upcomingHasMore = walked.hasMore;
@@ -1174,32 +1175,32 @@ async function loadMergedTimelineFeed(
 
   const mergedNextCursor = lastHasMore ? lastNextCursor : null;
   return {
+    // complete_chronological: exhaustive merged timeline with real cursor pagination.
+    descriptor: {
+      completeness: "exhaustive",
+      cursor: mergedNextCursor,
+      has_more: lastHasMore,
+      kind: "complete_chronological",
+      ordering: "time",
+    },
     entries: accumulated,
     exactWindowComplete: false,
     exactWindows: [],
     fromSearch: false,
     hybridUsed: false,
+    newSinceAnchor: newSinceSnapshot > 0 ? newSinceSnapshot : null,
     // The real composite cursor from the LAST fetched page — non-null when has_more.
     nextCursor: mergedNextCursor,
-    newSinceAnchor: newSinceSnapshot > 0 ? newSinceSnapshot : null,
     searchHasMore: false,
     searchNextCursor: null,
-    // complete_chronological: exhaustive merged timeline with real cursor pagination.
-    descriptor: {
-      kind: "complete_chronological",
-      ordering: "time",
-      completeness: "exhaustive",
-      has_more: lastHasMore,
-      cursor: mergedNextCursor,
-    },
     snapshotAnchor,
     streamDoor: null,
     streamSeeAllLinks: [],
     truncated: false,
     upcoming: upcomingEntries,
-    upcomingTotal,
-    upcomingNextCursor,
     upcomingHasMore,
+    upcomingNextCursor,
+    upcomingTotal,
     warnings: [],
   };
 }
@@ -1233,24 +1234,24 @@ function toTimeRangeEntry({
   }
   // Declared roles seam (empty default; see declaredRolesFromCapabilities).
   const declaredFieldRoles = declaredRolesFromCapabilities(fieldCapabilities);
-  const kind = classifyRecordKind(streamName, data, declaredFieldTypes, undefined, declaredFieldRoles).kind;
+  const { kind } = classifyRecordKind(streamName, data, declaredFieldTypes, undefined, declaredFieldRoles);
   return {
     blobAffordance: buildBlobAffordance(data, fieldCapabilities) ?? undefined,
-    connectorId: summary.connector_id,
-    connectionId: summary.connection_id,
     connectionDisplayName: connectorSummaryDisplayName(summary),
-    stream: streamName,
-    recordId,
-    emittedAt,
+    connectionId: summary.connection_id,
+    connectorId: summary.connector_id,
     displayAt: new Date(ms).toISOString(),
     // Always semantic: this path only runs for streams with a declared
     // consent_time_field (see timeRangeStreamTargets), and only when that
     // field resolved to a valid timestamp on this record (the `ms === null`
     // guard above).
     displayIsSemantic: true,
+    emittedAt,
     // No `summary`: this body-backed row renders from declared-role `preview` slots.
     kind,
     preview: buildRecordPreview(kind, data, declaredFieldTypes, declaredFieldRoles) ?? undefined,
+    recordId,
+    stream: streamName,
   };
 }
 
@@ -1260,6 +1261,7 @@ function timeRangeStreamTargets(
   filterStreams: ReadonlySet<string>
 ): Array<{ consentTimeField: string; streamName: string }> {
   const targets: Array<{ consentTimeField: string; streamName: string }> = [];
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: The declared public input remains defensive at this boundary; removing the guard would reduce runtime tolerance.
   for (const streamName of summary.streams ?? []) {
     if (filterStreams.size > 0 && !filterStreams.has(streamName)) {
       continue;
@@ -1326,9 +1328,10 @@ function collectStreamFetchResults(results: StreamFetchResult[]): CollectedStrea
         connectionId: result.connectionId,
         connectorId: result.connectorId,
         displayName: result.displayName,
-        stream: result.stream,
-        total: result.exactWindow?.total ?? null,
         hasMore: result.hasMore,
+        stream: result.stream,
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: The declared public input remains defensive at this boundary; removing the guard would reduce runtime tolerance.
+        total: result.exactWindow?.total ?? null,
       });
     } else {
       failures.push(result.failure);
@@ -1365,19 +1368,17 @@ async function fetchOneTimeRangeStream(
       }),
     ]);
     return {
-      ok: true,
       connectionId: summary.connection_id,
       connectorId: summary.connector_id,
       displayName: connectorSummaryDisplayName(summary),
-      stream: streamName,
       entries: page.data
         .map((record) =>
           toTimeRangeEntry({
             consentTimeField,
             data: recordData(record.data),
             declaredFieldTypes: metadata.declaredFieldTypes,
-            fieldCapabilities: metadata.fieldCapabilities,
             emittedAt: record.emitted_at,
+            fieldCapabilities: metadata.fieldCapabilities,
             recordId: record.id,
             sinceMs,
             streamName,
@@ -1388,18 +1389,20 @@ async function fetchOneTimeRangeStream(
         .filter((entry): entry is ExplorerFeedEntry => entry !== null),
       exactWindow: exactWindowFromPage(page),
       hasMore: page.has_more,
+      ok: true,
+      stream: streamName,
       warning,
     };
   } catch (err) {
     const { expected, reason } = classifyFanInFailure(err);
     return {
-      ok: false,
       failure: {
         connectionName: connectorSummaryDisplayName(summary),
         expected,
         reason,
         stream: streamName,
       },
+      ok: false,
     };
   }
 }
@@ -1474,37 +1477,37 @@ async function loadTimeRangeFeed(
   const timeRangeTotal = exactWindows.reduce((sum, w) => sum + w.total, 0);
   const timeRangeTruncated = truncated || streamInfos.some((si) => si.hasMore);
   return {
-    entries: entries.slice(0, TIME_RANGE_TOTAL_CAP),
-    exactWindowComplete: okCount > 0 && exactWindows.length === okCount,
-    fromSearch: false,
-    hybridUsed: false,
-    nextCursor: null,
-    newSinceAnchor: null,
-    searchHasMore: false,
-    searchNextCursor: null,
     // Time-range: relevance_bounded when truncated (bounded sample with escape ramps);
     // filtered_exact when all streams are within cap and we have exact totals.
     descriptor: timeRangeTruncated
       ? {
+          completeness: "bounded_sample",
           kind: "relevance_bounded",
           ordering: "relevance",
-          completeness: "bounded_sample",
           ...(timeRangeTotal > 0 ? { total: timeRangeTotal } : {}),
-          has_more: false as const,
           cursor: null,
+          has_more: false as const,
         }
       : {
+          completeness: "exact",
+          cursor: null,
+          has_more: false,
           kind: "filtered_exact",
           ordering: "owner_chosen",
-          completeness: "exact",
           total: timeRangeTotal,
-          has_more: false,
-          cursor: null,
         },
+    entries: entries.slice(0, TIME_RANGE_TOTAL_CAP),
+    exactWindowComplete: okCount > 0 && exactWindows.length === okCount,
+    exactWindows,
+    fromSearch: false,
+    hybridUsed: false,
+    newSinceAnchor: null,
+    nextCursor: null,
+    searchHasMore: false,
+    searchNextCursor: null,
     snapshotAnchor: null,
     streamDoor: null,
     streamSeeAllLinks,
-    exactWindows,
     truncated,
     warnings,
   };
@@ -1521,7 +1524,7 @@ function detectSingleStreamDoor(
   if (filtered.length === 0) {
     return null;
   }
-  const first = filtered[0];
+  const [first] = filtered;
   if (!first) {
     return null;
   }
@@ -1536,12 +1539,12 @@ function detectSingleStreamDoor(
   if (matchingSummaries.length !== 1 || !matchingSummaries[0]) {
     return null;
   }
-  const summary = matchingSummaries[0];
+  const [summary] = matchingSummaries;
   return {
-    connectorId: sharedConnector,
     connectionId: summary.connection_id,
-    stream: sharedStream,
+    connectorId: sharedConnector,
     displayName: `${connectorSummaryDisplayName(summary)} - ${sharedStream}`,
+    stream: sharedStream,
   };
 }
 
@@ -1571,11 +1574,11 @@ async function loadMostRecentSingleStream(
   dataSource: DashboardDataSource
 ): Promise<{ entries: ExplorerFeedEntry[]; searchNextCursor: string | null; searchHasMore: boolean }> {
   const page = await dataSource.searchRecordsLexical(query, {
-    streams: [streamName],
     limit: SEARCH_PAGE_LIMIT,
     // order=recent: genuine emitted_at DESC ordering within the lexical candidate
     // window. This is what makes keyword_pageable with ordering=time honest (F2 fix).
     order: "recent",
+    streams: [streamName],
     ...(cursor ? { cursor } : {}),
   });
   // Post-filter to the exact stream (the server streams param narrows scope but
@@ -1589,36 +1592,36 @@ async function loadMostRecentSingleStream(
       emittedAt: hit.emitted_at,
       metadata: lookupSearchTimestampMetadata(timestampMetadata, summary.connector_id, streamName),
     });
-    const kind = classifyRecordKind(
+    const { kind } = classifyRecordKind(
       streamName,
       null,
       metadata.declaredFieldTypes,
       metadata.fieldNames,
       declaredFieldRoles.get(metaKey)
-    ).kind;
+    );
     return {
       blobAffordance: undefined,
-      connectorId: summary.connector_id,
-      connectionId: summary.connection_id,
       connectionDisplayName: connectorSummaryDisplayName(summary),
-      stream: streamName,
-      recordId: hit.record_key,
-      emittedAt: hit.emitted_at,
+      connectionId: summary.connection_id,
+      connectorId: summary.connector_id,
       displayAt: display.value,
       displayIsSemantic: display.isSemantic,
+      emittedAt: hit.emitted_at,
+      kind,
+      recordId: hit.record_key,
+      retrievalMode: "lexical" as const,
       // The matched-text excerpt for this search hit — a clearly-labelled secondary in
       // the row, NEVER a faked title. Absent when the server returns no snippet (the row
       // then shows the neutral record id, which is honest for a bodyless retrieval hit).
       snippet: hit.snippet?.text ? plainSnippetText(hit.snippet.text) : undefined,
       snippetSegments: hit.snippet?.text ? snippetSegments(hit.snippet.text) : undefined,
-      kind,
-      retrievalMode: "lexical" as const,
+      stream: streamName,
     };
   });
   return {
     entries,
-    searchNextCursor: page.next_cursor ?? null,
     searchHasMore: page.has_more,
+    searchNextCursor: page.next_cursor ?? null,
   };
 }
 
@@ -1699,11 +1702,11 @@ async function probeLexical(
         }
       : null;
   return {
-    hits: page.data,
-    lexicalRecallExhaustive,
     hasMoreRecords,
-    lexicalNextCursor: paged ? (page.next_cursor ?? null) : null,
+    hits: page.data,
     lexicalHasMore: paged ? page.has_more : false,
+    lexicalNextCursor: paged ? (page.next_cursor ?? null) : null,
+    lexicalRecallExhaustive,
     warning,
   };
 }
@@ -1727,30 +1730,31 @@ function mostRelevantSearchResult(args: {
   const exhaustive = !args.hybridUsed && args.lexicalRecallExhaustive;
   if (exhaustive) {
     return {
-      searchHasMore: args.lexicalHasMore,
-      searchNextCursor: args.lexicalNextCursor,
       descriptor: {
+        completeness: "pageable",
+        cursor: args.lexicalNextCursor,
+        has_more: args.lexicalHasMore,
         kind: "keyword_pageable",
         ordering: "relevance",
-        completeness: "pageable",
-        has_more: args.lexicalHasMore,
-        cursor: args.lexicalNextCursor,
       },
+      searchHasMore: args.lexicalHasMore,
+      searchNextCursor: args.lexicalNextCursor,
     };
   }
   return {
-    searchHasMore: false,
-    searchNextCursor: null,
     descriptor: {
+      completeness: "bounded_sample",
+      cursor: null,
+      has_more: false,
       kind: "relevance_bounded",
       ordering: "relevance",
-      completeness: "bounded_sample",
-      has_more: false,
-      cursor: null,
     },
+    searchHasMore: false,
+    searchNextCursor: null,
   };
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: The branch structure directly represents the supported data variants; extraction would split one decision table.
 async function loadSearchFeed(
   query: string,
   searchSort: "relevance" | "recent",
@@ -1825,11 +1829,7 @@ async function loadSearchFeed(
   }
   if (!hybridUsed) {
     const probe = await probeLexical(query, searchSort, searchCursor, dataSource);
-    hits = probe.hits;
-    lexicalRecallExhaustive = probe.lexicalRecallExhaustive;
-    hasMoreRecords = probe.hasMoreRecords;
-    lexicalNextCursor = probe.lexicalNextCursor;
-    lexicalHasMore = probe.lexicalHasMore;
+    ({ hasMoreRecords, hits, lexicalHasMore, lexicalNextCursor, lexicalRecallExhaustive } = probe);
     if (probe.warning) {
       warnings.push(probe.warning);
     }
@@ -1844,8 +1844,8 @@ async function loadSearchFeed(
       return false;
     }
     return shouldIncludeSearchHit(h, {
-      allowedConnectors,
       allowedConnectionIds,
+      allowedConnectors,
       enforceConnectionFilter,
       excludeConnectionIds: exclude.instanceIds,
     });
@@ -1879,25 +1879,25 @@ async function loadSearchFeed(
             dataSource
           );
           return {
+            // keyword_pageable ordered by time: genuine emitted_at DESC via lexical
+            // order=recent. This is the honest "Browse all matching records, newest
+            // first" path for a single stream (F2 fix).
+            descriptor: {
+              completeness: "pageable",
+              cursor: result.searchNextCursor,
+              has_more: result.searchHasMore,
+              kind: "keyword_pageable",
+              ordering: "time",
+            },
             entries: result.entries,
             exactWindowComplete: false,
             exactWindows: [],
             fromSearch: true,
             hybridUsed: false,
+            newSinceAnchor: null,
+            nextCursor: null,
             searchHasMore: result.searchHasMore,
             searchNextCursor: result.searchNextCursor,
-            nextCursor: null,
-            newSinceAnchor: null,
-            // keyword_pageable ordered by time: genuine emitted_at DESC via lexical
-            // order=recent. This is the honest "Browse all matching records, newest
-            // first" path for a single stream (F2 fix).
-            descriptor: {
-              kind: "keyword_pageable",
-              ordering: "time",
-              completeness: "pageable",
-              has_more: result.searchHasMore,
-              cursor: result.searchNextCursor,
-            },
             snapshotAnchor: null,
             streamDoor,
             streamSeeAllLinks: [],
@@ -1936,8 +1936,8 @@ async function loadSearchFeed(
         return false;
       }
       return shouldIncludeSearchHit(h, {
-        allowedConnectors,
         allowedConnectionIds,
+        allowedConnectors,
         enforceConnectionFilter,
         excludeConnectionIds: exclude.instanceIds,
       });
@@ -1951,19 +1951,12 @@ async function loadSearchFeed(
       const attribution = attributeSearchHit(hit, filteredSummaries);
       const metaKey = searchTimestampMetadataKey(hit.connector_id, hit.stream);
       return {
-        connectorId: hit.connector_id,
-        connectionId: attribution.connectionId,
         connectionDisplayName: attribution.connectionDisplayName,
-        stream: hit.stream,
-        recordId: hit.record_key,
-        emittedAt: hit.emitted_at,
+        connectionId: attribution.connectionId,
+        connectorId: hit.connector_id,
         displayAt: display.value,
         displayIsSemantic: display.isSemantic,
-        // The matched-text excerpt for this search hit — a clearly-labelled secondary in
-        // the row, NEVER a faked title. Absent when the server returns no snippet (the row
-        // then shows the neutral record id, which is honest for a bodyless retrieval hit).
-        snippet: hit.snippet?.text ? plainSnippetText(hit.snippet.text) : undefined,
-        snippetSegments: hit.snippet?.text ? snippetSegments(hit.snippet.text) : undefined,
+        emittedAt: hit.emitted_at,
         kind: classifyRecordKind(
           hit.stream,
           null,
@@ -1971,34 +1964,41 @@ async function loadSearchFeed(
           manifestFieldNames.get(metaKey),
           declaredFieldRoles.get(metaKey)
         ).kind,
+        recordId: hit.record_key,
         retrievalMode: "lexical" as const,
+        // The matched-text excerpt for this search hit — a clearly-labelled secondary in
+        // the row, NEVER a faked title. Absent when the server returns no snippet (the row
+        // then shows the neutral record id, which is honest for a bodyless retrieval hit).
+        snippet: hit.snippet?.text ? plainSnippetText(hit.snippet.text) : undefined,
+        snippetSegments: hit.snippet?.text ? snippetSegments(hit.snippet.text) : undefined,
+        stream: hit.stream,
       };
     });
     const fallbackDoor = detectSingleStreamDoor(fallbackFiltered, filteredSummaries);
     const fallbackNextCursor = fallbackPage.next_cursor ?? null;
     return {
-      entries: fallbackEntries,
-      exactWindowComplete: false,
-      exactWindows: [],
-      fromSearch: true,
-      hybridUsed: false,
-      // Wire the lexical cursor so "Browse all matching records" pages exhaustively
-      // through MATCHING records (F2 fix: previously searchHasMore was hardcoded false).
-      searchHasMore: fallbackPage.has_more,
-      searchNextCursor: fallbackNextCursor,
-      nextCursor: null,
-      newSinceAnchor: null,
       // keyword_pageable ordered by time: multi-stream Most-recent path uses
       // lexical order=recent, so results are genuinely emitted_at DESC within
       // the lexical candidate window. Cross-source strict time ordering requires
       // the Phase 3 merged timeline; this is the honest bounded alternative.
       descriptor: {
+        completeness: "pageable",
+        cursor: fallbackNextCursor,
+        has_more: fallbackPage.has_more,
         kind: "keyword_pageable",
         ordering: "time",
-        completeness: "pageable",
-        has_more: fallbackPage.has_more,
-        cursor: fallbackNextCursor,
       },
+      entries: fallbackEntries,
+      exactWindowComplete: false,
+      exactWindows: [],
+      fromSearch: true,
+      hybridUsed: false,
+      newSinceAnchor: null,
+      nextCursor: null,
+      // Wire the lexical cursor so "Browse all matching records" pages exhaustively
+      // through MATCHING records (F2 fix: previously searchHasMore was hardcoded false).
+      searchHasMore: fallbackPage.has_more,
+      searchNextCursor: fallbackNextCursor,
       snapshotAnchor: null,
       streamDoor: fallbackDoor,
       streamSeeAllLinks: [],
@@ -2023,19 +2023,12 @@ async function loadSearchFeed(
     // buildRecordPreview is gated on an actual record body below.
     const metaKey = searchTimestampMetadataKey(hit.connector_id, hit.stream);
     return {
-      connectorId: hit.connector_id,
-      connectionId: attribution.connectionId,
       connectionDisplayName: attribution.connectionDisplayName,
-      stream: hit.stream,
-      recordId: hit.record_key,
-      emittedAt: hit.emitted_at,
+      connectionId: attribution.connectionId,
+      connectorId: hit.connector_id,
       displayAt: display.value,
       displayIsSemantic: display.isSemantic,
-      // The matched-text excerpt for this search hit — a clearly-labelled secondary in
-      // the row, NEVER a faked title. Absent when the server returns no snippet (the row
-      // then shows the neutral record id, which is honest for a bodyless retrieval hit).
-      snippet: hit.snippet?.text ? plainSnippetText(hit.snippet.text) : undefined,
-      snippetSegments: hit.snippet?.text ? snippetSegments(hit.snippet.text) : undefined,
+      emittedAt: hit.emitted_at,
       kind: classifyRecordKind(
         hit.stream,
         null,
@@ -2043,7 +2036,14 @@ async function loadSearchFeed(
         manifestFieldNames.get(metaKey),
         declaredFieldRoles.get(metaKey)
       ).kind,
+      recordId: hit.record_key,
       retrievalMode: hit.retrieval_mode ?? (hybridUsed ? "hybrid" : "lexical"),
+      // The matched-text excerpt for this search hit — a clearly-labelled secondary in
+      // the row, NEVER a faked title. Absent when the server returns no snippet (the row
+      // then shows the neutral record id, which is honest for a bodyless retrieval hit).
+      snippet: hit.snippet?.text ? plainSnippetText(hit.snippet.text) : undefined,
+      snippetSegments: hit.snippet?.text ? snippetSegments(hit.snippet.text) : undefined,
+      stream: hit.stream,
     };
   });
 
@@ -2053,11 +2053,11 @@ async function loadSearchFeed(
     exactWindows: [],
     fromSearch: true,
     hybridUsed,
-    nextCursor: null,
     newSinceAnchor: null,
+    nextCursor: null,
     // Recall honesty gate: a bounded candidate window is a ranked sample
     // (relevance_bounded, no cursor), not an exhaustive keyword_pageable set.
-    ...mostRelevantSearchResult({ hybridUsed, lexicalRecallExhaustive, lexicalHasMore, lexicalNextCursor }),
+    ...mostRelevantSearchResult({ hybridUsed, lexicalHasMore, lexicalNextCursor, lexicalRecallExhaustive }),
     snapshotAnchor: null,
     streamDoor,
     streamSeeAllLinks: [],
@@ -2442,11 +2442,11 @@ export function manifestConnectorKey(manifest: { connector_id: string; connector
 
 async function buildManifestMetadata(dataSource: DashboardDataSource): Promise<ManifestMetadata> {
   const maps = {
-    timestampMetadata: new Map<string, SearchTimestampMetadata>(),
-    manifestFieldNames: new Map<string, readonly string[]>(),
-    declaredFieldTypes: new Map<string, DeclaredFieldTypes>(),
     declaredFieldRoles: new Map<string, DeclaredFieldRoles>(),
+    declaredFieldTypes: new Map<string, DeclaredFieldTypes>(),
+    manifestFieldNames: new Map<string, readonly string[]>(),
     serverFilterableFields: new Map<string, Set<string>>(),
+    timestampMetadata: new Map<string, SearchTimestampMetadata>(),
   };
   for (const manifest of await dataSource.listConnectorManifests()) {
     const connectorKey = manifestConnectorKey(manifest);
@@ -2496,14 +2496,15 @@ async function buildPeek(
     return null;
   }
   const connection = resolvePeekConnection(parsed, byConnectionId);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: The declared public input remains defensive at this boundary; removing the guard would reduce runtime tolerance.
   const connectorInstanceId = connection?.connector_instance_id ?? connection?.connection_id ?? null;
 
   const readUrl = buildPeekReadUrl({
-    rsBaseUrl,
     connectorId: parsed.connectorId,
-    stream: parsed.stream,
-    recordId: parsed.recordId,
     connectorInstanceId,
+    recordId: parsed.recordId,
+    rsBaseUrl,
+    stream: parsed.stream,
   });
 
   try {
@@ -2538,31 +2539,33 @@ async function buildPeek(
     // equal the ingest time, and we must still show it as the authored date.
     const semanticTimestamp = peekSemantic.isSemantic ? { label: peekSemantic.label, value: peekSemantic.value } : null;
     return {
-      fields: buildPeekFields(data, fieldCapabilities),
-      connectorId: parsed.connectorId,
-      connectionId: connection?.connection_id ?? null,
-      connectionDisplayName: connection ? connectorSummaryDisplayName(connection) : null,
-      stream: parsed.stream,
-      recordId: parsed.recordId,
-      emittedAt: record.emitted_at,
-      readUrl,
       bodyJson: JSON.stringify(data, null, 2),
+      connectionDisplayName: connection ? connectorSummaryDisplayName(connection) : null,
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: The declared public input remains defensive at this boundary; removing the guard would reduce runtime tolerance.
+      connectionId: connection?.connection_id ?? null,
+      connectorId: parsed.connectorId,
+      emittedAt: record.emitted_at,
       error: null,
+      fields: buildPeekFields(data, fieldCapabilities),
+      readUrl,
+      recordId: parsed.recordId,
       semanticTimestamp,
+      stream: parsed.stream,
     };
   } catch (err) {
     return {
-      fields: [],
-      connectorId: parsed.connectorId,
-      connectionId: connection?.connection_id ?? null,
-      connectionDisplayName: connection ? connectorSummaryDisplayName(connection) : null,
-      stream: parsed.stream,
-      recordId: parsed.recordId,
-      emittedAt: "",
-      readUrl,
       bodyJson: null,
+      connectionDisplayName: connection ? connectorSummaryDisplayName(connection) : null,
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: The declared public input remains defensive at this boundary; removing the guard would reduce runtime tolerance.
+      connectionId: connection?.connection_id ?? null,
+      connectorId: parsed.connectorId,
+      emittedAt: "",
       error: err instanceof Error ? err.message : String(err),
+      fields: [],
+      readUrl,
+      recordId: parsed.recordId,
       semanticTimestamp: null,
+      stream: parsed.stream,
     };
   }
 }
@@ -2675,9 +2678,11 @@ function resolveChartTarget(
     return null;
   }
   return {
-    connectorId: summary.connector_id,
-    connectorInstanceId: summary.connector_instance_id ?? summary.connection_id ?? null,
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: The declared public input remains defensive at this boundary; removing the guard would reduce runtime tolerance.
     connectionId: summary.connection_id ?? null,
+    connectorId: summary.connector_id,
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: The declared public input remains defensive at this boundary; removing the guard would reduce runtime tolerance.
+    connectorInstanceId: summary.connector_instance_id ?? summary.connection_id ?? null,
     stream: streamName,
   };
 }
@@ -2698,7 +2703,7 @@ function chartTargets(
       targets.push(target);
     }
   }
-  return { targets, partial: false };
+  return { partial: false, targets };
 }
 
 /**
@@ -2755,7 +2760,7 @@ function computeBucketRequest(args: {
 
   return {
     connections,
-    streams,
+    descriptorKind: args.descriptor.kind,
     // EXCLUDED connections: `chartTargets` iterates `filteredSummaries` (the
     // INCLUDE-filtered set) and does NOT drop the `-con:` exclusions, so an
     // excluded connection's streams DO land in `connections` above. Carry the
@@ -2767,10 +2772,10 @@ function computeBucketRequest(args: {
     // action re-asserts the same exclusion server-side (defense in depth — the
     // include scope already narrows it, but passing it keeps the request honest).
     excludeStreams: [...args.excludeStreams],
-    since: args.since,
-    until: args.until,
-    descriptorKind: args.descriptor.kind,
     fromSearch: args.fromSearch,
+    since: args.since,
+    streams,
+    until: args.until,
   };
 }
 
@@ -2800,14 +2805,14 @@ function parsePageParams(
   const isFirstPage = !(searchCursor || cursorTrail.length > 0 || rawAnchor);
   const snapshotAnchorFallback = rawAnchor ?? (query ? null : new Date().toISOString());
   return {
-    searchSort,
-    feedDirection,
-    searchCursor,
     cursorTrail,
-    upcomingTrail,
-    rawAnchor,
+    feedDirection,
     isFirstPage,
+    rawAnchor,
+    searchCursor,
+    searchSort,
     snapshotAnchorFallback,
+    upcomingTrail,
   };
 }
 
@@ -2877,26 +2882,26 @@ export async function assembleExplorerData(
 
   const [feedDispatch, peek] = await Promise.all([
     dispatchFeed({
-      query,
-      searchSort,
-      searchCursor,
       cursorTrail,
-      upcomingTrail,
-      snapshotAnchorParam: rawAnchor,
-      since,
-      until,
-      filteredSummaries,
-      filterStreamSet,
-      timestampMetadata,
-      manifestFieldNames,
-      declaredFieldTypes,
+      dataSource,
       declaredFieldRoles,
-      filterConnectionSet,
+      declaredFieldTypes,
       excludeConnectionSet,
       excludeStreamSet,
-      summaries,
       feedDirection,
-      dataSource,
+      filterConnectionSet,
+      filteredSummaries,
+      filterStreamSet,
+      manifestFieldNames,
+      query,
+      searchCursor,
+      searchSort,
+      since,
+      snapshotAnchorParam: rawAnchor,
+      summaries,
+      timestampMetadata,
+      until,
+      upcomingTrail,
     }),
     buildPeek(params.peek, summaryByConnectionId(summaries), dataSource, rsBaseUrl),
   ]);
@@ -2910,11 +2915,11 @@ export async function assembleExplorerData(
   // stay scoped to the SAME (connection, stream) targets the feed shows.
   const bucketRequest = computeBucketRequest({
     descriptor: feedResult.descriptor,
-    fromSearch: feedResult.fromSearch,
-    filteredSummaries,
-    filterStreams: filterStreamSet,
     excludeConnections: excludeConnectionSet,
     excludeStreams: excludeStreamSet,
+    filteredSummaries,
+    filterStreams: filterStreamSet,
+    fromSearch: feedResult.fromSearch,
     since,
     until,
   });
@@ -2966,8 +2971,6 @@ export async function assembleExplorerData(
 
   return {
     activitySummary: activitySummaryForFeed(feedResult),
-    query,
-    connections,
     // DEFERRED over-time chart inputs (null when suppressed: search /
     // relevance_bounded / no targets). The canvas loads the band post-mount from
     // these, off the first-paint critical path.
@@ -2976,47 +2979,49 @@ export async function assembleExplorerData(
     // so the assembler never blocks first paint on the 3.6s aggregate. Always null
     // here; the canvas holds the loaded series in its own state.
     bucketSeries: null,
-    // SET-DESCRIPTOR: propagate the engine-level truth about completeness and ordering.
-    // The canvas switches on this to decide what it may claim about the set.
-    descriptor: feedResult.descriptor,
-    supportsTimelineDirection,
-    selectedConnectionIds,
-    selectedStreams,
-    excludeConnectionIds,
-    excludeStreams,
-    serverFilterableFields: [...filterableFieldUnion].sort(),
-    since,
-    until,
-    lens,
-    fromSearch: feedResult.fromSearch,
-    hybridUsed: feedResult.hybridUsed,
-    feed: feedResult.entries,
-    truncated: feedResult.truncated,
-    // P2: search sort toggle + lexical cursor trail
-    searchHasMore: feedResult.searchHasMore,
-    searchNextCursor: feedResult.searchNextCursor,
-    searchSort: feedResult.fromSearch ? searchSort : "relevance",
-    streamDoor: feedResult.streamDoor,
-    streamSeeAllLinks: feedResult.streamSeeAllLinks,
-    // P3 merged-timeline cursor and point-in-time stability.
-    // When /_ref/explore/records ran: nextCursor is the real composite cursor
-    // (non-null when has_more=true); snapshotAnchor is the endpoint's snapshot_at.
-    nextCursor: feedResult.nextCursor ?? null,
+    connections,
     // The accumulating cursor trail backing this feed. Only the recent merged-
     // timeline lens accumulates; search / time-range lenses page via the single
     // searchNextCursor, so they carry an empty trail.
     cursorTrail: lens === "recent" ? cursorTrail : [],
-    upcomingTrail: lens === "recent" ? upcomingTrail : [],
-    snapshotAnchor: resolvedSnapshotAnchor,
+    // SET-DESCRIPTOR: propagate the engine-level truth about completeness and ordering.
+    // The canvas switches on this to decide what it may claim about the set.
+    descriptor: feedResult.descriptor,
+    excludeConnectionIds,
+    excludeStreams,
+    feed: feedResult.entries,
+    fromSearch: feedResult.fromSearch,
+    hybridUsed: feedResult.hybridUsed,
+    lens,
     newSinceAnchor: computedNewSinceAnchor,
+    // P3 merged-timeline cursor and point-in-time stability.
+    // When /_ref/explore/records ran: nextCursor is the real composite cursor
+    // (non-null when has_more=true); snapshotAnchor is the endpoint's snapshot_at.
+    nextCursor: feedResult.nextCursor ?? null,
+    peek,
+    query,
+    // P2: search sort toggle + lexical cursor trail
+    searchHasMore: feedResult.searchHasMore,
+    searchNextCursor: feedResult.searchNextCursor,
+    searchSort: feedResult.fromSearch ? searchSort : "relevance",
+    selectedConnectionIds,
+    selectedStreams,
+    serverFilterableFields: [...filterableFieldUnion].sort(),
+    since,
+    snapshotAnchor: resolvedSnapshotAnchor,
+    streamDoor: feedResult.streamDoor,
+    streamSeeAllLinks: feedResult.streamSeeAllLinks,
+    supportsTimelineDirection,
+    truncated: feedResult.truncated,
+    until,
     // Server's separate Upcoming (future-dated) projection + true count. Empty for
     // non-recent lenses. The canvas renders the collapsed "Upcoming" section from
     // this; it does NOT re-derive the past/future boundary.
     upcoming: feedResult.upcoming ?? [],
-    upcomingTotal: feedResult.upcomingTotal ?? 0,
-    upcomingNextCursor: feedResult.upcomingNextCursor ?? null,
     upcomingHasMore: feedResult.upcomingHasMore ?? false,
-    peek,
+    upcomingNextCursor: feedResult.upcomingNextCursor ?? null,
+    upcomingTotal: feedResult.upcomingTotal ?? 0,
+    upcomingTrail: lens === "recent" ? upcomingTrail : [],
     warnings,
   };
 }

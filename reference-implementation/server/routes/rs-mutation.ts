@@ -79,7 +79,7 @@ import {
   RecordsIngestNotFoundError,
   type RecordsIngestOutput,
 } from "../../operations/rs-records-ingest/index.ts";
-import { canonicalConnectorKey } from "../connector-key.js";
+import { canonicalConnectorKey } from "../connector-key.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 
 // Express-shaped surface, structurally typed to avoid pulling in the
@@ -94,23 +94,24 @@ interface RouteRequest {
 }
 
 interface RouteResponse {
-  end(): unknown;
-  json(body: unknown): unknown;
-  setHeader(name: string, value: string): unknown;
-  status(code: number): RouteResponse;
+  end: () => unknown;
+  json: (body: unknown) => unknown;
+  setHeader: (name: string, value: string) => unknown;
+  status: (code: number) => RouteResponse;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
 
 interface AppLike {
-  delete(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
-  get(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
-  patch(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
-  post(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
-  put(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  delete: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
+  get: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
+  patch: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
+  post: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
+  put: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
 }
 
 function subscriptionIdFromParams(params: Readonly<Record<string, string>>): string {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   return params.subscription_id ?? params.id ?? "";
 }
 
@@ -137,6 +138,7 @@ function ownerStateDraftAdmission(
   if (grantId) {
     return {};
   }
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const explicitConnectorInstanceId = singleQueryValue(req.query?.connector_instance_id);
   return explicitConnectorInstanceId ? { allowStatuses: ["active", "draft"] } : {};
 }
@@ -344,7 +346,7 @@ export interface MountRsMutationContext {
 
   // Event-subscription capabilities
   readonly getDefaultClientEventSubscriptionStore: () => unknown;
-  readonly getDefaultDeliveryWorker: () => { tick(): Promise<void> };
+  readonly getDefaultDeliveryWorker: () => { tick: () => Promise<void> };
   readonly getLatestAcquisitionBatchForConnection?: (
     connectorInstanceId: string
   ) => Promise<AcquisitionBatchLike | null> | AcquisitionBatchLike | null;
@@ -472,23 +474,23 @@ export function mountRsBlobsUpload(app: AppLike, ctx: MountRsMutationContext): v
             return ctx.persistContentAddressedBlob({
               connectorId: namespace.connectorId,
               connectorInstanceId: namespace.connectorInstanceId,
-              stream,
-              recordKey,
-              mimeType,
               // ctx.persistContentAddressedBlob is untyped (.js host); Buffer extends
               // Uint8Array so the operation's coerced Uint8Array is always passable here.
               data: data instanceof Buffer ? data : Buffer.from(data),
+              mimeType,
+              recordKey,
+              stream,
             }) as ReturnType<BlobsUploadDependencies["persistBlob"]>;
           },
         };
         const operationInput: BlobsUploadInput = {
+          body: req.body,
+          contentType: (req.headers as Record<string, unknown>)["content-type"],
           requestParams: {
             connector_id: (req.query as Record<string, unknown>).connector_id,
-            stream: (req.query as Record<string, unknown>).stream,
             record_key: (req.query as Record<string, unknown>).record_key,
+            stream: (req.query as Record<string, unknown>).stream,
           },
-          contentType: (req.headers as Record<string, unknown>)["content-type"],
-          body: req.body,
         };
         let output: { envelope: unknown };
         try {
@@ -557,8 +559,8 @@ function buildBearerActorFromTokenInfo(req: RouteRequest): BearerActor | null {
       authorityKind: "client_grant",
       clientId: ti.client_id,
       grantId: ti.grant_id,
-      subjectId: ti.subject_id ?? "",
       grantScope: buildGrantScope(grant),
+      subjectId: ti.subject_id ?? "",
     };
   }
   if (ti.pdpp_token_kind === "owner") {
@@ -569,8 +571,8 @@ function buildBearerActorFromTokenInfo(req: RouteRequest): BearerActor | null {
       authorityKind: "trusted_owner_agent",
       clientId: ti.client_id,
       grantId: null,
-      subjectId: ti.subject_id,
       grantScope: { streams: [{ name: "*" }] },
+      subjectId: ti.subject_id,
     };
   }
   return null;
@@ -588,6 +590,7 @@ function handleClientEventSubError(ctx: MountRsMutationContext, res: RouteRespon
     code?: string;
     message?: string;
   };
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   if (e && e.name === "ClientEventSubscriptionError") {
     return ctx.pdppError(res, e.status || 400, e.code || "invalid_request", e.message);
   }
@@ -596,8 +599,8 @@ function handleClientEventSubError(ctx: MountRsMutationContext, res: RouteRespon
 
 export function mountRsEventSubscriptions(app: AppLike, ctx: MountRsMutationContext): void {
   const clientEventSubsDeps = () => ({
-    store: ctx.getDefaultClientEventSubscriptionStore(),
     nowIso: () => new Date().toISOString(),
+    store: ctx.getDefaultClientEventSubscriptionStore(),
   });
 
   // POST /v1/event-subscriptions
@@ -634,11 +637,11 @@ export function mountRsEventSubscriptions(app: AppLike, ctx: MountRsMutationCont
           createdAt: string;
         };
         return res.status(201).json({
-          subscription_id: o.subscriptionId,
-          secret: o.secret,
-          status: o.status,
           callback_url: o.callbackUrl,
           created_at: o.createdAt,
+          secret: o.secret,
+          status: o.status,
+          subscription_id: o.subscriptionId,
         });
       } catch (err) {
         return handleClientEventSubError(ctx, res, err);
@@ -791,21 +794,12 @@ export function mountRsRecordsDeleteStream(app: AppLike, ctx: MountRsMutationCon
         connectorId,
         connectorInstanceId,
         operation: "delete_stream_records",
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
         streamId: req.params.stream ?? null,
       });
       try {
         let storageNamespace: ConnectorNamespaceLike | null = null;
         const dependencies: RecordsDeleteStreamDependencies = {
-          hasManifestStream: async (cid: string, streamName: string) => {
-            const manifest = await ctx.resolveRegisteredConnectorManifest(cid);
-            const visible = Boolean((manifest.streams || []).find((stream) => stream.name === streamName));
-            if (visible) {
-              storageNamespace = await ctx.resolveOwnerConnectorNamespace(req, cid, {
-                connectorInstanceId,
-              });
-            }
-            return visible;
-          },
           deleteAllRecords: async (cid: string, streamName: string) => {
             const namespace =
               storageNamespace ??
@@ -818,6 +812,16 @@ export function mountRsRecordsDeleteStream(app: AppLike, ctx: MountRsMutationCon
               streamName
             ) as Promise<number>;
           },
+          hasManifestStream: async (cid: string, streamName: string) => {
+            const manifest = await ctx.resolveRegisteredConnectorManifest(cid);
+            const visible = Boolean((manifest.streams || []).find((stream) => stream.name === streamName));
+            if (visible) {
+              storageNamespace = await ctx.resolveOwnerConnectorNamespace(req, cid, {
+                connectorInstanceId,
+              });
+            }
+            return visible;
+          },
         };
         let output: { deletedRecordCount: number };
         try {
@@ -829,6 +833,7 @@ export function mountRsRecordsDeleteStream(app: AppLike, ctx: MountRsMutationCon
           }
           ctx.setReferenceTraceId(res, mutationContext.traceId);
           await ctx.emitMutationRequested(req, mutationContext);
+          // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
           output = await executeRecordsDeleteStream({ connectorId, streamName: req.params.stream ?? "" }, dependencies);
         } catch (opErr) {
           if (
@@ -879,27 +884,19 @@ export function mountRsRecordsDelete(app: AppLike, ctx: MountRsMutationContext):
     async (req: RouteRequest, res: RouteResponse) => {
       const connectorId = canonicalizeConnectorId(ctx.resolveSingleConnectorIdQueryValue(req.query.connector_id));
       const connectorInstanceId = ctx.resolveSingleConnectorIdQueryValue(req.query.connector_instance_id);
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
       const requestedRecordId = decodeURIComponent(req.params.id ?? "");
       const mutationContext = ctx.buildMutationContext(req, res, {
         connectorId,
         connectorInstanceId,
         operation: "delete_record",
-        streamId: req.params.stream ?? null,
         requestedRecordId,
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+        streamId: req.params.stream ?? null,
       });
       try {
         let storageNamespace: ConnectorNamespaceLike | null = null;
         const dependencies: RecordsDeleteDependencies = {
-          hasManifestStream: async (cid: string, streamName: string) => {
-            const manifest = await ctx.resolveRegisteredConnectorManifest(cid);
-            const visible = Boolean((manifest.streams || []).find((stream) => stream.name === streamName));
-            if (visible) {
-              storageNamespace = await ctx.resolveOwnerConnectorNamespace(req, cid, {
-                connectorInstanceId,
-              });
-            }
-            return visible;
-          },
           deleteRecord: async (cid: string, streamName: string, recordId: string) => {
             const namespace =
               storageNamespace ??
@@ -913,6 +910,16 @@ export function mountRsRecordsDelete(app: AppLike, ctx: MountRsMutationContext):
               recordId
             ) as Promise<number>;
           },
+          hasManifestStream: async (cid: string, streamName: string) => {
+            const manifest = await ctx.resolveRegisteredConnectorManifest(cid);
+            const visible = Boolean((manifest.streams || []).find((stream) => stream.name === streamName));
+            if (visible) {
+              storageNamespace = await ctx.resolveOwnerConnectorNamespace(req, cid, {
+                connectorInstanceId,
+              });
+            }
+            return visible;
+          },
         };
         let output: { deletedRecordCount: number };
         try {
@@ -924,8 +931,9 @@ export function mountRsRecordsDelete(app: AppLike, ctx: MountRsMutationContext):
           output = await executeRecordsDelete(
             {
               connectorId,
-              streamName: req.params.stream ?? "",
               recordId: requestedRecordId,
+              // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+              streamName: req.params.stream ?? "",
             },
             dependencies
           );
@@ -985,6 +993,7 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
       connectorId,
       connectorInstanceId,
       operation: "ingest_records",
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
       streamId: req.params.stream ?? null,
       submittedRecordCount: lineCount,
     });
@@ -1028,6 +1037,7 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
               ctx,
               namespace,
               await acquisitionBatchPromise,
+              // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
               req.params.stream ?? "",
               record
             );
@@ -1044,10 +1054,11 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
         await ctx.emitMutationRequested(req, mutationContext);
         output = await executeRecordsIngest(
           {
+            body: rawBody,
             connectorId,
             connectorInstanceId,
+            // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
             streamName: req.params.stream ?? "",
-            body: rawBody,
           },
           dependencies
         );
@@ -1070,9 +1081,9 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
         recordsRejected: output.envelope.records_rejected,
       });
       await ctx.emitMutationEvent(req, mutationContext, "mutation.completed", "succeeded", {
+        error_count: output.envelope.errors.length,
         records_accepted: output.envelope.records_accepted,
         records_rejected: output.envelope.records_rejected,
-        error_count: output.envelope.errors.length,
       });
       return res.json(output.envelope);
     } catch (err) {
@@ -1103,6 +1114,7 @@ export function mountRsConnectorStateGet(app: AppLike, ctx: MountRsMutationConte
     ctx.requireToken,
     ctx.requireOwner,
     async (req: RouteRequest, res: RouteResponse) => {
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
       const connectorId = canonicalizeConnectorId(decodeURIComponent(req.params.connectorId ?? "")) ?? "";
       const grantId = typeof req.query.grant_id === "string" ? req.query.grant_id : null;
       const stateContext = ctx.buildStateContext(req, res, {
@@ -1113,27 +1125,6 @@ export function mountRsConnectorStateGet(app: AppLike, ctx: MountRsMutationConte
       try {
         let storageNamespace: ConnectorNamespaceLike | null = null;
         const stateGetDeps: RsConnectorStateGetDependencies = {
-          resolveRegisteredConnectorManifest: async (id: string) => {
-            const manifest = await ctx.resolveRegisteredConnectorManifest(id);
-            storageNamespace = await ctx.resolveOwnerConnectorNamespace(
-              req,
-              id,
-              ownerStateDraftAdmission(req, grantId)
-            );
-            return manifest;
-          },
-          // ctx.resolveGrantScopedStateGrant is untyped (.js host); it returns
-          // the grant scope object matching RsConnectorStateGetGrantScope.
-          resolveGrantScope: (id: string, gid: string) =>
-            ctx.resolveGrantScopedStateGrant(id, gid) as Promise<RsConnectorStateGetGrantScope>,
-          onGrantResolved: async (grantScope) => {
-            if (grantScope?.traceId) {
-              stateContext.traceId = grantScope.traceId;
-              stateContext.scenarioId = grantScope.scenarioId;
-            }
-            ctx.setReferenceTraceId(res, stateContext.traceId);
-            await ctx.emitStateRequested(req, stateContext);
-          },
           getSyncState: async (_id: string, args) => {
             const namespace =
               storageNamespace ??
@@ -1144,11 +1135,34 @@ export function mountRsConnectorStateGet(app: AppLike, ctx: MountRsMutationConte
               args
             ) as Promise<RsConnectorStateGetState>;
           },
+          onGrantResolved: async (grantScope) => {
+            if (grantScope?.traceId) {
+              stateContext.traceId = grantScope.traceId;
+              stateContext.scenarioId = grantScope.scenarioId;
+            }
+            ctx.setReferenceTraceId(res, stateContext.traceId);
+            await ctx.emitStateRequested(req, stateContext);
+          },
+          // ctx.resolveGrantScopedStateGrant is untyped (.js host); it returns
+          // the grant scope object matching RsConnectorStateGetGrantScope.
+          resolveGrantScope: (id: string, gid: string) =>
+            ctx.resolveGrantScopedStateGrant(id, gid) as Promise<RsConnectorStateGetGrantScope>,
+          resolveRegisteredConnectorManifest: async (id: string) => {
+            const manifest = await ctx.resolveRegisteredConnectorManifest(id);
+            storageNamespace = await ctx.resolveOwnerConnectorNamespace(
+              req,
+              id,
+              ownerStateDraftAdmission(req, grantId)
+            );
+            return manifest;
+          },
         };
         const { state } = await executeRsConnectorStateGet({ connectorId, grantId }, stateGetDeps);
         await ctx.emitStateEvent(req, stateContext, "state.served", "succeeded", {
-          visible_streams: Object.keys(state?.state || {}),
+          // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
           updated_at: state?.updated_at || null,
+          // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+          visible_streams: Object.keys(state?.state || {}),
         });
         return res.json(ctx.toPublicConnectorStateProjection(state));
       } catch (err) {
@@ -1179,6 +1193,7 @@ export function mountRsConnectorStatePut(app: AppLike, ctx: MountRsMutationConte
     ctx.requireToken,
     ctx.requireOwner,
     async (req: RouteRequest, res: RouteResponse) => {
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
       const connectorId = canonicalizeConnectorId(decodeURIComponent(req.params.connectorId ?? "")) ?? "";
       const grantId = typeof req.query.grant_id === "string" ? req.query.grant_id : null;
       const body = req.body as Record<string, unknown> | null | undefined;
@@ -1196,22 +1211,6 @@ export function mountRsConnectorStatePut(app: AppLike, ctx: MountRsMutationConte
       try {
         let storageNamespace: ConnectorNamespaceLike | null = null;
         const statePutDeps: RsConnectorStatePutDependencies = {
-          resolveRegisteredConnectorManifest: async (id: string) => {
-            const manifest = await ctx.resolveRegisteredConnectorManifest(id);
-            storageNamespace = await ctx.resolveOwnerConnectorNamespace(
-              req,
-              id,
-              ownerStateDraftAdmission(req, grantId)
-            );
-            // ctx.resolveRegisteredConnectorManifest is untyped (.js host); streams[].name
-            // may be null/undefined at runtime but the operation's stream-membership check
-            // guards against that via a Set lookup (missing names simply won't match).
-            return manifest as RsConnectorStatePutManifest;
-          },
-          // ctx.resolveGrantScopedStateGrant is untyped (.js host); it returns the grant
-          // scope object matching RsConnectorStatePutGrantScope.
-          resolveGrantScope: (id: string, gid: string) =>
-            ctx.resolveGrantScopedStateGrant(id, gid) as Promise<RsConnectorStatePutGrantScope>,
           onGrantResolved: async (grantScope) => {
             if (grantScope?.traceId) {
               stateContext.traceId = grantScope.traceId;
@@ -1231,10 +1230,28 @@ export function mountRsConnectorStatePut(app: AppLike, ctx: MountRsMutationConte
               args
             ) as Promise<RsConnectorStatePutState>;
           },
+          // ctx.resolveGrantScopedStateGrant is untyped (.js host); it returns the grant
+          // scope object matching RsConnectorStatePutGrantScope.
+          resolveGrantScope: (id: string, gid: string) =>
+            ctx.resolveGrantScopedStateGrant(id, gid) as Promise<RsConnectorStatePutGrantScope>,
+          resolveRegisteredConnectorManifest: async (id: string) => {
+            const manifest = await ctx.resolveRegisteredConnectorManifest(id);
+            storageNamespace = await ctx.resolveOwnerConnectorNamespace(
+              req,
+              id,
+              ownerStateDraftAdmission(req, grantId)
+            );
+            // ctx.resolveRegisteredConnectorManifest is untyped (.js host); streams[].name
+            // may be null/undefined at runtime but the operation's stream-membership check
+            // guards against that via a Set lookup (missing names simply won't match).
+            return manifest as RsConnectorStatePutManifest;
+          },
         };
         const { state } = await executeRsConnectorStatePut({ connectorId, grantId, stateMap }, statePutDeps);
         await ctx.emitStateEvent(req, stateContext, "state.updated", "succeeded", {
+          // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
           persisted_streams: Object.keys(state?.state || {}),
+          // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
           updated_at: state?.updated_at || null,
         });
         return res.json(ctx.toPublicConnectorStateProjection(state));

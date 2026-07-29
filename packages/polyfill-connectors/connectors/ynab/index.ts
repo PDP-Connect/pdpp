@@ -263,7 +263,7 @@ async function ynab<T>(
   extra?: Parameters<ProgressFn>[1]
 ): Promise<T> {
   const url = new URL(`${API_BASE}${path}`);
-  if (knowledge != null) {
+  if (knowledge !== undefined) {
     url.searchParams.set("last_knowledge_of_server", String(knowledge));
   }
   if (sinceDate) {
@@ -277,7 +277,7 @@ async function ynab<T>(
         const retryAfter = res.headers.get("retry-after");
         return {
           body: await res.text().catch((): string => ""),
-          ...(retryAfter == null ? {} : { headers: { "retry-after": retryAfter } }),
+          ...(retryAfter === null ? {} : { headers: { "retry-after": retryAfter } }),
           status: res.status,
         } as { body: string; status: number };
       },
@@ -933,7 +933,7 @@ async function collectTransactions(ctx: BudgetCtx): Promise<void> {
   const priorSinceDate = txnState?.[budgetId]?.since_date;
   const scopeSince = stream?.time_range?.since?.slice(0, 10);
   // Use server-side since_date only on first run (no delta cursor yet).
-  const sinceDate = knowledge == null ? scopeSince || priorSinceDate || undefined : undefined;
+  const sinceDate = knowledge === undefined ? scopeSince || priorSinceDate || undefined : undefined;
   await progress("Fetching YNAB transactions window", {
     stream: "transactions",
     phase: "fetch",
@@ -979,7 +979,7 @@ async function collectTransactions(ctx: BudgetCtx): Promise<void> {
       continue;
     }
     await trackAndEmit("transactions", transactionRecord(t, budgetId, accountTypeById));
-    emittedTransactions++;
+    emittedTransactions += 1;
   }
   await progress("Processed YNAB transactions window", {
     stream: "transactions",
@@ -1143,7 +1143,7 @@ export async function collectMonthCategories(
   });
 
   let highestMonth: string | null = priorCutoff || scopeSince || null;
-  for (let i = 0; i < activeMonths.length; i++) {
+  for (let i = 0; i < activeMonths.length; i += 1) {
     const m = activeMonths[i];
     if (!m) {
       continue;
@@ -1320,7 +1320,7 @@ if (isMainModule(import.meta.url)) {
       // Trap to record ids so end-of-stream reconciliation can compare.
       // Delegates to the runtime's emitRecord; only observes ids flowing through.
       const trackAndEmit: TrackedEmitRecord = (stream, data) => {
-        if (data.id != null) {
+        if (data.id !== null && data.id !== undefined) {
           emittedIds.get(stream)?.add(String(data.id));
         }
         return runtimeEmitRecord(stream, data);
@@ -1334,7 +1334,7 @@ if (isMainModule(import.meta.url)) {
         phase: "fetch",
         cursor_present: false,
       });
-      const budgets = budgetsRes.data.budgets;
+      const { budgets } = budgetsRes.data;
       const budgetIds = budgets.map((b) => b.id);
       await progressWithCounters("Fetched budgets", {
         stream: "budgets",
@@ -1350,7 +1350,7 @@ if (isMainModule(import.meta.url)) {
         await emitBudgetsStream({ budgets, state, newState, emit, trackAndEmit });
       }
 
-      for (let budgetOrdinal = 0; budgetOrdinal < budgetIds.length; budgetOrdinal++) {
+      for (let budgetOrdinal = 0; budgetOrdinal < budgetIds.length; budgetOrdinal += 1) {
         const budgetId = budgetIds[budgetOrdinal];
         if (!budgetId) {
           continue;

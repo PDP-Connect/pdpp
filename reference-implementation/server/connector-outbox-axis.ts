@@ -90,9 +90,9 @@ function escalateOutboxAxisSeverity(
 // stale-pending also needs a rerun. Higher rank wins.
 const STALLED_CAUSE_RANK: Record<OutboxStalledCause, number> = {
   dead_letter_backlog: 4,
-  state_read_failed: 3,
-  stale_pending: 2,
   stale_heartbeat: 1,
+  stale_pending: 2,
+  state_read_failed: 3,
   transient_upload_failure: 0,
 };
 
@@ -116,12 +116,12 @@ function accumulateOutboxAxisRow(acc: OutboxAxisAccumulator, row: HeartbeatRow, 
   }
   const result = deriveOutboxAxisFromHeartbeat(
     {
+      deadLetterCount: row.outboxDiagnostics?.dead_letter ?? null,
+      deadLetterErrorClasses: deadLetterErrorClassesFromHeartbeat(row.lastError),
       evidenceTrusted: trusted,
       lastHeartbeatAt: row.lastHeartbeatAt,
       lastHeartbeatStatus: normalizeHeartbeatStatusForAxis(row.lastHeartbeatStatus),
       recordsPending: row.recordsPending,
-      deadLetterCount: row.outboxDiagnostics?.dead_letter ?? null,
-      deadLetterErrorClasses: deadLetterErrorClassesFromHeartbeat(row.lastError),
     },
     {
       nowIso,
@@ -148,7 +148,7 @@ export function projectConnectorOutboxAxisFromHeartbeats(
   options: { readonly nowIso: string }
 ): { axis: OutboxAxis; cause: OutboxStalledCause | null; unreliable: boolean; hasEvidence: boolean } {
   if (heartbeats.length === 0) {
-    return { axis: "unknown", cause: null, unreliable: false, hasEvidence: false };
+    return { axis: "unknown", cause: null, hasEvidence: false, unreliable: false };
   }
   // Track each trusted row's contribution separately. We can only claim
   // `idle` when every trusted row reports idle; a trusted row whose
@@ -156,8 +156,8 @@ export function projectConnectorOutboxAxisFromHeartbeats(
   // silently treated as idle, or a dead collector with no record of life
   // would paint the connection green.
   const acc: OutboxAxisAccumulator = {
-    anyUnreliable: false,
     anyTrustedEvidence: false,
+    anyUnreliable: false,
     sawTrustedIdle: false,
     sawTrustedUnknown: false,
     severity: null,
@@ -169,20 +169,20 @@ export function projectConnectorOutboxAxisFromHeartbeats(
   // If every row is untrusted (e.g. all sources/devices revoked), there
   // is no honest evidence — keep `unknown` rather than implying idle.
   if (!acc.anyTrustedEvidence) {
-    return { axis: "unknown", cause: null, unreliable: acc.anyUnreliable, hasEvidence: false };
+    return { axis: "unknown", cause: null, hasEvidence: false, unreliable: acc.anyUnreliable };
   }
   if (acc.severity !== null) {
     // Cause only travels with a stalled axis; an `active` rollup carries none.
     const cause = acc.severity === "stalled" ? acc.stalledCause : null;
-    return { axis: acc.severity, cause, unreliable: acc.anyUnreliable, hasEvidence: true };
+    return { axis: acc.severity, cause, hasEvidence: true, unreliable: acc.anyUnreliable };
   }
   // No trusted instance is actively working or stalled. We can only
   // promise `idle` when every trusted instance reported idle — a missing
   // heartbeat on any trusted instance keeps the axis `unknown`.
   if (acc.sawTrustedIdle && !acc.sawTrustedUnknown) {
-    return { axis: "idle", cause: null, unreliable: acc.anyUnreliable, hasEvidence: true };
+    return { axis: "idle", cause: null, hasEvidence: true, unreliable: acc.anyUnreliable };
   }
-  return { axis: "unknown", cause: null, unreliable: acc.anyUnreliable, hasEvidence: acc.sawTrustedIdle };
+  return { axis: "unknown", cause: null, hasEvidence: acc.sawTrustedIdle, unreliable: acc.anyUnreliable };
 }
 
 function deadLetterErrorClassesFromHeartbeat(value: unknown): { count: number; error_class: string }[] | null {
@@ -200,7 +200,7 @@ function deadLetterErrorClassesFromHeartbeat(value: unknown): { count: number; e
     }
     const row = item as { count?: unknown; error_class?: unknown };
     if (typeof row.error_class === "string" && typeof row.count === "number" && Number.isFinite(row.count)) {
-      classes.push({ error_class: row.error_class, count: row.count });
+      classes.push({ count: row.count, error_class: row.error_class });
     }
   }
   return classes.length > 0 ? classes : null;
@@ -244,11 +244,15 @@ export function projectLocalDeviceProgress(heartbeats: readonly HeartbeatRow[]):
   let manifestGeneration: number | null = null;
   for (const row of trusted) {
     if (row.lastHeartbeatAt !== null && (lastHeartbeatAt === null || row.lastHeartbeatAt > lastHeartbeatAt)) {
+      // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
       lastHeartbeatAt = row.lastHeartbeatAt;
+      // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
       lastHeartbeatStatus = row.lastHeartbeatStatus;
+      // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
       manifestGeneration = row.manifestGeneration;
     }
     if (row.lastIngestAt !== null && (lastIngestAt === null || row.lastIngestAt > lastIngestAt)) {
+      // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
       lastIngestAt = row.lastIngestAt;
     }
     if (typeof row.recordsPending === "number") {

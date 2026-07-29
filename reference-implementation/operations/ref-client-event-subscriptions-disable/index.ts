@@ -26,10 +26,7 @@
  *       reference-implementation-architecture/spec.md
  */
 
-import type {
-  ClientEventSubscriptionStore,
-  SubscriptionRow,
-} from "../as-client-event-subscriptions/index.ts";
+import type { ClientEventSubscriptionStore, SubscriptionRow } from "../as-client-event-subscriptions/index.ts";
 
 const DEFAULT_DISABLED_REASON = "operator_disabled";
 const MAX_DISABLED_REASON_BYTES = 256;
@@ -53,33 +50,37 @@ export class RefClientEventSubscriptionsDisableInvalidRequestError extends Error
 }
 
 export interface RefClientEventSubscriptionsDisableInput {
-  readonly subscriptionId: string;
   readonly reason?: string | null;
+  readonly subscriptionId: string;
 }
 
 export interface RefClientEventSubscriptionsDisableDependencies {
-  readonly store: ClientEventSubscriptionStore;
   readonly nowIso: () => string;
+  readonly store: ClientEventSubscriptionStore;
 }
 
 export interface RefClientEventSubscriptionsDisableOutput {
-  readonly subscriptionId: string;
-  readonly status: SubscriptionRow["status"];
-  readonly disabledReason: string | null;
   readonly disabledAt: string | null;
+  readonly disabledReason: string | null;
+  readonly status: SubscriptionRow["status"];
+  readonly subscriptionId: string;
   readonly wasAlreadyDisabled: boolean;
 }
 
 function validateReason(reason: string | null | undefined): string | null {
-  if (reason === undefined || reason === null) return null;
+  if (reason === undefined || reason === null) {
+    return null;
+  }
   if (typeof reason !== "string") {
     throw new RefClientEventSubscriptionsDisableInvalidRequestError("reason must be a string");
   }
   const trimmed = reason.trim();
-  if (trimmed.length === 0) return null;
+  if (trimmed.length === 0) {
+    return null;
+  }
   if (Buffer.byteLength(trimmed, "utf8") > MAX_DISABLED_REASON_BYTES) {
     throw new RefClientEventSubscriptionsDisableInvalidRequestError(
-      `reason exceeds ${MAX_DISABLED_REASON_BYTES} bytes`,
+      `reason exceeds ${MAX_DISABLED_REASON_BYTES} bytes`
     );
   }
   return trimmed;
@@ -87,22 +88,18 @@ function validateReason(reason: string | null | undefined): string | null {
 
 export async function executeRefClientEventSubscriptionsDisable(
   input: RefClientEventSubscriptionsDisableInput,
-  dependencies: RefClientEventSubscriptionsDisableDependencies,
+  dependencies: RefClientEventSubscriptionsDisableDependencies
 ): Promise<RefClientEventSubscriptionsDisableOutput> {
   const row = await dependencies.store.getSubscriptionById(input.subscriptionId);
   if (!row || row.status === "deleted") {
     throw new RefClientEventSubscriptionsDisableNotFoundError(input.subscriptionId);
   }
-  if (
-    row.status === "disabled" ||
-    row.status === "disabled_failure" ||
-    row.status === "disabled_revoked"
-  ) {
+  if (row.status === "disabled" || row.status === "disabled_failure" || row.status === "disabled_revoked") {
     return {
-      subscriptionId: row.subscription_id,
-      status: row.status,
-      disabledReason: row.disabled_reason,
       disabledAt: row.disabled_at,
+      disabledReason: row.disabled_reason,
+      status: row.status,
+      subscriptionId: row.subscription_id,
       wasAlreadyDisabled: true,
     };
   }
@@ -111,10 +108,10 @@ export async function executeRefClientEventSubscriptionsDisable(
   await dependencies.store.updateStatus(row.subscription_id, "disabled", now, now, reason);
   await dependencies.store.dropQueuedForSubscription(row.subscription_id);
   return {
-    subscriptionId: row.subscription_id,
-    status: "disabled",
-    disabledReason: reason,
     disabledAt: now,
+    disabledReason: reason,
+    status: "disabled",
+    subscriptionId: row.subscription_id,
     wasAlreadyDisabled: false,
   };
 }

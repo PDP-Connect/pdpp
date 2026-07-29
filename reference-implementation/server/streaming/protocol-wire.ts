@@ -36,8 +36,8 @@ export function normalizeReferenceWireViewportPayload(value: unknown): Reference
   }
 
   const viewport: ReferenceWireViewportPayload = {
-    width,
     height,
+    width,
   };
   const deviceScaleFactor = Number(input.deviceScaleFactor);
   if (Number.isFinite(deviceScaleFactor) && deviceScaleFactor > 0) {
@@ -80,9 +80,9 @@ export function buildReferenceWireAttachedPayload({
   viewport: unknown;
 }): JsonObject {
   return {
-    run_id: runId,
-    interaction_id: interactionId,
     browser_session_id: browserSessionId,
+    interaction_id: interactionId,
+    run_id: runId,
     viewport: toJsonValueOrNull(viewport),
   };
 }
@@ -93,9 +93,9 @@ export function buildReferenceWireFramePayload(frame: {
   metadata?: unknown;
 }): JsonObject {
   return {
-    session_id: typeof frame.sessionId === "number" ? frame.sessionId : Number(frame.sessionId),
     data_base64: typeof frame.data === "string" ? frame.data : "",
     metadata: frame.metadata ? toJsonValueOrNull(frame.metadata) : null,
+    session_id: typeof frame.sessionId === "number" ? frame.sessionId : Number(frame.sessionId),
   };
 }
 
@@ -116,23 +116,23 @@ export function buildReferenceWireCompanionEventPayload(event: unknown): { name:
       if (typeof record.title === "string") {
         data.title = record.title;
       }
-      return { name: "url_changed", data };
+      return { data, name: "url_changed" };
     }
     case "popup_opened":
       return {
-        name: "popup_opened",
         data: {
           targetId: typeof record.targetId === "string" ? record.targetId : "",
           url: typeof record.url === "string" ? record.url : "",
         },
+        name: "popup_opened",
       };
     case "popup_closed":
       return {
-        name: "popup_closed",
         data: { targetId: typeof record.targetId === "string" ? record.targetId : "" },
+        name: "popup_closed",
       };
     default:
-      return { name: record.kind, data: event };
+      return { data: event, name: record.kind };
   }
 }
 

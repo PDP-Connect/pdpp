@@ -138,6 +138,10 @@ const CHASE_CURRENT_ACTIVITY_TABLE_MARKER_RE = /<table\b[^>]*\bclass=["'][^"']*\
 const CHASE_DASHBOARD_MARKER_RE = /\baccounts-name-link-button-[a-z0-9_-]+\b/giu;
 const CHASE_DASHBOARD_OVERVIEW_PATH = "/web/auth/dashboard";
 const CHASE_DASHBOARD_OVERVIEW_HASH = "#/dashboard/overview";
+const CHASE_INCOME_CAPTURE_HASH = "#/dashboard/interstitial/income-capture";
+const CHASE_INCOME_CAPTURE_TITLE = "Accounts - chase.com";
+const CHASE_INCOME_CAPTURE_HEADING = "Update Income";
+const CHASE_INCOME_CAPTURE_DESCRIPTION = "Confirm or update your income";
 export const CHASE_QFX_ACTIVITY_SELECT_SELECTORS = [
   "#downloadActivityOptionId",
   "#select-downloadActivityOptionId",
@@ -162,6 +166,51 @@ export function chaseTimeRangeField(stream: string): string {
 interface NoActivityConfirmation {
   bodyPreview: string;
   url: string;
+}
+
+export type ChaseAccountsSurface = "income_capture_interstitial" | "unknown";
+
+/**
+ * Identify the exact authenticated dashboard interstitial observed in a
+ * failed account-enumeration run. This is deliberately stricter than a
+ * route-only check: the route, title, and two visible structural markers must
+ * all agree before collection treats the page as the income-capture surface.
+ *
+ * No control is inferred here. The observed capture does not identify a
+ * dismissal or deferral affordance, so callers preserve selectors_pending and
+ * retain a dedicated checkpoint for the next evidence-backed repair.
+ */
+export function classifyChaseAccountsSurface(diagnostics: DashboardDiagnostics | null): ChaseAccountsSurface {
+  if (!diagnostics) {
+    return "unknown";
+  }
+  try {
+    const url = new URL(diagnostics.url);
+    return url.protocol === "https:" &&
+      url.hostname === "secure.chase.com" &&
+      url.port === "" &&
+      url.username === "" &&
+      url.password === "" &&
+      url.pathname === CHASE_DASHBOARD_OVERVIEW_PATH &&
+      url.hash === CHASE_INCOME_CAPTURE_HASH &&
+      url.search === "" &&
+      diagnostics.title === CHASE_INCOME_CAPTURE_TITLE &&
+      Number.isSafeInteger(diagnostics.income_capture_heading_count) &&
+      diagnostics.income_capture_heading_count > 0 &&
+      Number.isSafeInteger(diagnostics.income_capture_description_count) &&
+      diagnostics.income_capture_description_count > 0
+      ? "income_capture_interstitial"
+      : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+export function chaseNoAccountsDiagnosticMessage(surface: ChaseAccountsSurface): string {
+  if (surface === "income_capture_interstitial") {
+    return "Chase redirected the accounts overview to its authenticated income-capture interstitial. No evidence-backed dismiss or defer control is configured; account discovery cannot proceed without a captured action selector.";
+  }
+  return "No accounts discovered from dashboard. Selectors need calibration against live DOM.";
 }
 
 // ─── Dashboard scrape: enumerate accounts ─────────────────────────────────
@@ -335,7 +384,6 @@ async function selectActivity(page: Page, optionLabel: string): Promise<void> {
 async function clickActivityControl(page: Page): Promise<void> {
   try {
     await page.locator(CHASE_QFX_ACTIVITY_SELECT_SELECTOR).first().click({ timeout: CLICK_TIMEOUT_MS });
-    return;
   } catch (selectorErr) {
     try {
       await page
@@ -344,13 +392,13 @@ async function clickActivityControl(page: Page): Promise<void> {
         })
         .first()
         .click({ timeout: CLICK_TIMEOUT_MS });
-      return;
     } catch (semanticErr) {
       throw new Error(
         `activity_control_unavailable: selector=${CHASE_QFX_ACTIVITY_SELECT_SELECTOR}: ${truncate(
           errMessage(selectorErr),
           ERROR_MESSAGE_SLICE
-        )}; combobox=${truncate(errMessage(semanticErr), ERROR_MESSAGE_SLICE)}`
+        )}; combobox=${truncate(errMessage(semanticErr), ERROR_MESSAGE_SLICE)}`,
+        { cause: semanticErr }
       );
     }
   }
@@ -375,7 +423,6 @@ async function selectFileType(page: Page, label: string): Promise<void> {
 async function clickFileTypeControl(page: Page): Promise<void> {
   try {
     await page.locator(CHASE_QFX_FILE_TYPE_SELECT_SELECTOR).first().click({ timeout: CLICK_TIMEOUT_MS });
-    return;
   } catch (selectorErr) {
     try {
       await page
@@ -384,13 +431,13 @@ async function clickFileTypeControl(page: Page): Promise<void> {
         })
         .first()
         .click({ timeout: CLICK_TIMEOUT_MS });
-      return;
     } catch (semanticErr) {
       throw new Error(
         `file_type_control_unavailable: selector=${CHASE_QFX_FILE_TYPE_SELECT_SELECTOR}: ${truncate(
           errMessage(selectorErr),
           ERROR_MESSAGE_SLICE
-        )}; combobox=${truncate(errMessage(semanticErr), ERROR_MESSAGE_SLICE)}`
+        )}; combobox=${truncate(errMessage(semanticErr), ERROR_MESSAGE_SLICE)}`,
+        { cause: semanticErr }
       );
     }
   }
@@ -991,7 +1038,7 @@ async function capturePageCheckpoint(
   }
 }
 
-function chaseLocatorProbesForLabel(label: string): readonly LocatorProbe[] {
+export function chaseLocatorProbesForLabel(label: string): readonly LocatorProbe[] {
   const probes: LocatorProbe[] = [];
   if (label.includes("dashboard")) {
     probes.push({
@@ -1000,6 +1047,24 @@ function chaseLocatorProbesForLabel(label: string): readonly LocatorProbe[] {
       kind: "css",
       selector: DASHBOARD_ACCOUNT_SELECTOR,
     });
+  }
+  if (label.includes("income-capture-interstitial")) {
+    probes.push(
+      {
+        description: "Observed authenticated Chase income-capture heading; this is not an account surface.",
+        exact: true,
+        id: "income-capture-heading",
+        kind: "text",
+        text: CHASE_INCOME_CAPTURE_HEADING,
+      },
+      {
+        description: "Observed income-capture explanatory text; no action selector was retained in the evidence.",
+        exact: true,
+        id: "income-capture-description",
+        kind: "text",
+        text: CHASE_INCOME_CAPTURE_DESCRIPTION,
+      }
+    );
   }
   if (label.includes("download-qfx")) {
     probes.push(
@@ -1688,24 +1753,57 @@ export async function emitNoActivityProgress(
   });
 }
 
-async function emitNoAccountsDiagnostic(page: Page, emit: EmitFn): Promise<void> {
-  const diag = await page
-    .evaluate((): DashboardDiagnostics => {
-      const WS = /\s+/g;
-      return {
-        url: location.href,
-        title: document.title,
-        body_preview: (document.body?.innerText || "").replace(WS, " ").slice(0, 500),
-      };
-    })
+function readDashboardDiagnostics(page: Page): Promise<DashboardDiagnostics | null> {
+  return page
+    .evaluate(
+      ({ description, heading }): DashboardDiagnostics => {
+        const WS = /\s+/g;
+        const text = (element: Element): string => (element.textContent ?? "").replace(WS, " ").trim();
+        const countExactText = (selector: string, expected: string): number =>
+          Array.from(document.querySelectorAll(selector)).filter((element) => text(element) === expected).length;
+        return {
+          url: location.href,
+          title: document.title,
+          body_preview: (document.body?.innerText || "").replace(WS, " ").slice(0, 500),
+          income_capture_heading_count: countExactText("h1, h2, h3, h4, h5, h6", heading),
+          income_capture_description_count: countExactText("p", description),
+        };
+      },
+      { description: CHASE_INCOME_CAPTURE_DESCRIPTION, heading: CHASE_INCOME_CAPTURE_HEADING }
+    )
     .catch((): DashboardDiagnostics | null => null);
+}
+
+async function emitNoAccountsDiagnostic(diagnostics: DashboardDiagnostics | null, emit: EmitFn): Promise<void> {
+  const surface = classifyChaseAccountsSurface(diagnostics);
   await emit({
     type: "SKIP_RESULT",
     stream: "accounts",
     reason: "selectors_pending",
-    message: "No accounts discovered from dashboard. Selectors need calibration against live DOM.",
-    diagnostics: diag,
+    message: chaseNoAccountsDiagnosticMessage(surface),
+    diagnostics,
   });
+}
+
+export async function collectChaseAccountInventory({
+  capture,
+  emit,
+  page,
+}: Pick<BrowserCollectContext, "capture" | "emit" | "page">): Promise<ChaseAccount[]> {
+  const accounts = await discoverAccounts(page);
+  if (accounts.length === 0) {
+    const diagnostics = await readDashboardDiagnostics(page);
+    const surface = classifyChaseAccountsSurface(diagnostics);
+    await capturePageCheckpoint(
+      capture,
+      page,
+      surface === "income_capture_interstitial" ? "dashboard-income-capture-interstitial" : "dashboard-accounts"
+    );
+    await emitNoAccountsDiagnostic(diagnostics, emit);
+    return accounts;
+  }
+  await capturePageCheckpoint(capture, page, "dashboard-accounts");
+  return accounts;
 }
 
 function accountProgressLabel(accountProgress?: { index: number; total: number }): string {
@@ -1948,7 +2046,7 @@ export function buildServedAccountGapLookup(
       continue;
     }
     const locator = gap.detail_locator;
-    if (!locator || locator.kind !== "chase.account") {
+    if (locator?.kind !== "chase.account") {
       continue;
     }
     const accountId = locator.account_id;
@@ -2020,7 +2118,7 @@ export async function runTransactionsAndBalances(
   filteredAccounts: readonly ChaseAccount[]
 ): Promise<void> {
   const outcomes: AccountDetailOutcome[] = [];
-  for (let i = 0; i < filteredAccounts.length; i++) {
+  for (let i = 0; i < filteredAccounts.length; i += 1) {
     const account = filteredAccounts[i];
     if (!account) {
       continue;
@@ -2116,7 +2214,7 @@ export async function runCurrentActivity(
     return;
   }
 
-  const account = filteredAccounts[0];
+  const [account] = filteredAccounts;
   if (!account) {
     return;
   }
@@ -2284,7 +2382,7 @@ async function runStatements(
     });
 
     const outcomes: StatementDetailOutcome[] = [];
-    for (let i = 0; i < rows.length; i++) {
+    for (let i = 0; i < rows.length; i += 1) {
       const row = rows[i];
       if (!row) {
         continue;
@@ -2454,10 +2552,8 @@ if (isMainModule(import.meta.url)) {
       try {
         await progress("Chase session verified; enumerating accounts");
 
-        const accounts = await discoverAccounts(page);
-        await capturePageCheckpoint(capture, page, "dashboard-accounts");
+        const accounts = await collectChaseAccountInventory({ capture, emit, page });
         if (accounts.length === 0) {
-          await emitNoAccountsDiagnostic(page, emit);
           return; // runtime emits DONE succeeded
         }
 

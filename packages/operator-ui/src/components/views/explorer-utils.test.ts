@@ -7,8 +7,8 @@ import { buildBlobAffordance, buildPeekFields, exactWindowSummaryText, feedCount
 
 test("buildPeekFields represents ungranted metadata fields as withheld", () => {
   const fields = buildPeekFields({ id: "rec_1", summary: "sensitive note", title: "Visible title" }, [
-    { name: "title", granted: true, type: "text" },
-    { name: "summary", granted: false, type: "text" },
+    { granted: true, name: "title", type: "text" },
+    { granted: false, name: "summary", type: "text" },
   ]);
 
   assert.deepEqual(
@@ -24,18 +24,18 @@ test("buildPeekFields represents ungranted metadata fields as withheld", () => {
 test("buildBlobAffordance links only granted declared blob fields", () => {
   assert.deepEqual(
     buildBlobAffordance({ blob_ref: { blob_id: "blob_1", fetch_url: "/v1/blobs/blob_1" } }, [
-      { name: "blob_ref", granted: true, type: "blob" },
+      { granted: true, name: "blob_ref", type: "blob" },
     ]),
     { fieldName: "blob_ref", href: "/v1/blobs/blob_1", state: "available" }
   );
   assert.deepEqual(
-    buildBlobAffordance({ blob_ref: { blob_id: "blob_2" } }, [{ name: "blob_ref", granted: true, type: "blob" }]),
+    buildBlobAffordance({ blob_ref: { blob_id: "blob_2" } }, [{ granted: true, name: "blob_ref", type: "blob" }]),
     { fieldName: "blob_ref", href: "/v1/blobs/blob_2", state: "available" }
   );
 
   assert.deepEqual(
     buildBlobAffordance({ blob_ref: { blob_id: "blob_1", fetch_url: "/v1/blobs/blob_1" } }, [
-      { name: "blob_ref", granted: false, type: "blob" },
+      { granted: false, name: "blob_ref", type: "blob" },
     ]),
     {
       fieldName: "blob_ref",
@@ -44,7 +44,7 @@ test("buildBlobAffordance links only granted declared blob fields", () => {
     }
   );
 
-  assert.equal(buildBlobAffordance({ blob_ref: { blob_id: "blob_1" } }, [{ name: "blob_ref", granted: true }]), null);
+  assert.equal(buildBlobAffordance({ blob_ref: { blob_id: "blob_1" } }, [{ granted: true, name: "blob_ref" }]), null);
 });
 
 test("feedCountLabel uses singular nouns only for an exact, non-truncated count of one", () => {

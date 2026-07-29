@@ -260,7 +260,7 @@ export function configuredBrowserChannel(env: Record<string, string | undefined>
 export function isCdpAttachSessionRaceError(err: unknown): boolean {
   let message = "";
   if (err instanceof Error) {
-    message = err.message;
+    ({ message } = err);
   } else if (typeof err === "string") {
     message = err;
   }
@@ -295,10 +295,11 @@ export class CdpAttachSessionRaceExhaustedError extends Error {
 
   constructor(lastError: unknown) {
     const lastMessage = lastError instanceof Error ? lastError.message : String(lastError);
-    super(`remote CDP attach exhausted its retry budget on the attach-session race: ${lastMessage}`);
+    super(`remote CDP attach exhausted its retry budget on the attach-session race: ${lastMessage}`, {
+      cause: lastError,
+    });
     this.name = "CdpAttachSessionRaceExhaustedError";
     this.code = CDP_ATTACH_SESSION_RACE_EXHAUSTED_CODE;
-    this.cause = lastError;
   }
 }
 
@@ -318,8 +319,8 @@ const REMOTE_CDP_ATTACH_SETTLE_MS = 250;
  * process listeners (the test drives a fake emitter directly).
  */
 export interface UnhandledRejectionHost {
-  off(event: "unhandledRejection", listener: (reason: unknown) => void): void;
-  on(event: "unhandledRejection", listener: (reason: unknown) => void): void;
+  off: (event: "unhandledRejection", listener: (reason: unknown) => void) => void;
+  on: (event: "unhandledRejection", listener: (reason: unknown) => void) => void;
 }
 
 /**
@@ -402,20 +403,20 @@ export async function runCdpAttemptWithRaceGuard<TBrowser>({
   try {
     let connectSettled = false;
     const connectPromise = connect().then(
-      (browser) => {
+      (connectedBrowser) => {
         connectSettled = true;
-        return browser;
+        return connectedBrowser;
       },
       (err: unknown) => {
         connectSettled = true;
         throw err;
       }
     );
-    const disconnectLateBrowser = async (browser: TBrowser): Promise<void> => {
+    const disconnectLateBrowser = async (lateBrowser: TBrowser): Promise<void> => {
       if (!disconnect) {
         return;
       }
-      await Promise.resolve(disconnect(browser)).catch(() => undefined);
+      await Promise.resolve(disconnect(lateBrowser)).catch(() => undefined);
     };
     const browser = await Promise.race([
       connectPromise,
@@ -425,6 +426,7 @@ export async function runCdpAttemptWithRaceGuard<TBrowser>({
         // retryable race immediately. If connect later yields a Browser, close
         // that orphaned CDP client best-effort.
         if (!connectSettled) {
+          // biome-ignore lint/suspicious/noNestedPromises: deliberately fire-and-forget — this must not block converting the current attempt into the retryable race
           connectPromise.then(disconnectLateBrowser, () => undefined).catch(() => undefined);
         }
         throw raceReason;
@@ -503,6 +505,7 @@ export async function connectOverCdpWithRetry<TBrowser>({
         // The ONLY point that knows the bounded retry budget was exhausted
         // specifically on this narrow race. Tag it here so no downstream
         // layer has to re-parse message text to learn the same fact.
+        // biome-ignore lint/style/useErrorCause: CdpAttachSessionRaceExhaustedError's constructor already forwards `cause` to super() internally — Biome only recognizes a literal `{ cause }` at the call site
         throw new CdpAttachSessionRaceExhaustedError(err);
       }
       process.stderr.write(
@@ -841,7 +844,7 @@ export async function acquireIsolatedBrowser({
 async function publishCdpEndpointFromLaunch({ isolatedDir }: { isolatedDir: string }): Promise<void> {
   try {
     const port = await readDevToolsActivePort({ userDataDir: isolatedDir, timeoutMs: 5000, pollMs: 50 });
-    if (port == null) {
+    if (port === null) {
       process.stderr.write(
         "[browser-launch] could not read DevToolsActivePort; streaming-companion will be unavailable for this run.\n"
       );
@@ -911,7 +914,7 @@ export async function resolvePageTargetWsUrl({
   pollMs?: number;
 }): Promise<string | null> {
   const port = await readDevToolsActivePort({ userDataDir, timeoutMs, pollMs });
-  if (port == null) {
+  if (port === null) {
     return null;
   }
   return await fetchPageTargetWsUrl({ port, fetchImpl });

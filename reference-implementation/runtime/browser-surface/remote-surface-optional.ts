@@ -28,11 +28,12 @@ let cached: RemoteSurfaceAvailability | null = null;
  * Never throws — a missing package yields `{ available: false, reason }`.
  */
 export async function loadRemoteSurface(): Promise<RemoteSurfaceAvailability> {
-  if (cached) return cached;
+  if (cached) {
+    return cached;
+  }
   try {
-    const module = (await import(
-      "@opendatalabs/remote-surface/leases"
-    )) as RemoteSurfaceModule;
+    // biome-ignore lint/correctness/noUnresolvedImports: remote-surface 1.5.1 exports ./leases; Biome 2.5.5 fails to resolve this package export.
+    const module = (await import("@opendatalabs/remote-surface/leases")) as RemoteSurfaceModule;
     cached = { available: true, module };
   } catch (error) {
     cached = {
@@ -54,6 +55,8 @@ export async function createOptionalBrowserSurfaceLeaseManager(
   args: ConstructorParameters<RemoteSurfaceModule["BrowserSurfaceLeaseManager"]>[0]
 ): Promise<InstanceType<RemoteSurfaceModule["BrowserSurfaceLeaseManager"]> | null> {
   const surface = await loadRemoteSurface();
-  if (!surface.available) return null;
+  if (!surface.available) {
+    return null;
+  }
   return new surface.module.BrowserSurfaceLeaseManager(args);
 }

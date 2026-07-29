@@ -49,7 +49,7 @@ export interface RedactedStderr {
 
 export function redactStderrTail(text: unknown): RedactedStderr {
   if (typeof text !== "string" || text.length === 0) {
-    return { text: (text as string | null | undefined) ?? "", redacted: false };
+    return { redacted: false, text: (text as string | null | undefined) ?? "" };
   }
   // URL-embedded credentials first (before keyed-secret, so "password" in the
   // URL path doesn't trip a partial match on the userinfo it already redacted).
@@ -59,5 +59,5 @@ export function redactStderrTail(text: unknown): RedactedStderr {
   next = next.replace(KEYED_SECRET_RE, (_match, marker: string) => `${marker}=[REDACTED]`);
   next = next.replace(OTP_RE, "[REDACTED_OTP]");
   next = next.replace(LONG_OPAQUE_RE, "[REDACTED]");
-  return { text: next, redacted: next !== text };
+  return { redacted: next !== text, text: next };
 }

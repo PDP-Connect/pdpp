@@ -60,7 +60,8 @@ const ROW_ACTION_LABEL_RE = /<span className="rr-x-row__action">\{actionLabel\}<
 // as "ingested", and still renders a `precision="time"` Timestamp. Keep the
 // assertions loose enough to tolerate JSX reshaping.
 const ROW_TIME_CONTAINER_RE = /<span className="rr-x-row__time">/;
-const ROW_TIME_QUALIFIER_RE = /entry\.displayIsSemantic \? null : <span className="text-muted-foreground">ingested <\/span>/;
+const ROW_TIME_QUALIFIER_RE =
+  /entry\.displayIsSemantic \? null : <span className="text-muted-foreground">ingested <\/span>/;
 const ROW_TIME_TIMESTAMP_RE = /<Timestamp precision="time" value=\{entry\.displayAt\} \/>/;
 const ROW_TIME_CSS_RE = /\.rr-x-row__time\s*\{/;
 // Future-dated records (e.g. YNAB future budget months) must NOT sit above today:
@@ -255,7 +256,7 @@ const FEED_PENDING_DIM_RE =
 // right overflow), capped by max-width:100vw and a viewport-relative max-height
 // with internal scroll (no bottom overflow). No JS measurement.
 const TYPEAHEAD_VIEWPORT_CLAMP_RE =
-  /\.rr-x-typeahead \{[\s\S]*?left: 0;[\s\S]*?right: 0;[\s\S]*?max-width: 100vw;[\s\S]*?max-height: min\(280px, 60vh\);[\s\S]*?overflow-y: auto;/;
+  /\.rr-x-typeahead \{(?=[\s\S]*?left: 0;)(?=[\s\S]*?right: 0;)(?=[\s\S]*?max-width: 100vw;)(?=[\s\S]*?max-height: min\(280px, 60vh\);)(?=[\s\S]*?overflow-y: auto;)[\s\S]*?\}/;
 
 // (#7) Motion communicates model state and is reduced-motion gated with a static
 // fallback. The shared reveal (Upcoming body / burst expand / day-group mount):
@@ -276,7 +277,7 @@ const REVEAL_KEYFRAME_TRANSFORM_OPACITY_ONLY_RE =
 // motion (base.css zeroes --duration-*), so no keyframe gating is required for a
 // pure transition.
 const SELECTION_TRANSITION_RE =
-  /\.rr-x-row \{[\s\S]*?transition: background var\(--motion-state\), box-shadow var\(--motion-state\);/;
+  /\.rr-x-row \{[\s\S]*?transition:\s*background var\(--motion-state\),\s*box-shadow var\(--motion-state\);/;
 // The burst expanded rows are wrapped in the reveal container in the canvas.
 const BURST_REVEAL_WRAPPER_RE = /<div className="rr-x-burst__rows">/;
 
@@ -781,11 +782,11 @@ test("Slice 5: every Explore animation reference sits inside a prefers-reduced-m
     let depth = 0;
     let i = idx + opener.length - 1; // start at the opening brace
     let end = css.length;
-    for (; i < css.length; i++) {
+    for (; i < css.length; i += 1) {
       if (css[i] === "{") {
-        depth++;
+        depth += 1;
       } else if (css[i] === "}") {
-        depth--;
+        depth -= 1;
         if (depth === 0) {
           end = i;
           break;
@@ -803,7 +804,7 @@ test("Slice 5: every Explore animation reference sits inside a prefers-reduced-m
   // reset — so we only check keyframe-driven `animation:` here.)
   const animationDeclRe = /animation:\s*[^;]+;/g;
   for (const m of css.matchAll(animationDeclRe)) {
-    const decl = m[0];
+    const [decl] = m;
     const referencesGated = GATED_KEYFRAMES.some((k) => decl.includes(k));
     if (referencesGated) {
       assert.ok(
@@ -832,11 +833,11 @@ const RRX_HAS_SELECTION_THREE_COL_RE =
 const RRX_EMPTY_INSPECTOR_HIDDEN_RE = /\.rr-x:not\(\.has-selection\)\s*>\s*\.rr-inspector\s*\{\s*display:\s*none;\s*\}/;
 const RRX_1280_RESETS_BOTH_RE =
   /@media \(max-width: 1280px\) \{[\s\S]*?\.rr-x,\s*\.rr-x\.has-selection \{\s*grid-template-columns:\s*200px\s+minmax\(0,\s*1fr\);/;
-const HAS_SELECTION_DERIVES_FROM_PEEK_RE = /const hasSelection = data\.peek != null;/;
+const HAS_SELECTION_DERIVES_FROM_PEEK_RE = /const hasSelection = data\.peek !== null && data\.peek !== undefined;/;
 const HAS_SELECTION_CLASS_WIRING_RE = /className=\{hasSelection \? "rr-x has-selection" : "rr-x"\}/;
 const BURST_VISIBLE_ENTRIES_PREVIEW_RE = /const visibleEntries = expanded \? burst\.entries : burst\.preview;/;
 const BURST_HEAD_LEFT_ALIGN_RE = /\.rr-x-burst__head \{[\s\S]*?text-align:\s*left;/;
-const SNIPPET_TEXT_WRAPPER_RE = /<span className="rr-x-row__snippet-text">\{snippet\}<\/span>/;
+const SNIPPET_TEXT_WRAPPER_RE = /<span className="rr-x-row__snippet-text">[\s\S]*?matchExcerpt/;
 const SNIPPET_TEXT_ELLIPSIS_CSS_RE =
   /\.rr-x-row__snippet-text \{[\s\S]*?min-width:\s*0;[\s\S]*?text-overflow:\s*ellipsis;/;
 

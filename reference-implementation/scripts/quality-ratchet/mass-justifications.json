@@ -1,5 +1,25 @@
 {
-  "lib/postgres-spine.js": {
+  "server/scheduler-manager-factory.ts": {
+    "allowed_mass": 76,
+    "reason": "TypeScript migration (2026-07-27): strict contracts replace implicit JavaScript surfaces for scheduler dependencies, and the original sequential refresh order is preserved with an explicit promise reduction rather than parallelizing manifest resolution and owner-token issuance. The four-point mass increase is the minimum control-flow cost of retaining that ordering while satisfying the no-await-in-loop rule; removing it would change refresh concurrency and behavior.",
+    "date": "2026-07-27"
+  },
+  "server/connector-key.ts": {
+    "allowed_mass": 4,
+    "reason": "Lane C3c TypeScript migration (2026-07-26): canonicalConnectorKey's legacy-alias branch indexed LEGACY_LOCAL_ALIASES[trimmed] with an unchecked string in the original .js; under strict-plus typing that requires trimmed to be narrowed to the object's literal key union first. Added a 4-line isLegacyLocalAliasKey(value): value is LegacyLocalAlias type guard (baseline 2 -> current 4) rather than an unsafe index signature or an `as` assertion on the lookup. No behavior change: the guard's body is the same LEGACY_LOCAL_ALIAS_SET.has(value) check the pre-migration code already performed one line earlier before this branch was ever reached.",
+    "date": "2026-07-26"
+  },
+  "server/local-transformer-child.ts": {
+    "allowed_mass": 1,
+    "reason": "Lane C3c TypeScript migration (2026-07-26): pump()'s `const job = queue.shift()` returns TransformerJob | undefined under noUncheckedIndexedAccess even though `queue.length > 0` in the enclosing while-condition already guarantees an element is present at this single-threaded call site. Added `if (!job) { break; }` (baseline 0 -> current 1) as the honest narrowing guard rather than a forbidden non-null assertion; the branch is unreachable in practice (queue is only ever read/written synchronously within this one module) but the type system cannot prove that from the API shape of Array.prototype.shift alone.",
+    "date": "2026-07-26"
+  },
+  "server/stores/connector-instance-store.js": {
+    "allowed_mass": 28,
+    "reason": "D8 (fix-enroll-connector-instance-pk-collision): a live counterexample proved connector_instances.upsert's INSERT ... ON CONFLICT(owner, connector, source_kind, source_binding_key) is not resilient to a PRIMARY KEY collision against a legacy row for the SAME logical binding whose source_binding_key was computed under an OLDER, larger sourceBinding shape (embedding per-enrollment device_id/source_instance_id) that predates deviceExporterSourceBindingIdentity's stable {kind, local_binding_name}-only shape. That legacy row's id predates makeConnectorInstanceId and coincides with what today's formula computes for this same binding under its current key. Reaching the INSERT already proves the named ON CONFLICT target did not match this binding under its CURRENT key, so a 23505 here means either (a) the colliding row is this same binding under a legacy key (a migration, not a collision), or (b) it is a genuinely unrelated row (must fail closed). Both backends (Postgres try/catch; SQLite equivalent catching SQLITE_CONSTRAINT_PRIMARYKEY) now look up the colliding row and migrate it in place -- UPDATE its source_binding_key/source_binding_json to the current shape and return its SAME connector_instance_id -- ONLY when isSameLogicalBindingUnderLegacyKey proves it (same owner/connector/source_kind, and the local_binding_name embedded in its OWN stored source_binding_json matches); any other collision re-throws the raw 23505 unmodified. Proven load-bearing by a mutation test: reverting the migration logic makes the Postgres D8 regression (device-enroll-postgres-admission-decoupling.test.js) fail deterministically 3/3 runs with the exact live 503 enrollment_identity_conflict symptom; a SQLite unit test (connector-instance-store.test.js) additionally proves the fail-closed path for an unrelated colliding row.",
+    "date": "2026-07-25"
+  },
+  "lib/postgres-spine.ts": {
     "allowed_mass": 132,
     "reason": "mergeEventRows fix for a silent data-loss bug (distinct rows sharing a null/duplicate event_seq collapsed onto the same dedup key). The fix needs a two-key (event_seq, event_id) comparator, which Biome's cognitive-complexity scoring counts as added mass even when extracted into its own named function (compareEventRowOrder) — tried extraction first; it did not reduce the file-level score. Correctness over a lower number here.",
     "date": "2026-07-20"
@@ -14,14 +34,129 @@
     "reason": "Port of main's external-tool detection hardening (security fix e6e96933b) + owner-cancel/recovery surfaces from #199/#190 reconciliation; behavior required by main's test contract. Queued for decomposition in the Phase-1 drain.",
     "date": "2026-07-06"
   },
-  "server/db.js": {
+  "server/db.ts": {
     "allowed_mass": 173,
     "reason": "The SQLite migration must inventory recognized enum shapes, preserve dependent objects, rebuild atomically, and fail closed before committing a foreign_key_check. These independent persistence safety branches are necessary to avoid lossy migration of historical schemas.",
     "date": "2026-07-22"
   },
-  "server/postgres-storage.js": {
+  "server/postgres-storage.ts": {
     "allowed_mass": 117,
     "reason": "The PostgreSQL migration serializes public legacy bootstraps before catalog discovery with bounded pg_try_advisory_lock polling, distinguishes exact direct legacy/current checks from unrelated compound checks, and performs transactional rollback. The polling/lock classification and fail-closed branches are required to avoid broad constraint deletion, concurrent startup failure, or concurrent-index deadlock.",
     "date": "2026-07-22"
+  },
+  "server/postgres-records.ts": {
+    "allowed_mass": 204,
+    "reason": "Final TypeScript/PostgreSQL closure (2026-07-28): pg returns MIN/MAX aggregates over timestamptz columns as Date instances, while the typed query boundary also admits string-shaped rows from adapters and tests. computePostgresRecordWindow must distinguish both representations before normalizing them and reject invalid timestamps without emitting malformed window metadata. The eight-point increase over the unchanged 196 baseline is the explicit runtime discrimination that fixes the real PostgreSQL record-window parity failure; hiding it behind assertions or string coercion would erase the backend data-shape contract rather than reduce semantic complexity.",
+    "date": "2026-07-28"
+  },
+  "server/stores/connector-detail-gap-store.js": {
+    "allowed_mass": 29,
+    "reason": "The SQLite and Postgres implementations must each make the same run-and-lease-owned compare-and-set transitions for claim, explicit attempt, recovery, re-deferral, release, and expired-lease reclaim. The branches preserve the distinction between an untouched issuance and a real provider attempt across durable backend dialects; collapsing them behind a shallow helper would hide the SQL ownership predicates that prevent re-serve races.",
+    "date": "2026-07-22"
+  },
+  "server/routes/ref-device-exporters.ts": {
+    "allowed_mass": 161,
+    "reason": "decouple-device-enrollment-from-ingest-writer-admission adds the idempotent re-enroll path (handleIdempotentReEnroll) that recovers a one-time device credential lost to a transport failure: it must enforce four independent safeguards (unexpired code, same bound device, device-not-revoked, same binding) before atomically rotating the credential, emit an audit receipt, and reject every other consumed-code replay — plus a typed-503 backpressure mapping (respondEnrollError). The enroll handler itself was decomposed first (performFirstEnrollment, handleIdempotentReEnroll, respondEnrollError all extracted, each within the per-function complexity budget); the residual file-level mass is the four safeguard branches, which are load-bearing correctness for a live credential-loss fix, not incidental style. D5/D6 (fix-enroll-pending-code-partial-write-idempotency / fix-enroll-stable-binding-identity-key) add a second typed-error branch to respondEnrollError (raw Postgres 23505 -> retryable 503, defense-in-depth alongside the existing connector_instance_busy mapping), a fault-injection hook (maybeEnrollPhaseFault) mirroring the file's existing deviceIngestPhaseFaultHook seam so the D5/D6 oracles can inject exact partial-write/race failure points deterministically, and an explicit consumed-code-replay rejection (respondIfConsumedCodeReplay) so a declined D2 resume can never fall through to performFirstEnrollment and create an orphaned, unclaimable device. The consumed-code handling was extracted into its own function specifically to keep the route handler's own complexity flat; the residual file-level mass is the extra typed-error branch and the fault-injection seam, both load-bearing for the live 500/23505 counterexamples this closes.",
+    "date": "2026-07-25"
+  },
+  "server/stores/device-exporter-store.ts": {
+    "allowed_mass": 36,
+    "reason": "decouple-device-enrollment-from-ingest-writer-admission adds rotateDeviceCredential to both the SQLite and Postgres store backends (the store is a two-backend union, so a new durable primitive necessarily lands twice). Each revokes all non-revoked credentials for the device and inserts exactly one fresh credential; the Postgres variant wraps revoke+insert in withPostgresTransaction so concurrent rotations serialize on the revoke's row locks and exactly one active credential remains. D6 (fix-enroll-stable-binding-identity-key, +1) adds resolveOrCreateEnrollmentDevice to both backends: atomically resolves an existing orphaned partial-write device for a (owner, connector, binding) or creates a fresh one, serialized on Postgres by a pg_advisory_xact_lock keyed on the binding (proven load-bearing by a mutation test: removing the lock makes four independent Postgres oracles fail deterministically) and on SQLite by the single-writer connection (no explicit lock needed, documented in the method itself). D7 (fix-enroll-source-kind-identity-gap, +2) qualifies advisoryEnrollmentBindingKey and both resolveOrCreateEnrollmentDevice orphan queries by sourceKind (an added parameter plus an added SQL predicate on each of the two backends' lookup queries), closing a live cross-kind adoption gap where a local_device orphan could be adopted by a browser_collector enrollment sharing the same owner/connector/binding. Proven load-bearing by a mutation test: removing the source_kind predicate from the Postgres orphan query makes the new D7 adversarial oracle fail deterministically (3/3 runs). This is the minimum surface for the credential-rotation, identity-resolution, and source-kind-isolation guarantees and cannot be reduced without dropping one backend or the qualifier.",
+    "date": "2026-07-25"
+  },
+  "server/auth.ts": {
+    "allowed_mass": 395,
+    "reason": "TypeScript migration (2026-07-27) + strict-typing closure (2026-07-28): auth.ts migrated from auth.js and fully typed under strict-plus contracts. Baseline tightened from 581 to 395 after explicit type annotations eliminated implicit branching from unknown/object-typed parameters. D4 complexity: gates registerConnector's derived-column repair backfill behind the same backfillRetrievalIndexes flag that guards retrieval-index backfill, requiring at least one extra branch to express two different flag-gated behaviors sharing one backend check.",
+    "date": "2026-07-27"
+  },
+  "runtime/detail-gap-paging.ts": {
+    "allowed_mass": 24,
+    "reason": "restore-detail-gap-lease-guard: createDetailGapPageReader silently skipped CAS recovery leasing when the injected detailGapStore did not implement claimPendingGaps, letting a stale page serve a row another run already owned. The added guard fails closed with a clear error before any lease bookkeeping starts, rather than continuing to serve unleased gaps. Proven load-bearing by an oracle (detail-gap page reader fails clearly when CAS leasing is unavailable, detail-gap-page-request-oracle.test.js) that fails deterministically without the guard.",
+    "date": "2026-07-25"
+  },
+  "server/cimd.ts": {
+    "allowed_mass": 46,
+    "reason": "P2 TypeScript migration (2026-07-27): CIMD's public fetch boundary must retain the checked DNS-result union, typed error/cache paths, and the explicit absent-versus-null client_secret check rather than erase them through a cast. The added branches keep hostname-bearing failures and public-client validation closed over every outcome.",
+    "date": "2026-07-27"
+  },
+  "server/ssrf-guard.ts": {
+    "allowed_mass": 29,
+    "reason": "P2 TypeScript migration (2026-07-27): separate Undici and Node HTTPS callback adapters share one bounded-address core but preserve their incompatible callback settlement contracts. The additional branches are the load-bearing error-without-socket and late-socket-destruction paths proven by ssrf-guard.test.js; collapsing them would either fabricate a socket or weaken single settlement.",
+    "date": "2026-07-27"
+  },
+  "server/transport.ts": {
+    "allowed_mass": 77,
+    "reason": "P2 TypeScript migration (2026-07-27): the Fastify-to-Express shim now has explicit runtime-checked query-parser and route-manifest boundaries, plus response/header/middleware contracts. These branches preserve existing request validation ordering and Express chain semantics; removing them would move framework-specific uncertainty into route modules.",
+    "date": "2026-07-27"
+  },
+  "server/auth-middleware.ts": {
+    "allowed_mass": 18,
+    "reason": "Auth/store leaf TypeScript migration (2026-07-27): request and response boundaries retain the existing auth-gate route classification, inactive-token telemetry, and owner/client token-kind checks. The added structural guards make previously implicit middleware values explicit without assertions or changed authorization outcomes; extraction keeps the route projection and response mapping locally auditable.",
+    "date": "2026-07-27"
+  },
+  "server/connection-identity.ts": {
+    "allowed_mass": 16,
+    "reason": "Auth/store leaf TypeScript migration (2026-07-27): connection identity still distinguishes a missing connector instance, a missing active binding, and a connector mismatch before forming the public wire binding. These runtime checks are the existing fail-closed behavior made explicit at an unknown storage boundary; removing them would require a cast or conflate those states.",
+    "date": "2026-07-27"
+  },
+  "server/connector-schema-builder.ts": {
+    "allowed_mass": 9,
+    "reason": "Auth/store leaf TypeScript migration (2026-07-27): schema construction retains the existing grant, manifest, and freshness absence checks before assembling metadata. The branches preserve the distinction between owner and grant-scoped visibility and avoid asserting untrusted manifest fields.",
+    "date": "2026-07-27"
+  },
+  "server/manifest-resolution.ts": {
+    "allowed_mass": 30,
+    "reason": "TypeScript migration closure (2026-07-28): manifest resolution adds 3 extra guards for StorageBinding | null | undefined -> StorageBinding | null | undefined alignment with exactOptionalPropertyTypes and SourceDescriptorOptions nativeManifest field. Each guard narrows a real nullable boundary; removing them would require a cast that violates the strict-plus baseline.",
+    "date": "2026-07-28"
+  },
+  "server/source-descriptor.ts": {
+    "allowed_mass": 3,
+    "reason": "Auth/store leaf TypeScript migration (2026-07-27): descriptor construction continues to validate the binding kind and identifier before projecting a client-visible source. The small guard set is the existing null-on-invalid contract expressed honestly under strict typing.",
+    "date": "2026-07-27"
+  },
+  "server/stores/connector-instance-credential-store.ts": {
+    "allowed_mass": 7,
+    "reason": "Auth/store leaf TypeScript migration (2026-07-27): encrypted credential persistence retains validation for credential kinds, ownership, status, and secret recovery. The checks protect the fail-closed store contract and both backend paths; replacing them with casts would weaken the typed storage boundary.",
+    "date": "2026-07-27"
+  },
+  "server/stores/credential-encryption.ts": {
+    "allowed_mass": 12,
+    "reason": "Auth/store leaf TypeScript migration (2026-07-27): encryption retains its key-source, sealed-token shape, field-length, and authenticated-decrypt guards. The typed rethrows now preserve the original causal error on the same CredentialEncryptionError instance; these branches are required to remain secret-free and fail closed.",
+    "date": "2026-07-27"
+  },
+  "server/stores/provider-auth-run-credentials.ts": {
+    "allowed_mass": 3,
+    "reason": "Auth/store leaf TypeScript migration (2026-07-27): provider-auth run injection keeps its connector/source gate and validates recovered JSON bundles before mapping environment fields. The typed JSON parse rethrow preserves code, identity, and SyntaxError cause without a suppression.",
+    "date": "2026-07-27"
+  },
+  "server/stores/static-secret-credential-probe.ts": {
+    "allowed_mass": 10,
+    "reason": "Auth/store leaf TypeScript migration (2026-07-27): the credential probe adapter retains capability gating and the provider-error versus generic-retryable mapping. The Error-property checks preserve the existing owner-safe failure surface when a dependency throws an unknown value.",
+    "date": "2026-07-27"
+  },
+  "server/stores/static-secret-run-credentials.ts": {
+    "allowed_mass": 6,
+    "reason": "Auth/store leaf TypeScript migration (2026-07-27): run credential injection keeps the static-secret connector gate and the browser-session exception for absent, revoked, or rejected optional login credentials. These branches preserve fail-closed recovery for all other paths without casting the recovered credential.",
+    "date": "2026-07-27"
+  },
+  "server/stores/connector-instance-store.ts": {
+    "allowed_mass": 37,
+    "reason": "TypeScript migration closure (2026-07-28): connector-instance-store.ts strict-plus type fixes add 3 conditional branches to handle row narrowing from generic SqliteRow/QueryResultRow to typed ConnectorInstanceRow, plus null guard for the optional detail-gap store capability. The alternatives are unsafe casts that violate the strict-plus baseline.",
+    "date": "2026-07-28"
+  },
+  "server/index.ts": {
+    "allowed_mass": 714,
+    "reason": "RI server entry root TypeScript migration (2026-07-27): server/index.js is the largest single file in the codebase (~6800 lines), containing startup orchestration, all route-adapter mounts, the scheduler manager factory, CLI entrypoint, and browser-surface lifecycle. The entire structural complexity is inherited from the pre-migration JS source; no new control-flow branches were introduced. The 25 type-contract fixes (exactOptionalPropertyTypes conditional spreads, useUnknownInCatchVariables guards, noUncheckedIndexedAccess bracket narrowing, and explicit typed parameters on implicit-any callbacks) each add at most one conditional branch; removing them would require suppressions or any-casts that violate the strict-plus baseline. Mass is the verbatim translation of the original JS complexity; it cannot be reduced without splitting this file into sub-modules, which is a separate refactor orthogonal to this migration slice.",
+    "date": "2026-07-27"
+  },
+  "runtime/controller.ts": {
+    "allowed_mass": 251,
+    "reason": "TypeScript migration closure (2026-07-28): runtime/controller.ts strict-plus type fixes add two conditional branches — one to handle ConnectorDetailGapReadStore unknown cast (line 2140) and one for the exactOptionalPropertyTypes baseUrl spread (line 2388). Both are honest narrowing guards with no behavior change; the alternative is a cast that would violate the strict-plus baseline.",
+    "date": "2026-07-28"
+  },
+  "server/records.ts": {
+    "allowed_mass": 456,
+    "reason": "TypeScript migration closure (2026-07-28): server/records.ts strict-plus type fixes add 7 conditional branches for null/undefined guards (string|null|undefined -> string narrowing), DevicePreparePlanEntry/DeviceRecordPlanEntry alignment, and exactOptionalPropertyTypes spreads. Each branch is an honest narrowing guard that expresses a real nullable boundary; the alternative is a cast or suppression that violates the strict-plus baseline.",
+    "date": "2026-07-28"
   }
 }

@@ -6,6 +6,7 @@
 // reads only the lease/surface status and timestamp fields (types owned by the
 // remote-surface package) and has no store or projection dependency.
 
+// biome-ignore lint/correctness/noUnresolvedImports: Biome cannot resolve this installed package export; Node and TypeScript resolve it.
 import type { BrowserSurface, BrowserSurfaceLease } from "@opendatalabs/remote-surface/leases";
 
 /** Lease statuses that mean the connection is actively waiting for a surface. */

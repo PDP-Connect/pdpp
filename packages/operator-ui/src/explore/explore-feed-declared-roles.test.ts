@@ -36,9 +36,9 @@ const SNAPSHOT_AT = "2026-12-31T00:00:00Z";
 
 function chatgptSummary(): RefConnectorSummary {
   return {
+    connection_id: "cin_chatgpt",
     connector_display_name: "ChatGPT",
     connector_id: "chatgpt",
-    connection_id: "cin_chatgpt",
     connector_instance_id: "cin_chatgpt",
     display_name: "ChatGPT",
     freshness: {},
@@ -67,12 +67,12 @@ function chatgptManifest(): ConnectorManifest {
         name: "messages",
         schema: {
           properties: {
-            role: { type: "string", x_pdpp_role: "actor" },
             content: { type: "string", x_pdpp_role: "primary-title" },
             // No event-time role on a message stream (event-time check): the row
             // time comes from create_time via cursor_field/consent_time_field → displayAt,
             // not a presentation role. Mirrors the real chatgpt manifest.
             create_time: { type: "string" },
+            role: { type: "string", x_pdpp_role: "actor" },
           },
         },
       },
@@ -83,30 +83,30 @@ function chatgptManifest(): ConnectorManifest {
 /** One `messages` record carrying content + role + create_time (the message body). */
 function messageRecord(): ExploreTimelineRecord {
   return {
-    object: "timeline_record" as const,
     connector_id: "chatgpt",
     connector_instance_id: "cin_chatgpt",
-    stream: "messages",
-    record_key: "msg-9f3c-uuid",
-    emitted_at: "2026-06-01T00:00:00Z",
-    // The server orders by semantic_time; provide it so displayAt is the authored time.
-    semantic_time: "2026-05-20T12:00:00Z",
     data: {
-      role: "assistant",
       content: "Here is the answer to your question about timelines.",
       create_time: "2026-05-20T12:00:00Z",
+      role: "assistant",
     },
+    emitted_at: "2026-06-01T00:00:00Z",
+    object: "timeline_record" as const,
+    record_key: "msg-9f3c-uuid",
+    // The server orders by semantic_time; provide it so displayAt is the authored time.
+    semantic_time: "2026-05-20T12:00:00Z",
+    stream: "messages",
   } as ExploreTimelineRecord;
 }
 
 function timelinePage(records: ExploreTimelineRecord[]): ExploreTimelinePage {
   return {
-    object: "list",
     data: records,
     has_more: false,
-    next_cursor: null,
-    snapshot_at: SNAPSHOT_AT,
     new_since_snapshot: 0,
+    next_cursor: null,
+    object: "list",
+    snapshot_at: SNAPSHOT_AT,
   };
 }
 
@@ -114,38 +114,38 @@ const notStubbed = () => Promise.reject(new Error("not stubbed"));
 
 function makeDataSource(page: ExploreTimelinePage): DashboardDataSource {
   return {
-    kind: "live",
     aggregateRecordsByTime: notStubbed,
-    listExploreRecordBuckets: notStubbed,
-    listConnectorSummaries: () =>
-      Promise.resolve({ object: "list" as const, data: [chatgptSummary()], has_more: false }),
-    listConnectorManifests: () => Promise.resolve([chatgptManifest()]),
-    listExploreTimeline: (): Promise<ExploreTimelinePage> => Promise.resolve(page),
-    // The recent feed never loads per-stream metadata before first paint; return an
-    // empty capability set so any accidental reliance on served roles would NOT mask
-    // the manifest-sourced roles under test.
-    getStreamMetadata: (_c: string, stream: string): Promise<StreamMetadata> =>
-      Promise.resolve({ name: stream, object: "stream_metadata", field_capabilities: {} }),
-    queryRecords: (): Promise<RecordsPage> => Promise.resolve({ data: [], has_more: false, object: "list" }),
     getConnectorOverview: notStubbed,
     getDatasetSummary: notStubbed,
     getDeploymentDiagnostics: notStubbed,
     getGrantTimeline: () => Promise.resolve(null),
     getRecord: notStubbed,
     getRunTimeline: () => Promise.resolve(null),
+    // The recent feed never loads per-stream metadata before first paint; return an
+    // empty capability set so any accidental reliance on served roles would NOT mask
+    // the manifest-sourced roles under test.
+    getStreamMetadata: (_c: string, stream: string): Promise<StreamMetadata> =>
+      Promise.resolve({ field_capabilities: {}, name: stream, object: "stream_metadata" }),
     getTraceTimeline: () => Promise.resolve(null),
     isHybridRetrievalAdvertised: () => Promise.resolve(false),
     isSemanticRetrievalAdvertised: () => Promise.resolve(false),
-    listGrants: () => Promise.resolve({ object: "list" as const, data: [], has_more: false }),
-    listPendingApprovals: () => Promise.resolve({ object: "list" as const, data: [], has_more: false }),
-    listRuns: () => Promise.resolve({ object: "list" as const, data: [], has_more: false }),
+    kind: "live",
+    listConnectorManifests: () => Promise.resolve([chatgptManifest()]),
+    listConnectorSummaries: () =>
+      Promise.resolve({ data: [chatgptSummary()], has_more: false, object: "list" as const }),
+    listExploreRecordBuckets: notStubbed,
+    listExploreTimeline: (): Promise<ExploreTimelinePage> => Promise.resolve(page),
+    listGrants: () => Promise.resolve({ data: [], has_more: false, object: "list" as const }),
+    listPendingApprovals: () => Promise.resolve({ data: [], has_more: false, object: "list" as const }),
+    listRuns: () => Promise.resolve({ data: [], has_more: false, object: "list" as const }),
     listStreams: () => Promise.resolve([]),
-    listTraces: () => Promise.resolve({ object: "list" as const, data: [], has_more: false }),
+    listTraces: () => Promise.resolve({ data: [], has_more: false, object: "list" as const }),
+    queryRecords: (): Promise<RecordsPage> => Promise.resolve({ data: [], has_more: false, object: "list" }),
     refSearch: () =>
-      Promise.resolve({ object: "search_result" as const, traces: [], grants: [], runs: [], exact: null }),
-    searchRecordsHybrid: () => Promise.resolve({ object: "list" as const, data: [], has_more: false, warnings: [] }),
-    searchRecordsLexical: () => Promise.resolve({ object: "list" as const, data: [], has_more: false, warnings: [] }),
-    searchRecordsSemantic: () => Promise.resolve({ object: "list" as const, data: [], has_more: false, warnings: [] }),
+      Promise.resolve({ exact: null, grants: [], object: "search_result" as const, runs: [], traces: [] }),
+    searchRecordsHybrid: () => Promise.resolve({ data: [], has_more: false, object: "list" as const, warnings: [] }),
+    searchRecordsLexical: () => Promise.resolve({ data: [], has_more: false, object: "list" as const, warnings: [] }),
+    searchRecordsSemantic: () => Promise.resolve({ data: [], has_more: false, object: "list" as const, warnings: [] }),
   } satisfies DashboardDataSource;
 }
 
@@ -156,7 +156,7 @@ test("recent feed: a chatgpt/messages row renders a TITLED card (title=content, 
   const data = await assembleExplorerData({}, ds, "https://rs.test");
 
   assert.equal(data.feed.length, 1, "exactly one feed entry");
-  const entry = data.feed[0];
+  const [entry] = data.feed;
   assert.ok(entry, "feed entry present");
   assert.ok(entry.preview, "feed entry MUST carry a preview (it was undefined/generic before the fix)");
   assert.equal(
@@ -202,7 +202,7 @@ test("recent feed: an UNDECLARED stream still takes the honest generic card (no 
   };
 
   const data = await assembleExplorerData({}, ds, "https://rs.test");
-  const entry = data.feed[0];
+  const [entry] = data.feed;
   assert.ok(entry?.preview, "generic preview still present");
   // No declared role → no typed message card; the content is NOT promoted to a title.
   assert.notEqual(entry?.preview?.title, "Here is the answer to your question about timelines.");

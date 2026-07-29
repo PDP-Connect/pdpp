@@ -43,14 +43,16 @@ import type {
 } from "imapflow";
 import type { DetailGapStartEntry } from "../../src/connector-runtime.ts";
 import { buildDetailCoverageMessage } from "../../src/connector-runtime.ts";
-import { runtimeBlobUploadAvailable } from "../../src/reference-blob-uploader.ts";
+import { ReferenceBlobUploadFailure, runtimeBlobUploadAvailable } from "../../src/reference-blob-uploader.ts";
 import { type EmittedRecord, makeRecordingEmit, type RecordedEvent } from "../../src/test-harness.ts";
 import {
   ATTACHMENT_BACKFILL_PAGE_DEFAULT_BYTES,
   ATTACHMENT_BACKFILL_PAGE_MAX_BYTES,
   ATTACHMENT_BACKFILL_PAGE_MIN_BYTES,
   ATTACHMENT_BACKFILL_UNKNOWN_SIZE_FALLBACK_BYTES,
+  ATTACHMENT_RECOVERY_PAGE_DEFAULT_BYTES,
   type AttachmentDetailCoverage,
+  type AttachmentHydrationResult,
   addAttachmentBackfillRecordToSummary,
   attachmentBackfillPageByteBudget,
   buildAttachmentDetailCoverageMessage,
@@ -72,6 +74,7 @@ import {
   redactEmailForProgress,
   resolveAttachmentBackfillPageByteBudget,
   resolveAttachmentBackfillWindowUids,
+  resolveAttachmentRecoveryPageByteBudget,
   resolveGmailAddressFromEnv,
   resolveGmailPasswordFromEnv,
   resolveMaxAttachmentBytes,
@@ -97,6 +100,14 @@ const FROZEN_NOW = "2026-04-22T12:00:00.000Z";
 
 function makeRequested(streams: readonly string[]): Map<string, StreamRequest> {
   return new Map(streams.map((name) => [name, { name }]));
+}
+
+function hydratedResult(record: AttachmentRecord): AttachmentHydrationResult {
+  return { failure: null, record };
+}
+
+function failedResult(record: AttachmentRecord): AttachmentHydrationResult {
+  return { failure: { stage: "blob_upload_transport_failed" }, record };
 }
 
 /** Default fake body fetch: returns plausible non-null bodies so records
@@ -141,7 +152,7 @@ function makeHarness(overrides: HarnessOverrides = {}): RecordingHarness {
       return true;
     },
     fetchBodies: overrides.fetchBodies ?? defaultFetchBodies,
-    hydrateAttachment: overrides.hydrateAttachment ?? ((_, attachment) => Promise.resolve(attachment)),
+    hydrateAttachment: overrides.hydrateAttachment ?? ((_, attachment) => Promise.resolve(hydratedResult(attachment))),
     recoveredAttachmentGapIds: new Set<string>(),
     nowIso: overrides.nowIso ?? ((): string => FROZEN_NOW),
     requested,
@@ -209,10 +220,12 @@ function makeServedRecoveryGap(args: {
   messageId: string;
   partIndex: number;
   attachmentId?: string;
+  leaseId?: string;
 }): DetailGapStartEntry {
   const attachmentId = args.attachmentId ?? `${args.messageId}:${args.partIndex}`;
   return {
     gap_id: args.gapId,
+    ...(args.leaseId ? { lease_id: args.leaseId } : {}),
     reference_only: true,
     status: "pending",
     stream: "attachments",
@@ -1016,7 +1029,7 @@ test("recoverServedAttachmentGaps: a completed historical cursor still drains a 
     },
   };
   const attachmentCoverage = makeAttachmentDetailCoverage();
-  const recoveryMessage = makeServedRecoveryMsg();
+  const recoveryMessage = makeServedRecoveryMsg({ attachments: [5 * 1024 * 1024, 16] });
   const search = mock.fn((query: { emailId?: string }) => {
     assert.equal(query.emailId, "gmmsgid-recovery");
     return Promise.resolve([recoveryMessage.uid ?? 321]);
@@ -1027,20 +1040,22 @@ test("recoverServedAttachmentGaps: a completed historical cursor still drains a 
   });
   const client: Pick<ImapFlow, "search" | "fetchOne"> = { search, fetchOne };
   const hydrateAttachmentMock = mock.fn((_msg: FetchMessageObject, attachment: AttachmentRecord) =>
-    Promise.resolve({
-      ...attachment,
-      blob_ref: {
-        blob_id: `blob-${attachment.id}`,
-        mime_type: attachment.content_type ?? "application/octet-stream",
-        sha256: `sha-${attachment.id}`,
-        size_bytes: attachment.size_bytes ?? 0,
-      },
-      content_sha256: `sha-${attachment.id}`,
-      content_type: attachment.content_type,
-      hydration_error: null,
-      hydration_status: "hydrated" as const,
-      size_bytes: attachment.size_bytes,
-    })
+    Promise.resolve(
+      hydratedResult({
+        ...attachment,
+        blob_ref: {
+          blob_id: `blob-${attachment.id}`,
+          mime_type: attachment.content_type ?? "application/octet-stream",
+          sha256: `sha-${attachment.id}`,
+          size_bytes: attachment.size_bytes ?? 0,
+        },
+        content_sha256: `sha-${attachment.id}`,
+        content_type: attachment.content_type,
+        hydration_error: null,
+        hydration_status: "hydrated" as const,
+        size_bytes: attachment.size_bytes,
+      })
+    )
   );
   const harness = makeHarness({
     attachmentCoverage,
@@ -1117,20 +1132,22 @@ test("runAttachmentBackfillAndRecoveryPass: served gaps preempt historical attac
   const client: Pick<ImapFlow, "fetch" | "fetchOne" | "search"> = { fetch, fetchOne, search };
   const attachmentCoverage = makeAttachmentDetailCoverage();
   const hydrateAttachmentMock = mock.fn((_msg: FetchMessageObject, attachment: AttachmentRecord) =>
-    Promise.resolve({
-      ...attachment,
-      blob_ref: {
-        blob_id: `blob-${attachment.id}`,
-        mime_type: attachment.content_type ?? "application/octet-stream",
-        sha256: `sha-${attachment.id}`,
-        size_bytes: attachment.size_bytes ?? 0,
-      },
-      content_sha256: `sha-${attachment.id}`,
-      content_type: attachment.content_type,
-      hydration_error: null,
-      hydration_status: "hydrated" as const,
-      size_bytes: attachment.size_bytes,
-    })
+    Promise.resolve(
+      hydratedResult({
+        ...attachment,
+        blob_ref: {
+          blob_id: `blob-${attachment.id}`,
+          mime_type: attachment.content_type ?? "application/octet-stream",
+          sha256: `sha-${attachment.id}`,
+          size_bytes: attachment.size_bytes ?? 0,
+        },
+        content_sha256: `sha-${attachment.id}`,
+        content_type: attachment.content_type,
+        hydration_error: null,
+        hydration_status: "hydrated" as const,
+        size_bytes: attachment.size_bytes,
+      })
+    )
   );
   const servedGap: DetailGapStartEntry = {
     gap_id: "gap-served-old",
@@ -1191,6 +1208,70 @@ test("runAttachmentBackfillAndRecoveryPass: served gaps preempt historical attac
     runHarness.protocolMessages.some((msg) => msg.type === "PROGRESS" && msg.stream === "attachments"),
     "the served-gap branch should emit its own recovery progress"
   );
+  const terminalRecoverySummary = runHarness.protocolMessages.find(
+    (msg): msg is ProgressMessage =>
+      msg.type === "PROGRESS" && msg.message.startsWith("Gmail served attachment-gap recovery summary:")
+  );
+  assert.deepEqual(
+    terminalRecoverySummary?.attachment_recovery_outcome,
+    {
+      admitted: 1,
+      admitted_bytes: 2 * 1024 * 1024,
+      attempted: 1,
+      hydration_failed: 0,
+      lookup_miss: 0,
+      metadata_lookups: 1,
+      object: "attachment_recovery_outcome",
+      recovered: 1,
+      run_cap_deferred: 0,
+      served: 1,
+    },
+    "the existing terminal recovery summary carries the exact aggregate-only outcome"
+  );
+  assert.deepEqual(
+    Object.keys(terminalRecoverySummary?.attachment_recovery_outcome ?? {}).sort(),
+    [
+      "admitted",
+      "admitted_bytes",
+      "attempted",
+      "hydration_failed",
+      "lookup_miss",
+      "metadata_lookups",
+      "object",
+      "recovered",
+      "run_cap_deferred",
+      "served",
+    ],
+    "the terminal outcome is an allowlisted aggregate shape, not a carrier for locators, identities, content, or errors"
+  );
+  assert.deepEqual(
+    terminalRecoverySummary?.attachment_hydration_failure_outcome,
+    {
+      blob_upload_http_4xx: 0,
+      blob_upload_http_5xx: 0,
+      blob_upload_integrity_failed: 0,
+      blob_upload_invalid_response: 0,
+      blob_upload_transport_failed: 0,
+      imap_download_failed: 0,
+      unclassified_failed: 0,
+      object: "attachment_hydration_failure_outcome",
+    },
+    "the terminal recovery summary carries the exact aggregate-only hydration failure stages"
+  );
+  assert.deepEqual(
+    Object.keys(terminalRecoverySummary?.attachment_hydration_failure_outcome ?? {}).sort(),
+    [
+      "blob_upload_http_4xx",
+      "blob_upload_http_5xx",
+      "blob_upload_integrity_failed",
+      "blob_upload_invalid_response",
+      "blob_upload_transport_failed",
+      "imap_download_failed",
+      "object",
+      "unclassified_failed",
+    ],
+    "the stage outcome cannot become a carrier for keys, locators, provider data, or error content"
+  );
   assert.equal(
     runHarness.protocolMessages.some((msg) => msg.type === "STATE" && msg.stream === "attachments"),
     false,
@@ -1240,20 +1321,22 @@ test("runAttachmentBackfillAndRecoveryPass: recoveryOnly=true recovers served ga
   const client: Pick<ImapFlow, "fetch" | "fetchOne" | "search"> = { fetch, fetchOne, search };
   const attachmentCoverage = makeAttachmentDetailCoverage();
   const hydrateAttachmentMock = mock.fn((_msg: FetchMessageObject, attachment: AttachmentRecord) =>
-    Promise.resolve({
-      ...attachment,
-      blob_ref: {
-        blob_id: `blob-${attachment.id}`,
-        mime_type: attachment.content_type ?? "application/octet-stream",
-        sha256: `sha-${attachment.id}`,
-        size_bytes: attachment.size_bytes ?? 0,
-      },
-      content_sha256: `sha-${attachment.id}`,
-      content_type: attachment.content_type,
-      hydration_error: null,
-      hydration_status: "hydrated" as const,
-      size_bytes: attachment.size_bytes,
-    })
+    Promise.resolve(
+      hydratedResult({
+        ...attachment,
+        blob_ref: {
+          blob_id: `blob-${attachment.id}`,
+          mime_type: attachment.content_type ?? "application/octet-stream",
+          sha256: `sha-${attachment.id}`,
+          size_bytes: attachment.size_bytes ?? 0,
+        },
+        content_sha256: `sha-${attachment.id}`,
+        content_type: attachment.content_type,
+        hydration_error: null,
+        hydration_status: "hydrated" as const,
+        size_bytes: attachment.size_bytes,
+      })
+    )
   );
   const servedGap: DetailGapStartEntry = {
     gap_id: "gap-served-only",
@@ -1345,20 +1428,22 @@ test("recoverServedAttachmentGaps: an oversized first candidate admits exactly o
       return Promise.resolve(message);
     });
     const hydrateAttachmentMock = mock.fn((_msg: FetchMessageObject, attachment: AttachmentRecord) =>
-      Promise.resolve({
-        ...attachment,
-        blob_ref: {
-          blob_id: `blob-${attachment.id}`,
-          mime_type: attachment.content_type ?? "application/octet-stream",
-          sha256: `sha-${attachment.id}`,
-          size_bytes: attachment.size_bytes ?? 0,
-        },
-        content_sha256: `sha-${attachment.id}`,
-        content_type: attachment.content_type,
-        hydration_error: null,
-        hydration_status: "hydrated" as const,
-        size_bytes: attachment.size_bytes,
-      })
+      Promise.resolve(
+        hydratedResult({
+          ...attachment,
+          blob_ref: {
+            blob_id: `blob-${attachment.id}`,
+            mime_type: attachment.content_type ?? "application/octet-stream",
+            sha256: `sha-${attachment.id}`,
+            size_bytes: attachment.size_bytes ?? 0,
+          },
+          content_sha256: `sha-${attachment.id}`,
+          content_type: attachment.content_type,
+          hydration_error: null,
+          hydration_status: "hydrated" as const,
+          size_bytes: attachment.size_bytes,
+        })
+      )
     );
     const emitHarness = makeRecordingEmit();
     const emitRecord = async (stream: string, data: Record<string, unknown>): Promise<boolean> => {
@@ -1438,20 +1523,22 @@ test("recoverServedAttachmentGaps: small candidates stop at budget after one rej
       return Promise.resolve(message);
     });
     const hydrateAttachmentMock = mock.fn((_msg: FetchMessageObject, attachment: AttachmentRecord) =>
-      Promise.resolve({
-        ...attachment,
-        blob_ref: {
-          blob_id: `blob-${attachment.id}`,
-          mime_type: attachment.content_type ?? "application/octet-stream",
-          sha256: `sha-${attachment.id}`,
-          size_bytes: attachment.size_bytes ?? 0,
-        },
-        content_sha256: `sha-${attachment.id}`,
-        content_type: attachment.content_type,
-        hydration_error: null,
-        hydration_status: "hydrated" as const,
-        size_bytes: attachment.size_bytes,
-      })
+      Promise.resolve(
+        hydratedResult({
+          ...attachment,
+          blob_ref: {
+            blob_id: `blob-${attachment.id}`,
+            mime_type: attachment.content_type ?? "application/octet-stream",
+            sha256: `sha-${attachment.id}`,
+            size_bytes: attachment.size_bytes ?? 0,
+          },
+          content_sha256: `sha-${attachment.id}`,
+          content_type: attachment.content_type,
+          hydration_error: null,
+          hydration_status: "hydrated" as const,
+          size_bytes: attachment.size_bytes,
+        })
+      )
     );
     const emitHarness = makeRecordingEmit();
     const emitRecord = async (stream: string, data: Record<string, unknown>): Promise<boolean> => {
@@ -1474,6 +1561,26 @@ test("recoverServedAttachmentGaps: small candidates stop at budget after one rej
     assert.equal(hydrateAttachmentMock.mock.callCount(), 2, "only the budgeted prefix should hydrate");
     assert.equal(summary.admitted, 2);
     assert.equal(summary.recovered, 2);
+    assert.deepEqual(summary, {
+      admitted: 2,
+      admitted_bytes: 200_000,
+      attempted: 3,
+      attachment_hydration_failure_outcome: {
+        blob_upload_http_4xx: 0,
+        blob_upload_http_5xx: 0,
+        blob_upload_integrity_failed: 0,
+        blob_upload_invalid_response: 0,
+        blob_upload_transport_failed: 0,
+        imap_download_failed: 0,
+        unclassified_failed: 0,
+      },
+      hydration_failed: 0,
+      lookup_miss: 0,
+      metadata_lookups: 3,
+      recovered: 2,
+      run_cap_deferred: 3,
+      served: 5,
+    });
     const progressMessages = emitHarness.protocolMessages.filter((msg) => msg.type === "PROGRESS");
     assert.equal(progressMessages.length, 4, "each admitted attempt should emit hydrating and settled progress");
     assert.deepEqual(
@@ -1485,6 +1592,110 @@ test("recoverServedAttachmentGaps: small candidates stop at budget after one rej
       delete process.env.PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES;
     } else {
       process.env.PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES = originalBudget;
+    }
+  }
+});
+
+test("recoverServedAttachmentGaps: default recovery batch admits two live-shape attachments without changing forward-backfill default", async () => {
+  const originalBackfillBudget = process.env.PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES;
+  const originalRecoveryBudget = process.env.PDPP_GMAIL_ATTACHMENT_RECOVERY_PAGE_BYTES;
+  delete process.env.PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES;
+  delete process.env.PDPP_GMAIL_ATTACHMENT_RECOVERY_PAGE_BYTES;
+  try {
+    const liveShapeBytes = 1_889_782;
+    const messagesById = new Map<string, FetchMessageObject>();
+    const servedGaps = Array.from({ length: 3 }, (_unused, index) => {
+      const messageId = `gmmsgid-live-shape-${index}`;
+      const message = makeServedRecoveryMsg({
+        attachments: [liveShapeBytes],
+        emailId: messageId,
+        threadId: `gmthrid-live-shape-${index}`,
+        uid: 6000 + index,
+      });
+      messagesById.set(messageId, message);
+      return makeServedRecoveryGap({ gapId: `gap-live-shape-${index}`, messageId, partIndex: 1 });
+    });
+    const search = mock.fn((query: { emailId?: string }) => {
+      const message = query.emailId ? messagesById.get(query.emailId) : undefined;
+      return Promise.resolve(message ? [message.uid ?? 0] : []);
+    });
+    const fetchOne = mock.fn((range: string) => {
+      const message = [...messagesById.values()].find((candidate) => candidate.uid === Number(range));
+      assert.ok(message, `unexpected uid lookup: ${range}`);
+      return Promise.resolve(message);
+    });
+    const hydrateAttachmentMock = mock.fn((_msg: FetchMessageObject, attachment: AttachmentRecord) =>
+      Promise.resolve({
+        failure: null,
+        record: {
+          ...attachment,
+          blob_ref: {
+            blob_id: `blob-${attachment.id}`,
+            mime_type: attachment.content_type ?? "application/octet-stream",
+            sha256: `sha-${attachment.id}`,
+            size_bytes: attachment.size_bytes ?? 0,
+          },
+          content_sha256: `sha-${attachment.id}`,
+          content_type: attachment.content_type,
+          hydration_error: null,
+          hydration_status: "hydrated" as const,
+          size_bytes: attachment.size_bytes,
+        },
+      })
+    );
+    const emitHarness = makeRecordingEmit();
+
+    const summary = await recoverServedAttachmentGaps(
+      { search, fetchOne },
+      {
+        detailGaps: servedGaps,
+        emitProtocol: emitHarness.emit,
+        emitRecord: async (stream, data) => {
+          await emitHarness.emitRecord(stream, data);
+          return true;
+        },
+        hydrateAttachment: hydrateAttachmentMock as HydrateAttachmentFn,
+      }
+    );
+
+    assert.equal(ATTACHMENT_BACKFILL_PAGE_DEFAULT_BYTES, 1024 * 1024);
+    assert.equal(ATTACHMENT_RECOVERY_PAGE_DEFAULT_BYTES, 4 * 1024 * 1024);
+    assert.equal(search.mock.callCount(), 3, "one overflow probe establishes the truthful deferred suffix");
+    assert.equal(
+      hydrateAttachmentMock.mock.callCount(),
+      2,
+      "the default recovery lane admits a bounded two-item batch"
+    );
+    assert.deepEqual(summary, {
+      admitted: 2,
+      admitted_bytes: liveShapeBytes * 2,
+      attachment_hydration_failure_outcome: {
+        blob_upload_http_4xx: 0,
+        blob_upload_http_5xx: 0,
+        blob_upload_integrity_failed: 0,
+        blob_upload_invalid_response: 0,
+        blob_upload_transport_failed: 0,
+        imap_download_failed: 0,
+        unclassified_failed: 0,
+      },
+      attempted: 3,
+      hydration_failed: 0,
+      lookup_miss: 0,
+      metadata_lookups: 3,
+      recovered: 2,
+      run_cap_deferred: 1,
+      served: 3,
+    });
+  } finally {
+    if (originalBackfillBudget === undefined) {
+      delete process.env.PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES;
+    } else {
+      process.env.PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES = originalBackfillBudget;
+    }
+    if (originalRecoveryBudget === undefined) {
+      delete process.env.PDPP_GMAIL_ATTACHMENT_RECOVERY_PAGE_BYTES;
+    } else {
+      process.env.PDPP_GMAIL_ATTACHMENT_RECOVERY_PAGE_BYTES = originalRecoveryBudget;
     }
   }
 });
@@ -1504,7 +1715,7 @@ test("recoverServedAttachmentGaps: emits hydrating progress before a slow hydrat
     assert.equal(range, "5000");
     return Promise.resolve(message);
   });
-  const hydration = createDeferred<AttachmentRecord>();
+  const hydration = createDeferred<AttachmentHydrationResult>();
   const hydrateAttachmentMock = mock.fn(() => hydration.promise);
   const emitHarness = makeRecordingEmit();
   const emitRecord = async (stream: string, data: Record<string, unknown>): Promise<boolean> => {
@@ -1551,27 +1762,29 @@ test("recoverServedAttachmentGaps: emits hydrating progress before a slow hydrat
     "the attachment record must not emit before the hydration promise resolves"
   );
 
-  hydration.resolve({
-    blob_ref: {
-      blob_id: "blob-gmmsgid-slow:1",
-      mime_type: "application/pdf",
-      sha256: "sha-gmmsgid-slow:1",
+  hydration.resolve(
+    hydratedResult({
+      blob_ref: {
+        blob_id: "blob-gmmsgid-slow:1",
+        mime_type: "application/pdf",
+        sha256: "sha-gmmsgid-slow:1",
+        size_bytes: 16,
+      },
+      content_id: null,
+      content_sha256: "sha-gmmsgid-slow:1",
+      content_type: "application/pdf",
+      encoding: "base64",
+      filename: "attachment-1.pdf",
+      hydration_error: null,
+      hydration_status: "hydrated",
+      id: "gmmsgid-slow:1",
+      is_inline: false,
+      message_id: "gmmsgid-slow",
+      message_received_at: FROZEN_NOW,
+      part_index: "1",
       size_bytes: 16,
-    },
-    content_id: null,
-    content_sha256: "sha-gmmsgid-slow:1",
-    content_type: "application/pdf",
-    encoding: "base64",
-    filename: "attachment-1.pdf",
-    hydration_error: null,
-    hydration_status: "hydrated",
-    id: "gmmsgid-slow:1",
-    is_inline: false,
-    message_id: "gmmsgid-slow",
-    message_received_at: FROZEN_NOW,
-    part_index: "1",
-    size_bytes: 16,
-  });
+    })
+  );
 
   const summary = await runPromise;
 
@@ -1613,6 +1826,7 @@ test("recoverServedAttachmentGaps: 33 distinct lookup misses cap out at 32 uniqu
       gapId: `gap-miss-${index}`,
       messageId: `gmmsgid-miss-${index}`,
       partIndex: 1,
+      leaseId: `lease-miss-${index}`,
     })
   );
   const search = mock.fn(() => Promise.resolve([] as number[]));
@@ -1630,15 +1844,17 @@ test("recoverServedAttachmentGaps: 33 distinct lookup misses cap out at 32 uniqu
       emitProtocol: emitHarness.emit,
       emitRecord,
       hydrateAttachment: mock.fn((_msg: FetchMessageObject, attachment: AttachmentRecord) =>
-        Promise.resolve({
-          ...attachment,
-          blob_ref: null,
-          content_sha256: null,
-          content_type: attachment.content_type,
-          hydration_error: "unexpected",
-          hydration_status: "failed" as const,
-          size_bytes: attachment.size_bytes,
-        })
+        Promise.resolve(
+          failedResult({
+            ...attachment,
+            blob_ref: null,
+            content_sha256: null,
+            content_type: attachment.content_type,
+            hydration_error: "unexpected",
+            hydration_status: "failed" as const,
+            size_bytes: attachment.size_bytes,
+          })
+        )
       ) as HydrateAttachmentFn,
     }
   );
@@ -1647,9 +1863,209 @@ test("recoverServedAttachmentGaps: 33 distinct lookup misses cap out at 32 uniqu
   assert.equal(fetchOne.mock.callCount(), 0, "misses never fetch a message body");
   assert.equal(summary.admitted, 0);
   assert.equal(summary.recovered, 0);
+  assert.deepEqual(summary, {
+    admitted: 0,
+    admitted_bytes: 0,
+    attempted: 32,
+    attachment_hydration_failure_outcome: {
+      blob_upload_http_4xx: 0,
+      blob_upload_http_5xx: 0,
+      blob_upload_integrity_failed: 0,
+      blob_upload_invalid_response: 0,
+      blob_upload_transport_failed: 0,
+      imap_download_failed: 0,
+      unclassified_failed: 0,
+    },
+    hydration_failed: 0,
+    lookup_miss: 32,
+    metadata_lookups: 32,
+    recovered: 0,
+    run_cap_deferred: 0,
+    served: 33,
+  });
+  const attempts = emitHarness.protocolMessages.filter((msg) => msg.type === "DETAIL_GAP_ATTEMPTED");
+  const deferred = emitHarness.protocolMessages.filter((msg) => msg.type === "DETAIL_GAP");
+  assert.equal(attempts.length, 32, "each real metadata lookup is explicitly accounted as an attempt");
+  assert.equal(deferred.length, 32, "each lookup miss explicitly re-defers instead of ending silently");
+  assert.equal(
+    deferred.every((msg) => msg.last_error?.class === "attachment_lookup_miss"),
+    true
+  );
   assert.equal(
     emitHarness.protocolMessages.some((msg) => msg.type === "PROGRESS"),
     false
+  );
+});
+
+test("recoverServedAttachmentGaps: an unclassified plain blob failure remains retryable without changing the run", async () => {
+  const message = makeServedRecoveryMsg({ attachments: [16], emailId: "gmmsgid-hydration-failure", uid: 6000 });
+  const attachmentCoverage = makeAttachmentDetailCoverage();
+  const emitHarness = makeRecordingEmit();
+  let failedAttachment: AttachmentRecord | undefined;
+  const hydrateAttachment = makeAttachmentHydrator({
+    connectorId: "https://registry.pdpp.org/connectors/gmail",
+    fetchAttachment: () =>
+      Promise.resolve({
+        content: Readable.from([Buffer.from("attachment")]),
+        expectedSize: 16,
+        mimeType: "application/pdf",
+      }),
+    uploadBlob: () => Promise.reject(new Error("private unclassified blob failure")),
+  });
+  const summary = await recoverServedAttachmentGaps(
+    {
+      search: mock.fn(() => Promise.resolve([message.uid ?? 6000])),
+      fetchOne: mock.fn(() => Promise.resolve(message)),
+    },
+    {
+      attachmentCoverage,
+      detailGaps: [
+        makeServedRecoveryGap({
+          gapId: "gap-hydration-failure",
+          messageId: "gmmsgid-hydration-failure",
+          partIndex: 1,
+        }),
+      ],
+      emitProtocol: emitHarness.emit,
+      emitRecord: async (stream, data) => {
+        await emitHarness.emitRecord(stream, data);
+        return true;
+      },
+      hydrateAttachment: async (loadedMessage, attachment) => {
+        const result = await hydrateAttachment(loadedMessage, attachment);
+        failedAttachment = result.record;
+        return result;
+      },
+    }
+  );
+
+  assert.deepEqual(summary, {
+    admitted: 1,
+    admitted_bytes: 16,
+    attempted: 1,
+    attachment_hydration_failure_outcome: {
+      blob_upload_http_4xx: 0,
+      blob_upload_http_5xx: 0,
+      blob_upload_integrity_failed: 0,
+      blob_upload_invalid_response: 0,
+      blob_upload_transport_failed: 0,
+      imap_download_failed: 0,
+      unclassified_failed: 1,
+    },
+    hydration_failed: 1,
+    lookup_miss: 0,
+    metadata_lookups: 1,
+    recovered: 0,
+    run_cap_deferred: 0,
+    served: 1,
+  });
+  assert.equal(
+    emitHarness.protocolMessages.some((msg) => msg.type === "DETAIL_GAP_RECOVERED"),
+    false,
+    "a failed hydration must not acknowledge the served gap as recovered"
+  );
+  assert.ok(failedAttachment, "the failed attachment record must still be emitted");
+  assert.equal(failedAttachment.hydration_status, "failed");
+  assert.deepEqual(attachmentCoverage.gapKeys, [failedAttachment.id]);
+  assert.deepEqual(attachmentCoverage.failedRecords, [failedAttachment]);
+  const [failedCoverageRecord] = attachmentCoverage.failedRecords;
+  assert.ok(failedCoverageRecord, "failed recovery records must be retained for detail-gap emission");
+  assert.deepEqual(buildAttachmentDetailGap(failedCoverageRecord), {
+    type: "DETAIL_GAP",
+    stream: "attachments",
+    parent_stream: "messages",
+    record_key: failedAttachment.id,
+    status: "pending",
+    reason: "temporary_unavailable",
+    detail_locator: {
+      kind: "gmail.attachment_detail",
+      message_id: failedAttachment.message_id,
+      part_index: failedAttachment.part_index,
+      attachment_id: failedAttachment.id,
+    },
+    retryable: true,
+    reference_only: true,
+  });
+  assert.equal(JSON.stringify(summary).includes("private unclassified blob failure"), false);
+});
+
+test("recoverServedAttachmentGaps: boundary-derived stages account for every failed hydration exactly once", async () => {
+  const message = makeServedRecoveryMsg({
+    attachments: [16, 16, 16, 16, 16, 16],
+    emailId: "gmmsgid-stage-outcome",
+    uid: 6010,
+  });
+  const hydrateAttachment = makeAttachmentHydrator({
+    connectorId: "https://registry.pdpp.org/connectors/gmail",
+    fetchAttachment: (_msg, attachment) => {
+      if (attachment.part_index === "1") {
+        throw new Error("private IMAP download failure");
+      }
+      return Promise.resolve({
+        content: Readable.from([Buffer.from("attachment")]),
+        expectedSize: 16,
+        mimeType: "application/pdf",
+      });
+    },
+    uploadBlob: ({ recordKey }) => {
+      const kindByPart: Record<string, ReferenceBlobUploadFailure["kind"]> = {
+        "2": "transport",
+        "3": "http_4xx",
+        "4": "http_5xx",
+        "5": "invalid_response",
+        "6": "integrity_mismatch",
+      };
+      const part = recordKey.split(":").at(-1) ?? "";
+      throw new ReferenceBlobUploadFailure(kindByPart[part] ?? "transport", "private blob failure");
+    },
+  });
+  const emitHarness = makeRecordingEmit();
+  const summary = await recoverServedAttachmentGaps(
+    {
+      search: mock.fn(() => Promise.resolve([message.uid ?? 6010])),
+      fetchOne: mock.fn(() => Promise.resolve(message)),
+    },
+    {
+      detailGaps: [1, 2, 3, 4, 5, 6].map((partIndex) =>
+        makeServedRecoveryGap({
+          gapId: `gap-stage-${partIndex}`,
+          messageId: "gmmsgid-stage-outcome",
+          partIndex,
+        })
+      ),
+      emitProtocol: emitHarness.emit,
+      emitRecord: async (stream, data) => {
+        await emitHarness.emitRecord(stream, data);
+        return true;
+      },
+      hydrateAttachment,
+    }
+  );
+
+  assert.equal(summary.hydration_failed, 6);
+  assert.deepEqual(summary.attachment_hydration_failure_outcome, {
+    blob_upload_http_4xx: 1,
+    blob_upload_http_5xx: 1,
+    blob_upload_integrity_failed: 1,
+    blob_upload_invalid_response: 1,
+    blob_upload_transport_failed: 1,
+    imap_download_failed: 1,
+    unclassified_failed: 0,
+  });
+  assert.equal(
+    Object.values(summary.attachment_hydration_failure_outcome).reduce((total, count) => total + count, 0),
+    summary.hydration_failed,
+    "each failed hydration increments exactly one aggregate stage"
+  );
+  assert.equal(
+    emitHarness.protocolMessages.some((msg) => msg.type === "DETAIL_GAP_RECOVERED"),
+    false,
+    "stage telemetry does not acknowledge a failed hydration as recovered"
+  );
+  assert.equal(
+    JSON.stringify(summary.attachment_hydration_failure_outcome).includes("private"),
+    false,
+    "the aggregate stage evidence contains no source or blob error content"
   );
 });
 
@@ -1671,20 +2087,22 @@ test("recoverServedAttachmentGaps: same-message served gaps reuse one lookup", a
     return Promise.resolve(message);
   });
   const hydrateAttachmentMock = mock.fn((_msg: FetchMessageObject, attachment: AttachmentRecord) =>
-    Promise.resolve({
-      ...attachment,
-      blob_ref: {
-        blob_id: `blob-${attachment.id}`,
-        mime_type: attachment.content_type ?? "application/octet-stream",
-        sha256: `sha-${attachment.id}`,
-        size_bytes: attachment.size_bytes ?? 0,
-      },
-      content_sha256: `sha-${attachment.id}`,
-      content_type: attachment.content_type,
-      hydration_error: null,
-      hydration_status: "hydrated" as const,
-      size_bytes: attachment.size_bytes,
-    })
+    Promise.resolve(
+      hydratedResult({
+        ...attachment,
+        blob_ref: {
+          blob_id: `blob-${attachment.id}`,
+          mime_type: attachment.content_type ?? "application/octet-stream",
+          sha256: `sha-${attachment.id}`,
+          size_bytes: attachment.size_bytes ?? 0,
+        },
+        content_sha256: `sha-${attachment.id}`,
+        content_type: attachment.content_type,
+        hydration_error: null,
+        hydration_status: "hydrated" as const,
+        size_bytes: attachment.size_bytes,
+      })
+    )
   );
   const emitHarness = makeRecordingEmit();
   const emitRecord = async (stream: string, data: Record<string, unknown>): Promise<boolean> => {
@@ -1775,6 +2193,41 @@ test("resolveAttachmentBackfillPageByteBudget: env override must be a positive i
     resolveAttachmentBackfillPageByteBudget({ PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES: "not-a-number" }),
     ATTACHMENT_BACKFILL_PAGE_DEFAULT_BYTES
   );
+});
+
+test("resolveAttachmentRecoveryPageByteBudget: uses a recovery-specific override while preserving the legacy override", () => {
+  assert.equal(resolveAttachmentRecoveryPageByteBudget({}), ATTACHMENT_RECOVERY_PAGE_DEFAULT_BYTES);
+  assert.equal(
+    resolveAttachmentRecoveryPageByteBudget({ PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES: String(2 * 1024 * 1024) }),
+    2 * 1024 * 1024,
+    "existing operator configuration continues to constrain served recovery"
+  );
+  assert.equal(
+    resolveAttachmentRecoveryPageByteBudget({
+      PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES: String(2 * 1024 * 1024),
+      PDPP_GMAIL_ATTACHMENT_RECOVERY_PAGE_BYTES: String(3 * 1024 * 1024),
+    }),
+    3 * 1024 * 1024,
+    "the recovery-specific override takes precedence without altering backfill"
+  );
+  assert.equal(
+    resolveAttachmentRecoveryPageByteBudget({
+      PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES: String(2 * 1024 * 1024),
+      PDPP_GMAIL_ATTACHMENT_RECOVERY_PAGE_BYTES: "invalid",
+    }),
+    2 * 1024 * 1024,
+    "an invalid new override does not discard a valid legacy safety setting"
+  );
+  for (const invalidRecoveryBudget of ["0", "262143"]) {
+    assert.equal(
+      resolveAttachmentRecoveryPageByteBudget({
+        PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES: String(ATTACHMENT_BACKFILL_PAGE_MIN_BYTES),
+        PDPP_GMAIL_ATTACHMENT_RECOVERY_PAGE_BYTES: invalidRecoveryBudget,
+      }),
+      ATTACHMENT_BACKFILL_PAGE_MIN_BYTES,
+      `numeric out-of-range recovery override ${invalidRecoveryBudget} does not weaken the legacy safety setting`
+    );
+  }
 });
 
 test("trimAttachmentBackfillPageToByteBudget: a page is sized by cumulative byte cost, not a fixed UID count", () => {
@@ -2299,8 +2752,10 @@ function makeSingleAttachmentMsg(emailId: string): FetchMessageObject {
  * bucket deterministically without exercising the real download/upload path.
  */
 function statusStampingHydrator(statusById: Record<string, AttachmentRecord["hydration_status"]>): HydrateAttachmentFn {
-  return (_msg, attachment) =>
-    Promise.resolve({ ...attachment, hydration_status: statusById[attachment.id] ?? attachment.hydration_status });
+  return (_msg, attachment) => {
+    const record = { ...attachment, hydration_status: statusById[attachment.id] ?? attachment.hydration_status };
+    return Promise.resolve(record.hydration_status === "failed" ? failedResult(record) : hydratedResult(record));
+  };
 }
 
 test("recordAttachmentCoverage: routes each hydration status into the honest bucket", () => {

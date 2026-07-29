@@ -42,7 +42,7 @@ const OWNER_ROUTE_PREFIXES = [
 // RegExp-constructor workaround trips useRegexLiterals. This explicit
 // loop matches the same rejection set (C0: 0x00-0x1F, DEL: 0x7F).
 function containsControlChar(value: string): boolean {
-  for (let i = 0; i < value.length; i++) {
+  for (let i = 0; i < value.length; i += 1) {
     const code = value.charCodeAt(i);
     if (code <= C0_CONTROL_END || code === DEL) {
       return true;

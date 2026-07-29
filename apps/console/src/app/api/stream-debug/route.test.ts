@@ -25,13 +25,13 @@ test("stream debug route appends sanitized events to date-grouped JSONL", async 
         body: JSON.stringify({
           events: [
             {
-              name: "neko.clipboard_local_to_remote",
               clipboardChangeEventAvailable: true,
+              name: "neko.clipboard_local_to_remote",
               password: "do-not-store-password",
-              rawClipboardText: "do-not-store-clipboard",
               proxyUrl: "https://token:do-not-store@neko.internal/session",
-              transportError: "upstream disconnected at wss://neko.internal/socket?token=do-not-store",
+              rawClipboardText: "do-not-store-clipboard",
               safeLengthBucket: "17-64",
+              transportError: "upstream disconnected at wss://neko.internal/socket?token=do-not-store",
             },
           ],
         }),
@@ -45,7 +45,7 @@ test("stream debug route appends sanitized events to date-grouped JSONL", async 
     );
 
     assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { ok: true, accepted: 1 });
+    assert.deepEqual(await response.json(), { accepted: 1, ok: true });
     assert.equal(
       logs.some((line) => line.includes("pdpp_stream_debug")),
       true

@@ -12,11 +12,7 @@ import {
   NekoSurfaceAdapter,
 } from "@opendatalabs/remote-surface/client";
 import type { RemoteSurfaceInputPayload } from "@opendatalabs/remote-surface/protocol";
-import {
-  completeNekoTouchScrollGesture,
-  deliverNekoFallbackTap,
-  deliverNekoTouchScrollSteps,
-} from "./neko-client.ts";
+import { completeNekoTouchScrollGesture, deliverNekoFallbackTap, deliverNekoTouchScrollSteps } from "./neko-client.ts";
 import {
   cancelActiveViewerPresses,
   createActiveViewerPresses,
@@ -34,12 +30,18 @@ const VIEWER_WHEEL_DISPATCH_RE = /viewer\.dispatchInput\(\{\s*action:\s*"wheel"/
 const DIRECT_ADAPTER_POINTER_DISPATCH_RE = /adapter\.sendPointer\(/;
 const TOUCH_BRIDGE_VIEWER_DISPATCH_RE = /startMobileTouchScrollBridge\(neko, options\.dispatchInput\)/;
 const TOUCH_SCROLL_WHEEL_INTENT_RE = /if \(options\.dispatchInput\) \{[\s\S]{0,400}source:\s*"touch-gesture"/;
-const TOUCH_SCROLL_BOUNDARY_RE = /function dispatchNekoTouchScrollBoundary\([\s\S]{0,500}deltaX:\s*0,[\s\S]{0,100}deltaY:\s*0,[\s\S]{0,100}gestureBoundary:\s*true/;
-const TOUCH_SCROLL_TERMINAL_HANDLER_RE = /function completeNekoTouchScrollGesture\([\s\S]{0,700}dispatchNekoTouchScrollBoundary\(state, dispatchInput\)/;
-const FALLBACK_TAP_DELIVERY_RE = /function deliverNekoFallbackTap\([\s\S]{0,1000}if \(!dispatchInput\) \{[\s\S]{0,300}clickNekoAt\([\s\S]{0,1000}action: "pointerdown"[\s\S]{0,500}action: "pointerup"/;
-const MOUNTED_FALLBACK_TAP_RE = /deliverNekoFallbackTap\(\{ interactionSeq: state\.interactionSeq, pointerId: state\.id \}, touch, dispatchInput\)/;
-const REMOUNT_CANCEL_RE = /cancelActiveViewerPresses\(activeViewerPressesRef\.current, \(intent\) => mountedViewer\.dispatchInput\(intent\)\)/;
+const TOUCH_SCROLL_BOUNDARY_RE =
+  /function dispatchNekoTouchScrollBoundary\([\s\S]{0,500}deltaX:\s*0,[\s\S]{0,100}deltaY:\s*0,[\s\S]{0,100}gestureBoundary:\s*true/;
+const TOUCH_SCROLL_TERMINAL_HANDLER_RE =
+  /function completeNekoTouchScrollGesture\([\s\S]{0,700}dispatchNekoTouchScrollBoundary\(state, dispatchInput\)/;
+const FALLBACK_TAP_DELIVERY_RE =
+  /function deliverNekoFallbackTap\([\s\S]{0,1000}if \(!dispatchInput\) \{[\s\S]{0,300}clickNekoAt\([\s\S]{0,1000}action: "pointerdown"[\s\S]{0,500}action: "pointerup"/;
+const MOUNTED_FALLBACK_TAP_RE =
+  /deliverNekoFallbackTap\(\{ interactionSeq: state\.interactionSeq, pointerId: state\.id \}, touch, dispatchInput\)/;
+const REMOUNT_CANCEL_RE =
+  /cancelActiveViewerPresses\(activeViewerPressesRef\.current, \(intent\) => mountedViewer\.dispatchInput\(intent\)\)/;
 const VIEWER_INPUT_DIAGNOSTIC_RE = /onInputDiagnostic:\s*\(event\)[\s\S]{0,400}remote_surface_viewer\.input/;
+const DIRECT_FALLBACK_TAP_RE = /clickNekoAt\(/;
 
 interface TouchGesture {
   end: { clientX: number; clientY: number };
@@ -60,7 +62,7 @@ function createMountedAdapter(mapPointerToRemote = (x: number, y: number) => ({ 
       calls.push({ type: "move", ...pos });
     },
     scroll(step) {
-      calls.push({ controlKey: step.controlKey ?? false, type: "scroll", deltaX: step.deltaX, deltaY: step.deltaY });
+      calls.push({ controlKey: step.controlKey ?? false, deltaX: step.deltaX, deltaY: step.deltaY, type: "scroll" });
     },
   };
   const client: NekoClientApi = {
@@ -182,7 +184,7 @@ test("console capture targets the viewer router while preserving the host-owned 
   assert.match(client, FALLBACK_TAP_DELIVERY_RE);
   assert.match(client, MOUNTED_FALLBACK_TAP_RE);
   const touchEnd = client.slice(client.indexOf("const onTouchEnd"), client.indexOf("const onTouchCancel"));
-  assert.doesNotMatch(touchEnd, /clickNekoAt\(/, "mounted fallback tap must not bypass viewer.dispatchInput");
+  assert.doesNotMatch(touchEnd, DIRECT_FALLBACK_TAP_RE, "mounted fallback tap must not bypass viewer.dispatchInput");
   assert.match(viewer, VIEWER_INPUT_DIAGNOSTIC_RE);
   assert.match(viewer, REMOUNT_CANCEL_RE);
 });
@@ -191,6 +193,10 @@ test("production delivery parity isolates touch residuals while the viewer owns 
   const direct = createMountedAdapter();
   await mountAdapter(direct.adapter);
   for (const intent of pointerGesture) {
+    // Simulates a real ordered input gesture sequence; delivering events
+    // out of order or concurrently would not exercise the ordering invariant
+    // this test verifies.
+    // biome-ignore lint/performance/noAwaitInLoops: see comment above.
     await direct.adapter.sendPointer({
       button: intent.button,
       pointerId: intent.pointerId ?? 0,
@@ -201,6 +207,10 @@ test("production delivery parity isolates touch residuals while the viewer owns 
     });
   }
   for (const intent of desktopWheelBurst.slice(0, 1)) {
+    // Simulates a real ordered input gesture sequence; delivering events
+    // out of order or concurrently would not exercise the ordering invariant
+    // this test verifies.
+    // biome-ignore lint/performance/noAwaitInLoops: see comment above.
     await direct.adapter.sendWheel?.({
       deltaX: intent.deltaX ?? 0,
       deltaY: intent.deltaY ?? 0,
@@ -212,6 +222,10 @@ test("production delivery parity isolates touch residuals while the viewer owns 
     deliverProductionDirectTouchScroll(direct.bridgeControl, gesture);
   }
   for (const intent of desktopWheelBurst.slice(1)) {
+    // Simulates a real ordered input gesture sequence; delivering events
+    // out of order or concurrently would not exercise the ordering invariant
+    // this test verifies.
+    // biome-ignore lint/performance/noAwaitInLoops: see comment above.
     await direct.adapter.sendWheel?.({
       deltaX: intent.deltaX ?? 0,
       deltaY: intent.deltaY ?? 0,
@@ -304,7 +318,10 @@ test("production delivery parity isolates touch residuals while the viewer owns 
       },
     ]
   );
-  assert.equal(routedIntents.some((intent) => intent.action === "wheel" && intent.source !== "touch-gesture"), true);
+  assert.equal(
+    routedIntents.some((intent) => intent.action === "wheel" && intent.source !== "touch-gesture"),
+    true
+  );
 });
 
 test("console-dispatched input stays held until the viewer router settles and flushes", () => {
@@ -312,11 +329,11 @@ test("console-dispatched input stays held until the viewer router settles and fl
   let settled = false;
   const router = createNekoViewerInputRouter({
     adapter: {
-      copyRemoteSelection() {
-        return Promise.resolve(false);
-      },
       blurTextInput() {
         // Unused by this input-router fixture.
+      },
+      copyRemoteSelection() {
+        return Promise.resolve(false);
       },
       focusTextInput() {
         // Unused by this input-router fixture.
@@ -326,6 +343,9 @@ test("console-dispatched input stays held until the viewer router settles and fl
       },
       pasteText() {
         return Promise.resolve(false);
+      },
+      sendKeysym() {
+        return Promise.resolve();
       },
       sendPointer(intent) {
         dispatched.push({
@@ -337,14 +357,11 @@ test("console-dispatched input stays held until the viewer router settles and fl
         });
         return Promise.resolve();
       },
-      sendKeysym() {
+      sendText() {
         return Promise.resolve();
       },
       sendWheel(intent) {
         dispatched.push({ action: "wheel", pointerType: "mouse", type: "pointer", x: intent.x, y: intent.y });
-        return Promise.resolve();
-      },
-      sendText() {
         return Promise.resolve();
       },
       setRemoteInputFocused() {
@@ -398,11 +415,7 @@ test("rotation settle gate prevents taps landing off-target after rotation throu
   const router = createNekoViewerInputRouter({ adapter: routed.adapter, isSettled: () => settled });
   const viewer = { dispatchInput: (intent: RemoteSurfaceInputPayload) => router.dispatch(intent) };
 
-  deliverNekoFallbackTap(
-    { interactionSeq: 1, pointerId: 1 },
-    tap,
-    (intent) => viewer.dispatchInput(intent)
-  );
+  deliverNekoFallbackTap({ interactionSeq: 1, pointerId: 1 }, tap, (intent) => viewer.dispatchInput(intent));
   assert.equal(router.queueSize(), 2);
   assert.deepEqual(routed.calls, []);
 

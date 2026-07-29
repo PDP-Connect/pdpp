@@ -34,6 +34,7 @@ import {
   executeRefConnectorsList,
   type RefConnectorsRuntimeStatus,
 } from "../../operations/ref-connectors-list/index.ts";
+import type { FleetHealthVerdict } from "../fleet-health.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 import { assertRemoteControlSupported } from "./_route-contract.ts";
 
@@ -48,21 +49,21 @@ interface RouteRequest {
 }
 
 interface RouteResponse {
-  end(): unknown;
-  getHeader(name: string): string | number | string[] | undefined;
-  json(body: unknown): unknown;
-  setHeader(name: string, value: string): void;
-  status(code: number): RouteResponse;
+  end: () => unknown;
+  getHeader: (name: string) => string | number | string[] | undefined;
+  json: (body: unknown) => unknown;
+  setHeader: (name: string, value: string) => void;
+  status: (code: number) => RouteResponse;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
 
 interface AppLike {
-  delete(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
-  get(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
-  patch(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
-  post(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
-  put(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  delete: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
+  get: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
+  patch: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
+  post: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
+  put: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
 }
 
 // Minimal connector-instance shape this adapter projects. The substrate
@@ -92,12 +93,12 @@ interface ConnectorNamespace {
 }
 
 interface ConnectorInstanceStore {
-  get(connectorInstanceId: string): Promise<ConnectorInstanceRow | null> | ConnectorInstanceRow | null;
-  listByOwner(ownerSubjectId: string): Promise<ConnectorInstanceRow[]> | ConnectorInstanceRow[];
-  setDisplayName(
+  get: (connectorInstanceId: string) => Promise<ConnectorInstanceRow | null> | ConnectorInstanceRow | null;
+  listByOwner: (ownerSubjectId: string) => Promise<ConnectorInstanceRow[]> | ConnectorInstanceRow[];
+  setDisplayName: (
     connectorInstanceId: string,
     options: { ownerSubjectId: string; displayName: string; updatedAt: string }
-  ): Promise<ConnectorInstanceRow>;
+  ) => Promise<ConnectorInstanceRow>;
 }
 
 interface ScheduleUpsertResult {
@@ -142,9 +143,9 @@ interface OwnerNamespaceOptions {
 }
 
 export interface MountRefConnectorsContext {
-  canonicalConnectorKey(value: string | null | undefined): string | null;
-  createRequestConnectorInstanceStore(): ConnectorInstanceStore;
-  createTraceContext(input?: { scenarioId?: string }): TraceContext;
+  canonicalConnectorKey: (value: string | null | undefined) => string | null;
+  createRequestConnectorInstanceStore: () => ConnectorInstanceStore;
+  createTraceContext: (input?: { scenarioId?: string }) => TraceContext;
   // Connection-scoped destructive delete primitive — the SAME cascade the
   // owner-agent bearer delete route delegates to. Resolves + verifies owner
   // ownership BEFORE any mutation, refuses active-run / default-account with the
@@ -152,70 +153,71 @@ export interface MountRefConnectorsContext {
   // records + state, and returns the non-secret deletion summary. Wired with the
   // same injected `purge` phases the bearer route receives so the console path
   // cannot diverge from the agent path.
-  deleteConnection(
+  deleteConnection: (
     connectorInstanceId: string,
     options: { ownerSubjectId: string; now?: string | undefined }
-  ): Promise<ConnectionDeleteSummary>;
-  deleteSchedule(connectorId: string, options: { connectorInstanceId?: string | null }): Promise<boolean>;
-  emitSpineEvent(event: Record<string, unknown>): Promise<unknown>;
-  ensureRequestId(res: RouteResponse): string;
-  getConnectorDetail(connectorId: string): Promise<Record<string, unknown> | null>;
-  getConnectorSummaryForRoute(routeId: string): Promise<unknown | null> | unknown | null;
-  getOwnerSubjectId(req: unknown): string;
-  getRuntimeStatus(): RefConnectorsRuntimeStatus;
-  getSchedule(connectorId: string, options: { connectorInstanceId?: string | null }): Promise<unknown> | unknown;
-  handleError(res: unknown, err: unknown): void;
-  invalidateConnectorSummariesCache?(): void;
-  listConnectorSummaries(): Promise<readonly unknown[]> | readonly unknown[];
-  listSchedules(): Promise<ScheduleRow[]> | ScheduleRow[];
+  ) => Promise<ConnectionDeleteSummary>;
+  deleteSchedule: (connectorId: string, options: { connectorInstanceId?: string | null }) => Promise<boolean>;
+  emitSpineEvent: (event: Record<string, unknown>) => Promise<unknown>;
+  ensureRequestId: (res: RouteResponse) => string;
+  getConnectorDetail: (connectorId: string) => Promise<Record<string, unknown> | null>;
+  getConnectorSummaryForRoute: (routeId: string) => Promise<unknown | null> | unknown | null;
+  getFleetHealthVerdict: () => Promise<FleetHealthVerdict> | FleetHealthVerdict;
+  getOwnerSubjectId: (req: unknown) => string;
+  getRuntimeStatus: () => RefConnectorsRuntimeStatus;
+  getSchedule: (connectorId: string, options: { connectorInstanceId?: string | null }) => Promise<unknown> | unknown;
+  handleError: (res: unknown, err: unknown) => void;
+  invalidateConnectorSummariesCache?: () => void;
+  listConnectorSummaries: () => Promise<readonly unknown[]> | readonly unknown[];
+  listSchedules: () => Promise<ScheduleRow[]> | ScheduleRow[];
   // Marks the maintained connector-summary read-model evidence for exactly one
   // connection dirty after a cookie-authed `/_ref` mutation (run / schedule /
   // rename / revoke / reactivate / delete). Injected (not imported) to match the
   // optional `invalidateConnectorSummariesCache` above; awaited at each call
   // site so ordering is explicit, best-effort, and a no-op until the read model
   // is warmed.
-  markConnectorSummaryEvidenceDirty?(input: { connectorInstanceId: string; reason?: string }): Promise<void> | void;
-  now?(): string;
-  onScheduleMutation?(): Promise<unknown> | unknown;
+  markConnectorSummaryEvidenceDirty?: (input: { connectorInstanceId: string; reason?: string }) => Promise<void> | void;
+  now?: () => string;
+  onScheduleMutation?: () => Promise<unknown> | unknown;
   pdppError: PdppErrorFn;
   requireOwnerSession: MiddlewareHandler;
-  resolveOwnerConnectorNamespace(
+  resolveOwnerConnectorNamespace: (
     req: unknown,
     connectorId: string | null,
     options?: OwnerNamespaceOptions
-  ): Promise<ConnectorNamespace>;
-  resolveRegisteredConnectorManifest(connectorId: string): Promise<unknown>;
-  resolveSingleConnectorIdQueryValue(raw: unknown): string | null;
-  runNow(
+  ) => Promise<ConnectorNamespace>;
+  resolveRegisteredConnectorManifest: (connectorId: string) => Promise<unknown>;
+  resolveSingleConnectorIdQueryValue: (raw: unknown) => string | null;
+  runNow: (
     connectorId: string,
     options: {
       connectorInstanceId?: string | null;
       force?: boolean;
       resources?: Readonly<Record<string, readonly string[]>>;
     }
-  ): Promise<unknown>;
-  setReferenceTraceId(res: RouteResponse, traceId: string): void;
-  setScheduleEnabled(
+  ) => Promise<unknown>;
+  setReferenceTraceId: (res: RouteResponse, traceId: string) => void;
+  setScheduleEnabled: (
     connectorId: string,
     enabled: boolean,
     options: { connectorInstanceId?: string | null }
-  ): Promise<unknown>;
+  ) => Promise<unknown>;
   // Connection-scoped soft-flip primitive — the SAME store `updateStatus`
   // method the owner-agent bearer revoke and reactivate routes use. Flips
   // exactly one connector instance to the target status, zero cascade; the
   // namespace is owner-verified before this is called. Reactivate passes
   // `{ status: 'active', revokedAt: null }` to clear the revoke stamp.
-  updateConnectorInstanceStatus(
+  updateConnectorInstanceStatus: (
     connectorInstanceId: string,
     options:
       | { status: "revoked"; updatedAt: string; revokedAt: string }
       | { status: "active"; updatedAt: string; revokedAt: null }
-  ): Promise<RevokedInstance> | RevokedInstance;
-  upsertSchedule(
+  ) => Promise<RevokedInstance> | RevokedInstance;
+  upsertSchedule: (
     connectorId: string,
     input: unknown,
     options: { connectorInstanceId?: string | null }
-  ): Promise<ScheduleUpsertResult>;
+  ) => Promise<ScheduleUpsertResult>;
 }
 
 // Moved from the `buildAsApp` closure in `server/index.js`. Owner subject
@@ -240,9 +242,9 @@ function resolveRefConnectionNamespace(
   options: { allowStatuses?: readonly string[] } = {}
 ): Promise<ConnectorNamespace> {
   return ctx.resolveOwnerConnectorNamespace(req, null, {
-    ownerSubjectId: ctx.getOwnerSubjectId(req),
     allowDefaultAccount: false,
     connectorInstanceId,
+    ownerSubjectId: ctx.getOwnerSubjectId(req),
     ...(options.allowStatuses ? { allowStatuses: options.allowStatuses } : {}),
   });
 }
@@ -259,17 +261,17 @@ function projectRefConnection(
   canonicalizeConnectorId: (id: string) => string | null = (id) => id
 ): Record<string, unknown> {
   return {
-    object: "ref_connection",
-    connector_instance_id: instance.connectorInstanceId,
     connector_id: canonicalizeConnectorId(instance.connectorId) ?? instance.connectorId,
-    display_name: instance.displayName,
-    status: instance.status,
-    source_kind: instance.sourceKind,
-    source_binding: instance.sourceBinding,
+    connector_instance_id: instance.connectorInstanceId,
     created_at: instance.createdAt,
-    updated_at: instance.updatedAt,
+    display_name: instance.displayName,
+    object: "ref_connection",
     revoked_at: instance.revokedAt,
     schedule: schedulesByInstanceId.get(instance.connectorInstanceId) || null,
+    source_binding: instance.sourceBinding,
+    source_kind: instance.sourceKind,
+    status: instance.status,
+    updated_at: instance.updatedAt,
   };
 }
 
@@ -342,20 +344,36 @@ export function mountRefConnectorsList(app: AppLike, ctx: MountRefConnectorsCont
         const listConnectorSummaries = connectionSelector
           ? async () => {
               const summary = await ctx.getConnectorSummaryForRoute(connectionSelector);
-              return summary == null ? [] : [summary];
+              return summary === null || summary === undefined ? [] : [summary];
             }
           : () => ctx.listConnectorSummaries();
         // The operation expects `RefConnectorsListItem[]`; the host read
         // returns the same shape via `ref-control.ts`. We forward
         // opaquely — the adapter does not redefine the item shape.
         const envelope = await executeRefConnectorsList({
+          getRuntimeStatus: ctx.getRuntimeStatus,
           listConnectorSummaries: () =>
             listConnectorSummaries() as unknown as ReturnType<
               Parameters<typeof executeRefConnectorsList>[0]["listConnectorSummaries"]
             >,
-          getRuntimeStatus: ctx.getRuntimeStatus,
         });
         res.json(envelope);
+      } catch (err) {
+        ctx.handleError(res, err);
+      }
+    }
+  );
+}
+
+/** Owner-only fleet verdict; the console consumes this server composition. */
+export function mountRefFleetHealth(app: AppLike, ctx: MountRefConnectorsContext): void {
+  app.get(
+    "/_ref/fleet-health",
+    { contract: "refGetFleetHealth" },
+    ctx.requireOwnerSession,
+    async (_req: RouteRequest, res: RouteResponse) => {
+      try {
+        res.json(await ctx.getFleetHealthVerdict());
       } catch (err) {
         ctx.handleError(res, err);
       }
@@ -482,7 +500,7 @@ export function mountRefConnectionsList(app: AppLike, ctx: MountRefConnectorsCon
           .map((instance) =>
             projectRefConnection(instance, schedulesByInstanceId, (id) => ctx.canonicalConnectorKey(id))
           );
-        res.json({ object: "list", data });
+        res.json({ data, object: "list" });
       } catch (err) {
         ctx.handleError(res, err);
       }
@@ -512,7 +530,7 @@ export function mountRefConnectorInstancesList(app: AppLike, ctx: MountRefConnec
           .filter((instance) => connectorIdMatchesFilter(ctx, instance, connectorId))
           .filter((instance) => !status || instance.status === status)
           .map((instance) => projectRefConnection(instance, new Map(), (id) => ctx.canonicalConnectorKey(id)));
-        res.json({ object: "list", data });
+        res.json({ data, object: "list" });
       } catch (err) {
         ctx.handleError(res, err);
       }
@@ -581,8 +599,8 @@ export function mountRefConnectionSetDisplayName(app: AppLike, ctx: MountRefConn
         await resolveRefConnectionNamespace(ctx, req, connectorInstanceId);
         const store = ctx.createRequestConnectorInstanceStore();
         const updated = await store.setDisplayName(connectorInstanceId, {
-          ownerSubjectId,
           displayName: displayName.trim(),
+          ownerSubjectId,
           updatedAt: new Date().toISOString(),
         });
         ctx.invalidateConnectorSummariesCache?.();
@@ -611,6 +629,7 @@ export function mountRefConnectionSetDisplayName(app: AppLike, ctx: MountRefConn
 // ─── Action routes (run / schedule put / pause / resume / delete) ───────
 
 function readExplicitRunForce(req: RouteRequest): boolean {
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const body = req.body;
   return Boolean(
     body && typeof body === "object" && !Array.isArray(body) && (body as { force?: unknown }).force === true
@@ -640,12 +659,13 @@ function isStringArray(values: unknown): values is string[] {
 }
 
 function readRunResourcesObject(req: RouteRequest): Record<string, unknown> | undefined {
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const body = req.body;
   if (!(body && typeof body === "object" && !Array.isArray(body))) {
     return;
   }
-  const raw = (body as { resources?: unknown }).resources;
-  if (raw == null) {
+  const { resources: raw = null } = body as { resources?: unknown };
+  if (raw === null) {
     return;
   }
   if (!(typeof raw === "object" && !Array.isArray(raw))) {
@@ -671,7 +691,7 @@ function normalizeRunResourceEntry(stream: string, values: unknown): readonly [s
 
 function readRunResources(req: RouteRequest): Readonly<Record<string, readonly string[]>> | undefined {
   const raw = readRunResourcesObject(req);
-  if (raw == null) {
+  if (raw === undefined) {
     return;
   }
   const resources: Record<string, string[]> = {};
@@ -1100,24 +1120,15 @@ async function emitConnectionControlAudit(
   const trace = buildConnectionControlAuditTrace(ctx, res);
   const code = (args.error as { code?: unknown } | null)?.code;
   await ctx.emitSpineEvent({
-    event_type: args.eventType,
-    trace_id: trace.trace_id,
-    scenario_id: trace.scenario_id,
-    request_id: trace.request_id,
-    actor_type: "owner_session",
     actor_id: args.ownerSubjectId ?? "owner_session",
-    subject_type: "subject",
-    subject_id: args.ownerSubjectId ?? null,
-    object_type: "connection",
-    object_id: args.connectionId || args.connectorKey || "unknown_connection",
-    status: args.outcome,
+    actor_type: "owner_session",
     data: {
       actor_kind: "owner_session",
       connection_id: args.connectionId ?? null,
       connector_key: args.connectorKey ?? null,
-      selector: "connection_id",
       operation: args.operation,
       outcome: args.outcome,
+      selector: "connection_id",
       ...(args.operation === "run_now"
         ? {
             forced: args.force === true,
@@ -1130,13 +1141,22 @@ async function emitConnectionControlAudit(
             deletion_summary: {
               deleted_record_count: args.deletionSummary.deleted_record_count,
               deleted_stream_count: args.deletionSummary.deleted_stream_count,
-              schedule_deleted: args.deletionSummary.schedule_deleted,
               device_refs_cleared: args.deletionSummary.device_refs_cleared,
+              schedule_deleted: args.deletionSummary.schedule_deleted,
             },
           }
         : {}),
       ...(args.error ? { error: { code: typeof code === "string" ? code : "api_error" } } : {}),
     },
+    event_type: args.eventType,
+    object_id: args.connectionId || args.connectorKey || "unknown_connection",
+    object_type: "connection",
+    request_id: trace.request_id,
+    scenario_id: trace.scenario_id,
+    status: args.outcome,
+    subject_id: args.ownerSubjectId ?? null,
+    subject_type: "subject",
+    trace_id: trace.trace_id,
   });
 }
 
@@ -1164,9 +1184,9 @@ export function mountRefConnectionRevoke(app: AppLike, ctx: MountRefConnectorsCo
         const stamp = ctx.now ? ctx.now() : new Date().toISOString();
         const revoked = await Promise.resolve(
           ctx.updateConnectorInstanceStatus(namespace.connectorInstanceId, {
+            revokedAt: stamp,
             status: "revoked",
             updatedAt: stamp,
-            revokedAt: stamp,
           })
         );
         ctx.invalidateConnectorSummariesCache?.();
@@ -1185,12 +1205,12 @@ export function mountRefConnectionRevoke(app: AppLike, ctx: MountRefConnectorsCo
           ownerSubjectId,
         });
         res.status(200).json({
-          object: "ref_connection_revoke",
           connection_id: connectionId,
           connector_id: connectorKey,
           connector_key: connectorKey,
-          status: revoked.status ?? "revoked",
+          object: "ref_connection_revoke",
           revoked_at: revoked.revokedAt ?? stamp,
+          status: revoked.status ?? "revoked",
         });
       } catch (err) {
         await emitConnectionControlAudit(ctx, res, {
@@ -1226,7 +1246,7 @@ export function mountRefConnectionDelete(app: AppLike, ctx: MountRefConnectorsCo
       let connectorKey: string | null = null;
       try {
         const now = ctx.now ? ctx.now() : undefined;
-        const summary = await ctx.deleteConnection(connectionId as string, { ownerSubjectId, now });
+        const summary = await ctx.deleteConnection(connectionId as string, { now, ownerSubjectId });
         connectionId = summary.connection_id;
         connectorKey = ctx.canonicalConnectorKey(summary.connector_id) ?? summary.connector_id;
         ctx.invalidateConnectorSummariesCache?.();
@@ -1247,15 +1267,15 @@ export function mountRefConnectionDelete(app: AppLike, ctx: MountRefConnectorsCo
           ownerSubjectId,
         });
         res.status(200).json({
-          object: "ref_connection_delete",
           connection_id: summary.connection_id,
           connector_id: connectorKey,
           connector_key: connectorKey,
           deleted: true,
           deleted_record_count: summary.deleted_record_count,
           deleted_stream_count: summary.deleted_stream_count,
-          schedule_deleted: summary.schedule_deleted,
           device_refs_cleared: summary.device_refs_cleared,
+          object: "ref_connection_delete",
+          schedule_deleted: summary.schedule_deleted,
         });
       } catch (err) {
         await emitConnectionControlAudit(ctx, res, {
@@ -1303,6 +1323,7 @@ export function mountRefConnectionReactivate(app: AppLike, ctx: MountRefConnecto
             allowStatuses: ["revoked"],
           });
         } catch (resolveErr) {
+          // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
           const code = (resolveErr as { code?: unknown })?.code;
           if (code === "connector_instance_inactive") {
             ctx.pdppError(
@@ -1320,9 +1341,9 @@ export function mountRefConnectionReactivate(app: AppLike, ctx: MountRefConnecto
         const stamp = ctx.now ? ctx.now() : new Date().toISOString();
         const reactivated = await Promise.resolve(
           ctx.updateConnectorInstanceStatus(namespace.connectorInstanceId, {
+            revokedAt: null,
             status: "active",
             updatedAt: stamp,
-            revokedAt: null,
           })
         );
         ctx.invalidateConnectorSummariesCache?.();
@@ -1341,12 +1362,12 @@ export function mountRefConnectionReactivate(app: AppLike, ctx: MountRefConnecto
           ownerSubjectId,
         });
         res.status(200).json({
-          object: "ref_connection_reactivate",
           connection_id: connectionId,
           connector_id: connectorKey,
           connector_key: connectorKey,
-          status: reactivated.status ?? "active",
+          object: "ref_connection_reactivate",
           reactivated_at: stamp,
+          status: reactivated.status ?? "active",
         });
       } catch (err) {
         await emitConnectionControlAudit(ctx, res, {

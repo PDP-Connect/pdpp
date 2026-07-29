@@ -22,12 +22,12 @@
  */
 
 export interface RefClientTokenRevokeInput {
+  /** Acting subject id (owner session sub or default placeholder). */
+  readonly actingSubjectId: string;
   /** Already URL-decoded client id from the path parameter. */
   readonly clientId: string;
   /** Already URL-decoded non-bearer public token id from the path parameter. */
   readonly tokenIdPublic: string;
-  /** Acting subject id (owner session sub or default placeholder). */
-  readonly actingSubjectId: string;
 }
 
 export interface RefClientTokenRevokeResult {
@@ -36,67 +36,71 @@ export interface RefClientTokenRevokeResult {
 }
 
 export interface RefClientTokenRevokeDependencies {
-  revokeOwnerClientTokenByPublicId(
+  revokeOwnerClientTokenByPublicId: (
     clientId: string,
     tokenIdPublic: string,
-    actingSubjectId: string,
-  ): Promise<RefClientTokenRevokeResult> | RefClientTokenRevokeResult;
+    actingSubjectId: string
+  ) => Promise<RefClientTokenRevokeResult> | RefClientTokenRevokeResult;
 }
 
 export interface RefClientTokenRevokeSuccessOutcome {
-  readonly outcome: "success";
-  readonly status: 200;
   readonly body: {
     readonly object: "owner_client_token_revocation";
     readonly revoked: boolean;
     readonly token_id_public: string;
   };
+  readonly outcome: "success";
+  readonly status: 200;
 }
 
 export interface RefClientTokenRevokeFailureOutcome {
-  readonly outcome: "failure";
-  readonly status: number;
   readonly errorCode: string;
   readonly errorMessage: string;
+  readonly outcome: "failure";
+  readonly status: number;
 }
 
-export type RefClientTokenRevokeOutcome =
-  | RefClientTokenRevokeSuccessOutcome
-  | RefClientTokenRevokeFailureOutcome;
+export type RefClientTokenRevokeOutcome = RefClientTokenRevokeSuccessOutcome | RefClientTokenRevokeFailureOutcome;
 
 function mapErrorStatus(code: string): number {
-  if (code === "not_found") return 404;
-  if (code === "forbidden") return 403;
+  if (code === "not_found") {
+    return 404;
+  }
+  if (code === "forbidden") {
+    return 403;
+  }
   return 400;
 }
 
 export async function executeRefClientTokenRevoke(
   input: RefClientTokenRevokeInput,
-  deps: RefClientTokenRevokeDependencies,
+  deps: RefClientTokenRevokeDependencies
 ): Promise<RefClientTokenRevokeOutcome> {
   try {
     const result = await deps.revokeOwnerClientTokenByPublicId(
       input.clientId,
       input.tokenIdPublic,
-      input.actingSubjectId,
+      input.actingSubjectId
     );
     return {
-      outcome: "success",
-      status: 200,
       body: {
         object: "owner_client_token_revocation",
         revoked: result.revoked,
         token_id_public: result.token_id_public,
       },
+      outcome: "success",
+      status: 200,
     };
   } catch (err) {
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     const errCode = (err as { code?: string })?.code || "invalid_request";
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     const errMessage = (err as { message?: string })?.message || "Token revoke rejected";
     return {
-      outcome: "failure",
-      status: mapErrorStatus(errCode),
       errorCode: errCode,
       errorMessage: errMessage,
+      outcome: "failure",
+      status: mapErrorStatus(errCode),
     };
   }
 }

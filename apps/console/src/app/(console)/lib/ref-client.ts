@@ -124,7 +124,7 @@ function normalizeTimeline(raw: unknown): TimelineEnvelope {
   };
   let events: SpineEvent[] = [];
   if (Array.isArray(r.events)) {
-    events = r.events;
+    ({ events } = r);
   } else if (Array.isArray(r.data)) {
     events = r.data;
   }
@@ -136,12 +136,12 @@ function normalizeTimeline(raw: unknown): TimelineEnvelope {
       ? r.terminal_status
       : null;
   return {
-    object: r.object ?? "timeline",
-    trace_id: r.trace_id ?? null,
     event_count: typeof r.event_count === "number" ? r.event_count : events.length,
     events,
     next_cursor: typeof r.next_cursor === "string" && r.next_cursor.length > 0 ? r.next_cursor : undefined,
+    object: r.object ?? "timeline",
     terminal_status: terminalStatus,
+    trace_id: r.trace_id ?? null,
     truncated: r.truncated === true,
   };
 }
@@ -572,7 +572,7 @@ export interface RefAcquisitionCoverageSummary {
  * and `RefConnectorStreamRecord.count_state`. Every console renderer of a
  * `total_records`/per-stream `record_count` value should route through
  * `formatTotalRecordsLabel`/`isTotalRecordsAuthoritative` in
- * `sources-view-model.ts` (Sol fourth-verdict P1.3: "centralize state-aware
+ * `total-records-label.ts` (Sol fourth-verdict P1.3: "centralize state-aware
  * count formatting... every owner-console total_records consumer") rather
  * than re-deriving this literal union or its branching locally.
  */
@@ -730,6 +730,46 @@ export interface RefConnectorRuntimeStatus {
 
 export interface RefConnectorSummariesResponse extends ListResponse<RefConnectorSummary> {
   runtime?: RefConnectorRuntimeStatus;
+}
+
+/** Owner-only server composition; never a grant-scoped health contract. */
+export type RefFleetHealthState = "healthy" | "healthy_with_advisories" | "indeterminate" | "unhealthy";
+
+export interface RefFleetConnectionReference {
+  connection_id: string;
+  connector_id: string;
+  connector_instance_id: string;
+  display_name: string;
+}
+
+export interface RefFleetHealthVerdict {
+  dimensions: {
+    active_work: readonly RefFleetConnectionReference[];
+    attention: { needs_owner: readonly RefFleetConnectionReference[] };
+    coverage_audit: "fail" | "inconclusive" | "pass";
+    freshness_advisories: readonly RefFleetConnectionReference[];
+    intentional_policy: {
+      manual: readonly RefFleetConnectionReference[];
+      paused: readonly RefFleetConnectionReference[];
+    };
+    recovery: {
+      retryable: readonly RefFleetConnectionReference[];
+      terminal: readonly RefFleetConnectionReference[];
+    };
+    runtime: "healthy" | "unhealthy" | "unknown";
+    stalled_work: readonly RefFleetConnectionReference[];
+    system: { degraded_or_broken: readonly RefFleetConnectionReference[] };
+    unknown_evidence: readonly RefFleetConnectionReference[];
+  };
+  fully_healthy: boolean;
+  scope: {
+    assessed: readonly RefFleetConnectionReference[];
+    configured: number;
+    intentional_exclusions: readonly RefFleetConnectionReference[];
+    setup_pending: readonly RefFleetConnectionReference[];
+    unassessed: readonly RefFleetConnectionReference[];
+  };
+  state: RefFleetHealthState;
 }
 
 /**
@@ -1203,6 +1243,10 @@ export async function refFetch(
       })
     );
   } catch (err) {
+    // ReferenceServerUnreachableError already threads `err` through to
+    // Error's native `cause` (see its constructor in owner-token.ts); Biome's
+    // syntactic check doesn't look inside a custom class to see that.
+    // biome-ignore lint/style/useErrorCause: see comment above.
     throw new ReferenceServerUnreachableError(`Cannot reach authorization server at ${getAsInternalUrl()}`, err);
   }
   if (res.status === 404) {
@@ -1233,8 +1277,8 @@ export { RefNotFoundError, RefRequestError };
 // run.
 export class StaticSecretValidationError extends Error {
   readonly code = "static_secret_credential_rejected";
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, cause?: unknown) {
+    super(message, { cause });
     this.name = "StaticSecretValidationError";
   }
 }
@@ -1439,14 +1483,14 @@ export async function listExploreTimeline(
   return (await refFetch("/_ref/explore/records", {
     connection: connection || undefined,
     cursor: opts.cursor ?? undefined,
-    limit: opts.limit,
-    upcoming_limit: opts.upcomingLimit,
-    rewind: opts.rewindToFirstPage ? 1 : undefined,
-    stream: stream || undefined,
-    xconnection: xconnection || undefined,
-    xstream: xstream || undefined,
     // Only the oldest-first re-page sends a direction; newest-first is the default.
     direction: opts.direction === "asc" ? "asc" : undefined,
+    limit: opts.limit,
+    rewind: opts.rewindToFirstPage ? 1 : undefined,
+    stream: stream || undefined,
+    upcoming_limit: opts.upcomingLimit,
+    xconnection: xconnection || undefined,
+    xstream: xstream || undefined,
   })) as ExploreTimelinePage;
 }
 
@@ -1461,6 +1505,10 @@ export async function listConnectorSummaries(
   return (await refFetch("/_ref/connectors", {
     connection: options.connectionRouteId,
   })) as RefConnectorSummariesResponse;
+}
+
+export async function getFleetHealthVerdict(): Promise<RefFleetHealthVerdict> {
+  return (await refFetch("/_ref/fleet-health")) as RefFleetHealthVerdict;
 }
 
 export async function listRecordVersionStats(
@@ -1914,7 +1962,11 @@ export async function captureStaticSecretCredential(input: {
     // becomes a typed error so the action keeps the owner on the form. The
     // message is the provider-named, owner-causal reason from the route.
     if (err instanceof RefRequestError && err.status === 400 && isCredentialRejectionBody(err.bodyText)) {
-      throw new StaticSecretValidationError(err.message);
+      // StaticSecretValidationError threads `err` through to Error's native
+      // `cause` (see its constructor above); Biome's syntactic check doesn't
+      // look inside a custom class to see that.
+      // biome-ignore lint/style/useErrorCause: see comment above.
+      throw new StaticSecretValidationError(err.message, err);
     }
     throw err;
   }
@@ -2124,14 +2176,18 @@ async function postManualUploadFile(
     url.searchParams.set("display_name", options.displayName);
   }
   const init = await withOwnerSessionCookie({
-    method: "POST",
     body: file,
     cache: "no-store",
+    method: "POST",
   });
   let res: Response;
   try {
     res = await fetch(url.toString(), init);
   } catch (err) {
+    // ReferenceServerUnreachableError already threads `err` through to
+    // Error's native `cause` (see its constructor in owner-token.ts); Biome's
+    // syntactic check doesn't look inside a custom class to see that.
+    // biome-ignore lint/style/useErrorCause: see comment above.
     throw new ReferenceServerUnreachableError(`Cannot reach authorization server at ${getAsInternalUrl()}`, err);
   }
   if (!res.ok) {
@@ -2563,8 +2619,8 @@ export interface GrantPackageRevokeResult {
 export class GrantPackageRevokePartialFailureError extends Error {
   readonly result: GrantPackageRevokeResult;
 
-  constructor(result: GrantPackageRevokeResult) {
-    super(formatGrantPackageRevokePartialFailure(result));
+  constructor(result: GrantPackageRevokeResult, cause?: unknown) {
+    super(formatGrantPackageRevokePartialFailure(result), { cause });
     this.name = "GrantPackageRevokePartialFailureError";
     this.result = result;
   }
@@ -2621,7 +2677,7 @@ export async function lookupGrantPackageIdForGrant(grantId: string): Promise<str
     return null;
   }
   try {
-    const page = await listGrants({ q: grantId, limit: 5 });
+    const page = await listGrants({ limit: 5, q: grantId });
     for (const row of page.data) {
       if (row.grant_id === grantId && typeof row.grant_package_id === "string" && row.grant_package_id.length > 0) {
         return row.grant_package_id;
@@ -2672,7 +2728,11 @@ export async function revokeGrantPackage(packageId: string): Promise<GrantPackag
     if (err instanceof RefRequestError) {
       const result = parseGrantPackageRevokeResult(err.bodyText);
       if (result) {
-        throw new GrantPackageRevokePartialFailureError(result);
+        // GrantPackageRevokePartialFailureError threads `err` through to
+        // Error's native `cause` (see its constructor above); Biome's
+        // syntactic check doesn't look inside a custom class to see that.
+        // biome-ignore lint/style/useErrorCause: see comment above.
+        throw new GrantPackageRevokePartialFailureError(result, err);
       }
     }
     throw err;

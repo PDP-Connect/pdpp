@@ -70,29 +70,29 @@ test("classifyKnownGaps keeps protocol violations distinct from source coverage 
 test("connectorHasPartialCoverageHint requires produced records and a non-protocol coverage gap", () => {
   assert.equal(
     connectorHasPartialCoverageHint({
-      totalRecords: 12,
       lastRunKnownGaps: [{ kind: "skip_result", reason: "missing_credentials" }],
+      totalRecords: 12,
     }),
     true
   );
   assert.equal(
     connectorHasPartialCoverageHint({
-      totalRecords: 0,
       lastRunKnownGaps: [{ kind: "skip_result", reason: "missing_credentials" }],
+      totalRecords: 0,
     }),
     false
   );
   assert.equal(
     connectorHasPartialCoverageHint({
-      totalRecords: 12,
       lastRunKnownGaps: [{ kind: "run_failed", reason: "connector_protocol_violation" }],
+      totalRecords: 12,
     }),
     false
   );
   assert.equal(
     connectorHasPartialCoverageHint({
-      totalRecords: 12,
       lastRunKnownGaps: [{ kind: "skip_result", reason: "not_available", severity: "informational" }],
+      totalRecords: 12,
     }),
     false
   );
@@ -111,7 +111,7 @@ test("extractTerminalKnownGaps reads the latest terminal event payload", () => {
           recovery_hint: { action: "retry_by_runtime" },
         },
       ],
-      known_gaps_summary: { count: 1, truncated: false, by_reason: { partially_committed: 1 } },
+      known_gaps_summary: { by_reason: { partially_committed: 1 }, count: 1, truncated: false },
     },
     event_id: "evt_1",
     event_type: "run.failed",
@@ -164,25 +164,25 @@ test("normalizeKnownGaps and formatRecoveryHint tolerate unknown payloads", () =
 });
 
 test("normalizeKnownGaps propagates bounded SKIP_RESULT diagnostics object", () => {
-  const diagnostics = { phase: "export_artifact_wait_failed", error: "download_empty", dialogs_open: 1 };
-  const [gap] = normalizeKnownGaps([{ kind: "skip_result", reason: "export_no_download", diagnostics }]);
+  const diagnostics = { dialogs_open: 1, error: "download_empty", phase: "export_artifact_wait_failed" };
+  const [gap] = normalizeKnownGaps([{ diagnostics, kind: "skip_result", reason: "export_no_download" }]);
   assert.ok(gap);
   assert.deepEqual(gap.diagnostics, diagnostics);
 });
 
 test("normalizeKnownGaps drops diagnostics when value is an array or scalar", () => {
-  const [gapArray] = normalizeKnownGaps([{ kind: "skip_result", reason: "r", diagnostics: ["a", "b"] }]);
+  const [gapArray] = normalizeKnownGaps([{ diagnostics: ["a", "b"], kind: "skip_result", reason: "r" }]);
   assert.ok(gapArray);
   assert.equal(gapArray.diagnostics, undefined);
 
-  const [gapString] = normalizeKnownGaps([{ kind: "skip_result", reason: "r", diagnostics: "text" }]);
+  const [gapString] = normalizeKnownGaps([{ diagnostics: "text", kind: "skip_result", reason: "r" }]);
   assert.ok(gapString);
   assert.equal(gapString.diagnostics, undefined);
 });
 
 test("normalizeKnownGaps passes sentinel diagnostics object through unchanged", () => {
-  const sentinel = { truncated: true, reason: "size_overflow" };
-  const [gap] = normalizeKnownGaps([{ kind: "skip_result", reason: "export_no_download", diagnostics: sentinel }]);
+  const sentinel = { reason: "size_overflow", truncated: true };
+  const [gap] = normalizeKnownGaps([{ diagnostics: sentinel, kind: "skip_result", reason: "export_no_download" }]);
   assert.ok(gap);
   assert.deepEqual(gap.diagnostics, sentinel);
 });
@@ -194,8 +194,8 @@ test("extractTerminalKnownGaps preserves diagnostics on known gaps", () => {
     actor_type: "runtime",
     client_id: null,
     data: {
-      known_gaps: [{ kind: "skip_result", reason: "export_no_download", diagnostics }],
-      known_gaps_summary: { count: 1, truncated: false, by_reason: { export_no_download: 1 } },
+      known_gaps: [{ diagnostics, kind: "skip_result", reason: "export_no_download" }],
+      known_gaps_summary: { by_reason: { export_no_download: 1 }, count: 1, truncated: false },
     },
     event_id: "evt_2",
     event_type: "run.completed",

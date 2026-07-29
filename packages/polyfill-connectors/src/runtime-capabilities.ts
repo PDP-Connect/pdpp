@@ -86,7 +86,7 @@ export function diffRequiredBindings(
   const declared = connector.runtime_requirements?.bindings ?? {};
   const missing: RuntimeBindingName[] = [];
   for (const [name, decl] of Object.entries(declared) as [RuntimeBindingName, { required?: boolean }][]) {
-    if (decl?.required && !runtime.bindings.has(name)) {
+    if (decl.required && !runtime.bindings.has(name)) {
       missing.push(name);
     }
   }

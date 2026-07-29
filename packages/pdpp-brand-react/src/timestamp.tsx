@@ -40,46 +40,46 @@ const DAY = 24 * HOUR;
 const RELATIVE_CUTOFF = 7 * DAY;
 
 const localDateFmt = new Intl.DateTimeFormat(undefined, {
-  year: "numeric",
-  month: "short",
   day: "numeric",
+  month: "short",
+  year: "numeric",
 });
 
 const localDateTimeFmt = new Intl.DateTimeFormat(undefined, {
-  year: "numeric",
-  month: "short",
   day: "numeric",
   hour: "numeric",
   minute: "2-digit",
+  month: "short",
+  year: "numeric",
 });
 
 const tooltipFmt = new Intl.DateTimeFormat(undefined, {
-  weekday: "short",
-  year: "numeric",
-  month: "short",
   day: "numeric",
   hour: "numeric",
   minute: "2-digit",
+  month: "short",
   second: "2-digit",
   timeZoneName: "short",
+  weekday: "short",
+  year: "numeric",
 });
 
 const relFmt = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
 
 const utcDateFmt = new Intl.DateTimeFormat("en-US", {
-  year: "numeric",
-  month: "short",
   day: "numeric",
+  month: "short",
   timeZone: "UTC",
+  year: "numeric",
 });
 
 const utcDateTimeFmt = new Intl.DateTimeFormat("en-US", {
-  year: "numeric",
-  month: "short",
   day: "numeric",
   hour: "numeric",
   minute: "2-digit",
+  month: "short",
   timeZone: "UTC",
+  year: "numeric",
 });
 
 const CALENDAR_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -133,7 +133,7 @@ export function parseTimestampValue(
   value: IcTimestampProps["value"],
   valueKind: TimestampValueKind = "auto"
 ): ParsedTimestamp | null {
-  if (value == null || value === "") {
+  if (value === null || value === undefined || value === "") {
     return null;
   }
 

@@ -77,7 +77,14 @@ function allManifestConnectorKeys(): string[] {
 }
 
 test("every publicly-listed connector is in the production-ready roster, and vice versa", () => {
-  const listedKeys = allManifestConnectorKeys().filter(isListed).sort();
+  const listedKeys = allManifestConnectorKeys()
+    .filter(isListed)
+    .sort((a, b) => {
+      if (a < b) {
+        return -1;
+      }
+      return a > b ? 1 : 0;
+    });
   const rosterKeys = Object.keys(PRODUCTION_READY_CONNECTORS).sort();
 
   const listedButNotRostered = listedKeys.filter((k) => !rosterKeys.includes(k));

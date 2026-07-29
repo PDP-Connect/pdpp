@@ -38,7 +38,7 @@ import type { MiddlewareHandler, PdppErrorFn, RouteArg, TraceContext } from "./_
 
 interface RouteRequest {
   readonly body?: unknown;
-  get(name: string): string | undefined;
+  get: (name: string) => string | undefined;
   readonly hostname: string;
   readonly protocol: string;
   readonly tokenInfo?: {
@@ -51,15 +51,15 @@ interface RouteRequest {
 }
 
 interface RouteResponse {
-  json(body: unknown): unknown;
-  setHeader(name: string, value: string): void;
-  status(code: number): RouteResponse;
+  json: (body: unknown) => unknown;
+  setHeader: (name: string, value: string) => void;
+  status: (code: number) => RouteResponse;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
 
 interface AppLike {
-  post(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  post: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
 }
 
 // Minimal connector manifest shape this classifier reads. Manifests carry far
@@ -73,7 +73,7 @@ interface ConnectorManifestLike {
 }
 
 interface DeviceExporterEnrollmentStore {
-  createEnrollmentCode(input: {
+  createEnrollmentCode: (input: {
     enrollmentCodeId: string;
     codeHash: string;
     ownerSubjectId: string;
@@ -82,37 +82,37 @@ interface DeviceExporterEnrollmentStore {
     displayName: string | null;
     createdAt: string;
     expiresAt: string;
-  }): Promise<unknown> | unknown;
+  }) => Promise<unknown> | unknown;
 }
 
 export interface MountOwnerConnectionIntentContext {
-  canonicalConnectorKey(value: string | null | undefined): string | null;
-  createTraceContext(input?: { scenarioId?: string }): TraceContext;
+  canonicalConnectorKey: (value: string | null | undefined) => string | null;
+  createTraceContext: (input?: { scenarioId?: string }) => TraceContext;
   deviceExporterStore: DeviceExporterEnrollmentStore;
-  emitSpineEvent(event: Record<string, unknown>): Promise<unknown>;
-  ensureRequestId(res: RouteResponse): string;
-  generateReferenceSecret(prefix: string, bytes?: number): string;
-  generateSpineId(prefix: string): string;
+  emitSpineEvent: (event: Record<string, unknown>) => Promise<unknown>;
+  ensureRequestId: (res: RouteResponse) => string;
+  generateReferenceSecret: (prefix: string, bytes?: number) => string;
+  generateSpineId: (prefix: string) => string;
   // Resolves a connector manifest for a registered connector. Returns `null`
   // for an unknown connector. Async to match the host's `getConnectorManifest`.
-  getConnectorManifest(connectorId: string): Promise<ConnectorManifestLike | null> | ConnectorManifestLike | null;
-  getOwnerTokenSubjectId(req: unknown): string;
-  handleError(res: unknown, err: unknown): void;
-  hashDeviceSecret(value: string): string;
-  now?(): string;
+  getConnectorManifest: (connectorId: string) => Promise<ConnectorManifestLike | null> | ConnectorManifestLike | null;
+  getOwnerTokenSubjectId: (req: unknown) => string;
+  handleError: (res: unknown, err: unknown) => void;
+  hashDeviceSecret: (value: string) => string;
+  now?: () => string;
   pdppError: PdppErrorFn;
   // Resolves a local-collector catalog manifest (claude-code, codex) by key, or
   // `null` for connectors not in the local-collector catalog. Mirrors the host's
   // `readReferenceLocalConnectorCatalogManifest`.
-  readReferenceLocalConnectorCatalogManifest(connectorId: string): ConnectorManifestLike | null;
+  readReferenceLocalConnectorCatalogManifest: (connectorId: string) => ConnectorManifestLike | null;
   requireOwner: MiddlewareHandler;
   requireToken: MiddlewareHandler;
   // Resolves the caller-visible trusted AS issuer base (forwarded-origin-safe).
   // The device-exporter enroll route lives on the AS app, so the enroll endpoint
   // the local collector should call is built from the AS base, not the RS base
   // this route is served from.
-  resolveEnrollBaseUrl(req: unknown): string;
-  setReferenceTraceId(res: RouteResponse, traceId: string): void;
+  resolveEnrollBaseUrl: (req: unknown) => string;
+  setReferenceTraceId: (res: RouteResponse, traceId: string) => void;
 }
 
 function stripTrailingSlash(value: string): string {
@@ -146,21 +146,12 @@ async function emitConnectionIntentAudit(
     args.ownerSubjectId ?? (typeof req.tokenInfo?.subject_id === "string" ? req.tokenInfo.subject_id : null);
   const code = (args.error as { code?: unknown } | null)?.code;
   await ctx.emitSpineEvent({
-    event_type: "owner_agent.connection.initiate",
-    trace_id: trace.trace_id,
-    scenario_id: trace.scenario_id,
-    request_id: trace.request_id,
-    actor_type: actorKind,
     actor_id: clientId ?? ownerSubjectId ?? actorKind,
-    subject_type: "subject",
-    subject_id: ownerSubjectId,
+    actor_type: actorKind,
     client_id: clientId,
-    object_type: "connection_intent",
-    object_id: args.connectorKey || "unknown_connector",
-    status: args.outcome,
     data: {
-      auth_token_kind: req.tokenInfo?.pdpp_token_kind ?? null,
       actor_kind: actorKind,
+      auth_token_kind: req.tokenInfo?.pdpp_token_kind ?? null,
       client_id: clientId,
       client_name: clientName,
       connector_key: args.connectorKey ?? null,
@@ -178,6 +169,15 @@ async function emitConnectionIntentAudit(
           }
         : {}),
     },
+    event_type: "owner_agent.connection.initiate",
+    object_id: args.connectorKey || "unknown_connector",
+    object_type: "connection_intent",
+    request_id: trace.request_id,
+    scenario_id: trace.scenario_id,
+    status: args.outcome,
+    subject_id: ownerSubjectId,
+    subject_type: "subject",
+    trace_id: trace.trace_id,
   });
 }
 
@@ -213,10 +213,10 @@ function parseConnectionIntentBody(
   const rawConnectorId = body.connector_id;
   if (typeof rawConnectorId !== "string" || !rawConnectorId.trim()) {
     return {
-      ok: false,
+      displayNameSupplied: false,
       field: "connector_id",
       message: "connector_id must be a non-empty string",
-      displayNameSupplied: false,
+      ok: false,
     };
   }
   const displayNameSupplied = Object.hasOwn(body, "display_name");
@@ -226,17 +226,17 @@ function parseConnectionIntentBody(
     (typeof displayNameRaw !== "string" || !displayNameRaw.trim() || displayNameRaw.trim().length > 200)
   ) {
     return {
-      ok: false,
+      displayNameSupplied: true,
       field: "display_name",
       message: "display_name must be a non-empty string up to 200 characters when provided",
-      displayNameSupplied: true,
+      ok: false,
     };
   }
   return {
-    ok: true,
     connectorId: rawConnectorId.trim(),
     displayName: typeof displayNameRaw === "string" ? displayNameRaw.trim() : null,
     displayNameSupplied,
+    ok: true,
   };
 }
 
@@ -256,17 +256,17 @@ async function mintEnrollmentNextStep(
   // collector reuses it as the local binding name on enroll.
   const localBindingId = args.connectorKey;
   await ctx.deviceExporterStore.createEnrollmentCode({
-    enrollmentCodeId: ctx.generateSpineId("denroll"),
     codeHash: ctx.hashDeviceSecret(enrollmentCode),
-    ownerSubjectId: args.ownerSubjectId,
     connectorId: args.connectorKey,
-    localBindingId,
-    displayName: args.displayName,
     createdAt: now,
+    displayName: args.displayName,
+    enrollmentCodeId: ctx.generateSpineId("denroll"),
     expiresAt,
+    localBindingId,
+    ownerSubjectId: args.ownerSubjectId,
   });
   const enrollEndpoint = `${stripTrailingSlash(ctx.resolveEnrollBaseUrl(req))}/_ref/device-exporters/enroll`;
-  return { enrollmentCode, enrollEndpoint, localBindingId, expiresAt };
+  return { enrollEndpoint, enrollmentCode, expiresAt, localBindingId };
 }
 
 // POST /v1/owner/connections/intents — bearer-authed owner-agent connection
@@ -333,26 +333,26 @@ export function mountOwnerConnectionIntent(app: AppLike, ctx: MountOwnerConnecti
             ownerSubjectId,
           });
           res.status(201).json({
-            object: "owner_connection_intent",
+            connection_active: false,
             connector_id: connectorKey,
             connector_key: connectorKey,
             connector_modality: modality,
-            connection_active: false,
             deployment_readiness: plan.deploymentReadiness,
+            next_step: {
+              enroll_endpoint: enrollEndpoint,
+              enrollment_code: enrollmentCode,
+              expires_at: expiresAt,
+              kind: "enroll_local_collector",
+              local_binding_name: localBindingId,
+              reason:
+                "Run the owner's local collector for this connector and exchange the enrollment_code at enroll_endpoint. The connection materializes when the device enrolls and ingests; any provider login happens locally.",
+            },
+            object: "owner_connection_intent",
             proof_gate: plan.proofGate,
             runbook_path: plan.runbookPath,
             setup_modality: plan.setupModality,
             support_state: plan.supportState,
             validation: plan.validationMode,
-            next_step: {
-              kind: "enroll_local_collector",
-              reason:
-                "Run the owner's local collector for this connector and exchange the enrollment_code at enroll_endpoint. The connection materializes when the device enrolls and ingests; any provider login happens locally.",
-              enrollment_code: enrollmentCode,
-              enroll_endpoint: enrollEndpoint,
-              local_binding_name: localBindingId,
-              expires_at: expiresAt,
-            },
           });
           return;
         }
@@ -360,7 +360,9 @@ export function mountOwnerConnectionIntent(app: AppLike, ctx: MountOwnerConnecti
         // Proof-gated, deployment-blocked, and unsupported connectors still
         // return the same setup-plan projection. They do not mint codes, return
         // secrets, or create connection rows.
+        // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
         const reason = plan.ownerAgentIntent.reason;
+        // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
         const nextStepKind = plan.ownerAgentIntent.nextStepKind;
         await emitConnectionIntentAudit(ctx, req, res, {
           connectorKey,
@@ -384,18 +386,18 @@ export function mountOwnerConnectionIntent(app: AppLike, ctx: MountOwnerConnecti
           nextStep.runbook_path = plan.runbookPath;
         }
         res.status(201).json({
-          object: "owner_connection_intent",
+          connection_active: false,
           connector_id: connectorKey,
           connector_key: connectorKey,
           connector_modality: modality,
-          connection_active: false,
           deployment_readiness: plan.deploymentReadiness,
+          next_step: nextStep,
+          object: "owner_connection_intent",
           proof_gate: plan.proofGate,
           runbook_path: plan.runbookPath,
           setup_modality: plan.setupModality,
           support_state: plan.supportState,
           validation: plan.validationMode,
-          next_step: nextStep,
         });
       } catch (err) {
         await emitConnectionIntentAudit(ctx, req, res, {

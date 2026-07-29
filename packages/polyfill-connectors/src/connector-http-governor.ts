@@ -1,17 +1,17 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import type { CollectionRateProgress } from "./connector-runtime-protocol.js";
+import type { CollectionRateProgress } from "./connector-runtime-protocol.ts";
 import {
   type HttpRetryBudget,
   type HttpRetryResponse,
   RetryExhaustedError,
   retryHttp,
   TerminalHttpStatusError,
-} from "./http-retry.js";
-import { type PacingSnapshot, ProviderPacing } from "./provider-pacing.js";
-import type { ProviderPacingProfile } from "./provider-profile.js";
-import type { SendGovernor } from "./send-governor.js";
+} from "./http-retry.ts";
+import { type PacingSnapshot, ProviderPacing } from "./provider-pacing.ts";
+import type { ProviderPacingProfile } from "./provider-profile.ts";
+import type { SendGovernor } from "./send-governor.ts";
 
 /**
  * Shared HTTP request governor for API connectors.
@@ -131,10 +131,10 @@ export interface ConnectorHttpGovernor {
    * `RetryExhaustedError`; on a `shouldAbort` status throws
    * `TerminalHttpStatusError` (or the caller maps it first via `classify`).
    */
-  request<T, R>(
+  request: <T, R>(
     send: () => R | Promise<R>,
     classify: (raw: R) => { status: number; headers?: Record<string, string | undefined>; value: T }
-  ): Promise<ConnectorHttpResult<T>>;
+  ) => Promise<ConnectorHttpResult<T>>;
   /**
    * Operator-legible snapshot of the live rate controller, or `null` when pacing
    * is disabled (`pacingInitialIntervalMs: 0`). `snapshot.intervalMs` is the
@@ -142,7 +142,7 @@ export interface ConnectorHttpGovernor {
    * {@link buildPacingStateFields} / {@link buildCollectionRateProgress}. PURE:
    * reads only, never advances GCRA state.
    */
-  snapshot(): PacingSnapshot | null;
+  snapshot: () => PacingSnapshot | null;
 }
 
 /**
@@ -150,8 +150,8 @@ export interface ConnectorHttpGovernor {
  * existing connector `retryablePattern` cross-run contract still fires.
  */
 export class ConnectorRateLimitedError extends Error {
-  constructor(name: string) {
-    super(`${name}_rate_limited`);
+  constructor(name: string, options?: ErrorOptions) {
+    super(`${name}_rate_limited`, options);
     this.name = "ConnectorRateLimitedError";
   }
 }
@@ -205,20 +205,22 @@ export function createConnectorHttpGovernor(options: ConnectorHttpGovernorOption
   // shared fallback (spec §3). A missing profile is a compile-time error on the
   // options type, so by the time we are here `pacingMinIntervalMs` is always a
   // declared, per-provider value.
-  const pacingMinIntervalMs = options.profile.pacingMinIntervalMs;
+  const { pacingMinIntervalMs } = options.profile;
   const pacingEnabled = pacingInitialIntervalMs > 0;
   // Warm-start: seed from the prior run's learned interval when the connector
   // restored one (already staleness-guarded by readPersistedPacingInterval).
   const restored =
-    options.restoredIntervalMs == null || !Number.isFinite(options.restoredIntervalMs)
+    options.restoredIntervalMs === null ||
+    options.restoredIntervalMs === undefined ||
+    !Number.isFinite(options.restoredIntervalMs)
       ? null
       : options.restoredIntervalMs;
   const pacing = new ProviderPacing({
     initialIntervalMs: pacingInitialIntervalMs,
     minIntervalMs: pacingMinIntervalMs,
-    ...(restored == null ? {} : { restoredIntervalMs: restored }),
-    ...(options.now == null ? {} : { now: options.now }),
-    ...(options.sleep == null ? {} : { sleep: (ms: number) => Promise.resolve(options.sleep?.(ms)) }),
+    ...(restored === null ? {} : { restoredIntervalMs: restored }),
+    ...(options.now === undefined ? {} : { now: options.now }),
+    ...(options.sleep === undefined ? {} : { sleep: (ms: number) => Promise.resolve(options.sleep?.(ms)) }),
   });
 
   // The single pre-flight wait. ProviderPacing.admit() is the ONE governor for
@@ -247,9 +249,9 @@ export function createConnectorHttpGovernor(options: ConnectorHttpGovernorOption
         maxAttempts,
         maxDelayMs,
         maxRetryAfterMs,
-        ...(options.random == null ? {} : { random: options.random }),
-        ...(options.retryBudget == null ? {} : { retryBudget: options.retryBudget }),
-        ...(options.sleep == null ? {} : { sleep: options.sleep }),
+        ...(options.random === undefined ? {} : { random: options.random }),
+        ...(options.retryBudget === undefined ? {} : { retryBudget: options.retryBudget }),
+        ...(options.sleep === undefined ? {} : { sleep: options.sleep }),
         request: async () => {
           const raw = await send();
           const c = classify(raw);
@@ -274,7 +276,7 @@ export function createConnectorHttpGovernor(options: ConnectorHttpGovernorOption
       return response;
     } catch (error) {
       if (isRateLimitTerminal(error)) {
-        throw new ConnectorRateLimitedError(options.name);
+        throw new ConnectorRateLimitedError(options.name, { cause: error });
       }
       throw error;
     }

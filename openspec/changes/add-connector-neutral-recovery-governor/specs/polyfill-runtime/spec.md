@@ -431,3 +431,81 @@ repair regardless of who initiated it.
 - **THEN** the admission record SHALL mark it as forced with its initiator
 - **AND** the forced run SHALL still refuse unattended owner-interactive auth
   repair.
+
+### Requirement: A connector's forward walk SHALL NOT re-attempt detail work it has already durably covered AND whose list surface is unchanged
+
+A connector whose forward-collection pass re-scans an ongoing (never-frozen)
+boundary every run — such as Amazon's current-year order list — SHALL NOT
+re-attempt detail hydration for an item its own prior run already durably
+hydrated, PROVIDED the item's list-surface fingerprint (the fields the list
+page alone can prove — not the detail-only fields) has not changed since
+hydration. Re-attempting already-covered, unchanged work wastes the per-run
+detail-attempt budget on repeat work instead of reaching genuinely new or
+still-outstanding items, which starves the tail of a growing boundary even
+though the connector-neutral recovery governor is correctly draining every
+gap it is served — the governor cannot fix a workload the connector keeps
+re-generating from already-covered items. "Known-covered" is NOT a
+permanent claim: a durably-hydrated item's underlying source state can still
+change (a return/refund appears, delivery status advances), and a
+list-surface change is the connector-observable signal that it might have.
+
+#### Scenario: An already-hydrated, list-surface-unchanged item emits nothing and is not re-fetched
+
+- **WHEN** a connector's forward walk re-scans a boundary that includes an
+  item whose detail was durably hydrated by a prior run
+- **AND** the item's current list-surface fingerprint matches the fingerprint
+  recorded at hydration time
+- **THEN** the connector SHALL NOT re-attempt the browser/network detail
+  fetch for that item
+- **AND** the connector SHALL NOT re-emit ANY record for that item on any
+  stream this run — re-emitting a list-page-only (detail-less) version of an
+  already-enriched record would silently downgrade the durable record with
+  no new information to justify it
+- **AND** the item SHALL still count toward the run's coverage numerator (it
+  remains proven-covered)
+- **AND** the per-run detail-attempt budget freed by skipping it SHALL remain
+  available for genuinely new or still-outstanding items in the same run.
+
+#### Scenario: A list-surface change invalidates the known-covered proof and forces full re-hydration
+
+- **WHEN** an item's current list-surface fingerprint differs from the
+  fingerprint recorded at hydration time (or no fingerprint was ever
+  recorded — legacy/unknown state)
+- **THEN** the connector SHALL treat the item as not-yet-covered and attempt
+  a full detail re-hydration
+- **AND** on a successful re-hydration the connector SHALL re-emit the
+  enriched record(s) on every in-scope stream, refreshing detail-driven
+  fields
+- **AND** on success the connector SHALL record the NEW list-surface
+  fingerprint observed this run, not the stale one.
+
+#### Scenario: A degraded detail attempt is never marked known-covered
+
+- **WHEN** a connector attempts detail hydration for an item and the attempt
+  is degraded (fails or is deferred, not hydrated)
+- **THEN** the item SHALL NOT be marked known-covered
+- **AND** it SHALL remain reachable for an ordinary retry or the connector-neutral
+  recovery path on a later run.
+
+#### Scenario: Known-covered proof is scoped to the stream it actually proves
+
+- **WHEN** a connector fetches an item's detail while a stream OTHER than the
+  one the known-covered proof describes is out of scope for this run (for
+  example, detail fetched only to enrich a differently-scoped stream)
+- **THEN** the connector SHALL NOT mark the item known-covered for the
+  out-of-scope stream
+- **AND** a later run that DOES scope that stream SHALL make its own real
+  detail attempt for the item, never trusting a proof recorded under a
+  different scope.
+
+#### Scenario: A gap recovered through the recovery path does not fabricate known-covered proof
+
+- **WHEN** the connector-neutral recovery path successfully hydrates a
+  previously-gapped item using only the gap's own locator (not a fresh
+  list-page row)
+- **THEN** the connector SHALL NOT mark that item known-covered unless it can
+  compute a real list-surface fingerprint for it
+- **AND** a forward walk that later lists the item SHALL make its own
+  ordinary detail attempt and establish the proof normally, with a real
+  fingerprint — fabricating a proof from incomplete data is worse than one
+  bounded extra re-fetch.

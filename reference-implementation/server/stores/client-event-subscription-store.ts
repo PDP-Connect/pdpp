@@ -22,6 +22,7 @@
  */
 
 import { allowUnboundedReadAcknowledged, exec, getOne, referenceQueries } from "../../lib/db.ts";
+import { isNullish } from "../../lib/nullish.ts";
 import type {
   ClientEventSubscriptionStore,
   QueuedEventForEnqueue,
@@ -29,7 +30,7 @@ import type {
   SubscriptionRow,
   SubscriptionStatus,
 } from "../../operations/as-client-event-subscriptions/index.ts";
-import { isPostgresStorageBackend, postgresQuery } from "../postgres-storage.js";
+import { isPostgresStorageBackend, postgresQuery } from "../postgres-storage.ts";
 
 export interface QueueRow {
   readonly attempt_count: number;
@@ -68,6 +69,25 @@ export function createSqliteClientEventSubscriptionStore(): ClientEventSubscript
   // driver. Methods below return synchronously; the operation layer awaits
   // everything uniformly.
   return {
+    deleteSubscription(id): void {
+      exec(referenceQueries.clientEventSubscriptionsDeleteSubscription, [id]);
+    },
+    dropQueuedForSubscription(id): void {
+      exec(referenceQueries.clientEventSubscriptionsDropQueuedForSubscription, [id]);
+    },
+    enqueueEvent(event: QueuedEventForEnqueue): void {
+      exec(referenceQueries.clientEventSubscriptionsInsertQueue, [
+        event.subscriptionId,
+        event.eventId,
+        event.eventType,
+        event.payloadJson,
+        event.enqueuedAt,
+        event.nextAttemptAt,
+      ]);
+    },
+    getSubscriptionById(id: string): SubscriptionRow | null {
+      return getOne<SubscriptionRow>(referenceQueries.clientEventSubscriptionsGetSubscriptionById, [id]);
+    },
     insertSubscription(row: SubscriptionRow): void {
       exec(referenceQueries.clientEventSubscriptionsInsertSubscription, [
         row.subscription_id,
@@ -85,9 +105,6 @@ export function createSqliteClientEventSubscriptionStore(): ClientEventSubscript
         row.updated_at,
       ]);
     },
-    getSubscriptionById(id: string): SubscriptionRow | null {
-      return getOne<SubscriptionRow>(referenceQueries.clientEventSubscriptionsGetSubscriptionById, [id]);
-    },
     listSubscriptionsByClient(clientId: string): SubscriptionRow[] {
       return [
         ...allowUnboundedReadAcknowledged<SubscriptionRow>(
@@ -104,27 +121,11 @@ export function createSqliteClientEventSubscriptionStore(): ClientEventSubscript
         ),
       ];
     },
-    updateStatus(id, status, updatedAt, disabledAt, disabledReason): void {
-      exec(referenceQueries.clientEventSubscriptionsUpdateStatus, [status, updatedAt, disabledAt, disabledReason, id]);
-    },
     updateSecret(id, secretHash, secretText, updatedAt): void {
       exec(referenceQueries.clientEventSubscriptionsUpdateSecret, [secretHash, secretText, updatedAt, id]);
     },
-    deleteSubscription(id): void {
-      exec(referenceQueries.clientEventSubscriptionsDeleteSubscription, [id]);
-    },
-    enqueueEvent(event: QueuedEventForEnqueue): void {
-      exec(referenceQueries.clientEventSubscriptionsInsertQueue, [
-        event.subscriptionId,
-        event.eventId,
-        event.eventType,
-        event.payloadJson,
-        event.enqueuedAt,
-        event.nextAttemptAt,
-      ]);
-    },
-    dropQueuedForSubscription(id): void {
-      exec(referenceQueries.clientEventSubscriptionsDropQueuedForSubscription, [id]);
+    updateStatus(id, status, updatedAt, disabledAt, disabledReason): void {
+      exec(referenceQueries.clientEventSubscriptionsUpdateStatus, [status, updatedAt, disabledAt, disabledReason, id]);
     },
   };
 }
@@ -152,30 +153,68 @@ function pgPayloadJsonToText(value: unknown): string {
 
 function pgSubscriptionRow(raw: Record<string, unknown>): SubscriptionRow {
   return {
-    subscription_id: String(raw.subscription_id),
     authority_kind: (raw.authority_kind ?? "client_grant") as SubscriptionAuthorityKind,
-    grant_id: raw.grant_id === null || raw.grant_id === undefined ? null : String(raw.grant_id),
-    client_id: String(raw.client_id),
-    subject_id: String(raw.subject_id),
     callback_url: String(raw.callback_url),
+    client_id: String(raw.client_id),
+    created_at: String(raw.created_at),
+    disabled_at: raw.disabled_at === null || raw.disabled_at === undefined ? null : String(raw.disabled_at),
+    disabled_reason:
+      raw.disabled_reason === null || raw.disabled_reason === undefined ? null : String(raw.disabled_reason),
+    grant_id: raw.grant_id === null || raw.grant_id === undefined ? null : String(raw.grant_id),
+    scope_json: pgScopeJsonToText(raw.scope_json),
     secret_hash: String(raw.secret_hash),
     secret_text: String(raw.secret_text),
-    scope_json: pgScopeJsonToText(raw.scope_json),
     status: raw.status as SubscriptionStatus,
+    subject_id: String(raw.subject_id),
+    subscription_id: String(raw.subscription_id),
+    updated_at: String(raw.updated_at),
     verification_challenge:
       raw.verification_challenge === null || raw.verification_challenge === undefined
         ? null
         : String(raw.verification_challenge),
-    created_at: String(raw.created_at),
-    updated_at: String(raw.updated_at),
-    disabled_at: raw.disabled_at === null || raw.disabled_at === undefined ? null : String(raw.disabled_at),
-    disabled_reason:
-      raw.disabled_reason === null || raw.disabled_reason === undefined ? null : String(raw.disabled_reason),
   };
 }
 
 export function createPostgresClientEventSubscriptionStore(): ClientEventSubscriptionStore {
   return {
+    async deleteSubscription(id): Promise<void> {
+      await postgresQuery("DELETE FROM client_event_subscriptions WHERE subscription_id = $1", [id]);
+    },
+    async dropQueuedForSubscription(id): Promise<void> {
+      await postgresQuery(
+        `UPDATE client_event_queue
+            SET status = 'dropped'
+          WHERE subscription_id = $1
+            AND status = 'pending'`,
+        [id]
+      );
+    },
+    async enqueueEvent(event: QueuedEventForEnqueue): Promise<void> {
+      await postgresQuery(
+        `INSERT INTO client_event_queue(
+           subscription_id, event_id, event_type, payload_json,
+           enqueued_at, next_attempt_at, attempt_count, status
+         )
+         VALUES($1, $2, $3, $4::jsonb, $5, $6, 0, 'pending')`,
+        [event.subscriptionId, event.eventId, event.eventType, event.payloadJson, event.enqueuedAt, event.nextAttemptAt]
+      );
+    },
+    async getSubscriptionById(id: string): Promise<SubscriptionRow | null> {
+      const result = await postgresQuery<SubscriptionRow>(
+        `SELECT subscription_id, authority_kind, grant_id, client_id, subject_id, callback_url,
+                secret_hash, secret_text, scope_json, status, verification_challenge,
+                created_at, updated_at, disabled_at, disabled_reason
+           FROM client_event_subscriptions
+          WHERE subscription_id = $1`,
+        [id]
+      );
+      if (result.rowCount === 0) {
+        return null;
+      }
+      // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
+      const row = result.rows[0];
+      return row === undefined ? null : pgSubscriptionRow(row as unknown as Record<string, unknown>);
+    },
     async insertSubscription(row: SubscriptionRow): Promise<void> {
       await postgresQuery(
         `INSERT INTO client_event_subscriptions(
@@ -201,20 +240,6 @@ export function createPostgresClientEventSubscriptionStore(): ClientEventSubscri
         ]
       );
     },
-    async getSubscriptionById(id: string): Promise<SubscriptionRow | null> {
-      const result = await postgresQuery(
-        `SELECT subscription_id, authority_kind, grant_id, client_id, subject_id, callback_url,
-                secret_hash, secret_text, scope_json, status, verification_challenge,
-                created_at, updated_at, disabled_at, disabled_reason
-           FROM client_event_subscriptions
-          WHERE subscription_id = $1`,
-        [id]
-      );
-      if (result.rowCount === 0) {
-        return null;
-      }
-      return pgSubscriptionRow(result.rows[0]);
-    },
     async listSubscriptionsByClient(clientId: string): Promise<SubscriptionRow[]> {
       const result = await postgresQuery(
         `SELECT subscription_id, authority_kind, grant_id, client_id, subject_id, callback_url,
@@ -239,17 +264,6 @@ export function createPostgresClientEventSubscriptionStore(): ClientEventSubscri
       );
       return result.rows.map(pgSubscriptionRow);
     },
-    async updateStatus(id, status, updatedAt, disabledAt, disabledReason): Promise<void> {
-      await postgresQuery(
-        `UPDATE client_event_subscriptions
-            SET status = $1,
-                updated_at = $2,
-                disabled_at = $3,
-                disabled_reason = $4
-          WHERE subscription_id = $5`,
-        [status, updatedAt, disabledAt, disabledReason, id]
-      );
-    },
     async updateSecret(id, secretHash, secretText, updatedAt): Promise<void> {
       await postgresQuery(
         `UPDATE client_event_subscriptions
@@ -260,26 +274,15 @@ export function createPostgresClientEventSubscriptionStore(): ClientEventSubscri
         [secretHash, secretText, updatedAt, id]
       );
     },
-    async deleteSubscription(id): Promise<void> {
-      await postgresQuery("DELETE FROM client_event_subscriptions WHERE subscription_id = $1", [id]);
-    },
-    async enqueueEvent(event: QueuedEventForEnqueue): Promise<void> {
+    async updateStatus(id, status, updatedAt, disabledAt, disabledReason): Promise<void> {
       await postgresQuery(
-        `INSERT INTO client_event_queue(
-           subscription_id, event_id, event_type, payload_json,
-           enqueued_at, next_attempt_at, attempt_count, status
-         )
-         VALUES($1, $2, $3, $4::jsonb, $5, $6, 0, 'pending')`,
-        [event.subscriptionId, event.eventId, event.eventType, event.payloadJson, event.enqueuedAt, event.nextAttemptAt]
-      );
-    },
-    async dropQueuedForSubscription(id): Promise<void> {
-      await postgresQuery(
-        `UPDATE client_event_queue
-            SET status = 'dropped'
-          WHERE subscription_id = $1
-            AND status = 'pending'`,
-        [id]
+        `UPDATE client_event_subscriptions
+            SET status = $1,
+                updated_at = $2,
+                disabled_at = $3,
+                disabled_reason = $4
+          WHERE subscription_id = $5`,
+        [status, updatedAt, disabledAt, disabledReason, id]
       );
     },
   };
@@ -317,7 +320,7 @@ export function __resetClientEventSubscriptionStoreForTests(): void {
 
 export async function listActiveSubscriptions(): Promise<SubscriptionRow[]> {
   if (isPostgresStorageBackend()) {
-    const result = await postgresQuery(
+    const result = await postgresQuery<SubscriptionRow>(
       `SELECT subscription_id, authority_kind, grant_id, client_id, subject_id, callback_url,
               secret_hash, secret_text, scope_json, status, verification_challenge,
               created_at, updated_at, disabled_at, disabled_reason
@@ -326,7 +329,7 @@ export async function listActiveSubscriptions(): Promise<SubscriptionRow[]> {
         ORDER BY created_at, subscription_id`,
       []
     );
-    return result.rows.map(pgSubscriptionRow);
+    return result.rows.map((row) => pgSubscriptionRow(row as unknown as Record<string, unknown>));
   }
   return [
     ...allowUnboundedReadAcknowledged<SubscriptionRow>(
@@ -338,28 +341,28 @@ export async function listActiveSubscriptions(): Promise<SubscriptionRow[]> {
 
 function pgQueueRow(raw: Record<string, unknown>): QueueRow {
   return {
-    queue_id: Number(raw.queue_id),
-    subscription_id: String(raw.subscription_id),
+    attempt_count: Number(raw.attempt_count),
+    callback_url: String(raw.callback_url),
+    enqueued_at: String(raw.enqueued_at),
     event_id: String(raw.event_id),
     event_type: String(raw.event_type),
-    payload_json: pgPayloadJsonToText(raw.payload_json),
-    enqueued_at: String(raw.enqueued_at),
     next_attempt_at: String(raw.next_attempt_at),
-    attempt_count: Number(raw.attempt_count),
-    status: String(raw.status),
-    callback_url: String(raw.callback_url),
+    payload_json: pgPayloadJsonToText(raw.payload_json),
+    queue_id: Number(raw.queue_id),
     secret_text: String(raw.secret_text),
+    status: String(raw.status),
+    subscription_id: String(raw.subscription_id),
+    subscription_status: raw.subscription_status as SubscriptionStatus,
     verification_challenge:
       raw.verification_challenge === null || raw.verification_challenge === undefined
         ? null
         : String(raw.verification_challenge),
-    subscription_status: raw.subscription_status as SubscriptionStatus,
   };
 }
 
 export async function claimDueQueue(beforeIso: string): Promise<QueueRow[]> {
   if (isPostgresStorageBackend()) {
-    const result = await postgresQuery(
+    const result = await postgresQuery<QueueRow>(
       `SELECT q.queue_id,
               q.subscription_id,
               q.event_id,
@@ -381,7 +384,7 @@ export async function claimDueQueue(beforeIso: string): Promise<QueueRow[]> {
         LIMIT 100`,
       [beforeIso]
     );
-    return result.rows.map(pgQueueRow);
+    return result.rows.map((row) => pgQueueRow(row as unknown as Record<string, unknown>));
   }
   return [
     ...allowUnboundedReadAcknowledged<QueueRow>(referenceQueries.clientEventSubscriptionsClaimDueQueue, [beforeIso]),
@@ -501,7 +504,7 @@ export async function listAllSubscriptions(filters: ListAllSubscriptionsFilters 
   const grantId = filters.grantId ?? null;
   const status = filters.status ?? null;
   if (isPostgresStorageBackend()) {
-    const result = await postgresQuery(
+    const result = await postgresQuery<SubscriptionRow>(
       `SELECT subscription_id, authority_kind, grant_id, client_id, subject_id, callback_url,
               secret_hash, secret_text, scope_json, status, verification_challenge,
               created_at, updated_at, disabled_at, disabled_reason
@@ -513,7 +516,7 @@ export async function listAllSubscriptions(filters: ListAllSubscriptionsFilters 
         ORDER BY created_at DESC, subscription_id ASC`,
       [clientId, grantId, status]
     );
-    return result.rows.map(pgSubscriptionRow);
+    return result.rows.map((row) => pgSubscriptionRow(row as unknown as Record<string, unknown>));
   }
   return [
     ...allowUnboundedReadAcknowledged<SubscriptionRow>(referenceQueries.clientEventSubscriptionsListAllSubscriptions, [
@@ -529,29 +532,29 @@ export async function listAllSubscriptions(filters: ListAllSubscriptionsFilters 
 
 function pgSummaryRow(raw: Record<string, unknown>): SubscriptionSummaryRow {
   return {
-    subscription_id: String(raw.subscription_id),
     authority_kind: (raw.authority_kind ?? "client_grant") as SubscriptionAuthorityKind,
-    grant_id: raw.grant_id === null || raw.grant_id === undefined ? null : String(raw.grant_id),
-    client_id: String(raw.client_id),
-    subject_id: String(raw.subject_id),
     callback_url: String(raw.callback_url),
-    scope_json: pgScopeJsonToText(raw.scope_json),
-    status: raw.status as SubscriptionStatus,
+    client_id: String(raw.client_id),
     created_at: String(raw.created_at),
-    updated_at: String(raw.updated_at),
     disabled_at: raw.disabled_at === null || raw.disabled_at === undefined ? null : String(raw.disabled_at),
     disabled_reason:
       raw.disabled_reason === null || raw.disabled_reason === undefined ? null : String(raw.disabled_reason),
-    pending_queue_count: Number(raw.pending_queue_count ?? 0),
     final_failure_count: Number(raw.final_failure_count ?? 0),
-    last_attempted_at:
-      raw.last_attempted_at === null || raw.last_attempted_at === undefined ? null : String(raw.last_attempted_at),
+    grant_id: raw.grant_id === null || raw.grant_id === undefined ? null : String(raw.grant_id),
     last_attempt_ok:
       raw.last_attempt_ok === null || raw.last_attempt_ok === undefined ? null : Number(raw.last_attempt_ok),
     last_attempt_status_code:
       raw.last_attempt_status_code === null || raw.last_attempt_status_code === undefined
         ? null
         : Number(raw.last_attempt_status_code),
+    last_attempted_at:
+      raw.last_attempted_at === null || raw.last_attempted_at === undefined ? null : String(raw.last_attempted_at),
+    pending_queue_count: Number(raw.pending_queue_count ?? 0),
+    scope_json: pgScopeJsonToText(raw.scope_json),
+    status: raw.status as SubscriptionStatus,
+    subject_id: String(raw.subject_id),
+    subscription_id: String(raw.subscription_id),
+    updated_at: String(raw.updated_at),
   };
 }
 
@@ -596,7 +599,9 @@ export async function getSubscriptionSummary(subscriptionId: string): Promise<Su
     if (result.rowCount === 0) {
       return null;
     }
-    return pgSummaryRow(result.rows[0]);
+    // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
+    const row = result.rows[0];
+    return row === undefined ? null : pgSummaryRow(row);
   }
   return getOne<SubscriptionSummaryRow>(referenceQueries.clientEventSubscriptionsGetSubscriptionSummary, [
     subscriptionId,
@@ -628,15 +633,15 @@ export async function listAttemptsForSubscription(
     );
     return result.rows.map((raw: Record<string, unknown>) => ({
       attempt_id: Number(raw.attempt_id),
-      queue_id: Number(raw.queue_id),
+      attempted_at: String(raw.attempted_at),
+      error: isNullish(raw.error) ? null : String(raw.error),
       event_id: String(raw.event_id),
       event_type: String(raw.event_type),
-      attempted_at: String(raw.attempted_at),
-      status_code: raw.status_code == null ? null : Number(raw.status_code),
+      latency_ms: isNullish(raw.latency_ms) ? null : Number(raw.latency_ms),
       ok: Number(raw.ok ?? 0),
-      latency_ms: raw.latency_ms == null ? null : Number(raw.latency_ms),
-      error: raw.error == null ? null : String(raw.error),
-      response_snippet: raw.response_snippet == null ? null : String(raw.response_snippet),
+      queue_id: Number(raw.queue_id),
+      response_snippet: isNullish(raw.response_snippet) ? null : String(raw.response_snippet),
+      status_code: isNullish(raw.status_code) ? null : Number(raw.status_code),
     }));
   }
   return [
@@ -658,13 +663,13 @@ export async function listAttemptsForQueue(queueId: number): Promise<AttemptRow[
     );
     return result.rows.map((raw: Record<string, unknown>) => ({
       attempt_id: Number(raw.attempt_id),
-      queue_id: Number(raw.queue_id),
       attempted_at: String(raw.attempted_at),
-      status_code: raw.status_code == null ? null : Number(raw.status_code),
+      error: isNullish(raw.error) ? null : String(raw.error),
+      latency_ms: isNullish(raw.latency_ms) ? null : Number(raw.latency_ms),
       ok: Number(raw.ok ?? 0),
-      latency_ms: raw.latency_ms == null ? null : Number(raw.latency_ms),
-      error: raw.error == null ? null : String(raw.error),
-      response_snippet: raw.response_snippet == null ? null : String(raw.response_snippet),
+      queue_id: Number(raw.queue_id),
+      response_snippet: isNullish(raw.response_snippet) ? null : String(raw.response_snippet),
+      status_code: isNullish(raw.status_code) ? null : Number(raw.status_code),
     }));
   }
   return [

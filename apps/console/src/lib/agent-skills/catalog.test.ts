@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { createPdppCliCommand, getPdppCliPackageInfo } from "../../../../../packages/cli/src/package-info.js";
+import { createPdppCliCommand, getPdppCliPackageInfo } from "../../../../../packages/cli/src/package-info.ts";
 import { pdppCliConnectCommand, pdppCliPackageInfo } from "../pdpp-cli-command.ts";
 import {
   agentSkillsLLMSIndex,

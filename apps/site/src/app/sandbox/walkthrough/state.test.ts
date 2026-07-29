@@ -45,8 +45,9 @@ test("deny returns to initial state but keeps refusal evidence", () => {
 
   const transcript = buildTranscript(denied);
   const denial = transcript.find((entry) => entry.id === "denied");
-  assert.equal(denial?.available, true);
-  assert.equal((denial?.body as { error?: string }).error, "owner_denied");
+  assert.ok(denial, "transcript must include a denied entry");
+  assert.equal(denial.available, true);
+  assert.equal((denial.body as { error?: string }).error, "owner_denied");
 });
 
 test("reset returns to initial regardless of phase", () => {
@@ -98,6 +99,11 @@ test("revoked transcript captures the 403 refusal example", () => {
   const revoked = buildTranscript(run(["request", "approve", "query", "revoke"]));
   const last = revoked.at(-1);
   const body = last?.body as { next_attempt?: { status?: number; error?: string } };
+  // `as` erases last?.body's real optionality from body's static type, so
+  // tsc/Biome see body as non-nullish — but at runtime body is still
+  // undefined whenever `last` is, so the guard stays.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: see comment above.
   assert.equal(body?.next_attempt?.status, 403);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: see comment above.
   assert.equal(body?.next_attempt?.error, "grant_revoked");
 });

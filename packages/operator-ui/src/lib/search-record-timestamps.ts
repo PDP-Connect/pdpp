@@ -96,10 +96,10 @@ export function pickSearchDisplayTimestamp({
   if (semantic) {
     return {
       emittedAt,
+      isSemantic: true,
       label: humanizeFieldName(semantic.field),
       value: semantic.value,
-      isSemantic: true,
     };
   }
-  return { emittedAt, label: "emitted", value: emittedAt, isSemantic: false };
+  return { emittedAt, isSemantic: false, label: "emitted", value: emittedAt };
 }
