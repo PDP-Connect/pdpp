@@ -1,6 +1,8 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import { createHash } from "node:crypto";
+
 /**
  * Bounded, aggregate-safe telemetry for connector-summary observation
  * barriers. The server has no metrics sink, so this emits every useful
@@ -68,6 +70,29 @@ function readZeroRepairSampleEvery(value: number | undefined): number {
   return sampleEvery;
 }
 
+function readSamplingEpochStartedAt(value: string | undefined): string {
+  const epoch = value ?? new Date().toISOString();
+  if (new Date(epoch).toISOString() !== epoch) {
+    throw new RangeError("samplingEpochStartedAt must be an ISO-8601 UTC timestamp");
+  }
+  return epoch;
+}
+
+/**
+ * Select clean latency observations with a deterministic SHA-256 draw over
+ * only the non-identity sampling epoch and a local counter. This avoids the
+ * periodic request-position bias of every-N sampling while remaining exactly
+ * reproducible from the safe fields emitted with a selected observation.
+ */
+export function shouldSampleCleanBarrier(
+  samplingEpochStartedAt: string,
+  cleanBarrierCount: number,
+  zeroRepairSampleEvery: number
+): boolean {
+  const hash = createHash("sha256").update(`${samplingEpochStartedAt}\u0000${cleanBarrierCount}`).digest();
+  return hash.readUInt32BE(0) % zeroRepairSampleEvery === 0;
+}
+
 /**
  * Create the server-owned observation sink. Every repair/failure/deferred
  * barrier is reported; clean zero-repair barriers are sampled one-in-N so
@@ -75,13 +100,13 @@ function readZeroRepairSampleEvery(value: number | undefined): number {
  */
 export function createConnectorSummaryReconcileObservationSink(
   logger: StructuredLogger,
-  options: { readonly zeroRepairSampleEvery?: number } = {}
+  options: { readonly samplingEpochStartedAt?: string; readonly zeroRepairSampleEvery?: number } = {}
 ): (observation: ConnectorSummaryReconcileObservation) => void {
   const zeroRepairSampleEvery = readZeroRepairSampleEvery(options.zeroRepairSampleEvery);
   // This timestamp is a process-local sampling epoch, not an owner or
   // connection identifier. It lets analysis group cumulative lower bounds
   // without inventing volume from clean barriers lost at process restart.
-  const samplingEpochStartedAt = new Date().toISOString();
+  const samplingEpochStartedAt = readSamplingEpochStartedAt(options.samplingEpochStartedAt);
   let cleanBarrierCount = 0;
 
   return (observation) => {
@@ -93,7 +118,7 @@ export function createConnectorSummaryReconcileObservationSink(
       observation.failureClasses.length > 0;
     if (!exceptional) {
       cleanBarrierCount += 1;
-      if (cleanBarrierCount % zeroRepairSampleEvery !== 0) {
+      if (!shouldSampleCleanBarrier(samplingEpochStartedAt, cleanBarrierCount, zeroRepairSampleEvery)) {
         return;
       }
     }
@@ -102,6 +127,7 @@ export function createConnectorSummaryReconcileObservationSink(
         {
           candidate_reason_counts: sanitizedReasonCounts(observation.candidateReasonCounts),
           candidates_inspected: nonNegativeInteger(observation.candidatesInspected),
+          clean_sample_algorithm: "sha256_epoch_counter_modulo_v1",
           duration_ms: nonNegativeInteger(observation.durationMs),
           failed: nonNegativeInteger(observation.failed),
           failure_classes: sanitizedFailureClasses(observation.failureClasses),

@@ -13,12 +13,14 @@ import {
 import {
   type ConnectorSummaryReconcileObservation,
   createConnectorSummaryReconcileObservationSink,
+  shouldSampleCleanBarrier,
 } from "../server/connector-summary-reconcile-observability.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
 
 const MISSING_REASON_PATTERN = /"missing":1/;
 const PRIVATE_DATA_PATTERN = /owner@example\.test|secret-token-value|opaque-cursor|raw failure text/;
 const SAMPLE_RATE_ERROR_PATTERN = /finite positive integer/;
+const TEST_EPOCH = "2026-07-29T00:00:00.000Z";
 
 const CLEAN: ConnectorSummaryReconcileObservation = {
   candidateReasonCounts: {},
@@ -42,19 +44,29 @@ function captureRecords() {
   };
 }
 
-test("reconcile telemetry samples successful zero-repair barriers at the configured deterministic rate", () => {
+test("reconcile telemetry samples successful zero-repair barriers with a reproducible hash draw", () => {
   const { logger, records } = captureRecords();
-  const observe = createConnectorSummaryReconcileObservationSink(logger, { zeroRepairSampleEvery: 2 });
+  const observe = createConnectorSummaryReconcileObservationSink(logger, {
+    samplingEpochStartedAt: TEST_EPOCH,
+    zeroRepairSampleEvery: 2,
+  });
 
-  observe(CLEAN);
-  assert.equal(records.length, 0, "the first clean barrier is not logged");
-  observe(CLEAN);
+  let selectedCount = 0;
+  let cleanBarrierCount = 0;
+  while (selectedCount === 0) {
+    cleanBarrierCount += 1;
+    observe(CLEAN);
+    if (shouldSampleCleanBarrier(TEST_EPOCH, cleanBarrierCount, 2)) {
+      selectedCount += 1;
+    }
+  }
 
   assert.deepEqual(records, [
     {
       candidate_reason_counts: {},
       candidates_inspected: 41,
-      clean_barriers_since_epoch_lower_bound: 2,
+      clean_barriers_since_epoch_lower_bound: cleanBarrierCount,
+      clean_sample_algorithm: "sha256_epoch_counter_modulo_v1",
       duration_ms: 23,
       failed: 0,
       failure_classes: [],
@@ -62,13 +74,26 @@ test("reconcile telemetry samples successful zero-repair barriers at the configu
       observation: "connector_summary_reconcile",
       repaired: 0,
       resume_state: "none",
-      sampling_epoch_started_at: records[0]?.sampling_epoch_started_at,
+      sampling_epoch_started_at: TEST_EPOCH,
       scope_kind: "complete",
       scope_size: 41,
       skipped: 0,
       zero_repair_sample_every: 2,
     },
   ]);
+});
+
+test("hash clean sampling is reproducible and not periodic", () => {
+  const selected = Array.from({ length: 24 }, (_, index) => index + 1).filter((count) =>
+    shouldSampleCleanBarrier(TEST_EPOCH, count, 4)
+  );
+
+  assert.deepEqual(selected, [4, 11, 16, 17, 18, 20, 22, 23]);
+  assert.notEqual(
+    (selected[1] ?? 0) - (selected[0] ?? 0),
+    (selected[2] ?? 0) - (selected[1] ?? 0),
+    "selected counts are not every fourth barrier"
+  );
 });
 
 test("reconcile telemetry rejects non-finite and non-positive clean sample rates", () => {
@@ -84,34 +109,50 @@ test("reconcile telemetry rejects non-finite and non-positive clean sample rates
 test("clean lower bounds reach the decision floor only after complete sample blocks and reset per epoch", () => {
   const firstEpoch = captureRecords();
   const observeFirstEpoch = createConnectorSummaryReconcileObservationSink(firstEpoch.logger, {
+    samplingEpochStartedAt: TEST_EPOCH,
     zeroRepairSampleEvery: 100,
   });
-  for (let index = 0; index < 5999; index += 1) {
+  for (let index = 0; index < 6000; index += 1) {
     observeFirstEpoch(CLEAN);
   }
-  assert.equal(firstEpoch.records.length, 59, "5,999 barriers produce only 59 emitted clean latency samples");
-  observeFirstEpoch(CLEAN);
-  assert.equal(firstEpoch.records.length, 60, "the 6,000th barrier reaches the 60-sample decision floor");
-  assert.equal(firstEpoch.records.at(-1)?.clean_barriers_since_epoch_lower_bound, 6000);
+  assert.ok(firstEpoch.records.length > 0, "hash sampling produces descriptive clean latency observations");
+  assert.ok(
+    Number(firstEpoch.records.at(-1)?.clean_barriers_since_epoch_lower_bound) < 6000,
+    "the lower bound excludes unsampled clean barriers"
+  );
+  for (
+    let _index = 6000;
+    Number(firstEpoch.records.at(-1)?.clean_barriers_since_epoch_lower_bound) < 6000;
+    _index += 1
+  ) {
+    observeFirstEpoch(CLEAN);
+  }
+  assert.ok(
+    Number(firstEpoch.records.at(-1)?.clean_barriers_since_epoch_lower_bound) >= 6000,
+    "a selected clean sample proves the conservative volume threshold"
+  );
 
   const restartedEpoch = captureRecords();
   const observeRestartedEpoch = createConnectorSummaryReconcileObservationSink(restartedEpoch.logger, {
+    samplingEpochStartedAt: "2026-07-29T00:01:00.000Z",
     zeroRepairSampleEvery: 100,
   });
-  for (let index = 0; index < 100; index += 1) {
+  for (let _index = 0; restartedEpoch.records.length === 0; _index += 1) {
     observeRestartedEpoch(CLEAN);
   }
   assert.equal(restartedEpoch.records.length, 1);
-  assert.equal(
-    restartedEpoch.records[0]?.clean_barriers_since_epoch_lower_bound,
-    100,
+  assert.ok(
+    Number(restartedEpoch.records[0]?.clean_barriers_since_epoch_lower_bound) < 6000,
     "a process restart starts a fresh lower bound instead of carrying prior volume"
   );
 });
 
 test("reconcile telemetry always reports an actual repair with its sanitized candidate reason", () => {
   const { logger, records } = captureRecords();
-  const observe = createConnectorSummaryReconcileObservationSink(logger, { zeroRepairSampleEvery: 100 });
+  const observe = createConnectorSummaryReconcileObservationSink(logger, {
+    samplingEpochStartedAt: TEST_EPOCH,
+    zeroRepairSampleEvery: 100,
+  });
 
   observe({ ...CLEAN, candidateReasonCounts: { missing: 1 }, repaired: 1, scopeKind: "scoped", scopeSize: 1 });
 
@@ -123,7 +164,7 @@ test("reconcile telemetry always reports an actual repair with its sanitized can
 
 test("reconcile telemetry always reports failure and incomplete resume state", () => {
   const { logger, records } = captureRecords();
-  const observe = createConnectorSummaryReconcileObservationSink(logger);
+  const observe = createConnectorSummaryReconcileObservationSink(logger, { samplingEpochStartedAt: TEST_EPOCH });
 
   observe({
     ...CLEAN,
@@ -144,7 +185,10 @@ test("reconcile telemetry always reports failure and incomplete resume state", (
 
 test("reconcile telemetry redacts unknown reason data and never spreads caller fields", () => {
   const { logger, records } = captureRecords();
-  const observe = createConnectorSummaryReconcileObservationSink(logger, { zeroRepairSampleEvery: 1 });
+  const observe = createConnectorSummaryReconcileObservationSink(logger, {
+    samplingEpochStartedAt: TEST_EPOCH,
+    zeroRepairSampleEvery: 1,
+  });
   const unsafe = {
     ...CLEAN,
     candidateReasonCounts: { missing: 1, "owner@example.test": 9 },
