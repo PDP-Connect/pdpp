@@ -23,6 +23,10 @@ LEFT JOIN (
   SELECT device_id, source_instance_id, MAX(accepted_at) AS last_ingest_at
   FROM device_ingest_batch_outcomes
   WHERE status = 'accepted'
+    AND device_id IN (
+      SELECT device_id FROM device_source_instances
+      WHERE connector_id = ? AND (? IS NULL OR connector_instance_id = ?)
+    )
   GROUP BY device_id, source_instance_id
 ) dio ON dio.device_id = dsi.device_id AND dio.source_instance_id = dsi.source_instance_id
 WHERE dsi.connector_id = ?

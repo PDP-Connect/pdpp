@@ -239,15 +239,25 @@ export async function listSourceInstanceHeartbeatsByConnectionIds(connectorInsta
                          dsi.manifest_generation, dsi.updated_at, dio.last_ingest_at,
                          de.status AS device_status, de.revoked_at AS device_revoked_at
                     FROM device_source_instances dsi
-                    JOIN device_exporters de ON de.device_id = dsi.device_id
-                    LEFT JOIN (
-                      SELECT device_id, source_instance_id, MAX(accepted_at) AS last_ingest_at
-                        FROM device_ingest_batch_outcomes WHERE status = 'accepted'
-                       GROUP BY device_id, source_instance_id
-                    ) dio ON dio.device_id = dsi.device_id AND dio.source_instance_id = dsi.source_instance_id`;
+                    JOIN device_exporters de ON de.device_id = dsi.device_id`;
+  // dio is scoped to dsi.device_id (via the requested connector_instance_id
+  // page, same as the outer WHERE) rather than to
+  // device_ingest_batch_outcomes.connector_instance_id directly: legacy rows
+  // written through recordBatchOutcome's insert-batch-outcome path can carry
+  // an empty-string connector_instance_id (see normalizeOutcome's `?? ""`),
+  // so filtering the aggregate by that column would silently drop real
+  // ingest history for those rows.
   if (isPostgresStorageBackend()) {
     const result = await postgresQuery<Row>(
-      `${select} WHERE dsi.connector_instance_id = ANY($1::text[])
+      `${select}
+                    LEFT JOIN (
+                      SELECT device_id, source_instance_id, MAX(accepted_at) AS last_ingest_at
+                        FROM device_ingest_batch_outcomes
+                       WHERE status = 'accepted'
+                         AND device_id IN (SELECT device_id FROM device_source_instances WHERE connector_instance_id = ANY($1::text[]))
+                       GROUP BY device_id, source_instance_id
+                    ) dio ON dio.device_id = dsi.device_id AND dio.source_instance_id = dsi.source_instance_id
+       WHERE dsi.connector_instance_id = ANY($1::text[])
        ORDER BY dsi.connector_instance_id ASC, (dsi.last_heartbeat_at IS NULL), dsi.last_heartbeat_at DESC NULLS LAST, dsi.device_id ASC, dsi.source_instance_id ASC`,
       [ids]
     );
@@ -255,13 +265,22 @@ export async function listSourceInstanceHeartbeatsByConnectionIds(connectorInsta
   } else {
     for (let start = 0; start < ids.length; start += 900) {
       const chunk = ids.slice(start, start + 900);
+      const placeholders = chunk.map(() => "?").join(", ");
       rows.push(
         ...(getDb()
           .prepare(
-            `${select} WHERE dsi.connector_instance_id IN (${chunk.map(() => "?").join(", ")})
+            `${select}
+                    LEFT JOIN (
+                      SELECT device_id, source_instance_id, MAX(accepted_at) AS last_ingest_at
+                        FROM device_ingest_batch_outcomes
+                       WHERE status = 'accepted'
+                         AND device_id IN (SELECT device_id FROM device_source_instances WHERE connector_instance_id IN (${placeholders}))
+                       GROUP BY device_id, source_instance_id
+                    ) dio ON dio.device_id = dsi.device_id AND dio.source_instance_id = dsi.source_instance_id
+             WHERE dsi.connector_instance_id IN (${placeholders})
              ORDER BY dsi.connector_instance_id ASC, (dsi.last_heartbeat_at IS NULL), dsi.last_heartbeat_at DESC, dsi.device_id ASC, dsi.source_instance_id ASC`
           )
-          .all(...chunk) as Row[])
+          .all(...chunk, ...chunk) as Row[])
       );
     }
   }
@@ -624,7 +643,7 @@ export function createSqliteDeviceExporterStore() {
       const connectorInstanceId = options?.connectorInstanceId ?? null;
       return allowUnboundedReadAcknowledged<Row>(
         referenceQueries.deviceExportersListSourceInstanceHeartbeatsByConnector,
-        [connectorId, connectorInstanceId, connectorInstanceId]
+        [connectorId, connectorInstanceId, connectorInstanceId, connectorId, connectorInstanceId, connectorInstanceId]
       ).map(mapSourceInstanceHeartbeatRow);
     },
 
@@ -1120,6 +1139,10 @@ export function createPostgresDeviceExporterStore() {
              SELECT device_id, source_instance_id, MAX(accepted_at) AS last_ingest_at
                FROM device_ingest_batch_outcomes
               WHERE status = 'accepted'
+                AND device_id IN (
+                  SELECT device_id FROM device_source_instances
+                   WHERE connector_id = $1 AND ($2::text IS NULL OR connector_instance_id = $2)
+                )
               GROUP BY device_id, source_instance_id
            ) dio ON dio.device_id = dsi.device_id AND dio.source_instance_id = dsi.source_instance_id
           WHERE dsi.connector_id = $1
