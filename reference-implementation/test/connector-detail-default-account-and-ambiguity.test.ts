@@ -29,6 +29,27 @@ import test from "node:test";
 
 import { runConnector } from "../runtime/index.ts";
 import { startServer } from "../server/index.ts";
+import { makeDefaultAccountConnectorInstanceId } from "../server/stores/connector-instance-store.ts";
+
+/**
+ * Minimal admission fixture for `runConnector`'s required `admitRunConnection`
+ * callback: echoes back an explicit claim, or (when the caller made none)
+ * derives the same deterministic default-account connector-instance id the
+ * storage layer itself falls back to. This file's whole point is proving the
+ * no-explicit-instance/default-account journey resolves on the dashboard, so
+ * the fixture must agree with that same default binding, not invent its own.
+ */
+function fakeAdmitRunConnection(): (input: {
+  connectorId: string;
+  connectorInstanceId: string | null;
+  ownerSubjectId: string | null;
+}) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }> {
+  return ({ connectorId, connectorInstanceId, ownerSubjectId: requestedOwnerSubjectId }) => {
+    const ownerSubjectId = requestedOwnerSubjectId || "owner_local";
+    const exactId = connectorInstanceId ?? makeDefaultAccountConnectorInstanceId(ownerSubjectId, connectorId);
+    return Promise.resolve({ connectorId, connectorInstanceId: exactId, ownerSubjectId });
+  };
+}
 
 // `startServer`'s inferred asServer/rsServer type comes from a framework
 // `.listen()` call whose TS overload resolves to an http2-shaped type, but at
@@ -188,6 +209,7 @@ test("a no-explicit-instance ingest run against an unlisted connector resolves t
     // No connectorInstanceId is passed anywhere below — the supported
     // implicit default-account journey.
     const result = await runConnector({
+      admitRunConnection: fakeAdmitRunConnection(),
       collectionMode: "full_refresh",
       connectorId,
       connectorPath,

@@ -19,6 +19,7 @@ import {
   createSqliteConnectorDetailGapStore,
   sanitizeDetailGapMetadata,
 } from "../server/stores/connector-detail-gap-store.ts";
+import { makeDefaultAccountConnectorInstanceId } from "../server/stores/connector-instance-store.ts";
 
 // `runtime/index.ts` (the ambient signature for the still-JS runtime
 // entrypoint) does not yet declare `detailGapStore` — the runtime itself
@@ -33,6 +34,27 @@ import {
 type RunConnectorTestOptions = Omit<RuntimeRunConnectorOptions, "detailGapStore"> & { detailGapStore?: unknown };
 type RunConnectorFn = (opts: RunConnectorTestOptions) => Promise<RuntimeRunConnectorResult>;
 const runConnectorWithGapStore = runConnector as RunConnectorFn;
+
+// This file never routes through the real connector-instance store — every
+// dependency it hands the runtime (detail gap store, state server, etc.) is
+// a hand-rolled in-memory double, so admission only needs to echo back
+// whatever identity a test already asserts on. When a test omits
+// `connectorInstanceId` entirely, several call sites (and the detail-gap
+// store's own `defaultConnectorInstanceId` helper) independently resolve the
+// SAME default-account binding id for direct store assertions to line up
+// against what the runtime actually persisted under, so the fallback here
+// must derive the identical id rather than inventing its own scheme.
+function fakeAdmitRunConnection(): (input: {
+  connectorId: string;
+  connectorInstanceId: string | null;
+  ownerSubjectId: string | null;
+}) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }> {
+  return ({ connectorId, connectorInstanceId, ownerSubjectId: requestedOwnerSubjectId }) => {
+    const ownerSubjectId = requestedOwnerSubjectId || "owner_local";
+    const exactId = connectorInstanceId ?? makeDefaultAccountConnectorInstanceId(ownerSubjectId, connectorId);
+    return Promise.resolve({ connectorId, connectorInstanceId: exactId, ownerSubjectId });
+  };
+}
 
 function withTempDb(fn: (dir: string) => Promise<void>): () => Promise<void> {
   return async () => {
@@ -601,6 +623,7 @@ async function assertConnectorEmittedDetailGapRoundTrip({
     type: "DETAIL_GAP",
   };
   const runtimeArgs = {
+    admitRunConnection: fakeAdmitRunConnection(),
     connectorId,
     connectorInstanceId,
     detailGapStore: store,
@@ -1816,6 +1839,7 @@ test(
     const progressMessages: MockGap[] = [];
     try {
       const result = await runConnectorWithGapStore({
+        admitRunConnection: fakeAdmitRunConnection(),
         connectorId: "chatgpt",
         connectorPath,
         detailGapStore,
@@ -1915,6 +1939,7 @@ test(
 
     try {
       const result = await runConnectorWithGapStore({
+        admitRunConnection: fakeAdmitRunConnection(),
         connectorId: "chatgpt",
         connectorPath,
         detailGapStore,
@@ -1964,6 +1989,7 @@ test(
       await assert.rejects(
         () =>
           runConnectorWithGapStore({
+            admitRunConnection: fakeAdmitRunConnection(),
             connectorId: "gmail",
             connectorPath,
             detailGapStore: store,
@@ -2022,6 +2048,7 @@ test(
 
     try {
       const result = await runConnectorWithGapStore({
+        admitRunConnection: fakeAdmitRunConnection(),
         connectorId: "chatgpt",
         connectorInstanceId: "cin_chatgpt_personal",
         connectorPath,
@@ -2070,6 +2097,7 @@ test(
 
     try {
       const result = await runConnectorWithGapStore({
+        admitRunConnection: fakeAdmitRunConnection(),
         connectorId: "chatgpt",
         connectorPath: connector.connectorPath,
         detailGapStore: store,
@@ -2142,6 +2170,7 @@ test(
 
     try {
       const result = await runConnectorWithGapStore({
+        admitRunConnection: fakeAdmitRunConnection(),
         connectorId: "gmail",
         connectorPath: connector.connectorPath,
         detailGapStore: store,
@@ -2184,6 +2213,7 @@ test(
 
     try {
       const result = await runConnectorWithGapStore({
+        admitRunConnection: fakeAdmitRunConnection(),
         connectorId: "chatgpt",
         connectorPath: connector.connectorPath,
         detailGapStore: store,
@@ -2250,6 +2280,7 @@ test(
 
     try {
       const result = await runConnectorWithGapStore({
+        admitRunConnection: fakeAdmitRunConnection(),
         connectorId: "chatgpt",
         connectorPath: connector.connectorPath,
         detailGapStore: store,
@@ -2317,6 +2348,7 @@ test(
     const { connectorPath, cleanup } = createStartCaptureConnector(startPath);
     try {
       await runConnectorWithGapStore({
+        admitRunConnection: fakeAdmitRunConnection(),
         connectorId: "chatgpt",
         connectorPath,
         detailGapStore: store,
@@ -2447,6 +2479,7 @@ test(
 
     try {
       const result = await runConnectorWithGapStore({
+        admitRunConnection: fakeAdmitRunConnection(),
         connectorId: "amazon",
         connectorPath,
         detailGapStore: store,
@@ -2520,6 +2553,7 @@ test(
 
     try {
       const result = await runConnectorWithGapStore({
+        admitRunConnection: fakeAdmitRunConnection(),
         connectorId: "amazon",
         connectorPath,
         detailGapStore: store,
@@ -2689,6 +2723,7 @@ test(
     const { connectorPath, cleanup } = createConnector([], { exitCode: 1 });
     try {
       const result = await runConnectorWithGapStore({
+        admitRunConnection: fakeAdmitRunConnection(),
         connectorId: "chatgpt",
         connectorPath,
         detailGapStore: store,
@@ -2825,6 +2860,7 @@ test(
     let settled = false;
     try {
       const resultPromise = runConnectorWithGapStore({
+        admitRunConnection: fakeAdmitRunConnection(),
         connectorId: "gmail",
         connectorPath,
         detailGapStore: delayedStore,
@@ -2909,6 +2945,7 @@ test(
       let settled = false;
       try {
         const resultPromise = runConnectorWithGapStore({
+          admitRunConnection: fakeAdmitRunConnection(),
           connectorId: "gmail",
           connectorPath,
           detailGapStore: delayedStore,
@@ -2962,6 +2999,7 @@ test(
 
     try {
       const result = await runConnectorWithGapStore({
+        admitRunConnection: fakeAdmitRunConnection(),
         connectorId: "chatgpt",
         connectorPath,
         detailGapStore: store,
@@ -3019,6 +3057,7 @@ test(
     const { connectorPath, cleanup } = createStartCaptureConnector(startPath);
     try {
       await runConnectorWithGapStore({
+        admitRunConnection: fakeAdmitRunConnection(),
         connectorId: "chatgpt",
         connectorPath,
         detailGapStore: store,
@@ -3610,6 +3649,7 @@ test(
       await assert.rejects(
         () =>
           runConnectorWithGapStore({
+            admitRunConnection: fakeAdmitRunConnection(),
             connectorId: "chatgpt",
             connectorPath,
             detailGapStore,
@@ -3680,6 +3720,7 @@ test(
 
       try {
         const result = await runConnectorWithGapStore({
+          admitRunConnection: fakeAdmitRunConnection(),
           connectorId: "chatgpt",
           connectorPath,
           detailGapStore,
@@ -3732,6 +3773,7 @@ test(
       await assert.rejects(
         () =>
           runConnectorWithGapStore({
+            admitRunConnection: fakeAdmitRunConnection(),
             connectorId: "chatgpt",
             connectorPath,
             detailGapStore,
@@ -3771,6 +3813,7 @@ test(
         await assert.rejects(
           () =>
             runConnectorWithGapStore({
+              admitRunConnection: fakeAdmitRunConnection(),
               connectorId: "chatgpt",
               connectorPath,
               manifest: { streams: [{ name: "conversation_list" }, { name: "conversations" }] },
@@ -3841,6 +3884,7 @@ test(
 
       try {
         const result = await runConnectorWithGapStore({
+          admitRunConnection: fakeAdmitRunConnection(),
           connectorId: "chatgpt",
           connectorPath,
           detailGapStore,
@@ -3925,6 +3969,7 @@ test(
         try {
           const run = () =>
             runConnectorWithGapStore({
+              admitRunConnection: fakeAdmitRunConnection(),
               connectorId: "chatgpt",
               connectorPath,
               manifest: { streams: [{ name: "conversation_list" }] },
@@ -4000,6 +4045,7 @@ test(
 
     try {
       const result = await runConnectorWithGapStore({
+        admitRunConnection: fakeAdmitRunConnection(),
         connectorId: "chase",
         connectorPath,
         detailGapStore: store,

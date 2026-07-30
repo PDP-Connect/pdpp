@@ -27,6 +27,25 @@ import { join } from "node:path";
 import test from "node:test";
 import { runConnector } from "../runtime/index.ts";
 import { startServer } from "../server/index.ts";
+import { makeDefaultAccountConnectorInstanceId } from "../server/stores/connector-instance-store.ts";
+
+/**
+ * Minimal admission fixture for `runConnector`'s required `admitRunConnection`
+ * callback: echoes back an explicit claim, or (when the caller made none)
+ * derives the same deterministic default-account connector-instance id the
+ * storage layer itself falls back to, so writer/reader agree.
+ */
+function fakeAdmitRunConnection(): (input: {
+  connectorId: string;
+  connectorInstanceId: string | null;
+  ownerSubjectId: string | null;
+}) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }> {
+  return ({ connectorId, connectorInstanceId, ownerSubjectId: requestedOwnerSubjectId }) => {
+    const ownerSubjectId = requestedOwnerSubjectId || "owner_local";
+    const exactId = connectorInstanceId ?? makeDefaultAccountConnectorInstanceId(ownerSubjectId, connectorId);
+    return Promise.resolve({ connectorId, connectorInstanceId: exactId, ownerSubjectId });
+  };
+}
 
 const TEST_DCR_INITIAL_ACCESS_TOKEN = "pdpp-reference-test-initial-access-token";
 
@@ -148,6 +167,7 @@ test("connector failure diagnostics surface on owner timeline; not on /v1 surfac
     let runId: string | null = null;
     try {
       const result = (await runConnector({
+        admitRunConnection: fakeAdmitRunConnection(),
         collectionMode: "full_refresh",
         connectorId: STUB_MANIFEST.connector_id,
         connectorPath: stubPath,

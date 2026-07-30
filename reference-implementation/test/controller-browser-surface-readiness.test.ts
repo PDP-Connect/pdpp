@@ -49,6 +49,8 @@ import { getDefaultBrowserSurfaceReplacementReceiptStore } from "../server/store
 import type { ActiveRunRecord, SchedulerStore } from "../server/stores/scheduler-store.ts";
 import { makeTemporaryDbPath } from "./helpers/temp-dir.ts";
 
+const REGEXP_FIXTURE_ADMISSION_REJECTED = /fixture admission rejected/;
+
 const MANIFEST = {
   capabilities: {
     browser_surface: {
@@ -61,25 +63,39 @@ const MANIFEST = {
   version: "1.0.0",
 };
 
-const FIXTURE_CONNECTION_IDS = new Set([
-  "managed",
-  "cin_managed_fixture",
-  "other-managed-instance-2",
-  "live-instance-from-memory",
-]);
+// Maps each fixture connection id to the one owner that actually holds it.
+// Mirrors the production store's owner-scoping (connector_instance_owner_mismatch):
+// admission must reject a claim from any subject other than the id's real
+// owner, not merely check connectorId/connectorInstanceId membership.
+const FIXTURE_CONNECTION_OWNERS: Readonly<Record<string, string>> = {
+  cin_managed_fixture: "owner_local",
+  "live-instance-from-memory": "owner_local",
+  managed: "owner_local",
+  "other-managed-instance-2": "owner_local",
+  "owner-bob-instance": "owner_bob",
+};
 
 function admitManagedFixtureRun({
   connectorId,
   connectorInstanceId,
+  ownerSubjectId,
 }: {
   connectorId: string;
   connectorInstanceId: string | null;
+  ownerSubjectId?: string | null;
 }) {
   const exactId = connectorInstanceId ?? "managed";
-  if (connectorId !== "managed" || !FIXTURE_CONNECTION_IDS.has(exactId)) {
+  const requestedOwnerSubjectId = ownerSubjectId || "owner_local";
+  const actualOwnerSubjectId = FIXTURE_CONNECTION_OWNERS[exactId];
+  if (connectorId !== "managed" || !actualOwnerSubjectId) {
     throw new Error(`fixture admission rejected ${connectorId}/${exactId}`);
   }
-  return Promise.resolve({ connectorId, connectorInstanceId: exactId });
+  if (actualOwnerSubjectId !== requestedOwnerSubjectId) {
+    throw new Error(
+      `fixture admission rejected: connection '${exactId}' belongs to '${actualOwnerSubjectId}', not '${requestedOwnerSubjectId}'`
+    );
+  }
+  return Promise.resolve({ connectorId, connectorInstanceId: exactId, ownerSubjectId: actualOwnerSubjectId });
 }
 
 function tempDbPath() {
@@ -301,7 +317,7 @@ function setup(
     connectorPathResolver: () => "/tmp/connector.js",
     logger: { error: () => undefined, warn: () => undefined },
     resolveOwnerSubjectIdForConnectorInstance: async (connectorInstanceId) =>
-      FIXTURE_CONNECTION_IDS.has(connectorInstanceId) ? "owner_local" : null,
+      FIXTURE_CONNECTION_OWNERS[connectorInstanceId] ?? null,
     runConnectorImpl: async (opts) => {
       runConnectorCalls.push(opts);
       if (runConnectorImpl) {
@@ -433,6 +449,25 @@ test("readiness probe success: connector spawned with surface env and run.browse
   assert.equal(readyData.browser_surface_probe.ok, true);
   assert.equal(readyData.browser_surface_probe.page_target_count, 1);
   assert.equal(readyData.browser_surface_probe.browser_version, "Chrome/124.0");
+});
+
+test("admission rejects a claim for another owner's connection, even with a valid connector/instance id", async (t) => {
+  const { controller, runConnectorCalls } = setup(t);
+
+  // "owner-bob-instance" is a real fixture connection, but it belongs to
+  // owner_bob (see FIXTURE_CONNECTION_OWNERS) — the default-owner caller here
+  // must be refused, not silently admitted onto someone else's connection.
+  await assert.rejects(
+    () =>
+      controller.runNow("managed", {
+        connectorInstanceId: "owner-bob-instance",
+        manifest: MANIFEST,
+        ownerToken: "owner-token",
+        runId: "run_cross_owner_denied",
+      }),
+    REGEXP_FIXTURE_ADMISSION_REJECTED
+  );
+  assert.equal(runConnectorCalls.length, 0, "the connector child must never spawn for a denied cross-owner claim");
 });
 
 test("static managed readiness defaults the durable replacement store without an allocator", async (t) => {
@@ -679,7 +714,7 @@ test("readiness probe failure calls allocator.stopSurface(reason: surface_failed
     connectorPathResolver: () => "/tmp/connector.js",
     logger: { error: () => undefined, warn: () => undefined },
     resolveOwnerSubjectIdForConnectorInstance: async (connectorInstanceId) =>
-      FIXTURE_CONNECTION_IDS.has(connectorInstanceId) ? "owner_local" : null,
+      FIXTURE_CONNECTION_OWNERS[connectorInstanceId] ?? null,
     runConnectorImpl: (opts) => {
       otherCalls.push(opts);
       return Promise.resolve({

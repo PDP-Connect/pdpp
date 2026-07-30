@@ -79,6 +79,7 @@ const EXPECTED_CODE_TO_STATUS = {
   provider_pressure_cooldown: 425,
   query_not_found: 404,
   run_already_active: 409,
+  run_owner_mismatch: 403,
   unknown_field: 400,
   unsupported_version: 400,
 };

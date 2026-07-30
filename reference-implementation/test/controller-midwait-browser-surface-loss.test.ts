@@ -93,6 +93,31 @@ function tempDbPath() {
   return path.join(dir, "pdpp.sqlite");
 }
 
+// A minimal, production-shaped admission fixture. Every `runNow` call in this
+// file omits `connectorInstanceId` (these tests exercise the "managed"
+// browser-surface connector against a single unnamespaced static surface), so
+// the fallback here echoes `connectorId` itself as the admitted instance —
+// NOT a synthesized default-account id — to keep
+// `connectorInstanceId === connectorId`. That equality is load-bearing:
+// `readBrowserSurfaceProfileKey` (runtime/browser-surface/profile-key.ts)
+// namespaces the profile key as `${profileKey}:${connectorInstanceId}`
+// whenever the two differ, which would make this fixture's static surface's
+// plain "managed-profile" key mismatch and the run defer
+// (`incompatible_static_profile`) — a fixture-induced behavior change this
+// admission gate must not introduce. Mirrors the equivalent fallback in
+// controller-browser-surface-readiness.test.ts's `admitManagedFixtureRun`.
+function fakeAdmitRunConnection(): (input: {
+  connectorId: string;
+  connectorInstanceId: string | null;
+  ownerSubjectId: string | null;
+}) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }> {
+  return ({ connectorId, connectorInstanceId, ownerSubjectId: requestedOwnerSubjectId }) => {
+    const ownerSubjectId = requestedOwnerSubjectId || "owner_local";
+    const exactId = connectorInstanceId ?? connectorId;
+    return Promise.resolve({ connectorId, connectorInstanceId: exactId, ownerSubjectId });
+  };
+}
+
 function createSchedulerStore(): SchedulerStore {
   const activeRuns = new Map<string, ActiveRunRecord>();
   return {
@@ -219,6 +244,7 @@ function setup(t: TestContext, { probe, leaseManager, pollIntervalMs = 5 }: Setu
 
   const runConnectorCalls: unknown[] = [];
   const controller = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
     browserSurfaceLeaseManager: leaseManager || createManagerWithReadySurface(),
     ...(probe ? { browserSurfaceReadinessProbe: probe } : {}),
     browserSurfaceMidWaitPollIntervalMs: pollIntervalMs,
@@ -276,6 +302,7 @@ test("surface dies during manual_action wait: run.browser_surface_lost emitted, 
   });
 
   const c2 = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
     browserSurfaceLeaseManager: createManagerWithReadySurface(),
     browserSurfaceMidWaitPollIntervalMs: 5,
     browserSurfaceReadinessProbe: probe,
@@ -357,6 +384,7 @@ test("surface-backed otp wait is monitored and cancelled when the surface dies",
   let interactionResponseStatus: "cancelled" | "success" | null = null;
 
   const c = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
     browserSurfaceLeaseManager: createManagerWithReadySurface(),
     browserSurfaceMidWaitPollIntervalMs: 5,
     browserSurfaceReadinessProbe: probe,
@@ -425,6 +453,7 @@ test("surface lost: respondToInteraction with same interaction_id throws no_pend
   });
 
   const c = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
     browserSurfaceLeaseManager: createManagerWithReadySurface(),
     browserSurfaceMidWaitPollIntervalMs: 5,
     browserSurfaceReadinessProbe: probe,
@@ -496,6 +525,7 @@ test("surface stays live: owner response settles normally, no browser_surface_lo
 
   let interactionResponseStatus: "cancelled" | "success" | null = null;
   const c = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
     browserSurfaceLeaseManager: createManagerWithReadySurface(),
     browserSurfaceMidWaitPollIntervalMs: 5,
     browserSurfaceReadinessProbe: alwaysOkProbe,
@@ -579,6 +609,7 @@ test("otp interaction without browser surface is not monitored, no spurious brow
   let interactionResponseStatus: "cancelled" | "success" | null = null;
 
   const c = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
     browserSurfaceMidWaitPollIntervalMs: 5,
     // No lease manager: not a managed connector, so no surface detector.
     browserSurfaceReadinessProbe: {

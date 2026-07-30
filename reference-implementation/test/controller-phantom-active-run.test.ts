@@ -106,6 +106,22 @@ function createDurableConflictSchedulerStore(existingRow: ActiveRunRecord | null
   };
 }
 
+// A minimal, production-shaped admission fixture: mints a deterministic
+// default-account connector_instance_id per (ownerSubjectId, connectorId) and
+// refuses any other claimed id — the same authority shape
+// `admitOwnerRunConnection` enforces in production, without a real store.
+function fakeAdmitRunConnection(): (input: {
+  connectorId: string;
+  connectorInstanceId: string | null;
+  ownerSubjectId: string | null;
+}) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }> {
+  return ({ connectorId, connectorInstanceId, ownerSubjectId: requestedOwnerSubjectId }) => {
+    const ownerSubjectId = requestedOwnerSubjectId || "owner_local";
+    const exactId = connectorInstanceId ?? `cin_${ownerSubjectId}_${connectorId.replace(/[^a-z0-9]+/gi, "_")}`;
+    return Promise.resolve({ connectorId, connectorInstanceId: exactId, ownerSubjectId });
+  };
+}
+
 function freshDb(t: TestContext) {
   closeDb();
   initDb(makeTemporaryDbPath("pdpp-phantom-run-"));
@@ -147,6 +163,7 @@ test("watchdog force-finalizes a hung run and allows a subsequent run-now to suc
 
   // Use a very short watchdog budget (20 ms) so the test is fast.
   const controller = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
     connectorPathResolver: () => "/tmp/connector.js",
     logger: {
       error: () => undefined,
@@ -214,6 +231,7 @@ test("watchdog emits a typed run_timed_out terminal spine event for hung run", a
 
   const hang = makeHangingImpl();
   const controller = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
     connectorPathResolver: () => "/tmp/connector.js",
     logger: { error: () => undefined, warn: () => undefined },
     maxRunWallClockMs: 20,
@@ -251,6 +269,7 @@ test("watchdog does not fire for a run that completes within budget", async (t) 
 
   const warnLines: string[] = [];
   const controller = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
     connectorPathResolver: () => "/tmp/connector.js",
     logger: {
       error: () => undefined,
@@ -289,6 +308,7 @@ test("stale activeRuns entry (settled promise) is reclaimed and new run-now succ
   freshDb(t);
 
   const controller = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
     connectorPathResolver: () => "/tmp/connector.js",
     logger: { error: () => undefined, warn: () => undefined },
     // Disable the watchdog so we can exercise the reconciliation path directly.
@@ -332,6 +352,7 @@ test("durable active-run row blocks manual and recovery admission after restart"
   };
   let runConnectorCalled = false;
   const controller = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
     connectorPathResolver: () => "/tmp/connector.js",
     logger: { error: () => undefined, warn: () => undefined },
     maxRunWallClockMs: Number.POSITIVE_INFINITY,
@@ -379,6 +400,7 @@ test("a genuinely live in-flight run still returns 409 run_already_active", asyn
   const hang = makeHangingImpl();
   // Disable watchdog so the run stays live for the duration of the test.
   const controller = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
     connectorPathResolver: () => "/tmp/connector.js",
     logger: { error: () => undefined, warn: () => undefined },
     maxRunWallClockMs: Number.POSITIVE_INFINITY,
@@ -426,6 +448,7 @@ test("a run that completes normally then has its entry reclaimed is not double-f
   // called once via .finally); then we attempt a second run-now — this must
   // not crash or emit a duplicate terminal event.
   const controller = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
     connectorPathResolver: () => "/tmp/connector.js",
     logger: { error: () => undefined, warn: () => undefined },
     maxRunWallClockMs: Number.POSITIVE_INFINITY,

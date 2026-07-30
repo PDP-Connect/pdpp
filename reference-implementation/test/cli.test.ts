@@ -16,7 +16,11 @@ import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { getDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
 import { ingestRecord } from "../server/records.ts";
-import { makeDefaultAccountConnectorInstanceId } from "../server/stores/connector-instance-store.ts";
+import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
+import {
+  admitOwnerRunConnection,
+  makeDefaultAccountConnectorInstanceId,
+} from "../server/stores/connector-instance-store.ts";
 
 const TOP_LEVEL_REGEX_1 = /Reference trace ID: (trc_[A-Za-z0-9]+)/;
 const TOP_LEVEL_REGEX_2 = /^warning: "pdpp trace show" is deprecated; use "pdpp ref trace show" instead\.$/m;
@@ -608,6 +612,35 @@ function readPendingConsentTraceContext(requestUri: string): Promise<PendingCons
   const [firstRow] = rows;
   assert.ok(firstRow, "expected one pending_consents row");
   return Promise.resolve(firstRow);
+}
+
+// Real ingest (`resolveOwnerConnectorNamespace` in server/index.ts) resolves
+// the acting owner subject from the REQUEST'S bearer token
+// (`getOwnerTokenSubjectId(req)`), independent of `runConnector`'s own
+// `ownerSubjectId` option. Every direct `runConnector` call below in this
+// file mints its owner token via `issueOwnerToken(asUrl, "cli_owner")` and
+// omits `connectorInstanceId`, so admission must materialize/resolve that
+// same subject's default-account binding through the real store — mirrors
+// the production wiring in server/index.ts's
+// `createController({ admitRunConnection: ... })` and the identical fixture
+// already applied in event-spine.test.ts/collection-profile.test.ts.
+function fakeAdmitRunConnection(
+  ownerSubjectIdDefault = "cli_owner"
+): (input: {
+  connectorId: string;
+  connectorInstanceId: string | null;
+  ownerSubjectId: string | null;
+}) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }> {
+  return async ({ connectorId, connectorInstanceId, ownerSubjectId: requestedOwnerSubjectId }) => {
+    const ownerSubjectId = requestedOwnerSubjectId || ownerSubjectIdDefault;
+    const namespace = await admitOwnerRunConnection({
+      connectorId,
+      connectorInstanceId,
+      connectorInstanceStore: createRequestConnectorInstanceStore(),
+      ownerSubjectId,
+    });
+    return { connectorId: namespace.connectorId, connectorInstanceId: namespace.connectorInstanceId, ownerSubjectId };
+  };
 }
 
 function seedSpotify(rsUrl: string, manifest: TestManifest, ownerToken: string, ownerSubjectId = "cli_owner") {
@@ -4653,6 +4686,7 @@ test("PDPP CLI smoke", async (t) => {
 
       try {
         const result = await runConnector({
+          admitRunConnection: fakeAdmitRunConnection(),
           collectionMode: "full_refresh",
           connectorId: spotifyManifest.connector_id,
           connectorPath,
@@ -4731,6 +4765,7 @@ rl.on('line', (line) => {
 
       try {
         const result = await runConnector({
+          admitRunConnection: fakeAdmitRunConnection(),
           collectionMode: "full_refresh",
           connectorId: spotifyManifest.connector_id,
           connectorPath,
@@ -4824,6 +4859,7 @@ rl.on('line', (line) => {
 
       try {
         const result = await runConnector({
+          admitRunConnection: fakeAdmitRunConnection(),
           collectionMode: "full_refresh",
           connectorId: spotifyManifest.connector_id,
           connectorPath,
@@ -4898,6 +4934,7 @@ rl.on('line', (line) => {
 
       try {
         const result = await runConnector({
+          admitRunConnection: fakeAdmitRunConnection(),
           collectionMode: "full_refresh",
           connectorId: spotifyManifest.connector_id,
           connectorPath,
@@ -4967,6 +5004,7 @@ rl.on('line', (line) => {
         let rejected: RuntimeRunConnectorError | undefined;
         await assert.rejects(
           runConnector({
+            admitRunConnection: fakeAdmitRunConnection(),
             collectionMode: "full_refresh",
             connectorId: spotifyManifest.connector_id,
             connectorPath,
@@ -5065,6 +5103,7 @@ rl.on('line', (line) => {
           let rejected: RuntimeRunConnectorError | undefined;
           await assert.rejects(
             runConnector({
+              admitRunConnection: fakeAdmitRunConnection(),
               collectionMode: "full_refresh",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
@@ -5150,6 +5189,7 @@ rl.on('line', (line) => {
           let rejected: RuntimeRunConnectorError | undefined;
           await assert.rejects(
             runConnector({
+              admitRunConnection: fakeAdmitRunConnection(),
               collectionMode: "full_refresh",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
@@ -5232,6 +5272,7 @@ rl.on('line', (line) => {
           let rejected: RuntimeRunConnectorError | undefined;
           await assert.rejects(
             runConnector({
+              admitRunConnection: fakeAdmitRunConnection(),
               collectionMode: "full_refresh",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
@@ -5308,6 +5349,7 @@ rl.on('line', (line) => {
           let rejected: RuntimeRunConnectorError | undefined;
           await assert.rejects(
             runConnector({
+              admitRunConnection: fakeAdmitRunConnection(),
               collectionMode: "full_refresh",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
@@ -5383,6 +5425,7 @@ rl.on('line', (line) => {
           let rejected: RuntimeRunConnectorError | undefined;
           await assert.rejects(
             runConnector({
+              admitRunConnection: fakeAdmitRunConnection(),
               collectionMode: "full_refresh",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
@@ -5459,6 +5502,7 @@ rl.on('line', (line) => {
           let rejected: RuntimeRunConnectorError | undefined;
           await assert.rejects(
             runConnector({
+              admitRunConnection: fakeAdmitRunConnection(),
               collectionMode: "full_refresh",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
@@ -5534,6 +5578,7 @@ rl.on('line', (line) => {
           let rejected: RuntimeRunConnectorError | undefined;
           await assert.rejects(
             runConnector({
+              admitRunConnection: fakeAdmitRunConnection(),
               collectionMode: "full_refresh",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
@@ -5693,6 +5738,7 @@ rl.on('line', (line) => {
               let rejected: RuntimeRunConnectorError | undefined;
               await assert.rejects(
                 runConnector({
+                  admitRunConnection: fakeAdmitRunConnection(),
                   collectionMode: "full_refresh",
                   connectorId: spotifyManifest.connector_id,
                   connectorPath,
@@ -5778,6 +5824,7 @@ rl.on('line', (line) => {
       );
 
       const result = await runConnector({
+        admitRunConnection: fakeAdmitRunConnection(),
         collectionMode: "incremental",
         connectorId: spotifyManifest.connector_id,
         connectorPath,
@@ -5872,6 +5919,7 @@ rl.on('line', (line) => {
         await assert.rejects(
           async () => {
             await runConnector({
+              admitRunConnection: fakeAdmitRunConnection(),
               collectionMode: "full_refresh",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
@@ -5984,6 +6032,7 @@ rl.on('line', (line) => {
         await assert.rejects(
           async () => {
             await runConnector({
+              admitRunConnection: fakeAdmitRunConnection(),
               collectionMode: "incremental",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
@@ -6096,6 +6145,7 @@ rl.on('line', (line) => {
         await assert.rejects(
           async () => {
             await runConnector({
+              admitRunConnection: fakeAdmitRunConnection(),
               collectionMode: "full_refresh",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
@@ -6200,6 +6250,7 @@ rl.on('line', (line) => {
         await assert.rejects(
           async () => {
             await runConnector({
+              admitRunConnection: fakeAdmitRunConnection(),
               collectionMode: "full_refresh",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
@@ -6282,6 +6333,7 @@ rl.on('line', (line) => {
 
       try {
         const result = await runConnector({
+          admitRunConnection: fakeAdmitRunConnection(),
           collectionMode: "full_refresh",
           connectorId: spotifyManifest.connector_id,
           connectorPath,
@@ -6353,6 +6405,7 @@ rl.on('line', (line) => {
 
         try {
           const result = await runConnector({
+            admitRunConnection: fakeAdmitRunConnection(),
             collectionMode: "full_refresh",
             connectorId: spotifyManifest.connector_id,
             connectorPath,
@@ -6439,6 +6492,7 @@ rl.on('line', (line) => {
         await assert.rejects(
           async () => {
             await runConnector({
+              admitRunConnection: fakeAdmitRunConnection(),
               collectionMode: "incremental",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
@@ -6535,6 +6589,7 @@ rl.on('line', (line) => {
         await assert.rejects(
           async () => {
             await runConnector({
+              admitRunConnection: fakeAdmitRunConnection(),
               collectionMode: "incremental",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
@@ -6655,6 +6710,7 @@ rl.on('line', (line) => {
           await assert.rejects(
             async () => {
               await runConnector({
+                admitRunConnection: fakeAdmitRunConnection(),
                 collectionMode: "incremental",
                 connectorId: spotifyManifest.connector_id,
                 connectorPath,
@@ -6745,6 +6801,7 @@ rl.on('line', (line) => {
           await assert.rejects(
             async () => {
               await runConnector({
+                admitRunConnection: fakeAdmitRunConnection(),
                 collectionMode: "full_refresh",
                 connectorId: spotifyManifest.connector_id,
                 connectorPath,
@@ -6851,6 +6908,7 @@ rl.on('line', (line) => {
         await assert.rejects(
           async () => {
             await runConnector({
+              admitRunConnection: fakeAdmitRunConnection(),
               collectionMode: "incremental",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
@@ -7040,6 +7098,7 @@ rl.on('line', (line) => {
       await assert.rejects(
         async () => {
           await runConnector({
+            admitRunConnection: fakeAdmitRunConnection(),
             collectionMode: "incremental",
             connectorId: manifest.connector_id,
             connectorPath,

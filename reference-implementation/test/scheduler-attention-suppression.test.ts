@@ -104,6 +104,7 @@ test("scheduler skips due runs while durable attention is unresolved and emits o
     connectors: [
       {
         connectorId: "attn-suppress-connector",
+        connectorInstanceId: "attn-suppress-connector",
         connectorPath,
         intervalMs: 25,
         manifest: { capabilities: { refresh_policy: { background_safe: true } } },
@@ -152,6 +153,7 @@ test("scheduler emits a fresh suppression skip when the attention identity chang
     connectors: [
       {
         connectorId: "attn-rotate-connector",
+        connectorInstanceId: "attn-rotate-connector",
         connectorPath,
         intervalMs: 25,
         manifest: { capabilities: { refresh_policy: { background_safe: true } } },
@@ -203,6 +205,7 @@ test("attention suppression does not bleed across connections", async () => {
     connectors: [
       {
         connectorId: "blocked-connector",
+        connectorInstanceId: "blocked-connector",
         connectorPath: blockedConnector.connectorPath,
         intervalMs: 25,
         manifest: POLICY_BLOCKED_MANIFEST,
@@ -211,6 +214,7 @@ test("attention suppression does not bleed across connections", async () => {
       },
       {
         connectorId: "peer-connector",
+        connectorInstanceId: "peer-connector",
         connectorPath: peerConnector.connectorPath,
         intervalMs: 25,
         manifest: POLICY_BLOCKED_MANIFEST,
@@ -374,6 +378,7 @@ test("resolved attention does not replay missed ticks — latest-only catch-up",
     connectors: [
       {
         connectorId: "attn-catchup-connector",
+        connectorInstanceId: "attn-catchup-connector",
         connectorPath,
         intervalMs: 25,
         manifest: POLICY_BLOCKED_MANIFEST,
@@ -447,6 +452,7 @@ test("attention probe failure must not silently suppress runs", async () => {
     connectors: [
       {
         connectorId: "attn-probe-failure-connector",
+        connectorInstanceId: "attn-probe-failure-connector",
         connectorPath,
         intervalMs: 25,
         manifest: POLICY_BLOCKED_MANIFEST,

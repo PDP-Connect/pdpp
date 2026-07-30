@@ -45,6 +45,7 @@ import {
   getDefaultConnectorAttentionStore,
   resetDefaultConnectorAttentionStoreCache,
 } from "../server/stores/connector-attention-store.ts";
+import { makeDefaultAccountConnectorInstanceId } from "../server/stores/connector-instance-store.ts";
 
 // ─── Fake store for unit tests ───────────────────────────────────────────────
 
@@ -147,6 +148,29 @@ function withTempDb(fn: (dir: string) => Promise<void>): () => Promise<void> {
       resetDefaultConnectorAttentionStoreCache();
       rmSync(dir, { force: true, recursive: true });
     }
+  };
+}
+
+/**
+ * Minimal admission fixture for `runConnector`'s required `admitRunConnection`
+ * callback: echoes back whatever connectorId/connectorInstanceId/ownerSubjectId
+ * it is asked to admit, satisfying the exact-match checks in
+ * `admitRuntimeRunConnection` (runtime/index.ts) without asserting anything
+ * about the admission decision itself.
+ */
+function fakeAdmitRunConnection(): (input: {
+  connectorId: string;
+  connectorInstanceId: string | null;
+  ownerSubjectId: string | null;
+}) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }> {
+  return ({ connectorId, connectorInstanceId, ownerSubjectId: requestedOwnerSubjectId }) => {
+    const ownerSubjectId = requestedOwnerSubjectId || "owner_local";
+    // Echo the explicit claim when the caller made one; otherwise fall back to
+    // the same deterministic default-account binding the storage layer itself
+    // derives (`getConnectorAttentionProjection` with no explicit instance id
+    // resolves to this same id), so writer upserts and reader queries agree.
+    const exactId = connectorInstanceId ?? makeDefaultAccountConnectorInstanceId(ownerSubjectId, connectorId);
+    return Promise.resolve({ connectorId, connectorInstanceId: exactId, ownerSubjectId });
   };
 }
 
@@ -465,6 +489,7 @@ test(
     };
 
     const outcome = await runConnector({
+      admitRunConnection: fakeAdmitRunConnection(),
       collectionMode: "full_refresh",
       connectorId: "codex",
       connectorPath: stubPath,

@@ -33,6 +33,8 @@ import {
   runConnector,
 } from "../runtime/index.ts";
 import { startServer } from "../server/index.ts";
+import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
+import { admitOwnerRunConnection } from "../server/stores/connector-instance-store.ts";
 
 type TestServer = Awaited<ReturnType<typeof startServer>>;
 
@@ -74,8 +76,82 @@ type CollectionProfileRunResult = Omit<RuntimeRunConnectorResult, "known_gaps"> 
   known_gaps?: readonly KnownGap[] | null;
 };
 
+/**
+ * Admission fixture for `runConnector`'s required `admitRunConnection`
+ * callback. Mirrors the EXACT production wiring in `server/index.ts`
+ * (`createController({ admitRunConnection: ... })`): calls the real
+ * `admitOwnerRunConnection` against a request-scoped connector-instance
+ * store, which both validates an explicit claim against a genuinely
+ * registered row AND materializes the caller's default-account row when no
+ * explicit instance was claimed. A naive id-echoing double is NOT enough
+ * here — this suite's runs actually ingest through the real RS/`_ref`
+ * routes, which look the instance id up in `connector_instances` and 404
+ * with `connector_instance_not_found` for any id that was never actually
+ * materialized in the store.
+ */
+// Real ingest (`resolveOwnerConnectorNamespace` in server/index.ts, called from
+// server/routes/rs-mutation.ts on every `POST /v1/ingest/...`) resolves the
+// acting owner subject from the REQUEST'S bearer token
+// (`getOwnerTokenSubjectId(req)` -> `req.tokenInfo?.subject_id`), which is
+// wholly independent of `runConnector`'s own `ownerSubjectId` option (always
+// null in this suite) or the controller-layer server config default. This
+// file's shared `setupConnector()` helper mints every owner token for subject
+// `'test_user'`, so admission must materialize/resolve the SAME subject or a
+// run that actually ingests through the real RS 403s with
+// `connector_instance_owner_mismatch`. Tests that mint their own token for a
+// different subject (e.g. the dashboard-visibility test using 'owner_local')
+// pass their own `admitRunConnection` override to `runTestConnector`.
+const DEFAULT_TEST_OWNER_SUBJECT_ID = "test_user";
+
+function fakeAdmitRunConnection(
+  ownerSubjectIdDefault = DEFAULT_TEST_OWNER_SUBJECT_ID
+): (input: {
+  connectorId: string;
+  connectorInstanceId: string | null;
+  ownerSubjectId: string | null;
+}) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }> {
+  return async ({ connectorId, connectorInstanceId, ownerSubjectId: requestedOwnerSubjectId }) => {
+    const ownerSubjectId = requestedOwnerSubjectId || ownerSubjectIdDefault;
+    const namespace = await admitOwnerRunConnection({
+      connectorId,
+      connectorInstanceId,
+      connectorInstanceStore: createRequestConnectorInstanceStore(),
+      ownerSubjectId,
+    });
+    return { connectorId: namespace.connectorId, connectorInstanceId: namespace.connectorInstanceId, ownerSubjectId };
+  };
+}
+
+/**
+ * A handful of bare-runtime tests in this file call `runTestConnector` with
+ * a `connectorId` that is never registered against any real server/store
+ * (no `startServer()`, an unreachable `rsUrl`, e.g. binding-validation and
+ * START-shape unit tests) — the real-store `fakeAdmitRunConnection` above
+ * throws `Connector '<id>' is not registered` for these, masking the actual
+ * behavior under test (which runs entirely before/independent of ingest).
+ * This naive echo — same shape as the reference fixture pattern used across
+ * the other files in this migration — satisfies `admitRuntimeRunConnection`'s
+ * exact-match checks without touching any store, for tests that only need
+ * `runConnector` to get past the admission gate.
+ */
+function fakeEchoAdmitRunConnection(): (input: {
+  connectorId: string;
+  connectorInstanceId: string | null;
+  ownerSubjectId: string | null;
+}) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }> {
+  return ({ connectorId, connectorInstanceId, ownerSubjectId: requestedOwnerSubjectId }) => {
+    const ownerSubjectId = requestedOwnerSubjectId || DEFAULT_TEST_OWNER_SUBJECT_ID;
+    const exactId = connectorInstanceId ?? `cin_${ownerSubjectId}_${connectorId.replace(/[^a-z0-9]+/gi, "_")}`;
+    return Promise.resolve({ connectorId, connectorInstanceId: exactId, ownerSubjectId });
+  };
+}
+
 async function runTestConnector(opts: CollectionProfileRunOptions): Promise<CollectionProfileRunResult> {
-  return (await runConnector(opts as RuntimeRunConnectorOptions)) as CollectionProfileRunResult;
+  const optsWithAdmission: CollectionProfileRunOptions = {
+    ...opts,
+    admitRunConnection: opts.admitRunConnection ?? fakeAdmitRunConnection(),
+  };
+  return (await runConnector(optsWithAdmission as RuntimeRunConnectorOptions)) as CollectionProfileRunResult;
 }
 
 // The `err` thrown by a rejected `runTestConnector()` call is a plain `Error`
@@ -1737,6 +1813,11 @@ test("Collection Profile conformance", async (t) => {
     await new Promise<void>((resolve) => rsServer.listen(0, () => resolve()));
     try {
       const result = await runTestConnector({
+        // This test's `rsServer` is a hand-rolled mock (asserting on the raw
+        // ingest/state HTTP requests), never a real connector-instance store,
+        // so admission must be a pure echo of the explicit claim rather than
+        // a real-store lookup that would 404 on this never-registered id.
+        admitRunConnection: fakeEchoAdmitRunConnection(),
         collectionMode: "incremental",
         connectorId,
         connectorInstanceId,
@@ -2784,6 +2865,10 @@ rl.on('line', (line) => {
       await assert.rejects(
         () =>
           runTestConnector({
+            // Bare runtime unit test: no server, no registered connector, an
+            // unreachable rsUrl. A pure-echo admission just needs to clear the
+            // gate so the binding-validation rejection under test is reached.
+            admitRunConnection: fakeEchoAdmitRunConnection(),
             collectionMode: "full_refresh",
             connectorId: "test",
             connectorPath,
@@ -2819,6 +2904,10 @@ rl.on('line', (line) => {
 
     try {
       const result = await runTestConnector({
+        // Bare runtime unit test: no server, no registered connector, an
+        // unreachable rsUrl. A pure-echo admission just needs to clear the
+        // gate so the START.bindings capture under test is reached.
+        admitRunConnection: fakeEchoAdmitRunConnection(),
         collectionMode: "full_refresh",
         connectorId: "test",
         connectorPath,
@@ -2858,6 +2947,10 @@ rl.on('line', (line) => {
 
       try {
         const result = await runTestConnector({
+          // Bare runtime unit test: no server, no registered connector, an
+          // unreachable rsUrl. A pure-echo admission just needs to clear the
+          // gate so the START.bindings capture under test is reached.
+          admitRunConnection: fakeEchoAdmitRunConnection(),
           collectionMode: "full_refresh",
           connectorId: "test",
           connectorPath,
@@ -5445,6 +5538,11 @@ rl.on('line', (line) => {
 
       try {
         const result = await runTestConnector({
+          // This test mints its owner token for subject 'owner_local' (see the
+          // comment above), not `runTestConnector`'s 'test_user' admission
+          // default, so it must override admission to materialize the SAME
+          // subject the dashboard-visibility assertions below depend on.
+          admitRunConnection: fakeAdmitRunConnection("owner_local"),
           collectionMode: "full_refresh",
           connectorId,
           connectorPath,

@@ -23,6 +23,35 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { isTransientManifestDriftIngestFailure, loadSyncState, runConnector } from "../runtime/index.ts";
 import { startServer } from "../server/index.ts";
+import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
+import { admitOwnerRunConnection } from "../server/stores/connector-instance-store.ts";
+
+/**
+ * Admission fixture for `runConnector`'s required `admitRunConnection`
+ * callback. Mirrors the production wiring in `server/index.ts`
+ * (`createController({ admitRunConnection: ... })`): calls the real
+ * `admitOwnerRunConnection` against a request-scoped connector-instance
+ * store, materializing the caller's default-account row for
+ * `OWNER_AUTH_DEFAULT_SUBJECT_ID` ('owner_local' — this file's
+ * `issueOwnerToken` default). Both tests here ingest through the real RS,
+ * which validates the resolved instance id against that same real store.
+ */
+function fakeAdmitRunConnection(): (input: {
+  connectorId: string;
+  connectorInstanceId: string | null;
+  ownerSubjectId: string | null;
+}) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }> {
+  return async ({ connectorId, connectorInstanceId, ownerSubjectId: requestedOwnerSubjectId }) => {
+    const ownerSubjectId = requestedOwnerSubjectId || "owner_local";
+    const namespace = await admitOwnerRunConnection({
+      connectorId,
+      connectorInstanceId,
+      connectorInstanceStore: createRequestConnectorInstanceStore(),
+      ownerSubjectId,
+    });
+    return { connectorId: namespace.connectorId, connectorInstanceId: namespace.connectorInstanceId, ownerSubjectId };
+  };
+}
 
 const REGEXP_1 = /undeclared stream: not_in_scope/;
 
@@ -178,6 +207,7 @@ test("transient manifest drift: scope-stream ingest not_found degrades to a per-
 
     try {
       const result = await runConnector({
+        admitRunConnection: fakeAdmitRunConnection(),
         collectionMode: "full_refresh",
         connectorId,
         connectorPath,
@@ -265,6 +295,7 @@ test("transient manifest drift: scope-stream ingest not_found degrades to a per-
       await assert.rejects(
         () =>
           runConnector({
+            admitRunConnection: fakeAdmitRunConnection(),
             collectionMode: "full_refresh",
             connectorId,
             connectorPath,

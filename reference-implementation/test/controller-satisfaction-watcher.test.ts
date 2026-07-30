@@ -138,6 +138,24 @@ function detailGapBacklog(overrides: Partial<DetailGapBacklog> = {}): DetailGapB
   };
 }
 
+// A minimal, production-shaped admission fixture: mints a deterministic
+// default-account connector_instance_id per (ownerSubjectId, connectorId) and
+// echoes back an explicitly requested one (both `autoResumeSatisfiedActions`
+// calls below always pass an explicit `connectorInstanceId: INSTANCE_ID`) —
+// the same authority shape `admitOwnerRunConnection` enforces in production,
+// without a real store.
+function fakeAdmitRunConnection(): (input: {
+  connectorId: string;
+  connectorInstanceId: string | null;
+  ownerSubjectId: string | null;
+}) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }> {
+  return ({ connectorId, connectorInstanceId, ownerSubjectId: requestedOwnerSubjectId }) => {
+    const ownerSubjectId = requestedOwnerSubjectId || "owner_local";
+    const exactId = connectorInstanceId ?? `cin_${ownerSubjectId}_${connectorId.replace(/[^a-z0-9]+/gi, "_")}`;
+    return Promise.resolve({ connectorId, connectorInstanceId: exactId, ownerSubjectId });
+  };
+}
+
 function createSchedulerStore(): SchedulerStore {
   const activeRuns = new Map<string, ActiveRunRecord>();
   const schedules = new Map<string, ScheduleRecord>();
@@ -293,6 +311,7 @@ test("satisfying a reauth action auto-resumes on the existing connection and can
   freshDb(t);
   const calls: RuntimeRunConnectorOptions[] = [];
   const controller = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
     connectorPathResolver: () => "/tmp/connector.js",
     logger: { error: () => undefined, warn: () => undefined },
     runConnectorImpl: completeRunConnector(calls),
@@ -343,6 +362,7 @@ test("an identical re-failure re-presents the same action and does not paint gre
   freshDb(t);
   const calls: RuntimeRunConnectorOptions[] = [];
   const controller = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
     connectorPathResolver: () => "/tmp/connector.js",
     logger: { error: () => undefined, warn: () => undefined },
     runConnectorImpl: failRunConnector(calls),

@@ -402,6 +402,12 @@ test("scheduled runs inject store credentials env-absent for every static-secret
       const resolverCalls: { connectorId: string; connectorInstanceId: string }[] = [];
 
       const scheduler = createScheduler({
+        admitRunConnection: (input) =>
+          Promise.resolve({
+            connectorId: input.connectorId,
+            connectorInstanceId: input.connectorInstanceId ?? connectorInstanceId,
+            ownerSubjectId: input.ownerSubjectId ?? "scheduler_static_secret_user",
+          }),
         connectors: [
           {
             connectorId,
@@ -475,6 +481,12 @@ test("manual run forwards bounded trigger and automation metadata to connector c
 
   try {
     const result = await runConnector({
+      admitRunConnection: (input) =>
+        Promise.resolve({
+          connectorId: input.connectorId,
+          connectorInstanceId: input.connectorInstanceId ?? "cin_metadata_test",
+          ownerSubjectId: input.ownerSubjectId ?? "owner_local",
+        }),
       automationMode: "assisted",
       connectorId: "metadata-test",
       connectorPath,
@@ -528,6 +540,12 @@ test("a store row suppresses credentials_required on the scheduled path (and its
       const completedRuns: RunRecord[] = [];
       const interactions: EscalationInteraction[] = [];
       const scheduler = createScheduler({
+        admitRunConnection: (input) =>
+          Promise.resolve({
+            connectorId: input.connectorId,
+            connectorInstanceId: input.connectorInstanceId ?? "cin_github_test",
+            ownerSubjectId: input.ownerSubjectId ?? "scheduler_creds_required_user",
+          }),
         connectors: [
           {
             connectorId: "github",

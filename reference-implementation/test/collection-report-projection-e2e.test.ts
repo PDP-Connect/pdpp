@@ -9,6 +9,27 @@ import test from "node:test";
 
 import { runConnector } from "../runtime/index.ts";
 import { startServer } from "../server/index.ts";
+import { makeDefaultAccountConnectorInstanceId } from "../server/stores/connector-instance-store.ts";
+
+/**
+ * Minimal admission fixture for `runConnector`'s required `admitRunConnection`
+ * callback: echoes back an explicit claim, or (when the caller made none)
+ * derives the same deterministic default-account connector-instance id the
+ * storage layer itself falls back to — this file's owner-dashboard reads all
+ * resolve through that same default binding (see the comment above
+ * `issueOwnerToken`), so writer and reader must agree on it.
+ */
+function fakeAdmitRunConnection(): (input: {
+  connectorId: string;
+  connectorInstanceId: string | null;
+  ownerSubjectId: string | null;
+}) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }> {
+  return ({ connectorId, connectorInstanceId, ownerSubjectId: requestedOwnerSubjectId }) => {
+    const ownerSubjectId = requestedOwnerSubjectId || "owner_local";
+    const exactId = connectorInstanceId ?? makeDefaultAccountConnectorInstanceId(ownerSubjectId, connectorId);
+    return Promise.resolve({ connectorId, connectorInstanceId: exactId, ownerSubjectId });
+  };
+}
 
 // End-to-end + isolation tests for the Tranche C control-plane projection
 // (`define-connector-progress-evidence-contract`, tasks 2.2b / 2.4 / 2.5 / 2.6).
@@ -232,6 +253,7 @@ test("2.2b: a two-stream run yields a two-entry collection_report on the detail 
 
   try {
     const result = await runConnector({
+      admitRunConnection: fakeAdmitRunConnection(),
       collectionMode: "full_refresh",
       connectorId,
       connectorPath,
@@ -316,6 +338,7 @@ test("2.4: a collected-records, no-gaps, no-considered run is NOT projected comp
 
   try {
     const result = await runConnector({
+      admitRunConnection: fakeAdmitRunConnection(),
       collectionMode: "full_refresh",
       connectorId,
       connectorPath,
@@ -378,6 +401,7 @@ test("2.6: a portable RECORD/STATE/DONE-only connector yields a valid report wit
 
   try {
     const result = await runConnector({
+      admitRunConnection: fakeAdmitRunConnection(),
       collectionMode: "full_refresh",
       connectorId,
       connectorPath,
@@ -429,6 +453,7 @@ test("2.5: collection_facts and collection_report are absent from grant-scoped /
 
   try {
     const result = await runConnector({
+      admitRunConnection: fakeAdmitRunConnection(),
       collectionMode: "full_refresh",
       connectorId,
       connectorPath,
@@ -504,6 +529,7 @@ test("derive-on-read: coverage condition is computed on each read (not frozen at
 
   try {
     const result = await runConnector({
+      admitRunConnection: fakeAdmitRunConnection(),
       collectionMode: "full_refresh",
       connectorId,
       connectorPath,
