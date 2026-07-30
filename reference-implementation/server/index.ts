@@ -4471,7 +4471,16 @@ export function buildAsApp(opts: ServerOpts = {}) {
         presentationScreenStateStore: opts.presentationScreenStateStore || null,
         surfaceId: surface_id,
       });
-      await originalCancelRun?.(run_id);
+      // System-initiated cleanup for a run already known to the controller,
+      // not an owner-facing cancel request — resolve the requester from the
+      // run's own admitted-owner bookkeeping rather than a caller-supplied
+      // claim. A `null` owner means the run is no longer active; cancelRun
+      // has nothing left to cancel, so skip the call rather than fabricate
+      // an owner identity.
+      const restoreFailureOwnerSubjectId = controller?.getActiveRunOwnerSubjectId(run_id);
+      if (restoreFailureOwnerSubjectId) {
+        await originalCancelRun?.(run_id, restoreFailureOwnerSubjectId);
+      }
     },
     ownerAuth,
     setTimeoutImpl: opts.streamingSetTimeout,
@@ -4505,7 +4514,13 @@ export function buildAsApp(opts: ServerOpts = {}) {
             status: "cancelled",
           });
         } finally {
-          await originalCancelRun?.(runId);
+          // Same trusted internal resolution as onPresentationRestoreFailure
+          // above: this is system-initiated teardown of a run already known
+          // to the controller, not an owner-facing cancel request.
+          const restoreFailureOwnerSubjectId = controller?.getActiveRunOwnerSubjectId(runId);
+          if (restoreFailureOwnerSubjectId) {
+            await originalCancelRun?.(runId, restoreFailureOwnerSubjectId);
+          }
         }
         throw err;
       } finally {
@@ -4524,13 +4539,13 @@ export function buildAsApp(opts: ServerOpts = {}) {
       return originalRespondToInteraction(runId, input as Parameters<typeof originalRespondToInteraction>[1]);
     };
     if (originalCancelRun) {
-      controller.cancelRun = async (runId) => {
+      controller.cancelRun = async (runId, requestingOwnerSubjectId) => {
         // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
         const pending = controller.getPendingInteraction?.(runId);
         if (pending?.interaction_id) {
           await restorePresentationBeforeTerminal(runId, pending.interaction_id, "run_cancelled");
         }
-        return await originalCancelRun(runId);
+        return await originalCancelRun(runId, requestingOwnerSubjectId);
       };
     }
     if (opts.presentationTerminalBarrier && typeof opts.presentationTerminalBarrier === "object") {
@@ -4606,30 +4621,32 @@ export function buildAsApp(opts: ServerOpts = {}) {
   // grants, or connections. Mutation-only; not a public PDPP API.
   // See openspec/changes/add-owner-run-cancellation-control.
   mountRefRunCancel(app, {
-    cancelRun: async (runId: string) => {
+    cancelRun: async (runId: string, requestingOwnerSubjectId: string) => {
       if (!controller) {
         return { run_id: runId, status: "no_active_run" } as unknown as Parameters<
           typeof mountRefRunCancel
-        >[1]["cancelRun"] extends (id: string) => Promise<infer R>
+        >[1]["cancelRun"] extends (id: string, owner: string) => Promise<infer R>
           ? R
           : never;
       }
-      const controllerResult = await controller.cancelRun(runId);
+      const controllerResult = await controller.cancelRun(runId, requestingOwnerSubjectId);
       if (controllerResult.status !== "no_active_run") {
         return controllerResult as unknown as Parameters<typeof mountRefRunCancel>[1]["cancelRun"] extends (
-          id: string
+          id: string,
+          owner: string
         ) => Promise<infer R>
           ? R
           : never;
       }
       return ((await opts.cancelScheduledRun?.(runId)) ?? controllerResult) as unknown as Parameters<
         typeof mountRefRunCancel
-      >[1]["cancelRun"] extends (id: string) => Promise<infer R>
+      >[1]["cancelRun"] extends (id: string, owner: string) => Promise<infer R>
         ? R
         : never;
     },
     controller,
     handleError,
+    ownerSubjectId: ownerAuth.subjectId || OWNER_AUTH_DEFAULT_SUBJECT_ID,
     pdppError,
     requireOwnerSession: ownerAuth.requireOwnerSession,
   } as unknown as Parameters<typeof mountRefRunCancel>[1]);

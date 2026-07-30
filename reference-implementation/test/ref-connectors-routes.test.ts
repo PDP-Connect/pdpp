@@ -22,6 +22,7 @@ import { fileURLToPath } from "node:url";
 import { canonicalConnectorKeyFromManifest } from "../server/connector-key.ts";
 import { getDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
+import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from "../server/owner-auth.ts";
 import { createSqliteConnectorDetailGapStore } from "../server/stores/connector-detail-gap-store.ts";
 import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 
@@ -330,7 +331,7 @@ test("POST /_ref/connections/:connectorInstanceId/run returns 202 (started run)"
     });
     assert.equal(resp.status, 202);
     assert.ok(resp.body.run_id);
-    await server.controller.cancelRun(resp.body.run_id);
+    await server.controller.cancelRun(resp.body.run_id, OWNER_AUTH_DEFAULT_SUBJECT_ID);
     await server.controller.awaitRun(resp.body.run_id);
   });
 });

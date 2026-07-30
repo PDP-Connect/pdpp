@@ -32,10 +32,16 @@ import {
   type Controller,
   type RunNowResult,
 } from "../runtime/controller.ts";
+import { canonicalConnectorKey } from "../server/connector-key.ts";
 import {
   isManagedNekoSurfaceApproved as isManagedNekoSurfaceApprovedUntyped,
   startServer as startServerUntyped,
 } from "../server/index.ts";
+import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from "../server/owner-auth.ts";
+import {
+  createSqliteConnectorInstanceStore,
+  makeDefaultAccountConnectorInstanceId,
+} from "../server/stores/connector-instance-store.ts";
 import { createMockCompanion, type MockCompanion } from "../server/streaming/cdp-companion.ts";
 import { createNekoCompanion as createNekoCompanionUntyped } from "../server/streaming/neko-adapter.ts";
 import { normalizeReferenceWireViewportPayload } from "../server/streaming/protocol-wire.ts";
@@ -149,6 +155,7 @@ interface MakeLeaseManagerOptions {
   runId?: string;
   surfaceHealth?: BrowserSurfaceHealth;
   surfaceMode?: BrowserSurfaceMode;
+  surfaceSubjectId?: string;
   withSettleEndpoint?: boolean;
 }
 
@@ -158,6 +165,7 @@ function makeLeaseManager({
   runId = "run_dynamic_1",
   surfaceHealth = "ready",
   surfaceMode = "dynamic",
+  surfaceSubjectId,
   initialActiveLease = false,
   withSettleEndpoint = true,
 }: MakeLeaseManagerOptions = {}) {
@@ -186,6 +194,7 @@ function makeLeaseManager({
         profile_key: profileKey,
         stream_base_url: "http://10.88.0.4:6080/_ref/browser-surfaces/surface_dynamic_1",
         surface_id: "surface_dynamic_1",
+        ...(surfaceSubjectId ? { surface_subject_id: surfaceSubjectId } : {}),
         ...(withSettleEndpoint ? { window_settle_endpoint: "http://neko:9222/pdpp/window-settle" } : {}),
         allocator_metadata: {
           resource_owner: "pdpp-reference",
@@ -852,7 +861,9 @@ async function withHarness(options: HarnessOptions | null, fn: (ctx: HarnessCont
           }
         })
       );
-      const cancellations = await Promise.all(Array.from(runIds, (runId) => server.controller.cancelRun(runId)));
+      const cancellations = await Promise.all(
+        Array.from(runIds, (runId) => server.controller.cancelRun(runId, OWNER_AUTH_DEFAULT_SUBJECT_ID))
+      );
       const drain = await server.controller.drainActiveRuns(5000);
       assert.equal(
         drain.timedOut,
@@ -1252,8 +1263,29 @@ test("mint fails loudly before viewer creation when the live window-settle behav
 });
 
 test("managed lifecycle reaches interaction attach after readiness and a manual wait", async () => {
-  const connectorId = "https://registry.pdpp.org/connectors/spotify";
-  const leaseManager = makeLeaseManager({ connectorId, profileKey: connectorId });
+  // The lease manager's `managedConnectors`/surface `connector_id` must match
+  // the SAME canonical key the controller's runNow (called directly below,
+  // bypassing the route-level canonicalization) actually admits and runs
+  // with — a raw URL-form key here would never match the canonical runtime
+  // lookup and silently skip the managed browser-surface path entirely.
+  const connectorId = canonicalConnectorKey("https://registry.pdpp.org/connectors/spotify") ?? "spotify";
+  // No explicit `connectorInstanceId` is claimed below, so admission
+  // materializes the real default-account instance id (a `cin_<hash>` string,
+  // never equal to `connectorId`). `readBrowserSurfaceProfileKey`
+  // (runtime/browser-surface/profile-key.ts) therefore scopes this run's
+  // profile key as `${connectorId}:${connectorInstanceId}` AND the runtime's
+  // lease request carries that same connectorInstanceId as `surfaceSubjectId`
+  // (run-coordinator.ts's `acquireInitialBrowserSurfaceLease`) — the static
+  // surface below must be seeded under BOTH the scoped profile key and the
+  // matching surface_subject_id, or the lease can never synchronously match
+  // an idle surface (`#findReadyIdleSurface` requires an exact match on both).
+  const defaultAccountInstanceId = makeDefaultAccountConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
+  const profileKey = `${connectorId}:${defaultAccountInstanceId}`;
+  const leaseManager = makeLeaseManager({
+    connectorId,
+    profileKey,
+    surfaceSubjectId: defaultAccountInstanceId,
+  });
   let readinessCalls = 0;
   let attachCalls = 0;
   let companionCreated = false;
@@ -1278,7 +1310,16 @@ test("managed lifecycle reaches interaction attach after readiness and a manual 
       },
     },
     async ({ asUrl, server, spotifyManifest }) => {
-      const started = await server.controller.runNow(spotifyManifest.connector_id, {
+      // `server.controller.runNow` is called directly here (bypassing the
+      // `/_ref/connectors/:id/run` HTTP route, which canonicalizes the
+      // connector id before resolving a namespace). The controller's own
+      // admission gate (`admitRunConnection`, wired to the real store in
+      // server/index.ts) requires the SAME canonical key the connectors
+      // table registered under — a raw URL-form manifest.connector_id 404s
+      // as "not registered" against that store. Reuse the same canonical
+      // `connectorId` the lease manager above was built with, so the
+      // managed browser-surface lookup matches what this run actually admits.
+      const started = await server.controller.runNow(connectorId, {
         manifest: spotifyManifest,
         ownerToken: "owner-token",
         runId: "run_readiness_manual_attach",
@@ -3368,14 +3409,40 @@ test("two stream sessions in one cookie jar retain session-scoped controller aut
   await withHarness(
     { makeCompanion: makeMockNekoCompanion("http://127.0.0.1:9", { dispatchedEvents: dispatched }) },
     async ({ asUrl, server, spotifyManifest }) => {
+      // Same canonicalization requirement as the direct-`runNow` test above,
+      // plus: each run below claims an explicit, literal `connectorInstanceId`
+      // that must actually exist in the store for the controller's real-store
+      // admission gate to admit it (an unregistered explicit claim 404s as
+      // `connector_instance_not_found` rather than materializing a new row —
+      // only an omitted selector may do that). Seed both distinct instances
+      // up front, matching the pattern in composed-origin.test.ts's
+      // `materializeDefaultSpotifyConnection`.
+      const connectorId = canonicalConnectorKey(spotifyManifest.connector_id) ?? spotifyManifest.connector_id;
+      const now = "2026-07-29T00:00:00.000Z";
+      const instanceStore = createSqliteConnectorInstanceStore();
+      for (const connectorInstanceId of ["stream_cookie_session_a", "stream_cookie_session_b"]) {
+        // biome-ignore lint/performance/noAwaitInLoops: two sequential upserts against the same in-memory store; no concurrency to gain.
+        await instanceStore.upsert({
+          connectorId,
+          connectorInstanceId,
+          createdAt: now,
+          displayName: connectorInstanceId,
+          ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
+          sourceBinding: { kind: "test_account", label: connectorInstanceId },
+          sourceBindingKey: connectorInstanceId,
+          sourceKind: "account",
+          status: "active",
+          updatedAt: now,
+        });
+      }
       const [runA, runB] = await Promise.all([
-        server.controller.runNow(spotifyManifest.connector_id, {
+        server.controller.runNow(connectorId, {
           connectorInstanceId: "stream_cookie_session_a",
           manifest: spotifyManifest,
           ownerToken: "owner-token",
           runId: "run_stream_cookie_a",
         }),
-        server.controller.runNow(spotifyManifest.connector_id, {
+        server.controller.runNow(connectorId, {
           connectorInstanceId: "stream_cookie_session_b",
           manifest: spotifyManifest,
           ownerToken: "owner-token",

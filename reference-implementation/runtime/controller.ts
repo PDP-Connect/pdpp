@@ -649,10 +649,13 @@ export interface Controller {
    * cooperative-cancel signal so the runtime terminates that connector child
    * and resolves the run terminal as `run.cancelled`. Returns a typed result
    * distinguishing a requested cancellation from a missing or already-terminal
-   * run. Never touches sibling active runs.
+   * run. Never touches sibling active runs. `requestingOwnerSubjectId` is
+   * compared against the run's admitted owner; a mismatch throws
+   * `ControllerError` (`run_owner_mismatch`) rather than cancelling — a bare
+   * run id is never a sufficient capability across owners.
    * See add-owner-run-cancellation-control.
    */
-  cancelRun: (runId: string) => Promise<CancelRunResult>;
+  cancelRun: (runId: string, requestingOwnerSubjectId: string) => Promise<CancelRunResult>;
   cleanupIdleBrowserSurfaces: () => Promise<BrowserSurfaceProjection[]>;
   clearNeedsHuman: (connectorId: string, options?: ConnectorInstanceOptions) => void;
   deleteSchedule: (connectorId: string, options?: ConnectorInstanceOptions) => Promise<boolean>;
@@ -675,6 +678,14 @@ export interface Controller {
   expireBrowserSurfaceWaits: () => Promise<BrowserSurfaceProjection[]>;
   findActiveRunByRunId: (runId: string) => ActiveRun | null;
   getActiveRun: (connectorId: string, options?: ConnectorInstanceOptions) => ActiveRun | null;
+  /**
+   * Trusted internal lookup for system-initiated cancellation (e.g. tearing
+   * down a run after a failed presentation-surface restore). Returns the
+   * run's admitted owner from the controller's own bookkeeping, or `null` if
+   * the run is not active. NOT for gating an owner-facing HTTP request —
+   * `cancelRun`'s `requestingOwnerSubjectId` parameter exists for that.
+   */
+  getActiveRunOwnerSubjectId: (runId: string) => string | null;
   /** Stable identity for dynamic allocator single-flight; null outside dynamic mode. */
   getBrowserSurfaceRuntimeAllocatorScopeId: () => string | null;
   /** Classifies connector management without exposing allocator operations. */
@@ -2276,8 +2287,11 @@ export function createController(opts: ControllerOptions = {}): Controller {
   // AbortController per run and threads its signal into `runConnector`;
   // `cancelRun` aborts only the targeted run's controller; `finalizeRunCleanup`
   // deletes the entry when the run settles. Scoped to a single run so a cancel
-  // never touches sibling runs. See add-owner-run-cancellation-control.
-  const activeRunCancellations = new Map<string, AbortController>();
+  // never touches sibling runs. The admitted run owner travels alongside the
+  // controller so `cancelRun` can refuse a foreign owner's cancellation
+  // request instead of trusting a bare run id. See
+  // add-owner-run-cancellation-control.
+  const activeRunCancellations = new Map<string, { abort: AbortController; ownerSubjectId: string }>();
 
   function browserSurfaceRuntimeManagement(connectorId: string): BrowserSurfaceRuntimeManagement {
     if (!browserSurfaceLeaseManager?.isManagedConnector(connectorId)) {
@@ -3308,9 +3322,9 @@ export function createController(opts: ControllerOptions = {}): Controller {
         `[controller] watchdog: run ${runId} for ${connectorId} exceeded ${maxRunWallClockMs}ms wall-clock budget; force-finalizing`
       );
       const cancellation = activeRunCancellations.get(runId);
-      if (cancellation && !cancellation.signal.aborted) {
+      if (cancellation && !cancellation.abort.signal.aborted) {
         try {
-          cancellation.abort();
+          cancellation.abort.abort();
         } catch {
           /* idempotent */
         }
@@ -3502,7 +3516,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     // cancellation of only this run; the runtime cooperatively terminates the
     // connector child. Cleared in finalizeRunCleanup when the run settles.
     const cancellation = new AbortController();
-    activeRunCancellations.set(runId, cancellation);
+    activeRunCancellations.set(runId, { abort: cancellation, ownerSubjectId: runOwnerSubjectId });
 
     const connectorDisplayName = readManifestDisplayName(manifest) ?? connectorId;
     const baseInteractionHandler = (interaction: unknown) =>
@@ -3908,7 +3922,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     return { accepted: true, status: response.status };
   }
 
-  async function cancelRun(runId: string): Promise<CancelRunResult> {
+  async function cancelRun(runId: string, requestingOwnerSubjectId: string): Promise<CancelRunResult> {
     const cancellation = activeRunCancellations.get(runId);
     if (!cancellation) {
       // No in-memory active run for this id. Distinguish a run that already
@@ -3919,15 +3933,39 @@ export function createController(opts: ControllerOptions = {}): Controller {
       }
       return { run_id: runId, status: "no_active_run" };
     }
-    if (cancellation.signal.aborted) {
+    // The run's admitted owner travels with its cancellation controller
+    // (set at runNow admission time). A requester who is not that run's
+    // owner gets a typed permission error instead of a cancellation — the
+    // arbitrary run id alone must never be a sufficient capability.
+    if (cancellation.ownerSubjectId !== requestingOwnerSubjectId) {
+      throw new ControllerError(
+        `Run ${runId} does not belong to owner '${requestingOwnerSubjectId}'.`,
+        "run_owner_mismatch",
+        {
+          runId,
+        }
+      );
+    }
+    if (cancellation.abort.signal.aborted) {
       // Cancellation already requested for this run; the abort is idempotent.
       return { run_id: runId, status: "cancel_requested" };
     }
     // Abort only this run's signal. The runtime's abort listener emits
     // run.cancel_requested and terminates the connector child; the terminal
     // run.cancelled event lands when the child exits.
-    cancellation.abort();
+    cancellation.abort.abort();
     return { run_id: runId, status: "cancel_requested" };
+  }
+
+  // Trusted internal lookup for system-initiated cancellation (e.g. tearing
+  // down a run after a failed presentation-surface restore): the run's own
+  // admitted owner, sourced from the SAME bookkeeping `cancelRun` checks a
+  // requester's claimed owner against. Never derived from an external,
+  // spoofable input — safe for a caller that already has the run in hand
+  // from its own trusted controller-side context, not for gating an
+  // owner-facing HTTP request.
+  function getActiveRunOwnerSubjectId(runId: string): string | null {
+    return activeRunCancellations.get(runId)?.ownerSubjectId ?? null;
   }
 
   function getPendingInteraction(runId: string): PendingInteractionProjection | null {
@@ -3971,6 +4009,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     expireBrowserSurfaceWaits: () => browserSurface.expireBrowserSurfaceWaits(),
     findActiveRunByRunId,
     getActiveRun,
+    getActiveRunOwnerSubjectId,
     getBrowserSurfaceRuntimeAllocatorScopeId: browserSurfaceRuntimeAllocatorScopeId,
     getBrowserSurfaceRuntimeManagement: browserSurfaceRuntimeManagement,
     getPendingInteraction,
