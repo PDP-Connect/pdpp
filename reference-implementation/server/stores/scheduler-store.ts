@@ -306,7 +306,7 @@ export function createSqliteSchedulerStore(): SchedulerStore {
   return {
     appendRunHistory(record) {
       const connectorInstanceId = requireRunHistoryConnectorInstanceId(record);
-      exec(referenceQueries.controllerInsertSchedulerRunHistory, [
+      exec(referenceQueries.controllerInsertRunHistory, [
         connectorInstanceId,
         record.connectorId,
         JSON.stringify(record.source),
@@ -355,7 +355,7 @@ export function createSqliteSchedulerStore(): SchedulerStore {
     },
 
     getLatestRunHistoryForConnection(connectorInstanceId, status = null) {
-      const row = getOne<SchedulerRunHistoryRow>(referenceQueries.controllerGetLatestSchedulerRunHistoryForConnection, [
+      const row = getOne<SchedulerRunHistoryRow>(referenceQueries.controllerGetLatestRunHistoryForConnection, [
         connectorInstanceId,
         status,
         status,
@@ -413,7 +413,15 @@ export function createSqliteSchedulerStore(): SchedulerStore {
       const rows: SchedulerRunHistoryRecord[] = [];
       for (const ids of chunks) {
         // REVIEWED-DYNAMIC: SQLite has no bound array type; this ranks one
-        // terminal/skip history row per bound page connection id.
+        // terminal/skip history row per bound page connection id. This is
+        // the LIST last-run-facts batch fallback (ref-control.ts) and must
+        // produce byte-identical output to before the generalized writer
+        // landed — scoped to `scheduler_managed` so a manual/browser/
+        // cancelled run's new row does not newly surface here (that
+        // widening is a deliberate follow-up slice). `status <> 'running'`
+        // excludes the started-but-not-yet-finalized rows the generalized
+        // writer creates (openspec/changes/
+        // generalize-run-history-write-authority).
         rows.push(
           ...[
             ...iterateDynamicSqlAcknowledged<SchedulerRunHistoryRow>(
@@ -424,8 +432,10 @@ export function createSqliteSchedulerStore(): SchedulerStore {
                    PARTITION BY connector_instance_id
                    ORDER BY completed_at DESC, id DESC
                  ) AS row_rank
-               FROM scheduler_run_history
+               FROM run_history
                WHERE connector_instance_id IN (${sqliteMembershipPlaceholders(ids)})
+                 AND status <> 'running'
+                 AND scheduler_managed
                  AND (? IS NULL OR status = ?)
             ) ranked
              WHERE row_rank = 1
@@ -443,7 +453,7 @@ export function createSqliteSchedulerStore(): SchedulerStore {
     },
 
     listRunHistory(limit) {
-      return getMany<SchedulerRunHistoryRow>(referenceQueries.controllerListSchedulerRunHistory, [], {
+      return getMany<SchedulerRunHistoryRow>(referenceQueries.controllerListRunHistory, [], {
         limit,
       }).rows.map(rowToRunHistoryRecord);
     },
@@ -528,7 +538,7 @@ export function createPostgresSchedulerStore(): SchedulerStore {
     async appendRunHistory(record) {
       const connectorInstanceId = requireRunHistoryConnectorInstanceId(record);
       await postgresQuery(
-        `INSERT INTO scheduler_run_history(
+        `INSERT INTO run_history(
            connector_instance_id,
            connector_id,
            source_json,
@@ -545,8 +555,24 @@ export function createPostgresSchedulerStore(): SchedulerStore {
            started_at,
            completed_at,
            error,
-           attempt
-         ) VALUES($1, $2, $3::jsonb, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11, $12, $13, $14, $15, $16, $17)`,
+           attempt,
+           scheduler_managed
+         ) VALUES($1, $2, $3::jsonb, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11, $12, $13, $14, $15, $16, $17, true)
+         ON CONFLICT(run_id) WHERE run_id IS NOT NULL DO UPDATE SET
+           source_json = excluded.source_json,
+           status = excluded.status,
+           records_emitted = excluded.records_emitted,
+           reported_records_emitted = excluded.reported_records_emitted,
+           checkpoint_summary_json = excluded.checkpoint_summary_json,
+           known_gaps_json = excluded.known_gaps_json,
+           connector_error_json = excluded.connector_error_json,
+           trace_id = excluded.trace_id,
+           failure_reason = excluded.failure_reason,
+           terminal_reason = excluded.terminal_reason,
+           completed_at = excluded.completed_at,
+           error = excluded.error,
+           attempt = excluded.attempt,
+           scheduler_managed = true`,
         [
           connectorInstanceId,
           record.connectorId,
@@ -634,8 +660,10 @@ export function createPostgresSchedulerStore(): SchedulerStore {
            completed_at,
            error,
            attempt
-         FROM scheduler_run_history
+         FROM run_history
          WHERE connector_instance_id = $1
+           AND status <> 'running'
+           AND scheduler_managed
            AND ($2::text IS NULL OR status = $2)
          ORDER BY completed_at DESC, id DESC
          LIMIT 1`,
@@ -734,8 +762,10 @@ export function createPostgresSchedulerStore(): SchedulerStore {
                     ORDER BY history.completed_at DESC, history.id DESC
                   ) AS row_rank
            FROM unnest($1::text[]) AS input(connector_instance_id)
-           JOIN scheduler_run_history AS history USING (connector_instance_id)
-           WHERE $2::text IS NULL OR history.status = $2
+           JOIN run_history AS history USING (connector_instance_id)
+           WHERE history.status <> 'running'
+             AND history.scheduler_managed
+             AND ($2::text IS NULL OR history.status = $2)
          )
          SELECT ${SCHEDULER_RUN_HISTORY_COLUMNS}
          FROM scoped_history
@@ -776,7 +806,9 @@ export function createPostgresSchedulerStore(): SchedulerStore {
            attempt
          FROM (
            SELECT *
-           FROM scheduler_run_history
+           FROM run_history
+           WHERE status <> 'running'
+             AND scheduler_managed
            ORDER BY completed_at DESC, id DESC
            LIMIT $1
          ) rows

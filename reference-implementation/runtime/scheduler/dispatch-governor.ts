@@ -641,10 +641,11 @@ export function createDispatchGovernor(deps: DispatchGovernorDeps): DispatchGove
     const connectorId = schedule.connectorId;
     const key = runtimeKey(schedule);
     const history = runtime.history.filter((r) => (r.connectorInstanceId || r.connectorId) === key);
-    // `scheduler_last_run_times` and `scheduler_run_history` are persisted
-    // through separate writes. If a process is killed between them — or if
-    // an older runtime never wrote `last_run_time` at all — we hydrate
-    // history with failed records but no last-run timestamp. Computing
+    // `scheduler_last_run_times` and `run_history` (renamed from
+    // `scheduler_run_history`) are persisted through separate writes. If a
+    // process is killed between them — or if an older runtime never wrote
+    // `last_run_time` at all — we hydrate history with failed records but
+    // no last-run timestamp. Computing
     // `nextRunAt = 0 + effectiveIntervalMs` then surfaces a 1970 date in
     // the audit log. Fall back to the newest history record's
     // `completedAt` so the next-attempt math has a real anchor.

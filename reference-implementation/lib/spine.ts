@@ -5,6 +5,11 @@ import { randomBytes } from "node:crypto";
 import { getDb } from "../server/db.ts";
 import { isPostgresStorageBackend } from "../server/postgres-storage.ts";
 import {
+  isRunHistoryRelevantEventType,
+  type RunHistorySpineEvent,
+  writeSqliteRunHistoryForSpineEvent,
+} from "../server/stores/run-history-writer.ts";
+import {
   execNamedOn,
   getMany,
   getOne,
@@ -498,7 +503,27 @@ export function emitSpineEvent(
 
   execNamedOn(db, referenceQueries.spineInsertEvent, event);
 
+  if (isRunHistoryRelevantEventType(event.event_type)) {
+    // Same synchronous single-connection handle as the insert above — no
+    // partial-commit window on SQLite. See run-history-writer.ts header.
+    writeSqliteRunHistoryForSpineEvent(toRunHistorySpineEvent(event, input.data));
+  }
+
   return Promise.resolve(hydrateNormalizedEvent(event));
+}
+
+function toRunHistorySpineEvent(event: NormalizedSpineEvent, rawData: unknown): RunHistorySpineEvent {
+  const data =
+    rawData && typeof rawData === "object" && !Array.isArray(rawData) ? (rawData as Record<string, unknown>) : {};
+  return {
+    connectorId: event.source_kind === "connector" ? event.source_id : null,
+    connectorInstanceId: event.connector_instance_id,
+    data,
+    eventType: event.event_type ?? "",
+    occurredAt: event.occurred_at,
+    runId: event.run_id,
+    status: event.status,
+  };
 }
 
 /**

@@ -36,7 +36,7 @@ const ALL_TABLE_NAMES = [
   "grant_connector_state",
   "connector_schedules",
   "controller_active_runs",
-  "scheduler_run_history",
+  "run_history",
   "scheduler_last_run_times",
   "records",
   "record_changes",

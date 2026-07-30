@@ -468,12 +468,18 @@ test(
     });
 
     // Guard the premise: the projection below must derive collection_report purely
-    // from spine facts.
+    // from spine facts, not from scheduler-cadence history. The manual run's
+    // run.started/run.completed spine events now create a `run_history` row
+    // via the generalized writer (server/stores/run-history-writer.ts,
+    // openspec/changes/generalize-run-history-write-authority) — but with
+    // `scheduler_managed = 0`, since this run never went through
+    // runtime/scheduler/run-executor.ts. Assert exactly that shape rather
+    // than "no row at all".
     const historyRows = getDb()
-      .prepare("SELECT COUNT(*) AS n FROM scheduler_run_history WHERE connector_id = ?")
+      .prepare("SELECT COUNT(*) AS n FROM run_history WHERE connector_id = ? AND scheduler_managed = 1")
       .get<{ n: number }>(CONNECTOR_ID);
-    assert.ok(historyRows, "premise: scheduler_run_history query returns a count row");
-    assert.equal(historyRows.n, 0, "premise: the manual run left no scheduler_run_history row");
+    assert.ok(historyRows, "premise: run_history query returns a count row");
+    assert.equal(historyRows.n, 0, "premise: the manual run left no scheduler_managed run_history row");
 
     const summaries = await listConnectorSummaries();
     const listWork = summaries.find(

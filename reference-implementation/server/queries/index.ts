@@ -257,15 +257,18 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly connectorSummaryEvidenceMarkDirtyByConnectorInstance: MutationQuery;
   readonly controllerDeleteActiveRun: MutationQuery;
   readonly controllerDeleteSchedule: MutationQuery;
-  readonly controllerGetLatestSchedulerRunHistoryForConnection: ReadOneQuery;
+  readonly controllerFinalizeRunHistory: MutationQuery;
+  readonly controllerGetLatestRunHistoryForConnection: ReadOneQuery;
   readonly controllerGetScheduleByConnector: ReadOneQuery;
+  readonly controllerInsertFinalizedRunHistory: MutationQuery;
+  readonly controllerInsertRunHistory: MutationQuery;
   readonly controllerInsertSchedule: MutationQuery;
   // Controller — schedule + active-run persistence for runtime/controller.
-  readonly controllerInsertSchedulerRunHistory: MutationQuery;
   readonly controllerListActiveRuns: SmallEnumerationQuery;
+  readonly controllerListRunHistory: ReadManyQuery;
   readonly controllerListSchedulerLastRunTimes: SmallEnumerationQuery;
-  readonly controllerListSchedulerRunHistory: ReadManyQuery;
   readonly controllerListSchedules: SmallEnumerationQuery;
+  readonly controllerStartRunHistory: MutationQuery;
   readonly controllerUpdateSchedule: MutationQuery;
   readonly controllerUpdateScheduleEnabled: MutationQuery;
   readonly controllerUpsertActiveRun: MutationQuery;
@@ -813,15 +816,18 @@ export function loadReferenceQueries(queryDir = QUERIES_DIR): ReferenceQueryRegi
     "controllerListActiveRuns",
     "controllerUpsertActiveRun",
     "controllerDeleteActiveRun",
-    "controllerGetLatestSchedulerRunHistoryForConnection",
+    "controllerGetLatestRunHistoryForConnection",
     "controllerGetScheduleByConnector",
     "controllerListSchedules",
     "controllerInsertSchedule",
     "controllerUpdateSchedule",
     "controllerUpdateScheduleEnabled",
     "controllerDeleteSchedule",
-    "controllerInsertSchedulerRunHistory",
-    "controllerListSchedulerRunHistory",
+    "controllerInsertRunHistory",
+    "controllerListRunHistory",
+    "controllerStartRunHistory",
+    "controllerFinalizeRunHistory",
+    "controllerInsertFinalizedRunHistory",
     "controllerListSchedulerLastRunTimes",
     "controllerUpsertSchedulerLastRunTime",
     // Source webhooks — replay/idempotency guard.

@@ -58,7 +58,7 @@ const TABLE_ORDER = [
   "grant_connector_state",
   "connector_schedules",
   "controller_active_runs",
-  "scheduler_run_history",
+  "run_history",
   "scheduler_last_run_times",
   "version_counter",
   "blobs",

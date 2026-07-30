@@ -408,7 +408,7 @@ test("scheduler storage migration backfills legacy rows to deterministic default
         scenario_id TEXT NOT NULL,
         started_at TEXT NOT NULL
       );
-      DROP TABLE scheduler_run_history;
+      DROP TABLE run_history;
       CREATE TABLE scheduler_run_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         connector_id TEXT NOT NULL,
@@ -679,7 +679,7 @@ test("PostgreSQL scheduler page batches match SQLite semantics and use one typed
   const ids = fixtures.map((fixture) => fixture.connectorInstanceId);
   await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
   try {
-    await postgresQuery("DELETE FROM scheduler_run_history WHERE connector_instance_id = ANY($1::text[])", [ids]);
+    await postgresQuery("DELETE FROM run_history WHERE connector_instance_id = ANY($1::text[])", [ids]);
     await postgresQuery("DELETE FROM scheduler_last_run_times WHERE connector_instance_id = ANY($1::text[])", [ids]);
     await postgresQuery("DELETE FROM connector_schedules WHERE connector_instance_id = ANY($1::text[])", [ids]);
     const store = createPostgresSchedulerStore();
@@ -754,7 +754,7 @@ test("PostgreSQL scheduler page batches match SQLite semantics and use one typed
       pool.query = originalQuery;
     }
   } finally {
-    await postgresQuery("DELETE FROM scheduler_run_history WHERE connector_instance_id = ANY($1::text[])", [ids]);
+    await postgresQuery("DELETE FROM run_history WHERE connector_instance_id = ANY($1::text[])", [ids]);
     await postgresQuery("DELETE FROM scheduler_last_run_times WHERE connector_instance_id = ANY($1::text[])", [ids]);
     await postgresQuery("DELETE FROM connector_schedules WHERE connector_instance_id = ANY($1::text[])", [ids]);
     await closePostgresStorage();

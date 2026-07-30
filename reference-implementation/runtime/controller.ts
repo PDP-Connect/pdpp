@@ -1998,7 +1998,9 @@ function buildSchedulerBackoffApi(
   // back-off gate clears a stale streak even when that success was recorded by
   // a path whose record has rolled off the bounded `recentRuns` window (or, on
   // a fresh boot, before the scheduler re-appended it). `latestSuccessfulAt`
-  // already accounts for every success in `scheduler_run_history`; passing it
+  // already accounts for every success in `run_history` (scoped to
+  // `scheduler_managed` rows — see server/queries/controller/
+  // list-run-history.sql); passing it
   // explicitly keeps this read-model's `consecutive_failures` honest with the
   // same semantic the runtime scheduler now applies. `null` → legacy behaviour.
   const lastSuccessAtMs =

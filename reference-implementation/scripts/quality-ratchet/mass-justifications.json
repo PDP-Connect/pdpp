@@ -40,8 +40,8 @@
     "date": "2026-07-20"
   },
   "lib/spine.ts": {
-    "allowed_mass": 109,
-    "reason": "loadEventsForSummaries batches the summary-hydration N+1 (one query per correlation id -> one query for the whole page) via a ROW_NUMBER()-partitioned fetch plus a per-id grouping pass (building the id->rows Map, iterating placeholders, hydrating rows). The 2026-07-30 connector-summary change adds the same bounded partitioned aggregation one layer earlier for every connector id in an authorized page, then returns an id-keyed map to preserve the existing connection matcher and singleton fallback. The explicit empty/backend branches and per-row fail-closed hydration are load-bearing backend parity, not incidental extraction candidates; the SQLite 50-to-200 slope and no-write oracle plus PostgreSQL authority cover them.",
+    "allowed_mass": 110,
+    "reason": "loadEventsForSummaries batches the summary-hydration N+1 (one query per correlation id -> one query for the whole page) via a ROW_NUMBER()-partitioned fetch plus a per-id grouping pass (building the id->rows Map, iterating placeholders, hydrating rows). The 2026-07-30 connector-summary change adds the same bounded partitioned aggregation one layer earlier for every connector id in an authorized page, then returns an id-keyed map to preserve the existing connection matcher and singleton fallback. The explicit empty/backend branches and per-row fail-closed hydration are load-bearing backend parity, not incidental extraction candidates; the SQLite 50-to-200 slope and no-write oracle plus PostgreSQL authority cover them. Authority Slice A (2026-07-30, generalize-run-history-write-authority): emitSpineEvent's SQLite path gains one dirty-independent branch (isRunHistoryRelevantEventType) that hooks the kind-neutral run_history writer for run.started/terminal events, plus toRunHistorySpineEvent, a small pure mapping function from the already-normalized spine event into the writer's input shape. This is the single seam every run kind (scheduled/manual/browser/cancelled) already funnels through; adding the hook here, rather than at each of the ~15 individual call sites across runtime/index.ts and runtime/scheduler.ts, is the whole point of the design (one seam, not N call-site edits). Proven load-bearing by test/run-history-writer-authority.test.ts (6 tests: started->finalized transition per run kind, idempotency under retried started/terminal events, terminal-only fallback insert).",
     "date": "2026-07-30"
   },
   "server/connector-manifest-validation.ts": {
@@ -143,6 +143,11 @@
     "allowed_mass": 3,
     "reason": "Auth/store leaf TypeScript migration (2026-07-27): provider-auth run injection keeps its connector/source gate and validates recovered JSON bundles before mapping environment fields. The typed JSON parse rethrow preserves code, identity, and SyntaxError cause without a suppression.",
     "date": "2026-07-27"
+  },
+  "server/stores/run-history-writer.ts": {
+    "allowed_mass": 9,
+    "reason": "New file (2026-07-30, Authority Slice A / generalize-run-history-write-authority): the kind-neutral run_history writer hooked into emitSpineEvent. Its branches are the identity guard (skip a run event missing run_id/connector_instance_id/connector_id rather than write a row with fabricated identity), the run.started-vs-terminal event-type branch, the finalize-then-fallback-insert branch (an UPDATE targeting status='running' that affects zero rows falls back to an ON CONFLICT DO NOTHING insert of the run already terminal, covering a lost/raced started write), and the small field-reassembly helpers (connectorErrorJsonFromTerminalData reassembles the executor's flattened connector-error fields; factsJsonFromTerminalData extracts a small bounded subset of SpineSummary-relevant fields present on the terminal event's own data). Each branch is load-bearing idempotency/identity-safety logic, not incidental structure; collapsing them would either silently duplicate a row under a race or write fabricated identity. Proven by test/run-history-writer-authority.test.ts (6 tests covering every branch: per-run-kind started->finalized transition, retried-started idempotency, retried-terminal idempotency, terminal-only fallback insert, scheduler-merge-not-duplicate, scheduler_managed reader scoping).",
+    "date": "2026-07-30"
   },
   "server/stores/static-secret-credential-probe.ts": {
     "allowed_mass": 10,

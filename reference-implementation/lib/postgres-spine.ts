@@ -9,7 +9,12 @@
 
 import { randomUUID } from "node:crypto";
 
-import { postgresQuery } from "../server/postgres-storage.ts";
+import { postgresQuery, withPostgresTransaction } from "../server/postgres-storage.ts";
+import {
+  isRunHistoryRelevantEventType,
+  type RunHistorySpineEvent,
+  writePostgresRunHistoryForSpineEvent,
+} from "../server/stores/run-history-writer.ts";
 
 type SourceKind = "connector" | "provider_native";
 type JsonObject = Record<string, unknown>;
@@ -1030,10 +1035,7 @@ async function listRecentCorrelationAggregates(
     .sort(compareSummaryRows);
 }
 
-export async function postgresEmitSpineEvent(input: SpineEventInput = {}): Promise<SpineEventRecord | null> {
-  const event = normalize(input);
-  const result = await postgresQuery<SpineEventRow>(
-    `INSERT INTO spine_events (
+const SPINE_INSERT_EVENT_SQL = `INSERT INTO spine_events (
        event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
        actor_type, actor_id, subject_type, subject_id, object_type, object_id,
        status, request_id, grant_id, run_id, source_kind, source_id, client_id, stream_id,
@@ -1044,36 +1046,68 @@ export async function postgresEmitSpineEvent(input: SpineEventInput = {}): Promi
        $13, $14, $15, $16, $17, $18, $19, $20,
        $21, $22, $23, $24::jsonb, $25
      )
-     RETURNING *`,
-    [
-      event.event_id,
-      event.event_type,
-      event.occurred_at,
-      event.recorded_at,
-      event.scenario_id,
-      event.trace_id,
-      event.actor_type,
-      event.actor_id,
-      event.subject_type,
-      event.subject_id,
-      event.object_type,
-      event.object_id,
-      event.status,
-      event.request_id,
-      event.grant_id,
-      event.run_id,
-      event.source_kind,
-      event.source_id,
-      event.client_id,
-      event.stream_id,
-      event.token_id,
-      event.interaction_id,
-      event.connector_instance_id,
-      event.data_json,
-      event.version,
-    ]
-  );
-  return hydrate(result.rows[0]);
+     RETURNING *`;
+
+function spineInsertEventParams(event: NormalizedSpineEvent): unknown[] {
+  return [
+    event.event_id,
+    event.event_type,
+    event.occurred_at,
+    event.recorded_at,
+    event.scenario_id,
+    event.trace_id,
+    event.actor_type,
+    event.actor_id,
+    event.subject_type,
+    event.subject_id,
+    event.object_type,
+    event.object_id,
+    event.status,
+    event.request_id,
+    event.grant_id,
+    event.run_id,
+    event.source_kind,
+    event.source_id,
+    event.client_id,
+    event.stream_id,
+    event.token_id,
+    event.interaction_id,
+    event.connector_instance_id,
+    event.data_json,
+    event.version,
+  ];
+}
+
+function toRunHistorySpineEvent(event: NormalizedSpineEvent, rawData: unknown): RunHistorySpineEvent {
+  const data =
+    rawData && typeof rawData === "object" && !Array.isArray(rawData) ? (rawData as Record<string, unknown>) : {};
+  return {
+    connectorId: event.source_kind === "connector" ? event.source_id : null,
+    connectorInstanceId: event.connector_instance_id,
+    data,
+    eventType: event.event_type,
+    occurredAt: event.occurred_at,
+    runId: event.run_id,
+    status: event.status,
+  };
+}
+
+export async function postgresEmitSpineEvent(input: SpineEventInput = {}): Promise<SpineEventRecord | null> {
+  const event = normalize(input);
+
+  if (!isRunHistoryRelevantEventType(event.event_type)) {
+    const result = await postgresQuery<SpineEventRow>(SPINE_INSERT_EVENT_SQL, spineInsertEventParams(event));
+    return hydrate(result.rows[0]);
+  }
+
+  // Run/terminal events also write run_history (Authority Slice A): wrap
+  // both writes in one transaction so the spine event and its run-history
+  // row cannot diverge. See server/stores/run-history-writer.ts.
+  return withPostgresTransaction(async (client) => {
+    const result = await client.query<SpineEventRow>(SPINE_INSERT_EVENT_SQL, spineInsertEventParams(event));
+    await writePostgresRunHistoryForSpineEvent(client, toRunHistorySpineEvent(event, input.data));
+    return hydrate(result.rows[0]);
+  });
 }
 
 export async function postgresListSpineEventsPage(

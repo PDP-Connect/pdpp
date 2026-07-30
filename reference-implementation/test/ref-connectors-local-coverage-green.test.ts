@@ -222,7 +222,7 @@ function seedCoverage(rows: readonly TestCoverageRow[], { includeExpected = true
 function seedHistoricalSchedulerRun({ completedAt = STALE_HISTORICAL_RUN_AT } = {}) {
   getDb()
     .prepare(
-      `INSERT INTO scheduler_run_history(
+      `INSERT INTO run_history(
          connector_instance_id, connector_id, source_json, status, records_emitted,
          known_gaps_json, run_id, started_at, completed_at, attempt
        )
