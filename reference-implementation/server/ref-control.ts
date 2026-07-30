@@ -4706,6 +4706,21 @@ function createConnectorRunSummariesReader(
   };
 }
 
+function listPageRunSummaries(
+  connectorIds: readonly string[] | undefined,
+  includeRunSummaries: ConnectorRunSummaryInclusion | undefined
+): Promise<
+  readonly [ReadonlyMap<string, readonly SpineSummary[]>, ReadonlyMap<string, readonly SpineSummary[]>] | null
+> {
+  if (!connectorIds || includeRunSummaries === false) {
+    return Promise.resolve(null);
+  }
+  return Promise.all([
+    listRunSummariesByConnectorIds(connectorIds),
+    listRunSummariesByConnectorIds(connectorIds, "succeeded"),
+  ]);
+}
+
 function groupRetainedSizeRowsByInstance(
   rows: readonly RecordProjectionRow[]
 ): Map<string, readonly RecordProjectionRow[]> {
@@ -5678,8 +5693,7 @@ async function loadConnectorSummaryProjectionDeps(
     latestRunHistoryRows,
     latestSuccessfulRunHistoryRows,
     scheduleRows,
-    runSummariesByConnectorId,
-    successfulRunSummariesByConnectorId,
+    pageRunSummaries,
   ] = await Promise.all([
     listRegisteredConnectorRows(),
     options.includeRetainedSizeSnapshot ? loadRetainedSizeProjectionSnapshot() : Promise.resolve(undefined),
@@ -5703,8 +5717,7 @@ async function loadConnectorSummaryProjectionDeps(
     runHistoryScopeIds && typeof controller?.listSchedulesForConnections === "function"
       ? Promise.resolve(controller.listSchedulesForConnections(runHistoryScopeIds)).catch(() => null)
       : Promise.resolve(null),
-    options.connectorIds ? listRunSummariesByConnectorIds(options.connectorIds) : Promise.resolve(null),
-    options.connectorIds ? listRunSummariesByConnectorIds(options.connectorIds, "succeeded") : Promise.resolve(null),
+    listPageRunSummaries(options.connectorIds, options.includeRunSummaries),
   ]);
   const latestRunHistoryByInstanceId =
     latestRunHistoryRows === null
@@ -5788,15 +5801,14 @@ async function loadConnectorSummaryProjectionDeps(
     },
     includeRunSummaries: options.includeRunSummaries ?? true,
     latestStreamFactsByInstanceId,
-    listRunSummariesForConnector:
-      runSummariesByConnectorId && successfulRunSummariesByConnectorId
-        ? createConnectorRunSummariesReader(
-            new Map([
-              ["", runSummariesByConnectorId],
-              ["succeeded", successfulRunSummariesByConnectorId],
-            ])
-          )
-        : createConnectorRunSummariesReader(),
+    listRunSummariesForConnector: pageRunSummaries
+      ? createConnectorRunSummariesReader(
+          new Map([
+            ["", pageRunSummaries[0]],
+            ["succeeded", pageRunSummaries[1]],
+          ])
+        )
+      : createConnectorRunSummariesReader(),
     manifestDeclarationByConnectorId,
     manifestsByConnectorId,
     ...(retainedSizeSnapshot ? { retainedSizeSnapshot } : {}),
