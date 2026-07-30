@@ -2672,7 +2672,9 @@ export function createController(opts: ControllerOptions = {}): Controller {
     return apis.flatMap((api) => (api ? [api] : []));
   }
 
-  async function listSchedulesForConnections(connectorInstanceIds: readonly string[]): Promise<Map<string, ScheduleApi>> {
+  async function listSchedulesForConnections(
+    connectorInstanceIds: readonly string[]
+  ): Promise<Map<string, ScheduleApi>> {
     const result = new Map<string, ScheduleApi>();
     if (connectorInstanceIds.length === 0 || typeof schedulerStore.listSchedulesByConnectionIds !== "function") {
       return result;
@@ -2693,7 +2695,12 @@ export function createController(opts: ControllerOptions = {}): Controller {
           browserSurfaceLeaseManager,
           historyIndex
         );
-        const api = scheduleToApi(schedule, runtimeProjection, policy, historyIndex.get(schedule.connector_instance_id));
+        const api = scheduleToApi(
+          schedule,
+          runtimeProjection,
+          policy,
+          historyIndex.get(schedule.connector_instance_id)
+        );
         if (api) {
           result.set(schedule.connector_instance_id, api);
         }

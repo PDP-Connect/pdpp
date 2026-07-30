@@ -6,6 +6,7 @@ import test from "node:test";
 
 import { closePostgresStorage, getPostgresPool, initPostgresStorage } from "../server/postgres-storage.ts";
 import { withTemporaryPostgresDatabase } from "./helpers/postgres-temp-database.ts";
+
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 
 const RE_STREAM_VERSION_BTREE = /USING btree \(stream, version\)/;
@@ -24,7 +25,10 @@ async function withTempDb(baseUrl: string, fn: (url: string) => Promise<void>): 
   );
 }
 
-async function readIndex(pool: ReturnType<typeof getPostgresPool>, indexName: string): Promise<{ oid: string; definition: string } | null> {
+async function readIndex(
+  pool: ReturnType<typeof getPostgresPool>,
+  indexName: string
+): Promise<{ oid: string; definition: string } | null> {
   const result = await pool.query<{ oid: string; definition: string }>(
     `SELECT idx.oid::text AS oid, pg_get_indexdef(idx.oid) AS definition
        FROM pg_class idx

@@ -182,7 +182,7 @@ export async function runLiveStreamHealthAudit({
   }
 
   try {
-  // Terminal-gate revision (2026-07-29): the bare `?limit=500` request
+    // Terminal-gate revision (2026-07-29): the bare `?limit=500` request
     // both exceeded the route's new maximum page size (100) and no longer
     // exists as a single-request "give me everything" contract. Page-follow
     // to completion instead — this audit genuinely needs the whole fleet.

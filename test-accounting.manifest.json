@@ -164,7 +164,9 @@
       "loader": "node-test",
       "authority_argument": null,
       "execution": "direct",
-      "environment": { "TSX_TSCONFIG_PATH": "packages/list-envelope/tsconfig.json" },
+      "environment": {
+        "TSX_TSCONFIG_PATH": "packages/list-envelope/tsconfig.json"
+      },
       "profiles": [{ "id": "default", "required": true, "skip_reasons": {} }],
       "command": [
         "node",

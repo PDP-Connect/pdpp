@@ -1,10 +1,10 @@
-import pg from 'pg';
+import pg from "pg";
 
 const { Pool } = pg;
 
 function adminUrl(connectionString) {
   const url = new URL(connectionString);
-  url.pathname = '/postgres';
+  url.pathname = "/postgres";
   return url.toString();
 }
 
@@ -25,10 +25,7 @@ function quotedIdentifier(identifier) {
  * pool shutdown must not turn into a durable database leak on the proof
  * cluster. The repository's Postgres test image is pg16, which supports it.
  */
-export async function withTemporaryPostgresDatabase(
-  { connectionString, databaseName, closeConnections },
-  callback,
-) {
+export async function withTemporaryPostgresDatabase({ connectionString, databaseName, closeConnections }, callback) {
   const admin = new Pool({ connectionString: adminUrl(connectionString) });
   const database = quotedIdentifier(databaseName);
   let created = false;
@@ -71,11 +68,15 @@ export async function withTemporaryPostgresDatabase(
   if (operationError && cleanupErrors.length > 0) {
     throw new AggregateError(
       [operationError, ...cleanupErrors],
-      `temporary Postgres database operation and cleanup both failed for ${databaseName}`,
+      `temporary Postgres database operation and cleanup both failed for ${databaseName}`
     );
   }
-  if (operationError) throw operationError;
-  if (cleanupErrors.length === 1) throw cleanupErrors[0];
+  if (operationError) {
+    throw operationError;
+  }
+  if (cleanupErrors.length === 1) {
+    throw cleanupErrors[0];
+  }
   if (cleanupErrors.length > 1) {
     throw new AggregateError(cleanupErrors, `could not clean up temporary Postgres database ${databaseName}`);
   }

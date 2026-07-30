@@ -131,11 +131,7 @@ test("buildPeekRelationships scopes its summary lookup to the inspected connecti
       stream: "messages",
     },
     {
-      getStreamMetadata: (
-        _connectorId: string,
-        stream: string,
-        options?: { connectorInstanceId?: string | null }
-      ) => {
+      getStreamMetadata: (_connectorId: string, stream: string, options?: { connectorInstanceId?: string | null }) => {
         metadataInstanceIds.push(options?.connectorInstanceId);
         return Promise.resolve({ name: stream } as StreamMetadata);
       },

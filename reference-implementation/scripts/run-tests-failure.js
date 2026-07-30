@@ -2,8 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 export function combineTestAndCleanupFailure(testError, cleanupError, context) {
-  if (!testError) return cleanupError;
-  if (!cleanupError) return testError;
+  if (!testError) {
+    return cleanupError;
+  }
+  if (!cleanupError) {
+    return testError;
+  }
   return new AggregateError([testError, cleanupError], `${context} and database cleanup both failed`);
 }
 

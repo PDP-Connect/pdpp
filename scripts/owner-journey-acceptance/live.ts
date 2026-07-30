@@ -416,7 +416,11 @@ async function runLiveSemanticChecks({
   // "give me everything" contract. Page-follow the bounded route to
   // completion instead — this acceptance check genuinely needs the whole
   // fleet.
-  const connectorsPaged = await fetchAllConnectorSummaries({ base, fetchImpl, headers: { accept: "application/json", ...header } });
+  const connectorsPaged = await fetchAllConnectorSummaries({
+    base,
+    fetchImpl,
+    headers: { accept: "application/json", ...header },
+  });
   if (!connectorsPaged.ok) {
     findings.push({
       ruleId: "live-ref-surface-not-reached",

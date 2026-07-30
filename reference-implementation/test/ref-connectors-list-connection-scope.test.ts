@@ -302,7 +302,7 @@ test("unscoped request with no limit fails explicitly instead of scanning the fl
   assert.deepEqual(harness.calls.pdppError, [{ code: "invalid_request", param: "limit", status: 400 }]);
 });
 
-test('empty/blank selector is treated as absent, and still requires limit like any unscoped request', async () => {
+test("empty/blank selector is treated as absent, and still requires limit like any unscoped request", async () => {
   const harness = buildHarness({
     summaryForRoute: () => assert.fail("blank selector must not resolve a single connection"),
   });
