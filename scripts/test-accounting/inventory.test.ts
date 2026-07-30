@@ -589,6 +589,29 @@ test("keeps every candidate-added PostgreSQL skip title in the exact receipt map
     ]
   );
 });
+// Aggregate gate regression (2026-07-30, run-history-backfill-cutover REVISE):
+// test/active-run-summary-zero-spine.test.ts (reference-implementation) added
+// three PostgreSQL tests using the bare-boolean `skip: !POSTGRES_URL` shape
+// (in-progress/terminal/no-run cases), and memory-default rejected the first
+// one encountered as an unexplained skip because none of the three exact
+// names were in POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS. The accounting parser
+// aborts on the FIRST unexplained skip per run, so all three names must be
+// present together or a memory-default run fails serially, one at a time,
+// across repeated fix attempts.
+test("keeps every active-run-summary-zero-spine PostgreSQL skip title in the exact receipt mapping", () => {
+  assert.deepEqual(
+    [
+      "PostgreSQL: zero spine_events statements for an in-progress run's GET (collection_rate merged via run.progress_reported)",
+      "PostgreSQL: zero spine_events statements for a terminal run's GET",
+      "PostgreSQL: zero spine_events statements for a connection with no run at all",
+    ].filter((name) => POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name)),
+    [
+      "PostgreSQL: zero spine_events statements for an in-progress run's GET (collection_rate merged via run.progress_reported)",
+      "PostgreSQL: zero spine_events statements for a terminal run's GET",
+      "PostgreSQL: zero spine_events statements for a connection with no run at all",
+    ]
+  );
+});
 test("the exact named-skip mapping join fails closed on stale rows and on unconfigured consumed identities", () => {
   // Property 3, stale/unmatched arm. A configured row that no emitted skip
   // consumed (e.g. a test renamed so its title now self-describes, or deleted)
