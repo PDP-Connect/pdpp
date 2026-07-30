@@ -612,6 +612,20 @@ test("keeps every active-run-summary-zero-spine PostgreSQL skip title in the exa
     ]
   );
 });
+// Aggregate gate regression (2026-07-30, terminal-read-integration closure):
+// test/browser-surface.test.ts (reference-implementation) test for scoped
+// browser-surface reads was not in the POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS
+// mapping, causing memory-default to reject it as an unexplained skip.
+test("keeps every browser-surface PostgreSQL skip title in the exact receipt mapping", () => {
+  assert.deepEqual(
+    [
+      "Postgres scoped browser-surface reads match filtered global rows for 0, 1, and 25 identities",
+    ].filter((name) => POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name)),
+    [
+      "Postgres scoped browser-surface reads match filtered global rows for 0, 1, and 25 identities",
+    ]
+  );
+});
 test("the exact named-skip mapping join fails closed on stale rows and on unconfigured consumed identities", () => {
   // Property 3, stale/unmatched arm. A configured row that no emitted skip
   // consumed (e.g. a test renamed so its title now self-describes, or deleted)
@@ -861,7 +875,7 @@ test("the memory-default profile declares the exact current skip baseline", asyn
   const suite = manifestValue.suites.find((entry) => entry.id === "ri-default");
   const memoryDefault = suite?.profiles?.find((entry) => typeof entry !== "string" && entry.id === "memory-default");
   assert.deepEqual(typeof memoryDefault === "string" ? undefined : memoryDefault?.skip_reasons, {
-    "PDPP_TEST_POSTGRES_URL unset": 129,
+    "PDPP_TEST_POSTGRES_URL unset": 133,
     "set PDPP_TEST_POSTGRES_URL to the dedicated loopback listener": 13,
     "dedicated disposable URL not selected": 1,
     "set PDPP_LIVE_CONNECTOR_HEALTH_GATE=1 to run": 1,
