@@ -18,6 +18,7 @@
 - [x] 3.5 Prevent historical unhealthy/stopping reconciliation rows from minting or masking external-loss successor receipts; prove the production topology and a genuine ready-loss successor.
 - [x] 3.6 Coalesce allocator-absent ready projections by connection/subject/profile scope and prove one deterministic boundary and one successor completion in SQLite and dedicated PostgreSQL.
 - [x] 3.7 Add a reversible, exact-fingerprint selector correction for historically synthetic starts; prove before/after selection, rejected near-match provenance, revocation, and unchanged analogous connector history.
+- [x] 3.8 Preserve the single-target correction and add the reviewed complete-episode batch only for multiple exact later unresolved starts; prove SQLite and dedicated PostgreSQL omission, receipt-append/revoke races, unauthorized-revoke non-mutation, atomic reversal, and canonical audit append.
 
 ## 4. Deploy/UAT (owner, after merge and deployment)
 

@@ -3,6 +3,7 @@ const TOP_LEVEL_REGEX_2 = /CREATE UNIQUE INDEX IF NOT EXISTS .*one_resolution/;
 const TOP_LEVEL_REGEX_3 = /surface_subject_id IS NOT DISTINCT FROM/;
 const TOP_LEVEL_REGEX_4 = /profile_key = \$3/;
 const SELECTION_OVERRIDE_ERROR = /selection override requires/;
+const AUDIT_WRITE_FAILURE = /test audit write failure/;
 
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
@@ -11,6 +12,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { Pool } from "pg";
 
 import {
   createBrowserSurfaceReplacementLedger,
@@ -27,6 +29,7 @@ import {
   createPostgresBrowserSurfaceReplacementReceiptStore,
   createSqliteBrowserSurfaceReplacementReceiptStore,
   POSTGRES_BROWSER_SURFACE_REPLACEMENT_LEDGER_SCHEMA,
+  type ReplacementReceiptSelectionOverrideBatchInput,
   SQLITE_BROWSER_SURFACE_REPLACEMENT_LEDGER_SCHEMA,
 } from "../server/stores/browser-surface-replacement-ledger-store.ts";
 
@@ -65,6 +68,28 @@ function mustExist<T>(value: T | null | undefined, description: string): T {
   return value;
 }
 
+function revokeAuthorization(input: ReplacementReceiptSelectionOverrideBatchInput) {
+  return {
+    episode_id: input.episode.id,
+    replacement_batch_id: input.replacement_batch_id,
+    reviewed_artifact_sha256: input.reviewed_artifact_sha256,
+  };
+}
+
+async function waitForPostgresReceiptLock(pool: Pool, remainingAttempts = 20): Promise<boolean> {
+  const lock = await pool.query<{ held: boolean }>(
+    "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE relation = 'browser_surface_replacement_receipts'::regclass AND mode = 'ShareRowExclusiveLock' AND granted) AS held"
+  );
+  if (lock.rows[0]?.held) {
+    return true;
+  }
+  if (remainingAttempts <= 1) {
+    return false;
+  }
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  return waitForPostgresReceiptLock(pool, remainingAttempts - 1);
+}
+
 function typedDb(): ReturnType<typeof getDb> {
   return getDb();
 }
@@ -97,7 +122,7 @@ function receiptSequence(connectionId: string, subjectId: string) {
   return { completed, started };
 }
 
-async function assertStoreContract(store: BrowserSurfaceReplacementReceiptStore) {
+async function assertStoreContract(store: BrowserSurfaceReplacementReceiptStore, sqliteAuditFault = false) {
   const namespace = `store-contract-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const id = (value: string) => `${namespace}:${value}`;
   const first = receiptSequence(id("connection-a"), id("subject-a"));
@@ -434,6 +459,304 @@ async function assertStoreContract(store: BrowserSurfaceReplacementReceiptStore)
   );
 
   await assertSelectionOverrideContract(store, id);
+  await assertSelectionOverrideBatchContract(store, id, sqliteAuditFault);
+}
+
+async function assertSelectionOverrideBatchContract(
+  store: BrowserSurfaceReplacementReceiptStore,
+  id: (value: string) => string,
+  sqliteAuditFault: boolean
+): Promise<void> {
+  async function scenario(label: string, memberCount = 3, connectorId = "chatgpt") {
+    const ledger = createBrowserSurfaceReplacementLedger({ idPrefix: `selection-batch-${label}`, now: () => NOW });
+    const connectionId = id(`selection-batch-${label}-connection`);
+    const profileKey = id(`selection-batch-${label}-profile`);
+    const subjectId = id(`selection-batch-${label}-subject`);
+    const priorStarted = await store.append(
+      ledger.start({
+        cause: "external_or_host_loss",
+        connection_id: connectionId,
+        connector_id: connectorId,
+        idempotency_key: id(`selection-batch-${label}-prior`),
+        observed_at: "2026-07-29T21:07:58.000Z",
+        profile_key: profileKey,
+        surface_id: id(`selection-batch-${label}-prior-surface`),
+        surface_subject_id: subjectId,
+      })
+    );
+    await store.append(
+      ledger.terminate(
+        omitUndefined({
+          cause: priorStarted.cause,
+          connection_id: connectionId,
+          outcome: "failed",
+          profile_key: profileKey,
+          replacement_id: priorStarted.replacement_id,
+          surface_id: priorStarted.surface_id,
+          surface_subject_id: subjectId,
+        })
+      )
+    );
+    const members: ReplacementReceipt[] = [];
+    async function appendMembers(index: number): Promise<void> {
+      if (index >= memberCount) {
+        return;
+      }
+      members.push(
+        await store.append(
+          ledger.start({
+            cause: "external_or_host_loss",
+            connection_id: connectionId,
+            connector_id: connectorId,
+            idempotency_key: id(`selection-batch-${label}-synthetic-${index}`),
+            observed_at: `2026-07-29T21:07:59.${String(index).padStart(3, "0")}Z`,
+            profile_key: profileKey,
+            surface_id: id(`selection-batch-${label}-synthetic-surface-${index}`),
+            surface_subject_id: subjectId,
+          })
+        )
+      );
+      await appendMembers(index + 1);
+    }
+    await appendMembers(0);
+    const input: ReplacementReceiptSelectionOverrideBatchInput = {
+      applied_at: "2026-07-30T00:00:00.000Z",
+      episode: {
+        first_event_seq: mustExist(members[0], "batch has a first member").event_seq,
+        first_observed_at: mustExist(members[0], "batch has a first member").observed_at,
+        id: id(`selection-batch-${label}-episode`),
+        last_event_seq: members.at(-1)?.event_seq ?? 0,
+        last_observed_at: members.at(-1)?.observed_at ?? "",
+      },
+      members: members.map((member) => ({
+        connection_id: member.connection_id,
+        connector_id: member.connector_id ?? null,
+        event_seq: member.event_seq,
+        idempotency_key: member.idempotency_key,
+        observed_at: member.observed_at,
+        profile_key: member.profile_key,
+        replacement_id: member.replacement_id,
+        scope: member.scope,
+        surface_id: member.surface_id ?? "",
+        surface_subject_id: member.surface_subject_id ?? null,
+      })),
+      prior_failed_replacement_id: priorStarted.replacement_id,
+      replacement_batch_id: id(`selection-batch-${label}`),
+      reviewed_artifact_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    };
+    return {
+      input,
+      memberReceipts: members,
+      priorStarted,
+      selectorInput: { connection_id: connectionId, profile_key: profileKey, surface_subject_id: subjectId },
+    };
+  }
+
+  const reviewed = await scenario("reviewed");
+  await assert.rejects(
+    () =>
+      store.dryRunSelectionOverrideBatch({
+        ...reviewed.input,
+        members: reviewed.input.members.filter((_member, index) => index !== 1),
+      }),
+    SELECTION_OVERRIDE_ERROR,
+    "omitting an in-bounds sibling start is rejected rather than silently leaving it selectable"
+  );
+  await assert.rejects(
+    () =>
+      store.dryRunSelectionOverrideBatch({
+        ...reviewed.input,
+        members: reviewed.input.members.map((member, index) =>
+          index === 1 ? { ...member, profile_key: id("selection-batch-mixed-profile") } : member
+        ),
+      }),
+    SELECTION_OVERRIDE_ERROR,
+    "a reviewed set cannot mix scopes"
+  );
+  await assert.rejects(
+    () =>
+      store.dryRunSelectionOverrideBatch({
+        ...reviewed.input,
+        members: reviewed.input.members.map((member, index) =>
+          index === 1 ? { ...member, idempotency_key: `${member.idempotency_key}:altered` } : member
+        ),
+      }),
+    SELECTION_OVERRIDE_ERROR,
+    "an altered immutable fingerprint is rejected"
+  );
+  assert.deepEqual(
+    (await store.dryRunSelectionOverrideBatch(reviewed.input)).member_replacement_ids,
+    reviewed.input.members.map((member) => member.replacement_id).sort(),
+    "dry-run validates the full reviewed set without writing it"
+  );
+  await store.applySelectionOverrideBatch(reviewed.input);
+  await store.applySelectionOverrideBatch(reviewed.input);
+  assert.equal(
+    (await store.selectSystemActionable(reviewed.selectorInput))?.replacement_id,
+    reviewed.priorStarted.replacement_id,
+    "the atomic batch unmasks the named failed predecessor only after every later start is excluded"
+  );
+  assert.equal(
+    (await store.verifySelectionOverrideBatch(reviewed.input.replacement_batch_id))?.active,
+    true,
+    "an idempotent retry preserves one active batch"
+  );
+  const postApplyLedger = createBrowserSurfaceReplacementLedger({
+    idPrefix: "selection-batch-post-apply",
+    now: () => NOW,
+  });
+  await store.append(
+    postApplyLedger.start({
+      cause: "external_or_host_loss",
+      connection_id: reviewed.selectorInput.connection_id,
+      connector_id: "chatgpt",
+      idempotency_key: id("selection-batch-post-apply-start"),
+      observed_at: "2026-07-30T00:01:00.000Z",
+      profile_key: reviewed.selectorInput.profile_key,
+      surface_id: id("selection-batch-post-apply-surface"),
+      surface_subject_id: reviewed.selectorInput.surface_subject_id,
+    })
+  );
+  assert.equal(
+    (await store.verifySelectionOverrideBatch(reviewed.input.replacement_batch_id))?.active,
+    true,
+    "a later legitimate start cannot invalidate the immutable admitted batch snapshot"
+  );
+  await store.revokeSelectionOverrideBatch(revokeAuthorization(reviewed.input), "2026-07-30T01:00:00.000Z");
+  await store.revokeSelectionOverrideBatch(revokeAuthorization(reviewed.input), "2026-07-30T02:00:00.000Z");
+  assert.equal(
+    await store.selectSystemActionable(reviewed.selectorInput),
+    null,
+    "batch revocation restores ordinary selection without touching the receipt ledger"
+  );
+  assert.equal(
+    (await store.verifySelectionOverrideBatch(reviewed.input.replacement_batch_id))?.active,
+    false,
+    "batch verification reports the reversible state"
+  );
+
+  const unrelated = await scenario("unrelated", 2);
+  const unrelatedLedger = createBrowserSurfaceReplacementLedger({
+    idPrefix: "selection-batch-unrelated",
+    now: () => NOW,
+  });
+  await store.append(
+    unrelatedLedger.start({
+      cause: "idle_ttl",
+      connection_id: unrelated.selectorInput.connection_id,
+      connector_id: "chatgpt",
+      idempotency_key: id("selection-batch-unrelated-intervening"),
+      observed_at: "2026-07-29T21:08:01.000Z",
+      profile_key: unrelated.selectorInput.profile_key,
+      surface_id: id("selection-batch-unrelated-intervening-surface"),
+      surface_subject_id: unrelated.selectorInput.surface_subject_id,
+    })
+  );
+  await assert.rejects(
+    () => store.applySelectionOverrideBatch(unrelated.input),
+    SELECTION_OVERRIDE_ERROR,
+    "an unrelated intervening start rejects the entire episode correction"
+  );
+  assert.equal(
+    await store.verifySelectionOverrideBatch(unrelated.input.replacement_batch_id),
+    null,
+    "validation failure does not partially create a batch"
+  );
+
+  const resolved = await scenario("resolved", 1);
+  await store.append(terminalReceipt(mustExist(resolved.memberReceipts[0], "resolved batch has a member")));
+  await assert.rejects(
+    () => store.dryRunSelectionOverrideBatch(resolved.input),
+    SELECTION_OVERRIDE_ERROR,
+    "a resolved reviewed member cannot be excluded by a batch correction"
+  );
+
+  const revocable = await scenario("revocable", 1);
+  await store.applySelectionOverrideBatch(revocable.input);
+  await assert.rejects(
+    () =>
+      store.revokeSelectionOverrideBatch(
+        {
+          ...revokeAuthorization(revocable.input),
+          reviewed_artifact_sha256: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        },
+        "2026-07-30T03:00:00.000Z"
+      ),
+    SELECTION_OVERRIDE_ERROR,
+    "a different reviewed artifact cannot revoke an admitted batch"
+  );
+  assert.equal(
+    (await store.verifySelectionOverrideBatch(revocable.input.replacement_batch_id))?.active,
+    true,
+    "failed revoke authorization leaves the correction active"
+  );
+  await store.append(terminalReceipt(mustExist(revocable.memberReceipts[0], "revocable batch has a member")));
+  assert.equal(
+    (await store.verifySelectionOverrideBatch(revocable.input.replacement_batch_id))?.active,
+    true,
+    "a member resolving after apply cannot invalidate the immutable admitted batch snapshot"
+  );
+  assert.equal(
+    (await store.revokeSelectionOverrideBatch(revokeAuthorization(revocable.input), "2026-07-30T03:00:00.000Z"))
+      ?.active,
+    false,
+    "a now-resolved member cannot block atomic revocation of its already-applied correction"
+  );
+
+  if (sqliteAuditFault) {
+    const auditFailure = await scenario("audit-failure", 1);
+    typedDb().exec(`
+CREATE TRIGGER reject_selection_batch_audit
+BEFORE INSERT ON browser_surface_replacement_selection_override_audit_outbox
+WHEN NEW.replacement_batch_id = '${auditFailure.input.replacement_batch_id}'
+BEGIN SELECT RAISE(ABORT, 'test audit write failure'); END;`);
+    await assert.rejects(
+      () => store.applySelectionOverrideBatch(auditFailure.input),
+      AUDIT_WRITE_FAILURE,
+      "an audit-outbox write failure rolls the whole correction back"
+    );
+    assert.equal(
+      await store.verifySelectionOverrideBatch(auditFailure.input.replacement_batch_id),
+      null,
+      "an audit failure cannot leave a committed correction without its durable fact"
+    );
+    typedDb().exec("DROP TRIGGER reject_selection_batch_audit");
+    await store.applySelectionOverrideBatch(auditFailure.input);
+  }
+
+  const partial = await scenario("partial", 1);
+  const onlyMember = mustExist(partial.input.members[0], "single-member batch has a member");
+  await store.applySelectionOverride({
+    applied_at: partial.input.applied_at,
+    connection_id: onlyMember.connection_id,
+    connector_id: onlyMember.connector_id,
+    idempotency_key: onlyMember.idempotency_key,
+    observed_at: onlyMember.observed_at,
+    prior_failed_replacement_id: partial.input.prior_failed_replacement_id,
+    profile_key: onlyMember.profile_key,
+    replacement_id: onlyMember.replacement_id,
+    surface_id: onlyMember.surface_id,
+    surface_subject_id: onlyMember.surface_subject_id,
+  });
+  await assert.rejects(
+    () => store.applySelectionOverrideBatch(partial.input),
+    SELECTION_OVERRIDE_ERROR,
+    "a pre-existing member override aborts the batch before any partial batch write"
+  );
+  assert.equal(
+    await store.verifySelectionOverrideBatch(partial.input.replacement_batch_id),
+    null,
+    "a conflict leaves no batch record to revoke or verify"
+  );
+
+  const isolated = await scenario("isolation", 2);
+  const unrelatedScope = await scenario("other-connector", 1, "reddit");
+  await store.applySelectionOverrideBatch(isolated.input);
+  assert.equal(
+    await store.selectSystemActionable(unrelatedScope.selectorInput),
+    null,
+    "an approved scope does not select, override, or otherwise alter another connector scope"
+  );
 }
 
 async function assertSelectionOverrideContract(
@@ -691,7 +1014,7 @@ function rowFromReceipt(receipt: ReplacementReceipt): ReplacementReceiptRow {
 test("SQLite replacement ledger is append-only, redacted, idempotent, and generation-scoped", async () => {
   initDb();
   try {
-    await assertStoreContract(createSqliteBrowserSurfaceReplacementReceiptStore());
+    await assertStoreContract(createSqliteBrowserSurfaceReplacementReceiptStore(), true);
     const columns = typedDb()
       .prepare("PRAGMA table_info(browser_surface_replacement_receipts)")
       .all()
@@ -736,6 +1059,136 @@ test("Postgres replacement ledger matches SQLite append/order/selection contract
   try {
     await assertStoreContract(createPostgresBrowserSurfaceReplacementReceiptStore());
   } finally {
+    await closePostgresStorage();
+  }
+});
+
+test("Postgres batch apply blocks a concurrent receipt append until its admitted snapshot commits", {
+  skip: POSTGRES_URL ? false : "PDPP_TEST_POSTGRES_URL unset",
+}, async () => {
+  assert.ok(POSTGRES_URL, "Postgres URL is configured when this test runs");
+  const namespace = `batch-lock-${process.pid}-${Date.now()}`;
+  const ledger = createBrowserSurfaceReplacementLedger({ idPrefix: namespace, now: () => NOW });
+  const store = createPostgresBrowserSurfaceReplacementReceiptStore();
+  const pool = new Pool({ connectionString: POSTGRES_URL });
+  const connectionId = `${namespace}-connection`;
+  const profileKey = `${namespace}-profile`;
+  const subjectId = `${namespace}-subject`;
+  const priorStarted = ledger.start({
+    cause: "external_or_host_loss",
+    connection_id: connectionId,
+    connector_id: "chatgpt",
+    idempotency_key: `${namespace}-prior`,
+    observed_at: "2026-07-29T21:07:58.000Z",
+    profile_key: profileKey,
+    surface_id: `${namespace}-prior-surface`,
+    surface_subject_id: subjectId,
+  });
+  const member = ledger.start({
+    cause: "external_or_host_loss",
+    connection_id: connectionId,
+    connector_id: "chatgpt",
+    idempotency_key: `${namespace}-member`,
+    observed_at: "2026-07-29T21:07:59.000Z",
+    profile_key: profileKey,
+    surface_id: `${namespace}-member-surface`,
+    surface_subject_id: subjectId,
+  });
+  const concurrent = ledger.start({
+    cause: "external_or_host_loss",
+    connection_id: connectionId,
+    connector_id: "chatgpt",
+    idempotency_key: `${namespace}-concurrent`,
+    observed_at: "2026-07-29T21:08:00.000Z",
+    profile_key: profileKey,
+    surface_id: `${namespace}-concurrent-surface`,
+    surface_subject_id: subjectId,
+  });
+  try {
+    await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
+    await store.append(priorStarted);
+    await store.append(
+      ledger.terminate({
+        cause: priorStarted.cause,
+        connection_id: priorStarted.connection_id,
+        outcome: "failed",
+        profile_key: priorStarted.profile_key,
+        replacement_id: priorStarted.replacement_id,
+        surface_id: mustExist(priorStarted.surface_id, "prior receipt has a surface id"),
+        surface_subject_id: subjectId,
+      })
+    );
+    const storedMember = await store.append(member);
+    await pool.query(`
+      CREATE OR REPLACE FUNCTION pdpp_test_pause_selection_batch_audit() RETURNS trigger AS $$
+      BEGIN PERFORM pg_sleep(0.3); RETURN NEW; END; $$ LANGUAGE plpgsql;
+      CREATE TRIGGER pdpp_test_pause_selection_batch_audit
+      BEFORE INSERT ON browser_surface_replacement_selection_override_audit_outbox
+      FOR EACH ROW EXECUTE FUNCTION pdpp_test_pause_selection_batch_audit();
+    `);
+    const input: ReplacementReceiptSelectionOverrideBatchInput = {
+      applied_at: NOW,
+      episode: {
+        first_event_seq: storedMember.event_seq,
+        first_observed_at: storedMember.observed_at,
+        id: `${namespace}-episode`,
+        last_event_seq: storedMember.event_seq,
+        last_observed_at: storedMember.observed_at,
+      },
+      members: [
+        {
+          connection_id: connectionId,
+          connector_id: "chatgpt",
+          event_seq: storedMember.event_seq,
+          idempotency_key: storedMember.idempotency_key,
+          observed_at: storedMember.observed_at,
+          profile_key: profileKey,
+          replacement_id: storedMember.replacement_id,
+          scope: storedMember.scope,
+          surface_id: storedMember.surface_id ?? "",
+          surface_subject_id: subjectId,
+        },
+      ],
+      prior_failed_replacement_id: priorStarted.replacement_id,
+      replacement_batch_id: `${namespace}-batch`,
+      reviewed_artifact_sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    };
+    const applying = store.applySelectionOverrideBatch(input);
+    assert.equal(
+      await waitForPostgresReceiptLock(pool),
+      true,
+      "apply holds its receipt relation lock before committing"
+    );
+    let appendFinished = false;
+    const append = store.append(concurrent).then(() => {
+      appendFinished = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(appendFinished, false, "concurrent append waits for the admitted batch snapshot");
+    await applying;
+    await append;
+    assert.equal((await store.verifySelectionOverrideBatch(input.replacement_batch_id))?.active, true);
+    const revoking = store.revokeSelectionOverrideBatch(revokeAuthorization(input), "2026-07-30T01:00:00.000Z");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(
+      (await store.verifySelectionOverrideBatch(input.replacement_batch_id))?.active,
+      true,
+      "verify observes one pre-revoke snapshot while a revoke is still uncommitted"
+    );
+    await revoking;
+    assert.equal(
+      (await store.verifySelectionOverrideBatch(input.replacement_batch_id))?.active,
+      false,
+      "verify observes the complete revoked snapshot after commit"
+    );
+  } finally {
+    await pool
+      .query(
+        "DROP TRIGGER IF EXISTS pdpp_test_pause_selection_batch_audit ON browser_surface_replacement_selection_override_audit_outbox"
+      )
+      .catch(() => undefined);
+    await pool.query("DROP FUNCTION IF EXISTS pdpp_test_pause_selection_batch_audit()").catch(() => undefined);
+    await pool.end();
     await closePostgresStorage();
   }
 });
