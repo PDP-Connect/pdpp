@@ -855,13 +855,13 @@ export async function runStartupSummaryEvidenceSweepToCompletion({
     if (typeof onRound === "function") {
       onRound(summary, round);
     }
-    if (!(summary.incomplete && summary.resumeAfterId)) {
+    if (!summary.incomplete) {
       return rounds;
     }
     if (maxRounds !== undefined && round >= maxRounds) {
       return rounds;
     }
-    afterId = summary.resumeAfterId;
+    afterId = summary.resumeAfterId ?? null;
   }
 }
 

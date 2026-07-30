@@ -56,7 +56,10 @@ interface ResumableEvidenceSweepResult {
 
 const DEFAULT_CURSOR_LEASE_DURATION_MS = 30_000;
 
-function readResumableEvidenceSweepResult(value: unknown): ResumableEvidenceSweepResult | null {
+function readResumableEvidenceSweepResult(
+  value: unknown,
+  currentCursor: string | null
+): ResumableEvidenceSweepResult | null {
   if (!(value && typeof value === "object")) {
     return null;
   }
@@ -73,9 +76,12 @@ function readResumableEvidenceSweepResult(value: unknown): ResumableEvidenceSwee
   if (!result.incomplete && result.resumeAfterId !== null) {
     return null;
   }
-  // An incomplete sweep without a cursor is not resumable. Do not replace a
-  // known-good cursor with an ambiguous result that would restart the fleet.
-  if (result.incomplete && !result.resumeAfterId) {
+  // An incomplete first page legitimately resumes from NULL: the bounded
+  // sweep uses its cursor-before-page, so a heavy first-page fold must revisit
+  // that same page. After a non-null cursor, however, NULL loses known-good
+  // progress and remains invalid. The fenced lease is the durable authority
+  // for which of those two meanings applies.
+  if (result.incomplete && (result.resumeAfterId === "" || (result.resumeAfterId === null && currentCursor !== null))) {
     return null;
   }
   return { incomplete: result.incomplete, resumeAfterId: result.resumeAfterId as string | null };
@@ -123,7 +129,8 @@ export function createResumableConnectorMaintenanceSweep(
         return null;
       }
       const result = readResumableEvidenceSweepResult(
-        await options.runEvidenceSweep({ ...args, afterId: lease.resumeAfterId })
+        await options.runEvidenceSweep({ ...args, afterId: lease.resumeAfterId }),
+        lease.resumeAfterId
       );
       if (!result) {
         throw new Error("Maintenance evidence sweep returned an invalid resumable result.");

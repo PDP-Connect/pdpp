@@ -2,13 +2,19 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { createResumableConnectorMaintenanceSweep } from "../server/connector-maintenance-sweep.ts";
 import { closeDb, initDb } from "../server/db.ts";
-import type {
-  ConnectorMaintenanceCursorLease,
-  ConnectorMaintenanceCursorStore,
+import {
+  type ConnectorMaintenanceCursorLease,
+  type ConnectorMaintenanceCursorStore,
+  createConnectorMaintenanceCursorStore,
 } from "../server/stores/connector-maintenance-cursor-store.ts";
+
+const INVALID_RESUMABLE_RESULT = /invalid resumable result/;
 
 function memoryCursorStore(): ConnectorMaintenanceCursorStore & { readonly writes: Array<string | null> } {
   let cursor: string | null = null;
@@ -168,6 +174,73 @@ test("maintenance rejects a complete result that incorrectly carries a cursor", 
     assert.deepEqual(received, [null, "cin_resume", "cin_resume"]);
     assert.deepEqual(phases, ["evidence"]);
     assert.deepEqual(cursorStore.writes, ["cin_resume", null]);
+  } finally {
+    closeDb();
+  }
+});
+
+test("SQLite retries a heavy first-page fold across restart and completes it", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "pdpp-maintenance-first-page-"));
+  const databasePath = join(directory, "pdpp.sqlite");
+  const received: Array<string | null | undefined> = [];
+  try {
+    initDb(databasePath);
+    const firstProcess = runner(createConnectorMaintenanceCursorStore(), (afterId) => {
+      received.push(afterId);
+      return Promise.resolve({ incomplete: true, resumeAfterId: null });
+    });
+    assert.deepEqual(await firstProcess.runEvidenceSweepRound({ maxDurationMs: 1 }), {
+      incomplete: true,
+      resumeAfterId: null,
+    });
+
+    closeDb();
+    initDb(databasePath);
+    let remainingFoldBatches = 2;
+    const restartedProcess = runner(createConnectorMaintenanceCursorStore(), (afterId) => {
+      received.push(afterId);
+      remainingFoldBatches -= 1;
+      return Promise.resolve(
+        remainingFoldBatches === 0
+          ? { incomplete: false, resumeAfterId: null }
+          : { incomplete: true, resumeAfterId: null }
+      );
+    });
+    assert.deepEqual(await restartedProcess.runEvidenceSweepRound({ maxDurationMs: 1 }), {
+      incomplete: true,
+      resumeAfterId: null,
+    });
+    assert.deepEqual(await restartedProcess.runEvidenceSweepRound({ maxDurationMs: 1 }), {
+      incomplete: false,
+      resumeAfterId: null,
+    });
+
+    assert.deepEqual(received, [null, null, null]);
+    assert.equal(remainingFoldBatches, 0, "repeated bounded rounds complete the first-page fold");
+  } finally {
+    closeDb();
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("SQLite rejects a null cursor that would lose non-null progress", async () => {
+  initDb(":memory:");
+  try {
+    const seeded = runner(createConnectorMaintenanceCursorStore(), () =>
+      Promise.resolve({ incomplete: true, resumeAfterId: "cin_keep" })
+    );
+    await seeded.runEvidenceSweepRound({ maxDurationMs: 1 });
+
+    const invalid = runner(createConnectorMaintenanceCursorStore(), () =>
+      Promise.resolve({ incomplete: true, resumeAfterId: null })
+    );
+    await assert.rejects(invalid.runEvidenceSweepRound({ maxDurationMs: 1 }), INVALID_RESUMABLE_RESULT);
+
+    const resumed = runner(createConnectorMaintenanceCursorStore(), (afterId) => {
+      assert.equal(afterId, "cin_keep");
+      return Promise.resolve({ incomplete: false, resumeAfterId: null });
+    });
+    await resumed.runEvidenceSweepRound({ maxDurationMs: 1 });
   } finally {
     closeDb();
   }

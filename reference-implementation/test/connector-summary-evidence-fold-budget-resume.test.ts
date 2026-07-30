@@ -251,7 +251,11 @@ test(
       false,
       "complete-set pruning must NOT run when a page's fold left terminal history unfolded"
     );
-    assert.ok(result.resumeAfterId !== undefined, "a resume cursor is returned");
+    assert.equal(
+      result.resumeAfterId,
+      null,
+      "an incomplete first page resumes from its cursor-before-page: NULL means retry that same page"
+    );
   })
 );
 
@@ -424,6 +428,7 @@ test("real PostgreSQL: runBoundedSummaryEvidenceSweep reports incomplete and ski
       "the sweep is incomplete on real PostgreSQL because the page's own fold did not converge"
     );
     assert.equal(first.prunedComplete, false, "complete-set pruning must not run on real PostgreSQL either");
+    assert.equal(first.resumeAfterId, null, "the real PostgreSQL first page also retries from NULL");
 
     const { last, rounds } = await converge(first, 1, 30, (current) =>
       runBoundedSummaryEvidenceSweep({
