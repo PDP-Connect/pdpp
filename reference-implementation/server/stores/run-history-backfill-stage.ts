@@ -7,11 +7,14 @@
 // Scope: every run whose lifecycle predates (or bypassed) the generalized
 // run-grain writer (server/stores/run-history-writer.ts) has no
 // `run_history` row yet. This stage walks `spine_events` once per
-// run-lifecycle event batch, seq-ascending, folds each candidate run with
-// the EXISTING `summarizeEvents`/`postgresFoldRunSummariesByIds` fold
-// (unchanged), and inserts the terminal result — never touching a run a
-// live write has already landed (`ON CONFLICT(run_id) DO NOTHING`, live
-// terminal write always wins).
+// run-lifecycle event batch, seq-ascending, folds each candidate's own
+// CONNECTION-SCOPED event window with the EXISTING `summarizeEvents`/
+// `summarizeRows` fold (unchanged fold logic — only the input window is
+// pre-scoped; run_id alone is NOT a globally unique identity, see
+// openspec/changes/run-history-backfill-list-cutover), and inserts the
+// terminal result — never touching a run a live write has already landed
+// (`ON CONFLICT(run_id, connector_instance_id) DO NOTHING`, live terminal
+// write always wins).
 //
 // Chassis reuse (R9.1 struck a dedicated table + startup-blocking loop):
 // this stage registers its own name-keyed row
@@ -22,8 +25,18 @@
 // (provenance lives in `facts_json`, not a schema column), no traffic gate.
 
 import { exec, iterateDynamicSqlAcknowledged, referenceQueries } from "../../lib/db.ts";
-import { type Summary as PostgresSpineSummary, postgresFoldRunSummariesByIds } from "../../lib/postgres-spine.ts";
-import { loadEventsForSummaries, type SpineSummary, summarizeEvents } from "../../lib/spine.ts";
+import {
+  fetchRowsForSummaries,
+  type Summary as PostgresSpineSummary,
+  summarizeRows,
+} from "../../lib/postgres-spine.ts";
+import {
+  connectionIdFromEventData,
+  loadEventsForSummaries,
+  type SpineEventRecord,
+  type SpineSummary,
+  summarizeEvents,
+} from "../../lib/spine.ts";
 import { isPostgresStorageBackend, postgresQuery } from "../postgres-storage.ts";
 import {
   getConnectorInstanceStore,
@@ -56,7 +69,23 @@ const DEFAULT_BATCH_SIZE = 25;
 const DEFAULT_DURATION_BUDGET_MS = 2000;
 const DEFAULT_LEASE_DURATION_MS = 30_000;
 
+// run_id alone is NOT globally unique: two different connections can
+// independently mint the same run_id (Date.now()-based generators with no
+// connection-scoped entropy — confirmed live). Candidate discovery,
+// idempotency-skip, and event-window folding all key on the pair (run_id,
+// connector_instance_id) — the real identity — sourced from
+// `spine_events.connector_instance_id` (a real, indexed, write-time-
+// populated column; see openspec/changes/reconcile-active-summary-evidence
+// and the terminal-event backfill migration
+// migrateSpineEventsConnectorInstanceIdBackfill/
+// stamp_terminal_manifest_generation), never `data_json` parsing at
+// discovery time. A legacy run whose events predate that column (both
+// NULL) groups into its own NULL-instance candidate and flows through the
+// existing resolveLegacyConnectorWideInstanceId singleton-resolution path
+// unchanged (R9.2) — SQL GROUP BY already treats NULL as equal to NULL for
+// grouping. See openspec/changes/run-history-backfill-list-cutover.
 interface CandidateRun {
+  readonly connectorInstanceId: string | null;
   readonly maxEventSeq: number;
   readonly runId: string;
 }
@@ -68,18 +97,27 @@ function toFiniteEventSeq(value: unknown): number | null {
 
 function sqliteFindCandidateRuns(afterSeq: number, limit: number): CandidateRun[] {
   const placeholders = RUN_LIFECYCLE_EVENT_TYPES.map(() => "?").join(", ");
-  // REVIEWED-DYNAMIC: fixed event-type IN-list, bounded LIMIT; run_id
-  // membership against run_history is the idempotency skip (never
-  // re-fold a run a live write or a prior backfill tick already landed).
+  // REVIEWED-DYNAMIC: fixed event-type IN-list, bounded LIMIT; (run_id,
+  // connector_instance_id) membership against run_history is the
+  // idempotency skip (never re-fold a run a live write or a prior
+  // backfill tick already landed) — NOT run_id alone, which is not a
+  // unique identity (see header comment above CandidateRun).
   const rows = [
-    ...iterateDynamicSqlAcknowledged<{ run_id: string; max_seq: number }>(
-      `SELECT run_id, MAX(event_seq) AS max_seq
+    ...iterateDynamicSqlAcknowledged<{ connector_instance_id: string | null; run_id: string; max_seq: number }>(
+      `SELECT run_id, connector_instance_id, MAX(event_seq) AS max_seq
        FROM spine_events
        WHERE run_id IS NOT NULL
          AND event_seq > ?
          AND event_type IN (${placeholders})
-         AND run_id NOT IN (SELECT run_id FROM run_history WHERE run_id IS NOT NULL)
-       GROUP BY run_id
+         AND NOT EXISTS (
+           SELECT 1 FROM run_history
+           WHERE run_history.run_id = spine_events.run_id
+             AND (
+               run_history.connector_instance_id = spine_events.connector_instance_id
+               OR (run_history.connector_instance_id IS NULL AND spine_events.connector_instance_id IS NULL)
+             )
+         )
+       GROUP BY run_id, connector_instance_id
        ORDER BY max_seq ASC
        LIMIT ?`,
       [afterSeq, ...RUN_LIFECYCLE_EVENT_TYPES, limit]
@@ -88,22 +126,26 @@ function sqliteFindCandidateRuns(afterSeq: number, limit: number): CandidateRun[
   return rows
     .map((row) => {
       const maxEventSeq = toFiniteEventSeq(row.max_seq);
-      return maxEventSeq === null ? null : { maxEventSeq, runId: row.run_id };
+      return maxEventSeq === null
+        ? null
+        : { connectorInstanceId: row.connector_instance_id, maxEventSeq, runId: row.run_id };
     })
     .filter((row): row is CandidateRun => row !== null);
 }
 
 async function postgresFindCandidateRuns(afterSeq: number, limit: number): Promise<CandidateRun[]> {
-  const result = await postgresQuery<{ run_id: string; max_seq: string }>(
-    `SELECT run_id, MAX(event_seq)::text AS max_seq
+  const result = await postgresQuery<{ connector_instance_id: string | null; run_id: string; max_seq: string }>(
+    `SELECT run_id, connector_instance_id, MAX(event_seq)::text AS max_seq
      FROM spine_events
      WHERE run_id IS NOT NULL
        AND event_seq > $1
        AND event_type = ANY($2::text[])
        AND NOT EXISTS (
-         SELECT 1 FROM run_history WHERE run_history.run_id = spine_events.run_id
+         SELECT 1 FROM run_history
+         WHERE run_history.run_id = spine_events.run_id
+           AND run_history.connector_instance_id IS NOT DISTINCT FROM spine_events.connector_instance_id
        )
-     GROUP BY run_id
+     GROUP BY run_id, connector_instance_id
      ORDER BY MAX(event_seq) ASC
      LIMIT $3`,
     [afterSeq, [...RUN_LIFECYCLE_EVENT_TYPES], limit]
@@ -111,7 +153,9 @@ async function postgresFindCandidateRuns(afterSeq: number, limit: number): Promi
   return result.rows
     .map((row) => {
       const maxEventSeq = toFiniteEventSeq(row.max_seq);
-      return maxEventSeq === null ? null : { maxEventSeq, runId: row.run_id };
+      return maxEventSeq === null
+        ? null
+        : { connectorInstanceId: row.connector_instance_id, maxEventSeq, runId: row.run_id };
     })
     .filter((row): row is CandidateRun => row !== null);
 }
@@ -211,52 +255,75 @@ const RUN_TERMINAL_EVENT_TYPES_FOR_FACTS = new Set([
   "run.abandoned",
 ]);
 
-// SQLite: extract the terminal event's `data` from the already-fetched
-// event window (loadEventsForSummaries) — zero extra query.
-function sqliteTerminalDataByRunId(
-  runIds: readonly string[],
-  eventsById: ReadonlyMap<string, readonly { readonly data: unknown; readonly event_type: string }[]>
+// Composite candidate key: run_id alone is NOT globally unique (see the
+// CandidateRun header comment above). Every per-candidate map in this
+// module (summaries, terminal facts data) is keyed by this string, never
+// by bare run_id, so two candidates sharing a run_id on different
+// connections never collide on the same map entry. U+0000 cannot appear
+// in a run_id/connector_instance_id (both are opaque application-minted
+// identifiers, never raw user input), so it is a safe separator.
+function candidateKey(runId: string, connectorInstanceId: string | null): string {
+  return `${runId} ${connectorInstanceId ?? ""}`;
+}
+
+// SQLite: extract the terminal event's `data` from the already-fetched,
+// per-candidate-scoped event window — zero extra query.
+function sqliteTerminalDataByCandidate(
+  candidates: readonly CandidateRun[],
+  eventsByCandidate: ReadonlyMap<string, readonly { readonly data: unknown; readonly event_type: string }[]>
 ): Map<string, Record<string, unknown> | null> {
-  const byRunId = new Map<string, Record<string, unknown> | null>();
-  for (const runId of runIds) {
-    const events = eventsById.get(runId) ?? [];
+  const byCandidate = new Map<string, Record<string, unknown> | null>();
+  for (const candidate of candidates) {
+    const key = candidateKey(candidate.runId, candidate.connectorInstanceId);
+    const events = eventsByCandidate.get(key) ?? [];
     const terminal = [...events].reverse().find((e) => RUN_TERMINAL_EVENT_TYPES_FOR_FACTS.has(e.event_type));
     const data = terminal?.data;
-    byRunId.set(
-      runId,
+    byCandidate.set(
+      key,
       data && typeof data === "object" && !Array.isArray(data) ? (data as Record<string, unknown>) : null
     );
   }
-  return byRunId;
+  return byCandidate;
 }
 
 // Postgres: one small batched query for the terminal event's data_json
-// per run_id in this bounded candidate set (never a per-run GET-path
-// read — this runs inside the maintenance sweep only).
-async function postgresTerminalDataByRunId(
-  runIds: readonly string[]
+// per (run_id, connector_instance_id) candidate in this bounded set
+// (never a per-run GET-path read — this runs inside the maintenance
+// sweep only). Scoped by connector_instance_id (IS NOT DISTINCT FROM,
+// so a NULL-instance legacy candidate matches only NULL-instance rows,
+// never a different connection's rows) — a bare run_id filter would
+// blend two connections' terminal events into one candidate's facts.
+async function postgresTerminalDataByCandidate(
+  candidates: readonly CandidateRun[]
 ): Promise<Map<string, Record<string, unknown> | null>> {
-  const byRunId = new Map<string, Record<string, unknown> | null>(runIds.map((id) => [id, null]));
-  if (runIds.length === 0) {
-    return byRunId;
+  const byCandidate = new Map<string, Record<string, unknown> | null>(
+    candidates.map((c) => [candidateKey(c.runId, c.connectorInstanceId), null])
+  );
+  if (candidates.length === 0) {
+    return byCandidate;
   }
-  const result = await postgresQuery<{ data_json: string; run_id: string }>(
-    `SELECT DISTINCT ON (run_id) run_id, data_json::text AS data_json
+  const runIds = candidates.map((c) => c.runId);
+  const result = await postgresQuery<{ connector_instance_id: string | null; data_json: string; run_id: string }>(
+    `SELECT DISTINCT ON (run_id, connector_instance_id) run_id, connector_instance_id, data_json::text AS data_json
      FROM spine_events
      WHERE run_id = ANY($1::text[])
        AND event_type = ANY($2::text[])
-     ORDER BY run_id, event_seq DESC`,
+     ORDER BY run_id, connector_instance_id, event_seq DESC`,
     [runIds, [...RUN_TERMINAL_EVENT_TYPES_FOR_FACTS]]
   );
   for (const row of result.rows) {
+    const key = candidateKey(row.run_id, row.connector_instance_id);
+    if (!byCandidate.has(key)) {
+      continue;
+    }
     try {
       const parsed = JSON.parse(row.data_json);
-      byRunId.set(row.run_id, parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null);
+      byCandidate.set(key, parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null);
     } catch {
-      byRunId.set(row.run_id, null);
+      byCandidate.set(key, null);
     }
   }
-  return byRunId;
+  return byCandidate;
 }
 
 function toRunHistoryStatus(status: string): string {
@@ -309,7 +376,7 @@ async function postgresInsertBackfilledRun(input: {
        status, known_gaps_json, started_at, completed_at, records_emitted,
        connector_error_json, failure_reason, terminal_reason, facts_json, attempt
      ) VALUES($1, $2, $3, NULL, $4::jsonb, $5, '[]'::jsonb, $6, $7, 0, NULL, NULL, NULL, $8::jsonb, 1)
-     ON CONFLICT(run_id) WHERE run_id IS NOT NULL DO NOTHING`,
+     ON CONFLICT(run_id, connector_instance_id) WHERE run_id IS NOT NULL DO NOTHING`,
     [
       input.runId,
       input.attribution.connectorInstanceId,
@@ -336,9 +403,9 @@ export interface RunHistoryBackfillTickResult {
 // skipped — never surfaced, per R9.2).
 async function backfillOneCandidate(
   postgres: boolean,
-  runId: string,
+  candidate: CandidateRun,
   summary: PostgresSpineSummary | SpineSummary,
-  terminalDataByRunId: ReadonlyMap<string, Record<string, unknown> | null>
+  terminalDataByCandidate: ReadonlyMap<string, Record<string, unknown> | null>
 ): Promise<boolean> {
   if (!summary.first_at) {
     return false;
@@ -348,50 +415,102 @@ async function backfillOneCandidate(
   if (!attribution) {
     return false;
   }
-  const factsJson = factsJsonForBackfill(terminalDataByRunId.get(runId) ?? null);
+  const key = candidateKey(candidate.runId, candidate.connectorInstanceId);
+  const factsJson = factsJsonForBackfill(terminalDataByCandidate.get(key) ?? null);
   const finishedAt = summary.last_at || summary.first_at;
   if (postgres) {
     await postgresInsertBackfilledRun({
       attribution,
       factsJson,
       finishedAt,
-      runId,
+      runId: candidate.runId,
       startedAt: summary.first_at,
       status,
     });
   } else {
-    sqliteInsertBackfilledRun({ attribution, factsJson, finishedAt, runId, startedAt: summary.first_at, status });
+    sqliteInsertBackfilledRun({
+      attribution,
+      factsJson,
+      finishedAt,
+      runId: candidate.runId,
+      startedAt: summary.first_at,
+      status,
+    });
   }
   return true;
 }
 
-// Fold every candidate run's event window (unmodified summarizeEvents /
-// postgresFoldRunSummariesByIds) plus its terminal event's raw facts data,
-// in one batched pass per backend. Extracted out of runRunHistoryBackfillRound
-// to keep that function's cognitive complexity bounded.
+// Fold every candidate's own CONNECTION-SCOPED event window (not merely
+// its run_id window, which run_id alone is not a unique identity — see
+// the CandidateRun header comment) with the unmodified fold
+// (summarizeEvents / summarizeRows), plus its terminal event's raw facts
+// data, in one batched pass per backend. Extracted out of
+// runRunHistoryBackfillRound to keep that function's cognitive complexity
+// bounded.
+//
+// Both backends fetch by run_id exactly as before (the SAME batched
+// fetch this stage always used — loadEventsForSummaries /
+// fetchRowsForSummaries, genuinely unmodified), then filter the returned
+// window down to the candidate's own connector_instance_id BEFORE
+// folding: Postgres via the real connector_instance_id column already on
+// each fetched row; SQLite via connectionIdFromEventData (the same
+// data.connector_instance_id/data.connection_id precedence
+// summarizeEvents itself uses internally to resolve connection_id,
+// since SpineEventRecord does not carry the raw column). A candidate
+// with connectorInstanceId === null (legacy pre-migration run) matches
+// events whose own resolved connection id is also null/absent — the
+// existing resolveLegacyConnectorWideInstanceId singleton path (R9.2)
+// then handles attribution for that filtered window exactly as it did
+// before this fix, just now guaranteed not to have another connection's
+// events mixed in.
 async function loadCandidateFoldData(
   postgres: boolean,
-  runIds: readonly string[]
+  candidates: readonly CandidateRun[]
 ): Promise<{
   readonly summariesById: ReadonlyMap<string, PostgresSpineSummary | SpineSummary>;
-  readonly terminalDataByRunId: ReadonlyMap<string, Record<string, unknown> | null>;
+  readonly terminalDataByCandidate: ReadonlyMap<string, Record<string, unknown> | null>;
 }> {
+  const runIds = [...new Set(candidates.map((c) => c.runId))];
   if (postgres) {
-    const [summariesById, terminalDataByRunId] = await Promise.all([
-      postgresFoldRunSummariesByIds(runIds),
-      postgresTerminalDataByRunId(runIds),
-    ]);
-    return { summariesById, terminalDataByRunId };
+    const rowsByRunId = await fetchRowsForSummaries("run", "run_id", runIds);
+    const summariesById = new Map<string, PostgresSpineSummary>();
+    for (const candidate of candidates) {
+      const rows = (rowsByRunId.get(candidate.runId) ?? []).filter(
+        (row) => row.connector_instance_id === candidate.connectorInstanceId
+      );
+      if (rows.length === 0) {
+        continue;
+      }
+      const key = candidateKey(candidate.runId, candidate.connectorInstanceId);
+      // biome-ignore lint/performance/noAwaitInLoops: bounded per-batch candidate count; summarizeRows itself issues at most one lease-lookup query per in-progress candidate.
+      summariesById.set(key, await summarizeRows(candidate.runId, rows));
+    }
+    return {
+      summariesById,
+      terminalDataByCandidate: await postgresTerminalDataByCandidate(candidates),
+    };
   }
-  const eventsById = loadEventsForSummaries("run", runIds);
+  const eventsByRunId = loadEventsForSummaries("run", runIds);
   const summariesById = new Map<string, SpineSummary>();
-  for (const runId of runIds) {
-    const summary = summarizeEvents(eventsById.get(runId) ?? []);
+  const eventsByCandidate = new Map<string, SpineEventRecord[]>();
+  for (const candidate of candidates) {
+    const events = (eventsByRunId.get(candidate.runId) ?? []).filter(
+      (event) => connectionIdFromEventData(event) === candidate.connectorInstanceId
+    );
+    const key = candidateKey(candidate.runId, candidate.connectorInstanceId);
+    eventsByCandidate.set(key, events);
+    if (events.length === 0) {
+      continue;
+    }
+    const summary = summarizeEvents(events);
     if (summary) {
-      summariesById.set(runId, summary);
+      summariesById.set(key, summary);
     }
   }
-  return { summariesById, terminalDataByRunId: sqliteTerminalDataByRunId(runIds, eventsById) };
+  return {
+    summariesById,
+    terminalDataByCandidate: sqliteTerminalDataByCandidate(candidates, eventsByCandidate),
+  };
 }
 
 /**
@@ -420,8 +539,7 @@ export async function runRunHistoryBackfillRound(options: {
     return { attempted: 0, backfilled: 0, incomplete: false, resumeAfterSeq: null };
   }
 
-  const runIds = candidates.map((c) => c.runId);
-  const { summariesById, terminalDataByRunId } = await loadCandidateFoldData(postgres, runIds);
+  const { summariesById, terminalDataByCandidate } = await loadCandidateFoldData(postgres, candidates);
 
   let backfilled = 0;
   let incomplete = false;
@@ -432,7 +550,8 @@ export async function runRunHistoryBackfillRound(options: {
       incomplete = true;
       break;
     }
-    const summary = summariesById.get(candidate.runId);
+    const key = candidateKey(candidate.runId, candidate.connectorInstanceId);
+    const summary = summariesById.get(key);
     if (summary && toRunHistoryStatus(summary.status) === "running") {
       // Still-active run: its own live writer owns this row once it
       // terminates, or the read-time lease overlay discovers it orphaned.
@@ -450,7 +569,7 @@ export async function runRunHistoryBackfillRound(options: {
       continue;
     }
     // biome-ignore lint/performance/noAwaitInLoops: sequential per-candidate work within one bounded batch; ordering matches candidate discovery order.
-    const landed = await backfillOneCandidate(postgres, candidate.runId, summary, terminalDataByRunId);
+    const landed = await backfillOneCandidate(postgres, candidate, summary, terminalDataByCandidate);
     if (landed) {
       backfilled += 1;
     }

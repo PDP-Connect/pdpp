@@ -85,8 +85,8 @@ function buildSqlitePreRenamedStuckFixture(dbPath: string): void {
     );
     CREATE INDEX idx_run_history_connector_completed
       ON run_history(connector_id, completed_at, id);
-    CREATE UNIQUE INDEX uniq_run_history_run_id
-      ON run_history(run_id) WHERE run_id IS NOT NULL;
+    CREATE UNIQUE INDEX uniq_run_history_run_id_instance
+      ON run_history(run_id, connector_instance_id) WHERE run_id IS NOT NULL;
   `);
   db.prepare(
     "INSERT INTO run_history(connector_instance_id, connector_id, source_json, status, records_emitted, known_gaps_json, run_id, started_at, completed_at, attempt) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
@@ -148,7 +148,10 @@ test("SQLite: a pre-renamed-stuck database (run_history already exists, no sched
       indexNames.includes("idx_run_history_connector_completed"),
       "the connector/completed_at index survives the rebuild"
     );
-    assert.ok(indexNames.includes("uniq_run_history_run_id"), "the unique partial run_id index survives the rebuild");
+    assert.ok(
+      indexNames.includes("uniq_run_history_run_id_instance"),
+      "the unique partial (run_id, connector_instance_id) index survives the rebuild"
+    );
 
     // Idempotency: closing and re-opening again must not throw, must not
     // re-rebuild (already nullable), and must not alter existing data.
@@ -181,7 +184,7 @@ test("SQLite: a fresh install is unaffected by the fleet-migration repair", () =
     );
     const indexNames = sqliteIndexNames();
     assert.ok(indexNames.includes("idx_run_history_connector_completed"), "fresh-install index present");
-    assert.ok(indexNames.includes("uniq_run_history_run_id"), "fresh-install unique index present");
+    assert.ok(indexNames.includes("uniq_run_history_run_id_instance"), "fresh-install unique index present");
   } finally {
     closeDb();
   }
@@ -231,7 +234,7 @@ test("PostgreSQL: a pre-renamed-stuck database is repaired on the next boot, ide
         "CREATE INDEX idx_pg_run_history_connector_completed ON run_history(connector_id, completed_at, id)"
       );
       await postgresQuery(
-        "CREATE UNIQUE INDEX uniq_pg_run_history_run_id ON run_history(run_id) WHERE run_id IS NOT NULL"
+        "CREATE UNIQUE INDEX uniq_pg_run_history_run_id_instance ON run_history(run_id, connector_instance_id) WHERE run_id IS NOT NULL"
       );
       const insertResult = await postgresQuery<{ id: string }>(
         `INSERT INTO run_history(
@@ -293,8 +296,8 @@ test("PostgreSQL: a pre-renamed-stuck database is repaired on the next boot, ide
         "the connector/completed_at index survives the repair (ALTER COLUMN does not touch indexes)"
       );
       assert.ok(
-        indexNames.includes("uniq_pg_run_history_run_id"),
-        "the unique partial run_id index survives the repair"
+        indexNames.includes("uniq_pg_run_history_run_id_instance"),
+        "the unique partial (run_id, connector_instance_id) index survives the repair"
       );
 
       // Idempotency: a second bootstrap must not throw and must leave

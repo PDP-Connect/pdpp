@@ -1170,7 +1170,14 @@ function connectionIdFromBrowserSurfaceProfileKey(projection: Record<string, unk
   return suffix?.startsWith("cin_") ? suffix : null;
 }
 
-function connectionIdFromEventData(event: SpineEventRecord): string | null {
+// Exported for the run-history backfill stage
+// (server/stores/run-history-backfill-stage.ts), which must filter a
+// batched-fetched event window down to one candidate's own connection
+// before folding it with the unmodified summarizeEvents — run_id alone is
+// not a unique identity (see openspec/changes/
+// run-history-backfill-list-cutover), so a window fetched by run_id can
+// contain more than one connection's events.
+export function connectionIdFromEventData(event: SpineEventRecord): string | null {
   const data = event.data && typeof event.data === "object" && !Array.isArray(event.data) ? event.data : null;
   if (!data) {
     return null;

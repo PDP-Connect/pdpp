@@ -194,3 +194,89 @@
       (4/4, zero skips), `run-history-writer-authority.test.ts` (8/8 incl. live
       Postgres), full `pdpp.test.ts` (118/118). `pnpm typecheck` clean; `ultracite check`
       clean on every touched file.
+
+## 10. LIVE CANARY REVISE (2026-07-30): duplicate `run_id` identity fix
+
+- [x] Root cause: candidate `1a4d32971` was rolled back to `1392a386f` after Postgres
+      migration could not create `uniq_pg_run_history_run_id` (error 42P10), then every
+      `ON CONFLICT(run_id)` writer/backfill insert failed the same way. Read-only live
+      proof: exactly 2 duplicate `run_id`s, each representing TWO DISTINCT connection
+      histories, not duplicate rows — `run_1782401113918` = a failed run on
+      `cin_11deac...` and a succeeded run on a different connection `cin_b110...`;
+      `run_1782865411684` = a failed run on `cin_11deac...` and a succeeded run on
+      `cin_c858...`. `run_id` is minted independently by several call sites
+      (`runtime/scheduler/run-executor.ts`, `runtime/controller.ts`, `runtime/index.ts`)
+      using `Date.now()`-based generators with no connection-scoped entropy, so two
+      different connections can legitimately produce the identical `run_id` string —
+      `run_id` alone was never a safe uniqueness/conflict/identity key. No historical
+      rows were deleted, collapsed, or relabeled; no live data was patched — this is a
+      schema/write-path fix only.
+- [x] The real identity is the pair `(run_id, connector_instance_id)`. Unique index
+      renamed and widened on both backends: SQLite `uniq_run_history_run_id_instance`,
+      Postgres `uniq_pg_run_history_run_id_instance`, both
+      `ON run_history(run_id, connector_instance_id) WHERE run_id IS NOT NULL` — the
+      old bare-`run_id` index is explicitly `DROP INDEX IF EXISTS`'d at each migration
+      site before the composite one is created. No swallowed index-creation error: the
+      migration sites that used to fail-open (try/catch, log, continue) on duplicate
+      `run_id` data now create the composite index unconditionally, with no
+      compatibility read path — it succeeds because the composite key does not collide
+      on the live data shape, and if it ever did, that would be a genuine anomaly this
+      migration must surface loudly, not hide.
+- [x] Every `ON CONFLICT(run_id)` writer retargeted to `ON CONFLICT(run_id,
+      connector_instance_id)`: `start-run-history.sql`,
+      `insert-finalized-run-history.sql`, `insert-run-history.sql` (SQLite), plus their
+      3 Postgres inline mirrors in `run-history-writer.ts` and `scheduler-store.ts`, and
+      the backfill stage's own insert.
+- [x] Every `UPDATE run_history ... WHERE run_id = ?` (finalize, progress-merge) now
+      also fences on `AND connector_instance_id = ?` on both backends
+      (`finalize-run-history.sql`, `merge-run-history-collection-rate.sql`, and their 2
+      Postgres inline mirrors) — without this fence, a terminal or progress write for
+      one connection's run could match and corrupt a DIFFERENT connection's
+      still-running row sharing the same `run_id`. This is the actual live-corruption
+      vector, independent of the index/ON CONFLICT fix.
+- [x] Backfill stage (`run-history-backfill-stage.ts`): candidate discovery now
+      `GROUP BY run_id, connector_instance_id` (sourced from the real, indexed
+      `spine_events.connector_instance_id` column, not `data_json` parsing at discovery
+      time), idempotency-skip keyed on the composite pair. Event-window fold: both
+      backends fetch by `run_id` exactly as before (the SAME unmodified batched fetch —
+      `loadEventsForSummaries`/`fetchRowsForSummaries`), then filter the returned window
+      down to one candidate's own connection BEFORE folding — Postgres via the real
+      `connector_instance_id` column already on each fetched row, SQLite via
+      `connectionIdFromEventData` (now exported from `lib/spine.ts`, the same
+      `data.connector_instance_id`/`data.connection_id` precedence `summarizeEvents`
+      itself uses internally). The fold functions themselves
+      (`summarizeEvents`/`summarizeRows`, the latter now exported from
+      `lib/postgres-spine.ts`) are genuinely unmodified — only their input window is
+      pre-scoped. A legacy candidate with `connectorInstanceId === null` groups into its
+      own NULL-instance bucket and flows through the existing
+      `resolveLegacyConnectorWideInstanceId` singleton path unchanged (R9.2).
+- [x] `test/run-history-duplicate-run-id-identity.test.ts` (new, 4 tests, dual-backend):
+      (1) SQLite — two connections sharing a run_id each get their own row; a progress
+      event for one connection merges only into that connection's `facts_json`, never
+      the other's; finalizing one connection does not affect the other's still-running
+      row; `scheduler.appendRunHistory`'s upsert enriches only the targeted connection's
+      row. (2) SQLite — the backfill stage discovers two connections sharing a run_id as
+      two separate `(run_id, connector_instance_id)` candidates and folds each with only
+      its own connection's event window (not a blended one), idempotent on a second
+      round. (3) PostgreSQL — migration builds the composite unique index over data
+      reproducing the exact live 42P10 failure shape (two rows sharing a run_id across
+      distinct connections), preserving both rows, and a subsequent
+      `ON CONFLICT(run_id, connector_instance_id)` write for a THIRD connection sharing
+      the same run_id succeeds. (4) PostgreSQL — the same connection-isolation proof as
+      (1), against real Postgres via the live spine writer.
+- [x] Existing test files updated for the renamed/widened index:
+      `run-history-completed-at-fleet-migration.test.ts`'s SQLite and Postgres fixtures
+      and assertions now reference `uniq_run_history_run_id_instance`/
+      `uniq_pg_run_history_run_id_instance` on the composite key.
+- [x] Regression sweep re-run clean: `run-history-duplicate-run-id-identity.test.ts`
+      (4/4, zero skips against sanctioned Postgres),
+      `run-history-completed-at-fleet-migration.test.ts` (4/4),
+      `run-history-backfill-cutover.test.ts` (9/9),
+      `run-history-writer-authority.test.ts` (8/8 incl. live Postgres),
+      `active-run-summary-zero-spine.test.ts` (6/6, zero skips) — 27/27 combined.
+      `pnpm typecheck` clean (only pre-existing unrelated errors remain);
+      `ultracite check` clean on every touched file.
+- [x] Test-accounting: 2 new PostgreSQL bare-boolean-skip test names added to
+      `scripts/test-accounting/receipt.ts`'s exact named-skip mapping; verified via a
+      real memory-default run through `structuredNodeSummary` (both skips explained,
+      zero "unexplained skip" throws).

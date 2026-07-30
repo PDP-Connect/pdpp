@@ -1565,8 +1565,13 @@ export async function bootstrapPostgresSchema({
       CREATE INDEX IF NOT EXISTS idx_pg_run_history_connector_completed
         ON run_history(connector_id, completed_at, id);
 
-      CREATE UNIQUE INDEX IF NOT EXISTS uniq_pg_run_history_run_id
-        ON run_history(run_id) WHERE run_id IS NOT NULL;
+      -- run_id alone is NOT globally unique: two different connections
+      -- can independently mint the same run_id (Date.now()-based
+      -- generators with no connection-scoped entropy — confirmed live).
+      -- (run_id, connector_instance_id) is the real identity. See
+      -- openspec/changes/run-history-backfill-list-cutover.
+      CREATE UNIQUE INDEX IF NOT EXISTS uniq_pg_run_history_run_id_instance
+        ON run_history(run_id, connector_instance_id) WHERE run_id IS NOT NULL;
 
       CREATE TABLE IF NOT EXISTS scheduler_last_run_times (
         connector_instance_id TEXT PRIMARY KEY,
@@ -2930,19 +2935,25 @@ async function migratePostgresRunHistoryRename(client: PoolClient): Promise<void
     throw err;
   }
 
-  // Separate, non-transactional step: a unique index on historical
-  // `run_id` data can only fail if pre-existing rows already violate
-  // uniqueness (a data anomaly, not an expected state). Fail open rather
-  // than block the rename/column-add above from landing.
-  try {
-    await client.query(
-      "CREATE UNIQUE INDEX IF NOT EXISTS uniq_pg_run_history_run_id ON run_history(run_id) WHERE run_id IS NOT NULL"
-    );
-  } catch (err) {
-    console.error(
-      `[migratePostgresRunHistoryRename] could not create uniq_pg_run_history_run_id (likely duplicate run_id rows in historical data): ${err instanceof Error ? err.message : String(err)}`
-    );
-  }
+  // Separate, non-transactional step, mirroring the original migration's
+  // shape. run_id alone is NOT globally unique — two different
+  // connections can legitimately share a run_id (confirmed live; a
+  // production instance hit exactly this: two connections' runs sharing
+  // a run_id caused this CREATE UNIQUE INDEX to fail with 42P10, and every
+  // subsequent ON CONFLICT(run_id) writer/backfill insert then failed the
+  // same way — see openspec/changes/run-history-backfill-list-cutover).
+  // The real identity, and the only key this index can be built on
+  // without colliding on legitimate historical data, is (run_id,
+  // connector_instance_id). Unlike the bare-run_id index this replaces,
+  // this is NOT wrapped in a swallow-and-log try/catch: a duplicate
+  // (run_id, connector_instance_id) pair would be a genuine data anomaly
+  // (the same connection's same run recorded twice under different
+  // rows), which must fail the migration loudly rather than leave the
+  // writer's ON CONFLICT target unindexed and silently degraded.
+  await client.query("DROP INDEX IF EXISTS uniq_pg_run_history_run_id");
+  await client.query(
+    "CREATE UNIQUE INDEX IF NOT EXISTS uniq_pg_run_history_run_id_instance ON run_history(run_id, connector_instance_id) WHERE run_id IS NOT NULL"
+  );
 }
 
 // REVISE fix (fleet-migration gap, 2026-07-30 second gate pass): the

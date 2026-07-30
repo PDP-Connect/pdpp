@@ -16,16 +16,29 @@
 // rationale. This slice does NOT touch LIST readers or backfill historical
 // spine-only runs — see that document for the follow-up slices.
 //
-// Idempotency: `run_history.run_id` carries a unique index (partial, NULLs
-// excluded — `ON CONFLICT` targets must repeat that `WHERE run_id IS NOT
-// NULL` clause verbatim to match a partial index). `startRunHistory` is
-// `INSERT ... ON CONFLICT(run_id) WHERE run_id IS NOT NULL DO NOTHING` —
-// a retried/duplicate `run.started` is a no-op. `finalizeRunHistory`
-// first tries `UPDATE ... WHERE run_id = ? AND status = 'running'` (a
-// retried/duplicate terminal event no-ops because the row is no longer
-// `running`); if that affects zero rows (the started row raced, was lost,
-// or predates this writer), it falls back to inserting the run already
-// terminal, which uses the same conflict target for the same reason.
+// Identity: `run_id` is NOT globally unique. It is minted independently by
+// several call sites (runtime/scheduler/run-executor.ts,
+// runtime/controller.ts, runtime/index.ts) using Date.now()-based
+// generators with no connection-scoped entropy, so two different
+// connections can legitimately produce the same run_id (confirmed live —
+// see openspec/changes/run-history-backfill-list-cutover). The real
+// identity is the pair (run_id, connector_instance_id).
+//
+// Idempotency: `run_history(run_id, connector_instance_id)` carries a
+// unique index (partial, NULLs excluded — `ON CONFLICT` targets must
+// repeat that `WHERE run_id IS NOT NULL` clause verbatim to match a
+// partial index). `startRunHistory` is `INSERT ... ON CONFLICT(run_id,
+// connector_instance_id) WHERE run_id IS NOT NULL DO NOTHING` — a
+// retried/duplicate `run.started` is a no-op. `finalizeRunHistory` first
+// tries `UPDATE ... WHERE run_id = ? AND connector_instance_id = ? AND
+// status = 'running'` (a retried/duplicate terminal event no-ops because
+// the row is no longer `running`); if that affects zero rows (the
+// started row raced, was lost, or predates this writer), it falls back
+// to inserting the run already terminal, which uses the same conflict
+// target for the same reason. The `connector_instance_id` fence on every
+// UPDATE is load-bearing, not defensive: without it, a terminal or
+// progress write for one connection's run could match and corrupt a
+// DIFFERENT connection's still-running row sharing the same run_id.
 //
 // Transaction alignment: SQLite's `emitSpineEvent` insert and this writer's
 // insert both go through the same synchronous single-connection handle
@@ -176,7 +189,11 @@ export function writeSqliteRunHistoryForSpineEvent(event: RunHistorySpineEvent):
     // in-flight progress snapshot.
     const mergeJson = collectionRateMergeJson(event.data);
     if (mergeJson !== null) {
-      exec(referenceQueries.controllerMergeRunHistoryCollectionRate, [mergeJson, event.runId]);
+      exec(referenceQueries.controllerMergeRunHistoryCollectionRate, [
+        mergeJson,
+        event.runId,
+        event.connectorInstanceId,
+      ]);
     }
     return;
   }
@@ -216,6 +233,7 @@ export function writeSqliteRunHistoryForSpineEvent(event: RunHistorySpineEvent):
     terminalReason,
     factsJson,
     event.runId,
+    event.connectorInstanceId,
   ]);
   if (finalizeResult.changes > 0) {
     return;
@@ -256,8 +274,9 @@ export async function writePostgresRunHistoryForSpineEvent(
         `UPDATE run_history
          SET facts_json = COALESCE(facts_json, '{}'::jsonb) || jsonb_build_object('collection_rate', $1::jsonb)
          WHERE run_id = $2
+           AND connector_instance_id = $3
            AND status = 'running'`,
-        [JSON.stringify(event.data.collection_rate), event.runId]
+        [JSON.stringify(event.data.collection_rate), event.runId, event.connectorInstanceId]
       );
     }
     return;
@@ -269,7 +288,7 @@ export async function writePostgresRunHistoryForSpineEvent(
          run_id, connector_instance_id, connector_id, trigger_kind, source_json,
          status, known_gaps_json, started_at, attempt
        ) VALUES($1, $2, $3, $4, $5::jsonb, 'running', '[]'::jsonb, $6, 1)
-       ON CONFLICT(run_id) WHERE run_id IS NOT NULL DO NOTHING`,
+       ON CONFLICT(run_id, connector_instance_id) WHERE run_id IS NOT NULL DO NOTHING`,
       [
         event.runId,
         event.connectorInstanceId,
@@ -306,6 +325,7 @@ export async function writePostgresRunHistoryForSpineEvent(
          terminal_reason = $6,
          facts_json = $7::jsonb
      WHERE run_id = $8
+       AND connector_instance_id = $9
        AND status = 'running'`,
     [
       terminalStatus,
@@ -316,6 +336,7 @@ export async function writePostgresRunHistoryForSpineEvent(
       terminalReason,
       factsJson,
       event.runId,
+      event.connectorInstanceId,
     ]
   );
   if ((finalizeResult.rowCount ?? 0) > 0) {
@@ -328,7 +349,7 @@ export async function writePostgresRunHistoryForSpineEvent(
        status, known_gaps_json, started_at, completed_at, records_emitted,
        connector_error_json, failure_reason, terminal_reason, facts_json, attempt
      ) VALUES($1, $2, $3, $4, $5::jsonb, $6, '[]'::jsonb, $7, $8, $9, $10::jsonb, $11, $12, $13::jsonb, 1)
-     ON CONFLICT(run_id) WHERE run_id IS NOT NULL DO NOTHING`,
+     ON CONFLICT(run_id, connector_instance_id) WHERE run_id IS NOT NULL DO NOTHING`,
     [
       event.runId,
       event.connectorInstanceId,

@@ -56,6 +56,8 @@ export const POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS: readonly string[] = [
   "PostgreSQL: a fresh install is unaffected by the fleet-migration repair",
   "PostgreSQL: a pre-renamed-stuck database is repaired on the next boot, idempotently, with row/id/index preservation",
   "PostgreSQL: a run.started write succeeds against a database migrated from legacy scheduler_run_history",
+  "PostgreSQL: migration builds the composite unique index over live duplicate-run_id data (the exact 42P10 failure this fix closes), preserving both connections' rows",
+  "PostgreSQL: two different connections sharing a run_id each get their own run_history row via the live spine writer",
   "PostgreSQL: zero spine_events statements for a connection with no run at all",
   "PostgreSQL: zero spine_events statements for a terminal run's GET",
   "PostgreSQL: zero spine_events statements for an in-progress run's GET (collection_rate merged via run.progress_reported)",

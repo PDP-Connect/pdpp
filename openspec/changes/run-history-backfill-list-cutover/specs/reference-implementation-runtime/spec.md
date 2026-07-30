@@ -218,3 +218,54 @@ migrated for the first time after the repair shipped.
 - **WHEN** the database is initialized
 - **THEN** `run_history` SHALL be created with `completed_at` nullable from its
   `CREATE TABLE` statement, and the repair SHALL no-op immediately
+
+### Requirement: `run_history`'s uniqueness, conflict, and identity key SHALL be `(run_id, connector_instance_id)`, never `run_id` alone
+
+`run_id` is minted independently by multiple call sites with no connection-scoped
+entropy and is NOT globally unique — two different connections CAN legitimately
+produce the identical `run_id` string. Every unique index, `ON CONFLICT` target, and
+identity-fencing predicate on `run_history` SHALL therefore key on the pair `(run_id,
+connector_instance_id)`, never on `run_id` alone. No compatibility read path, and no
+swallowed/fail-open index-creation error, SHALL exist for this key.
+
+#### Scenario: Two different connections independently producing the same run_id each get their own row
+
+- **GIVEN** two distinct connections whose independently-minted `run_id` values are
+  identical (a genuine collision, not a retry)
+- **WHEN** both connections' `run.started` events are written
+- **THEN** `run_history` SHALL contain two separate rows, one per connection, neither
+  overwriting nor blocking the other
+- **AND** this SHALL hold on both the SQLite and PostgreSQL backends
+
+#### Scenario: A progress or terminal write for one connection never affects another connection's row sharing the same run_id
+
+- **GIVEN** two `run_history` rows sharing a `run_id` but belonging to different
+  connections, one still `status = 'running'`
+- **WHEN** a `run.progress_reported` or terminal spine event for ONE of those
+  connections is written
+- **THEN** only that connection's row SHALL be modified
+- **AND** the other connection's row SHALL remain completely unchanged, regardless of
+  its own status
+
+#### Scenario: The unique index builds successfully over historical data containing duplicate run_ids across distinct connections
+
+- **GIVEN** a database whose `run_history` table already contains two or more rows
+  sharing a `run_id` value, each belonging to a distinct `connector_instance_id`
+- **WHEN** the database is initialized (fresh install, post-rename migration, or
+  post-`completed_at`-repair index recreation)
+- **THEN** the composite `(run_id, connector_instance_id)` unique index SHALL be
+  created successfully, with no error and no fail-open/swallowed-exception path
+- **AND** every pre-existing row SHALL be preserved exactly — none deleted, collapsed,
+  or relabeled
+
+#### Scenario: The backfill stage discovers and folds each connection's run separately, never blending their event windows
+
+- **GIVEN** `spine_events` contains lifecycle events for two distinct connections that
+  independently used the same `run_id`, and neither has a `run_history` row yet
+- **WHEN** the backfill stage's candidate discovery and fold run
+- **THEN** the two connections SHALL be discovered as two separate candidates (keyed
+  on the pair, not bare `run_id`)
+- **AND** each candidate SHALL be folded using ONLY its own connection's events —
+  never a window blended with the other connection's events
+- **AND** two separate `run_history` rows SHALL result, each with status/facts
+  reflecting only its own connection's actual event history

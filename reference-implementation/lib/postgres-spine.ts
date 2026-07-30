@@ -81,7 +81,13 @@ interface NormalizedSpineEvent {
   readonly version: string;
 }
 
-interface SpineEventRow {
+// Exported for the run-history backfill stage
+// (server/stores/run-history-backfill-stage.ts), which filters the
+// `connector_instance_id` field directly (a real, indexed column, not
+// JSON) to scope a run_id-fetched window down to one candidate's own
+// connection before folding (run_id alone is not a unique identity — see
+// openspec/changes/run-history-backfill-list-cutover).
+export interface SpineEventRow {
   readonly actor_id: string;
   readonly actor_type: string;
   readonly client_id: string | null;
@@ -500,7 +506,13 @@ function connectionIdFromBrowserSurfaceProfileKey(projection: JsonObject | null)
   return suffix?.startsWith("cin_") ? suffix : null;
 }
 
-function connectionIdFromEventData(event: SpineEventRecord): string | null {
+// Exported for the run-history backfill stage
+// (server/stores/run-history-backfill-stage.ts), which must filter a
+// batched-fetched event window down to one candidate's own connection
+// before folding it via summarizeRows — run_id alone is not a unique
+// identity (see openspec/changes/run-history-backfill-list-cutover), so a
+// window fetched by run_id can contain more than one connection's events.
+export function connectionIdFromEventData(event: SpineEventRecord): string | null {
   const data =
     event.data && typeof event.data === "object" && !Array.isArray(event.data) ? (event.data as JsonObject) : null;
   if (!data) {
@@ -747,7 +759,17 @@ function assembleSummaryObject(
   };
 }
 
-async function summarizeRows(id: string, rows: SpineEventRow[], aggregate: SummaryAggregate = {}): Promise<Summary> {
+// Exported for the run-history backfill stage
+// (server/stores/run-history-backfill-stage.ts), which folds a
+// connection-scoped row window (pre-filtered by connectionIdFromEventData,
+// since run_id alone is not a unique identity) directly with this
+// function rather than through postgresFoldRunSummariesByIds, whose own
+// fetchRowsForSummaries has no connection-scoping input.
+export async function summarizeRows(
+  id: string,
+  rows: SpineEventRow[],
+  aggregate: SummaryAggregate = {}
+): Promise<Summary> {
   const events = rows.map(hydrate).filter(isPresent);
   const eventFields = selectSummaryEventFields(events);
   const sourceProjection = selectSummarySourceProjection(events);
@@ -850,7 +872,15 @@ function mergeRunEventWindows(
 // trips per row), using a partitioned window function to keep the same
 // per-id LIMIT semantics. Returns a Map<id, rows[]> so callers can look up
 // each row's events the same way the per-row version did.
-async function fetchRowsForSummaries(
+//
+// Exported for the run-history backfill stage
+// (server/stores/run-history-backfill-stage.ts), which calls this
+// unmodified with column="run_id" (the SAME fetch postgresFoldRunSummariesByIds
+// uses internally) and then filters the returned rows by
+// `connector_instance_id` in memory before folding each candidate's own
+// connection-scoped window with summarizeRows — run_id alone is not a
+// unique identity (see openspec/changes/run-history-backfill-list-cutover).
+export async function fetchRowsForSummaries(
   kind: CorrelationKind,
   column: CorrelationColumn,
   ids: string[]

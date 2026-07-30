@@ -682,7 +682,7 @@ export function createPostgresSchedulerStore(): SchedulerStore {
            attempt,
            scheduler_managed
          ) VALUES($1, $2, $3::jsonb, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11, $12, $13, $14, $15, $16, $17, true)
-         ON CONFLICT(run_id) WHERE run_id IS NOT NULL DO UPDATE SET
+         ON CONFLICT(run_id, connector_instance_id) WHERE run_id IS NOT NULL DO UPDATE SET
            source_json = excluded.source_json,
            status = excluded.status,
            records_emitted = excluded.records_emitted,
