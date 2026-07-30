@@ -121,6 +121,7 @@ test("started-only run without an active controller row is projected as failed o
       actor_type: "runtime",
       data: {
         boot_epoch: "00000000-0000-4000-8000-000000000001",
+        connector_instance_id: "cin_github",
         seq: 1,
       },
       event_type: "run.started",
@@ -151,6 +152,7 @@ test("started-only run with an active controller row is projected as in progress
       actor_type: "runtime",
       data: {
         boot_epoch: "00000000-0000-4000-8000-000000000002",
+        connector_instance_id: "cin_ynab",
         seq: 1,
       },
       event_type: "run.started",

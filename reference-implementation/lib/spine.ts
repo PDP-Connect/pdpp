@@ -479,6 +479,7 @@ export function emitSpineEvent(
   dbHandle: SpineDatabase | null = null
 ): Promise<SpineEventRecord | null> {
   try {
+    assertRunEventHasConnectorInstanceId(input);
     assertRunStartedIsStamped(input);
   } catch (e) {
     return Promise.reject(e);
@@ -497,6 +498,35 @@ export function emitSpineEvent(
   execNamedOn(db, referenceQueries.spineInsertEvent, event);
 
   return Promise.resolve(hydrateNormalizedEvent(event));
+}
+
+/**
+ * New run-timeline rows are connection-owned facts. A connector type, a
+ * browser profile, and an adjacent timeline event are not an identity: each
+ * can be ambiguous after a connection is reconfigured or duplicated. Keep
+ * the nullable column for historical and sub-resource rows, but reject an
+ * unbound run-creation event before either storage backend sees it.
+ */
+function assertRunEventHasConnectorInstanceId(input: SpineEventInput): void {
+  if (input.event_type !== "run.started") {
+    return;
+  }
+  const data =
+    input.data && typeof input.data === "object" && !Array.isArray(input.data)
+      ? (input.data as Record<string, unknown>)
+      : null;
+  const connectorInstanceId = data?.connector_instance_id;
+  if (typeof connectorInstanceId !== "string" || connectorInstanceId.trim().length === 0) {
+    throw new Error(
+      "emitSpineEvent: new run.started events require data.connector_instance_id (non-empty immutable connector instance identity); do not infer it from connector_id, browser state, or event history."
+    );
+  }
+  const connectionId = data?.connection_id;
+  if (typeof connectionId === "string" && connectionId.length > 0 && connectionId !== connectorInstanceId) {
+    throw new Error(
+      "emitSpineEvent: run event data.connection_id must exactly match data.connector_instance_id when both are provided."
+    );
+  }
 }
 
 /**

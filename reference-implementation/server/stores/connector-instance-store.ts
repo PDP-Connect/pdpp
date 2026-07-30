@@ -635,9 +635,10 @@ const FALL_THROUGH_TO_CONNECTOR_ID = Symbol("fall-through-to-connector-id");
 // Resolves the explicit `connector_instance_id` selector: fetches the row and
 // runs its full validation chain (owner-mismatch, connector-mismatch,
 // status-inactive) UNCHANGED. Returns a namespace on a valid hit, or
-// `FALL_THROUGH_TO_CONNECTOR_ID` when the instance is missing but doubles as
-// a legacy default-account connector_id hint (see Decision 3 note at the
-// caller). Throws connector_instance_not_found otherwise.
+// `FALL_THROUGH_TO_CONNECTOR_ID` when the instance is missing but is either a
+// legacy connector_id hint or the deterministic default-account identity (see
+// Decision 3 note at the caller). Throws connector_instance_not_found
+// otherwise.
 function resolveByExplicitInstanceId(
   instance: ConnectorInstance | null,
   {
@@ -678,11 +679,16 @@ function resolveByExplicitInstanceId(
     }
     return namespaceFromInstance(instance, { selector: "connector_instance_id" });
   }
-  // Older grant/storage bindings can use connector_id as a default account
-  // instance hint. When the instance is missing but this hint applies, we
-  // fall through past this whole block to the connector_id resolution path
-  // below instead of treating the missing id as a hard not-found.
-  const isDefaultAccountHint = allowDefaultAccount && connectorId && connectorInstanceId === connectorId;
+  // Older grant/storage bindings use connector_id as a default-account hint;
+  // direct runtime writers use the deterministic default-account identity.
+  // Both are safe fall-through selectors only when they match this owner and
+  // connector's exact default binding. Arbitrary or foreign-owner missing
+  // instance IDs remain a typed not-found and are never materialized.
+  const isDefaultAccountHint =
+    allowDefaultAccount &&
+    connectorId &&
+    (connectorInstanceId === connectorId ||
+      connectorInstanceId === makeDefaultAccountConnectorInstanceId(ownerSubjectId, connectorId));
   if (!isDefaultAccountHint) {
     throw new ConnectorInstanceResolutionError(
       "connector_instance_not_found",
@@ -847,6 +853,43 @@ export async function resolveOwnerConnectorInstanceNamespace({
     displayName: displayName ?? connectorId,
     now,
     ownerSubjectId,
+  });
+}
+
+/**
+ * Admit a new connector run to one authoritative connection namespace.
+ *
+ * This is deliberately narrower than `resolveOwnerConnectorInstanceNamespace`:
+ * a claimed instance id is always an exact, existing, owner-authorized row.
+ * Only an omitted selector may materialize the authenticated owner's default
+ * account. Keeping that policy here prevents run creators from treating a
+ * connector type (or another owner's deterministic id) as a capability.
+ */
+export function admitOwnerRunConnection({
+  ownerSubjectId,
+  connectorId,
+  connectorInstanceId = null,
+  connectorInstanceStore,
+  displayName = null,
+  now,
+}: {
+  ownerSubjectId: string;
+  connectorId: string;
+  connectorInstanceId?: string | null;
+  connectorInstanceStore: ConnectorInstanceStoreLike;
+  displayName?: string | null;
+  now?: string;
+}): Promise<ConnectorInstanceNamespace> {
+  return resolveOwnerConnectorInstanceNamespace({
+    // Explicit selectors never materialize or fall through. The broader
+    // resolver still supports legacy read compatibility independently.
+    allowDefaultAccount: !connectorInstanceId,
+    connectorId,
+    connectorInstanceId,
+    connectorInstanceStore,
+    displayName,
+    ownerSubjectId,
+    ...(now === undefined ? {} : { now }),
   });
 }
 

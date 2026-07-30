@@ -70,6 +70,13 @@ export interface RunExecutorRuntimeState {
 }
 
 export interface RunExecutorDeps {
+  admitRunConnection:
+    | ((input: {
+        connectorId: string;
+        connectorInstanceId: string | null;
+        ownerSubjectId: string | null;
+      }) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }>)
+    | null;
   getState: GetStateHandler;
   handleGrantFailureDisable: (reason: string | null | undefined, connectorInstanceId: string) => void;
   isManagedConnector: IsManagedConnectorHandler;
@@ -154,9 +161,18 @@ function coerceRunError(err: unknown): RunConnectorError {
   if (err && typeof err === "object") {
     const candidate = err as RunConnectorError;
     const message = candidate.message ?? (err instanceof Error ? err.message : "unknown");
-    return { ...candidate, message };
+    return {
+      ...candidate,
+      message,
+      ...(message.includes("admitted run connection") || message.includes("admission did not authorize")
+        ? { failure_reason: "permission_error", terminal_reason: "permission_error" as const }
+        : {}),
+    };
   }
-  return { message: typeof err === "string" ? err : "unknown" };
+  const message = typeof err === "string" ? err : "unknown";
+  return message.includes("admitted run connection") || message.includes("admission did not authorize")
+    ? { failure_reason: "permission_error", message, terminal_reason: "permission_error" }
+    : { message };
 }
 
 function nowIso(): string {
@@ -226,6 +242,7 @@ function toStoredRunRecord(record: RunRecord): SchedulerRunHistoryRecord {
 // ─── RunConnectorCall (internal) ──────────────────────────────────────────────
 
 interface RunConnectorCall {
+  admitRunConnection?: Exclude<RunExecutorDeps["admitRunConnection"], null>;
   automationMode?: RunAutomationMode;
   cancelSignal?: AbortSignal | null;
   collectionMode: "full_refresh" | "incremental";
@@ -236,6 +253,7 @@ interface RunConnectorCall {
   onInteraction: InteractionHandler;
   onProgress: () => void;
   onStarted?: (run: { run_id?: string | null; scenario_id?: string | null; trace_id?: string | null }) => void;
+  ownerSubjectId: string;
   ownerToken: string;
   persistState: boolean;
   recoveryOnly?: boolean;
@@ -538,6 +556,7 @@ function controllerRunNowDeferReason(err: unknown): string | null {
 
 export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
   const {
+    admitRunConnection,
     getState,
     handleGrantFailureDisable,
     isManagedConnector,
@@ -911,6 +930,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     connectorId: string,
     connectorInstanceId: string,
     ownerToken: string,
+    ownerSubjectId: string,
     options: { maxRetries?: number; recoveryOnly?: boolean } = {}
   ): Promise<RunRecord | null> {
     const maxRetries =
@@ -928,6 +948,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
         // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
         runNowResult = await via(connectorId, {
           connectorInstanceId,
+          ownerSubjectId,
           ownerToken,
           priorityClass: "background",
           recoveryOnly: options.recoveryOnly === true,
@@ -1076,6 +1097,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
       connectorPath,
       manifest,
       ownerToken,
+      ownerSubjectId = "",
       grantAccessMode = "continuous",
     } = schedule;
     const persistState = grantAccessMode !== "single_use";
@@ -1154,6 +1176,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
         connectorId,
         connectorInstanceId,
         ownerToken,
+        ownerSubjectId,
         managedRunOptions
       );
       if (managed !== null) {
@@ -1162,6 +1185,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     }
 
     return await runWithRetries(schedule, {
+      ...(admitRunConnection ? { admitRunConnection } : {}),
       automationMode: automationPolicy.automation_mode,
       collectionMode,
       connectorId,
@@ -1175,6 +1199,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
       onStarted: (run) => {
         currentRunIdBox.value = typeof run?.run_id === "string" ? run.run_id : null;
       },
+      ownerSubjectId,
       ownerToken,
       persistState,
       recoveryOnly,

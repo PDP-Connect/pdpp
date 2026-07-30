@@ -159,6 +159,23 @@ function buildRealResolver(): StaticSecretRunEnvResolver {
   };
 }
 
+// A minimal, production-shaped admission fixture: mints a deterministic
+// default-account connector_instance_id per (ownerSubjectId, connectorId) and
+// echoes back an explicitly requested one — the same authority shape
+// `admitOwnerRunConnection` enforces in production, without a real store.
+// Every `runNow` call in this file passes an explicit `connectorInstanceId`.
+function fakeAdmitRunConnection(): (input: {
+  connectorId: string;
+  connectorInstanceId: string | null;
+  ownerSubjectId: string | null;
+}) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }> {
+  return ({ connectorId, connectorInstanceId, ownerSubjectId: requestedOwnerSubjectId }) => {
+    const ownerSubjectId = requestedOwnerSubjectId || "owner_local";
+    const exactId = connectorInstanceId ?? `cin_${ownerSubjectId}_${connectorId.replace(/[^a-z0-9]+/gi, "_")}`;
+    return Promise.resolve({ connectorId, connectorInstanceId: exactId, ownerSubjectId });
+  };
+}
+
 function captureStore() {
   return createSqliteConnectorInstanceCredentialStore({
     env: { PDPP_CREDENTIAL_ENCRYPTION_KEY: TEST_KEY },
@@ -183,6 +200,7 @@ function makeController(
   } = {}
 ) {
   return createController({
+    admitRunConnection: fakeAdmitRunConnection(),
     connectorPathResolver: () => "/tmp/connector.ts",
     // biome-ignore lint/suspicious/noEmptyBlockStatements: localized test assertion preserves its explicit contract.
     logger: { error: () => {}, warn: () => {} },
@@ -564,6 +582,7 @@ test("a resolver failure occurs before managed browser-surface acquisition", asy
   const calls: RuntimeRunConnectorOptions[] = [];
   const managerCalls: string[] = [];
   const controller = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
     // The real BrowserSurfaceLeaseManager (from @opendatalabs/remote-surface)
     // is a class with private fields, so no plain object literal can ever
     // structurally satisfy it; this test only exercises isManagedConnector

@@ -101,6 +101,12 @@ test("direct scheduled run persists active liveness until terminal", async (t) =
   });
 
   scheduler = createScheduler({
+    admitRunConnection: ({ connectorId, connectorInstanceId, ownerSubjectId }) => {
+      assert.equal(connectorId, CONNECTOR_ID);
+      assert.equal(connectorInstanceId, CONNECTOR_INSTANCE_ID);
+      assert.equal(ownerSubjectId, "owner_scheduler_liveness");
+      return Promise.resolve({ connectorId, connectorInstanceId: CONNECTOR_INSTANCE_ID, ownerSubjectId });
+    },
     connectors: [
       {
         connectorId: CONNECTOR_ID,
@@ -108,6 +114,7 @@ test("direct scheduled run persists active liveness until terminal", async (t) =
         connectorPath: connector.connectorPath,
         intervalMs: 60_000,
         manifest: MANIFEST,
+        ownerSubjectId: "owner_scheduler_liveness",
         ownerToken: "owner-token",
       },
     ],
@@ -179,6 +186,12 @@ test("direct scheduled run cancellation registers by run id and terminals as can
   });
 
   scheduler = createScheduler({
+    admitRunConnection: ({ connectorId, connectorInstanceId, ownerSubjectId }) => {
+      assert.equal(connectorId, CONNECTOR_ID);
+      assert.equal(connectorInstanceId, CONNECTOR_INSTANCE_ID);
+      assert.equal(ownerSubjectId, "owner_scheduler_liveness");
+      return Promise.resolve({ connectorId, connectorInstanceId: CONNECTOR_INSTANCE_ID, ownerSubjectId });
+    },
     connectors: [
       {
         connectorId: CONNECTOR_ID,
@@ -186,6 +199,7 @@ test("direct scheduled run cancellation registers by run id and terminals as can
         connectorPath: connector.connectorPath,
         intervalMs: 60_000,
         manifest: MANIFEST,
+        ownerSubjectId: "owner_scheduler_liveness",
         ownerToken: "owner-token",
       },
     ],
@@ -276,6 +290,12 @@ test("direct scheduled run skips without spawning a child when durable active-ru
   });
 
   scheduler = createScheduler({
+    admitRunConnection: ({ connectorId, connectorInstanceId, ownerSubjectId }) => {
+      assert.equal(connectorId, CONNECTOR_ID);
+      assert.equal(connectorInstanceId, CONNECTOR_INSTANCE_ID);
+      assert.equal(ownerSubjectId, "owner_scheduler_liveness");
+      return Promise.resolve({ connectorId, connectorInstanceId: CONNECTOR_INSTANCE_ID, ownerSubjectId });
+    },
     connectors: [
       {
         connectorId: CONNECTOR_ID,
@@ -283,6 +303,7 @@ test("direct scheduled run skips without spawning a child when durable active-ru
         connectorPath: connector.connectorPath,
         intervalMs: 60_000,
         manifest: MANIFEST,
+        ownerSubjectId: "owner_scheduler_liveness",
         ownerToken: "owner-token",
       },
     ],

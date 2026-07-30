@@ -330,7 +330,7 @@ test("POST /_ref/connections/:id/run forwards explicit force override to the con
   assert.deepEqual(harness.calls.runNow, [
     {
       connectorId: "chatgpt",
-      options: { connectorInstanceId: "cin_chatgpt", force: true },
+      options: { connectorInstanceId: "cin_chatgpt", force: true, ownerSubjectId: "owner_local" },
     },
   ]);
   const [firstEvent] = harness.calls.emitSpineEvent;
@@ -352,7 +352,7 @@ test("POST /_ref/connectors/:id/run forwards explicit force override to the cont
   assert.deepEqual(harness.calls.runNow, [
     {
       connectorId: "chatgpt",
-      options: { connectorInstanceId: "cin_chatgpt", force: true },
+      options: { connectorInstanceId: "cin_chatgpt", force: true, ownerSubjectId: "owner_local" },
     },
   ]);
   const [firstEvent] = harness.calls.emitSpineEvent;
@@ -393,6 +393,7 @@ test("POST /_ref/connections/:id/run forwards scoped stream resources", async ()
       options: {
         connectorInstanceId: "cin_slack",
         force: false,
+        ownerSubjectId: "owner_local",
         resources: { messages: ["C07JYF0U8BY"] },
       },
     },

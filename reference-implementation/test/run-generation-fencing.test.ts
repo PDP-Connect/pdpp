@@ -48,6 +48,24 @@ function unimplemented(name: string): never {
   throw new Error(`test fake: ${name} is not implemented — this path should be unreachable in this test`);
 }
 
+// A minimal, production-shaped admission fixture: mints a deterministic
+// default-account connector_instance_id per (ownerSubjectId, connectorId) and
+// echoes back an explicitly requested one — the same authority shape
+// `admitOwnerRunConnection` enforces in production, without a real store.
+// Every `runNow` call in this file passes an explicit `connectorInstanceId`,
+// so each connector instance keeps its own distinct, stable id throughout.
+function fakeAdmitRunConnection(): (input: {
+  connectorId: string;
+  connectorInstanceId: string | null;
+  ownerSubjectId: string | null;
+}) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }> {
+  return ({ connectorId, connectorInstanceId, ownerSubjectId: requestedOwnerSubjectId }) => {
+    const ownerSubjectId = requestedOwnerSubjectId || "owner_local";
+    const exactId = connectorInstanceId ?? `cin_${ownerSubjectId}_${connectorId.replace(/[^a-z0-9]+/gi, "_")}`;
+    return Promise.resolve({ connectorId, connectorInstanceId: exactId, ownerSubjectId });
+  };
+}
+
 interface CapturingSchedulerStore extends SchedulerStore {
   _upsertLog: ActiveRunRecord[];
 }
@@ -129,6 +147,7 @@ test("first admitted run for a connector_instance gets run_generation=1", async 
 
   const store = createCapturingSchedulerStore();
   const controller = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
     connectorPathResolver: () => "/tmp/connector.js",
     // biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op test double represents an optional side effect.
     logger: { error: () => {}, warn: () => {} },
@@ -162,6 +181,7 @@ test("generation increments to 2 when a stale run is reclaimed and a new run is 
   const hang = makeHangingImpl();
 
   const controller = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
     connectorPathResolver: () => "/tmp/connector.js",
     // biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op test double represents an optional side effect.
     logger: { error: () => {}, warn: () => {} },
@@ -252,6 +272,7 @@ test("zombie run (stale generation) is refused when emitting launch-failure term
 
   const warnLines: string[] = [];
   const controller = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
     connectorPathResolver: () => "/tmp/connector.js",
     // biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op test double represents an optional side effect.
     logger: { error: () => {}, warn: (l: unknown) => warnLines.push(String(l)) },
@@ -339,6 +360,7 @@ test("REGRESSION: a normal run (current generation) completes successfully witho
 
   const store = createCapturingSchedulerStore();
   const controller = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
     connectorPathResolver: () => "/tmp/connector.js",
     // biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op test double represents an optional side effect.
     logger: { error: () => {}, warn: () => {} },
@@ -380,6 +402,7 @@ test("run_generation is persisted in the DB row via upsertActiveRun", async (t) 
   const hang = makeHangingImpl();
 
   const controller = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
     connectorPathResolver: () => "/tmp/connector.js",
     // biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op test double represents an optional side effect.
     logger: { error: () => {}, warn: () => {} },

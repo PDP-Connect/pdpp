@@ -243,6 +243,8 @@ export interface RunNowOptions {
    */
   force?: boolean;
   manifest?: ConnectorManifest;
+  /** Authenticated subject used by the server admission boundary. */
+  ownerSubjectId?: string;
   ownerToken?: string;
   priorityClass?: "interactive" | "background";
   recoveryContinuationDepth?: number;
@@ -398,6 +400,15 @@ export interface RunTargetNonceHooks {
 }
 
 export interface ControllerOptions {
+  /**
+   * Resolves an exact configured connection before runtime can emit a new
+   * run fact. Production installs this against the connector-instance store.
+   */
+  admitRunConnection?: (input: {
+    connectorId: string;
+    connectorInstanceId: string | null;
+    ownerSubjectId: string;
+  }) => Promise<{ connectorId: string; connectorInstanceId: string }>;
   asPublicUrl?: string;
   /** Awaited before a managed surface lease becomes reusable after run cleanup. */
   beforeBrowserSurfaceLeaseRelease?: (args: { readonly runId: string }) => Promise<void> | void;
@@ -470,6 +481,8 @@ export interface ControllerOptions {
   maxRunWallClockMs?: number;
   ownerClientId?: string;
   ownerSubjectId?: string;
+  /** Resolves the persisted owner of an exact admitted connection after restart. */
+  resolveOwnerSubjectIdForConnectorInstance?: (connectorInstanceId: string) => Promise<string | null>;
   /**
    * Optional connection-scoped static-secret resolver. When present, the
    * controller calls it before each run to obtain the env fragment carrying
@@ -517,6 +530,25 @@ export interface ControllerOptions {
    *   reference-implementation/server/streaming/run-target-registry.js
    */
   streamingTargetNonceHooks?: RunTargetNonceHooks;
+}
+
+function resolveAdmittedRunConnection(
+  controllerOptions: ControllerOptions,
+  connectorId: string,
+  connectorInstanceId: string | undefined,
+  ownerSubjectId: string
+): Promise<{ connectorId: string; connectorInstanceId: string }> {
+  if (controllerOptions.admitRunConnection) {
+    return controllerOptions.admitRunConnection({
+      connectorId,
+      connectorInstanceId: connectorInstanceId ?? null,
+      ownerSubjectId,
+    });
+  }
+  throw new ControllerError(
+    "run-connection authority resolver is required before a run can be created.",
+    "connector_instance_store_required"
+  );
 }
 
 function createInteractionTimeoutTerminalHandler(
@@ -617,10 +649,13 @@ export interface Controller {
    * cooperative-cancel signal so the runtime terminates that connector child
    * and resolves the run terminal as `run.cancelled`. Returns a typed result
    * distinguishing a requested cancellation from a missing or already-terminal
-   * run. Never touches sibling active runs.
+   * run. Never touches sibling active runs. `requestingOwnerSubjectId` is
+   * compared against the run's admitted owner; a mismatch throws
+   * `ControllerError` (`run_owner_mismatch`) rather than cancelling — a bare
+   * run id is never a sufficient capability across owners.
    * See add-owner-run-cancellation-control.
    */
-  cancelRun: (runId: string) => Promise<CancelRunResult>;
+  cancelRun: (runId: string, requestingOwnerSubjectId: string) => Promise<CancelRunResult>;
   cleanupIdleBrowserSurfaces: () => Promise<BrowserSurfaceProjection[]>;
   clearNeedsHuman: (connectorId: string, options?: ConnectorInstanceOptions) => void;
   deleteSchedule: (connectorId: string, options?: ConnectorInstanceOptions) => Promise<boolean>;
@@ -643,6 +678,14 @@ export interface Controller {
   expireBrowserSurfaceWaits: () => Promise<BrowserSurfaceProjection[]>;
   findActiveRunByRunId: (runId: string) => ActiveRun | null;
   getActiveRun: (connectorId: string, options?: ConnectorInstanceOptions) => ActiveRun | null;
+  /**
+   * Trusted internal lookup for system-initiated cancellation (e.g. tearing
+   * down a run after a failed presentation-surface restore). Returns the
+   * run's admitted owner from the controller's own bookkeeping, or `null` if
+   * the run is not active. NOT for gating an owner-facing HTTP request —
+   * `cancelRun`'s `requestingOwnerSubjectId` parameter exists for that.
+   */
+  getActiveRunOwnerSubjectId: (runId: string) => string | null;
   /** Stable identity for dynamic allocator single-flight; null outside dynamic mode. */
   getBrowserSurfaceRuntimeAllocatorScopeId: () => string | null;
   /** Classifies connector management without exposing allocator operations. */
@@ -650,7 +693,7 @@ export interface Controller {
   getPendingInteraction: (runId: string) => PendingInteractionProjection | null;
   getSchedule: (connectorId: string, options?: ConnectorInstanceOptions) => Promise<ScheduleApi | null>;
   isNeedsHuman: (connectorId: string, options?: ConnectorInstanceOptions) => boolean;
-  issueRuntimeOwnerToken: () => Promise<string>;
+  issueRuntimeOwnerToken: (ownerSubjectId?: string) => Promise<string>;
   listBrowserSurfaceRunProjections: () => BrowserSurfaceRunProjection[];
   listSchedules: () => Promise<ScheduleApi[]>;
   markNeedsHuman: (connectorId: string, options?: ConnectorInstanceOptions) => void;
@@ -2244,8 +2287,11 @@ export function createController(opts: ControllerOptions = {}): Controller {
   // AbortController per run and threads its signal into `runConnector`;
   // `cancelRun` aborts only the targeted run's controller; `finalizeRunCleanup`
   // deletes the entry when the run settles. Scoped to a single run so a cancel
-  // never touches sibling runs. See add-owner-run-cancellation-control.
-  const activeRunCancellations = new Map<string, AbortController>();
+  // never touches sibling runs. The admitted run owner travels alongside the
+  // controller so `cancelRun` can refuse a foreign owner's cancellation
+  // request instead of trusting a bare run id. See
+  // add-owner-run-cancellation-control.
+  const activeRunCancellations = new Map<string, { abort: AbortController; ownerSubjectId: string }>();
 
   function browserSurfaceRuntimeManagement(connectorId: string): BrowserSurfaceRuntimeManagement {
     if (!browserSurfaceLeaseManager?.isManagedConnector(connectorId)) {
@@ -2434,10 +2480,10 @@ export function createController(opts: ControllerOptions = {}): Controller {
     return null;
   }
 
-  async function issueRuntimeOwnerToken(): Promise<string> {
+  async function issueRuntimeOwnerToken(subjectId = ownerSubjectId): Promise<string> {
     const baseUrl = opts.asPublicUrl || process.env.AS_PUBLIC_URL;
     const device = await initiateOwnerDeviceAuthorization(ownerClientId, baseUrl ? { baseUrl } : {});
-    const approved = await approveOwnerDeviceAuthorization(device.user_code, ownerSubjectId);
+    const approved = await approveOwnerDeviceAuthorization(device.user_code, subjectId);
     if (typeof approved.access_token !== "string") {
       throw new TypeError("owner device approval did not return an access token");
     }
@@ -2457,6 +2503,8 @@ export function createController(opts: ControllerOptions = {}): Controller {
     listPersistedActiveRuns,
     log,
     pendingBrowserSurfaceLaunches,
+    resolveOwnerSubjectIdForConnectorInstance: async (connectorInstanceId) =>
+      (await opts.resolveOwnerSubjectIdForConnectorInstance?.(connectorInstanceId)) ?? null,
     scheduleRun(connectorId, options, onFailure) {
       detachControllerTask(runNow(connectorId, options).catch(onFailure));
     },
@@ -3124,6 +3172,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     readonly connectorInstanceId: string;
     readonly manifest: ConnectorManifest;
     readonly options: RunNowOptions;
+    readonly ownerSubjectId: string;
     readonly ownerToken: string;
     readonly result: Awaited<ReturnType<RunConnectorFn>> | undefined;
     readonly rsUrl?: string;
@@ -3149,6 +3198,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       const continuationOptions: RunNowOptions = {
         connectorInstanceId: input.connectorInstanceId,
         manifest: input.manifest,
+        ownerSubjectId: input.ownerSubjectId,
         ownerToken: input.ownerToken,
         recoveryContinuationDepth: depth + 1,
         recoveryOnly: true,
@@ -3178,7 +3228,10 @@ export function createController(opts: ControllerOptions = {}): Controller {
     if (options.force) {
       return;
     }
-    const connectorInstanceId = options.connectorInstanceId || connectorId;
+    const { connectorInstanceId } = options;
+    if (!connectorInstanceId) {
+      throw new ControllerError("connectorInstanceId is required for source-pressure evaluation.", "invalid_request");
+    }
     const pendingPressureGaps = await collectPendingPressureGaps(connectorId, connectorInstanceId);
     if (pendingPressureGaps.length === 0) {
       return;
@@ -3269,9 +3322,9 @@ export function createController(opts: ControllerOptions = {}): Controller {
         `[controller] watchdog: run ${runId} for ${connectorId} exceeded ${maxRunWallClockMs}ms wall-clock budget; force-finalizing`
       );
       const cancellation = activeRunCancellations.get(runId);
-      if (cancellation && !cancellation.signal.aborted) {
+      if (cancellation && !cancellation.abort.signal.aborted) {
         try {
-          cancellation.abort();
+          cancellation.abort.abort();
         } catch {
           /* idempotent */
         }
@@ -3339,13 +3392,24 @@ export function createController(opts: ControllerOptions = {}): Controller {
   }
 
   async function runNow(connectorId: string, options: RunNowOptions = {}): Promise<RunNowResult> {
-    const connectorInstanceId = options.connectorInstanceId || connectorId;
-    const key = runtimeKey(connectorId, connectorInstanceId);
-    const { manifest, connectorPath } = await validateRunNowPreconditions(connectorId, options, key);
+    const runOwnerSubjectId = options.ownerSubjectId || ownerSubjectId;
+    const admittedConnection = await resolveAdmittedRunConnection(
+      opts,
+      connectorId,
+      options.connectorInstanceId,
+      runOwnerSubjectId
+    );
+    const { connectorId: admittedConnectorId, connectorInstanceId } = admittedConnection;
+    const key = runtimeKey(admittedConnectorId, connectorInstanceId);
+    const { manifest, connectorPath } = await validateRunNowPreconditions(
+      admittedConnectorId,
+      { ...options, connectorInstanceId },
+      key
+    );
 
     const scopedResources = normalizeRunNowResources(options.resources);
     const effectiveRecoveryOnly = await resolveEffectiveRecoveryOnly(
-      connectorId,
+      admittedConnectorId,
       connectorInstanceId,
       options,
       scopedResources !== null
@@ -3366,7 +3430,11 @@ export function createController(opts: ControllerOptions = {}): Controller {
     // connector is not static-secret-backed or this browser-session source has
     // no optional stored login credential.
     const staticSecretEnv = opts.resolveStaticSecretRunEnv
-      ? await opts.resolveStaticSecretRunEnv({ connectorId, connectorInstanceId, ownerSubjectId })
+      ? await opts.resolveStaticSecretRunEnv({
+          connectorId: admittedConnectorId,
+          connectorInstanceId,
+          ownerSubjectId: runOwnerSubjectId,
+        })
       : null;
     // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     const usedStaticSecret = Boolean(staticSecretEnv && Object.keys(staticSecretEnv).length > 0);
@@ -3380,11 +3448,11 @@ export function createController(opts: ControllerOptions = {}): Controller {
     // incremental when that state is non-empty.
     const { state, collectionMode } = deriveCollectionState(
       (await getSyncState({
-        connector_id: connectorId,
+        connector_id: admittedConnectorId,
         connector_instance_id: connectorInstanceId,
       })) as { state?: unknown } | null
     );
-    const ownerToken = options.ownerToken || (await issueRuntimeOwnerToken());
+    const ownerToken = options.ownerToken || (await issueRuntimeOwnerToken(runOwnerSubjectId));
 
     // Manual owner gestures clear any pending human-attention flag so the
     // scheduler can resume after the owner resolves the issue. Webhook
@@ -3448,14 +3516,14 @@ export function createController(opts: ControllerOptions = {}): Controller {
     // cancellation of only this run; the runtime cooperatively terminates the
     // connector child. Cleared in finalizeRunCleanup when the run settles.
     const cancellation = new AbortController();
-    activeRunCancellations.set(runId, cancellation);
+    activeRunCancellations.set(runId, { abort: cancellation, ownerSubjectId: runOwnerSubjectId });
 
     const connectorDisplayName = readManifestDisplayName(manifest) ?? connectorId;
     const baseInteractionHandler = (interaction: unknown) =>
       brokerInteraction(runId, connectorId, readRuntimeInteraction(interaction), {
         connectorDisplayName,
         log,
-        ownerSubjectId,
+        ownerSubjectId: runOwnerSubjectId,
       });
     const interactionHandler = browserSurface.wrapInteractionHandlerWithSurfaceLossDetection(
       runId,
@@ -3475,7 +3543,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
             assistance: msg as Record<string, unknown>,
             connectorDisplayName,
             log,
-            ownerSubjectId,
+            ownerSubjectId: runOwnerSubjectId,
             runId,
           })
         );
@@ -3495,10 +3563,26 @@ export function createController(opts: ControllerOptions = {}): Controller {
     const runPromise = Promise.resolve()
       .then(() =>
         runConnectorImpl({
-          connectorId,
+          admitRunConnection: async (candidate) => {
+            await Promise.resolve();
+            if (
+              candidate.connectorId !== admittedConnectorId ||
+              candidate.connectorInstanceId !== connectorInstanceId ||
+              candidate.ownerSubjectId !== runOwnerSubjectId
+            ) {
+              throw new ControllerError("runtime run admission identity mismatch", "invalid_request");
+            }
+            return {
+              connectorId: admittedConnectorId,
+              connectorInstanceId,
+              ownerSubjectId: runOwnerSubjectId,
+            };
+          },
+          connectorId: admittedConnectorId,
           connectorInstanceId,
           connectorPath,
           manifest,
+          ownerSubjectId: runOwnerSubjectId,
           ownerToken,
           state,
           ...(scopedResources ? { scope: { streams: scopedResources } } : {}),
@@ -3564,7 +3648,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
             await opts.markStaticSecretCredentialRejected({
               connectorId,
               connectorInstanceId,
-              ownerSubjectId,
+              ownerSubjectId: runOwnerSubjectId,
               reason: typeof result.connector_error.message === "string" ? result.connector_error.message : null,
               rejectedAt: nowIso(),
               runId,
@@ -3645,6 +3729,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
           connectorInstanceId: string;
           manifest: ConnectorManifest;
           options: RunNowOptions;
+          ownerSubjectId: string;
           ownerToken: string;
           result: Awaited<ReturnType<RunConnectorFn>> | undefined;
           rsUrl?: string;
@@ -3653,6 +3738,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
           connectorInstanceId,
           manifest,
           options,
+          ownerSubjectId: runOwnerSubjectId,
           ownerToken,
           result: runResult,
           ...(options.rsUrl ? { rsUrl: options.rsUrl } : {}),
@@ -3836,7 +3922,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     return { accepted: true, status: response.status };
   }
 
-  async function cancelRun(runId: string): Promise<CancelRunResult> {
+  async function cancelRun(runId: string, requestingOwnerSubjectId: string): Promise<CancelRunResult> {
     const cancellation = activeRunCancellations.get(runId);
     if (!cancellation) {
       // No in-memory active run for this id. Distinguish a run that already
@@ -3847,15 +3933,39 @@ export function createController(opts: ControllerOptions = {}): Controller {
       }
       return { run_id: runId, status: "no_active_run" };
     }
-    if (cancellation.signal.aborted) {
+    // The run's admitted owner travels with its cancellation controller
+    // (set at runNow admission time). A requester who is not that run's
+    // owner gets a typed permission error instead of a cancellation — the
+    // arbitrary run id alone must never be a sufficient capability.
+    if (cancellation.ownerSubjectId !== requestingOwnerSubjectId) {
+      throw new ControllerError(
+        `Run ${runId} does not belong to owner '${requestingOwnerSubjectId}'.`,
+        "run_owner_mismatch",
+        {
+          runId,
+        }
+      );
+    }
+    if (cancellation.abort.signal.aborted) {
       // Cancellation already requested for this run; the abort is idempotent.
       return { run_id: runId, status: "cancel_requested" };
     }
     // Abort only this run's signal. The runtime's abort listener emits
     // run.cancel_requested and terminates the connector child; the terminal
     // run.cancelled event lands when the child exits.
-    cancellation.abort();
+    cancellation.abort.abort();
     return { run_id: runId, status: "cancel_requested" };
+  }
+
+  // Trusted internal lookup for system-initiated cancellation (e.g. tearing
+  // down a run after a failed presentation-surface restore): the run's own
+  // admitted owner, sourced from the SAME bookkeeping `cancelRun` checks a
+  // requester's claimed owner against. Never derived from an external,
+  // spoofable input — safe for a caller that already has the run in hand
+  // from its own trusted controller-side context, not for gating an
+  // owner-facing HTTP request.
+  function getActiveRunOwnerSubjectId(runId: string): string | null {
+    return activeRunCancellations.get(runId)?.ownerSubjectId ?? null;
   }
 
   function getPendingInteraction(runId: string): PendingInteractionProjection | null {
@@ -3899,6 +4009,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     expireBrowserSurfaceWaits: () => browserSurface.expireBrowserSurfaceWaits(),
     findActiveRunByRunId,
     getActiveRun,
+    getActiveRunOwnerSubjectId,
     getBrowserSurfaceRuntimeAllocatorScopeId: browserSurfaceRuntimeAllocatorScopeId,
     getBrowserSurfaceRuntimeManagement: browserSurfaceRuntimeManagement,
     getPendingInteraction,

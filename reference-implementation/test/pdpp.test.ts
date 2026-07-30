@@ -18,7 +18,37 @@ import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { getDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
 import { ingestRecord } from "../server/records.ts";
-import { makeDefaultAccountConnectorInstanceId } from "../server/stores/connector-instance-store.ts";
+import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
+import {
+  admitOwnerRunConnection,
+  makeDefaultAccountConnectorInstanceId,
+} from "../server/stores/connector-instance-store.ts";
+
+// Real ingest resolves the acting owner subject from the request's bearer
+// token (`getOwnerTokenSubjectId` in server/index.ts), independent of
+// `runConnector`'s own `ownerSubjectId` option (always null in this suite).
+// This file's dominant owner-token subject is 'u1' (see `issueOwnerToken`
+// call sites), so admission must materialize/resolve that same subject via
+// the real store — mirrors the exact production wiring in server/index.ts's
+// `createController({ admitRunConnection: ... })`.
+function fakeAdmitRunConnection(
+  ownerSubjectIdDefault = "u1"
+): (input: {
+  connectorId: string;
+  connectorInstanceId: string | null;
+  ownerSubjectId: string | null;
+}) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }> {
+  return async ({ connectorId, connectorInstanceId, ownerSubjectId: requestedOwnerSubjectId }) => {
+    const ownerSubjectId = requestedOwnerSubjectId || ownerSubjectIdDefault;
+    const namespace = await admitOwnerRunConnection({
+      connectorId,
+      connectorInstanceId,
+      connectorInstanceStore: createRequestConnectorInstanceStore(),
+      ownerSubjectId,
+    });
+    return { connectorId: namespace.connectorId, connectorInstanceId: namespace.connectorInstanceId, ownerSubjectId };
+  };
+}
 
 const REGEXP_1 = /Longview/;
 const REGEXP_2 = /concert-recommendation profile/;
@@ -1295,6 +1325,7 @@ async function registerDynamicClient(
 async function seedSpotify(rsUrl: string, manifest: ConnectorManifest, ownerToken: string) {
   const connectorPath = join(REFERENCE_IMPL_DIR, "connectors/seed/index.ts");
   return runConnector({
+    admitRunConnection: fakeAdmitRunConnection(),
     collectionMode: "full_refresh",
     connectorId: manifest.connector_id,
     connectorPath,
@@ -9088,6 +9119,7 @@ test("PDPP reference implementation integration", async (t) => {
       const ownerToken = await issueOwnerToken(asUrl, "u1");
 
       const uncommittedRun = await runConnector({
+        admitRunConnection: fakeAdmitRunConnection(),
         collectionMode: "full_refresh",
         connectorId: spotifyManifest.connector_id,
         connectorPath: join(REFERENCE_IMPL_DIR, "connectors/seed/index.ts"),
@@ -9111,6 +9143,7 @@ test("PDPP reference implementation integration", async (t) => {
       assert.deepEqual(noState, {});
 
       const committedRun = await runConnector({
+        admitRunConnection: fakeAdmitRunConnection(),
         collectionMode: "full_refresh",
         connectorId: spotifyManifest.connector_id,
         connectorPath: join(REFERENCE_IMPL_DIR, "connectors/seed/index.ts"),

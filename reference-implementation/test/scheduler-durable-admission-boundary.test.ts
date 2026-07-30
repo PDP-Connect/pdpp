@@ -221,6 +221,12 @@ test("two independent scheduler processes sharing one durable store admit exactl
   // Process A: starts first, reaches durable admission, blocks (paused
   // connector) so its active-run row stays live.
   schedulerA = createScheduler({
+    admitRunConnection: ({ connectorId, connectorInstanceId, ownerSubjectId }) =>
+      Promise.resolve({
+        connectorId,
+        connectorInstanceId: connectorInstanceId ?? CONNECTOR_INSTANCE_ID,
+        ownerSubjectId: ownerSubjectId ?? "owner_local",
+      }),
     connectors: [connectorEntry],
     getState: async () => null,
     onInteraction: () => ({ status: "cancelled", type: "INTERACTION_RESPONSE" }),
@@ -246,6 +252,12 @@ test("two independent scheduler processes sharing one durable store admit exactl
   // restarted process) racing process A while A's run is still genuinely
   // live.
   schedulerB = createScheduler({
+    admitRunConnection: ({ connectorId, connectorInstanceId, ownerSubjectId }) =>
+      Promise.resolve({
+        connectorId,
+        connectorInstanceId: connectorInstanceId ?? CONNECTOR_INSTANCE_ID,
+        ownerSubjectId: ownerSubjectId ?? "owner_local",
+      }),
     connectors: [connectorEntry],
     getState: async () => null,
     onInteraction: () => ({ status: "cancelled", type: "INTERACTION_RESPONSE" }),
@@ -317,6 +329,12 @@ test("scheduler restart while an incumbent run is genuinely still live does not 
   };
 
   originalScheduler = createScheduler({
+    admitRunConnection: ({ connectorId, connectorInstanceId, ownerSubjectId }) =>
+      Promise.resolve({
+        connectorId,
+        connectorInstanceId: connectorInstanceId ?? CONNECTOR_INSTANCE_ID,
+        ownerSubjectId: ownerSubjectId ?? "owner_local",
+      }),
     connectors: [connectorEntry],
     getState: async () => null,
     onInteraction: () => ({ status: "cancelled", type: "INTERACTION_RESPONSE" }),
@@ -336,6 +354,12 @@ test("scheduler restart while an incumbent run is genuinely still live does not 
   // in-memory `activeRuns` from the durable row (that field is intentionally
   // process-local); the durable gate alone must prevent a second launch.
   restartedScheduler = createScheduler({
+    admitRunConnection: ({ connectorId, connectorInstanceId, ownerSubjectId }) =>
+      Promise.resolve({
+        connectorId,
+        connectorInstanceId: connectorInstanceId ?? CONNECTOR_INSTANCE_ID,
+        ownerSubjectId: ownerSubjectId ?? "owner_local",
+      }),
     connectors: [connectorEntry],
     getState: async () => null,
     onInteraction: () => ({ status: "cancelled", type: "INTERACTION_RESPONSE" }),
@@ -380,6 +404,11 @@ test("manual controller.runNow racing a scheduled tick for the same connector in
   let manualRunConnectorCalled = false;
 
   const controller = createController({
+    admitRunConnection: ({ connectorId, connectorInstanceId }) =>
+      Promise.resolve({
+        connectorId,
+        connectorInstanceId: connectorInstanceId ?? CONNECTOR_INSTANCE_ID,
+      }),
     connectorPathResolver: () => connector.connectorPath,
     logger: { error: () => undefined, warn: () => undefined },
     maxRunWallClockMs: Number.POSITIVE_INFINITY,
@@ -424,6 +453,12 @@ test("manual controller.runNow racing a scheduled tick for the same connector in
   // connector) races against the manual incumbent via the SAME durable
   // store. It must be rejected without spawning a child.
   scheduler = createScheduler({
+    admitRunConnection: ({ connectorId, connectorInstanceId, ownerSubjectId }) =>
+      Promise.resolve({
+        connectorId,
+        connectorInstanceId: connectorInstanceId ?? CONNECTOR_INSTANCE_ID,
+        ownerSubjectId: ownerSubjectId ?? "owner_local",
+      }),
     connectors: [
       {
         connectorId: CONNECTOR_ID,
@@ -495,6 +530,12 @@ test("next scheduled dispatch is anchored to a run's actual completion time, obs
   });
 
   scheduler = createScheduler({
+    admitRunConnection: ({ connectorId, connectorInstanceId, ownerSubjectId }) =>
+      Promise.resolve({
+        connectorId,
+        connectorInstanceId: connectorInstanceId ?? CONNECTOR_INSTANCE_ID,
+        ownerSubjectId: ownerSubjectId ?? "owner_local",
+      }),
     connectors: [
       {
         connectorId: CONNECTOR_ID,

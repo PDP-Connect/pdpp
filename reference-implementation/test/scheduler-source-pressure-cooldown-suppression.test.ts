@@ -166,6 +166,7 @@ test("a connection with pending upstream_pressure gaps cools off — one skip pe
     connectors: [
       {
         connectorId,
+        connectorInstanceId: connectorId,
         connectorPath,
         intervalMs: 50,
         manifest: POLICY_BLOCKED_MANIFEST,
@@ -214,6 +215,7 @@ test("pending pressure gaps do not defer once the computed nextRunAt has arrived
     connectors: [
       {
         connectorId,
+        connectorInstanceId: connectorId,
         connectorPath,
         intervalMs: 50,
         manifest: POLICY_BLOCKED_MANIFEST,
@@ -256,6 +258,7 @@ test("scheduler skip history does not slide source-pressure cooldown forward", a
     connectors: [
       {
         connectorId,
+        connectorInstanceId: connectorId,
         connectorPath,
         intervalMs: 50,
         manifest: POLICY_BLOCKED_MANIFEST,
@@ -298,6 +301,7 @@ test("the cooling-off audit line re-arms when the pressure picture changes", asy
     connectors: [
       {
         connectorId,
+        connectorInstanceId: connectorId,
         connectorPath,
         intervalMs: 50,
         manifest: POLICY_BLOCKED_MANIFEST,
@@ -342,6 +346,7 @@ test("a future nextAttemptAfter floor is enforced, not only displayed", async ()
     connectors: [
       {
         connectorId,
+        connectorInstanceId: connectorId,
         connectorPath,
         intervalMs: 50,
         manifest: POLICY_BLOCKED_MANIFEST,
@@ -387,6 +392,7 @@ test("a recovered run clears the cooldown — the connection becomes eligible ag
     connectors: [
       {
         connectorId,
+        connectorInstanceId: connectorId,
         connectorPath,
         intervalMs: 50,
         manifest: POLICY_BLOCKED_MANIFEST,
@@ -439,6 +445,7 @@ test("source-pressure cooldown does not bleed across connections", async () => {
     connectors: [
       {
         connectorId: "pressured-connector",
+        connectorInstanceId: "pressured-connector",
         connectorPath: pressured.connectorPath,
         intervalMs: 50,
         manifest: POLICY_BLOCKED_MANIFEST,
@@ -447,6 +454,7 @@ test("source-pressure cooldown does not bleed across connections", async () => {
       },
       {
         connectorId: "peer-connector",
+        connectorInstanceId: "peer-connector",
         connectorPath: peer.connectorPath,
         intervalMs: 50,
         manifest: POLICY_BLOCKED_MANIFEST,
@@ -502,6 +510,7 @@ test("source-pressure probe failure must not silently suppress runs (fail-open)"
     connectors: [
       {
         connectorId,
+        connectorInstanceId: connectorId,
         connectorPath,
         intervalMs: 50,
         manifest: POLICY_BLOCKED_MANIFEST,

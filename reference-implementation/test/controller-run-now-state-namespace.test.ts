@@ -101,10 +101,28 @@ interface MakeControllerOverrides {
   runConnectorImpl?: ControllerOptions["runConnectorImpl"];
 }
 
+// A minimal, production-shaped admission fixture: echoes back whatever
+// connectorInstanceId the caller requested (each test in this file always
+// passes an explicit one), falling back to a deterministic default-account id
+// only when none is given — the same authority shape `admitOwnerRunConnection`
+// enforces in production, without a real store.
+function fakeAdmitRunConnection(): (input: {
+  connectorId: string;
+  connectorInstanceId: string | null;
+  ownerSubjectId: string | null;
+}) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }> {
+  return ({ connectorId, connectorInstanceId, ownerSubjectId: requestedOwnerSubjectId }) => {
+    const ownerSubjectId = requestedOwnerSubjectId || "owner_local";
+    const exactId = connectorInstanceId ?? `cin_${ownerSubjectId}_${connectorId.replace(/[^a-z0-9]+/gi, "_")}`;
+    return Promise.resolve({ connectorId, connectorInstanceId: exactId, ownerSubjectId });
+  };
+}
+
 function makeController(calls: RuntimeRunConnectorOptions[], overrides: MakeControllerOverrides = {}) {
   // No browserSurfaceLeaseManager: amazon runs without acquiring a managed
   // surface, so the stubbed runConnectorImpl is reached directly.
   return createController({
+    admitRunConnection: fakeAdmitRunConnection(),
     connectorPathResolver: () => "/tmp/connector.ts",
     ...(overrides.detailGapStore ? { detailGapStore: overrides.detailGapStore } : {}),
     logger: { error: () => undefined, warn: () => undefined },

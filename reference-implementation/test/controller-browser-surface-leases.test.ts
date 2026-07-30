@@ -69,6 +69,28 @@ const DISTINCT_PROFILE_MANIFEST = {
   },
 };
 
+// A minimal, production-shaped admission fixture. None of this file's
+// `runNow` calls pass an explicit `connectorInstanceId`, and the fixtures/
+// assertions throughout (profile-key scoping, `getActiveRun(connectorId)`
+// lookups, durable-conflict rows keyed by the bare connector id) are written
+// against this file's pre-existing single-account convention where the
+// default connection's id IS the connector id -- i.e. no `:instanceId`
+// suffix is added to the browser-surface profile key (see
+// `runtime/browser-surface/profile-key.ts`: it only scopes the key when
+// `connectorInstanceId !== connectorId`). Mirrors the same authority shape
+// `admitOwnerRunConnection` enforces in production, without a real store.
+function fakeAdmitRunConnection(): (input: {
+  connectorId: string;
+  connectorInstanceId: string | null;
+  ownerSubjectId: string | null;
+}) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }> {
+  return ({ connectorId, connectorInstanceId, ownerSubjectId: requestedOwnerSubjectId }) => {
+    const ownerSubjectId = requestedOwnerSubjectId || "owner_local";
+    const exactId = connectorInstanceId ?? connectorId;
+    return Promise.resolve({ connectorId, connectorInstanceId: exactId, ownerSubjectId });
+  };
+}
+
 function tempDbPath(): string {
   return makeTemporaryDbPath("pdpp-controller-bsl-");
 }
@@ -411,6 +433,14 @@ function setup(
   };
   const schedulerStore = createSchedulerStore(calls);
   const controller = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
+    // Queued/deferred leases are promoted later without a live caller-supplied
+    // `ownerSubjectId` (queueWaitingBrowserSurfaceLaunch only persists it when
+    // the original runNow call set one explicitly, which this file's tests
+    // never do). Promotion re-derives the owner via this hook -- mirror the
+    // fixture's own default owner so promotion can proceed the same way
+    // production's real resolver would for the single-account convention.
+    resolveOwnerSubjectIdForConnectorInstance: async () => "owner_local",
     ...(browserSurfaceAllocator ? { browserSurfaceAllocator } : {}),
     browserSurfaceLeaseManager: manager,
     ...(browserSurfaceLeaseStore ? { browserSurfaceLeaseStore } : {}),
@@ -612,6 +642,7 @@ test("durable active-run row blocks managed manual and recovery admission before
   };
   let runConnectorCalled = false;
   const controller = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
     browserSurfaceAllocator: allocator,
     browserSurfaceLeaseManager: manager,
     connectorPathResolver: () => "/tmp/connector.js",
@@ -1195,6 +1226,7 @@ test("dynamic allocator failure clears the reservation and admits the next run",
   assert.equal(controller.getActiveRun("managed"), null);
 
   const recoveryController = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
     browserSurfaceAllocator: createReadyAllocator(),
     browserSurfaceLeaseManager: createDynamicManager(),
     connectorPathResolver: () => "/tmp/connector.js",

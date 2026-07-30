@@ -49,6 +49,8 @@ import { getDefaultBrowserSurfaceReplacementReceiptStore } from "../server/store
 import type { ActiveRunRecord, SchedulerStore } from "../server/stores/scheduler-store.ts";
 import { makeTemporaryDbPath } from "./helpers/temp-dir.ts";
 
+const REGEXP_FIXTURE_ADMISSION_REJECTED = /fixture admission rejected/;
+
 const MANIFEST = {
   capabilities: {
     browser_surface: {
@@ -60,6 +62,41 @@ const MANIFEST = {
   streams: [],
   version: "1.0.0",
 };
+
+// Maps each fixture connection id to the one owner that actually holds it.
+// Mirrors the production store's owner-scoping (connector_instance_owner_mismatch):
+// admission must reject a claim from any subject other than the id's real
+// owner, not merely check connectorId/connectorInstanceId membership.
+const FIXTURE_CONNECTION_OWNERS: Readonly<Record<string, string>> = {
+  cin_managed_fixture: "owner_local",
+  "live-instance-from-memory": "owner_local",
+  managed: "owner_local",
+  "other-managed-instance-2": "owner_local",
+  "owner-bob-instance": "owner_bob",
+};
+
+function admitManagedFixtureRun({
+  connectorId,
+  connectorInstanceId,
+  ownerSubjectId,
+}: {
+  connectorId: string;
+  connectorInstanceId: string | null;
+  ownerSubjectId?: string | null;
+}) {
+  const exactId = connectorInstanceId ?? "managed";
+  const requestedOwnerSubjectId = ownerSubjectId || "owner_local";
+  const actualOwnerSubjectId = FIXTURE_CONNECTION_OWNERS[exactId];
+  if (connectorId !== "managed" || !actualOwnerSubjectId) {
+    throw new Error(`fixture admission rejected ${connectorId}/${exactId}`);
+  }
+  if (actualOwnerSubjectId !== requestedOwnerSubjectId) {
+    throw new Error(
+      `fixture admission rejected: connection '${exactId}' belongs to '${actualOwnerSubjectId}', not '${requestedOwnerSubjectId}'`
+    );
+  }
+  return Promise.resolve({ connectorId, connectorInstanceId: exactId, ownerSubjectId: actualOwnerSubjectId });
+}
 
 function tempDbPath() {
   return makeTemporaryDbPath("pdpp-controller-rdy-");
@@ -272,12 +309,15 @@ function setup(
 
   const runConnectorCalls: RuntimeRunConnectorOptions[] = [];
   const controller = createController({
+    admitRunConnection: admitManagedFixtureRun,
     ...(browserSurfaceAllocator ? { browserSurfaceAllocator } : {}),
     ...(browserSurfaceLeaseStore ? { browserSurfaceLeaseStore } : {}),
     browserSurfaceLeaseManager: leaseManager || createManagerWithReadySurface(),
     ...(probe ? { browserSurfaceReadinessProbe: probe } : {}),
     connectorPathResolver: () => "/tmp/connector.js",
     logger: { error: () => undefined, warn: () => undefined },
+    resolveOwnerSubjectIdForConnectorInstance: async (connectorInstanceId) =>
+      FIXTURE_CONNECTION_OWNERS[connectorInstanceId] ?? null,
     runConnectorImpl: async (opts) => {
       runConnectorCalls.push(opts);
       if (runConnectorImpl) {
@@ -409,6 +449,25 @@ test("readiness probe success: connector spawned with surface env and run.browse
   assert.equal(readyData.browser_surface_probe.ok, true);
   assert.equal(readyData.browser_surface_probe.page_target_count, 1);
   assert.equal(readyData.browser_surface_probe.browser_version, "Chrome/124.0");
+});
+
+test("admission rejects a claim for another owner's connection, even with a valid connector/instance id", async (t) => {
+  const { controller, runConnectorCalls } = setup(t);
+
+  // "owner-bob-instance" is a real fixture connection, but it belongs to
+  // owner_bob (see FIXTURE_CONNECTION_OWNERS) — the default-owner caller here
+  // must be refused, not silently admitted onto someone else's connection.
+  await assert.rejects(
+    () =>
+      controller.runNow("managed", {
+        connectorInstanceId: "owner-bob-instance",
+        manifest: MANIFEST,
+        ownerToken: "owner-token",
+        runId: "run_cross_owner_denied",
+      }),
+    REGEXP_FIXTURE_ADMISSION_REJECTED
+  );
+  assert.equal(runConnectorCalls.length, 0, "the connector child must never spawn for a denied cross-owner claim");
 });
 
 test("static managed readiness defaults the durable replacement store without an allocator", async (t) => {
@@ -648,11 +707,14 @@ test("readiness probe failure calls allocator.stopSurface(reason: surface_failed
 
   const otherCalls: RuntimeRunConnectorOptions[] = [];
   const c2 = createController({
+    admitRunConnection: admitManagedFixtureRun,
     browserSurfaceAllocator: allocator,
     browserSurfaceLeaseManager: leaseManager,
     browserSurfaceReadinessProbe: probe,
     connectorPathResolver: () => "/tmp/connector.js",
     logger: { error: () => undefined, warn: () => undefined },
+    resolveOwnerSubjectIdForConnectorInstance: async (connectorInstanceId) =>
+      FIXTURE_CONNECTION_OWNERS[connectorInstanceId] ?? null,
     runConnectorImpl: (opts) => {
       otherCalls.push(opts);
       return Promise.resolve({
@@ -856,7 +918,7 @@ test("typed browser_surface_attach_exhausted code on a dynamic surface after rea
       await emitSpineEvent({
         actor_id: opts.connectorId,
         actor_type: "runtime",
-        data: { records_emitted: 0 },
+        data: { connector_instance_id: "managed", records_emitted: 0 },
         event_type: "run.failed",
         object_id: opts.runId ?? null,
         object_type: "run",
@@ -876,6 +938,7 @@ test("typed browser_surface_attach_exhausted code on a dynamic surface after rea
   });
 
   const first = await controller.runNow("managed", {
+    connectorInstanceId: "managed",
     manifest: MANIFEST,
     ownerToken: "owner-token",
     runId: "run_attach_exhausted_first",
@@ -1180,6 +1243,10 @@ function setupPromotionHarness({
     listPersistedActiveRuns: async () => [],
     log: { error: () => undefined, warn: () => undefined },
     pendingBrowserSurfaceLaunches,
+    resolveOwnerSubjectIdForConnectorInstance: async (connectorInstanceId) =>
+      new Set([connectorId, surfaceSubjectId, "live-instance-from-memory"]).has(connectorInstanceId)
+        ? "owner_restart_fixture"
+        : null,
     scheduleRun: (schedConnectorId, options) => {
       calls.push({ connectorId: schedConnectorId, options });
     },
@@ -1201,6 +1268,7 @@ test("restart promotion restores connectorInstanceId from the persisted lease's 
   const firstCall = at(calls, 0);
   assert.equal(firstCall.connectorId, "other-managed");
   assert.equal(firstCall.options.runId, "run_after_restart");
+  assert.equal(firstCall.options.ownerSubjectId, "owner_restart_fixture");
   assert.equal(
     firstCall.options.connectorInstanceId,
     "other-managed-instance-2",

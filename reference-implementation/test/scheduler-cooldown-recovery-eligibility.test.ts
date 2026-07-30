@@ -143,6 +143,7 @@ test("a source-pressure cooldown does NOT suppress the dispatch when non-pressur
     connectors: [
       {
         connectorId,
+        connectorInstanceId: connectorId,
         connectorPath,
         intervalMs: 50,
         manifest: POLICY_BLOCKED_MANIFEST,
@@ -253,6 +254,7 @@ test("recovery fires even when a stale failure-backoff interval has NOT elapsed 
     connectors: [
       {
         connectorId,
+        connectorInstanceId: connectorId,
         connectorPath,
         intervalMs: 50,
         manifest: POLICY_BLOCKED_MANIFEST,
@@ -300,6 +302,7 @@ test("a source-pressure cooldown still suppresses the dispatch when there is NO 
     connectors: [
       {
         connectorId,
+        connectorInstanceId: connectorId,
         connectorPath,
         intervalMs: 50,
         manifest: POLICY_BLOCKED_MANIFEST,
@@ -345,6 +348,7 @@ test("stale source-pressure rows do not re-arm the scheduler cooldown", async ()
     connectors: [
       {
         connectorId,
+        connectorInstanceId: connectorId,
         connectorPath,
         intervalMs: 50,
         manifest: POLICY_BLOCKED_MANIFEST,
@@ -388,6 +392,7 @@ test("the non-pressure recovery probe defaults to fail-closed (legacy behaviour 
     connectors: [
       {
         connectorId,
+        connectorInstanceId: connectorId,
         connectorPath,
         intervalMs: 50,
         manifest: POLICY_BLOCKED_MANIFEST,
@@ -486,6 +491,7 @@ test("a genuine cross-path success NEWER than the streak clears the stale back-o
     connectors: [
       {
         connectorId,
+        connectorInstanceId: connectorId,
         connectorPath,
         // Small interval so a 4x back-off (2^(5-3)=4 => 200ms) still sits in the
         // future relative to the ~0ms elapsed at start, proving the streak would
@@ -539,6 +545,7 @@ test("a STALE cross-path success (older than the streak) does NOT clear the back
     connectors: [
       {
         connectorId,
+        connectorInstanceId: connectorId,
         connectorPath,
         intervalMs: 50,
         manifest: POLICY_BLOCKED_MANIFEST,
@@ -594,6 +601,7 @@ test("with NO cross-path success probe wired, a stale streak keeps backing off (
     connectors: [
       {
         connectorId,
+        connectorInstanceId: connectorId,
         connectorPath,
         intervalMs: 50,
         manifest: POLICY_BLOCKED_MANIFEST,

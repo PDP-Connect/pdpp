@@ -66,6 +66,7 @@ export const POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS: readonly string[] = [
   "Postgres introspection fails closed on an unexpected manifest-storage fault",
   "Postgres migrates legacy accepted outcomes to equal named terminal cursor facts",
   "Postgres pool saturation and unlock uncertainty destroy the lock session",
+  "Postgres preserves new run identity and rejects an unbound writer",
   "Postgres replacement ledger matches SQLite append/order/selection contract",
   "Postgres retained-size reads shape identically to SQLite for global/connection/stream/record-family/top grains",
   "Postgres revokeDevice cascades revoked status when PDPP_TEST_POSTGRES_URL is set",

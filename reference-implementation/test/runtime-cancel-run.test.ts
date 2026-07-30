@@ -37,6 +37,8 @@ import test from "node:test";
 import type { RuntimeRunConnectorResult } from "../runtime/index.ts";
 import { runConnector } from "../runtime/index.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
+import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from "../server/owner-auth.ts";
+import { makeDefaultAccountConnectorInstanceId } from "../server/stores/connector-instance-store.ts";
 
 const STREAM = "items";
 
@@ -145,6 +147,7 @@ function freshDb(t: TestContext): void {
 }
 
 interface SpineEventRow {
+  connector_instance_id: string | null;
   event_type: string;
   status: string | null;
 }
@@ -164,8 +167,27 @@ function asStructuredOutcome(value: unknown): StructuredCancelOutcome {
 function spineEventsForRun(runId: string): SpineEventRow[] {
   const db = getDb();
   return db
-    .prepare("SELECT event_type, status FROM spine_events WHERE run_id = ? ORDER BY event_seq ASC")
+    .prepare(
+      "SELECT connector_instance_id, event_type, status FROM spine_events WHERE run_id = ? ORDER BY event_seq ASC"
+    )
     .all(runId) as SpineEventRow[];
+}
+
+function assertRunEventsUseDefaultAccountBinding(runId: string): SpineEventRow[] {
+  const events = spineEventsForRun(runId);
+  const expectedConnectorInstanceId = makeDefaultAccountConnectorInstanceId(
+    OWNER_AUTH_DEFAULT_SUBJECT_ID,
+    MANIFEST.connector_id
+  );
+  assert.ok(events.length > 0, "runtime run persisted spine events");
+  for (const event of events) {
+    assert.equal(
+      event.connector_instance_id,
+      expectedConnectorInstanceId,
+      `${event.event_type} keeps the direct runtime's exact default-account binding`
+    );
+  }
+  return events;
 }
 
 async function runCancelScenario(t: TestContext, { ignoreSigterm, runId }: { ignoreSigterm: boolean; runId: string }) {
@@ -186,6 +208,13 @@ async function runCancelScenario(t: TestContext, { ignoreSigterm, runId }: { ign
   let outcomeError: unknown = null;
   try {
     outcome = await runConnector({
+      admitRunConnection: async ({ connectorId, connectorInstanceId, ownerSubjectId }) => {
+        await Promise.resolve();
+        const exactId = makeDefaultAccountConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
+        assert.ok(connectorInstanceId === null || connectorInstanceId === exactId);
+        assert.equal(ownerSubjectId, OWNER_AUTH_DEFAULT_SUBJECT_ID);
+        return { connectorId, connectorInstanceId: exactId, ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID };
+      },
       cancelSignal: controller.signal,
       collectionMode: "full_refresh",
       connectorId: MANIFEST.connector_id,
@@ -208,6 +237,7 @@ async function runCancelScenario(t: TestContext, { ignoreSigterm, runId }: { ign
       onInteraction: () => ({ status: "cancelled", type: "INTERACTION_RESPONSE" }),
       // biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op test double represents an optional side effect.
       onProgress: () => {},
+      ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
       ownerToken: "test-owner-token",
       persistState: true,
       rsUrl,
@@ -245,7 +275,7 @@ test("runtime owner-cancel: connector that exits on SIGTERM terminals as owner_c
   assert.equal(stateCommits.length, 0, "staged cursor state is NOT committed on cancel");
 
   // Spine timeline records the request and a terminal run.cancelled.
-  const events = spineEventsForRun(runId).map((e) => e.event_type);
+  const events = assertRunEventsUseDefaultAccountBinding(runId).map((e) => e.event_type);
   assert.ok(events.includes("run.cancel_requested"), "a non-terminal run.cancel_requested is recorded");
   assert.ok(events.includes("run.cancelled"), "a terminal run.cancelled is recorded");
   assert.ok(!events.includes("run.failed"), "an owner-cancelled run does NOT terminal as run.failed");
@@ -272,7 +302,7 @@ test("runtime owner-cancel: connector that ignores SIGTERM is force-terminated â
   const stateCommits = requests.filter((r) => r.method === "PUT" && r.pathname.startsWith("/v1/state/"));
   assert.equal(stateCommits.length, 0, "staged cursor state is NOT committed on forced cancel");
 
-  const events = spineEventsForRun(runId).map((e) => e.event_type);
+  const events = assertRunEventsUseDefaultAccountBinding(runId).map((e) => e.event_type);
   assert.ok(events.includes("run.cancel_requested"), "a non-terminal run.cancel_requested is recorded");
   assert.ok(events.includes("run.cancelled"), "a terminal run.cancelled is recorded");
   assert.ok(!events.includes("run.failed"), "a force-cancelled run does NOT terminal as run.failed");

@@ -4,7 +4,14 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-
+import { canonicalConnectorKey } from "../../server/connector-key.ts";
+import { initDb } from "../../server/db.ts";
+import { initPostgresStorage, isPostgresStorageBackend, resolveStorageBackend } from "../../server/postgres-storage.ts";
+import {
+  admitOwnerRunConnection,
+  createPostgresConnectorInstanceStore,
+  createSqliteConnectorInstanceStore,
+} from "../../server/stores/connector-instance-store.ts";
 import type { CliFlags } from "../lib/args.ts";
 import { parseArgs } from "../lib/args.ts";
 import { resolveAsUrl, resolveRsUrl } from "../lib/common.ts";
@@ -38,6 +45,11 @@ interface RunConnectorResult {
   [key: string]: unknown;
 }
 type RunConnectorFn = (args: {
+  admitRunConnection: (input: {
+    connectorId: string;
+    connectorInstanceId: string | null;
+    ownerSubjectId: string | null;
+  }) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }>;
   connectorPath: string;
   connectorId: string;
   ownerToken: string;
@@ -91,6 +103,7 @@ async function seedOneConnector(
   asUrl: string | true,
   rsUrl: string | true,
   ownerToken: string,
+  ownerSubjectId: string,
   runConnector: RunConnectorFn
 ): Promise<SeedOutcome> {
   process.stdout.write(`  · ${name} … `);
@@ -100,9 +113,38 @@ async function seedOneConnector(
 
     await registerManifest(asUrl, manifest);
 
+    const connectorInstanceStore = isPostgresStorageBackend()
+      ? createPostgresConnectorInstanceStore()
+      : createSqliteConnectorInstanceStore();
+
     const result = await runConnector({
+      // Authoritative admission: resolves (and, for an omitted selector,
+      // materializes) the owner's exact connection through the same store
+      // boundary the reference server uses for every other run starter
+      // (server/index.ts's admitRunConnection wiring). This never trusts a
+      // caller-recomputed id — the store is the only source of truth for
+      // which connector_instance_id belongs to this owner+connector.
+      admitRunConnection: async ({ connectorId, connectorInstanceId, ownerSubjectId: admittedOwnerSubjectId }) => {
+        const namespace = await admitOwnerRunConnection({
+          connectorId,
+          connectorInstanceId,
+          connectorInstanceStore,
+          ownerSubjectId: admittedOwnerSubjectId ?? ownerSubjectId,
+        });
+        return {
+          connectorId: namespace.connectorId,
+          connectorInstanceId: namespace.connectorInstanceId,
+          ownerSubjectId: namespace.ownerSubjectId,
+        };
+      },
       collectionMode: "full_refresh",
-      connectorId: manifest.connector_id,
+      // The raw manifest connector_id may be a URL-form first-party id
+      // (e.g. https://registry.pdpp.org/connectors/spotify); runConnector
+      // canonicalizes it (canonicalConnectorKey) before admission, so admit
+      // against the SAME canonical key here rather than the raw manifest
+      // value — otherwise the store resolves a different connector than the
+      // one runConnector actually starts.
+      connectorId: canonicalConnectorKey(manifest.connector_id) ?? manifest.connector_id,
       connectorPath: SEED_CONNECTOR_PATH,
       manifest,
       ownerToken,
@@ -165,6 +207,7 @@ export async function runSeed(argv: string[]): Promise<void> {
   const connectors = resolveRequestedConnectors(flags);
 
   await ensureReachable(asUrl);
+  await connectSeedStorageBackend();
 
   const runtimeModule = (await import(join(REF_ROOT, "runtime", "index.ts"))) as { runConnector: RunConnectorFn };
   const { runConnector } = runtimeModule;
@@ -191,7 +234,7 @@ export async function runSeed(argv: string[]): Promise<void> {
     // order, and later connectors can rely on earlier ones having
     // finished registering against the shared reference server.
     // biome-ignore lint/performance/noAwaitInLoops: see comment above
-    const outcome = await seedOneConnector(name, asUrl, rsUrl, ownerToken, runConnector);
+    const outcome = await seedOneConnector(name, asUrl, rsUrl, ownerToken, String(subjectId), runConnector);
     results.push(outcome);
   }
 
@@ -212,6 +255,31 @@ export async function runSeed(argv: string[]): Promise<void> {
     );
     process.exitCode = 1;
   }
+}
+
+// `seed` drives `runConnector` in-process (not over HTTP) so it can await
+// each connector's full synchronous result before printing progress. That
+// only produces authoritative admission (and dataset-summary-visible
+// records) when this process's storage handle is the SAME database the
+// target reference server is reading — never a private, disconnected
+// default. Mirrors the server's own storage bootstrap (server/index.ts's
+// `startServer`) so `pdpp seed`'s admission checks the identical store.
+async function connectSeedStorageBackend(): Promise<void> {
+  const backend = resolveStorageBackend();
+  if (backend.backend === "postgres") {
+    await initPostgresStorage(backend);
+    return;
+  }
+  const dbPath = process.env.PDPP_DB_PATH || process.env.DB_PATH;
+  if (!dbPath) {
+    throw new PdppCliError(
+      "pdpp seed requires PDPP_DB_PATH (or PDPP_DATABASE_URL for Postgres) set to the SAME\n" +
+        "database the target reference server uses. Without it, seed would open its own private\n" +
+        "in-memory database that the server can never see, and every seeded connector would\n" +
+        "appear to succeed while writing records nobody can read."
+    );
+  }
+  await initDb(dbPath);
 }
 
 async function ensureReachable(asUrl: string | true): Promise<void> {

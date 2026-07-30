@@ -89,6 +89,8 @@ export interface ConnectorSchedule {
   readonly intervalMs: number;
   readonly manifest: SchedulerManifest;
   readonly maxRetries?: number;
+  /** Owner admitted with this exact connection at scheduler refresh. */
+  readonly ownerSubjectId?: string;
   readonly ownerToken: string;
 }
 
@@ -330,6 +332,7 @@ export type RunManagedConnectorViaController = (
   connectorId: string,
   opts: {
     connectorInstanceId: string;
+    ownerSubjectId: string;
     ownerToken: string;
     priorityClass: "background";
     recoveryOnly?: boolean;
@@ -342,6 +345,11 @@ export type RunManagedConnectorViaController = (
 ) => ManagedConnectorRun | null | Promise<ManagedConnectorRun | null>;
 
 export interface SchedulerOptions {
+  admitRunConnection?: (input: {
+    connectorId: string;
+    connectorInstanceId: string | null;
+    ownerSubjectId: string | null;
+  }) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }>;
   connectors: readonly ConnectorSchedule[];
   /**
    * Durable cross-path "latest successful run at" projection. Lets the back-off

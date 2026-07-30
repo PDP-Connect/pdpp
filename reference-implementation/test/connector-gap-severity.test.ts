@@ -9,6 +9,32 @@ import test from "node:test";
 
 import { runConnector } from "../runtime/index.ts";
 import { startServer } from "../server/index.ts";
+import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
+import { admitOwnerRunConnection } from "../server/stores/connector-instance-store.ts";
+
+// Real ingest resolves the acting owner subject from the request's bearer
+// token (`getOwnerTokenSubjectId` in server/index.ts), independent of
+// `runConnector`'s own `ownerSubjectId` option (always null here). This
+// file's harness mints its owner token for subject 'gap_severity_user', so
+// admission must materialize/resolve that same subject via the real store —
+// mirrors the exact production wiring in server/index.ts's
+// `createController({ admitRunConnection: ... })`.
+function fakeAdmitRunConnection(): (input: {
+  connectorId: string;
+  connectorInstanceId: string | null;
+  ownerSubjectId: string | null;
+}) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }> {
+  return async ({ connectorId, connectorInstanceId, ownerSubjectId: requestedOwnerSubjectId }) => {
+    const ownerSubjectId = requestedOwnerSubjectId || "gap_severity_user";
+    const namespace = await admitOwnerRunConnection({
+      connectorId,
+      connectorInstanceId,
+      connectorInstanceStore: createRequestConnectorInstanceStore(),
+      ownerSubjectId,
+    });
+    return { connectorId: namespace.connectorId, connectorInstanceId: namespace.connectorInstanceId, ownerSubjectId };
+  };
+}
 
 // `startServer`'s inferred asServer/rsServer type comes from a framework
 // `.listen()` call whose TS overload resolves to an http2-shaped type, but at
@@ -197,6 +223,7 @@ test("default START.scope excludes unsupported-in-mode streams", async () => {
     const { connectorPath, cleanup } = createScopeAwareConnector(capturePath);
     try {
       const result = await runConnector({
+        admitRunConnection: fakeAdmitRunConnection(),
         collectionMode: "incremental",
         connectorId: manifest.connector_id,
         connectorPath,
@@ -228,6 +255,7 @@ test("explicit unsupported-in-mode stream skip is actionable", async () => {
     const { connectorPath, cleanup } = createScopeAwareConnector(capturePath);
     try {
       const result = await runConnector({
+        admitRunConnection: fakeAdmitRunConnection(),
         collectionMode: "incremental",
         connectorId: manifest.connector_id,
         connectorPath,
@@ -261,6 +289,7 @@ test("default-selected supported stream not_available stays actionable", async (
     const { connectorPath, cleanup } = createScopeAwareConnector(capturePath, { itemSkipReason: "not_available" });
     try {
       const result = await runConnector({
+        admitRunConnection: fakeAdmitRunConnection(),
         collectionMode: "incremental",
         connectorId: manifest.connector_id,
         connectorPath,
@@ -293,6 +322,7 @@ test("transient skip reasons are persisted with transient severity", async () =>
     const { connectorPath, cleanup } = createScopeAwareConnector(capturePath, { itemSkipReason: "http_429" });
     try {
       const result = await runConnector({
+        admitRunConnection: fakeAdmitRunConnection(),
         collectionMode: "incremental",
         connectorId: manifest.connector_id,
         connectorPath,

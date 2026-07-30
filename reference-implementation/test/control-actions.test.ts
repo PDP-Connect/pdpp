@@ -367,6 +367,8 @@ async function emitSyntheticRun({
       bindings: { filesystem: {}, interactive: {}, network: {} },
       boot_epoch: _epoch.boot_epoch,
       collection_mode: "incremental",
+      connector_instance_id:
+        connectorId === SPOTIFY_CONNECTOR_KEY ? SPOTIFY_INSTANCE_ID : `cin_synthetic_${connectorId}`,
       controller_id: _epoch.controller_id,
       persist_state: true,
       scope: { streams: [{ name: "top_artists" }] },
@@ -983,6 +985,7 @@ test("controller startup reconciles abandoned controller-managed runs after rest
           // scheduler_run_history reconciler, not the boot-epoch one).
           boot_epoch: "prior-incarnation-epoch",
           collection_mode: "incremental",
+          connector_instance_id: SPOTIFY_INSTANCE_ID,
           controller_id: "prior-incarnation",
           persist_state: true,
           scope: { streams: [{ name: "top_tracks" }] },

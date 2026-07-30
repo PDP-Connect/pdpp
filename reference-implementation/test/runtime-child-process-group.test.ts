@@ -210,6 +210,25 @@ function asStructuredOutcome(value: unknown): StructuredCancelOutcome {
   return value as StructuredCancelOutcome;
 }
 
+/**
+ * Minimal admission fixture for `runConnector`'s required `admitRunConnection`
+ * callback: echoes back whatever connectorId/connectorInstanceId/ownerSubjectId
+ * it is asked to admit. These process-group reaping tests assert only on
+ * spawn/cancel/terminal-reason outcomes, never on connection identity, so a
+ * pass-through admission is sufficient.
+ */
+function fakeAdmitRunConnection(): (input: {
+  connectorId: string;
+  connectorInstanceId: string | null;
+  ownerSubjectId: string | null;
+}) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }> {
+  return ({ connectorId, connectorInstanceId, ownerSubjectId: requestedOwnerSubjectId }) => {
+    const ownerSubjectId = requestedOwnerSubjectId || "owner_local";
+    const exactId = connectorInstanceId ?? `cin_${ownerSubjectId}_${connectorId.replace(/[^a-z0-9]+/gi, "_")}`;
+    return Promise.resolve({ connectorId, connectorInstanceId: exactId, ownerSubjectId });
+  };
+}
+
 function isAlive(pid: number): boolean {
   try {
     // Signal 0 performs no signalling — it only checks the target exists and is
@@ -262,6 +281,7 @@ async function runGroupReapScenario(t: TestContext, { ignoreSigterm }: { ignoreS
 
   try {
     outcome = await runConnector({
+      admitRunConnection: fakeAdmitRunConnection(),
       cancelSignal: controller.signal,
       collectionMode: "full_refresh",
       connectorId: MANIFEST.connector_id,

@@ -149,6 +149,7 @@ test("T1+T2: scheduled managed-connector run calls runManagedConnectorViaControl
       connectors: [
         {
           connectorId,
+          connectorInstanceId: connectorId,
           connectorPath,
           intervalMs: 25,
           manifest: BACKGROUND_SAFE_MANIFEST,
@@ -216,6 +217,7 @@ test("T2c: scheduled managed connector retries runtime-retryable terminal known 
       connectors: [
         {
           connectorId,
+          connectorInstanceId: connectorId,
           connectorPath,
           intervalMs: 25,
           manifest: BACKGROUND_SAFE_MANIFEST,
@@ -352,6 +354,7 @@ test("T2b: scheduled managed-connector recovery dispatch preserves recoveryOnly"
       connectors: [
         {
           connectorId,
+          connectorInstanceId: connectorId,
           connectorPath,
           intervalMs: 25,
           manifest: BACKGROUND_SAFE_MANIFEST,
@@ -401,6 +404,7 @@ test("T3: browser_surface_queued status maps to skipped RunRecord (not failure-r
       connectors: [
         {
           connectorId: "chatgpt",
+          connectorInstanceId: "chatgpt",
           connectorPath,
           intervalMs: 25,
           manifest: BACKGROUND_SAFE_MANIFEST,
@@ -448,6 +452,7 @@ test("T3c: run_already_active controller contention maps to skipped RunRecord", 
       connectors: [
         {
           connectorId: "chatgpt",
+          connectorInstanceId: "chatgpt",
           connectorPath,
           intervalMs: 25,
           manifest: BACKGROUND_SAFE_MANIFEST,
@@ -501,6 +506,7 @@ test("T3b: surface_failed status also maps to skipped RunRecord", async () => {
       connectors: [
         {
           connectorId: "chatgpt",
+          connectorInstanceId: "chatgpt",
           connectorPath,
           intervalMs: 25,
           manifest: BACKGROUND_SAFE_MANIFEST,
@@ -544,9 +550,16 @@ test("T4: non-managed connector (callback returns null) falls through to runConn
     let managedCallCount = 0;
 
     const scheduler = createScheduler({
+      admitRunConnection: ({ connectorId, connectorInstanceId, ownerSubjectId }) =>
+        Promise.resolve({
+          connectorId,
+          connectorInstanceId: connectorInstanceId ?? "filesystem-connector",
+          ownerSubjectId: ownerSubjectId ?? "owner_local",
+        }),
       connectors: [
         {
           connectorId: "filesystem-connector",
+          connectorInstanceId: "filesystem-connector",
           connectorPath,
           intervalMs: 25,
           manifest: BACKGROUND_SAFE_MANIFEST,
@@ -608,7 +621,11 @@ test("T5: connectorInstanceId matches connectorId when not explicitly set (profi
       connectors: [
         {
           connectorId,
-          // No explicit connectorInstanceId → defaults to connectorId
+          // No explicit connectorInstanceId configured in the schedule entry
+          // itself (T5 verifies the profile_key derivation) — but the
+          // scheduler still requires an admitted instance id to create a run
+          // at all, so the fixture below echoes connectorId back.
+          connectorInstanceId: connectorId,
           connectorPath,
           intervalMs: 25,
           manifest: BACKGROUND_SAFE_MANIFEST,
@@ -657,6 +674,7 @@ test("T6: controller.runNow throw produces a failed RunRecord (scheduler stays a
       connectors: [
         {
           connectorId: "chatgpt",
+          connectorInstanceId: "chatgpt",
           connectorPath,
           intervalMs: 25,
           manifest: BACKGROUND_SAFE_MANIFEST,
@@ -708,6 +726,7 @@ test("T7: a managed run that DISPATCHES but FAILS records a failed RunRecord (no
       connectors: [
         {
           connectorId: "chatgpt",
+          connectorInstanceId: "chatgpt",
           connectorPath,
           intervalMs: 25,
           manifest: BACKGROUND_SAFE_MANIFEST,
@@ -841,6 +860,7 @@ test("T8: managed connector with an unwired routing seam DEFERS (skip), not a co
       connectors: [
         {
           connectorId: "chatgpt",
+          connectorInstanceId: "chatgpt",
           connectorPath,
           intervalMs: 25,
           manifest: BACKGROUND_SAFE_MANIFEST,
@@ -903,9 +923,16 @@ test("T9: non-managed connector with no routing seam still uses runConnector (de
     const completedRuns: RunRecord[] = [];
 
     const scheduler = createScheduler({
+      admitRunConnection: ({ connectorId, connectorInstanceId, ownerSubjectId }) =>
+        Promise.resolve({
+          connectorId,
+          connectorInstanceId: connectorInstanceId ?? "filesystem-connector",
+          ownerSubjectId: ownerSubjectId ?? "owner_local",
+        }),
       connectors: [
         {
           connectorId: "filesystem-connector",
+          connectorInstanceId: "filesystem-connector",
           connectorPath,
           intervalMs: 25,
           manifest: BACKGROUND_SAFE_MANIFEST,

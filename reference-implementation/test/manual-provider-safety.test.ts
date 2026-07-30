@@ -152,6 +152,27 @@ function fakeSchedulerStore({
   };
 }
 
+// A minimal, production-shaped admission fixture. Every `runNow` call in this
+// file that omits `connectorInstanceId` relies on this suite's fixture data
+// (`pressureGap`/`lastRunTimes` rows keyed by bare `connector_id`, with
+// `connector_instance_id: null`) matching the legacy "default instance id
+// equals connectorId" convention that `collectPendingPressureGaps`
+// (runtime/controller.ts) reads via `row.connector_instance_id || connectorId`.
+// Echoing `connectorId` itself here (rather than synthesizing a distinct
+// default-account id) keeps that equality true and preserves the exact
+// pressure-gate behavior under test.
+function fakeAdmitRunConnection(): (input: {
+  connectorId: string;
+  connectorInstanceId: string | null;
+  ownerSubjectId: string | null;
+}) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }> {
+  return ({ connectorId, connectorInstanceId, ownerSubjectId: requestedOwnerSubjectId }) => {
+    const ownerSubjectId = requestedOwnerSubjectId || "owner_local";
+    const exactId = connectorInstanceId ?? connectorId;
+    return Promise.resolve({ connectorId, connectorInstanceId: exactId, ownerSubjectId });
+  };
+}
+
 // One pending pressure gap (the shape the controller reads from the store).
 function pressureGap(overrides: Partial<PendingDetailGapRow> = {}): PendingDetailGapRow {
   return {
@@ -184,6 +205,7 @@ async function withPreGateController(
   const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-manual-safety-"));
   const connectorPath = buildImmediateConnectorFixture(tmpDir);
   const controller = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
     connectorPathResolver: () => connectorPath,
     detailGapStore: detailGapStoreFn(),
     schedulerStore: fakeSchedulerStore(schedulerStoreOptions),

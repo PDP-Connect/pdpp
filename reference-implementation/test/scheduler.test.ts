@@ -344,6 +344,24 @@ function cancelledInteractionResponse(...args: unknown[]) {
   };
 }
 
+// Permissive admission fixture for the require-new-run-connection-id
+// fail-closed boundary: every schedule fixture in this file now supplies an
+// explicit `connectorInstanceId`, so this fixture simply echoes the exact
+// admitted identity the scheduler passes in -- it never invents a different
+// id, matching the connector's configured binding.
+function fakeAdmitRunConnection(): (input: {
+  connectorId: string;
+  connectorInstanceId: string | null;
+  ownerSubjectId: string | null;
+}) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }> {
+  return ({ connectorId, connectorInstanceId, ownerSubjectId }) =>
+    Promise.resolve({
+      connectorId,
+      connectorInstanceId: connectorInstanceId ?? connectorId,
+      ownerSubjectId: ownerSubjectId ?? "owner_local",
+    });
+}
+
 test("server-owned scheduler starts persisted enabled schedules after startup", async () => {
   const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
   const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-server-scheduler-enabled-"));
@@ -361,6 +379,28 @@ test("server-owned scheduler starts persisted enabled schedules after startup", 
       method: "POST",
     });
     assert.equal(registerResp.status, 201);
+    // Admission requires an existing connector-instance row for this owner +
+    // connector (require-new-run-connection-id): the production
+    // admitRunConnection wiring in server/index.ts refuses to materialize one
+    // implicitly once the schedule row carries an explicit
+    // connector_instance_id (upsertSchedule always sets one), so the fixture
+    // must register the connection before the scheduler can admit a run.
+    // upsertSchedule (called below with no explicit connectorInstanceId option)
+    // stores the schedule's connector_instance_id as the CANONICAL key, not the
+    // URL-shaped connector_id — the connector-instance row must be keyed the
+    // same way so buildConnectors' admission lookup finds it.
+    const serverOwnedCanonicalKey = canonicalConnectorKey(spotifyManifest.connector_id) ?? spotifyManifest.connector_id;
+    await createSqliteConnectorInstanceStore().upsert({
+      connectorId: serverOwnedCanonicalKey,
+      connectorInstanceId: serverOwnedCanonicalKey,
+      createdAt: "2026-04-29T00:00:00.000Z",
+      displayName: spotifyManifest.display_name || spotifyManifest.connector_id,
+      ownerSubjectId: "owner_local",
+      sourceBinding: { kind: "test_scheduler_fixture" },
+      sourceBindingKey: "scheduler_server_owned_fixture",
+      sourceKind: "account",
+      updatedAt: "2026-04-29T00:00:00.000Z",
+    });
     await server.controller.upsertSchedule(spotifyManifest.connector_id, {
       enabled: true,
       interval_seconds: 60,
@@ -392,9 +432,11 @@ test("scheduler enforces automation policy before starting an unsafe automatic r
   const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-scheduler-automation-policy-"));
   const { attemptsPath, connectorPath } = writeLoggingConnector(tmpDir);
   const scheduler = createScheduler({
+    admitRunConnection: fakeAdmitRunConnection(),
     connectors: [
       {
         connectorId: "unsafe-automatic",
+        connectorInstanceId: "unsafe-automatic",
         connectorPath,
         intervalMs: 1,
         manifest: {
@@ -572,6 +614,23 @@ test("autonomous scheduler canonicalizes a legacy URL-shaped schedule connector_
     });
     assert.equal(registerResp.status, 201);
 
+    // Admission requires an existing connector-instance row (require-new-run-
+    // connection-id): buildConnectors canonicalizes connectorId to canonicalKey
+    // but forwards the legacy (non-canonical) connector_instance_id verbatim,
+    // so the store row must be keyed by the legacy id while pointing at the
+    // canonical connector.
+    await createSqliteConnectorInstanceStore().upsert({
+      connectorId: canonicalKey,
+      connectorInstanceId: legacyConnectorId,
+      createdAt: "2026-04-29T00:00:00.000Z",
+      displayName: spotifyManifest.display_name || canonicalKey,
+      ownerSubjectId: "owner_local",
+      sourceBinding: { kind: "test_scheduler_fixture" },
+      sourceBindingKey: "scheduler_legacy_canonical_fixture",
+      sourceKind: "account",
+      updatedAt: "2026-04-29T00:00:00.000Z",
+    });
+
     // Seed the schedule row directly — NOT via controller.upsertSchedule, which
     // would canonicalize — to faithfully model a legacy row written before the
     // canonicalization slice landed.
@@ -652,9 +711,11 @@ test("scheduler history records checkpoint summaries from runConnector results",
 
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_user");
     const scheduler = createScheduler({
+      admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
           connectorId: spotifyManifest.connector_key,
+          connectorInstanceId: spotifyManifest.connector_key,
           connectorPath: join(REFERENCE_IMPL_DIR, "connectors/seed/index.ts"),
           intervalMs: 60_000,
           manifest: spotifyManifest,
@@ -762,9 +823,11 @@ test("scheduler hydrates persisted history without bypassing a fresh persisted l
 
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_persistence_user");
     const scheduler = createScheduler({
+      admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
           connectorId: spotifyManifest.connector_id,
+          connectorInstanceId: spotifyManifest.connector_id,
           connectorPath: join(REFERENCE_IMPL_DIR, "connectors/seed/index.ts"),
           intervalMs: 60_000,
           manifest: spotifyManifest,
@@ -837,9 +900,11 @@ test("scheduler direct runs timeout, terminal, and clear durable active-run rows
   try {
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_timeout_user");
     const scheduler = createScheduler({
+      admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
           connectorId: manifest.connector_id,
+          connectorInstanceId: manifest.connector_id,
           connectorPath,
           intervalMs: 60_000,
           manifest,
@@ -925,9 +990,11 @@ test("scheduler timeout beats connector DONE emitted during shutdown", async () 
   try {
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_timeout_done_user");
     const scheduler = createScheduler({
+      admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
           connectorId: manifest.connector_id,
+          connectorInstanceId: manifest.connector_id,
           connectorPath,
           intervalMs: 60_000,
           manifest,
@@ -984,9 +1051,11 @@ test("scheduler progress watchdog allows long direct runs that keep reporting pr
   try {
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_progress_watchdog_user");
     const scheduler = createScheduler({
+      admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
           connectorId: manifest.connector_id,
+          connectorInstanceId: manifest.connector_id,
           connectorPath,
           intervalMs: 60_000,
           manifest,
@@ -1092,9 +1161,11 @@ rl.on('line', (line) => {
 
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_failure_user");
     const scheduler = createScheduler({
+      admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
           connectorId: manifest.connector_id,
+          connectorInstanceId: manifest.connector_id,
           connectorPath,
           intervalMs: 60_000,
           manifest,
@@ -1286,9 +1357,11 @@ rl.on('line', (line) => {
 
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_partial_checkpoint_user");
     const scheduler = createScheduler({
+      admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
           connectorId: manifest.connector_id,
+          connectorInstanceId: manifest.connector_id,
           connectorPath,
           intervalMs: 60_000,
           manifest,
@@ -1423,9 +1496,11 @@ rl.on('line', (line) => {
 
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_terminal_counter_mismatch_user");
     const scheduler = createScheduler({
+      admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
           connectorId: manifest.connector_id,
+          connectorInstanceId: manifest.connector_id,
           connectorPath,
           intervalMs: 60_000,
           manifest,
@@ -1554,9 +1629,11 @@ rl.on('line', (line) => {
 
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_terminal_error_user");
     const scheduler = createScheduler({
+      admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
           connectorId: manifest.connector_id,
+          connectorInstanceId: manifest.connector_id,
           connectorPath,
           intervalMs: 60_000,
           manifest,
@@ -1675,9 +1752,11 @@ rl.on('line', (line) => {
 
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_known_gap_user");
     const scheduler = createScheduler({
+      admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
           connectorId: manifest.connector_id,
+          connectorInstanceId: manifest.connector_id,
           connectorPath,
           intervalMs: 60_000,
           manifest,
@@ -1786,9 +1865,11 @@ rl.on('line', (line) => {
 
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_cancelled_terminal_error_user");
     const scheduler = createScheduler({
+      admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
           connectorId: manifest.connector_id,
+          connectorInstanceId: manifest.connector_id,
           connectorPath,
           intervalMs: 60_000,
           manifest,
@@ -1908,9 +1989,11 @@ rl.on('line', (line) => {
 
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_no_retry_protocol_user");
     const scheduler = createScheduler({
+      admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
           connectorId: manifest.connector_id,
+          connectorInstanceId: manifest.connector_id,
           connectorPath,
           intervalMs: 60_000,
           manifest,
@@ -2030,9 +2113,11 @@ rl.on('line', (line) => {
 
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_retryable_terminal_error_user");
     const scheduler = createScheduler({
+      admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
           connectorId: manifest.connector_id,
+          connectorInstanceId: manifest.connector_id,
           connectorPath,
           intervalMs: 60_000,
           manifest,
@@ -2134,9 +2219,11 @@ rl.on('line', (line) => {
 
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_nonretryable_terminal_error_user");
     const scheduler = createScheduler({
+      admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
           connectorId: manifest.connector_id,
+          connectorInstanceId: manifest.connector_id,
           connectorPath,
           intervalMs: 60_000,
           manifest,
@@ -2256,9 +2343,11 @@ rl.on('line', (line) => {
     await new Promise<void>((resolve) => rsServer.listen(0, () => resolve()));
     const rsPort = addressPort(rsServer);
     const scheduler = createScheduler({
+      admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
           connectorId: manifest.connector_id,
+          connectorInstanceId: manifest.connector_id,
           connectorPath,
           intervalMs: 60_000,
           manifest,
@@ -2409,9 +2498,11 @@ rl.on('line', (line) => {
     await new Promise<void>((resolve) => rsServer.listen(0, () => resolve()));
     const rsPort = addressPort(rsServer);
     const scheduler = createScheduler({
+      admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
           connectorId: manifest.connector_id,
+          connectorInstanceId: manifest.connector_id,
           connectorPath,
           intervalMs: 60_000,
           manifest,
@@ -2553,9 +2644,11 @@ rl.on('line', (line) => {
     await new Promise<void>((resolve) => rsServer.listen(0, () => resolve()));
     const rsPort = addressPort(rsServer);
     const scheduler = createScheduler({
+      admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
           connectorId: manifest.connector_id,
+          connectorInstanceId: manifest.connector_id,
           connectorPath,
           intervalMs: 60_000,
           manifest,
@@ -2707,9 +2800,11 @@ rl.on('line', (line) => {
     await new Promise<void>((resolve) => rsServer.listen(0, () => resolve()));
     const rsPort = addressPort(rsServer);
     const scheduler = createScheduler({
+      admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
           connectorId: manifest.connector_id,
+          connectorInstanceId: manifest.connector_id,
           connectorPath,
           intervalMs: 60_000,
           manifest,
@@ -2840,9 +2935,11 @@ rl.on('line', (line) => {
     await new Promise<void>((resolve) => rsServer.listen(0, () => resolve()));
     const rsPort = addressPort(rsServer);
     const scheduler = createScheduler({
+      admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
           connectorId: manifest.connector_id,
+          connectorInstanceId: manifest.connector_id,
           connectorPath,
           intervalMs: 60_000,
           manifest,
@@ -2918,9 +3015,11 @@ test("scheduler treats single_use grants as one successful run followed by exhau
       updatedAt: "2026-04-29T02:00:00.000Z",
     });
     const scheduler = createScheduler({
+      admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
           connectorId: spotifyManifest.connector_id,
+          connectorInstanceId: spotifyManifest.connector_id,
           connectorPath: join(REFERENCE_IMPL_DIR, "connectors/seed/index.ts"),
           grantAccessMode: "single_use",
           intervalMs: 25,
@@ -3038,9 +3137,11 @@ rl.on('line', (line) => {
 
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_active_run_user");
     const scheduler = createScheduler({
+      admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
           connectorId: spotifyManifest.connector_id,
+          connectorInstanceId: spotifyManifest.connector_id,
           connectorPath,
           intervalMs: 50,
           manifest: spotifyManifest,
@@ -3137,9 +3238,11 @@ rl.on('line', (line) => {
 
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_single_use_retry_user");
     const scheduler = createScheduler({
+      admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
           connectorId: spotifyManifest.connector_id,
+          connectorInstanceId: spotifyManifest.connector_id,
           connectorPath,
           grantAccessMode: "single_use",
           intervalMs: 50,
@@ -3253,9 +3356,11 @@ rl.on('line', (line) => {
 
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_stop_retry_user");
     const scheduler = createScheduler({
+      admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
           connectorId: spotifyManifest.connector_id,
+          connectorInstanceId: spotifyManifest.connector_id,
           connectorPath,
           intervalMs: 60_000,
           manifest: spotifyManifest,
@@ -3322,9 +3427,11 @@ test("scheduler start is idempotent and does not launch a second immediate run",
 
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_idempotent_start_user");
     const scheduler = createScheduler({
+      admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
           connectorId: spotifyManifest.connector_key,
+          connectorInstanceId: spotifyManifest.connector_key,
           connectorPath: join(REFERENCE_IMPL_DIR, "connectors/seed/index.ts"),
           intervalMs: 10_000,
           manifest: spotifyManifest,
@@ -3445,9 +3552,11 @@ rl.on('line', (line) => {
       await new Promise<void>((resolve) => rsServer.listen(0, () => resolve()));
       const rsPort = addressPort(rsServer);
       const scheduler = createScheduler({
+        admitRunConnection: fakeAdmitRunConnection(),
         connectors: [
           {
             connectorId: manifest.connector_id,
+            connectorInstanceId: manifest.connector_id,
             connectorPath,
             intervalMs: 50,
             manifest,
@@ -3517,9 +3626,11 @@ test("scheduler skips automatic run with needs_human_attention when isNeedsHuman
 
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_nhuman_skip_user");
     const scheduler = createScheduler({
+      admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
           connectorId: spotifyManifest.connector_id,
+          connectorInstanceId: spotifyManifest.connector_id,
           connectorPath: join(REFERENCE_IMPL_DIR, "connectors/seed/index.ts"),
           // Short interval so several ticks fire during the test window.
           intervalMs: 25,
@@ -3585,9 +3696,11 @@ test("scheduler records one not-ready skip for automatic runs when runtime prere
 
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_not_ready_skip_user");
     const scheduler = createScheduler({
+      admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
           connectorId: manifest.connector_id,
+          connectorInstanceId: manifest.connector_id,
           connectorPath: join(REFERENCE_IMPL_DIR, "connectors/seed/index.ts"),
           intervalMs: 25,
           manifest,
@@ -3648,9 +3761,11 @@ test("scheduler emits a fresh not-ready skip when readiness reason changes", asy
 
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_not_ready_changing_user");
     const scheduler = createScheduler({
+      admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
           connectorId: manifest.connector_id,
+          connectorInstanceId: manifest.connector_id,
           connectorPath: join(REFERENCE_IMPL_DIR, "connectors/seed/index.ts"),
           intervalMs: 25,
           manifest,
@@ -3723,9 +3838,11 @@ test("scheduler default readiness checker skips missing manifest-declared extern
 
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_missing_tool_user");
     const scheduler = createScheduler({
+      admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
           connectorId: manifest.connector_id,
+          connectorInstanceId: manifest.connector_id,
           connectorPath,
           intervalMs: 25,
           manifest,
@@ -3797,9 +3914,11 @@ test("scheduler default readiness checker probes SLACKDUMP_BIN with version when
 
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_slackdump_bin_user");
     const scheduler = createScheduler({
+      admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
           connectorId: manifest.connector_id,
+          connectorInstanceId: manifest.connector_id,
           connectorPath,
           intervalMs: 60_000,
           manifest,
@@ -3835,9 +3954,11 @@ test("scheduler default readiness checker applies local-source checks to canonic
   const previousStateDb = process.env.CODEX_STATE_DB;
   const completedRuns: RunRecord[] = [];
   const scheduler = createScheduler({
+    admitRunConnection: fakeAdmitRunConnection(),
     connectors: [
       {
         connectorId: "codex",
+        connectorInstanceId: "codex",
         connectorPath,
         intervalMs: 25,
         manifest: {
@@ -3923,9 +4044,11 @@ test("scheduler default readiness checker does not treat browser bindings as rea
 
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_browser_not_ready_user");
     const scheduler = createScheduler({
+      admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
           connectorId: manifest.connector_id,
+          connectorInstanceId: manifest.connector_id,
           connectorPath,
           intervalMs: 25,
           manifest,
@@ -4013,9 +4136,11 @@ test("scheduler default readiness checker treats PDPP_NEKO_CDP_HTTP_URL as manag
 
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_browser_neko_cdp_user");
     const scheduler = createScheduler({
+      admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
           connectorId: manifest.connector_id,
+          connectorInstanceId: manifest.connector_id,
           connectorPath,
           intervalMs: 25,
           manifest,
@@ -4106,9 +4231,11 @@ test("scheduler default readiness checker treats PDPP_NEKO_MANAGED_CONNECTORS as
 
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_browser_neko_managed_user");
     const scheduler = createScheduler({
+      admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
           connectorId: manifest.connector_id,
+          connectorInstanceId: manifest.connector_id,
           connectorPath,
           intervalMs: 25,
           manifest,
@@ -4221,9 +4348,11 @@ rl.on('line', (line) => {
 
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_interaction_user");
     const scheduler = createScheduler({
+      admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
           connectorId: manifest.connector_id,
+          connectorInstanceId: manifest.connector_id,
           connectorPath,
           intervalMs: 25,
           manifest,
@@ -4324,9 +4453,11 @@ test("scheduler backoff skip derives next_attempt_at from history when last_run_
 
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_backoff_1970_user");
     const scheduler = createScheduler({
+      admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
           connectorId: manifest.connector_id,
+          connectorInstanceId: manifest.connector_id,
           connectorPath: join(REFERENCE_IMPL_DIR, "connectors/seed/index.ts"),
           intervalMs: 25,
           manifest,
@@ -4442,9 +4573,11 @@ test("scheduler backoff skip uses gave_up phrasing once health-state crosses blo
 
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_backoff_blocked_msg_user");
     const scheduler = createScheduler({
+      admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
           connectorId: manifest.connector_id,
+          connectorInstanceId: manifest.connector_id,
           connectorPath: join(REFERENCE_IMPL_DIR, "connectors/seed/index.ts"),
           intervalMs: 25,
           manifest,
@@ -4568,9 +4701,11 @@ test("scheduler does not re-emit persisted backoff transition markers on restart
 
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_backoff_restart_noise_user");
     const scheduler = createScheduler({
+      admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
           connectorId: manifest.connector_id,
+          connectorInstanceId: manifest.connector_id,
           connectorPath: join(REFERENCE_IMPL_DIR, "connectors/seed/index.ts"),
           intervalMs: 25,
           manifest,

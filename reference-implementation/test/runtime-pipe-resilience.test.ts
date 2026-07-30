@@ -40,6 +40,25 @@ function asStructuredOutcome(value: unknown): StructuredRunOutcome {
   return value as StructuredRunOutcome;
 }
 
+/**
+ * Minimal admission fixture for `runConnector`'s required `admitRunConnection`
+ * callback: echoes back whatever connectorId/connectorInstanceId/ownerSubjectId
+ * it is asked to admit. These pipe-resilience tests assert only on the
+ * spawn/terminal-reason outcome shape, never on connection identity, so a
+ * pass-through admission is sufficient.
+ */
+function fakeAdmitRunConnection(): (input: {
+  connectorId: string;
+  connectorInstanceId: string | null;
+  ownerSubjectId: string | null;
+}) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }> {
+  return ({ connectorId, connectorInstanceId, ownerSubjectId: requestedOwnerSubjectId }) => {
+    const ownerSubjectId = requestedOwnerSubjectId || "owner_local";
+    const exactId = connectorInstanceId ?? `cin_${ownerSubjectId}_${connectorId.replace(/[^a-z0-9]+/gi, "_")}`;
+    return Promise.resolve({ connectorId, connectorInstanceId: exactId, ownerSubjectId });
+  };
+}
+
 // Regression coverage for
 //   openspec/changes/harden-reference-runtime-reliability/
 //
@@ -274,6 +293,7 @@ test("runConnector: connector that exits before reading START does not crash the
   let outcomeError: unknown = null;
   try {
     outcome = await runConnector({
+      admitRunConnection: fakeAdmitRunConnection(),
       collectionMode: "full_refresh",
       connectorId: manifest.connector_id,
       connectorPath: stubPath,
@@ -453,6 +473,7 @@ main().catch(err => {
   let outcomeError: unknown = null;
   try {
     outcome = await runConnector({
+      admitRunConnection: fakeAdmitRunConnection(),
       collectionMode: "full_refresh",
       connectorId: manifest.connector_id,
       connectorPath: stubPath,

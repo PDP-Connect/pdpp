@@ -94,6 +94,7 @@ interface ManifestStream {
 
 interface ConnectorManifest {
   runtime_requirements?: { bindings?: Record<string, { required?: boolean }> } | null;
+  storage_binding?: { connector_instance_id?: string | null } | null;
   streams?: ManifestStream[] | null;
   [key: string]: unknown;
 }
@@ -383,6 +384,15 @@ export interface RuntimeBrowserSurfaceEnv {
 }
 
 export interface RuntimeRunConnectorOptions {
+  /**
+   * Trusted run-creation admission. It must validate or materialize one exact
+   * owner-owned configured instance before this runtime emits `run.started`.
+   */
+  admitRunConnection?: (input: {
+    connectorId: string;
+    connectorInstanceId: string | null;
+    ownerSubjectId: string | null;
+  }) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }>;
   automationMode?: RuntimeRunAutomationMode | null;
   /**
    * Explicit browser-surface child env override for tests and integration
@@ -425,6 +435,8 @@ export interface RuntimeRunConnectorOptions {
   onInteractionTerminal?: ((info: { interactionId: string; status: string }) => unknown) | null;
   onProgress?: (message: unknown) => void;
   onStarted?: ((info: { run_id: string; scenario_id?: string; trace_id: string }) => void) | null;
+  /** Authenticated owner for standalone default-account resolution. */
+  ownerSubjectId?: string | null;
   ownerToken: string;
   persistState?: boolean;
   /**
@@ -644,6 +656,40 @@ function buildRunConnectionIdentity(connectorInstanceId: string | null): Record<
         connector_instance_id: connectorInstanceId,
       }
     : {};
+}
+
+function resolveRuntimeConnectorInstanceId(input: {
+  connectorId: string;
+  connectorInstanceId: string | null;
+  manifest: ConnectorManifest;
+}): string | null {
+  const explicit = optionalNonEmptyEnv(input.connectorInstanceId);
+  if (explicit) {
+    return explicit;
+  }
+  const manifestBinding = optionalNonEmptyEnv(input.manifest.storage_binding?.connector_instance_id);
+  if (manifestBinding) {
+    return manifestBinding;
+  }
+  return null;
+}
+
+async function admitRuntimeRunConnection(
+  admitRunConnection: RuntimeRunConnectorOptions["admitRunConnection"],
+  input: { connectorId: string; connectorInstanceId: string | null; ownerSubjectId: string | null }
+): Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }> {
+  if (!admitRunConnection) {
+    throw new Error("runConnector: an admitted run connection is required before run.started.");
+  }
+  const admittedConnection = await admitRunConnection(input);
+  if (
+    admittedConnection.connectorId !== input.connectorId ||
+    (input.connectorInstanceId !== null && admittedConnection.connectorInstanceId !== input.connectorInstanceId) ||
+    (input.ownerSubjectId !== null && admittedConnection.ownerSubjectId !== input.ownerSubjectId)
+  ) {
+    throw new Error("runConnector: admission did not authorize the claimed owner connection.");
+  }
+  return admittedConnection;
 }
 
 function appendUniqueFields(fields: string[], extraFields: string[]): string[] {
@@ -1835,9 +1881,11 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         }
       : (msg: unknown) => safeStderrWrite(`[runtime] ${JSON.stringify(msg)}\n`);
   const {
+    admitRunConnection,
     connectorPath,
     connectorId: rawConnectorId,
     connectorInstanceId = null,
+    ownerSubjectId = null,
     ownerToken,
     manifest,
     scope: providedScope = null,
@@ -1890,6 +1938,17 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     recoveryOnly = false,
   } = opts;
   const connectorId = canonicalConnectorKey(rawConnectorId) ?? rawConnectorId;
+  const claimedConnectorInstanceId = resolveRuntimeConnectorInstanceId({
+    connectorId,
+    connectorInstanceId,
+    manifest,
+  });
+  const admittedConnection = await admitRuntimeRunConnection(admitRunConnection, {
+    connectorId,
+    connectorInstanceId: claimedConnectorInstanceId,
+    ownerSubjectId,
+  });
+  const resolvedConnectorInstanceId = admittedConnection.connectorInstanceId;
 
   // Check binding requirements
   const requiredBindings = manifest.runtime_requirements?.bindings || {};
@@ -1936,7 +1995,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     automationMode,
     browserSurfaceEnv,
     browserSurfaceLease,
-    connectorInstanceId,
+    connectorInstanceId: resolvedConnectorInstanceId,
     connectorPath,
     referenceBaseUrl,
     runId: spawnRunId,
@@ -3195,7 +3254,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         ownerCancelRequested = true;
         // Emit the audit marker without blocking the terminate path; the terminal
         // `run.cancelled` event is emitted later by the close handler.
-        emitSpineEvent({
+        emitRunSpineEvent({
           actor_id: connectorId,
           actor_type: "owner",
           data: { source: runSource, ...(triggerKind ? { trigger_kind: triggerKind } : {}) },

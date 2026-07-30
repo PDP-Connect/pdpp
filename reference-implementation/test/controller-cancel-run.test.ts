@@ -23,6 +23,7 @@ import type { RuntimeRunConnectorOptions, RuntimeRunConnectorResult } from "../r
 import { closeDb, initDb } from "../server/db.ts";
 import type { ActiveRunRecord, SchedulerStore } from "../server/stores/scheduler-store.ts";
 
+const REGEXP_OWNER_MISMATCH = /run_owner_mismatch|does not belong/i;
 const CONNECTOR_ID = "https://registry.pdpp.org/connectors/cancel-run-test";
 const SIBLING_ID = "https://registry.pdpp.org/connectors/cancel-run-sibling";
 const MANIFEST = {
@@ -32,6 +33,22 @@ const MANIFEST = {
   version: "1.0.0",
 };
 const SIBLING_MANIFEST = { ...MANIFEST, connector_id: SIBLING_ID, name: "Cancel Run Sibling" };
+
+// A minimal, production-shaped admission fixture: mints a deterministic
+// default-account connector_instance_id per (ownerSubjectId, connectorId) and
+// refuses any other claimed id — the same authority shape
+// `admitOwnerRunConnection` enforces in production, without a real store.
+function fakeAdmitRunConnection(): (input: {
+  connectorId: string;
+  connectorInstanceId: string | null;
+  ownerSubjectId: string | null;
+}) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }> {
+  return ({ connectorId, connectorInstanceId, ownerSubjectId: requestedOwnerSubjectId }) => {
+    const ownerSubjectId = requestedOwnerSubjectId || "owner_local";
+    const exactId = connectorInstanceId ?? `cin_${ownerSubjectId}_${connectorId.replace(/[^a-z0-9]+/gi, "_")}`;
+    return Promise.resolve({ connectorId, connectorInstanceId: exactId, ownerSubjectId });
+  };
+}
 
 function createSchedulerStore(): SchedulerStore {
   const activeRuns = new Map<string, ActiveRunRecord>();
@@ -119,6 +136,7 @@ test("cancelRun aborts only the targeted run; sibling run is untouched", async (
   const runB = cancellableRun();
   const store = createSchedulerStore();
   const controller = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
     connectorPathResolver: () => "/tmp/connector.js",
     logger: { error: () => undefined, warn: () => undefined },
     runConnectorImpl: (opts) => (opts.connectorInstanceId === "cin_b" ? runB(opts) : runA(opts)),
@@ -141,7 +159,7 @@ test("cancelRun aborts only the targeted run; sibling run is untouched", async (
   assert.equal(controller.getActiveRun(CONNECTOR_ID, { connectorInstanceId: "cin_a" })?.run_id, "run_a");
   assert.equal(controller.getActiveRun(SIBLING_ID, { connectorInstanceId: "cin_b" })?.run_id, "run_b");
 
-  const result = await controller.cancelRun("run_a");
+  const result = await controller.cancelRun("run_a", "owner_local");
   assert.deepEqual(result, { run_id: "run_a", status: "cancel_requested" });
 
   // run_a's fake observed the abort; run_b's did not.
@@ -169,19 +187,21 @@ test("cancelRun aborts only the targeted run; sibling run is untouched", async (
 test("cancelRun on an unknown run returns no_active_run", async (t) => {
   freshDb(t);
   const controller = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
     connectorPathResolver: () => "/tmp/connector.js",
     logger: { error: () => undefined, warn: () => undefined },
     runConnectorImpl: () => Promise.resolve({ records_emitted: 0, status: "succeeded" }),
     schedulerStore: createSchedulerStore(),
   });
 
-  const result = await controller.cancelRun("run_does_not_exist");
+  const result = await controller.cancelRun("run_does_not_exist", "owner_local");
   assert.deepEqual(result, { run_id: "run_does_not_exist", status: "no_active_run" });
 });
 
 test("cancelRun on a run with a terminal event returns already_terminal", async (t) => {
   freshDb(t);
   const controller = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
     connectorPathResolver: () => "/tmp/connector.js",
     logger: { error: () => undefined, warn: () => undefined },
     runConnectorImpl: () => Promise.resolve({ records_emitted: 0, status: "succeeded" }),
@@ -200,7 +220,7 @@ test("cancelRun on a run with a terminal event returns already_terminal", async 
     status: "succeeded",
   });
 
-  const result = await controller.cancelRun("run_finished");
+  const result = await controller.cancelRun("run_finished", "owner_local");
   assert.deepEqual(result, { run_id: "run_finished", status: "already_terminal" });
 });
 
@@ -210,6 +230,7 @@ test("after cancel, a new manual run for the same connector is admitted", async 
   const firstRun = cancellableRun();
   let secondImplCalled = false;
   const controller = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
     connectorPathResolver: () => "/tmp/connector.js",
     logger: { error: () => undefined, warn: () => undefined },
     runConnectorImpl: (opts) => {
@@ -242,7 +263,7 @@ test("after cancel, a new manual run for the same connector is admitted", async 
     /run_already_active|already has an active run/i
   );
 
-  await controller.cancelRun("run_first");
+  await controller.cancelRun("run_first", "owner_local");
   await controller.drainActiveRuns(1000).catch(() => undefined);
 
   // Lock cleared → a fresh manual run is admitted.
@@ -254,5 +275,42 @@ test("after cancel, a new manual run for the same connector is admitted", async 
   });
   assert.equal(second.run_id, "run_second");
   assert.equal(secondImplCalled, true);
+  await controller.drainActiveRuns(1000).catch(() => undefined);
+});
+
+test("cancelRun refuses a foreign owner's cancellation request and leaves the run active", async (t) => {
+  freshDb(t);
+
+  const run = cancellableRun();
+  const controller = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
+    connectorPathResolver: () => "/tmp/connector.js",
+    logger: { error: () => undefined, warn: () => undefined },
+    ownerSubjectId: "owner_alice",
+    runConnectorImpl: run,
+    schedulerStore: createSchedulerStore(),
+  });
+
+  await controller.runNow(CONNECTOR_ID, {
+    connectorInstanceId: "cin_alice",
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_alice",
+  });
+
+  // Bob knows Alice's active run id but is not its owner: cancellation must
+  // be refused, not silently succeed against another owner's run.
+  await assert.rejects(() => controller.cancelRun("run_alice", "owner_bob"), REGEXP_OWNER_MISMATCH);
+
+  // Refused, not merely rejected-then-ignored: the run is still live and
+  // never observed a cancel signal.
+  assert.equal(run.aborted, false, "foreign-owner cancel attempt must not abort the run");
+  assert.equal(controller.getActiveRun(CONNECTOR_ID, { connectorInstanceId: "cin_alice" })?.run_id, "run_alice");
+
+  // The true owner can still cancel it.
+  const result = await controller.cancelRun("run_alice", "owner_alice");
+  assert.deepEqual(result, { run_id: "run_alice", status: "cancel_requested" });
+  assert.equal(run.aborted, true, "the actual owner's cancel request aborts the run");
+
   await controller.drainActiveRuns(1000).catch(() => undefined);
 });

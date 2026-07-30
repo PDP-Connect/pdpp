@@ -73,6 +73,22 @@ function createSchedulerStore(): SchedulerStore {
   };
 }
 
+// A minimal, production-shaped admission fixture: mints a deterministic
+// default-account connector_instance_id per (ownerSubjectId, connectorId) and
+// refuses any other claimed id — the same authority shape
+// `admitOwnerRunConnection` enforces in production, without a real store.
+function fakeAdmitRunConnection(): (input: {
+  connectorId: string;
+  connectorInstanceId: string | null;
+  ownerSubjectId: string | null;
+}) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }> {
+  return ({ connectorId, connectorInstanceId, ownerSubjectId: requestedOwnerSubjectId }) => {
+    const ownerSubjectId = requestedOwnerSubjectId || "owner_local";
+    const exactId = connectorInstanceId ?? `cin_${ownerSubjectId}_${connectorId.replace(/[^a-z0-9]+/gi, "_")}`;
+    return Promise.resolve({ connectorId, connectorInstanceId: exactId, ownerSubjectId });
+  };
+}
+
 function freshDb(t: TestContext) {
   closeDb();
   initDb(join(mkdtempSync(join(tmpdir(), "pdpp-launch-failure-")), "pdpp.sqlite"));
@@ -107,6 +123,7 @@ test("launch crash before run.started emits a typed launch_failed terminal and l
   const errorLines: string[] = [];
   const launch = deferredLaunchCrash("could not spawn connector child: executable missing");
   const controller = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
     connectorPathResolver: () => "/tmp/connector.js",
     logger: {
       error: (message) => {
@@ -162,6 +179,7 @@ test("launch-failure terminal message is bounded", async (t) => {
   freshDb(t);
 
   const controller = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
     connectorPathResolver: () => "/tmp/connector.js",
     logger: { error: () => undefined, warn: () => undefined },
     runConnectorImpl: () => Promise.reject(new Error("x".repeat(5000))),
@@ -188,6 +206,7 @@ test("post-spawn rejection with a runtime-recorded terminal event is not double-
   // Fake runtime behaviour for the connector-exit failure path: record the
   // terminal `run.failed` (as runtime/index.ts does), then reject.
   const controller = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
     connectorPathResolver: () => "/tmp/connector.js",
     logger: { error: () => undefined, warn: () => undefined },
     runConnectorImpl: async (opts) => {

@@ -148,6 +148,25 @@ interface StubDetailGapStore {
 
 type RunStubOptions = RuntimeRunConnectorOptions & { detailGapStore: StubDetailGapStore };
 
+/**
+ * Minimal admission fixture for `runConnector`'s required `admitRunConnection`
+ * callback: echoes back whatever connectorId/connectorInstanceId/ownerSubjectId
+ * it is asked to admit. These tests assert only on the stderr-diagnostics
+ * outcome shape, never on connection identity, so a pass-through admission is
+ * sufficient.
+ */
+function fakeAdmitRunConnection(): (input: {
+  connectorId: string;
+  connectorInstanceId: string | null;
+  ownerSubjectId: string | null;
+}) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }> {
+  return ({ connectorId, connectorInstanceId, ownerSubjectId: requestedOwnerSubjectId }) => {
+    const ownerSubjectId = requestedOwnerSubjectId || "owner_local";
+    const exactId = connectorInstanceId ?? `cin_${ownerSubjectId}_${connectorId.replace(/[^a-z0-9]+/gi, "_")}`;
+    return Promise.resolve({ connectorId, connectorInstanceId: exactId, ownerSubjectId });
+  };
+}
+
 // `RuntimeRunConnectorResult` in runtime/index.ts also omits `exit_code`,
 // which runtime/index.ts genuinely sets on every terminal failure outcome
 // this stub can produce (see the `exit_code: code` / `exit_code: exitCode`
@@ -186,6 +205,7 @@ async function runStub({
   let outcome: StubRunResult | null = null;
   let outcomeError: StubRunResult | null = null;
   const runOptions: RunStubOptions = {
+    admitRunConnection: fakeAdmitRunConnection(),
     collectionMode: "full_refresh",
     connectorId: TEST_MANIFEST.connector_id,
     connectorPath: stubPath,

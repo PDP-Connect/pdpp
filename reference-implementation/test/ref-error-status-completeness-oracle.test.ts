@@ -61,6 +61,7 @@ const EXPECTED = {
   provider_pressure_cooldown: 425,
   query_not_found: 404,
   run_already_active: 409,
+  run_owner_mismatch: 403,
   unknown_field: 400,
   unsupported_version: 400,
 };
@@ -75,6 +76,6 @@ test("codeToStatus has no added or removed codes versus the pinned contract", ()
   assert.deepEqual(Object.keys(codeToStatus).sort(), Object.keys(EXPECTED).sort());
 });
 
-test("codeToStatus contains all 49 committed error codes", () => {
-  assert.equal(Object.keys(codeToStatus).length, 49);
+test("codeToStatus contains all 50 committed error codes", () => {
+  assert.equal(Object.keys(codeToStatus).length, 50);
 });

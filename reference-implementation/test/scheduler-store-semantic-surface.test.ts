@@ -219,6 +219,7 @@ test("scheduler run history and last-run time round-trip through semantic method
       completedAt,
       connectorError: null,
       connectorId: SEMANTIC_CONNECTOR,
+      connectorInstanceId: "cin_semantic_history",
       failureReason: null,
       knownGaps: [],
       recordsEmitted: 7,
@@ -230,7 +231,7 @@ test("scheduler run history and last-run time round-trip through semantic method
       terminalReason: null,
       traceId: "trc_semantic_history",
     });
-    await store.upsertLastRunTime(SEMANTIC_CONNECTOR, 1_776_000_001_000, completedAt);
+    await store.upsertLastRunTime("cin_semantic_history", 1_776_000_001_000, completedAt, SEMANTIC_CONNECTOR);
 
     const history = await store.listRunHistory(10);
     assert.equal(history.length, 1);
@@ -240,7 +241,7 @@ test("scheduler run history and last-run time round-trip through semantic method
       completedAt,
       connectorError: null,
       connectorId: SEMANTIC_CONNECTOR,
-      connectorInstanceId: SEMANTIC_CONNECTOR,
+      connectorInstanceId: "cin_semantic_history",
       failureReason: null,
       knownGaps: [],
       recordsEmitted: 7,
@@ -252,17 +253,17 @@ test("scheduler run history and last-run time round-trip through semantic method
       terminalReason: null,
       traceId: "trc_semantic_history",
     });
-    assert.equal((await store.getLatestRunHistoryForConnection(SEMANTIC_CONNECTOR))?.runId, "run_semantic_history");
+    assert.equal((await store.getLatestRunHistoryForConnection("cin_semantic_history"))?.runId, "run_semantic_history");
     assert.equal(
-      (await store.getLatestRunHistoryForConnection(SEMANTIC_CONNECTOR, "succeeded"))?.runId,
+      (await store.getLatestRunHistoryForConnection("cin_semantic_history", "succeeded"))?.runId,
       "run_semantic_history"
     );
-    assert.equal(await store.getLatestRunHistoryForConnection(SEMANTIC_CONNECTOR, "failed"), null);
+    assert.equal(await store.getLatestRunHistoryForConnection("cin_semantic_history", "failed"), null);
 
     assert.deepEqual(await store.listLastRunTimes(), [
       {
         connector_id: SEMANTIC_CONNECTOR,
-        connector_instance_id: SEMANTIC_CONNECTOR,
+        connector_instance_id: "cin_semantic_history",
         last_run_time_ms: 1_776_000_001_000,
         updated_at: completedAt,
       },

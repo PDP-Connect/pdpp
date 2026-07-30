@@ -15,6 +15,7 @@ import {
   teardownConnectionSearchProjection as teardownConnectionSearchProjectionUntyped,
 } from "../server/records.ts";
 import {
+  admitOwnerRunConnection,
   ConnectorInstanceDeleteError,
   ConnectorInstanceResolutionError,
   createPostgresConnectorInstanceStore,
@@ -265,6 +266,52 @@ async function runConformance({
   await seedConnector("gmail");
   await seedConnector("claude-code");
   await seedConnector("reddit");
+
+  // New-run admission owns the authority boundary. An omitted selector may
+  // materialize only the authenticated owner's default; a claimed id (whether
+  // a connector type or arbitrary string) is never a materialization hint.
+  const aliceDefault = await admitOwnerRunConnection({
+    connectorId: "reddit",
+    connectorInstanceStore: store,
+    ownerSubjectId: "owner_alice",
+  });
+  assert.equal(aliceDefault.connectorInstanceId, makeDefaultAccountConnectorInstanceId("owner_alice", "reddit"));
+  await resolveOwnerConnectorInstanceNamespace({
+    allowDefaultAccount: true,
+    connectorId: "reddit",
+    connectorInstanceStore: store,
+    ownerSubjectId: "owner_local",
+  });
+  const bobDefault = await admitOwnerRunConnection({
+    connectorId: "reddit",
+    connectorInstanceStore: store,
+    ownerSubjectId: "owner_bob",
+  });
+  assert.equal(
+    bobDefault.connectorInstanceId,
+    makeDefaultAccountConnectorInstanceId("owner_bob", "reddit"),
+    "a present owner_local row cannot influence another owner's admitted run"
+  );
+  await assert.rejects(
+    () =>
+      admitOwnerRunConnection({
+        connectorId: "reddit",
+        connectorInstanceId: "cin_claimed_missing",
+        connectorInstanceStore: store,
+        ownerSubjectId: "owner_alice",
+      }),
+    (err) => err instanceof ConnectorInstanceResolutionError && err.code === "connector_instance_not_found"
+  );
+  await assert.rejects(
+    () =>
+      admitOwnerRunConnection({
+        connectorId: "reddit",
+        connectorInstanceId: "reddit",
+        connectorInstanceStore: store,
+        ownerSubjectId: "owner_alice",
+      }),
+    (err) => err instanceof ConnectorInstanceResolutionError && err.code === "connector_instance_not_found"
+  );
 
   const defaultAccount = await driver.call("ensureDefaultAccountConnection", {
     connectorId: "gmail",
@@ -580,6 +627,21 @@ async function runConformance({
   assert.equal(defaultHint.connectorInstanceId, makeDefaultAccountConnectorInstanceId("owner_4", "reddit"));
   assert.equal(defaultHint.createdDefaultAccount, true);
   assert.equal(defaultHint.selector, "connector_id");
+  const deterministicDefaultHint = await resolveOwnerConnectorInstanceNamespace({
+    allowDefaultAccount: true,
+    connectorId: "reddit",
+    connectorInstanceId: makeDefaultAccountConnectorInstanceId("owner_direct_runtime", "reddit"),
+    connectorInstanceStore: store,
+    displayName: "Reddit",
+    now: NOW,
+    ownerSubjectId: "owner_direct_runtime",
+  });
+  assert.equal(
+    deterministicDefaultHint.connectorInstanceId,
+    makeDefaultAccountConnectorInstanceId("owner_direct_runtime", "reddit")
+  );
+  assert.equal(deterministicDefaultHint.createdDefaultAccount, true);
+  assert.equal(deterministicDefaultHint.selector, "connector_id");
   await assert.rejects(
     () =>
       resolveOwnerConnectorInstanceNamespace({
@@ -1651,7 +1713,18 @@ test("SQLite deleteConnection is all-or-nothing: a schedule/device/row failure A
   }
 });
 
-const CONFORMANCE_TEST_OWNER_SUBJECT_IDS = ["owner_1", "owner_2", "owner_3", "owner_4", "owner_5", "owner_6"];
+const CONFORMANCE_TEST_OWNER_SUBJECT_IDS = [
+  "owner_1",
+  "owner_2",
+  "owner_3",
+  "owner_4",
+  "owner_5",
+  "owner_6",
+  "owner_alice",
+  "owner_bob",
+  "owner_direct_runtime",
+  "owner_local",
+];
 const CONFORMANCE_TEST_CONNECTOR_IDS = ["gmail", "claude-code", "reddit", "github", "spotify", "codex"];
 
 async function cleanConformanceFixtures() {

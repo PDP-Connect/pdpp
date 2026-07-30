@@ -293,10 +293,19 @@ function serializeJson(value: unknown): string | null {
   return value === null || value === undefined ? null : JSON.stringify(value);
 }
 
+function requireRunHistoryConnectorInstanceId(record: SchedulerRunHistoryRecord): string {
+  if (typeof record.connectorInstanceId !== "string" || record.connectorInstanceId.trim().length === 0) {
+    throw new Error(
+      "SchedulerStore.appendRunHistory: new run history requires connectorInstanceId (non-empty immutable connector instance identity); do not fall back to connectorId."
+    );
+  }
+  return record.connectorInstanceId;
+}
+
 export function createSqliteSchedulerStore(): SchedulerStore {
   return {
     appendRunHistory(record) {
-      const connectorInstanceId = record.connectorInstanceId ?? record.connectorId;
+      const connectorInstanceId = requireRunHistoryConnectorInstanceId(record);
       exec(referenceQueries.controllerInsertSchedulerRunHistory, [
         connectorInstanceId,
         record.connectorId,
@@ -517,7 +526,7 @@ export function createSqliteSchedulerStore(): SchedulerStore {
 export function createPostgresSchedulerStore(): SchedulerStore {
   return {
     async appendRunHistory(record) {
-      const connectorInstanceId = record.connectorInstanceId ?? record.connectorId;
+      const connectorInstanceId = requireRunHistoryConnectorInstanceId(record);
       await postgresQuery(
         `INSERT INTO scheduler_run_history(
            connector_instance_id,

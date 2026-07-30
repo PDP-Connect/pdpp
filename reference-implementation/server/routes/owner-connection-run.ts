@@ -155,6 +155,7 @@ export interface MountOwnerConnectionRunContext {
     options: {
       connectorInstanceId?: string | null;
       force?: boolean;
+      ownerSubjectId?: string;
       resources?: Readonly<Record<string, readonly string[]>>;
     }
   ) => Promise<unknown>;
@@ -374,6 +375,7 @@ function buildRunHandler(
       const started = await ctx.runNow(namespace.connectorId, {
         connectorInstanceId: namespace.connectorInstanceId,
         force,
+        ownerSubjectId,
         ...(resources ? { resources } : {}),
       });
       ctx.invalidateConnectorSummariesCache?.();

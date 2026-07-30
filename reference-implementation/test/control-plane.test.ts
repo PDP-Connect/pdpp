@@ -23,7 +23,10 @@ import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { getDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
 import { ingestRecord } from "../server/records.ts";
-import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
+import {
+  createSqliteConnectorInstanceStore,
+  makeDefaultAccountConnectorInstanceId,
+} from "../server/stores/connector-instance-store.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
@@ -62,10 +65,16 @@ const typedStartServer = startServer as unknown as (opts: StartServerOptions) =>
  * the result is modeled as `unknown` rather than invented a divergent shape.
  */
 interface RunConnectorOptions {
+  admitRunConnection: (input: {
+    connectorId: string;
+    connectorInstanceId: string | null;
+    ownerSubjectId: string | null;
+  }) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }>;
   collectionMode: string;
   connectorId: string;
   connectorPath: string;
   manifest: SpotifyManifest;
+  ownerSubjectId: string;
   ownerToken: string;
   rsUrl: string;
   state: null;
@@ -190,6 +199,13 @@ async function withHarness(fn: (ctx: HarnessContext) => Promise<void>): Promise<
       method: "POST",
     });
     assert.equal(registerResp.status, 201);
+    const connectorId = canonicalManifestConnectorId(spotifyManifest);
+    createSqliteConnectorInstanceStore().ensureDefaultAccountConnection({
+      connectorId,
+      displayName: connectorId,
+      now: "2026-04-24T00:00:00.000Z",
+      ownerSubjectId: "owner_local",
+    });
     await fn({ asUrl, rsUrl, spotifyManifest });
   } finally {
     await closeServer(server);
@@ -202,10 +218,18 @@ async function seedOneRun({ asUrl, rsUrl, spotifyManifest }: HarnessContext): Pr
 }> {
   const ownerToken = await issueOwnerToken(asUrl);
   const runResult = await typedRunConnector({
+    admitRunConnection: async ({ connectorId, connectorInstanceId, ownerSubjectId }) => {
+      await Promise.resolve();
+      const exactId = makeDefaultAccountConnectorInstanceId("owner_local", connectorId);
+      assert.ok(connectorInstanceId === null || connectorInstanceId === exactId);
+      assert.equal(ownerSubjectId, "owner_local");
+      return { connectorId, connectorInstanceId: exactId, ownerSubjectId: "owner_local" };
+    },
     collectionMode: "full_refresh",
     connectorId: spotifyManifest.connector_id,
     connectorPath: join(REFERENCE_IMPL_DIR, "connectors/seed/index.ts"),
     manifest: spotifyManifest,
+    ownerSubjectId: "owner_local",
     ownerToken,
     rsUrl,
     state: null,
@@ -534,7 +558,7 @@ test("_ref listing helpers", async (t) => {
 
       await emitSpineEvent({
         ...base,
-        data: { source, ...runStartedStamp },
+        data: { connector_instance_id: instance.connectorInstanceId, source, ...runStartedStamp },
         event_type: "run.started",
         object_id: "run_pending_input",
         occurred_at: "2026-04-24T00:00:00.000Z",
@@ -553,7 +577,7 @@ test("_ref listing helpers", async (t) => {
       });
       await emitSpineEvent({
         ...base,
-        data: { source, ...runStartedStamp },
+        data: { connector_instance_id: instance.connectorInstanceId, source, ...runStartedStamp },
         event_type: "run.started",
         object_id: "run_terminal_stale_input",
         occurred_at: "2026-04-24T00:01:00.000Z",
@@ -581,7 +605,7 @@ test("_ref listing helpers", async (t) => {
       });
       await emitSpineEvent({
         ...base,
-        data: { source, ...runStartedStamp },
+        data: { connector_instance_id: secondInstance.connectorInstanceId, source, ...runStartedStamp },
         event_type: "run.started",
         object_id: "run_second_input",
         occurred_at: "2026-04-24T00:02:00.000Z",

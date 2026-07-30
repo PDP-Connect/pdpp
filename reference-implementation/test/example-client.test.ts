@@ -20,6 +20,43 @@ import { buildDefaultDraft as buildDefaultDraftUntyped } from "../examples/third
 import { runConnector } from "../runtime/index.ts";
 import { startServer as startServerUntyped } from "../server/index.ts";
 import { DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN } from "../server/reference-local-defaults.ts";
+import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
+import { admitOwnerRunConnection } from "../server/stores/connector-instance-store.ts";
+
+/**
+ * Admission fixture for `runConnector`'s required `admitRunConnection`
+ * callback, mirroring the production wiring in `server/index.ts`'s
+ * `createController({ admitRunConnection: ... })`: calls the real
+ * `admitOwnerRunConnection` against a request-scoped connector-instance
+ * store so it materializes a genuine `connector_instances` row for
+ * `ownerSubjectId`. Downstream flow-example assertions (`registerClient`,
+ * `queryStreamRecords`, etc.) exercise the real HTTP surfaces, which
+ * validate ingested records against that same real store — a naive
+ * id-echoing double would leave the seeded run's records unreachable
+ * (`connector_instance_not_found`/owner mismatch).
+ */
+function fakeAdmitRunConnection(
+  ownerSubjectId: string
+): (input: {
+  connectorId: string;
+  connectorInstanceId: string | null;
+  ownerSubjectId: string | null;
+}) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }> {
+  return async ({ connectorId, connectorInstanceId, ownerSubjectId: requestedOwnerSubjectId }) => {
+    const resolvedOwnerSubjectId = requestedOwnerSubjectId || ownerSubjectId;
+    const namespace = await admitOwnerRunConnection({
+      connectorId,
+      connectorInstanceId,
+      connectorInstanceStore: createRequestConnectorInstanceStore(),
+      ownerSubjectId: resolvedOwnerSubjectId,
+    });
+    return {
+      connectorId: namespace.connectorId,
+      connectorInstanceId: namespace.connectorInstanceId,
+      ownerSubjectId: resolvedOwnerSubjectId,
+    };
+  };
+}
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
@@ -162,6 +199,7 @@ async function seedSpotify({
 }) {
   const ownerToken = await issueOwnerToken(asUrl, subjectId);
   const result = await runConnector({
+    admitRunConnection: fakeAdmitRunConnection(subjectId),
     collectionMode: "full_refresh",
     connectorId: manifest.connector_id,
     connectorPath: join(REFERENCE_IMPL_DIR, "connectors/seed/index.ts"),

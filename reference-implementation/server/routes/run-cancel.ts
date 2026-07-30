@@ -21,6 +21,7 @@
 import type { MiddlewareHandler, PdppErrorFn } from "./_route-contract.ts";
 
 interface RouteRequest {
+  readonly ownerSession?: { readonly sub?: string | null } | null;
   readonly params: Readonly<Record<string, string>>;
 }
 
@@ -41,13 +42,15 @@ export interface RunCancelResult {
 }
 
 export interface RunCancelController {
-  cancelRun: (runId: string) => Promise<RunCancelResult> | RunCancelResult;
+  cancelRun: (runId: string, requestingOwnerSubjectId: string) => Promise<RunCancelResult> | RunCancelResult;
 }
 
 export interface MountRefRunCancelContext {
-  cancelRun?: (runId: string) => Promise<RunCancelResult> | RunCancelResult;
+  cancelRun?: (runId: string, requestingOwnerSubjectId: string) => Promise<RunCancelResult> | RunCancelResult;
   readonly controller: RunCancelController | null | undefined;
   handleError: (res: unknown, err: unknown) => void;
+  /** Fallback subject when no owner session is attached to the request (matches the rest of the owner-session-optional surface). */
+  readonly ownerSubjectId: string;
   pdppError: PdppErrorFn;
   requireOwnerSession: MiddlewareHandler;
 }
@@ -59,7 +62,10 @@ export function mountRefRunCancel(app: AppLike, ctx: MountRefRunCancelContext): 
         return ctx.pdppError(res, 404, "not_found", "Controller is not configured on this server");
       }
       const runId = decodeURIComponent(req.params.runId as string);
-      const result = await (ctx.cancelRun ? ctx.cancelRun(runId) : ctx.controller.cancelRun(runId));
+      const requestingOwnerSubjectId = req.ownerSession?.sub ?? ctx.ownerSubjectId;
+      const result = await (ctx.cancelRun
+        ? ctx.cancelRun(runId, requestingOwnerSubjectId)
+        : ctx.controller.cancelRun(runId, requestingOwnerSubjectId));
       if (result.status === "no_active_run") {
         return ctx.pdppError(res, 404, "no_active_run", `No active run with id: ${runId}`, "run_id");
       }

@@ -35,7 +35,12 @@ import test from "node:test";
 import { listSpineEventsPage } from "../lib/spine.ts";
 import { type RuntimeRunConnectorResult, runConnector } from "../runtime/index.ts";
 import { startServer } from "../server/index.ts";
+import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
 import { getDefaultConnectorDetailGapStore } from "../server/stores/connector-detail-gap-store.ts";
+import {
+  admitOwnerRunConnection,
+  makeDefaultAccountConnectorInstanceId,
+} from "../server/stores/connector-instance-store.ts";
 
 /**
  * `server/index.ts` now exposes the migrated server surface. This test keeps
@@ -68,6 +73,33 @@ type RunConnectorTestOptions = Omit<Parameters<typeof runConnector>[0], "detailG
 };
 type RunConnectorFn = (opts: RunConnectorTestOptions) => Promise<RuntimeRunConnectorResult>;
 const runConnectorWithGapStore = runConnector as RunConnectorFn;
+
+// Real state-commit ingest (the `rsUrl` writes every test here drives through)
+// checks the bearer token's own subject against the target connector
+// instance's owner and 403s on `connector_instance_owner_mismatch` — so
+// admission MUST resolve the same subject `issueOwnerToken` approved
+// ('test_user'), not the detail-gap store's own hardcoded default subject.
+// Mirrors the production wiring in server/index.ts's
+// `createController({ admitRunConnection: ... })` and the identical fixture
+// already applied in event-spine.test.ts and collection-profile.test.ts.
+function fakeAdmitRunConnection(
+  ownerSubjectIdDefault = "test_user"
+): (input: {
+  connectorId: string;
+  connectorInstanceId: string | null;
+  ownerSubjectId: string | null;
+}) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }> {
+  return async ({ connectorId, connectorInstanceId, ownerSubjectId: requestedOwnerSubjectId }) => {
+    const ownerSubjectId = requestedOwnerSubjectId || ownerSubjectIdDefault;
+    const namespace = await admitOwnerRunConnection({
+      connectorId,
+      connectorInstanceId,
+      connectorInstanceStore: createRequestConnectorInstanceStore(),
+      ownerSubjectId,
+    });
+    return { connectorId: namespace.connectorId, connectorInstanceId: namespace.connectorInstanceId, ownerSubjectId };
+  };
+}
 
 /**
  * `getDefaultConnectorDetailGapStore()` returns `unknown` (server/stores/
@@ -252,13 +284,16 @@ test("a recovered detail gap re-deferred with the same identity must not fail th
 
   // Conversation X's durable gap, with a stable locator. Seed pending, then
   // recover it (as a prior run's recovery pass would). connectorInstanceId is
-  // omitted so the store derives the same default the runtime uses
-  // (runConnector passes connectorInstanceId=null), keeping the gap_id identity
-  // collision faithful.
+  // set explicitly to the SAME default-account binding `admitRunConnection`
+  // resolves for the run's owner subject ('test_user', via issueOwnerToken),
+  // keeping the gap_id identity collision faithful — the gap store's own
+  // implicit default assumes a different, hardcoded subject and would
+  // otherwise seed a sibling instance's row instead of colliding with it.
   const LOCATOR = { conversation_id: "X", kind: "chatgpt.conversation" };
   const store = getTestDetailGapStore();
   const seeded = await store.upsertPendingGap({
     connectorId,
+    connectorInstanceId: makeDefaultAccountConnectorInstanceId("test_user", connectorId),
     detailLocator: LOCATOR,
     discoveredRunId: "prior",
     grantId: null,
@@ -306,6 +341,7 @@ test("a recovered detail gap re-deferred with the same identity must not fail th
   let thrown: unknown = null;
   try {
     result = await runConnectorWithGapStore({
+      admitRunConnection: fakeAdmitRunConnection(),
       collectionMode: "full_refresh",
       connectorId,
       connectorPath,
@@ -357,6 +393,7 @@ test("run.detail_gap_recorded fires once at first sighting, NOT on a prior-run r
   const OLD_LOCATOR = { conversation_id: "OLD", kind: "chatgpt.conversation" };
   await store.upsertPendingGap({
     connectorId,
+    connectorInstanceId: makeDefaultAccountConnectorInstanceId("test_user", connectorId),
     detailLocator: OLD_LOCATOR,
     discoveredRunId: "prior",
     grantId: null,
@@ -407,6 +444,7 @@ test("run.detail_gap_recorded fires once at first sighting, NOT on a prior-run r
   let result: RuntimeRunConnectorResult | null = null;
   try {
     result = await runConnectorWithGapStore({
+      admitRunConnection: fakeAdmitRunConnection(),
       collectionMode: "full_refresh",
       connectorId,
       connectorPath,
@@ -427,7 +465,7 @@ test("run.detail_gap_recorded fires once at first sighting, NOT on a prior-run r
   // Both gaps are durably pending (lose-nothing intact) — the gate touches only
   // the spine emit, never the durable substrate.
   assert.ok(result.detail_gaps, "result carries a detail_gaps list");
-  const durableKeys = result.detail_gaps.map((g) => g.gap_id).sort();
+  const durableKeys = result.detail_gaps.map((g) => g.gap_id).sort((a, b) => (a ?? "").localeCompare(b ?? ""));
   assert.equal(durableKeys.length, 2, "both gaps are durably recorded (lose-nothing)");
 
   // The spine carries exactly ONE run.detail_gap_recorded for THIS run — the NEW
@@ -493,6 +531,7 @@ test("a recovered gap re-deferred by a LATER run reopens to pending and surfaces
   const LOCATOR = { conversation_id: "LATER_X", kind: "chatgpt.conversation" };
   const seeded = await store.upsertPendingGap({
     connectorId,
+    connectorInstanceId: makeDefaultAccountConnectorInstanceId("test_user", connectorId),
     detailLocator: LOCATOR,
     discoveredRunId: "prior",
     grantId: null,
@@ -539,6 +578,7 @@ test("a recovered gap re-deferred by a LATER run reopens to pending and surfaces
   let result: RuntimeRunConnectorResult | null = null;
   try {
     result = await runConnectorWithGapStore({
+      admitRunConnection: fakeAdmitRunConnection(),
       collectionMode: "full_refresh",
       connectorId,
       connectorPath,
@@ -605,6 +645,7 @@ test("a recovered gap re-deferred by the SAME run that recovered it stays recove
   const LOCATOR = { conversation_id: "SAME_X", kind: "chatgpt.conversation" };
   const seeded = await store.upsertPendingGap({
     connectorId,
+    connectorInstanceId: makeDefaultAccountConnectorInstanceId("test_user", connectorId),
     detailLocator: LOCATOR,
     discoveredRunId: "prior",
     grantId: null,
@@ -660,6 +701,7 @@ test("a recovered gap re-deferred by the SAME run that recovered it stays recove
   let result: RuntimeRunConnectorResult | null = null;
   try {
     result = await runConnectorWithGapStore({
+      admitRunConnection: fakeAdmitRunConnection(),
       collectionMode: "full_refresh",
       connectorId,
       connectorPath,
@@ -735,6 +777,7 @@ test("a truly pending gap still surfaces as a retryable known_gap", async (t) =>
   let result: RuntimeRunConnectorResult | null = null;
   try {
     result = await runConnectorWithGapStore({
+      admitRunConnection: fakeAdmitRunConnection(),
       collectionMode: "full_refresh",
       connectorId,
       connectorPath,
