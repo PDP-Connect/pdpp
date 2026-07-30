@@ -32,6 +32,22 @@ only the named active start from system-actionable selection, and records a
 revocation timestamp to restore ordinary selection. No automatic time-window
 or connector-wide correction is permitted.
 
+That single-target contract remains the ordinary correction. A reviewed
+synthetic episode with multiple exact later unresolved starts in one scope uses
+the connector-neutral complete-episode batch form instead: one named earlier
+failed predecessor, explicit episode identity/bounds, and every full immutable
+started-receipt fingerprint. Admission rejects an omitted sibling, mixed scope,
+altered fingerprint, resolved member, or unrelated/intervening start; it never
+infers membership from a time window. Apply/revoke are atomic and reversible,
+and verification checks the admitted immutable snapshot so later normal starts
+or later member resolution do not invalidate it. The bounded direct operator
+tool consumes the reviewed artifact's exact bytes (SHA-256) for dry-run,
+apply, verify, or revoke; revoke revalidates its batch/episode/digest while
+locked before mutation. Each committed decision atomically appends its
+deterministic redacted fact to the canonical Spine. No HTTP operator surface,
+production identifiers in product code, or cross-connector/scope widening is
+permitted.
+
 A terminal successor receipt is not a current browser generation; it is separate system-actionable runtime evidence. It degrades continuity and remains available through idle scale-to-zero, but it does not mint or repeat a browser-session owner repair. Only provider invalidation proof remains repair authority.
 
 The reference copies the allocator's stable profile bind path into `browser_surfaces.profile_dir`. It does not create a second cookie/token store or browser hibernation mechanism.
@@ -55,3 +71,8 @@ The profile key and persisted path/volume form one compatibility boundary: healt
 6. An exact reviewed selector override restores an older failed external-loss
    receipt; an unmatched fingerprint and analogous connector history remain
    unchanged, and revocation restores the original selector result.
+7. A reviewed multi-start synthetic episode admits only its complete exact
+   fingerprint set on SQLite and PostgreSQL; omission, races, unauthorized
+   revoke, and audit append failure leave no partial correction, while a
+   committed correction/revoke has one canonical audit fact and remains
+   verifiable and reversible.

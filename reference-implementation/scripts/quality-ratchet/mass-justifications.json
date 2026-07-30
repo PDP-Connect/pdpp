@@ -163,5 +163,10 @@
     "allowed_mass": 92,
     "reason": "Terminal-gate re-revision (2026-07-29): shapeEvidenceRow and the SQLite/PostgreSQL column lists in listEvidence gained two additional fields (schedule_checkpoint, run_lifecycle_event_seq) to surface the new durable-signal checkpoints added to connector-summary-evidence-engine.ts's classifyCandidate. Purely additive field projection with a sentinel-vs-null distinction (schedule_checkpoint defaults to the 'unobserved' sentinel, distinct from an absent schedule, so the two states are never conflated); no existing control flow changed.",
     "date": "2026-07-29"
+  },
+  "server/stores/browser-surface-replacement-ledger-store.ts": {
+    "allowed_mass": 48,
+    "reason": "Reviewed replacement episode correction (2026-07-30): atomic correction must fail closed on a complete exact-scope immutable set, a named failed predecessor, unresolved membership, and no intervening competing starts, while retaining parity for SQLite and PostgreSQL transactions. The additional branches are the validation boundary and idempotent/reversible persistence checks; collapsing them into a generic override helper would weaken the intentionally stricter batch contract or hide backend transaction semantics. Proven by mutation-grade omission, mixed-scope, altered-fingerprint, resolved/unrelated member, partial-apply, retry, revoke, and non-target-isolation tests.",
+    "date": "2026-07-30"
   }
 }

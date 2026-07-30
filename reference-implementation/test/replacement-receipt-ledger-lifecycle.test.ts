@@ -802,6 +802,8 @@ function lifecyclePersistence(initialSurface: BrowserSurfaceWithPersistenceMetad
       return receipt;
     },
     applySelectionOverride: async () => notImplementedInLifecycleFake("applySelectionOverride"),
+    applySelectionOverrideBatch: async () => notImplementedInLifecycleFake("applySelectionOverrideBatch"),
+    dryRunSelectionOverrideBatch: async () => notImplementedInLifecycleFake("dryRunSelectionOverrideBatch"),
     findPendingForScope: async ({ connection_id, surface_subject_id, profile_key }) =>
       receipts
         .filter(
@@ -831,6 +833,7 @@ function lifecyclePersistence(initialSurface: BrowserSurfaceWithPersistenceMetad
     list: async () => receipts.slice(),
     listForScope: async () => notImplementedInLifecycleFake("listForScope"),
     revokeSelectionOverride: async () => notImplementedInLifecycleFake("revokeSelectionOverride"),
+    revokeSelectionOverrideBatch: async () => notImplementedInLifecycleFake("revokeSelectionOverrideBatch"),
     selectCurrent: async () => notImplementedInLifecycleFake("selectCurrent"),
     selectSystemActionable: ({ connection_id, profile_key, surface_subject_id }) => {
       const scoped = receipts.filter(
@@ -847,6 +850,7 @@ function lifecyclePersistence(initialSurface: BrowserSurfaceWithPersistenceMetad
           : null
       );
     },
+    verifySelectionOverrideBatch: async () => notImplementedInLifecycleFake("verifySelectionOverrideBatch"),
   };
   return {
     getSurface: () => surface,

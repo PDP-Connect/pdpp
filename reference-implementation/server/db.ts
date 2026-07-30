@@ -1106,8 +1106,37 @@ CREATE TABLE IF NOT EXISTS browser_surface_replacement_selection_overrides (
   surface_id TEXT NOT NULL,
   observed_at TEXT NOT NULL,
   prior_failed_replacement_id TEXT NOT NULL,
+  replacement_batch_id TEXT,
   applied_at TEXT NOT NULL,
   revoked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_browser_surface_replacement_selection_override_batch
+  ON browser_surface_replacement_selection_overrides(replacement_batch_id);
+CREATE TABLE IF NOT EXISTS browser_surface_replacement_selection_override_batches (
+  replacement_batch_id TEXT PRIMARY KEY,
+  episode_id TEXT NOT NULL,
+  connection_id TEXT NOT NULL,
+  connector_id TEXT,
+  profile_key TEXT NOT NULL,
+  surface_subject_id TEXT,
+  prior_failed_replacement_id TEXT NOT NULL,
+  reviewed_artifact_sha256 TEXT NOT NULL,
+  first_event_seq INTEGER NOT NULL,
+  last_event_seq INTEGER NOT NULL,
+  first_observed_at TEXT NOT NULL,
+  last_observed_at TEXT NOT NULL,
+  applied_at TEXT NOT NULL,
+  revoked_at TEXT
+);
+CREATE TABLE IF NOT EXISTS browser_surface_replacement_selection_override_audit_outbox (
+  audit_outbox_id TEXT PRIMARY KEY,
+  replacement_batch_id TEXT NOT NULL,
+  operation TEXT NOT NULL CHECK (operation IN ('apply', 'revoke')),
+  reviewed_artifact_sha256 TEXT NOT NULL,
+  snapshot_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  delivered_at TEXT,
+  UNIQUE(replacement_batch_id, operation)
 );
 
 CREATE TABLE IF NOT EXISTS scheduler_run_history (
@@ -4746,6 +4775,48 @@ CREATE INDEX IF NOT EXISTS idx_blob_bindings_record ON blob_bindings(connector_i
   raw.exec(
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_owner_device_auth_approval_id ON owner_device_auth(approval_id) WHERE approval_id IS NOT NULL"
   );
+  // Selection overrides predate reviewed episode batches. Keep legacy
+  // single-target rows valid while making batch membership additive.
+  runWithSqliteBusyRetrySync(() =>
+    addColumnIfMissing(raw, "browser_surface_replacement_selection_overrides", "replacement_batch_id", "TEXT")
+  );
+  runWithSqliteBusyRetrySync(() =>
+    addColumnIfMissing(
+      raw,
+      "browser_surface_replacement_selection_override_batches",
+      "reviewed_artifact_sha256",
+      "TEXT NOT NULL DEFAULT ''"
+    )
+  );
+  raw.exec(`
+CREATE INDEX IF NOT EXISTS idx_browser_surface_replacement_selection_override_batch
+  ON browser_surface_replacement_selection_overrides(replacement_batch_id);
+CREATE TABLE IF NOT EXISTS browser_surface_replacement_selection_override_batches (
+  replacement_batch_id TEXT PRIMARY KEY,
+  episode_id TEXT NOT NULL,
+  connection_id TEXT NOT NULL,
+  connector_id TEXT,
+  profile_key TEXT NOT NULL,
+  surface_subject_id TEXT,
+  prior_failed_replacement_id TEXT NOT NULL,
+  reviewed_artifact_sha256 TEXT NOT NULL,
+  first_event_seq INTEGER NOT NULL,
+  last_event_seq INTEGER NOT NULL,
+  first_observed_at TEXT NOT NULL,
+  last_observed_at TEXT NOT NULL,
+  applied_at TEXT NOT NULL,
+  revoked_at TEXT
+);
+CREATE TABLE IF NOT EXISTS browser_surface_replacement_selection_override_audit_outbox (
+  audit_outbox_id TEXT PRIMARY KEY,
+  replacement_batch_id TEXT NOT NULL,
+  operation TEXT NOT NULL CHECK (operation IN ('apply', 'revoke')),
+  reviewed_artifact_sha256 TEXT NOT NULL,
+  snapshot_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  delivered_at TEXT,
+  UNIQUE(replacement_batch_id, operation)
+)`);
   // cimd_client_documents: added for CIMD operator-managed document service.
   // CREATE TABLE IF NOT EXISTS in the base schema handles fresh DBs; this
   // exec ensures the table exists for pre-existing DBs that lack it.

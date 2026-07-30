@@ -1415,8 +1415,41 @@ export async function bootstrapPostgresSchema({
         surface_id TEXT NOT NULL,
         observed_at TEXT NOT NULL,
         prior_failed_replacement_id TEXT NOT NULL,
+        replacement_batch_id TEXT,
         applied_at TEXT NOT NULL,
         revoked_at TEXT
+      );
+      ALTER TABLE browser_surface_replacement_selection_overrides
+        ADD COLUMN IF NOT EXISTS replacement_batch_id TEXT;
+      CREATE INDEX IF NOT EXISTS idx_pg_browser_surface_replacement_selection_override_batch
+        ON browser_surface_replacement_selection_overrides(replacement_batch_id);
+      CREATE TABLE IF NOT EXISTS browser_surface_replacement_selection_override_batches (
+        replacement_batch_id TEXT PRIMARY KEY,
+        episode_id TEXT NOT NULL,
+        connection_id TEXT NOT NULL,
+        connector_id TEXT,
+        profile_key TEXT NOT NULL,
+        surface_subject_id TEXT,
+        prior_failed_replacement_id TEXT NOT NULL,
+        reviewed_artifact_sha256 TEXT NOT NULL,
+        first_event_seq BIGINT NOT NULL,
+        last_event_seq BIGINT NOT NULL,
+        first_observed_at TEXT NOT NULL,
+        last_observed_at TEXT NOT NULL,
+        applied_at TEXT NOT NULL,
+        revoked_at TEXT
+      );
+      ALTER TABLE browser_surface_replacement_selection_override_batches
+        ADD COLUMN IF NOT EXISTS reviewed_artifact_sha256 TEXT NOT NULL DEFAULT '';
+      CREATE TABLE IF NOT EXISTS browser_surface_replacement_selection_override_audit_outbox (
+        audit_outbox_id TEXT PRIMARY KEY,
+        replacement_batch_id TEXT NOT NULL,
+        operation TEXT NOT NULL CHECK (operation IN ('apply', 'revoke')),
+        reviewed_artifact_sha256 TEXT NOT NULL,
+        snapshot_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        delivered_at TEXT,
+        UNIQUE(replacement_batch_id, operation)
       );
 
       ALTER TABLE browser_surfaces
