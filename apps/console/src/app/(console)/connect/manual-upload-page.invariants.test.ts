@@ -47,7 +47,16 @@ test("manual-upload page is manifest-driven, not a connector-specific prompt", a
   const src = await readFile(PAGE_FILE, "utf8");
   assert.match(src, GET_SETUP);
   assert.match(src, FORM_COMPONENT);
-  assert.match(src, /listConnectorSummaries\(\)/);
+  // Third gate REVISE (2026-07-29): existing-sources discovery no longer
+  // fetches a bounded FLEET page at all — it uses the exact per-connector
+  // seam (existingSourcesForManualUpload / existingSourcesForConnector),
+  // never loadConnectorSummaryPage's fleet-wide primitive.
+  assert.match(src, /existingSourcesForManualUpload\(/);
+  assert.doesNotMatch(
+    src,
+    /loadConnectorSummaryPage\(/,
+    "existing-sources discovery must use the exact connector-scoped seam, never a fleet page"
+  );
   assert.match(src, SECURITY_BOUNDARY_COPY);
   assert.doesNotMatch(src, NO_CONNECTOR_BRANCH);
   assert.doesNotMatch(src, NO_PROVIDER_COPY);

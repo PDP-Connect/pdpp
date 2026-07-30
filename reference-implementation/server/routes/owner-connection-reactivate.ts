@@ -373,12 +373,10 @@ async function applyReactivate(
     })
   );
   ctx.invalidateConnectorSummariesCache?.();
-  // Scoped, awaited dirty marking: reactivation flips status back to active
-  // and clears revoked_at — both durable summary evidence. Instance id known.
-  await ctx.markConnectorSummaryEvidenceDirty?.({
-    connectorInstanceId,
-    reason: "owner reactivate changed connection lifecycle evidence",
-  });
+  // Terminal-gate revision (2026-07-29): `updateConnectorInstanceStatus`
+  // (-> `store.updateStatus`) now marks summary evidence dirty in the SAME
+  // transaction as the status write — a separate post-hoc call here would
+  // be redundant, not additive.
   return { reactivated, stamp };
 }
 

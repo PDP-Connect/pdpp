@@ -16,6 +16,7 @@ import {
   __setConnectorInstanceWritePhaseHookForTest,
   withConnectorInstanceWrite,
 } from "../server/connector-instance-write-coordinator.ts";
+import { reconcileDirtyConnectorSummaryEvidence } from "../server/connector-summary-read-model.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
 import { composeFleetHealthVerdict } from "../server/fleet-health.ts";
 import { deriveReferenceFreshness, type ReferenceFreshness } from "../server/freshness.ts";
@@ -327,6 +328,18 @@ async function seedDeadLetterHeartbeat() {
 }
 
 async function projectConnection() {
+  // Terminal-gate revision (2026-07-29): `connector_summary_evidence` rows
+  // are materialized ONLY by the maintenance sweep (startup + periodic — see
+  // `server/connector-maintenance-sweep.ts`), never by an ordinary read
+  // (`listConnectorSummaries` no longer reconciles inline). Run the same
+  // reconcile-then-fold observation barrier the sweep would already have run
+  // before every read in this file, exactly like the sibling evidence-engine
+  // test suites do — otherwise the evidence row genuinely does not exist yet
+  // (or its `terminal_facts` component is left `unobserved`, since a bare
+  // repair pass alone never folds `spine_events`) and the read honestly
+  // reports `summary_missing`/`terminal_fold_failed`, which is not what
+  // these local-coverage projection tests are exercising.
+  await reconcileDirtyConnectorSummaryEvidence(null);
   const summaries = await listConnectorSummaries();
   const row = summaries.find((summary) => summary.connector_instance_id === CONNECTOR_INSTANCE_ID);
   assert.ok(row, "expected the local-device connection to project a summary row");

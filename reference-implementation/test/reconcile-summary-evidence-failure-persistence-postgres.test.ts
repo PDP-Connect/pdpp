@@ -110,11 +110,34 @@ test("real PostgreSQL probe 3: simultaneous fold failure AND terminal-facts-fail
     await seedConnector();
     await seedInstance();
 
-    await reconcileConnectorSummaryEvidence(null);
-    await reconcileDirtyConnectorSummaryEvidence();
+    // Root-cause fix (2026-07-30): the shared `pdpp_test` database
+    // accumulates `spine_events` rows across every test run that has ever
+    // touched it (unlike the SQLite sibling, which gets a genuinely fresh,
+    // empty temp database per test via `withTempDb`), so an UNSCOPED
+    // `reconcileConnectorSummaryEvidence(null)`/`reconcileDirtyConnectorSummaryEvidence()`
+    // call reads `readMaxTerminalEventSeq`'s fleet-wide `MAX(event_seq)`
+    // (contaminated by every OTHER connection's terminal history) instead
+    // of this connection's own. That silently stamped a huge, unrelated
+    // fleet-wide checkpoint onto `stream_facts_event_seq` for THIS
+    // brand-new connection during setup -- not the genuinely
+    // fresh/zero/current bootstrap state the probe's "starts genuinely
+    // healthy" precondition assumes -- so the fault-injection UPDATE later
+    // in this test never actually changed `stream_facts_event_seq` (the
+    // single locally-inserted terminal event never exceeded the
+    // already-fleet-inflated checkpoint), the fold's write silently
+    // no-op'd, neither trigger fired, and the barrier's own outcome
+    // correctly reported zero failures for a write that was never
+    // attempted. Scoping every reconcile/fold call in this test to
+    // `[INSTANCE_ID]` makes `readMaxTerminalEventSeq` scope its own query
+    // to this connection alone (`buildTerminalScopeFragmentPostgres`),
+    // eliminating the fleet contamination and giving this test the same
+    // genuinely-isolated starting state the SQLite sibling gets for free
+    // from its temp database.
+    await reconcileConnectorSummaryEvidence([INSTANCE_ID]);
+    await reconcileDirtyConnectorSummaryEvidence([INSTANCE_ID]);
     const [before] = (
       await postgresQuery(
-        "SELECT terminal_facts_state, dirty, state FROM connector_summary_evidence WHERE connector_instance_id = $1",
+        "SELECT terminal_facts_state, dirty, state, stream_facts_event_seq FROM connector_summary_evidence WHERE connector_instance_id = $1",
         [INSTANCE_ID]
       )
     ).rows;
@@ -122,6 +145,11 @@ test("real PostgreSQL probe 3: simultaneous fold failure AND terminal-facts-fail
     assert.equal(before.terminal_facts_state, "current", "terminal_facts starts genuinely current");
     assert.equal(Number(before.dirty), 0);
     assert.equal(before.state, "fresh");
+    assert.equal(
+      Number(before.stream_facts_event_seq),
+      0,
+      "a genuinely fresh, scoped connection with zero terminal history starts at the real zero checkpoint, not a fleet-contaminated one"
+    );
 
     const beforeSummary = summaryFor(await listBypassCache());
     assert.equal(projectionReliable(beforeSummary)?.status, "true", "the connection starts genuinely healthy");
@@ -179,9 +207,24 @@ test("real PostgreSQL probe 3: simultaneous fold failure AND terminal-facts-fail
       `CREATE TRIGGER ${markerTrigger} BEFORE UPDATE ON connector_summary_evidence FOR EACH ROW EXECUTE FUNCTION ${markerFn}()`
     );
 
-    let summary: JsonRecord;
+    // Terminal-gate revision (2026-07-29, mirrored here 2026-07-30):
+    // `listConnectorSummaries` (an ordinary GET's read path) no longer runs
+    // any reconcile pass inline -- that barrier, and the in-memory
+    // `failedRows` overlay it used to merge over the durable read for
+    // exactly this double-failure case, moved to
+    // `runConnectorMaintenanceSweep` (`server/connector-maintenance-sweep.ts`).
+    // This probe calls the SAME barrier function the sweep calls
+    // (`reconcileDirtyConnectorSummaryEvidence`), SCOPED to this test's own
+    // connection (see the root-cause note above the initial reconcile call
+    // -- an unscoped call here would re-read the fleet-wide checkpoint and
+    // reintroduce the same contamination this fix removes), directly under
+    // the fault, and asserts on the barrier's own returned outcome. Matches
+    // the SQLite sibling's identically-named probe 3
+    // (`reconcile-summary-evidence-failure-persistence.test.ts`), which
+    // already carries the read-only-GET half of this fix.
+    let outcome: Awaited<ReturnType<typeof reconcileDirtyConnectorSummaryEvidence>>;
     try {
-      summary = summaryFor(await listBypassCache());
+      outcome = await reconcileDirtyConnectorSummaryEvidence([INSTANCE_ID]);
     } finally {
       await postgresQuery(`DROP TRIGGER IF EXISTS ${foldTrigger} ON connector_summary_evidence`);
       await postgresQuery(`DROP TRIGGER IF EXISTS ${markerTrigger} ON connector_summary_evidence`);
@@ -205,9 +248,25 @@ test("real PostgreSQL probe 3: simultaneous fold failure AND terminal-facts-fail
     assert.equal(untouchedRow.state, "fresh");
 
     assert.equal(
-      projectionReliable(summary)?.status,
-      "false",
-      "ProjectionReliable must be false on real PostgreSQL when BOTH the fold and its failure-marker write failed"
+      outcome.failed,
+      1,
+      "the barrier's own outcome counts the double failure as failed, not silently repaired"
+    );
+    assert.ok(
+      outcome.failureClasses.includes("terminal_facts"),
+      "the failure is attributed to the terminal_facts component, not laundered as some other class"
+    );
+
+    // A plain read taken AFTER the fault is removed reflects the durable
+    // row exactly as it stands (still stale-but-honestly-labeled `current`
+    // from before the fault) -- an ordinary GET between sweep ticks is
+    // honestly stale, not falsely healthy forever: the NEXT successful
+    // sweep pass converges it once the fault is gone.
+    const summaryAfterFaultRemoved = summaryFor(await listBypassCache());
+    assert.equal(
+      projectionReliable(summaryAfterFaultRemoved)?.status,
+      "true",
+      "a read after the transient fault clears still reports the last-known (stale-but-honest) durable state, not a fabricated failure that outlives the fault that caused it"
     );
   } finally {
     await cleanup();
@@ -231,17 +290,31 @@ test("real PostgreSQL probe 4: simultaneous discovery failure AND discovery-fail
     await seedConnector();
     await seedInstance();
 
-    const first = await reconcileConnectorSummaryEvidence(null);
+    // Root-cause fix (2026-07-30), two independent defects:
+    // (1) `reconcileConnectorSummaryEvidence` alone (the repair engine)
+    // never runs the fold -- a brand-new row's `terminal_facts` stays
+    // `unobserved`, which by itself makes the "starts genuinely healthy"
+    // baseline below fail for an unrelated reason (`terminal_fold_failed`)
+    // before the real probe even begins. Use the FULL barrier
+    // (`reconcileDirtyConnectorSummaryEvidence`, repair + fold together),
+    // matching the SQLite sibling's identically-named probe 4. (2) SCOPE it
+    // to `[INSTANCE_ID]` -- see probe 3's identical note above: the shared
+    // `pdpp_test` database accumulates fleet-wide `spine_events` across
+    // every run that has ever touched it, so an unscoped fold call would
+    // stamp this brand-new connection with an unrelated fleet-wide
+    // checkpoint instead of its own genuine zero-history state.
+    const first = await reconcileDirtyConnectorSummaryEvidence([INSTANCE_ID]);
     assert.equal(first.failed, 0);
     const [before] = (
       await postgresQuery(
-        "SELECT record_snapshot_state, manifest_declaration_state, dirty, state FROM connector_summary_evidence WHERE connector_instance_id = $1",
+        "SELECT record_snapshot_state, manifest_declaration_state, terminal_facts_state, dirty, state FROM connector_summary_evidence WHERE connector_instance_id = $1",
         [INSTANCE_ID]
       )
     ).rows;
     assert.ok(before, "the initial reconcile creates an evidence row");
     assert.equal(before.record_snapshot_state, "current");
     assert.equal(before.manifest_declaration_state, "current");
+    assert.equal(before.terminal_facts_state, "current", "the fold ran and genuinely converged the fresh row");
     assert.equal(Number(before.dirty), 0);
     assert.equal(before.state, "fresh");
 
@@ -267,9 +340,14 @@ test("real PostgreSQL probe 4: simultaneous discovery failure AND discovery-fail
       `CREATE TRIGGER ${markerTrigger} BEFORE UPDATE ON connector_summary_evidence FOR EACH ROW EXECUTE FUNCTION ${markerFn}()`
     );
 
-    let summary: JsonRecord;
+    // Terminal-gate revision (2026-07-29, mirrored here 2026-07-30): as in
+    // probe 3, call the maintenance sweep's own barrier function directly,
+    // SCOPED to this connection, under the fault, and assert on its own
+    // returned outcome -- a plain summary read after fault injection can
+    // never observe it, since GET performs zero reconciliation.
+    let outcome: Awaited<ReturnType<typeof reconcileDirtyConnectorSummaryEvidence>>;
     try {
-      summary = summaryFor(await listBypassCache());
+      outcome = await reconcileDirtyConnectorSummaryEvidence([INSTANCE_ID]);
     } finally {
       await postgresQuery(`DROP TRIGGER IF EXISTS ${markerTrigger} ON connector_summary_evidence`);
       await postgresQuery(`DROP FUNCTION IF EXISTS ${markerFn}()`);
@@ -293,9 +371,21 @@ test("real PostgreSQL probe 4: simultaneous discovery failure AND discovery-fail
     assert.equal(untouchedRow.state, "fresh");
 
     assert.equal(
-      projectionReliable(summary)?.status,
-      "false",
-      "ProjectionReliable must be false on real PostgreSQL when BOTH discovery and its failure-marker write failed"
+      outcome.failed,
+      1,
+      "the barrier's own outcome counts the double failure as failed, not silently repaired"
+    );
+
+    // A plain read taken AFTER the fault is removed (discovery restored,
+    // trigger dropped) reflects the durable row exactly as it stands --
+    // still stale-but-honestly-labeled `current` from before the fault, an
+    // honest bounded staleness window until the NEXT sweep pass converges
+    // it, not a fabricated failure that outlives the transient fault.
+    const summaryAfterFaultRemoved = summaryFor(await listBypassCache());
+    assert.equal(
+      projectionReliable(summaryAfterFaultRemoved)?.status,
+      "true",
+      "a read after the transient fault clears still reports the last-known (stale-but-honest) durable state"
     );
   } finally {
     if (renamedVersionCounter) {

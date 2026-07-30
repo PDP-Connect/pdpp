@@ -1494,17 +1494,77 @@ export async function listExploreTimeline(
   })) as ExploreTimelinePage;
 }
 
+/** Max page size the reference accepts (`CONNECTOR_SUMMARY_PAGE_LIMIT_MAX`). */
+export const CONNECTOR_SUMMARY_PAGE_LIMIT_MAX = 100;
+const CONNECTOR_SUMMARY_DEFAULT_PAGE_LIMIT = 100;
+
 export async function listConnectorSummaries(
-  options: { connectionRouteId?: string } = {}
+  options: { connectionRouteId?: string; cursor?: string; limit?: number } = {}
 ): Promise<RefConnectorSummariesResponse> {
   // When a record subpage knows the connection it wants, pass the route id so
   // the reference projects only that one connection (a 0-or-1 list) instead of
-  // running the per-connection fan-out for every configured connection. Unscoped
-  // callers (records index, schedules, grant request) omit it and get the full
-  // list exactly as before.
+  // running the per-connection fan-out for every configured connection.
+  if (options.connectionRouteId) {
+    return (await refFetch("/_ref/connectors", {
+      connection: options.connectionRouteId,
+    })) as RefConnectorSummariesResponse;
+  }
+  // Unscoped callers always page — the reference's unbounded compat branch
+  // (no `limit`/`cursor`) runs a full per-connection fan-out plus a
+  // full-fleet-scoped evidence reconcile on every request; there is no
+  // first-party reason to ever take that branch anymore.
   return (await refFetch("/_ref/connectors", {
-    connection: options.connectionRouteId,
+    cursor: options.cursor,
+    limit: options.limit ?? CONNECTOR_SUMMARY_DEFAULT_PAGE_LIMIT,
   })) as RefConnectorSummariesResponse;
+}
+
+/**
+ * One `ref_connection` row from `GET /_ref/connections` — the reference's
+ * OWNER-SCOPED, connector_id-filterable connection identity list
+ * (`mountRefConnectionsList`, reference-implementation/server/routes/ref-connectors.ts:527`).
+ * Distinct from and leaner than `RefConnectorSummary`: no `total_records`,
+ * `acquisition_coverage`, or `streams` — this route projects identity +
+ * status + schedule only. The route is NOT paginated (it lists the whole
+ * connector_id-filtered set for the owner in one response), because it is
+ * scoped by connector identity, not by fleet size.
+ */
+export interface RefConnection {
+  connector_id: string;
+  connector_instance_id: string;
+  created_at: string;
+  display_name: string;
+  object: "ref_connection";
+  revoked_at: string | null;
+  schedule: unknown;
+  source_binding: unknown;
+  source_kind: string;
+  status: string;
+  updated_at: string;
+}
+
+/**
+ * List every connection the owner has configured for one connector,
+ * EXACT — not a fleet page filtered client-side. This is the seam that
+ * closes gate finding 1 (Add Source / manual upload / grant connection pins
+ * previously derived "does this connector already have a source" from one
+ * arbitrary bounded fleet page, which is wrong independently of fleet size:
+ * arriving on a LATER page that happens to be the global final page makes
+ * `has_more === false`, so the view calls that partial slice "complete" even
+ * though earlier pages were never read).
+ *
+ * `/_ref/connections?connector_id=` is unpaginated by design — it already
+ * returns the full owner-scoped set for that one connector, so there is no
+ * "later final page" ambiguity here: a caller either gets every connection
+ * for that connector, or the request fails outright (never a partial view
+ * silently presented as whole).
+ */
+export async function listConnectionsByConnector(connectorId: string): Promise<readonly RefConnection[]> {
+  const response = (await refFetch("/_ref/connections", { connector_id: connectorId })) as {
+    data: RefConnection[];
+    object: "list";
+  };
+  return response.data;
 }
 
 export async function getFleetHealthVerdict(): Promise<RefFleetHealthVerdict> {

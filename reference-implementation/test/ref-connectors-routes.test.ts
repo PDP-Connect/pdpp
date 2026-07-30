@@ -185,12 +185,21 @@ async function seedProviderPressureGap(connectorId: string): Promise<string> {
   return nextAttemptAfter;
 }
 
-test("GET /_ref/connectors returns list envelope", async () => {
+test("GET /_ref/connectors with limit returns a bounded list envelope", async () => {
   await withServer(async ({ asUrl }) => {
-    const { status, body } = await fetchJson<RefListEnvelope>(`${asUrl}/_ref/connectors`);
+    const { status, body } = await fetchJson<RefListEnvelope>(`${asUrl}/_ref/connectors?limit=50`);
     assert.equal(status, 200);
     assert.equal(body.object, "list");
     assert.ok(Array.isArray(body.data));
+  });
+});
+
+test("GET /_ref/connectors without limit fails explicitly instead of scanning the fleet", async () => {
+  await withServer(async ({ asUrl }) => {
+    const { status, body } = await fetchJson<RefErrorEnvelope>(`${asUrl}/_ref/connectors`);
+    assert.equal(status, 400);
+    assert.equal(body.error?.code, "invalid_request");
+    assert.equal(body.error?.param, "limit");
   });
 });
 

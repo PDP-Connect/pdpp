@@ -14,6 +14,9 @@ export function buildExploreDemoData(): RecordsExplorerData {
     },
     bucketRequest: null,
     bucketSeries: null,
+    connectionsPageError: null,
+    connectionsPageHasMore: false,
+    connectionsPageIsPaged: false,
     connections: [
       {
         connectionId: "cin_demo_chatgpt_work",

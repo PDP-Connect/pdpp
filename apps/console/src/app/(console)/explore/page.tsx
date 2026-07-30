@@ -68,6 +68,10 @@ export default async function RecordsExplorerPage({
     demo?: string;
     q?: string;
     connection?: string | string[];
+    // Opaque continuation for the connector-summary FACET page (Sources
+    // rail), distinct from `cursor`/`cursors` which page the record feed
+    // itself. Empty/absent = facet page 1.
+    connections_page_cursor?: string;
     // EXCLUDED connections/streams (the facet "is not" toggle / `-con:` operator).
     // Bounded: one repeatable param per excluded id, mirroring connection/stream.
     xconnection?: string | string[];

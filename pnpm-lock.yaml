@@ -21,6 +21,9 @@ importers:
       '@pdpp/brand':
         specifier: workspace:*
         version: link:packages/pdpp-brand
+      '@pdpp/list-envelope':
+        specifier: workspace:*
+        version: link:packages/list-envelope
       '@semantic-release/exec':
         specifier: ^7.1.0
         version: 7.1.0(semantic-release@25.0.8(typescript@7.0.2))
@@ -69,6 +72,9 @@ importers:
       '@pdpp/brand-react':
         specifier: workspace:*
         version: link:../../packages/pdpp-brand-react
+      '@pdpp/list-envelope':
+        specifier: workspace:*
+        version: link:../../packages/list-envelope
       '@pdpp/operator-ui':
         specifier: workspace:*
         version: link:../../packages/operator-ui
@@ -273,6 +279,8 @@ importers:
         specifier: ^26.1.2
         version: 26.1.2
 
+  packages/list-envelope: {}
+
   packages/local-collector:
     dependencies:
       zod:
@@ -310,6 +318,9 @@ importers:
       '@pdpp/brand':
         specifier: workspace:*
         version: link:../pdpp-brand
+      '@pdpp/list-envelope':
+        specifier: workspace:*
+        version: link:../list-envelope
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
@@ -6023,10 +6034,6 @@ packages:
     resolution: {integrity: sha512-o5sSPKEkg/DIQNmH43V0/uerLrpzVedkUh8tGNvaeXpfpuwjKenlSox/2O/BTlZUtEe+JG7s5YhEz608PlAHRA==}
     engines: {node: '>=0.6'}
 
-  tough-cookie@6.0.1:
-    resolution: {integrity: sha512-LktZQb3IeoUWB9lqR5EWTHgW/VTITCXg4D21M+lvybRVdylLrRMnqaIONLVb5mav8vM19m44HIcGq4qASeu2Qw==}
-    engines: {node: '>=16'}
-
   tough-cookie@6.0.2:
     resolution: {integrity: sha512-exgYmnmL/sJpR3upZfXG5PoatXQii55xAiXGXzY+sROLZ/Y+SLcp9PgJNI9Vz37HpQ74WvDcLT8eqm+kV3FzrA==}
     engines: {node: '>=16'}
@@ -6143,6 +6150,7 @@ packages:
   undici@7.29.0:
     resolution: {integrity: sha512-IDxfleLmmbSskfWSUATiN1nfn2rDuvnMOqb5CWR92iIfojA0Ud+ulOAAEQ57LPr9rWmsreUyf5lwyao+7GNNVw==}
     engines: {node: '>=20.18.1'}
+
   undici@8.9.0:
     resolution: {integrity: sha512-aWZpUj7XoGonMClx4gdDRfgBjqeA+F473aDmROQQbM9n6PRfK/u1q/a0X4wMTgcHfT8H6fpbt98PFuDUwFg2YA==}
     engines: {node: '>=22.19.0'}
@@ -12118,10 +12126,6 @@ snapshots:
 
   toidentifier@1.0.1: {}
 
-  tough-cookie@6.0.1:
-    dependencies:
-      tldts: 7.0.28
-
   tough-cookie@6.0.2:
     dependencies:
       tldts: 7.0.28
@@ -12239,6 +12243,7 @@ snapshots:
   undici@7.25.0: {}
 
   undici@7.29.0: {}
+
   undici@8.9.0: {}
 
   unicode-emoji-modifier-base@1.0.0: {}

@@ -7,7 +7,9 @@ const LOOPBACK_PREFIX = "postgresql://postgres:pw@127.0.0.1:55447/";
 
 test("dedicated Postgres URL accepts the fixed database and runner-derived per-file database", () => {
   const direct = `${LOOPBACK_PREFIX}pdpp_test`;
-  const runnerDerived = `${LOOPBACK_PREFIX}pdpp_test_connector_summary_stream_facts_monotonic_1`;
+  // Matches deriveDedicatedPostgresDbNameForFile's real three-part shape:
+  // <file-derived base, capped at 38 chars>_<8-hex-char runnerId>_<base-36 counter>.
+  const runnerDerived = `${LOOPBACK_PREFIX}pdpp_test_connector_summary_stream_facts_monoton_b36787e3_1`;
 
   assert.equal(dedicatedPostgresTestUrl(direct), direct);
   assert.equal(dedicatedPostgresTestUrl(runnerDerived), runnerDerived);

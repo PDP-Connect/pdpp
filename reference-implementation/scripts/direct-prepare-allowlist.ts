@@ -95,7 +95,7 @@ export const DIRECT_PREPARE_ALLOWLIST: readonly DirectPrepareAllowlistEntry[] = 
   },
   {
     category: "grandfathered_pre_wrapper",
-    line: 7188,
+    line: 7272,
     note: "backfillSqliteRecordSemanticTimesForManifest: prepared UPDATE records SET semantic_time = ? (per-record backfill write inside the writeTransaction)",
     path: "reference-implementation/server/records.ts",
   },

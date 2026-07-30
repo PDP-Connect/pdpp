@@ -176,7 +176,7 @@ function makeTimelinePage(
 const notStubbed = () => Promise.reject(new Error("not stubbed"));
 
 function makeDataSource(overrides: Partial<DashboardDataSource>): DashboardDataSource {
-  return {
+  const stub: DashboardDataSource = {
     aggregateRecordsByTime: notStubbed,
     getConnectorOverview: notStubbed,
     getDatasetSummary: notStubbed,
@@ -213,6 +213,7 @@ function makeDataSource(overrides: Partial<DashboardDataSource>): DashboardDataS
     searchRecordsSemantic: notStubbed,
     ...overrides,
   };
+  return stub;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

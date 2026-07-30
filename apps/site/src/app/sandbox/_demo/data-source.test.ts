@@ -16,13 +16,18 @@
  */
 
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { classifyRecordKind } from "@pdpp/operator-ui/lib/record-kind";
 import { executeRefDatasetSummary } from "pdpp-reference-implementation/operations/ref-dataset-summary";
 import { sandboxDashboardDataSource as ds } from "./data-source.ts";
 import { createSandboxRefDatasetSummaryDependencies } from "./operations-fixtures.ts";
 
 const NOT_FOUND_RE = /\(404\)/;
+const SANDBOX_SCHEDULES_PAGE = fileURLToPath(new URL("../schedules/page.tsx", import.meta.url));
+const BARE_UNSCOPED_CALL_RE = /\bds\.listConnectorSummaries\(\)/;
+const BOUNDED_CALL_RE = /ds\.listConnectorSummaries\(\{\s*limit:\s*SANDBOX_CONNECTOR_SUMMARY_PAGE_LIMIT\s*\}\)/;
 
 test("sandbox source identifies as sandbox kind", () => {
   assert.equal(ds.kind, "sandbox");
@@ -38,6 +43,67 @@ test("listConnectorSummaries returns demo connectors with run + stream metadata"
     assert.ok(Array.isArray(c.streams));
     assert.equal(typeof c.total_records, "number");
   }
+});
+
+test("listConnectorSummaries scoping mirrors the live reference's resolution precedence", async () => {
+  // Exact connection/instance identity resolves to exactly that one row (the
+  // sandbox dataset's connection_id/connector_id/connector_instance_id are
+  // the same string per connector, so this exercises both the exact-match
+  // AND the connector-id-fallback code paths on the same fixture).
+  const exact = await ds.listConnectorSummaries({ connectionRouteId: "acme_payroll_demo" });
+  assert.equal(exact.data.length, 1);
+  assert.equal(exact.data[0]?.connection_id, "acme_payroll_demo");
+
+  // An unresolvable route id must return EMPTY, never a "first configured
+  // connection" fallback — the live reference's unambiguous-only rule, not
+  // "pick something".
+  const unknown = await ds.listConnectorSummaries({ connectionRouteId: "not-a-real-connection" });
+  assert.deepEqual(unknown.data, []);
+});
+
+// ---- third gate REVISE (2026-07-29), finding 5: bounded cursor/limit contract ----
+
+test("listConnectorSummaries honors an explicit limit, bounding the page below the full demo set", async () => {
+  const full = await ds.listConnectorSummaries();
+  assert.ok(full.data.length >= 3, "the demo fixture has at least 3 connectors to page over");
+
+  const bounded = await ds.listConnectorSummaries({ limit: 1 });
+  assert.equal(bounded.data.length, 1, "limit must actually bound the returned page, not be silently ignored");
+  assert.equal(bounded.has_more, full.data.length > 1);
+});
+
+test("listConnectorSummaries pages via cursor with no duplication and no gaps", async () => {
+  const page1 = await ds.listConnectorSummaries({ limit: 1 });
+  assert.equal(page1.data.length, 1);
+  assert.ok(page1.has_more, "the demo fixture has more than one connector");
+  assert.ok(page1.next_cursor, "a has_more:true page must carry a usable next_cursor");
+
+  const page2 = await ds.listConnectorSummaries({ cursor: page1.next_cursor, limit: 1 });
+  assert.equal(page2.data.length, 1);
+  assert.notEqual(
+    page2.data[0]?.connector_id,
+    page1.data[0]?.connector_id,
+    "cursor must actually advance the page, not repeat the same row"
+  );
+});
+
+test("listConnectorSummaries with no limit still defaults to a BOUNDED page, never the unbounded fleet-wide read", async () => {
+  const resp = await ds.listConnectorSummaries();
+  // The demo fixture is small enough to fit under the default page limit in
+  // one page today, but the CONTRACT must be bounded regardless of fixture
+  // size — has_more/next_cursor are always coherent, never silently omitted.
+  assert.equal(resp.has_more, false);
+  assert.equal(resp.next_cursor, undefined);
+});
+
+test("sandbox schedules page calls listConnectorSummaries explicitly bounded, never the bare unparameterized form", async () => {
+  const src = await readFile(SANDBOX_SCHEDULES_PAGE, "utf8");
+  assert.doesNotMatch(
+    src,
+    BARE_UNSCOPED_CALL_RE,
+    "the sandbox schedules page must not call listConnectorSummaries() bare/unscoped"
+  );
+  assert.match(src, BOUNDED_CALL_RE);
 });
 
 test("listConnectorManifests returns dashboard-shaped manifests", async () => {

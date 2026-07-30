@@ -4,19 +4,33 @@
 import { PageHeader } from "@pdpp/operator-ui/components/primitives";
 import { SchedulesView } from "@pdpp/operator-ui/components/views/schedules-view";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
+import {
+  ConnectorSummaryPageError,
+  ConnectorSummaryPager,
+  loadConnectorSummaryPage,
+} from "../components/connector-summary-page.tsx";
+import { isPagedRequest, parseConnectorSummaryPageState } from "../components/connector-summary-pager.ts";
 import { ServerUnreachable } from "../components/shell.tsx";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
-import { listConnectorSummaries, type RefConnectorSummary } from "../lib/ref-client.ts";
+import { listConnectorSummaries } from "../lib/ref-client.ts";
 import { ScheduleRow } from "./schedule-row.tsx";
 import { SchedulesPoller } from "./schedules-poller.tsx";
 
+const SCHEDULES_PATH = "/schedules";
+
 export const dynamic = "force-dynamic";
 
-export default async function SchedulesPage() {
-  let summaries: RefConnectorSummary[];
+function fetchSchedulesPage(pageState: ReturnType<typeof parseConnectorSummaryPageState>) {
+  return loadConnectorSummaryPage(pageState, (opts) => listConnectorSummaries(opts));
+}
+
+export default async function SchedulesPage({ searchParams }: { searchParams?: Promise<{ page_cursor?: string }> }) {
+  const params = searchParams ? await searchParams : {};
+  const pageState = parseConnectorSummaryPageState(params);
+
+  let page: Awaited<ReturnType<typeof fetchSchedulesPage>>;
   try {
-    const response = await listConnectorSummaries();
-    summaries = response.data;
+    page = await fetchSchedulesPage(pageState);
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
@@ -29,6 +43,16 @@ export default async function SchedulesPage() {
     throw err;
   }
 
+  if (page.kind === "error") {
+    return (
+      <RecordroomShellWithPalette>
+        <PageHeader title="Schedules" />
+        <ConnectorSummaryPageError basePath={SCHEDULES_PATH} currentParams={params} message={page.message} />
+      </RecordroomShellWithPalette>
+    );
+  }
+
+  const summaries = page.items;
   const hasActiveRun = summaries.some((s) => s.schedule?.active_run_id !== null);
 
   return (
@@ -44,8 +68,15 @@ export default async function SchedulesPage() {
           />
         )}
         scheduledEmptyHint="Use the buttons below to add a schedule to any connector."
-        summaries={summaries}
+        summaries={[...summaries]}
         unscheduledDescription="These connectors have no automatic schedule. Use 'Set schedule' to add one, or sync manually from the Records page."
+      />
+      <ConnectorSummaryPager
+        basePath={SCHEDULES_PATH}
+        currentParams={params}
+        hasMore={page.hasMore}
+        isPaged={isPagedRequest(pageState)}
+        nextCursor={page.nextCursor}
       />
     </RecordroomShellWithPalette>
   );

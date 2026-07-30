@@ -40,7 +40,7 @@ import test from "node:test";
 
 import { closeDb, getDb, initDb } from "../server/db.ts";
 import { getConnectorDetail, RefControlError } from "../server/ref-control.ts";
-import { rebuildRetainedSize } from "../server/retained-size-read-model.ts";
+import { rebuildRetainedSize, reconcileDirtyRetainedSize } from "../server/retained-size-read-model.ts";
 import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 
 const CONNECTOR_ID = "https://test.pdpp.dev/connectors/detail-connection-resolution";
@@ -179,14 +179,20 @@ test(
     });
     await rebuildRetainedSize();
     // Simulate a write landing after the last rebuild but before the next
-    // reconcile pass: the connection's retained-size row is mid-flight dirty.
-    // `getConnectorDetail` must still report the CURRENT canonical count (via
-    // the barrier's reconcile-before-read), not a stale pre-repair snapshot —
-    // proving it goes through `loadConnectorSummaryProjectionDeps`'s barrier,
-    // not a cached/stale read.
+    // periodic maintenance-sweep tick: the connection's retained-size row is
+    // mid-flight dirty. Terminal-gate revision (2026-07-29): an ordinary GET
+    // must never repair evidence inline, so `getConnectorDetail` itself does
+    // NOT reconcile this dirty row — that repair now runs exclusively from
+    // `runConnectorMaintenanceSweep` (`server/connector-maintenance-sweep.ts`),
+    // via the same `reconcileDirtyRetainedSize` this test calls directly to
+    // simulate "the sweep already ran." Once reconciled, `getConnectorDetail`
+    // must report the now-current canonical count from its plain barrier-
+    // backed read — proving detail reflects repaired evidence without ever
+    // performing the repair itself.
     getDb()
       .prepare("UPDATE retained_size_connection SET dirty = 1 WHERE connector_instance_id = ?")
       .run(WORK_INSTANCE_ID);
+    await reconcileDirtyRetainedSize();
 
     const detail = await getConnectorDetail(CONNECTOR_ID);
 
@@ -260,7 +266,7 @@ test(
     );
     assert.equal(detail.rendered_verdict, null, "ambiguous connector detail must not select either sibling's verdict");
     assert.deepEqual(
-      detail.streams.map((s) => s.name).sort(),
+      detail.streams.map((s) => s.name).sort((left, right) => left.localeCompare(right)),
       ["files", "messages"],
       "ambiguous still surfaces the manifest's declared stream names — a connector-level catalog fact, not per-connection evidence"
     );
@@ -293,7 +299,7 @@ test(
     // registered manifest), knowable with zero connections — distinct from
     // the per-connection record_count/last_updated facts, which stay null.
     assert.deepEqual(
-      detail.streams.map((s) => s.name).sort(),
+      detail.streams.map((s) => s.name).sort((left, right) => left.localeCompare(right)),
       ["files", "messages"],
       "unresolved still surfaces the manifest's declared stream names"
     );
@@ -364,7 +370,7 @@ test(
     // per-connection evidence — they still surface, but neither sibling's
     // real per-connection record_count (3 or 5) is presented as authoritative.
     assert.deepEqual(
-      detail.streams.map((s) => s.name).sort(),
+      detail.streams.map((s) => s.name).sort((left, right) => left.localeCompare(right)),
       ["files", "messages"],
       "ambiguous still surfaces the manifest's declared stream names"
     );

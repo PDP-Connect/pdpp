@@ -483,7 +483,7 @@ test("probe 2: a fold failure after a previously-clean checkpointed-empty termin
     assert.equal(projection?.status, "false", "ProjectionReliable must be false after the fold failure, never true");
   }));
 
-test("probe 3: simultaneous fold failure AND terminal-facts-failed-marker write failure (Sol third-verdict P1.1) still fails closed through the real production read", () =>
+test("probe 3: simultaneous fold failure AND terminal-facts-failed-marker write failure (Sol third-verdict P1.1) still fails closed through the maintenance-sweep barrier's own outcome", () =>
   withTempDb(async () => {
     seedConnector();
     seedInstance();
@@ -532,13 +532,7 @@ test("probe 3: simultaneous fold failure AND terminal-facts-failed-marker write 
     // Fault injection: reject BOTH the fold's own write
     // (`stream_facts_event_seq` advance) AND the terminal-facts-failed
     // marker's own write (`terminal_facts_state` degrade) — the exact
-    // simultaneous double-failure Sol's third verdict reproduced. Before
-    // this fix, `markTerminalFactsFailedForAllRows` caught and silently
-    // discarded its own write failure, and `observeConnectorSummaryEvidence`
-    // ignored `foldStreamFactsBestEffort`'s `{ok:false}` entirely — the
-    // durable row stayed `terminal_facts_state=current`/`dirty=0`/
-    // `state=fresh` and the returned summary reported `ProjectionReliable:
-    // true`.
+    // simultaneous double-failure Sol's third verdict reproduced.
     getDb().exec(
       `CREATE TRIGGER fault_probe3_fold_write
            BEFORE UPDATE OF stream_facts_event_seq ON connector_summary_evidence
@@ -555,16 +549,31 @@ test("probe 3: simultaneous fold failure AND terminal-facts-failed-marker write 
            SELECT RAISE(ABORT, 'injected terminal-facts-failed marker write fault');
          END`
     );
-    let summary: ReturnType<typeof summaryFor>;
+    // Terminal-gate revision (2026-07-29): `listConnectorSummaries` (an
+    // ordinary GET's read path) no longer runs any reconcile pass inline —
+    // that barrier, and the in-memory `failedRows` overlay it used to merge
+    // over the durable read for exactly this double-failure case, moved to
+    // `runConnectorMaintenanceSweep` (`server/connector-maintenance-sweep.ts`).
+    // This probe now calls the SAME barrier function the sweep calls
+    // (`reconcileDirtyConnectorSummaryEvidence`) directly, under the fault,
+    // simulating "the sweep attempted this and both its repair write AND its
+    // own failure-marker write failed" — and asserts on the barrier's own
+    // returned outcome, which still correctly reports the failure even
+    // though nothing durable reflects it (Sol's third verdict is a property
+    // of the barrier's in-memory accounting, not of a subsequent unrelated
+    // read).
+    let outcome: Awaited<ReturnType<typeof reconcileDirtyConnectorSummaryEvidence>>;
     try {
-      summary = summaryFor(await listBypassCache());
+      outcome = await reconcileDirtyConnectorSummaryEvidence();
     } finally {
       getDb().exec("DROP TRIGGER fault_probe3_fold_write");
       getDb().exec("DROP TRIGGER fault_probe3_marker_write");
     }
 
     // The durable row is genuinely untouched by either rejected write —
-    // this is the exact condition that used to read as healthy.
+    // this is the exact condition that used to read as healthy before this
+    // fix, when a plain GET's own inline barrier call was the only thing
+    // that could ever have caught it.
     const untouchedRow = getDb()
       .prepare(
         "SELECT terminal_facts_state, dirty, state FROM connector_summary_evidence WHERE connector_instance_id = ?"
@@ -579,23 +588,40 @@ test("probe 3: simultaneous fold failure AND terminal-facts-failed-marker write 
     assert.equal(untouchedRow.dirty, 0, "dirty is genuinely untouched — neither rejected write landed");
     assert.equal(untouchedRow.state, "fresh", "state is genuinely untouched — neither rejected write landed");
 
-    // The real production entry point, read in the SAME pass while the
-    // fault is still active, must surface the fold failure via the
-    // in-memory typed overlay even though nothing durable reflects it.
+    // The maintenance-sweep barrier's own in-memory accounting must still
+    // surface the fold failure even though nothing durable reflects it.
+    assert.equal(outcome.failed, 1, "the barrier's own outcome counts the double failure as failed, not silently repaired");
+    assert.ok(
+      outcome.failureClasses.includes("terminal_facts"),
+      "the failure is attributed to the terminal_facts component, not laundered as some other class"
+    );
+
+    // A plain read taken AFTER the fault is removed reflects the durable
+    // row exactly as it stands (still stale-but-honestly-labeled `current`
+    // from before the fault) — an ordinary GET between sweep ticks is
+    // honestly stale, not falsely healthy forever: the NEXT successful
+    // sweep pass converges it once the fault is gone.
+    const summaryAfterFaultRemoved = summaryFor(await listBypassCache());
     assert.equal(
-      projectionReliable(summary)?.status,
-      "false",
-      "ProjectionReliable must be false — a stale current terminal_facts must never read reliable when BOTH the fold and its failure-marker write failed"
+      projectionReliable(summaryAfterFaultRemoved)?.status,
+      "true",
+      "a read after the transient fault clears still reports the last-known (stale-but-honest) durable state, not a fabricated failure that outlives the fault that caused it"
     );
   }));
 
-test("probe 4: simultaneous discovery failure AND discovery-failed-marker write failure (Sol third-verdict P1.1) still fails closed through the real production read", () =>
+test("probe 4: simultaneous discovery failure AND discovery-failed-marker write failure (Sol third-verdict P1.1) still fails closed through the maintenance-sweep barrier's own outcome", () =>
   withTempDb(async () => {
     seedConnector();
     seedInstance();
 
-    // First pass: create a genuinely current, correct evidence row.
-    const first = await reconcileConnectorSummaryEvidence(null);
+    // First pass: create a genuinely current, correct evidence row. Uses
+    // the FULL barrier (repair + fold), not the engine-level
+    // `reconcileConnectorSummaryEvidence` alone — the engine call only runs
+    // the repair half and leaves `terminal_facts` at `unobserved` for a
+    // brand-new row (`terminalFactsForRepair`), which would otherwise make
+    // the "starts genuinely healthy" baseline below fail for an unrelated
+    // reason (`terminal_fold_failed`) before the real probe even begins.
+    const first = await reconcileDirtyConnectorSummaryEvidence();
     assert.equal(first.failed, 0);
     const before = getDb()
       .prepare(
@@ -618,9 +644,7 @@ test("probe 4: simultaneous discovery failure AND discovery-failed-marker write 
     // `connector_summary_evidence` read/write, AND simultaneously reject
     // the discovery-failed marker's own write
     // (`record_snapshot_state`/`manifest_declaration_state` degrade) — the
-    // exact simultaneous double-failure. Before this fix, the durable row
-    // stayed current/fresh and the returned summary reported
-    // `ProjectionReliable: true`.
+    // exact simultaneous double-failure.
     getDb().exec("ALTER TABLE version_counter RENAME TO version_counter_hidden_probe4");
     getDb().exec(
       `CREATE TRIGGER fault_probe4_marker_write
@@ -630,9 +654,14 @@ test("probe 4: simultaneous discovery failure AND discovery-failed-marker write 
            SELECT RAISE(ABORT, 'injected discovery-failed marker write fault');
          END`
     );
-    let summary: ReturnType<typeof summaryFor>;
+    // Terminal-gate revision (2026-07-29): as in probe 3, the in-memory
+    // `failedRows` overlay that a plain GET used to merge over the durable
+    // read for exactly this double-failure case moved to the maintenance
+    // sweep. Call the same barrier function the sweep calls, directly,
+    // under the fault, and assert on ITS OWN returned outcome.
+    let outcome: Awaited<ReturnType<typeof reconcileDirtyConnectorSummaryEvidence>>;
     try {
-      summary = summaryFor(await listBypassCache());
+      outcome = await reconcileDirtyConnectorSummaryEvidence();
     } finally {
       getDb().exec("DROP TRIGGER fault_probe4_marker_write");
       getDb().exec("ALTER TABLE version_counter_hidden_probe4 RENAME TO version_counter");
@@ -653,9 +682,19 @@ test("probe 4: simultaneous discovery failure AND discovery-failed-marker write 
     assert.equal(untouchedRow.dirty, 0, "dirty is genuinely untouched — neither rejected write landed");
     assert.equal(untouchedRow.state, "fresh", "state is genuinely untouched — neither rejected write landed");
 
+    // The maintenance-sweep barrier's own in-memory accounting must still
+    // surface the discovery failure even though nothing durable reflects it.
+    assert.equal(outcome.failed, 1, "the barrier's own outcome counts the double failure as failed, not silently repaired");
+
+    // A plain read taken AFTER the fault is removed (discovery restored,
+    // trigger dropped) reflects the durable row exactly as it stands —
+    // still stale-but-honestly-labeled `current` from before the fault, an
+    // honest bounded staleness window until the NEXT sweep pass converges
+    // it, not a fabricated failure that outlives the transient fault.
+    const summaryAfterFaultRemoved = summaryFor(await listBypassCache());
     assert.equal(
-      projectionReliable(summary)?.status,
-      "false",
-      "ProjectionReliable must be false — a stale current record_snapshot must never read reliable when BOTH discovery and its failure-marker write failed"
+      projectionReliable(summaryAfterFaultRemoved)?.status,
+      "true",
+      "a read after the transient fault clears still reports the last-known (stale-but-honest) durable state"
     );
   }));

@@ -10,9 +10,14 @@
  * + foot actions; below it a stream manifest Table links every stream into
  * Explore. Records are never rendered here — Explore is the one reader.
  *
- * Data path is REAL: the page fetches connector summaries through the existing
- * owner-token `liveDashboardDataSource.listConnectorSummaries()` and projects
- * them with the pure `toSourcesView` mapping. The route id is unchanged
+ * Data path is REAL: the page fetches exactly ONE bounded page of connector
+ * summaries (`listConnectorSummaries({ cursor, limit: 100 })` — never the
+ * exhaustive fold) through the existing owner-token `liveDashboardDataSource`,
+ * and projects it with the pure `toSourcesView` mapping. A fleet larger than
+ * one page is reachable via the shared `ConnectorSummaryPager` (a bounded
+ * `page_cursor` Next link + explicit Restart; Previous is the browser's own
+ * back button, never URL-side history), not by prefetching every page
+ * before first paint. The route id is unchanged
  * (`/sources`); redirects + tests pin it. The Sync and Revoke
  * mutations bind to the same server actions the prior surface used
  * (`runConnectorNowAction`, `revokeConnectionAction`, `reactivateConnectionAction`).
@@ -23,11 +28,16 @@
  * when `demo` is absent.
  */
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
+import {
+  ConnectorSummaryPageError,
+  ConnectorSummaryPager,
+  loadConnectorSummaryPage,
+} from "../components/connector-summary-page.tsx";
+import { isPagedRequest, parseConnectorSummaryPageState } from "../components/connector-summary-pager.ts";
 import { ServerUnreachable } from "../components/shell.tsx";
 import { isActiveConnectorRunSummaryStatus } from "../lib/connector-run-summary-status.ts";
 import { liveDashboardDataSource } from "../lib/data-source.ts";
 import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
-import type { RefConnectorSummary } from "../lib/ref-client.ts";
 import { listConnectorManifests } from "../lib/rs-client.ts";
 import { reactivateConnectionAction, revokeConnectionAction } from "./[connector]/actions.ts";
 import { RecordsPagePoller } from "./records-page-poller.tsx";
@@ -38,6 +48,8 @@ import {
   type SourcesRuntimeAdvisory,
   toSourcesView,
 } from "./sources-view-model.ts";
+
+const SOURCES_PATH = "/sources";
 
 export const dynamic = "force-dynamic";
 
@@ -55,13 +67,23 @@ async function resolveHost(): Promise<string> {
   }
 }
 
+function fetchSourcesPage(pageState: ReturnType<typeof parseConnectorSummaryPageState>) {
+  return loadConnectorSummaryPage(pageState, (opts) => liveDashboardDataSource.listConnectorSummaries(opts));
+}
+
 export default async function RecordsIndexPage({
   searchParams,
 }: {
-  searchParams?: Promise<{ demo?: string; error?: string; message?: string }>;
+  searchParams?: Promise<{
+    demo?: string;
+    error?: string;
+    message?: string;
+    page_cursor?: string;
+  }>;
 }) {
   const params = searchParams ? await searchParams : {};
   const host = await resolveHost();
+  const pageState = parseConnectorSummaryPageState(params);
 
   // DEV-ONLY seeded demo. Gated by NODE_ENV so production never reads fixtures.
   const demoParam = typeof params.demo === "string" ? params.demo : undefined;
@@ -84,16 +106,11 @@ export default async function RecordsIndexPage({
     );
   }
 
-  let summaries: RefConnectorSummary[];
-  let runtimeAdvisory: SourcesRuntimeAdvisory | null = null;
   let manifests: Awaited<ReturnType<typeof listConnectorManifests>>;
+  let page: Awaited<ReturnType<typeof fetchSourcesPage>>;
   try {
-    const [response, connectorManifests] = await Promise.all([
-      liveDashboardDataSource.listConnectorSummaries(),
-      listConnectorManifests(),
-    ]);
-    summaries = response.data;
-    runtimeAdvisory = buildSourcesRuntimeAdvisory(response.runtime);
+    const [pageResult, connectorManifests] = await Promise.all([fetchSourcesPage(pageState), listConnectorManifests()]);
+    page = pageResult;
     manifests = connectorManifests;
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
@@ -107,6 +124,17 @@ export default async function RecordsIndexPage({
     throw err;
   }
 
+  if (page.kind === "error") {
+    return (
+      <RecordroomShellWithPalette build="pdpp 0.1.0" host={host}>
+        <SourcesHeader error={params.error} message={params.message} />
+        <ConnectorSummaryPageError basePath={SOURCES_PATH} currentParams={params} message={page.message} />
+      </RecordroomShellWithPalette>
+    );
+  }
+
+  const summaries = [...page.items];
+  const runtimeAdvisory: SourcesRuntimeAdvisory | null = buildSourcesRuntimeAdvisory(page.runtime);
   const instances = toSourcesView(summaries, { manifests });
   // The poller is mounted unconditionally; `running` (derived from any active
   // run) only selects the fast vs. idle cadence. Named `runningCount` to match
@@ -124,6 +152,13 @@ export default async function RecordsIndexPage({
         reactivateAction={reactivateConnectionAction}
         revokeAction={revokeConnectionAction}
         runtimeAdvisory={runtimeAdvisory}
+      />
+      <ConnectorSummaryPager
+        basePath={SOURCES_PATH}
+        currentParams={params}
+        hasMore={page.hasMore}
+        isPaged={isPagedRequest(pageState)}
+        nextCursor={page.nextCursor}
       />
       <RecordsPagePoller running={runningCount > 0} />
     </RecordroomShellWithPalette>

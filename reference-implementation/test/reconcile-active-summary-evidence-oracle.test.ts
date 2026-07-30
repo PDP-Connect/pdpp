@@ -98,6 +98,11 @@ function requireRow<T>(row: T | undefined, description: string): T {
   assert.ok(row, description);
   return row;
 }
+
+function requireConnectorSummary<T>(summary: T | null, description: string): T {
+  assert.ok(summary, description);
+  return summary;
+}
 const getDb = getDbTyped;
 const postgresQuery = postgresQueryTyped;
 const registerConnector = registerConnectorTyped;
@@ -318,20 +323,25 @@ function streamEntry(summary: any, stream: string): any {
   return entry;
 }
 
-test("observation barrier creates missing evidence for an active connection before synthesis", () =>
+test("a completed maintenance sweep observation creates missing evidence for an active connection before synthesis", () =>
   withSqlite(async () => {
     seedConnectorSqlite();
     seedInstanceSqlite();
 
+    // Terminal-gate revision (2026-07-29): ordinary reads no longer create
+    // missing evidence inline — only `runConnectorMaintenanceSweep`'s
+    // periodic/startup barrier does. Simulate "the maintenance sweep already
+    // ran" explicitly before reading.
+    await rebuildConnectorSummaryEvidence();
     const summaries = await listBypassCache();
     summaryFor(summaries);
     const evidence = await getConnectorSummaryEvidence(INSTANCE_ID);
 
-    assert.ok(evidence, "a direct summary consumer must create missing active evidence");
+    assert.ok(evidence, "a completed maintenance sweep observation must create missing active evidence");
     assert.equal(evidence.state, "fresh");
   }));
 
-test("lost dirty marker cannot hide changed canonical ingest from the next observation", () =>
+test("lost dirty marker cannot hide changed canonical ingest from the next maintenance observation", () =>
   withSqlite(async () => {
     seedConnectorSqlite();
     seedInstanceSqlite();
@@ -339,11 +349,18 @@ test("lost dirty marker cannot hide changed canonical ingest from the next obser
     seedHealthyRetainedSnapshotSqlite({ streamCount: 1 });
     await rebuildConnectorSummaryEvidence();
 
+    // Terminal-gate revision (2026-07-29): an ordinary read no longer
+    // recomputes `total_records` live — it reads the durably maintained
+    // evidence row exactly as the last observation left it. A dirty-marker
+    // loss can only be caught by the NEXT maintenance-sweep observation, not
+    // by the read itself, so the fixture explicitly simulates that next
+    // sweep before asserting on the projected summary.
     seedCanonicalRecordSqlite({ emittedAt: "2026-07-16T12:01:00.000Z", recordKey: "record_2" });
+    await rebuildConnectorSummaryEvidence();
     const summaries = await listBypassCache();
     const summary = summaryFor(summaries);
 
-    assert.equal(summary.total_records, 2, "record snapshot must detect changed ingest without a dirty hook");
+    assert.equal(summary.total_records, 2, "the next observation detects changed ingest without a dirty hook");
     assert.equal(streamEntry(summary, STREAM).record_count, 2);
   }));
 
@@ -353,6 +370,10 @@ test("declared empty stream exposes known_zero only after a current canonical sn
     seedInstanceSqlite();
     seedHealthyRetainedSnapshotSqlite({ streamCount: 1 });
     await rebuildRetainedSize();
+    // Terminal-gate revision (2026-07-29): the summary-evidence barrier is no
+    // longer implicit on read — simulate the maintenance sweep explicitly so
+    // the canonical (empty) snapshot is observed before synthesis.
+    await rebuildConnectorSummaryEvidence();
 
     const summary = summaryFor(await listBypassCache());
     const empty = streamEntry(summary, EMPTY_STREAM);
@@ -382,7 +403,10 @@ test("only explicit current-generation undeclared-write provenance becomes unexp
     seedConnectorSqlite();
     seedInstanceSqlite();
     seedCanonicalRecordSqlite({ recordKey: "historical-only", stream: UNEXPECTED_STREAM });
-    await listBypassCache();
+    // Terminal-gate revision (2026-07-29): each observation below must be
+    // driven by an explicit maintenance-sweep barrier call — ordinary reads
+    // no longer reconcile evidence as a side effect.
+    await rebuildConnectorSummaryEvidence();
     assert.equal(
       streamEntry(summaryFor(await listBypassCache()), UNEXPECTED_STREAM).declaration_state,
       "dormant",
@@ -393,6 +417,7 @@ test("only explicit current-generation undeclared-write provenance becomes unexp
       { connector_id: CONNECTOR_ID, connector_instance_id: INSTANCE_ID },
       { provenance: "test_rejected_current_write", stream: UNEXPECTED_STREAM }
     );
+    await rebuildConnectorSummaryEvidence();
     const summary = summaryFor(await listBypassCache());
     assert.equal(streamEntry(summary, UNEXPECTED_STREAM).declaration_state, "unexpected");
     assert.equal(summary.connection_health.state, "unknown", "unexpected evidence fails ProjectionReliable closed");
@@ -403,6 +428,10 @@ test("unobserved manifest remove-readd advances twice and never replays terminal
     seedConnectorSqlite();
     seedInstanceSqlite();
     seedTerminalCollectionFactSqlite({ eventSeq: 1 });
+    // Terminal-gate revision (2026-07-29): each phase below needs its own
+    // explicit maintenance-sweep barrier before reading — ordinary reads no
+    // longer reconcile evidence as a side effect.
+    await rebuildConnectorSummaryEvidence();
     await listBypassCache();
     assert.match(
       JSON.stringify((await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts),
@@ -413,6 +442,7 @@ test("unobserved manifest remove-readd advances twice and never replays terminal
     const withoutMessages = { ...MANIFEST, streams: [MANIFEST.streams[1]] };
     await registerConnector(withoutMessages, { backfillRetrievalIndexes: false });
     await registerConnector(MANIFEST, { backfillRetrievalIndexes: false });
+    await rebuildConnectorSummaryEvidence();
     const readded = summaryFor(await listBypassCache());
     const readdedEvidence = await getConnectorSummaryEvidence(INSTANCE_ID);
     const readdedGeneration = requireRow(
@@ -430,6 +460,7 @@ test("unobserved manifest remove-readd advances twice and never replays terminal
     );
 
     seedTerminalCollectionFactSqlite({ eventSeq: 2 });
+    await rebuildConnectorSummaryEvidence();
     await listBypassCache();
     assert.match(
       JSON.stringify((await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts),
@@ -443,6 +474,9 @@ test("SQLite rebuild refuses pre-generation terminal facts and accepts a post-mu
     seedConnectorSqlite();
     seedInstanceSqlite();
     seedTerminalCollectionFactSqlite({ eventId: "evt_generation_zero", eventSeq: 1 });
+    // Terminal-gate revision (2026-07-29): every phase below needs its own
+    // explicit maintenance-sweep barrier before reading.
+    await rebuildConnectorSummaryEvidence();
     await listBypassCache();
 
     await registerConnector({ ...MANIFEST, streams: [MANIFEST.streams[1]] }, { backfillRetrievalIndexes: false });
@@ -492,12 +526,14 @@ test("SQLite rebuild refuses pre-generation terminal facts and accepts a post-mu
     initDb(databasePath);
     invalidateConnectorSummariesCache();
 
+    await rebuildConnectorSummaryEvidence();
     const rebuilt = summaryFor(await listBypassCache());
     assert.equal((await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts, null);
     assert.notEqual(rebuilt.connection_health.state, "healthy");
     assert.equal(rebuilt.terminal_facts.state, "stale", "legacy generationless facts remain historical, not current");
 
     seedTerminalCollectionFactSqlite({ eventId: "evt_generation_two", eventSeq: 3 });
+    await rebuildConnectorSummaryEvidence();
     await listBypassCache();
     assert.match(
       JSON.stringify((await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts),
@@ -516,6 +552,10 @@ test("SQLite: pre-provenance fact event straddled by later stamped recovery-only
     getDb()
       .prepare("UPDATE spine_events SET manifest_generation = NULL WHERE event_id = ?")
       .run("evt_straddle_pre_provenance");
+    // Terminal-gate revision (2026-07-29): simulate the maintenance sweep
+    // explicitly — ordinary reads no longer fold terminal facts as a side
+    // effect.
+    await rebuildConnectorSummaryEvidence();
     await listBypassCache();
     const preProvenanceFacts = (await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts;
     assert.match(
@@ -557,6 +597,7 @@ test("SQLite: pre-provenance fact event straddled by later stamped recovery-only
     insertRecoveryOnlyEvent(2, "evt_straddle_recovery_only_1");
     insertRecoveryOnlyEvent(3, "evt_straddle_recovery_only_2");
 
+    await rebuildConnectorSummaryEvidence();
     const afterRecoveryOnly = summaryFor(await listBypassCache());
     assert.equal(
       afterRecoveryOnly.terminal_facts.state,
@@ -584,6 +625,11 @@ test("SQLite warm v3 terminal projection is invalidated and replayed, now accept
     // historical regardless of the connection's generation (fix-pre-
     // provenance-terminal-generation-semantics' whole point). Blanking the
     // stamp to NULL models "this event predates generation provenance."
+    //
+    // Terminal-gate revision (2026-07-29): the scoped route no longer
+    // creates missing evidence as a side effect — simulate the maintenance
+    // sweep explicitly to establish the pre-upgrade projection first.
+    await rebuildConnectorSummaryEvidence();
     await getConnectorSummaryForRoute(INSTANCE_ID);
     assert.match(
       JSON.stringify((await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts),
@@ -605,10 +651,17 @@ test("SQLite warm v3 terminal projection is invalidated and replayed, now accept
     closeDb();
     initDb(databasePath);
     invalidateConnectorSummariesCache();
-    const warmRead = await getConnectorSummaryForRoute(INSTANCE_ID);
+    // Terminal-gate revision (2026-07-29): the fold-version upgrade replay
+    // is driven by the maintenance-sweep barrier, not by the scoped route
+    // read itself — simulate that sweep explicitly before the route call.
+    await rebuildConnectorSummaryEvidence();
+    const warmRead = requireConnectorSummary(
+      await getConnectorSummaryForRoute(INSTANCE_ID),
+      "warm route summary exists"
+    );
     const warmEvidence = await getConnectorSummaryEvidence(INSTANCE_ID);
-    assert.equal(warmRead?.terminal_facts.state, "current");
-    assert.equal(warmRead?.terminal_facts.reason_code, null);
+    assert.equal(warmRead.terminal_facts.state, "current");
+    assert.equal(warmRead.terminal_facts.reason_code, null);
     assert.match(JSON.stringify(warmEvidence.stream_latest_facts), TOP_LEVEL_REGEX_2);
     assert.equal(
       Number(
@@ -624,18 +677,22 @@ test("SQLite warm v3 terminal projection is invalidated and replayed, now accept
 
     const healedProjection = {
       facts: warmEvidence.stream_latest_facts,
-      reason: warmRead?.terminal_facts.reason_code,
-      state: warmRead?.terminal_facts.state,
+      reason: warmRead.terminal_facts.reason_code,
+      state: warmRead.terminal_facts.state,
     };
     closeDb();
     initDb(databasePath);
     invalidateConnectorSummariesCache();
-    const repeatedRestart = await getConnectorSummaryForRoute(INSTANCE_ID);
+    await rebuildConnectorSummaryEvidence();
+    const repeatedRestart = requireConnectorSummary(
+      await getConnectorSummaryForRoute(INSTANCE_ID),
+      "summary exists after repeated restart"
+    );
     assert.deepEqual(
       {
         facts: (await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts,
-        reason: repeatedRestart?.terminal_facts.reason_code,
-        state: repeatedRestart?.terminal_facts.state,
+        reason: repeatedRestart.terminal_facts.reason_code,
+        state: repeatedRestart.terminal_facts.state,
       },
       healedProjection,
       "the healed current projection is stable across repeated restarts"
@@ -647,12 +704,16 @@ test("SQLite warm v3 terminal projection is invalidated and replayed, now accept
     closeDb();
     initDb(databasePath);
     invalidateConnectorSummariesCache();
-    const rebuilt = await getConnectorSummaryForRoute(INSTANCE_ID);
+    await rebuildConnectorSummaryEvidence();
+    const rebuilt = requireConnectorSummary(
+      await getConnectorSummaryForRoute(INSTANCE_ID),
+      "summary exists after delete and rebuild"
+    );
     assert.deepEqual(
       {
         facts: (await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts,
-        reason: rebuilt?.terminal_facts.reason_code,
-        state: rebuilt?.terminal_facts.state,
+        reason: rebuilt.terminal_facts.reason_code,
+        state: rebuilt.terminal_facts.state,
       },
       healedProjection,
       "first warm-upgrade read and delete/rebuild have identical terminal evidence"
@@ -664,6 +725,10 @@ test("SQLite route retries a lost v4 replay before trusting a mixed-version v2 t
     seedConnectorSqlite();
     seedInstanceSqlite();
     seedTerminalCollectionFactSqlite({ eventId: "evt_mixed_v2_messages", eventSeq: 1 });
+    // Terminal-gate revision (2026-07-29): the scoped route no longer
+    // creates missing evidence as a side effect — simulate the maintenance
+    // sweep explicitly first.
+    await rebuildConnectorSummaryEvidence();
     await getConnectorSummaryForRoute(INSTANCE_ID);
     const oldFacts = (await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts;
     getDb()
@@ -688,7 +753,12 @@ test("SQLite route retries a lost v4 replay before trusting a mixed-version v2 t
       }
     });
     try {
-      const routePromise = getConnectorSummaryForRoute(INSTANCE_ID);
+      // Terminal-gate revision (2026-07-29): the fold this race pauses
+      // inside now only runs from the explicit maintenance-sweep barrier,
+      // not from the scoped route read itself — race the barrier call
+      // instead of the route call, then read the route's projection of the
+      // resulting (converged) evidence afterward.
+      const barrierPromise = rebuildConnectorSummaryEvidence();
       await paused;
       seedTerminalCollectionFactSqlite({ eventId: "evt_mixed_v2_empty", eventSeq: 2, stream: EMPTY_STREAM });
       const v2WriteAccepted = await __testOnlyUpdateStreamFactsCasWrite({
@@ -710,9 +780,13 @@ test("SQLite route retries a lost v4 replay before trusting a mixed-version v2 t
       assert.equal(v2WriteAccepted, true, "premise: the realistic v2 delta wins before v4 owns the row");
       __testOnlySetFoldPauseHook(null);
       releaseReplay?.();
-      const firstRoute = await routePromise;
+      await barrierPromise;
+      const firstRoute = requireConnectorSummary(
+        await getConnectorSummaryForRoute(INSTANCE_ID),
+        "first route summary exists after replay"
+      );
       const firstEvidence = await getConnectorSummaryEvidence(INSTANCE_ID);
-      assert.equal(firstRoute?.terminal_facts.state, "current");
+      assert.equal(firstRoute.terminal_facts.state, "current");
       assert.equal(
         Number(
           requireRow(
@@ -733,16 +807,20 @@ test("SQLite route retries a lost v4 replay before trusting a mixed-version v2 t
 
       const firstProjection = {
         facts: firstEvidence.stream_latest_facts,
-        reason: firstRoute?.terminal_facts.reason_code,
-        state: firstRoute?.terminal_facts.state,
+        reason: firstRoute.terminal_facts.reason_code,
+        state: firstRoute.terminal_facts.state,
       };
       getDb().prepare("DELETE FROM connector_summary_evidence WHERE connector_instance_id = ?").run(INSTANCE_ID);
-      const rebuiltRoute = await getConnectorSummaryForRoute(INSTANCE_ID);
+      await rebuildConnectorSummaryEvidence();
+      const rebuiltRoute = requireConnectorSummary(
+        await getConnectorSummaryForRoute(INSTANCE_ID),
+        "rebuilt route summary exists after replay"
+      );
       assert.deepEqual(
         {
           facts: (await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts,
-          reason: rebuiltRoute?.terminal_facts.reason_code,
-          state: rebuiltRoute?.terminal_facts.state,
+          reason: rebuiltRoute.terminal_facts.reason_code,
+          state: rebuiltRoute.terminal_facts.state,
         },
         firstProjection,
         "the first route result equals delete/rebuild after the mixed-version race"
@@ -766,6 +844,10 @@ test("SQLite route fails terminal facts closed when bounded v3 replay contention
     seedConnectorSqlite();
     seedInstanceSqlite();
     seedTerminalCollectionFactSqlite({ eventId: "evt_contention_v2_messages", eventSeq: 1 });
+    // Terminal-gate revision (2026-07-29): the scoped route no longer
+    // creates missing evidence as a side effect — simulate the maintenance
+    // sweep explicitly first.
+    await rebuildConnectorSummaryEvidence();
     await getConnectorSummaryForRoute(INSTANCE_ID);
     const oldFacts = (await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts;
     getDb()
@@ -806,10 +888,17 @@ test("SQLite route fails terminal facts closed when bounded v3 replay contention
       v2Wins += 1;
     });
     try {
-      const route = await getConnectorSummaryForRoute(INSTANCE_ID);
-      assert.equal(v2Wins, 2, "the route made exactly its bounded two replay attempts");
-      assert.equal(route?.terminal_facts.state, "stale");
-      assert.equal(route?.terminal_facts.reason_code, "terminal_fold_contention");
+      // Terminal-gate revision (2026-07-29): the bounded replay-contention
+      // fold this race exercises now only runs from the explicit
+      // maintenance-sweep barrier, not from the scoped route read itself.
+      await rebuildConnectorSummaryEvidence();
+      const route = requireConnectorSummary(
+        await getConnectorSummaryForRoute(INSTANCE_ID),
+        "route summary exists after contention"
+      );
+      assert.equal(v2Wins, 2, "the barrier made exactly its bounded two replay attempts");
+      assert.equal(route.terminal_facts.state, "stale");
+      assert.equal(route.terminal_facts.reason_code, "terminal_fold_contention");
       assert.match(
         JSON.stringify((await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts),
         TOP_LEVEL_REGEX_3,
@@ -861,6 +950,10 @@ test("SQLite event after an unobserved mutation is current while pre-mutation hi
       "post-mutation event exists"
     );
     assert.equal(afterMutationEvent.manifest_generation, 2);
+    // Terminal-gate revision (2026-07-29): simulate the maintenance sweep
+    // explicitly — no evidence row exists yet, and ordinary reads no longer
+    // create/fold it as a side effect.
+    await rebuildConnectorSummaryEvidence();
     const summary = summaryFor(await listBypassCache());
     assert.match(
       JSON.stringify((await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts),
@@ -874,6 +967,10 @@ test("malformed manifest preserves connection and stream evidence as declaration
     seedConnectorSqlite("not-json");
     seedInstanceSqlite();
     seedCanonicalRecordSqlite({ recordKey: "manifest_unavailable", stream: UNEXPECTED_STREAM });
+    // Terminal-gate revision (2026-07-29): simulate the maintenance sweep
+    // explicitly — no evidence row exists yet, and ordinary reads no longer
+    // create/repair it as a side effect.
+    await rebuildConnectorSummaryEvidence();
 
     const summary = summaryFor(await listBypassCache());
     assert.equal(summary.manifest_declaration.state, "unavailable");
@@ -894,6 +991,10 @@ test("retained-byte failure does not erase a current canonical count", () =>
       )
       .run(INSTANCE_ID);
 
+    // Terminal-gate revision (2026-07-29): simulate the maintenance sweep
+    // explicitly — ordinary reads no longer reconcile evidence as a side
+    // effect.
+    await rebuildConnectorSummaryEvidence();
     const summary = summaryFor(await listBypassCache());
     assert.equal(summary.total_records, 1);
     assert.equal(streamEntry(summary, STREAM).count_state, "known");
@@ -1033,7 +1134,11 @@ test("retained bytes evidence component is exposed on the summary distinct from 
     seedInstanceSqlite();
     seedCanonicalRecordSqlite({ recordKey: "current_record" });
 
-    // Never-observed: no retained_size_connection row at all.
+    // Terminal-gate revision (2026-07-29): the observation barrier must run
+    // explicitly to create this connection's evidence row before the first
+    // read — no retained_size_connection row exists yet, so the barrier
+    // stamps retained_bytes_evidence "stale" (observed, but no data).
+    await rebuildConnectorSummaryEvidence();
     const summaryBefore = summaryFor(await listBypassCache());
     assert.equal(summaryBefore.retained_bytes_evidence.state, "stale");
     assert.equal(summaryBefore.retained_bytes ?? null, null);
@@ -1055,12 +1160,16 @@ test("terminal facts distinguish never-observed from checkpointed-empty history"
   withSqlite(async () => {
     seedConnectorSqlite();
     seedInstanceSqlite();
-    // The one observation barrier fully converges in ONE call: discovery
-    // creates the missing evidence row, then the fold runs against that
-    // now-existing row in the same pass, so even a never-before-seen
-    // connection's terminal history is genuinely checkpointed (empty) by
-    // the time this call returns — never requiring a second call to reach
-    // `current`.
+    // Terminal-gate revision (2026-07-29): the one-call convergence
+    // contract now belongs to the explicit maintenance-sweep barrier
+    // (`rebuildConnectorSummaryEvidence`), not to an ordinary read — a plain
+    // `listBypassCache()` no longer creates or folds evidence at all. One
+    // barrier call still fully converges in ONE call: discovery creates the
+    // missing evidence row, then the fold runs against that now-existing
+    // row in the same pass, so even a never-before-seen connection's
+    // terminal history is genuinely checkpointed (empty) by the time this
+    // call returns — never requiring a second call to reach `current`.
+    await rebuildConnectorSummaryEvidence();
     const converged = summaryFor(await listBypassCache());
     assert.equal(converged.terminal_facts.state, "current");
     assert.equal(converged.terminal_facts.event_seq, 0);
@@ -1073,6 +1182,7 @@ test("terminal facts distinguish never-observed from checkpointed-empty history"
     seedInstanceSqlite({ connectorInstanceId: "cin_never_observed" });
     getDb().exec("ALTER TABLE spine_events RENAME TO spine_events_hidden");
     try {
+      await rebuildConnectorSummaryEvidence();
       const failed = summaryFor(await listBypassCache(), "cin_never_observed");
       assert.equal(
         failed.terminal_facts.state,
@@ -1083,9 +1193,10 @@ test("terminal facts distinguish never-observed from checkpointed-empty history"
       getDb().exec("ALTER TABLE spine_events_hidden RENAME TO spine_events");
     }
 
-    // Once the fold can read again, the NEXT single call fully converges
-    // this connection too — proving `unobserved` was never a permanent or
-    // call-order artifact.
+    // Once the fold can read again, the NEXT single barrier call fully
+    // converges this connection too — proving `unobserved` was never a
+    // permanent or call-order artifact.
+    await rebuildConnectorSummaryEvidence();
     const recovered = summaryFor(await listBypassCache(), "cin_never_observed");
     assert.equal(recovered.terminal_facts.state, "current");
   }));
@@ -1094,11 +1205,15 @@ test("terminal facts distinguish never-observed from checkpointed-empty history"
 // never-before-seen connection with a genuine (non-empty) terminal history
 // on the spine reaches record_snapshot=current, terminal_facts=current with
 // the correct high-water event_seq, and manifest_declaration=current — ALL
-// from exactly one consumer call. No caller may ever need a second call (or
-// an explicit rebuild) to converge a healthy connection; regressing the
-// barrier back to a discover-only-then-fold-next-time ordering would make
-// this fail even though the earlier tests in this file could still pass.
-test("a single observation fully converges every evidence component for a never-before-seen connection", () =>
+// from exactly one maintenance-sweep barrier call. Terminal-gate revision
+// (2026-07-29): this one-call convergence contract now belongs to the
+// explicit barrier (`rebuildConnectorSummaryEvidence`), which every ordinary
+// read (list/route) relies on the maintenance sweep to have already run —
+// no barrier caller may ever need a second call to converge a healthy
+// connection; regressing the barrier itself back to a discover-only-then-
+// fold-next-time ordering would make this fail even though the earlier
+// tests in this file could still pass.
+test("a single maintenance-sweep observation fully converges every evidence component for a never-before-seen connection", () =>
   withSqlite(async () => {
     seedConnectorSqlite();
     seedInstanceSqlite();
@@ -1124,11 +1239,16 @@ test("a single observation fully converges every evidence component for a never-
         })
       );
 
+    await rebuildConnectorSummaryEvidence();
     const summary = summaryFor(await listBypassCache());
-    assert.equal(summary.record_snapshot.state, "current", "one call converges record_snapshot");
-    assert.equal(summary.terminal_facts.state, "current", "one call converges terminal_facts");
-    assert.equal(summary.terminal_facts.event_seq, 1, "the fold reaches the real high-water seq in the same call");
-    assert.equal(summary.manifest_declaration.state, "current", "one call converges manifest_declaration");
+    assert.equal(summary.record_snapshot.state, "current", "one barrier call converges record_snapshot");
+    assert.equal(summary.terminal_facts.state, "current", "one barrier call converges terminal_facts");
+    assert.equal(
+      summary.terminal_facts.event_seq,
+      1,
+      "the fold reaches the real high-water seq in the same barrier call"
+    );
+    assert.equal(summary.manifest_declaration.state, "current", "one barrier call converges manifest_declaration");
     assert.equal(summary.total_records, 1);
   }));
 
@@ -1282,6 +1402,11 @@ test("dedicated PostgreSQL manifest generations fence historical facts and undec
       );
     };
     await insertTerminal(firstSeq);
+    // Terminal-gate revision (2026-07-29): each phase below needs its own
+    // explicit maintenance-sweep barrier before reading — ordinary reads no
+    // longer reconcile evidence as a side effect (matches the SQLite
+    // "unobserved manifest remove-readd..." test's established pattern).
+    await rebuildConnectorSummaryEvidence();
     await listBypassCache();
     assert.match(
       JSON.stringify((await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts),
@@ -1290,6 +1415,7 @@ test("dedicated PostgreSQL manifest generations fence historical facts and undec
 
     const withoutMessages = { ...MANIFEST, streams: [MANIFEST.streams[1]] };
     await registerConnector(withoutMessages, { backfillRetrievalIndexes: false });
+    await rebuildConnectorSummaryEvidence();
     await listBypassCache();
     const dormant = await getConnectorSummaryEvidence(INSTANCE_ID);
     assert.equal(dormant.stream_latest_facts, null, "Postgres clears old terminal facts at the manifest boundary");
@@ -1297,6 +1423,7 @@ test("dedicated PostgreSQL manifest generations fence historical facts and undec
     assert.equal(dormant.manifest_generation, 1, "the production manifest write advances the durable generation");
 
     await registerConnector(MANIFEST, { backfillRetrievalIndexes: false });
+    await rebuildConnectorSummaryEvidence();
     await listBypassCache();
     const readded = await getConnectorSummaryEvidence(INSTANCE_ID);
     assert.equal(readded.stream_latest_facts, null, "Postgres re-add withholds historical proof");
@@ -1305,6 +1432,7 @@ test("dedicated PostgreSQL manifest generations fence historical facts and undec
     await postgresQuery("DELETE FROM connector_summary_evidence WHERE connector_instance_id = $1", [INSTANCE_ID]);
     await closePostgresStorage();
     await initPostgresStorage({ backend: "postgres", databaseUrl: requirePostgresUrl() });
+    await rebuildConnectorSummaryEvidence();
     const rebuilt = summaryFor(await listBypassCache());
     assert.equal(
       (await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts,
@@ -1314,6 +1442,7 @@ test("dedicated PostgreSQL manifest generations fence historical facts and undec
     assert.notEqual(rebuilt.connection_health.state, "healthy");
 
     await insertTerminal(firstSeq + 1);
+    await rebuildConnectorSummaryEvidence();
     await listBypassCache();
     assert.match(
       JSON.stringify((await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts),
@@ -1324,6 +1453,7 @@ test("dedicated PostgreSQL manifest generations fence historical facts and undec
       { connector_id: CONNECTOR_ID, connector_instance_id: INSTANCE_ID },
       { provenance: "postgres_current_generation_rejected_write", stream: UNEXPECTED_STREAM }
     );
+    await rebuildConnectorSummaryEvidence();
     const unexpected = summaryFor(await listBypassCache());
     assert.equal(streamEntry(unexpected, UNEXPECTED_STREAM).declaration_state, "unexpected");
 
@@ -1357,6 +1487,7 @@ test("dedicated PostgreSQL manifest generations fence historical facts and undec
       Number(firstRow(nextGenerationResult.rows, "next PostgreSQL connector generation exists").manifest_generation),
       3
     );
+    await rebuildConnectorSummaryEvidence();
     const nextGeneration = summaryFor(await listBypassCache());
     assert.notEqual(
       nextGeneration.stream_records.find((entry: any) => entry.stream === UNEXPECTED_STREAM)?.declaration_state,
@@ -1418,6 +1549,11 @@ test("dedicated PostgreSQL warm v3 terminal projection is invalidated and replay
         }),
       ]
     );
+    // Terminal-gate revision (2026-07-29): the scoped route no longer
+    // creates missing evidence as a side effect — simulate the maintenance
+    // sweep explicitly to establish the pre-upgrade projection first (matches
+    // the SQLite "warm v3 terminal projection..." test's established pattern).
+    await rebuildConnectorSummaryEvidence();
     await getConnectorSummaryForRoute(INSTANCE_ID);
     assert.match(
       JSON.stringify((await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts),
@@ -1437,10 +1573,17 @@ test("dedicated PostgreSQL warm v3 terminal projection is invalidated and replay
     await closePostgresStorage();
     await initPostgresStorage({ backend: "postgres", databaseUrl: requirePostgresUrl() });
     invalidateConnectorSummariesCache();
-    const warmRead = await getConnectorSummaryForRoute(INSTANCE_ID);
+    // Terminal-gate revision (2026-07-29): the fold-version upgrade replay is
+    // driven by the maintenance-sweep barrier, not by the scoped route read
+    // itself — simulate that sweep explicitly before the route call.
+    await rebuildConnectorSummaryEvidence();
+    const warmRead = requireConnectorSummary(
+      await getConnectorSummaryForRoute(INSTANCE_ID),
+      "warm PostgreSQL route summary exists"
+    );
     const warmEvidence = await getConnectorSummaryEvidence(INSTANCE_ID);
-    assert.equal(warmRead?.terminal_facts.state, "current");
-    assert.equal(warmRead?.terminal_facts.reason_code, null);
+    assert.equal(warmRead.terminal_facts.state, "current");
+    assert.equal(warmRead.terminal_facts.reason_code, null);
     assert.match(JSON.stringify(warmEvidence.stream_latest_facts), TOP_LEVEL_REGEX_8);
     const warmEvidenceVersion = await postgresQuery(
       "SELECT stream_facts_fold_version FROM connector_summary_evidence WHERE connector_instance_id = $1",
@@ -1453,18 +1596,22 @@ test("dedicated PostgreSQL warm v3 terminal projection is invalidated and replay
 
     const healedProjection = {
       facts: warmEvidence.stream_latest_facts,
-      reason: warmRead?.terminal_facts.reason_code,
-      state: warmRead?.terminal_facts.state,
+      reason: warmRead.terminal_facts.reason_code,
+      state: warmRead.terminal_facts.state,
     };
     await closePostgresStorage();
     await initPostgresStorage({ backend: "postgres", databaseUrl: requirePostgresUrl() });
     invalidateConnectorSummariesCache();
-    const repeatedRestart = await getConnectorSummaryForRoute(INSTANCE_ID);
+    await rebuildConnectorSummaryEvidence();
+    const repeatedRestart = requireConnectorSummary(
+      await getConnectorSummaryForRoute(INSTANCE_ID),
+      "PostgreSQL summary exists after repeated restart"
+    );
     assert.deepEqual(
       {
         facts: (await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts,
-        reason: repeatedRestart?.terminal_facts.reason_code,
-        state: repeatedRestart?.terminal_facts.state,
+        reason: repeatedRestart.terminal_facts.reason_code,
+        state: repeatedRestart.terminal_facts.state,
       },
       healedProjection,
       "the healed current projection is stable across repeated restarts on PostgreSQL"
@@ -1474,12 +1621,16 @@ test("dedicated PostgreSQL warm v3 terminal projection is invalidated and replay
     await closePostgresStorage();
     await initPostgresStorage({ backend: "postgres", databaseUrl: requirePostgresUrl() });
     invalidateConnectorSummariesCache();
-    const rebuilt = await getConnectorSummaryForRoute(INSTANCE_ID);
+    await rebuildConnectorSummaryEvidence();
+    const rebuilt = requireConnectorSummary(
+      await getConnectorSummaryForRoute(INSTANCE_ID),
+      "PostgreSQL summary exists after delete and rebuild"
+    );
     assert.deepEqual(
       {
         facts: (await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts,
-        reason: rebuilt?.terminal_facts.reason_code,
-        state: rebuilt?.terminal_facts.state,
+        reason: rebuilt.terminal_facts.reason_code,
+        state: rebuilt.terminal_facts.state,
       },
       healedProjection,
       "first warm-upgrade read and delete/rebuild have identical terminal evidence on PostgreSQL"
@@ -1542,6 +1693,11 @@ test("dedicated PostgreSQL route retries a lost v4 replay before trusting a mixe
       );
     };
     await insertTerminal({ collected: 1, eventId: "evt_mixed_v2_messages_pg", eventSeq: firstSeq, stream: STREAM });
+    // Terminal-gate revision (2026-07-29): the scoped route no longer
+    // creates missing evidence as a side effect — simulate the maintenance
+    // sweep explicitly first (matches the SQLite "route retries a lost v4
+    // replay..." test's established pattern).
+    await rebuildConnectorSummaryEvidence();
     await getConnectorSummaryForRoute(INSTANCE_ID);
     const oldFacts = (await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts;
     await postgresQuery(
@@ -1567,7 +1723,12 @@ test("dedicated PostgreSQL route retries a lost v4 replay before trusting a mixe
       }
     });
     try {
-      const routePromise = getConnectorSummaryForRoute(INSTANCE_ID);
+      // Terminal-gate revision (2026-07-29): the fold this race pauses
+      // inside now only runs from the explicit maintenance-sweep barrier,
+      // not from the scoped route read itself — race the barrier call
+      // instead of the route call, then read the route's projection of the
+      // resulting (converged) evidence afterward.
+      const barrierPromise = rebuildConnectorSummaryEvidence();
       await paused;
       await insertTerminal({
         collected: 1,
@@ -1594,9 +1755,13 @@ test("dedicated PostgreSQL route retries a lost v4 replay before trusting a mixe
       assert.equal(v2WriteAccepted, true, "premise: the realistic v2 delta wins before v4 owns the PostgreSQL row");
       __testOnlySetFoldPauseHook(null);
       releaseReplay?.();
-      const firstRoute = await routePromise;
+      await barrierPromise;
+      const firstRoute = requireConnectorSummary(
+        await getConnectorSummaryForRoute(INSTANCE_ID),
+        "first PostgreSQL route summary exists after replay"
+      );
       const firstEvidence = await getConnectorSummaryEvidence(INSTANCE_ID);
-      assert.equal(firstRoute?.terminal_facts.state, "current");
+      assert.equal(firstRoute.terminal_facts.state, "current");
       const firstRouteEvidenceVersion = await postgresQuery(
         "SELECT stream_facts_fold_version FROM connector_summary_evidence WHERE connector_instance_id = $1",
         [INSTANCE_ID]
@@ -1616,16 +1781,20 @@ test("dedicated PostgreSQL route retries a lost v4 replay before trusting a mixe
 
       const firstProjection = {
         facts: firstEvidence.stream_latest_facts,
-        reason: firstRoute?.terminal_facts.reason_code,
-        state: firstRoute?.terminal_facts.state,
+        reason: firstRoute.terminal_facts.reason_code,
+        state: firstRoute.terminal_facts.state,
       };
       await postgresQuery("DELETE FROM connector_summary_evidence WHERE connector_instance_id = $1", [INSTANCE_ID]);
-      const rebuiltRoute = await getConnectorSummaryForRoute(INSTANCE_ID);
+      await rebuildConnectorSummaryEvidence();
+      const rebuiltRoute = requireConnectorSummary(
+        await getConnectorSummaryForRoute(INSTANCE_ID),
+        "rebuilt PostgreSQL route summary exists after replay"
+      );
       assert.deepEqual(
         {
           facts: (await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts,
-          reason: rebuiltRoute?.terminal_facts.reason_code,
-          state: rebuiltRoute?.terminal_facts.state,
+          reason: rebuiltRoute.terminal_facts.reason_code,
+          state: rebuiltRoute.terminal_facts.state,
         },
         firstProjection,
         "the first PostgreSQL route result equals delete/rebuild after the mixed-version race"

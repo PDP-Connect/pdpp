@@ -14,6 +14,7 @@
 // auth was supplied, never its value.
 
 import { loginWithOwnerPassword, type OwnerAuthResult } from "../lib/owner-session.ts";
+import { fetchAllConnectorSummaries } from "../lib/ref-connectors-page-follow.ts";
 import { type Finding, lineOf, scanForbiddenStrings } from "./scan.ts";
 import { FORBIDDEN_STRING_RULES } from "./surface-manifest.ts";
 
@@ -395,55 +396,6 @@ function runLiveGrantCaptionChecks({ htmlByPath }: { htmlByPath: Map<string, str
   return { findings, checks };
 }
 
-async function fetchJsonOrFinding({
-  base,
-  header,
-  fetchImpl,
-  path,
-}: {
-  base: string;
-  fetchImpl: FetchImpl;
-  header: Record<string, string>;
-  path: string;
-}): Promise<{ data: unknown; finding: Finding | null }> {
-  try {
-    const res = await fetchImpl(`${base}${path}`, {
-      headers: { accept: "application/json", ...header },
-      redirect: "manual",
-    });
-    const { status } = res;
-    const body = await res.text();
-    if (status < 200 || status >= 300) {
-      return {
-        data: null,
-        finding: {
-          ruleId: "live-ref-surface-not-reached",
-          class: "live-probe-inconclusive",
-          path: `live:${path}`,
-          line: 0,
-          excerpt: `status ${status}`,
-          rationale:
-            "The live semantic probe could not reach the reference JSON surface. Owner-journey trust checks are inconclusive until the data source behind the rendered page is observed.",
-        },
-      };
-    }
-    return { data: JSON.parse(body), finding: null };
-  } catch (err) {
-    return {
-      data: null,
-      finding: {
-        ruleId: "live-ref-surface-fetch-failed",
-        class: "live-probe-inconclusive",
-        path: `live:${path}`,
-        line: 0,
-        excerpt: err instanceof Error ? err.message : String(err),
-        rationale:
-          "The live semantic probe could not fetch or parse the reference JSON surface. Owner-journey trust checks are inconclusive until the rendered page can be compared with its source data.",
-      },
-    };
-  }
-}
-
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: this is the live semantic-probe orchestrator running ~10 independent trust-claim checks against the rendered dashboard — carried over unchanged from the .mjs source.
 async function runLiveSemanticChecks({
   base,
@@ -459,14 +411,22 @@ async function runLiveSemanticChecks({
   const findings: Finding[] = [];
   const checks: { detail: string; id: string; status: string }[] = [];
 
-  const connectorsResult = await fetchJsonOrFinding({
-    base,
-    header,
-    fetchImpl,
-    path: "/_ref/connectors?limit=200",
-  });
-  if (connectorsResult.finding) {
-    findings.push(connectorsResult.finding);
+  // Terminal-gate revision (2026-07-29): `?limit=200` exceeded the route's
+  // new maximum page size (100) and no longer exists as a single-request
+  // "give me everything" contract. Page-follow the bounded route to
+  // completion instead — this acceptance check genuinely needs the whole
+  // fleet.
+  const connectorsPaged = await fetchAllConnectorSummaries({ base, fetchImpl, headers: { accept: "application/json", ...header } });
+  if (!connectorsPaged.ok) {
+    findings.push({
+      ruleId: "live-ref-surface-not-reached",
+      class: "live-probe-inconclusive",
+      path: "live:/_ref/connectors",
+      line: 0,
+      excerpt: `status ${connectorsPaged.status}`,
+      rationale:
+        "The live semantic probe could not reach the reference JSON surface. Owner-journey trust checks are inconclusive until the data source behind the rendered page is observed.",
+    });
     checks.push({
       id: "dashboard-source-issue-all-clear",
       status: "inconclusive",
@@ -475,7 +435,7 @@ async function runLiveSemanticChecks({
     return { findings, checks };
   }
 
-  const connectors = asArrayList(connectorsResult.data);
+  const connectors = asArrayList(connectorsPaged.data);
   const sourceIssues = connectors.filter(isMaterialSourceIssue).map((connector) => ({
     label: connectorLabel(connector),
     forwardStatement: String(renderedVerdict(connector)?.forward_statement ?? ""),

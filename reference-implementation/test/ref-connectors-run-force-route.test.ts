@@ -113,7 +113,6 @@ function buildHarness(mount: MountRefRun) {
     handleError(_res, err) {
       throw err;
     },
-    listConnectorSummaries: () => [],
     listSchedules: () => [],
     pdppError(_res, status, code, message) {
       const err = new Error(message) as Error & { status: number; code: string };

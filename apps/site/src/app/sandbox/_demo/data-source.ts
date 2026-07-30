@@ -77,6 +77,9 @@ import type { DemoRecord, DemoStreamDef, DemoTimelineEvent } from "./types.ts";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
+/** Mirrors the live reference's own default/max connector-summary page size. */
+const CONNECTOR_SUMMARY_DEFAULT_PAGE_LIMIT = 100;
+
 function streamRecords(streamKey: string): readonly DemoRecord[] {
   return DEMO_RECORDS.filter((r) => r.stream === streamKey);
 }
@@ -740,11 +743,47 @@ export const sandboxDashboardDataSource: DashboardDataSource = {
     return getDemoConnectors().map((c) => buildConnectorManifest(c.connector_id));
   },
 
-  async listConnectorSummaries(): Promise<ListResponse<RefConnectorSummary>> {
+  async listConnectorSummaries(options?: {
+    connectionRouteId?: string;
+    cursor?: string;
+    limit?: number;
+  }): Promise<ListResponse<RefConnectorSummary>> {
     const connectors = getDemoConnectors();
+    const summaries = connectors.map((c) => buildRefConnectorSummary(c.connector_id));
+    if (options?.connectionRouteId) {
+      // Mirror the live reference's resolution precedence (ref-control.ts
+      // `resolveUnambiguousConnectionForConnectorId`): exact connection/instance
+      // identity first, then a connector-id fallback ONLY when exactly one
+      // configured connection has that connector type — never "first match".
+      const routeId = options.connectionRouteId;
+      const exact = summaries.filter((s) => s.connection_id === routeId || s.connector_instance_id === routeId);
+      if (exact.length > 0) {
+        return { data: exact, has_more: false, object: "list" };
+      }
+      const connectorMatches = summaries.filter((s) => s.connector_id === routeId);
+      return {
+        data: connectorMatches.length === 1 ? connectorMatches : [],
+        has_more: false,
+        object: "list",
+      };
+    }
+    // Real bounded pagination over the deterministic fixture list — mirrors
+    // the live reference's own `limit`/`cursor` contract (an opaque
+    // "next offset" string) rather than silently ignoring both and always
+    // returning the whole demo set. The demo dataset is small enough that
+    // this rarely pages beyond one request, but the CONTRACT must behave
+    // the same as the live path: an unscoped caller that forgets `limit`
+    // still gets a bounded default, never the fleet-wide unbounded read this
+    // migration exists to remove.
+    const limit = options?.limit && options.limit > 0 ? options.limit : CONNECTOR_SUMMARY_DEFAULT_PAGE_LIMIT;
+    const offset = options?.cursor ? Number(options.cursor) : 0;
+    const page = summaries.slice(offset, offset + limit);
+    const nextOffset = offset + page.length;
+    const hasMore = nextOffset < summaries.length;
     return {
-      data: connectors.map((c) => buildRefConnectorSummary(c.connector_id)),
-      has_more: false,
+      data: page,
+      has_more: hasMore,
+      next_cursor: hasMore ? String(nextOffset) : undefined,
       object: "list",
     };
   },

@@ -242,6 +242,17 @@ test("a declared stream reads known_zero independent of collection coverage rema
     // coverage for this connection has never been measured (no
     // classifying run exists to derive a coverage axis from).
 
+    // Terminal-gate revision (2026-07-29): `connector_summary_evidence` rows
+    // are materialized ONLY by the maintenance sweep (startup + periodic —
+    // see `server/connector-maintenance-sweep.ts`), never by an ordinary
+    // read (`listConnectorSummaries` no longer reconciles inline). Run the
+    // same reconcile pass the sweep would have already run before this
+    // connection is ever read, exactly like every other test in this file
+    // does — otherwise the evidence row genuinely does not exist yet and
+    // the read honestly reports `summary_missing`/unreliable, which is not
+    // what this test is exercising (known_zero vs. unmeasured coverage).
+    await reconcileConnectorSummaryEvidence(null);
+
     const summaries = await listConnectorSummaries(null, { concurrency: 1 });
     const summary = summaries.find((row) => row.connector_instance_id === "cin_no_coverage");
     assert.ok(summary, "the connection is visible even with zero collection history");

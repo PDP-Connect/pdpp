@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { parseArgs, requirePositional } from "../args.ts";
-import { PdppUsageError } from "../errors.ts";
+import { PdppCliError, PdppUsageError } from "../errors.ts";
 import { fetchJson, ownerSessionHeaders, resolveReferenceUrl } from "../fetch.ts";
+import { validateListEnvelope } from "../list-envelope.ts";
 import { resolveFormat, writeData, writeEnvelopeWarnings } from "../output.ts";
 import type { CommandIo } from "./call.ts";
 
@@ -213,7 +214,261 @@ function findConditionById(conditions: ConditionEntry[] | undefined, id: string 
   return conditions.find((condition) => condition?.id === id) || null;
 }
 
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: two subcommands (list/show) each with a verbose/projected branch, dispatched by a flat if-chain; splitting would scatter each subcommand's request/format/output handling across helpers for no reduction in real complexity.
+/** Reference's own page-size ceiling (`CONNECTOR_SUMMARY_PAGE_LIMIT_MAX`). */
+const CONNECTOR_SUMMARY_PAGE_LIMIT_MAX = 100;
+/** Hard stop on `--all` page-following so a broken/never-ending cursor can't loop forever. */
+const CONNECTOR_SUMMARY_MAX_PAGES = 1000;
+
+interface ConnectorSummaryPageBody {
+  data?: ConnectorSummary[];
+  has_more?: boolean;
+  next_cursor?: string | null;
+}
+
+async function fetchConnectorSummaryPage(
+  asUrl: string,
+  headers: Record<string, string>,
+  fetchImpl: typeof fetch,
+  opts: { cursor?: string; limit: number }
+): Promise<{ body: ConnectorSummaryPageBody; rawBody: unknown }> {
+  const url = new URL(`${asUrl}/_ref/connectors`);
+  url.searchParams.set("limit", String(opts.limit));
+  if (opts.cursor) {
+    url.searchParams.set("cursor", opts.cursor);
+  }
+  const { body } = await fetchJson(url, { headers }, fetchImpl);
+  return { body: body as ConnectorSummaryPageBody, rawBody: body };
+}
+
+interface ListFlags {
+  all: boolean;
+  cursor: string | undefined;
+  limit: number;
+  verbose: boolean;
+}
+
+function parseListFlags(flags: Record<string, string | boolean>): ListFlags {
+  const requestedLimit = typeof flags.limit === "string" ? Number(flags.limit) : Number.NaN;
+  const limit =
+    Number.isSafeInteger(requestedLimit) && requestedLimit > 0
+      ? Math.min(requestedLimit, CONNECTOR_SUMMARY_PAGE_LIMIT_MAX)
+      : CONNECTOR_SUMMARY_PAGE_LIMIT_MAX;
+  return {
+    all: flags.all === true || flags.all === "true",
+    cursor: typeof flags.cursor === "string" ? flags.cursor : undefined,
+    limit,
+    verbose: flags.verbose === true || flags.verbose === "true",
+  };
+}
+
+interface CollectedPages {
+  cursor: string | undefined;
+  envelopes: unknown[];
+  hasMore: boolean;
+  lastRawBody: unknown;
+  pages: number;
+  rows: ConnectorSummary[];
+}
+
+/**
+ * Malformed-continuation error thrown by `collectConnectorSummaryPages` — an
+ * envelope that fails the shared `validateListEnvelope` contract (wrong
+ * discriminator, non-array `data`, non-boolean `has_more`, or an incoherent
+ * continuation — including a blank-after-trim `next_cursor`), or a
+ * `next_cursor` that repeats a cursor already consumed in this same
+ * page-following run (the self-loop case, and the general repeated-cursor
+ * case once more than one prior cursor has been seen). All of these would
+ * otherwise either silently stop (looking identical to a genuinely
+ * exhausted feed) or loop forever — this surfaces the exact resumable
+ * cursor instead.
+ */
+class MalformedContinuationError extends PdppCliError {
+  readonly resumeCursor: string;
+  constructor(message: string, resumeCursor: string) {
+    super(message, 6, { resumeCursor });
+    this.name = "MalformedContinuationError";
+    this.resumeCursor = resumeCursor;
+  }
+}
+
+/**
+ * Thrown when `--all` hits `CONNECTOR_SUMMARY_MAX_PAGES` with more
+ * connectors remaining. This is a FAILURE, not a partial success: automation
+ * consuming `--all` output must never receive success-shaped (exit 0)
+ * output that silently omits rows past the cap. The exact resumable cursor
+ * is threaded through so a caller can pick up with `--cursor` manually.
+ */
+class PageCapExceededError extends PdppCliError {
+  readonly resumeCursor: string;
+  constructor(pages: number, resumeCursor: string) {
+    super(
+      `--all stopped after ${pages} pages (safety cap of ${CONNECTOR_SUMMARY_MAX_PAGES}) with more connectors remaining; resume with --cursor ${resumeCursor}`,
+      7,
+      { resumeCursor }
+    );
+    this.name = "PageCapExceededError";
+    this.resumeCursor = resumeCursor;
+  }
+}
+
+/**
+ * Fetch page 1, then (only with `--all`) keep following `next_cursor` until
+ * exhaustion or `CONNECTOR_SUMMARY_MAX_PAGES` — a backstop against a broken/
+ * never-terminating cursor, never a silent "good enough" completion. Hitting
+ * the cap while more remain THROWS `PageCapExceededError` (non-zero exit,
+ * nothing printed to stdout) rather than returning a success-shaped partial
+ * result.
+ *
+ * Every envelope is validated by the shared `validateListEnvelope` (the same
+ * strict contract the console pager, Explore, and the live-audit script
+ * use). A `next_cursor` that repeats any cursor already consumed this run
+ * (immediate OR non-adjacent) throws `MalformedContinuationError` rather
+ * than silently treating it as "no more pages" or looping forever.
+ *
+ * `seenCursors` is a full in-memory visited-cursor set (`Set<string |
+ * undefined>`, plain function-scoped local — created fresh on every call,
+ * never `globalThis`, never keyed by anything a caller supplies) held for
+ * the lifetime of ONE `--all` run. That is deliberately NOT the shape the
+ * interactive console/Explore pagers use (see
+ * `apps/console/.../connector-summary-page.tsx`'s module doc): those reject
+ * only an immediate self-loop and keep no cross-request history at all,
+ * because an interactive pager's caller-supplied key (a `nav`/session token)
+ * would be forgeable and unbounded across many concurrent owners/requests.
+ * `--all` has neither problem — it is one unattended, single-process loop
+ * with no user interaction between pages and no externally-supplied key to
+ * forge, so a full local visited-set here is the correct, minimal tool, not
+ * a shortcut.
+ */
+async function collectConnectorSummaryPages(
+  asUrl: string,
+  headers: Record<string, string>,
+  fetchImpl: typeof fetch,
+  listFlags: ListFlags
+): Promise<CollectedPages> {
+  const rows: ConnectorSummary[] = [];
+  const envelopes: unknown[] = [];
+  const seenCursors = new Set<string | undefined>([listFlags.cursor]);
+  let { cursor } = listFlags;
+  let hasMore = false;
+  let lastRawBody: unknown;
+  let pages = 0;
+  do {
+    // biome-ignore lint/performance/noAwaitInLoops: each page depends on the previous page's cursor; only reached more than once when --all is passed.
+    const { body, rawBody } = await fetchConnectorSummaryPage(
+      asUrl,
+      headers,
+      fetchImpl,
+      cursor === undefined ? { limit: listFlags.limit } : { cursor, limit: listFlags.limit }
+    );
+    lastRawBody = rawBody;
+    const validation = validateListEnvelope<ConnectorSummary>(body);
+    if (validation.kind === "invalid") {
+      throw new MalformedContinuationError(
+        `the server returned a malformed connector-summary page after page ${pages + 1} (${validation.reason})`,
+        cursor ?? ""
+      );
+    }
+    envelopes.push(rawBody);
+    rows.push(...validation.data);
+    ({ hasMore } = validation);
+    pages += 1;
+    if (hasMore) {
+      const nextCursor = validation.nextCursor as string;
+      if (seenCursors.has(nextCursor)) {
+        throw new MalformedContinuationError(
+          `the server returned a repeated/self-looping next_cursor ("${nextCursor}") after page ${pages} — resume manually once the reference server's cursor bug is fixed`,
+          cursor ?? ""
+        );
+      }
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
+      if (listFlags.all && pages >= CONNECTOR_SUMMARY_MAX_PAGES) {
+        throw new PageCapExceededError(pages, cursor);
+      }
+    } else {
+      cursor = undefined;
+    }
+  } while (listFlags.all && hasMore && cursor);
+  return { cursor, envelopes, hasMore, lastRawBody, pages, rows };
+}
+
+function writeConnectorSummaryList(
+  collected: CollectedPages,
+  listFlags: ListFlags,
+  format: string,
+  out: NodeJS.WritableStream,
+  err: NodeJS.WritableStream
+): void {
+  if (listFlags.verbose) {
+    // Merge EVERY collected page's raw envelope, not just the last one — a
+    // multi-page --all run must never silently drop earlier pages from the
+    // --verbose/json output the same way `rows` never drops them from the
+    // projected view.
+    const merged =
+      collected.envelopes.length > 1
+        ? { data: collected.rows, envelopes: collected.envelopes, object: "list" }
+        : collected.lastRawBody;
+    writeData(format === "table" ? collected.rows : merged, format, out);
+  } else {
+    const rows = collected.rows.map(projectSummaryRow);
+    writeData(format === "table" ? rows.map(projectSummaryTableRow) : { data: rows, object: "list" }, format, out);
+  }
+  writeEnvelopeWarnings(collected.lastRawBody, err);
+
+  // Never silently truncate: a caller that did not pass --all and still has
+  // more pages gets an explicit, visible notice (not a bare exit) telling it
+  // exactly how to continue. (The --all + cap-exceeded case never reaches
+  // here — collectConnectorSummaryPages throws PageCapExceededError before
+  // returning, so that case never prints success-shaped output at all.)
+  if (collected.hasMore && collected.cursor && !listFlags.all) {
+    err.write(
+      `more results available; pass --cursor ${collected.cursor} for the next page, or --all to fetch every page\n`
+    );
+  }
+}
+
+/**
+ * `ref connectors list` — bounded by default (one page, `--limit` capped at
+ * the reference's own 100-row max), never the bare unparameterized
+ * `/_ref/connectors` call (which selects the reference's deprecated
+ * unbounded compatibility branch: a full per-connection fan-out plus a
+ * full-fleet-scoped evidence reconcile on every request).
+ *
+ * `--cursor` continues an explicit prior page. `--all` page-follows to
+ * exhaustion (bounded by `CONNECTOR_SUMMARY_MAX_PAGES`) — an explicit,
+ * visible opt-in, never the silent default. `has_more`/`next_cursor` are
+ * always surfaced (in the envelope for `--verbose`/json, and as an explicit
+ * stderr notice otherwise) so a truncated fleet is never mistaken for a
+ * complete one. `--verbose --format json` on a multi-page `--all` run prints
+ * every collected page's envelope, not just the last (see `envelopes` on
+ * `CollectedPages`). Every envelope is validated by the shared
+ * `validateListEnvelope` (`../list-envelope.ts`); a malformed page or a
+ * `next_cursor` that repeats one already consumed this run throws
+ * `MalformedContinuationError` (exit code 6) carrying the last-known-good
+ * cursor to resume from. `--all` hitting the `CONNECTOR_SUMMARY_MAX_PAGES`
+ * safety cap with more remaining throws `PageCapExceededError` (exit code
+ * 7) — NOTHING is printed to stdout in that case; automation must never see
+ * success-shaped (exit 0) output for a run that silently omitted rows past
+ * the cap.
+ */
+async function runRefConnectorsList(
+  flags: Record<string, string | boolean>,
+  io: CommandIo,
+  fetchImpl: typeof fetch
+): Promise<number> {
+  const out = io.stdout || process.stdout;
+  const err = io.stderr || process.stderr;
+  const asUrl = resolveReferenceUrl(flags);
+  const ownerSession = typeof flags["owner-session"] === "string" ? flags["owner-session"] : "";
+  const cacheRoot = typeof flags["cache-root"] === "string" ? flags["cache-root"] : undefined;
+  const headers = { ...ownerSessionHeaders({ ownerSession, referenceUrl: asUrl, cacheRoot }) };
+  const format = resolveFormat(flags, "table", "json");
+  const listFlags = parseListFlags(flags);
+
+  const collected = await collectConnectorSummaryPages(asUrl, headers, fetchImpl, listFlags);
+  writeConnectorSummaryList(collected, listFlags, format, out, err);
+  return 0;
+}
 export async function runRefConnectors(
   argv: string[],
   io: CommandIo = {},
@@ -225,26 +480,7 @@ export async function runRefConnectors(
   const err = io.stderr || process.stderr;
 
   if (subcommand === "list") {
-    const asUrl = resolveReferenceUrl(flags);
-    const ownerSession = typeof flags["owner-session"] === "string" ? flags["owner-session"] : "";
-    const cacheRoot = typeof flags["cache-root"] === "string" ? flags["cache-root"] : undefined;
-    const { body } = await fetchJson(
-      `${asUrl}/_ref/connectors`,
-      { headers: { ...ownerSessionHeaders({ ownerSession, referenceUrl: asUrl, cacheRoot }) } },
-      fetchImpl
-    );
-    const format = resolveFormat(flags, "table", "json");
-    const verbose = flags.verbose === true || flags.verbose === "true";
-    const typedBody = body as { data?: ConnectorSummary[] };
-    if (verbose) {
-      writeData(format === "table" ? typedBody.data || [] : body, format, out);
-      writeEnvelopeWarnings(body, err);
-      return 0;
-    }
-    const rows = Array.isArray(typedBody.data) ? typedBody.data.map(projectSummaryRow) : [];
-    writeData(format === "table" ? rows.map(projectSummaryTableRow) : { object: "list", data: rows }, format, out);
-    writeEnvelopeWarnings(body, err);
-    return 0;
+    return runRefConnectorsList(flags, io, fetchImpl);
   }
 
   if (subcommand === "show") {
@@ -271,7 +507,7 @@ export async function runRefConnectors(
   }
 
   throw new PdppUsageError(
-    "Usage: pdpp ref connectors <list|show <connector-id>> [--as-url <url>] [--owner-session <cookie>] [--format json|table] [--verbose]"
+    "Usage: pdpp ref connectors <list|show <connector-id>> [--as-url <url>] [--owner-session <cookie>] [--format json|table] [--verbose] [--limit <n>] [--cursor <opaque>] [--all]"
   );
 }
 

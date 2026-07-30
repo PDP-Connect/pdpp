@@ -159,6 +159,24 @@
       "include": ["packages/reference-contract/test/*.test.ts"]
     },
     {
+      "id": "list-envelope",
+      "cwd": ".",
+      "loader": "node-test",
+      "authority_argument": null,
+      "execution": "direct",
+      "environment": { "TSX_TSCONFIG_PATH": "packages/list-envelope/tsconfig.json" },
+      "profiles": [{ "id": "default", "required": true, "skip_reasons": {} }],
+      "command": [
+        "node",
+        "--test",
+        "--import",
+        "tsx",
+        "--test-reporter",
+        "scripts/test-accounting/node-reporter.ts"
+      ],
+      "include": ["packages/list-envelope/src/**/*.test.ts"]
+    },
+    {
       "id": "local-collector",
       "cwd": ".",
       "loader": "node-test",

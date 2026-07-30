@@ -255,8 +255,47 @@ export interface RecordsExplorerData {
    * test/sandbox can still supply a server-rendered series if it wants one.
    */
   bucketSeries: BucketSeries | null;
-  /** Always present, sorted by display name. */
+  /**
+   * The facet RAIL's list of pageable options only — sorted by display name,
+   * bounded to ONE fetched connector-summary page (never the exhaustive
+   * fold). A fleet larger than one page is reachable via
+   * `connectionsPageHasMore`/`connectionsPageNextCursor`, not by prefetching
+   * every page before first paint. A connection not on this page is simply
+   * absent from the facet rail's chip list until the owner pages forward.
+   *
+   * This is NOT the source of truth for whether a `?connection=` selection
+   * is honored in filtering: `assembleExplorerData` resolves every selected
+   * connection id via a separate exact `connectionRouteId` lookup
+   * (`resolveExactSelectedSummaries`) independent of this page, specifically
+   * so that paging the rail can never silently drop a selected connection's
+   * records just because it isn't on the currently-displayed facet page.
+   */
   connections: ExplorerConnectionFacet[];
+  /**
+   * Non-null when the facet rail's connector-summary page request was
+   * rejected — a malformed/missing `next_cursor` on `has_more: true`, a
+   * self-looping `next_cursor`, or a thrown fetch (e.g. an expired/garbage
+   * `connections_page_cursor`). When set, `connections` is empty and
+   * `connectionsPageHasMore`/`connectionsPageNextCursor` are absent; the
+   * canvas must render an explicit restart affordance rather than a plain
+   * empty facet rail, which would look identical to a genuinely tiny fleet.
+   * Selected-connection record filtering is UNAFFECTED by this error: it is
+   * resolved by a separate exact lookup, not this page (see
+   * `resolveExactSelectedSummaries` in explore-data-assembler.ts).
+   */
+  connectionsPageError: string | null;
+  /** Whether a further connector-summary facet page exists beyond `connections`. */
+  connectionsPageHasMore: boolean;
+  /**
+   * True when `connections_page_cursor` was present on this request (the
+   * facet rail is showing page 2+, or a rejected continuation). Drives the
+   * "Restart" affordance — "Previous" is the browser's own back button, so
+   * this is the only signal the canvas needs to decide whether Restart
+   * should render.
+   */
+  connectionsPageIsPaged: boolean;
+  /** Opaque continuation for the connector-summary facet page above; undefined when exhausted or on the last page. */
+  connectionsPageNextCursor?: string;
   /**
    * The accumulating cursor TRAIL backing the recent merged-timeline lens
    * (`cursors=c1,c2,…` in the URL). Each element is a `next_cursor` already

@@ -30,6 +30,9 @@ import type { FetchImpl } from "../../scripts/lib/owner-session.ts";
 import { auditStreamHealth } from "../../scripts/stream-health-audit/audit.ts";
 import { runLiveStreamHealthAudit } from "../../scripts/stream-health-audit/live.ts";
 
+const LIMIT_100_RE = /limit=100\b/;
+const LIMIT_500_RE = /limit=500/;
+
 function firstOf<T>(items: readonly T[], label: string): T {
   // biome-ignore lint/style/useDestructuring: the property access names the fixture value at its point of use.
   const first = items[0];
@@ -523,7 +526,7 @@ test("live audit: PDPP_OWNER_PASSWORD logs in via /owner/login and reaches /_ref
       const headers = initObj.headers as Record<string, unknown>;
       // biome-ignore lint/suspicious/noUnnecessaryConditions: the runtime fixture deliberately exercises an absent or nullable boundary value.
       cookieHeadersSeen.push((headers?.cookie as string | null) ?? null);
-      return response(200, JSON.stringify({ data: [], object: "list" }));
+      return response(200, JSON.stringify({ data: [], has_more: false, object: "list" }));
     }
     throw new Error(`unexpected fetch: ${href}`);
   };
@@ -608,7 +611,11 @@ test("live audit: PDPP_OWNER_SESSION_COOKIE takes precedence over PDPP_OWNER_PAS
       const headers = initObj.headers as Record<string, unknown>;
       // biome-ignore lint/suspicious/noUnnecessaryConditions: the runtime fixture deliberately exercises an absent or nullable boundary value.
       assert.equal(headers?.cookie, "pdpp_owner_session=explicit-cookie");
-      return { headers: { get: () => null }, status: 200, text: async () => JSON.stringify({ data: [] }) };
+      return {
+        headers: { get: () => null },
+        status: 200,
+        text: async () => JSON.stringify({ data: [], has_more: false, object: "list" }),
+      };
     }
     throw new Error(`unexpected fetch: ${href}`);
   };
@@ -634,4 +641,268 @@ test("empty input passes", () => {
   assert.equal(result.ok, true);
   assert.deepEqual(result.failures, []);
   assert.deepEqual(result.inconclusive, []);
+});
+
+// ---- second gate REVISE (2026-07-29): live.ts's invalid limit=500 fix ----
+
+test("live audit: fetches at limit=100 (the reference's own page-size ceiling), never the invalid limit=500", async () => {
+  const urlsSeen: string[] = [];
+  // biome-ignore lint/suspicious/useAwait: async test doubles retain the Promise-returning dependency contract and its microtask timing.
+  const fetchImpl: FetchImpl = async (url) => {
+    urlsSeen.push(String(url));
+    return {
+      headers: { get: () => null },
+      status: 200,
+      text: async () => JSON.stringify({ data: [], object: "list" }),
+    };
+  };
+
+  await runLiveStreamHealthAudit({
+    env: { PDPP_OWNER_SESSION_COOKIE: "pdpp_owner_session=c" },
+    fetchImpl,
+    origin: "https://pdpp.example.com",
+  });
+
+  assert.equal(urlsSeen.length, 1);
+  assert.match(urlsSeen[0] ?? "", LIMIT_100_RE);
+  assert.doesNotMatch(urlsSeen[0] ?? "", LIMIT_500_RE);
+});
+
+test("live audit: page-follows a multi-page fleet and merges every page's connections, with no duplication", async () => {
+  const pages: Record<string, unknown> = {
+    "https://pdpp.example.com/_ref/connectors?limit=100": {
+      data: [{ connection_id: "c1" }],
+      has_more: true,
+      next_cursor: "page2",
+      object: "list",
+    },
+    "https://pdpp.example.com/_ref/connectors?limit=100&cursor=page2": {
+      data: [{ connection_id: "c2" }],
+      has_more: false,
+      next_cursor: null,
+      object: "list",
+    },
+  };
+  // biome-ignore lint/suspicious/useAwait: async test doubles retain the Promise-returning dependency contract and its microtask timing.
+  const fetchImpl: FetchImpl = async (url) => {
+    const key = String(url);
+    if (!Object.hasOwn(pages, key)) {
+      throw new Error(`unexpected fetch: ${key}`);
+    }
+    return { headers: { get: () => null }, status: 200, text: async () => JSON.stringify(pages[key]) };
+  };
+
+  const result = await runLiveStreamHealthAudit({
+    env: { PDPP_OWNER_SESSION_COOKIE: "pdpp_owner_session=c" },
+    fetchImpl,
+    origin: "https://pdpp.example.com",
+  });
+
+  assert.equal(result.fetched, true);
+  assert.equal(result.connectionCount, 2, "both pages' connections must be present — the audit needs the WHOLE fleet");
+});
+
+test("ADVERSARIAL: live audit fails closed (never silently under-audits) when has_more:true carries no next_cursor", async () => {
+  const fetchImpl: FetchImpl = async () => ({
+    headers: { get: () => null },
+    status: 200,
+    text: async () =>
+      JSON.stringify({ data: [{ connection_id: "c1" }], has_more: true, next_cursor: null, object: "list" }),
+  });
+
+  const result = await runLiveStreamHealthAudit({
+    env: { PDPP_OWNER_SESSION_COOKIE: "pdpp_owner_session=c" },
+    fetchImpl,
+    origin: "https://pdpp.example.com",
+  });
+
+  assert.equal(result.fetched, false, "a malformed continuation must not report as if the fleet was fully audited");
+  assert.equal(result.status, "inconclusive");
+  // Now routed through the shared @pdpp/list-envelope validator's coherent-
+  // continuation check rather than a bespoke local one.
+  // biome-ignore lint/performance/useTopLevelRegex: test assertion patterns remain colocated with the assertion they explain.
+  assert.match(requiredString(result.error, "result.error"), /malformed connector-summary page/);
+});
+
+test("ADVERSARIAL: live audit fails closed on a repeated/self-looping next_cursor, never loops forever", async () => {
+  // biome-ignore lint/suspicious/useAwait: async test doubles retain the Promise-returning dependency contract and its microtask timing.
+  const fetchImpl: FetchImpl = async (url) => {
+    if (String(url).includes("cursor=loop")) {
+      return {
+        headers: { get: () => null },
+        status: 200,
+        text: async () =>
+          JSON.stringify({ data: [{ connection_id: "c2" }], has_more: true, next_cursor: "loop", object: "list" }),
+      };
+    }
+    return {
+      headers: { get: () => null },
+      status: 200,
+      text: async () =>
+        JSON.stringify({ data: [{ connection_id: "c1" }], has_more: true, next_cursor: "loop", object: "list" }),
+    };
+  };
+
+  const result = await runLiveStreamHealthAudit({
+    env: { PDPP_OWNER_SESSION_COOKIE: "pdpp_owner_session=c" },
+    fetchImpl,
+    origin: "https://pdpp.example.com",
+  });
+
+  assert.equal(result.fetched, false);
+  assert.equal(result.status, "inconclusive");
+  // biome-ignore lint/performance/useTopLevelRegex: test assertion patterns remain colocated with the assertion they explain.
+  assert.match(requiredString(result.error, "result.error"), /repeated\/self-looping next_cursor/);
+});
+
+test("the visited-cursor set is fresh per run — a cursor value seen in one audit does not poison the next", async () => {
+  // Two SEPARATE runLiveStreamHealthAudit calls, each single-page and
+  // well-formed, both using cursor "shared" as their one and only
+  // next_cursor. If the visited-set were shared across runs (e.g.
+  // globalThis-backed, the exact shape the gate rejected for the
+  // interactive UI pagers), the second run would spuriously see "shared" as
+  // already-visited. It must not: each call gets a brand-new local Set.
+  const fetchImpl: FetchImpl = async () => ({
+    headers: { get: () => null },
+    status: 200,
+    text: async () =>
+      JSON.stringify({ data: [{ connection_id: "c1" }], has_more: false, next_cursor: null, object: "list" }),
+  });
+
+  const first = await runLiveStreamHealthAudit({
+    env: { PDPP_OWNER_SESSION_COOKIE: "pdpp_owner_session=c" },
+    fetchImpl,
+    origin: "https://pdpp.example.com",
+  });
+  const second = await runLiveStreamHealthAudit({
+    env: { PDPP_OWNER_SESSION_COOKIE: "pdpp_owner_session=c" },
+    fetchImpl,
+    origin: "https://pdpp.example.com",
+  });
+
+  assert.equal(first.fetched, true);
+  assert.equal(second.fetched, true, "a fresh run must not inherit a prior run's visited-cursor history");
+  assert.equal(second.status, first.status);
+});
+
+// ---- third gate REVISE (2026-07-29), finding 2: shared strict envelope validator ----
+
+test("ADVERSARIAL: live audit rejects a next_cursor equal to any cursor already seen this run (not just the immediately-prior one)", async () => {
+  const pages: Record<string, unknown> = {
+    "https://pdpp.example.com/_ref/connectors?limit=100": {
+      data: [{ connection_id: "c1" }],
+      has_more: true,
+      next_cursor: "cursor-a",
+      object: "list",
+    },
+    "https://pdpp.example.com/_ref/connectors?limit=100&cursor=cursor-a": {
+      data: [{ connection_id: "c2" }],
+      has_more: true,
+      next_cursor: "cursor-b",
+      object: "list",
+    },
+    "https://pdpp.example.com/_ref/connectors?limit=100&cursor=cursor-b": {
+      data: [{ connection_id: "c3" }],
+      has_more: true,
+      // Loops back to the FIRST cursor, not the immediately-prior one — a
+      // bare "does next_cursor equal the cursor I just requested" check
+      // would miss this; the full visited-set this audit keeps does not.
+      next_cursor: "cursor-a",
+      object: "list",
+    },
+  };
+  // biome-ignore lint/suspicious/useAwait: async test doubles retain the Promise-returning dependency contract and its microtask timing.
+  const fetchImpl: FetchImpl = async (url) => {
+    const key = String(url);
+    if (!Object.hasOwn(pages, key)) {
+      throw new Error(`unexpected fetch: ${key}`);
+    }
+    return { headers: { get: () => null }, status: 200, text: async () => JSON.stringify(pages[key]) };
+  };
+
+  const result = await runLiveStreamHealthAudit({
+    env: { PDPP_OWNER_SESSION_COOKIE: "pdpp_owner_session=c" },
+    fetchImpl,
+    origin: "https://pdpp.example.com",
+  });
+
+  assert.equal(result.fetched, false, "a non-adjacent cycle must not report as if the fleet was fully audited");
+  assert.equal(result.status, "inconclusive");
+  // biome-ignore lint/performance/useTopLevelRegex: test assertion patterns remain colocated with the assertion they explain.
+  assert.match(requiredString(result.error, "result.error"), /repeated\/self-looping next_cursor/);
+});
+
+test("ADVERSARIAL: live audit becomes INCONCLUSIVE (never a false pass) on a wrong discriminator (object !== 'list')", async () => {
+  const fetchImpl: FetchImpl = async () => ({
+    headers: { get: () => null },
+    status: 200,
+    text: async () => JSON.stringify({ data: [], has_more: false, object: "not-a-list" }),
+  });
+
+  const result = await runLiveStreamHealthAudit({
+    env: { PDPP_OWNER_SESSION_COOKIE: "pdpp_owner_session=c" },
+    fetchImpl,
+    origin: "https://pdpp.example.com",
+  });
+
+  assert.equal(result.fetched, false, "a wrong discriminator must never report fetched:true / status:pass");
+  assert.equal(result.status, "inconclusive");
+});
+
+test("ADVERSARIAL: live audit becomes INCONCLUSIVE on non-array data even when object/has_more look correct", async () => {
+  const fetchImpl: FetchImpl = async () => ({
+    headers: { get: () => null },
+    status: 200,
+    text: async () => JSON.stringify({ data: { not: "an array" }, has_more: false, object: "list" }),
+  });
+
+  const result = await runLiveStreamHealthAudit({
+    env: { PDPP_OWNER_SESSION_COOKIE: "pdpp_owner_session=c" },
+    fetchImpl,
+    origin: "https://pdpp.example.com",
+  });
+
+  assert.equal(result.fetched, false);
+  assert.equal(result.status, "inconclusive");
+});
+
+test("ADVERSARIAL: live audit becomes INCONCLUSIVE on a non-boolean has_more, never coercing a truthy/falsy value", async () => {
+  const fetchImpl: FetchImpl = async () => ({
+    headers: { get: () => null },
+    status: 200,
+    text: async () => JSON.stringify({ data: [], has_more: "false", object: "list" }),
+  });
+
+  const result = await runLiveStreamHealthAudit({
+    env: { PDPP_OWNER_SESSION_COOKIE: "pdpp_owner_session=c" },
+    fetchImpl,
+    origin: "https://pdpp.example.com",
+  });
+
+  assert.equal(result.fetched, false);
+  assert.equal(result.status, "inconclusive");
+});
+
+test("ADVERSARIAL: live audit becomes INCONCLUSIVE on a blank (whitespace-only) next_cursor, never issuing a literal ?cursor=+ follow-up", async () => {
+  const urlsSeen: string[] = [];
+  // biome-ignore lint/suspicious/useAwait: async test doubles retain the Promise-returning dependency contract and its microtask timing.
+  const fetchImpl: FetchImpl = async (url) => {
+    urlsSeen.push(String(url));
+    return {
+      headers: { get: () => null },
+      status: 200,
+      text: async () =>
+        JSON.stringify({ data: [{ connection_id: "c1" }], has_more: true, next_cursor: " ", object: "list" }),
+    };
+  };
+
+  const result = await runLiveStreamHealthAudit({
+    env: { PDPP_OWNER_SESSION_COOKIE: "pdpp_owner_session=c" },
+    fetchImpl,
+    origin: "https://pdpp.example.com",
+  });
+
+  assert.equal(result.fetched, false);
+  assert.equal(result.status, "inconclusive");
+  assert.equal(urlsSeen.length, 1, "a blank cursor must never be followed as a second literal ?cursor=+ request");
 });

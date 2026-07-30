@@ -267,7 +267,7 @@ async function getStatus(
 
 // biome-ignore lint/suspicious/useAwait: async test doubles retain the Promise-returning dependency contract and its microtask timing.
 async function listRefConnectors(asUrl: string, cookie: string): Promise<JsonResult> {
-  return fetchJson(`${asUrl}/_ref/connectors`, {
+  return fetchJson(`${asUrl}/_ref/connectors?limit=100`, {
     headers: { Accept: "application/json", Cookie: cookie },
   });
 }

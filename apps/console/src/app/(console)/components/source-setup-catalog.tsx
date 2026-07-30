@@ -369,6 +369,13 @@ export function SourceSetupCatalog({
 }: {
   action: string;
   catalog: readonly ConnectorCatalogEntry[];
+  /**
+   * Built from `listConnectionsByConnector` (one exact `GET
+   * /_ref/connections?connector_id=` call per catalog entry) — the full
+   * owner-scoped set for each connector, never a fleet page filtered
+   * client-side. There is no "incomplete" state to render here: each
+   * connector's existing-sources list is exact by construction.
+   */
   existingSourcesByConnector?: Readonly<Record<string, readonly ExistingSourceSetupLink[]>>;
   query: string;
 }) {

@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { buttonVariants } from "@pdpp/brand-react";
-import { formatConnectorNameForDisplay } from "@pdpp/operator-ui/lib/connector-display";
 import type { Viewport } from "next";
 import { notFound } from "next/navigation";
 import { ServerUnreachable } from "../../../components/shell.tsx";
@@ -21,6 +20,11 @@ import {
   hasActiveBrowserSurface,
   requiresBrowserSurfaceAssistance,
 } from "../../../lib/run-assistance.ts";
+import {
+  buildConnectorContext,
+  type ConnectorContext,
+  resolveConnectorSummaryRouteId,
+} from "./connector-context-resolution.ts";
 import { NoAssistanceRunPoller } from "./no-assistance-run-poller.tsx";
 import {
   type NoAssistanceEndedStatus,
@@ -36,11 +40,6 @@ export const viewport: Viewport = {
   viewportFit: "cover",
   width: "device-width",
 };
-
-interface ConnectorContext {
-  connectorId: string;
-  displayName: string;
-}
 
 function RunDetailLink({ children, runId }: { children: string; runId: string }) {
   return (
@@ -93,28 +92,19 @@ async function resolveConnectorContext(
     return null;
   }
   try {
-    const summaries = await listConnectorSummaries();
-    const instanceMatch = connectorInstanceId
-      ? summaries.data.find(
-          (c) =>
-            c.connector_id === connectorId &&
-            (c.connector_instance_id === connectorInstanceId || c.connection_id === connectorInstanceId)
-        )
-      : null;
-    const match = instanceMatch ?? summaries.data.find((c) => c.connector_id === connectorId);
-    return {
-      connectorId,
-      displayName: formatConnectorNameForDisplay({
-        connectorId,
-        displayName: match?.display_name,
-        name: match?.connector_display_name,
-      }),
-    };
+    // The connection is already known (from the run timeline), so scope the
+    // read to that one connection instead of fetching the whole fleet and
+    // filtering client-side. The reference resolves exact connection identity
+    // first and falls back to an unambiguous connector-id match, the same
+    // resolution `connection-route.ts` relies on for the records subpage.
+    const {
+      data: [match],
+    } = await listConnectorSummaries({
+      connectionRouteId: resolveConnectorSummaryRouteId(connectorId, connectorInstanceId),
+    });
+    return buildConnectorContext(connectorId, match);
   } catch {
-    return {
-      connectorId,
-      displayName: formatConnectorNameForDisplay({ connectorId }),
-    };
+    return buildConnectorContext(connectorId, undefined);
   }
 }
 

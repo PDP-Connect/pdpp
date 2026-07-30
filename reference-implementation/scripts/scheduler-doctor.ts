@@ -136,13 +136,42 @@ try {
 // `/_ref/connectors` is reachable best-effort; if it isn't (older
 // reference build, owner-auth mismatch, network blip), the doctor still
 // returns persisted-schedule verdicts unchanged.
-const connectorsUrl = `${baseUrl}/_ref/connectors`;
+//
+// Terminal-gate revision (2026-07-29): `GET /_ref/connectors` no longer
+// serves an unbounded fleet response — it requires `limit` (max 100) and
+// fails closed with 400 without it. This doctor genuinely needs the
+// complete registered-connector set to cross-reference against, so it now
+// page-follows the bounded route to completion instead of one bare request.
+const CONNECTORS_PAGE_LIMIT = 100;
+const CONNECTORS_PAGE_GUARD = 200; // generous cap on pages, never expected to bind in practice.
 let connectorsListing: unknown = null;
 try {
-  const resp = await fetch(connectorsUrl, { headers });
-  if (resp.ok) {
-    connectorsListing = await resp.json();
+  const allConnectors: unknown[] = [];
+  let cursor: string | null = null;
+  for (let page = 0; page < CONNECTORS_PAGE_GUARD; page += 1) {
+    const params = new URLSearchParams({ limit: String(CONNECTORS_PAGE_LIMIT) });
+    if (cursor) {
+      params.set("cursor", cursor);
+    }
+    const connectorsUrl = `${baseUrl}/_ref/connectors?${params.toString()}`;
+    // biome-ignore lint/performance/noAwaitInLoops: each page's cursor depends on the previous page's response.
+    const resp = await fetch(connectorsUrl, { headers });
+    if (!resp.ok) {
+      break;
+    }
+    const body = await resp.json();
+    const pageData = asRecord(body)?.data;
+    if (Array.isArray(pageData)) {
+      allConnectors.push(...pageData);
+    }
+    const hasMore = asRecord(body)?.has_more;
+    const nextCursor = asRecord(body)?.next_cursor;
+    if (!hasMore || typeof nextCursor !== "string") {
+      break;
+    }
+    cursor = nextCursor;
   }
+  connectorsListing = { data: allConnectors };
 } catch {
   // Silent fallback: catalog cross-reference is opportunistic, not required.
 }

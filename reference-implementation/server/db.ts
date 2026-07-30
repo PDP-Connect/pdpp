@@ -1772,7 +1772,26 @@ CREATE TABLE IF NOT EXISTS connector_summary_evidence (
   last_error                    TEXT,
   -- Durable connection-scoped declaration identity. This is the only
   -- eligibility boundary for terminal, coverage, and heartbeat proof.
-  manifest_generation INTEGER NOT NULL DEFAULT 0
+  manifest_generation INTEGER NOT NULL DEFAULT 0,
+  -- Terminal-gate revision (2026-07-29): the last-observed
+  -- connector_schedules.updated_at this row's schedule-derived evidence
+  -- was computed against -- 'absent' (a sentinel, not NULL, so "no schedule
+  -- row" is distinguishable from "never observed") when no schedule exists.
+  -- Compared against the live value on every discovery pass (maintenance
+  -- sweep only, never on read) so a schedule pause/resume/delete/upsert
+  -- whose best-effort dirty marker was lost is still caught and repaired --
+  -- connector_schedules.updated_at is written atomically with every
+  -- schedule mutation on both backends, making it a durable repair receipt
+  -- with no new outbox table required. See classifyCandidate's
+  -- schedule_mismatch reason in connector-summary-evidence-engine.ts.
+  schedule_checkpoint TEXT NOT NULL DEFAULT 'unobserved',
+  -- Terminal-gate revision (2026-07-29): the last-observed
+  -- MAX(spine_events.event_seq) (unfiltered by event_type, unlike the
+  -- existing stream_facts_event_seq/terminal-only checkpoint above) for
+  -- this connection -- catches a run-lifecycle event (e.g. run.started)
+  -- whose best-effort dirty marker was lost, using the spine's own
+  -- already-durable, atomically-assigned sequence as the repair receipt.
+  run_lifecycle_event_seq INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_connector_summary_evidence_connector
   ON connector_summary_evidence(connector_id);
@@ -1955,6 +1974,8 @@ function ensureConnectorSummaryEvidenceColumns(raw: SqliteDatabase): void {
   addColumnIfMissing(raw, "connector_summary_evidence", "retained_bytes_state", "TEXT NOT NULL DEFAULT 'unobserved'");
   addColumnIfMissing(raw, "connector_summary_evidence", "retained_bytes_reason_code", "TEXT");
   addColumnIfMissing(raw, "connector_summary_evidence", "manifest_generation", "INTEGER NOT NULL DEFAULT 0");
+  addColumnIfMissing(raw, "connector_summary_evidence", "schedule_checkpoint", "TEXT NOT NULL DEFAULT 'unobserved'");
+  addColumnIfMissing(raw, "connector_summary_evidence", "run_lifecycle_event_seq", "INTEGER");
 }
 
 function migrateManifestWriteViolations(raw: SqliteDatabase): void {

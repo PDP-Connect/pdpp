@@ -46,6 +46,9 @@ import {
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
+const CONNECTORS_LIMIT_100_RE = /limit=100\b/;
+const CONNECTORS_LIMIT_200_RE = /limit=200/;
+
 function scanNormal(src: string): Finding[] {
   return scanForbiddenStrings({ path: "fixture.tsx", src, tier: "normal", rules: FORBIDDEN_STRING_RULES });
 }
@@ -472,7 +475,7 @@ test("live probe can create an owner session from PDPP_OWNER_PASSWORD and scan a
     if (String(url).includes("/_ref/connectors")) {
       // biome-ignore lint/suspicious/noUnnecessaryConditions: headers is Record<string, string> | undefined (init.headers cast); Biome's type-aware pass narrows this differently than tsc, which still allows undefined here.
       cookieHeaders.push(headers?.cookie ?? "");
-      return response(200, JSON.stringify({ object: "list", data: [] }));
+      return response(200, JSON.stringify({ object: "list", data: [], has_more: false }));
     }
     // biome-ignore lint/suspicious/noUnnecessaryConditions: headers is Record<string, string> | undefined (init.headers cast); Biome's type-aware pass narrows this differently than tsc, which still allows undefined here.
     cookieHeaders.push(headers?.cookie ?? "");
@@ -502,6 +505,44 @@ test("live probe can create an owner session from PDPP_OWNER_PASSWORD and scan a
   );
 });
 
+test("live semantic probe requests connectors at limit=100 (the reference's own page-size ceiling), never the invalid limit=200", async () => {
+  const urlsSeen: string[] = [];
+  const response = (status: number, body: string, setCookie: string | null = null) => ({
+    headers: { get: (name: string) => (name.toLowerCase() === "set-cookie" ? setCookie : null) },
+    status,
+    text: async () => body,
+  });
+  // biome-ignore lint/suspicious/useAwait: mocks the fetch(...) => Promise<Response> contract; async is required to satisfy the type even though this mock body never awaits.
+  const fetchImpl = async (url: unknown, init?: { method?: string }) => {
+    urlsSeen.push(String(url));
+    if (String(url).includes("/owner/login") && init?.method !== "POST") {
+      return response(
+        200,
+        '<input type="hidden" name="_csrf" value="csrf-1" />',
+        "pdpp_owner_csrf=csrf-cookie; Path=/"
+      );
+    }
+    if (String(url).endsWith("/owner/login") && init?.method === "POST") {
+      return response(302, "", "pdpp_owner_session=session-cookie; Path=/; HttpOnly");
+    }
+    if (String(url).includes("/_ref/connectors")) {
+      return response(200, JSON.stringify({ data: [], has_more: false, object: "list" }));
+    }
+    return response(200, defaultLiveOwnerPageHtml(String(url)));
+  };
+
+  await runLiveAcceptance({
+    env: { PDPP_OWNER_PASSWORD: "secret" },
+    fetchImpl,
+    origin: "https://example.com/",
+  });
+
+  const connectorsUrl = urlsSeen.find((u) => u.includes("/_ref/connectors"));
+  assert.ok(connectorsUrl, "the acceptance run must fetch /_ref/connectors");
+  assert.match(connectorsUrl ?? "", CONNECTORS_LIMIT_100_RE);
+  assert.doesNotMatch(connectorsUrl ?? "", CONNECTORS_LIMIT_200_RE);
+});
+
 test("live semantic probe rejects dashboard all-clear when connector summaries contain source issues", async () => {
   const response = (
     status: number,
@@ -519,6 +560,7 @@ test("live semantic probe rejects dashboard all-clear when connector summaries c
         200,
         JSON.stringify({
           object: "list",
+          has_more: false,
           data: [
             {
               connection_id: "cin_chase",
@@ -574,6 +616,7 @@ test("live semantic probe passes when material source issues are represented on 
         200,
         JSON.stringify({
           object: "list",
+          has_more: false,
           data: [
             {
               connection_id: "cin_chase",
@@ -628,6 +671,7 @@ test("live semantic probe does not treat healthy refresh advisories as source is
         200,
         JSON.stringify({
           object: "list",
+          has_more: false,
           data: [
             {
               connection_health: {
@@ -693,7 +737,7 @@ test("live semantic probe rejects unsupported dashboard all-clear claims", async
   const fetchImpl = async (url: string | URL) => {
     const href = String(url);
     if (href.includes("/_ref/connectors")) {
-      return response(200, JSON.stringify({ object: "list", data: [] }));
+      return response(200, JSON.stringify({ object: "list", data: [], has_more: false }));
     }
     if (href.endsWith("/")) {
       return response(
@@ -732,6 +776,7 @@ test("live semantic probe rejects healthy refresh advisories rendered as degrade
         200,
         JSON.stringify({
           object: "list",
+          has_more: false,
           data: [
             {
               connection_health: {
@@ -802,6 +847,7 @@ test("live semantic probe rejects raw broken source facts hidden by a calm verdi
         200,
         JSON.stringify({
           object: "list",
+          has_more: false,
           data: [
             {
               connection_health: {
@@ -860,6 +906,7 @@ test("live semantic probe accepts raw broken source facts represented on the das
         200,
         JSON.stringify({
           object: "list",
+          has_more: false,
           data: [
             {
               connection_health: {
@@ -910,7 +957,7 @@ test("live semantic probe rejects dashboard monograms that pollute client labels
   const fetchImpl = async (url: string | URL) => {
     const href = String(url);
     if (href.includes("/_ref/connectors")) {
-      return response(200, JSON.stringify({ object: "list", data: [] }));
+      return response(200, JSON.stringify({ object: "list", data: [], has_more: false }));
     }
     if (href.endsWith("/")) {
       return response(
@@ -945,7 +992,7 @@ test("live semantic probe accepts decorative dashboard monograms", async () => {
   const fetchImpl = async (url: string | URL) => {
     const href = String(url);
     if (href.includes("/_ref/connectors")) {
-      return response(200, JSON.stringify({ object: "list", data: [] }));
+      return response(200, JSON.stringify({ object: "list", data: [], has_more: false }));
     }
     if (href.endsWith("/")) {
       return response(
@@ -983,6 +1030,7 @@ test("live semantic probe rejects visible source count claims that diverge from 
         200,
         JSON.stringify({
           object: "list",
+          has_more: false,
           data: [
             {
               connection_id: "cin_amazon",
@@ -1035,6 +1083,7 @@ test("live semantic probe accepts visible source count claims that match connect
         200,
         JSON.stringify({
           object: "list",
+          has_more: false,
           data: [
             {
               connection_id: "cin_amazon",
@@ -1086,6 +1135,7 @@ test("live semantic probe rejects direct browser-session new-source controls", a
         200,
         JSON.stringify({
           object: "list",
+          has_more: false,
           data: [],
         })
       );
@@ -1127,6 +1177,7 @@ test("live semantic probe accepts repair-only browser-session guidance", async (
         200,
         JSON.stringify({
           object: "list",
+          has_more: false,
           data: [],
         })
       );
@@ -1163,7 +1214,7 @@ test("live semantic probe rejects shell-only Schedules and Explore pages", async
   const fetchImpl = async (url: string | URL) => {
     const href = String(url);
     if (href.includes("/_ref/connectors")) {
-      return response(200, JSON.stringify({ object: "list", data: [] }));
+      return response(200, JSON.stringify({ object: "list", data: [], has_more: false }));
     }
     if (href.endsWith("/schedules") || href.endsWith("/explore")) {
       return response(200, "<main>clean owner shell only</main>");
@@ -1201,6 +1252,7 @@ test("live semantic probe rejects owner actions that are absent from the exact s
         200,
         JSON.stringify({
           object: "list",
+          has_more: false,
           data: [
             {
               connection_id: "cin_local",
@@ -1265,6 +1317,7 @@ test("live semantic probe accepts owner actions visible on dashboard and exact s
         200,
         JSON.stringify({
           object: "list",
+          has_more: false,
           data: [
             {
               connection_id: "cin_local",
@@ -1337,6 +1390,7 @@ test("live semantic probe rejects raw stale manual sources without a visible nex
         200,
         JSON.stringify({
           object: "list",
+          has_more: false,
           data: [
             {
               connection_health: {
@@ -1391,6 +1445,7 @@ test("live semantic probe accepts raw stale manual sources with a visible refres
         200,
         JSON.stringify({
           object: "list",
+          has_more: false,
           data: [
             {
               connection_health: {
@@ -1452,7 +1507,7 @@ test("live semantic probe rejects raw denial reason codes on dashboard", async (
   const fetchImpl = async (url: string | URL) => {
     const href = String(url);
     if (href.includes("/_ref/connectors")) {
-      return response(200, JSON.stringify({ object: "list", data: [] }));
+      return response(200, JSON.stringify({ object: "list", data: [], has_more: false }));
     }
     if (href.endsWith("/")) {
       return response(200, "<main><section>slack tried to read — turned away, orphaned_started_run.</section></main>");
@@ -1487,7 +1542,7 @@ test("live semantic probe rejects single-token raw denial codes on dashboard", a
   const fetchImpl = async (url: string | URL) => {
     const href = String(url);
     if (href.includes("/_ref/connectors")) {
-      return response(200, JSON.stringify({ object: "list", data: [] }));
+      return response(200, JSON.stringify({ object: "list", data: [], has_more: false }));
     }
     if (href.endsWith("/")) {
       return response(200, "<main><section>slack tried to read — turned away, forbidden.</section></main>");
@@ -1522,7 +1577,7 @@ test("live semantic probe accepts humanized dashboard denial reasons", async () 
   const fetchImpl = async (url: string | URL) => {
     const href = String(url);
     if (href.includes("/_ref/connectors")) {
-      return response(200, JSON.stringify({ object: "list", data: [] }));
+      return response(200, JSON.stringify({ object: "list", data: [], has_more: false }));
     }
     if (href.endsWith("/")) {
       return response(
@@ -1563,6 +1618,7 @@ test("live semantic probe rejects dead-letter jargon on source recovery detail p
         200,
         JSON.stringify({
           object: "list",
+          has_more: false,
           data: [
             {
               connection_id: "cin_local",
@@ -1618,6 +1674,7 @@ test("live semantic probe accepts failed-upload owner copy on source recovery de
         200,
         JSON.stringify({
           object: "list",
+          has_more: false,
           data: [
             {
               connection_id: "cin_local",
@@ -1675,6 +1732,7 @@ test("live semantic probe rejects clean-success source detail copy when collecti
         200,
         JSON.stringify({
           object: "list",
+          has_more: false,
           data: [
             {
               connection_id: "cin_chase",
@@ -1739,6 +1797,7 @@ test("live semantic probe accepts partial source detail copy when collection gap
         200,
         JSON.stringify({
           object: "list",
+          has_more: false,
           data: [
             {
               connection_id: "cin_chase",
@@ -1798,7 +1857,7 @@ test("live semantic probe rejects raw technical client ids as visible grant capt
   const fetchImpl = async (url: string | URL) => {
     const href = String(url);
     if (href.includes("/_ref/connectors")) {
-      return response(200, JSON.stringify({ object: "list", data: [] }));
+      return response(200, JSON.stringify({ object: "list", data: [], has_more: false }));
     }
     if (href.endsWith("/grants")) {
       return response(200, "<main><article>slack active client cli_348b7036fe7172ba 7 hours ago</article></main>");
@@ -1830,7 +1889,7 @@ test("live semantic probe rejects raw URL client ids as visible grant captions",
   const fetchImpl = async (url: string | URL) => {
     const href = String(url);
     if (href.includes("/_ref/connectors")) {
-      return response(200, JSON.stringify({ object: "list", data: [] }));
+      return response(200, JSON.stringify({ object: "list", data: [], has_more: false }));
     }
     if (href.endsWith("/grants")) {
       return response(

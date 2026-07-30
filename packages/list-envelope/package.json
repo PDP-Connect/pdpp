@@ -1,0 +1,11 @@
+{
+  "name": "@pdpp/list-envelope",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Shared runtime validator for the bounded-list-page envelope shape ({ object: \"list\", data: [], has_more, next_cursor }) used by every /_ref/connectors-style paged read. Directly imported by apps/console, packages/operator-ui, and the root-level stream-health-audit script. packages/cli cannot import this private workspace package (it publishes publicly with zero runtime deps), so its copy is a generated artifact of this source (see packages/cli/scripts/generate-list-envelope.ts and scripts/check-generated-artifacts.ts) — never a second hand-maintained implementation.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "license": "Apache-2.0"
+}

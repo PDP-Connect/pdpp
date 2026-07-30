@@ -328,14 +328,10 @@ function buildRevokeHandler(
         })
       );
       ctx.invalidateConnectorSummariesCache?.();
-      // Scoped, awaited dirty marking for the maintained read model: the soft
-      // revoke changed this connection's lifecycle evidence (status/revoked_at),
-      // so its summary evidence row is now stale. Instance id is known, so this
-      // is a scoped marker rather than a full-table sweep.
-      await ctx.markConnectorSummaryEvidenceDirty?.({
-        connectorInstanceId: namespace.connectorInstanceId,
-        reason: "owner revoke changed connection lifecycle evidence",
-      });
+      // Terminal-gate revision (2026-07-29): `updateConnectorInstanceStatus`
+      // (-> `store.updateStatus`) now marks summary evidence dirty in the
+      // SAME transaction as the status write — a separate post-hoc call
+      // here would be redundant, not additive.
       await emitRevokeAudit(ctx, req, res, {
         connectionId,
         connectorKey,

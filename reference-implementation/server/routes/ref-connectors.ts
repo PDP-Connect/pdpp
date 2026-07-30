@@ -175,7 +175,6 @@ export interface MountRefConnectorsContext {
   getSchedule: (connectorId: string, options: { connectorInstanceId?: string | null }) => Promise<unknown> | unknown;
   handleError: (res: unknown, err: unknown) => void;
   invalidateConnectorSummariesCache?: () => void;
-  listConnectorSummaries: () => Promise<readonly unknown[]> | readonly unknown[];
   listConnectorSummaryPage?: (
     ownerSubjectId: string,
     request: ConnectorSummaryPageRequest
@@ -341,10 +340,10 @@ async function sendConnectionScopedConnectorSummary(
   if (!connectionSelector) {
     return false;
   }
-  if (req.query.limit !== undefined || req.query.cursor !== undefined) {
+  if (req.query.limit !== undefined || req.query.cursor !== undefined || req.query.connector_id !== undefined) {
     throw new ConnectorSummaryPageRequestError(
       req.query.limit === undefined ? "cursor" : "limit",
-      "limit and cursor are available only on the unscoped connector-summary list"
+      "limit, cursor, and connector_id are available only on the unscoped connector-summary list"
     );
   }
   const envelope = await executeRefConnectorsList({
@@ -382,36 +381,39 @@ export function mountRefConnectorsList(app: AppLike, ctx: MountRefConnectorsCont
         if (await sendConnectionScopedConnectorSummary(ctx, req, res)) {
           return;
         }
-        const hasPaginationParameter = req.query.limit !== undefined || req.query.cursor !== undefined;
-        const ownerSubjectId = hasPaginationParameter ? ctx.getOwnerSubjectId(req) : null;
-        const pageRequest = ownerSubjectId ? parseConnectorSummaryPageRequest(req.query, ownerSubjectId) : null;
-        if (pageRequest && ownerSubjectId) {
-          const { listConnectorSummaryPage } = ctx;
-          if (!listConnectorSummaryPage) {
-            throw new Error("Connector summary page capability is not configured.");
-          }
-          const envelope = await executeRefConnectorsList({
-            getRuntimeStatus: ctx.getRuntimeStatus,
-            listConnectorSummaries: () => [],
-            listConnectorSummariesPage: () =>
-              listConnectorSummaryPage(ownerSubjectId, pageRequest) as unknown as RefConnectorsListPage,
-          });
-          res.json(envelope);
+        // Terminal-gate revision (2026-07-29): the unparameterized compat
+        // response was an inherently fleet-N read (a "complete" response
+        // cannot also be constant-query) — the gate rejected disguising that
+        // cost rather than removing it. `limit` is now REQUIRED; a bare GET
+        // fails explicitly instead of silently falling through to a
+        // fleet-wide read. Every backend/ops caller (the CLI's `ref
+        // connectors list`) has been migrated to page-follow this bounded
+        // route to completion. The console frontend is migrating in a
+        // separate branch; both integrate atomically before deploy.
+        if (req.query.limit === undefined) {
+          ctx.pdppError(
+            res,
+            400,
+            "invalid_request",
+            "limit is required: GET /_ref/connectors no longer returns an unbounded fleet-wide response. Supply limit (and cursor to continue) to page through connections.",
+            "limit"
+          );
           return;
         }
-        // Compatibility release: this legacy unparameterized response stays
-        // complete rather than inheriting a hidden page cap, but advertises
-        // its migration path. Explicit `limit` activates bounded mode.
-        res.setHeader("PDPP-Warning", "deprecated_unbounded_connector_summary_list: supply limit");
-        // The operation expects `RefConnectorsListItem[]`; the host read
-        // returns the same shape via `ref-control.ts`. We forward
-        // opaquely — the adapter does not redefine the item shape.
+        const ownerSubjectId = ctx.getOwnerSubjectId(req);
+        // Non-null: `parseConnectorSummaryPageRequest` returns null only when
+        // none of limit/cursor/connector_id are present, and `limit` is
+        // already confirmed present above.
+        const pageRequest = parseConnectorSummaryPageRequest(req.query, ownerSubjectId) as ConnectorSummaryPageRequest;
+        const { listConnectorSummaryPage } = ctx;
+        if (!listConnectorSummaryPage) {
+          throw new Error("Connector summary page capability is not configured.");
+        }
         const envelope = await executeRefConnectorsList({
           getRuntimeStatus: ctx.getRuntimeStatus,
-          listConnectorSummaries: () =>
-            ctx.listConnectorSummaries() as unknown as ReturnType<
-              Parameters<typeof executeRefConnectorsList>[0]["listConnectorSummaries"]
-            >,
+          listConnectorSummaries: () => [],
+          listConnectorSummariesPage: () =>
+            listConnectorSummaryPage(ownerSubjectId, pageRequest) as unknown as RefConnectorsListPage,
         });
         res.json(envelope);
       } catch (err) {
@@ -660,11 +662,10 @@ export function mountRefConnectionSetDisplayName(app: AppLike, ctx: MountRefConn
           updatedAt: new Date().toISOString(),
         });
         ctx.invalidateConnectorSummariesCache?.();
-        // Scoped, awaited dirty marking: display_name is durable summary evidence.
-        await ctx.markConnectorSummaryEvidenceDirty?.({
-          connectorInstanceId: updated.connectorInstanceId,
-          reason: "ref rename changed connection display_name evidence",
-        });
+        // Terminal-gate revision (2026-07-29): `store.setDisplayName` now
+        // marks summary evidence dirty in the SAME transaction as the
+        // display_name write (server/stores/connector-instance-store.ts) —
+        // a separate post-hoc call here would be redundant, not additive.
         const schedule = await ctx.getSchedule(updated.connectorId, {
           connectorInstanceId: updated.connectorInstanceId,
         });
@@ -1247,12 +1248,10 @@ export function mountRefConnectionRevoke(app: AppLike, ctx: MountRefConnectorsCo
           })
         );
         ctx.invalidateConnectorSummariesCache?.();
-        // Scoped, awaited dirty marking: the soft revoke changed this
-        // connection's lifecycle evidence (status/revoked_at). Instance id known.
-        await ctx.markConnectorSummaryEvidenceDirty?.({
-          connectorInstanceId: namespace.connectorInstanceId,
-          reason: "ref revoke changed connection lifecycle evidence",
-        });
+        // Terminal-gate revision (2026-07-29): `updateConnectorInstanceStatus`
+        // (-> `store.updateStatus`) now marks summary evidence dirty in the
+        // SAME transaction as the status write — a separate post-hoc call
+        // here would be redundant, not additive.
         await emitConnectionControlAudit(ctx, res, {
           connectionId,
           connectorKey,
@@ -1404,12 +1403,10 @@ export function mountRefConnectionReactivate(app: AppLike, ctx: MountRefConnecto
           })
         );
         ctx.invalidateConnectorSummariesCache?.();
-        // Scoped, awaited dirty marking: reactivation flips status back to active
-        // and clears revoked_at — both durable summary evidence. Instance id known.
-        await ctx.markConnectorSummaryEvidenceDirty?.({
-          connectorInstanceId: namespace.connectorInstanceId,
-          reason: "ref reactivate changed connection lifecycle evidence",
-        });
+        // Terminal-gate revision (2026-07-29): `updateConnectorInstanceStatus`
+        // (-> `store.updateStatus`) now marks summary evidence dirty in the
+        // SAME transaction as the status write — a separate post-hoc call
+        // here would be redundant, not additive.
         await emitConnectionControlAudit(ctx, res, {
           connectionId,
           connectorKey,

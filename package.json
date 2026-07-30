@@ -112,6 +112,7 @@
     "@babel/parser": "7.29.2",
     "@biomejs/biome": "2.5.6",
     "@pdpp/brand": "workspace:*",
+    "@pdpp/list-envelope": "workspace:*",
     "@semantic-release/exec": "^7.1.0",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^26.1.2",

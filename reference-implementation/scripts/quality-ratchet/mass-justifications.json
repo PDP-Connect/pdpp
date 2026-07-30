@@ -139,11 +139,6 @@
     "reason": "Auth/store leaf TypeScript migration (2026-07-27): run credential injection keeps the static-secret connector gate and the browser-session exception for absent, revoked, or rejected optional login credentials. These branches preserve fail-closed recovery for all other paths without casting the recovered credential.",
     "date": "2026-07-27"
   },
-  "server/stores/connector-instance-store.ts": {
-    "allowed_mass": 37,
-    "reason": "TypeScript migration closure (2026-07-28): connector-instance-store.ts strict-plus type fixes add 3 conditional branches to handle row narrowing from generic SqliteRow/QueryResultRow to typed ConnectorInstanceRow, plus null guard for the optional detail-gap store capability. The alternatives are unsafe casts that violate the strict-plus baseline.",
-    "date": "2026-07-28"
-  },
   "server/index.ts": {
     "allowed_mass": 714,
     "reason": "RI server entry root TypeScript migration (2026-07-27): server/index.js is the largest single file in the codebase (~6800 lines), containing startup orchestration, all route-adapter mounts, the scheduler manager factory, CLI entrypoint, and browser-surface lifecycle. The entire structural complexity is inherited from the pre-migration JS source; no new control-flow branches were introduced. The 25 type-contract fixes (exactOptionalPropertyTypes conditional spreads, useUnknownInCatchVariables guards, noUncheckedIndexedAccess bracket narrowing, and explicit typed parameters on implicit-any callbacks) each add at most one conditional branch; removing them would require suppressions or any-casts that violate the strict-plus baseline. Mass is the verbatim translation of the original JS complexity; it cannot be reduced without splitting this file into sub-modules, which is a separate refactor orthogonal to this migration slice.",
@@ -158,5 +153,15 @@
     "allowed_mass": 456,
     "reason": "TypeScript migration closure (2026-07-28): server/records.ts strict-plus type fixes add 7 conditional branches for null/undefined guards (string|null|undefined -> string narrowing), DevicePreparePlanEntry/DeviceRecordPlanEntry alignment, and exactOptionalPropertyTypes spreads. Each branch is an honest narrowing guard that expresses a real nullable boundary; the alternative is a cast or suppression that violates the strict-plus baseline.",
     "date": "2026-07-28"
+  },
+  "server/connector-summary-evidence-engine.ts": {
+    "allowed_mass": 75,
+    "reason": "Terminal-gate re-revision (2026-07-29): per the gate's explicit instruction to prefer the existing maintenance sweep consuming already-durable canonical signals over a new parallel outbox, classifyCandidate gained two additional dirty-independent staleness checks -- schedule_mismatch (compares the evidence row's stored schedule_checkpoint against the live connector_schedules.updated_at) and lifecycle_checkpoint_lag (compares against the live MAX(spine_events.event_seq), unfiltered by event_type, unlike the existing terminal-only checkpoint) -- plus the matching discovery-context batch reads, repair-candidate reads, and upsert column wiring on both SQLite and PostgreSQL backends. The added branches are the load-bearing mechanism that makes a swallowed best-effort dirty mark on a schedule mutation or a non-terminal run-lifecycle event (e.g. run.started) self-heal on the next maintenance sweep using only signals the canonical mutation already committed durably -- no new table, no new write path. Proven by dedicated fault-injection tests that mutate the canonical tables directly, deliberately never calling any dirty-mark function, then assert the sweep still detects and repairs (reconcile-schedule-and-lifecycle-checkpoints.test.ts, 4/4 passing across SQLite and real PostgreSQL, deterministic across repeated runs).",
+    "date": "2026-07-29"
+  },
+  "server/connector-summary-read-model.ts": {
+    "allowed_mass": 92,
+    "reason": "Terminal-gate re-revision (2026-07-29): shapeEvidenceRow and the SQLite/PostgreSQL column lists in listEvidence gained two additional fields (schedule_checkpoint, run_lifecycle_event_seq) to surface the new durable-signal checkpoints added to connector-summary-evidence-engine.ts's classifyCandidate. Purely additive field projection with a sentinel-vs-null distinction (schedule_checkpoint defaults to the 'unobserved' sentinel, distinct from an absent schedule, so the two states are never conflated); no existing control flow changed.",
+    "date": "2026-07-29"
   }
 }

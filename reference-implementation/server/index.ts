@@ -128,6 +128,7 @@ import {
   withConnectorInstanceWrite,
 } from "./connector-instance-write-coordinator.ts";
 import { canonicalConnectorKey, isInternalConnectorId } from "./connector-key.ts";
+import { runConnectorMaintenanceSweep } from "./connector-maintenance-sweep.ts";
 import {
   getConnectorSummaryEvidence,
   markConnectorSummaryEvidenceDirty,
@@ -772,6 +773,17 @@ const STARTUP_SUMMARY_EVIDENCE_PAGE_SIZE = 25;
 // design.md "Startup is acceleration, not authority": never the correctness
 // gate regardless of how many rounds actually ran).
 const STARTUP_SUMMARY_EVIDENCE_MAX_RESUME_ROUNDS = 20;
+// Terminal-gate revision (2026-07-29): periodic tick interval for the
+// connector-maintenance sweep (browser-enrollment-shell retirement, due-
+// attention expiry, one bounded evidence-sweep round) — the recurring
+// counterpart to the one-shot startup pass above, now that ordinary GET no
+// longer performs any of these writes inline. 60s keeps staleness windows
+// short relative to human-observed dashboard refresh cadence without
+// running meaningfully more often than the durable state it sweeps
+// actually changes.
+const CONNECTOR_MAINTENANCE_SWEEP_INTERVAL_MS = 60_000;
+const CONNECTOR_MAINTENANCE_EVIDENCE_SWEEP_MAX_DURATION_MS = 2000;
+const CONNECTOR_MAINTENANCE_EVIDENCE_SWEEP_PAGE_SIZE = 25;
 
 /**
  * Walks `runBoundedSummaryEvidenceSweep` to completion across up to
@@ -4789,10 +4801,13 @@ export function buildAsApp(opts: ServerOpts = {}) {
         : null,
     handleError,
     invalidateConnectorSummariesCache,
-    listConnectorSummaries: () => listConnectorSummaries(controller, { includeRunSummaries: "singleton-active" }),
-    listConnectorSummaryPage: (ownerSubjectId: string, page: { cursor: unknown; limit: number }) =>
+    listConnectorSummaryPage: (
+      ownerSubjectId: string,
+      page: { connectorId?: string | null; cursor: unknown; limit: number }
+    ) =>
       listConnectorSummaryPage(controller, {
         after: (page.cursor as Parameters<typeof listConnectorSummaryPage>[1]["after"]) ?? null,
+        connectorId: page.connectorId ?? null,
         includeRunSummaries: "singleton-active",
         limit: page.limit,
         ownerSubjectId,
@@ -6529,6 +6544,40 @@ export async function startServer(opts: ServerOpts = {}) {
   function stopBrowserSurfaceLeaseSweep() {
     browserSurfaceLeaseSweepTimer.stop();
   }
+  // Terminal-gate revision (2026-07-29): reuses the SAME generic timer
+  // chassis the browser-surface lease sweep uses above — not a new engine,
+  // one more `sweep: () => Promise<void>` on its own interval. Constructed
+  // (unstarted) here for the same reason: its `sweep` closure does not
+  // depend on any later fallible await, but starting it is still deferred
+  // to armConnectorMaintenanceSweepAfterBoot at the very end of this
+  // function so a boot failure anywhere before that point can never leave
+  // an orphaned running timer (identical reasoning to the browser-surface
+  // lease sweep's own comment on this).
+  const connectorMaintenanceSweepTimer = createBrowserSurfaceLeaseSweepTimer({
+    intervalMs: CONNECTOR_MAINTENANCE_SWEEP_INTERVAL_MS,
+    onSweepError: (err: unknown) => {
+      logger.warn?.({ err: err instanceof Error ? err.message : String(err) }, "connector-maintenance sweep tick failed");
+    },
+    sweep: () =>
+      runConnectorMaintenanceSweep({
+        evidenceSweepMaxDurationMs: CONNECTOR_MAINTENANCE_EVIDENCE_SWEEP_MAX_DURATION_MS,
+        evidenceSweepPageSize: CONNECTOR_MAINTENANCE_EVIDENCE_SWEEP_PAGE_SIZE,
+        onPhaseError: (phase, err) => {
+          logger.warn?.(
+            { err: err instanceof Error ? err.message : String(err), phase },
+            "connector-maintenance sweep phase failed"
+          );
+        },
+        runEvidenceSweep: (args) =>
+          runBoundedSummaryEvidenceSweep({
+            maxDurationMs: args.maxDurationMs,
+            pageSize: args.pageSize ?? CONNECTOR_MAINTENANCE_EVIDENCE_SWEEP_PAGE_SIZE,
+          }),
+      }),
+  });
+  function stopConnectorMaintenanceSweep() {
+    connectorMaintenanceSweepTimer.stop();
+  }
   let schedulerManager: {
     cancelRun: (runId: string) => { status: string; run_id: string };
     refresh: () => Promise<void>;
@@ -6840,17 +6889,15 @@ export async function startServer(opts: ServerOpts = {}) {
   // Bounded, multi-round startup observation: best-effort acceleration,
   // never the correctness authority (design.md "Startup is acceleration,
   // not authority"). Off the request path, after listen, runs the SAME
-  // discovery+fold+repair+prune barrier every consumer read uses, one small
+  // discovery+fold+repair+prune barrier, one small
   // page (STARTUP_SUMMARY_EVIDENCE_PAGE_SIZE connections) at a time via
   // `runBoundedSummaryEvidenceSweep`, resuming from its returned cursor
   // across up to STARTUP_SUMMARY_EVIDENCE_MAX_RESUME_ROUNDS rounds until the
   // complete canonical set is covered or the round cap is reached, so a
   // never-before-seen or pre-change connection's evidence is fully current
-  // before the first owner-console read rather than paying that cost
-  // inline. The barrier inside every /_ref/connectors read remains the
-  // correctness backstop regardless of whether this succeeds or how many
-  // rounds run; a failure here marks rows stale (visible) and the next
-  // observation repairs them.
+  // before the first owner-console read rather than paying that cost inline.
+  // A failure here marks rows stale (visible) and a later maintenance pass
+  // repairs them.
   //
   // `maxDurationMs` genuinely bounds TOTAL wall-clock work across discovery,
   // fold, AND repair for every page (checked BEFORE each page starts, never
@@ -6931,6 +6978,15 @@ export async function startServer(opts: ServerOpts = {}) {
     asServer,
     rsServer
   );
+  // Same deferred-arming discipline as the browser-surface lease sweep
+  // above, for the same reason: bind stop-on-close before start() so there
+  // is no window where the timer runs with no owner able to stop it, and
+  // defer both to the very end of boot so an earlier failure never leaves
+  // an orphaned running timer. Unlike the browser-surface sweep, this one
+  // has no "not configured" gate — connector-summary maintenance applies to
+  // every deployment.
+  connectorMaintenanceSweepTimer.stopWhenAllClosed([asServer, rsServer]);
+  connectorMaintenanceSweepTimer.start();
   const deliveryWorkerLeases =
     opts.startClientEventDeliveryWorker === false
       ? []
@@ -6970,6 +7026,11 @@ export async function startServer(opts: ServerOpts = {}) {
     // sweep timer. A no-op when no dynamic allocator was configured.
     stopBrowserSurfaceLeaseSweep,
     stopClientEventDeliveryWorker,
+    // Exposed so the CLI shutdown path (and tests that start/stop many
+    // server instances per process) can clear the periodic connector-
+    // maintenance sweep timer (shell retirement, attention expiry, bounded
+    // evidence-sweep round — see connector-maintenance-sweep.ts).
+    stopConnectorMaintenanceSweep,
   };
 }
 
@@ -7860,6 +7921,7 @@ if (process.argv[1]?.endsWith("server/index.ts")) {
     controller: StartServerResult["controller"] | null;
     stopBrowserSurfaceLeaseSweep: StartServerResult["stopBrowserSurfaceLeaseSweep"] | null;
     stopClientEventDeliveryWorker: StartServerResult["stopClientEventDeliveryWorker"] | null;
+    stopConnectorMaintenanceSweep: StartServerResult["stopConnectorMaintenanceSweep"] | null;
   } = {
     abortStartupBackfill: null,
     asServer: null,
@@ -7870,6 +7932,7 @@ if (process.argv[1]?.endsWith("server/index.ts")) {
     startupSummaryEvidenceSweepDone: null,
     stopBrowserSurfaceLeaseSweep: null,
     stopClientEventDeliveryWorker: null,
+    stopConnectorMaintenanceSweep: null,
   };
   const exitOnSignal = (signal: string) => async () => {
     if (shuttingDown) {
@@ -7944,6 +8007,7 @@ if (process.argv[1]?.endsWith("server/index.ts")) {
       // biome-ignore lint/suspicious/noEmptyBlockStatements: The empty handler intentionally absorbs this best-effort cleanup failure.
     } catch {}
     server.stopBrowserSurfaceLeaseSweep?.();
+    server.stopConnectorMaintenanceSweep?.();
     await server.stopClientEventDeliveryWorker?.();
     // Drain in-flight connector children IN PARALLEL with the HTTP /
     // backfill drains. Children received their own SIGTERM from Docker
@@ -7985,6 +8049,7 @@ if (process.argv[1]?.endsWith("server/index.ts")) {
       server.controller = result.controller;
       server.stopBrowserSurfaceLeaseSweep = result.stopBrowserSurfaceLeaseSweep;
       server.stopClientEventDeliveryWorker = result.stopClientEventDeliveryWorker;
+      server.stopConnectorMaintenanceSweep = result.stopConnectorMaintenanceSweep;
     })
     .catch((err) => {
       closePostgresStorage().finally(() => closeDb());

@@ -451,8 +451,16 @@ test(
 );
 
 test(
-  "attention projection reconciles expired rows before returning open attention",
+  "attention projection hides due-expired rows from reads without durably reconciling them",
   withTempDb(async () => {
+    // Terminal-gate revision (2026-07-29): ordinary reads must be
+    // side-effect-free. getConnectorAttentionProjection (backing GET
+    // /_ref/connectors) no longer calls expireDueAttentionForConnection
+    // inline — it only excludes due-expired rows from the *read* via a
+    // non-mutating `expires_at` predicate. The durable `lifecycle` column
+    // is left exactly as-is ("open") until the periodic/startup
+    // maintenance sweep (server/connector-maintenance-sweep.ts) calls
+    // store.expireAllDueAttention and writes the reconciliation.
     const store = getDefaultConnectorAttentionStore();
     await store.upsertAttention({
       connectorId: "amazon",
@@ -477,15 +485,31 @@ test(
       connectorInstanceId: "cin_amazon_a",
     });
     assert.equal(projection.unreliable, false);
-    assert.deepEqual(projection.records, []);
+    assert.deepEqual(projection.records, [], "the read hides the due-expired row without writing to it");
 
-    const persisted = requirePersistedAttentionRow(
+    const beforeSweep = requirePersistedAttentionRow(
       getDb()
         .prepare("SELECT lifecycle, record_json FROM connector_attention_records WHERE attention_id = ?")
         .get("att_projection_expired")
     );
-    assert.equal(persisted.lifecycle, "expired");
-    assert.equal(JSON.parse(persisted.record_json).lifecycle, "expired");
+    assert.equal(beforeSweep.lifecycle, "open", "the read path must not durably reconcile the row");
+    assert.equal(JSON.parse(beforeSweep.record_json).lifecycle, "open");
+
+    // Simulate the maintenance sweep's attention-expiry phase, which is the
+    // only place this reconciliation now happens.
+    const swept = await store.expireAllDueAttention({ now: "2026-05-19T12:00:00.000Z" });
+    assert.deepEqual(
+      swept.map((record) => record.id),
+      ["att_projection_expired"]
+    );
+
+    const afterSweep = requirePersistedAttentionRow(
+      getDb()
+        .prepare("SELECT lifecycle, record_json FROM connector_attention_records WHERE attention_id = ?")
+        .get("att_projection_expired")
+    );
+    assert.equal(afterSweep.lifecycle, "expired");
+    assert.equal(JSON.parse(afterSweep.record_json).lifecycle, "expired");
   })
 );
 

@@ -58,7 +58,7 @@ const SOURCE_ACTIONABILITY_PROJECTION_RE = /const actionability = projectSourceA
 const RENDERED_VERDICT_STATUS_RE = /const status = actionability\.renderedStatus/;
 const RENDERED_VERDICT_PRIMARY_ACTION_RE = /const \{ primaryVerdictAction \} = actionability/;
 const RENDERED_VERDICT_NEXT_ACTION_RE = /actionability\.nextAction/;
-const RUNTIME_ADVISORY_MODEL_RE = /buildSourcesRuntimeAdvisory\(response\.runtime\)/;
+const RUNTIME_ADVISORY_MODEL_RE = /buildSourcesRuntimeAdvisory\(page\.runtime\)/;
 const RUNTIME_ADVISORY_PROP_RE = /runtimeAdvisory=\{runtimeAdvisory\}/;
 const RUNTIME_ADVISORY_RENDER_RE = /data-testid="sources-runtime-advisory"/;
 const INSPECTION_LAYER_FIELDS_RE = /detail_gap_backlog|next_attempt_at|collection_rate|suppressed/;

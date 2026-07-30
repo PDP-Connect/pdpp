@@ -478,7 +478,7 @@ async function emitSyntheticStartedRun({
 test("GET /_ref/connectors lists configured connections with stream names and freshness", async () => {
   await withHarness(async ({ asUrl, spotifyManifest }) => {
     await seedSpotifyConnection(spotifyManifest.connector_id);
-    const { status, body } = await fetchJson<RefConnectorListBody>(`${asUrl}/_ref/connectors`);
+    const { status, body } = await fetchJson<RefConnectorListBody>(`${asUrl}/_ref/connectors?limit=100`);
     assert.equal(status, 200);
     assert.ok(body, "expected a connectors list body");
     assert.equal(body.object, "list");
@@ -506,7 +506,7 @@ test("GET /_ref/connectors keeps active run finished_at null", async () => {
       runId: "run_spotify_active",
     });
 
-    const { status, body } = await fetchJson<RefConnectorListBody>(`${asUrl}/_ref/connectors`);
+    const { status, body } = await fetchJson<RefConnectorListBody>(`${asUrl}/_ref/connectors?limit=100`);
     assert.equal(status, 200);
     assert.ok(body, "expected a connectors list body");
     const entry = body.data.find((row) => row.connector_id === SPOTIFY_CONNECTOR_KEY);
@@ -537,7 +537,7 @@ test("GET /_ref/connectors finds connector runs that are older than newer runs f
       });
     }
 
-    const { status, body } = await fetchJson<RefConnectorListBody>(`${asUrl}/_ref/connectors`);
+    const { status, body } = await fetchJson<RefConnectorListBody>(`${asUrl}/_ref/connectors?limit=100`);
     assert.equal(status, 200);
     assert.ok(body, "expected a connectors list body");
     const entry = body.data.find((row) => row.connector_id === SPOTIFY_CONNECTOR_KEY);
@@ -568,7 +568,7 @@ test("GET /_ref/connectors projects known gaps from the latest run summary", asy
       status: "succeeded",
     });
 
-    const { status, body } = await fetchJson<RefConnectorListBody>(`${asUrl}/_ref/connectors`);
+    const { status, body } = await fetchJson<RefConnectorListBody>(`${asUrl}/_ref/connectors?limit=100`);
     assert.equal(status, 200);
     assert.ok(body, "expected a connectors list body");
     const entry = body.data.find((row) => row.connector_id === SPOTIFY_CONNECTOR_KEY);
@@ -634,7 +634,7 @@ test("GET /_ref/connectors projects schedule when one is configured", async () =
       method: "PUT",
     });
     assert.equal(put.status, 200);
-    const { body } = await fetchJson<RefConnectorListBody>(`${asUrl}/_ref/connectors`);
+    const { body } = await fetchJson<RefConnectorListBody>(`${asUrl}/_ref/connectors?limit=100`);
     assert.ok(body, "expected a connectors list body");
     const entry = body.data.find((c) => c.connector_id === SPOTIFY_CONNECTOR_KEY);
     assert.ok(entry);
@@ -827,7 +827,7 @@ test("POST /_ref/connectors/:connectorId/run starts an async background run and 
     const completed = (timeline.data || []).find((event) => event.event_type === "run.completed");
     assert.ok(completed, "manual run should complete in the background");
 
-    const { body: connectors } = await fetchJson<RefConnectorListBody>(`${asUrl}/_ref/connectors`);
+    const { body: connectors } = await fetchJson<RefConnectorListBody>(`${asUrl}/_ref/connectors?limit=100`);
     assert.ok(connectors, "expected a connectors list body");
     const entry = connectors.data.find((row) => row.connector_id === SPOTIFY_CONNECTOR_KEY);
     assert.ok(entry, "connector should still be listed");
@@ -1077,7 +1077,7 @@ test("controller startup reconciles abandoned controller-managed runs after rest
       "startup reconciliation should close open attention for terminal runs"
     );
 
-    const { body: connectors } = await fetchJson<RefConnectorListBody>(`${asUrl}/_ref/connectors`);
+    const { body: connectors } = await fetchJson<RefConnectorListBody>(`${asUrl}/_ref/connectors?limit=100`);
     assert.ok(connectors, "expected a connectors list body");
     const entry = connectors.data.find((row) => row.connector_id === SPOTIFY_CONNECTOR_KEY);
     assert.ok(entry, "configured spotify connection should still be listed after restart");

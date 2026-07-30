@@ -52,7 +52,14 @@ const PAGE_DEFAULT_OPTION_RE =
   /options=\{\[\{ label: FAN_IN_OPTION_LABEL, value: FAN_IN_OPTION_VALUE \}, \.\.\.connectionOptions\]\}/;
 const PAGE_COLLAPSE_GUARD_RE = /if \(connectionOptions\.length <= 1\)/;
 const PAGE_FAN_IN_TESTID_RE = /data-testid="connection-pin-fan-in-only"/;
-const PAGE_LOADS_OPTIONS_RE = /const connectionOptions = await loadConnectionPinOptions\(draft\)/;
+const PAGE_LOADS_OPTIONS_RE = /const connectionPinOptions = await loadConnectionPinOptions\(draft\)/;
+const LOAD_OPTIONS_USES_SEAM_RE =
+  /async function loadConnectionPinOptions\(draft: GrantRequestDraft\)[\s\S]*listConnectionsByConnector\(draft\.sourceId\)/;
+const NO_LIST_ALL_CONNECTOR_SUMMARIES_RE = /\blistAllConnectorSummaries\b/;
+const NO_BOUNDED_FLEET_PAGE_RE = /\bloadConnectorSummaryPage\b/;
+const NO_COMPLETE_FIELD_RE = /\bcomplete:\s*(true|false|!page\.hasMore)/;
+const NO_INCOMPLETE_NOTICE_TESTID_RE = /data-testid="connection-pin-options-incomplete-notice"/;
+const NO_CONNECTION_OPTIONS_COMPLETE_RE = /connectionOptionsComplete/;
 
 function draft(overrides: Partial<ConnectionPinDraft> = {}): ConnectionPinDraft {
   return {
@@ -175,4 +182,44 @@ test("the page hides the pin control when there is nothing to disambiguate", asy
 test("the page loads the pin options from the live connector listing", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
   assert.match(src, PAGE_LOADS_OPTIONS_RE);
+});
+
+// ---- third gate REVISE (2026-07-29), finding 1: grant-request consumes the exact seam ----
+//
+// The second revision's `loadConnectorSummaryPage({ cursor: undefined })` +
+// `complete: !page.hasMore` was itself the rejected one-arbitrary-fleet-page
+// stopgap (wrong independently of fleet size: landing on a later GLOBAL
+// final page makes `hasMore === false`, so a partial slice gets called
+// complete even though earlier pages were never read). This closes it by
+// switching to the exact `listConnectionsByConnector` seam — bounded by this
+// ONE connector's own connection count, never by fleet position.
+
+test("loadConnectionPinOptions consumes the exact listConnectionsByConnector seam, never a bounded fleet page", async () => {
+  const src = await readFile(LIB_FILE, "utf8");
+  assert.match(src, LOAD_OPTIONS_USES_SEAM_RE);
+  assert.doesNotMatch(
+    src,
+    NO_LIST_ALL_CONNECTOR_SUMMARIES_RE,
+    "the exhaustive fold must never return to the grant-request connection-pin path"
+  );
+  assert.doesNotMatch(
+    src,
+    NO_BOUNDED_FLEET_PAGE_RE,
+    "connection pins must not be derived from any bounded fleet page — the seam is connector-scoped, not fleet-position-scoped"
+  );
+});
+
+test("loadConnectionPinOptions has no complete/incompleteness escape hatch — the seam result is exact by construction", async () => {
+  const src = await readFile(LIB_FILE, "utf8");
+  assert.doesNotMatch(
+    src,
+    NO_COMPLETE_FIELD_RE,
+    "there is nothing partial left to disclose once the lookup is connector-scoped and exact"
+  );
+});
+
+test("the page no longer renders a connection-pin-options incompleteness notice (removed with the stopgap)", async () => {
+  const src = await readFile(PAGE_FILE, "utf8");
+  assert.doesNotMatch(src, NO_INCOMPLETE_NOTICE_TESTID_RE);
+  assert.doesNotMatch(src, NO_CONNECTION_OPTIONS_COMPLETE_RE);
 });

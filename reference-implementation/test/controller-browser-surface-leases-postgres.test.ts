@@ -19,6 +19,24 @@ import { dedicatedPostgresTestUrl } from "./helpers/dedicated-postgres-test-url.
 
 const POSTGRES_URL = dedicatedPostgresTestUrl(process.env.PDPP_TEST_POSTGRES_URL);
 
+// Matches test/controller-browser-surface-leases.test.ts's identically-named
+// helper: runNow requires an admitRunConnection authority resolver
+// (runtime/controller.ts's resolveAdmittedRunConnection throws
+// connector_instance_store_required without one), which this file's fixture
+// never wired -- a pre-existing gap independent of the SQLite sibling that
+// already has it.
+function fakeAdmitRunConnection(): (input: {
+  connectorId: string;
+  connectorInstanceId: string | null;
+  ownerSubjectId: string | null;
+}) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }> {
+  return ({ connectorId, connectorInstanceId, ownerSubjectId: requestedOwnerSubjectId }) => {
+    const ownerSubjectId = requestedOwnerSubjectId || "owner_local";
+    const exactId = connectorInstanceId ?? connectorId;
+    return Promise.resolve({ connectorId, connectorInstanceId: exactId, ownerSubjectId });
+  };
+}
+
 function schedulerStore(): SchedulerStore {
   const active = new Map<string, ActiveRunRecord>();
   return {
@@ -131,6 +149,7 @@ test("dedicated PostgreSQL: duplicate allocator-absent ready rows create one bou
     stopSurface: async () => null,
   };
   const controller = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
     browserSurfaceAllocator: allocator,
     browserSurfaceLeaseManager: manager,
     browserSurfaceLeaseStore: leaseStore,

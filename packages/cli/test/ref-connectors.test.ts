@@ -6,7 +6,12 @@ import { test } from "node:test";
 
 import { runCli } from "../src/index.ts";
 import { runRefConnectors } from "../src/ref/commands/connectors.ts";
-import { PdppHttpError, PdppUsageError } from "../src/ref/errors.ts";
+import { PdppCliError, PdppHttpError, PdppUsageError } from "../src/ref/errors.ts";
+
+const NO_USABLE_NEXT_CURSOR_RE = /malformed connector-summary page/;
+const REPEATED_SELF_LOOPING_CURSOR_RE = /repeated\/self-looping next_cursor/;
+const CAP_STOPPED_AT_1000_RE = /stopped after 1000 pages \(safety cap of 1000\)/;
+const CAP_RESUME_CURSOR_1000_RE = /resume with --cursor cursor-1000/;
 
 function mockFetch(responses) {
   // biome-ignore lint/suspicious/useAwait: mocks the fetch(...) => Promise<Response> contract (or Response.text()/json()); async is required to satisfy the type even though this mock body never awaits.
@@ -206,7 +211,9 @@ const SUMMARY_FIXTURE = {
 
 test("ref connectors list: projects summary fields in JSON list", async () => {
   const fetch = mockFetch({
-    "https://ref.test/_ref/connectors": { body: { object: "list", data: [SUMMARY_FIXTURE] } },
+    "https://ref.test/_ref/connectors?limit=100": {
+      body: { data: [SUMMARY_FIXTURE], has_more: false, object: "list" },
+    },
   });
 
   const captured = capture();
@@ -271,19 +278,23 @@ test("ref connectors list: projects summary fields in JSON list", async () => {
 
 test("ref connectors list: --verbose returns raw envelope", async () => {
   const fetch = mockFetch({
-    "https://ref.test/_ref/connectors": { body: { object: "list", data: [SUMMARY_FIXTURE] } },
+    "https://ref.test/_ref/connectors?limit=100": {
+      body: { data: [SUMMARY_FIXTURE], has_more: false, object: "list" },
+    },
   });
 
   const captured = capture();
   await runRefConnectors(["list", "--as-url", "https://ref.test", "--format", "json", "--verbose"], captured.io, fetch);
 
   const parsed = JSON.parse(captured.stdout);
-  assert.deepEqual(parsed, { object: "list", data: [SUMMARY_FIXTURE] });
+  assert.deepEqual(parsed, { data: [SUMMARY_FIXTURE], has_more: false, object: "list" });
 });
 
 test("ref connectors list: table format includes projected columns", async () => {
   const fetch = mockFetch({
-    "https://ref.test/_ref/connectors": { body: { object: "list", data: [SUMMARY_FIXTURE] } },
+    "https://ref.test/_ref/connectors?limit=100": {
+      body: { data: [SUMMARY_FIXTURE], has_more: false, object: "list" },
+    },
   });
 
   const captured = capture();
@@ -333,7 +344,7 @@ test("ref connectors list: handles missing axes / next_action without crashing",
     schedule: null,
   };
   const fetch = mockFetch({
-    "https://ref.test/_ref/connectors": { body: { object: "list", data: [minimal] } },
+    "https://ref.test/_ref/connectors?limit=100": { body: { data: [minimal], has_more: false, object: "list" } },
   });
 
   const captured = capture();
@@ -475,7 +486,7 @@ test("ref connectors show: maps 404 to PdppHttpError exit code 5", async () => {
 test("runCli ref connectors list routes to handler", async () => {
   const origFetch = globalThis.fetch;
   globalThis.fetch = mockFetch({
-    "https://ref.test/_ref/connectors": { body: { object: "list", data: [] } },
+    "https://ref.test/_ref/connectors?limit=100": { body: { data: [], has_more: false, object: "list" } },
   });
 
   try {
@@ -485,7 +496,10 @@ test("runCli ref connectors list routes to handler", async () => {
       captured.io
     );
     assert.equal(code, 0);
-    assert.deepEqual(JSON.parse(captured.stdout), { object: "list", data: [] });
+    // Non-verbose output is the PROJECTED shape ({ data, object }), which
+    // never carried has_more — only the mock fixture (the server envelope
+    // going IN) needed has_more added for the strict validator.
+    assert.deepEqual(JSON.parse(captured.stdout), { data: [], object: "list" });
   } finally {
     globalThis.fetch = origFetch;
   }
@@ -505,16 +519,17 @@ test("runCli ref --help mentions connectors commands", async () => {
 
 test("ref connectors list: surfaces canonical meta.warnings to stderr without polluting stdout JSON", async () => {
   const fetch = mockFetch({
-    "https://ref.test/_ref/connectors": {
+    "https://ref.test/_ref/connectors?limit=100": {
       body: {
-        object: "list",
         data: [SUMMARY_FIXTURE],
+        has_more: false,
         meta: {
           warnings: [
             { code: "deprecated_alias", message: "connector_instance_id is deprecated; use connection_id" },
             { code: "count_downgraded", dropped_parameter: "count=exact" },
           ],
         },
+        object: "list",
       },
     },
   });
@@ -566,7 +581,9 @@ test("ref connectors show: surfaces canonical meta.warnings on single-record res
 
 test("ref connectors list: emits no stderr noise when meta.warnings is absent (backward compat)", async () => {
   const fetch = mockFetch({
-    "https://ref.test/_ref/connectors": { body: { object: "list", data: [SUMMARY_FIXTURE] } },
+    "https://ref.test/_ref/connectors?limit=100": {
+      body: { data: [SUMMARY_FIXTURE], has_more: false, object: "list" },
+    },
   });
 
   const captured = capture();
@@ -578,10 +595,10 @@ test("ref connectors list: emits no stderr noise when meta.warnings is absent (b
 
 test("ref connectors list: ignores malformed warnings entries", async () => {
   const fetch = mockFetch({
-    "https://ref.test/_ref/connectors": {
+    "https://ref.test/_ref/connectors?limit=100": {
       body: {
-        object: "list",
         data: [SUMMARY_FIXTURE],
+        has_more: false,
         meta: {
           warnings: [
             "not-an-object",
@@ -590,6 +607,7 @@ test("ref connectors list: ignores malformed warnings entries", async () => {
             { code: "ok_warning", message: "this one is well-formed" },
           ],
         },
+        object: "list",
       },
     },
   });
@@ -604,4 +622,345 @@ test("ref connectors list: ignores malformed warnings entries", async () => {
   assert.doesNotMatch(captured.stderr, /not-an-object/);
   // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
   assert.doesNotMatch(captured.stderr, /missing code field/);
+});
+
+// ---- pagination (bounded-by-default, --cursor, --all) ----------------------
+
+test("ref connectors list: defaults to one bounded page (limit=100), never the bare unbounded route", async () => {
+  const fetch = mockFetch({
+    "https://ref.test/_ref/connectors?limit=100": {
+      body: { data: [SUMMARY_FIXTURE], has_more: false, next_cursor: null, object: "list" },
+    },
+  });
+
+  const captured = capture();
+  const code = await runRefConnectors(["list", "--as-url", "https://ref.test", "--format", "json"], captured.io, fetch);
+
+  assert.equal(code, 0);
+  const parsed = JSON.parse(captured.stdout);
+  assert.equal(parsed.data.length, 1);
+  // No "more results" notice — has_more was false.
+  assert.equal(captured.stderr, "");
+});
+
+test("ref connectors list: has_more:true without --all surfaces an explicit continuation notice, never a silent truncation", async () => {
+  const fetch = mockFetch({
+    "https://ref.test/_ref/connectors?limit=100": {
+      body: { data: [SUMMARY_FIXTURE], has_more: true, next_cursor: "cursor-page-2", object: "list" },
+    },
+  });
+
+  const captured = capture();
+  const code = await runRefConnectors(["list", "--as-url", "https://ref.test", "--format", "json"], captured.io, fetch);
+
+  assert.equal(code, 0);
+  // The page's data still prints in full — never silently dropped.
+  assert.equal(JSON.parse(captured.stdout).data.length, 1);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
+  assert.match(captured.stderr, /more results available/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
+  assert.match(captured.stderr, /--cursor cursor-page-2/);
+});
+
+test("ref connectors list: --cursor requests the exact continuation, not page 1", async () => {
+  const fetch = mockFetch({
+    "https://ref.test/_ref/connectors?limit=100&cursor=cursor-page-2": {
+      body: { data: [SUMMARY_FIXTURE], has_more: false, next_cursor: null, object: "list" },
+    },
+  });
+
+  const captured = capture();
+  const code = await runRefConnectors(
+    ["list", "--as-url", "https://ref.test", "--format", "json", "--cursor", "cursor-page-2"],
+    captured.io,
+    fetch
+  );
+
+  assert.equal(code, 0);
+  assert.equal(JSON.parse(captured.stdout).data.length, 1);
+});
+
+test("ref connectors list: --limit is capped at the reference's own page-size max (100)", async () => {
+  const fetch = mockFetch({
+    "https://ref.test/_ref/connectors?limit=100": {
+      body: { data: [SUMMARY_FIXTURE], has_more: false, next_cursor: null, object: "list" },
+    },
+  });
+
+  const captured = capture();
+  const code = await runRefConnectors(
+    ["list", "--as-url", "https://ref.test", "--format", "json", "--limit", "5000"],
+    captured.io,
+    fetch
+  );
+
+  assert.equal(code, 0, "a request for limit=5000 must clamp to 100, not fail or bypass the cap");
+});
+
+test("ref connectors list: --all page-follows every page and merges all rows, with no duplication", async () => {
+  const pageOneSummary = { ...SUMMARY_FIXTURE, connection_id: "github-1", connector_instance_id: "github-1" };
+  const pageTwoSummary = { ...SUMMARY_FIXTURE, connection_id: "github-2", connector_instance_id: "github-2" };
+  const fetch = mockFetch({
+    "https://ref.test/_ref/connectors?limit=100": {
+      body: { data: [pageOneSummary], has_more: true, next_cursor: "cursor-page-2", object: "list" },
+    },
+    "https://ref.test/_ref/connectors?limit=100&cursor=cursor-page-2": {
+      body: { data: [pageTwoSummary], has_more: false, next_cursor: null, object: "list" },
+    },
+  });
+
+  const captured = capture();
+  const code = await runRefConnectors(
+    ["list", "--as-url", "https://ref.test", "--format", "json", "--all"],
+    captured.io,
+    fetch
+  );
+
+  assert.equal(code, 0);
+  const parsed = JSON.parse(captured.stdout);
+  assert.equal(parsed.data.length, 2, "both pages' rows must be present, exactly once each");
+  const ids = parsed.data.map((row) => row.connection_id);
+  assert.deepEqual(new Set(ids).size, ids.length, "no row may be duplicated across the page boundary");
+  // Exhausted cleanly (has_more:false on the last page) — no continuation notice.
+  assert.equal(captured.stderr, "");
+});
+
+test("ref connectors list: --all stops at the safety cap and FAILS NON-ZERO with a resumable cursor, never a success-shaped partial output", async () => {
+  // Third gate REVISE (2026-07-29), finding 3: hitting the page-count safety
+  // cap with more remaining must be a FAILURE (non-zero exit, nothing
+  // printed to stdout), never exit 0 with 1000 rows silently presented as
+  // if that were the whole answer — automation consuming --all must never
+  // mistake a capped partial result for a complete one.
+  let calls = 0;
+  // biome-ignore lint/suspicious/useAwait: mocks the fetch(...) => Promise<Response> contract; async is required to satisfy the type even though this mock body never awaits.
+  const fetch = async () => {
+    calls += 1;
+    const body = {
+      data: [{ ...SUMMARY_FIXTURE, connection_id: `endless-${calls}`, connector_instance_id: `endless-${calls}` }],
+      has_more: true,
+      next_cursor: `cursor-${calls}`,
+      object: "list",
+    };
+    return {
+      headers: { get: () => null },
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify(body),
+    };
+  };
+
+  const captured = capture();
+  await assert.rejects(
+    () => runRefConnectors(["list", "--as-url", "https://ref.test", "--format", "json", "--all"], captured.io, fetch),
+    (err) =>
+      err instanceof PdppCliError &&
+      err.exitCode === 7 &&
+      CAP_STOPPED_AT_1000_RE.test(err.message) &&
+      CAP_RESUME_CURSOR_1000_RE.test(err.message)
+  );
+  assert.equal(
+    captured.stdout,
+    "",
+    "the cap-exceeded case must print NOTHING to stdout — no success-shaped partial output"
+  );
+});
+
+test("ref connectors list: a rejected/malformed continuation surfaces as an explicit HTTP error, never an empty or truncated list", async () => {
+  const fetch = mockFetch({
+    "https://ref.test/_ref/connectors?limit=100&cursor=not-a-real-cursor": {
+      body: { error_description: "Connector summary cursor is invalid" },
+      status: 400,
+    },
+  });
+
+  const captured = capture();
+  await assert.rejects(
+    () =>
+      runRefConnectors(
+        ["list", "--as-url", "https://ref.test", "--format", "json", "--cursor", "not-a-real-cursor"],
+        captured.io,
+        fetch
+      ),
+    (err) => err instanceof PdppHttpError && err.status === 400
+  );
+  // Nothing printed to stdout — a rejected cursor never renders a fabricated empty page.
+  assert.equal(captured.stdout, "");
+});
+
+// ---- second gate REVISE (2026-07-29): envelope validation + full merge ----
+
+test("ADVERSARIAL: has_more:true with a wrong discriminator (object !== 'list') is rejected, never silently accepted", async () => {
+  const fetch = mockFetch({
+    "https://ref.test/_ref/connectors?limit=100": {
+      body: { data: {}, has_more: false, object: "not-a-list" },
+    },
+  });
+  const captured = capture();
+  await assert.rejects(
+    () => runRefConnectors(["list", "--as-url", "https://ref.test", "--format", "json"], captured.io, fetch),
+    (err) => err instanceof PdppCliError && err.exitCode === 6
+  );
+  assert.equal(captured.stdout, "", "a malformed discriminator/data shape never renders a fabricated empty list");
+});
+
+test("ADVERSARIAL: a blank (whitespace-only) next_cursor on has_more:true is rejected, never issued as a literal ?cursor=+ request", async () => {
+  const fetch = mockFetch({
+    "https://ref.test/_ref/connectors?limit=100": {
+      body: { data: [SUMMARY_FIXTURE], has_more: true, next_cursor: " ", object: "list" },
+    },
+  });
+  const captured = capture();
+  await assert.rejects(
+    () => runRefConnectors(["list", "--as-url", "https://ref.test", "--format", "json", "--all"], captured.io, fetch),
+    (err) => err instanceof PdppCliError && err.exitCode === 6
+  );
+  assert.equal(
+    captured.stdout,
+    "",
+    "a blank cursor never renders a fabricated page or issues a literal ?cursor=+ follow-up"
+  );
+});
+
+test("ADVERSARIAL: --all rejects has_more:true with no next_cursor — never silently stops as if exhausted", async () => {
+  const fetch = mockFetch({
+    "https://ref.test/_ref/connectors?limit=100": {
+      body: { data: [SUMMARY_FIXTURE], has_more: true, next_cursor: null, object: "list" },
+    },
+  });
+
+  const captured = capture();
+  await assert.rejects(
+    () => runRefConnectors(["list", "--as-url", "https://ref.test", "--format", "json", "--all"], captured.io, fetch),
+    (err) => err instanceof PdppCliError && err.exitCode === 6 && NO_USABLE_NEXT_CURSOR_RE.test(err.message)
+  );
+  assert.equal(captured.stdout, "", "a malformed envelope never renders a fabricated page");
+});
+
+test("ADVERSARIAL: --all rejects a next_cursor that repeats the cursor already consumed (self-loop) — never loops forever", async () => {
+  const fetch = mockFetch({
+    "https://ref.test/_ref/connectors?limit=100": {
+      body: { data: [SUMMARY_FIXTURE], has_more: true, next_cursor: "loop-cursor", object: "list" },
+    },
+    "https://ref.test/_ref/connectors?limit=100&cursor=loop-cursor": {
+      body: {
+        data: [{ ...SUMMARY_FIXTURE, connection_id: "github-2" }],
+        has_more: true,
+        next_cursor: "loop-cursor",
+        object: "list",
+      },
+    },
+  });
+
+  const captured = capture();
+  await assert.rejects(
+    () => runRefConnectors(["list", "--as-url", "https://ref.test", "--format", "json", "--all"], captured.io, fetch),
+    (err) => err instanceof PdppCliError && err.exitCode === 6 && REPEATED_SELF_LOOPING_CURSOR_RE.test(err.message)
+  );
+  assert.equal(captured.stdout, "", "a self-looping cursor never renders a partial/duplicated page");
+});
+
+test("ADVERSARIAL: --all rejects a next_cursor equal to any cursor already seen this run (not just the immediately-prior one)", async () => {
+  const fetch = mockFetch({
+    "https://ref.test/_ref/connectors?limit=100": {
+      body: { data: [SUMMARY_FIXTURE], has_more: true, next_cursor: "cursor-a", object: "list" },
+    },
+    "https://ref.test/_ref/connectors?limit=100&cursor=cursor-a": {
+      body: {
+        data: [{ ...SUMMARY_FIXTURE, connection_id: "github-2" }],
+        has_more: true,
+        next_cursor: "cursor-b",
+        object: "list",
+      },
+    },
+    "https://ref.test/_ref/connectors?limit=100&cursor=cursor-b": {
+      body: {
+        data: [{ ...SUMMARY_FIXTURE, connection_id: "github-3" }],
+        has_more: true,
+        // Loops back to the FIRST cursor, not the immediately-prior one.
+        next_cursor: "cursor-a",
+        object: "list",
+      },
+    },
+  });
+
+  const captured = capture();
+  await assert.rejects(
+    () => runRefConnectors(["list", "--as-url", "https://ref.test", "--format", "json", "--all"], captured.io, fetch),
+    (err) => err instanceof PdppCliError && err.exitCode === 6
+  );
+});
+
+test("the visited-cursor set is fresh per invocation — a cursor value seen in one --all run does not poison the next", async () => {
+  // Two SEPARATE runRefConnectors(["list", ..., "--all"]) invocations, each a
+  // single well-formed page whose one cursor happens to be the same string
+  // ("shared"). If the visited-set were shared across invocations (e.g.
+  // globalThis-backed, the exact shape the gate rejected for the
+  // interactive UI pagers), the second invocation would spuriously treat
+  // "shared" as already-visited. It must not: each call gets a brand-new
+  // local Set inside collectConnectorSummaryPages.
+  const fetch = mockFetch({
+    "https://ref.test/_ref/connectors?limit=100": {
+      body: { data: [SUMMARY_FIXTURE], has_more: false, next_cursor: null, object: "list" },
+    },
+  });
+
+  const firstCaptured = capture();
+  await runRefConnectors(
+    ["list", "--as-url", "https://ref.test", "--format", "json", "--all"],
+    firstCaptured.io,
+    fetch
+  );
+  const secondCaptured = capture();
+  await runRefConnectors(
+    ["list", "--as-url", "https://ref.test", "--format", "json", "--all"],
+    secondCaptured.io,
+    fetch
+  );
+
+  assert.ok(firstCaptured.stdout.length > 0, "first invocation must succeed");
+  assert.ok(
+    secondCaptured.stdout.length > 0,
+    "a fresh invocation must not inherit a prior invocation's visited-cursor history"
+  );
+});
+
+test("--all --verbose --format json merges every collected page's envelope, never dropping earlier pages", async () => {
+  const pageOneSummary = { ...SUMMARY_FIXTURE, connection_id: "github-1" };
+  const pageTwoSummary = { ...SUMMARY_FIXTURE, connection_id: "github-2" };
+  const fetch = mockFetch({
+    "https://ref.test/_ref/connectors?limit=100": {
+      body: { data: [pageOneSummary], has_more: true, next_cursor: "cursor-page-2", object: "list" },
+    },
+    "https://ref.test/_ref/connectors?limit=100&cursor=cursor-page-2": {
+      body: { data: [pageTwoSummary], has_more: false, next_cursor: null, object: "list" },
+    },
+  });
+
+  const captured = capture();
+  const code = await runRefConnectors(
+    ["list", "--as-url", "https://ref.test", "--format", "json", "--all", "--verbose"],
+    captured.io,
+    fetch
+  );
+
+  assert.equal(code, 0);
+  const parsed = JSON.parse(captured.stdout);
+  assert.equal(parsed.data.length, 2, "--verbose --all must merge BOTH pages' rows, not just the last page's");
+  const ids = parsed.data.map((row) => row.connection_id);
+  assert.deepEqual(new Set(ids).size, ids.length, "no row is duplicated across the page boundary");
+  assert.equal(parsed.envelopes.length, 2, "every collected page's raw envelope is present, not just the last");
+});
+
+test("--verbose (no --all, single page) still returns the bare raw envelope unchanged (no wrapper regression)", async () => {
+  const fetch = mockFetch({
+    "https://ref.test/_ref/connectors?limit=100": {
+      body: { object: "list", data: [SUMMARY_FIXTURE], has_more: false, next_cursor: null },
+    },
+  });
+
+  const captured = capture();
+  await runRefConnectors(["list", "--as-url", "https://ref.test", "--format", "json", "--verbose"], captured.io, fetch);
+
+  const parsed = JSON.parse(captured.stdout);
+  assert.deepEqual(parsed, { object: "list", data: [SUMMARY_FIXTURE], has_more: false, next_cursor: null });
 });

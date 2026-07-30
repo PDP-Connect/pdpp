@@ -6,8 +6,9 @@
  * the serializable shape the Recordroom "loading dock" presentation consumes.
  *
  * This module is the data-source seam for the redesigned Sources view. The
- * server page fetches `RefConnectorSummary[]` through the existing
- * `liveDashboardDataSource.listConnectorSummaries()` and maps it here into
+ * server page fetches ONE bounded `RefConnectorSummary[]` page through the
+ * existing `liveDashboardDataSource.listConnectorSummaries` binding (a
+ * shared `ConnectorSummaryPager` reaches further pages) and maps it here into
  * `SourceInstanceView`s. We bind directly to `RefConnectorSummary` (not the
  * lossy `ConnectorOverview` projection) because that envelope carries the
  * schedule, connection health, next action, and retained-bytes the passport

@@ -178,7 +178,7 @@ export async function runCli(
         `  ${PDPP_CLI_BIN_NAME} ref trace show <trace-id> --as-url <url> [--owner-session <cookie>] [--format json|table]\n`
       );
       io.stdout.write(
-        `  ${PDPP_CLI_BIN_NAME} ref connectors list --as-url <url> [--owner-session <cookie>] [--format json|table] [--verbose]\n`
+        `  ${PDPP_CLI_BIN_NAME} ref connectors list --as-url <url> [--owner-session <cookie>] [--format json|table] [--verbose] [--limit <n>] [--cursor <opaque>] [--all]\n`
       );
       io.stdout.write(
         `  ${PDPP_CLI_BIN_NAME} ref connectors show <connector-id> --as-url <url> [--owner-session <cookie>] [--format json|table] [--verbose]\n`

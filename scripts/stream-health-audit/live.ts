@@ -17,17 +17,29 @@
 // `ConnectorSummary` in reference-implementation/server/ref-control.ts
 // (~line 540): the route calls `ctx.listConnectorSummaries()` (host read,
 // returns `ConnectorSummary[]`) and the operation wraps it as
-// `{ object: "list", data: ConnectorSummary[] }` — the route forwards each
-// item opaquely, so every `ConnectorSummary` field survives serialization
-// even though the operation's own `RefConnectorsListItem` type doesn't
-// re-declare them. The fields this audit reads: `connection_id`,
+// `{ object: "list", data: ConnectorSummary[], has_more, next_cursor }` —
+// the route forwards each item opaquely, so every `ConnectorSummary` field
+// survives serialization even though the operation's own
+// `RefConnectorsListItem` type doesn't re-declare them. The shared page-follow helper
+// (below) PAGE-FOLLOWS this route at the reference's own page-size ceiling
+// (`CONNECTOR_SUMMARY_PAGE_LIMIT_MAX` = 100 in
+// reference-implementation/operations/ref-connectors-list/pagination.ts —
+// the route REJECTS any `limit` above that, so a prior single-shot
+// `limit=500` request here was invalid) until the fleet is exhausted; this
+// audit's whole premise requires seeing every settled connection, so
+// exhaustive paging is correct here (unlike a first-render UI path) — a
+// malformed continuation or a safety-cap trip fails the run explicitly
+// rather than silently under-reporting the fleet. The fields this audit
+// reads: `connection_id`,
 // `connector_id`, `connector_instance_id`, `display_name`,
 // `connector_display_name`, `rendered_verdict` (`{ pill: { label, tone },
 // ... }`), and `collection_report` (`CollectionReportEntry[]`: `stream`,
 // `coverage_condition`, `forward_disposition`, `coverage_strategy`,
-// `checkpoint`, `considered`, `covered`, `required`). `asArrayList` below
-// unwraps both the `{ data: [...] }` envelope and a bare array so this
-// stays correct if the envelope shape shifts.
+// `checkpoint`, `considered`, `covered`, `required`). Terminal-gate revision
+// (2026-07-29): the connection list is now assembled by page-following the
+// bounded `GET /_ref/connectors?limit=100[&cursor=...]` route to completion
+// (`fetchAllConnectorSummaries`, scripts/lib/ref-connectors-page-follow.ts)
+// rather than one bare/unbounded request.
 //
 // Failure rows carry a neutral evidence class (what the served entry
 // shows), not an inferred cause. Investigation hints:
@@ -55,6 +67,7 @@
 // sent as an Authorization header to a cookie-gated /_ref route.
 
 import { type FetchImpl, resolveOwnerAuthForLive } from "../lib/owner-session.ts";
+import { fetchAllConnectorSummaries } from "../lib/ref-connectors-page-follow.ts";
 import { auditStreamHealth, type StreamHealthAuditResult } from "./audit.ts";
 
 const REGEX_PATTERN = /\/+$/;
@@ -99,16 +112,6 @@ export async function resolveOwnerAuthForStreamHealth({
   }
 
   return { header: {}, mode: "none", supported: false, error: null };
-}
-
-function asArrayList(raw: unknown): unknown[] {
-  if (Array.isArray(raw)) {
-    return raw;
-  }
-  if (raw && typeof raw === "object" && Array.isArray((raw as Record<string, unknown>).data)) {
-    return (raw as Record<string, unknown>).data as unknown[];
-  }
-  return [];
 }
 
 interface LiveStreamHealthAuditResult {
@@ -179,17 +182,22 @@ export async function runLiveStreamHealthAudit({
   }
 
   try {
-    const res = await fetchImpl(`${base}/_ref/connectors?limit=500`, {
+  // Terminal-gate revision (2026-07-29): the bare `?limit=500` request
+    // both exceeded the route's new maximum page size (100) and no longer
+    // exists as a single-request "give me everything" contract. Page-follow
+    // to completion instead — this audit genuinely needs the whole fleet.
+    const paged = await fetchAllConnectorSummaries({
+      base,
+      fetchImpl,
       headers: { accept: "application/json", ...header },
-      redirect: "manual",
     });
-    if (res.status < 200 || res.status >= 300) {
+    if (!paged.ok) {
       return {
         origin: base,
         authMode: mode,
         authCapability: "cookie_only",
         fetched: false,
-        error: `GET /_ref/connectors returned status ${res.status}`,
+        error: paged.error ?? `GET /_ref/connectors returned status ${paged.status}`,
         connectionCount: 0,
         ok: false,
         status: "inconclusive",
@@ -197,9 +205,7 @@ export async function runLiveStreamHealthAudit({
         inconclusive: [],
       };
     }
-    const body = await res.text();
-    const parsed = JSON.parse(body);
-    const connections = asArrayList(parsed);
+    const connections = [...paged.data];
     const { ok, status, failures, inconclusive } = auditStreamHealth(connections);
     return {
       origin: base,

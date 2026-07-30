@@ -4,11 +4,11 @@
 import { PageHeader } from "@pdpp/operator-ui/components/primitives";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
+import { existingSourcesByConnectorCatalog } from "../../components/existing-sources-by-connector.ts";
 import { ServerUnreachable } from "../../components/shell.tsx";
 import { type ExistingSourceSetupLink, SourceSetupCatalog } from "../../components/source-setup-catalog.tsx";
 import { buildConnectorCatalog, type ConnectorCatalogEntry } from "../../lib/connection-catalog.ts";
 import { ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
-import { listConnectorSummaries, type RefConnectorSummary } from "../../lib/ref-client.ts";
 import { listConnectorManifests } from "../../lib/rs-client.ts";
 
 export const dynamic = "force-dynamic";
@@ -18,54 +18,25 @@ interface PageParams {
   source_q?: string;
 }
 
-function latestImport(summary: RefConnectorSummary): { file: string | null; status: string | null } {
-  const batch = summary.acquisition_coverage?.latest_batch ?? null;
-  return {
-    file: batch?.uploaded_file_name ?? null,
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
-    status: batch?.status ?? null,
-  };
-}
-
-function buildExistingSourcesByConnector(
-  summaries: readonly RefConnectorSummary[]
-): Record<string, ExistingSourceSetupLink[]> {
-  const grouped: Record<string, ExistingSourceSetupLink[]> = {};
-  for (const summary of summaries) {
-    if (!summary.connection_id || summary.status === "revoked" || summary.revoked_at) {
-      continue;
-    }
-    const importFacts = latestImport(summary);
-    const rows = grouped[summary.connector_id] ?? [];
-    rows.push({
-      connectionId: summary.connection_id,
-      displayName: summary.display_name,
-      latestImportFile: importFacts.file,
-      latestImportStatus: importFacts.status,
-      status: summary.status ?? null,
-      totalRecords: summary.total_records,
-      totalRecordsState: summary.total_records_state,
-    });
-    grouped[summary.connector_id] = rows;
-  }
-  for (const rows of Object.values(grouped)) {
-    rows.sort((a, b) => a.displayName.localeCompare(b.displayName));
-  }
-  return grouped;
-}
-
 export default async function AddSourcePage({ searchParams }: { searchParams: Promise<PageParams> }) {
   const params = await searchParams;
   let catalog: ConnectorCatalogEntry[] = [];
-  let existingSourcesByConnector: Record<string, ExistingSourceSetupLink[]> = {};
+  let existingSourcesByConnector: Record<string, readonly ExistingSourceSetupLink[]> = {};
   if (process.env.NODE_ENV !== "production" && params.demo === "atlas") {
     const demo = await import("./add-source-demo-data.ts");
     ({ catalog, existingSourcesByConnector } = demo.buildAddSourceDemoCatalog());
   } else {
     try {
-      const [manifests, summaries] = await Promise.all([listConnectorManifests(), listConnectorSummaries()]);
+      const manifests = await listConnectorManifests();
       catalog = buildConnectorCatalog(manifests);
-      existingSourcesByConnector = buildExistingSourcesByConnector(summaries.data);
+      // EXACT per-connector existing-sources lookup — one `GET
+      // /_ref/connections?connector_id=` call per catalog entry (bounded by
+      // the registered connector-type catalog size, a few dozen, never by
+      // fleet size). Replaces the rejected one-arbitrary-fleet-page
+      // `complete`/`existingSourcesIncomplete` stopgap entirely: each
+      // connector's existing-sources list is exact by construction, so
+      // there is no incompleteness signal left to surface.
+      existingSourcesByConnector = await existingSourcesByConnectorCatalog(catalog.map((entry) => entry.connectorKey));
     } catch (err) {
       if (err instanceof ReferenceServerUnreachableError) {
         return (
@@ -77,6 +48,7 @@ export default async function AddSourcePage({ searchParams }: { searchParams: Pr
       throw err;
     }
   }
+
   const sourceQuery = typeof params.source_q === "string" ? params.source_q.trim() : "";
   return (
     <RecordroomShellWithPalette>

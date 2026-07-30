@@ -14,9 +14,15 @@ import { sandboxDashboardDataSource } from "../_demo/data-source.ts";
 
 export const dynamic = "force-static";
 
+// Mirrors the live reference's own connector-summary page-size ceiling
+// (`CONNECTOR_SUMMARY_PAGE_LIMIT_MAX`) — an explicit, bounded request, never
+// the bare unparameterized call the gate flagged as the one remaining
+// first-party bare-call offender.
+const SANDBOX_CONNECTOR_SUMMARY_PAGE_LIMIT = 100;
+
 export default async function SandboxSchedulesPage() {
   const ds = sandboxDashboardDataSource;
-  const { data: summaries } = await ds.listConnectorSummaries();
+  const { data: summaries } = await ds.listConnectorSummaries({ limit: SANDBOX_CONNECTOR_SUMMARY_PAGE_LIMIT });
 
   return (
     <DashboardShell active="schedules" mode="mock-owner">

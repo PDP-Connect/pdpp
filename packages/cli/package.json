@@ -25,7 +25,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.build.json && node --import tsx scripts/postbuild.ts",
+    "build": "rm -rf dist && node --import tsx scripts/generate-list-envelope.ts && tsc -p tsconfig.build.json && node --import tsx scripts/postbuild.ts",
     "prepare": "pnpm build",
     "prepack": "pnpm build",
     "test": "pnpm build && node --import tsx scripts/run-tests.ts",

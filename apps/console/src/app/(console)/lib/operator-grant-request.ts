@@ -20,7 +20,7 @@ import {
   ReferenceServerUnreachableError,
   withOwnerSessionCookie,
 } from "./owner-token.ts";
-import { listConnectorSummaries } from "./ref-client.ts";
+import { listConnectionsByConnector, listConnectorSummaries } from "./ref-client.ts";
 
 export type { ConnectionPinOption } from "./grant-request-connection-pin.ts";
 
@@ -99,25 +99,39 @@ function sourceFromDraft(draft: GrantRequestDraft) {
   };
 }
 
+export interface ConnectionPinOptionsResult {
+  options: ConnectionPinOption[];
+}
+
 /**
- * Load the pinnable connections for the draft's current source. Returns `[]`
- * for non-connector or empty sources, and degrades to `[]` (fan-in only) if
- * the connector listing is unreachable — the page must never block staging on
- * connection enumeration.
+ * Load the pinnable connections for the draft's current source — EXACT, via
+ * the same seam composition `existing-sources-by-connector.ts` uses (closes
+ * gate finding 1, which named this function alongside Add Source/manual
+ * upload as still using the rejected one-arbitrary-fleet-page stopgap):
+ *   1. `listConnectionsByConnector(sourceId)` — the exact, connector_id-
+ *      filtered, unpaginated `/_ref/connections` identity set.
+ *   2. A scoped `listConnectorSummaries({ connectionRouteId })` call per
+ *      connection to backfill `streams` (needed to filter by
+ *      `draft.streamName` — a field `/_ref/connections` does not carry).
+ * Bounded by this connector's own connection count, never by fleet size.
+ * There is no `complete` signal anymore: the result is exact by
+ * construction. Returns an empty result for non-connector/empty sources.
  */
-export async function loadConnectionPinOptions(draft: GrantRequestDraft): Promise<ConnectionPinOption[]> {
+export async function loadConnectionPinOptions(draft: GrantRequestDraft): Promise<ConnectionPinOptionsResult> {
   if (draft.sourceKind !== "connector" || !trim(draft.sourceId)) {
-    return [];
+    return { options: [] };
   }
-  try {
-    const response = await listConnectorSummaries();
-    return buildConnectionPinOptions(
-      { id: draft.sourceId, kind: draft.sourceKind, streamName: draft.streamName },
-      response.data
-    );
-  } catch {
-    return [];
-  }
+  const connections = await listConnectionsByConnector(draft.sourceId);
+  const live = connections.filter((connection) => connection.status !== "revoked" && !connection.revoked_at);
+  const summaries = await Promise.all(
+    live.map((connection) => listConnectorSummaries({ connectionRouteId: connection.connector_instance_id }))
+  );
+  const scopedSummaries = summaries.flatMap((response) => response.data);
+  const options = buildConnectionPinOptions(
+    { id: draft.sourceId, kind: draft.sourceKind, streamName: draft.streamName },
+    scopedSummaries
+  );
+  return { options };
 }
 
 export function createDefaultGrantRequestDraft(): GrantRequestDraft {

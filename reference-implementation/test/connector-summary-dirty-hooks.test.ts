@@ -49,7 +49,8 @@ import {
 } from "../server/connector-summary-read-model.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
-import { deleteAllRecords, deleteRecord, ingestRecord } from "../server/records.ts";
+import { closePostgresStorage, initPostgresStorage, postgresQuery } from "../server/postgres-storage.ts";
+import { deleteAllRecords, deleteAllRecordsForConnector, deleteRecord, ingestRecord } from "../server/records.ts";
 import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -311,6 +312,123 @@ test("deleteAllRecords on an empty stream does not dirty summary evidence", asyn
     assert.equal(afterEmptyDelete.dirty, false, "a no-op bulk delete must not dirty summary evidence");
   } finally {
     closeDb();
+  }
+});
+
+// ── Connector-wide bulk delete seam (Perf-2026-07-29 parity fix) ────────────
+//
+// `deleteAllRecordsForConnector` (the CONNECTOR-WIDE variant, distinct from
+// the per-connection `deleteAllRecords` above) dirties every instance whose
+// records were cleared. The Postgres arm previously omitted this call
+// entirely (SQLite always had it) — a real backend-parity gap the batched
+// connector-summary read path surfaced once it started trusting the
+// evidence table's dirty/checkpoint state for connections it had never
+// scoped-repaired before.
+
+test("deleteAllRecordsForConnector (SQLite) dirties every instance it clears", async () => {
+  initDb();
+  try {
+    const clearedA = "cin_summary_delete_all_connector_a";
+    const clearedB = "cin_summary_delete_all_connector_b";
+    seedInstanceSqlite({ connectorInstanceId: clearedA, displayName: "Cleared A" });
+    seedInstanceSqlite({ connectorInstanceId: clearedB, displayName: "Cleared B" });
+
+    await ingestRecord(storageTargetFor(clearedA), {
+      data: { id: "rec_a", name: "a" },
+      emitted_at: NOW,
+      key: "rec_a",
+      stream: SPOTIFY_STREAM,
+    });
+    await ingestRecord(storageTargetFor(clearedB), {
+      data: { id: "rec_b", name: "b" },
+      emitted_at: NOW,
+      key: "rec_b",
+      stream: SPOTIFY_STREAM,
+    });
+    await rebuildConnectorSummaryEvidence();
+    const aBefore = await getConnectorSummaryEvidence(clearedA);
+    const bBefore = await getConnectorSummaryEvidence(clearedB);
+    assert.ok(aBefore && bBefore, "both connections' evidence rows must exist after rebuild");
+    assert.equal(aBefore.dirty, false);
+    assert.equal(bBefore.dirty, false);
+
+    const { deletedCount } = await deleteAllRecordsForConnector(SPOTIFY_CONNECTOR_KEY);
+    assert.equal(deletedCount, 2, "both connections' records were cleared");
+
+    const aAfter = await getConnectorSummaryEvidence(clearedA);
+    const bAfter = await getConnectorSummaryEvidence(clearedB);
+    assert.ok(aAfter && bAfter, "both connections' evidence rows must exist after connector-wide delete");
+    assert.equal(aAfter.dirty, true, "connector-wide delete marks connection A evidence dirty");
+    assert.equal(bAfter.dirty, true, "connector-wide delete marks connection B evidence dirty");
+  } finally {
+    closeDb();
+  }
+});
+
+test("deleteAllRecordsForConnector (PostgreSQL) dirties every instance it clears", {
+  skip: !process.env.PDPP_TEST_POSTGRES_URL,
+}, async () => {
+  const databaseUrl = process.env.PDPP_TEST_POSTGRES_URL;
+  assert.ok(databaseUrl, "Postgres URL is configured when this test runs");
+  await initPostgresStorage({ backend: "postgres", databaseUrl });
+  const connectorId = "pg_summary_delete_all_connector";
+  const clearedA = "cin_pg_summary_delete_all_a";
+  const clearedB = "cin_pg_summary_delete_all_b";
+  try {
+    await postgresQuery("DELETE FROM connector_summary_evidence WHERE connector_instance_id = ANY($1::text[])", [
+      [clearedA, clearedB],
+    ]);
+    await postgresQuery("DELETE FROM records WHERE connector_instance_id = ANY($1::text[])", [[clearedA, clearedB]]);
+    await postgresQuery("DELETE FROM connector_instances WHERE connector_instance_id = ANY($1::text[])", [
+      [clearedA, clearedB],
+    ]);
+    await postgresQuery("DELETE FROM connectors WHERE connector_id = $1", [connectorId]);
+    await postgresQuery(
+      `INSERT INTO connectors(connector_id, manifest, created_at)
+           VALUES($1, $2::jsonb, $3) ON CONFLICT(connector_id) DO NOTHING`,
+      [connectorId, JSON.stringify({ connector_id: connectorId }), NOW]
+    );
+    for (const instanceId of [clearedA, clearedB]) {
+      // biome-ignore lint/performance/noAwaitInLoops: sequential fixture setup, not the code path under test.
+      await postgresQuery(
+        `INSERT INTO connector_instances(
+             connector_instance_id, owner_subject_id, connector_id, display_name, status,
+             source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
+           )
+           VALUES($1, $2, $3, $1, 'active', 'account', $1, '{}'::jsonb, $4, $4, NULL)`,
+        [instanceId, OWNER_SUBJECT_ID, connectorId, NOW]
+      );
+      await postgresQuery(
+        `INSERT INTO records(connector_id, connector_instance_id, stream, record_key, record_json, emitted_at, version, deleted, primary_key_text)
+             VALUES($1, $2, $3, 'rec_1', '{}'::jsonb, $4, 1, false, 'rec_1')`,
+        [connectorId, instanceId, SPOTIFY_STREAM, NOW]
+      );
+    }
+    await rebuildConnectorSummaryEvidence();
+    const aBefore = await getConnectorSummaryEvidence(clearedA);
+    const bBefore = await getConnectorSummaryEvidence(clearedB);
+    assert.ok(aBefore && bBefore, "both connections' evidence rows must exist after rebuild");
+    assert.equal(aBefore.dirty, false);
+    assert.equal(bBefore.dirty, false);
+
+    const { deletedCount } = await deleteAllRecordsForConnector(connectorId);
+    assert.equal(deletedCount, 2, "both connections' records were cleared");
+
+    const aAfter = await getConnectorSummaryEvidence(clearedA);
+    const bAfter = await getConnectorSummaryEvidence(clearedB);
+    assert.ok(aAfter && bAfter, "both connections' evidence rows must exist after connector-wide delete");
+    assert.equal(aAfter.dirty, true, "Postgres connector-wide delete marks connection A evidence dirty");
+    assert.equal(bAfter.dirty, true, "Postgres connector-wide delete marks connection B evidence dirty");
+  } finally {
+    await postgresQuery("DELETE FROM connector_summary_evidence WHERE connector_instance_id = ANY($1::text[])", [
+      [clearedA, clearedB],
+    ]);
+    await postgresQuery("DELETE FROM records WHERE connector_instance_id = ANY($1::text[])", [[clearedA, clearedB]]);
+    await postgresQuery("DELETE FROM connector_instances WHERE connector_instance_id = ANY($1::text[])", [
+      [clearedA, clearedB],
+    ]);
+    await postgresQuery("DELETE FROM connectors WHERE connector_id = $1", [connectorId]);
+    await closePostgresStorage();
   }
 });
 
