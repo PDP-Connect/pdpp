@@ -43,6 +43,7 @@ import type {
   UpcomingFetchResult,
   UpcomingPartitionPosition,
 } from "../operations/rs-explore-timeline/index.ts";
+import { mapWithConcurrency } from "./concurrency.ts";
 import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.ts";
 
 // Wall-clock helper. Isolated so the cursor TTL has a single time source.
@@ -904,29 +905,38 @@ async function postgresCountNewSinceSnapshot(input: CountNewSinceSnapshotInput):
   return Number(result.rows[0]?.cnt ?? 0);
 }
 
+export const POSTGRES_UPCOMING_PARTITION_CONCURRENCY = 8;
+
 // The separate FUTURE projection (Postgres): records with semantic time > nowCeiling,
 // soonest-first, capped, plus a TRUE COUNT. Snapshot-bound. Probed PER-PARTITION so
 // the partition-prefixed idx_pg_records_semantic_time index serves it (a global query
 // Seq-Scans, cost ~472K live). Per-partition heads merged soonest-first; counts summed.
-async function postgresFetchUpcoming(input: UpcomingFetchInput): Promise<UpcomingFetchResult> {
+// Outer partition reads are bounded by POSTGRES_UPCOMING_PARTITION_CONCURRENCY (8) to
+// prevent connection pool saturation while turning O(partitions) serial roundtrips
+// into bounded concurrent batches.
+async function postgresFetchUpcoming(
+  input: UpcomingFetchInput,
+  options: { readonly onInFlightChange?: (inFlight: number) => void } = {}
+): Promise<UpcomingFetchResult> {
   const semExpr = "COALESCE(NULLIF(semantic_time, ''), emitted_at)";
   const computeTotal = input.computeTotal !== false;
   const afterByKey = upcomingAfterPositionMap(input.afterPositions);
+
+  const partitionResults = await mapWithConcurrency(
+    input.partitions,
+    POSTGRES_UPCOMING_PARTITION_CONCURRENCY,
+    (partition, partitionIndex) => {
+      const after = afterByKey.get(upcomingPartitionKey(partition.connectorId, partition.stream)) ?? null;
+      return postgresFetchUpcomingPartition(input, semExpr, computeTotal, partition, partitionIndex, after);
+    },
+    options
+  );
+
   let total = 0;
   const tagged: TaggedUpcomingRow[] = [];
   const partitionOverflow: boolean[] = [];
 
-  for (const [partitionIndex, partition] of input.partitions.entries()) {
-    const after = afterByKey.get(upcomingPartitionKey(partition.connectorId, partition.stream)) ?? null;
-    // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
-    const fetched = await postgresFetchUpcomingPartition(
-      input,
-      semExpr,
-      computeTotal,
-      partition,
-      partitionIndex,
-      after
-    );
+  for (const [partitionIndex, fetched] of partitionResults.entries()) {
     total += fetched.total;
     tagged.push(...fetched.tagged);
     partitionOverflow[partitionIndex] = fetched.overflow;

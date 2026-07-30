@@ -398,7 +398,10 @@ export interface ExploreTimelineDependencies {
    * `id <= snapshotSeq` (same snapshot as the main feed). When ABSENT, the
    * operation returns an empty upcoming set (legacy: no future/past split).
    */
-  fetchUpcoming?: (input: UpcomingFetchInput) => Promise<UpcomingFetchResult>;
+  fetchUpcoming?: (
+    input: UpcomingFetchInput,
+    options?: { readonly onInFlightChange?: (inFlight: number) => void }
+  ) => Promise<UpcomingFetchResult>;
   /**
    * List ALL distinct (connector_instance_id, stream) partitions visible to the
    * owner, with no limit. Returns an empty array when no records exist yet.
