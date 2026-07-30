@@ -85,7 +85,11 @@ function startFakeAsWith({
         res.end(JSON.stringify(schedules));
         return;
       }
-      if (req.url === "/_ref/connectors" && connectors) {
+      // Terminal-gate revision (2026-07-29): the doctor now page-follows the
+      // bounded route (`?limit=100[&cursor=...]`), never the bare path — the
+      // fake server matches by prefix instead of exact-URL, and returns one
+      // complete (no `has_more`) page since these fixtures are always small.
+      if (req.url?.startsWith("/_ref/connectors?") && connectors) {
         res.setHeader("content-type", "application/json");
         res.end(JSON.stringify(connectors));
         return;

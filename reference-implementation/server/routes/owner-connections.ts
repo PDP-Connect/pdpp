@@ -360,13 +360,10 @@ async function performOwnerConnectionRename(
     updatedAt: ctx.now ? ctx.now() : new Date().toISOString(),
   });
   ctx.invalidateConnectorSummariesCache?.();
-  // Scoped, awaited dirty marking: display_name is durable summary
-  // evidence, so a rename makes this connection's row stale. Instance id
-  // is known.
-  await ctx.markConnectorSummaryEvidenceDirty?.({
-    connectorInstanceId: connectionId,
-    reason: "owner rename changed connection display_name evidence",
-  });
+  // Terminal-gate revision (2026-07-29): `store.setDisplayName` now marks
+  // summary evidence dirty in the SAME transaction as the display_name write
+  // (server/stores/connector-instance-store.ts) — a separate post-hoc call
+  // here would be redundant, not additive.
   const schedules = await ctx.listSchedules();
   const schedulesByInstanceId = new Map<string, unknown>(
     schedules

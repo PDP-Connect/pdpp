@@ -94,7 +94,21 @@ try {
     "docs/design-system/ink-carbon/project/recordroom/rr-explore-data.ts",
   ]);
 
-  const pairs = [serviceWorker, syncScript, ...designScripts, ...recordroomScripts];
+  // packages/cli/src/ref/list-envelope.ts is a plain generated .ts-to-.ts
+  // copy of packages/list-envelope/src/index.ts (no tsc emit needed — both
+  // are already TypeScript source); see
+  // packages/cli/scripts/generate-list-envelope.ts for why the CLI cannot
+  // just import the shared package directly.
+  const cliListEnvelope: ArtifactPair = {
+    generated: join(temporaryRoot, "cli-list-envelope", "list-envelope.ts"),
+    tracked: "packages/cli/src/ref/list-envelope.ts",
+  };
+  execFileSync("node", ["--import", "tsx", "scripts/generate-list-envelope.ts", cliListEnvelope.generated], {
+    cwd: join(root, "packages/cli"),
+    stdio: "inherit",
+  });
+
+  const pairs = [serviceWorker, syncScript, ...designScripts, ...recordroomScripts, cliListEnvelope];
   for (const pair of pairs) {
     compare(pair);
   }

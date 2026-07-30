@@ -696,6 +696,18 @@ export interface Controller {
   issueRuntimeOwnerToken: (ownerSubjectId?: string) => Promise<string>;
   listBrowserSurfaceRunProjections: () => BrowserSurfaceRunProjection[];
   listSchedules: () => Promise<ScheduleApi[]>;
+  /**
+   * Same enrichment as `listSchedules()`/`getSchedule()` (`scheduleToApi` —
+   * runtime projection, refresh policy, schedule history), but scoped to a
+   * caller-supplied connection set via the store's batch reader instead of
+   * `schedulerStore.listSchedules()`'s whole-fleet read. For a render that
+   * already knows exactly which connections it needs (e.g. one page of the
+   * connector-summary list), this is the batch-of-N equivalent of calling
+   * `getSchedule` once per connection without either re-reading the shared
+   * history index N times or fetching every owner's schedule to answer one
+   * page's worth of connections.
+   */
+  listSchedulesForConnections: (connectorInstanceIds: readonly string[]) => Promise<Map<string, ScheduleApi>>;
   markNeedsHuman: (connectorId: string, options?: ConnectorInstanceOptions) => void;
   /**
    * Reads one current dynamic allocator inventory. Call once per full health
@@ -2660,6 +2672,36 @@ export function createController(opts: ControllerOptions = {}): Controller {
     return apis.flatMap((api) => (api ? [api] : []));
   }
 
+  async function listSchedulesForConnections(connectorInstanceIds: readonly string[]): Promise<Map<string, ScheduleApi>> {
+    const result = new Map<string, ScheduleApi>();
+    if (connectorInstanceIds.length === 0 || typeof schedulerStore.listSchedulesByConnectionIds !== "function") {
+      return result;
+    }
+    const schedules = await Promise.resolve(schedulerStore.listSchedulesByConnectionIds(connectorInstanceIds));
+    if (schedules.length === 0) {
+      return result;
+    }
+    // Same shared-index amortization as `listSchedules()`: one bounded
+    // history read for this whole batch, not one per connection.
+    const historyIndex = await loadScheduleHistoryIndex();
+    await Promise.all(
+      schedules.map(async (schedule) => {
+        const policy = await getConnectorRefreshPolicy(schedule.connector_id);
+        const runtimeProjection = getRuntimeProjection(
+          schedule.connector_id,
+          schedule.connector_instance_id,
+          browserSurfaceLeaseManager,
+          historyIndex
+        );
+        const api = scheduleToApi(schedule, runtimeProjection, policy, historyIndex.get(schedule.connector_instance_id));
+        if (api) {
+          result.set(schedule.connector_instance_id, api);
+        }
+      })
+    );
+    return result;
+  }
+
   async function getSchedule(connectorId: string, options: ConnectorInstanceOptions = {}): Promise<ScheduleApi | null> {
     const resolvedConnectorId = canonicalConnectorKey(connectorId) ?? connectorId;
     const connectorInstanceId = options.connectorInstanceId || resolvedConnectorId;
@@ -4019,6 +4061,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     issueRuntimeOwnerToken,
     listBrowserSurfaceRunProjections,
     listSchedules,
+    listSchedulesForConnections,
     markNeedsHuman,
     observeBrowserSurfaceRuntimeInventory,
     promoteBrowserSurfaceLeasesAfterBoot: () => browserSurface.promoteBrowserSurfaceLeasesAfterBoot(),

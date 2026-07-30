@@ -288,7 +288,7 @@ async function listConnections(asUrl: string, cookie: string): Promise<JsonResul
 // created connection is discoverable before its first ingest.
 // biome-ignore lint/suspicious/useAwait: Async callback preserves the dependency contract and rejection timing.
 async function listConnectors(asUrl: string, cookie: string): Promise<JsonResult> {
-  return fetchJson(`${asUrl}/_ref/connectors`, {
+  return fetchJson(`${asUrl}/_ref/connectors?limit=100`, {
     headers: { Accept: "application/json", Cookie: cookie },
   });
 }

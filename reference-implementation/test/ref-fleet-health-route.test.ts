@@ -41,7 +41,6 @@ function fleetHealthTestContext(
     getOwnerSubjectId: unusedContextMember("getOwnerSubjectId"),
     getRuntimeStatus: unusedContextMember("getRuntimeStatus"),
     getSchedule: unusedContextMember("getSchedule"),
-    listConnectorSummaries: unusedContextMember("listConnectorSummaries"),
     listSchedules: unusedContextMember("listSchedules"),
     pdppError: unusedContextMember("pdppError"),
     resolveOwnerConnectorNamespace: unusedContextMember("resolveOwnerConnectorNamespace"),

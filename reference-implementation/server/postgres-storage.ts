@@ -1779,7 +1779,9 @@ export async function bootstrapPostgresSchema({
         source_event_seq          BIGINT,
         state                     TEXT NOT NULL DEFAULT 'rebuilding',
         last_error                TEXT,
-        manifest_generation BIGINT NOT NULL DEFAULT 0
+        manifest_generation BIGINT NOT NULL DEFAULT 0,
+        schedule_checkpoint TEXT NOT NULL DEFAULT 'unobserved',
+        run_lifecycle_event_seq BIGINT
       );
       CREATE INDEX IF NOT EXISTS idx_pg_connector_summary_evidence_connector
         ON connector_summary_evidence(connector_id);
@@ -1849,6 +1851,13 @@ export async function bootstrapPostgresSchema({
         ADD COLUMN IF NOT EXISTS retained_bytes_reason_code TEXT;
       ALTER TABLE connector_summary_evidence
         ADD COLUMN IF NOT EXISTS manifest_generation BIGINT NOT NULL DEFAULT 0;
+      -- Terminal-gate revision (2026-07-29): durable repair-receipt
+      -- checkpoints consumed by the maintenance sweep — see the matching
+      -- SQLite column comments in server/db.ts for the full rationale.
+      ALTER TABLE connector_summary_evidence
+        ADD COLUMN IF NOT EXISTS schedule_checkpoint TEXT NOT NULL DEFAULT 'unobserved';
+      ALTER TABLE connector_summary_evidence
+        ADD COLUMN IF NOT EXISTS run_lifecycle_event_seq BIGINT;
       ALTER TABLE connector_state
         ADD COLUMN IF NOT EXISTS manifest_generation BIGINT NOT NULL DEFAULT 0;
       ALTER TABLE grant_connector_state

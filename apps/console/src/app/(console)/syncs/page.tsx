@@ -19,30 +19,37 @@
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import { redirect } from "next/navigation";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
+import {
+  ConnectorSummaryPageError,
+  ConnectorSummaryPager,
+  loadConnectorSummaryPage,
+} from "../components/connector-summary-page.tsx";
+import { isPagedRequest, parseConnectorSummaryPageState } from "../components/connector-summary-pager.ts";
 import { LivePoller } from "../components/live-poller.tsx";
 import { ServerUnreachable } from "../components/shell.tsx";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
-import {
-  type ListResponse,
-  listConnectorSummaries,
-  listRuns,
-  type RefConnectorSummary,
-  type RunSummary,
-} from "../lib/ref-client.ts";
+import { type ListResponse, listConnectorSummaries, listRuns, type RunSummary } from "../lib/ref-client.ts";
 import { DEMO_SYNCS_MODEL } from "./syncs-demo.ts";
 import { buildSyncsViewModel } from "./syncs-model.ts";
 import { SyncsView } from "./syncs-view.tsx";
+
+const SYNCS_PATH = "/syncs";
 
 export const dynamic = "force-dynamic";
 const SYNCS_OVERVIEW_RUN_LIMIT = 25;
 
 interface Params {
   connector_id?: string;
-  cursor?: string;
   demo?: string;
+  page_cursor?: string;
   peek?: string;
   q?: string;
   status?: string;
+  [key: string]: string | undefined;
+}
+
+function fetchSyncsConnectorsPage(pageState: ReturnType<typeof parseConnectorSummaryPageState>) {
+  return loadConnectorSummaryPage(pageState, (opts) => listConnectorSummaries(opts));
 }
 
 function isLiveRun(run: RunSummary): boolean {
@@ -67,12 +74,13 @@ export default async function RunsPage({ searchParams }: { searchParams: Promise
     );
   }
 
+  const pageState = parseConnectorSummaryPageState(params);
   let runsResult: ListResponse<RunSummary>;
-  let connectorsResult: ListResponse<RefConnectorSummary>;
+  let connectorsPage: Awaited<ReturnType<typeof fetchSyncsConnectorsPage>>;
   try {
-    [runsResult, connectorsResult] = await Promise.all([
+    [runsResult, connectorsPage] = await Promise.all([
       listRuns({ limit: SYNCS_OVERVIEW_RUN_LIMIT }),
-      listConnectorSummaries(),
+      fetchSyncsConnectorsPage(pageState),
     ]);
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
@@ -85,8 +93,16 @@ export default async function RunsPage({ searchParams }: { searchParams: Promise
     throw err;
   }
 
+  if (connectorsPage.kind === "error") {
+    return (
+      <RecordroomShellWithPalette>
+        <ConnectorSummaryPageError basePath={SYNCS_PATH} currentParams={params} message={connectorsPage.message} />
+      </RecordroomShellWithPalette>
+    );
+  }
+
   const model = buildSyncsViewModel({
-    connectors: connectorsResult.data,
+    connectors: connectorsPage.items,
     runs: runsResult.data,
   });
 
@@ -96,6 +112,13 @@ export default async function RunsPage({ searchParams }: { searchParams: Promise
     <RecordroomShellWithPalette>
       <LivePoller enabled={liveRunCount > 0} />
       <SyncsView model={model} />
+      <ConnectorSummaryPager
+        basePath={SYNCS_PATH}
+        currentParams={params}
+        hasMore={connectorsPage.hasMore}
+        isPaged={isPagedRequest(pageState)}
+        nextCursor={connectorsPage.nextCursor}
+      />
     </RecordroomShellWithPalette>
   );
 }

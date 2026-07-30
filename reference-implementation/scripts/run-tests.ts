@@ -23,6 +23,7 @@ import {
   dedicatedPostgresTestUrl,
   isDedicatedPostgresTestDatabaseName,
 } from "../test/helpers/dedicated-postgres-test-url.ts";
+import { deriveDedicatedPostgresDbNameForFile } from "./dedicated-postgres-db-name.ts";
 import type { ProcessEnvLike } from "./test-env.ts";
 import { buildScrubbedTestEnv } from "./test-env.ts";
 import { storageProfileEnvironment } from "./test-profile-env.ts";
@@ -128,10 +129,6 @@ if (configuredPostgresTestUrl && !dedicatedBasePostgresTestUrl) {
 let fileCounter = 0;
 const runnerId = randomBytes(4).toString("hex");
 
-const WINDOWS_PATH_SEPARATOR_PATTERN = /\\/g;
-const FILE_EXTENSION_SUFFIX_PATTERN = /\.[^.]+$/;
-const NON_DB_IDENTIFIER_CHAR_PATTERN = /[^a-z0-9_]/gi;
-
 /**
  * Derive the admin connection URL from a per-test URL by replacing the
  * database path segment with 'postgres' (always present on any standard PG
@@ -147,16 +144,12 @@ function adminUrlFromBase(baseUrl: string): string {
 /**
  * Derive a short, safe DB name from the test file path, a per-run random ID,
  * and a monotonic counter so concurrent runners and workers never collide.
+ * The pure derivation itself lives in `dedicated-postgres-db-name.ts` so it
+ * can be unit-tested without importing this top-level-await CLI script.
  */
 function deriveDbName(filePath: string): string {
-  // Strip directory and extension; keep only alphanumeric/underscore chars.
-  const base = (filePath.replace(WINDOWS_PATH_SEPARATOR_PATTERN, "/").split("/").pop() ?? filePath)
-    .replace(FILE_EXTENSION_SUFFIX_PATTERN, "")
-    .replace(NON_DB_IDENTIFIER_CHAR_PATTERN, "_")
-    .toLowerCase()
-    .slice(0, 38);
   fileCounter += 1;
-  const dbName = `pdpp_test_${base}_${runnerId}_${fileCounter.toString(36)}`;
+  const dbName = deriveDedicatedPostgresDbNameForFile(filePath, runnerId, fileCounter);
   if (!isDedicatedPostgresTestDatabaseName(dbName)) {
     throw new Error(`runner derived a database name outside the dedicated test contract: ${dbName}`);
   }
@@ -232,22 +225,27 @@ async function allocateTestDb(filePath: string, baseUrl: string): Promise<TestDb
   let releasePromise: Promise<void> | undefined;
   const allocation: TestDbAllocation = {
     release: () => {
-      if (releasePromise) return releasePromise;
-      releasePromise = (async () => {
-      const drop = new pg.Client({ connectionString: adminUrl });
-      try {
-        await drop.connect();
-        await drop.query(`DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`);
-        await drop.end();
-        activeAllocations.delete(allocation);
-      } catch (err) {
-        try {
-          await drop.end();
-        } catch {
-          // Best-effort teardown after a failed connect/query.
-        }
-        throw new Error(`[run-tests] could not drop test DB ${dbName}: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
+      if (releasePromise) {
+        return releasePromise;
       }
+      releasePromise = (async () => {
+        const drop = new pg.Client({ connectionString: adminUrl });
+        try {
+          await drop.connect();
+          await drop.query(`DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`);
+          await drop.end();
+          activeAllocations.delete(allocation);
+        } catch (err) {
+          try {
+            await drop.end();
+          } catch {
+            // Best-effort teardown after a failed connect/query.
+          }
+          throw new Error(
+            `[run-tests] could not drop test DB ${dbName}: ${err instanceof Error ? err.message : String(err)}`,
+            { cause: err }
+          );
+        }
       })().catch((error) => {
         releasePromise = undefined;
         throw error;

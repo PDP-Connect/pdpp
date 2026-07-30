@@ -27,6 +27,7 @@ export interface ConnectorIdentityPageBoundary {
 }
 
 export interface ConnectorSummaryPageRequest {
+  readonly connectorId: string | null;
   readonly cursor: ConnectorIdentityPageBoundary | null;
   readonly limit: number;
 }
@@ -52,8 +53,19 @@ export class ConnectorSummaryPageCursorError extends Error {
   }
 }
 
-function scopeDigest(ownerSubjectId: string): Buffer {
-  return createHash("sha256").update(`pdpp-ref-connectors-page-v1:${ownerSubjectId}`).digest();
+// The `connectorId` filter is bound into the SAME scope digest as the owner
+// subject: a cursor issued while filtering by one connector must not resolve
+// under a request that omits the filter or names a different connector — an
+// unrelated identity page would render as this filter's "next page" and
+// silently mix scopes (Perf-2026-07-29 client-gate requirement: "must not
+// combine ambiguously"). ` ` is a safe separator since neither an owner
+// subject id nor a connector id can contain it (see `isNonEmptyString` at
+// every read site that treats non-empty ASCII-safe strings as the trusted
+// boundary here).
+function scopeDigest(ownerSubjectId: string, connectorId: string | null): Buffer {
+  return createHash("sha256")
+    .update(`pdpp-ref-connectors-page-v1:${ownerSubjectId} ${connectorId ?? ""}`)
+    .digest();
 }
 
 function cursorEncryptionKey(keyMaterial?: string): Buffer {
@@ -89,13 +101,18 @@ export function parseConnectorSummaryPageRequest(
 ): ConnectorSummaryPageRequest | null {
   const rawLimit = query.limit;
   const rawCursor = query.cursor;
+  const rawConnectorId = query.connector_id;
   const hasLimit = rawLimit !== undefined;
   const hasCursor = rawCursor !== undefined;
-  if (!(hasLimit || hasCursor)) {
+  const hasConnectorId = rawConnectorId !== undefined;
+  if (!(hasLimit || hasCursor || hasConnectorId)) {
     return null;
   }
   if (!hasLimit) {
-    throw new ConnectorSummaryPageRequestError("limit", "limit is required when cursor is supplied");
+    throw new ConnectorSummaryPageRequestError(
+      "limit",
+      hasCursor ? "limit is required when cursor is supplied" : "limit is required when connector_id is supplied"
+    );
   }
   if (typeof rawLimit !== "string" || !POSITIVE_INTEGER.test(rawLimit)) {
     throw new ConnectorSummaryPageRequestError("limit", "limit must be a positive integer");
@@ -107,26 +124,40 @@ export function parseConnectorSummaryPageRequest(
       `limit must be no greater than ${CONNECTOR_SUMMARY_PAGE_LIMIT_MAX}`
     );
   }
+  let connectorId: string | null = null;
+  if (hasConnectorId) {
+    if (!isNonEmptyString(rawConnectorId)) {
+      throw new ConnectorSummaryPageRequestError("limit", "connector_id must be a non-empty string");
+    }
+    connectorId = rawConnectorId;
+  }
   if (!hasCursor) {
-    return { cursor: null, limit };
+    return { connectorId, cursor: null, limit };
   }
   if (!isNonEmptyString(rawCursor)) {
     throw new ConnectorSummaryPageCursorError();
   }
-  return { cursor: decodeConnectorSummaryPageCursor(rawCursor, ownerSubjectId), limit };
+  return { connectorId, cursor: decodeConnectorSummaryPageCursor(rawCursor, ownerSubjectId, connectorId), limit };
 }
 
-/** Encode an opaque, versioned continuation for one owner and identity tuple. */
+/**
+ * Encode an opaque, versioned continuation for one owner, identity tuple, and
+ * (when the page was filtered) the exact `connector_id` filter that produced
+ * it. `connectorIdFilter` defaults to `null` (unfiltered, fleet-wide page) —
+ * every existing caller that omits it preserves the exact prior cursor scope.
+ */
 export function encodeConnectorSummaryPageCursor(
   boundary: ConnectorIdentityPageBoundary,
   ownerSubjectId: string,
-  keyMaterial?: string
+  keyMaterial?: string,
+  connectorIdFilter: string | null = null
 ): string {
   const payload = Buffer.from(
     JSON.stringify({
       c: boundary.connectorId,
+      f: connectorIdFilter,
       i: boundary.connectorInstanceId,
-      s: scopeDigest(ownerSubjectId).toString("base64url"),
+      s: scopeDigest(ownerSubjectId, connectorIdFilter).toString("base64url"),
       t: boundary.createdAt,
       v: CONNECTOR_SUMMARY_CURSOR_VERSION,
     })
@@ -137,10 +168,18 @@ export function encodeConnectorSummaryPageCursor(
   return `${CONNECTOR_SUMMARY_CURSOR_PREFIX}${Buffer.concat([iv, cipher.getAuthTag(), ciphertext]).toString("base64url")}`;
 }
 
-/** Decode and scope-check a connector-summary continuation without logging it. */
+/**
+ * Decode and scope-check a connector-summary continuation without logging it.
+ * `connectorIdFilter` is the CURRENT request's `connector_id` filter (`null`
+ * when absent) — it must exactly match the filter the cursor was issued
+ * under (bound into the same scope digest as the owner subject), so a cursor
+ * from a connector-filtered page cannot be replayed against an unfiltered
+ * request or a different connector's page, and vice versa.
+ */
 export function decodeConnectorSummaryPageCursor(
   cursor: string,
   ownerSubjectId: string,
+  connectorIdFilter: string | null = null,
   keyMaterial?: string
 ): ConnectorIdentityPageBoundary {
   if (!cursor.startsWith(CONNECTOR_SUMMARY_CURSOR_PREFIX)) {
@@ -170,8 +209,13 @@ export function decodeConnectorSummaryPageCursor(
     !isNonEmptyString(payload.c) ||
     !isNonEmptyString(payload.i) ||
     !isNonEmptyString(payload.s) ||
-    !isNonEmptyString(payload.t)
+    !isNonEmptyString(payload.t) ||
+    !(payload.f === null || payload.f === undefined || isNonEmptyString(payload.f))
   ) {
+    throw new ConnectorSummaryPageCursorError();
+  }
+  const cursorConnectorIdFilter = isNonEmptyString(payload.f) ? payload.f : null;
+  if (cursorConnectorIdFilter !== connectorIdFilter) {
     throw new ConnectorSummaryPageCursorError();
   }
   let suppliedScope: Buffer;
@@ -180,7 +224,7 @@ export function decodeConnectorSummaryPageCursor(
   } catch (cause) {
     throw new ConnectorSummaryPageCursorError(undefined, { cause });
   }
-  const expectedScope = scopeDigest(ownerSubjectId);
+  const expectedScope = scopeDigest(ownerSubjectId, connectorIdFilter);
   if (suppliedScope.length !== expectedScope.length || !timingSafeEqual(suppliedScope, expectedScope)) {
     throw new ConnectorSummaryPageCursorError();
   }

@@ -17,8 +17,9 @@
  * current `now` and controller/runtime liveness so a cached verdict can never
  * say a source is healthy after its evidence has gone stale or blocked.
  *
- * The `/_ref/connectors` routes run `reconcileDirtyConnectorSummaryEvidence`
- * before every list/detail read, so the reconcile pass IS on the hot path;
+ * The maintenance sweep runs `reconcileDirtyConnectorSummaryEvidence` before
+ * its bounded observation passes; ordinary `/_ref/connectors` reads are
+ * read-only and do not reconcile inline.
  * the identity/count columns still do not back the summary payload (the
  * projection reads the retained_size_* tables directly). What the hot path
  * DOES consume from here is the per-stream latest-attempt evidence
@@ -177,7 +178,7 @@ function createConnectorSummaryStore() {
                   retained_bytes_state, retained_bytes_reason_code,
                   stream_latest_facts_json, stream_facts_event_seq, stream_facts_fold_version,
                   dirty, computed_at, source_event_seq, state, last_error,
-                  manifest_generation
+                  manifest_generation, schedule_checkpoint, run_lifecycle_event_seq
              FROM connector_summary_evidence
              ${where}
              ORDER BY connector_instance_id ASC`,
@@ -221,15 +222,19 @@ function createConnectorSummaryStore() {
       async markAllTerminalFactsFailed({
         sanitized,
         connectorInstanceIds,
+        terminalFactsState = "failed",
+        reasonCode = REASON_CODES.TERMINAL_FOLD_FAILED,
       }: {
         sanitized?: string | null;
         connectorInstanceIds?: readonly string[] | null;
+        terminalFactsState?: string;
+        reasonCode?: string;
       }) {
         if (connectorInstanceIds && connectorInstanceIds.length === 0) {
           return;
         }
-        const where = connectorInstanceIds ? "WHERE connector_instance_id = ANY($3::text[])" : "";
-        const params: unknown[] = [sanitized, REASON_CODES.TERMINAL_FOLD_FAILED];
+        const where = connectorInstanceIds ? "WHERE connector_instance_id = ANY($4::text[])" : "";
+        const params: unknown[] = [sanitized, terminalFactsState, reasonCode];
         if (connectorInstanceIds) {
           params.push(connectorInstanceIds);
         }
@@ -238,8 +243,8 @@ function createConnectorSummaryStore() {
               SET dirty = 1,
                   state = 'stale',
                   last_error = $1,
-                  terminal_facts_state = 'failed',
-                  terminal_facts_reason_code = $2
+                  terminal_facts_state = $2,
+                  terminal_facts_reason_code = $3
               ${where}`,
           params
         );
@@ -253,6 +258,19 @@ function createConnectorSummaryStore() {
         sanitized?: string | null;
         sourceEventSeq?: unknown;
       }) {
+        // Every write-hook call site (record ingest/delete, owner mutations,
+        // the connector-wide bulk delete) omits `sourceEventSeq` entirely —
+        // only a handful of callers pass it explicitly. `sourceEventSeq ===
+        // null ? null : Number(sourceEventSeq)` mishandled the common
+        // omitted (`undefined`) case: `Number(undefined)` is `NaN`, which
+        // Postgres's bigint column rejects outright ("invalid input syntax
+        // for type bigint: 'NaN'"), throwing before the UPDATE could run at
+        // all — silently swallowed by this function's caller-facing
+        // best-effort catch, so every omitted-sourceEventSeq dirty-mark call
+        // was a complete no-op against Postgres. Nullish (both `null` and
+        // `undefined`) must bind SQL `NULL`, not `NaN`.
+        const boundSourceEventSeq =
+          sourceEventSeq === null || sourceEventSeq === undefined ? null : Number(sourceEventSeq);
         await postgresQuery(
           `UPDATE connector_summary_evidence
               SET dirty = 1,
@@ -260,7 +278,7 @@ function createConnectorSummaryStore() {
                   last_error = $2,
                   source_event_seq = COALESCE($3, source_event_seq)
             WHERE connector_instance_id = $1`,
-          [connectorInstanceId, sanitized, sourceEventSeq === null ? null : Number(sourceEventSeq)]
+          [connectorInstanceId, sanitized, boundSourceEventSeq]
         );
       },
     };
@@ -284,7 +302,7 @@ function createConnectorSummaryStore() {
                     retained_bytes_state, retained_bytes_reason_code,
                     stream_latest_facts_json, stream_facts_event_seq, stream_facts_fold_version,
                     dirty, computed_at, source_event_seq, state, last_error,
-                    manifest_generation`;
+                    manifest_generation, schedule_checkpoint, run_lifecycle_event_seq`;
       if (connectorInstanceId) {
         return db
           .prepare(
@@ -348,9 +366,13 @@ function createConnectorSummaryStore() {
     markAllTerminalFactsFailed({
       sanitized,
       connectorInstanceIds,
+      terminalFactsState = "failed",
+      reasonCode = REASON_CODES.TERMINAL_FOLD_FAILED,
     }: {
       sanitized?: string | null;
       connectorInstanceIds?: readonly string[] | null;
+      terminalFactsState?: string;
+      reasonCode?: string;
     }) {
       if (connectorInstanceIds && connectorInstanceIds.length === 0) {
         return;
@@ -364,11 +386,11 @@ function createConnectorSummaryStore() {
               SET dirty = 1,
                   state = 'stale',
                   last_error = ?,
-                  terminal_facts_state = 'failed',
+                  terminal_facts_state = ?,
                   terminal_facts_reason_code = ?
               ${where}`
         )
-        .run(sanitized, REASON_CODES.TERMINAL_FOLD_FAILED, ...(connectorInstanceIds ?? []));
+        .run(sanitized, terminalFactsState, reasonCode, ...(connectorInstanceIds ?? []));
     },
     markDirty({
       connectorInstanceId,
@@ -508,6 +530,8 @@ export function shapeEvidenceRow(row: Row) {
     retained_bytes: retainedBytesState === "current" ? parseEvidenceJson(row.retained_bytes_json, null) : null,
     retained_bytes_evidence: shapeComponentEnvelope(row, retainedBytesState, row.retained_bytes_reason_code),
     revoked_at: row.revoked_at || null,
+    run_lifecycle_event_seq: row.run_lifecycle_event_seq === null ? null : Number(row.run_lifecycle_event_seq),
+    schedule_checkpoint: row.schedule_checkpoint === undefined ? "unobserved" : String(row.schedule_checkpoint),
     source_event_seq: row.source_event_seq === null ? null : Number(row.source_event_seq),
     source_kind: row.source_kind,
     state: row.state || "unknown",
@@ -698,6 +722,56 @@ export async function markTerminalFactsFailedForAllRows(
 }
 
 /**
+ * Durably records a bounded CAS-replay contention outcome (terminal-gate
+ * revision, 2026-07-29): before this fix, `foldStreamFactsBestEffort`
+ * deliberately left the row's `terminal_facts_state`/`reason_code`
+ * untouched on CAS rejection — the comment's rationale ("the final
+ * competing writer may own a future fold version") is about the FACTS
+ * PAYLOAD (`stream_latest_facts_json`/`stream_facts_event_seq`/
+ * `stream_facts_fold_version`), which this function never touches, exactly
+ * like `markTerminalFactsFailedForAllRows` above. The in-memory-only overlay
+ * this branch computed was designed to be merged by "the central route
+ * loader" in the SAME barrier pass that observed the contention — a
+ * consumer that no longer exists now that GET never calls the barrier
+ * inline. Without a durable mark, a subsequent independent GET would read
+ * the stale `current` row as trustworthy until the NEXT maintenance-sweep
+ * fold happens to converge it, silently widening the honest-staleness
+ * window this pass itself already measured. Marking the SAME metadata
+ * columns `markAllTerminalFactsFailed` already safely marks for a harder
+ * failure — scoped to exactly the ids this fold round found in contention —
+ * closes that gap without touching the facts payload the original comment
+ * protects.
+ */
+export async function markTerminalFactsContentionForRows(
+  connectorInstanceIds: readonly string[]
+): Promise<ReadonlyMap<string, Row>> {
+  if (connectorInstanceIds.length === 0) {
+    return new Map();
+  }
+  const existingById = await readExistingRowsForFailureOverlay(connectorInstanceIds);
+  try {
+    const store = createConnectorSummaryStore();
+    await store.markAllTerminalFactsFailed({
+      connectorInstanceIds,
+      reasonCode: REASON_CODES.TERMINAL_FOLD_CONTENTION,
+      sanitized: null,
+      terminalFactsState: "stale",
+    });
+    return new Map();
+  } catch {
+    // The durable marker write itself failed — fall back to the same
+    // in-memory overlay shape the caller already builds, so a same-pass
+    // reader (if one exists) still sees the contention rather than nothing.
+    return buildComponentFailedRows(
+      connectorInstanceIds,
+      existingById,
+      { terminal_facts_reason_code: REASON_CODES.TERMINAL_FOLD_CONTENTION, terminal_facts_state: "stale" },
+      null
+    );
+  }
+}
+
+/**
  * Failure-specific marker for a genuine discovery failure
  * (`observeConnectorSummaryEvidence`'s discovery-throw catch): discovery
  * itself failed — broader than any one row's repair failure, meaning
@@ -773,8 +847,8 @@ export async function markAllConnectorSummaryEvidenceDiscoveryFailed(
 // (legacy connector-wide) is refused, never attributed.
 //
 // Rows with a NULL checkpoint (pre-change instances) self-heal: the next
-// fold pass — reconcile runs before every `/_ref/connectors` read, and the
-// server schedules one pass at startup — folds their full attributable
+// fold pass — the maintenance sweep (including startup acceleration) folds
+// their full attributable
 // terminal history once. On fold failure every row is marked stale with the
 // sanitized error so the state is visible, and the projection's fail-closed
 // default (missing facts read unknown) keeps verdicts truthful.
@@ -801,8 +875,8 @@ const STREAM_FACTS_FOLD_BATCH = 2000;
  * the beginning (full terminal history replay) and starts from an EMPTY fact
  * map rather than trusting its previously-folded (possibly logic-stale)
  * facts as a baseline. This makes every existing row self-heal on its next
- * ordinary reconcile pass (`/_ref/connectors` routes reconcile before every
- * read, and the server runs one pass at startup) — no per-connector/per-
+ * maintenance reconcile pass (including startup acceleration) — no
+ * per-connector/per-
  * provider special case, no manual data mutation. Bump this whenever a
  * change to `mergeEventStreamFacts`'s merge semantics could change the
  * output for existing already-folded event history.
@@ -1922,19 +1996,21 @@ async function foldStreamFactsBestEffort(
   try {
     const result = await foldConnectorSummaryStreamFacts(connectorInstanceIds, options);
     if (result.casRejectedInstanceIds.length > 0) {
-      // Do not durably mark this row: the final competing writer may own a
-      // future fold version, which this binary must leave byte-for-byte
-      // untouched. The central route loader merges this typed overlay over
-      // the immediate read, so a still-v2 current row cannot leak through
-      // while the next observation retries from its new durable baseline.
-      const existingById = await readExistingRowsForFailureOverlay(result.casRejectedInstanceIds);
+      // Terminal-gate revision (2026-07-29): the facts PAYLOAD
+      // (`stream_latest_facts_json`/`stream_facts_event_seq`/
+      // `stream_facts_fold_version`) is still left byte-for-byte untouched —
+      // the final competing writer may yet own a future fold version. But
+      // the metadata (`terminal_facts_state`/`reason_code`) is now ALSO
+      // durably marked via `markTerminalFactsContentionForRows`: the
+      // in-memory-only overlay this branch used to return exclusively was
+      // designed for a "central route loader" that merged it in the SAME
+      // barrier pass — a consumer that no longer exists now that GET never
+      // calls this barrier inline. Without a durable mark, an independent
+      // GET after this pass would read the stale `current` row as
+      // trustworthy until the next fold happens to converge it.
+      const failedRows = await markTerminalFactsContentionForRows(result.casRejectedInstanceIds);
       return {
-        failedRows: buildComponentFailedRows(
-          result.casRejectedInstanceIds,
-          existingById,
-          { terminal_facts_reason_code: REASON_CODES.TERMINAL_FOLD_CONTENTION, terminal_facts_state: "stale" },
-          null
-        ),
+        failedRows,
         incomplete: false,
         ok: false,
         resumeAfterSeq: null,
@@ -2122,8 +2198,8 @@ export async function rebuildConnectorSummaryEvidence() {
 // ---------------------------------------------------------------------------
 
 /**
- * The barrier every `/_ref/connectors` consumer (list, scoped route, owner
- * diagnostics, scheduler) calls before synthesizing a summary — over the
+ * The maintenance barrier that repairs summary evidence before its bounded
+ * sweep passes — over the
  * COMPLETE canonical `connector_instances` set, not filtered to `dirty = 1`
  * rows. Filtering to only-dirty was the exact defect design.md fixes: a
  * MISSING row (no evidence row at all) has no `dirty` flag to filter on, so
@@ -2143,10 +2219,8 @@ export async function rebuildConnectorSummaryEvidence() {
  * that already resolved the one `connectorInstanceId` it needs) must not
  * pay for a complete census of every other connection the owner has.
  * Defaults to `null` (complete census), the exact existing behavior, so
- * every caller that does not pass a scope is unaffected. List/dashboard
- * reads that genuinely need the complete set (`computeConnectorSummaries`,
- * the bare `/_ref/connectors` list route's pre-fetch) correctly keep
- * calling this with no scope.
+ * maintenance callers that do not pass a scope retain fleet-wide semantics;
+ * interactive reads do not call this function.
  *
  * `options.maxCandidates`/`options.maxDurationMs`, when provided, bound the
  * repair loop AND the fold THIS call runs — by candidate count and/or total
@@ -2156,8 +2230,8 @@ export async function rebuildConnectorSummaryEvidence() {
  * slow; Sol fourth-verdict P1.2 closed the further gap where the fold
  * itself, within one connection, was unconditionally unbounded regardless
  * of this option) — used ONLY by the startup one-shot acceleration pass,
- * never by a read-time consumer, which always needs the complete unbounded
- * repair+fold. `options.maxEvents`, when provided, additionally bounds the
+ * never by an interactive read. `options.maxEvents`, when provided,
+ * additionally bounds the
  * fold's own event-count budget. `skipped` in the return value counts
  * candidates a bounded pass declined to repair; they are never lost, only
  * deferred to the next observation. `incomplete`/`resumeAfterSeq` surface

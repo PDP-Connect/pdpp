@@ -1098,7 +1098,7 @@ test("reference revision header is distinct reference metadata across AS, RS, an
     expectReferenceRevisionHeader(rsMetadata, referenceRevision);
     assert.equal(rsMetadata.headers.get("PDPP-Version"), "2026-04-06");
 
-    const refSurface = await fetch(`${asUrl}/_ref/connectors`);
+    const refSurface = await fetch(`${asUrl}/_ref/connectors?limit=1`);
     assert.equal(refSurface.status, 200);
     expectReferenceRevisionHeader(refSurface, referenceRevision);
     assert.equal(refSurface.headers.get("PDPP-Version"), null);

@@ -17,18 +17,21 @@
  * What this pins
  * --------------
  * 1. A scoped request (`?connection=<id>`) calls `getConnectorSummaryForRoute`
- *    and NOT the all-connector `listConnectorSummaries` — the records-subpage
- *    hot path no longer hydrates every connector.
+ *    and never reaches the bounded page capability — the records-subpage hot
+ *    path no longer hydrates every connector.
  * 2. The scoped envelope is the same `{object: 'list', data}` shape with a
  *    single matching item.
  * 3. A scoped request that resolves nothing returns an empty list, not a
  *    silently-unscoped full list.
- * 4. An unscoped request (no selector) still calls `listConnectorSummaries`
- *    and returns every connection, unchanged.
+ * 4. An unscoped request with no `limit` fails explicitly (terminal-gate
+ *    revision, 2026-07-29): a "complete fleet" response is inherently
+ *    fleet-N, so the route no longer serves one. `limit` is required; a bare
+ *    GET returns 400 `invalid_request` instead of silently scanning the
+ *    fleet.
  * 5. The route itself never calls `reconcileDirtyConnectorSummaryEvidence`
  *    directly (Sol P1.2): that was a genuinely redundant, always-UNSCOPED
- *    second barrier pass ahead of a caller (`listConnectorSummaries`/
- *    `getConnectorSummaryForRoute`) that already runs its own barrier
+ *    second barrier pass ahead of a caller (`getConnectorSummaryForRoute`/
+ *    the bounded page capability) that already runs its own barrier
  *    internally, scoped to the resolved connection when one is known —
  *    defeating the whole point of the connection selector's scoping.
  */
@@ -86,11 +89,9 @@ function summaryItem(connectorId: string, connectionId: string = connectorId): R
 // The owner-session middleware is a no-op here; auth posture is covered
 // elsewhere. The ctx spies record which projection dependency the route used.
 function buildHarness({
-  allConnections,
   page = null,
   summaryForRoute,
 }: {
-  allConnections: readonly RefConnectorsListItem[];
   page?:
     | {
         readonly data: readonly RefConnectorsListItem[];
@@ -107,8 +108,8 @@ function buildHarness({
 }) {
   const calls = {
     getConnectorSummaryForRoute: [] as string[],
-    listConnectorSummaries: 0,
     listConnectorSummaryPage: 0,
+    pdppError: [] as { status: number; code: string; param: string | null | undefined }[],
     reconcileDirtyConnectorSummaryEvidence: 0,
   };
   // mountRefConnectorsList only reads the six members through the end of this
@@ -151,10 +152,6 @@ function buildHarness({
     handleError(_res: unknown, err: unknown) {
       throw err;
     },
-    listConnectorSummaries() {
-      calls.listConnectorSummaries += 1;
-      return allConnections;
-    },
     ...(page
       ? {
           listConnectorSummaryPage(_ownerSubjectId, request) {
@@ -164,7 +161,9 @@ function buildHarness({
         }
       : {}),
     listSchedules: () => unusedByThisRoute("listSchedules"),
-    pdppError: () => unusedByThisRoute("pdppError"),
+    pdppError(_res, status, code, _message, param) {
+      calls.pdppError.push({ code, param, status });
+    },
     requireOwnerSession: (_req: unknown, _res: unknown, next: unknown) =>
       typeof next === "function" ? next() : undefined,
     resolveOwnerConnectorNamespace: () => unusedByThisRoute("resolveOwnerConnectorNamespace"),
@@ -208,10 +207,10 @@ function buildHarness({
   return {
     calls,
     headers,
-    async invoke(query: Readonly<Record<string, unknown>> = {}): Promise<RefConnectorsListEnvelope> {
-      // The route always responds via res.json(envelope) with the
-      // executeRefConnectorsList envelope (see mountRefConnectorsList); the
-      // recorder captures exactly that value.
+    // A refused bare GET responds only via `ctx.pdppError` (see calls.pdppError)
+    // and never calls `res.json`, so `invoke` returns `null` rather than
+    // asserting an envelope always exists.
+    async invoke(query: Readonly<Record<string, unknown>> = {}): Promise<RefConnectorsListEnvelope | null> {
       let recorded: RefConnectorsListEnvelope | undefined;
       const res: RouteResponse = {
         end: () => unusedByThisRoute("res.end"),
@@ -220,9 +219,9 @@ function buildHarness({
           recorded = body as RefConnectorsListEnvelope;
           return body;
         },
-        // Compatibility-mode list responses now emit a migration hint. The
-        // focused assertions below remain about projection selection, so the
-        // recorder accepts headers without widening their scope.
+        // No route path sets a response header today; kept as a permissive
+        // recorder so a future header emission doesn't require touching this
+        // harness.
         setHeader: (name: string, value: string) => {
           headers.set(name, value);
         },
@@ -233,31 +232,30 @@ function buildHarness({
       }
       const req: RouteRequest = { params: {}, query };
       await handler(req, res);
-      assert.ok(recorded, "the route handler must call res.json with the list envelope");
-      return recorded;
+      return recorded ?? null;
     },
   };
 }
 
-test("scoped request projects only the resolved connection and skips the all-connector list", async () => {
+test("scoped request projects only the resolved connection and skips the bounded page capability", async () => {
   const all = [summaryItem("gmail", "conn-work"), summaryItem("github", "conn-gh")];
   const harness = buildHarness({
-    allConnections: all,
     summaryForRoute: (routeId) => all.find((s) => s.connection_id === routeId) ?? null,
   });
 
   const envelope = await harness.invoke({ connection: "conn-work" });
 
   // The whole point: the records-subpage hot path resolved ONE connection and
-  // never ran the all-connector fan-out.
-  assert.equal(harness.calls.listConnectorSummaries, 0, "scoped request must NOT call the all-connector summarizer");
+  // never reached the bounded page capability.
+  assert.equal(harness.calls.listConnectorSummaryPage, 0, "scoped request must NOT reach the page capability");
   assert.equal(
     harness.calls.reconcileDirtyConnectorSummaryEvidence,
     0,
-    "the route no longer owns a redundant barrier call (Sol P1.2) — listConnectorSummaries/getConnectorSummaryForRoute each run their own barrier internally"
+    "the route no longer owns a redundant barrier call (Sol P1.2) — getConnectorSummaryForRoute/listConnectorSummaryPage each run their own barrier internally"
   );
   assert.deepEqual(harness.calls.getConnectorSummaryForRoute, ["conn-work"]);
 
+  assert.ok(envelope);
   assert.equal(envelope.object, "list");
   assert.equal(envelope.data.length, 1, "scoped request returns a 0-or-1 list");
   const [onlyItem] = envelope.data;
@@ -266,83 +264,68 @@ test("scoped request projects only the resolved connection and skips the all-con
 });
 
 test("scoped request that resolves nothing returns an empty list, not the full list", async () => {
-  const all = [summaryItem("gmail", "conn-work")];
   const harness = buildHarness({
-    allConnections: all,
     summaryForRoute: () => null,
   });
 
   const envelope = await harness.invoke({ connection: "does-not-exist" });
 
-  assert.equal(harness.calls.listConnectorSummaries, 0, "an empty resolution must not fall back to the full list");
+  assert.equal(
+    harness.calls.listConnectorSummaryPage,
+    0,
+    "an empty resolution must not fall back to the bounded page capability"
+  );
   assert.equal(
     harness.calls.reconcileDirtyConnectorSummaryEvidence,
     0,
-    "the route no longer owns a redundant barrier call (Sol P1.2) — listConnectorSummaries/getConnectorSummaryForRoute each run their own barrier internally"
+    "the route no longer owns a redundant barrier call (Sol P1.2) — getConnectorSummaryForRoute/listConnectorSummaryPage each run their own barrier internally"
   );
   // Not a full deepEqual against `{ object: 'list', data: [] }`: the real
   // MountRefConnectorsContext.getRuntimeStatus is a required (non-optional)
   // field, so a production envelope always carries `runtime` too. Assert on
   // the two fields this test is actually about instead.
+  assert.ok(envelope);
   assert.equal(envelope.object, "list");
   assert.deepEqual(envelope.data, []);
 });
 
-test("unscoped request lists every connection exactly as before", async () => {
-  const all = [summaryItem("gmail", "conn-work"), summaryItem("github", "conn-gh")];
+test("unscoped request with no limit fails explicitly instead of scanning the fleet", async () => {
   const harness = buildHarness({
-    allConnections: all,
-    summaryForRoute: () => assert.fail("unscoped request must not resolve a single connection"),
+    summaryForRoute: () => assert.fail("a refused bare GET must not resolve a single connection"),
   });
 
   const envelope = await harness.invoke({});
 
-  assert.equal(harness.calls.listConnectorSummaries, 1, "unscoped request uses the all-connector summarizer");
-  assert.equal(
-    harness.calls.reconcileDirtyConnectorSummaryEvidence,
-    0,
-    "the route no longer owns a redundant barrier call (Sol P1.2) — listConnectorSummaries/getConnectorSummaryForRoute each run their own barrier internally"
-  );
+  assert.equal(envelope, null, "a refused request never calls res.json");
+  assert.equal(harness.calls.listConnectorSummaryPage, 0, "a refused request must not reach the page capability");
   assert.equal(harness.calls.getConnectorSummaryForRoute.length, 0);
-  assert.equal(envelope.object, "list");
-  assert.deepEqual(
-    envelope.data.map((item) => item.connection_id),
-    ["conn-work", "conn-gh"]
-  );
-  assert.equal(harness.headers.get("PDPP-Warning"), "deprecated_unbounded_connector_summary_list: supply limit");
+  assert.deepEqual(harness.calls.pdppError, [{ code: "invalid_request", param: "limit", status: 400 }]);
 });
 
-test('empty/blank selector is treated as absent (full list), never as a connector named ""', async () => {
-  const all = [summaryItem("gmail", "conn-work")];
+test('empty/blank selector is treated as absent, and still requires limit like any unscoped request', async () => {
   const harness = buildHarness({
-    allConnections: all,
     summaryForRoute: () => assert.fail("blank selector must not resolve a single connection"),
   });
 
   const envelope = await harness.invoke({ connection: "" });
 
-  assert.equal(harness.calls.listConnectorSummaries, 1, "blank selector falls through to the full list");
-  assert.equal(
-    harness.calls.reconcileDirtyConnectorSummaryEvidence,
-    0,
-    "the route no longer owns a redundant barrier call (Sol P1.2) — listConnectorSummaries/getConnectorSummaryForRoute each run their own barrier internally"
-  );
+  assert.equal(envelope, null);
   assert.equal(harness.calls.getConnectorSummaryForRoute.length, 0);
-  assert.equal(envelope.data.length, 1);
+  assert.deepEqual(harness.calls.pdppError, [{ code: "invalid_request", param: "limit", status: 400 }]);
 });
 
 test("explicit unscoped limit uses the bounded page capability and emits continuation fields", async () => {
   const all = [summaryItem("gmail", "conn-work"), summaryItem("github", "conn-gh")];
   const harness = buildHarness({
-    allConnections: all,
     page: { data: all.slice(0, 1), has_more: true, next_cursor: "rcs1.next" },
     summaryForRoute: () => assert.fail("unscoped page must not resolve a single connection"),
   });
 
   const envelope = await harness.invoke({ limit: "1" });
 
-  assert.equal(harness.calls.listConnectorSummaries, 0);
+  assert.ok(envelope);
   assert.equal(harness.calls.listConnectorSummaryPage, 1);
+  assert.equal(harness.calls.pdppError.length, 0);
   assert.deepEqual(
     envelope.data.map((item) => item.connection_id),
     ["conn-work"]
@@ -354,7 +337,6 @@ test("explicit unscoped limit uses the bounded page capability and emits continu
 test("explicit cursor forwards the decoded immutable boundary to the next page", async () => {
   const all = [summaryItem("gmail", "conn-work"), summaryItem("github", "conn-gh")];
   const harness = buildHarness({
-    allConnections: all,
     page: (request) => {
       assert.deepEqual(request.cursor, {
         connectorId: "gmail",
@@ -373,6 +355,7 @@ test("explicit cursor forwards the decoded immutable boundary to the next page",
     "owner_test"
   );
   const envelope = await harness.invoke({ cursor, limit: "1" });
+  assert.ok(envelope);
   assert.deepEqual(
     envelope.data.map((item) => item.connection_id),
     ["conn-gh"]
@@ -383,7 +366,6 @@ test("explicit cursor forwards the decoded immutable boundary to the next page",
 test("scoped connection requests remain unpaginated", async () => {
   const all = [summaryItem("gmail", "conn-work")];
   const harness = buildHarness({
-    allConnections: all,
     summaryForRoute: (routeId) => all.find((item) => item.connection_id === routeId) ?? null,
   });
   await assert.rejects(

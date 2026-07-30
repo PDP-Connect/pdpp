@@ -3747,15 +3747,22 @@ export async function readCommittedLocalCoverageDiagnosticsByConnectionIds(conne
     }
   }
   for (const row of rows) {
-    const stateJson = typeof row.state_json === "string" ? JSON.parse(row.state_json) : row.state_json;
-    const state =
-      stateJson && typeof stateJson === "object"
-        ? ((stateJson as Record<string, unknown>)[LOCAL_COVERAGE_DIAGNOSTICS_STREAM] ?? null)
-        : null;
+    // `row.state_json` is already the `coverage_diagnostics` stream's own
+    // payload — the JOIN's `ON` clause already narrows `cs.stream =
+    // LOCAL_COVERAGE_DIAGNOSTICS_STREAM`, so a matched row's `state_json`
+    // column is that one stream's state, not a wrapper object keyed by
+    // stream name (unlike `getStateSync`'s multi-stream `state` map, which
+    // this function does not build). Re-indexing it a second time here
+    // always missed and returned `null`, which `parseCoverageDiagnosticsStateSnapshot`
+    // then read as "no coverage evidence" — the exact live symptom this
+    // function exists to fix, silently reintroduced because nothing called
+    // this batch path until Perf-2026-07-29 wired it into `computeConnectorSummaries`.
+    const state = row.state_json === null || row.state_json === undefined ? null : row.state_json;
+    const parsedState = typeof state === "string" ? JSON.parse(state) : state;
     result.set(row.connector_instance_id, {
-      ...parseCoverageDiagnosticsStateSnapshot(row.connector_id, state),
+      ...parseCoverageDiagnosticsStateSnapshot(row.connector_id, parsedState),
       manifestGeneration: row.current_generation === null ? null : Number(row.current_generation),
-      state,
+      state: parsedState,
       stateManifestGeneration: row.state_generation === null ? null : Number(row.state_generation),
       updatedAt: row.updated_at ?? null,
     });
@@ -5516,6 +5523,17 @@ async function postgresDeleteAllRecordsForConnector(connectorId: string) {
           stream,
         ]);
         await markRetainedSizeStreamDirty({ connectorInstanceId, stream });
+        // Parity with the SQLite arm above: a connector-wide record delete
+        // changes this connection's count/stream evidence and must mark the
+        // connector-summary evidence row dirty too, not just retained-size.
+        // Missing this left Postgres deployments relying solely on
+        // `classifyCandidate`'s checkpoint/count backstops to notice the
+        // change (bounded staleness until the next full reconcile pass, not
+        // permanent — but a real, avoidable honesty gap).
+        await markConnectorSummaryEvidenceDirty({
+          connectorInstanceId,
+          reason: "bulk connector record delete changed connection count/stream evidence",
+        });
         await lexicalIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
         await semanticIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
       });

@@ -20,6 +20,7 @@
 
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
+import { loadConnectorSummaryPage } from "./components/connector-summary-page.tsx";
 import { StandingOverview } from "./components/views/standing-overview.tsx";
 import {
   advisoryOwnerActionsFromConnectors,
@@ -36,10 +37,10 @@ import {
   type GrantSummary,
   getFleetHealthVerdict,
   getGrantPackageCount,
-  listConnectorSummaries,
   listOwnerIssuedClients,
   type OwnerIssuedClient,
   type PendingApproval,
+  type RefConnectorSummary,
   type TraceSummary,
 } from "./lib/ref-client.ts";
 import { sourceWorkFromConnectors } from "./lib/source-actionability.ts";
@@ -83,9 +84,29 @@ async function safe<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
   return (await safeRead("read_failed", fn, fallback)).value;
 }
 
+/**
+ * ONE bounded connector-summary page (never the exhaustive fold) — Overview
+ * has no pager UI (it is a single-screen summary, not a paged list), so a
+ * fleet larger than one page cannot be shown in full here. When that
+ * happens this returns `complete: false`, which the caller threads into
+ * `overviewLoadIssues` so the hero explicitly says "could not check
+ * everything" instead of silently claiming an all-clear it cannot back for
+ * the un-fetched remainder of the fleet.
+ */
+async function loadOverviewConnectors(): Promise<{ complete: boolean; connectors: RefConnectorSummary[] }> {
+  // Page 1, one shot, no Next/Restart navigation here.
+  const page = await loadConnectorSummaryPage({ cursor: undefined }, (opts) =>
+    liveDashboardDataSource.listConnectorSummaries(opts)
+  );
+  if (page.kind === "error") {
+    return { complete: false, connectors: [] };
+  }
+  return { complete: !page.hasMore, connectors: [...page.items] };
+}
+
 async function loadStandingInputs(): Promise<StandingInputs> {
   const ds = liveDashboardDataSource;
-  const [summary, grantsRes, tracesRes, pendingRes, clientsRes, connectorsRes, fleetHealthRes, packageCountRes] =
+  const [summary, grantsRes, tracesRes, pendingRes, clientsRes, connectorsResult, fleetHealthRes, packageCountRes] =
     await Promise.all([
       safeRead("dataset_summary", () => ds.getDatasetSummary(), null),
       safeRead("grants", () => ds.listGrants({ limit: 12 }), {
@@ -109,18 +130,27 @@ async function loadStandingInputs(): Promise<StandingInputs> {
         object: "list" as const,
       }),
       // The SINGLE source of attention truth — same `_ref/connectors` family `/runs` uses.
-      safeRead("source_status", () => listConnectorSummaries(), { data: [], has_more: false, object: "list" as const }),
+      // ONE bounded page; see loadOverviewConnectors for the `complete` signal.
+      safeRead("source_status", () => loadOverviewConnectors(), {
+        complete: true,
+        connectors: [] as RefConnectorSummary[],
+      }),
       safeRead("fleet_health", () => getFleetHealthVerdict(), null),
       // Authoritative grant-package count so the overview badge need not page the
       // full grants/packages list. Fails soft to a null count, which makes the
       // view-model fall back to the loaded-grants floor.
       safeRead<{ count: number | null }>("grant_package_count", () => getGrantPackageCount(), { count: null }),
     ]);
-  const overviewLoadIssues = [summary, grantsRes, tracesRes, pendingRes, clientsRes, connectorsRes, fleetHealthRes]
+  const overviewLoadIssues = [summary, grantsRes, tracesRes, pendingRes, clientsRes, connectorsResult, fleetHealthRes]
     .map((result) => result.issue)
     .filter((issue): issue is string => issue !== null);
+  // A >100 fleet means the connectors page above did not cover every
+  // connection — the hero must not claim all-clear from that partial view.
+  if (connectorsResult.issue === null && !connectorsResult.value.complete) {
+    overviewLoadIssues.push("source_status_incomplete_fleet");
+  }
 
-  const connectors = connectorsRes.value.data;
+  const { connectors } = connectorsResult.value;
   return {
     advisoryOwnerActions: advisoryOwnerActionsFromConnectors(connectors),
     attentionConnections: attentionConnectionsFromConnectors(connectors),

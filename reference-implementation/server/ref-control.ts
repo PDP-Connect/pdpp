@@ -18,7 +18,9 @@ import { allowUnboundedReadAcknowledged, getOne, iterateDynamicSqlAcknowledged, 
 import { isNullish } from "../lib/nullish.ts";
 import { listSpineCorrelations, type SpineSummary } from "../lib/spine.ts";
 import {
+  CONNECTOR_SUMMARY_PAGE_LIMIT_MAX,
   type ConnectorIdentityPageBoundary,
+  decodeConnectorSummaryPageCursor,
   encodeConnectorSummaryPageCursor,
 } from "../operations/ref-connectors-list/pagination.ts";
 import { type AttentionRecord, isHealthRelevant, type OwnerAction } from "../runtime/attention.ts";
@@ -115,11 +117,7 @@ import {
   projectConnectorOutboxAxisFromHeartbeats,
   projectLocalDeviceProgress,
 } from "./connector-outbox-axis.ts";
-import {
-  listConnectorSummaryEvidence,
-  reconcileDirtyConnectorSummaryEvidence,
-  shapeEvidenceRow,
-} from "./connector-summary-read-model.ts";
+import { listConnectorSummaryEvidence } from "./connector-summary-read-model.ts";
 import { getSqliteStoreCacheIdentity } from "./db.ts";
 import { deriveReferenceFreshness, type ReferenceFreshness } from "./freshness.ts";
 import { mapPendingPressureGaps } from "./pending-pressure-gap-map.ts";
@@ -167,6 +165,7 @@ import {
 import {
   createPostgresConnectorInstanceStore,
   createSqliteConnectorInstanceStore,
+  isOwnerVisibleConnectorInstance,
 } from "./stores/connector-instance-store.ts";
 import {
   getDefaultDeviceExporterStore,
@@ -585,6 +584,15 @@ interface ControllerLike {
    * schedule object from the resulting instance-id index.
    */
   listSchedules?: () => Promise<readonly unknown[]>;
+  /**
+   * Scoped batch equivalent of `getSchedule`: the same `scheduleToApi`
+   * enrichment (runtime projection, refresh policy, schedule history), but
+   * limited to a caller-supplied connection set instead of every owner's
+   * schedules. This is what `loadConnectorSummaryProjectionDeps` uses so a
+   * page's schedule batch is both scoped AND carries the enriched shape
+   * (`trigger_kind`/`automation_mode`/etc.) — a bare store row is not enough.
+   */
+  listSchedulesForConnections?: (connectorInstanceIds: readonly string[]) => Promise<ReadonlyMap<string, unknown>>;
   observeBrowserSurfaceRuntimeInventory?: () => Promise<BrowserSurfaceRuntimeInventorySnapshot>;
 }
 
@@ -1473,12 +1481,6 @@ interface AttentionStoreProjection {
 }
 
 interface ConnectorAttentionStoreLike {
-  expireDueAttentionForConnection?: (input: {
-    connectorId: string;
-    connectorInstanceId?: string;
-    limit?: number;
-    now?: string;
-  }) => Promise<readonly AttentionRecord[]> | readonly AttentionRecord[];
   listOpenAttentionForConnection: (input: {
     connectorId: string;
     connectorInstanceId?: string;
@@ -1495,6 +1497,22 @@ interface ConnectorAttentionStoreLike {
  * `{ records: [], unreliable: true }` when the underlying store throws,
  * so callers must mark the projection as `unreliable` to avoid a false
  * healthy when attention evidence cannot be read.
+ *
+ * Terminal-gate revision (2026-07-29): this used to also call
+ * `expireDueAttentionForConnection` inline — a durable write on an ordinary
+ * GET. Ordinary GET must never write. Due-attention expiry now runs
+ * system-wide from `runConnectorMaintenanceSweep` (see
+ * `server/connector-maintenance-sweep.ts`), not per-connection on read.
+ * `listOpenAttentionForConnection`'s own predicate already excludes any row
+ * whose `expires_at` has passed regardless of its stored `lifecycle`
+ * (`expires_at IS NULL OR expires_at > ?` — see the store implementations),
+ * so a row the sweep has not yet flipped to `expired` still reads as
+ * closed/absent here, not as a false-healthy open item. The only
+ * observable difference from removing the inline write is that the row's
+ * OWN `lifecycle` column lags briefly between "genuinely due" and "the
+ * sweep marked it `expired`" — an honest, bounded staleness window, not a
+ * correctness gap, matching the maintenance-vs-request-time-repair split
+ * `connector_summary_evidence` already uses.
  */
 export async function getConnectorAttentionProjection(
   connectorId: string,
@@ -1502,25 +1520,12 @@ export async function getConnectorAttentionProjection(
 ): Promise<AttentionStoreProjection> {
   try {
     const store = getDefaultConnectorAttentionStore() as ConnectorAttentionStoreLike;
-    const now = new Date().toISOString();
     const request: { connectorId: string; connectorInstanceId?: string; limit?: number } = {
       connectorId,
       limit: 50,
     };
     if (options.connectorInstanceId !== undefined) {
       request.connectorInstanceId = options.connectorInstanceId;
-    }
-    try {
-      await Promise.resolve(
-        store.expireDueAttentionForConnection?.({
-          ...request,
-          limit: 200,
-          now,
-        })
-      );
-    } catch {
-      // The read path already filters expired rows. A hygiene-write failure must
-      // not turn an otherwise reliable read into an owner-facing unknown state.
     }
     const records = await Promise.resolve(store.listOpenAttentionForConnection(request));
     return { records, unreliable: false };
@@ -1834,7 +1839,19 @@ export async function listOwnerVisibleConnectorInstances(
   // fix-pending-connection-discovery design. Callers project `instance.status`
   // through `owner_state.resolver` (`setup_in_progress`), so a draft never
   // reads as healthy/configured.
-  await retireExpiredBrowserEnrollmentShellsForDashboard(new Date().toISOString(), ownerSubjectId);
+  //
+  // Terminal-gate revision (2026-07-29): this used to also retire expired
+  // browser-enrollment shells inline (`retireExpiredBrowserEnrollmentShellsForDashboard`)
+  // — a durable `updateStatus` write on an ordinary read. Ordinary GET must
+  // never write. Shell retirement now runs system-wide from
+  // `runConnectorMaintenanceSweep` (`server/connector-maintenance-sweep.ts`),
+  // not per-request. An expired-but-not-yet-retired shell is still visible
+  // here with its pre-retirement status until the sweep next runs — an
+  // honest, bounded staleness window (the sweep's default interval), not a
+  // correctness gap; the owner-facing projection already renders a draft/
+  // active browser-enrollment shell as "setup in progress," never as a
+  // false-healthy connection, regardless of whether its TTL has technically
+  // elapsed.
   const store = getConnectorInstanceStore();
   const rows: ConnectorInstanceRow[] = [];
   const readNextPage = async (after: ConnectorIdentityPageBoundary | null): Promise<void> => {
@@ -1864,18 +1881,33 @@ export async function listOwnerVisibleConnectorInstances(
   return rows;
 }
 
-/** Read one bounded owner-visible identity page before summary evidence. */
+/**
+ * Read one bounded owner-visible identity page before summary evidence.
+ * Terminal-gate revision (2026-07-29): no longer retires expired
+ * browser-enrollment shells inline — see the doc comment on
+ * `listOwnerVisibleConnectorInstances` above for why.
+ */
 export async function listOwnerVisibleConnectorInstancePage(
   ownerSubjectId: string,
-  { after = null, limit }: { after?: ConnectorIdentityPageBoundary | null; limit: number }
+  {
+    after = null,
+    limit,
+    connectorId = null,
+  }: { after?: ConnectorIdentityPageBoundary | null; limit: number; connectorId?: string | null }
 ): Promise<{ readonly hasMore: boolean; readonly rows: readonly ConnectorInstanceRow[] }> {
-  await retireExpiredBrowserEnrollmentShellsForDashboard(new Date().toISOString(), ownerSubjectId);
-  return await getConnectorInstanceStore().listOwnerVisibleIdentityPage(ownerSubjectId, { after, limit });
+  return await getConnectorInstanceStore().listOwnerVisibleIdentityPage(ownerSubjectId, { after, connectorId, limit });
 }
 
-function retireExpiredBrowserEnrollmentShellsForDashboard(
+/**
+ * Retire every expired browser-enrollment shell. `ownerSubjectId: null`
+ * (the default) sweeps system-wide — the maintenance-sweep caller's shape
+ * (`server/connector-maintenance-sweep.ts`). No longer called from any GET
+ * path; see the doc comments on `listOwnerVisibleConnectorInstances` and
+ * `listOwnerVisibleConnectorInstancePage` above.
+ */
+export function retireExpiredBrowserEnrollmentShellsForMaintenance(
   now: string,
-  ownerSubjectId = REFERENCE_OWNER_SUBJECT_ID
+  ownerSubjectId: string | null = null
 ): Promise<readonly string[]> {
   const store = getConnectorInstanceStore() as {
     listDraftBrowserEnrollmentShells: (
@@ -4526,7 +4558,7 @@ function refreshConnectorSummariesCache(
   options: ListConnectorSummariesOptions
 ): Promise<ConnectorSummary[]> {
   const generation = connectorSummariesCacheGeneration;
-  const promise = computeConnectorSummaries(controller, options);
+  const promise = listAllConnectorSummariesByPaging(controller, options);
   connectorSummariesCache.set(key, { generation, promise });
   const clearIfCurrent = () => {
     const current = connectorSummariesCache.get(key);
@@ -4628,63 +4660,6 @@ interface PageProductEvidence {
       readonly unreliable: boolean;
     }
   > | null;
-}
-
-function indexSchedulesByConnectionId(schedules: readonly unknown[]): ReadonlyMap<string, unknown> {
-  const byInstanceId = new Map<string, unknown>();
-  for (const schedule of schedules) {
-    if (!schedule || typeof schedule !== "object" || Array.isArray(schedule)) {
-      continue;
-    }
-    const connectorInstanceId = (schedule as { connector_instance_id?: unknown }).connector_instance_id;
-    if (typeof connectorInstanceId === "string" && connectorInstanceId.length > 0) {
-      byInstanceId.set(connectorInstanceId, schedule);
-    }
-  }
-  return byInstanceId;
-}
-
-function isActiveVisibleConnectorInstance(
-  instance: ConnectorInstanceRow,
-  manifestsByConnectorId: ReadonlyMap<string, ConnectorManifest>,
-  requireCatalogVisibility = true
-): boolean {
-  if (instance.status !== "active") {
-    return false;
-  }
-  const manifest = manifestsByConnectorId.get(instance.connectorId);
-  if (!manifest) {
-    return false;
-  }
-  if (!requireCatalogVisibility) {
-    return true;
-  }
-  return isPublicReferenceConnector(
-    { connector_id: instance.connectorId, manifest: JSON.stringify(manifest) },
-    manifest
-  );
-}
-
-// `requireCatalogVisibility` (default true, the pre-existing behavior):
-// whether "visible" additionally means catalog-listed. `getConnectorDetail`
-// passes `false` — it is reached by an owner-addressed connector_id, not
-// catalog browsing, so an unlisted connector's real singleton connection
-// must still be eligible for the connector-wide run-summary fallback below
-// (see `projectConnectorSummaryForInstance`'s call), matching this route's
-// pre-e6610b946 connector-wide behavior instead of silently going quiet.
-function countActiveVisibleConnectionsByConnectorId(
-  rows: readonly ConnectorInstanceRow[],
-  manifestsByConnectorId: ReadonlyMap<string, ConnectorManifest>,
-  requireCatalogVisibility = true
-): Map<string, number> {
-  const counts = new Map<string, number>();
-  for (const instance of rows) {
-    if (!isActiveVisibleConnectorInstance(instance, manifestsByConnectorId, requireCatalogVisibility)) {
-      continue;
-    }
-    counts.set(instance.connectorId, (counts.get(instance.connectorId) ?? 0) + 1);
-  }
-  return counts;
 }
 
 function shouldHydrateRunSummariesForInstance(
@@ -5631,40 +5606,68 @@ async function loadConnectorSummaryProjectionDeps(
     readonly includeRetainedSizeSnapshot?: boolean;
     readonly includeRunSummaries?: ConnectorRunSummaryInclusion;
     /**
-     * Narrows the observation barrier's reconcile/discovery/repair phase to
-     * exactly this connection set. A caller that already resolved the one
-     * (or few) `connectorInstanceId`s it needs (e.g. `getConnectorSummaryForRoute`,
-     * `getConnectorDetail`) must not pay for a complete census of every
-     * other connection the owner has. Defaults to `null` (complete census) —
-     * the exact prior behavior — so `computeConnectorSummaries` (the LIST
-     * path, which genuinely needs every connection) is unaffected by
-     * omitting this option.
+     * Narrows every batch read below to exactly this connection set. A
+     * caller that already resolved the one (or few) `connectorInstanceId`s
+     * it needs (e.g. `getConnectorSummaryForRoute`, `getConnectorDetail`)
+     * must not pay for a complete census of every other connection the
+     * owner has. Defaults to `null` (complete census) — the exact prior
+     * behavior — so `computeConnectorSummaries` (the LIST path, which
+     * genuinely needs every connection) is unaffected by omitting this
+     * option.
      */
     readonly connectorInstanceIds?: readonly string[] | null;
   } = {}
 ): Promise<ConnectorSummaryProjectionDeps> {
   const schedulerStore = getDefaultSchedulerStore();
-  // Central observation barrier (design.md "Central consumer and cache
-  // boundary"): reconcile BEFORE reading, so every summary this render
-  // produces reflects canonical state, not a pre-repair snapshot. Runs for
-  // every caller of this shared loader — list, scoped route, owner
-  // diagnostics, and the scheduler all go through it — closing the prior
-  // bypass where only cookie routes reconciled. Best-effort: a reconcile
-  // failure degrades to reading whatever evidence exists (the fold/repair
-  // machinery already marks failed rows visibly non-fresh; it never blocks
-  // the read entirely). Scoped to `options.connectorInstanceIds` when the
-  // caller supplied one; `null` (the default) runs the complete census.
-  //
-  // `failedRows`: candidates whose repair AND durable failure-marker write
-  // BOTH failed this pass (Sol P1.1) — the subsequent durable read below
-  // cannot see them, since nothing was actually written. Carried in memory
-  // and merged over the durable read for exactly those instance ids, so
-  // this render still reflects the failure rather than a stale prior row.
-  const reconcileOutcome = await reconcileDirtyConnectorSummaryEvidence(options.connectorInstanceIds ?? null).catch(
-    () => null
-  );
-  const inMemoryFailedRows = reconcileOutcome?.failedRows ?? new Map<string, Row>();
-  const [connectorRows, retainedSizeSnapshot, activeRuns, summaryEvidenceRead] = await Promise.all([
+  // Terminal-gate revision (2026-07-29): this used to call
+  // `reconcileDirtyConnectorSummaryEvidence` here, before every read — a
+  // durable `connector_summary_evidence` write (repair candidates + orphan
+  // pruning) on an ordinary GET, bounded to 200ms for the list branches but
+  // fully UNBOUNDED for `getConnectorSummaryForRoute`/`getConnectorDetail`
+  // (neither ever passed a budget). Ordinary GET must never write, bounded
+  // or not. The repair/reconcile barrier now runs ONLY from
+  // `runConnectorMaintenanceSweep` (`server/connector-maintenance-sweep.ts`),
+  // on its own periodic timer plus the existing one-shot startup sweep —
+  // this function reads `connector_summary_evidence` exactly as it
+  // currently stands via `readSummaryEvidenceRowsOrFailure` below, honestly
+  // labeled `stale`/`dirty` by the maintenance sweep's own last pass rather
+  // than force-repaired inline. `evidenceReadFailed` and each evidence row's
+  // own `state`/`dirty` fields already carry that honesty through to the
+  // projection unchanged — nothing here fabricates freshness.
+  // Perf-2026-07-29: `getLatestRunSummaryForConnection`'s scheduler-history
+  // fallback previously called `schedulerStore.getLatestRunHistoryForConnection`
+  // once per connection per status (last-attempt + last-successful = 2 calls
+  // per connection). `listLatestRunHistoryByConnectionIds` already exists on
+  // both backends (added alongside the other page-scoped batch readers) but
+  // was never wired to this shared loader. Batching it here, keyed by
+  // `connectorInstanceId`, fixes the identical per-connection cost in every
+  // caller of this function — the unscoped list, the paginated list, and the
+  // two scoped single-connection routes alike (a batch of size 1 costs the
+  // same as the single-connection call it replaces).
+  // Terminal-gate revision (2026-07-29): `getScheduleFrom`'s live per-
+  // connection fallback (`controller.getSchedule(connectorId, ...)`) fired
+  // once per non-local-device connection whenever `schedulesByInstanceId`
+  // was `null` — which was ALWAYS true before this fix, since nothing ever
+  // populated it here (the removed `computeConnectorSummaries` populated it
+  // via a separate, itself-unbounded `controller.listSchedules()` call, but
+  // `listConnectorSummaryPage` never did, so the paginated route already had
+  // this exact per-connection cost). `controller.listSchedulesForConnections`
+  // batches the SAME `scheduleToApi` enrichment `getSchedule`/`listSchedules`
+  // use (runtime projection, refresh policy, schedule history), scoped to
+  // this render's exact connection set — a bare store row (which is all
+  // `schedulerStore.listSchedulesByConnectionIds` alone returns) is missing
+  // `trigger_kind`/`automation_mode`/etc. and would silently degrade the
+  // projected schedule shape.
+  const runHistoryScopeIds = options.connectorInstanceIds ?? null;
+  const [
+    connectorRows,
+    retainedSizeSnapshot,
+    activeRuns,
+    summaryEvidenceRead,
+    latestRunHistoryRows,
+    latestSuccessfulRunHistoryRows,
+    scheduleRows,
+  ] = await Promise.all([
     listRegisteredConnectorRows(),
     options.includeRetainedSizeSnapshot ? loadRetainedSizeProjectionSnapshot() : Promise.resolve(undefined),
     Promise.resolve()
@@ -5676,25 +5679,46 @@ async function loadConnectorSummaryProjectionDeps(
     // closed downstream via `evidenceReadFailed`), never to a projection
     // error.
     readSummaryEvidenceRowsOrFailure(options.connectorInstanceIds ?? null),
+    runHistoryScopeIds && typeof schedulerStore.listLatestRunHistoryByConnectionIds === "function"
+      ? Promise.resolve(schedulerStore.listLatestRunHistoryByConnectionIds(runHistoryScopeIds, null)).catch(() => null)
+      : Promise.resolve(null),
+    runHistoryScopeIds && typeof schedulerStore.listLatestRunHistoryByConnectionIds === "function"
+      ? Promise.resolve(schedulerStore.listLatestRunHistoryByConnectionIds(runHistoryScopeIds, "succeeded")).catch(
+          () => null
+        )
+      : Promise.resolve(null),
+    runHistoryScopeIds && typeof controller?.listSchedulesForConnections === "function"
+      ? Promise.resolve(controller.listSchedulesForConnections(runHistoryScopeIds)).catch(() => null)
+      : Promise.resolve(null),
   ]);
+  const latestRunHistoryByInstanceId =
+    latestRunHistoryRows === null
+      ? null
+      : new Map(
+          latestRunHistoryRows
+            .filter((row): row is SchedulerRunHistoryRecord & { connectorInstanceId: string } =>
+              Boolean(row.connectorInstanceId)
+            )
+            .map((row) => [row.connectorInstanceId, row])
+        );
+  const latestSuccessfulRunHistoryByInstanceId =
+    latestSuccessfulRunHistoryRows === null
+      ? null
+      : new Map(
+          latestSuccessfulRunHistoryRows
+            .filter((row): row is SchedulerRunHistoryRecord & { connectorInstanceId: string } =>
+              Boolean(row.connectorInstanceId)
+            )
+            .map((row) => [row.connectorInstanceId, row])
+        );
   const evidenceReadFailed = summaryEvidenceRead.failed;
-  // In-memory failed rows win over the durable read for the same instance
-  // id — the durable read is guaranteed stale for exactly those ids (the
-  // write that should have superseded it did not land). `shapeEvidenceRow`
-  // is the same flat-row-to-envelope transform `listConnectorSummaryEvidence`
-  // already applied to `summaryEvidenceRead.rows`; the raw engine
-  // `failedRow` shape (`buildFailedRow`) defaults gracefully through it.
-  const mergedEvidenceRows =
-    inMemoryFailedRows.size === 0
-      ? summaryEvidenceRead.rows
-      : [
-          ...summaryEvidenceRead.rows.filter(
-            (row) => !inMemoryFailedRows.has(String((row as Row).connector_instance_id))
-          ),
-          ...[...inMemoryFailedRows.values()].map((row) => shapeEvidenceRow(row) as unknown as Row),
-        ];
-  const latestStreamFactsByInstanceId = buildLatestStreamFactsIndex(mergedEvidenceRows);
-  const evidenceByInstanceId = buildEvidenceIndex(mergedEvidenceRows);
+  // Terminal-gate revision (2026-07-29): this read used to merge an
+  // in-memory failure overlay from the (now-removed) inline reconcile call
+  // over the durable read. With reconcile removed from GET entirely, this
+  // read is exactly `summaryEvidenceRead.rows` as durably stored — however
+  // stale or `dirty` the maintenance sweep last left it, honestly.
+  const latestStreamFactsByInstanceId = buildLatestStreamFactsIndex(summaryEvidenceRead.rows);
+  const evidenceByInstanceId = buildEvidenceIndex(summaryEvidenceRead.rows);
   const activeRunsByInstanceId = new Map<string, ActiveRunRecord>();
   for (const activeRun of activeRuns) {
     if (activeRun.connector_instance_id) {
@@ -5735,8 +5759,18 @@ async function loadConnectorSummaryProjectionDeps(
     controller,
     evidenceByInstanceId,
     evidenceReadFailed,
-    getLatestRunHistoryForConnection: (connectorInstanceId, status = null) =>
-      Promise.resolve(schedulerStore.getLatestRunHistoryForConnection(connectorInstanceId, status)).catch(() => null),
+    getLatestRunHistoryForConnection: (connectorInstanceId, status = null) => {
+      const batched = status === "succeeded" ? latestSuccessfulRunHistoryByInstanceId : latestRunHistoryByInstanceId;
+      if (batched !== null) {
+        // The batch already covers exactly this render's connection scope —
+        // a miss here is a genuine "no run history for this connection", not
+        // a reason to fall back to a live per-connection read.
+        return Promise.resolve(batched.get(connectorInstanceId) ?? null);
+      }
+      return Promise.resolve(schedulerStore.getLatestRunHistoryForConnection(connectorInstanceId, status)).catch(
+        () => null
+      );
+    },
     includeRunSummaries: options.includeRunSummaries ?? true,
     latestStreamFactsByInstanceId,
     listRunSummariesForConnector: createConnectorRunSummariesReader(),
@@ -5745,22 +5779,9 @@ async function loadConnectorSummaryProjectionDeps(
     ...(retainedSizeSnapshot ? { retainedSizeSnapshot } : {}),
     runtimeInventory,
     runtimeOk: !isNullish(controller),
-    schedulesByInstanceId: null,
+    schedulesByInstanceId: scheduleRows,
     sharedBrowserSurfaceReader,
   };
-}
-
-function loadSummaryScheduleSnapshot(
-  controller: ControllerLike | null | undefined,
-  rows: readonly ConnectorInstanceRow[]
-): Promise<ReadonlyMap<string, unknown> | null> {
-  // A local-device connection never reads scheduler evidence in its
-  // per-connection projection. Avoid replacing zero reads with an owner-wide
-  // schedule list for an all-local-device summary request.
-  if (!rows.some((row) => row.sourceKind !== "local_device") || typeof controller?.listSchedules !== "function") {
-    return Promise.resolve(null);
-  }
-  return controller.listSchedules().then(indexSchedulesByConnectionId);
 }
 
 /** Untyped read-model row shape crossing the module boundary. */
@@ -5884,6 +5905,62 @@ function parseLatestStreamFactsMap(raw: unknown): Map<string, LatestStreamFactRe
   return map;
 }
 
+/**
+ * Terminal-gate revision (2026-07-29): the independent gate required
+ * eliminating the unparameterized complete-fleet compat path rather than
+ * trying to make an inherently complete response constant-query — a
+ * genuinely complete "every connection" response cannot help but cost
+ * O(fleet size) somewhere; the fix is to stop offering that as an ordinary
+ * GET contract, not to hide the cost. `listConnectorSummaries` /
+ * `computeConnectorSummaries` (which called the unbounded, recursively-
+ * paging `listOwnerVisibleConnectorInstances` before any batch reader ever
+ * ran) are REMOVED. `GET /_ref/connectors` with no `limit`/`cursor`/
+ * `connection` now fails explicitly (`server/routes/ref-connectors.ts`) —
+ * the console is being migrated to always paginate in a separate branch,
+ * integrated atomically with this one before deploy.
+ *
+ * The two internal (non-route) callers that legitimately need "every
+ * owner-visible connection" — `getFleetHealthVerdict` and the reference
+ * scheduler's own summary consumer — now page-follow
+ * `listConnectorSummaryPage` to completion via this helper. Each page is
+ * still the SAME bounded, fixed-family batch read `listConnectorSummaryPage`
+ * already proves flat per page; page-following costs O(ceil(N/pageSize))
+ * page-batch round trips for N connections, which is the honest, visible
+ * cost of "give me everything" — never hidden behind a route that looks
+ * like an ordinary constant-cost GET.
+ */
+async function listAllConnectorSummariesByPaging(
+  controller: ControllerLike | null | undefined,
+  options: ListConnectorSummariesOptions = {}
+): Promise<ConnectorSummary[]> {
+  const ownerSubjectId = options.ownerSubjectId ?? REFERENCE_OWNER_SUBJECT_ID;
+  const includeRunSummaries: ConnectorRunSummaryInclusion = options.includeRunSummaries ?? true;
+  const summaries: ConnectorSummary[] = [];
+  let after: ConnectorIdentityPageBoundary | null = null;
+  for (;;) {
+    // biome-ignore lint/performance/noAwaitInLoops: each page's continuation depends on the previous page's cursor.
+    const page = await listConnectorSummaryPage(controller, {
+      after,
+      includeRunSummaries,
+      limit: CONNECTOR_SUMMARY_PAGE_LIMIT_MAX,
+      ownerSubjectId,
+    });
+    summaries.push(...page.data);
+    if (!(page.has_more && page.next_cursor)) {
+      break;
+    }
+    after = decodeConnectorSummaryPageCursor(page.next_cursor, ownerSubjectId);
+  }
+  return summaries;
+}
+
+/**
+ * Cache-coalesced "every owner-visible connection" read for the two
+ * internal (non-route) callers that need it. Purely in-flight coalescing —
+ * see `connectorSummariesCache`'s own doc comment — now backed by
+ * `listAllConnectorSummariesByPaging` instead of the removed unbounded
+ * compute path.
+ */
 export function listConnectorSummaries(
   controller?: ControllerLike | null,
   options: ListConnectorSummariesOptions = {}
@@ -5896,36 +5973,7 @@ export function listConnectorSummaries(
     }
     return refreshConnectorSummariesCache(key, controller, options);
   }
-  return computeConnectorSummaries(controller, options);
-}
-
-async function computeConnectorSummaries(
-  controller?: ControllerLike | null,
-  options: ListConnectorSummariesOptions = {}
-): Promise<ConnectorSummary[]> {
-  const ownerSubjectId = options.ownerSubjectId ?? REFERENCE_OWNER_SUBJECT_ID;
-  const rows = options.visibleConnections ?? (await listOwnerVisibleConnectorInstances(ownerSubjectId));
-  const deps = await loadConnectorSummaryProjectionDeps(controller, {
-    connectorInstanceIds: rows.map((row) => row.connectorInstanceId),
-    includeRetainedSizeSnapshot: true,
-    includeRunSummaries: options.includeRunSummaries ?? true,
-  });
-  const schedulesByInstanceId = await loadSummaryScheduleSnapshot(controller, rows);
-  const summaryDeps = schedulesByInstanceId === null ? deps : { ...deps, schedulesByInstanceId };
-  const activeVisibleConnectionCounts = countActiveVisibleConnectionsByConnectorId(
-    rows,
-    summaryDeps.manifestsByConnectorId
-  );
-  const summaries = await runWithConcurrency(
-    rows,
-    options.concurrency ?? LIST_CONNECTOR_SUMMARIES_CONCURRENCY,
-    (instance): Promise<ConnectorSummary | null> =>
-      projectConnectorSummaryForInstance(instance, summaryDeps, {
-        activeVisibleConnectionCount: activeVisibleConnectionCounts.get(instance.connectorId) ?? 0,
-      }),
-    options.onInFlightChange ? { onInFlightChange: options.onInFlightChange } : {}
-  );
-  return summaries.filter((summary): summary is ConnectorSummary => summary !== null);
+  return listAllConnectorSummariesByPaging(controller, options);
 }
 
 /**
@@ -5938,11 +5986,24 @@ export async function listConnectorSummaryPage(
   controller: ControllerLike | null | undefined,
   {
     after = null,
+    connectorId = null,
     includeRunSummaries = "singleton-active",
     limit,
     ownerSubjectId,
   }: {
     readonly after?: ConnectorIdentityPageBoundary | null;
+    /**
+     * Optional owner-scoped filter narrowing this SAME keyset page to one
+     * connector's connections. Composes with `limit`/`cursor` unconditionally
+     * (fixed query family — see `SQLITE_OWNER_VISIBLE_IDENTITY_PAGE_SQL`'s
+     * `connector_id = ? OR ? IS NULL` clause). Distinct from the `?connection=`
+     * exact-connection selector: `connectorId` still returns a keyset PAGE
+     * (0, 1, or many rows across one or more calls), never a single resolved
+     * connection. A cursor issued under one `connectorId` is not valid for a
+     * request omitting it or naming a different one — see
+     * `encodeConnectorSummaryPageCursor`'s `connectorId` binding.
+     */
+    readonly connectorId?: string | null;
     readonly includeRunSummaries?: ConnectorRunSummaryInclusion;
     readonly limit: number;
     readonly ownerSubjectId: string;
@@ -5952,7 +6013,7 @@ export async function listConnectorSummaryPage(
   readonly has_more: boolean;
   readonly next_cursor: string | null;
 }> {
-  const identityPage = await listOwnerVisibleConnectorInstancePage(ownerSubjectId, { after, limit });
+  const identityPage = await listOwnerVisibleConnectorInstancePage(ownerSubjectId, { after, connectorId, limit });
   const pageIds = identityPage.rows.map((row) => row.connectorInstanceId);
   const [pageEvidence, deps, activeConnectionCounts] = await Promise.all([
     loadPageProductEvidence(pageIds),
@@ -5976,11 +6037,11 @@ export async function listConnectorSummaryPage(
     retainedSizeSnapshot: pageEvidence.retainedSizeSnapshot,
   };
   const activeVisibleConnectionCounts = new Map(
-    [...activeConnectionCounts].filter(([connectorId]) => {
-      const manifest = pageDeps.manifestsByConnectorId.get(connectorId);
+    [...activeConnectionCounts].filter(([activeConnectorId]) => {
+      const manifest = pageDeps.manifestsByConnectorId.get(activeConnectorId);
       return (
         manifest !== undefined &&
-        isPublicReferenceConnector({ connector_id: connectorId, manifest: JSON.stringify(manifest) }, manifest)
+        isPublicReferenceConnector({ connector_id: activeConnectorId, manifest: JSON.stringify(manifest) }, manifest)
       );
     })
   );
@@ -6003,7 +6064,9 @@ export async function listConnectorSummaryPage(
               connectorInstanceId: last.connectorInstanceId,
               createdAt: last.createdAt,
             },
-            ownerSubjectId
+            ownerSubjectId,
+            undefined,
+            connectorId
           )
         : null,
   };
@@ -6044,6 +6107,43 @@ function resolveUnambiguousConnectionForConnectorId(
   };
 }
 
+/**
+ * Resolve `routeId` to at most one owner-visible connection WITHOUT reading
+ * the owner's complete connection inventory. `routeId` may be either an
+ * exact `connector_instance_id` (the common case — a point lookup) or a
+ * `connector_id` that happens to have exactly one visible connection (the
+ * fallback `resolveUnambiguousConnectionForConnectorId` already supported,
+ * preserved here). Both branches are bounded by the number of connections
+ * actually sharing this one `connector_id`, never by fleet size.
+ *
+ * Terminal-gate revision (2026-07-29): this replaces the prior
+ * `listOwnerVisibleConnectorInstances(REFERENCE_OWNER_SUBJECT_ID)` fleet-wide
+ * read both `getConnectorSummaryForRoute` and `getConnectorDetail` used to do
+ * merely to resolve one id — the same "read everything to find one thing"
+ * anti-pattern the gate rejected for the unscoped list route.
+ */
+async function resolveOwnerVisibleConnectionForRoute(routeId: string): Promise<ConnectorIdResolution> {
+  const store = getConnectorInstanceStore();
+  const exact = await Promise.resolve(store.get(routeId));
+  // The exact-id fast path bypasses the paged listing query entirely, so it
+  // must apply the SAME retired-setup-shell visibility rule that query's SQL
+  // enforces (terminal-gate revision, 2026-07-29 fallout fix): a `revoked`
+  // browser-enrollment-shell/static-secret-draft/manual-upload-draft row is
+  // hidden from every owner-visible read surface, not just the list.
+  if (exact && exact.ownerSubjectId === REFERENCE_OWNER_SUBJECT_ID && isOwnerVisibleConnectorInstance(exact)) {
+    return { match: exact as unknown as ConnectorInstanceRow, matchCount: 1 };
+  }
+  // Not an exact connector_instance_id (or owned by a different subject —
+  // never leak a match across owners). Fall back to the connector_id page,
+  // filtered to exactly this id: bounded by however many connections share
+  // this one connector_id (typically 0 or 1), never by fleet size.
+  const page = await listOwnerVisibleConnectorInstancePage(REFERENCE_OWNER_SUBJECT_ID, {
+    connectorId: routeId,
+    limit: CONNECTOR_SUMMARY_PAGE_LIMIT_MAX,
+  });
+  return resolveUnambiguousConnectionForConnectorId(page.rows, routeId);
+}
+
 // Resolve one configured connection from a record-subpage route id and project
 // only that connection. Exact stable connection identity is preferred. Connector
 // id fallback is allowed only when it is unambiguous; otherwise a connector-key
@@ -6052,8 +6152,7 @@ export async function getConnectorSummaryForRoute(
   routeId: string,
   controller?: ControllerLike | null
 ): Promise<ConnectorSummary | null> {
-  const rows = await listOwnerVisibleConnectorInstances(REFERENCE_OWNER_SUBJECT_ID);
-  const { match } = resolveUnambiguousConnectionForConnectorId(rows, routeId);
+  const { match } = await resolveOwnerVisibleConnectionForRoute(routeId);
   if (match === null) {
     return null;
   }
@@ -6064,10 +6163,19 @@ export async function getConnectorSummaryForRoute(
     connectorInstanceIds: [match.connectorInstanceId],
     includeRunSummaries: true,
   });
-  const activeVisibleConnectionCounts = countActiveVisibleConnectionsByConnectorId(rows, deps.manifestsByConnectorId);
-  return projectConnectorSummaryForInstance(match, deps, {
-    activeVisibleConnectionCount: activeVisibleConnectionCounts.get(match.connectorId) ?? 0,
-  });
+  // Bounded aggregate, scoped to exactly this one connector_id — the SAME
+  // store call `listConnectorSummaryPage` already uses for every connector_id
+  // on its page, never a fleet-wide in-memory count.
+  const activeConnectionCounts = await Promise.resolve(
+    getConnectorInstanceStore().countActiveByOwnerConnectorIds(REFERENCE_OWNER_SUBJECT_ID, [match.connectorId])
+  );
+  const manifest = deps.manifestsByConnectorId.get(match.connectorId);
+  const activeVisibleConnectionCount =
+    manifest &&
+    isPublicReferenceConnector({ connector_id: match.connectorId, manifest: JSON.stringify(manifest) }, manifest)
+      ? (activeConnectionCounts.get(match.connectorId) ?? 0)
+      : 0;
+  return projectConnectorSummaryForInstance(match, deps, { activeVisibleConnectionCount });
 }
 
 /**
@@ -6144,9 +6252,10 @@ export async function getConnectorDetail(
   // `getConnectorSummaryForRoute` does (design.md "Central consumer and
   // cache boundary"): a connector-keyed lookup with zero or multiple visible
   // connections must never merge/sum sibling evidence. Reuse the shared
-  // resolver rather than a divergent connector-wide read.
-  const rows = await listOwnerVisibleConnectorInstances(REFERENCE_OWNER_SUBJECT_ID);
-  const { match, matchCount } = resolveUnambiguousConnectionForConnectorId(rows, connectorId);
+  // resolver rather than a divergent connector-wide read — bounded to a
+  // point lookup plus (at most) one connector_id-filtered page, never the
+  // full owner fleet.
+  const { match, matchCount } = await resolveOwnerVisibleConnectionForRoute(connectorId);
   if (match === null) {
     return buildUnresolvedConnectorDetail(connectorId, manifest, matchCount === 0 ? "unresolved" : "ambiguous");
   }
@@ -6157,10 +6266,13 @@ export async function getConnectorDetail(
     connectorInstanceIds: [match.connectorInstanceId],
     includeRunSummaries: true,
   });
-  const activeVisibleConnectionCounts = countActiveVisibleConnectionsByConnectorId(
-    rows,
-    deps.manifestsByConnectorId,
-    false
+  // Bounded aggregate scoped to exactly this one connector_id. This route's
+  // "active visible" has catalog gating off (see `requireCatalogVisibility:
+  // false` below), which reduces to plain `status === "active"` for a
+  // connector_id with a resolved manifest — exactly what this store
+  // aggregate counts. Never a fleet-wide in-memory count.
+  const activeVisibleConnectionCounts = await Promise.resolve(
+    getConnectorInstanceStore().countActiveByOwnerConnectorIds(REFERENCE_OWNER_SUBJECT_ID, [match.connectorId])
   );
   const summary = await projectConnectorSummaryForInstance(match, deps, {
     activeVisibleConnectionCount: activeVisibleConnectionCounts.get(match.connectorId) ?? 0,

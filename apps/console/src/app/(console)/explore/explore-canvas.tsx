@@ -643,23 +643,25 @@ function buildFilterChips(args: {
   return out;
 }
 
+function withPresentRef<T>(value: T | null, effect: (value: T) => void): void {
+  if (value !== null) {
+    effect(value);
+  }
+}
+
 function CopyViewLinkButton({ href }: { href: string }) {
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(
     () => () => {
-      if (timerRef.current) {
-        clearTimeout(timerRef.current);
-      }
+      withPresentRef(timerRef.current, clearTimeout);
     },
     []
   );
 
   const resetSoon = useCallback(() => {
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
-    }
+    withPresentRef(timerRef.current, clearTimeout);
     timerRef.current = setTimeout(() => setCopyState("idle"), 1200);
   }, []);
 
@@ -1196,9 +1198,11 @@ function DateChip({
       }
     };
     const onDown = (e: MouseEvent) => {
-      if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
+      withPresentRef(popoverRef.current, (popover) => {
+        if (!popover.contains(e.target as Node)) {
+          setOpen(false);
+        }
+      });
     };
     document.addEventListener("keydown", onKey);
     document.addEventListener("mousedown", onDown);
@@ -1650,6 +1654,40 @@ function FacetRow({
       </button>
     </div>
   );
+}
+
+/**
+ * Href for the "More connections" facet pager. Preserves every OTHER current
+ * URL param (query, filters, feed cursor trail — repeats included via
+ * `URLSearchParams`'s native multi-value handling) — only
+ * `connections_page_cursor` changes, since advancing the facet page must
+ * never reset or replay the feed's own pagination state, and vice versa.
+ * No session/navigation token: see `connector-summary-page.tsx`'s
+ * (apps/console) module doc for why this codebase does not track
+ * cross-request pagination history for interactive UI surfaces.
+ */
+function connectionsFacetPageHref(explorePath: string, nextCursor: string): string {
+  const current = typeof window === "undefined" ? "" : window.location.search;
+  const params = new URLSearchParams(current);
+  params.set("connections_page_cursor", nextCursor);
+  return `${explorePath}?${params.toString()}`;
+}
+
+/**
+ * Href for the facet rail's "Restart from page 1" link — drops
+ * `connections_page_cursor`, preserving every other current param
+ * (repeats included). "Previous" for this rail is the browser's own back
+ * button (same bounded-Next + browser-history contract as the
+ * Sources/Schedules/Syncs pager); this is the always-present explicit
+ * affordance for a bookmarked/shared link with no back history, or for
+ * recovering from a rejected continuation (`connectionsPageError`).
+ */
+function connectionsFacetRestartHref(explorePath: string): string {
+  const current = typeof window === "undefined" ? "" : window.location.search;
+  const params = new URLSearchParams(current);
+  params.delete("connections_page_cursor");
+  const qs = params.toString();
+  return qs ? `${explorePath}?${qs}` : explorePath;
 }
 
 function ConnectionFacets({
@@ -3057,19 +3095,19 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
   // On wide viewports we open it so the disclosure state matches the always-
   // shown desktop rail, and we keep it in sync across resizes. Desktop CSS
   // force-shows the body regardless, so first paint never hides desktop facets.
-  const railRef = useRef<HTMLDetailsElement>(null);
+  const railRef = useRef<HTMLDetailsElement | null>(null);
   useEffect(() => {
-    const rail = railRef.current;
-    if (!rail) {
-      return;
-    }
-    const mql = window.matchMedia("(min-width: 861px)");
-    const sync = () => {
-      rail.open = mql.matches;
-    };
-    sync();
-    mql.addEventListener("change", sync);
-    return () => mql.removeEventListener("change", sync);
+    let cleanup: (() => void) | undefined;
+    withPresentRef(railRef.current, (rail) => {
+      const mql = window.matchMedia("(min-width: 861px)");
+      const sync = () => {
+        rail.open = mql.matches;
+      };
+      sync();
+      mql.addEventListener("change", sync);
+      cleanup = () => mql.removeEventListener("change", sync);
+    });
+    return cleanup;
   }, []);
 
   // The search input holds local text; server tokens commit on Enter, while
@@ -3719,14 +3757,38 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
               </div>
             ) : null}
           </div>
-          <ConnectionFacets
-            connections={data.connections}
-            countFor={countForConnection}
-            excluded={excludeConnectionIds}
-            onToggle={toggleConnection}
-            onToggleExclude={toggleExcludeConnection}
-            selected={selectedConnectionIds}
-          />
+          {data.connectionsPageError ? (
+            <div className="rr-s-toast" data-tone="error" role="alert">
+              <p style={{ margin: "0 0 8px" }}>{data.connectionsPageError}</p>
+              <a href={connectionsFacetRestartHref(explorePath)}>Restart connections list from page 1</a>
+            </div>
+          ) : (
+            <>
+              <ConnectionFacets
+                connections={data.connections}
+                countFor={countForConnection}
+                excluded={excludeConnectionIds}
+                onToggle={toggleConnection}
+                onToggleExclude={toggleExcludeConnection}
+                selected={selectedConnectionIds}
+              />
+              <div className="rr-x-facets__pager" style={{ display: "flex", gap: 12 }}>
+                {data.connectionsPageIsPaged ? (
+                  <a className="rr-x-facets__restart" href={connectionsFacetRestartHref(explorePath)}>
+                    ↺ Restart
+                  </a>
+                ) : null}
+                {data.connectionsPageHasMore && data.connectionsPageNextCursor ? (
+                  <a
+                    className="rr-x-facets__more"
+                    href={connectionsFacetPageHref(explorePath, data.connectionsPageNextCursor)}
+                  >
+                    More connections →
+                  </a>
+                ) : null}
+              </div>
+            </>
+          )}
           <StreamFacets groups={streamGroups} onToggle={toggleStream} onToggleExclude={toggleExcludeStream} />
         </div>
         {/* P1: sticky close affordance so users aren't trapped in the mobile rail */}
@@ -3734,9 +3796,9 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
           <button
             className="rr-lens"
             onClick={() => {
-              if (railRef.current) {
-                railRef.current.open = false;
-              }
+              withPresentRef(railRef.current, (rail) => {
+                rail.open = false;
+              });
             }}
             type="button"
           >

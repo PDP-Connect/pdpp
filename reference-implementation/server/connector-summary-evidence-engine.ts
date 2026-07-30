@@ -89,7 +89,9 @@ export type RepairCandidateReason =
   | "identity_mismatch"
   | "manifest_mismatch"
   | "terminal_checkpoint_lag"
-  | "retained_bytes_changed_or_unavailable";
+  | "retained_bytes_changed_or_unavailable"
+  | "schedule_mismatch"
+  | "lifecycle_checkpoint_lag";
 
 export interface StreamEvidence {
   readonly count_state: CountState;
@@ -230,6 +232,10 @@ function parseManifestDeclaration(raw: unknown): ManifestDeclaration {
 interface DiscoveryInput {
   readonly canonicalTotalRecords: number;
   readonly currentCheckpoint: RecordSourceCheckpoint;
+  /** Live `MAX(spine_events.event_seq)` for this connection, unfiltered by event_type. `null` when no spine events exist for it. */
+  readonly currentLifecycleEventSeq: number | null;
+  /** Live `connector_schedules.updated_at` for this connection, or `"absent"` when no schedule row exists. */
+  readonly currentScheduleCheckpoint: string;
   readonly existingEvidence: Row | null;
   readonly instance: Row;
   readonly manifest: ManifestDeclaration;
@@ -294,6 +300,30 @@ function classifyCandidate(input: DiscoveryInput): RepairCandidateReason | null 
     (storedTerminalSeq === null || storedTerminalSeq < input.maxTerminalEventSeq)
   ) {
     return "terminal_checkpoint_lag";
+  }
+  // Terminal-gate revision (2026-07-29): schedule mutations (pause/resume/
+  // delete/upsert) have no other durable backstop — `connector_schedules.
+  // updated_at` is the repair receipt, written atomically with every
+  // mutation on both backends. `existingEvidence.schedule_checkpoint`
+  // defaults to 'unobserved' for a pre-migration row, which never equals a
+  // real `updated_at` value OR the 'absent' sentinel, so an old row is
+  // always classified once and then converges.
+  const storedScheduleCheckpoint = String(existingEvidence.schedule_checkpoint ?? "unobserved");
+  if (storedScheduleCheckpoint !== input.currentScheduleCheckpoint) {
+    return "schedule_mismatch";
+  }
+  // Terminal-gate revision (2026-07-29): run-lifecycle events (e.g.
+  // `run.started`) beyond terminal outcomes have no other durable backstop
+  // either — reuses the spine's own event_seq, scoped per connection.
+  const storedLifecycleSeq =
+    existingEvidence.run_lifecycle_event_seq === null || existingEvidence.run_lifecycle_event_seq === undefined
+      ? null
+      : Number(existingEvidence.run_lifecycle_event_seq);
+  if (
+    input.currentLifecycleEventSeq !== null &&
+    (storedLifecycleSeq === null || storedLifecycleSeq < input.currentLifecycleEventSeq)
+  ) {
+    return "lifecycle_checkpoint_lag";
   }
   if (retainedBytesNeedsRepair(existingEvidence, retainedByteRow)) {
     return "retained_bytes_changed_or_unavailable";
@@ -404,8 +434,10 @@ function readSqliteDiscoveryContext(connectorInstanceIds: readonly string[] | nu
       evidenceByInstance: new Map<string, Row>(),
       instanceRows: [] as Row[],
       manifestByConnector: new Map<string, string>(),
+      maxLifecycleEventSeqByInstance: new Map<string, number>(),
       maxTerminalEventSeq: null,
       retainedByteByInstance: new Map<string, Row>(),
+      scheduleUpdatedAtByInstance: new Map<string, string>(),
       versionCountersByInstance: new Map<string, Row[]>(),
     };
   }
@@ -502,16 +534,61 @@ function readSqliteDiscoveryContext(connectorInstanceIds: readonly string[] | nu
         WHERE event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')`
     )
     .get() as Row | undefined;
+  // Terminal-gate revision (2026-07-29): schedule mutations have NO existing
+  // dirty-independent backstop — `connector_schedules.updated_at` is already
+  // written atomically with every schedule mutation on both backends (a
+  // durable repair receipt), just never compared. One batched read of
+  // exactly the requested (or complete) scope, same shape as the canonical
+  // record-count read above.
+  const scheduleRows: Row[] = scoped
+    ? db
+        .prepare(
+          `SELECT connector_instance_id, updated_at FROM connector_schedules
+            WHERE connector_instance_id IN (${placeholders})`
+        )
+        // biome-ignore lint/style/noNonNullAssertion: The trusted boundary invariant is established by the preceding validation.
+        .all(...connectorInstanceIds!)
+    : [...iterateDynamicSqlAcknowledged<Row>("SELECT connector_instance_id, updated_at FROM connector_schedules")];
+  const scheduleUpdatedAtByInstance = new Map(
+    scheduleRows.map((row) => [String(row.connector_instance_id), String(row.updated_at)])
+  );
+  // Terminal-gate revision (2026-07-29): run-lifecycle events (e.g.
+  // `run.started`) have no existing dirty-independent backstop either — the
+  // terminal-only `maxTerminalEventSeq` above deliberately excludes them.
+  // Reuses the spine's own already-durable, atomically-assigned `event_seq`
+  // as the repair receipt, scoped per connection (unlike the fleet-wide
+  // terminal scalar, since run-lifecycle freshness is a per-connection fact).
+  const maxLifecycleSeqRows: Row[] = scoped
+    ? db
+        .prepare(
+          `SELECT connector_instance_id, MAX(event_seq) AS max_seq FROM spine_events
+            WHERE connector_instance_id IN (${placeholders})
+            GROUP BY connector_instance_id`
+        )
+        // biome-ignore lint/style/noNonNullAssertion: The trusted boundary invariant is established by the preceding validation.
+        .all(...connectorInstanceIds!)
+    : db
+        .prepare(
+          `SELECT connector_instance_id, MAX(event_seq) AS max_seq FROM spine_events
+            WHERE connector_instance_id IS NOT NULL
+            GROUP BY connector_instance_id`
+        )
+        .all();
+  const maxLifecycleEventSeqByInstance = new Map(
+    maxLifecycleSeqRows.map((row) => [String(row.connector_instance_id), Number(row.max_seq)])
+  );
   return {
     canonicalTotalRecordsByInstance,
     evidenceByInstance,
     instanceRows: instanceRows as Row[],
     manifestByConnector,
+    maxLifecycleEventSeqByInstance,
     maxTerminalEventSeq:
       maxTerminalSeqRow?.max_seq === null || maxTerminalSeqRow?.max_seq === undefined
         ? null
         : Number(maxTerminalSeqRow.max_seq),
     retainedByteByInstance,
+    scheduleUpdatedAtByInstance,
     versionCountersByInstance,
   };
 }
@@ -529,8 +606,10 @@ async function readPostgresDiscoveryContext(connectorInstanceIds: readonly strin
       evidenceByInstance: new Map<string, Row>(),
       instanceRows: [] as Row[],
       manifestByConnector: new Map<string, string>(),
+      maxLifecycleEventSeqByInstance: new Map<string, number>(),
       maxTerminalEventSeq: null,
       retainedByteByInstance: new Map<string, Row>(),
+      scheduleUpdatedAtByInstance: new Map<string, string>(),
       versionCountersByInstance: new Map<string, Row[]>(),
     };
   }
@@ -610,13 +689,50 @@ async function readPostgresDiscoveryContext(connectorInstanceIds: readonly strin
       WHERE event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')`
   );
   const maxSeq = (maxTerminalSeqResult.rows[0] as Row | undefined)?.max_seq;
+  // Terminal-gate revision (2026-07-29): schedule mutations have NO existing
+  // dirty-independent backstop — `connector_schedules.updated_at` is already
+  // written atomically with every schedule mutation on both backends (a
+  // durable repair receipt), just never compared. One batched read of
+  // exactly the requested (or complete) scope, same shape as the canonical
+  // record-count read above.
+  const scheduleResult = scoped
+    ? await postgresQuery(
+        "SELECT connector_instance_id, updated_at FROM connector_schedules WHERE connector_instance_id = ANY($1::text[])",
+        [connectorInstanceIds]
+      )
+    : await postgresQuery("SELECT connector_instance_id, updated_at FROM connector_schedules");
+  const scheduleUpdatedAtByInstance = new Map(
+    (scheduleResult.rows as Row[]).map((row) => [String(row.connector_instance_id), String(row.updated_at)])
+  );
+  // Terminal-gate revision (2026-07-29): run-lifecycle events (e.g.
+  // `run.started`) have no existing dirty-independent backstop either — the
+  // terminal-only `maxTerminalEventSeq` above deliberately excludes them.
+  // Reuses the spine's own already-durable, atomically-assigned `event_seq`
+  // as the repair receipt, scoped per connection.
+  const maxLifecycleSeqResult = scoped
+    ? await postgresQuery(
+        `SELECT connector_instance_id, MAX(event_seq) AS max_seq FROM spine_events
+          WHERE connector_instance_id = ANY($1::text[])
+          GROUP BY connector_instance_id`,
+        [connectorInstanceIds]
+      )
+    : await postgresQuery(
+        `SELECT connector_instance_id, MAX(event_seq) AS max_seq FROM spine_events
+          WHERE connector_instance_id IS NOT NULL
+          GROUP BY connector_instance_id`
+      );
+  const maxLifecycleEventSeqByInstance = new Map(
+    (maxLifecycleSeqResult.rows as Row[]).map((row) => [String(row.connector_instance_id), Number(row.max_seq)])
+  );
   return {
     canonicalTotalRecordsByInstance,
     evidenceByInstance,
     instanceRows: instanceResult.rows as Row[],
     manifestByConnector,
+    maxLifecycleEventSeqByInstance,
     maxTerminalEventSeq: maxSeq === null ? null : Number(maxSeq),
     retainedByteByInstance,
+    scheduleUpdatedAtByInstance,
     versionCountersByInstance,
   };
 }
@@ -650,6 +766,8 @@ async function discoverCandidates(
     const reason = classifyCandidate({
       canonicalTotalRecords: ctx.canonicalTotalRecordsByInstance.get(instanceId) ?? 0,
       currentCheckpoint,
+      currentLifecycleEventSeq: ctx.maxLifecycleEventSeqByInstance.get(instanceId) ?? null,
+      currentScheduleCheckpoint: ctx.scheduleUpdatedAtByInstance.get(instanceId) ?? "absent",
       existingEvidence,
       instance,
       manifest,
@@ -988,6 +1106,16 @@ function repairCandidateSqlite(connectorInstanceId: string): RepairedEvidence {
             WHERE event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')`
         )
         .get() as Row | undefined;
+      // Terminal-gate revision (2026-07-29): repair also refreshes the
+      // schedule/lifecycle repair-receipt checkpoints so a repaired row
+      // records the current values it was JUST verified against, not the
+      // stale ones that triggered the repair.
+      const scheduleRow = db
+        .prepare("SELECT updated_at FROM connector_schedules WHERE connector_instance_id = ?")
+        .get(connectorInstanceId) as Row | undefined;
+      const lifecycleHighWaterRow = db
+        .prepare("SELECT MAX(event_seq) AS max_seq FROM spine_events WHERE connector_instance_id = ?")
+        .get(connectorInstanceId) as Row | undefined;
 
       // Test-only: see `testOnlyRepairCandidateSqliteDelay` — no-op in
       // production. Held here, between the read phase above and the write
@@ -998,9 +1126,14 @@ function repairCandidateSqlite(connectorInstanceId: string): RepairedEvidence {
         canonicalByStream,
         checkpoint,
         instance,
+        lifecycleEventSeq:
+          lifecycleHighWaterRow?.max_seq === null || lifecycleHighWaterRow?.max_seq === undefined
+            ? null
+            : Number(lifecycleHighWaterRow.max_seq),
         manifest,
         retainedByStream,
         retainedByteRow,
+        scheduleCheckpoint: scheduleRow?.updated_at === undefined ? "absent" : String(scheduleRow.updated_at),
         terminalFactsGenerationBoundary:
           terminalHighWaterRow?.max_seq === null || terminalHighWaterRow?.max_seq === undefined
             ? 0
@@ -1093,14 +1226,31 @@ async function repairCandidatePostgres(connectorInstanceId: string): Promise<Rep
           WHERE event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')`
       );
       const terminalHighWater = (terminalHighWaterResult.rows[0] as Row | undefined)?.max_seq;
+      // Terminal-gate revision (2026-07-29): repair also refreshes the
+      // schedule/lifecycle repair-receipt checkpoints so a repaired row
+      // records the current values it was JUST verified against, not the
+      // stale ones that triggered the repair.
+      const scheduleResult = await client.query(
+        "SELECT updated_at FROM connector_schedules WHERE connector_instance_id = $1",
+        [connectorInstanceId]
+      );
+      const scheduleCheckpoint = (scheduleResult.rows[0] as Row | undefined)?.updated_at;
+      const lifecycleHighWaterResult = await client.query(
+        "SELECT MAX(event_seq) AS max_seq FROM spine_events WHERE connector_instance_id = $1",
+        [connectorInstanceId]
+      );
+      const lifecycleHighWater = (lifecycleHighWaterResult.rows[0] as Row | undefined)?.max_seq;
 
       const built = buildRepairedRow({
         canonicalByStream,
         checkpoint,
         instance,
+        lifecycleEventSeq:
+          lifecycleHighWater === null || lifecycleHighWater === undefined ? null : Number(lifecycleHighWater),
         manifest,
         retainedByStream,
         retainedByteRow,
+        scheduleCheckpoint: scheduleCheckpoint === undefined ? "absent" : String(scheduleCheckpoint),
         terminalFactsGenerationBoundary: terminalHighWater === null ? 0 : Number(terminalHighWater),
         unexpectedStreams,
       });
@@ -1127,9 +1277,13 @@ interface RepairInputs {
   readonly canonicalByStream: ReadonlyMap<string, Row>;
   readonly checkpoint: RecordSourceCheckpoint;
   readonly instance: Row;
+  /** Live `MAX(spine_events.event_seq)` for this connection at repair time, unfiltered by event_type. `null` when none exist. */
+  readonly lifecycleEventSeq: number | null;
   readonly manifest: ManifestDeclaration;
   readonly retainedByStream: ReadonlyMap<string, number>;
   readonly retainedByteRow: Row | undefined;
+  /** Live `connector_schedules.updated_at` for this connection at repair time, or `"absent"` when no schedule row exists. */
+  readonly scheduleCheckpoint: string;
   /**
    * Terminal-event high-water captured while the fingerprinted manifest is
    * repaired. This is an in-memory generation boundary, never persisted as a
@@ -1236,6 +1390,8 @@ function buildRepairedRow(inputs: RepairInputs): Row {
     retained_bytes_reason_code: retainedBytesClean ? null : REASON_CODES.RETAINED_BYTES_UNAVAILABLE,
     retained_bytes_state: retainedBytesClean ? "current" : "stale",
     revoked_at: instance.revoked_at || null,
+    run_lifecycle_event_seq: inputs.lifecycleEventSeq,
+    schedule_checkpoint: inputs.scheduleCheckpoint,
     source_kind: instance.source_kind,
     state: "fresh",
     status: instance.status,
@@ -1270,9 +1426,9 @@ function upsertSqliteEvidenceRow(db: Db, row: Row): void {
        terminal_facts_state, terminal_facts_reason_code,
        stream_latest_facts_json, stream_facts_event_seq,
        dirty, computed_at, source_event_seq, state, last_error,
-       manifest_generation
+       manifest_generation, schedule_checkpoint, run_lifecycle_event_seq
      )
-     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, ?, ?, ?)
+     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, ?, ?, ?, ?, ?)
      ON CONFLICT(connector_instance_id) DO UPDATE SET
        connector_id = excluded.connector_id,
        display_name = excluded.display_name,
@@ -1301,7 +1457,9 @@ function upsertSqliteEvidenceRow(db: Db, row: Row): void {
        computed_at = excluded.computed_at,
        state = 'fresh',
        last_error = NULL,
-       manifest_generation = excluded.manifest_generation`,
+       manifest_generation = excluded.manifest_generation,
+       schedule_checkpoint = excluded.schedule_checkpoint,
+       run_lifecycle_event_seq = excluded.run_lifecycle_event_seq`,
     [
       row.connector_instance_id,
       row.connector_id,
@@ -1336,6 +1494,8 @@ function upsertSqliteEvidenceRow(db: Db, row: Row): void {
       row.state,
       row.last_error,
       row.manifest_generation,
+      row.schedule_checkpoint,
+      row.run_lifecycle_event_seq,
     ] as BindValue[]
   );
 }
@@ -1361,9 +1521,9 @@ async function upsertPostgresEvidenceRow(client: Db, row: Row): Promise<void> {
        terminal_facts_state, terminal_facts_reason_code,
        stream_latest_facts_json, stream_facts_event_seq,
        dirty, computed_at, source_event_seq, state, last_error,
-       manifest_generation
+       manifest_generation, schedule_checkpoint, run_lifecycle_event_seq
      )
-     VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12, $13::jsonb, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23::jsonb, $24, 0, $25, NULL, $26, $27, $28)
+     VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12, $13::jsonb, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23::jsonb, $24, 0, $25, NULL, $26, $27, $28, $29, $30)
      ON CONFLICT (connector_instance_id) DO UPDATE SET
        connector_id = EXCLUDED.connector_id,
        display_name = EXCLUDED.display_name,
@@ -1392,7 +1552,9 @@ async function upsertPostgresEvidenceRow(client: Db, row: Row): Promise<void> {
        computed_at = EXCLUDED.computed_at,
        state = 'fresh',
        last_error = NULL,
-       manifest_generation = EXCLUDED.manifest_generation`,
+       manifest_generation = EXCLUDED.manifest_generation,
+       schedule_checkpoint = EXCLUDED.schedule_checkpoint,
+       run_lifecycle_event_seq = EXCLUDED.run_lifecycle_event_seq`,
     [
       row.connector_instance_id,
       row.connector_id,
@@ -1422,6 +1584,8 @@ async function upsertPostgresEvidenceRow(client: Db, row: Row): Promise<void> {
       row.state,
       row.last_error,
       row.manifest_generation,
+      row.schedule_checkpoint,
+      row.run_lifecycle_event_seq,
     ]
   );
 }

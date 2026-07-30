@@ -101,18 +101,38 @@ jobs:
           fi
 
       - name: Install pnpm
-        if: steps.changes.outputs.reference_impacting == 'true'
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
 
       - name: Install Node.js
-        if: steps.changes.outputs.reference_impacting == 'true'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
           cache: "pnpm"
 
+      # --ignore-scripts is deliberate here: a normal `pnpm install` runs
+      # every workspace package's `prepare` script, and packages/cli's
+      # `prepare` runs `pnpm build`, which REGENERATES packages/cli/src/ref/
+      # list-envelope.ts from packages/list-envelope/src/index.ts before any
+      # later drift check would ever see the tracked file's real committed
+      # state — checking after a scripted install would silently normalize
+      # (and thus never catch) exactly the drift this check exists to find.
+      # node_modules from this pass is sufficient for
+      # generated-artifacts:check (tsx + tsc, no package builds needed).
+      - name: Install dependencies (no lifecycle scripts, for drift check)
+        env:
+          PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      # Unconditional (not gated by reference_impacting): this check covers
+      # generated artifacts outside that classifier's path list (the
+      # design-system docs scripts, packages/cli's generated list-envelope
+      # copy) and is cheap enough to always run on every PR rather than risk
+      # a drifted tracked file slipping through on a PR the classifier skips.
+      - name: Check generated artifacts are not drifted (before any build/prepack normalizes them)
+        run: pnpm generated-artifacts:check
+
       - name: Install dependencies
-        if: steps.changes.outputs.reference_impacting == 'true'
         env:
           PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"

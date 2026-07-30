@@ -79,6 +79,7 @@ export const POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS: readonly string[] = [
   "an actual PostgreSQL advisory-session disconnect leaks no lock and the same key recovers",
   "dedicated PostgreSQL manifest generations fence historical facts and undeclared-write provenance",
   "dedicated Postgres processing reservation acceptance locks and fences current manifest and semantic identity",
+  "deleteAllRecordsForConnector (PostgreSQL) dirties every instance it clears",
   "real PostgreSQL persisted private coverage STATE fails closed and does not echo the sentinel",
   "real PostgreSQL probe 3: simultaneous fold failure AND terminal-facts-failed-marker write failure still fails closed through the real production read",
   "real PostgreSQL probe 4: simultaneous discovery failure AND discovery-failed-marker write failure still fails closed through the real production read",

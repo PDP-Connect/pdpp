@@ -6,12 +6,8 @@ import { Callout, PageHeader, Section } from "@pdpp/operator-ui/components/primi
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
-import {
-  getManualUploadSetup,
-  listConnectorSummaries,
-  type RefConnectorSummary,
-  RefNotFoundError,
-} from "../../../lib/ref-client.ts";
+import { existingSourcesForConnector as fetchExistingSourcesForConnector } from "../../../components/existing-sources-by-connector.ts";
+import { getManualUploadSetup, RefNotFoundError } from "../../../lib/ref-client.ts";
 import { formatTotalRecordsLabel } from "../../../lib/total-records-label.ts";
 import { ManualUploadForm } from "./manual-upload-form.tsx";
 
@@ -33,31 +29,24 @@ function InlineNotice({ message }: { message: string }) {
   );
 }
 
-function sourceDetail(summary: RefConnectorSummary): string {
-  const streamCount = summary.stream_count ?? summary.streams.length;
-  const streamLabel = `${streamCount} stream${streamCount === 1 ? "" : "s"}`;
-  // Sol fourth-verdict P1.3: another direct RefConnectorSummary.total_records
-  // renderer — routed through the centralized state-aware label.
-  const recordLabel = formatTotalRecordsLabel(summary.total_records, summary.total_records_state, "records");
-  return `${recordLabel}, ${streamLabel}`;
-}
-
-function existingSourcesForConnector(summaries: readonly RefConnectorSummary[], connectorId: string) {
-  return summaries
-    .filter((summary) => {
-      if (summary.connector_id !== connectorId) {
-        return false;
-      }
-      if (!summary.connection_id) {
-        return false;
-      }
-      return !(summary.status === "revoked" || summary.revoked_at);
-    })
-    .map((summary) => ({
-      connection_id: summary.connection_id,
-      detail: sourceDetail(summary),
-      display_name: summary.display_name || summary.connector_display_name || summary.connector_id,
-    }));
+/**
+ * EXACT per-connector existing-sources lookup (`existing-sources-by-connector.ts`
+ * — one `GET /_ref/connections?connector_id=` call, plus a scoped
+ * per-connection `listConnectorSummaries` backfill for record counts /
+ * latest-import facts). Replaces the rejected one-arbitrary-fleet-page
+ * stopgap: this connector's existing sources are exact by construction,
+ * never a partial slice that happens to look complete because it landed on
+ * the global final page.
+ */
+async function existingSourcesForManualUpload(connectorId: string) {
+  const links = await fetchExistingSourcesForConnector(connectorId);
+  return links.map((link) => ({
+    connection_id: link.connectionId,
+    detail: `${formatTotalRecordsLabel(link.totalRecords, link.totalRecordsState, "records")}${
+      link.latestImportStatus ? ` · ${link.latestImportStatus}` : ""
+    }`,
+    display_name: link.displayName,
+  }));
 }
 
 interface AcquisitionMethod {
@@ -103,19 +92,20 @@ export default async function ManualUploadConnectPage({
 }) {
   const { connectorId: rawConnectorId } = await params;
   const connectorId = decodeURIComponent(rawConnectorId);
-  const [setup, summaries] = await Promise.all([
-    getManualUploadSetup(connectorId).catch((err) => {
-      if (err instanceof RefNotFoundError) {
-        notFound();
-      }
-      throw err;
-    }),
-    listConnectorSummaries().then((page) => page.data),
-  ]);
   const resolvedSearchParams = await searchParams;
+  const setup = await getManualUploadSetup(connectorId).catch((err) => {
+    if (err instanceof RefNotFoundError) {
+      notFound();
+    }
+    throw err;
+  });
   const error = firstValue(resolvedSearchParams.error);
   const targetConnectionId = firstValue(resolvedSearchParams.connection_id) ?? null;
-  const existingSources = targetConnectionId ? [] : existingSourcesForConnector(summaries, setup.connector_id);
+
+  // EXACT per-connector lookup (existing-sources-by-connector.ts) — never a
+  // fleet page filtered client-side. No incompleteness signal to surface:
+  // this connector's existing sources are exact by construction.
+  const existingSources = targetConnectionId ? [] : await existingSourcesForManualUpload(setup.connector_id);
 
   // Primary acquisition methods lead; advanced/secondary paths sit behind one
   // disclosure so the recommended path is obvious and the page stays low-noise.

@@ -1,6 +1,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import { validateListEnvelope } from "@pdpp/list-envelope";
 /**
  * Shared Explorer data assembly, parameterized by a DashboardDataSource adapter.
  *
@@ -198,6 +199,84 @@ function summaryByConnectionId(summaries: RefConnectorSummary[]): Map<string, Re
     map.set(s.connection_id, s);
   }
   return map;
+}
+
+/**
+ * Fetch the EXACT summary for every `?connection=` selection via the scoped
+ * `connectionRouteId` lookup (a 0-or-1 list per id), independent of whatever
+ * facet page the rail happens to be showing. The one bounded facet page
+ * (`summaries`) is paged for the SIDEBAR's list of pageable options — it is
+ * not a reliable source for "does this selected connection still exist,"
+ * because paging the rail forward/back is unrelated navigation that must
+ * never change which records a `?connection=` filter matches. Without this,
+ * a selected connection living on facet page 2 while the rail shows page 1
+ * (or vice versa) makes `filteredSummaries` empty and silently drops every
+ * record for a connection that genuinely exists.
+ */
+async function resolveExactSelectedSummaries(
+  selectedConnectionIds: readonly string[],
+  dataSource: DashboardDataSource
+): Promise<RefConnectorSummary[]> {
+  if (selectedConnectionIds.length === 0) {
+    return [];
+  }
+  const pages = await Promise.all(
+    selectedConnectionIds.map((connectionRouteId) => dataSource.listConnectorSummaries({ connectionRouteId }))
+  );
+  return pages.flatMap((page) => page.data);
+}
+
+/**
+ * Envelope validation for the facet rail's ONE bounded connector-summary
+ * page — `@pdpp/list-envelope`'s shared validator (the same one the console
+ * pager, CLI, and live-audit script use) enforces the strict envelope shape
+ * (`object: "list"`, array `data`, boolean `has_more`, coherent trimmed
+ * continuation).
+ *
+ * IMMEDIATE SELF-LOOP REJECTION ONLY: a `next_cursor` equal to the cursor
+ * that produced it is rejected. This module does NOT track cross-request
+ * cycle history (no session store, no `nav` token) — see
+ * `connector-summary-page.tsx`'s module doc (apps/console) for the full
+ * boundary rationale: this is an interactive UI talking to our own
+ * authenticated backend over a signed, monotonic keyset cursor contract, not
+ * an untrusted channel that needs a client-held cryptographic session to
+ * defend. A prior revision's `explore-facet-navigation-session.ts`
+ * (a `globalThis` map keyed by a caller-supplied `nav` token) was rejected
+ * by an independent gate review: it accepted any token with no
+ * format/signature/expiry/owner binding, so it was both unbounded (an
+ * attacker or just many bookmarked links could grow the map forever) and
+ * defeated by a forged fresh token per request (which reintroduces the very
+ * non-adjacent-cycle blind spot it existed to close). It has been deleted,
+ * not hardened — hardening it into an HMAC-signed session token would solve
+ * a forgery problem this surface doesn't have, at the cost of exactly the
+ * unbounded-memory/forgery surface the gate found.
+ *
+ * Either rejection surfaces as an explicit restart affordance via
+ * `connectionsPageError` — never silently treated as "no more pages."
+ */
+function validateFacetPageEnvelope(
+  requestedCursor: string | undefined,
+  response: { data: unknown; has_more: unknown; next_cursor?: unknown; object: unknown }
+): { error: string | null; hasMore: boolean; items: RefConnectorSummary[]; nextCursor: string | undefined } {
+  const validation = validateListEnvelope<RefConnectorSummary>(response);
+  if (validation.kind === "invalid") {
+    return {
+      error: `The server returned a malformed connections page (${validation.reason}). Please restart from page 1.`,
+      hasMore: false,
+      items: [],
+      nextCursor: undefined,
+    };
+  }
+  if (validation.nextCursor && validation.nextCursor === requestedCursor) {
+    return {
+      error:
+        "The server returned a continuation that loops back to this same connections page. Please restart from page 1.",
+      hasMore: false,
+      items: [],
+      nextCursor: undefined,
+    };
+  }
+  return { error: null, hasMore: validation.hasMore, items: [...validation.data], nextCursor: validation.nextCursor };
 }
 
 function isValidIsoDate(value: string): boolean {
@@ -2579,6 +2658,12 @@ export interface ExplorerSearchParams {
   anchor?: string;
   connection?: string | string[];
   /**
+   * Opaque continuation for the connector-summary facet page (Sources/facet
+   * rail), DISTINCT from `cursor`/`cursors` which page the record feed. Empty
+   * = facet page 1.
+   */
+  connections_page_cursor?: string;
+  /**
    * Opaque cursor for lexical search pagination in Most-relevant mode OR the
    * keyset cursor for Most-recent single-stream pagination (search lenses).
    * Cleared when the query or sort mode changes.
@@ -2816,6 +2901,74 @@ function parsePageParams(
   };
 }
 
+/** Max connector-summary page size for the Explore facet rail — the reference's own bound (`CONNECTOR_SUMMARY_PAGE_LIMIT_MAX`). */
+const EXPLORE_CONNECTIONS_PAGE_LIMIT = 100;
+
+interface ExploreConnectionsFacetResult {
+  connections: ExplorerConnectionFacet[];
+  connectionsPageError: string | null;
+  connectionsPageHasMore: boolean;
+  connectionsPageIsPaged: boolean;
+  connectionsPageNextCursor: string | undefined;
+  /** Facet page summaries merged with the exact-selection lookup — the authoritative set for filtering. */
+  summaries: RefConnectorSummary[];
+}
+
+/**
+ * Load the Explore facet rail: ONE bounded connector-summary page (never the
+ * exhaustive fold) for the sidebar's pageable option list, PLUS a separate
+ * exact lookup for every `?connection=` selection
+ * (`resolveExactSelectedSummaries`) so paging the rail can never silently
+ * drop a selected connection's records just because it isn't on the
+ * currently-displayed page. A malformed/rejected facet-page continuation
+ * (including an immediate self-loop — see `validateFacetPageEnvelope`'s doc)
+ * is caught here (never left to propagate to the route's generic error
+ * boundary) and surfaced as `connectionsPageError` so the canvas can render
+ * the same explicit restart affordance every other pager in this codebase
+ * uses — that failure never affects the independently-resolved selection.
+ */
+async function loadExploreConnectionsFacet(
+  params: ExplorerSearchParams,
+  selectedConnectionIds: readonly string[],
+  dataSource: DashboardDataSource
+): Promise<ExploreConnectionsFacetResult> {
+  const requestedFacetCursor =
+    typeof params.connections_page_cursor === "string" ? params.connections_page_cursor : undefined;
+
+  const [facetPageResult, exactSelectedSummaries] = await Promise.all([
+    dataSource
+      .listConnectorSummaries({ cursor: requestedFacetCursor, limit: EXPLORE_CONNECTIONS_PAGE_LIMIT })
+      .then((page) => validateFacetPageEnvelope(requestedFacetCursor, page))
+      .catch((err: unknown) => ({
+        error: err instanceof Error ? err.message : "Could not load the connections list.",
+        hasMore: false,
+        items: [],
+        nextCursor: undefined,
+      })),
+    resolveExactSelectedSummaries(selectedConnectionIds, dataSource),
+  ]);
+  const facetPageSummaries = facetPageResult.error ? [] : facetPageResult.items;
+
+  // Merge the exact-selection lookup into the facet page's summaries so every
+  // OTHER consumer (record filtering, peek lookups, chart targets) sees a
+  // selected connection regardless of which facet page the rail is showing —
+  // including when the facet page itself failed to load. The facet page's
+  // own copy wins on id collision (same data, no-op either way).
+  const summariesById = new Map(exactSelectedSummaries.map((s) => [s.connection_id, s] as const));
+  for (const s of facetPageSummaries) {
+    summariesById.set(s.connection_id, s);
+  }
+
+  return {
+    connections: facetPageSummaries.map(toConnectionFacet).sort((a, b) => a.displayName.localeCompare(b.displayName)),
+    connectionsPageError: facetPageResult.error,
+    connectionsPageHasMore: facetPageResult.error ? false : facetPageResult.hasMore,
+    connectionsPageIsPaged: requestedFacetCursor !== undefined,
+    connectionsPageNextCursor: facetPageResult.error ? undefined : facetPageResult.nextCursor,
+    summaries: [...summariesById.values()],
+  };
+}
+
 /**
  * Assemble the data the Explorer canvas renders.
  */
@@ -2839,13 +2992,20 @@ export async function assembleExplorerData(
   const since = isValidIsoDate(rawSince) ? rawSince : "";
   const until = isValidIsoDate(rawUntil) ? rawUntil : "";
 
-  const [response, manifestMetadata] = await Promise.all([
-    dataSource.listConnectorSummaries(),
+  const [
+    {
+      connections,
+      connectionsPageError,
+      connectionsPageHasMore,
+      connectionsPageIsPaged,
+      connectionsPageNextCursor,
+      summaries,
+    },
+    manifestMetadata,
+  ] = await Promise.all([
+    loadExploreConnectionsFacet(params, selectedConnectionIds, dataSource),
     buildManifestMetadata(dataSource),
   ]);
-  const summaries = response.data;
-
-  const connections = summaries.map(toConnectionFacet).sort((a, b) => a.displayName.localeCompare(b.displayName));
 
   const filterConnectionSet = new Set(selectedConnectionIds);
   const filteredSummaries =
@@ -2980,6 +3140,10 @@ export async function assembleExplorerData(
     // here; the canvas holds the loaded series in its own state.
     bucketSeries: null,
     connections,
+    connectionsPageError,
+    connectionsPageHasMore,
+    connectionsPageIsPaged,
+    connectionsPageNextCursor,
     // The accumulating cursor trail backing this feed. Only the recent merged-
     // timeline lens accumulates; search / time-range lenses page via the single
     // searchNextCursor, so they carry an empty trail.

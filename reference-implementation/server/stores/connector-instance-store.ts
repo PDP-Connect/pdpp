@@ -171,6 +171,17 @@ export interface ConnectorIdentityPageBoundary {
   readonly createdAt: string;
 }
 
+/**
+ * Optional owner-scoped `connector_id` filter for `listOwnerVisibleIdentityPage`.
+ * `null`/omitted preserves the exact prior fleet-wide page. When supplied, it
+ * narrows the SAME keyset page (identity, ordering, cursor tuple) to one
+ * connector's connections — Add Source, manual upload, and grant discovery
+ * enumerate all of one connector's connections without a fleet scan.
+ */
+export interface ConnectorIdentityPageFilter {
+  readonly connectorId?: string | null;
+}
+
 export interface ConnectorInstanceIdentityPage {
   readonly hasMore: boolean;
   readonly rows: readonly ConnectorInstance[];
@@ -182,14 +193,88 @@ function assertConnectorIdentityPageLimit(limit: number): void {
   }
 }
 
+/**
+ * Shared bind-parameter array for `listOwnerVisibleIdentityPage`'s two static
+ * templates (filtered/unfiltered) — identical on both backends, since only
+ * the SQL text differs, not the bound values. Isolated so neither store's
+ * `listOwnerVisibleIdentityPage` has to re-express the template-choice
+ * branch inline.
+ */
+function ownerVisibleIdentityPageParams(
+  ownerSubjectId: string,
+  connectorId: string | null,
+  after: ConnectorIdentityPageBoundary | null,
+  limit: number
+): (string | number | null)[] {
+  const cursorConnectorId = after ? after.connectorId : null;
+  const cursorCreatedAt = after ? after.createdAt : null;
+  const cursorInstanceId = after ? after.connectorInstanceId : null;
+  const base = [
+    ownerSubjectId,
+    cursorConnectorId,
+    cursorConnectorId,
+    cursorConnectorId,
+    cursorCreatedAt,
+    cursorConnectorId,
+    cursorCreatedAt,
+    cursorInstanceId,
+    limit + 1,
+  ];
+  return connectorId === null ? base : [ownerSubjectId, connectorId, ...base.slice(1)];
+}
+
 // This is an owner-facing dashboard visibility policy, not a generic status
 // filter: drafts and ordinary revoked connections remain visible, while
 // retired setup shells and system-only connectors do not consume page slots.
-const SQLITE_OWNER_VISIBLE_IDENTITY_PAGE_SQL = `
+//
+// Terminal-gate revision (2026-07-29): the prior single fixed-shape query
+// expressed the optional connector_id filter as `(? IS NULL OR connector_id =
+// ?)`. SQLite's planner cannot use a composite index's second column
+// (`idx_connector_instances_owner_identity_page(owner_subject_id,
+// connector_id, created_at, connector_instance_id)`) through that OR shape —
+// EXPLAIN showed it fell back to a full `owner_subject_id`-only index scan,
+// walking every connection the owner has for a sparse filtered connector
+// (real PostgreSQL, whose planner CAN see through the OR, used the composite
+// index on both columns). Two static, separately-prepared templates — one
+// with a plain sargable `connector_id = ?` equality, one without the
+// predicate at all — let SQLite range-scan the composite index on both
+// columns in the filtered case, and keep the original owner-only scan in the
+// unfiltered case (there is no `connector_id` to seek to when listing every
+// connector). The application chooses which template to bind based on
+// whether a `connectorId` filter is present; both keep the identical column
+// list, NOT LIKE exclusions, visibility predicate, cursor tuple, ordering,
+// and limit.
+// Exported for EXPLAIN-plan test introspection only (e.g. asserting the
+// composite `idx_connector_instances_owner_identity_page` index is seekable
+// on `connector_id` for the filtered template) — not part of the store's
+// public read surface, which stays `listOwnerVisibleIdentityPage`.
+export const SQLITE_OWNER_VISIBLE_IDENTITY_PAGE_UNFILTERED_SQL = `
 SELECT connector_instance_id, owner_subject_id, connector_id, display_name, status,
        source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
 FROM connector_instances
 WHERE owner_subject_id = ?
+  AND connector_id NOT LIKE '%manual_action_stub%'
+  AND connector_id NOT LIKE '%manual-action-stub%'
+  AND connector_id NOT LIKE '%stream-test-stub%'
+  AND connector_id NOT LIKE '%pg_runtime_%'
+  AND connector_id NOT LIKE '%pg_canonical_%'
+  AND connector_id NOT LIKE '%pg_expand_%'
+  AND connector_id NOT LIKE '%pg_lexical_backfill_%'
+  AND (status <> 'revoked' OR COALESCE(json_extract(source_binding_json, '$.kind'), '') NOT IN ('browser_enrollment_shell', 'static_secret_draft', 'manual_upload_draft'))
+  AND (
+    ? IS NULL
+    OR connector_id > ?
+    OR (connector_id = ? AND created_at > ?)
+    OR (connector_id = ? AND created_at = ? AND connector_instance_id > ?)
+  )
+ORDER BY connector_id ASC, created_at ASC, connector_instance_id ASC
+LIMIT ?`;
+export const SQLITE_OWNER_VISIBLE_IDENTITY_PAGE_FILTERED_SQL = `
+SELECT connector_instance_id, owner_subject_id, connector_id, display_name, status,
+       source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
+FROM connector_instances
+WHERE owner_subject_id = ?
+  AND connector_id = ?
   AND connector_id NOT LIKE '%manual_action_stub%'
   AND connector_id NOT LIKE '%manual-action-stub%'
   AND connector_id NOT LIKE '%stream-test-stub%'
@@ -217,6 +302,43 @@ const VALID_STATUSES = new Set(["active", "paused", "revoked", "draft"]);
 // connection read surface). A draft must never appear in a list, count, or
 // dashboard view. See Decision 2.
 const READ_SURFACE_HIDDEN_STATUSES = new Set(["draft"]);
+// Source-binding kinds whose REVOKED row is a retired setup shell, not an
+// ordinary revoked connection — hidden from every owner-visible read surface
+// alongside `READ_SURFACE_HIDDEN_STATUSES`. Mirrors the SQL predicate
+// `(status <> 'revoked' OR source_binding kind NOT IN (...))` in
+// `SQLITE_OWNER_VISIBLE_IDENTITY_PAGE_*_SQL`/the Postgres equivalents below —
+// duplicated here (SQL + JS) because `resolveOwnerVisibleConnectionForRoute`'s
+// exact-id point lookup (`ref-control.ts`) bypasses the paged query entirely
+// and must apply the SAME visibility rule to what it reads via `store.get`.
+const RETIRED_SETUP_SHELL_BINDING_KINDS = new Set([
+  "browser_enrollment_shell",
+  "static_secret_draft",
+  "manual_upload_draft",
+]);
+
+/**
+ * True when `instance` is owner-visible under the SAME rule the identity-page
+ * SQL enforces: a `revoked` row whose source-binding kind is a retired setup
+ * shell (browser-enrollment shell, static-secret draft, manual-upload draft)
+ * is hidden from every read surface, exactly like a `draft`-status row is.
+ * Every other status/kind combination is visible. Used by any point-lookup
+ * path (`store.get`) that must match the paged listing's visibility contract
+ * without re-querying the page.
+ */
+export function isOwnerVisibleConnectorInstance(instance: {
+  readonly status: string;
+  readonly sourceBinding: unknown;
+}): boolean {
+  if (instance.status !== "revoked") {
+    return true;
+  }
+  const { sourceBinding } = instance;
+  const kind =
+    sourceBinding && typeof sourceBinding === "object" && !Array.isArray(sourceBinding)
+      ? (sourceBinding as { kind?: unknown }).kind
+      : undefined;
+  return typeof kind !== "string" || !RETIRED_SETUP_SHELL_BINDING_KINDS.has(kind);
+}
 // `browser_collector` is a peer of `local_device` on the connector-instance
 // source-binding axis: a binding collected by a local collector driving a
 // browser session for a browser-bound connector. See
@@ -1218,25 +1340,26 @@ export function createSqliteConnectorInstanceStore() {
     // this identity contract. SQL remains fixed and every value is bound.
     listOwnerVisibleIdentityPage(
       ownerSubjectId: string,
-      { after = null, limit }: { after?: ConnectorIdentityPageBoundary | null; limit: number }
+      {
+        after = null,
+        limit,
+        connectorId = null,
+      }: { after?: ConnectorIdentityPageBoundary | null; limit: number } & ConnectorIdentityPageFilter
     ): ConnectorInstanceIdentityPage {
       assertConnectorIdentityPageLimit(limit);
-      const cursorConnectorId = after ? after.connectorId : null;
-      const cursorCreatedAt = after ? after.createdAt : null;
-      const cursorInstanceId = after ? after.connectorInstanceId : null;
-      const rows = Array.from(
-        iterateDynamicSqlAcknowledged<ConnectorInstanceRow>(SQLITE_OWNER_VISIBLE_IDENTITY_PAGE_SQL, [
-          ownerSubjectId,
-          cursorConnectorId,
-          cursorConnectorId,
-          cursorConnectorId,
-          cursorCreatedAt,
-          cursorConnectorId,
-          cursorCreatedAt,
-          cursorInstanceId,
-          limit + 1,
-        ])
-      );
+      // Static template choice, not a dynamic-shape query: a present
+      // `connectorId` binds the FILTERED template (plain sargable
+      // `connector_id = ?`, seekable on the composite index); a `null`
+      // filter binds the UNFILTERED template (no connector_id predicate at
+      // all). Every other bound value and column is identical between them
+      // (see `ownerVisibleIdentityPageParams`, shared with the PostgreSQL
+      // store since only the SQL text differs, not the bound values).
+      const sql =
+        connectorId === null
+          ? SQLITE_OWNER_VISIBLE_IDENTITY_PAGE_UNFILTERED_SQL
+          : SQLITE_OWNER_VISIBLE_IDENTITY_PAGE_FILTERED_SQL;
+      const params = ownerVisibleIdentityPageParams(ownerSubjectId, connectorId, after, limit);
+      const rows = Array.from(iterateDynamicSqlAcknowledged<ConnectorInstanceRow>(sql, params));
       const hasMore = rows.length > limit;
       return { hasMore, rows: rows.slice(0, limit).map(mapInstance) };
     },
@@ -1250,6 +1373,11 @@ export function createSqliteConnectorInstanceStore() {
       return resolveSingleActive(rows, ownerSubjectId, connectorId);
     },
 
+    // Terminal-gate revision (2026-07-29): same one-transaction shape as
+    // `updateStatus` — the display_name write and its dirty marker commit
+    // together, or neither does. Thrown errors (not-found) roll back the
+    // whole transaction via better-sqlite3's transaction wrapper, so the
+    // not-found check below never leaves a dangling dirty marker.
     setDisplayName(
       connectorInstanceId: string,
       {
@@ -1263,22 +1391,35 @@ export function createSqliteConnectorInstanceStore() {
       }
     ): ConnectorInstance | null {
       assertOwnerSetDisplayNameArgs({ connectorInstanceId, displayName, ownerSubjectId });
-      const result = exec(referenceQueries.connectorInstancesUpdateDisplayName, [
-        displayName,
-        updatedAt ?? new Date().toISOString(),
-        connectorInstanceId,
-        ownerSubjectId,
-      ]);
-      if (!result || result.changes === 0) {
-        throw new ConnectorInstanceResolutionError(
-          "connector_instance_not_found",
-          `Connector instance '${connectorInstanceId}' does not exist for owner '${ownerSubjectId}'.`,
-          { connectorInstanceId, ownerSubjectId }
-        );
-      }
+      writeTransaction(() => {
+        const result = exec(referenceQueries.connectorInstancesUpdateDisplayName, [
+          displayName,
+          updatedAt ?? new Date().toISOString(),
+          connectorInstanceId,
+          ownerSubjectId,
+        ]);
+        if (!result || result.changes === 0) {
+          throw new ConnectorInstanceResolutionError(
+            "connector_instance_not_found",
+            `Connector instance '${connectorInstanceId}' does not exist for owner '${ownerSubjectId}'.`,
+            { connectorInstanceId, ownerSubjectId }
+          );
+        }
+        exec(referenceQueries.connectorSummaryEvidenceMarkDirtyByConnectorInstance, [
+          "connector instance display_name changed",
+          connectorInstanceId,
+        ]);
+      });
       return this.get(connectorInstanceId);
     },
 
+    // Terminal-gate revision (2026-07-29): the status write and its
+    // summary-evidence dirty marker commit in ONE transaction, matching
+    // `deleteConnection`'s existing precedent for the same table. A marker
+    // write that failed AFTER an already-committed status change (the
+    // previous two-statement shape) could silently lose the repair signal;
+    // GET is now purely read-only, so there is no read-time reconcile left
+    // to paper over that gap.
     updateStatus(
       connectorInstanceId: string,
       {
@@ -1294,7 +1435,13 @@ export function createSqliteConnectorInstanceStore() {
       if (!VALID_STATUSES.has(status)) {
         throw new Error(`Invalid connector instance status '${status}'.`);
       }
-      exec(referenceQueries.connectorInstancesUpdateStatus, [status, updatedAt, revokedAt, connectorInstanceId]);
+      writeTransaction(() => {
+        exec(referenceQueries.connectorInstancesUpdateStatus, [status, updatedAt, revokedAt, connectorInstanceId]);
+        exec(referenceQueries.connectorSummaryEvidenceMarkDirtyByConnectorInstance, [
+          `connector instance status changed to ${status}`,
+          connectorInstanceId,
+        ]);
+      });
       return this.get(connectorInstanceId);
     },
     // Design D8 (fix-enroll-connector-instance-pk-collision). See the
@@ -1437,6 +1584,52 @@ function assertOwnerSetDisplayNameArgs({
     throw new InvalidRequestError("display_name must be at most 200 characters.", "display_name");
   }
 }
+
+// Exported for EXPLAIN-plan test introspection only, mirroring the SQLite
+// constants above — not part of the store's public read surface.
+export const POSTGRES_OWNER_VISIBLE_IDENTITY_PAGE_UNFILTERED_SQL = `
+SELECT connector_instance_id, owner_subject_id, connector_id, display_name, status,
+       source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
+FROM connector_instances
+WHERE owner_subject_id = $1
+  AND connector_id NOT LIKE '%manual_action_stub%'
+  AND connector_id NOT LIKE '%manual-action-stub%'
+  AND connector_id NOT LIKE '%stream-test-stub%'
+  AND connector_id NOT LIKE '%pg_runtime_%'
+  AND connector_id NOT LIKE '%pg_canonical_%'
+  AND connector_id NOT LIKE '%pg_expand_%'
+  AND connector_id NOT LIKE '%pg_lexical_backfill_%'
+  AND (status <> 'revoked' OR COALESCE(source_binding_json->>'kind', '') NOT IN ('browser_enrollment_shell', 'static_secret_draft', 'manual_upload_draft'))
+  AND (
+    $2::text IS NULL
+    OR connector_id > $3
+    OR (connector_id = $4 AND created_at > $5)
+    OR (connector_id = $6 AND created_at = $7 AND connector_instance_id > $8)
+  )
+ORDER BY connector_id ASC, created_at ASC, connector_instance_id ASC
+LIMIT $9`;
+export const POSTGRES_OWNER_VISIBLE_IDENTITY_PAGE_FILTERED_SQL = `
+SELECT connector_instance_id, owner_subject_id, connector_id, display_name, status,
+       source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
+FROM connector_instances
+WHERE owner_subject_id = $1
+  AND connector_id = $2
+  AND connector_id NOT LIKE '%manual_action_stub%'
+  AND connector_id NOT LIKE '%manual-action-stub%'
+  AND connector_id NOT LIKE '%stream-test-stub%'
+  AND connector_id NOT LIKE '%pg_runtime_%'
+  AND connector_id NOT LIKE '%pg_canonical_%'
+  AND connector_id NOT LIKE '%pg_expand_%'
+  AND connector_id NOT LIKE '%pg_lexical_backfill_%'
+  AND (status <> 'revoked' OR COALESCE(source_binding_json->>'kind', '') NOT IN ('browser_enrollment_shell', 'static_secret_draft', 'manual_upload_draft'))
+  AND (
+    $3::text IS NULL
+    OR connector_id > $4
+    OR (connector_id = $5 AND created_at > $6)
+    OR (connector_id = $7 AND created_at = $8 AND connector_instance_id > $9)
+  )
+ORDER BY connector_id ASC, created_at ASC, connector_instance_id ASC
+LIMIT $10`;
 
 export function createPostgresConnectorInstanceStore() {
   const store = {
@@ -1774,45 +1967,27 @@ export function createPostgresConnectorInstanceStore() {
 
     async listOwnerVisibleIdentityPage(
       ownerSubjectId: string,
-      { after = null, limit }: { after?: ConnectorIdentityPageBoundary | null; limit: number }
+      {
+        after = null,
+        limit,
+        connectorId = null,
+      }: { after?: ConnectorIdentityPageBoundary | null; limit: number } & ConnectorIdentityPageFilter
     ): Promise<ConnectorInstanceIdentityPage> {
       assertConnectorIdentityPageLimit(limit);
-      const cursorConnectorId = after ? after.connectorId : null;
-      const cursorCreatedAt = after ? after.createdAt : null;
-      const cursorInstanceId = after ? after.connectorInstanceId : null;
-      const result = await postgresQuery(
-        `SELECT connector_instance_id, owner_subject_id, connector_id, display_name, status,
-                source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
-         FROM connector_instances
-         WHERE owner_subject_id = $1
-           AND connector_id NOT LIKE '%manual_action_stub%'
-           AND connector_id NOT LIKE '%manual-action-stub%'
-           AND connector_id NOT LIKE '%stream-test-stub%'
-           AND connector_id NOT LIKE '%pg_runtime_%'
-           AND connector_id NOT LIKE '%pg_canonical_%'
-           AND connector_id NOT LIKE '%pg_expand_%'
-           AND connector_id NOT LIKE '%pg_lexical_backfill_%'
-           AND (status <> 'revoked' OR COALESCE(source_binding_json->>'kind', '') NOT IN ('browser_enrollment_shell', 'static_secret_draft', 'manual_upload_draft'))
-           AND (
-             $2::text IS NULL
-             OR connector_id > $3
-             OR (connector_id = $4 AND created_at > $5)
-             OR (connector_id = $6 AND created_at = $7 AND connector_instance_id > $8)
-           )
-         ORDER BY connector_id ASC, created_at ASC, connector_instance_id ASC
-         LIMIT $9`,
-        [
-          ownerSubjectId,
-          cursorConnectorId,
-          cursorConnectorId,
-          cursorConnectorId,
-          cursorCreatedAt,
-          cursorConnectorId,
-          cursorCreatedAt,
-          cursorInstanceId,
-          limit + 1,
-        ]
-      );
+      // Static template choice (terminal-gate revision, 2026-07-29), matching
+      // the SQLite store: a plain sargable `connector_id = $2` equality when
+      // filtered, no connector_id predicate at all when not. Real PostgreSQL
+      // already planned the prior `($2::text IS NULL OR connector_id = $2)`
+      // shape onto the composite index correctly, but the static-template
+      // requirement applies to both backends, not only the one whose planner
+      // happened to see through the dynamic shape. Bound values are shared
+      // with the SQLite store via `ownerVisibleIdentityPageParams`.
+      const sql =
+        connectorId === null
+          ? POSTGRES_OWNER_VISIBLE_IDENTITY_PAGE_UNFILTERED_SQL
+          : POSTGRES_OWNER_VISIBLE_IDENTITY_PAGE_FILTERED_SQL;
+      const params = ownerVisibleIdentityPageParams(ownerSubjectId, connectorId, after, limit);
+      const result = await postgresQuery(sql, params);
       const rows = result.rows as ConnectorInstanceRow[];
       const hasMore = rows.length > limit;
       return { hasMore, rows: rows.slice(0, limit).map(mapInstance) };
@@ -1830,6 +2005,10 @@ export function createPostgresConnectorInstanceStore() {
       return resolveSingleActive((result.rows as ConnectorInstanceRow[]).map(mapInstance), ownerSubjectId, connectorId);
     },
 
+    // Terminal-gate revision (2026-07-29): same one-transaction shape as the
+    // SQLite store and as `deleteConnection`'s existing precedent for this
+    // table — the display_name write and its dirty marker commit together
+    // via the SAME client, or neither does.
     async setDisplayName(
       connectorInstanceId: string,
       {
@@ -1843,19 +2022,27 @@ export function createPostgresConnectorInstanceStore() {
       }
     ): Promise<ConnectorInstance | null> {
       assertOwnerSetDisplayNameArgs({ connectorInstanceId, displayName, ownerSubjectId });
-      const result = await postgresQuery(
-        `UPDATE connector_instances
-         SET display_name = $1, updated_at = $2
-         WHERE connector_instance_id = $3 AND owner_subject_id = $4`,
-        [displayName, updatedAt ?? new Date().toISOString(), connectorInstanceId, ownerSubjectId]
+      await withPostgresTransaction(
+        async (client: { query: (sql: string, params?: unknown[]) => Promise<{ rowCount?: number | null }> }) => {
+          const result = await client.query(
+            `UPDATE connector_instances
+           SET display_name = $1, updated_at = $2
+           WHERE connector_instance_id = $3 AND owner_subject_id = $4`,
+            [displayName, updatedAt ?? new Date().toISOString(), connectorInstanceId, ownerSubjectId]
+          );
+          if (result.rowCount === 0) {
+            throw new ConnectorInstanceResolutionError(
+              "connector_instance_not_found",
+              `Connector instance '${connectorInstanceId}' does not exist for owner '${ownerSubjectId}'.`,
+              { connectorInstanceId, ownerSubjectId }
+            );
+          }
+          await client.query(
+            `UPDATE connector_summary_evidence SET dirty = 1, state = 'stale', last_error = $1 WHERE connector_instance_id = $2`,
+            ["connector instance display_name changed", connectorInstanceId]
+          );
+        }
       );
-      if (!result || result.rowCount === 0) {
-        throw new ConnectorInstanceResolutionError(
-          "connector_instance_not_found",
-          `Connector instance '${connectorInstanceId}' does not exist for owner '${ownerSubjectId}'.`,
-          { connectorInstanceId, ownerSubjectId }
-        );
-      }
       return await this.get(connectorInstanceId);
     },
 
@@ -1874,9 +2061,17 @@ export function createPostgresConnectorInstanceStore() {
       if (!VALID_STATUSES.has(status)) {
         throw new Error(`Invalid connector instance status '${status}'.`);
       }
-      await postgresQuery(
-        "UPDATE connector_instances SET status = $1, updated_at = $2, revoked_at = $3 WHERE connector_instance_id = $4",
-        [status, updatedAt, revokedAt, connectorInstanceId]
+      await withPostgresTransaction(
+        async (client: { query: (sql: string, params?: unknown[]) => Promise<unknown> }) => {
+          await client.query(
+            "UPDATE connector_instances SET status = $1, updated_at = $2, revoked_at = $3 WHERE connector_instance_id = $4",
+            [status, updatedAt, revokedAt, connectorInstanceId]
+          );
+          await client.query(
+            `UPDATE connector_summary_evidence SET dirty = 1, state = 'stale', last_error = $1 WHERE connector_instance_id = $2`,
+            [`connector instance status changed to ${status}`, connectorInstanceId]
+          );
+        }
       );
       return await this.get(connectorInstanceId);
     },

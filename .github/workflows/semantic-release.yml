@@ -79,6 +79,24 @@ jobs:
           node-version: "lts/*"
           cache: "pnpm"
 
+      # --ignore-scripts is deliberate here: a normal `pnpm install` runs every
+      # workspace package's `prepare` script, and packages/cli's `prepare`
+      # runs `pnpm build`, which REGENERATES packages/cli/src/ref/
+      # list-envelope.ts from packages/list-envelope/src/index.ts before any
+      # later drift check would ever see the tracked file's real committed
+      # state. Checking drift after a scripted install would silently
+      # normalize (and thus never catch) exactly the drift this check exists
+      # to find. node_modules from this pass is sufficient for
+      # generated-artifacts:check (tsx + tsc, no package builds needed).
+      - name: Install dependencies (no lifecycle scripts, for drift check)
+        env:
+          PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Check generated artifacts are not drifted (before any build/prepack normalizes them)
+        run: pnpm generated-artifacts:check
+
       - name: Install dependencies
         env:
           PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1"

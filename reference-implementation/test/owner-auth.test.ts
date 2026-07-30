@@ -594,7 +594,7 @@ test("owner-auth placeholder: enabled — _ref reads and mutations both require 
     await startPendingConsent(asUrl);
     const connectorId = SPOTIFY_MANIFEST.connector_id;
 
-    const unauthenticatedRead = await fetchJson(`${asUrl}/_ref/connectors`, {
+    const unauthenticatedRead = await fetchJson(`${asUrl}/_ref/connectors?limit=20`, {
       headers: { Accept: "application/json" },
     });
     assert.equal(unauthenticatedRead.status, 401, "_ref reads now require owner session");
@@ -616,7 +616,7 @@ test("owner-auth placeholder: enabled — _ref reads and mutations both require 
 
     const { cookie } = await login(asUrl, TEST_PASSWORD);
 
-    const authenticatedRead = await fetchJson(`${asUrl}/_ref/connectors`, {
+    const authenticatedRead = await fetchJson(`${asUrl}/_ref/connectors?limit=20`, {
       headers: { Accept: "application/json", Cookie: cookie || "" },
     });
     assert.equal(authenticatedRead.status, 200, "_ref read succeeds with owner session");

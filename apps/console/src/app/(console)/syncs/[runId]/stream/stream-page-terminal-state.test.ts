@@ -30,10 +30,13 @@ const POLLER_STREAM_READY_RE = /getCurrentBrowserSurfaceAssistance\(timelineEven
 const POLLER_HARD_RELOAD_RE = /window\.location\.reload\(\)/;
 const RUN_STATUS_INSTANCE_CONTEXT_RE =
   /const connectorInstanceId =\s*runStatus\?\.connector_instance_id \?\? getConnectorInstanceIdFromTimeline\(envelope\.events\);/;
+// The client no longer filters an unbounded fetch in the browser — it scopes
+// the reference read itself, via resolveConnectorSummaryRouteId (instance id
+// when known, else the bare connector id — the reference resolves exact
+// identity first and only falls back to an unambiguous connector-id match,
+// same precedence the old client-side filter enforced).
 const INSTANCE_SCOPED_SUMMARY_MATCH_RE =
-  /c\.connector_id === connectorId &&\s*\(c\.connector_instance_id === connectorInstanceId \|\| c\.connection_id === connectorInstanceId\)/;
-const CONNECTOR_TYPE_FALLBACK_RE =
-  /instanceMatch \?\? summaries\.data\.find\(\(c\) => c\.connector_id === connectorId\)/;
+  /listConnectorSummaries\(\{\s*connectionRouteId:\s*resolveConnectorSummaryRouteId\(connectorId,\s*connectorInstanceId\)/;
 const BROWSER_ASSISTANCE_STREAM_KIND_RE =
   /interactionKind="manual_action"[\s\S]{0,180}interactionMessage=\{streamableAssistance\.message\}/;
 const BROWSER_ASSISTANCE_RESPONSE_CONTRACT_RE =
@@ -44,6 +47,9 @@ const RESOLVED_SURFACE_ACCEPTS_RUN_ID_RE = /export function ResolvedSurface\(\{ 
 const RESOLVED_SURFACE_RUN_LINK_RE = /href=\{`\/syncs\/\$\{encodeURIComponent\(runId\)\}`\}/;
 const WINDOW_CLOSE_RE = /window\.close\(\)/;
 const CLOSE_TAB_COPY_RE = />\s*Close this tab\s*</;
+const NO_CLIENT_SIDE_FIRST_MATCH_RE = /summaries\.data\.find\(\(c\) => c\.connector_id === connectorId\)/;
+const BUILDS_CONTEXT_FROM_MATCH_RE = /return buildConnectorContext\(connectorId, match\);/;
+const BUILDS_CONTEXT_FROM_UNDEFINED_RE = /return buildConnectorContext\(connectorId, undefined\);/;
 
 test("no-assistance stream state distinguishes success, terminal failure, and active runs", () => {
   assert.equal(selectNoAssistanceStreamState({ terminalStatus: "completed" }), "resolved");
@@ -112,7 +118,52 @@ test("external provider approval does not render as a browser-session repair", (
 test("stream page labels multi-account runs by connection instance before connector type", () => {
   assert.match(pageSource, RUN_STATUS_INSTANCE_CONTEXT_RE);
   assert.match(pageSource, INSTANCE_SCOPED_SUMMARY_MATCH_RE);
-  assert.match(pageSource, CONNECTOR_TYPE_FALLBACK_RE);
+});
+
+// Intentional migration behavior change (gate finding #6, 2026-07-29):
+//
+// BEFORE: when the run timeline carried no connector_instance_id, the page
+// fetched the WHOLE fleet and did
+//   `instanceMatch ?? summaries.data.find((c) => c.connector_id === connectorId)`
+// — an ambiguous connector_id (multiple connections of the same connector
+// type) silently resolved to the FIRST configured connection, attaching
+// that connection's display_name to a run that might belong to a sibling
+// connection. This was a real, if narrow, mislabeling bug.
+//
+// AFTER: the page scopes the reference read itself, via
+// `resolveConnectorSummaryRouteId` (instance id when known, else the bare
+// connector id), which server-side resolves exact instance identity first,
+// then a connector_id fallback ONLY when exactly one configured connection
+// has that connector type (`resolveUnambiguousConnectionForConnectorId`,
+// `connection-route.ts`'s established precedent for the SAME tradeoff on
+// the records subpage). An ambiguous connector_id now resolves to NO
+// match — `buildConnectorContext` (connector-context-resolution.ts,
+// executable-tested there) degrades to the generic connector-type label
+// (e.g. "Strava") instead of a specific but possibly-wrong connection's
+// display_name (e.g. "Strava (work account)"). This is strictly safer
+// (never attributes to the wrong sibling connection) but is a real,
+// observable UX change for the rare multi-instance-same-connector-type
+// case with no instance id on the timeline, so it is pinned here as an
+// intentional scenario rather than left as an unexamined side effect.
+test("multi-instance fallback: the resolver delegates to the exact-identity-first, no-silent-first-match helpers", () => {
+  const resolverBody = pageSource.slice(
+    pageSource.indexOf("async function resolveConnectorContext"),
+    pageSource.indexOf("function renderNoAssistanceSurface")
+  );
+  // The scoped call resolves its route id via resolveConnectorSummaryRouteId
+  // (instance id when known, else connector id) — there is no client-side
+  // "first match" fallback left in this function.
+  assert.match(resolverBody, INSTANCE_SCOPED_SUMMARY_MATCH_RE);
+  assert.doesNotMatch(
+    resolverBody,
+    NO_CLIENT_SIDE_FIRST_MATCH_RE,
+    "no residual client-side first-match-by-connector_id fallback may remain"
+  );
+  // Both the resolved-match and error paths build the context through the
+  // shared, directly-unit-tested buildConnectorContext helper — never an
+  // inline fallback that could silently diverge from the tested behavior.
+  assert.match(resolverBody, BUILDS_CONTEXT_FROM_MATCH_RE);
+  assert.match(resolverBody, BUILDS_CONTEXT_FROM_UNDEFINED_RE);
 });
 
 test("stream page opens browser-surface assistance without assuming a response is required", () => {

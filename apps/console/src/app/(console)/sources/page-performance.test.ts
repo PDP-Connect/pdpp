@@ -7,11 +7,14 @@
  * The Ink Carbon "loading dock" reskin replaced the prior records-index
  * (`RecordsListView` + streamed version-churn diagnostics + raced
  * device-exporter backlog) with a master-detail Recordroom view. The page now
- * does ONE load-bearing read — `listConnectorSummaries()` — and projects it
- * with the pure `toSourcesView` mapping. These structural assertions pin that
- * the page stays a single-read projection, does not reintroduce a blocking
- * diagnostics waterfall, and preserves the reference-unreachable partial
- * fallback (never a thrown blank).
+ * does ONE load-bearing read — a single bounded `loadConnectorSummaryPage`
+ * (`listConnectorSummaries({ cursor, limit: 100 })`), NEVER the exhaustive
+ * `listAllConnectorSummaries` fold — and projects it with the pure
+ * `toSourcesView` mapping. A fleet larger than one page is reached via the
+ * shared `ConnectorSummaryPager`, not by prefetching every page server-side.
+ * These structural assertions pin that the page stays a single-bounded-page
+ * projection, does not reintroduce a blocking diagnostics waterfall, and
+ * preserves the reference-unreachable partial fallback (never a thrown blank).
  */
 
 import assert from "node:assert/strict";
@@ -22,7 +25,10 @@ import { fileURLToPath } from "node:url";
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const PAGE_FILE = `${HERE}page.tsx`;
 
-const LISTS_CONNECTOR_SUMMARIES = /listConnectorSummaries\(\)/;
+const LOADS_ONE_BOUNDED_PAGE = /loadConnectorSummaryPage\(/;
+const NEVER_EXHAUSTS_ALL_PAGES = /listAllConnectorSummaries\(\)/;
+const RENDERS_PAGER = /<ConnectorSummaryPager\b/;
+const RENDERS_PAGE_ERROR = /<ConnectorSummaryPageError\b/;
 const PROJECTS_WITH_VIEW_MODEL = /toSourcesView\(/;
 const RENDERS_SHELL = /<RecordroomShellWithPalette\b/;
 const RENDERS_SOURCES_VIEW = /<SourcesView\b/;
@@ -36,13 +42,27 @@ const CHURN_SUSPENSE_SLOT = /versionChurnSlot=/;
 const UNREACHABLE_ERROR = /ReferenceServerUnreachableError/;
 const UNREACHABLE_FALLBACK = /<ServerUnreachable \/>/;
 
-test("the Sources page does one load-bearing read and projects it with the view model", async () => {
+test("the Sources page does one bounded-page read and projects it with the view model", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
+  // loadConnectorSummaryPage is called from a small file-level helper (so its
+  // return type is concretely inferable), not inlined in the page body — so
+  // this checks the whole file, not just the page-function slice.
+  assert.match(src, LOADS_ONE_BOUNDED_PAGE);
   const pageBody = src.slice(src.indexOf("export default async function RecordsIndexPage"));
-  assert.match(pageBody, LISTS_CONNECTOR_SUMMARIES);
   assert.match(pageBody, PROJECTS_WITH_VIEW_MODEL);
   assert.match(pageBody, RENDERS_SHELL);
   assert.match(pageBody, RENDERS_SOURCES_VIEW);
+  assert.match(pageBody, RENDERS_PAGER);
+  assert.match(pageBody, RENDERS_PAGE_ERROR);
+});
+
+test("the Sources page never awaits the exhaustive all-pages fold before first paint", async () => {
+  const src = await readFile(PAGE_FILE, "utf8");
+  assert.doesNotMatch(
+    src,
+    NEVER_EXHAUSTS_ALL_PAGES,
+    "first render must await exactly one bounded page, never the exhaustive fold"
+  );
 });
 
 test("the Sources page does not reintroduce a blocking diagnostics waterfall", async () => {

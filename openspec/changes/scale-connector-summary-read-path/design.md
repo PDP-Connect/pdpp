@@ -47,21 +47,19 @@ not supply an implicit cross-request snapshot. [PostgreSQL LIMIT/OFFSET](https:/
 
 1. Retain `?connection=` exactly: it resolves one exact/unambiguous connection
    and remains unpaginated, deep, and output-compatible.
-2. Add `limit` and `cursor` to the unscoped list response, with `has_more` and
-   nullable `next_cursor`. The console moves to the paginated contract first.
-3. During one compatibility release, an unparameterized request retains its
-   current small-fleet envelope and ordering but returns a deprecation signal;
-   it MUST NOT silently truncate a large fleet. The final switch makes the
-   bounded default explicit and is blocked on consumer migration/UAT.
-4. Fleet-wide counts, attention rollups, and fleet health continue to use their
+2. Every unscoped list request MUST provide a positive bounded `limit` (capped
+   at 100). It may provide `cursor`; the response includes `has_more` and a
+   nullable `next_cursor`. A bare unscoped list request is invalid rather than
+   a compatibility mode.
+3. Fleet-wide counts, attention rollups, and fleet health continue to use their
    own bounded aggregation/composition endpoint. They are not inferred from a
    page and are not embedded into every item.
 
-The temporary compatibility mode is intentional: changing an unpaginated list
-to a default cap changes large-client semantics. Stripe's established list
-surface likewise uses a bounded `limit` and opaque continuation cursor; its
-specific object cursor is not reused here because PDP-Connect needs an exact
-connection-identity tuple. [Stripe pagination](https://docs.stripe.com/api/pagination)
+The final list contract intentionally requires an explicit bound, so clients
+cannot accidentally request or materialize an owner-wide summary. Stripe's
+established list surface likewise uses a bounded `limit` and opaque
+continuation cursor; its specific object cursor is not reused here because
+PDP-Connect needs an exact connection-identity tuple. [Stripe pagination](https://docs.stripe.com/api/pagination)
 
 ## Evidence batching boundary
 
@@ -106,9 +104,9 @@ guarantees as an additional server responsibility. [JSON:API cursor profile](htt
 
 ## Validation and UAT
 
-- Characterize the present 1–20 connection output byte-for-byte before and
-  after pagination compatibility mode, including drafts, revoked rows,
-  duplicate connector ids, local-device rows, and scoped `?connection=`.
+- Characterize bounded unscoped pages and exact unpaged `?connection=` reads,
+  including drafts, revoked rows, duplicate connector ids, and local-device
+  rows.
 - Add SQLite and PostgreSQL cursor tests for malformed/scope-mismatched cursor,
   tuple ties, delete/update/insert between pages, and no cross-connection
   evidence leakage.

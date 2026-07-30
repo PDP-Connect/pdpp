@@ -8,6 +8,8 @@ import { join } from "node:path";
 import test from "node:test";
 import { emitSpineEvent } from "../lib/spine.ts";
 import { CONNECTION_CONDITION_REASONS } from "../runtime/connection-health.ts";
+import { reconcileConnectorSummaryEvidence } from "../server/connector-summary-evidence-engine.ts";
+import { rebuildConnectorSummaryEvidence } from "../server/connector-summary-read-model.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
 import {
   type CollectionReportEntry,
@@ -518,7 +520,8 @@ test(
     assert.equal(sibling.last_run, null, "the sibling has no run of its own to borrow");
     const siblingByStream = collectionReportByStream(sibling.collection_report);
     const siblingMessages = siblingByStream.messages;
-    assert.notEqual(siblingMessages?.collected, 1145, "sibling must not inherit the manual run collected count");
+    assert.ok(siblingMessages, "the sibling has a messages collection_report entry");
+    assert.notEqual(siblingMessages.collected, 1145, "sibling must not inherit the manual run collected count");
   })
 );
 
@@ -544,6 +547,13 @@ test(
         },
       ],
     });
+
+    // The maintenance sweep (not the read itself) is what makes a required
+    // stream's coverage evidence authoritative — including folding this
+    // run's terminal collection_facts into `terminal_facts`. Simulate the
+    // full sweep barrier having already run before this read, same as
+    // production between sweeps.
+    await rebuildConnectorSummaryEvidence();
 
     const summaries = await listConnectorSummaries();
     const work = summaries.find(
@@ -591,6 +601,12 @@ test(
         },
       ],
     });
+
+    // Simulate the maintenance sweep having already run before this read
+    // (repair + terminal-facts fold both), so required-stream coverage
+    // evidence is authoritative — matches production between sweeps, not an
+    // inline-reconcile-on-read that no longer exists.
+    await rebuildConnectorSummaryEvidence();
 
     const summaries = await listConnectorSummaries();
     const work = summaries.find(
@@ -647,6 +663,12 @@ test(
         },
       ],
     });
+
+    // Simulate the maintenance sweep having already run before this read
+    // (repair + terminal-facts fold both), so required-stream coverage
+    // evidence is authoritative — matches production between sweeps, not an
+    // inline-reconcile-on-read that no longer exists.
+    await rebuildConnectorSummaryEvidence();
 
     const summaries = await listConnectorSummaries();
     const summary = summaries.find(
@@ -792,6 +814,11 @@ test(
       )
       .run("blob_work_1", CONNECTOR_ID, WORK_INSTANCE_ID, "files", "file_1");
     await rebuildRetainedSize();
+    // Simulate the maintenance sweep having already run before this read, so
+    // `stream_count` reads from the reconciled evidence row (streams with
+    // real records) instead of falling back to the manifest's declared
+    // stream count.
+    await reconcileConnectorSummaryEvidence(null);
 
     const summaries = await listConnectorSummaries();
     const rows = summaries.filter((row) => row.connector_id === CONNECTOR_ID);
@@ -864,6 +891,11 @@ test(
       )
       .run("blob_local_device_1", storageConnectorId, WORK_INSTANCE_ID, "messages", "local_msg_1");
     await rebuildRetainedSize();
+    // Simulate the maintenance sweep having already run before this read, so
+    // `stream_count` reads from the reconciled evidence row (streams with
+    // real records) instead of falling back to the manifest's declared
+    // stream count.
+    await reconcileConnectorSummaryEvidence(null);
 
     const summaries = await listConnectorSummaries();
     const work = summaries.find(
@@ -1193,6 +1225,11 @@ test(
       version: 1,
     });
     await rebuildRetainedSize();
+    // Terminal-gate revision (2026-07-29): the observation barrier no longer
+    // runs inline on a read — only the maintenance sweep (startup + periodic)
+    // reconciles `connector_summary_evidence`. Simulate the sweep having
+    // already run before this read, exactly as it would have in production.
+    await reconcileConnectorSummaryEvidence(null);
 
     const scoped = await getConnectorSummaryForRoute(WORK_INSTANCE_ID);
 
@@ -1202,10 +1239,10 @@ test(
     assert.equal(scoped.connector_id, CONNECTOR_ID);
     assert.equal(scoped.total_records, 1, "scoped route must not include sibling connection records");
     // `files` is a manifest-declared stream with no live canonical records for
-    // this connection. The observation barrier completes this connection's
-    // canonical snapshot on this very read, so `files` reads as an exact,
-    // genuine `known_zero` — never a fabricated value, and never smeared with
-    // the sibling connection's `messages` record.
+    // this connection. The maintenance sweep already completed this
+    // connection's canonical snapshot before this read, so `files` reads as
+    // an exact, genuine `known_zero` — never a fabricated value, and never
+    // smeared with the sibling connection's `messages` record.
     assert.deepEqual(
       [...scoped.stream_records]
         .sort((a, b) => a.stream.localeCompare(b.stream))
@@ -1241,6 +1278,10 @@ test(
     getDb()
       .prepare("UPDATE retained_size_connection SET dirty = 1 WHERE connector_instance_id = ?")
       .run(WORK_INSTANCE_ID);
+    // Terminal-gate revision (2026-07-29): simulate the maintenance sweep
+    // having already reconciled this connection's canonical snapshot before
+    // this read (the barrier no longer runs inline during GET).
+    await reconcileConnectorSummaryEvidence(null);
 
     const scoped = await getConnectorSummaryForRoute(WORK_INSTANCE_ID);
 
@@ -1280,9 +1321,11 @@ test(
     // stream evidence"), canonical `records` is the count authority
     // independent of retained-size: a declared stream absent from a COMPLETED
     // canonical snapshot is `declared + known_zero`, not a synthesized-absence
-    // gap. The observation barrier (`getConnectorSummaryForRoute` ->
-    // `loadConnectorSummaryProjectionDeps`) completes that snapshot on this
-    // very read, so `known_zero` is exact truth here, not a fabricated value.
+    // gap. Terminal-gate revision (2026-07-29): the barrier no longer runs
+    // inline during a read — simulate the maintenance sweep having already
+    // completed that snapshot before this read, so `known_zero` is exact
+    // truth here, not a fabricated value.
+    await reconcileConnectorSummaryEvidence(null);
 
     const scoped = await getConnectorSummaryForRoute(WORK_INSTANCE_ID);
 
@@ -1773,7 +1816,7 @@ test(
     assert.equal(credentialsFalse, undefined, "no CredentialsValid=false condition from a read failure alone");
 
     // And no owner reauth CTA is fabricated from the read failure.
-    for (const action of scoped.rendered_verdict?.required_actions ?? []) {
+    for (const action of scoped.rendered_verdict.required_actions) {
       assert.notEqual(action.kind, "reauth");
     }
   })
@@ -1863,15 +1906,21 @@ test(
       const before = await listConnectorSummaries(directController);
       assert.equal(directCalls.getSchedule, 2, "before: one direct schedule read per connection");
 
-      const batchedCalls = { getSchedule: 0, listSchedules: 0 };
+      const batchedCalls = { getSchedule: 0, listSchedulesForConnections: 0 };
       const batchedController = {
         getSchedule() {
           batchedCalls.getSchedule += 1;
           return Promise.reject(new Error("the batched list projection must not call getSchedule"));
         },
-        listSchedules() {
-          batchedCalls.listSchedules += 1;
-          return Promise.resolve(schedules);
+        listSchedulesForConnections(connectorInstanceIds: readonly string[]) {
+          batchedCalls.listSchedulesForConnections += 1;
+          const result = new Map<string, (typeof schedules)[number]>();
+          for (const schedule of schedules) {
+            if (connectorInstanceIds.includes(schedule.connector_instance_id)) {
+              result.set(schedule.connector_instance_id, schedule);
+            }
+          }
+          return Promise.resolve(result);
         },
       };
 
@@ -1880,7 +1929,7 @@ test(
       assert.deepEqual(after, before, "the batched schedule snapshot preserves every summary byte-for-byte");
       assert.deepEqual(
         batchedCalls,
-        { getSchedule: 0, listSchedules: 1 },
+        { getSchedule: 0, listSchedulesForConnections: 1 },
         "after: one existing list read replays schedule evidence for both connections (2 -> 1)"
       );
     } finally {

@@ -91,7 +91,11 @@ export interface DashboardDataSource {
   readonly kind: "live" | "sandbox";
   listConnectorManifests: () => Promise<ConnectorManifest[]>;
   // ── Records ────────────────────────────────────────────────────────────
-  listConnectorSummaries: () => Promise<ListResponse<RefConnectorSummary>>;
+  listConnectorSummaries: (options?: {
+    connectionRouteId?: string;
+    cursor?: string;
+    limit?: number;
+  }) => Promise<ListResponse<RefConnectorSummary>>;
   /**
    * Index-backed, single-call over-time bucket aggregate for the Explore chart —
    * the honest replacement for the per-(connection, stream) `aggregateRecordsByTime`

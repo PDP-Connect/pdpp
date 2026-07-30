@@ -144,6 +144,11 @@ const FAN_IN_OPTION_LABEL = "All connections (fan-in)";
  * connection, the owner may pin one; the chosen `connection_id` rides on
  * `streams[].connection_id` (an existing grant field the read path enforces).
  *
+ * `connectionOptions` is now built from `loadConnectionPinOptions`'s EXACT
+ * per-connector seam lookup (`ref-client.ts`'s `listConnectionsByConnector`
+ * composed with scoped `listConnectorSummaries` calls) — there is no
+ * incompleteness signal to render here anymore.
+ *
  * For a single-connection or provider-native source there is nothing to
  * disambiguate, so the control collapses to a static "fan-in" note and posts
  * the empty (fan-in) value — preserving the prior single-connection shape.
@@ -334,7 +339,7 @@ export default async function GrantRequestPage({ searchParams }: { searchParams:
   // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   const draft = workspace?.draft ?? createDefaultGrantRequestDraft();
   const examples = workspace ? await buildGrantRequestExamples(workspace) : null;
-  const connectionOptions = await loadConnectionPinOptions(draft);
+  const connectionPinOptions = await loadConnectionPinOptions(draft);
   const error = params.error ?? workspace?.lastError ?? null;
   const ownerLoginUrl = getOwnerLoginPath();
 
@@ -350,7 +355,7 @@ export default async function GrantRequestPage({ searchParams }: { searchParams:
 
       {error ? <WorkspaceError message={error} /> : null}
 
-      <DraftSection connectionOptions={connectionOptions} draft={draft} workspace={workspace} />
+      <DraftSection connectionOptions={connectionPinOptions.options} draft={draft} workspace={workspace} />
       <WorkspaceStateSection workspace={workspace} />
       {workspace?.stagedRequest ? <DriveConsentSection ownerLoginUrl={ownerLoginUrl} workspace={workspace} /> : null}
       {examples ? <EquivalentsSection examples={examples} /> : null}

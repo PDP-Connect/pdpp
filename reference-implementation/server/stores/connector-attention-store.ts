@@ -122,8 +122,23 @@ interface ReconcileTerminalRunsInput {
   now?: string | null;
 }
 
+interface ExpireAllDueInput {
+  limit?: number | null;
+  now?: string | null;
+}
+
 export interface ConnectorAttentionStore {
   cancelOpenAttentionForTerminalRuns: (input?: ReconcileTerminalRunsInput) => Promise<AttentionRecord[]>;
+  /**
+   * System-wide due-attention expiry, scoped by nothing but lifecycle and
+   * `expires_at` — the maintenance-sweep sibling of
+   * `expireDueAttentionForConnection` (which requires a `connectorId` and is
+   * still used only by an exact single-connection read). Same shape as
+   * `cancelOpenAttentionForTerminalRuns` above: a bounded, ordered batch read
+   * followed by one `UPDATE` per due row, safe to call from a periodic sweep
+   * with no connection enumeration required.
+   */
+  expireAllDueAttention: (input?: ExpireAllDueInput) => Promise<AttentionRecord[]>;
   expireDueAttentionForConnection: (input?: ExpireDueInput) => Promise<AttentionRecord[]>;
   /** Page-scoped durable evidence keyed by exact connector_instance_id. */
   listOpenAttentionByConnectorInstanceIds: (
@@ -338,6 +353,39 @@ export function createSqliteConnectorAttentionStore(): ConnectorAttentionStore {
         cancelled.push(next);
       }
       return cancelled;
+    },
+
+    // biome-ignore lint/suspicious/useAwait: sync sqlite driver; async satisfies the shared ConnectorAttentionStore contract.
+    async expireAllDueAttention({ now, limit }: ExpireAllDueInput = {}): Promise<AttentionRecord[]> {
+      const updatedAt = nonEmptyString(now) || nowIso();
+      const bounded = clampLimit(limit ?? EXPIRE_DUE_LIMIT);
+      const rows = [
+        ...iterateDynamicSqlAcknowledged<AttentionExpireRow>(
+          `SELECT attention_id, record_json, expires_at
+             FROM connector_attention_records
+            WHERE lifecycle IN (${OPEN_LIFECYCLES.map(() => "?").join(", ")})
+              AND expires_at IS NOT NULL
+              AND expires_at <= ?
+            ORDER BY updated_at DESC
+            LIMIT ?`,
+          [...OPEN_LIFECYCLES, updatedAt, bounded]
+        ),
+      ];
+      const expired: AttentionRecord[] = [];
+      for (const row of rows) {
+        if (!expiresAtOrBefore(row.expires_at, updatedAt)) {
+          continue;
+        }
+        const next = expiredRecord(rowToRecord(row), updatedAt);
+        execDynamicSqlAcknowledged(
+          `UPDATE connector_attention_records
+              SET lifecycle = ?, updated_at = ?, record_json = ?
+            WHERE attention_id = ?`,
+          ["expired", updatedAt, JSON.stringify(next), row.attention_id]
+        );
+        expired.push(next);
+      }
+      return expired;
     },
 
     // biome-ignore lint/suspicious/useAwait: sync sqlite driver; async satisfies the shared ConnectorAttentionStore contract.
@@ -614,6 +662,37 @@ export function createPostgresConnectorAttentionStore(): ConnectorAttentionStore
         cancelled.push(next);
       }
       return cancelled;
+    },
+
+    async expireAllDueAttention({ now, limit }: ExpireAllDueInput = {}): Promise<AttentionRecord[]> {
+      const updatedAt = nonEmptyString(now) || nowIso();
+      const bounded = clampLimit(limit ?? EXPIRE_DUE_LIMIT);
+      const result = await postgresQuery(
+        `SELECT attention_id, record_json, expires_at
+           FROM connector_attention_records
+          WHERE lifecycle = ANY($1::text[])
+            AND expires_at IS NOT NULL
+            AND expires_at <= $2
+          ORDER BY updated_at DESC
+          LIMIT $3`,
+        [OPEN_LIFECYCLES, updatedAt, bounded]
+      );
+      const expired: AttentionRecord[] = [];
+      for (const row of result.rows as AttentionExpireRow[]) {
+        if (!expiresAtOrBefore(row.expires_at, updatedAt)) {
+          continue;
+        }
+        const next = expiredRecord(rowToRecord(row), updatedAt);
+        // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
+        await postgresQuery(
+          `UPDATE connector_attention_records
+              SET lifecycle = $1, updated_at = $2, record_json = $3::jsonb
+            WHERE attention_id = $4`,
+          ["expired", updatedAt, JSON.stringify(next), row.attention_id]
+        );
+        expired.push(next);
+      }
+      return expired;
     },
 
     async expireDueAttentionForConnection({

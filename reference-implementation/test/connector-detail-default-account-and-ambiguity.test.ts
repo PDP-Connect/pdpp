@@ -241,7 +241,7 @@ test("a no-explicit-instance ingest run against an unlisted connector resolves t
     // omitting this connector — catalog visibility is a real, distinct
     // concept the detail route must not inherit. Confirms the fix is
     // scoped to the detail route only, not a global gate removal.
-    const { body: list } = await fetchJson<{ data: unknown }>(`${asUrl}/_ref/connectors`, {
+    const { body: list } = await fetchJson<{ data: unknown }>(`${asUrl}/_ref/connectors?limit=100`, {
       headers: { Authorization: `Bearer ${ownerToken}`, Cookie: "" },
     });
     assert.ok(Array.isArray(list.data));
