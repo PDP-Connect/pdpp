@@ -626,6 +626,34 @@ test("keeps every browser-surface PostgreSQL skip title in the exact receipt map
     ]
   );
 });
+// Aggregate gate regression (2026-07-30, terminal-read-integration closure, receipt 70bfe0b9):
+// Four additional PostgreSQL tests were not in the POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS
+// mapping: fleet-migration repair, scheduler_run_history legacy database migration,
+// and terminal LIST projection tests. All emitted 133 skips now mapped.
+test("keeps every fleet-migration and scheduler-upgrade PostgreSQL skip title in the exact receipt mapping", () => {
+  assert.deepEqual(
+    [
+      "PostgreSQL: a fresh install is unaffected by the fleet-migration repair",
+      "PostgreSQL: a pre-renamed-stuck database is repaired on the next boot, idempotently, with row/id/index preservation",
+      "PostgreSQL: a run.started write succeeds against a database migrated from legacy scheduler_run_history",
+    ].filter((name) => POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name)),
+    [
+      "PostgreSQL: a fresh install is unaffected by the fleet-migration repair",
+      "PostgreSQL: a pre-renamed-stuck database is repaired on the next boot, idempotently, with row/id/index preservation",
+      "PostgreSQL: a run.started write succeeds against a database migrated from legacy scheduler_run_history",
+    ]
+  );
+});
+test("keeps every terminal-LIST PostgreSQL skip title in the exact receipt mapping", () => {
+  assert.deepEqual(
+    [
+      "Postgres terminal LIST projection rejects late canonical snapshots",
+    ].filter((name) => POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name)),
+    [
+      "Postgres terminal LIST projection rejects late canonical snapshots",
+    ]
+  );
+});
 test("the exact named-skip mapping join fails closed on stale rows and on unconfigured consumed identities", () => {
   // Property 3, stale/unmatched arm. A configured row that no emitted skip
   // consumed (e.g. a test renamed so its title now self-describes, or deleted)
