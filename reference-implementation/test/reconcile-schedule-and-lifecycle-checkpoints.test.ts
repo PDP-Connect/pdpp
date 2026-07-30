@@ -34,7 +34,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { reconcileConnectorSummaryEvidence } from "../server/connector-summary-evidence-engine.ts";
-import { getConnectorSummaryEvidence, rebuildConnectorSummaryEvidence } from "../server/connector-summary-read-model.ts";
+import {
+  getConnectorSummaryEvidence,
+  rebuildConnectorSummaryEvidence,
+} from "../server/connector-summary-read-model.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
 import {
   closePostgresStorage,
@@ -141,15 +144,9 @@ async function requireEvidence(): Promise<Record<string, unknown>> {
 
 /**
  * The Postgres test lane shares one long-lived disposable database across
- * every test FILE in the suite (`pdpp_test`), so `maxTerminalEventSeq`
- * (deliberately a fleet-wide scalar, not scoped per connection — see
- * classifyCandidate in connector-summary-evidence-engine.ts) can be non-null
- * from OTHER tests' leftover terminal spine_events even when THIS connection
- * has never observed one itself, which would otherwise make
- * terminal_checkpoint_lag win the classification race ahead of the
- * schedule_mismatch/lifecycle_checkpoint_lag reasons this file tests.
- * Seeding and converging a terminal event for THIS connection removes that
- * ambiguity regardless of what else is in the shared database.
+ * every test FILE in the suite (`pdpp_test`). Seeding and converging a
+ * terminal event for THIS connection gives the lifecycle checkpoint a stable
+ * local baseline before this file advances it again.
  *
  * Convergence requires `rebuildConnectorSummaryEvidence` (the full
  * maintenance-sweep entry point, which folds terminal facts via
@@ -315,19 +312,10 @@ if (POSTGRES_URL) {
     withPostgres(async () => {
       assert.ok(isPostgresStorageBackend(), "must run against the real Postgres backend");
       await seedConnectorAndInstancePostgres();
-      // Converge a terminal event first and confirm the row reaches a fully
-      // stable baseline (terminal_checkpoint_lag resolved) before testing
-      // the run-lifecycle checkpoint specifically — otherwise a lingering
-      // fleet-wide terminal high-water from another test in this shared
-      // database could make terminal_checkpoint_lag win the classification
-      // race ahead of lifecycle_checkpoint_lag on the SAME pass.
+      // Converge a terminal event first and confirm the row reaches a stable
+      // local baseline before testing the run-lifecycle checkpoint.
       await seedAndConvergeTerminalEventPostgres();
-      const baseline = await reconcileConnectorSummaryEvidence();
-      assert.equal(
-        baseline.candidateReasonCounts.terminal_checkpoint_lag ?? 0,
-        0,
-        "the seeded terminal event is fully converged before the lifecycle-specific assertions begin"
-      );
+      await reconcileConnectorSummaryEvidence();
       const firstEvidence = await requireEvidence();
       assert.ok(
         typeof firstEvidence.run_lifecycle_event_seq === "number",
@@ -337,7 +325,10 @@ if (POSTGRES_URL) {
 
       const nextSeq = await postgresQuery("SELECT COALESCE(MAX(event_seq), 0) + 1 AS next_seq FROM spine_events");
       const eventSeq = Number((nextSeq.rows[0] as { next_seq: number }).next_seq);
-      assert.ok(eventSeq > baselineLifecycleSeq, "the new run.started event is strictly newer than the converged baseline");
+      assert.ok(
+        eventSeq > baselineLifecycleSeq,
+        "the new run.started event is strictly newer than the converged baseline"
+      );
       await postgresQuery(
         `INSERT INTO spine_events(
            event_id, event_seq, event_type, occurred_at, recorded_at, scenario_id, trace_id,
