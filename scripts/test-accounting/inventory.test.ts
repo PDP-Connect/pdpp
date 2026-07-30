@@ -832,6 +832,23 @@ test("the PostgreSQL profile declares its exact live-gate skip baseline", async 
     "set PDPP_LIVE_CONNECTOR_HEALTH_GATE=1 to run": 1,
   });
 });
+test("the memory-default profile declares the exact current skip baseline", async () => {
+  const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
+  const manifestValue = await readManifest(join(root, "test-accounting.manifest.json"), { root });
+  const suite = manifestValue.suites.find((entry) => entry.id === "ri-default");
+  const memoryDefault = suite?.profiles?.find((entry) => typeof entry !== "string" && entry.id === "memory-default");
+  assert.deepEqual(typeof memoryDefault === "string" ? undefined : memoryDefault?.skip_reasons, {
+    "PDPP_TEST_POSTGRES_URL unset": 129,
+    "set PDPP_TEST_POSTGRES_URL to the dedicated loopback listener": 13,
+    "dedicated disposable URL not selected": 1,
+    "set PDPP_LIVE_CONNECTOR_HEALTH_GATE=1 to run": 1,
+    "set PDPP_TEST_LIVE_NEKO_CAP=1 inside the Docker reference service": 1,
+    "PDPP_TEST_POSTGRES_URL is required for PostgreSQL status-window authority": 1,
+    "set PDPP_TEST_LIVE_CDP=1 and PDPP_TEST_CDP_BIN or PDPP_TEST_CDP_WS_URL to run": 1,
+    "set PDPP_TEST_LIVE_NEKO=1 and NEKO_ORIGIN to run": 2,
+    "set PDPP_MULTILINGUAL_MINILM_SMOKE=1 to run the external model-download smoke": 1,
+  });
+});
 test("the optional PostgreSQL profile is not selected by the required default and rejects implicit execution", async () => {
   const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
   const manifestValue = await readManifest(join(root, "test-accounting.manifest.json"), { root });
