@@ -1864,10 +1864,10 @@ CREATE TABLE IF NOT EXISTS connector_summary_evidence (
 CREATE INDEX IF NOT EXISTS idx_connector_summary_evidence_connector
   ON connector_summary_evidence(connector_id);
 
--- One durable scheduling cursor for the bounded, periodic summary-evidence
--- sweep. It is not evidence and does not participate in owner projections.
+-- Durable scheduling cursors for bounded, periodic maintenance sweeps
+-- (name-keyed, one row per stage). Not evidence, not owner-visible data.
 CREATE TABLE IF NOT EXISTS connector_maintenance_cursor (
-  name                         TEXT PRIMARY KEY CHECK(name = 'connector_summary_evidence'),
+  name                         TEXT PRIMARY KEY CHECK(name IN ('connector_summary_evidence', 'run_history_backfill')),
   resume_after_id              TEXT,
   updated_at                   TEXT NOT NULL,
   generation                   INTEGER NOT NULL DEFAULT 0,
@@ -3563,6 +3563,44 @@ CREATE INDEX IF NOT EXISTS idx_scheduler_run_history_connector_completed ON sche
 `);
 }
 
+// Widen `connector_maintenance_cursor.name`'s CHECK to admit the
+// `run_history_backfill` cursor row alongside the existing
+// `connector_summary_evidence` one. SQLite has no ALTER-CHECK; rebuild the
+// table (it holds at most one scheduling row per stage, never owner data)
+// and copy through unchanged. No-op once the CHECK already admits both
+// names.
+function migrateConnectorMaintenanceCursorNameCheck(raw: SqliteDatabase): void {
+  const table = raw
+    .prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'connector_maintenance_cursor'`)
+    .get<SqliteMasterRow>();
+  if (!table?.sql || table.sql.includes("run_history_backfill")) {
+    return;
+  }
+
+  raw.transaction(() => {
+    raw.exec(`
+      ALTER TABLE connector_maintenance_cursor RENAME TO connector_maintenance_cursor_old_name_check;
+
+      CREATE TABLE connector_maintenance_cursor (
+        name                         TEXT PRIMARY KEY CHECK(name IN ('connector_summary_evidence', 'run_history_backfill')),
+        resume_after_id              TEXT,
+        updated_at                   TEXT NOT NULL,
+        generation                   INTEGER NOT NULL DEFAULT 0,
+        lease_token                  TEXT,
+        lease_expires_at             TEXT
+      );
+
+      INSERT INTO connector_maintenance_cursor(
+        name, resume_after_id, updated_at, generation, lease_token, lease_expires_at
+      )
+      SELECT name, resume_after_id, updated_at, generation, lease_token, lease_expires_at
+      FROM connector_maintenance_cursor_old_name_check;
+
+      DROP TABLE connector_maintenance_cursor_old_name_check;
+    `);
+  })();
+}
+
 // Rename `scheduler_run_history` -> `run_history` and add the columns the
 // generalized run-grain writer needs (`trigger_kind`, `facts_json`,
 // nullable `completed_at`/`run_id`/`attempt` default). A pure rename plus
@@ -3610,23 +3648,70 @@ function migrateRunHistoryRename(raw: SqliteDatabase): void {
     // exactly the rows they saw before this migration.
     addColumnIfMissing(raw, "run_history", "scheduler_managed", "INTEGER NOT NULL DEFAULT 1");
 
-    // The legacy scheduler_run_history schema declared completed_at NOT
-    // NULL (every row was written post-terminal, in one shot). The
-    // generalized writer's run.started INSERT deliberately leaves
-    // completed_at unset until the terminal event finalizes the row — so
-    // a surviving NOT NULL constraint on a migrated table makes every
-    // run.started write throw. SQLite has no ALTER COLUMN; rebuild the
-    // table with the fresh-install (nullable-completed_at) column defs,
-    // copy every row by explicit column list (preserving `id` exactly —
-    // callers order by it as a tie-breaker), drop the old table, rename
-    // the rebuild into place. Gated on the column actually being NOT
-    // NULL so this step is a no-op if some future migration path already
-    // produced a nullable column here.
-    const completedAtColumn = raw
-      .prepare("SELECT \"notnull\" FROM pragma_table_info('run_history') WHERE name = 'completed_at'")
-      .get() as { notnull: number } | undefined;
-    if (completedAtColumn?.notnull) {
-      raw.exec(`
+    // completed_at nullability is repaired separately by
+    // migrateRunHistoryCompletedAtNullable, called unconditionally (not
+    // gated on legacyExists) right after this function — see that
+    // function's own header for why the repair cannot live inside this
+    // legacy-table-gated branch.
+    raw.exec(`
+DROP INDEX IF EXISTS idx_scheduler_run_history_connector_completed;
+CREATE INDEX IF NOT EXISTS idx_run_history_connector_completed
+  ON run_history(connector_id, completed_at, id);
+`);
+  })();
+
+  // Separate, non-transactional step: a unique index on historical
+  // `run_id` data can only fail if pre-existing rows already violate
+  // uniqueness (a data anomaly, not an expected state). Fail open rather
+  // than block the rename/column-add above from landing — the idempotent
+  // writer (Slice A follow-up) degrades to its upsert-by-select fallback
+  // without the index; this is logged so it can be repaired by hand.
+  try {
+    raw.exec(`
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_run_history_run_id
+  ON run_history(run_id) WHERE run_id IS NOT NULL;
+`);
+  } catch (err) {
+    console.error(
+      `[migrateRunHistoryRename] could not create uniq_run_history_run_id (likely duplicate run_id rows in historical data): ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+}
+
+// REVISE fix (fleet-migration gap, 2026-07-30 second gate pass): the
+// completed_at nullable repair e44bf3391 added lived INSIDE
+// migrateRunHistoryRename's `legacyExists`-gated branch, which returns
+// immediately once `scheduler_run_history` no longer exists. A database
+// whose scheduler_run_history -> run_history rename already executed
+// under an EARLIER deployment of this migration (i.e. before e44bf3391
+// shipped the completed_at fix) is permanently stuck on the legacy NOT
+// NULL constraint: the repair's own guard (`legacyExists`) is false by
+// the time that fix ships, so the repair never reaches it, and every
+// run.started write throws forever on that database. This is a distinct,
+// unconditional repair: it runs whenever `run_history` exists and its
+// completed_at column is still NOT NULL, independent of whether
+// scheduler_run_history exists. SQLite has no ALTER COLUMN; rebuild the
+// table with the fresh-install (nullable-completed_at) column defs, copy
+// every row by explicit column list (preserving `id` exactly — callers
+// order by it as a tie-breaker), drop the old table, rename the rebuild
+// into place. Idempotent (a second run finds completed_at already
+// nullable and no-ops); a no-op on fresh installs (run_history is
+// created nullable from the start).
+function migrateRunHistoryCompletedAtNullable(raw: SqliteDatabase): void {
+  const runHistoryExists = raw
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'run_history'")
+    .get();
+  if (!runHistoryExists) {
+    return;
+  }
+  const completedAtColumn = raw
+    .prepare("SELECT \"notnull\" FROM pragma_table_info('run_history') WHERE name = 'completed_at'")
+    .get() as { notnull: number } | undefined;
+  if (!completedAtColumn?.notnull) {
+    return;
+  }
+  raw.transaction(() => {
+    raw.exec(`
 CREATE TABLE run_history_new (
   id                         INTEGER PRIMARY KEY AUTOINCREMENT,
   run_id                     TEXT,
@@ -3665,31 +3750,26 @@ FROM run_history;
 DROP TABLE run_history;
 ALTER TABLE run_history_new RENAME TO run_history;
 `);
-    }
-
+    // The rebuild drops every index the source table carried (SQLite does
+    // not preserve indexes across a table rename-in-place substitution
+    // here since run_history_new never had them) — recreate both indexes
+    // this table is known to carry so a repair on an already-migrated
+    // database does not silently lose them.
     raw.exec(`
-DROP INDEX IF EXISTS idx_scheduler_run_history_connector_completed;
 CREATE INDEX IF NOT EXISTS idx_run_history_connector_completed
   ON run_history(connector_id, completed_at, id);
 `);
-  })();
-
-  // Separate, non-transactional step: a unique index on historical
-  // `run_id` data can only fail if pre-existing rows already violate
-  // uniqueness (a data anomaly, not an expected state). Fail open rather
-  // than block the rename/column-add above from landing — the idempotent
-  // writer (Slice A follow-up) degrades to its upsert-by-select fallback
-  // without the index; this is logged so it can be repaired by hand.
-  try {
-    raw.exec(`
+    try {
+      raw.exec(`
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_run_history_run_id
   ON run_history(run_id) WHERE run_id IS NOT NULL;
 `);
-  } catch (err) {
-    console.error(
-      `[migrateRunHistoryRename] could not create uniq_run_history_run_id (likely duplicate run_id rows in historical data): ${err instanceof Error ? err.message : String(err)}`
-    );
-  }
+    } catch (err) {
+      console.error(
+        `[migrateRunHistoryCompletedAtNullable] could not recreate uniq_run_history_run_id after rebuild (likely duplicate run_id rows in historical data): ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  })();
 }
 
 // Reference tables that hold a direct `connector_instance_id` reference.
@@ -4867,6 +4947,8 @@ CREATE INDEX IF NOT EXISTS idx_blob_bindings_record ON blob_bindings(connector_i
 `);
   runWithSqliteBusyRetrySync(() => migrateSchedulerInstanceColumns(raw));
   runWithSqliteBusyRetrySync(() => migrateRunHistoryRename(raw));
+  runWithSqliteBusyRetrySync(() => migrateRunHistoryCompletedAtNullable(raw));
+  runWithSqliteBusyRetrySync(() => migrateConnectorMaintenanceCursorNameCheck(raw));
   runWithSqliteBusyRetrySync(() => migrateLegacyConnectorInstancesToDefaultAccount(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateConnectorInstancesSourceKindCheck(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateConnectorInstancesSourceKindBrowserCollector(raw, opts));

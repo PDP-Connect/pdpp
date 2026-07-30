@@ -34,6 +34,10 @@ import {
   type ConnectorMaintenanceCursorStore,
   createConnectorMaintenanceCursorStore,
 } from "./stores/connector-maintenance-cursor-store.ts";
+import {
+  createResumableRunHistoryBackfillStage,
+  type ResumableRunHistoryBackfillStage,
+} from "./stores/run-history-backfill-stage.ts";
 
 export interface ConnectorMaintenanceSweepOptions {
   readonly attentionExpireLimit?: number;
@@ -41,12 +45,21 @@ export interface ConnectorMaintenanceSweepOptions {
   readonly evidenceSweepMaxDurationMs?: number;
   readonly evidenceSweepPageSize?: number;
   readonly nowIso?: () => string;
-  readonly onPhaseError?: (phase: "attention" | "evidence" | "shells", err: unknown) => void;
+  readonly onPhaseError?: (phase: "attention" | "evidence" | "run_history_backfill" | "shells", err: unknown) => void;
   readonly runEvidenceSweep: (args: {
     readonly afterId?: string | null;
     readonly maxDurationMs: number;
     readonly pageSize?: number;
   }) => Promise<unknown>;
+  readonly runHistoryBackfillBatchSize?: number;
+  readonly runHistoryBackfillMaxDurationMs?: number;
+  /**
+   * Injectable for tests; defaults to the real fenced-cursor stage
+   * (terminal-read-architecture-fable-0730.md §9/R9.2). One more
+   * independently best-effort branch on the existing sweep — no new
+   * engine, no new table.
+   */
+  readonly runHistoryBackfillStage?: ResumableRunHistoryBackfillStage;
 }
 
 interface ResumableEvidenceSweepResult {
@@ -175,6 +188,12 @@ export function createResumableConnectorMaintenanceSweep(
  * convergence, but an ordinary GET reading momentarily stale evidence
  * between ticks is honest, not a correctness gap).
  */
+let defaultRunHistoryBackfillStage: ResumableRunHistoryBackfillStage | null = null;
+function getDefaultRunHistoryBackfillStage(): ResumableRunHistoryBackfillStage {
+  defaultRunHistoryBackfillStage ??= createResumableRunHistoryBackfillStage();
+  return defaultRunHistoryBackfillStage;
+}
+
 export async function runConnectorMaintenanceSweep(options: ConnectorMaintenanceSweepOptions): Promise<void> {
   const { onPhaseError, nowIso = () => new Date().toISOString() } = options;
 
@@ -192,6 +211,16 @@ export async function runConnectorMaintenanceSweep(options: ConnectorMaintenance
       })
       .catch((err) => {
         onPhaseError?.("evidence", err);
+      }),
+    (options.runHistoryBackfillStage ?? getDefaultRunHistoryBackfillStage())
+      .run({
+        ...(typeof options.runHistoryBackfillBatchSize === "number"
+          ? { batchSize: options.runHistoryBackfillBatchSize }
+          : {}),
+        maxDurationMs: options.runHistoryBackfillMaxDurationMs ?? 2000,
+      })
+      .catch((err) => {
+        onPhaseError?.("run_history_backfill", err);
       }),
   ]);
 }

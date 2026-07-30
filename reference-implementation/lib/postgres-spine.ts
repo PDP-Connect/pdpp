@@ -162,7 +162,7 @@ interface SummaryAggregate {
   readonly last_at?: string;
 }
 
-interface Summary {
+export interface Summary {
   readonly actor_id: string | null;
   readonly actor_type: string | null;
   readonly browser_surface_lease_id?: string;
@@ -911,6 +911,28 @@ async function fetchRowsForSummaries(
   ]);
 
   return mergeRunEventWindows(ids, [head.rows, tail.rows, terminal.rows], column);
+}
+
+/**
+ * Fold a bounded set of run ids into `Summary` objects, keyed by run_id —
+ * the SAME batched event-window fetch (`fetchRowsForSummaries`) and fold
+ * (`summarizeRows`) `postgresListRunSummariesByConnectorIds` uses
+ * internally, reused unmodified for the run-history backfill stage
+ * (server/stores/run-history-backfill-stage.ts,
+ * terminal-read-architecture-fable-0730.md §9/R9.2) instead of re-deriving
+ * run status from spine events. Callers own their own candidate-run
+ * discovery query; this only folds an already-bounded id list.
+ */
+export async function postgresFoldRunSummariesByIds(runIds: readonly string[]): Promise<Map<string, Summary>> {
+  const ids = [...new Set(runIds.filter((id) => typeof id === "string" && id.length > 0))];
+  if (ids.length === 0) {
+    return new Map();
+  }
+  const eventsById = await fetchRowsForSummaries("run", "run_id", ids);
+  const entries = await Promise.all(
+    ids.map(async (id): Promise<[string, Summary]> => [id, await summarizeRows(id, eventsById.get(id) || [])])
+  );
+  return new Map(entries);
 }
 
 function hasOnlyFirstPageRecentFilters(filters: SpineCorrelationFilters): boolean {

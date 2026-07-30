@@ -242,6 +242,10 @@ test("scheduler run history and last-run time round-trip through semantic method
       connectorError: null,
       connectorId: SEMANTIC_CONNECTOR,
       connectorInstanceId: "cin_semantic_history",
+      // listRunHistory's column set does not select facts_json (R9.2 added
+      // it only to the product-reader column set); rowToRunHistoryRecord's
+      // shared hydration always includes the field, so it round-trips null.
+      factsJson: null,
       failureReason: null,
       knownGaps: [],
       recordsEmitted: 7,

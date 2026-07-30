@@ -42,9 +42,14 @@ import { exec, referenceQueries } from "../../lib/db.ts";
 
 const RUN_STARTED_EVENT_TYPE = "run.started";
 const RUN_TERMINAL_EVENT_TYPES = new Set(["run.completed", "run.failed", "run.cancelled"]);
+const RUN_PROGRESS_EVENT_TYPE = "run.progress_reported";
 
 export function isRunHistoryRelevantEventType(eventType: string | null | undefined): boolean {
-  return eventType === RUN_STARTED_EVENT_TYPE || RUN_TERMINAL_EVENT_TYPES.has(eventType ?? "");
+  return (
+    eventType === RUN_STARTED_EVENT_TYPE ||
+    RUN_TERMINAL_EVENT_TYPES.has(eventType ?? "") ||
+    eventType === RUN_PROGRESS_EVENT_TYPE
+  );
 }
 
 export interface RunHistorySpineEvent {
@@ -75,6 +80,12 @@ function toTerminalStatus(eventType: string, status: string): string {
 // `run.browser_surface_released` sub-event, not the terminal event
 // itself); reproducing that full fold is explicitly out of scope for
 // Slice A's writer. Kept small and terminal-event-only on purpose.
+//
+// `known_gaps`, `collection_facts`, `recovery_only` (added for the
+// run-history LIST cutover, terminal-read-architecture-fable-0730.md §9)
+// let `toConnectorRunSummary`-equivalent readers build a full
+// `ConnectorRunSummary` from this row alone — no per-run
+// `readRunTerminalEventData` spine read on GET (G1).
 const FACTS_JSON_KEYS = [
   "collection_facts",
   "needs_input",
@@ -82,6 +93,9 @@ const FACTS_JSON_KEYS = [
   "browser_surface_profile_key",
   "browser_surface_status",
   "browser_surface_wait_reason",
+  "known_gaps",
+  "recovery_only",
+  "collection_rate",
 ] as const;
 
 function factsJsonFromTerminalData(data: Record<string, unknown>): string {
@@ -134,6 +148,17 @@ function sourceJsonForStart(data: Record<string, unknown>): string {
   });
 }
 
+// The run.progress_reported handler emits collection_rate only when the
+// connector reports one (runtime/index.ts's handleProgressMessage); most
+// progress events carry no rate change and must not overwrite facts_json
+// with an empty merge.
+function collectionRateMergeJson(data: Record<string, unknown>): string | null {
+  if (data.collection_rate === undefined) {
+    return null;
+  }
+  return JSON.stringify({ collection_rate: data.collection_rate });
+}
+
 export function writeSqliteRunHistoryForSpineEvent(event: RunHistorySpineEvent): void {
   if (!(event.runId && event.connectorInstanceId && event.connectorId)) {
     // A run event with no connector_instance_id is rejected upstream in
@@ -141,6 +166,18 @@ export function writeSqliteRunHistoryForSpineEvent(event: RunHistorySpineEvent):
     // run.started; a terminal event missing identity here means the
     // caller did not thread run connection identity through — skip
     // rather than write a row with fabricated identity.
+    return;
+  }
+
+  if (event.eventType === RUN_PROGRESS_EVENT_TYPE) {
+    // Merge-only, fenced by status='running' (see the query's own
+    // comment): a terminal write that already landed makes this a
+    // no-op, never overwriting finalized facts_json with a stale
+    // in-flight progress snapshot.
+    const mergeJson = collectionRateMergeJson(event.data);
+    if (mergeJson !== null) {
+      exec(referenceQueries.controllerMergeRunHistoryCollectionRate, [mergeJson, event.runId]);
+    }
     return;
   }
 
@@ -206,6 +243,23 @@ export async function writePostgresRunHistoryForSpineEvent(
   event: RunHistorySpineEvent
 ): Promise<void> {
   if (!(event.runId && event.connectorInstanceId && event.connectorId)) {
+    return;
+  }
+
+  if (event.eventType === RUN_PROGRESS_EVENT_TYPE) {
+    // Merge-only, fenced by status='running': a terminal write that
+    // already landed makes this a no-op, never overwriting finalized
+    // facts_json with a stale in-flight progress snapshot. jsonb `||`
+    // is a single atomic statement — no read-then-write race window.
+    if (event.data.collection_rate !== undefined) {
+      await client.query(
+        `UPDATE run_history
+         SET facts_json = COALESCE(facts_json, '{}'::jsonb) || jsonb_build_object('collection_rate', $1::jsonb)
+         WHERE run_id = $2
+           AND status = 'running'`,
+        [JSON.stringify(event.data.collection_rate), event.runId]
+      );
+    }
     return;
   }
 

@@ -268,6 +268,7 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly controllerListRunHistory: ReadManyQuery;
   readonly controllerListSchedulerLastRunTimes: SmallEnumerationQuery;
   readonly controllerListSchedules: SmallEnumerationQuery;
+  readonly controllerMergeRunHistoryCollectionRate: MutationQuery;
   readonly controllerStartRunHistory: MutationQuery;
   readonly controllerUpdateSchedule: MutationQuery;
   readonly controllerUpdateScheduleEnabled: MutationQuery;
@@ -441,7 +442,6 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly sourceWebhooksClaimEvent: MutationQuery;
   // Spine — controller-side terminal-event existence probe.
   readonly spineCheckRunTerminal: ReadOneQuery;
-  readonly spineGetRunLatestCollectionRateEvent: ReadOneQuery;
   // Spine — run-handle status lookups (bounded LIMIT 1 lifecycle reads).
   readonly spineGetRunStartedEvent: ReadOneQuery;
   readonly spineGetRunTerminalEvent: ReadOneQuery;
@@ -693,7 +693,6 @@ export function loadReferenceQueries(queryDir = QUERIES_DIR): ReferenceQueryRegi
     "spineListEventsByRunId",
     "spineGetRunStartedEvent",
     "spineGetRunTerminalEvent",
-    "spineGetRunLatestCollectionRateEvent",
     // Auth — pending_consents
     "authPendingConsentsGetByDeviceCode",
     "authPendingConsentsGetByApprovalId",
@@ -827,6 +826,7 @@ export function loadReferenceQueries(queryDir = QUERIES_DIR): ReferenceQueryRegi
     "controllerListRunHistory",
     "controllerStartRunHistory",
     "controllerFinalizeRunHistory",
+    "controllerMergeRunHistoryCollectionRate",
     "controllerInsertFinalizedRunHistory",
     "controllerListSchedulerLastRunTimes",
     "controllerUpsertSchedulerLastRunTime",

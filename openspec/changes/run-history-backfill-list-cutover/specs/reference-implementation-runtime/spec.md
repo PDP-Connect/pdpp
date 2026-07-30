@@ -1,0 +1,220 @@
+## MODIFIED Requirements
+
+### Requirement: Existing LIST readers SHALL remain unchanged in visible output by this generalization
+
+The connector-summary LIST/detail composition (`getConnectorSummaryForRoute`,
+`getConnectorDetail`, `listConnectorSummaries`, `listConnectorSummaryPage`,
+`getOwnerConnectionDiagnostics`) SHALL read `run_history` for every run kind — no
+`scheduler_managed` scope — composed with the page-scoped active-run/lease overlay,
+superseding the prior byte-identical-output constraint for this read path
+specifically. Scheduler cadence/backoff readers (`getLatestRunHistoryForConnection`,
+`listLatestRunHistoryByConnectionIds`, `listRunHistory`) SHALL remain unaffected and
+scoped to `scheduler_managed` rows exactly as established.
+
+#### Scenario: A manual run's row is now visible to the product LIST/detail composition
+
+- **GIVEN** a connection has no prior scheduler-dispatched run, but a manual run has
+  produced a non-`scheduler_managed` `run_history` row for it
+- **WHEN** the connector-summary LIST/detail projection reads run facts for that
+  connection
+- **THEN** the projection SHALL return the manual run's facts (status, timestamps,
+  `collection_facts`/`known_gaps`/`recovery_only` from `facts_json`), not an empty
+  result
+
+#### Scenario: Scheduler cadence hydration is unaffected by the product LIST cutover
+
+- **GIVEN** the same manual run's non-`scheduler_managed` row exists
+- **WHEN** the scheduler hydrates its in-memory run-history projection from
+  `run_history` on boot (`listRunHistory`/`getLatestRunHistoryForConnection`/
+  `listLatestRunHistoryByConnectionIds`)
+- **THEN** the hydrated history SHALL NOT include the manual run's row — unchanged from
+  before this slice
+
+## ADDED Requirements
+
+### Requirement: Historical spine-only runs SHALL be backfilled into `run_history` via a bounded, resumable maintenance-sweep stage
+
+Every run whose lifecycle predates or bypassed the generalized run-grain writer SHALL
+be discovered and folded into `run_history` by a bounded, resumable stage running on
+the existing connector-maintenance-sweep chassis (periodic tick plus a fire-and-forget
+startup accelerator) — never a synchronous startup-blocking loop, never a new table.
+The stage SHALL reuse the existing, unmodified event-fold logic
+(`summarizeEvents`/`postgresFoldRunSummariesByIds`) rather than re-deriving run status.
+A concurrent live terminal write for the same `run_id` SHALL always win over a backfill
+insert for that run_id.
+
+#### Scenario: A historical spine-only run is backfilled with the fold-derived status
+
+- **GIVEN** a run's `run.started`/terminal spine events exist but it has no
+  `run_history` row (predates the generalized writer)
+- **WHEN** the backfill stage's bounded round processes the batch containing this run
+- **THEN** `run_history` SHALL contain exactly one row for that `run_id`, with `status`
+  equal to the terminal status the existing fold derives from the run's event window
+- **AND** `facts_json` SHALL carry `origin: "backfill"` plus the same
+  `collection_facts`/`known_gaps`/`recovery_only`/browser-surface fields the live
+  writer captures, extracted from the terminal event's raw data
+
+#### Scenario: A legacy connector-wide run is attributed once, at backfill time, only when unambiguous
+
+- **GIVEN** a run's event window never resolves a `connector_instance_id` or
+  `connection_id` (a legacy connector-wide run predating connection identity on the
+  spine)
+- **AND** the connector currently has exactly one active, owner-visible instance
+- **WHEN** the backfill stage processes this run
+- **THEN** `run_history` SHALL contain one row for this run_id, attributed to that sole
+  active instance
+
+#### Scenario: An unattributable legacy connector-wide run is never inserted
+
+- **GIVEN** the same legacy connector-wide run window, but the connector currently has
+  zero or more than one active instance
+- **WHEN** the backfill stage processes this run
+- **THEN** no `run_history` row SHALL be created for this run_id (never surfaced — the
+  column is `NOT NULL`, so there is no schema slot for an unattributed audit row)
+
+#### Scenario: Backfill is idempotent under repeated or concurrent execution
+
+- **GIVEN** a run has already been backfilled into `run_history`
+- **WHEN** a subsequent backfill round (or a second concurrent sweep owner) processes
+  a batch that would otherwise rediscover this run
+- **THEN** the run SHALL be excluded from candidate discovery (already has a row) or,
+  if concurrently discovered, its insert SHALL be a no-op via `ON CONFLICT(run_id) DO
+  NOTHING`
+- **AND** exactly one row SHALL exist for the run_id, with terminal facts unchanged
+  from whichever write landed first
+
+#### Scenario: The backfill cursor commits only after its batch lands, surviving a crash mid-batch
+
+- **GIVEN** a backfill round processes a bounded batch of candidate runs
+- **WHEN** the round completes and commits its cursor
+- **THEN** the committed cursor position SHALL reflect only runs actually processed in
+  that round
+- **AND** a subsequent round (including one started by a freshly-constructed stage
+  instance after a simulated crash) SHALL resume from that committed position without
+  re-processing already-backfilled runs or skipping any candidate run
+
+#### Scenario: A still-active run is never backfilled as a terminal row
+
+- **GIVEN** a candidate run's event window shows `run.started` with no terminal event
+  and an active lease
+- **WHEN** the backfill stage encounters this run
+- **THEN** no `run_history` row SHALL be inserted for it, and the cursor SHALL NOT
+  advance past this run's `event_seq` — its own live writer (once it terminates) or a
+  later backfill pass (once it is discovered orphaned) owns this row
+
+### Requirement: The product LIST/detail active-run overlay SHALL use only the existing status vocabulary
+
+The read-time composition of a `running` `run_history` row with the page-scoped
+active-run/lease overlay SHALL produce only status values `summarizeEvents` already
+produces (`in_progress`, `failed`, or the row's own stored terminal status) — never a
+new status enum value.
+
+#### Scenario: A running row with a live lease renders in_progress
+
+- **GIVEN** a `run_history` row with `status = 'running'`
+- **AND** a live entry in the active-run/lease registry for the same `run_id`
+- **WHEN** the product LIST/detail composition reads this connection's run facts
+- **THEN** the composed status SHALL be `in_progress`
+
+#### Scenario: A running row with no lease renders failed (orphaned)
+
+- **GIVEN** a `run_history` row with `status = 'running'`
+- **AND** no entry in the active-run/lease registry for this `run_id` (e.g. a crashed
+  process left the row running)
+- **WHEN** the product LIST/detail composition reads this connection's run facts
+- **THEN** the composed status SHALL be `failed` — matching what the pre-cutover
+  spine fold rendered for the same orphaned-run shape
+
+### Requirement: Authenticated GET on the connector-summary LIST/detail routes SHALL perform zero `spine_events` statements
+
+`listConnectorSummaries`, `listConnectorSummaryPage`, `getConnectorSummaryForRoute`,
+`getConnectorDetail`, and `getOwnerConnectionDiagnostics` SHALL read run facts
+exclusively from `run_history` and the page-scoped active-run/lease overlay — never
+`spine_events`, and never a write, on the request path. This bar admits no
+route-specific or feature-specific exception: every fact the projection synthesizes,
+including the adaptive-rate-controller's `collection_rate` snapshot for a currently-running
+run, SHALL be sourced from `run_history.facts_json` alone.
+
+#### Scenario: A GET on the connector-summary route touches no spine_events statement for a terminal run
+
+- **GIVEN** a connection with a backfilled or live-written terminal `run_history` row
+- **WHEN** `getConnectorSummaryForRoute` (or any of the other four routes) is invoked
+- **THEN** the set of SQL statements executed during that call SHALL contain zero
+  statements referencing `spine_events`
+
+#### Scenario: A GET on the connector-summary route touches no spine_events statement for a currently-running run
+
+- **GIVEN** a connection with a `run_history` row still `status = 'running'`, whose
+  `run.progress_reported` event has merged a `collection_rate` snapshot into its
+  `facts_json`
+- **WHEN** `getConnectorSummaryForRoute` (or any of the other four routes) is invoked
+- **THEN** the set of SQL statements executed during that call SHALL contain zero
+  statements referencing `spine_events`
+- **AND** the synthesized summary's adaptive-rate-controller snapshot SHALL reflect the
+  merged `collection_rate` value
+- **AND** this SHALL hold on both the SQLite and PostgreSQL backends
+
+#### Scenario: A GET on the connector-summary route touches no spine_events statement for a connection with no run at all
+
+- **GIVEN** a connection with no `run_history` row
+- **WHEN** `getConnectorSummaryForRoute` (or any of the other four routes) is invoked
+- **THEN** the set of SQL statements executed during that call SHALL contain zero
+  statements referencing `spine_events`
+
+### Requirement: `run.progress_reported`'s `collection_rate` SHALL be merged into a still-running run's `facts_json` atomically, never overwriting a concurrent terminal write
+
+The run-history writer SHALL merge `collection_rate` into the `running` row's
+`facts_json` at each `run.progress_reported` event, using a single atomic
+statement scoped by `WHERE run_id = ? AND status = 'running'`. A concurrent or
+later terminal write SHALL always win: once a row has been finalized, a
+progress-event merge for the same `run_id` SHALL be a silent no-op.
+
+#### Scenario: A progress event's collection_rate is merged into the running row
+
+- **GIVEN** a `run_history` row exists with `status = 'running'`
+- **WHEN** a `run.progress_reported` event carrying `collection_rate` is emitted for
+  that `run_id`
+- **THEN** the row's `facts_json` SHALL contain the merged `collection_rate` value
+- **AND** the row's `status` SHALL remain `running`
+
+#### Scenario: A stale progress event after finalization does not resurrect or overwrite the terminal row
+
+- **GIVEN** a `run_history` row has already been finalized to a terminal status
+- **WHEN** a `run.progress_reported` event carrying a different `collection_rate` is
+  emitted for the same `run_id` (a stale/delayed delivery)
+- **THEN** the row SHALL remain unchanged — its `facts_json` SHALL NOT be overwritten
+  by the stale progress event's payload
+
+### Requirement: The `completed_at` nullable repair SHALL reach a database whose `scheduler_run_history` → `run_history` rename already executed under an earlier deployment
+
+The repair that relaxes `run_history.completed_at` from the legacy `NOT NULL`
+constraint SHALL run based on `run_history`'s own existence and column state,
+independent of whether `scheduler_run_history` still exists — so a database migrated
+under any deployment ordering converges to the nullable column, not only a database
+migrated for the first time after the repair shipped.
+
+#### Scenario: A database whose rename predates the completed_at fix is repaired on its next boot
+
+- **GIVEN** a database where `run_history` already exists (renamed from
+  `scheduler_run_history` by an earlier deployment) with `completed_at` still `NOT
+  NULL`, and no `scheduler_run_history` table remains
+- **WHEN** the database is initialized
+- **THEN** `run_history.completed_at` SHALL become nullable
+- **AND** a subsequent `run.started` write (with `completed_at` unset) SHALL succeed
+- **AND** every pre-existing row's data, `id` value, and both of `run_history`'s
+  indexes SHALL be preserved exactly
+- **AND** this SHALL hold on both the SQLite and PostgreSQL backends
+
+#### Scenario: The repair is idempotent
+
+- **GIVEN** a database has already been repaired by a prior boot (completed_at is
+  nullable)
+- **WHEN** the database is initialized again
+- **THEN** the repair SHALL no-op, and existing row data SHALL remain unchanged
+
+#### Scenario: A fresh install is unaffected by the repair
+
+- **GIVEN** a database with no pre-existing `run_history` artifacts of any kind
+- **WHEN** the database is initialized
+- **THEN** `run_history` SHALL be created with `completed_at` nullable from its
+  `CREATE TABLE` statement, and the repair SHALL no-op immediately

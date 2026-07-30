@@ -1903,10 +1903,10 @@ export async function bootstrapPostgresSchema({
       CREATE INDEX IF NOT EXISTS idx_pg_connector_summary_evidence_connector
         ON connector_summary_evidence(connector_id);
 
-      -- Scheduling state only: this cursor resumes a bounded maintenance
-      -- pass after restart without becoming evidence or owner-visible data.
+      -- Scheduling state only: name-keyed cursors resume bounded maintenance
+      -- passes after restart without becoming evidence or owner-visible data.
       CREATE TABLE IF NOT EXISTS connector_maintenance_cursor (
-        name TEXT PRIMARY KEY CHECK(name = 'connector_summary_evidence'),
+        name TEXT PRIMARY KEY CHECK(name IN ('connector_summary_evidence', 'run_history_backfill')),
         resume_after_id TEXT,
         updated_at TEXT NOT NULL,
         generation BIGINT NOT NULL DEFAULT 0,
@@ -2165,6 +2165,8 @@ export async function bootstrapPostgresSchema({
     await migratePostgresConnectorDetailGapInstanceColumns(client);
     await migratePostgresSchedulerInstanceColumns(client);
     await migratePostgresRunHistoryRename(client);
+    await migratePostgresRunHistoryCompletedAtNullable(client);
+    await migratePostgresConnectorMaintenanceCursorNameCheck(client);
     await migratePostgresRecordsBlobSearchInstanceColumns(client);
     await migratePostgresClientEventSubscriptionAuthority(client);
     await migratePostgresLocalDeviceConnectorInstances(client);
@@ -2909,14 +2911,11 @@ async function migratePostgresRunHistoryRename(client: PoolClient): Promise<void
     await client.query(
       "ALTER TABLE run_history ADD COLUMN IF NOT EXISTS scheduler_managed BOOLEAN NOT NULL DEFAULT true"
     );
-    // The legacy scheduler_run_history schema declared completed_at NOT
-    // NULL (every row was written post-terminal, in one shot). The
-    // generalized writer's run.started INSERT deliberately leaves
-    // completed_at unset until the terminal event finalizes the row — so
-    // a surviving NOT NULL constraint on a migrated table makes every
-    // run.started write throw. Relax it to match the fresh-install
-    // (nullable) shape.
-    await client.query("ALTER TABLE run_history ALTER COLUMN completed_at DROP NOT NULL");
+    // completed_at nullability is repaired separately by
+    // migratePostgresRunHistoryCompletedAtNullable, called unconditionally
+    // (not gated on legacyExists) right after this function — see that
+    // function's own header for why the repair cannot live inside this
+    // legacy-table-gated branch.
     await client.query("DROP INDEX IF EXISTS idx_pg_scheduler_run_history_connector_completed");
     await client.query(
       "CREATE INDEX IF NOT EXISTS idx_pg_run_history_connector_completed ON run_history(connector_id, completed_at, id)"
@@ -2944,6 +2943,71 @@ async function migratePostgresRunHistoryRename(client: PoolClient): Promise<void
       `[migratePostgresRunHistoryRename] could not create uniq_pg_run_history_run_id (likely duplicate run_id rows in historical data): ${err instanceof Error ? err.message : String(err)}`
     );
   }
+}
+
+// REVISE fix (fleet-migration gap, 2026-07-30 second gate pass): the
+// completed_at nullable repair e44bf3391 added lived INSIDE
+// migratePostgresRunHistoryRename's `legacyExists`-gated branch, which
+// returns immediately once `scheduler_run_history` no longer exists
+// (line ~2871 above). A database whose scheduler_run_history -> run_history
+// rename already executed under an EARLIER deployment of this migration
+// (i.e. before e44bf3391 shipped the completed_at fix) is permanently
+// stuck on the legacy NOT NULL constraint: the repair's own guard
+// (`legacyExists`) is false by the time that fix ships, so the repair
+// never reaches it, and every run.started write throws forever on that
+// database. This is a distinct, unconditional repair: it runs whenever
+// `run_history` exists and its completed_at column is still NOT NULL,
+// independent of whether scheduler_run_history exists. Idempotent (a
+// second run finds completed_at already nullable and no-ops); a no-op on
+// fresh installs (run_history is created nullable from the start, so the
+// `information_schema` check below is false immediately).
+async function migratePostgresRunHistoryCompletedAtNullable(client: PoolClient): Promise<void> {
+  const runHistoryExists = await hasPostgresTable(client, "run_history");
+  if (!runHistoryExists) {
+    return;
+  }
+  const result = await client.query<{ is_nullable: string }>(
+    `SELECT is_nullable FROM information_schema.columns
+       WHERE table_schema = current_schema() AND table_name = 'run_history' AND column_name = 'completed_at'`
+  );
+  const isNullable = result.rows[0]?.is_nullable;
+  if (isNullable !== "NO") {
+    // Nullable already (the common case), or the column is missing
+    // entirely (should not happen once run_history exists, but fail open
+    // rather than throw on an unexpected shape) — nothing to repair.
+    return;
+  }
+  await client.query("ALTER TABLE run_history ALTER COLUMN completed_at DROP NOT NULL");
+}
+
+// Widens `connector_maintenance_cursor.name`'s CHECK to admit the
+// `run_history_backfill` cursor row alongside the existing
+// `connector_summary_evidence` one. No-op once the constraint already
+// admits both names (checked via pg_get_constraintdef, since the
+// auto-generated constraint name is stable but its definition is what
+// actually matters here).
+async function migratePostgresConnectorMaintenanceCursorNameCheck(client: PoolClient): Promise<void> {
+  const result = await client.query<{ conname: string; definition: string }>(
+    `SELECT conname, pg_get_constraintdef(oid) AS definition
+       FROM pg_constraint
+      WHERE conrelid = 'connector_maintenance_cursor'::regclass
+        AND contype = 'c'`
+  );
+  const alreadyWidened = result.rows.some((row) => row.definition.includes("run_history_backfill"));
+  if (alreadyWidened) {
+    return;
+  }
+  for (const row of result.rows) {
+    // biome-ignore lint/performance/noAwaitInLoops: one-time migration over a table CHECK constraint list of size 0 or 1; sequential DDL, not a hot path.
+    await client.query(
+      `ALTER TABLE connector_maintenance_cursor DROP CONSTRAINT ${quotePostgresIdentifier(row.conname)}`
+    );
+  }
+  await client.query(
+    `ALTER TABLE connector_maintenance_cursor
+       ADD CONSTRAINT connector_maintenance_cursor_name_check
+       CHECK (name IN ('connector_summary_evidence', 'run_history_backfill'))`
+  );
 }
 
 async function migratePostgresRecordsBlobSearchInstanceColumns(client: PoolClient): Promise<void> {

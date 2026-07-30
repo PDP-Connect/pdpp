@@ -903,8 +903,16 @@ const EVENT_ROW_ORDER_ASC = "(event_seq IS NULL), event_seq ASC, event_id ASC";
  * `fetchRowsForSummaries` batching (`lib/postgres-spine.js`) — a
  * `ROW_NUMBER() OVER (PARTITION BY ...)` keeps the same per-id LIMIT
  * semantics a per-row `LIMIT ?` query would have.
+ *
+ * Exported for the run-history backfill stage
+ * (server/stores/run-history-backfill-stage.ts) to fetch each candidate
+ * run's event window before folding it with `summarizeEvents` — the SAME
+ * batched fetch+hydrate this module's own run-summary readers use.
  */
-function loadEventsForSummaries(kind: SpineCorrelationKind, ids: readonly string[]): Map<string, SpineEventRecord[]> {
+export function loadEventsForSummaries(
+  kind: SpineCorrelationKind,
+  ids: readonly string[]
+): Map<string, SpineEventRecord[]> {
   const byId = new Map<string, SpineEventRecord[]>();
   if (ids.length === 0) {
     return byId;
@@ -1187,7 +1195,11 @@ function findFirstConnectionId(events: readonly SpineEventRecord[]): string | nu
   return null;
 }
 
-function summarizeEvents(events: readonly SpineEventRecord[]): SpineSummary | null {
+// Exported for the run-history backfill stage
+// (server/stores/run-history-backfill-stage.ts,
+// terminal-read-architecture-fable-0730.md §9/R9.2), which reuses this fold
+// UNCHANGED rather than re-deriving run status from spine events itself.
+export function summarizeEvents(events: readonly SpineEventRecord[]): SpineSummary | null {
   if (events.length === 0) {
     return null;
   }

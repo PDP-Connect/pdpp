@@ -460,6 +460,10 @@ import {
   type PresentationScreenStateStore,
 } from "./stores/presentation-screen-state-store.ts";
 import { resolveProviderAuthRunEnv } from "./stores/provider-auth-run-credentials.ts";
+import {
+  createResumableRunHistoryBackfillStage,
+  runStartupRunHistoryBackfillToCompletion,
+} from "./stores/run-history-backfill-stage.ts";
 import { getDefaultSchedulerStore, type SchedulerStore } from "./stores/scheduler-store.ts";
 import { getDefaultSourceWebhookEventStore } from "./stores/source-webhook-event-store.ts";
 import { resolveStaticSecretRunEnv } from "./stores/static-secret-run-credentials.ts";
@@ -788,6 +792,14 @@ const STARTUP_SUMMARY_EVIDENCE_MAX_RESUME_ROUNDS = 20;
 const CONNECTOR_MAINTENANCE_SWEEP_INTERVAL_MS = 60_000;
 const CONNECTOR_MAINTENANCE_EVIDENCE_SWEEP_MAX_DURATION_MS = 2000;
 const CONNECTOR_MAINTENANCE_EVIDENCE_SWEEP_PAGE_SIZE = 25;
+// Run-history backfill (terminal-read-architecture-fable-0730.md §9):
+// same acceleration-not-authority shape as the summary-evidence startup
+// pass above, on its own name-keyed cursor. NOT a traffic gate (R9.1) —
+// fired via setImmediate/fire-and-forget below, never awaited before the
+// listener opens.
+const STARTUP_RUN_HISTORY_BACKFILL_MAX_DURATION_MS = 2000;
+const STARTUP_RUN_HISTORY_BACKFILL_BATCH_SIZE = 25;
+const STARTUP_RUN_HISTORY_BACKFILL_MAX_ROUNDS = 20;
 
 /**
  * Walks `runBoundedSummaryEvidenceSweep` to completion across up to
@@ -6633,6 +6645,7 @@ export async function startServer(opts: ServerOpts = {}) {
   // function so a boot failure anywhere before that point can never leave
   // an orphaned running timer (identical reasoning to the browser-surface
   // lease sweep's own comment on this).
+  const runHistoryBackfillStage = createResumableRunHistoryBackfillStage();
   const connectorMaintenanceSweep = createResumableConnectorMaintenanceSweep({
     evidenceSweepMaxDurationMs: CONNECTOR_MAINTENANCE_EVIDENCE_SWEEP_MAX_DURATION_MS,
     evidenceSweepPageSize: CONNECTOR_MAINTENANCE_EVIDENCE_SWEEP_PAGE_SIZE,
@@ -6648,6 +6661,7 @@ export async function startServer(opts: ServerOpts = {}) {
         maxDurationMs: args.maxDurationMs,
         pageSize: args.pageSize ?? CONNECTOR_MAINTENANCE_EVIDENCE_SWEEP_PAGE_SIZE,
       }),
+    runHistoryBackfillStage,
   });
   const connectorMaintenanceSweepTimer = createBrowserSurfaceLeaseSweepTimer({
     intervalMs: CONNECTOR_MAINTENANCE_SWEEP_INTERVAL_MS,
@@ -7049,6 +7063,42 @@ export async function startServer(opts: ServerOpts = {}) {
         .finally(resolve);
     });
   });
+  // Run-history backfill startup accelerator (terminal-read-architecture-
+  // fable-0730.md §9): same fire-and-forget shape as the evidence sweep
+  // above — NOT a traffic gate (R9.1 struck the blocking-startup-loop
+  // proposal). A connection this walk does not finish reaching converges
+  // on the next periodic tick; LIST renders `not yet observed
+  // (backfilling)` for any run not yet in run_history in the meantime,
+  // never a spine fallback.
+  const startupRunHistoryBackfillDone = new Promise<void>((resolve) => {
+    setImmediate(() => {
+      // biome-ignore lint/complexity/noVoid: The side effect is intentionally fire-and-forget by this runtime contract.
+      void runStartupRunHistoryBackfillToCompletion({
+        batchSize: STARTUP_RUN_HISTORY_BACKFILL_BATCH_SIZE,
+        maxDurationMs: STARTUP_RUN_HISTORY_BACKFILL_MAX_DURATION_MS,
+        maxRounds: STARTUP_RUN_HISTORY_BACKFILL_MAX_ROUNDS,
+        onRound: (result, round) => {
+          if (result.backfilled > 0 || result.incomplete) {
+            logger.info({ ...result, round }, "startup run-history backfill observation");
+          }
+        },
+        stage: runHistoryBackfillStage,
+      })
+        .then((rounds) => {
+          const last = rounds.at(-1);
+          if (last?.incomplete) {
+            logger.info(
+              { resumeAfterSeq: last.resumeAfterSeq, rounds: rounds.length },
+              "startup run-history backfill stopped after the resume-round cap; the periodic sweep covers the remainder"
+            );
+          }
+        })
+        .catch((err) => {
+          logger.warn({ err }, "startup run-history backfill failed; the periodic sweep will retry");
+        })
+        .finally(resolve);
+    });
+  });
   if (opts.awaitStartupBackfill === true) {
     await startupBackfillDone;
   }
@@ -7107,6 +7157,7 @@ export async function startServer(opts: ServerOpts = {}) {
     rsServer,
     schedulerManager,
     startupBackfillDone,
+    startupRunHistoryBackfillDone,
     startupSummaryEvidenceSweepDone,
     // Exposed so the CLI shutdown path (and tests that start/stop many
     // server instances per process) can clear the periodic browser-surface
@@ -8006,6 +8057,7 @@ if (process.argv[1]?.endsWith("server/index.ts")) {
     rsServer: StartServerResult["rsServer"] | null;
     abortStartupBackfill: StartServerResult["abortStartupBackfill"] | null;
     startupBackfillDone: StartServerResult["startupBackfillDone"] | null;
+    startupRunHistoryBackfillDone: StartServerResult["startupRunHistoryBackfillDone"] | null;
     startupSummaryEvidenceSweepDone: StartServerResult["startupSummaryEvidenceSweepDone"] | null;
     schedulerManager: StartServerResult["schedulerManager"] | null;
     controller: StartServerResult["controller"] | null;
@@ -8019,6 +8071,7 @@ if (process.argv[1]?.endsWith("server/index.ts")) {
     rsServer: null,
     schedulerManager: null,
     startupBackfillDone: null,
+    startupRunHistoryBackfillDone: null,
     startupSummaryEvidenceSweepDone: null,
     stopBrowserSurfaceLeaseSweep: null,
     stopClientEventDeliveryWorker: null,
@@ -8091,7 +8144,11 @@ if (process.argv[1]?.endsWith("server/index.ts")) {
       // biome-ignore lint/suspicious/noEmptyBlockStatements: The empty handler intentionally absorbs this best-effort cleanup failure.
     } catch {}
     const backfillDeadline = new Promise((resolve) => setTimeout(resolve, 2000));
-    const awaitStartupTasks = Promise.allSettled([server.startupBackfillDone, server.startupSummaryEvidenceSweepDone]);
+    const awaitStartupTasks = Promise.allSettled([
+      server.startupBackfillDone,
+      server.startupRunHistoryBackfillDone,
+      server.startupSummaryEvidenceSweepDone,
+    ]);
     try {
       server.schedulerManager?.stop?.();
       // biome-ignore lint/suspicious/noEmptyBlockStatements: The empty handler intentionally absorbs this best-effort cleanup failure.
@@ -8134,6 +8191,7 @@ if (process.argv[1]?.endsWith("server/index.ts")) {
       server.rsServer = result.rsServer;
       server.abortStartupBackfill = result.abortStartupBackfill;
       server.startupBackfillDone = result.startupBackfillDone;
+      server.startupRunHistoryBackfillDone = result.startupRunHistoryBackfillDone;
       server.startupSummaryEvidenceSweepDone = result.startupSummaryEvidenceSweepDone;
       server.schedulerManager = result.schedulerManager;
       server.controller = result.controller;
