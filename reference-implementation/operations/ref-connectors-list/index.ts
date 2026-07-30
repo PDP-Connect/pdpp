@@ -105,6 +105,27 @@ export interface RefConnectorsListIdentityItem {
   readonly streams: string[];
 }
 
+/**
+ * `retained_count_summary` profile row (design doc add-source-perf-design-
+ * agy-0730.md; Fable ruling terminal-read-architecture-fable-0730.md R4/R5):
+ * the pinned field set for Add Source — identity + `total_records`/
+ * `total_records_state`/`acquisition_coverage.latest_batch`, no health/run/
+ * schedule/runtime field. Mirrors `server/ref-control.ts`'s
+ * `ConnectorRetainedCountSummary`.
+ */
+export interface RefConnectorsListRetainedCountItem {
+  readonly acquisition_coverage: { readonly latest_batch: Record<string, unknown> | null } | null;
+  readonly connection_id: string;
+  readonly connector_display_name: string;
+  readonly connector_id: string;
+  readonly connector_instance_id: string;
+  readonly display_name: string;
+  readonly revoked_at: string | null;
+  readonly status: string;
+  readonly total_records: number;
+  readonly total_records_state: "known" | "known_zero" | "unobserved" | "stale" | "unknown";
+}
+
 export interface RefConnectorsRuntimeStatus {
   readonly label: string;
   readonly message: string | null;
@@ -129,9 +150,14 @@ export interface RefConnectorsListDependencies {
    * canonical sort.
    */
   listConnectorSummaries: () =>
-    | Promise<readonly RefConnectorsListItem[] | readonly RefConnectorsListIdentityItem[]>
+    | Promise<
+        | readonly RefConnectorsListItem[]
+        | readonly RefConnectorsListIdentityItem[]
+        | readonly RefConnectorsListRetainedCountItem[]
+      >
     | readonly RefConnectorsListItem[]
-    | readonly RefConnectorsListIdentityItem[];
+    | readonly RefConnectorsListIdentityItem[]
+    | readonly RefConnectorsListRetainedCountItem[];
   /**
    * Explicit keyset-page mode for the unscoped summary feed. Compatibility
    * callers keep using `listConnectorSummaries`, preserving their historical
@@ -141,14 +167,17 @@ export interface RefConnectorsListDependencies {
 }
 
 export interface RefConnectorsListPage {
-  readonly data: readonly RefConnectorsListItem[] | readonly RefConnectorsListIdentityItem[];
+  readonly data:
+    | readonly RefConnectorsListItem[]
+    | readonly RefConnectorsListIdentityItem[]
+    | readonly RefConnectorsListRetainedCountItem[];
   readonly fleet_health?: unknown;
   readonly has_more: boolean;
   readonly next_cursor: string | null;
 }
 
 export interface RefConnectorsListEnvelope {
-  readonly data: (RefConnectorsListItem | RefConnectorsListIdentityItem)[];
+  readonly data: (RefConnectorsListItem | RefConnectorsListIdentityItem | RefConnectorsListRetainedCountItem)[];
   readonly fleet_health?: unknown;
   readonly has_more?: boolean;
   readonly next_cursor?: string | null;

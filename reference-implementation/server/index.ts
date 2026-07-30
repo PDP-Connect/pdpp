@@ -4814,7 +4814,7 @@ export function buildAsApp(opts: ServerOpts = {}) {
     listConnectorSummaryPage: async (
       ownerSubjectId: string,
       page: {
-        connectorId?: string | null;
+        connectorId?: string | readonly string[] | null;
         cursor: unknown;
         includeFleetHealth?: boolean;
         limit: number;
@@ -4822,23 +4822,47 @@ export function buildAsApp(opts: ServerOpts = {}) {
       }
     ) => {
       const after = (page.cursor as ConnectorIdentityPageBoundary | null) ?? null;
-      const summaryPage =
-        page.profile === "identity_inventory"
-          ? await listConnectorSummaryPage(controller, {
-              after,
-              connectorId: page.connectorId ?? null,
-              includeRunSummaries: "singleton-active",
-              limit: page.limit,
-              ownerSubjectId,
-              profile: page.profile,
-            })
-          : await listConnectorSummaryPage(controller, {
-              after,
-              connectorId: page.connectorId ?? null,
-              includeRunSummaries: "singleton-active",
-              limit: page.limit,
-              ownerSubjectId,
-            });
+      // The three profile branches return different `data` element types
+      // (`ConnectorSummary` / `ConnectorIdentityInventorySummary` /
+      // `ConnectorRetainedCountSummary`); this closure's return type is
+      // already the widened `{data: readonly unknown[], ...}` shape the
+      // `MountRefConnectorsContext.listConnectorSummaryPage` capability
+      // declares, so each branch's narrow result is captured as `unknown`
+      // rather than forcing a single (necessarily wrong) common element type.
+      let summaryPage: {
+        readonly data: readonly unknown[];
+        readonly fleet_health?: unknown;
+        readonly has_more: boolean;
+        readonly inventory: readonly unknown[];
+        readonly next_cursor: string | null;
+      };
+      if (page.profile === "identity_inventory") {
+        summaryPage = await listConnectorSummaryPage(controller, {
+          after,
+          connectorId: page.connectorId ?? null,
+          includeRunSummaries: "singleton-active",
+          limit: page.limit,
+          ownerSubjectId,
+          profile: page.profile,
+        });
+      } else if (page.profile === "retained_count_summary") {
+        summaryPage = await listConnectorSummaryPage(controller, {
+          after,
+          connectorId: page.connectorId ?? null,
+          includeRunSummaries: "singleton-active",
+          limit: page.limit,
+          ownerSubjectId,
+          profile: page.profile,
+        });
+      } else {
+        summaryPage = await listConnectorSummaryPage(controller, {
+          after,
+          connectorId: page.connectorId ?? null,
+          includeRunSummaries: "singleton-active",
+          limit: page.limit,
+          ownerSubjectId,
+        });
+      }
       const { inventory, ...envelope } = summaryPage;
       // A fleet verdict is truthful only when the page itself is the complete
       // owner-visible inventory.  Never infer that from a short page: the
@@ -4850,11 +4874,19 @@ export function buildAsApp(opts: ServerOpts = {}) {
         return envelope;
       }
       const fullSummaries = summaryPage.data as unknown as Parameters<typeof auditStreamHealth>[0];
+      // Reachable only from the unfiltered, no-profile branch (the guard
+      // above requires `page.connectorId === null` AND `page.profile` was
+      // never set to reach this fleet-health composition), so `inventory`
+      // here is always the full owner-visible `FleetConfiguredConnection[]`
+      // inventory the unfiltered branch reads — the closure-wide `unknown[]`
+      // type only exists to let the three profile branches share one
+      // variable without forcing a single wrong common element type.
+      const fleetInventory = inventory as unknown as Parameters<typeof composeFleetHealthVerdict>[0]["inventory"];
       return {
         ...envelope,
         fleet_health: composeFleetHealthVerdict({
           coverageAudit: auditStreamHealth(fullSummaries),
-          inventory,
+          inventory: fleetInventory,
           runtime: getRuntimeStatus(),
           summaries: fullSummaries as unknown as Parameters<typeof composeFleetHealthVerdict>[0]["summaries"],
         }),

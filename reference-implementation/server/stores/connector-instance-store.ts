@@ -173,13 +173,18 @@ export interface ConnectorIdentityPageBoundary {
 
 /**
  * Optional owner-scoped `connector_id` filter for `listOwnerVisibleIdentityPage`.
- * `null`/omitted preserves the exact prior fleet-wide page. When supplied, it
+ * `null`/omitted preserves the exact prior fleet-wide page. A single string
  * narrows the SAME keyset page (identity, ordering, cursor tuple) to one
  * connector's connections — Add Source, manual upload, and grant discovery
- * enumerate all of one connector's connections without a fleet scan.
+ * enumerate all of one connector's connections without a fleet scan. A
+ * readonly array is the bounded repeated-value SET scope (design doc
+ * add-source-perf-design-agy-0730.md "Minimal contract"): 1..
+ * {@link CONNECTOR_IDENTITY_PAGE_LIMIT_MAX} canonical distinct ids, letting a
+ * single exhausted traversal answer "every connection across THESE N catalog
+ * types" — the batched Add Source read, never a per-catalog-id fan-out.
  */
 export interface ConnectorIdentityPageFilter {
-  readonly connectorId?: string | null;
+  readonly connectorId?: string | readonly string[] | null;
 }
 
 export interface ConnectorInstanceIdentityPage {
@@ -193,19 +198,56 @@ function assertConnectorIdentityPageLimit(limit: number): void {
   }
 }
 
+type ConnectorIdScopeNormalized =
+  | { readonly kind: "none" }
+  | { readonly kind: "single"; readonly id: string }
+  | { readonly kind: "set"; readonly ids: readonly string[] };
+
 /**
- * Shared bind-parameter array for `listOwnerVisibleIdentityPage`'s two static
- * templates (filtered/unfiltered) — identical on both backends, since only
- * the SQL text differs, not the bound values. Isolated so neither store's
- * `listOwnerVisibleIdentityPage` has to re-express the template-choice
- * branch inline.
+ * Normalize the store-level `connectorId` filter (`string | readonly
+ * string[] | null`, already canonicalized/deduplicated by the caller —
+ * `pagination.ts`'s `parseConnectorIdFilter`) into a template-choice
+ * discriminant. A 1-element array collapses to `single` — the exact
+ * pre-existing filtered-template shape — so a caller passing a trivial set
+ * never pays for the SET template's extra membership join.
+ */
+function normalizeConnectorIdScope(
+  connectorId: string | readonly string[] | null | undefined
+): ConnectorIdScopeNormalized {
+  if (connectorId === null || connectorId === undefined) {
+    return { kind: "none" };
+  }
+  if (typeof connectorId === "string") {
+    return { id: connectorId, kind: "single" };
+  }
+  if (connectorId.length === 0) {
+    return { kind: "none" };
+  }
+  if (connectorId.length === 1) {
+    return { id: connectorId[0] as string, kind: "single" };
+  }
+  assertConnectorIdentityPageLimit(connectorId.length);
+  return { ids: connectorId, kind: "set" };
+}
+
+/**
+ * Shared bind-parameter array for `listOwnerVisibleIdentityPage`'s static
+ * templates (unfiltered/filtered/SET) — identical on both backends, since
+ * only the SQL text differs, not the bound values. Isolated so neither
+ * store's `listOwnerVisibleIdentityPage` has to re-express the
+ * template-choice branch inline. `connectorIdSetParam` carries the SET
+ * template's second bind value — an already-JSON-stringified array for
+ * SQLite's `json_each`, or the raw string array for Postgres's `unnest`
+ * (each backend's caller passes its own encoding); `null`/single-string
+ * scope never populates it.
  */
 function ownerVisibleIdentityPageParams(
   ownerSubjectId: string,
   connectorId: string | null,
   after: ConnectorIdentityPageBoundary | null,
-  limit: number
-): (string | number | null)[] {
+  limit: number,
+  connectorIdSetParam?: string | readonly string[]
+): (string | number | null | readonly string[])[] {
   const cursorConnectorId = after ? after.connectorId : null;
   const cursorCreatedAt = after ? after.createdAt : null;
   const cursorInstanceId = after ? after.connectorInstanceId : null;
@@ -220,6 +262,9 @@ function ownerVisibleIdentityPageParams(
     cursorInstanceId,
     limit + 1,
   ];
+  if (connectorIdSetParam !== undefined) {
+    return [ownerSubjectId, connectorIdSetParam, ...base.slice(1)];
+  }
   return connectorId === null ? base : [ownerSubjectId, connectorId, ...base.slice(1)];
 }
 
@@ -275,6 +320,39 @@ SELECT connector_instance_id, owner_subject_id, connector_id, display_name, stat
 FROM connector_instances
 WHERE owner_subject_id = ?
   AND connector_id = ?
+  AND connector_id NOT LIKE '%manual_action_stub%'
+  AND connector_id NOT LIKE '%manual-action-stub%'
+  AND connector_id NOT LIKE '%stream-test-stub%'
+  AND connector_id NOT LIKE '%pg_runtime_%'
+  AND connector_id NOT LIKE '%pg_canonical_%'
+  AND connector_id NOT LIKE '%pg_expand_%'
+  AND connector_id NOT LIKE '%pg_lexical_backfill_%'
+  AND (status <> 'revoked' OR COALESCE(json_extract(source_binding_json, '$.kind'), '') NOT IN ('browser_enrollment_shell', 'static_secret_draft', 'manual_upload_draft'))
+  AND (
+    ? IS NULL
+    OR connector_id > ?
+    OR (connector_id = ? AND created_at > ?)
+    OR (connector_id = ? AND created_at = ? AND connector_instance_id > ?)
+  )
+ORDER BY connector_id ASC, created_at ASC, connector_instance_id ASC
+LIMIT ?`;
+// Bounded SET membership template (design doc add-source-perf-design-agy-0730.md
+// "Server shape and bounds": "two static identity-page query templates for a
+// set membership predicate"). `json_each` binds the SAME already-validated,
+// already-canonicalized, size-capped JSON array `countActiveByOwnerConnectorIds`
+// uses — never string-interpolated SQL, never an SQLite-only trick that
+// defeats the composite index: `json_each`'s output column joins into a plain
+// sargable `connector_id = page_connector_ids.value` equality, which (like
+// the single-id FILTERED template above) lets SQLite range-scan
+// `idx_connector_instances_owner_identity_page` on both
+// `owner_subject_id`/`connector_id`, rather than falling back to an
+// owner-only scan the way the old `OR`-shaped predicate did.
+export const SQLITE_OWNER_VISIBLE_IDENTITY_PAGE_SET_SQL = `
+SELECT connector_instance_id, owner_subject_id, connector_id, display_name, status,
+       source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
+FROM connector_instances
+WHERE owner_subject_id = ?
+  AND connector_id IN (SELECT value FROM json_each(?))
   AND connector_id NOT LIKE '%manual_action_stub%'
   AND connector_id NOT LIKE '%manual-action-stub%'
   AND connector_id NOT LIKE '%stream-test-stub%'
@@ -1347,18 +1425,37 @@ export function createSqliteConnectorInstanceStore() {
       }: { after?: ConnectorIdentityPageBoundary | null; limit: number } & ConnectorIdentityPageFilter
     ): ConnectorInstanceIdentityPage {
       assertConnectorIdentityPageLimit(limit);
-      // Static template choice, not a dynamic-shape query: a present
+      const scope = normalizeConnectorIdScope(connectorId);
+      // Static template choice, not a dynamic-shape query: a present single
       // `connectorId` binds the FILTERED template (plain sargable
-      // `connector_id = ?`, seekable on the composite index); a `null`
-      // filter binds the UNFILTERED template (no connector_id predicate at
-      // all). Every other bound value and column is identical between them
-      // (see `ownerVisibleIdentityPageParams`, shared with the PostgreSQL
-      // store since only the SQL text differs, not the bound values).
-      const sql =
-        connectorId === null
-          ? SQLITE_OWNER_VISIBLE_IDENTITY_PAGE_UNFILTERED_SQL
-          : SQLITE_OWNER_VISIBLE_IDENTITY_PAGE_FILTERED_SQL;
-      const params = ownerVisibleIdentityPageParams(ownerSubjectId, connectorId, after, limit);
+      // `connector_id = ?`, seekable on the composite index); a SET binds the
+      // SET template (`json_each` membership, same index-seekable shape); a
+      // `null` filter binds the UNFILTERED template (no connector_id
+      // predicate at all). Every other bound value and column is identical
+      // across all three (see `ownerVisibleIdentityPageParams`, shared with
+      // the PostgreSQL store since only the SQL text differs, not the bound
+      // values).
+      let sql: string;
+      let params: (string | number | null)[];
+      if (scope.kind === "set") {
+        sql = SQLITE_OWNER_VISIBLE_IDENTITY_PAGE_SET_SQL;
+        params = ownerVisibleIdentityPageParams(ownerSubjectId, null, after, limit, JSON.stringify(scope.ids)) as (
+          | string
+          | number
+          | null
+        )[];
+      } else if (scope.kind === "single") {
+        sql = SQLITE_OWNER_VISIBLE_IDENTITY_PAGE_FILTERED_SQL;
+        params = ownerVisibleIdentityPageParams(ownerSubjectId, scope.id, after, limit) as (string | number | null)[];
+      } else {
+        sql = SQLITE_OWNER_VISIBLE_IDENTITY_PAGE_UNFILTERED_SQL;
+        params = ownerVisibleIdentityPageParams(ownerSubjectId, null, after, limit) as (string | number | null)[];
+      }
+      // SQLite's bind driver never receives a raw array: the SET template's
+      // second parameter is always the JSON.stringify'd string bound above
+      // (json_each parses it), never the raw `readonly string[]` the shared
+      // params helper's return type also allows for the PostgreSQL `unnest`
+      // call site below.
       const rows = Array.from(iterateDynamicSqlAcknowledged<ConnectorInstanceRow>(sql, params));
       const hasMore = rows.length > limit;
       return { hasMore, rows: rows.slice(0, limit).map(mapInstance) };
@@ -1629,6 +1726,34 @@ WHERE owner_subject_id = $1
     OR (connector_id = $7 AND created_at = $8 AND connector_instance_id > $9)
   )
 ORDER BY connector_id ASC, created_at ASC, connector_instance_id ASC
+LIMIT $10`;
+// Postgres SET membership peer of the SQLite `json_each` template above,
+// mirroring `countActiveByOwnerConnectorIds`'s existing `unnest($n::text[])`
+// pattern: a bound `text[]` array, never interpolated SQL, joining into a
+// plain sargable `connector_id = page_connector_ids.connector_id` equality
+// the composite index can seek on.
+export const POSTGRES_OWNER_VISIBLE_IDENTITY_PAGE_SET_SQL = `
+SELECT ci.connector_instance_id, ci.owner_subject_id, ci.connector_id, ci.display_name, ci.status,
+       ci.source_kind, ci.source_binding_key, ci.source_binding_json, ci.created_at, ci.updated_at, ci.revoked_at
+FROM connector_instances AS ci
+JOIN unnest($2::text[]) AS page_connector_ids(connector_id)
+  ON page_connector_ids.connector_id = ci.connector_id
+WHERE ci.owner_subject_id = $1
+  AND ci.connector_id NOT LIKE '%manual_action_stub%'
+  AND ci.connector_id NOT LIKE '%manual-action-stub%'
+  AND ci.connector_id NOT LIKE '%stream-test-stub%'
+  AND ci.connector_id NOT LIKE '%pg_runtime_%'
+  AND ci.connector_id NOT LIKE '%pg_canonical_%'
+  AND ci.connector_id NOT LIKE '%pg_expand_%'
+  AND ci.connector_id NOT LIKE '%pg_lexical_backfill_%'
+  AND (ci.status <> 'revoked' OR COALESCE(ci.source_binding_json->>'kind', '') NOT IN ('browser_enrollment_shell', 'static_secret_draft', 'manual_upload_draft'))
+  AND (
+    $3::text IS NULL
+    OR ci.connector_id > $4
+    OR (ci.connector_id = $5 AND ci.created_at > $6)
+    OR (ci.connector_id = $7 AND ci.created_at = $8 AND ci.connector_instance_id > $9)
+  )
+ORDER BY ci.connector_id ASC, ci.created_at ASC, ci.connector_instance_id ASC
 LIMIT $10`;
 
 export function createPostgresConnectorInstanceStore() {
@@ -1974,19 +2099,29 @@ export function createPostgresConnectorInstanceStore() {
       }: { after?: ConnectorIdentityPageBoundary | null; limit: number } & ConnectorIdentityPageFilter
     ): Promise<ConnectorInstanceIdentityPage> {
       assertConnectorIdentityPageLimit(limit);
+      const scope = normalizeConnectorIdScope(connectorId);
       // Static template choice (terminal-gate revision, 2026-07-29), matching
       // the SQLite store: a plain sargable `connector_id = $2` equality when
-      // filtered, no connector_id predicate at all when not. Real PostgreSQL
-      // already planned the prior `($2::text IS NULL OR connector_id = $2)`
-      // shape onto the composite index correctly, but the static-template
-      // requirement applies to both backends, not only the one whose planner
-      // happened to see through the dynamic shape. Bound values are shared
-      // with the SQLite store via `ownerVisibleIdentityPageParams`.
-      const sql =
-        connectorId === null
-          ? POSTGRES_OWNER_VISIBLE_IDENTITY_PAGE_UNFILTERED_SQL
-          : POSTGRES_OWNER_VISIBLE_IDENTITY_PAGE_FILTERED_SQL;
-      const params = ownerVisibleIdentityPageParams(ownerSubjectId, connectorId, after, limit);
+      // filtered by one id, a bound `unnest($2::text[])` membership join when
+      // filtered by a SET, no connector_id predicate at all when unfiltered.
+      // Real PostgreSQL already planned the prior `($2::text IS NULL OR
+      // connector_id = $2)` shape onto the composite index correctly, but the
+      // static-template requirement applies to both backends, not only the
+      // one whose planner happened to see through the dynamic shape. Bound
+      // values are shared with the SQLite store via
+      // `ownerVisibleIdentityPageParams`.
+      let sql: string;
+      let params: (string | number | null | readonly string[])[];
+      if (scope.kind === "set") {
+        sql = POSTGRES_OWNER_VISIBLE_IDENTITY_PAGE_SET_SQL;
+        params = ownerVisibleIdentityPageParams(ownerSubjectId, null, after, limit, scope.ids);
+      } else if (scope.kind === "single") {
+        sql = POSTGRES_OWNER_VISIBLE_IDENTITY_PAGE_FILTERED_SQL;
+        params = ownerVisibleIdentityPageParams(ownerSubjectId, scope.id, after, limit);
+      } else {
+        sql = POSTGRES_OWNER_VISIBLE_IDENTITY_PAGE_UNFILTERED_SQL;
+        params = ownerVisibleIdentityPageParams(ownerSubjectId, null, after, limit);
+      }
       const result = await postgresQuery(sql, params);
       const rows = result.rows as ConnectorInstanceRow[];
       const hasMore = rows.length > limit;

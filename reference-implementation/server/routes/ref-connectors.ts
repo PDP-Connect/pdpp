@@ -35,6 +35,7 @@ import {
   type RefConnectorsListIdentityItem,
   type RefConnectorsListItem,
   type RefConnectorsListPage,
+  type RefConnectorsListRetainedCountItem,
   type RefConnectorsRuntimeStatus,
 } from "../../operations/ref-connectors-list/index.ts";
 import {
@@ -362,23 +363,34 @@ async function sendConnectionScopedConnectorSummary(
     );
   }
   const rawProfile = req.query.profile;
-  if (rawProfile !== undefined && rawProfile !== "identity_inventory") {
-    throw new ConnectorSummaryPageRequestError("profile", "profile must be one of: identity_inventory");
+  if (rawProfile !== undefined && rawProfile !== "identity_inventory" && rawProfile !== "retained_count_summary") {
+    throw new ConnectorSummaryPageRequestError(
+      "profile",
+      "profile must be one of: identity_inventory, retained_count_summary"
+    );
   }
   const profile = rawProfile as ConnectorSummaryPageProfile | undefined;
   const envelope = await executeRefConnectorsList({
     getRuntimeStatus: ctx.getRuntimeStatus,
     listConnectorSummaries: async () => {
-      const summary =
-        profile === "identity_inventory"
-          ? await ctx.getConnectorSummaryForRoute(connectionSelector, { profile })
-          : await ctx.getConnectorSummaryForRoute(connectionSelector);
+      let summary: unknown;
+      if (profile === "identity_inventory") {
+        summary = await ctx.getConnectorSummaryForRoute(connectionSelector, { profile });
+      } else if (profile === "retained_count_summary") {
+        summary = await ctx.getConnectorSummaryForRoute(connectionSelector, { profile });
+      } else {
+        summary = await ctx.getConnectorSummaryForRoute(connectionSelector);
+      }
       if (summary === null || summary === undefined) {
         return [];
       }
-      return profile === "identity_inventory"
-        ? [summary as RefConnectorsListIdentityItem]
-        : [summary as RefConnectorsListItem];
+      if (profile === "identity_inventory") {
+        return [summary as RefConnectorsListIdentityItem];
+      }
+      if (profile === "retained_count_summary") {
+        return [summary as RefConnectorsListRetainedCountItem];
+      }
+      return [summary as RefConnectorsListItem];
     },
   });
   res.json(envelope);
@@ -431,8 +443,17 @@ export function mountRefConnectorsList(app: AppLike, ctx: MountRefConnectorsCont
         const ownerSubjectId = ctx.getOwnerSubjectId(req);
         // Non-null: `parseConnectorSummaryPageRequest` returns null only when
         // none of limit/cursor/connector_id are present, and `limit` is
-        // already confirmed present above.
-        const pageRequest = parseConnectorSummaryPageRequest(req.query, ownerSubjectId) as ConnectorSummaryPageRequest;
+        // already confirmed present above. A repeated `connector_id` SET
+        // scope canonicalizes each member through the SAME boundary rule the
+        // single-id filter already uses (`ctx.canonicalConnectorKey`,
+        // falling back to the raw id when it is not a known URL-shaped
+        // registry id — mirrors `canonicalizeConnectorId` in
+        // `routes/rs-mutation.ts`).
+        const pageRequest = parseConnectorSummaryPageRequest(
+          req.query,
+          ownerSubjectId,
+          (id) => ctx.canonicalConnectorKey(id) ?? id
+        ) as ConnectorSummaryPageRequest;
         const { listConnectorSummaryPage } = ctx;
         if (!listConnectorSummaryPage) {
           throw new Error("Connector summary page capability is not configured.");

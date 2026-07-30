@@ -836,6 +836,29 @@ export interface ConnectorIdentityInventorySummary {
   readonly streams: string[];
 }
 
+/**
+ * `retained_count_summary` profile (design doc add-source-perf-design-agy-
+ * 0730.md; Fable ruling terminal-read-architecture-fable-0730.md §2 R4/R5,
+ * §3 G2/G4 — same one-projection-N-profiles pattern as `identity_inventory`,
+ * R8.1). The pinned field set is exactly Add Source's `existing-sources-by-
+ * connector.ts` consumption: identity + `total_records`/`total_records_state`
+ * (evidence-row canonical count) + `acquisition_coverage.latest_batch`
+ * (owner acquisition provenance) — no health/run/schedule/runtime field, no
+ * `recent_batches` (Add Source renders only the latest batch).
+ */
+export interface ConnectorRetainedCountSummary {
+  readonly acquisition_coverage: { readonly latest_batch: AcquisitionBatchSummary | null } | null;
+  readonly connection_id: string;
+  readonly connector_display_name: string;
+  readonly connector_id: string;
+  readonly connector_instance_id: string;
+  readonly display_name: string;
+  readonly revoked_at: string | null;
+  readonly status: string;
+  readonly total_records: number;
+  readonly total_records_state: "known" | "known_zero" | "unobserved" | "stale" | "unknown";
+}
+
 export interface ConnectorDetail {
   readonly acquisition_coverage: AcquisitionCoverageSummary | null;
   /** See {@link ConnectorSummary.collection_report}. Derived on read on the detail surface too. */
@@ -1914,7 +1937,11 @@ export async function listOwnerVisibleConnectorInstancePage(
     after = null,
     limit,
     connectorId = null,
-  }: { after?: ConnectorIdentityPageBoundary | null; limit: number; connectorId?: string | null }
+  }: {
+    after?: ConnectorIdentityPageBoundary | null;
+    limit: number;
+    connectorId?: string | readonly string[] | null;
+  }
 ): Promise<{ readonly hasMore: boolean; readonly rows: readonly ConnectorInstanceRow[] }> {
   return await getConnectorInstanceStore().listOwnerVisibleIdentityPage(ownerSubjectId, { after, connectorId, limit });
 }
@@ -6110,6 +6137,91 @@ async function projectConnectorIdentityInventoryPage(
 }
 
 /**
+ * Project an already-authorized identity page under the `retained_count_summary`
+ * profile (design doc add-source-perf-design-agy-0730.md; Fable ruling
+ * terminal-read-architecture-fable-0730.md R4/R5): identity + the exact three
+ * fields Add Source's existing-sources card renders — `total_records`,
+ * `total_records_state`, and `acquisition_coverage.latest_batch`. Dependency
+ * matrix: the identity page (already read by the caller) + one evidence-row
+ * batch (canonical `total_records`/`record_snapshot.state`) + one
+ * acquisition-batch-store batch (latest batch per instance, `limit: 1`) — the
+ * SAME two page-scoped batch reads `loadPageProductEvidence` already proves
+ * flat per page, minus the other nine families the full profile also loads.
+ * Zero spine/runtime/browser-surface/schedule/run-history, zero writes.
+ *
+ * `total_records`/`total_records_state` mirror `projectConnectorSummaryForInstance`'s
+ * evidence-first derivation exactly (ref-control.ts lines ~5142-5158): when an
+ * evidence row exists, its canonical `total_records` is authoritative and
+ * `total_records_state` is `known`/`known_zero` when the row's
+ * `record_snapshot.state === "current"`, else `stale` (a non-authoritative
+ * carried-over hint); no evidence row yet is `total_records: 0`,
+ * `total_records_state: "unobserved"` — never a fabricated exact zero. This
+ * profile does NOT fall back to the live per-connection record projection the
+ * full profile uses when evidence is absent: that fallback is itself a
+ * per-connection read this profile exists to avoid, and `unobserved` is
+ * already the honest, typed answer for "no evidence yet."
+ */
+// Mirrors `projectConnectorSummaryForInstance`'s evidence-first total_records_state
+// derivation (ref-control.ts lines ~5142-5158) exactly, extracted so
+// `projectConnectorRetainedCountSummaryPage`'s per-row closure stays under the
+// cognitive-complexity budget.
+function deriveRetainedCountState(
+  evidence: ConnectorSummaryEvidenceRow | null,
+  totalRecords: number
+): ConnectorRetainedCountSummary["total_records_state"] {
+  if (!evidence) {
+    return "unobserved";
+  }
+  if (evidence.record_snapshot.state !== "current") {
+    return "stale";
+  }
+  return totalRecords > 0 ? "known" : "known_zero";
+}
+
+async function projectConnectorRetainedCountSummaryPage(
+  rows: readonly ConnectorInstanceRow[]
+): Promise<readonly ConnectorRetainedCountSummary[]> {
+  const pageIds = rows.map((row) => row.connectorInstanceId);
+  const [connectorRows, summaryEvidenceRead, latestBatchByInstanceIdRaw] = await Promise.all([
+    listRegisteredConnectorRows(),
+    readSummaryEvidenceRowsOrFailure(pageIds),
+    Promise.resolve(getAcquisitionBatchStore().listByConnectionIds(pageIds, { limit: 1 })).catch(
+      () => new Map<string, AcquisitionBatchRow[]>()
+    ),
+  ]);
+  const latestBatchByInstanceId = latestBatchByInstanceIdRaw as ReadonlyMap<string, readonly AcquisitionBatchRow[]>;
+  const manifestsByConnectorId = new Map(
+    connectorRows.map((row) => [row.connector_id, resolveSummaryManifest(row.manifest).manifest])
+  );
+  const evidenceByInstanceId = buildEvidenceIndex(summaryEvidenceRead.rows);
+  return rows.flatMap((instance): readonly ConnectorRetainedCountSummary[] => {
+    const manifest = manifestsByConnectorId.get(instance.connectorId);
+    if (!manifest) {
+      return [];
+    }
+    const connectorDisplayName = manifest.display_name || instance.connectorId;
+    const evidence = evidenceByInstanceId.get(instance.connectorInstanceId) ?? null;
+    const totalRecords = evidence ? evidence.total_records : 0;
+    const totalRecordsState = deriveRetainedCountState(evidence, totalRecords);
+    const latestBatch = latestBatchByInstanceId.get(instance.connectorInstanceId)?.[0] ?? null;
+    return [
+      {
+        acquisition_coverage: latestBatch ? { latest_batch: projectAcquisitionBatchSummary(latestBatch) } : null,
+        connection_id: instance.connectorInstanceId,
+        connector_display_name: connectorDisplayName,
+        connector_id: instance.connectorId,
+        connector_instance_id: instance.connectorInstanceId,
+        display_name: instance.displayName || connectorDisplayName,
+        revoked_at: instance.revokedAt ?? null,
+        status: instance.status,
+        total_records: totalRecords,
+        total_records_state: totalRecordsState,
+      },
+    ];
+  });
+}
+
+/**
  * Project an already-authorized identity page. Both the public keyset route
  * and fleet health use this one batch/evidence path; fleet health supplies
  * the exact inventory it already read for its scope rather than querying the
@@ -6178,25 +6290,29 @@ interface ListConnectorSummaryPageOptions {
   readonly after?: ConnectorIdentityPageBoundary | null;
   /**
    * Optional owner-scoped filter narrowing this SAME keyset page to one
-   * connector's connections. Composes with `limit`/`cursor` unconditionally
-   * (fixed query family — see `SQLITE_OWNER_VISIBLE_IDENTITY_PAGE_SQL`'s
-   * `connector_id = ? OR ? IS NULL` clause). Distinct from the `?connection=`
-   * exact-connection selector: `connectorId` still returns a keyset PAGE
-   * (0, 1, or many rows across one or more calls), never a single resolved
-   * connection. A cursor issued under one `connectorId` is not valid for a
-   * request omitting it or naming a different one — see
+   * connector's connections, OR a bounded SET of connectors (design doc
+   * add-source-perf-design-agy-0730.md "Minimal contract": 1..100 canonical
+   * distinct ids). Composes with `limit`/`cursor` unconditionally (fixed
+   * query family — see `SQLITE_OWNER_VISIBLE_IDENTITY_PAGE_SQL`/`_SET_SQL`).
+   * Distinct from the `?connection=` exact-connection selector: `connectorId`
+   * still returns a keyset PAGE (0, 1, or many rows across one or more
+   * calls), never a single resolved connection. A cursor issued under one
+   * `connectorId` scope is not valid for a request omitting it, naming a
+   * different connector, or naming a different set — see
    * `encodeConnectorSummaryPageCursor`'s `connectorId` binding.
    */
-  readonly connectorId?: string | null;
+  readonly connectorId?: string | readonly string[] | null;
   readonly includeRunSummaries?: ConnectorRunSummaryInclusion;
   readonly limit: number;
   readonly ownerSubjectId: string;
   /**
    * Named semantic profile (Fable ruling §8). `undefined` = the full
    * (`detail`-shaped) response, unchanged. `identity_inventory` = R8.1's
-   * pure identity + stream-membership profile, option-gating which
-   * dependency families load — the same pattern `includeRunSummaries`
-   * already establishes, not a second projection implementation.
+   * pure identity + stream-membership profile. `retained_count_summary` =
+   * R4/R5's identity + total_records/total_records_state/acquisition_coverage
+   * profile for Add Source. Both option-gate which dependency families
+   * load — the same pattern `includeRunSummaries` already establishes, never
+   * a second projection implementation.
    */
   readonly profile?: ConnectorSummaryPageProfile;
 }
@@ -6216,6 +6332,10 @@ export function listConnectorSummaryPage(
 ): Promise<ListConnectorSummaryPageResult<ConnectorIdentityInventorySummary>>;
 export function listConnectorSummaryPage(
   controller: ControllerLike | null | undefined,
+  options: ListConnectorSummaryPageOptions & { readonly profile: "retained_count_summary" }
+): Promise<ListConnectorSummaryPageResult<ConnectorRetainedCountSummary>>;
+export function listConnectorSummaryPage(
+  controller: ControllerLike | null | undefined,
   options: ListConnectorSummaryPageOptions & { readonly profile?: undefined }
 ): Promise<ListConnectorSummaryPageResult<ConnectorSummary>>;
 export async function listConnectorSummaryPage(
@@ -6229,17 +6349,26 @@ export async function listConnectorSummaryPage(
     profile,
   }: ListConnectorSummaryPageOptions
 ): Promise<
-  ListConnectorSummaryPageResult<ConnectorSummary> | ListConnectorSummaryPageResult<ConnectorIdentityInventorySummary>
+  | ListConnectorSummaryPageResult<ConnectorSummary>
+  | ListConnectorSummaryPageResult<ConnectorIdentityInventorySummary>
+  | ListConnectorSummaryPageResult<ConnectorRetainedCountSummary>
 > {
   const identityPage = await listOwnerVisibleConnectorInstancePage(ownerSubjectId, { after, connectorId, limit });
-  const data =
-    profile === "identity_inventory"
-      ? await projectConnectorIdentityInventoryPage(identityPage.rows)
-      : await projectConnectorSummaryIdentityPage(controller, {
-          includeRunSummaries,
-          ownerSubjectId,
-          rows: identityPage.rows,
-        });
+  let data:
+    | readonly ConnectorSummary[]
+    | readonly ConnectorIdentityInventorySummary[]
+    | readonly ConnectorRetainedCountSummary[];
+  if (profile === "identity_inventory") {
+    data = await projectConnectorIdentityInventoryPage(identityPage.rows);
+  } else if (profile === "retained_count_summary") {
+    data = await projectConnectorRetainedCountSummaryPage(identityPage.rows);
+  } else {
+    data = await projectConnectorSummaryIdentityPage(controller, {
+      includeRunSummaries,
+      ownerSubjectId,
+      rows: identityPage.rows,
+    });
+  }
   const last = identityPage.rows.at(-1);
   // The runtime branch above already guarantees `data`'s element type matches
   // `profile`; the two-overload public signature exists so callers that omit
@@ -6264,7 +6393,8 @@ export async function listConnectorSummaryPage(
         : null,
   } as
     | ListConnectorSummaryPageResult<ConnectorSummary>
-    | ListConnectorSummaryPageResult<ConnectorIdentityInventorySummary>;
+    | ListConnectorSummaryPageResult<ConnectorIdentityInventorySummary>
+    | ListConnectorSummaryPageResult<ConnectorRetainedCountSummary>;
 }
 
 /**
@@ -6350,6 +6480,11 @@ export function getConnectorSummaryForRoute(
 ): Promise<ConnectorIdentityInventorySummary | null>;
 export function getConnectorSummaryForRoute(
   routeId: string,
+  controller: ControllerLike | null | undefined,
+  options: { readonly profile: "retained_count_summary" }
+): Promise<ConnectorRetainedCountSummary | null>;
+export function getConnectorSummaryForRoute(
+  routeId: string,
   controller?: ControllerLike | null,
   options?: { readonly profile?: ConnectorSummaryPageProfile }
 ): Promise<ConnectorSummary | null>;
@@ -6357,13 +6492,17 @@ export async function getConnectorSummaryForRoute(
   routeId: string,
   controller?: ControllerLike | null,
   options: { readonly profile?: ConnectorSummaryPageProfile } = {}
-): Promise<ConnectorSummary | ConnectorIdentityInventorySummary | null> {
+): Promise<ConnectorSummary | ConnectorIdentityInventorySummary | ConnectorRetainedCountSummary | null> {
   const { match } = await resolveOwnerVisibleConnectionForRoute(routeId);
   if (match === null) {
     return null;
   }
   if (options.profile === "identity_inventory") {
     const rows = await projectConnectorIdentityInventoryPage([match]);
+    return rows[0] ?? null;
+  }
+  if (options.profile === "retained_count_summary") {
+    const rows = await projectConnectorRetainedCountSummaryPage([match]);
     return rows[0] ?? null;
   }
   // Scoped to exactly the one resolved connection: by this point the
