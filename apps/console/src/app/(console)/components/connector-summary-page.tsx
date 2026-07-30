@@ -93,7 +93,7 @@ export interface ConnectorSummaryPageParams {
  * genuine transport failure — either way the view must show an explicit
  * restart, never a silently-empty or silently-truncated list.
  */
-export type ConnectorSummaryPageResult<T, R = undefined> =
+export type ConnectorSummaryPageResult<T, R = undefined, H = undefined> =
   | { readonly kind: "error"; readonly message: string }
   | {
       readonly hasMore: boolean;
@@ -101,6 +101,7 @@ export type ConnectorSummaryPageResult<T, R = undefined> =
       readonly kind: "ok";
       readonly nextCursor?: string;
       readonly runtime: R;
+      readonly fleetHealth?: H;
     };
 
 /**
@@ -118,15 +119,16 @@ export type ConnectorSummaryPageResult<T, R = undefined> =
  * produced it is rejected — see the module doc above for why this file
  * stops there and does not track cross-request cycle history.
  */
-export async function loadConnectorSummaryPage<T, R = undefined>(
+export async function loadConnectorSummaryPage<T, R = undefined, H = undefined>(
   state: ConnectorSummaryPageState,
   fetchPage: (opts: { cursor?: string; limit: number }) => Promise<{
     data: readonly T[];
     has_more: boolean;
     next_cursor?: string;
+    fleet_health?: H;
     runtime?: R;
   }>
-): Promise<ConnectorSummaryPageResult<T, R | undefined>> {
+): Promise<ConnectorSummaryPageResult<T, R | undefined, H | undefined>> {
   try {
     const response = await fetchPage({ cursor: state.cursor, limit: CONNECTOR_SUMMARY_PAGE_SIZE });
     const validation = validateListEnvelope<T>(response);
@@ -147,6 +149,7 @@ export async function loadConnectorSummaryPage<T, R = undefined>(
       items: validation.data,
       kind: "ok",
       nextCursor: validation.nextCursor,
+      fleetHealth: response.fleet_health,
       runtime: response.runtime,
     };
   } catch (err) {

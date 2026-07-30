@@ -5,7 +5,7 @@
     "date": "2026-07-30"
   },
   "server/ref-control.ts": {
-    "allowed_mass": 201,
+    "allowed_mass": 205,
     "reason": "Performance residual correction (2026-07-30): fleet health already reads the exact owner-visible connector inventory, but summary projection ignored that bounded snapshot and traversed the identities again. The added owner-scope rejection and supplied-inventory projection path preserve the same exact-id batched evidence/dependency reads while removing only the duplicate identity traversal. The owner check is fail-closed, pagination remains bounded at CONNECTOR_SUMMARY_PAGE_LIMIT_MAX, and a route oracle proves supplied-inventory parity plus the empty-inventory no-read behavior.",
     "date": "2026-07-30"
   },
@@ -40,9 +40,9 @@
     "date": "2026-07-20"
   },
   "lib/spine.ts": {
-    "allowed_mass": 101,
-    "reason": "loadEventsForSummaries batches the summary-hydration N+1 (one query per correlation id -> one query for the whole page) via a ROW_NUMBER()-partitioned fetch plus a per-id grouping pass (building the id->rows Map, iterating placeholders, hydrating rows). That control flow — not the SQL string literal itself — is what Biome's cognitive-complexity scoring counts as added mass; the SQL text's explicit `(event_seq IS NULL), event_seq, event_id` ordering is necessary because summarizeEvents derives status/source/browser-surface state from array position (first/last event, reverse scans), so the grouped rows must arrive in a caller-guaranteed total order rather than relying on the window function's undocumented partition-membership-only guarantee. This mass was already present at PR #368's head without a justification entry; adding one here rather than reducing it further, since the batching mechanism and its ordering contract are load-bearing correctness, not incidental style.",
-    "date": "2026-07-20"
+    "allowed_mass": 109,
+    "reason": "loadEventsForSummaries batches the summary-hydration N+1 (one query per correlation id -> one query for the whole page) via a ROW_NUMBER()-partitioned fetch plus a per-id grouping pass (building the id->rows Map, iterating placeholders, hydrating rows). The 2026-07-30 connector-summary change adds the same bounded partitioned aggregation one layer earlier for every connector id in an authorized page, then returns an id-keyed map to preserve the existing connection matcher and singleton fallback. The explicit empty/backend branches and per-row fail-closed hydration are load-bearing backend parity, not incidental extraction candidates; the SQLite 50-to-200 slope and no-write oracle plus PostgreSQL authority cover them.",
+    "date": "2026-07-30"
   },
   "server/connector-manifest-validation.ts": {
     "allowed_mass": 124,

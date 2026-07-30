@@ -179,8 +179,18 @@ export interface MountRefConnectorsContext {
     ownerSubjectId: string,
     request: ConnectorSummaryPageRequest
   ) =>
-    | Promise<{ readonly data: readonly unknown[]; readonly has_more: boolean; readonly next_cursor: string | null }>
-    | { readonly data: readonly unknown[]; readonly has_more: boolean; readonly next_cursor: string | null };
+    | Promise<{
+        readonly data: readonly unknown[];
+        readonly fleet_health?: unknown;
+        readonly has_more: boolean;
+        readonly next_cursor: string | null;
+      }>
+    | {
+        readonly data: readonly unknown[];
+        readonly fleet_health?: unknown;
+        readonly has_more: boolean;
+        readonly next_cursor: string | null;
+      };
   listSchedules: () => Promise<ScheduleRow[]> | ScheduleRow[];
   // Marks the maintained connector-summary read-model evidence for exactly one
   // connection dirty after a cookie-authed `/_ref` mutation (run / schedule /

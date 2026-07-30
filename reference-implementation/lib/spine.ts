@@ -17,6 +17,7 @@ import {
   postgresEmitSpineEvent,
   postgresGetRunStartedEvent,
   postgresGetRunTerminalEvent,
+  postgresListRunSummariesByConnectorIds,
   postgresListSpineCorrelations,
   postgresListSpineEventsPage,
   postgresSearchSpine,
@@ -1390,6 +1391,62 @@ export function listSpineCorrelations(
     return postgresListSpineCorrelations(key, filters) as Promise<SpineCorrelationPage>;
   }
   return Promise.resolve(listSpineCorrelationsSqlite(key, filters));
+}
+
+/**
+ * Return the bounded run-correlation candidate set for every connector in an
+ * already-authorized connector-summary page.  The map is keyed by connector
+ * id, never instance id: callers still perform the existing exact
+ * connection/browser-profile match and singleton-active fallback themselves.
+ */
+export function listRunSummariesByConnectorIds(
+  connectorIds: readonly string[],
+  status: string | null = null
+): Promise<ReadonlyMap<string, readonly SpineSummary[]>> {
+  const ids = [...new Set(connectorIds.filter((id) => typeof id === "string" && id.length > 0))];
+  if (isPostgresStorageBackend()) {
+    return postgresListRunSummariesByConnectorIds(ids, status) as Promise<ReadonlyMap<string, readonly SpineSummary[]>>;
+  }
+  const byConnector = new Map<string, SpineSummary[]>(ids.map((id) => [id, []]));
+  if (ids.length === 0 || !(getDb() as SpineDatabase | undefined)) {
+    return Promise.resolve(byConnector);
+  }
+  const placeholders = ids.map(() => "?").join(", ");
+  const rows = [
+    ...iterateDynamicSqlAcknowledged<CorrelationAggregateRow & { readonly source_id: string }>(
+      `WITH grouped AS (
+         SELECT source_id, run_id AS id, MIN(occurred_at) AS first_at, MAX(occurred_at) AS last_at, COUNT(*) AS event_count
+         FROM spine_events
+         WHERE run_id IS NOT NULL AND source_kind = 'connector' AND source_id IN (${placeholders})
+         GROUP BY source_id, run_id
+       ), ranked AS (
+         SELECT *, ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY last_at DESC, id ASC) AS rn
+         FROM grouped
+       )
+       SELECT source_id, id, first_at, last_at, event_count
+       FROM ranked
+       WHERE rn <= ?
+       ORDER BY source_id ASC, last_at DESC, id ASC`,
+      // Mirrors listSpineCorrelationsSqlite's `limit * 4` candidate window
+      // for a 64-row reader. Status is projected from hydrated events, so it
+      // must filter this full bounded window before the 64-item page cap.
+      [...ids, 256]
+    ),
+  ];
+  const eventsById = loadEventsForSummaries(
+    "run",
+    rows.map((row) => row.id)
+  );
+  for (const row of rows) {
+    const summary = hydrateAggregateRow(row, "run", { sourceId: row.source_id, sourceKind: "connector" }, eventsById);
+    if (summary && (status === null || summary.status === status)) {
+      const bucket = byConnector.get(row.source_id);
+      if (bucket && bucket.length < 64) {
+        bucket.push(summary);
+      }
+    }
+  }
+  return Promise.resolve(byConnector);
 }
 
 interface CorrelationAggregateSql {

@@ -16,7 +16,7 @@
 import type { BrowserSurface, BrowserSurfaceLease } from "@opendatalabs/remote-surface/leases";
 import { allowUnboundedReadAcknowledged, getOne, iterateDynamicSqlAcknowledged, referenceQueries } from "../lib/db.ts";
 import { isNullish } from "../lib/nullish.ts";
-import { listSpineCorrelations, type SpineSummary } from "../lib/spine.ts";
+import { listRunSummariesByConnectorIds, listSpineCorrelations, type SpineSummary } from "../lib/spine.ts";
 import {
   CONNECTOR_SUMMARY_PAGE_LIMIT_MAX,
   type ConnectorIdentityPageBoundary,
@@ -4682,7 +4682,15 @@ function shouldHydrateRunSummariesForInstance(
   return instance.status === "active";
 }
 
-function createConnectorRunSummariesReader(): ConnectorSummaryProjectionDeps["listRunSummariesForConnector"] {
+function createConnectorRunSummariesReader(
+  summariesByStatus?: ReadonlyMap<string, ReadonlyMap<string, readonly SpineSummary[]>>
+): ConnectorSummaryProjectionDeps["listRunSummariesForConnector"] {
+  if (summariesByStatus) {
+    return (connectorId, status = null) => Promise.resolve(summariesByStatus.get(status ?? "")?.get(connectorId) ?? []);
+  }
+  // Scoped/detail projections do not pre-load an identity page. Keep their
+  // established bounded `(connectorId, status)` reader rather than treating
+  // an absent page batch as an honest empty result.
   const cache = new Map<string, Promise<readonly SpineSummary[]>>();
   return (connectorId, status = null) => {
     const key = `${connectorId}\n${status ?? ""}`;
@@ -5616,6 +5624,9 @@ async function loadConnectorSummaryProjectionDeps(
      * option.
      */
     readonly connectorInstanceIds?: readonly string[] | null;
+    /** Connector ids belonging to the exact identity page.  Run correlation
+     * hydration is one bounded page-scoped map, never a per-row fallback. */
+    readonly connectorIds?: readonly string[];
   } = {}
 ): Promise<ConnectorSummaryProjectionDeps> {
   const schedulerStore = getDefaultSchedulerStore();
@@ -5667,6 +5678,8 @@ async function loadConnectorSummaryProjectionDeps(
     latestRunHistoryRows,
     latestSuccessfulRunHistoryRows,
     scheduleRows,
+    runSummariesByConnectorId,
+    successfulRunSummariesByConnectorId,
   ] = await Promise.all([
     listRegisteredConnectorRows(),
     options.includeRetainedSizeSnapshot ? loadRetainedSizeProjectionSnapshot() : Promise.resolve(undefined),
@@ -5690,6 +5703,8 @@ async function loadConnectorSummaryProjectionDeps(
     runHistoryScopeIds && typeof controller?.listSchedulesForConnections === "function"
       ? Promise.resolve(controller.listSchedulesForConnections(runHistoryScopeIds)).catch(() => null)
       : Promise.resolve(null),
+    options.connectorIds ? listRunSummariesByConnectorIds(options.connectorIds) : Promise.resolve(null),
+    options.connectorIds ? listRunSummariesByConnectorIds(options.connectorIds, "succeeded") : Promise.resolve(null),
   ]);
   const latestRunHistoryByInstanceId =
     latestRunHistoryRows === null
@@ -5773,7 +5788,15 @@ async function loadConnectorSummaryProjectionDeps(
     },
     includeRunSummaries: options.includeRunSummaries ?? true,
     latestStreamFactsByInstanceId,
-    listRunSummariesForConnector: createConnectorRunSummariesReader(),
+    listRunSummariesForConnector:
+      runSummariesByConnectorId && successfulRunSummariesByConnectorId
+        ? createConnectorRunSummariesReader(
+            new Map([
+              ["", runSummariesByConnectorId],
+              ["succeeded", successfulRunSummariesByConnectorId],
+            ])
+          )
+        : createConnectorRunSummariesReader(),
     manifestDeclarationByConnectorId,
     manifestsByConnectorId,
     ...(retainedSizeSnapshot ? { retainedSizeSnapshot } : {}),
@@ -6014,6 +6037,7 @@ async function projectConnectorSummaryIdentityPage(
   const [pageEvidence, deps, activeConnectionCounts] = await Promise.all([
     loadPageProductEvidence(pageIds),
     loadConnectorSummaryProjectionDeps(controller, {
+      connectorIds: rows.map((row) => row.connectorId),
       connectorInstanceIds: pageIds,
       includeRunSummaries,
     }),
@@ -6085,6 +6109,9 @@ export async function listConnectorSummaryPage(
 ): Promise<{
   readonly data: readonly ConnectorSummary[];
   readonly has_more: boolean;
+  /** Internal exact identity inventory for callers composing a complete-page
+   * verdict.  It never crosses the route envelope. */
+  readonly inventory: readonly ConnectorInstanceRow[];
   readonly next_cursor: string | null;
 }> {
   const identityPage = await listOwnerVisibleConnectorInstancePage(ownerSubjectId, { after, connectorId, limit });
@@ -6097,6 +6124,7 @@ export async function listConnectorSummaryPage(
   return {
     data,
     has_more: identityPage.hasMore,
+    inventory: identityPage.rows,
     next_cursor:
       identityPage.hasMore && last?.createdAt
         ? encodeConnectorSummaryPageCursor(

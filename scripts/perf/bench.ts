@@ -136,7 +136,9 @@ async function fetchOwnerCookie(): Promise<string> {
  * page, or error shell can otherwise produce a deceptively quick page benchmark. */
 export const PAGE_TARGETS = [
   { route: "/", marker: 'class="rr-stand"' },
-  { route: "/sources", marker: '<h1 class="pdpp-heading text-foreground">Sources</h1>' },
+  // This source-specific ownership copy is a semantic route marker, unlike
+  // the heading's generated style/class ordering which changes legitimately.
+  { route: "/sources", marker: "your loading dock · each source pushes into your streams · nothing leaves" },
   { route: "/sources/add", marker: '<h1 class="pdpp-heading break-words text-foreground">Add source</h1>' },
   { route: "/explore", marker: 'aria-label="Search or filter"' },
   { route: "/syncs", marker: '<h1 class="rr-sync__title">Syncs</h1>' },
@@ -251,11 +253,21 @@ interface Stats {
   p95: number | null;
   p99: number | null;
   statuses: number[];
+  ttfb_max: number | null;
+  ttfb_min: number | null;
+  ttfb_n: number;
+  ttfb_p50: number | null;
+  ttfb_p95: number | null;
+  ttfb_p99: number | null;
 }
 
 function stats(samples: SampleResult[]): Stats {
   const totals = samples.map((s) => s.totalMs).sort((a, b) => a - b);
   const sum = totals.reduce((a, b) => a + b, 0);
+  const ttfbs = samples
+    .map((sample) => sample.ttfbMs)
+    .filter((ttfb): ttfb is number => typeof ttfb === "number" && Number.isFinite(ttfb))
+    .sort((a, b) => a - b);
   return {
     n: totals.length,
     min: round(totals[0] ?? null),
@@ -266,6 +278,12 @@ function stats(samples: SampleResult[]): Stats {
     mean: round(sum / totals.length),
     statuses: [...new Set(samples.map((s) => s.status))],
     bytes: Math.round(samples.reduce((a, s) => a + s.bytes, 0) / samples.length),
+    ttfb_n: ttfbs.length,
+    ttfb_min: round(ttfbs[0] ?? null),
+    ttfb_p50: round(pct(ttfbs, 50)),
+    ttfb_p95: round(pct(ttfbs, 95)),
+    ttfb_p99: round(pct(ttfbs, 99)),
+    ttfb_max: round(ttfbs.at(-1) ?? null),
   };
 }
 
@@ -331,7 +349,7 @@ async function main(): Promise<void> {
     const r = await benchTarget(t);
     results.push(r);
     console.error(
-      `  ${pad(r.group, 5)} ${pad(r.name, 26)} ${r.ok ? "OK  " : "FAIL"} p50=${pad(r.p50, 7)}ms p95=${pad(r.p95, 7)}ms max=${pad(r.max, 7)}ms  [${r.statuses.join(",")}] ${fmtBytes(r.bytes)}${r.failures.length ? ` — ${r.failures.join("; ")}` : ""}`
+      `  ${pad(r.group, 5)} ${pad(r.name, 26)} ${r.ok ? "OK  " : "FAIL"} total p50=${pad(r.p50, 7)}ms p95=${pad(r.p95, 7)}ms; ttfb n=${r.ttfb_n} p50=${pad(r.ttfb_p50, 7)}ms p95=${pad(r.ttfb_p95, 7)}ms  [${r.statuses.join(",")}] ${fmtBytes(r.bytes)}${r.failures.length ? ` — ${r.failures.join("; ")}` : ""}`
     );
   }
 

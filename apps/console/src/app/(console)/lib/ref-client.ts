@@ -729,6 +729,7 @@ export interface RefConnectorRuntimeStatus {
 }
 
 export interface RefConnectorSummariesResponse extends ListResponse<RefConnectorSummary> {
+  fleet_health?: RefFleetHealthVerdict;
   runtime?: RefConnectorRuntimeStatus;
 }
 
@@ -1499,7 +1500,7 @@ export const CONNECTOR_SUMMARY_PAGE_LIMIT_MAX = 100;
 const CONNECTOR_SUMMARY_DEFAULT_PAGE_LIMIT = 100;
 
 export async function listConnectorSummaries(
-  options: { connectionRouteId?: string; cursor?: string; limit?: number } = {}
+  options: { connectionRouteId?: string; cursor?: string; includeFleetHealth?: boolean; limit?: number } = {}
 ): Promise<RefConnectorSummariesResponse> {
   // When a record subpage knows the connection it wants, pass the route id so
   // the reference projects only that one connection (a 0-or-1 list) instead of
@@ -1515,6 +1516,7 @@ export async function listConnectorSummaries(
   // first-party reason to ever take that branch anymore.
   return (await refFetch("/_ref/connectors", {
     cursor: options.cursor,
+    include_fleet_health: options.includeFleetHealth ? 1 : undefined,
     limit: options.limit ?? CONNECTOR_SUMMARY_DEFAULT_PAGE_LIMIT,
   })) as RefConnectorSummariesResponse;
 }

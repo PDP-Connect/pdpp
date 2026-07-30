@@ -4806,17 +4806,34 @@ export function buildAsApp(opts: ServerOpts = {}) {
         : null,
     handleError,
     invalidateConnectorSummariesCache,
-    listConnectorSummaryPage: (
+    listConnectorSummaryPage: async (
       ownerSubjectId: string,
-      page: { connectorId?: string | null; cursor: unknown; limit: number }
-    ) =>
-      listConnectorSummaryPage(controller, {
+      page: { connectorId?: string | null; cursor: unknown; includeFleetHealth?: boolean; limit: number }
+    ) => {
+      const summaryPage = await listConnectorSummaryPage(controller, {
         after: (page.cursor as Parameters<typeof listConnectorSummaryPage>[1]["after"]) ?? null,
         connectorId: page.connectorId ?? null,
         includeRunSummaries: "singleton-active",
         limit: page.limit,
         ownerSubjectId,
-      }),
+      });
+      const { inventory, ...envelope } = summaryPage;
+      // A fleet verdict is truthful only when the page itself is the complete
+      // owner-visible inventory.  Never infer that from a short page: the
+      // storage page's explicit has_more bit is the authority.
+      if (!(page.includeFleetHealth && page.connectorId === null && page.cursor === null && !summaryPage.has_more)) {
+        return envelope;
+      }
+      return {
+        ...envelope,
+        fleet_health: composeFleetHealthVerdict({
+          coverageAudit: auditStreamHealth(summaryPage.data),
+          inventory,
+          runtime: getRuntimeStatus(),
+          summaries: summaryPage.data,
+        }),
+      };
+    },
     listSchedules: async () => (controller ? await controller.listSchedules() : []),
     markConnectorSummaryEvidenceDirty,
     onScheduleMutation: opts.onScheduleMutation,

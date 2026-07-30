@@ -1327,6 +1327,78 @@ export async function postgresListSpineCorrelations(
   };
 }
 
+/**
+ * Page-scoped connector run hydration.  This is deliberately not another
+ * public correlation-list shape: the caller has already selected an exact
+ * connector-summary identity page, and needs the same bounded run candidates
+ * for each of those connector ids.  One partitioned aggregate replaces the
+ * old one-list-query-per-connector pattern; `fetchRowsForSummaries` retains
+ * the established head/tail/terminal event windows for every selected run.
+ */
+export async function postgresListRunSummariesByConnectorIds(
+  connectorIds: readonly string[],
+  status: string | null
+): Promise<Map<string, Summary[]>> {
+  const ids = [...new Set(connectorIds.filter((id) => typeof id === "string" && id.length > 0))];
+  const byConnector = new Map<string, Summary[]>(ids.map((id) => [id, []]));
+  if (ids.length === 0) {
+    return byConnector;
+  }
+  // Mirrors postgresListSpineCorrelations: fetch its 64-row page plus one
+  // lookahead candidate for EACH requested status before projecting it.
+  const limit = 65;
+  const aggregates = await postgresQuery<CorrelationAggregateRow & { readonly source_id: string }>(
+    `WITH candidate_runs AS (
+       SELECT DISTINCT run_id
+       FROM spine_events
+       WHERE run_id IS NOT NULL AND source_kind = 'connector' AND source_id = ANY($1)
+     ), latest_terminal AS (
+       SELECT DISTINCT ON (terminal.run_id) terminal.run_id, terminal.status
+       FROM spine_events terminal
+       INNER JOIN candidate_runs candidate ON candidate.run_id = terminal.run_id
+       WHERE terminal.event_type = ANY($2::text[])
+       ORDER BY terminal.run_id, terminal.occurred_at DESC, terminal.event_seq DESC
+     ), grouped AS (
+       SELECT event.source_id, event.run_id AS id, MIN(event.occurred_at) AS first_at, MAX(event.occurred_at) AS last_at, COUNT(*)::int AS event_count
+       FROM spine_events event
+       LEFT JOIN latest_terminal terminal ON terminal.run_id = event.run_id
+       WHERE event.run_id IS NOT NULL
+         AND event.source_kind = 'connector'
+         AND event.source_id = ANY($1)
+         AND ($3::text IS NULL OR terminal.status = $3)
+       GROUP BY event.source_id, event.run_id
+     ), ranked AS (
+       SELECT *, ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY last_at DESC, id ASC) AS rn
+       FROM grouped
+     )
+     SELECT source_id, id, first_at, last_at, event_count
+     FROM ranked
+     WHERE rn <= $4
+     ORDER BY source_id ASC, last_at DESC, id ASC`,
+    [ids, RUN_TERMINAL_EVENT_TYPE_LIST, status, limit]
+  );
+  const eventsById = await fetchRowsForSummaries(
+    "run",
+    "run_id",
+    aggregates.rows.map((row) => row.id)
+  );
+  const summaries = await Promise.all(
+    aggregates.rows.map(async (row) => ({
+      sourceId: row.source_id,
+      summary: await summarizeRows(row.id, eventsById.get(row.id) || [], row),
+    }))
+  );
+  for (const { sourceId, summary } of summaries) {
+    if (status === null || summary.status === status) {
+      const bucket = byConnector.get(sourceId);
+      if (bucket && bucket.length < 64) {
+        bucket.push(summary);
+      }
+    }
+  }
+  return byConnector;
+}
+
 interface SearchExactRow {
   readonly grant_id: string | null;
   readonly run_id: string | null;

@@ -77,6 +77,7 @@ test("connector summary page request requires an explicit bounded limit", () => 
   assert.deepEqual(parseConnectorSummaryPageRequest({ limit: "100" }, "owner_a"), {
     connectorId: null,
     cursor: null,
+    includeFleetHealth: false,
     limit: 100,
   });
   for (const query of [{ cursor: "rcs1.e30" }, { limit: "0" }, { limit: "101" }, { limit: "1.5" }]) {
@@ -93,6 +94,7 @@ test("connector summary page request decodes the issued continuation", () => {
   assert.deepEqual(parseConnectorSummaryPageRequest({ cursor, limit: "7" }, "owner_a"), {
     connectorId: null,
     cursor: boundary,
+    includeFleetHealth: false,
     limit: 7,
   });
 });
@@ -105,6 +107,20 @@ test("connector summary page request requires limit when connector_id is supplie
   assert.deepEqual(parseConnectorSummaryPageRequest({ connector_id: "github", limit: "10" }, "owner_a"), {
     connectorId: "github",
     cursor: null,
+    includeFleetHealth: false,
     limit: 10,
   });
+});
+
+test("connector summary page request accepts explicit complete-page fleet health only", () => {
+  assert.deepEqual(parseConnectorSummaryPageRequest({ include_fleet_health: "1", limit: "10" }, "owner_a"), {
+    connectorId: null,
+    cursor: null,
+    includeFleetHealth: true,
+    limit: 10,
+  });
+  assert.throws(
+    () => parseConnectorSummaryPageRequest({ include_fleet_health: "true", limit: "10" }, "owner_a"),
+    ConnectorSummaryPageRequestError
+  );
 });

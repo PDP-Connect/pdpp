@@ -34,7 +34,7 @@ const TOP_LEVEL_REGEX_6 = /ORDER BY/i;
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { emitSpineEvent, listSpineCorrelations } from "../lib/spine.ts";
+import { emitSpineEvent, listRunSummariesByConnectorIds, listSpineCorrelations } from "../lib/spine.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
 
 async function withSpine(fn: () => Promise<void>): Promise<void> {
@@ -80,6 +80,40 @@ test("run summary status prefers run-terminal events over later sub-resource eve
       summary.status,
       "failed",
       "run summary must reflect run.failed, not the later stream_session_resolved"
+    );
+  });
+});
+
+test("page-batched succeeded runs retain an older success behind 70 newer failures", async () => {
+  await withSpine(async () => {
+    const connectorId = "batched_status_window_sqlite";
+    for (let index = 0; index < 70; index += 1) {
+      // biome-ignore lint/performance/noAwaitInLoops: each fixture run has a distinct ordered terminal event.
+      await emitSpineEvent({
+        event_type: "run.failed",
+        object_id: `run_new_failed_${index}`,
+        object_type: "run",
+        occurred_at: `2026-04-02T00:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}Z`,
+        run_id: `run_new_failed_${index}`,
+        source_id: connectorId,
+        source_kind: "connector",
+        status: "failed",
+      });
+    }
+    await emitSpineEvent({
+      event_type: "run.completed",
+      object_id: "run_old_success",
+      object_type: "run",
+      occurred_at: "2026-04-01T00:00:00Z",
+      run_id: "run_old_success",
+      source_id: connectorId,
+      source_kind: "connector",
+      status: "succeeded",
+    });
+    const succeeded = await listRunSummariesByConnectorIds([connectorId], "succeeded");
+    assert.deepEqual(
+      (succeeded.get(connectorId) ?? []).map((summary) => [summary.run_id, summary.status]),
+      [["run_old_success", "succeeded"]]
     );
   });
 });

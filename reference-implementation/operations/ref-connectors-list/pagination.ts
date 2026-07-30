@@ -29,14 +29,16 @@ export interface ConnectorIdentityPageBoundary {
 export interface ConnectorSummaryPageRequest {
   readonly connectorId: string | null;
   readonly cursor: ConnectorIdentityPageBoundary | null;
+  /** Ask for a fleet verdict only when this exact bounded identity page is terminal. */
+  readonly includeFleetHealth: boolean;
   readonly limit: number;
 }
 
 export class ConnectorSummaryPageRequestError extends Error {
   readonly code = "invalid_request";
-  readonly param: "cursor" | "limit";
+  readonly param: "cursor" | "include_fleet_health" | "limit";
 
-  constructor(param: "cursor" | "limit", message: string) {
+  constructor(param: "cursor" | "include_fleet_health" | "limit", message: string) {
     super(message);
     this.name = "ConnectorSummaryPageRequestError";
     this.param = param;
@@ -102,10 +104,12 @@ export function parseConnectorSummaryPageRequest(
   const rawLimit = query.limit;
   const rawCursor = query.cursor;
   const rawConnectorId = query.connector_id;
+  const rawIncludeFleetHealth = query.include_fleet_health;
   const hasLimit = rawLimit !== undefined;
   const hasCursor = rawCursor !== undefined;
   const hasConnectorId = rawConnectorId !== undefined;
-  if (!(hasLimit || hasCursor || hasConnectorId)) {
+  const hasIncludeFleetHealth = rawIncludeFleetHealth !== undefined;
+  if (!(hasLimit || hasCursor || hasConnectorId || hasIncludeFleetHealth)) {
     return null;
   }
   if (!hasLimit) {
@@ -125,6 +129,13 @@ export function parseConnectorSummaryPageRequest(
     );
   }
   let connectorId: string | null = null;
+  let includeFleetHealth = false;
+  if (hasIncludeFleetHealth) {
+    if (rawIncludeFleetHealth !== "0" && rawIncludeFleetHealth !== "1") {
+      throw new ConnectorSummaryPageRequestError("include_fleet_health", "include_fleet_health must be 0 or 1");
+    }
+    includeFleetHealth = rawIncludeFleetHealth === "1";
+  }
   if (hasConnectorId) {
     if (!isNonEmptyString(rawConnectorId)) {
       throw new ConnectorSummaryPageRequestError("limit", "connector_id must be a non-empty string");
@@ -132,12 +143,17 @@ export function parseConnectorSummaryPageRequest(
     connectorId = rawConnectorId;
   }
   if (!hasCursor) {
-    return { connectorId, cursor: null, limit };
+    return { connectorId, cursor: null, includeFleetHealth, limit };
   }
   if (!isNonEmptyString(rawCursor)) {
     throw new ConnectorSummaryPageCursorError();
   }
-  return { connectorId, cursor: decodeConnectorSummaryPageCursor(rawCursor, ownerSubjectId, connectorId), limit };
+  return {
+    connectorId,
+    cursor: decodeConnectorSummaryPageCursor(rawCursor, ownerSubjectId, connectorId),
+    includeFleetHealth,
+    limit,
+  };
 }
 
 /**

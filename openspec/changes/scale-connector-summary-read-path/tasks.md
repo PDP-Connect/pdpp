@@ -12,3 +12,8 @@
   cursors per invocation, and fails resumably rather than silently truncating.
 - [x] SQLite/PostgreSQL identity, cursor, filter, zero-write, and query-slope
   authorities are covered, including large record corpora.
+- [x] Connector/run candidates are batch-hydrated once per identity page;
+  summary matching, ordering, singleton-active fallback, and bounded event
+  windows are unchanged.
+- [x] Terminal pages can optionally include health composed from their exact
+  inventory; incomplete pages omit it and Overview retains explicit fallback.

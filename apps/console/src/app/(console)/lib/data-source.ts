@@ -116,6 +116,7 @@ export interface DashboardDataSource {
   listConnectorSummaries: (options?: {
     connectionRouteId?: string;
     cursor?: string;
+    includeFleetHealth?: boolean;
     limit?: number;
   }) => Promise<RefConnectorSummariesResponse>;
   /**

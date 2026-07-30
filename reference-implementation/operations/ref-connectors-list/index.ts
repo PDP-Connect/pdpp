@@ -122,12 +122,14 @@ export interface RefConnectorsListDependencies {
 
 export interface RefConnectorsListPage {
   readonly data: readonly RefConnectorsListItem[];
+  readonly fleet_health?: unknown;
   readonly has_more: boolean;
   readonly next_cursor: string | null;
 }
 
 export interface RefConnectorsListEnvelope {
   readonly data: RefConnectorsListItem[];
+  readonly fleet_health?: unknown;
   readonly has_more?: boolean;
   readonly next_cursor?: string | null;
   readonly object: "list";
@@ -157,6 +159,7 @@ export async function executeRefConnectorsList(
     data: [...summaries],
     object: "list",
     ...(page ? { has_more: page.has_more, next_cursor: page.next_cursor } : {}),
+    ...(page?.fleet_health === undefined ? {} : { fleet_health: page.fleet_health }),
   };
   return runtime ? { ...envelope, runtime } : envelope;
 }
