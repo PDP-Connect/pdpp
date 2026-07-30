@@ -18,6 +18,7 @@ import {
   getStorageBackendKind,
   isPostgresStorageBackend,
   postgresQuery,
+  withPostgresReadOnlyTransaction,
   withPostgresTransaction,
 } from "../postgres-storage.ts";
 
@@ -1641,18 +1642,22 @@ class PostgresBrowserSurfaceReplacementReceiptStore implements BrowserSurfaceRep
     );
   }
 
-  async dryRunSelectionOverrideBatch(
+  dryRunSelectionOverrideBatch(
     input: ReplacementReceiptSelectionOverrideBatchInput
   ): Promise<ReplacementReceiptSelectionOverrideBatchVerification> {
-    assertExactBatchLedger(input, await postgresBatchLedgerRows((sql, bind) => this.#query(sql, bind), input));
-    return {
-      active: false,
-      audit_outbox_id: `${input.replacement_batch_id}:apply`,
-      episode_id: input.episode.id,
-      member_replacement_ids: input.members.map((member) => member.replacement_id).sort(),
-      replacement_batch_id: input.replacement_batch_id,
-      reviewed_artifact_sha256: input.reviewed_artifact_sha256,
-    };
+    return withPostgresReadOnlyTransaction(async (client) => {
+      const query: PostgresLedgerQuery = (sql, values = []) =>
+        client.query<ReplacementReceiptRow>(sql, [...values]) as Promise<{ rows: ReplacementReceiptRow[] }>;
+      assertExactBatchLedger(input, await postgresBatchLedgerRows(query, input));
+      return {
+        active: false,
+        audit_outbox_id: `${input.replacement_batch_id}:apply`,
+        episode_id: input.episode.id,
+        member_replacement_ids: input.members.map((member) => member.replacement_id).sort(),
+        replacement_batch_id: input.replacement_batch_id,
+        reviewed_artifact_sha256: input.reviewed_artifact_sha256,
+      };
+    });
   }
 
   async append(receipt: ReplacementReceipt): Promise<ReplacementReceipt> {
@@ -1862,10 +1867,9 @@ class PostgresBrowserSurfaceReplacementReceiptStore implements BrowserSurfaceRep
   }
 
   verifySelectionOverrideBatch(batchId: string): Promise<ReplacementReceiptSelectionOverrideBatchVerification | null> {
-    return withPostgresTransaction(async (client) => {
+    return withPostgresReadOnlyTransaction(async (client) => {
       const query: PostgresLedgerQuery = (sql, values = []) =>
         client.query<ReplacementReceiptRow>(sql, [...values]) as Promise<{ rows: ReplacementReceiptRow[] }>;
-      await query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ");
       const batchResult = await query(
         "SELECT * FROM browser_surface_replacement_selection_override_batches WHERE replacement_batch_id = $1",
         [batchId]
