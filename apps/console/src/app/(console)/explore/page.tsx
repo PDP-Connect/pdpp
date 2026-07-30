@@ -41,7 +41,7 @@ import { assembleExplorerData } from "@pdpp/operator-ui/explore/explore-data-ass
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
 import { ServerUnreachable } from "../components/shell.tsx";
 import { liveDashboardDataSource } from "../lib/data-source.ts";
-import { getOwnerToken, getRsInternalUrl, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
+import { getRsInternalUrl, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import { verifyDashboardSession } from "../lib/verify-session.ts";
 import { ExploreCanvas } from "./explore-canvas.tsx";
 import { buildPeekRelationships, type PeekRelationships } from "./explore-peek-relationships.ts";
@@ -117,10 +117,10 @@ export default async function RecordsExplorerPage({
   // Empty-query loads still need the DAL gate; verifying once up front keeps
   // the empty shell consistent with the search route.
   await verifyDashboardSession();
-  // Touch the owner token early so we surface "owner token required" through
-  // the same code path the other dashboard pages do, rather than dying later
-  // in the fan-out.
-  await getOwnerToken();
+  // The default first paint uses only owner-session-gated `/_ref` reads. The
+  // bearer is minted by the RS data-source methods that actually need it
+  // (search, time-range, peek, and the deferred chart action), so default
+  // Explore avoids an unrelated three-request device flow before rendering.
 
   const requestedOrder = params.order === "oldest" ? "oldest" : "newest";
 

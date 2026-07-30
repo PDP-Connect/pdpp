@@ -128,7 +128,7 @@ import {
   withConnectorInstanceWrite,
 } from "./connector-instance-write-coordinator.ts";
 import { canonicalConnectorKey, isInternalConnectorId } from "./connector-key.ts";
-import { runConnectorMaintenanceSweep } from "./connector-maintenance-sweep.ts";
+import { createResumableConnectorMaintenanceSweep } from "./connector-maintenance-sweep.ts";
 import {
   getConnectorSummaryEvidence,
   markConnectorSummaryEvidenceDirty,
@@ -790,9 +790,11 @@ const CONNECTOR_MAINTENANCE_EVIDENCE_SWEEP_PAGE_SIZE = 25;
  * `maxRounds` rounds, resuming each round from the prior round's
  * `resumeAfterId` (Sol P2.1: startup must actually SCHEDULE the follow-up
  * the returned cursor makes possible, not just log it). `runSweep` is
- * injected — the real caller passes `runBoundedSummaryEvidenceSweep`
- * itself; tests pass a fake to exercise the resume/round-cap logic without
- * needing a full boot to genuinely exhaust a real deadline. Exported for
+ * injected — the real caller passes the maintenance coordinator's fenced
+ * round; tests pass a fake to exercise the resume/round-cap logic without
+ * needing a full boot to genuinely exhaust a real deadline. A `null` round
+ * means another startup/periodic owner holds the durable lease, so this walk
+ * stops without manufacturing a cursor or overlapping its work. Exported for
  * exactly that reason.
  *
  * `resumeAfterId`, since the fourth-verdict P1.2 fix, means BOTH "resume
@@ -824,7 +826,7 @@ export async function runStartupSummaryEvidenceSweepToCompletion({
     pageSize?: number;
     afterId?: string | null;
     maxEventsPerFold?: number;
-  }) => Promise<SweepSummary>;
+  }) => Promise<SweepSummary | null>;
   maxDurationMs?: number;
   pageSize?: number;
   maxRounds?: number;
@@ -846,6 +848,9 @@ export async function runStartupSummaryEvidenceSweepToCompletion({
       afterId,
       ...(typeof maxEventsPerFold === "number" ? { maxEventsPerFold } : {}),
     });
+    if (!summary) {
+      return rounds;
+    }
     rounds.push(summary);
     if (typeof onRound === "function") {
       onRound(summary, round);
@@ -6553,27 +6558,31 @@ export async function startServer(opts: ServerOpts = {}) {
   // function so a boot failure anywhere before that point can never leave
   // an orphaned running timer (identical reasoning to the browser-surface
   // lease sweep's own comment on this).
+  const connectorMaintenanceSweep = createResumableConnectorMaintenanceSweep({
+    evidenceSweepMaxDurationMs: CONNECTOR_MAINTENANCE_EVIDENCE_SWEEP_MAX_DURATION_MS,
+    evidenceSweepPageSize: CONNECTOR_MAINTENANCE_EVIDENCE_SWEEP_PAGE_SIZE,
+    onPhaseError: (phase, err) => {
+      logger.warn?.(
+        { err: err instanceof Error ? err.message : String(err), phase },
+        "connector-maintenance sweep phase failed"
+      );
+    },
+    runEvidenceSweep: (args) =>
+      runBoundedSummaryEvidenceSweep({
+        ...(args.afterId === undefined ? {} : { afterId: args.afterId }),
+        maxDurationMs: args.maxDurationMs,
+        pageSize: args.pageSize ?? CONNECTOR_MAINTENANCE_EVIDENCE_SWEEP_PAGE_SIZE,
+      }),
+  });
   const connectorMaintenanceSweepTimer = createBrowserSurfaceLeaseSweepTimer({
     intervalMs: CONNECTOR_MAINTENANCE_SWEEP_INTERVAL_MS,
     onSweepError: (err: unknown) => {
-      logger.warn?.({ err: err instanceof Error ? err.message : String(err) }, "connector-maintenance sweep tick failed");
+      logger.warn?.(
+        { err: err instanceof Error ? err.message : String(err) },
+        "connector-maintenance sweep tick failed"
+      );
     },
-    sweep: () =>
-      runConnectorMaintenanceSweep({
-        evidenceSweepMaxDurationMs: CONNECTOR_MAINTENANCE_EVIDENCE_SWEEP_MAX_DURATION_MS,
-        evidenceSweepPageSize: CONNECTOR_MAINTENANCE_EVIDENCE_SWEEP_PAGE_SIZE,
-        onPhaseError: (phase, err) => {
-          logger.warn?.(
-            { err: err instanceof Error ? err.message : String(err), phase },
-            "connector-maintenance sweep phase failed"
-          );
-        },
-        runEvidenceSweep: (args) =>
-          runBoundedSummaryEvidenceSweep({
-            maxDurationMs: args.maxDurationMs,
-            pageSize: args.pageSize ?? CONNECTOR_MAINTENANCE_EVIDENCE_SWEEP_PAGE_SIZE,
-          }),
-      }),
+    sweep: () => connectorMaintenanceSweep.run(),
   });
   function stopConnectorMaintenanceSweep() {
     connectorMaintenanceSweepTimer.stop();
@@ -6943,9 +6952,12 @@ export async function startServer(opts: ServerOpts = {}) {
           }
         },
         pageSize: STARTUP_SUMMARY_EVIDENCE_PAGE_SIZE,
-        runSweep: runBoundedSummaryEvidenceSweep as unknown as Parameters<
-          typeof runStartupSummaryEvidenceSweepToCompletion
-        >[0]["runSweep"],
+        runSweep: (args) =>
+          connectorMaintenanceSweep.runEvidenceSweepRound({
+            ...(args.afterId === undefined ? {} : { afterId: args.afterId }),
+            maxDurationMs: args.maxDurationMs ?? STARTUP_SUMMARY_EVIDENCE_MAX_DURATION_MS,
+            pageSize: args.pageSize ?? STARTUP_SUMMARY_EVIDENCE_PAGE_SIZE,
+          }) as Promise<SweepSummary | null>,
       })
         .then((rounds) => {
           const last = rounds.at(-1);

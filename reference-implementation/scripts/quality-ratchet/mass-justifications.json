@@ -1,4 +1,19 @@
 {
+  "server/connector-maintenance-sweep.ts": {
+    "allowed_mass": 16,
+    "reason": "P0/P1 fleet evidence convergence correction (2026-07-30): periodic and startup bounded evidence maintenance must retain a keyset cursor through a durable cross-backend store, acquire a generation-and-token fenced lease before the full read/sweep/write unit, reject malformed/non-resumable results without overwriting the prior cursor, reject a malformed completed result that carries a cursor, retain progress on failure, and discard a completion when its lease was superseded. These independent scheduling-safety branches sit at the orchestration boundary; extracting them would conceal the ownership/error ordering or split a small module into shallow helpers. SQLite restart, malformed-result, startup/periodic overlap, and real PostgreSQL stale-writer regressions prove the paths.",
+    "date": "2026-07-30"
+  },
+  "server/ref-control.ts": {
+    "allowed_mass": 201,
+    "reason": "Performance residual correction (2026-07-30): fleet health already reads the exact owner-visible connector inventory, but summary projection ignored that bounded snapshot and traversed the identities again. The added owner-scope rejection and supplied-inventory projection path preserve the same exact-id batched evidence/dependency reads while removing only the duplicate identity traversal. The owner check is fail-closed, pagination remains bounded at CONNECTOR_SUMMARY_PAGE_LIMIT_MAX, and a route oracle proves supplied-inventory parity plus the empty-inventory no-read behavior.",
+    "date": "2026-07-30"
+  },
+  "server/stores/connector-maintenance-cursor-store.ts": {
+    "allowed_mass": 5,
+    "reason": "P1 PostgreSQL-replica maintenance fence (2026-07-30): the singleton cursor must atomically acquire only an unleased/expired row, issue a monotonically increasing generation plus opaque lease token, and condition both commit and failure release on both values. The SQLite BEGIN IMMEDIATE and PostgreSQL conditional UPDATE forms intentionally expose their backend predicates rather than hiding them behind a shallow SQL abstraction. A real PostgreSQL dual-runner regression and SQLite parity prove that an expired stale incomplete owner cannot replace a later complete NULL cursor.",
+    "date": "2026-07-30"
+  },
   "server/scheduler-manager-factory.ts": {
     "allowed_mass": 76,
     "reason": "TypeScript migration (2026-07-27): strict contracts replace implicit JavaScript surfaces for scheduler dependencies, and the original sequential refresh order is preserved with an explicit promise reduction rather than parallelizing manifest resolution and owner-token issuance. The four-point mass increase is the minimum control-flow cost of retaining that ordering while satisfying the no-await-in-loop rule; removing it would change refresh concurrency and behavior.",

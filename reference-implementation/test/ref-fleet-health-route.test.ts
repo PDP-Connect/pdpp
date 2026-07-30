@@ -9,6 +9,11 @@ import type { FleetHealthVerdict } from "../server/fleet-health.ts";
 import { buildAsApp } from "../server/index.ts";
 import { createOwnerAuthPlaceholder } from "../server/owner-auth.ts";
 import { createOwnerSessionController } from "../server/owner-session.ts";
+import {
+  invalidateConnectorSummariesCache,
+  listConnectorSummaries,
+  listOwnerVisibleConnectorInstances,
+} from "../server/ref-control.ts";
 import type { MountRefConnectorsContext } from "../server/routes/ref-connectors.ts";
 import { mountRefFleetHealth } from "../server/routes/ref-connectors.ts";
 import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
@@ -85,6 +90,20 @@ const HEALTHY_VERDICT: FleetHealthVerdict = {
   },
   state: "healthy",
 };
+
+function withoutObservedAt(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(withoutObservedAt);
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([key]) => key !== "observed_at")
+        .map(([key, item]) => [key, withoutObservedAt(item)])
+    );
+  }
+  return value;
+}
 
 test("fleet-health route uses the real transport, contract registry, and owner-session gate", async () => {
   const app = createApp();
@@ -190,6 +209,65 @@ test("production fleet wiring projects one custom-owner visible population witho
     assert.doesNotMatch(JSON.stringify(body), new RegExp(`${OWNER_LOCAL_CONNECTION_ID}|${INTERNAL_CONNECTION_ID}`));
   } finally {
     await app.fastify.close();
+    closeDb();
+  }
+});
+
+test("fleet-summary projection reuses its owner-visible inventory without a second identity traversal", async () => {
+  initDb(":memory:");
+  const store = createSqliteConnectorInstanceStore();
+  const now = "2026-07-30T00:00:00.000Z";
+  getDb()
+    .prepare("INSERT INTO connectors(connector_id, manifest, created_at) VALUES (?, ?, ?)")
+    .run(
+      VISIBLE_CONNECTOR_ID,
+      JSON.stringify({
+        capabilities: { public_listing: { listed: true, status: "test" } },
+        connector_id: VISIBLE_CONNECTOR_ID,
+        display_name: "Fleet-visible connector",
+        protocol_version: "0.1.0",
+        streams: [],
+        version: "1.0.0",
+      }),
+      now
+    );
+  await store.upsert({
+    connectorId: VISIBLE_CONNECTOR_ID,
+    connectorInstanceId: CUSTOM_OWNER_CONNECTION_ID,
+    createdAt: now,
+    displayName: "visible source",
+    ownerSubjectId: CUSTOM_OWNER_SUBJECT_ID,
+    sourceBinding: { kind: "test" },
+    sourceBindingKey: CUSTOM_OWNER_CONNECTION_ID,
+    sourceKind: "account",
+    status: "active",
+    updatedAt: now,
+  });
+  try {
+    const inventory = await listOwnerVisibleConnectorInstances(CUSTOM_OWNER_SUBJECT_ID);
+    invalidateConnectorSummariesCache();
+    const duplicateTraversal = await listConnectorSummaries(null, {
+      includeRunSummaries: "singleton-active",
+      ownerSubjectId: CUSTOM_OWNER_SUBJECT_ID,
+    });
+    const reusedInventory = await listConnectorSummaries(null, {
+      includeRunSummaries: "singleton-active",
+      ownerSubjectId: CUSTOM_OWNER_SUBJECT_ID,
+      visibleConnections: inventory,
+    });
+    const emptySnapshot = await listConnectorSummaries(null, {
+      includeRunSummaries: "singleton-active",
+      ownerSubjectId: CUSTOM_OWNER_SUBJECT_ID,
+      visibleConnections: [],
+    });
+
+    assert.deepEqual(
+      withoutObservedAt(reusedInventory),
+      withoutObservedAt(duplicateTraversal),
+      "reusing the snapshot preserves fleet summaries apart from request-time observation timestamps"
+    );
+    assert.deepEqual(emptySnapshot, [], "a supplied empty inventory must not re-query the owner identity page");
+  } finally {
     closeDb();
   }
 });

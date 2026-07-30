@@ -148,9 +148,9 @@ export const PAGE_TARGETS = [
 const ERROR_SHELL_PATTERNS = [
   /<h1[^>]*>\s*Something went wrong\s*<\/h1>/i,
   /<p[^>]*>\s*Read error\s*<\/p>/i,
-  /Reference server unreachable/i,
-  /This page could not be found/i,
-  /this is a display failure, not a change/i,
+  /<h[12][^>]*>\s*Reference server unreachable\s*<\/h[12]>/i,
+  /<h1[^>]*>\s*This page could not be found\s*<\/h1>/i,
+  /<p[^>]*>\s*this is a display failure, not a change\s*<\/p>/i,
 ];
 
 /** Console page targets require an owner session so measurements represent the

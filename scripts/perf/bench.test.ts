@@ -55,6 +55,23 @@ test("page validation accepts only the intended HTML page", () => {
     ERROR_SHELL_PATTERN
   );
   assert.match(
+    validatePageResponse(target, {
+      body: "<h1>This page could not be found</h1>",
+      contentType: "text/html",
+      status: 200,
+    }),
+    ERROR_SHELL_PATTERN
+  );
+  assert.equal(
+    validatePageResponse(target, {
+      body: `<main>${target.marker}</main><script>throw new Error("This page could not be found")</script>`,
+      contentType: "text/html",
+      status: 200,
+    }),
+    null,
+    "a route's bundled client error copy is not a rendered not-found shell"
+  );
+  assert.match(
     validatePageResponse(target, { body: "<main>other page</main>", contentType: "text/html", status: 200 }),
     MARKER_PATTERN
   );
