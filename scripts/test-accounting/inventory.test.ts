@@ -30,6 +30,7 @@ import {
 } from "./inventory.ts";
 import {
   assertNamedSkipMappingsFullyConsumed,
+  POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS,
   repositoryPaths,
   riConfiguredNamedSkipMappingIdentities,
   structuredNodeSummary,
@@ -571,6 +572,22 @@ test("rejects a duplicate configured named-skip mapping row before any lookup se
     seen.add(identity);
   }
   assert.ok(duplicateDetected, "array-first duplicate detection must see a repeated configured row");
+});
+test("keeps every candidate-added PostgreSQL skip title in the exact receipt mapping", () => {
+  assert.deepEqual(
+    [
+      "real PostgreSQL: the 25-row first-page starvation shape folds before slow generic repairs and survives restart/resume",
+      "real PostgreSQL mutation: a 1ms cold 25-row page starts at most one slow repair and later converges",
+      "real PostgreSQL mutation: a 1ms 2,001-event fold is capped and resumes from its durable checkpoint",
+      "real PostgreSQL mutation: an expired fold stops its delayed participant checkpoint-write tail after one started write",
+    ].filter((name) => POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name)),
+    [
+      "real PostgreSQL: the 25-row first-page starvation shape folds before slow generic repairs and survives restart/resume",
+      "real PostgreSQL mutation: a 1ms cold 25-row page starts at most one slow repair and later converges",
+      "real PostgreSQL mutation: a 1ms 2,001-event fold is capped and resumes from its durable checkpoint",
+      "real PostgreSQL mutation: an expired fold stops its delayed participant checkpoint-write tail after one started write",
+    ]
+  );
 });
 test("the exact named-skip mapping join fails closed on stale rows and on unconfigured consumed identities", () => {
   // Property 3, stale/unmatched arm. A configured row that no emitted skip

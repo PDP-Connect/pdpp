@@ -102,6 +102,10 @@ export const POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS: readonly string[] = [
   "real PostgreSQL: the real mounted route resolves correctly despite thousands of unrelated terminal events",
   "real disposable PostgreSQL reset-generation matches the SQLite union-rule contract",
   "real disposable PostgreSQL: connector-wide reset discovers and clears a counter-only namespace on production connector invalidation (Sol third-verdict P2.2)",
+  "real PostgreSQL: the 25-row first-page starvation shape folds before slow generic repairs and survives restart/resume",
+  "real PostgreSQL mutation: a 1ms cold 25-row page starts at most one slow repair and later converges",
+  "real PostgreSQL mutation: a 1ms 2,001-event fold is capped and resumes from its durable checkpoint",
+  "real PostgreSQL mutation: an expired fold stops its delayed participant checkpoint-write tail after one started write",
 ];
 // Every row above uses a PER-TEST boolean `skip` (e.g. `skip: !PDPP_TEST_POSTGRES_URL`)
 // inside a file that still REGISTERS the test under every profile. Under
