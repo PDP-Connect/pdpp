@@ -23,7 +23,7 @@
  * `connectionId: null` / `connectionDisplayName: null` so the UI can
  * label the row as connector-scoped.
  */
-import type { RefConnectorSummary } from "../lib/ref-client.ts";
+import type { RefConnectorIdentitySummary } from "../lib/ref-client.ts";
 import type { SearchResultHit } from "../lib/rs-client.ts";
 
 export interface AttributedSearchHit {
@@ -100,11 +100,11 @@ function pickHitConnectionId(hit: Pick<SearchResultHit, "connection_id" | "conne
 
 export function attributeSearchHit(
   hit: Pick<SearchResultHit, "connector_id" | "connection_id" | "connector_instance_id" | "display_name">,
-  visibleSummaries: readonly RefConnectorSummary[]
+  visibleSummaries: readonly RefConnectorIdentitySummary[]
 ): AttributedSearchHit {
   const hitConnectionId = pickHitConnectionId(hit);
 
-  let resolved: RefConnectorSummary | null = null;
+  let resolved: RefConnectorIdentitySummary | null = null;
 
   if (hitConnectionId) {
     resolved =

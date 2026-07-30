@@ -21,11 +21,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { DashboardDataSource } from "../lib/data-source.ts";
-import type { ExploreTimelinePage, RefConnectorSummary } from "../lib/ref-client.ts";
+import type { ExploreTimelinePage, RefConnectorIdentitySummary } from "../lib/ref-client.ts";
 import type { ConnectorManifest, RecordsPage, StreamMetadata } from "../lib/rs-client.ts";
 import { assembleExplorerData } from "./explore-data-assembler.ts";
 
-function summary(index: number): RefConnectorSummary {
+function summary(index: number): RefConnectorIdentitySummary {
   const connectorId = `connector_${index}`;
   return {
     connection_id: `cin_${index}`,
@@ -33,15 +33,9 @@ function summary(index: number): RefConnectorSummary {
     connector_id: connectorId,
     connector_instance_id: `cin_${index}`,
     display_name: `Source ${index}`,
-    freshness: {},
-    last_run: null,
-    last_successful_run: null,
-    manifest_version: "test",
-    schedule: null,
-    stream_count: 3,
+    membership_state: "complete",
     streams: ["alpha", "beta", "gamma"],
-    total_records: 100,
-  } as RefConnectorSummary;
+  };
 }
 
 function manifest(index: number): ConnectorManifest {
@@ -106,7 +100,11 @@ test("empty-query Explore keeps first-paint endpoint call bounded", async () => 
     isSemanticRetrievalAdvertised: async () => false,
     kind: "live",
     listConnectorManifests: async () => summaries.map((_, i) => manifest(i)),
-    listConnectorSummaries: async () => ({ data: summaries, has_more: false, object: "list" }),
+    listConnectorSummaries: (async () => ({
+      data: summaries,
+      has_more: false,
+      object: "list",
+    })) as unknown as DashboardDataSource["listConnectorSummaries"],
     // biome-ignore lint/suspicious/useAwait: Async test callback contract is intentional; changing it would alter node:test completion semantics.
     listExploreRecordBuckets: async () => {
       throw new Error("listExploreRecordBuckets not stubbed");

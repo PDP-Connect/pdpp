@@ -33,6 +33,7 @@ import type { DashboardDataSource } from "../lib/data-source.ts";
 import type { ExploreTimelinePage, ExploreTimelineRecord, RefConnectorSummary } from "../lib/ref-client.ts";
 import type { ConnectorManifest, RecordsPage, StreamMetadata } from "../lib/rs-client.ts";
 import { assembleExplorerData } from "./explore-data-assembler.ts";
+import { mockListConnectorSummaries } from "./test-mock-connector-summaries.ts";
 
 // Anchor newer than every page record so the page-1 snapshot filter keeps the
 // whole original snapshot (no record is "after the snapshot" in these fixtures).
@@ -185,7 +186,7 @@ function makeTrailDataSource(pages: Map<string, ExploreTimelinePage>, capturedKe
     isSemanticRetrievalAdvertised: () => Promise.resolve(false),
     kind: "live",
     listConnectorManifests: () => Promise.resolve([ynabManifest()]),
-    listConnectorSummaries: () => Promise.resolve({ data: [ynabSummary()], has_more: false, object: "list" as const }),
+    listConnectorSummaries: mockListConnectorSummaries([ynabSummary()]),
     listExploreRecordBuckets: notStubbed,
     listExploreTimeline: (opts): Promise<ExploreTimelinePage> => {
       // An upcoming-cursor fetch pages ONLY the future set; key it distinctly.

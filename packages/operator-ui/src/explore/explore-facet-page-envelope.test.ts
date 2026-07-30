@@ -32,7 +32,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { DashboardDataSource } from "../lib/data-source.ts";
-import type { ListResponse, RefConnectorSummary } from "../lib/ref-client.ts";
+import type { ListResponse, RefConnectorIdentitySummary } from "../lib/ref-client.ts";
 import type { ConnectorManifest } from "../lib/rs-client.ts";
 import { assembleExplorerData } from "./explore-data-assembler.ts";
 
@@ -41,22 +41,16 @@ const SELF_LOOP_RE = /loops back to this same connections page/i;
 const GLOBAL_THIS_USAGE_RE = /\bglobalThis\s*\[|\bglobalThis\s*\./;
 const NAV_TOKEN_FIELD_RE = /connections_page_nav\??:|connectionsPageNavToken\??:/;
 
-function makeSummary(over: { connection_id: string; connector_id: string }): RefConnectorSummary {
+function makeSummary(over: { connection_id: string; connector_id: string }): RefConnectorIdentitySummary {
   return {
-    connection_health: {} as RefConnectorSummary["connection_health"],
     connection_id: over.connection_id,
+    connector_display_name: over.connector_id,
     connector_id: over.connector_id,
     connector_instance_id: over.connection_id,
     display_name: over.connection_id,
-    freshness: {},
-    last_run: null,
-    last_successful_run: null,
-    manifest_version: null,
-    next_action: null,
-    schedule: null,
+    membership_state: "complete",
     streams: ["records"],
-    total_records: 0,
-  } as RefConnectorSummary;
+  };
 }
 
 function makeManifest(): ConnectorManifest {
@@ -70,7 +64,7 @@ function facetDs(
     connectionRouteId?: string;
     cursor?: string;
     limit?: number;
-  }) => Promise<ListResponse<RefConnectorSummary>>
+  }) => Promise<ListResponse<RefConnectorIdentitySummary>>
 ): DashboardDataSource {
   return {
     aggregateRecordsByTime: notStubbed,
@@ -86,7 +80,7 @@ function facetDs(
     isSemanticRetrievalAdvertised: () => Promise.resolve(false),
     kind: "sandbox" as const,
     listConnectorManifests: async () => [makeManifest()],
-    listConnectorSummaries: respond,
+    listConnectorSummaries: respond as unknown as DashboardDataSource["listConnectorSummaries"],
     listExploreRecordBuckets: notStubbed,
     listExploreTimeline: () =>
       Promise.resolve({
@@ -111,7 +105,7 @@ function facetDs(
     searchRecordsHybrid: notStubbed,
     searchRecordsLexical: notStubbed,
     searchRecordsSemantic: notStubbed,
-  } as DashboardDataSource;
+  };
 }
 
 test("ADVERSARIAL: has_more:true with no next_cursor rejects with connectionsPageError, never a silent empty facet list", async () => {

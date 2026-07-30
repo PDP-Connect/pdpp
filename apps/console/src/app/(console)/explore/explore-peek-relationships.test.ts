@@ -136,9 +136,9 @@ test("buildPeekRelationships scopes its summary lookup to the inspected connecti
         return Promise.resolve({ name: stream } as StreamMetadata);
       },
       listConnectorManifests: () => Promise.resolve([]),
-      listConnectorSummaries: (options?: { connectionRouteId?: string }) => {
+      listConnectorSummaries: (options?: { connectionRouteId?: string; profile?: string }) => {
         calls.push(options);
-        assert.deepEqual(options, { connectionRouteId: "conn_mail_work" });
+        assert.deepEqual(options, { connectionRouteId: "conn_mail_work", profile: "identity_inventory" });
         const scoped = allGmailConnections.filter((summary) => summary.connection_id === options?.connectionRouteId);
         assert.deepEqual(
           scoped.map((summary) => summary.connection_id),
@@ -155,6 +155,6 @@ test("buildPeekRelationships scopes its summary lookup to the inspected connecti
   );
 
   assert.deepEqual(rels, { parentBackLinks: [], relatedLinks: [], reverseChildListLinks: [] });
-  assert.deepEqual(calls, [{ connectionRouteId: "conn_mail_work" }]);
+  assert.deepEqual(calls, [{ connectionRouteId: "conn_mail_work", profile: "identity_inventory" }]);
   assert.deepEqual(metadataInstanceIds, ["cin_mail_work"]);
 });

@@ -93,9 +93,16 @@ export async function buildPeekRelationships(
 
   // Resolve the connection's instance id so metadata reads scope to the right
   // connection — the same binding the records route and the feed fan-out use.
+  // Identity-only lookup (Fable ruling terminal-read-architecture-fable-0730.md
+  // §8, R8.1): only `connection_id`/`connector_instance_id` are read here, so
+  // this goes through the `identity_inventory` profile like every other
+  // Explore connector-summary read, not the full health/evidence projection.
   let connectorInstanceId: string | null = connectionId;
   try {
-    const summaries = await dataSource.listConnectorSummaries({ connectionRouteId: connectionId });
+    const summaries = await dataSource.listConnectorSummaries({
+      connectionRouteId: connectionId,
+      profile: "identity_inventory",
+    });
     const match = summaries.data.find((s) => s.connection_id === connectionId);
     connectorInstanceId = match?.connector_instance_id ?? match?.connection_id ?? connectionId;
   } catch {

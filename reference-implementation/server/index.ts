@@ -36,6 +36,10 @@ import {
   searchSpine,
 } from "../lib/spine.ts";
 import { buildEventPayload } from "../operations/as-client-event-subscriptions/index.ts";
+import type {
+  ConnectorIdentityPageBoundary,
+  ConnectorSummaryPageProfile,
+} from "../operations/ref-connectors-list/pagination.ts";
 import { deriveClientEventsFromRecordChange } from "../operations/rs-client-event-derive/index.ts";
 import { isHealthRelevant as isAttentionHealthRelevant } from "../runtime/attention.ts";
 import { createOptionalBrowserSurfaceLeaseManager } from "../runtime/browser-surface/remote-surface-optional.ts";
@@ -4779,7 +4783,8 @@ export function buildAsApp(opts: ServerOpts = {}) {
     emitSpineEvent,
     ensureRequestId,
     getConnectorDetail: (id: string) => getConnectorDetail(id, controller),
-    getConnectorSummaryForRoute: (routeId: string) => getConnectorSummaryForRoute(routeId, controller),
+    getConnectorSummaryForRoute: (routeId: string, options?: { readonly profile?: ConnectorSummaryPageProfile }) =>
+      getConnectorSummaryForRoute(routeId, controller, options),
     getFleetHealthVerdict: async () => {
       const ownerSubjectId = ownerAuth.subjectId || OWNER_AUTH_DEFAULT_SUBJECT_ID;
       // Inventory and summaries consume one owner-visible snapshot. This
@@ -4808,29 +4813,50 @@ export function buildAsApp(opts: ServerOpts = {}) {
     invalidateConnectorSummariesCache,
     listConnectorSummaryPage: async (
       ownerSubjectId: string,
-      page: { connectorId?: string | null; cursor: unknown; includeFleetHealth?: boolean; limit: number }
+      page: {
+        connectorId?: string | null;
+        cursor: unknown;
+        includeFleetHealth?: boolean;
+        limit: number;
+        profile?: ConnectorSummaryPageProfile;
+      }
     ) => {
-      const summaryPage = await listConnectorSummaryPage(controller, {
-        after: (page.cursor as Parameters<typeof listConnectorSummaryPage>[1]["after"]) ?? null,
-        connectorId: page.connectorId ?? null,
-        includeRunSummaries: "singleton-active",
-        limit: page.limit,
-        ownerSubjectId,
-      });
+      const after = (page.cursor as ConnectorIdentityPageBoundary | null) ?? null;
+      const summaryPage =
+        page.profile === "identity_inventory"
+          ? await listConnectorSummaryPage(controller, {
+              after,
+              connectorId: page.connectorId ?? null,
+              includeRunSummaries: "singleton-active",
+              limit: page.limit,
+              ownerSubjectId,
+              profile: page.profile,
+            })
+          : await listConnectorSummaryPage(controller, {
+              after,
+              connectorId: page.connectorId ?? null,
+              includeRunSummaries: "singleton-active",
+              limit: page.limit,
+              ownerSubjectId,
+            });
       const { inventory, ...envelope } = summaryPage;
       // A fleet verdict is truthful only when the page itself is the complete
       // owner-visible inventory.  Never infer that from a short page: the
-      // storage page's explicit has_more bit is the authority.
+      // storage page's explicit has_more bit is the authority. The
+      // `identity_inventory` profile never requests a fleet verdict (Explore
+      // never sets `include_fleet_health`), so `summaryPage.data` here is
+      // always full `ConnectorSummary[]` when this branch runs.
       if (!(page.includeFleetHealth && page.connectorId === null && page.cursor === null && !summaryPage.has_more)) {
         return envelope;
       }
+      const fullSummaries = summaryPage.data as unknown as Parameters<typeof auditStreamHealth>[0];
       return {
         ...envelope,
         fleet_health: composeFleetHealthVerdict({
-          coverageAudit: auditStreamHealth(summaryPage.data),
+          coverageAudit: auditStreamHealth(fullSummaries),
           inventory,
           runtime: getRuntimeStatus(),
-          summaries: summaryPage.data,
+          summaries: fullSummaries as unknown as Parameters<typeof composeFleetHealthVerdict>[0]["summaries"],
         }),
       };
     },

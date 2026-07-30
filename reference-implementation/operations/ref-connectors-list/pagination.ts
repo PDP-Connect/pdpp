@@ -26,19 +26,32 @@ export interface ConnectorIdentityPageBoundary {
   readonly createdAt: string;
 }
 
+/**
+ * Named semantic profiles selecting which dependency families
+ * `listConnectorSummaryPage` loads and which fields it synthesizes
+ * (Fable ruling §8, R8.1: "one operation, one projection, no new route").
+ * `identity_inventory` is the only profile implemented so far: pure
+ * connection identity + stream membership, no health/evidence/runtime
+ * fields. Omitting `profile` preserves the full (`detail`-shaped) response
+ * exactly as before.
+ */
+export type ConnectorSummaryPageProfile = "identity_inventory";
+
 export interface ConnectorSummaryPageRequest {
   readonly connectorId: string | null;
   readonly cursor: ConnectorIdentityPageBoundary | null;
   /** Ask for a fleet verdict only when this exact bounded identity page is terminal. */
   readonly includeFleetHealth: boolean;
   readonly limit: number;
+  /** `undefined` = full profile (unchanged prior behavior). */
+  readonly profile?: ConnectorSummaryPageProfile;
 }
 
 export class ConnectorSummaryPageRequestError extends Error {
   readonly code = "invalid_request";
-  readonly param: "cursor" | "include_fleet_health" | "limit";
+  readonly param: "cursor" | "include_fleet_health" | "limit" | "profile";
 
-  constructor(param: "cursor" | "include_fleet_health" | "limit", message: string) {
+  constructor(param: "cursor" | "include_fleet_health" | "limit" | "profile", message: string) {
     super(message);
     this.name = "ConnectorSummaryPageRequestError";
     this.param = param;
@@ -96,6 +109,36 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
 
+function parseProfile(rawProfile: unknown): ConnectorSummaryPageProfile | undefined {
+  if (rawProfile === undefined) {
+    return;
+  }
+  if (rawProfile !== "identity_inventory") {
+    throw new ConnectorSummaryPageRequestError("profile", "profile must be one of: identity_inventory");
+  }
+  return rawProfile;
+}
+
+function parseIncludeFleetHealth(rawIncludeFleetHealth: unknown): boolean {
+  if (rawIncludeFleetHealth === undefined) {
+    return false;
+  }
+  if (rawIncludeFleetHealth !== "0" && rawIncludeFleetHealth !== "1") {
+    throw new ConnectorSummaryPageRequestError("include_fleet_health", "include_fleet_health must be 0 or 1");
+  }
+  return rawIncludeFleetHealth === "1";
+}
+
+function parseConnectorIdFilter(rawConnectorId: unknown): string | null {
+  if (rawConnectorId === undefined) {
+    return null;
+  }
+  if (!isNonEmptyString(rawConnectorId)) {
+    throw new ConnectorSummaryPageRequestError("limit", "connector_id must be a non-empty string");
+  }
+  return rawConnectorId;
+}
+
 /** Parse an explicit page request. `null` means compatibility-list mode. */
 export function parseConnectorSummaryPageRequest(
   query: Readonly<Record<string, unknown>>,
@@ -105,11 +148,13 @@ export function parseConnectorSummaryPageRequest(
   const rawCursor = query.cursor;
   const rawConnectorId = query.connector_id;
   const rawIncludeFleetHealth = query.include_fleet_health;
+  const rawProfile = query.profile;
   const hasLimit = rawLimit !== undefined;
   const hasCursor = rawCursor !== undefined;
   const hasConnectorId = rawConnectorId !== undefined;
   const hasIncludeFleetHealth = rawIncludeFleetHealth !== undefined;
-  if (!(hasLimit || hasCursor || hasConnectorId || hasIncludeFleetHealth)) {
+  const hasProfile = rawProfile !== undefined;
+  if (!(hasLimit || hasCursor || hasConnectorId || hasIncludeFleetHealth || hasProfile)) {
     return null;
   }
   if (!hasLimit) {
@@ -128,22 +173,11 @@ export function parseConnectorSummaryPageRequest(
       `limit must be no greater than ${CONNECTOR_SUMMARY_PAGE_LIMIT_MAX}`
     );
   }
-  let connectorId: string | null = null;
-  let includeFleetHealth = false;
-  if (hasIncludeFleetHealth) {
-    if (rawIncludeFleetHealth !== "0" && rawIncludeFleetHealth !== "1") {
-      throw new ConnectorSummaryPageRequestError("include_fleet_health", "include_fleet_health must be 0 or 1");
-    }
-    includeFleetHealth = rawIncludeFleetHealth === "1";
-  }
-  if (hasConnectorId) {
-    if (!isNonEmptyString(rawConnectorId)) {
-      throw new ConnectorSummaryPageRequestError("limit", "connector_id must be a non-empty string");
-    }
-    connectorId = rawConnectorId;
-  }
+  const includeFleetHealth = parseIncludeFleetHealth(rawIncludeFleetHealth);
+  const connectorId = parseConnectorIdFilter(rawConnectorId);
+  const profile = parseProfile(rawProfile);
   if (!hasCursor) {
-    return { connectorId, cursor: null, includeFleetHealth, limit };
+    return { connectorId, cursor: null, includeFleetHealth, limit, ...(profile ? { profile } : {}) };
   }
   if (!isNonEmptyString(rawCursor)) {
     throw new ConnectorSummaryPageCursorError();
@@ -153,6 +187,7 @@ export function parseConnectorSummaryPageRequest(
     cursor: decodeConnectorSummaryPageCursor(rawCursor, ownerSubjectId, connectorId),
     includeFleetHealth,
     limit,
+    ...(profile ? { profile } : {}),
   };
 }
 

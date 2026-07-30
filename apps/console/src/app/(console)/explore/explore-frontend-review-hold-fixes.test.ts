@@ -20,7 +20,7 @@ import type {
   ExploreTimelinePage,
   ExploreTimelineRecord,
   ListResponse,
-  RefConnectorSummary,
+  RefConnectorIdentitySummary,
 } from "@pdpp/operator-ui/lib/ref-client";
 import type { ConnectorManifest, SearchResultHit, SearchResultPage } from "@pdpp/operator-ui/lib/rs-client";
 
@@ -32,21 +32,15 @@ function makeSummary(over: {
   connector_instance_id?: string;
   streams?: string[];
   display_name?: string;
-}): RefConnectorSummary {
+}): RefConnectorIdentitySummary {
   return {
-    connection_health: {} as RefConnectorSummary["connection_health"],
     connection_id: over.connection_id,
+    connector_display_name: over.connector_id,
     connector_id: over.connector_id,
     connector_instance_id: over.connector_instance_id ?? over.connection_id,
     display_name: over.display_name ?? over.connection_id,
-    freshness: {},
-    last_run: null,
-    last_successful_run: null,
-    manifest_version: null,
-    next_action: null,
-    schedule: null,
+    membership_state: "complete",
     streams: over.streams ?? ["records"],
-    total_records: 0,
   };
 }
 
@@ -115,7 +109,7 @@ function makeLexicalPage(
   };
 }
 
-function summaryListResponse(summaries: RefConnectorSummary[]): ListResponse<RefConnectorSummary> {
+function summaryListResponse(summaries: RefConnectorIdentitySummary[]): ListResponse<RefConnectorIdentitySummary> {
   return { data: summaries, has_more: false, object: "list" };
 }
 
@@ -210,7 +204,10 @@ test("F1 (P1): recent lens filters by selected connection — YNAB records do no
   const ds = makeDataSource({
     listConnectorManifests: () =>
       Promise.resolve([makeManifest("amazon", ["orders"]), makeManifest("ynab", ["transactions"])]),
-    listConnectorSummaries: () => Promise.resolve(summaryListResponse([amazonSummary, ynabSummary])),
+    listConnectorSummaries: (() =>
+      Promise.resolve(
+        summaryListResponse([amazonSummary, ynabSummary])
+      )) as unknown as DashboardDataSource["listConnectorSummaries"],
     listExploreTimeline: (opts) => {
       assert.deepEqual(
         opts?.connectionIds,
@@ -273,7 +270,8 @@ test("F2 (P0): single-stream Most-recent calls lexical (not queryRecords) — on
 
   const ds = makeDataSource({
     listConnectorManifests: () => Promise.resolve([makeManifest("amazon", ["orders"])]),
-    listConnectorSummaries: () => Promise.resolve(summaryListResponse([summary])),
+    listConnectorSummaries: (() =>
+      Promise.resolve(summaryListResponse([summary]))) as unknown as DashboardDataSource["listConnectorSummaries"],
     // PRE-FIX: assembler called queryRecords here. If we stub it to NOT throw,
     // all records (matching or not) would be returned. We stub it to throw so
     // the pre-fix behavior is caught as a test failure.
@@ -342,7 +340,10 @@ test("F2 (P0): multi-stream Most-recent wires lexical cursor — searchHasMore r
   const ds = makeDataSource({
     listConnectorManifests: () =>
       Promise.resolve([makeManifest("ynab", ["transactions"]), makeManifest("amazon", ["orders"])]),
-    listConnectorSummaries: () => Promise.resolve(summaryListResponse([summaryA, summaryB])),
+    listConnectorSummaries: (() =>
+      Promise.resolve(
+        summaryListResponse([summaryA, summaryB])
+      )) as unknown as DashboardDataSource["listConnectorSummaries"],
     queryRecords: () => Promise.reject(new Error("queryRecords must not be called for multi-stream Most-recent")),
     // Lexical returns has_more=true with a cursor to simulate a deep result set.
     searchRecordsLexical: () =>
@@ -412,7 +413,10 @@ test("F3 (P1): timelineRecordToEntry uses connector_instance_id to resolve corre
 
   const ds = makeDataSource({
     listConnectorManifests: () => Promise.resolve([makeManifest("ynab", ["transactions"])]),
-    listConnectorSummaries: () => Promise.resolve(summaryListResponse([personalSummary, workSummary])),
+    listConnectorSummaries: (() =>
+      Promise.resolve(
+        summaryListResponse([personalSummary, workSummary])
+      )) as unknown as DashboardDataSource["listConnectorSummaries"],
     // The endpoint returns a record whose connector_instance_id = "cin_ynab_work".
     listExploreTimeline: () => Promise.resolve(makeTimelinePage([workRecord])),
   });
@@ -479,7 +483,10 @@ test("F3 (P1): connectionId falls back to connector_instance_id (not connector_i
 
   const ds = makeDataSource({
     listConnectorManifests: () => Promise.resolve([makeManifest("amazon", ["orders"])]),
-    listConnectorSummaries: () => Promise.resolve(summaryListResponse([amazonSummary])),
+    listConnectorSummaries: (() =>
+      Promise.resolve(
+        summaryListResponse([amazonSummary])
+      )) as unknown as DashboardDataSource["listConnectorSummaries"],
     listExploreTimeline: () => Promise.resolve(makeTimelinePage([twitterRecord])),
   });
 

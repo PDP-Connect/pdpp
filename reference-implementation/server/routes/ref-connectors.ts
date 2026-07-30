@@ -32,11 +32,13 @@ import {
 } from "../../operations/ref-connectors-detail/index.ts";
 import {
   executeRefConnectorsList,
+  type RefConnectorsListIdentityItem,
   type RefConnectorsListItem,
   type RefConnectorsListPage,
   type RefConnectorsRuntimeStatus,
 } from "../../operations/ref-connectors-list/index.ts";
 import {
+  type ConnectorSummaryPageProfile,
   type ConnectorSummaryPageRequest,
   ConnectorSummaryPageRequestError,
   parseConnectorSummaryPageRequest,
@@ -168,7 +170,10 @@ export interface MountRefConnectorsContext {
   emitSpineEvent: (event: Record<string, unknown>) => Promise<unknown>;
   ensureRequestId: (res: RouteResponse) => string;
   getConnectorDetail: (connectorId: string) => Promise<Record<string, unknown> | null>;
-  getConnectorSummaryForRoute: (routeId: string) => Promise<unknown | null> | unknown | null;
+  getConnectorSummaryForRoute: (
+    routeId: string,
+    options?: { readonly profile?: ConnectorSummaryPageProfile }
+  ) => Promise<unknown | null> | unknown | null;
   getFleetHealthVerdict: () => Promise<FleetHealthVerdict> | FleetHealthVerdict;
   getOwnerSubjectId: (req: unknown) => string;
   getRuntimeStatus: () => RefConnectorsRuntimeStatus;
@@ -356,11 +361,24 @@ async function sendConnectionScopedConnectorSummary(
       "limit, cursor, and connector_id are available only on the unscoped connector-summary list"
     );
   }
+  const rawProfile = req.query.profile;
+  if (rawProfile !== undefined && rawProfile !== "identity_inventory") {
+    throw new ConnectorSummaryPageRequestError("profile", "profile must be one of: identity_inventory");
+  }
+  const profile = rawProfile as ConnectorSummaryPageProfile | undefined;
   const envelope = await executeRefConnectorsList({
     getRuntimeStatus: ctx.getRuntimeStatus,
     listConnectorSummaries: async () => {
-      const summary = await ctx.getConnectorSummaryForRoute(connectionSelector);
-      return summary === null || summary === undefined ? [] : [summary as RefConnectorsListItem];
+      const summary =
+        profile === "identity_inventory"
+          ? await ctx.getConnectorSummaryForRoute(connectionSelector, { profile })
+          : await ctx.getConnectorSummaryForRoute(connectionSelector);
+      if (summary === null || summary === undefined) {
+        return [];
+      }
+      return profile === "identity_inventory"
+        ? [summary as RefConnectorsListIdentityItem]
+        : [summary as RefConnectorsListItem];
     },
   });
   res.json(envelope);

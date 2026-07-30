@@ -5,8 +5,13 @@
     "date": "2026-07-30"
   },
   "server/ref-control.ts": {
-    "allowed_mass": 205,
-    "reason": "Performance residual correction (2026-07-30): fleet health already reads the exact owner-visible connector inventory, but summary projection ignored that bounded snapshot and traversed the identities again. The added owner-scope rejection and supplied-inventory projection path preserve the same exact-id batched evidence/dependency reads while removing only the duplicate identity traversal. The owner check is fail-closed, pagination remains bounded at CONNECTOR_SUMMARY_PAGE_LIMIT_MAX, and a route oracle proves supplied-inventory parity plus the empty-inventory no-read behavior.",
+    "allowed_mass": 208,
+    "reason": "Fable ruling terminal-read-architecture-fable-0730.md §8 (2026-07-30): adds the identity_inventory named profile to the existing listConnectorSummaryPage/getConnectorSummaryForRoute projection (one-projection-N-profiles pattern, not a second projection). The added mass is projectConnectorIdentityInventoryPage's own bounded dependency read (identity page + one evidence-row batch + one declared-manifest lookup, zero spine/browser-surface/runtime reads) plus the profile branch in each public entry point and the overload signatures that keep the default (full) response narrowly typed for every existing caller. Removing the branch would either fold the identity path into the full projection (defeating the cost reduction the profile exists to prove) or duplicate the two public functions.",
+    "date": "2026-07-30"
+  },
+  "server/routes/ref-connectors.ts": {
+    "allowed_mass": 31,
+    "reason": "Fable ruling terminal-read-architecture-fable-0730.md §8 (2026-07-30): threads the optional identity_inventory profile query parameter through the connection-scoped and paged branches of GET /_ref/connectors, validating it once and branching the getConnectorSummaryForRoute call so TypeScript keeps inferring the correct (profile-specific) return type at each call site rather than widening every caller to a union. The added branches are the profile parse/validate guard and its two call-site forks; both are the minimum surface for the route to expose a second named profile without a second route.",
     "date": "2026-07-30"
   },
   "server/stores/connector-maintenance-cursor-store.ts": {

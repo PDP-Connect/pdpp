@@ -20,6 +20,7 @@ import { listRunSummariesByConnectorIds, listSpineCorrelations, type SpineSummar
 import {
   CONNECTOR_SUMMARY_PAGE_LIMIT_MAX,
   type ConnectorIdentityPageBoundary,
+  type ConnectorSummaryPageProfile,
   decodeConnectorSummaryPageCursor,
   encodeConnectorSummaryPageCursor,
 } from "../operations/ref-connectors-list/pagination.ts";
@@ -813,6 +814,26 @@ export interface ConnectorSummary {
    */
   readonly total_records_state?: "known" | "known_zero" | "unobserved" | "stale" | "unknown";
   readonly total_retained_bytes?: number | null;
+}
+
+/**
+ * Fable ruling (terminal-read-architecture-fable-0730.md §8, R8.1): the
+ * `identity_inventory` profile's pinned field set. Pure connection identity +
+ * stream membership — no health, evidence-component, run, schedule, or
+ * runtime field. `streams` is the evidence-row's declared∪observed union
+ * (R8.2), read as stored, never re-derived from record tables. `toConnectionFacet`
+ * (`explore-data-assembler.ts`) accepts this shape or the full `ConnectorSummary`
+ * interchangeably — both carry the same five identity fields plus `streams`.
+ */
+export interface ConnectorIdentityInventorySummary {
+  readonly connection_id: string;
+  readonly connector_display_name: string;
+  readonly connector_id: string;
+  readonly connector_instance_id: string;
+  readonly display_name: string;
+  /** `"pending"` when no `connector_summary_evidence` row exists yet (declared-only). */
+  readonly membership_state: "complete" | "pending";
+  readonly streams: string[];
 }
 
 export interface ConnectorDetail {
@@ -6028,6 +6049,67 @@ export function listConnectorSummaries(
 }
 
 /**
+ * Project an already-authorized identity page under the `identity_inventory`
+ * profile (Fable ruling §8, R8.1): pure connection identity + stream
+ * membership, no health/evidence-synthesis/run/schedule/runtime dependency
+ * family. Dependency matrix (R8.1): the identity page (already read by the
+ * caller) + one evidence-row batch + one declared-manifest lookup — exactly
+ * two reads here, three total with the caller's identity-page read, zero
+ * spine/runtime/browser-surface/history, zero writes.
+ *
+ * Membership authority (R8.2): `streams` is the evidence row's stored
+ * declared∪observed union (`stream_records`, excluding `unavailable` entries
+ * which mean "not declared and never observed"), read exactly as stored —
+ * never re-derived from record tables. No evidence row yet (new connection,
+ * pre-sweep) serves declared-only from the manifest with
+ * `membership_state: "pending"`; an evidence row present serves
+ * `membership_state: "complete"` regardless of each entry's own
+ * `declaration_state` (a `dormant`/`unexpected` stream is still an observed,
+ * complete membership fact — never a reason to relabel the whole row pending).
+ */
+async function projectConnectorIdentityInventoryPage(
+  rows: readonly ConnectorInstanceRow[]
+): Promise<readonly ConnectorIdentityInventorySummary[]> {
+  const pageIds = rows.map((row) => row.connectorInstanceId);
+  const [connectorRows, summaryEvidenceRead] = await Promise.all([
+    listRegisteredConnectorRows(),
+    readSummaryEvidenceRowsOrFailure(pageIds),
+  ]);
+  const manifestsByConnectorId = new Map(
+    connectorRows.map((row) => [row.connector_id, resolveSummaryManifest(row.manifest).manifest])
+  );
+  const evidenceByInstanceId = buildEvidenceIndex(summaryEvidenceRead.rows);
+  return rows.flatMap((instance): readonly ConnectorIdentityInventorySummary[] => {
+    const manifest = manifestsByConnectorId.get(instance.connectorId);
+    if (!manifest) {
+      return [];
+    }
+    const connectorDisplayName = manifest.display_name || instance.connectorId;
+    const evidence = evidenceByInstanceId.get(instance.connectorInstanceId) ?? null;
+    const streams = evidence
+      ? [
+          ...new Set(
+            evidence.stream_records
+              .filter((entry) => entry.declaration_state !== "unavailable")
+              .map((entry) => entry.stream)
+          ),
+        ]
+      : (manifest.streams || []).map((stream) => stream.name);
+    return [
+      {
+        connection_id: instance.connectorInstanceId,
+        connector_display_name: connectorDisplayName,
+        connector_id: instance.connectorId,
+        connector_instance_id: instance.connectorInstanceId,
+        display_name: instance.displayName || connectorDisplayName,
+        membership_state: evidence ? "complete" : "pending",
+        streams,
+      },
+    ];
+  });
+}
+
+/**
  * Project an already-authorized identity page. Both the public keyset route
  * and fleet health use this one batch/evidence path; fleet health supplies
  * the exact inventory it already read for its scope rather than querying the
@@ -6092,6 +6174,50 @@ async function projectConnectorSummaryIdentityPage(
  * fact is gathered once through exact-id batch APIs and the page is never put
  * into the rendered-summary cache.
  */
+interface ListConnectorSummaryPageOptions {
+  readonly after?: ConnectorIdentityPageBoundary | null;
+  /**
+   * Optional owner-scoped filter narrowing this SAME keyset page to one
+   * connector's connections. Composes with `limit`/`cursor` unconditionally
+   * (fixed query family — see `SQLITE_OWNER_VISIBLE_IDENTITY_PAGE_SQL`'s
+   * `connector_id = ? OR ? IS NULL` clause). Distinct from the `?connection=`
+   * exact-connection selector: `connectorId` still returns a keyset PAGE
+   * (0, 1, or many rows across one or more calls), never a single resolved
+   * connection. A cursor issued under one `connectorId` is not valid for a
+   * request omitting it or naming a different one — see
+   * `encodeConnectorSummaryPageCursor`'s `connectorId` binding.
+   */
+  readonly connectorId?: string | null;
+  readonly includeRunSummaries?: ConnectorRunSummaryInclusion;
+  readonly limit: number;
+  readonly ownerSubjectId: string;
+  /**
+   * Named semantic profile (Fable ruling §8). `undefined` = the full
+   * (`detail`-shaped) response, unchanged. `identity_inventory` = R8.1's
+   * pure identity + stream-membership profile, option-gating which
+   * dependency families load — the same pattern `includeRunSummaries`
+   * already establishes, not a second projection implementation.
+   */
+  readonly profile?: ConnectorSummaryPageProfile;
+}
+
+interface ListConnectorSummaryPageResult<TSummary> {
+  readonly data: readonly TSummary[];
+  readonly has_more: boolean;
+  /** Internal exact identity inventory for callers composing a complete-page
+   * verdict.  It never crosses the route envelope. */
+  readonly inventory: readonly ConnectorInstanceRow[];
+  readonly next_cursor: string | null;
+}
+
+export function listConnectorSummaryPage(
+  controller: ControllerLike | null | undefined,
+  options: ListConnectorSummaryPageOptions & { readonly profile: "identity_inventory" }
+): Promise<ListConnectorSummaryPageResult<ConnectorIdentityInventorySummary>>;
+export function listConnectorSummaryPage(
+  controller: ControllerLike | null | undefined,
+  options: ListConnectorSummaryPageOptions & { readonly profile?: undefined }
+): Promise<ListConnectorSummaryPageResult<ConnectorSummary>>;
 export async function listConnectorSummaryPage(
   controller: ControllerLike | null | undefined,
   {
@@ -6100,39 +6226,25 @@ export async function listConnectorSummaryPage(
     includeRunSummaries = "singleton-active",
     limit,
     ownerSubjectId,
-  }: {
-    readonly after?: ConnectorIdentityPageBoundary | null;
-    /**
-     * Optional owner-scoped filter narrowing this SAME keyset page to one
-     * connector's connections. Composes with `limit`/`cursor` unconditionally
-     * (fixed query family — see `SQLITE_OWNER_VISIBLE_IDENTITY_PAGE_SQL`'s
-     * `connector_id = ? OR ? IS NULL` clause). Distinct from the `?connection=`
-     * exact-connection selector: `connectorId` still returns a keyset PAGE
-     * (0, 1, or many rows across one or more calls), never a single resolved
-     * connection. A cursor issued under one `connectorId` is not valid for a
-     * request omitting it or naming a different one — see
-     * `encodeConnectorSummaryPageCursor`'s `connectorId` binding.
-     */
-    readonly connectorId?: string | null;
-    readonly includeRunSummaries?: ConnectorRunSummaryInclusion;
-    readonly limit: number;
-    readonly ownerSubjectId: string;
-  }
-): Promise<{
-  readonly data: readonly ConnectorSummary[];
-  readonly has_more: boolean;
-  /** Internal exact identity inventory for callers composing a complete-page
-   * verdict.  It never crosses the route envelope. */
-  readonly inventory: readonly ConnectorInstanceRow[];
-  readonly next_cursor: string | null;
-}> {
+    profile,
+  }: ListConnectorSummaryPageOptions
+): Promise<
+  ListConnectorSummaryPageResult<ConnectorSummary> | ListConnectorSummaryPageResult<ConnectorIdentityInventorySummary>
+> {
   const identityPage = await listOwnerVisibleConnectorInstancePage(ownerSubjectId, { after, connectorId, limit });
-  const data = await projectConnectorSummaryIdentityPage(controller, {
-    includeRunSummaries,
-    ownerSubjectId,
-    rows: identityPage.rows,
-  });
+  const data =
+    profile === "identity_inventory"
+      ? await projectConnectorIdentityInventoryPage(identityPage.rows)
+      : await projectConnectorSummaryIdentityPage(controller, {
+          includeRunSummaries,
+          ownerSubjectId,
+          rows: identityPage.rows,
+        });
   const last = identityPage.rows.at(-1);
+  // The runtime branch above already guarantees `data`'s element type matches
+  // `profile`; the two-overload public signature exists so callers that omit
+  // `profile` keep inferring the narrow `ConnectorSummary[]` result without a
+  // cast at every existing call site.
   return {
     data,
     has_more: identityPage.hasMore,
@@ -6150,7 +6262,9 @@ export async function listConnectorSummaryPage(
             connectorId
           )
         : null,
-  };
+  } as
+    | ListConnectorSummaryPageResult<ConnectorSummary>
+    | ListConnectorSummaryPageResult<ConnectorIdentityInventorySummary>;
 }
 
 /**
@@ -6229,13 +6343,28 @@ async function resolveOwnerVisibleConnectionForRoute(routeId: string): Promise<C
 // only that connection. Exact stable connection identity is preferred. Connector
 // id fallback is allowed only when it is unambiguous; otherwise a connector-key
 // route would silently pick the first source and attach sibling evidence to it.
+export function getConnectorSummaryForRoute(
+  routeId: string,
+  controller: ControllerLike | null | undefined,
+  options: { readonly profile: "identity_inventory" }
+): Promise<ConnectorIdentityInventorySummary | null>;
+export function getConnectorSummaryForRoute(
+  routeId: string,
+  controller?: ControllerLike | null,
+  options?: { readonly profile?: ConnectorSummaryPageProfile }
+): Promise<ConnectorSummary | null>;
 export async function getConnectorSummaryForRoute(
   routeId: string,
-  controller?: ControllerLike | null
-): Promise<ConnectorSummary | null> {
+  controller?: ControllerLike | null,
+  options: { readonly profile?: ConnectorSummaryPageProfile } = {}
+): Promise<ConnectorSummary | ConnectorIdentityInventorySummary | null> {
   const { match } = await resolveOwnerVisibleConnectionForRoute(routeId);
   if (match === null) {
     return null;
+  }
+  if (options.profile === "identity_inventory") {
+    const rows = await projectConnectorIdentityInventoryPage([match]);
+    return rows[0] ?? null;
   }
   // Scoped to exactly the one resolved connection: by this point the
   // unambiguous match is already known, so the observation barrier must not

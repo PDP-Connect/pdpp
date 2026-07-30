@@ -32,7 +32,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { assembleExplorerData } from "@pdpp/operator-ui/explore/explore-data-assembler";
 import type { DashboardDataSource } from "@pdpp/operator-ui/lib/data-source";
-import type { ExploreTimelinePage, ListResponse, RefConnectorSummary } from "@pdpp/operator-ui/lib/ref-client";
+import type { ExploreTimelinePage, ListResponse, RefConnectorIdentitySummary } from "@pdpp/operator-ui/lib/ref-client";
 import type {
   ConnectorManifest,
   RecordsPage,
@@ -72,20 +72,15 @@ function makeSummary(over: {
   connector_id: string;
   streams?: string[];
   display_name?: string;
-}): RefConnectorSummary {
+}): RefConnectorIdentitySummary {
   return {
-    connection_health: {} as RefConnectorSummary["connection_health"],
     connection_id: over.connection_id,
+    connector_display_name: over.connector_id,
     connector_id: over.connector_id,
+    connector_instance_id: over.connection_id,
     display_name: over.display_name ?? over.connection_id,
-    freshness: {},
-    last_run: null,
-    last_successful_run: null,
-    manifest_version: null,
-    next_action: null,
-    schedule: null,
+    membership_state: "complete",
     streams: over.streams ?? ["records"],
-    total_records: 0,
   };
 }
 
@@ -96,7 +91,7 @@ function makeManifest(connectorId: string, streams: string[] = ["records"]): Con
   };
 }
 
-function summaryListResponse(summaries: RefConnectorSummary[]): ListResponse<RefConnectorSummary> {
+function summaryListResponse(summaries: RefConnectorIdentitySummary[]): ListResponse<RefConnectorIdentitySummary> {
   return { data: summaries, has_more: false, object: "list" };
 }
 
@@ -344,7 +339,8 @@ test("P1 assembler: streamSeeAllLinks is non-empty when the time-range fan-out h
           streams: [{ consent_time_field: "date", name: "transactions" }],
         },
       ] satisfies ConnectorManifest[],
-    listConnectorSummaries: async () => summaryListResponse([summary]),
+    listConnectorSummaries: (async () =>
+      summaryListResponse([summary])) as unknown as DashboardDataSource["listConnectorSummaries"],
     // The recent lens would call this; it is irrelevant here (time-range lens),
     // but provide a valid empty page rather than throwing.
     listExploreTimeline: async () => ({
@@ -389,7 +385,8 @@ test("P3 Load-more cursor: assembler returns non-null nextCursor when real endpo
   const summary = makeSummary({ connection_id: "ynab-1", connector_id: "ynab", streams: ["transactions"] });
   const ds = makeDataSource({
     listConnectorManifests: async () => [makeManifest("ynab", ["transactions"])],
-    listConnectorSummaries: async () => summaryListResponse([summary]),
+    listConnectorSummaries: (async () =>
+      summaryListResponse([summary])) as unknown as DashboardDataSource["listConnectorSummaries"],
     // Real endpoint: returns has_more=true with a real composite cursor
     listExploreTimeline: async () => makeTimelinePage(32, { has_more: true, next_cursor: "composite-cursor-p2" }),
   });
@@ -406,7 +403,8 @@ test("P3 Load-more cursor: assembler returns null nextCursor when real endpoint 
   const summary = makeSummary({ connection_id: "ynab-1", connector_id: "ynab", streams: ["transactions"] });
   const ds = makeDataSource({
     listConnectorManifests: async () => [makeManifest("ynab", ["transactions"])],
-    listConnectorSummaries: async () => summaryListResponse([summary]),
+    listConnectorSummaries: (async () =>
+      summaryListResponse([summary])) as unknown as DashboardDataSource["listConnectorSummaries"],
     listExploreTimeline: async () => makeTimelinePage(5, { has_more: false, snapshot_at: "2026-06-19T00:00:00Z" }),
   });
 
@@ -463,7 +461,8 @@ test("P3 Load-more trail: second page ACCUMULATES (page 1 stays, page 2 appended
   const capturedFetches: string[] = [];
   const ds = makeDataSource({
     listConnectorManifests: async () => [makeManifest("ynab", ["transactions"])],
-    listConnectorSummaries: async () => summaryListResponse([summary]),
+    listConnectorSummaries: (async () =>
+      summaryListResponse([summary])) as unknown as DashboardDataSource["listConnectorSummaries"],
     listExploreTimeline: (opts) => {
       const cursor = opts?.cursor ?? null;
       const rewind = Boolean(opts?.rewindToFirstPage);
@@ -560,14 +559,16 @@ test("P2 sort toggle: lexical Most-relevant and Most-recent return same hit coun
   const dsRelevance = makeDataSource({
     isHybridRetrievalAdvertised: async () => false,
     listConnectorManifests: async () => [makeManifest("ynab", ["transactions"])],
-    listConnectorSummaries: async () => summaryListResponse([summary]),
+    listConnectorSummaries: (async () =>
+      summaryListResponse([summary])) as unknown as DashboardDataSource["listConnectorSummaries"],
     searchRecordsLexical: async () => makeLexicalPage([hit1, hit2], { has_more: false }),
   });
 
   const dsRecent = makeDataSource({
     isHybridRetrievalAdvertised: async () => false,
     listConnectorManifests: async () => [makeManifest("ynab", ["transactions"])],
-    listConnectorSummaries: async () => summaryListResponse([summary]),
+    listConnectorSummaries: (async () =>
+      summaryListResponse([summary])) as unknown as DashboardDataSource["listConnectorSummaries"],
     // Then queryRecords for the same 2 records in time order
     queryRecords: async () => makeRecordsPage(["r1", "r2"], { has_more: false }),
     // Most-recent detection path: lexical to find stream door
@@ -594,7 +595,8 @@ test("P2 lexical Load-more forwards cursor (assembler advances, does not re-fetc
   const ds = makeDataSource({
     isHybridRetrievalAdvertised: () => Promise.resolve(false),
     listConnectorManifests: async () => [makeManifest("ynab", ["transactions"])],
-    listConnectorSummaries: async () => summaryListResponse([summary]),
+    listConnectorSummaries: (async () =>
+      summaryListResponse([summary])) as unknown as DashboardDataSource["listConnectorSummaries"],
     searchRecordsLexical: (_q, opts) => {
       capturedCursors.push(opts?.cursor);
       // Recall proven complete: keyword_pageable, so the cursor pages exhaustively.

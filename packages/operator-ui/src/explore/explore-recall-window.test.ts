@@ -29,9 +29,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { DashboardDataSource } from "../lib/data-source.ts";
-import type { ListResponse, RefConnectorSummary } from "../lib/ref-client.ts";
+import type { RefConnectorSummary } from "../lib/ref-client.ts";
 import type { ConnectorManifest, RecordsPage, SearchResultHit, SearchResultPage } from "../lib/rs-client.ts";
 import { assembleExplorerData } from "./explore-data-assembler.ts";
+import { mockListConnectorSummaries } from "./test-mock-connector-summaries.ts";
 
 /** A bounded-window summary must never claim completeness. */
 const CLAIMS_COMPLETENESS_RE = /all matching|complete|every match/i;
@@ -125,8 +126,7 @@ function dataSource(page: SearchResultPage): DashboardDataSource {
     isSemanticRetrievalAdvertised: () => Promise.resolve(false),
     kind: "live",
     listConnectorManifests: () => Promise.resolve([manifest()]),
-    listConnectorSummaries: (): Promise<ListResponse<RefConnectorSummary>> =>
-      Promise.resolve({ data: summaries, has_more: false, object: "list" }),
+    listConnectorSummaries: mockListConnectorSummaries(summaries),
     listExploreRecordBuckets: unused,
     listExploreTimeline: () => Promise.reject(new Error("not used in search lens")),
     listGrants: () => Promise.resolve({ data: [], has_more: false, object: "list" }),
