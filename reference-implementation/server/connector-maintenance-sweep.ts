@@ -30,14 +30,131 @@
 
 import { retireExpiredBrowserEnrollmentShellsForMaintenance } from "./ref-control.ts";
 import { getDefaultConnectorAttentionStore } from "./stores/connector-attention-store.ts";
+import {
+  type ConnectorMaintenanceCursorStore,
+  createConnectorMaintenanceCursorStore,
+} from "./stores/connector-maintenance-cursor-store.ts";
 
 export interface ConnectorMaintenanceSweepOptions {
   readonly attentionExpireLimit?: number;
+  readonly evidenceSweepLeaseDurationMs?: number;
   readonly evidenceSweepMaxDurationMs?: number;
   readonly evidenceSweepPageSize?: number;
   readonly nowIso?: () => string;
   readonly onPhaseError?: (phase: "attention" | "evidence" | "shells", err: unknown) => void;
-  readonly runEvidenceSweep: (args: { readonly maxDurationMs: number; readonly pageSize?: number }) => Promise<unknown>;
+  readonly runEvidenceSweep: (args: {
+    readonly afterId?: string | null;
+    readonly maxDurationMs: number;
+    readonly pageSize?: number;
+  }) => Promise<unknown>;
+}
+
+interface ResumableEvidenceSweepResult {
+  readonly incomplete: boolean;
+  readonly resumeAfterId: string | null;
+}
+
+const DEFAULT_CURSOR_LEASE_DURATION_MS = 30_000;
+
+function readResumableEvidenceSweepResult(value: unknown): ResumableEvidenceSweepResult | null {
+  if (!(value && typeof value === "object")) {
+    return null;
+  }
+  const result = value as Record<string, unknown>;
+  if (typeof result.incomplete !== "boolean") {
+    return null;
+  }
+  if (result.resumeAfterId !== null && typeof result.resumeAfterId !== "string") {
+    return null;
+  }
+  // A complete sweep must clear the cursor. Accepting a cursor here would
+  // let a malformed adapter result erase known-good progress and restart a
+  // starved fleet on the next periodic tick.
+  if (!result.incomplete && result.resumeAfterId !== null) {
+    return null;
+  }
+  // An incomplete sweep without a cursor is not resumable. Do not replace a
+  // known-good cursor with an ambiguous result that would restart the fleet.
+  if (result.incomplete && !result.resumeAfterId) {
+    return null;
+  }
+  return { incomplete: result.incomplete, resumeAfterId: result.resumeAfterId as string | null };
+}
+
+/**
+ * Keeps the bounded sweep's keyset cursor durably across periodic ticks and
+ * process restarts. The cursor is an acceleration hint, not correctness
+ * state: each page still writes its own durable fold checkpoints. A
+ * rejected/malformed result leaves the prior cursor in place (fail closed)
+ * rather than silently restarting a starved fleet.
+ */
+export function createResumableConnectorMaintenanceSweep(
+  options: ConnectorMaintenanceSweepOptions,
+  cursorStore: ConnectorMaintenanceCursorStore = createConnectorMaintenanceCursorStore()
+): {
+  readonly getResumeAfterId: () => string | null;
+  readonly run: () => Promise<void>;
+  readonly runEvidenceSweepRound: (args: {
+    readonly afterId?: string | null;
+    readonly maxDurationMs: number;
+    readonly pageSize?: number;
+  }) => Promise<ResumableEvidenceSweepResult | null>;
+} {
+  let evidenceSweepInFlight = false;
+  let observedResumeAfterId: string | null = null;
+  const runEvidenceSweepRound = async (args: {
+    readonly afterId?: string | null;
+    readonly maxDurationMs: number;
+    readonly pageSize?: number;
+  }): Promise<ResumableEvidenceSweepResult | null> => {
+    if (evidenceSweepInFlight) {
+      return null;
+    }
+    evidenceSweepInFlight = true;
+    let lease: Awaited<ReturnType<ConnectorMaintenanceCursorStore["acquire"]>> = null;
+    let committed = false;
+    try {
+      const nowIso = options.nowIso?.() ?? new Date().toISOString();
+      lease = await cursorStore.acquire({
+        leaseDurationMs: options.evidenceSweepLeaseDurationMs ?? DEFAULT_CURSOR_LEASE_DURATION_MS,
+        nowIso,
+      });
+      if (!lease) {
+        return null;
+      }
+      const result = readResumableEvidenceSweepResult(
+        await options.runEvidenceSweep({ ...args, afterId: lease.resumeAfterId })
+      );
+      if (!result) {
+        throw new Error("Maintenance evidence sweep returned an invalid resumable result.");
+      }
+      const nextCursor = result.incomplete ? result.resumeAfterId : null;
+      committed = await cursorStore.commit({
+        lease,
+        resumeAfterId: nextCursor,
+        updatedAt: options.nowIso?.() ?? new Date().toISOString(),
+      });
+      if (!committed) {
+        return null;
+      }
+      observedResumeAfterId = nextCursor;
+      return result;
+    } finally {
+      if (lease && !committed) {
+        await cursorStore.release(lease).catch(() => {
+          // The bounded lease eventually expires; never mask the sweep error.
+        });
+      }
+      evidenceSweepInFlight = false;
+    }
+  };
+  return {
+    getResumeAfterId: () => observedResumeAfterId,
+    run: async () => {
+      await runConnectorMaintenanceSweep({ ...options, runEvidenceSweep: runEvidenceSweepRound });
+    },
+    runEvidenceSweepRound,
+  };
 }
 
 /**

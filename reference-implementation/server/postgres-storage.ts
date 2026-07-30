@@ -1819,6 +1819,17 @@ export async function bootstrapPostgresSchema({
       CREATE INDEX IF NOT EXISTS idx_pg_connector_summary_evidence_connector
         ON connector_summary_evidence(connector_id);
 
+      -- Scheduling state only: this cursor resumes a bounded maintenance
+      -- pass after restart without becoming evidence or owner-visible data.
+      CREATE TABLE IF NOT EXISTS connector_maintenance_cursor (
+        name TEXT PRIMARY KEY CHECK(name = 'connector_summary_evidence'),
+        resume_after_id TEXT,
+        updated_at TEXT NOT NULL,
+        generation BIGINT NOT NULL DEFAULT 0,
+        lease_token TEXT,
+        lease_expires_at TEXT
+      );
+
       CREATE TABLE IF NOT EXISTS manifest_write_violations (
         connector_instance_id TEXT NOT NULL,
         stream TEXT NOT NULL,
@@ -1891,6 +1902,12 @@ export async function bootstrapPostgresSchema({
         ADD COLUMN IF NOT EXISTS schedule_checkpoint TEXT NOT NULL DEFAULT 'unobserved';
       ALTER TABLE connector_summary_evidence
         ADD COLUMN IF NOT EXISTS run_lifecycle_event_seq BIGINT;
+      ALTER TABLE connector_maintenance_cursor
+        ADD COLUMN IF NOT EXISTS generation BIGINT NOT NULL DEFAULT 0;
+      ALTER TABLE connector_maintenance_cursor
+        ADD COLUMN IF NOT EXISTS lease_token TEXT;
+      ALTER TABLE connector_maintenance_cursor
+        ADD COLUMN IF NOT EXISTS lease_expires_at TEXT;
       ALTER TABLE connector_state
         ADD COLUMN IF NOT EXISTS manifest_generation BIGINT NOT NULL DEFAULT 0;
       ALTER TABLE grant_connector_state

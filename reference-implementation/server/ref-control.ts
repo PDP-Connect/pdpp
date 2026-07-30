@@ -5935,6 +5935,22 @@ async function listAllConnectorSummariesByPaging(
 ): Promise<ConnectorSummary[]> {
   const ownerSubjectId = options.ownerSubjectId ?? REFERENCE_OWNER_SUBJECT_ID;
   const includeRunSummaries: ConnectorRunSummaryInclusion = options.includeRunSummaries ?? true;
+  if (options.visibleConnections) {
+    if (options.visibleConnections.some((row) => row.ownerSubjectId !== ownerSubjectId)) {
+      throw new Error("Visible connector inventory contains a connection for a different owner.");
+    }
+    const summaries: ConnectorSummary[] = [];
+    for (let offset = 0; offset < options.visibleConnections.length; offset += CONNECTOR_SUMMARY_PAGE_LIMIT_MAX) {
+      // biome-ignore lint/performance/noAwaitInLoops: each bounded projection page owns a separate evidence batch.
+      const page = await projectConnectorSummaryIdentityPage(controller, {
+        includeRunSummaries,
+        ownerSubjectId,
+        rows: options.visibleConnections.slice(offset, offset + CONNECTOR_SUMMARY_PAGE_LIMIT_MAX),
+      });
+      summaries.push(...page);
+    }
+    return summaries;
+  }
   const summaries: ConnectorSummary[] = [];
   let after: ConnectorIdentityPageBoundary | null = null;
   for (;;) {
@@ -5977,6 +5993,64 @@ export function listConnectorSummaries(
 }
 
 /**
+ * Project an already-authorized identity page. Both the public keyset route
+ * and fleet health use this one batch/evidence path; fleet health supplies
+ * the exact inventory it already read for its scope rather than querying the
+ * same identity pages again.
+ */
+async function projectConnectorSummaryIdentityPage(
+  controller: ControllerLike | null | undefined,
+  {
+    includeRunSummaries,
+    ownerSubjectId,
+    rows,
+  }: {
+    readonly includeRunSummaries: ConnectorRunSummaryInclusion;
+    readonly ownerSubjectId: string;
+    readonly rows: readonly ConnectorInstanceRow[];
+  }
+): Promise<readonly ConnectorSummary[]> {
+  const pageIds = rows.map((row) => row.connectorInstanceId);
+  const [pageEvidence, deps, activeConnectionCounts] = await Promise.all([
+    loadPageProductEvidence(pageIds),
+    loadConnectorSummaryProjectionDeps(controller, {
+      connectorInstanceIds: pageIds,
+      includeRunSummaries,
+    }),
+    // The legacy connector-wide run fallback needs only active sibling
+    // cardinality for connector ids represented on this page. Ask the store
+    // for that aggregate directly; never walk the owner's full inventory.
+    Promise.resolve(
+      getConnectorInstanceStore().countActiveByOwnerConnectorIds(
+        ownerSubjectId,
+        rows.map((row) => row.connectorId)
+      )
+    ),
+  ]);
+  const pageDeps: ConnectorSummaryProjectionDeps = {
+    ...deps,
+    pageProductEvidence: pageEvidence.product,
+    retainedSizeSnapshot: pageEvidence.retainedSizeSnapshot,
+  };
+  const activeVisibleConnectionCounts = new Map(
+    [...activeConnectionCounts].filter(([activeConnectorId]) => {
+      const manifest = pageDeps.manifestsByConnectorId.get(activeConnectorId);
+      return (
+        manifest !== undefined &&
+        isPublicReferenceConnector({ connector_id: activeConnectorId, manifest: JSON.stringify(manifest) }, manifest)
+      );
+    })
+  );
+  return (
+    await runWithConcurrency(rows, LIST_CONNECTOR_SUMMARIES_CONCURRENCY, (instance) =>
+      projectConnectorSummaryForInstance(instance, pageDeps, {
+        activeVisibleConnectionCount: activeVisibleConnectionCounts.get(instance.connectorId) ?? 0,
+      })
+    )
+  ).filter((summary): summary is ConnectorSummary => summary !== null);
+}
+
+/**
  * Page summary synthesis starts from immutable owner-visible identities. It
  * deliberately does not use the all-list synthesizer: every durable product
  * fact is gathered once through exact-id batch APIs and the page is never put
@@ -6014,44 +6088,11 @@ export async function listConnectorSummaryPage(
   readonly next_cursor: string | null;
 }> {
   const identityPage = await listOwnerVisibleConnectorInstancePage(ownerSubjectId, { after, connectorId, limit });
-  const pageIds = identityPage.rows.map((row) => row.connectorInstanceId);
-  const [pageEvidence, deps, activeConnectionCounts] = await Promise.all([
-    loadPageProductEvidence(pageIds),
-    loadConnectorSummaryProjectionDeps(controller, {
-      connectorInstanceIds: pageIds,
-      includeRunSummaries,
-    }),
-    // The legacy connector-wide run fallback needs only active sibling
-    // cardinality for connector ids represented on this page. Ask the store
-    // for that aggregate directly; never walk the owner's full inventory.
-    Promise.resolve(
-      getConnectorInstanceStore().countActiveByOwnerConnectorIds(
-        ownerSubjectId,
-        identityPage.rows.map((row) => row.connectorId)
-      )
-    ),
-  ]);
-  const pageDeps: ConnectorSummaryProjectionDeps = {
-    ...deps,
-    pageProductEvidence: pageEvidence.product,
-    retainedSizeSnapshot: pageEvidence.retainedSizeSnapshot,
-  };
-  const activeVisibleConnectionCounts = new Map(
-    [...activeConnectionCounts].filter(([activeConnectorId]) => {
-      const manifest = pageDeps.manifestsByConnectorId.get(activeConnectorId);
-      return (
-        manifest !== undefined &&
-        isPublicReferenceConnector({ connector_id: activeConnectorId, manifest: JSON.stringify(manifest) }, manifest)
-      );
-    })
-  );
-  const data = (
-    await runWithConcurrency(identityPage.rows, LIST_CONNECTOR_SUMMARIES_CONCURRENCY, (instance) =>
-      projectConnectorSummaryForInstance(instance, pageDeps, {
-        activeVisibleConnectionCount: activeVisibleConnectionCounts.get(instance.connectorId) ?? 0,
-      })
-    )
-  ).filter((summary): summary is ConnectorSummary => summary !== null);
+  const data = await projectConnectorSummaryIdentityPage(controller, {
+    includeRunSummaries,
+    ownerSubjectId,
+    rows: identityPage.rows,
+  });
   const last = identityPage.rows.at(-1);
   return {
     data,

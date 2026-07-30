@@ -1825,6 +1825,17 @@ CREATE TABLE IF NOT EXISTS connector_summary_evidence (
 CREATE INDEX IF NOT EXISTS idx_connector_summary_evidence_connector
   ON connector_summary_evidence(connector_id);
 
+-- One durable scheduling cursor for the bounded, periodic summary-evidence
+-- sweep. It is not evidence and does not participate in owner projections.
+CREATE TABLE IF NOT EXISTS connector_maintenance_cursor (
+  name                         TEXT PRIMARY KEY CHECK(name = 'connector_summary_evidence'),
+  resume_after_id              TEXT,
+  updated_at                   TEXT NOT NULL,
+  generation                   INTEGER NOT NULL DEFAULT 0,
+  lease_token                  TEXT,
+  lease_expires_at             TEXT
+);
+
 -- Explicit provenance for a rejected write against this exact manifest
 -- generation. Retained rows never imply this state by themselves.
 CREATE TABLE IF NOT EXISTS manifest_write_violations (
@@ -2005,6 +2016,12 @@ function ensureConnectorSummaryEvidenceColumns(raw: SqliteDatabase): void {
   addColumnIfMissing(raw, "connector_summary_evidence", "manifest_generation", "INTEGER NOT NULL DEFAULT 0");
   addColumnIfMissing(raw, "connector_summary_evidence", "schedule_checkpoint", "TEXT NOT NULL DEFAULT 'unobserved'");
   addColumnIfMissing(raw, "connector_summary_evidence", "run_lifecycle_event_seq", "INTEGER");
+}
+
+function ensureConnectorMaintenanceCursorColumns(raw: SqliteDatabase): void {
+  addColumnIfMissing(raw, "connector_maintenance_cursor", "generation", "INTEGER NOT NULL DEFAULT 0");
+  addColumnIfMissing(raw, "connector_maintenance_cursor", "lease_token", "TEXT");
+  addColumnIfMissing(raw, "connector_maintenance_cursor", "lease_expires_at", "TEXT");
 }
 
 function migrateManifestWriteViolations(raw: SqliteDatabase): void {
@@ -4602,6 +4619,7 @@ export function initDb(path = ":memory:", opts: InitDbOptions = {}): DatabaseHan
   runWithSqliteBusyRetrySync(() => migrateBrowserSurfaceLeaseEnumChecks(raw));
   runWithSqliteBusyRetrySync(() => ensureBrowserSurfaceLeaseIndexes(raw));
   runWithSqliteBusyRetrySync(() => ensureConnectorSummaryEvidenceColumns(raw));
+  runWithSqliteBusyRetrySync(() => ensureConnectorMaintenanceCursorColumns(raw));
   runWithSqliteBusyRetrySync(() => migrateManifestWriteViolations(raw));
   runWithSqliteBusyRetrySync(() => ensureRecordResetGenerationColumn(raw));
   // Incremental add-source linkage: a later same-client ceremony records the
