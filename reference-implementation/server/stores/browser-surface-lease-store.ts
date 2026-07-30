@@ -73,6 +73,9 @@ export interface BrowserSurfaceLeaseStore {
   listLeases: () => Promise<BrowserSurfaceLease[]>;
   listNonTerminalLeases: () => Promise<BrowserSurfaceLease[]>;
   listSurfaces: () => Promise<BrowserSurfaceWithPersistenceMetadata[]>;
+  readForConnectionIdentities: (
+    identities: readonly BrowserSurfaceConnectionIdentity[]
+  ) => Promise<BrowserSurfaceConnectionIdentityBatch>;
   repairStaleSurfaceActiveLeases: () => Promise<void>;
   updateBrowserGenerationHash: (surfaceId: string, browserGenerationHash: string) => Promise<void>;
   updateLeaseTerminal: (
@@ -89,6 +92,34 @@ export interface BrowserSurfaceLeaseStore {
 }
 
 const TERMINAL_STATUS_SQL = TERMINAL_BROWSER_SURFACE_LEASE_STATUSES.map((status) => `'${status}'`).join(", ");
+const TERMINAL_LEASE_STATUS_SET = new Set<BrowserSurfaceLease["status"]>(TERMINAL_BROWSER_SURFACE_LEASE_STATUSES);
+
+/** Maximum identities accepted by one bounded summary/detail observation. */
+export const MAX_BROWSER_SURFACE_CONNECTION_IDENTITIES = 25;
+
+/** Exact durable identity used by browser-surface projections for one connection. */
+export interface BrowserSurfaceConnectionIdentity {
+  readonly connector_id: string;
+  readonly profile_key: string;
+  readonly surface_subject_id: string | null;
+}
+
+export interface BrowserSurfaceConnectionIdentityRows {
+  readonly identity: BrowserSurfaceConnectionIdentity;
+  readonly leases: readonly BrowserSurfaceLease[];
+  readonly non_terminal_leases: readonly BrowserSurfaceLease[];
+  readonly surfaces: readonly BrowserSurfaceWithPersistenceMetadata[];
+}
+
+/**
+ * Identity-keyed durable browser-surface rows. Every requested identity has
+ * an entry, including identities with no lease or surface rows.
+ */
+export type BrowserSurfaceConnectionIdentityBatch = ReadonlyMap<string, BrowserSurfaceConnectionIdentityRows>;
+
+export function browserSurfaceConnectionIdentityKey(identity: BrowserSurfaceConnectionIdentity): string {
+  return JSON.stringify([identity.connector_id, identity.profile_key, identity.surface_subject_id]);
+}
 
 export interface BrowserSurfacePersistenceMetadata {
   readonly browser_generation_hash?: string;
@@ -250,6 +281,100 @@ function allDynamicRows<R>(sql: string, params: BindValue[] = []): R[] {
   return [...iterateDynamicSqlAcknowledged<R>(sql, params)];
 }
 
+function boundedConnectionIdentities(
+  identities: readonly BrowserSurfaceConnectionIdentity[]
+): readonly BrowserSurfaceConnectionIdentity[] {
+  const unique = new Map<string, BrowserSurfaceConnectionIdentity>();
+  for (const identity of identities) {
+    unique.set(browserSurfaceConnectionIdentityKey(identity), identity);
+  }
+  if (unique.size > MAX_BROWSER_SURFACE_CONNECTION_IDENTITIES) {
+    throw new RangeError(
+      `browser surface observation accepts at most ${MAX_BROWSER_SURFACE_CONNECTION_IDENTITIES} connection identities`
+    );
+  }
+  return [...unique.values()];
+}
+
+function connectionIdentityPredicate(
+  identities: readonly BrowserSurfaceConnectionIdentity[],
+  placeholder: () => string,
+  subjectEquals: (placeholder: string) => string
+): string {
+  return identities
+    .map(
+      () => `(connector_id = ${placeholder()} AND profile_key = ${placeholder()} AND ${subjectEquals(placeholder())})`
+    )
+    .join(" OR ");
+}
+
+function connectionIdentityParams(identities: readonly BrowserSurfaceConnectionIdentity[]): (string | null)[] {
+  return identities.flatMap((identity) => [identity.connector_id, identity.profile_key, identity.surface_subject_id]);
+}
+
+function nonTerminalLeaseOrder(left: BrowserSurfaceLease, right: BrowserSurfaceLease): number {
+  const leftPriority = left.priority_class === "interactive" ? 0 : 1;
+  const rightPriority = right.priority_class === "interactive" ? 0 : 1;
+  return (
+    leftPriority - rightPriority ||
+    left.requested_at.localeCompare(right.requested_at) ||
+    left.lease_id.localeCompare(right.lease_id)
+  );
+}
+
+function connectionIdentityBatch(
+  identities: readonly BrowserSurfaceConnectionIdentity[],
+  leases: readonly BrowserSurfaceLease[],
+  surfaces: readonly BrowserSurfaceWithPersistenceMetadata[]
+): BrowserSurfaceConnectionIdentityBatch {
+  const rows = new Map<
+    string,
+    {
+      identity: BrowserSurfaceConnectionIdentity;
+      leases: BrowserSurfaceLease[];
+      surfaces: BrowserSurfaceWithPersistenceMetadata[];
+    }
+  >();
+  for (const identity of identities) {
+    rows.set(browserSurfaceConnectionIdentityKey(identity), { identity, leases: [], surfaces: [] });
+  }
+  for (const lease of leases) {
+    rows
+      .get(
+        browserSurfaceConnectionIdentityKey({
+          connector_id: lease.connector_id,
+          profile_key: lease.profile_key,
+          surface_subject_id: lease.surface_subject_id ?? null,
+        })
+      )
+      ?.leases.push(lease);
+  }
+  for (const surface of surfaces) {
+    rows
+      .get(
+        browserSurfaceConnectionIdentityKey({
+          connector_id: surface.connector_id,
+          profile_key: surface.profile_key,
+          surface_subject_id: surface.surface_subject_id ?? null,
+        })
+      )
+      ?.surfaces.push(surface);
+  }
+  return new Map(
+    [...rows].map(([key, row]) => [
+      key,
+      {
+        identity: row.identity,
+        leases: row.leases,
+        non_terminal_leases: row.leases
+          .filter((lease) => !TERMINAL_LEASE_STATUS_SET.has(lease.status))
+          .sort(nonTerminalLeaseOrder),
+        surfaces: row.surfaces,
+      },
+    ])
+  );
+}
+
 class SqliteBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
   upsertSurface(surface: BrowserSurfaceWithPersistenceMetadata): Promise<BrowserSurfaceWithPersistenceMetadata> {
     // REVIEWED-DYNAMIC: browser surface persistence is a compact new store seam; the SQL is static here and not caller-built.
@@ -374,6 +499,32 @@ class SqliteBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
        ORDER BY CASE priority_class WHEN 'interactive' THEN 0 ELSE 1 END, requested_at, lease_id`
     );
     return Promise.resolve(rows.map(mapRequiredLease));
+  }
+
+  readForConnectionIdentities(
+    requestedIdentities: readonly BrowserSurfaceConnectionIdentity[]
+  ): Promise<BrowserSurfaceConnectionIdentityBatch> {
+    const identities = boundedConnectionIdentities(requestedIdentities);
+    if (identities.length === 0) {
+      return Promise.resolve(new Map());
+    }
+    const predicate = connectionIdentityPredicate(
+      identities,
+      () => "?",
+      (placeholder) => `surface_subject_id IS ${placeholder}`
+    );
+    const params = connectionIdentityParams(identities);
+    // REVIEWED-DYNAMIC: bounded trusted identity count only changes static placeholder repetition.
+    const leases = allDynamicRows<BrowserSurfaceLeaseRow>(
+      `SELECT * FROM browser_surface_leases WHERE ${predicate} ORDER BY requested_at, lease_id`,
+      params
+    ).map(mapRequiredLease);
+    // REVIEWED-DYNAMIC: bounded trusted identity count only changes static placeholder repetition.
+    const surfaces = allDynamicRows<BrowserSurfaceRow>(
+      `SELECT * FROM browser_surfaces WHERE ${predicate} ORDER BY surface_id`,
+      params
+    ).map(mapRequiredSurface);
+    return Promise.resolve(connectionIdentityBatch(identities, leases, surfaces));
   }
 
   repairStaleSurfaceActiveLeases(): Promise<void> {
@@ -576,6 +727,34 @@ class PostgresBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
        ORDER BY CASE priority_class WHEN 'interactive' THEN 0 ELSE 1 END, requested_at, lease_id`
     );
     return (result.rows as BrowserSurfaceLeaseRow[]).map(mapRequiredLease);
+  }
+
+  async readForConnectionIdentities(
+    requestedIdentities: readonly BrowserSurfaceConnectionIdentity[]
+  ): Promise<BrowserSurfaceConnectionIdentityBatch> {
+    const identities = boundedConnectionIdentities(requestedIdentities);
+    if (identities.length === 0) {
+      return new Map();
+    }
+    let placeholderIndex = 0;
+    const predicate = connectionIdentityPredicate(
+      identities,
+      () => {
+        placeholderIndex += 1;
+        return `$${placeholderIndex}`;
+      },
+      (placeholder) => `surface_subject_id IS NOT DISTINCT FROM ${placeholder}`
+    );
+    const params = connectionIdentityParams(identities);
+    const [leasesResult, surfacesResult] = await Promise.all([
+      this.#query(`SELECT * FROM browser_surface_leases WHERE ${predicate} ORDER BY requested_at, lease_id`, params),
+      this.#query(`SELECT * FROM browser_surfaces WHERE ${predicate} ORDER BY surface_id`, params),
+    ]);
+    return connectionIdentityBatch(
+      identities,
+      (leasesResult.rows as BrowserSurfaceLeaseRow[]).map(mapRequiredLease),
+      (surfacesResult.rows as BrowserSurfaceRow[]).map(mapRequiredSurface)
+    );
   }
 
   async repairStaleSurfaceActiveLeases(): Promise<void> {

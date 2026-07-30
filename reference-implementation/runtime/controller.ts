@@ -60,7 +60,9 @@ import {
 } from "../server/stores/scheduler-store.ts";
 import {
   type BrowserSurfaceRuntimeInventorySnapshot,
+  type BrowserSurfaceRuntimeSurfaceObservation,
   observeDynamicBrowserSurfaceRuntimeInventory,
+  observeDynamicBrowserSurfaceRuntimeSurfaces,
 } from "./browser-surface/allocator-observation.ts";
 import {
   type BrowserSurfaceManagerDeps,
@@ -579,7 +581,10 @@ export interface BrowserSurfaceRuntimeManagement {
  * attachment repair while it derives readiness; it never creates, stops,
  * restarts, or leases a surface.
  */
-export type { BrowserSurfaceRuntimeInventorySnapshot } from "./browser-surface/allocator-observation.ts";
+export type {
+  BrowserSurfaceRuntimeInventorySnapshot,
+  BrowserSurfaceRuntimeSurfaceObservation,
+} from "./browser-surface/allocator-observation.ts";
 
 /**
  * Resolves the connection-scoped static-secret env fragment for one run.
@@ -715,6 +720,13 @@ export interface Controller {
    * calls.
    */
   observeBrowserSurfaceRuntimeInventory: () => Promise<BrowserSurfaceRuntimeInventorySnapshot>;
+  /**
+   * Reads only caller-known dynamic allocator surface ids. This scoped seam
+   * never expands to the global allocator inventory diagnostic.
+   */
+  observeBrowserSurfaceRuntimeSurfaces: (
+    surfaceIds: readonly string[]
+  ) => Promise<BrowserSurfaceRuntimeSurfaceObservation>;
   promoteBrowserSurfaceLeasesAfterBoot: () => Promise<void>;
   reconcileBrowserSurfaceLeasesAfterBoot: () => Promise<void>;
   respondToInteraction: (runId: string, input?: RunInteractionResponseInput) => RunInteractionAck;
@@ -2326,6 +2338,17 @@ export function createController(opts: ControllerOptions = {}): Controller {
     }
     return await observeDynamicBrowserSurfaceRuntimeInventory({
       allocator: browserSurfaceAllocator,
+      ttl_ms: browserSurfaceHealthObservationTtlMs,
+    });
+  }
+
+  async function observeBrowserSurfaceRuntimeSurfaces(
+    surfaceIds: readonly string[]
+  ): Promise<BrowserSurfaceRuntimeSurfaceObservation> {
+    const dynamicManaged = browserSurfaceLeaseManager?.config.surfaceMode === "dynamic";
+    return await observeDynamicBrowserSurfaceRuntimeSurfaces({
+      allocator: dynamicManaged ? browserSurfaceAllocator : undefined,
+      surface_ids: surfaceIds,
       ttl_ms: browserSurfaceHealthObservationTtlMs,
     });
   }
@@ -4071,6 +4094,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     listSchedulesForConnections,
     markNeedsHuman,
     observeBrowserSurfaceRuntimeInventory,
+    observeBrowserSurfaceRuntimeSurfaces,
     promoteBrowserSurfaceLeasesAfterBoot: () => browserSurface.promoteBrowserSurfaceLeasesAfterBoot(),
     reconcileBrowserSurfaceLeasesAfterBoot: () => browserSurface.reconcileBrowserSurfaceLeasesAfterBoot(),
     respondToInteraction,

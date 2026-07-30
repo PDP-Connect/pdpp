@@ -179,6 +179,7 @@ function createMemoryBrowserSurfaceLeaseStore({
     listLeases: async () => [...leaseRows.values()],
     listNonTerminalLeases: async () => [...leaseRows.values()].filter((lease) => !terminalStatuses.has(lease.status)),
     listSurfaces: async () => [...surfaceRows.values()].sort((a, b) => a.surface_id.localeCompare(b.surface_id)),
+    readForConnectionIdentities: async () => new Map(),
     repairStaleSurfaceActiveLeases: () => {
       for (const [surfaceId, surface] of surfaceRows) {
         const activeLeaseId = surface.active_lease_id;

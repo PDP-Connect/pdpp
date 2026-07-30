@@ -35,6 +35,7 @@
  */
 
 import { iterateDynamicSqlAcknowledged } from "../lib/db.ts";
+import type { EphemeralBrowserRuntimeProjection } from "../runtime/browser-surface/ephemeral-health-projection.ts";
 import type { RepairCandidateReason } from "./connector-summary-evidence-engine.ts";
 import {
   pruneOrphanedEvidenceComplete,
@@ -158,6 +159,53 @@ function parseEvidenceJson(value: unknown, fallback: unknown): unknown {
   }
 }
 
+/**
+ * Narrow handoff for the separately-owned scoped runtime observer. The
+ * terminal list projection stores the observer's already-classified result;
+ * it never discovers surfaces, reads runtime history, or treats an omitted
+ * observation as healthy.
+ */
+export interface ConnectorListSummaryRuntimeEvidence {
+  readonly observed_at: string;
+  readonly projection: EphemeralBrowserRuntimeProjection | null;
+}
+
+export interface ConnectorListSummaryTerminalProjection {
+  readonly runtime: ConnectorListSummaryRuntimeEvidence | null;
+  /** Exact owner LIST-item shape, retained as one named projection payload. */
+  readonly summary: Record<string, unknown>;
+}
+
+export interface ConnectorListSummaryTerminalProjectionEnvelope {
+  readonly computed_at: string | null;
+  readonly projection: ConnectorListSummaryTerminalProjection | null;
+  readonly reason_code: string | null;
+  readonly state: "current" | "stale" | "unobserved" | "failed";
+}
+
+const TERMINAL_PROJECTION_STATES = new Set(["current", "stale", "failed"]);
+
+function terminalProjectionState(value: unknown): ConnectorListSummaryTerminalProjectionEnvelope["state"] {
+  return typeof value === "string" && TERMINAL_PROJECTION_STATES.has(value)
+    ? (value as ConnectorListSummaryTerminalProjectionEnvelope["state"])
+    : "unobserved";
+}
+
+function parseTerminalProjection(value: unknown): ConnectorListSummaryTerminalProjection | null {
+  const parsed = parseEvidenceJson(value, null);
+  if (!(parsed && typeof parsed === "object" && !Array.isArray(parsed))) {
+    return null;
+  }
+  const candidate = parsed as Record<string, unknown>;
+  if (!(candidate.summary && typeof candidate.summary === "object" && !Array.isArray(candidate.summary))) {
+    return null;
+  }
+  return {
+    runtime: (candidate.runtime as ConnectorListSummaryRuntimeEvidence | null | undefined) ?? null,
+    summary: candidate.summary as Record<string, unknown>,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Domain-local store: connector_summary_evidence
 //
@@ -207,7 +255,10 @@ function createConnectorSummaryStore() {
                   retained_bytes_state, retained_bytes_reason_code,
                   stream_latest_facts_json, stream_facts_event_seq, stream_facts_fold_version,
                   dirty, computed_at, source_event_seq, state, last_error,
-                  manifest_generation, schedule_checkpoint, run_lifecycle_event_seq
+                  canonical_evidence_revision,
+                  manifest_generation, schedule_checkpoint, run_lifecycle_event_seq,
+                  list_summary_projection_json, list_summary_projection_state,
+                  list_summary_projection_reason_code, list_summary_projection_computed_at
              FROM connector_summary_evidence
              ${where}
              ORDER BY connector_instance_id ASC`,
@@ -216,9 +267,16 @@ function createConnectorSummaryStore() {
         return result.rows;
       },
       async markAllDirty({ sanitized }: { sanitized?: string | null }) {
-        await postgresQuery(`UPDATE connector_summary_evidence SET dirty = 1, state = 'stale', last_error = $1`, [
-          sanitized,
-        ]);
+        await postgresQuery(
+          `UPDATE connector_summary_evidence
+              SET dirty = 1,
+                  state = 'stale',
+                  last_error = $1,
+                  canonical_evidence_revision = canonical_evidence_revision + 1,
+                  list_summary_projection_state = 'stale',
+                  list_summary_projection_reason_code = 'canonical_evidence_dirty'`,
+          [sanitized]
+        );
       },
       async markAllDiscoveryFailed({
         sanitized,
@@ -240,6 +298,9 @@ function createConnectorSummaryStore() {
               SET dirty = 1,
                   state = 'stale',
                   last_error = $1,
+                  canonical_evidence_revision = canonical_evidence_revision + 1,
+                  list_summary_projection_state = 'stale',
+                  list_summary_projection_reason_code = 'canonical_evidence_dirty',
                   record_snapshot_state = 'failed',
                   record_snapshot_reason_code = $2,
                   manifest_declaration_state = 'failed',
@@ -272,6 +333,9 @@ function createConnectorSummaryStore() {
               SET dirty = 1,
                   state = 'stale',
                   last_error = $1,
+                  canonical_evidence_revision = canonical_evidence_revision + 1,
+                  list_summary_projection_state = 'stale',
+                  list_summary_projection_reason_code = 'canonical_evidence_dirty',
                   terminal_facts_state = $2,
                   terminal_facts_reason_code = $3
               ${where}`,
@@ -305,6 +369,9 @@ function createConnectorSummaryStore() {
               SET dirty = 1,
                   state = 'stale',
                   last_error = $2,
+                  canonical_evidence_revision = canonical_evidence_revision + 1,
+                  list_summary_projection_state = 'stale',
+                  list_summary_projection_reason_code = 'canonical_evidence_dirty',
                   source_event_seq = COALESCE($3, source_event_seq)
             WHERE connector_instance_id = $1`,
           [connectorInstanceId, sanitized, boundSourceEventSeq]
@@ -331,7 +398,10 @@ function createConnectorSummaryStore() {
                     retained_bytes_state, retained_bytes_reason_code,
                     stream_latest_facts_json, stream_facts_event_seq, stream_facts_fold_version,
                     dirty, computed_at, source_event_seq, state, last_error,
-                    manifest_generation, schedule_checkpoint, run_lifecycle_event_seq`;
+                    canonical_evidence_revision,
+                    manifest_generation, schedule_checkpoint, run_lifecycle_event_seq,
+                    list_summary_projection_json, list_summary_projection_state,
+                    list_summary_projection_reason_code, list_summary_projection_computed_at`;
       if (connectorInstanceId) {
         return db
           .prepare(
@@ -362,7 +432,15 @@ function createConnectorSummaryStore() {
     },
     markAllDirty({ sanitized }: { sanitized?: string | null }) {
       getDb()
-        .prepare(`UPDATE connector_summary_evidence SET dirty = 1, state = 'stale', last_error = ?`)
+        .prepare(
+          `UPDATE connector_summary_evidence
+              SET dirty = 1,
+                  state = 'stale',
+                  last_error = ?,
+                  canonical_evidence_revision = canonical_evidence_revision + 1,
+                  list_summary_projection_state = 'stale',
+                  list_summary_projection_reason_code = 'canonical_evidence_dirty'`
+        )
         .run(sanitized);
     },
     markAllDiscoveryFailed({
@@ -384,6 +462,9 @@ function createConnectorSummaryStore() {
               SET dirty = 1,
                   state = 'stale',
                   last_error = ?,
+                  canonical_evidence_revision = canonical_evidence_revision + 1,
+                  list_summary_projection_state = 'stale',
+                  list_summary_projection_reason_code = 'canonical_evidence_dirty',
                   record_snapshot_state = 'failed',
                   record_snapshot_reason_code = ?,
                   manifest_declaration_state = 'failed',
@@ -415,6 +496,9 @@ function createConnectorSummaryStore() {
               SET dirty = 1,
                   state = 'stale',
                   last_error = ?,
+                  canonical_evidence_revision = canonical_evidence_revision + 1,
+                  list_summary_projection_state = 'stale',
+                  list_summary_projection_reason_code = 'canonical_evidence_dirty',
                   terminal_facts_state = ?,
                   terminal_facts_reason_code = ?
               ${where}`
@@ -436,6 +520,9 @@ function createConnectorSummaryStore() {
               SET dirty = 1,
                   state = 'stale',
                   last_error = ?,
+                  canonical_evidence_revision = canonical_evidence_revision + 1,
+                  list_summary_projection_state = 'stale',
+                  list_summary_projection_reason_code = 'canonical_evidence_dirty',
                   source_event_seq = COALESCE(?, source_event_seq)
             WHERE connector_instance_id = ?`
         )
@@ -478,6 +565,161 @@ export async function getConnectorSummaryEvidence(connectorInstanceId: string | 
   }
   const rows = await listConnectorSummaryEvidence({ connectorInstanceId });
   return rows[0] ?? null;
+}
+
+/**
+ * Return the stored terminal owner-LIST projection for exactly one
+ * connection. This is a read-only evidence lookup: it never reconciles,
+ * rebuilds, observes runtime state, or upgrades a stale payload to current.
+ */
+export async function getConnectorListSummaryTerminalProjection(
+  connectorInstanceId: string | null | undefined
+): Promise<ConnectorListSummaryTerminalProjectionEnvelope> {
+  if (!connectorInstanceId) {
+    return unobservedTerminalProjectionEnvelope();
+  }
+  const batch = await getConnectorListSummaryTerminalProjectionBatch([connectorInstanceId]);
+  return batch.get(connectorInstanceId) ?? unobservedTerminalProjectionEnvelope();
+}
+
+/** Maximum connection ids accepted by one bounded terminal-projection batch read. */
+export const MAX_TERMINAL_PROJECTION_BATCH_IDS = 100;
+
+function unobservedTerminalProjectionEnvelope(): ConnectorListSummaryTerminalProjectionEnvelope {
+  return { computed_at: null, projection: null, reason_code: "summary_missing", state: "unobserved" };
+}
+
+function shapeTerminalProjectionRow(row: Row): ConnectorListSummaryTerminalProjectionEnvelope {
+  const state = terminalProjectionState(row.list_summary_projection_state);
+  const projection = state === "current" ? parseTerminalProjection(row.list_summary_projection_json) : null;
+  return {
+    computed_at:
+      typeof row.list_summary_projection_computed_at === "string" ? row.list_summary_projection_computed_at : null,
+    projection,
+    reason_code:
+      typeof row.list_summary_projection_reason_code === "string" ? row.list_summary_projection_reason_code : null,
+    state: projection === null && state === "current" ? "failed" : state,
+  };
+}
+
+/**
+ * Batched, read-only lookup of the stored terminal owner-LIST projection for
+ * every requested connection id, in ONE bounded evidence read (`IN (...)`/
+ * `= ANY`, never one query per id — the N+1 shape this batch getter exists
+ * to replace). Never reconciles, rebuilds, observes runtime state, or
+ * upgrades a stale payload to current; a read that finds no row, or a
+ * non-current row, returns that connection's honest `unobserved`/`stale`/
+ * `failed` envelope rather than silently omitting it.
+ *
+ * Every requested id has exactly one entry in the returned map, including
+ * ids with no durable evidence row at all (`unobserved`, `summary_missing`).
+ * Duplicate ids collapse to one entry. Bounded to
+ * `MAX_TERMINAL_PROJECTION_BATCH_IDS` requested ids per call.
+ */
+export async function getConnectorListSummaryTerminalProjectionBatch(
+  connectorInstanceIds: readonly string[]
+): Promise<ReadonlyMap<string, ConnectorListSummaryTerminalProjectionEnvelope>> {
+  const uniqueIds = [...new Set(connectorInstanceIds.filter((id): id is string => Boolean(id)))];
+  if (uniqueIds.length === 0) {
+    return new Map();
+  }
+  if (uniqueIds.length > MAX_TERMINAL_PROJECTION_BATCH_IDS) {
+    throw new RangeError(
+      `terminal connector summary projection batch accepts at most ${MAX_TERMINAL_PROJECTION_BATCH_IDS} connection ids`
+    );
+  }
+  const store = createConnectorSummaryStore();
+  const rows = (await store.listEvidence({ connectorInstanceIds: uniqueIds })) as Row[];
+  const byId = new Map<string, Row>();
+  for (const row of rows) {
+    byId.set(String(row.connector_instance_id), row);
+  }
+  const result = new Map<string, ConnectorListSummaryTerminalProjectionEnvelope>();
+  for (const id of uniqueIds) {
+    const row = byId.get(id);
+    result.set(id, row ? shapeTerminalProjectionRow(row) : unobservedTerminalProjectionEnvelope());
+  }
+  return result;
+}
+
+/**
+ * Publish a complete owner LIST item after a bounded maintenance reader has
+ * assembled every durable axis and supplied its runtime observation. The
+ * conditional update makes a concurrent canonical mutation win: a payload
+ * may only become current while the canonical evidence envelope is current.
+ */
+export async function publishConnectorListSummaryTerminalProjection(input: {
+  /** Captured with the bounded canonical evidence read used to derive `projection`. */
+  readonly canonicalEvidenceRevision: string;
+  readonly connectorInstanceId: string;
+  readonly computedAt: string;
+  readonly projection: ConnectorListSummaryTerminalProjection;
+}): Promise<boolean> {
+  const { canonicalEvidenceRevision, connectorInstanceId, computedAt, projection } = input;
+  const summaryConnectionId = projection.summary.connection_id ?? projection.summary.connector_instance_id;
+  if (summaryConnectionId !== connectorInstanceId) {
+    throw new Error("Terminal connector summary projection identity does not match its evidence row.");
+  }
+  const encoded = JSON.stringify(projection);
+  const currentEvidenceWhere = `dirty = 0
+    AND state = 'fresh'
+    AND record_snapshot_state = 'current'
+    AND terminal_facts_state = 'current'
+    AND manifest_declaration_state = 'current'`;
+  if (isPostgresStorageBackend()) {
+    const result = await postgresQuery(
+      `UPDATE connector_summary_evidence
+          SET list_summary_projection_json = $2::jsonb,
+              list_summary_projection_state = 'current',
+              list_summary_projection_reason_code = NULL,
+              list_summary_projection_computed_at = $3
+        WHERE connector_instance_id = $1
+          AND canonical_evidence_revision = $4
+          AND ${currentEvidenceWhere}`,
+      [connectorInstanceId, encoded, computedAt, canonicalEvidenceRevision]
+    );
+    return result.rowCount === 1;
+  }
+  const result = getDb()
+    .prepare(
+      `UPDATE connector_summary_evidence
+          SET list_summary_projection_json = ?,
+              list_summary_projection_state = 'current',
+              list_summary_projection_reason_code = NULL,
+              list_summary_projection_computed_at = ?
+        WHERE connector_instance_id = ?
+          AND canonical_evidence_revision = ?
+          AND ${currentEvidenceWhere}`
+    )
+    .run(encoded, computedAt, connectorInstanceId, canonicalEvidenceRevision);
+  return result.changes === 1;
+}
+
+async function invalidateAllConnectorListSummaryTerminalProjections(reasonCode: string): Promise<void> {
+  if (isPostgresStorageBackend()) {
+    await postgresQuery(
+      "UPDATE connector_summary_evidence SET canonical_evidence_revision = canonical_evidence_revision + 1"
+    );
+    await postgresQuery(
+      `UPDATE connector_summary_evidence
+          SET list_summary_projection_state = 'stale',
+              list_summary_projection_reason_code = $1
+        WHERE list_summary_projection_state = 'current'`,
+      [reasonCode]
+    );
+    return;
+  }
+  getDb()
+    .prepare("UPDATE connector_summary_evidence SET canonical_evidence_revision = canonical_evidence_revision + 1")
+    .run();
+  getDb()
+    .prepare(
+      `UPDATE connector_summary_evidence
+          SET list_summary_projection_state = 'stale',
+              list_summary_projection_reason_code = ?
+        WHERE list_summary_projection_state = 'current'`
+    )
+    .run(reasonCode);
 }
 
 /**
@@ -535,9 +777,22 @@ function shapeComponentEnvelope(row: Row, state: unknown, reasonCode: unknown) {
   };
 }
 
+function shapeListSummaryProjection(row: Row): ConnectorListSummaryTerminalProjectionEnvelope {
+  const state = terminalProjectionState(row.list_summary_projection_state);
+  return {
+    computed_at:
+      typeof row.list_summary_projection_computed_at === "string" ? row.list_summary_projection_computed_at : null,
+    projection: state === "current" ? parseTerminalProjection(row.list_summary_projection_json) : null,
+    reason_code:
+      typeof row.list_summary_projection_reason_code === "string" ? row.list_summary_projection_reason_code : null,
+    state,
+  };
+}
+
 export function shapeEvidenceRow(row: Row) {
   const retainedBytesState = String(row.retained_bytes_state || "unobserved");
   return {
+    canonical_evidence_revision: String(row.canonical_evidence_revision ?? "0"),
     computed_at: row.computed_at || null,
     connector_id: row.connector_id,
     connector_instance_id: row.connector_instance_id,
@@ -545,6 +800,7 @@ export function shapeEvidenceRow(row: Row) {
     display_name: row.display_name,
     last_error: row.last_error || null,
     last_record_updated_at: row.last_record_updated_at || null,
+    list_summary_projection: shapeListSummaryProjection(row),
     manifest_declaration: shapeComponentEnvelope(
       row,
       row.manifest_declaration_state || "unavailable",
@@ -1051,7 +1307,8 @@ function createStreamFactsFoldStore() {
                   stream_facts_event_seq = $3,
                   stream_facts_fold_version = $5,
                   terminal_facts_state = $6,
-                  terminal_facts_reason_code = $7
+                  terminal_facts_reason_code = $7,
+                  canonical_evidence_revision = canonical_evidence_revision + 1
             WHERE connector_instance_id = $1
               AND stream_facts_event_seq IS NOT DISTINCT FROM $4
               AND stream_facts_fold_version IS NOT DISTINCT FROM $8`,
@@ -1130,7 +1387,8 @@ function createStreamFactsFoldStore() {
                   stream_facts_event_seq = ?,
                   stream_facts_fold_version = ?,
                   terminal_facts_state = ?,
-                  terminal_facts_reason_code = ?
+                  terminal_facts_reason_code = ?,
+                  canonical_evidence_revision = canonical_evidence_revision + 1
             WHERE connector_instance_id = ?
               AND stream_facts_event_seq IS ?
               AND stream_facts_fold_version IS ?`
@@ -2430,6 +2688,7 @@ async function observeConnectorSummaryEvidence(
  */
 export async function rebuildConnectorSummaryEvidence() {
   await observeConnectorSummaryEvidence();
+  await invalidateAllConnectorListSummaryTerminalProjections("canonical_evidence_rebuilt");
   return listConnectorSummaryEvidence();
 }
 

@@ -1799,6 +1799,11 @@ CREATE TABLE IF NOT EXISTS connector_summary_evidence (
   state                         TEXT NOT NULL DEFAULT 'rebuilding',
   -- Sanitized last error (credentials redacted, bounded length).
   last_error                    TEXT,
+  -- Opaque compare-and-set revision for publishers of the terminal owner
+  -- LIST projection. Every canonical rebuild/reconcile or dirty transition
+  -- advances it, so a payload derived from an older bounded read cannot
+  -- publish after the row has moved on.
+  canonical_evidence_revision   INTEGER NOT NULL DEFAULT 0,
   -- Durable connection-scoped declaration identity. This is the only
   -- eligibility boundary for terminal, coverage, and heartbeat proof.
   manifest_generation INTEGER NOT NULL DEFAULT 0,
@@ -1820,7 +1825,15 @@ CREATE TABLE IF NOT EXISTS connector_summary_evidence (
   -- this connection -- catches a run-lifecycle event (e.g. run.started)
   -- whose best-effort dirty marker was lost, using the spine's own
   -- already-durable, atomically-assigned sequence as the repair receipt.
-  run_lifecycle_event_seq INTEGER
+  run_lifecycle_event_seq INTEGER,
+  -- Complete owner LIST-item projection, published only by bounded
+  -- maintenance after all durable axes have converged. This is deliberately
+  -- one named projection payload, not a generic cache: its state is coupled
+  -- to this row's canonical evidence envelope and is invalidated with it.
+  list_summary_projection_json TEXT,
+  list_summary_projection_state TEXT NOT NULL DEFAULT 'unobserved',
+  list_summary_projection_reason_code TEXT,
+  list_summary_projection_computed_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_connector_summary_evidence_connector
   ON connector_summary_evidence(connector_id);
@@ -2014,8 +2027,18 @@ function ensureConnectorSummaryEvidenceColumns(raw: SqliteDatabase): void {
   addColumnIfMissing(raw, "connector_summary_evidence", "retained_bytes_state", "TEXT NOT NULL DEFAULT 'unobserved'");
   addColumnIfMissing(raw, "connector_summary_evidence", "retained_bytes_reason_code", "TEXT");
   addColumnIfMissing(raw, "connector_summary_evidence", "manifest_generation", "INTEGER NOT NULL DEFAULT 0");
+  addColumnIfMissing(raw, "connector_summary_evidence", "canonical_evidence_revision", "INTEGER NOT NULL DEFAULT 0");
   addColumnIfMissing(raw, "connector_summary_evidence", "schedule_checkpoint", "TEXT NOT NULL DEFAULT 'unobserved'");
   addColumnIfMissing(raw, "connector_summary_evidence", "run_lifecycle_event_seq", "INTEGER");
+  addColumnIfMissing(raw, "connector_summary_evidence", "list_summary_projection_json", "TEXT");
+  addColumnIfMissing(
+    raw,
+    "connector_summary_evidence",
+    "list_summary_projection_state",
+    "TEXT NOT NULL DEFAULT 'unobserved'"
+  );
+  addColumnIfMissing(raw, "connector_summary_evidence", "list_summary_projection_reason_code", "TEXT");
+  addColumnIfMissing(raw, "connector_summary_evidence", "list_summary_projection_computed_at", "TEXT");
 }
 
 function ensureConnectorMaintenanceCursorColumns(raw: SqliteDatabase): void {

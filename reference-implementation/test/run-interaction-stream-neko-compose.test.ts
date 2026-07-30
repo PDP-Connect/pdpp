@@ -80,6 +80,7 @@ function fakeLeaseStore(): BrowserSurfaceLeaseStore {
     async listSurfaces() {
       return [];
     },
+    readForConnectionIdentities: () => unimplemented("readForConnectionIdentities"),
     // biome-ignore lint/suspicious/noEmptyBlockStatements: skipped test callback is intentionally empty
     async repairStaleSurfaceActiveLeases() {},
     updateBrowserGenerationHash: () => unimplemented("updateBrowserGenerationHash"),

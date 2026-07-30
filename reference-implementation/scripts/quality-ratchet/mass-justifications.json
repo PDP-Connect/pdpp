@@ -188,5 +188,10 @@
     "allowed_mass": 48,
     "reason": "Reviewed replacement episode correction (2026-07-30): atomic correction must fail closed on a complete exact-scope immutable set, a named failed predecessor, unresolved membership, and no intervening competing starts, while retaining parity for SQLite and PostgreSQL transactions. The additional branches are the validation boundary and idempotent/reversible persistence checks; collapsing them into a generic override helper would weaken the intentionally stricter batch contract or hide backend transaction semantics. Proven by mutation-grade omission, mixed-scope, altered-fingerprint, resolved/unrelated member, partial-apply, retry, revoke, and non-target-isolation tests.",
     "date": "2026-07-30"
+  },
+  "runtime/browser-surface/allocator-observation.ts": {
+    "allowed_mass": 5,
+    "reason": "Bounded runtime-observation seam (2026-07-30): known-id reads must distinguish an empty input (no allocator call), unavailable allocator (every requested id unknown), a missing surface, and an unreadable per-id status without falling back to the global listSurfaces diagnostic. The cap and explicit outcome branches are the contract that prevents unbounded background work and loss of missing-versus-unknown evidence; extracting them would split one small observation projection without reducing the required state distinctions. Focused 0/1/25 tests assert bounded calls, global-call exclusion, explicit outcomes, and filtered-global parity.",
+    "date": "2026-07-30"
   }
 }

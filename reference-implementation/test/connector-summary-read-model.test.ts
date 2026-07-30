@@ -8,10 +8,13 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  getConnectorListSummaryTerminalProjection,
+  getConnectorListSummaryTerminalProjectionBatch,
   getConnectorSummaryEvidence,
   listConnectorSummaryEvidence,
   markAllConnectorSummaryEvidenceDirty,
   markConnectorSummaryEvidenceDirty,
+  publishConnectorListSummaryTerminalProjection,
   rebuildConnectorSummaryEvidence,
   reconcileDirtyConnectorSummaryEvidence,
 } from "../server/connector-summary-read-model.ts";
@@ -322,6 +325,275 @@ test("rebuild keeps connections with zero records as honest empty evidence", () 
     assert.equal(row.state, "fresh");
   }));
 
+test("terminal LIST projection is published only from current canonical evidence and becomes stale without GET repair", () =>
+  withTempDb(async () => {
+    const connectorId = "terminal_projection";
+    const connectorInstanceId = "cin_terminal_projection";
+    seedInstanceSqlite({ connectorId, connectorInstanceId });
+    getDb()
+      .prepare("UPDATE connectors SET manifest = ? WHERE connector_id = ?")
+      .run(
+        JSON.stringify({ connector_id: connectorId, streams: [{ name: "messages", primary_key: ["id"] }] }),
+        connectorId
+      );
+    await rebuildConnectorSummaryEvidence();
+    const initialEvidence = await getConnectorSummaryEvidence(connectorInstanceId);
+    assert.ok(initialEvidence, "bounded canonical read must materialize the evidence row");
+
+    const before = await getConnectorListSummaryTerminalProjection(connectorInstanceId);
+    assert.deepEqual(before, {
+      computed_at: null,
+      projection: null,
+      reason_code: null,
+      state: "unobserved",
+    });
+    assert.equal(
+      await publishConnectorListSummaryTerminalProjection({
+        canonicalEvidenceRevision: initialEvidence.canonical_evidence_revision,
+        computedAt: "2026-07-30T18:00:00.000Z",
+        connectorInstanceId,
+        projection: {
+          runtime: null,
+          summary: {
+            connection_health: { state: "unknown" },
+            connection_id: connectorInstanceId,
+            connector_id: connectorId,
+            schedule: null,
+            total_records: 0,
+          },
+        },
+      }),
+      true
+    );
+    const published = await getConnectorListSummaryTerminalProjection(connectorInstanceId);
+    assert.equal(published.state, "current");
+    assert.deepEqual(published.projection?.summary, {
+      connection_health: { state: "unknown" },
+      connection_id: connectorInstanceId,
+      connector_id: connectorId,
+      schedule: null,
+      total_records: 0,
+    });
+
+    await rebuildConnectorSummaryEvidence();
+    const rebuilt = await getConnectorListSummaryTerminalProjection(connectorInstanceId);
+    assert.equal(rebuilt.state, "stale", "canonical rebuild invalidates a previously published terminal payload");
+    assert.equal(rebuilt.projection, null);
+    assert.equal(rebuilt.reason_code, "canonical_evidence_rebuilt");
+    const rebuiltEvidence = await getConnectorSummaryEvidence(connectorInstanceId);
+    assert.ok(rebuiltEvidence, "bounded canonical read must retain the evidence row after rebuild");
+    assert.equal(
+      await publishConnectorListSummaryTerminalProjection({
+        canonicalEvidenceRevision: rebuiltEvidence.canonical_evidence_revision,
+        computedAt: "2026-07-30T18:01:00.000Z",
+        connectorInstanceId,
+        projection: {
+          runtime: null,
+          summary: {
+            connection_health: { state: "unknown" },
+            connection_id: connectorInstanceId,
+            connector_id: connectorId,
+            schedule: null,
+            total_records: 0,
+          },
+        },
+      }),
+      true
+    );
+
+    const beforeReadRow = getDb().prepare("SELECT total_changes() AS changes").get<{ changes: number }>();
+    assert.ok(beforeReadRow);
+    const totalChangesBeforeRead = beforeReadRow.changes;
+    await getConnectorListSummaryTerminalProjection(connectorInstanceId);
+    const afterReadRow = getDb().prepare("SELECT total_changes() AS changes").get<{ changes: number }>();
+    assert.ok(afterReadRow);
+    const totalChangesAfterRead = afterReadRow.changes;
+    assert.equal(totalChangesAfterRead, totalChangesBeforeRead, "terminal LIST read must not repair or write");
+
+    await markConnectorSummaryEvidenceDirty({ connectorInstanceId, reason: "record mutation" });
+    const stale = await getConnectorListSummaryTerminalProjection(connectorInstanceId);
+    assert.equal(stale.state, "stale");
+    assert.equal(stale.projection, null, "a stale payload is not reusable truth");
+    assert.equal(stale.reason_code, "canonical_evidence_dirty");
+  }));
+
+test("terminal LIST rejects a late canonical snapshot after rebuild or dirty", () =>
+  withTempDb(async () => {
+    const connectorId = "terminal_snapshot_fence";
+    const connectorInstanceId = "cin_terminal_snapshot_fence";
+    seedInstanceSqlite({ connectorId, connectorInstanceId });
+    getDb()
+      .prepare("UPDATE connectors SET manifest = ? WHERE connector_id = ?")
+      .run(
+        JSON.stringify({ connector_id: connectorId, streams: [{ name: "messages", primary_key: ["id"] }] }),
+        connectorId
+      );
+    await rebuildConnectorSummaryEvidence();
+    const snapshotA = await getConnectorSummaryEvidence(connectorInstanceId);
+    assert.ok(snapshotA, "A is one bounded canonical-evidence read");
+
+    await rebuildConnectorSummaryEvidence();
+    const snapshotB = await getConnectorSummaryEvidence(connectorInstanceId);
+    assert.ok(snapshotB, "B is one bounded canonical-evidence read");
+    assert.notEqual(snapshotB.canonical_evidence_revision, snapshotA.canonical_evidence_revision);
+    assert.equal(
+      await publishConnectorListSummaryTerminalProjection({
+        canonicalEvidenceRevision: snapshotA.canonical_evidence_revision,
+        computedAt: "2026-07-30T18:02:00.000Z",
+        connectorInstanceId,
+        projection: {
+          runtime: null,
+          summary: { connection_id: connectorInstanceId, connector_id: connectorId, total_records: 999 },
+        },
+      }),
+      false,
+      "rebuild B must reject a late A-derived payload"
+    );
+    assert.equal((await getConnectorListSummaryTerminalProjection(connectorInstanceId)).projection, null);
+
+    await markConnectorSummaryEvidenceDirty({ connectorInstanceId, reason: "race mutation" });
+    assert.equal(
+      await publishConnectorListSummaryTerminalProjection({
+        canonicalEvidenceRevision: snapshotB.canonical_evidence_revision,
+        computedAt: "2026-07-30T18:03:00.000Z",
+        connectorInstanceId,
+        projection: {
+          runtime: null,
+          summary: { connection_id: connectorInstanceId, connector_id: connectorId, total_records: 998 },
+        },
+      }),
+      false,
+      "dirty B must reject a late B-derived payload"
+    );
+    const terminal = await getConnectorListSummaryTerminalProjection(connectorInstanceId);
+    assert.equal(terminal.state, "stale");
+    assert.equal(terminal.projection, null, "neither late payload may become current truth");
+  }));
+
+test("terminal LIST batch getter returns exact current/stale/unobserved/failed envelopes for N=0/1/25/100 and rejects over-bound", () =>
+  withTempDb(async () => {
+    const totalConnections = 100;
+    const connectorId = "batch_terminal_projection";
+    const ids = Array.from({ length: totalConnections }, (_, i) => `cin_batch_${i}`);
+    for (const connectorInstanceId of ids) {
+      seedInstanceSqlite({ connectorId, connectorInstanceId });
+    }
+    getDb()
+      .prepare("UPDATE connectors SET manifest = ? WHERE connector_id = ?")
+      .run(
+        JSON.stringify({ connector_id: connectorId, streams: [{ name: "messages", primary_key: ["id"] }] }),
+        connectorId
+      );
+    await rebuildConnectorSummaryEvidence();
+
+    // N=0: no ids requested returns an empty map without touching storage.
+    assert.deepEqual(await getConnectorListSummaryTerminalProjectionBatch([]), new Map());
+
+    // Publish current projections for a subset; leave others unobserved; mark
+    // one dirty (stale).
+    const currentIds = ids.slice(0, 25);
+    for (const connectorInstanceId of currentIds) {
+      // biome-ignore lint/performance/noAwaitInLoops: sequential publication keeps each connection's evidence revision unambiguous for this fixture.
+      const evidence = await getConnectorSummaryEvidence(connectorInstanceId);
+      assert.ok(evidence, "rebuild must materialize evidence for every seeded connection");
+      const published = await publishConnectorListSummaryTerminalProjection({
+        canonicalEvidenceRevision: evidence.canonical_evidence_revision,
+        computedAt: "2026-07-30T19:00:00.000Z",
+        connectorInstanceId,
+        projection: {
+          runtime: null,
+          summary: { connection_id: connectorInstanceId, connector_id: connectorId, total_records: 0 },
+        },
+      });
+      assert.equal(published, true);
+    }
+    const [staleId] = ids.slice(25, 26);
+    assert.ok(staleId);
+    const staleEvidence = await getConnectorSummaryEvidence(staleId);
+    assert.ok(staleEvidence);
+    assert.equal(
+      await publishConnectorListSummaryTerminalProjection({
+        canonicalEvidenceRevision: staleEvidence.canonical_evidence_revision,
+        computedAt: "2026-07-30T19:00:00.000Z",
+        connectorInstanceId: staleId,
+        projection: {
+          runtime: null,
+          summary: { connection_id: staleId, connector_id: connectorId, total_records: 0 },
+        },
+      }),
+      true
+    );
+    await markConnectorSummaryEvidenceDirty({ connectorInstanceId: staleId, reason: "batch fixture" });
+
+    // N=1
+    const oneResult = await getConnectorListSummaryTerminalProjectionBatch([currentIds[0] as string]);
+    assert.equal(oneResult.size, 1);
+    assert.equal(oneResult.get(currentIds[0] as string)?.state, "current");
+
+    // N=25: every requested id has an entry; current ids are current, the
+    // rest of this 25-window is unobserved (never published).
+    const twentyFiveWindow = ids.slice(0, 25);
+    const twentyFiveResult = await getConnectorListSummaryTerminalProjectionBatch(twentyFiveWindow);
+    assert.equal(twentyFiveResult.size, 25);
+    for (const id of twentyFiveWindow) {
+      assert.equal(twentyFiveResult.get(id)?.state, "current", `expected ${id} current`);
+    }
+
+    // N=100 (the full bound): every requested id has exactly one entry, no
+    // id silently dropped, states are exact per fixture.
+    const fullResult = await getConnectorListSummaryTerminalProjectionBatch(ids);
+    assert.equal(fullResult.size, totalConnections);
+    for (const id of currentIds) {
+      assert.equal(fullResult.get(id)?.state, "current", `expected ${id} current`);
+    }
+    assert.equal(fullResult.get(staleId)?.state, "stale");
+    assert.equal(fullResult.get(staleId)?.projection, null);
+    const [neverPublishedId] = ids.slice(50, 51);
+    assert.ok(neverPublishedId);
+    assert.deepEqual(fullResult.get(neverPublishedId), {
+      computed_at: null,
+      projection: null,
+      reason_code: null,
+      state: "unobserved",
+    });
+    const missingId = "cin_never_existed";
+    assert.deepEqual(
+      await getConnectorListSummaryTerminalProjectionBatch([missingId]),
+      new Map([
+        [
+          missingId,
+          {
+            computed_at: null,
+            projection: null,
+            reason_code: "summary_missing",
+            state: "unobserved",
+          },
+        ],
+      ])
+    );
+
+    // Duplicate ids collapse to one entry, not a wider read.
+    const dupResult = await getConnectorListSummaryTerminalProjectionBatch([
+      currentIds[0] as string,
+      currentIds[0] as string,
+    ]);
+    assert.equal(dupResult.size, 1);
+
+    // Over-bound (101 ids) is rejected outright rather than silently truncated.
+    await assert.rejects(
+      () => getConnectorListSummaryTerminalProjectionBatch([...ids, "cin_batch_overflow"]),
+      RangeError
+    );
+
+    // The batch read never writes: total_changes() is unchanged across the call.
+    const beforeReadRow = getDb().prepare("SELECT total_changes() AS changes").get<{ changes: number }>();
+    assert.ok(beforeReadRow);
+    await getConnectorListSummaryTerminalProjectionBatch(ids);
+    const afterReadRow = getDb().prepare("SELECT total_changes() AS changes").get<{ changes: number }>();
+    assert.ok(afterReadRow);
+    assert.equal(afterReadRow.changes, beforeReadRow.changes, "terminal LIST batch read must not repair or write");
+  }));
+
 test("rebuild materializes revoked lifecycle evidence without dropping the row", () =>
   withTempDb(async () => {
     seedInstanceSqlite({
@@ -624,6 +896,91 @@ test("Postgres connector-summary evidence reaches the same rebuild/dirty/reconci
     assert.equal(clean.total_retained_bytes, 2005);
   } finally {
     await cleanupPostgres(connectorId, instanceId);
+    await closePostgresStorage();
+  }
+});
+
+test("Postgres terminal LIST projection rejects late canonical snapshots", {
+  skip: !process.env.PDPP_TEST_POSTGRES_URL,
+}, async () => {
+  const databaseUrl = process.env.PDPP_TEST_POSTGRES_URL;
+  assert.ok(databaseUrl, "Postgres URL is configured when this test runs");
+  await initPostgresStorage({ backend: "postgres", databaseUrl });
+  const connectorId = "pg_terminal_projection";
+  const connectorInstanceId = "cin_pg_terminal_projection";
+  try {
+    await cleanupPostgres(connectorId, connectorInstanceId);
+    await postgresQuery(
+      `INSERT INTO connectors(connector_id, manifest, created_at)
+       VALUES($1, $2::jsonb, $3)`,
+      [
+        connectorId,
+        JSON.stringify({ connector_id: connectorId, streams: [{ name: "messages", primary_key: ["id"] }] }),
+        NOW,
+      ]
+    );
+    await postgresQuery(
+      `INSERT INTO connector_instances(
+         connector_instance_id, owner_subject_id, connector_id, display_name, status,
+         source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
+       ) VALUES($1, $2, $3, $4, 'active', 'account', $1, '{}'::jsonb, $5, $5, NULL)`,
+      [connectorInstanceId, OWNER, connectorId, "PG terminal summary", NOW]
+    );
+    await rebuildConnectorSummaryEvidence();
+    const snapshotA = await getConnectorSummaryEvidence(connectorInstanceId);
+    assert.ok(snapshotA, "A is one bounded canonical-evidence read");
+    assert.equal(
+      await publishConnectorListSummaryTerminalProjection({
+        canonicalEvidenceRevision: snapshotA.canonical_evidence_revision,
+        computedAt: "2026-07-30T18:00:00.000Z",
+        connectorInstanceId,
+        projection: {
+          runtime: null,
+          summary: {
+            connection_health: { state: "unknown" },
+            connection_id: connectorInstanceId,
+            connector_id: connectorId,
+          },
+        },
+      }),
+      true
+    );
+    assert.equal((await getConnectorListSummaryTerminalProjection(connectorInstanceId)).state, "current");
+    await rebuildConnectorSummaryEvidence();
+    assert.equal(
+      await publishConnectorListSummaryTerminalProjection({
+        canonicalEvidenceRevision: snapshotA.canonical_evidence_revision,
+        computedAt: "2026-07-30T18:01:00.000Z",
+        connectorInstanceId,
+        projection: {
+          runtime: null,
+          summary: { connection_id: connectorInstanceId, connector_id: connectorId, total_records: 999 },
+        },
+      }),
+      false,
+      "Postgres rebuild B must reject a late A-derived payload"
+    );
+    const snapshotB = await getConnectorSummaryEvidence(connectorInstanceId);
+    assert.ok(snapshotB, "B is one bounded canonical-evidence read");
+    await markConnectorSummaryEvidenceDirty({ connectorInstanceId, reason: "postgres mutation" });
+    assert.equal(
+      await publishConnectorListSummaryTerminalProjection({
+        canonicalEvidenceRevision: snapshotB.canonical_evidence_revision,
+        computedAt: "2026-07-30T18:02:00.000Z",
+        connectorInstanceId,
+        projection: {
+          runtime: null,
+          summary: { connection_id: connectorInstanceId, connector_id: connectorId, total_records: 998 },
+        },
+      }),
+      false,
+      "Postgres dirty B must reject a late B-derived payload"
+    );
+    const stale = await getConnectorListSummaryTerminalProjection(connectorInstanceId);
+    assert.equal(stale.state, "stale");
+    assert.equal(stale.projection, null);
+  } finally {
+    await cleanupPostgres(connectorId, connectorInstanceId);
     await closePostgresStorage();
   }
 });

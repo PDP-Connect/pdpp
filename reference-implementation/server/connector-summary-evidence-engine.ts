@@ -877,7 +877,8 @@ function persistFailedEvidenceSqlite(connectorInstanceId: string, failedRow: Row
               terminal_facts_reason_code = ?,
               dirty = 1,
               state = 'failed',
-              last_error = ?
+              last_error = ?,
+              canonical_evidence_revision = canonical_evidence_revision + 1
         WHERE connector_instance_id = ?`
     )
     .run(
@@ -920,7 +921,8 @@ function persistFailedEvidenceSqlite(connectorInstanceId: string, failedRow: Row
        terminal_facts_reason_code = excluded.terminal_facts_reason_code,
        dirty = 1,
        state = 'failed',
-       last_error = excluded.last_error`,
+       last_error = excluded.last_error,
+       canonical_evidence_revision = canonical_evidence_revision + 1`,
     [
       connectorInstanceId,
       failedRow.record_snapshot_state,
@@ -957,7 +959,8 @@ async function persistFailedEvidencePostgres(connectorInstanceId: string, failed
             terminal_facts_reason_code = $9,
             dirty = 1,
             state = 'failed',
-            last_error = $10
+            last_error = $10,
+            canonical_evidence_revision = canonical_evidence_revision + 1
       WHERE connector_instance_id = $1`,
     [
       connectorInstanceId,
@@ -996,7 +999,8 @@ async function persistFailedEvidencePostgres(connectorInstanceId: string, failed
        terminal_facts_reason_code = EXCLUDED.terminal_facts_reason_code,
        dirty = 1,
        state = 'failed',
-       last_error = EXCLUDED.last_error`,
+       last_error = EXCLUDED.last_error,
+       canonical_evidence_revision = connector_summary_evidence.canonical_evidence_revision + 1`,
     [
       connectorInstanceId,
       failedRow.record_snapshot_state,
@@ -1430,9 +1434,12 @@ function upsertSqliteEvidenceRow(db: Db, row: Row): void {
        computed_at = excluded.computed_at,
        state = 'fresh',
        last_error = NULL,
+       canonical_evidence_revision = canonical_evidence_revision + 1,
        manifest_generation = excluded.manifest_generation,
        schedule_checkpoint = excluded.schedule_checkpoint,
-       run_lifecycle_event_seq = excluded.run_lifecycle_event_seq`,
+       run_lifecycle_event_seq = excluded.run_lifecycle_event_seq,
+       list_summary_projection_state = 'stale',
+       list_summary_projection_reason_code = 'canonical_evidence_rebuilt'`,
     [
       row.connector_instance_id,
       row.connector_id,
@@ -1525,9 +1532,12 @@ async function upsertPostgresEvidenceRow(client: Db, row: Row): Promise<void> {
        computed_at = EXCLUDED.computed_at,
        state = 'fresh',
        last_error = NULL,
+       canonical_evidence_revision = connector_summary_evidence.canonical_evidence_revision + 1,
        manifest_generation = EXCLUDED.manifest_generation,
        schedule_checkpoint = EXCLUDED.schedule_checkpoint,
-       run_lifecycle_event_seq = EXCLUDED.run_lifecycle_event_seq`,
+       run_lifecycle_event_seq = EXCLUDED.run_lifecycle_event_seq,
+       list_summary_projection_state = 'stale',
+       list_summary_projection_reason_code = 'canonical_evidence_rebuilt'`,
     [
       row.connector_instance_id,
       row.connector_id,
