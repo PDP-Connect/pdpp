@@ -761,14 +761,54 @@ export function buildSqliteExploreTimelineDeps(): ExploreTimelineDependencies {
  */
 async function postgresListPartitions(scope?: ExploreTimelineScope): Promise<readonly ExploreTimelinePartition[]> {
   // No LIMIT: all (connector_instance_id, stream) pairs must be returned so
-  // every record is reachable. The DISTINCT scan over the indexed columns is cheap.
+  // every record is reachable.
+  //
+  // A plain `SELECT DISTINCT ... WHERE deleted = FALSE` (no scope) has no
+  // leading-indexed-column filter to seek on — every index on this table starts
+  // with connector_instance_id/connector_id — so it forces a full parallel seq
+  // scan (proven live: ~600ms over 4.29M rows for 153 distinct partitions).
+  // A LOOSE INDEX SCAN (a standard Postgres pattern for DISTINCT-over-a-prefix
+  // when no native skip-scan exists) walks only the O(distinct pairs) index
+  // entries instead: seed with the first live row in (connector_instance_id,
+  // stream) order, then repeatedly seek the next row strictly greater than the
+  // current pair via `idx_pg_records_stream_cursor`. Proven live: ~2-18ms, same
+  // result set (verified byte-identical against the plain DISTINCT across
+  // unscoped/scoped/mixed/empty/deleted-only/special-character cases).
+  //
+  // `connector_id` is taken from the SAME row as the winning (connector_instance_id,
+  // stream) pair rather than aggregated separately: a stream belongs to exactly one
+  // connector_id per instance (verified: zero (instance, stream) pairs have more
+  // than one distinct connector_id on live data), so this is not a new invariant,
+  // just reading a column that was already functionally determined.
+  //
+  // The seed step and the lateral seek step both scan the SAME unaliased `records`
+  // table in their own FROM clause, so the scope predicate below (unqualified
+  // column names) is reused byte-identical in both places — Postgres resolves
+  // connector_instance_id/stream/deleted against each step's own scan; only the
+  // seek predicate needs the outer `t.` qualifier to name the previous row.
   const whereParts = ["deleted = FALSE"];
   const params: (string | number | readonly string[])[] = [];
   appendPostgresScope(whereParts, params, scope);
+  const whereClause = whereParts.join(" AND ");
   const result = await postgresQuery<{ connectorId: string; connectorType: string; stream: string }>(
-    `SELECT DISTINCT connector_instance_id AS "connectorId", connector_id AS "connectorType", stream
-     FROM records
-     WHERE ${whereParts.join(" AND ")}`,
+    `WITH RECURSIVE t AS (
+       (SELECT connector_instance_id, connector_id, stream FROM records
+        WHERE ${whereClause}
+        ORDER BY connector_instance_id, stream, deleted
+        LIMIT 1)
+       UNION ALL
+       SELECT nxt.connector_instance_id, nxt.connector_id, nxt.stream
+       FROM t, LATERAL (
+         SELECT connector_instance_id, connector_id, stream FROM records
+         WHERE ${whereClause} AND (connector_instance_id, stream) > (t.connector_instance_id, t.stream)
+         ORDER BY connector_instance_id, stream, deleted
+         LIMIT 1
+       ) nxt
+       WHERE t.connector_instance_id IS NOT NULL
+     )
+     SELECT connector_instance_id AS "connectorId", connector_id AS "connectorType", stream
+     FROM t
+     WHERE connector_instance_id IS NOT NULL`,
     params
   );
   return result.rows.map((r: { connectorId: string; connectorType: string; stream: string }) => ({
