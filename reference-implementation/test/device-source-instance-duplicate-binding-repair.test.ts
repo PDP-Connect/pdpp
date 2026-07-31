@@ -64,6 +64,7 @@ const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 function fakeRow(overrides: Partial<DuplicateBindingRow> & Pick<DuplicateBindingRow, "deviceId">): DuplicateBindingRow {
   return {
     connectorId: "codex",
+    connectorInstanceId: "cin_fake_shared",
     deviceStatus: "active",
     lastHeartbeatAt: null,
     localBindingId: "vivid-fish",
@@ -71,6 +72,7 @@ function fakeRow(overrides: Partial<DuplicateBindingRow> & Pick<DuplicateBinding
     sourceInstanceCreatedAt: "2026-07-24T19:27:38.004Z",
     sourceInstanceId: `dsrc_${overrides.deviceId}`,
     sourceKind: "local_device",
+    sourceKindWasLegacyNull: false,
     ...overrides,
   };
 }
@@ -542,6 +544,483 @@ test("PostgreSQL: scanDuplicateBindings + buildRepairPlan + applyRepairPlanEntry
         // Idempotent: re-running the scan finds nothing left to repair.
         const groupsAfter = await scanDuplicateBindings(pool, { connectorId, ownerSubjectId: owner });
         assert.equal(groupsAfter.length, 0, "re-running after apply finds zero duplicate groups");
+      } finally {
+        await pool.end();
+      }
+    }
+  );
+});
+
+// Live-shape correction regression (this follow-up): a dry-run against the
+// ACTUAL deployed pdpp.vivid.fish database found ZERO duplicate groups —
+// disproving an earlier report's claim to reproduce the exact live shape.
+// Direct DB inspection showed why: the dead stub row
+// (dsrc_fbff3caefba6c972 / dexp_b07c56a6e71de9ae) has `source_kind IS
+// NULL` (a legacy row that predates the source_kind column, never
+// backfilled), while the healthy row has `source_kind = 'local_device'`.
+// The prior scan query filtered `dsi.source_kind IS NOT NULL`, silently
+// excluding the NULL row from ever being scanned — the live duplicate was
+// invisible to the tool that exists to find it. This test builds that
+// EXACT shape with raw SQL (the store's own resolveOrCreateEnrollmentDevice
+// always writes a non-NULL kind, so a legacy NULL row can only be
+// constructed directly) and proves the fixed scan finds it, correctly
+// resolves its effective kind from connector_instances.source_kind, and
+// the full dry-run/apply/idempotency cycle repairs it — normalizing the
+// legacy NULL to a real value in the same transaction as the revoke.
+test("PostgreSQL: exact live-incident shape — a legacy NULL-source_kind row is found, resolved via connector_instances, and repaired (dry-run / apply / idempotency)", {
+  skip: POSTGRES_URL ? false : "skipped: PDPP_TEST_POSTGRES_URL unset",
+}, async () => {
+  const postgresUrl = POSTGRES_URL as string;
+  await withTemporaryPostgresDatabase(
+    {
+      closeConnections: closePostgresStorage,
+      connectionString: postgresUrl,
+      databaseName: `pdpp_test_dupbind_nullkind_${process.pid}_${Date.now()}`,
+    },
+    async (url) => {
+      await initPostgresStorage({ backend: "postgres", databaseUrl: url });
+      await ensureReferenceConnectorCatalogEntry("codex", "vivid-fish Codex");
+
+      const deviceStore = createPostgresDeviceExporterStore();
+      const connectorStore = createPostgresConnectorInstanceStore();
+      const owner = "owner_ref";
+      const connectorId = "codex";
+      const sourceKind = "local_device";
+      const bindingId = "vivid-fish";
+      const now = new Date().toISOString();
+
+      // The dead stub: enrolled the normal way (which always writes a
+      // non-NULL source_kind), then its source_kind is forced to NULL
+      // via raw SQL — reproducing the legacy pre-column-backfill shape
+      // exactly, since the store itself cannot write a NULL kind.
+      const deadStub = await deviceStore.resolveOrCreateEnrollmentDevice({
+        candidateDeviceId: "dexp_b07c56a6e71de9ae",
+        candidateSourceInstanceId: "dsrc_fbff3caefba6c972",
+        collectorProtocolVersion: null,
+        connectorId,
+        displayName: "vivid-fish Codex",
+        localBindingId: bindingId,
+        now,
+        ownerSubjectId: owner,
+        sourceKind,
+      });
+      const connectorInstanceOrNull = await connectorStore.upsertForEnrollment({
+        connectorId,
+        createdAt: now,
+        displayName: "vivid-fish Codex",
+        ownerSubjectId: owner,
+        sourceBinding: {
+          device_id: deadStub.deviceId,
+          kind: sourceKind,
+          local_binding_name: bindingId,
+          source_instance_id: deadStub.sourceInstanceId,
+        },
+        sourceBindingKey: `local_device:${bindingId}`,
+        sourceKind,
+        status: "active",
+        updatedAt: now,
+      });
+      assert.ok(connectorInstanceOrNull);
+      const connectorInstance = connectorInstanceOrNull;
+      await deviceStore.upsertSourceInstance({
+        connectorId,
+        connectorInstanceId: connectorInstance.connectorInstanceId,
+        createdAt: now,
+        deviceId: deadStub.deviceId,
+        displayName: null,
+        localBindingId: bindingId,
+        sourceInstanceId: deadStub.sourceInstanceId,
+        sourceKind,
+        updatedAt: now,
+      });
+      // deadStub never heartbeats — the abandoned-enrollment shape.
+
+      const pool = new pg.Pool({ connectionString: url });
+      try {
+        // Force the legacy shape: source_kind NULL on the dead stub's row.
+        await pool.query("UPDATE device_source_instances SET source_kind = NULL WHERE source_instance_id = $1", [
+          deadStub.sourceInstanceId,
+        ]);
+        const forcedNull = await pool.query(
+          "SELECT source_kind FROM device_source_instances WHERE source_instance_id = $1",
+          [deadStub.sourceInstanceId]
+        );
+        assert.equal(forcedNull.rows[0]?.source_kind, null, "the dead stub's raw source_kind must genuinely be NULL");
+
+        // The healthy device: normal enrollment, real heartbeat, real
+        // non-NULL source_kind — exactly the live shape's other row.
+        const healthy = await deviceStore.resolveOrCreateEnrollmentDevice({
+          candidateDeviceId: "dexp_3fab667e951ed1d7",
+          candidateSourceInstanceId: "dsrc_83b8eae8f40c5b86",
+          collectorProtocolVersion: null,
+          connectorId,
+          displayName: "vivid-fish Codex",
+          localBindingId: bindingId,
+          now,
+          ownerSubjectId: owner,
+          sourceKind,
+        });
+        await deviceStore.upsertSourceInstance({
+          connectorId,
+          connectorInstanceId: connectorInstance.connectorInstanceId,
+          createdAt: now,
+          deviceId: healthy.deviceId,
+          displayName: null,
+          localBindingId: bindingId,
+          sourceInstanceId: healthy.sourceInstanceId,
+          sourceKind,
+          updatedAt: now,
+        });
+        await deviceStore.markDeviceHeartbeat(healthy.deviceId, {
+          agentVersion: null,
+          lastError: undefined,
+          receivedAt: now,
+        });
+        await deviceStore.markSourceInstanceHeartbeat(healthy.deviceId, healthy.sourceInstanceId, {
+          lastError: undefined,
+          outboxDiagnostics: undefined,
+          receivedAt: now,
+          recordsPending: 0,
+          status: "healthy",
+        });
+
+        // ── MUTATION PROOF: the OLD filter (source_kind IS NOT NULL)
+        // would find zero groups here, exactly reproducing the false
+        // "no groups" dry-run result the live incident report caught. ──
+        const oldFilterRows = await pool.query(
+          `SELECT dsi.source_instance_id
+               FROM device_source_instances dsi
+               JOIN device_exporters de ON de.device_id = dsi.device_id
+              WHERE dsi.status != 'revoked'
+                AND de.status != 'revoked'
+                AND dsi.source_kind IS NOT NULL
+                AND dsi.connector_id = $1
+                AND dsi.local_binding_id = $2`,
+          [connectorId, bindingId]
+        );
+        assert.equal(
+          oldFilterRows.rows.length,
+          1,
+          "the OLD (rejected) source_kind IS NOT NULL filter must find only the healthy row, missing the dead stub entirely — proving the old code would have reported zero duplicate groups for this exact live shape"
+        );
+
+        // ── THE FIX: scanDuplicateBindings must find BOTH rows and
+        // group them, resolving the NULL row's kind via connector_
+        // instances. ──
+        const groups = await scanDuplicateBindings(pool, { connectorId, ownerSubjectId: owner });
+        assert.equal(groups.length, 1, "the fixed scan must find the duplicate group the old filter missed");
+        const [group] = groups;
+        assert.ok(group);
+        assert.equal(group.connectorInstanceId, connectorInstance.connectorInstanceId);
+        assert.equal(
+          group.sourceKind,
+          "local_device",
+          "the group's effective kind is resolved from connector_instances, never left NULL or guessed"
+        );
+        assert.equal(group.rows.length, 2);
+
+        const plan = buildRepairPlan(groups);
+        assert.equal(plan.length, 1);
+        const [entry] = plan;
+        assert.ok(entry);
+        assert.equal(
+          entry.authoritative.deviceId,
+          healthy.deviceId,
+          "the heartbeating device is authoritative regardless of the other row's legacy-NULL kind"
+        );
+        assert.equal(entry.superseded[0]?.deviceId, deadStub.deviceId);
+
+        // Dry-run (scan + plan) must not have mutated anything.
+        const preApplyStub = await deviceStore.getDevice(deadStub.deviceId);
+        assert.equal(preApplyStub?.status, "active", "a dry-run scan/plan must never mutate any row");
+
+        // ── APPLY: revoke cascade + legacy-NULL normalization in the
+        // SAME transaction. ──
+        const applied = await applyRepairPlanEntry(pool, entry, new Date().toISOString());
+        assert.equal(applied.authoritativeDeviceId, healthy.deviceId);
+        assert.deepEqual(applied.supersededDeviceIds, [deadStub.deviceId]);
+
+        const deadStubDevice = await deviceStore.getDevice(deadStub.deviceId);
+        assert.equal(deadStubDevice?.status, "revoked");
+        const healthyDevice = await deviceStore.getDevice(healthy.deviceId);
+        assert.equal(healthyDevice?.status, "active");
+        const connectorInstanceRow = await connectorStore.get(connectorInstance.connectorInstanceId);
+        assert.equal(connectorInstanceRow?.status, "active", "the shared connector_instance must survive");
+
+        // Normalization: the dead stub's row now carries a real,
+        // non-NULL source_kind — the terminal invariant, not a
+        // perpetual NULL the tool must keep re-resolving.
+        const normalizedRow = await pool.query(
+          "SELECT source_kind FROM device_source_instances WHERE source_instance_id = $1",
+          [deadStub.sourceInstanceId]
+        );
+        assert.equal(
+          normalizedRow.rows[0]?.source_kind,
+          "local_device",
+          "the legacy NULL row must be normalized to the resolved effective kind in the same transaction as the revoke"
+        );
+
+        // ── IDEMPOTENCY: re-running the scan after apply finds zero
+        // groups (the live incident's outbox axis and freshness now
+        // read correctly, with no duplicate left to poison them). ──
+        const groupsAfter = await scanDuplicateBindings(pool, { connectorId, ownerSubjectId: owner });
+        assert.equal(groupsAfter.length, 0, "re-running after apply finds zero duplicate groups");
+
+        // A second apply attempt on the same (now-stale) entry must
+        // also be a safe no-op.
+        const reapplied = await applyRepairPlanEntry(pool, entry, new Date().toISOString());
+        assert.deepEqual(reapplied.supersededDeviceIds, []);
+      } finally {
+        await pool.end();
+      }
+    }
+  );
+});
+
+// Negative regression (this follow-up, prompted by an explicit review of
+// the normalization UPDATE's targeting): a single device can legitimately
+// own MULTIPLE device_source_instances rows (different connectors/
+// bindings — reproduced here as an entirely unrelated claude-code
+// connector_instance that ALSO happens to have a legacy-NULL
+// source_kind). The normalization UPDATE inside applyRepairPlanEntry must
+// key on `source_instance_id` (the true PRIMARY KEY), never `device_id`
+// alone — a device_id-scoped UPDATE would reach past the locked group and
+// silently GUESS a kind for an unrelated row that happens to share the
+// same device_id, fabricating data for a connector_instance the repair
+// never even read. This test proves that normalization stays scoped to
+// exactly the locked group's row: the unrelated row's `source_kind`
+// stays NULL throughout. (Its `status` DOES legitimately become
+// `revoked` — that is the correct, pre-existing device-wide revoke
+// cascade, unrelated to and unaffected by this normalization-scoping
+// fix; see the in-test comment at that assertion for why.)
+test("PostgreSQL: source_kind normalization touches ONLY the locked group's source_instance_id row — an unrelated NULL-kind row owned by the same device is never guessed at", {
+  skip: POSTGRES_URL ? false : "skipped: PDPP_TEST_POSTGRES_URL unset",
+}, async () => {
+  const postgresUrl = POSTGRES_URL as string;
+  await withTemporaryPostgresDatabase(
+    {
+      closeConnections: closePostgresStorage,
+      connectionString: postgresUrl,
+      databaseName: `pdpp_test_dupbind_crossrow_${process.pid}_${Date.now()}`,
+    },
+    async (url) => {
+      await initPostgresStorage({ backend: "postgres", databaseUrl: url });
+      await ensureReferenceConnectorCatalogEntry("codex", "vivid-fish Codex");
+      await ensureReferenceConnectorCatalogEntry("claude-code", "vivid-fish Claude Code");
+
+      const deviceStore = createPostgresDeviceExporterStore();
+      const connectorStore = createPostgresConnectorInstanceStore();
+      const owner = "owner_ref";
+      const now = new Date().toISOString();
+
+      // ── The target group: codex/vivid-fish, the same live-incident
+      // shape (one legacy-NULL dead stub, one healthy heartbeating row). ──
+      const deadStub = await deviceStore.resolveOrCreateEnrollmentDevice({
+        candidateDeviceId: "dexp_shared_device",
+        candidateSourceInstanceId: "dsrc_codex_stub",
+        collectorProtocolVersion: null,
+        connectorId: "codex",
+        displayName: "vivid-fish Codex",
+        localBindingId: "vivid-fish",
+        now,
+        ownerSubjectId: owner,
+        sourceKind: "local_device",
+      });
+      const codexInstanceOrNull = await connectorStore.upsertForEnrollment({
+        connectorId: "codex",
+        createdAt: now,
+        displayName: "vivid-fish Codex",
+        ownerSubjectId: owner,
+        sourceBinding: {
+          device_id: deadStub.deviceId,
+          kind: "local_device",
+          local_binding_name: "vivid-fish",
+          source_instance_id: deadStub.sourceInstanceId,
+        },
+        sourceBindingKey: "local_device:vivid-fish",
+        sourceKind: "local_device",
+        status: "active",
+        updatedAt: now,
+      });
+      assert.ok(codexInstanceOrNull);
+      const codexInstance = codexInstanceOrNull;
+      await deviceStore.upsertSourceInstance({
+        connectorId: "codex",
+        connectorInstanceId: codexInstance.connectorInstanceId,
+        createdAt: now,
+        deviceId: deadStub.deviceId,
+        displayName: null,
+        localBindingId: "vivid-fish",
+        sourceInstanceId: deadStub.sourceInstanceId,
+        sourceKind: "local_device",
+        updatedAt: now,
+      });
+      // deadStub's code MUST be consumed before the second device
+      // resolves, or resolveOrCreateEnrollmentDevice adopts deadStub as
+      // an unconsumed orphan instead of minting a genuinely new device
+      // — collapsing this test back to a single row.
+      await deviceStore.createEnrollmentCode({
+        codeHash: "hash_crossrow_1",
+        connectorId: "codex",
+        createdAt: now,
+        displayName: null,
+        enrollmentCodeId: "denroll_crossrow_1",
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        localBindingId: "vivid-fish",
+        ownerSubjectId: owner,
+      });
+      await deviceStore.consumeEnrollmentCode("denroll_crossrow_1", deadStub.deviceId, now);
+
+      const healthy = await deviceStore.resolveOrCreateEnrollmentDevice({
+        candidateDeviceId: "dexp_codex_healthy",
+        candidateSourceInstanceId: "dsrc_codex_healthy",
+        collectorProtocolVersion: null,
+        connectorId: "codex",
+        displayName: "vivid-fish Codex",
+        localBindingId: "vivid-fish",
+        now,
+        ownerSubjectId: owner,
+        sourceKind: "local_device",
+      });
+      await deviceStore.upsertSourceInstance({
+        connectorId: "codex",
+        connectorInstanceId: codexInstance.connectorInstanceId,
+        createdAt: now,
+        deviceId: healthy.deviceId,
+        displayName: null,
+        localBindingId: "vivid-fish",
+        sourceInstanceId: healthy.sourceInstanceId,
+        sourceKind: "local_device",
+        updatedAt: now,
+      });
+      await deviceStore.markDeviceHeartbeat(healthy.deviceId, {
+        agentVersion: null,
+        lastError: undefined,
+        receivedAt: now,
+      });
+      await deviceStore.markSourceInstanceHeartbeat(healthy.deviceId, healthy.sourceInstanceId, {
+        lastError: undefined,
+        outboxDiagnostics: undefined,
+        receivedAt: now,
+        recordsPending: 0,
+        status: "healthy",
+      });
+
+      // ── The UNRELATED row: the SAME device_id as the dead stub
+      // (`deadStub.deviceId`), but a DIFFERENT connector (claude-code),
+      // a DIFFERENT binding, and its OWN legacy-NULL source_kind. This
+      // is not part of the codex/vivid-fish duplicate group at all —
+      // it must never be touched by repairing that group. ──
+      const unrelatedInstanceOrNull = await connectorStore.upsertForEnrollment({
+        connectorId: "claude-code",
+        createdAt: now,
+        displayName: "vivid-fish Claude Code",
+        ownerSubjectId: owner,
+        sourceBinding: {
+          device_id: deadStub.deviceId,
+          kind: "local_device",
+          local_binding_name: "vivid-fish-claude",
+          source_instance_id: "dsrc_unrelated_claude",
+        },
+        sourceBindingKey: "local_device:vivid-fish-claude",
+        sourceKind: "local_device",
+        status: "active",
+        updatedAt: now,
+      });
+      assert.ok(unrelatedInstanceOrNull);
+      const unrelatedInstance = unrelatedInstanceOrNull;
+      await deviceStore.upsertSourceInstance({
+        connectorId: "claude-code",
+        connectorInstanceId: unrelatedInstance.connectorInstanceId,
+        createdAt: now,
+        deviceId: deadStub.deviceId,
+        displayName: null,
+        localBindingId: "vivid-fish-claude",
+        sourceInstanceId: "dsrc_unrelated_claude",
+        sourceKind: "local_device",
+        updatedAt: now,
+      });
+
+      const pool = new pg.Pool({ connectionString: url });
+      try {
+        // Force BOTH the target dead stub AND the unrelated row to
+        // legacy-NULL — same device_id, different source_instance_id,
+        // different connector_instance_id.
+        await pool.query("UPDATE device_source_instances SET source_kind = NULL WHERE source_instance_id = $1", [
+          deadStub.sourceInstanceId,
+        ]);
+        await pool.query("UPDATE device_source_instances SET source_kind = NULL WHERE source_instance_id = $1", [
+          "dsrc_unrelated_claude",
+        ]);
+        const bothNull = await pool.query(
+          "SELECT source_instance_id, source_kind FROM device_source_instances WHERE device_id = $1 ORDER BY source_instance_id",
+          [deadStub.deviceId]
+        );
+        assert.equal(
+          bothNull.rows.length,
+          2,
+          "the shared device must own exactly two source-instance rows for this test to be meaningful"
+        );
+        assert.ok(
+          bothNull.rows.every((row) => row.source_kind === null),
+          "both rows must genuinely start NULL"
+        );
+
+        // Repair ONLY the codex/vivid-fish group.
+        const groups = await scanDuplicateBindings(pool, { connectorId: "codex", ownerSubjectId: owner });
+        assert.equal(groups.length, 1);
+        const [group] = groups;
+        assert.ok(group);
+        assert.equal(group.connectorInstanceId, codexInstance.connectorInstanceId);
+        const plan = buildRepairPlan(groups);
+        const [entry] = plan;
+        assert.ok(entry);
+
+        await applyRepairPlanEntry(pool, entry, new Date().toISOString());
+
+        // The TARGET row (dead stub, inside the repaired group) is
+        // normalized.
+        const targetRow = await pool.query(
+          "SELECT source_kind, status FROM device_source_instances WHERE source_instance_id = $1",
+          [deadStub.sourceInstanceId]
+        );
+        assert.equal(
+          targetRow.rows[0]?.source_kind,
+          "local_device",
+          "the target row inside the repaired group must be normalized"
+        );
+        assert.equal(targetRow.rows[0]?.status, "revoked", "the target row must also be revoked (it was superseded)");
+
+        // The UNRELATED row (same device_id, DIFFERENT connector_instance,
+        // never part of the locked group). Its `status` legitimately
+        // becomes `revoked` too — that is the PRE-EXISTING, intentional
+        // device-wide revoke cascade (a device_exporters row going
+        // `revoked` correctly cascades to every device_source_instances
+        // row for that device_id, not just the one in the repaired
+        // group; a physical device being decommissioned really is
+        // decommissioned everywhere, matching revokeDevice's own
+        // semantics). What must NEVER happen is source_kind
+        // NORMALIZATION reaching this row: it belongs to a DIFFERENT
+        // connector_instance (claude-code, not codex) that could in
+        // principle resolve to an entirely different kind, so guessing
+        // its kind from the codex group's resolved value would be
+        // fabrication, not resolution. This is the exact defect the
+        // source_instance_id-scoped (never device_id-scoped) UPDATE in
+        // applyRepairPlanEntry exists to prevent.
+        const unrelatedRow = await pool.query(
+          "SELECT source_kind, status FROM device_source_instances WHERE source_instance_id = $1",
+          ["dsrc_unrelated_claude"]
+        );
+        assert.equal(
+          unrelatedRow.rows[0]?.source_kind,
+          null,
+          "an unrelated NULL-kind row owned by the SAME device_id but a DIFFERENT connector_instance must NEVER be normalized by repairing a different group"
+        );
+        assert.equal(
+          unrelatedRow.rows[0]?.status,
+          "revoked",
+          "device-wide revocation is the pre-existing, correct cascade semantics (a decommissioned device is decommissioned everywhere) — only source_kind normalization must stay scoped to the locked group"
+        );
       } finally {
         await pool.end();
       }

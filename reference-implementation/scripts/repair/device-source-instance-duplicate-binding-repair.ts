@@ -34,6 +34,38 @@
  * `unknown` and its freshness to a stale historical snapshot, even
  * while the live device heartbeated every ~15 minutes.
  *
+ * LEGACY-NULL source_kind (live-shape correction): `device_source_instances
+ * .source_kind` was added via `ALTER TABLE ... ADD COLUMN` with no backfill
+ * (see migratePostgresSpineSourceColumns's sibling migration in
+ * postgres-storage.ts), so rows written before that migration are
+ * permanently NULL unless explicitly repaired. The dead stub in the live
+ * incident above is EXACTLY this shape: `dexp_b07c56a6e71de9ae`'s row has
+ * `source_kind IS NULL`, while the healthy row has `source_kind =
+ * 'local_device'`. A first version of this tool filtered
+ * `dsi.source_kind IS NOT NULL`, which silently excluded the NULL row from
+ * ever being scanned — the exact live duplicate this tool exists to find
+ * was invisible to it. The scan and revalidation queries below instead
+ * resolve each row's EFFECTIVE source_kind by joining through
+ * `connector_instances` (whose own `source_kind` column is `NOT NULL` and
+ * constraint-checked to one of a fixed enum): `COALESCE(dsi.source_kind,
+ * ci.source_kind)`. This is authoritative, not a guess — `connector_
+ * instances.source_kind` is the ORIGINAL kind decision made once, at
+ * enrollment, for the whole binding; every `device_source_instances` row
+ * durably bound to that SAME `connector_instance_id` necessarily shares it
+ * (a `device_source_instances` row is never re-pointed to a
+ * connector_instance of a different kind — `deviceExporterSourceBinding
+ * Identity` folds `sourceKind` into the very identity that selects/creates
+ * the connector_instance in the first place). A row whose
+ * `connector_instance_id` is itself NULL (an unfinished placeholder that
+ * never reached `upsertSourceInstance`, per `resolveOrCreateEnrollmentDevice`
+ * 's doc comment) has no connector_instance to resolve from and is excluded
+ * from consideration entirely — never silently assigned a guessed kind.
+ * `applyRepairPlanEntry` additionally normalizes: whenever a surviving OR
+ * superseded row's raw `source_kind` is NULL, it backfills the column to
+ * the resolved value in the SAME locked transaction, so a re-scan converges
+ * on real (non-NULL) data — the terminal invariant — rather than needing
+ * this resolution logic forever.
+ *
  * Authoritative-row selection (per group):
  *   1. Prefer the row with the MOST RECENT `last_heartbeat_at` — real,
  *      current evidence of life beats everything else.
@@ -79,10 +111,15 @@
  * nothing left to revoke.
  *
  * This tool NEVER supersedes a genuinely distinct device: it only acts
- * within one (owner, connector, source_kind, local_binding_id) group,
- * which is the same identity key `resolveOrCreateEnrollmentDevice` uses
- * to decide whether two devices are "the same binding." Two devices
- * under DIFFERENT binding names are never compared or touched.
+ * within one (owner, connector, EFFECTIVE source_kind, local_binding_id)
+ * group, which is the same identity key `resolveOrCreateEnrollmentDevice`
+ * uses to decide whether two devices are "the same binding" — "effective"
+ * meaning NULL raw values are resolved through `connector_instances`
+ * first (see "LEGACY-NULL source_kind" above), never left as an
+ * un-resolved NULL that could either wrongly exclude a real duplicate or
+ * wrongly merge two rows that only coincidentally share a NULL. Two
+ * devices under DIFFERENT binding names, or whose resolved kinds are
+ * genuinely different, are never compared or touched.
  *
  * Authorization is by direct database access — possession of
  * `PDPP_DATABASE_URL` (the same credential that grants owner-level
@@ -116,6 +153,11 @@ const { Pool } = pg;
 
 export interface DuplicateBindingRow {
   readonly connectorId: string;
+  /** The `device_source_instances.connector_instance_id` this row is bound
+   *  to. Required (rows with a NULL connector_instance_id are excluded by
+   *  `selectGroupRows` — see its doc comment) — the authoritative anchor
+   *  `sourceKind` is resolved from. */
+  readonly connectorInstanceId: string;
   readonly deviceId: string;
   readonly deviceStatus: string;
   readonly lastHeartbeatAt: string | null;
@@ -123,11 +165,24 @@ export interface DuplicateBindingRow {
   readonly ownerSubjectId: string;
   readonly sourceInstanceCreatedAt: string;
   readonly sourceInstanceId: string;
+  /** The EFFECTIVE source_kind: `device_source_instances.source_kind` when
+   *  non-NULL, otherwise resolved from the authoritative, NOT-NULL
+   *  `connector_instances.source_kind` for this row's `connectorInstanceId`.
+   *  Never the raw, possibly-NULL column directly — see the module doc
+   *  comment's "LEGACY-NULL source_kind" section. */
   readonly sourceKind: string;
+  /** True when the raw `device_source_instances.source_kind` column was
+   *  NULL and `sourceKind` was resolved from `connector_instances.source_
+   *  kind` instead. `applyRepairPlanEntry` backfills the column when this
+   *  is true, in the same locked transaction as any revocation. */
+  readonly sourceKindWasLegacyNull: boolean;
 }
 
 export interface DuplicateBindingGroup {
   readonly connectorId: string;
+  /** The single connector_instance_id every row in this group is bound to
+   *  — the revalidation anchor `applyRepairPlanEntry` re-reads by. */
+  readonly connectorInstanceId: string;
   readonly localBindingId: string;
   readonly ownerSubjectId: string;
   readonly rows: readonly DuplicateBindingRow[];
@@ -152,12 +207,12 @@ interface PgPoolLike {
 }
 
 /**
- * Scan for every (owner, connector, source_kind, binding) identity group
- * with more than one non-revoked device_source_instances row. Read-only.
- * Optional owner/connector filters narrow the scan (e.g. for a targeted
- * live-incident repair); omitted, it scans the entire fleet. This is a
- * CANDIDATE-plan read only — see the module doc comment for why
- * `applyRepairPlanEntry` never trusts it for the actual writes.
+ * Scan for every (owner, connector, EFFECTIVE source_kind, binding)
+ * identity group with more than one non-revoked device_source_instances
+ * row. Read-only. Optional owner/connector filters narrow the scan (e.g.
+ * for a targeted live-incident repair); omitted, it scans the entire
+ * fleet. This is a CANDIDATE-plan read only — see the module doc comment
+ * for why `applyRepairPlanEntry` never trusts it for the actual writes.
  */
 export async function scanDuplicateBindings(
   client: PgClientLike,
@@ -165,9 +220,9 @@ export async function scanDuplicateBindings(
 ): Promise<DuplicateBindingGroup[]> {
   const rows = await selectGroupRows(client, {
     connectorId: filters.connectorId ?? null,
+    connectorInstanceId: null,
     localBindingId: null,
     ownerSubjectId: filters.ownerSubjectId ?? null,
-    sourceKind: null,
   });
   return groupDuplicateBindingRows(rows);
 }
@@ -178,32 +233,48 @@ export async function scanDuplicateBindings(
  * result set (Postgres `SELECT ... FOR UPDATE`) so concurrent writers
  * (heartbeat, enrollment, another repair run) block until this
  * transaction commits or rolls back.
+ *
+ * Resolves each row's EFFECTIVE `source_kind` via a JOIN to
+ * `connector_instances` (`COALESCE(dsi.source_kind, ci.source_kind)`) —
+ * see the module doc comment's "LEGACY-NULL source_kind" section for why
+ * this is authoritative rather than a guess. A row with a NULL
+ * `connector_instance_id` has nothing to resolve from and is excluded
+ * (`dsi.connector_instance_id IS NOT NULL`) — it is an unfinished
+ * placeholder, not a completed binding this tool's invariant applies to.
+ * Filtering by `connectorInstanceId` (rather than by kind) is what the
+ * revalidation call site uses: re-reading by the EXACT connector_instance
+ * a candidate group's rows were bound to is a stronger, simpler
+ * revalidation anchor than re-matching a derived kind string.
  */
 async function selectGroupRows(
   client: PgClientLike,
   filters: {
     connectorId: string | null;
+    connectorInstanceId: string | null;
     localBindingId: string | null;
     ownerSubjectId: string | null;
-    sourceKind: string | null;
   },
   forUpdate = false
 ): Promise<DuplicateBindingRow[]> {
   const result = await client.query<{
     connector_id: string;
+    connector_instance_id: string;
     device_id: string;
     device_status: string;
+    effective_source_kind: string;
     last_heartbeat_at: string | null;
     local_binding_id: string;
     owner_subject_id: string;
+    raw_source_kind: string | null;
     source_instance_created_at: string;
     source_instance_id: string;
-    source_kind: string;
   }>(
     `SELECT
         de.owner_subject_id,
         dsi.connector_id,
-        dsi.source_kind,
+        dsi.connector_instance_id,
+        dsi.source_kind AS raw_source_kind,
+        COALESCE(dsi.source_kind, ci.source_kind) AS effective_source_kind,
         dsi.local_binding_id,
         dsi.device_id,
         dsi.source_instance_id,
@@ -212,20 +283,22 @@ async function selectGroupRows(
         de.status AS device_status
       FROM device_source_instances dsi
       JOIN device_exporters de ON de.device_id = dsi.device_id
+      JOIN connector_instances ci ON ci.connector_instance_id = dsi.connector_instance_id
       WHERE dsi.status != 'revoked'
         AND de.status != 'revoked'
-        AND dsi.source_kind IS NOT NULL
+        AND dsi.connector_instance_id IS NOT NULL
         AND ($1::text IS NULL OR de.owner_subject_id = $1)
         AND ($2::text IS NULL OR dsi.connector_id = $2)
-        AND ($3::text IS NULL OR dsi.source_kind = $3)
-        AND ($4::text IS NULL OR dsi.local_binding_id = $4)
-      ORDER BY de.owner_subject_id, dsi.connector_id, dsi.source_kind, dsi.local_binding_id, dsi.created_at DESC${
+        AND ($3::text IS NULL OR dsi.local_binding_id = $3)
+        AND ($4::text IS NULL OR dsi.connector_instance_id = $4)
+      ORDER BY de.owner_subject_id, dsi.connector_id, dsi.connector_instance_id, dsi.created_at DESC${
         forUpdate ? "\n      FOR UPDATE OF dsi" : ""
       }`,
-    [filters.ownerSubjectId, filters.connectorId, filters.sourceKind, filters.localBindingId]
+    [filters.ownerSubjectId, filters.connectorId, filters.localBindingId, filters.connectorInstanceId]
   );
   return result.rows.map((row) => ({
     connectorId: row.connector_id,
+    connectorInstanceId: row.connector_instance_id,
     deviceId: row.device_id,
     deviceStatus: row.device_status,
     lastHeartbeatAt: row.last_heartbeat_at,
@@ -233,24 +306,44 @@ async function selectGroupRows(
     ownerSubjectId: row.owner_subject_id,
     sourceInstanceCreatedAt: row.source_instance_created_at,
     sourceInstanceId: row.source_instance_id,
-    sourceKind: row.source_kind,
+    sourceKind: row.effective_source_kind,
+    sourceKindWasLegacyNull: row.raw_source_kind === null,
   }));
 }
 
 /**
  * Pure grouping + duplicate-filter: groups rows by the exact identity key
- * `resolveOrCreateEnrollmentDevice` uses (owner, connector, source_kind,
- * binding), then keeps only groups with more than one row. Exported and
- * tested standalone so the "what counts as a duplicate" decision is
- * provable without a database. The key (`duplicateBindingGroupKey`) is an
- * injective `JSON.stringify` encoding of the four fields — never a plain
- * delimiter join, which can collide across a field boundary (see that
- * function's doc comment), and never a raw control character embedded in
- * source, which risks silent binary corruption of the tracked file.
+ * `resolveOrCreateEnrollmentDevice` uses (owner, connector, EFFECTIVE
+ * source_kind, binding — see `DuplicateBindingRow.sourceKind`'s doc
+ * comment for what "effective" means), then, within each such bucket,
+ * splits FURTHER by `connectorInstanceId` before accepting a group as a
+ * genuine duplicate — this is the "never merge genuinely different
+ * kinds/devices" guarantee applied literally: `connector_instances`'
+ * `(owner_subject_id, connector_id, source_kind, source_binding_key)`
+ * UNIQUE constraint means the 4-tuple key normally implies exactly one
+ * connector_instance_id, but a legacy connector_instances row whose id
+ * predates the deterministic-id formula (see D8 in mass-justifications.json)
+ * can coincidentally share a 4-tuple with a different, newer
+ * connector_instance_id. Two rows are only ever treated as the same
+ * "duplicate" group when BOTH the 4-tuple AND connector_instance_id match
+ * — proven equivalence, not an assumption. Finally keeps only groups with
+ * more than one row. Exported and tested standalone so the "what counts as
+ * a duplicate" decision is provable without a database. The key
+ * (`duplicateBindingGroupKey`) is an injective `JSON.stringify` encoding —
+ * never a plain delimiter join, which can collide across a field boundary
+ * (see that function's doc comment), and never a raw control character
+ * embedded in source, which risks silent binary corruption of the tracked
+ * file.
  */
 export function groupDuplicateBindingRows(rows: readonly DuplicateBindingRow[]): DuplicateBindingGroup[] {
   const groups = new Map<string, DuplicateBindingRow[]>();
   for (const row of rows) {
+    // Splitting by connector_instance_id INSIDE the 4-tuple key (rather
+    // than as a separate grouping pass) means two rows that share a
+    // 4-tuple but differ in connector_instance_id land in different
+    // buckets from the start — they are never transiently merged and then
+    // split, so there is no window where a caller could observe them as
+    // one group.
     const key = duplicateBindingGroupKey(row);
     const bucket = groups.get(key);
     if (bucket) {
@@ -270,6 +363,7 @@ export function groupDuplicateBindingRows(rows: readonly DuplicateBindingRow[]):
     }
     out.push({
       connectorId: first.connectorId,
+      connectorInstanceId: first.connectorInstanceId,
       localBindingId: first.localBindingId,
       ownerSubjectId: first.ownerSubjectId,
       rows: rowsForKey,
@@ -280,30 +374,47 @@ export function groupDuplicateBindingRows(rows: readonly DuplicateBindingRow[]):
 }
 
 /**
- * The exact identity key `resolveOrCreateEnrollmentDevice` uses to decide
- * "same binding" — encoded as `JSON.stringify` of the four fields in a
- * fixed order. This is INJECTIVE (distinct 4-tuples always produce distinct
- * strings): JSON.stringify escapes every quote and backslash in each string
- * field and wraps each in its own `"..."`, so no field's content can ever
- * bleed across the fixed array-index boundaries into an adjacent field —
- * unlike a plain delimiter join (e.g. `.join(" ")`), where a field
- * containing the delimiter character can collide with a different 4-tuple
- * whose fields split differently around the same delimiter (e.g.
- * `ownerSubjectId="a b", connectorId="c"` and `ownerSubjectId="a",
- * connectorId="b c"` join to the identical string `"a b c ..."`). A
- * collision here would silently MERGE two genuinely distinct identity keys
- * into one grouped "duplicate", producing a misleading repair plan — see
- * the collision regression in the test file for a concrete counterexample.
+ * The identity key deciding "same binding" — encoded as `JSON.stringify` of
+ * five fields (owner, connector, EFFECTIVE source_kind, binding,
+ * connector_instance_id) in a fixed order. The first four are the exact
+ * identity `resolveOrCreateEnrollmentDevice` uses; `connectorInstanceId` is
+ * appended so two rows sharing that 4-tuple but bound to DIFFERENT
+ * connector_instance_ids (the rare legacy-duplicate-connector-instance
+ * shape — see `groupDuplicateBindingRows`'s doc comment) are never merged
+ * into one group merely because their derived identity fields match.
+ *
+ * This is INJECTIVE (distinct 5-tuples always produce distinct strings):
+ * JSON.stringify escapes every quote and backslash in each string field and
+ * wraps each in its own `"..."`, so no field's content can ever bleed
+ * across the fixed array-index boundaries into an adjacent field — unlike a
+ * plain delimiter join (e.g. `.join(" ")`), where a field containing the
+ * delimiter character can collide with a different tuple whose fields
+ * split differently around the same delimiter (e.g. `ownerSubjectId="a b",
+ * connectorId="c"` and `ownerSubjectId="a", connectorId="b c"` join to the
+ * identical string `"a b c ..."`). A collision here would silently MERGE
+ * two genuinely distinct identity keys into one grouped "duplicate",
+ * producing a misleading repair plan — see the collision regression in the
+ * test file for a concrete counterexample.
+ *
  * This is a grouping-decision safeguard only: `applyRepairPlanEntry`'s
- * actual revalidation-under-lock query always reads the four discrete SQL
- * fields (`entry.group.ownerSubjectId` etc.), never this string key, so the
- * write path was never exposed to this collision class — only the
- * candidate-plan grouping was.
+ * actual revalidation-under-lock query re-reads by the exact
+ * `connectorInstanceId`, never this string key, so the write path was
+ * never exposed to this collision class — only the candidate-plan
+ * grouping was.
  */
 function duplicateBindingGroupKey(
-  row: Pick<DuplicateBindingRow, "connectorId" | "localBindingId" | "ownerSubjectId" | "sourceKind">
+  row: Pick<
+    DuplicateBindingRow,
+    "connectorId" | "connectorInstanceId" | "localBindingId" | "ownerSubjectId" | "sourceKind"
+  >
 ): string {
-  return JSON.stringify([row.ownerSubjectId, row.connectorId, row.sourceKind, row.localBindingId]);
+  return JSON.stringify([
+    row.ownerSubjectId,
+    row.connectorId,
+    row.sourceKind,
+    row.localBindingId,
+    row.connectorInstanceId,
+  ]);
 }
 
 /**
@@ -370,6 +481,21 @@ export interface AppliedRepairResult {
  * query-only client) because this needs one held connection across
  * `BEGIN`/lock/writes/`COMMIT`.
  *
+ * Revalidates by `connectorInstanceId` (not by the derived 4-tuple
+ * `entry.group.sourceKind` etc.) — the single strongest, simplest anchor:
+ * every row genuinely bound to the SAME connector_instance is, by
+ * construction, the same binding (see the module doc comment's
+ * "LEGACY-NULL source_kind" section), so re-reading by that one id is both
+ * necessary and sufficient, and cannot itself suffer the legacy-duplicate-
+ * connector-instance ambiguity `groupDuplicateBindingRows` guards against
+ * at the CANDIDATE-plan stage (there is exactly one row set for one id).
+ *
+ * Also normalizes: any freshly-locked row (survivor or superseded) whose
+ * raw `source_kind` is NULL is backfilled to the resolved effective kind
+ * in this SAME transaction, so re-scanning after `--apply` sees real
+ * (non-NULL) data — the terminal invariant this repair converges toward —
+ * rather than needing the COALESCE resolution forever.
+ *
  * Returns the freshly-derived authoritative device id and the device ids
  * actually revoked (a subset of, or none of, the candidate `entry`'s
  * `superseded` list — never a superset, and never including a row that
@@ -383,16 +509,16 @@ export async function applyRepairPlanEntry(
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    // Re-read AND row-lock current truth for this exact identity key —
-    // never trust `entry`'s membership or authoritative pick, which were
+    // Re-read AND row-lock current truth for this exact connector_instance
+    // — never trust `entry`'s membership or authoritative pick, which were
     // read before this transaction and may be stale.
     const lockedRows = await selectGroupRows(
       client,
       {
         connectorId: entry.group.connectorId,
+        connectorInstanceId: entry.group.connectorInstanceId,
         localBindingId: entry.group.localBindingId,
         ownerSubjectId: entry.group.ownerSubjectId,
-        sourceKind: entry.group.sourceKind,
       },
       true
     );
@@ -403,6 +529,33 @@ export async function applyRepairPlanEntry(
       // to do — idempotent no-op.
       await client.query("COMMIT");
       return { authoritativeDeviceId: entry.authoritative.deviceId, supersededDeviceIds: [] };
+    }
+    // Normalize legacy-NULL rows first, in this same transaction: any
+    // locked row whose raw source_kind is NULL is backfilled to the
+    // resolved effective kind. Runs before the revoke cascade below so
+    // the normalization always lands even for a group that turns out to
+    // need no revocation (e.g. a race already resolved it to one row).
+    //
+    // Keyed on `source_instance_id` (device_source_instances' actual
+    // PRIMARY KEY), NEVER `device_id` alone: one device can legitimately
+    // own multiple device_source_instances rows (different streams or
+    // bindings), so a device_id-scoped UPDATE could reach past this
+    // group and silently normalize an unrelated NULL-kind row that
+    // happens to share the same device_id but belongs to a different
+    // connector_instance entirely. `connector_instance_id` is retained
+    // as a second, redundant predicate — defense in depth, since the
+    // locked rows are already scoped to exactly one connector_instance_id
+    // by `selectGroupRows`.
+    const legacyNullRowIds = lockedRows.filter((row) => row.sourceKindWasLegacyNull).map((row) => row.sourceInstanceId);
+    if (legacyNullRowIds.length > 0) {
+      await client.query(
+        `UPDATE device_source_instances
+            SET source_kind = $1, updated_at = $2
+          WHERE source_instance_id = ANY($3::text[])
+            AND connector_instance_id = $4
+            AND source_kind IS NULL`,
+        [entry.group.sourceKind, revokedAt, legacyNullRowIds, entry.group.connectorInstanceId]
+      );
     }
     // Re-derive authoritative from the FRESHLY LOCKED rows, not the stale
     // candidate plan — a device that heartbeated between scan and apply
