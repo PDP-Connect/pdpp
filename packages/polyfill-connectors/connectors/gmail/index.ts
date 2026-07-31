@@ -779,13 +779,25 @@ async function emitAttachmentDetailGaps(coverage: AttachmentDetailCoverage | und
  * even on a run that requests only `messages`, no `message_bodies` or
  * `attachments`). Mirrors Amazon/H-E-B's `OrdersCoverage` (fix a4d411307):
  * every metadata row `collectMetadata` enumerated for the fetch range and
- * that reaches `processMessage` is "considered" (the denominator). It is
- * "covered" once a real accounting decision was made for its `messages`
- * record: the record was emitted (there is no per-message fingerprint gate
- * on `messages` today, so every in-scope, in-range message is emitted
- * unconditionally). A message dropped for lacking X-GM-MSGID, or excluded by
- * the `time_range` scope filter, is considered but not covered — no
- * accounting decision was made for its `messages` record.
+ * that reaches `processMessage` is "considered" (the denominator). A message
+ * dropped for lacking X-GM-MSGID, or excluded by the `time_range` scope
+ * filter, is considered but not covered — no accounting decision was made
+ * for its `messages` record.
+ *
+ * "covered" requires TWO things: the source-level decision to attempt
+ * emission (in-scope, in-range, has an id), AND the emitter's actual
+ * ACCEPTANCE of that record. `emitRecord` can reject a considered, attempted
+ * record post-decision, at the acceptance boundary — see `rejectedEmission`'s
+ * doc for why an emitter rejection is excluded from BOTH `considered` and
+ * `covered` (not merely left out of `covered`): `deriveGapFreeStreamCoverage
+ * Condition`'s checkpoint-proves-coverage rule fires for `checkpoint_window`
+ * streams whenever `considered` is non-null and the checkpoint is committed,
+ * BEFORE it ever compares `covered` against `considered` — so a
+ * `covered < considered` shortfall alone would still be silently masked by a
+ * committed checkpoint, and marking `covered` before checking `emitRecord`'s
+ * return would ALSO inflate the numerator on top of that. Excluding the
+ * rejected id from `considered` entirely is what actually keeps the
+ * denominator honest for this coverage strategy.
  *
  * `droppedNoId` and `caughtErrors` are BOTH deliberately excluded from
  * `considered` (there is no natural, non-fabricated id to key a no-X-GM-MSGID
@@ -805,11 +817,53 @@ export interface MessagesCoverage {
   considered: string[];
   covered: string[];
   droppedNoId: number;
+  /**
+   * Considered a candidate for emission (has an id, in scope, in range), but
+   * `emitRecord` rejected the actual attempt post-decision. Diagnostic-only —
+   * deliberately EXCLUDED from `considered`/`covered` (see above) rather than
+   * counted as a considered-but-not-covered shortfall, because
+   * `deriveGapFreeStreamCoverageCondition`'s rule 1 (checkpoint-proves-
+   * coverage) fires for `checkpoint_window` streams whenever `considered`
+   * is non-null and the checkpoint is committed — BEFORE it ever compares
+   * `covered` against `considered` (rule 2). A `covered < considered`
+   * shortfall alone is silently masked by a committed checkpoint on this
+   * strategy; only a `SKIP_RESULT` (a distinct, higher-precedence check)
+   * can force non-`complete`. Two rejection reasons exist, and only one of
+   * them warrants that escalation:
+   *   - Rejected by an explicit `resources` selection scope
+   *     (`makeEmitRecord`'s `resFilters` check): the caller's own
+   *     deliberate narrowing excluded this id. Not a source-semantic
+   *     failure and not a gap — the record was never owed under this run's
+   *     declared scope, so it is excluded from `considered` entirely
+   *     (mirroring how `time_range`-excluded rows would be if `messages`
+   *     itself were the boundary), not force-failed via SKIP_RESULT.
+   *   - Rejected for `schema_validation_failed`: `makeEmitRecord` already
+   *     emits its own independent, unconditional per-record `SKIP_RESULT`
+   *     for this case — with `stream: "messages"` and real diagnostics —
+   *     BEFORE returning `false`. That SKIP_RESULT alone already forces
+   *     `deriveStreamCoverageCondition`'s higher-precedence skip rule (rule
+   *     2, checked before `deriveGapFreeStreamCoverageCondition` even
+   *     runs), so no further accounting is needed here to make the read
+   *     side see it — excluding it from `considered` does not hide it.
+   * `emitRecord`'s boolean return does not currently distinguish which of
+   * the two reasons applied, so both are recorded here for diagnostics, but
+   * — deliberately — neither reason needs `considered` to carry it, because
+   * one is legitimately out-of-boundary and the other already self-reports
+   * through a stronger, independent channel.
+   */
+  rejectedEmission: string[];
   timeRangeDropped: string[];
 }
 
 export function newMessagesCoverage(): MessagesCoverage {
-  return { caughtErrors: 0, considered: [], covered: [], droppedNoId: 0, timeRangeDropped: [] };
+  return {
+    caughtErrors: 0,
+    considered: [],
+    covered: [],
+    droppedNoId: 0,
+    rejectedEmission: [],
+    timeRangeDropped: [],
+  };
 }
 
 /**
@@ -923,6 +977,48 @@ function perMessageInternalDateToIso(date: Date | string | undefined, nowIsoFn: 
 }
 
 /**
+ * Record the `messages` accounting outcome for one attempted emission, once
+ * `emitRecord` has returned. Extracted from `processMessage` to keep that
+ * function under the cognitive-complexity ceiling.
+ *
+ * No fingerprint gate exists on `messages` today, so a normal in-scope,
+ * in-range message always REACHES the emitter — but `emitRecord` itself can
+ * still reject the record post-decision, at the acceptance boundary, for two
+ * distinct reasons (see `MessagesCoverage.rejectedEmission`'s doc for why
+ * NEITHER belongs in `considered`, not merely out of `covered`):
+ *   - An explicit `resources` selection scope excluded this id: the record
+ *     was never owed under this run's declared scope, so it is excluded
+ *     from `considered` entirely, same as a `time_range` drop would be for
+ *     a boundary stream.
+ *   - `schema_validation_failed`: `makeEmitRecord` already emits its own
+ *     independent, unconditional per-record `SKIP_RESULT` for this before
+ *     returning `false` — that alone already forces the read-side skip
+ *     precedence rule, so excluding it from `considered` here does not
+ *     hide it.
+ * Only an ACCEPTED emission is a completed accounting decision that belongs
+ * in `considered`/`covered` at all. `EmitRecordFn`'s return type allows
+ * `void` for callers that don't report acceptance (unused by production —
+ * `makeEmitRecord` always returns an explicit `boolean` — but still part of
+ * the shared type); `void`/`undefined` is treated the same as `false`
+ * (unproven acceptance), never coerced to `true`.
+ */
+function recordMessagesEmitOutcome(
+  coverage: MessagesCoverage | undefined,
+  gmMsgid: string,
+  accepted: boolean | undefined
+): void {
+  if (!coverage) {
+    return;
+  }
+  if (accepted === true) {
+    coverage.considered.push(gmMsgid);
+    coverage.covered.push(gmMsgid);
+  } else {
+    coverage.rejectedEmission.push(gmMsgid);
+  }
+}
+
+/**
  * Emit the per-stream records for one Gmail message.
  *
  * Invariants (tested in integration.test.ts):
@@ -994,7 +1090,7 @@ export async function processMessage(deps: PerMessageDeps, msg: FetchMessageObje
   }
 
   if (deps.wantMessages) {
-    await deps.emitRecord(
+    const accepted = await deps.emitRecord(
       "messages",
       buildMessageRecord({
         attachmentsCount: attachments.length,
@@ -1010,14 +1106,7 @@ export async function processMessage(deps: PerMessageDeps, msg: FetchMessageObje
         snippet,
       })
     );
-    // No fingerprint gate exists on `messages` today — every in-scope,
-    // in-range message is unconditionally emitted, so this is always a real
-    // accounting decision (unlike Amazon's orders, which can also count a
-    // fingerprint-suppressed re-scrape as covered).
-    if (deps.messagesCoverage) {
-      deps.messagesCoverage.considered.push(gmMsgid);
-      deps.messagesCoverage.covered.push(gmMsgid);
-    }
+    recordMessagesEmitOutcome(deps.messagesCoverage, gmMsgid, accepted ?? undefined);
   }
 
   await emitAttachmentRecords(deps, msg, attachments);

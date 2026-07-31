@@ -128,6 +128,7 @@ const defaultFetchBodies: FetchBodiesFn = (): Promise<FetchedBodies> =>
 interface HarnessOverrides {
   attachmentCoverage?: AttachmentDetailCoverage;
   detailGaps?: readonly DetailGapStartEntry[];
+  emitRecordAccepts?: (stream: string, data: Record<string, unknown>) => boolean;
   fetchBodies?: FetchBodiesFn;
   hydrateAttachment?: HydrateAttachmentFn;
   messagesCoverage?: MessagesCoverage;
@@ -154,6 +155,10 @@ function makeHarness(overrides: HarnessOverrides = {}): RecordingHarness {
     },
     emitProtocol: harness.emit,
     emitRecord: async (stream, data, _keyField) => {
+      const accepted = overrides.emitRecordAccepts ? overrides.emitRecordAccepts(stream, data) : true;
+      if (!accepted) {
+        return false;
+      }
       await harness.emitRecord(stream, data);
       return true;
     },
@@ -3040,6 +3045,7 @@ test("buildMessagesCoverageMessage: reports considered/covered self-referentiall
     considered: ["gmmsgid-1", "gmmsgid-2"],
     covered: ["gmmsgid-1", "gmmsgid-2"],
     droppedNoId: 0,
+    rejectedEmission: [],
     timeRangeDropped: [],
   };
   const msg = buildMessagesCoverageMessage(coverage);
@@ -3265,4 +3271,89 @@ test("processMessage + emitMessagesPass: an only-missing-ID run still emits a dr
   const skipResult = buildMessagesDropSkipResult(coverage);
   assert.ok(skipResult, "the run-level accumulator now carries a signal a committed checkpoint cannot mask");
   assert.deepEqual(skipResult.diagnostics, { caught_errors: 0, dropped_no_id: 1 });
+});
+
+// ─── Unit D follow-up: covered must require ACCEPTED emission, not attempted ─
+//
+// The prior fix marked `covered` immediately after calling `emitRecord`,
+// without checking its return value. `emitRecord` (makeEmitRecord in
+// production) can return `false` for a considered, in-scope, in-range
+// message for two real reasons: an explicit `resources` selection scope
+// excluded the id, or schema validation failed. Simply moving the rejected
+// id from `covered` to "considered but not covered" is NOT enough for a
+// checkpoint_window stream: deriveGapFreeStreamCoverageCondition's
+// checkpoint-proves-coverage rule fires whenever `considered` is non-null
+// and the checkpoint is committed, BEFORE it ever compares `covered` against
+// `considered` — so a `covered < considered` shortfall alone is silently
+// masked by a committed checkpoint (see the read-side end-to-end test in
+// reference-implementation/test/connector-coverage-policy.test.ts that pins
+// this exact precedence fact). The fix therefore excludes an emitter
+// rejection from `considered` entirely, and relies on
+// `schema_validation_failed`'s own independent, unconditional SKIP_RESULT
+// (already emitted by makeEmitRecord, before it returns false) to force
+// non-`complete` for that reason specifically — the resources-scope
+// exclusion legitimately needs no such escalation, since the record was
+// never owed under this run's declared scope in the first place.
+
+test("processMessage: an emitRecord rejection is excluded from considered AND covered — no covered inflation, no shortfall to mask", async () => {
+  const coverage = newMessagesCoverage();
+  const { deps, emitted } = makeHarness({
+    emitRecordAccepts: (stream) => stream !== "messages",
+    messagesCoverage: coverage,
+    wantMessages: true,
+  });
+
+  await processMessage(deps, makeMsg());
+
+  assert.deepEqual(
+    coverage.considered,
+    [],
+    "an emitter rejection is excluded from considered — not merely from covered, or a committed checkpoint would still mask it"
+  );
+  assert.deepEqual(coverage.covered, [], "an emitter rejection must never be counted as covered");
+  assert.deepEqual(coverage.rejectedEmission, ["gmmsgid-1111"], "still tracked for diagnostics");
+  assert.ok(
+    !emitted.some((r) => r.stream === "messages"),
+    "no messages record actually reached the recording emit — the rejection is real, not merely reported"
+  );
+});
+
+test("emitMessagesPass: a mix of accepted and rejected emissions keeps considered/covered equal to the accepted subset only", async () => {
+  const coverage = newMessagesCoverage();
+  const rejectedIds = new Set(["gmmsgid-reject-1", "gmmsgid-reject-2"]);
+  const { deps, emitted } = makeHarness({
+    emitRecordAccepts: (stream, data) => stream !== "messages" || !rejectedIds.has(String(data.id)),
+    messagesCoverage: coverage,
+    wantMessages: true,
+  });
+
+  await emitMessagesPass(deps, [
+    makeMsg({ emailId: "gmmsgid-ok-1" }),
+    makeMsg({ emailId: "gmmsgid-reject-1" }),
+    makeMsg({ emailId: "gmmsgid-ok-2" }),
+    makeMsg({ emailId: "gmmsgid-reject-2" }),
+  ]);
+
+  assert.deepEqual(coverage.considered, ["gmmsgid-ok-1", "gmmsgid-ok-2"], "rejected ids never enter considered");
+  assert.deepEqual(coverage.covered, ["gmmsgid-ok-1", "gmmsgid-ok-2"]);
+  assert.deepEqual(coverage.rejectedEmission, ["gmmsgid-reject-1", "gmmsgid-reject-2"]);
+  assert.equal(
+    emitted.filter((r) => r.stream === "messages").length,
+    2,
+    "only the two accepted messages actually reached the recording emit"
+  );
+
+  // The honest wire shape: considered=2, covered=2 — rejected ids leave no
+  // artificial gap for a committed checkpoint to paper over, and no
+  // fabricated completeness either (they simply aren't this run's boundary).
+  assert.deepEqual(buildMessagesCoverageMessage(coverage), {
+    type: "DETAIL_COVERAGE",
+    reference_only: true,
+    stream: "messages",
+    state_stream: "messages",
+    required_keys: [],
+    hydrated_keys: [],
+    considered: 2,
+    covered: 2,
+  });
 });

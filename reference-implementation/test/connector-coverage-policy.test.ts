@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildMessagesCoverageMessage,
   buildMessagesDropSkipResult,
   type MessagesCoverage,
   newMessagesCoverage,
@@ -279,6 +280,113 @@ test("end-to-end: a zero-considered steady-state run with NO drops of either kin
       collected: 0,
       considered: 0,
       covered: 0,
+      skipped: null,
+      stream: "messages",
+    }),
+    { coverage_strategy: "checkpoint_window", freshness_strategy: "scheduled_window" }
+  );
+  assert.equal(condition, "complete");
+});
+
+// ─── Unit D second follow-up: emitter-rejected rows must not inflate
+// ─── `covered`, AND must not create a `covered < considered` gap that a
+// ─── committed checkpoint silently papers over ─────────────────────────────
+//
+// The gate found that `processMessage` marked a message `covered` immediately
+// after calling `emitRecord`, without checking its return value. `emitRecord`
+// can reject a considered, in-scope, in-range message for two real reasons:
+// an explicit `resources` selection scope excluded it, or schema validation
+// failed. The fix is NOT simply "move the rejected id from covered to
+// considered-but-not-covered" — this file's FIRST test already proves that
+// `checkpoint_window` + a committed checkpoint reads `complete` from a mere
+// `considered !== null` (deriveGapFreeStreamCoverageCondition's rule 1 fires
+// BEFORE it ever compares `covered` against `considered`), so a bare
+// `covered < considered` shortfall alone would still be silently masked.
+// Instead: a rejection is excluded from `considered` ENTIRELY (the record
+// was never owed under this run's declared scope), and the genuinely
+// source-semantic failure reason (`schema_validation_failed`) already emits
+// its own independent, unconditional `SKIP_RESULT` — which forces
+// non-`complete` through the skip-precedence rule (rule 2 in
+// `deriveStreamCoverageCondition`, checked before the checkpoint-proves-
+// coverage path even runs), with no dependence on `considered`/`covered` at
+// all.
+
+test("end-to-end: a rejected emission excluded from considered still projects complete when the rest of the boundary is satisfied", () => {
+  // The resources-scope-exclusion case: nothing went wrong, the record was
+  // never owed under this run's declared scope, so the remaining (accepted)
+  // boundary reading `complete` is the correct, non-over-corrected outcome —
+  // proven against the connector's REAL buildMessagesCoverageMessage output.
+  const coverage: MessagesCoverage = {
+    caughtErrors: 0,
+    considered: ["gmmsgid-ok-1", "gmmsgid-ok-2"], // the rejected id never entered this list
+    covered: ["gmmsgid-ok-1", "gmmsgid-ok-2"],
+    droppedNoId: 0,
+    rejectedEmission: ["gmmsgid-rejected"], // tracked for diagnostics only
+    timeRangeDropped: [],
+  };
+  const coverageMsg = buildMessagesCoverageMessage(coverage);
+  assert.equal(coverageMsg.considered, 2, "the rejected id must not appear in the denominator at all");
+  assert.equal(coverageMsg.covered, 2);
+
+  const condition = deriveStreamCoverageCondition(
+    fact({
+      checkpoint: "committed",
+      collected: 2,
+      considered: coverageMsg.considered ?? null,
+      covered: coverageMsg.covered ?? null,
+      skipped: null,
+      stream: "messages",
+    }),
+    { coverage_strategy: "checkpoint_window", freshness_strategy: "scheduled_window" }
+  );
+  assert.equal(condition, "complete", "an out-of-scope exclusion must not force the rest of the boundary non-complete");
+});
+
+test("end-to-end: schema_validation_failed's own independent SKIP_RESULT forces non-complete regardless of considered/covered", () => {
+  // The schema-validation-failure case: makeEmitRecord already emits its own
+  // SKIP_RESULT for this before returning false, entirely independent of
+  // MessagesCoverage bookkeeping. This test proves that signal alone — with
+  // no rejected-id accounting in considered/covered at all — is sufficient
+  // to force non-complete, exactly like the two Unit D SKIP_RESULT tests
+  // above for droppedNoId/caughtErrors, using the SAME precedence rule.
+  const condition = deriveStreamCoverageCondition(
+    fact({
+      checkpoint: "committed",
+      collected: 2,
+      considered: 2,
+      covered: 2,
+      skipped: { reason: "schema_validation_failed" },
+      stream: "messages",
+    }),
+    { coverage_strategy: "checkpoint_window", freshness_strategy: "scheduled_window" }
+  );
+  assert.notEqual(
+    condition,
+    "complete",
+    "a satisfied considered/covered pair alone must not mask a real schema failure"
+  );
+  assert.equal(condition, "terminal_gap");
+});
+
+test("end-to-end: covered equal to considered (no rejections) still projects complete — the fix does not over-correct", () => {
+  // Regression guard for the opposite failure mode: a genuinely fully
+  // accepted run must not start reading partial just because rejection
+  // accounting now exists.
+  const coverage: MessagesCoverage = {
+    caughtErrors: 0,
+    considered: ["gmmsgid-1", "gmmsgid-2"],
+    covered: ["gmmsgid-1", "gmmsgid-2"],
+    droppedNoId: 0,
+    rejectedEmission: [],
+    timeRangeDropped: [],
+  };
+  const coverageMsg = buildMessagesCoverageMessage(coverage);
+  const condition = deriveStreamCoverageCondition(
+    fact({
+      checkpoint: "committed",
+      collected: 2,
+      considered: coverageMsg.considered ?? null,
+      covered: coverageMsg.covered ?? null,
       skipped: null,
       stream: "messages",
     }),
