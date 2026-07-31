@@ -2560,12 +2560,19 @@ The reference public contract SHALL include the agent connect endpoint that the 
 
 ### Requirement: Browser-backed polyfill connectors SHALL declare a browser runtime binding
 
-The reference implementation SHALL make browser automation requirements visible in polyfill connector manifests using `runtime_requirements.bindings.browser`.
+The reference implementation SHALL make browser automation requirements visible in polyfill connector manifests using `runtime_requirements.bindings.browser`. A connector whose core collection depends on a browser for every run SHALL declare the binding as required; a connector that touches a browser only for a bounded subset of optional streams, and spawns and collects its non-browser streams normally when no browser binding is available, MAY declare the binding as not required — but MUST still declare it, so the dependency stays visible to manifest reviewers.
 
 #### Scenario: Browser-backed connector manifest is inspected
 
-- **WHEN** a polyfill connector uses the reference browser runtime
+- **WHEN** a polyfill connector's core collection path uses the reference browser runtime on every run
 - **THEN** its manifest SHALL declare `runtime_requirements.bindings.browser.required` equal to `true`
+- **AND** the manifest SHALL NOT rely on `network` alone to imply browser automation.
+
+#### Scenario: Connector uses a browser only for a bounded set of optional streams
+
+- **WHEN** a polyfill connector's core streams collect without a browser, and only a declared subset of optional streams uses the reference browser runtime
+- **THEN** its manifest SHALL still declare `runtime_requirements.bindings.browser` with `required` equal to `false`
+- **AND** those optional streams SHALL fail closed with a per-stream `SKIP_RESULT`, isolated from the run's required streams, when no browser binding is available
 - **AND** the manifest SHALL NOT rely on `network` alone to imply browser automation.
 
 #### Scenario: Reference runtime starts a connector

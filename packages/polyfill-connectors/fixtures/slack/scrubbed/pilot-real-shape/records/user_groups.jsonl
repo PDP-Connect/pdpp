@@ -1,0 +1,1 @@
+{"id":"S0123456789","team_id":"T0123456789","handle":"eng","name":"Engineering","description":"Engineering team","is_external":false,"is_subteam":true,"member_ids":["U0987654321","U0987654322"],"channel_ids":["C0123456789"],"created":1700000000,"created_at":"2023-11-14T22:13:20.000Z","updated":1710000000,"deleted":false}

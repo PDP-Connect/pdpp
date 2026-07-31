@@ -309,6 +309,29 @@ test("slack manifest declares no unsupported-in-mode streams (all four gap strea
   }
 });
 
+test("slack manifest declares an OPTIONAL browser binding for the gap streams' TLS-fingerprint fix", async () => {
+  // stars/user_groups/reminders/dm_read_states need a real Chromium page
+  // (see slack-api.ts module header + index.ts acquireSlackApiBrowserTransport
+  // for the full root cause: TLS fingerprinting) — but the connector's core
+  // value (messages/channels/files/etc., all slackdump-archive-derived)
+  // must stay fully headless. `required: false` is the load-bearing part:
+  // `true` would make the RUNTIME refuse to spawn the whole connector on any
+  // runtime that doesn't advertise a browser binding (validateRequiredRuntimeBindings
+  // in reference-implementation/runtime/index.ts), even though only these
+  // four optional streams ever touch it.
+  const manifest = JSON.parse(await readFile(SLACK_MANIFEST, "utf8")) as {
+    runtime_requirements?: { bindings?: Record<string, { required?: boolean }> };
+  };
+  const browserBinding = manifest.runtime_requirements?.bindings?.browser;
+  assert.ok(browserBinding, "expected runtime_requirements.bindings.browser to be declared");
+  assert.equal(
+    browserBinding?.required,
+    false,
+    "the browser binding MUST be optional — required:true would block the whole connector's spawn on a " +
+      "runtime with no browser binding, for the sake of four non-core streams"
+  );
+});
+
 test("slack connector reports DONE.records_emitted from runtime-counted RECORDs", async () => {
   const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-counter-"));
   try {

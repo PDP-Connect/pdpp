@@ -59,6 +59,7 @@ import { mkdir, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { acquireBrowserForConnector } from "../../src/browser-launch.ts";
 import { readOptions } from "../../src/connector-options.ts";
 import {
   buildDetailCoverageMessage,
@@ -99,6 +100,7 @@ import {
 } from "./parsers.ts";
 import { validateRecord } from "./schemas.ts";
 import {
+  createBrowserSlackApiTransport,
   fetchAllReminders,
   fetchAllStars,
   fetchAllUserGroups,
@@ -106,6 +108,8 @@ import {
   parseSlackApiErrorCode,
   SLACK_API_AUTH_FAILURE_RE,
   SLACK_API_RETRYABLE_FAILURE_RE,
+  type SlackApiBrowserPage,
+  type SlackApiTransport,
 } from "./slack-api.ts";
 import type {
   CanvasRow,
@@ -1976,24 +1980,39 @@ export async function runCanvasesStream(deps: StreamDeps): Promise<void> {
  * direct Slack Web API calls using the same session credential the
  * connector already captured for slackdump.
  */
-export async function runStarsStream(deps: StreamDeps, token: string, cookie: string): Promise<void> {
-  const items = await fetchAllStars(token, cookie);
+export async function runStarsStream(
+  deps: StreamDeps,
+  transport: SlackApiTransport,
+  token: string,
+  cookie: string
+): Promise<void> {
+  const items = await fetchAllStars(transport, token, cookie);
   for (const item of items) {
     await deps.emitRecord("stars", buildStarRecord(item));
   }
   await declareListConsidered(deps, "stars", items.length);
 }
 
-export async function runUserGroupsStream(deps: StreamDeps, token: string, cookie: string): Promise<void> {
-  const groups = await fetchAllUserGroups(token, cookie);
+export async function runUserGroupsStream(
+  deps: StreamDeps,
+  transport: SlackApiTransport,
+  token: string,
+  cookie: string
+): Promise<void> {
+  const groups = await fetchAllUserGroups(transport, token, cookie);
   for (const g of groups) {
     await deps.emitRecord("user_groups", buildUserGroupRecord(g));
   }
   await declareListConsidered(deps, "user_groups", groups.length);
 }
 
-export async function runRemindersStream(deps: StreamDeps, token: string, cookie: string): Promise<void> {
-  const reminders = await fetchAllReminders(token, cookie);
+export async function runRemindersStream(
+  deps: StreamDeps,
+  transport: SlackApiTransport,
+  token: string,
+  cookie: string
+): Promise<void> {
+  const reminders = await fetchAllReminders(transport, token, cookie);
   for (const r of reminders) {
     await deps.emitRecord("reminders", buildReminderRecord(r));
   }
@@ -2032,9 +2051,14 @@ function currentDmMpimChannelIds(db: DatabaseSync): string[] {
  * would multiply calls with no stream-relevant payoff. See design.md
  * Decision 3.
  */
-export async function runDmReadStatesStream(deps: StreamDeps, token: string, cookie: string): Promise<void> {
+export async function runDmReadStatesStream(
+  deps: StreamDeps,
+  transport: SlackApiTransport,
+  token: string,
+  cookie: string
+): Promise<void> {
   const dmChannelIds = currentDmMpimChannelIds(deps.db);
-  const states = await fetchDmReadStates(token, cookie, dmChannelIds);
+  const states = await fetchDmReadStates(transport, token, cookie, dmChannelIds);
   for (const state of states) {
     await deps.emitRecord("dm_read_states", buildDmReadStateRecord(state, deps.emittedAt));
   }
@@ -2263,6 +2287,111 @@ export async function runOptionalStream(
   }
 }
 
+const SLACK_API_BROWSER_PROFILE_NAME = "slack";
+const SLACK_COOKIE_DOMAIN = ".slack.com";
+const D_S_COOKIE_BACKDATE_SECONDS = 10;
+
+interface SlackApiBrowserTransportHandle {
+  release: () => Promise<void>;
+  transport: SlackApiTransport;
+}
+
+/**
+ * The minimal `IsolatedBrowser` surface `acquireSlackApiBrowserTransport`
+ * actually uses. `acquireBrowserForConnector`'s real return type
+ * (`IsolatedBrowser`, a full Playwright `BrowserContext`/`Page`) structurally
+ * satisfies this narrower interface, so the real launcher needs no cast to
+ * serve as this type's default; a test fake can implement just these three
+ * members without also faking Playwright's ~100 other `BrowserContext`/`Page`
+ * methods, and without a double-cast through `unknown` to get there.
+ */
+export interface SlackApiIsolatedBrowser {
+  context: {
+    addCookies: (cookies: readonly { domain: string; name: string; path: string; value: string }[]) => Promise<void>;
+    newPage: () => Promise<SlackApiBrowserPage>;
+  };
+  release: () => Promise<void>;
+}
+
+/**
+ * Acquire a headless, ephemeral Chromium page (via the existing
+ * `acquireBrowserForConnector` primitive already used by the browser-backed
+ * connectors) and seed it with the `d`/`d-s` session cookies, so `stars`/
+ * `user_groups`/`reminders`/`dm_read_states` can run their Slack Web API
+ * calls with a real Chromium TLS fingerprint. See `slack-api.ts`'s module
+ * header for why plain Node `fetch` cannot authenticate these calls even
+ * with a byte-identical, objectively-valid token+cookie pair.
+ *
+ * Headless (never headed): these are non-interactive, already-authenticated
+ * API calls — no login UI, no human interaction, so there is nothing for an
+ * operator to see or do. This also means the in-container
+ * headed-browser-visibility gate (`decideContainerHeadedBrowserGate`) never
+ * fires for this path.
+ *
+ * NEVER throws: a browser-acquisition failure (missing Chromium, launch
+ * error, cookie-seed failure) must stay isolated to these four optional
+ * streams exactly like a Slack API failure does, not fail the whole run —
+ * `runRequestedStreams`'s required streams (messages/channels/files/etc.)
+ * must be unaffected by this connector newly touching a browser. On
+ * failure, returns a transport whose every call rejects with the
+ * acquisition error and a no-op `release`; each of the four callers already
+ * wraps its stream in `runOptionalStream`, which turns that rejection into
+ * the same per-stream `optional_stream_failed` SKIP_RESULT a live-call
+ * failure would produce.
+ *
+ * `acquire` defaults to `acquireBrowserForConnector` (the real Chromium
+ * launcher); overridable so tests can exercise the acquisition-failure and
+ * cookie-seeding paths without spinning up a real browser process.
+ */
+export async function acquireSlackApiBrowserTransport(
+  progress: ProgressFn,
+  cookie: string,
+  acquire: (
+    options: Parameters<typeof acquireBrowserForConnector>[0]
+  ) => Promise<SlackApiIsolatedBrowser> = acquireBrowserForConnector
+): Promise<SlackApiBrowserTransportHandle> {
+  let browser: SlackApiIsolatedBrowser;
+  try {
+    browser = await acquire({
+      headless: true,
+      profileName: SLACK_API_BROWSER_PROFILE_NAME,
+    });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    progress(`Slack: could not acquire a browser for stars/user_groups/reminders/dm_read_states: ${message}`);
+    const failure = new Error(`slack_api_browser_unavailable: ${message}`, { cause: e });
+    return {
+      release: () => Promise.resolve(),
+      transport: () => Promise.reject(failure),
+    };
+  }
+  try {
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    await browser.context.addCookies([
+      { domain: SLACK_COOKIE_DOMAIN, name: "d", path: "/", value: cookie },
+      {
+        domain: SLACK_COOKIE_DOMAIN,
+        name: "d-s",
+        path: "/",
+        value: String(nowSeconds - D_S_COOKIE_BACKDATE_SECONDS),
+      },
+    ]);
+    const page = await browser.context.newPage();
+    return {
+      release: browser.release,
+      transport: createBrowserSlackApiTransport(page),
+    };
+  } catch (e) {
+    await browser.release();
+    const message = e instanceof Error ? e.message : String(e);
+    const failure = new Error(`slack_api_browser_setup_failed: ${message}`, { cause: e });
+    return {
+      release: () => Promise.resolve(),
+      transport: () => Promise.reject(failure),
+    };
+  }
+}
+
 /**
  * Run every requested record stream against the open sqlite DB in emit
  * order. Returns the max message TS for the post-loop STATE checkpoint.
@@ -2309,27 +2438,64 @@ async function runRequestedStreams(
     deps.progress("Slack: emitting canvases", { stream: "canvases" });
     await runCanvasesStream(deps);
   }
-  if (deps.requested.has("stars")) {
-    deps.progress("Slack: emitting stars", { stream: "stars" });
-    await runOptionalStream(emit, "stars", () => runStarsStream(deps, credentials.token, credentials.cookie));
-  }
-  if (deps.requested.has("user_groups")) {
-    deps.progress("Slack: emitting user groups", { stream: "user_groups" });
-    await runOptionalStream(emit, "user_groups", () =>
-      runUserGroupsStream(deps, credentials.token, credentials.cookie)
-    );
-  }
-  if (deps.requested.has("reminders")) {
-    deps.progress("Slack: emitting reminders", { stream: "reminders" });
-    await runOptionalStream(emit, "reminders", () => runRemindersStream(deps, credentials.token, credentials.cookie));
-  }
-  if (deps.requested.has("dm_read_states")) {
-    deps.progress("Slack: emitting DM read states", { stream: "dm_read_states" });
-    await runOptionalStream(emit, "dm_read_states", () =>
-      runDmReadStatesStream(deps, credentials.token, credentials.cookie)
-    );
-  }
+  await runGapStreamsIfRequested(deps, credentials, emit);
   return result;
+}
+
+/**
+ * Runs `stars`/`user_groups`/`reminders`/`dm_read_states` (if any are
+ * requested) through one shared, ephemeral browser transport. Split out of
+ * `runRequestedStreams` to keep that function's branch count under the
+ * repo's cognitive-complexity ceiling — this is a pure extraction, no
+ * behavior change.
+ */
+async function runGapStreamsIfRequested(
+  deps: StreamDeps,
+  credentials: SlackCredentials,
+  emit: CollectContext["emit"]
+): Promise<void> {
+  const gapStreamsRequested =
+    deps.requested.has("stars") ||
+    deps.requested.has("user_groups") ||
+    deps.requested.has("reminders") ||
+    deps.requested.has("dm_read_states");
+  if (!gapStreamsRequested) {
+    return;
+  }
+  // One browser page, shared across all four gap streams this run — not
+  // one per stream. Acquisition failure (e.g. Chromium missing) is caught
+  // per-stream below via `runOptionalStream`'s own isolation, so a single
+  // failed acquisition reports four honest skips instead of one shared
+  // browser bug taking down four otherwise-unrelated stream attempts.
+  const transport = await acquireSlackApiBrowserTransport(deps.progress, credentials.cookie);
+  try {
+    if (deps.requested.has("stars")) {
+      deps.progress("Slack: emitting stars", { stream: "stars" });
+      await runOptionalStream(emit, "stars", () =>
+        runStarsStream(deps, transport.transport, credentials.token, credentials.cookie)
+      );
+    }
+    if (deps.requested.has("user_groups")) {
+      deps.progress("Slack: emitting user groups", { stream: "user_groups" });
+      await runOptionalStream(emit, "user_groups", () =>
+        runUserGroupsStream(deps, transport.transport, credentials.token, credentials.cookie)
+      );
+    }
+    if (deps.requested.has("reminders")) {
+      deps.progress("Slack: emitting reminders", { stream: "reminders" });
+      await runOptionalStream(emit, "reminders", () =>
+        runRemindersStream(deps, transport.transport, credentials.token, credentials.cookie)
+      );
+    }
+    if (deps.requested.has("dm_read_states")) {
+      deps.progress("Slack: emitting DM read states", { stream: "dm_read_states" });
+      await runOptionalStream(emit, "dm_read_states", () =>
+        runDmReadStatesStream(deps, transport.transport, credentials.token, credentials.cookie)
+      );
+    }
+  } finally {
+    await transport.release();
+  }
 }
 
 // ─── Phase timing observability ────────────────────────────────────────

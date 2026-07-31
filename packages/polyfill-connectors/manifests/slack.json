@@ -12,6 +12,9 @@
       },
       "filesystem": {
         "required": true
+      },
+      "browser": {
+        "required": false
       }
     },
     "external_tools": [

@@ -11,15 +11,17 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, before, test } from "node:test";
 import type { EmittedMessage } from "../../src/connector-runtime.ts";
 import {
+  acquireSlackApiBrowserTransport,
   runDmReadStatesStream,
   runOptionalStream,
   runRemindersStream,
   runStarsStream,
   runUserGroupsStream,
   runUsersStream,
+  type SlackApiIsolatedBrowser,
   type StreamDeps,
 } from "./index.ts";
-import { resetSlackApiGovernor } from "./slack-api.ts";
+import { nodeFetchSlackApiTransport, resetSlackApiGovernor } from "./slack-api.ts";
 
 const ORIGINAL_FETCH = globalThis.fetch;
 const ORIGINAL_SET_TIMEOUT = globalThis.setTimeout;
@@ -82,7 +84,7 @@ test("runStarsStream: emits one RECORD per starred item and declares considered"
     );
   const db = new DatabaseSync(":memory:");
   const captured: Captured = { considered: [], records: [] };
-  await runStarsStream(fakeDeps(db, captured, ["stars"]), "xoxc-fake", "d-fake");
+  await runStarsStream(fakeDeps(db, captured, ["stars"]), nodeFetchSlackApiTransport, "xoxc-fake", "d-fake");
   assert.equal(captured.records.length, 1);
   assert.equal(captured.records[0]?.stream, "stars");
   assert.equal(captured.considered[0]?.considered, 1);
@@ -92,7 +94,7 @@ test("runStarsStream: zero stars still completes and declares considered=0", asy
   globalThis.fetch = () => Promise.resolve(jsonResponse({ ok: true, items: [] }));
   const db = new DatabaseSync(":memory:");
   const captured: Captured = { considered: [], records: [] };
-  await runStarsStream(fakeDeps(db, captured, ["stars"]), "xoxc-fake", "d-fake");
+  await runStarsStream(fakeDeps(db, captured, ["stars"]), nodeFetchSlackApiTransport, "xoxc-fake", "d-fake");
   assert.equal(captured.records.length, 0);
   assert.equal(captured.considered[0]?.considered, 0);
 });
@@ -102,7 +104,7 @@ test("runUserGroupsStream: emits one RECORD per user group", async () => {
     Promise.resolve(jsonResponse({ ok: true, usergroups: [{ id: "S01", handle: "eng", users: ["U01"] }] }));
   const db = new DatabaseSync(":memory:");
   const captured: Captured = { considered: [], records: [] };
-  await runUserGroupsStream(fakeDeps(db, captured, ["user_groups"]), "xoxc-fake", "d-fake");
+  await runUserGroupsStream(fakeDeps(db, captured, ["user_groups"]), nodeFetchSlackApiTransport, "xoxc-fake", "d-fake");
   assert.equal(captured.records.length, 1);
   assert.equal(captured.records[0]?.stream, "user_groups");
 });
@@ -112,7 +114,7 @@ test("runRemindersStream: emits one RECORD per reminder", async () => {
     Promise.resolve(jsonResponse({ ok: true, reminders: [{ id: "Rm01", text: "ping bob", time: 1_714_032_900 }] }));
   const db = new DatabaseSync(":memory:");
   const captured: Captured = { considered: [], records: [] };
-  await runRemindersStream(fakeDeps(db, captured, ["reminders"]), "xoxc-fake", "d-fake");
+  await runRemindersStream(fakeDeps(db, captured, ["reminders"]), nodeFetchSlackApiTransport, "xoxc-fake", "d-fake");
   assert.equal(captured.records.length, 1);
   assert.equal(captured.records[0]?.stream, "reminders");
 });
@@ -150,7 +152,12 @@ test("runDmReadStatesStream: only calls conversations.info for is_im/is_mpim cha
     );
   };
   const captured: Captured = { considered: [], records: [] };
-  await runDmReadStatesStream(fakeDeps(db, captured, ["dm_read_states"]), "xoxc-fake", "d-fake");
+  await runDmReadStatesStream(
+    fakeDeps(db, captured, ["dm_read_states"]),
+    nodeFetchSlackApiTransport,
+    "xoxc-fake",
+    "d-fake"
+  );
 
   assert.deepEqual([...seenChannels].sort(), ["D01", "G01"]);
   assert.equal(captured.records.length, 2);
@@ -162,7 +169,12 @@ test("runDmReadStatesStream: zero DM/MPIM channels makes zero API calls and comp
   seedChannel(db, "C01", { is_channel: true });
   globalThis.fetch = () => Promise.reject(new Error("should not be called"));
   const captured: Captured = { considered: [], records: [] };
-  await runDmReadStatesStream(fakeDeps(db, captured, ["dm_read_states"]), "xoxc-fake", "d-fake");
+  await runDmReadStatesStream(
+    fakeDeps(db, captured, ["dm_read_states"]),
+    nodeFetchSlackApiTransport,
+    "xoxc-fake",
+    "d-fake"
+  );
   assert.equal(captured.records.length, 0);
   assert.equal(captured.considered[0]?.considered, 0);
 });
@@ -323,4 +335,136 @@ test("contrast: a REQUIRED stream's failure is NOT caught by runOptionalStream a
     requested: new Map([["users", { name: "users" }]]),
   };
   await assert.rejects(() => runUsersStream(deps), /emitRecord_boom/);
+});
+
+// ─── acquireSlackApiBrowserTransport: TLS-fingerprint fix wiring ───────────
+//
+// Root cause (see slack-api.ts module header, also documented on
+// acquireSlackApiBrowserTransport itself): a plain Node fetch cannot
+// authenticate stars/user_groups/reminders/dm_read_states against Slack's
+// edge even with a byte-identical, valid token+cookie pair, because it
+// lacks slackdump's real Chromium/uTLS TLS fingerprint. These tests prove
+// the acquisition + cookie-seeding + failure-isolation contract using a
+// fake acquire function (the real one launches actual Chromium, which is
+// out of scope for a fast unit test) — not that Slack's edge accepts the
+// resulting fingerprint, which only a live call can prove.
+
+interface FakeCookie {
+  domain?: string;
+  name: string;
+  path?: string;
+  value: string;
+}
+
+type AcquireFn = (options: { headless?: boolean; profileName: string }) => Promise<SlackApiIsolatedBrowser>;
+
+// `SlackApiIsolatedBrowser` (index.ts) is ALREADY the minimal surface
+// `acquireSlackApiBrowserTransport` depends on — the fake below satisfies it
+// directly, with no cast needed at all (unlike a fake built against the full
+// Playwright `IsolatedBrowser`/`BrowserContext`/`Page` types).
+function fakeIsolatedBrowser(
+  overrides: {
+    addCookies?: (cookies: readonly FakeCookie[]) => Promise<void>;
+    newPage?: () => Promise<{ evaluate: () => Promise<never> }>;
+    release?: () => Promise<void>;
+  } = {}
+): { addCookiesCalls: FakeCookie[][]; browser: AcquireFn } {
+  const addCookiesCalls: FakeCookie[][] = [];
+  const browser: AcquireFn = () =>
+    Promise.resolve({
+      context: {
+        addCookies: (cookies) => {
+          addCookiesCalls.push([...(cookies as readonly FakeCookie[])]);
+          return overrides.addCookies ? overrides.addCookies(cookies as readonly FakeCookie[]) : Promise.resolve();
+        },
+        newPage:
+          overrides.newPage ??
+          (() => Promise.resolve({ evaluate: () => Promise.resolve({ status: 200, body: "{}" } as never) })),
+      },
+      release: overrides.release ?? (() => Promise.resolve()),
+    });
+  return { addCookiesCalls, browser };
+}
+
+test("acquireSlackApiBrowserTransport: seeds the d/d-s cookies on .slack.com before returning a transport", async () => {
+  const { addCookiesCalls, browser } = fakeIsolatedBrowser();
+  const handle = await acquireSlackApiBrowserTransport(() => Promise.resolve(), "d-cookie-value", browser);
+  try {
+    assert.equal(addCookiesCalls.length, 1, "must seed cookies exactly once per acquisition");
+    const cookies = addCookiesCalls[0] ?? [];
+    const dCookie = cookies.find((c) => c.name === "d");
+    const dsCookie = cookies.find((c) => c.name === "d-s");
+    assert.equal(dCookie?.value, "d-cookie-value");
+    assert.equal(dCookie?.domain, ".slack.com");
+    assert.equal(dCookie?.path, "/");
+    assert.ok(dsCookie, "must also seed the derived d-s freshness cookie slackdump's own auth provider sends");
+    assert.equal(dsCookie?.domain, ".slack.com");
+  } finally {
+    await handle.release();
+  }
+});
+
+test("acquireSlackApiBrowserTransport: browser acquisition failure never throws — returns a transport that rejects", async () => {
+  const progressMessages: string[] = [];
+  const handle = await acquireSlackApiBrowserTransport(
+    (msg) => {
+      progressMessages.push(msg);
+      return Promise.resolve();
+    },
+    "d-cookie-value",
+    () => Promise.reject(new Error("chromium_not_installed"))
+  );
+  // The function itself must not throw (proven by reaching this line) —
+  // this is what keeps a Chromium launch failure from failing the whole
+  // run, since runRequestedStreams awaits this directly, outside any
+  // runOptionalStream try/catch.
+  await assert.rejects(
+    () => handle.transport({ url: "https://slack.com/api/stars.list", method: "GET", headers: {} }),
+    /slack_api_browser_unavailable/
+  );
+  await assert.doesNotReject(() => handle.release(), "release must be a safe no-op after a failed acquisition");
+  assert.ok(
+    progressMessages.some((m) => m.includes("could not acquire a browser")),
+    "must report the acquisition failure via progress so it is visible in run evidence"
+  );
+});
+
+test("acquireSlackApiBrowserTransport: a failed run through runOptionalStream still reports honest per-stream SKIP_RESULTs when the browser is unavailable", async () => {
+  // End-to-end proof of the isolation contract at the actual call site
+  // shape: runOptionalStream wraps a stream runner that depends on the
+  // (failed) transport, and the SKIP_RESULT still carries a real, specific
+  // error — not a generic/opaque failure — for the operator to diagnose.
+  const { messages, emit } = captureEmitted();
+  const handle = await acquireSlackApiBrowserTransport(
+    () => Promise.resolve(),
+    "d-cookie-value",
+    () => Promise.reject(new Error("headed_browser_unavailable"))
+  );
+  await runOptionalStream(emit, "stars", () =>
+    handle.transport({ url: "https://slack.com/api/stars.list", method: "GET", headers: {} }).then(() => undefined)
+  );
+  await handle.release();
+
+  assert.equal(messages.length, 1);
+  const [msg] = messages;
+  assert.equal(msg?.type, "SKIP_RESULT");
+  assert.match((msg as { message?: string }).message ?? "", /slack_api_browser_unavailable/);
+  assert.match((msg as { message?: string }).message ?? "", /headed_browser_unavailable/);
+});
+
+test("acquireSlackApiBrowserTransport: a cookie-seeding failure is isolated the same way as an acquisition failure", async () => {
+  const releaseCalls: number[] = [];
+  const { browser } = fakeIsolatedBrowser({
+    addCookies: () => Promise.reject(new Error("context_closed")),
+    release: () => {
+      releaseCalls.push(1);
+      return Promise.resolve();
+    },
+  });
+  const handle = await acquireSlackApiBrowserTransport(() => Promise.resolve(), "d-cookie-value", browser);
+  await assert.rejects(
+    () => handle.transport({ url: "https://slack.com/api/stars.list", method: "GET", headers: {} }),
+    /slack_api_browser_setup_failed/
+  );
+  assert.equal(releaseCalls.length, 1, "the underlying browser must still be released even though setup failed");
 });

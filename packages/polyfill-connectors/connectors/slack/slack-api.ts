@@ -10,11 +10,30 @@
  * `reminders.list`, and `conversations.info` directly against
  * `https://slack.com/api/`, authenticated with the SAME session credential
  * the connector already captures for slackdump (`SLACK_TOKEN` xoxc token +
- * `SLACK_COOKIE` the `d` cookie) and the same browser-shaped request
- * posture slackdump uses (derived `d-s` cookie + browser UA) — no new auth
- * modality. See openspec/changes/complete-slack-bundled-connector-coverage
- * for the evidence that these methods are reachable with that credential
- * and are not exposed by slackdump's own CLI.
+ * `SLACK_COOKIE` the `d` cookie) — no new credential/auth modality. See
+ * openspec/changes/complete-slack-bundled-connector-coverage for the
+ * evidence that these methods are reachable with that credential and are
+ * not exposed by slackdump's own CLI.
+ *
+ * Transport: these calls MUST run through a real Chromium page
+ * (`SlackApiBrowserTransport`, provided by `index.ts`'s `runOptionalStream`
+ * caller), not plain Node `fetch`. Root-caused live: slackdump's own Slack
+ * Web API client (`rusq/slackdump`'s `auth.simpleProvider.HTTPClient`,
+ * `chttp.New(..., chttp.WithUTLS(&utls.Config{}))`) wraps every live call —
+ * including `conversations.info`, exposed on the exact same `Slack`
+ * interface slackdump's archive/resume path uses — in a uTLS transport that
+ * emulates a real Chrome TLS ClientHello. A plain Node `fetch()` presents a
+ * different TLS fingerprint at the handshake layer regardless of any HTTP
+ * header (User-Agent, Cookie) it sends, and Slack's edge rejects that
+ * fingerprint as `invalid_auth`/401 even for a token+cookie pair slackdump's
+ * own concurrent calls prove valid — confirmed by reading slackdump's actual
+ * request-construction path (`internal/client/client.go`
+ * `newSlackClient`/`auth/auth.go` `simpleProvider.HTTPClient`), not
+ * inferred. `SlackApiBrowserTransport` runs the request inside a real
+ * Chromium page (`page.evaluate(fetch)`, the same mechanism the ChatGPT
+ * connector already uses to preserve Cloudflare's TLS fingerprint check —
+ * see `connectors/chatgpt/index.ts` `chatGptBackendFetchInBrowser`) so the
+ * TLS handshake is genuinely Chromium's, not reimplemented/spoofed.
  */
 
 import { type ConnectorHttpGovernor, createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
@@ -105,6 +124,83 @@ interface SlackApiRawResponse {
   status: number;
 }
 
+export interface SlackApiRequestInit {
+  body?: string;
+  headers: Record<string, string>;
+  method: "GET" | "POST";
+  url: string;
+}
+
+/**
+ * Issues one HTTP request and returns its status/body/retry-after. The
+ * default (`nodeFetchSlackApiTransport`) uses Node `fetch` — this is the
+ * ORIGINAL, still-available transport, kept as the fallback for tests and
+ * for any caller that hasn't wired a browser page. Every live call from
+ * `index.ts`'s `runOptionalStream` MUST use `createBrowserSlackApiTransport`
+ * instead (see module header for why: TLS fingerprinting).
+ */
+export type SlackApiTransport = (req: SlackApiRequestInit) => Promise<SlackApiRawResponse>;
+
+export async function nodeFetchSlackApiTransport(req: SlackApiRequestInit): Promise<SlackApiRawResponse> {
+  const res = await fetch(req.url, {
+    method: req.method,
+    headers: req.headers,
+    ...(req.body === undefined ? {} : { body: req.body }),
+  });
+  const retryAfter = res.headers.get("retry-after");
+  return {
+    body: await res.text().catch((): string => ""),
+    status: res.status,
+    ...(retryAfter === null ? {} : { retryAfter }),
+  };
+}
+
+/**
+ * The function actually serialized into the Chromium page by
+ * `createBrowserSlackApiTransport` (via `page.evaluate`). MUST be a pure,
+ * self-contained function — Playwright stringifies it and runs it in the
+ * page's own JS context, so it cannot close over any module-scope value
+ * (mirrors `chatGptBackendFetchInBrowser` in `connectors/chatgpt/index.ts`,
+ * the established pattern for this exact TLS-fingerprint problem). Runs as
+ * `window.fetch` inside the page, riding Chromium's real network stack —
+ * the whole reason this function exists instead of calling Node `fetch`
+ * directly. The page's cookie jar (seeded by the caller via
+ * `context.addCookies` before this ever runs) supplies `d`/`d-s`; only the
+ * bearer/form token and non-cookie headers are passed in explicitly.
+ */
+export async function slackApiFetchInBrowser(req: SlackApiRequestInit): Promise<SlackApiRawResponse> {
+  const res = await fetch(req.url, {
+    method: req.method,
+    headers: req.headers,
+    credentials: "include",
+    ...(req.body === undefined ? {} : { body: req.body }),
+  });
+  const retryAfter = res.headers.get("retry-after");
+  return {
+    body: await res.text().catch((): string => ""),
+    status: res.status,
+    ...(retryAfter === null ? {} : { retryAfter }),
+  };
+}
+
+/** The minimal Playwright `Page` surface this module depends on. */
+export interface SlackApiBrowserPage {
+  evaluate: <R, Arg>(pageFunction: (arg: Arg) => R | Promise<R>, arg: Arg) => Promise<R>;
+}
+
+/**
+ * Build a `SlackApiTransport` that runs every request through `page`
+ * (`page.evaluate(slackApiFetchInBrowser, req)`), so the request's TLS
+ * handshake is Chromium's real ClientHello, not Node's. The caller
+ * (`index.ts`) is responsible for seeding the page's browser context with
+ * the `d`/`d-s` session cookies via `context.addCookies` before any call
+ * through this transport — this function does not manage cookies, only
+ * dispatch.
+ */
+export function createBrowserSlackApiTransport(page: SlackApiBrowserPage): SlackApiTransport {
+  return (req) => page.evaluate(slackApiFetchInBrowser, req);
+}
+
 /**
  * POST a Slack Web API method with `application/x-www-form-urlencoded`
  * params, authenticated as `token` (matches `rusq/slack`'s `postForm` —
@@ -113,6 +209,7 @@ interface SlackApiRawResponse {
  * Slackdump's auth substrate sends for client tokens.
  */
 async function slackApiPost<T extends { error?: string; ok: boolean }>(
+  transport: SlackApiTransport,
   method: string,
   token: string,
   cookie: string,
@@ -122,8 +219,9 @@ async function slackApiPost<T extends { error?: string; ok: boolean }>(
   let raw: SlackApiRawResponse;
   try {
     const r = await httpGovernor.request<SlackApiRawResponse, SlackApiRawResponse>(
-      async (): Promise<SlackApiRawResponse> => {
-        const res = await fetch(`${API_BASE}${method}`, {
+      () =>
+        transport({
+          url: `${API_BASE}${method}`,
           method: "POST",
           headers: {
             "Content-Type": "application/x-www-form-urlencoded",
@@ -131,14 +229,7 @@ async function slackApiPost<T extends { error?: string; ok: boolean }>(
             "User-Agent": USER_AGENT,
           },
           body: body.toString(),
-        });
-        const retryAfter = res.headers.get("retry-after");
-        return {
-          body: await res.text().catch((): string => ""),
-          status: res.status,
-          ...(retryAfter === null ? {} : { retryAfter }),
-        };
-      },
+        }),
       (resp) => ({
         status: resp.status,
         ...(resp.retryAfter === undefined ? {} : { headers: { "retry-after": resp.retryAfter } }),
@@ -158,6 +249,7 @@ async function slackApiPost<T extends { error?: string; ok: boolean }>(
  * plus the derived session cookie pair (`d` + `d-s`) and browser UA.
  */
 async function slackApiGet<T extends { error?: string; ok: boolean }>(
+  transport: SlackApiTransport,
   method: string,
   token: string,
   cookie: string,
@@ -167,21 +259,16 @@ async function slackApiGet<T extends { error?: string; ok: boolean }>(
   let raw: SlackApiRawResponse;
   try {
     const r = await httpGovernor.request<SlackApiRawResponse, SlackApiRawResponse>(
-      async (): Promise<SlackApiRawResponse> => {
-        const res = await fetch(`${API_BASE}${method}?${query}`, {
+      () =>
+        transport({
+          url: `${API_BASE}${method}?${query}`,
+          method: "GET",
           headers: {
             Authorization: `Bearer ${token}`,
             Cookie: buildSlackSessionCookieHeader(cookie),
             "User-Agent": USER_AGENT,
           },
-        });
-        const retryAfter = res.headers.get("retry-after");
-        return {
-          body: await res.text().catch((): string => ""),
-          status: res.status,
-          ...(retryAfter === null ? {} : { retryAfter }),
-        };
-      },
+        }),
       (resp) => ({
         status: resp.status,
         ...(resp.retryAfter === undefined ? {} : { headers: { "retry-after": resp.retryAfter } }),
@@ -221,7 +308,11 @@ function parseSlackApiResponse<T extends { error?: string; ok: boolean }>(raw: S
 
 const STARS_PAGE_COUNT = "100";
 
-export async function fetchAllStars(token: string, cookie: string): Promise<SlackStarItem[]> {
+export async function fetchAllStars(
+  transport: SlackApiTransport,
+  token: string,
+  cookie: string
+): Promise<SlackStarItem[]> {
   const items: SlackStarItem[] = [];
   let cursor: string | undefined;
   do {
@@ -229,7 +320,7 @@ export async function fetchAllStars(token: string, cookie: string): Promise<Slac
     if (cursor) {
       params.cursor = cursor;
     }
-    const resp = await slackApiPost<SlackStarsListResponse>("stars.list", token, cookie, params);
+    const resp = await slackApiPost<SlackStarsListResponse>(transport, "stars.list", token, cookie, params);
     items.push(...(resp.items ?? []));
     cursor = resp.response_metadata?.next_cursor || undefined;
   } while (cursor);
@@ -238,8 +329,12 @@ export async function fetchAllStars(token: string, cookie: string): Promise<Slac
 
 // ─── usergroups.list ─────────────────────────────────────────────────────
 
-export async function fetchAllUserGroups(token: string, cookie: string): Promise<SlackUserGroup[]> {
-  const resp = await slackApiPost<SlackUserGroupsListResponse>("usergroups.list", token, cookie, {
+export async function fetchAllUserGroups(
+  transport: SlackApiTransport,
+  token: string,
+  cookie: string
+): Promise<SlackUserGroup[]> {
+  const resp = await slackApiPost<SlackUserGroupsListResponse>(transport, "usergroups.list", token, cookie, {
     include_users: "true",
     include_count: "true",
     include_disabled: "true",
@@ -249,8 +344,12 @@ export async function fetchAllUserGroups(token: string, cookie: string): Promise
 
 // ─── reminders.list ──────────────────────────────────────────────────────
 
-export async function fetchAllReminders(token: string, cookie: string): Promise<SlackReminder[]> {
-  const resp = await slackApiPost<SlackRemindersListResponse>("reminders.list", token, cookie, {});
+export async function fetchAllReminders(
+  transport: SlackApiTransport,
+  token: string,
+  cookie: string
+): Promise<SlackReminder[]> {
+  const resp = await slackApiPost<SlackRemindersListResponse>(transport, "reminders.list", token, cookie, {});
   return resp.reminders ?? [];
 }
 
@@ -270,13 +369,14 @@ export interface DmReadState {
  * channel type itself, keeping it a pure per-ID fetch.
  */
 export async function fetchDmReadStates(
+  transport: SlackApiTransport,
   token: string,
   cookie: string,
   channelIds: readonly string[]
 ): Promise<DmReadState[]> {
   const out: DmReadState[] = [];
   for (const channelId of channelIds) {
-    const resp = await slackApiGet<SlackConversationInfoResponse>("conversations.info", token, cookie, {
+    const resp = await slackApiGet<SlackConversationInfoResponse>(transport, "conversations.info", token, cookie, {
       channel: channelId,
     });
     const ch = resp.channel;
