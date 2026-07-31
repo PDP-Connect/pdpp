@@ -2679,6 +2679,53 @@ async function getOwnerDeviceAuthRowByUserCode(userCode: unknown): Promise<Owner
   return await getOwnerDeviceAuthStore().getByUserCode(userCode);
 }
 
+// user_code is a short (6 hex char, ~16.7M-value) random string with a
+// UNIQUE constraint: `owner_device_auth_user_code_key` on Postgres (inline
+// column UNIQUE gets that auto-generated name; confirmed live via `\d
+// owner_device_auth`), a plain column UNIQUE on SQLite. At fleet scale,
+// genuine collisions occur with non-negligible probability, so a colliding
+// insert on THIS SPECIFIC constraint is an expected transient condition,
+// not a corruption signal: regenerate only the colliding user_code and
+// retry the same insert a bounded number of times. device_code/approval_id
+// are left untouched across attempts -- they are independently generated
+// from 8 random bytes and are not the retried column, and their own UNIQUE
+// constraints (device_code's PRIMARY KEY, approval_id's UNIQUE) MUST NOT be
+// treated as retryable here.
+//
+// Both drivers' errors are narrowed to that exact constraint, not merely
+// "some 23505 / some SQLITE_CONSTRAINT_UNIQUE happened":
+//   - pg (node-postgres) DatabaseError exposes `.constraint`, the literal
+//     Postgres constraint name, for 23505 (verified live against the pool:
+//     `err.constraint === "owner_device_auth_user_code_key"`).
+//   - better-sqlite3 does not expose a structured column/constraint field,
+//     but its SQLITE_CONSTRAINT_UNIQUE message is the stable, driver-formatted
+//     "UNIQUE constraint failed: <table>.<column>" (verified live), so the
+//     column name is matched out of the message text.
+const USER_CODE_COLLISION_MAX_ATTEMPTS = 5;
+const OWNER_DEVICE_AUTH_USER_CODE_PG_CONSTRAINT = "owner_device_auth_user_code_key";
+const SQLITE_USER_CODE_UNIQUE_MESSAGE_RE = /UNIQUE constraint failed: owner_device_auth\.user_code\b/;
+
+// Exported only as a pure, side-effect-free predicate so its exact-constraint
+// narrowing can be unit-tested directly against constructed error shapes,
+// without needing a live DB collision for every driver/constraint case.
+export function isUserCodeUniqueViolation(err: unknown): boolean {
+  if (!(err instanceof Error)) {
+    return false;
+  }
+  const { code, constraint } = err as { code?: unknown; constraint?: unknown };
+  if (code === "23505") {
+    return constraint === OWNER_DEVICE_AUTH_USER_CODE_PG_CONSTRAINT;
+  }
+  if (code === "SQLITE_CONSTRAINT_UNIQUE") {
+    return SQLITE_USER_CODE_UNIQUE_MESSAGE_RE.test(err.message);
+  }
+  return false;
+}
+
+function generateOwnerDeviceUserCode(): string {
+  return randomBytes(3).toString("hex").toUpperCase();
+}
+
 async function createOwnerDeviceAuth({
   deviceCode,
   userCode,
@@ -2688,6 +2735,7 @@ async function createOwnerDeviceAuth({
   requestId = null,
   traceId = null,
   scenarioId = null,
+  nextCandidateUserCode = generateOwnerDeviceUserCode,
 }: {
   deviceCode: string;
   userCode: string;
@@ -2697,22 +2745,37 @@ async function createOwnerDeviceAuth({
   requestId?: string | null;
   traceId?: string | null;
   scenarioId?: string | null;
-}): Promise<void> {
+  nextCandidateUserCode?: () => string;
+}): Promise<string> {
   // approval_id mirrors `pending_consents.approval_id` — see
   // createPendingConsent for rationale.
   const approvalId = generateId("appr");
-  await getOwnerDeviceAuthStore().insert({
-    approvalId,
-    clientId,
-    createdAt: nowIso(),
-    deviceCode,
-    expiresAt,
-    intervalSeconds,
-    requestId,
-    scenarioId,
-    traceId,
-    userCode,
-  });
+  let candidateUserCode = userCode;
+  for (let attempt = 1; attempt <= USER_CODE_COLLISION_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      // biome-ignore lint/performance/noAwaitInLoops: each attempt's outcome (success, retryable collision, or unrelated failure) gates whether the next attempt happens at all -- this is not independent work to parallelize.
+      await getOwnerDeviceAuthStore().insert({
+        approvalId,
+        clientId,
+        createdAt: nowIso(),
+        deviceCode,
+        expiresAt,
+        intervalSeconds,
+        requestId,
+        scenarioId,
+        traceId,
+        userCode: candidateUserCode,
+      });
+      return candidateUserCode;
+    } catch (err: unknown) {
+      if (!isUserCodeUniqueViolation(err) || attempt === USER_CODE_COLLISION_MAX_ATTEMPTS) {
+        throw err;
+      }
+      candidateUserCode = nextCandidateUserCode();
+    }
+  }
+  // Unreachable: the loop above always returns or throws.
+  throw new Error("createOwnerDeviceAuth: exhausted user_code collision retries without a terminal outcome");
 }
 
 export async function getOwnerDeviceAuthRowByApprovalId(approvalId: unknown): Promise<OwnerDeviceAuthRow | null> {
@@ -7272,7 +7335,17 @@ export async function denyGrant(deviceCode: string): Promise<boolean> {
  */
 export async function initiateOwnerDeviceAuthorization(
   clientId: unknown,
-  opts: { scenarioId?: string; baseUrl?: string; expiresIn?: number; interval?: number } = {}
+  opts: {
+    scenarioId?: string;
+    baseUrl?: string;
+    expiresIn?: number;
+    interval?: number;
+    // Test-only: overrides the user_code collision-retry candidate
+    // generator so the bounded-retry contract can be driven deterministically
+    // instead of depending on a real ~1-in-16.7M `crypto.randomBytes`
+    // collision. Production callers MUST NOT set this.
+    nextCandidateUserCode?: () => string;
+  } = {}
 ): Promise<Record<string, unknown>> {
   const traceContext = createTraceContext(opts.scenarioId ? { scenarioId: opts.scenarioId } : {});
   try {
@@ -7289,22 +7362,22 @@ export async function initiateOwnerDeviceAuthorization(
     }
 
     const deviceCode = generateId("dc_owner");
-    const userCode = randomBytes(3).toString("hex").toUpperCase();
     const verificationBaseUrl =
       opts.baseUrl || process.env.AS_PUBLIC_URL || `http://localhost:${process.env.AS_PORT || "7662"}`;
     const expiresIn = opts.expiresIn || 300;
     const interval = opts.interval || 1;
     const expiresAt = expiresInIso(expiresIn);
 
-    await createOwnerDeviceAuth({
+    const userCode = await createOwnerDeviceAuth({
       clientId,
       deviceCode,
       expiresAt,
       intervalSeconds: interval,
+      ...(opts.nextCandidateUserCode ? { nextCandidateUserCode: opts.nextCandidateUserCode } : {}),
       requestId: traceContext.request_id,
       scenarioId: traceContext.scenario_id,
       traceId: traceContext.trace_id,
-      userCode,
+      userCode: (opts.nextCandidateUserCode ?? generateOwnerDeviceUserCode)(),
     });
 
     await emitSpineEvent({
