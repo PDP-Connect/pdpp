@@ -3,6 +3,11 @@
 # be committed after scrubber output and human review.
 fixtures/*/raw/
 
+# Bounded always-on diagnostic fallback captures (see usaa/index.ts's
+# writeExportDialogUnexpectedShapeFallback) — process-local debugging
+# artifacts, never scrubbed, never meant to be committed.
+fixtures/*/diagnostics/
+
 # Local data + cache
 .pdpp-data/
 .pdpp-tools/

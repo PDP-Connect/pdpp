@@ -261,6 +261,11 @@ export interface DriveExportOptions {
   accountType?: string;
   capture?: CaptureSession | null;
   captureLabel?: string;
+  /** Test-only override for writeExportDialogUnexpectedShapeFallback's
+   *  write root; production reads PDPP_CAPTURE_ROOT_DIR / the package
+   *  default. Avoids tests mutating global process.env, which is unsafe
+   *  under this file's default (concurrent) top-level test() execution. */
+  fallbackDiagnosticRootOverride?: string;
   onDiagnostics?: (info: DiagnosticInfo) => void;
   /** Test-only override; production uses the verified account-settle delay. */
   settleDelayMs?: number;

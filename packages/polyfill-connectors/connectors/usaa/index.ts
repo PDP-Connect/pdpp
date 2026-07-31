@@ -21,7 +21,7 @@
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
-import { readdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BrowserContext, Locator, Page } from "playwright";
@@ -1171,17 +1171,95 @@ async function emitExportClickFailedDiagnostic(
   });
 }
 
-async function emitDialogUnexpectedShapeDiagnostic(
+/**
+ * Bounded, always-on raw evidence for `export_dialog_unexpected_shape` — the
+ * one diagnostic phase this file has no live DOM evidence for (see
+ * design-notes/usaa.md "2026-07-31 gate: export_dialog_unexpected_shape
+ * evidence gap"). Every OTHER diagnostic capture in this file (the
+ * `dialog_html_preview` passed to `onDiagnostics`, and every
+ * `captureExportCheckpoint` call) is either bounded to `HTML_PREVIEW_MAX`
+ * chars before it reaches durable evidence, or gated behind
+ * `options.capture` (the operator-opt-in `PDPP_CAPTURE_FIXTURES` /
+ * `PDPP_CAPTURE_ON_FAILURE` fixture-capture session — see
+ * ../../src/fixture-capture.ts). On the 2026-07-31 live run neither capture
+ * flag was set, so when the dialog took this unexpected shape the ladder's
+ * own diagnostics were fully redacted before they reached the DB
+ * (`sanitizeDiagnosticInfo` nulls `dialog_html_preview` and every candidate
+ * list), and no `dom/*.html` checkpoint existed to fall back on — the
+ * failure was real and reproducible in the live DB, but the DOM shape that
+ * caused it is unrecoverable after the fact.
+ *
+ * This function closes that specific gap without turning on general-purpose
+ * capture (a shared-runtime, cross-connector policy change, out of scope for
+ * a provider-specific fix): it writes ONE bounded, path-fixed, filename-fixed
+ * file per process — `<capture root>/usaa/diagnostics/export-dialog-unexpected-shape.json`
+ * — that a later run silently overwrites, so disk usage never grows
+ * unbounded regardless of how many times this phase recurs. It fires
+ * unconditionally at this one boundary (not a general "always capture
+ * everything" change), is best-effort (a write failure is swallowed exactly
+ * like every other capture call in this file — capture must never fail a
+ * run), and reuses the same 600-char `HTML_PREVIEW_MAX` truncation and
+ * `capturePageDiagnostics` redaction (no full raw HTML, no cookies/tokens —
+ * `dialogHtml` is DOM structure only) already applied to the in-memory
+ * diagnostic that reaches `onDiagnostics`. The next live occurrence of this
+ * phase leaves a retrievable, git-ignored artifact even with fixture capture
+ * off, which is the missing piece for reconstructing the real selector this
+ * connector needs.
+ */
+const DEFAULT_FALLBACK_DIAGNOSTIC_ROOT = join(new URL("../../fixtures", import.meta.url).pathname);
+
+/** Read at call time (not module load) so PDPP_CAPTURE_ROOT_DIR set after
+ *  import is honored, matching how createCaptureSession reads the same env
+ *  var in fixture-capture.ts. `override` lets a test supply an explicit
+ *  root instead of mutating global process.env — this file's tests run as
+ *  concurrent top-level test() calls by default, so a shared env mutation
+ *  would race with unrelated tests in the same process. */
+function fallbackDiagnosticRoot(override: string | undefined): string {
+  return override ?? process.env.PDPP_CAPTURE_ROOT_DIR?.trim() ?? DEFAULT_FALLBACK_DIAGNOSTIC_ROOT;
+}
+
+async function writeExportDialogUnexpectedShapeFallback(
   page: Page,
-  onDiagnostics: NonNullable<DriveExportOptions["onDiagnostics"]>
+  preview: string | null,
+  rootOverride: string | undefined
 ): Promise<void> {
-  const base = await capturePageDiagnostics(page);
+  try {
+    const dir = join(fallbackDiagnosticRoot(rootOverride), "usaa", "diagnostics");
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      join(dir, "export-dialog-unexpected-shape.json"),
+      JSON.stringify(
+        {
+          captured_at: nowIso(),
+          phase: "export_dialog_unexpected_shape",
+          page_title: await page.title().catch((): string => ""),
+          dialog_html_preview: preview,
+          note: "Bounded fallback capture — overwritten on every occurrence, not accumulated. See writeExportDialogUnexpectedShapeFallback doc comment.",
+        },
+        null,
+        2
+      )
+    );
+  } catch {
+    // Best-effort, matching every other capture call in this file: a
+    // filesystem error here must never fail the connector run.
+  }
+}
+
+async function readDialogHtmlPreview(page: Page): Promise<string | null> {
   const dialogHtml = await page
     .locator('[role="dialog"]')
     .first()
     .innerHTML()
     .catch((): string | null => null);
-  const preview = dialogHtml ? dialogHtml.replace(DIALOG_HTML_WS_RE, " ").slice(0, HTML_PREVIEW_MAX) : null;
+  return dialogHtml ? dialogHtml.replace(DIALOG_HTML_WS_RE, " ").slice(0, HTML_PREVIEW_MAX) : null;
+}
+
+function emitDialogUnexpectedShapeDiagnostic(
+  base: PageDiagnostics | null,
+  preview: string | null,
+  onDiagnostics: NonNullable<DriveExportOptions["onDiagnostics"]>
+): void {
   onDiagnostics({
     phase: "export_dialog_unexpected_shape",
     diag: base
@@ -1214,8 +1292,15 @@ async function openExportDialog(page: Page, located: LocatedExportPage, options:
     .count()
     .catch((): number => 0);
   if (!selectCount) {
+    // The dialog HTML preview is read once and used two ways: the bounded
+    // fallback capture fires unconditionally (must not depend on
+    // onDiagnostics being wired up — see writeExportDialogUnexpectedShapeFallback),
+    // while the in-memory diagnostic only builds when a caller is listening.
+    const preview = await readDialogHtmlPreview(page);
+    await writeExportDialogUnexpectedShapeFallback(page, preview, options.fallbackDiagnosticRootOverride);
     if (onDiagnostics) {
-      await emitDialogUnexpectedShapeDiagnostic(page, onDiagnostics);
+      const base = await capturePageDiagnostics(page);
+      emitDialogUnexpectedShapeDiagnostic(base, preview, onDiagnostics);
     }
     // Capture before Escape: the keypress below can dismiss/mutate the
     // dialog surface, so the checkpoint must run on the still-intact page.

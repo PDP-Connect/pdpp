@@ -42,7 +42,10 @@
  */
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import type { BrowserContext, Page } from "playwright";
 import type { EmittedMessage, StreamScope } from "../../src/connector-runtime.ts";
@@ -791,6 +794,82 @@ function makeDialogNotOpenPage(callOrder: string[]): Page {
         },
       };
     },
+    title() {
+      return Promise.resolve("Bank Account Summary | USAA");
+    },
+    url() {
+      return "https://www.usaa.com/my/checking?accountId=private";
+    },
+  });
+}
+
+/** Same shape as makeDialogNotOpenPage, but the dialog DOES render (a
+ *  `[role="dialog"]` element with real innerHTML) — just never gets the
+ *  expected `select[name="selectionType"]`, so it still falls into the
+ *  unexpected-shape branch, but this time with a real (non-null)
+ *  `dialog_html_preview`. Used to prove the bounded fallback-capture file
+ *  is written with the same truncated, redaction-safe preview that reaches
+ *  in-memory diagnostics — never the raw untruncated HTML. */
+function makeDialogWrongShapePage(dialogHtml: string): Page {
+  return Object.assign({} as Page, {
+    evaluate() {
+      return Promise.resolve({
+        dialog_html_preview: null,
+        dialogs_open: 1,
+        export_candidates: [],
+        has_utility_bar: false,
+        nav_candidates: [],
+        title: "Bank Account Summary | USAA",
+        url: "https://www.usaa.com/my/checking?accountId=private",
+      });
+    },
+    goto() {
+      return Promise.resolve(null);
+    },
+    keyboard: {
+      press() {
+        return Promise.resolve();
+      },
+    },
+    locator(selector: string) {
+      if (selector === "button.ent-as-utility-bar__item.export") {
+        return {
+          click() {
+            return Promise.resolve();
+          },
+          count() {
+            return Promise.resolve(1);
+          },
+          first() {
+            return this;
+          },
+        };
+      }
+      if (selector === '[role="dialog"]') {
+        return {
+          first() {
+            return this;
+          },
+          innerHTML() {
+            return Promise.resolve(dialogHtml);
+          },
+        };
+      }
+      return {
+        count() {
+          return Promise.resolve(0);
+        },
+        filter() {
+          return this;
+        },
+        first() {
+          return this;
+        },
+      };
+    },
+    title() {
+      return Promise.resolve("Bank Account Summary | USAA");
+    },
     url() {
       return "https://www.usaa.com/my/checking?accountId=private";
     },
@@ -828,6 +907,79 @@ test("driveExport captures the dialog-not-open checkpoint before pressing Escape
     captureIdx < escapeIdx,
     `checkpoint capture must run before Escape mutates the page (capture=${captureIdx}, escape=${escapeIdx})`
   );
+});
+
+/**
+ * Regression for the 2026-07-31 gate finding: the live pending gap on
+ * 0002-qjnDfcbON1LHLxlg2AtzmEHo failed with phase=export_dialog_unexpected_shape,
+ * and neither PDPP_CAPTURE_FIXTURES nor PDPP_CAPTURE_ON_FAILURE was set for
+ * that run, so no dom/*.html checkpoint exists and the durable diagnostic
+ * (`sanitizeDiagnosticInfo`) nulls dialog_html_preview before it reaches the
+ * DB — the DOM shape that caused the failure is unrecoverable after the
+ * fact. The bounded fallback write in `openExportDialog`'s !selectCount
+ * branch fires unconditionally (not gated on `options.capture` or even
+ * `onDiagnostics`) and closes that gap for the *next* occurrence. This test
+ * drives driveExport with no `capture`/`onDiagnostics` at all (matching the
+ * live run's actual configuration — this file's other tests always pass at
+ * least a fake capture session or onDiagnostics callback; this one
+ * deliberately passes neither) and asserts the fallback file lands anyway,
+ * bounded to a single fixed filename (proving it can't grow unbounded
+ * across repeated failures) and truncated to the same HTML_PREVIEW_MAX the
+ * in-memory diagnostic already uses (proving no raw/untruncated HTML is
+ * ever written to disk).
+ *
+ * Uses `fallbackDiagnosticRootOverride` rather than mutating
+ * `process.env.PDPP_CAPTURE_ROOT_DIR`: this file's tests run as concurrent
+ * top-level test() calls by default, so a shared env mutation races with
+ * unrelated tests in the same process.
+ */
+test("driveExport writes a bounded fallback capture for export_dialog_unexpected_shape even with no capture session configured", async () => {
+  const captureRoot = mkdtempSync(join(tmpdir(), "usaa-fallback-capture-"));
+  try {
+    const longDialogHtml = `<div class="unexpected-promo-dialog">${"x".repeat(2000)}</div>`;
+    const outcome = await driveExport(makeDialogWrongShapePage(longDialogHtml), "https://www.usaa.com/my/checking", {
+      // Deliberately no `capture` and no `onDiagnostics` — matches
+      // PDPP_CAPTURE_FIXTURES / PDPP_CAPTURE_ON_FAILURE both being unset
+      // and no live diagnostics listener, as on the live 07-31 run.
+      fallbackDiagnosticRootOverride: captureRoot,
+      settleDelayMs: 0,
+      sinceDate: "2026-01-01",
+      untilDate: "2026-07-16",
+    });
+    assert.deepEqual(outcome, { kind: "failed" });
+
+    const fallbackPath = join(captureRoot, "usaa", "diagnostics", "export-dialog-unexpected-shape.json");
+    const written = JSON.parse(await readFile(fallbackPath, "utf8"));
+    assert.equal(written.phase, "export_dialog_unexpected_shape");
+    assert.equal(written.page_title, "Bank Account Summary | USAA");
+    assert.ok(written.dialog_html_preview.length <= 600, "fallback preview must stay within HTML_PREVIEW_MAX");
+    assert.ok(
+      !written.dialog_html_preview.includes("x".repeat(601)),
+      "fallback must never carry the untruncated raw dialog HTML"
+    );
+
+    // A second occurrence overwrites, not accumulates — the whole point of
+    // "bounded" is a fixed single file, not one per run.
+    const secondOutcome = await driveExport(
+      makeDialogWrongShapePage(`<div>${"y".repeat(2000)}</div>`),
+      "https://www.usaa.com/my/checking",
+      {
+        fallbackDiagnosticRootOverride: captureRoot,
+        settleDelayMs: 0,
+        sinceDate: "2026-01-01",
+        untilDate: "2026-07-16",
+      }
+    );
+    assert.deepEqual(secondOutcome, { kind: "failed" });
+    const rewritten = JSON.parse(await readFile(fallbackPath, "utf8"));
+    assert.ok(rewritten.dialog_html_preview.includes("y"), "second occurrence must overwrite, not append");
+    assert.ok(
+      !rewritten.dialog_html_preview.includes("x"),
+      "prior occurrence's content must not survive the overwrite"
+    );
+  } finally {
+    rmSync(captureRoot, { force: true, recursive: true });
+  }
 });
 
 test("runSingleLadderAttempt retains a logon interstitial on the existing re-auth failure outcome", async () => {
