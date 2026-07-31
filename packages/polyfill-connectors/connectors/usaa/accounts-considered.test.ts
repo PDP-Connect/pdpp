@@ -19,10 +19,16 @@
  * `considered` against `covered` when present, so a fresh / steady-state /
  * one-changed run all read complete-eligible (covered === considered).
  *
- * `account_stats` is an append-keyed daily observation, not an inventory, so it
- * declares no denominator; the stats-only path (emitEntity: false) emits no
- * accounts self-coverage. The projection half (covered-vs-considered →
- * complete/partial, and the dropped-row → partial guardrail) is pinned in
+ * `account_stats` is an append-keyed daily observation with no fingerprint
+ * suppression, so it needs none of the covered-vs-collected machinery above —
+ * but it still has its own real per-run denominator (every account this run
+ * sampled a stat for) and declares its own, separate self-coverage message
+ * under `stream: "account_stats"` (see account-stats.test.ts). This file only
+ * covers the `accounts` ENTITY self-coverage message, which the stats-only
+ * path (emitEntity: false) correctly does not emit — there is no entity
+ * boundary to cover when the entity stream isn't requested. The projection
+ * half (covered-vs-considered → complete/partial, and the dropped-row →
+ * partial guardrail) is pinned in
  * reference-implementation/test/collection-report-projection.test.js.
  */
 
@@ -154,9 +160,12 @@ test("accounts considered: a one-changed run keeps covered === considered", asyn
   assert.equal(cov?.covered, 2, "covered (1 emitted + 1 suppressed) === considered, not the collected count of 1");
 });
 
-test("accounts considered: the stats-only path (emitEntity false) declares no accounts coverage", async () => {
+test("accounts considered: the stats-only path (emitEntity false) declares no ENTITY (accounts) coverage", async () => {
   const run = makeHarness();
   // account_stats-only run: no entity enumeration, no entity boundary to cover.
+  // (It still emits its own `stream: "account_stats"` self-coverage — see
+  // account-stats.test.ts — this assertion is scoped to the "accounts" entity
+  // self-coverage message only.)
   await emitAccountsStream(run.deps, [makeAccount({ account_id_raw: "A1" })], RUN1_AT, undefined, {
     emitEntity: false,
     emitStats: true,
@@ -165,7 +174,7 @@ test("accounts considered: the stats-only path (emitEntity false) declares no ac
   assert.equal(
     accountsSelfCoverage(run.messages),
     undefined,
-    "stats-only path enumerates no entity inventory → declares no considered/covered"
+    "stats-only path enumerates no entity inventory → declares no ENTITY considered/covered"
   );
 });
 
