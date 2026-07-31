@@ -456,6 +456,15 @@ export interface ControllerOptions {
   browserSurfaceReplacementReceiptStore?: BrowserSurfaceReplacementReceiptStore;
   /** Injectable sleep for the reclaim retry delay. Defaults to setTimeout. Tests inject a synchronous no-op. */
   browserSurfaceSleep?: (ms: number) => Promise<void>;
+  /**
+   * Bounded per-call retry attempts for a single starting-surface allocator
+   * poll before that poll's error is allowed to permanently terminalize the
+   * lease. Defaults to 3. See BrowserSurfaceManagerDeps for the full
+   * rationale (2026-07-31 Amazon Personal canary).
+   */
+  browserSurfaceStartingPollRetryAttempts?: number;
+  /** Delay between starting-surface poll retry attempts (ms). Defaults to 250. Tests set 0. */
+  browserSurfaceStartingPollRetryDelayMs?: number;
   connectorPathResolver?: ConnectorPathResolver;
   // Optional durable detail-gap store override; defaults to the configured
   // storage-backed singleton. The controller reads pending *source-pressure*
@@ -2198,7 +2207,14 @@ function scheduleToApi(
 function browserSurfaceReclaimOverridesFor(
   opts: ControllerOptions
 ): Partial<
-  Pick<BrowserSurfaceManagerDeps, "browserSurfaceReclaimRetryAttempts" | "browserSurfaceReclaimRetryDelayMs" | "sleep">
+  Pick<
+    BrowserSurfaceManagerDeps,
+    | "browserSurfaceReclaimRetryAttempts"
+    | "browserSurfaceReclaimRetryDelayMs"
+    | "browserSurfaceStartingPollRetryAttempts"
+    | "browserSurfaceStartingPollRetryDelayMs"
+    | "sleep"
+  >
 > {
   return {
     ...(opts.browserSurfaceReclaimRetryAttempts === undefined
@@ -2207,6 +2223,12 @@ function browserSurfaceReclaimOverridesFor(
     ...(opts.browserSurfaceReclaimRetryDelayMs === undefined
       ? {}
       : { browserSurfaceReclaimRetryDelayMs: opts.browserSurfaceReclaimRetryDelayMs }),
+    ...(opts.browserSurfaceStartingPollRetryAttempts === undefined
+      ? {}
+      : { browserSurfaceStartingPollRetryAttempts: opts.browserSurfaceStartingPollRetryAttempts }),
+    ...(opts.browserSurfaceStartingPollRetryDelayMs === undefined
+      ? {}
+      : { browserSurfaceStartingPollRetryDelayMs: opts.browserSurfaceStartingPollRetryDelayMs }),
     ...(opts.browserSurfaceSleep ? { sleep: opts.browserSurfaceSleep } : {}),
   };
 }

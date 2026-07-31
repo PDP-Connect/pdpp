@@ -128,6 +128,21 @@ export interface BrowserSurfaceManagerDeps {
   /** Delay between reclaim retry attempts. Defaults to 250ms. Tests inject 0. */
   readonly browserSurfaceReclaimRetryDelayMs?: number;
   readonly browserSurfaceReplacementReceiptStore: BrowserSurfaceReplacementReceiptStore | null;
+  /**
+   * Bounded per-call retry attempts for a single starting-surface allocator
+   * poll (`ensureSurface`/`getSurfaceStatus`) before that poll's error is
+   * allowed to reach remote-surface's `ensureStartingSurfaceReady`, which
+   * treats ANY thrown error as definitive surface death and immediately,
+   * irrevocably terminalizes the lease to `surface_failed` with no
+   * distinction between "this container is dead" and "one HTTP call to the
+   * allocator hiccuped." Defaults to 3. Both allocator calls are read-only or
+   * idempotent-on-existing-container (see `ensureSurface`'s
+   * inspect-existing-then-reuse branch in `neko-surface-allocator-server.ts`),
+   * so retrying in place is safe and mints no new surface.
+   */
+  readonly browserSurfaceStartingPollRetryAttempts?: number;
+  /** Delay between starting-surface poll retry attempts. Defaults to 250ms. Tests inject 0. */
+  readonly browserSurfaceStartingPollRetryDelayMs?: number;
   readonly listPersistedActiveRuns: () => Promise<
     ReadonlyArray<{ readonly connector_instance_id?: string | null; readonly run_id: string }>
   >;
@@ -237,6 +252,8 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     browserSurfaceReadinessTimeoutMs,
     browserSurfaceReclaimRetryAttempts = 3,
     browserSurfaceReclaimRetryDelayMs = 250,
+    browserSurfaceStartingPollRetryAttempts = 3,
+    browserSurfaceStartingPollRetryDelayMs = 250,
     sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
     listPersistedActiveRuns,
     log,
@@ -705,6 +722,56 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
 
   // ─── Lease lifecycle ───────────────────────────────────────────────────────
 
+  /**
+   * Wraps a starting-surface allocator so a single transient
+   * `ensureSurface`/`getSurfaceStatus` failure cannot reach
+   * remote-surface's `ensureStartingSurfaceReady`, which treats ANY thrown
+   * error as definitive surface death and immediately, irrevocably
+   * terminalizes the lease to `surface_failed` (bare `catch {}`, no
+   * distinction between "container is actually dead" and "one HTTP call to
+   * the allocator hiccuped mid-boot"). This is the fix for the 2026-07-31
+   * Amazon Personal canary (run_1785535443538): two consecutive ~1s-fast
+   * allocator throws terminalized the run while the SAME two surfaces it had
+   * already minted went on to become healthy moments later — proving the
+   * throws were transient poll hiccups, not real container death.
+   *
+   * Both wrapped calls are safe to retry in place against the SAME
+   * `surfaceId`: `ensureSurface`'s existing-container branch
+   * (`neko-surface-allocator-server.ts`'s `#findOwnedContainer` ->
+   * inspect-and-reuse) is idempotent, and `getSurfaceStatus` is a pure read.
+   * Neither call creates a new container on retry, so this keeps ownership
+   * of the one replacement surface through its readiness lifecycle instead
+   * of minting additional containers per hiccup. Bounded to
+   * browserSurfaceStartingPollRetryAttempts (default 3) consecutive
+   * failures; only after that budget is exhausted does the error reach the
+   * package and the lease manager's own terminal-lease bookkeeping, which is
+   * unchanged and still fails closed for a genuinely dead surface.
+   */
+  function wrapAllocatorWithTransientPollRetry(allocator: BrowserSurfaceAllocator): BrowserSurfaceAllocator {
+    async function withRetry<T>(call: () => Promise<T>): Promise<T> {
+      const attempts = Math.max(1, browserSurfaceStartingPollRetryAttempts);
+      let lastError: unknown;
+      for (let attempt = 1; attempt <= attempts; attempt += 1) {
+        try {
+          // biome-ignore lint/performance/noAwaitInLoops: Bounded sequential retry against the same surface; concurrency would multiply allocator load, not help it.
+          return await call();
+        } catch (err) {
+          lastError = err;
+          if (attempt < attempts && browserSurfaceStartingPollRetryDelayMs > 0) {
+            await sleep(browserSurfaceStartingPollRetryDelayMs);
+          }
+        }
+      }
+      throw lastError;
+    }
+    return {
+      ensureSurface: (request) => withRetry(() => allocator.ensureSurface(request)),
+      getSurfaceStatus: (surfaceId) => withRetry(() => allocator.getSurfaceStatus(surfaceId)),
+      listSurfaces: () => allocator.listSurfaces(),
+      stopSurface: (request) => allocator.stopSurface(request),
+    };
+  }
+
   async function waitForStartingBrowserSurface(
     lease: BrowserSurfaceLease,
     connectorId: string,
@@ -717,7 +784,9 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     }
 
     let current = lease;
-    const allocator = replacementAwareAllocator ?? UNCONFIGURED_BROWSER_SURFACE_ALLOCATOR;
+    const allocator = wrapAllocatorWithTransientPollRetry(
+      replacementAwareAllocator ?? UNCONFIGURED_BROWSER_SURFACE_ALLOCATOR
+    );
     while (current.status === "starting_surface") {
       // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
       const readyResult = await ensureStartingBrowserSurfaceReady(browserSurfaceLeaseManager, current, allocator);
