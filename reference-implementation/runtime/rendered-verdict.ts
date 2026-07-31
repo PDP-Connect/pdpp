@@ -1567,6 +1567,17 @@ function terminalProgressHeadline(retained: number | null, actions: readonly Req
   return `${held}; this source cannot collect more until the terminal issue is fixed.`;
 }
 
+// Idle scheduled eligibility is not active work: only claim "Collecting"
+// while a run is actually in flight (badges.syncing). Otherwise use the same
+// neutral eligibility phrase already used for manual-default schedules
+// (staleRefreshPolicyText).
+function scheduledProgressHeadline(committed: number | null, syncing: boolean): string {
+  if (committed !== null) {
+    return `Committed ${committed.toLocaleString()} records last run.`;
+  }
+  return syncing ? "Collecting on schedule." : "Refreshes on schedule.";
+}
+
 function progressHeadline(
   mode: ProgressMode,
   gapsDrained: number | null,
@@ -1589,14 +1600,7 @@ function progressHeadline(
     case "deferred":
       return deferredHeadline(gapsDrained, retained);
     case "scheduled":
-      if (committed === null) {
-        // Idle scheduled eligibility is not active work: only claim
-        // "Collecting" while a run is actually in flight (badges.syncing).
-        // Otherwise use the same neutral eligibility phrase already used for
-        // manual-default schedules (staleRefreshPolicyText).
-        return syncing ? "Collecting on schedule." : "Refreshes on schedule.";
-      }
-      return `Committed ${committed.toLocaleString()} records last run.`;
+      return scheduledProgressHeadline(committed, syncing);
     case "manual":
       return manualHeadline(retained, refreshedAt);
     case "local_device":
