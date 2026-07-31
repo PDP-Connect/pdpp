@@ -786,8 +786,22 @@ async function emitAttachmentDetailGaps(coverage: AttachmentDetailCoverage | und
  * unconditionally). A message dropped for lacking X-GM-MSGID, or excluded by
  * the `time_range` scope filter, is considered but not covered — no
  * accounting decision was made for its `messages` record.
+ *
+ * `droppedNoId` and `caughtErrors` are BOTH deliberately excluded from
+ * `considered` (there is no natural, non-fabricated id to key a no-X-GM-MSGID
+ * row or a caught per-message exception on — imapflow's UID is reused across
+ * UIDVALIDITY epochs and is not the stream's semantic key). They are instead
+ * surfaced via `buildMessagesDropSkipResult`'s bounded, count-only
+ * `SKIP_RESULT`, the same non-fabricating-id mechanism Amazon/H-E-B use for
+ * `unparseable_order_date` (index.ts:1377-1390) — the read-side coverage
+ * policy (`connector-coverage-policy.ts` `deriveStreamCoverageCondition`,
+ * precedence rule 2) treats ANY `SKIP_RESULT` on a stream as taking
+ * precedence over that stream's checkpoint-proves-coverage path, so a run
+ * that silently drops these rows can no longer read `complete` from a bare
+ * `0/0` + committed checkpoint.
  */
 export interface MessagesCoverage {
+  caughtErrors: number;
   considered: string[];
   covered: string[];
   droppedNoId: number;
@@ -795,7 +809,44 @@ export interface MessagesCoverage {
 }
 
 export function newMessagesCoverage(): MessagesCoverage {
-  return { considered: [], covered: [], droppedNoId: 0, timeRangeDropped: [] };
+  return { caughtErrors: 0, considered: [], covered: [], droppedNoId: 0, timeRangeDropped: [] };
+}
+
+/**
+ * Build the bounded, count-only `SKIP_RESULT` for messages rows dropped
+ * without ever reaching a `messages` accounting decision — no X-GM-MSGID, or
+ * a per-message exception `emitMessagesPass` caught and swallowed. Neither
+ * drop has a natural non-fabricated per-record id (see `MessagesCoverage`
+ * doc), so this reports one run-level aggregate per drop class, exactly
+ * mirroring Amazon's per-year `unparseable_order_date` SKIP_RESULT
+ * (index.ts:1377-1390): `reason` strings are chosen to avoid the read-side
+ * policy's retryable/deferred/unavailable/unsupported reason-pattern
+ * matches, so they fall through to `terminal_gap` — a real, non-`complete`,
+ * non-silently-retried signal that reflects "the connector could not
+ * account for these rows and nothing will re-attempt them automatically."
+ * Returns `null` when nothing was dropped, so a clean run emits nothing.
+ */
+export function buildMessagesDropSkipResult(
+  coverage: Pick<MessagesCoverage, "caughtErrors" | "droppedNoId">
+): Extract<EmittedMessage, { type: "SKIP_RESULT" }> | null {
+  const { droppedNoId, caughtErrors } = coverage;
+  if (droppedNoId === 0 && caughtErrors === 0) {
+    return null;
+  }
+  const parts: string[] = [];
+  if (droppedNoId > 0) {
+    parts.push(`${droppedNoId} row${droppedNoId === 1 ? "" : "s"} missing X-GM-MSGID`);
+  }
+  if (caughtErrors > 0) {
+    parts.push(`${caughtErrors} row${caughtErrors === 1 ? "" : "s"} failed with a caught processing error`);
+  }
+  return {
+    type: "SKIP_RESULT",
+    stream: "messages",
+    reason: "messages_row_accounting_dropped",
+    message: `Gmail messages: dropped ${parts.join(" and ")} without a messages accounting decision`,
+    diagnostics: { caught_errors: caughtErrors, dropped_no_id: droppedNoId },
+  };
 }
 
 /**
@@ -1000,6 +1051,14 @@ export async function emitMessagesPass(deps: PerMessageDeps, metas: readonly Fet
       const emsg = perMsgErr instanceof Error ? (perMsgErr.stack ?? perMsgErr.message) : String(perMsgErr);
       process.stderr.write(`[gmail] per-message error at UID ${String(msg.uid)}: ${emsg}\n`);
       // Continue with next message; don't let one bad record halt the whole run.
+      // The message never reached a `messages` accounting decision (it threw
+      // before or during processMessage), so it is NOT added to `considered`
+      // — there is no natural, non-fabricated id to key it on (imapflow's UID
+      // is not the stream's semantic key). The count-only aggregate surfaces
+      // via `buildMessagesDropSkipResult` instead.
+      if (deps.wantMessages && deps.messagesCoverage) {
+        deps.messagesCoverage.caughtErrors += 1;
+      }
     }
   }
 }
@@ -2846,6 +2905,21 @@ async function runAllMailPasses(
 
   // Pass 2: detect flag/label changes on already-seen messages (incremental only)
   await runDeltaPass(client, session, deps.requested, deps.emitRecord, deps.emittedAt);
+
+  // A bounded, count-only SKIP_RESULT for rows this run could not account
+  // for at all (no X-GM-MSGID, or a caught per-message exception) — emitted
+  // BEFORE the DETAIL_COVERAGE so the read-side projection sees the skip
+  // fact for `messages` in the same run as its coverage evidence. Per
+  // `deriveStreamCoverageCondition`'s precedence, any SKIP_RESULT on a
+  // stream outranks that stream's checkpoint-proves-coverage path, so a run
+  // that silently dropped these rows can no longer read a bare 0/0 +
+  // committed checkpoint as `complete`.
+  if (messagesCoverage) {
+    const dropSkip = buildMessagesDropSkipResult(messagesCoverage);
+    if (dropSkip) {
+      await emit(dropSkip);
+    }
+  }
 
   // Same honesty posture as attachments: emit once the forward walk
   // completes, including the zero-considered steady-state case, so the

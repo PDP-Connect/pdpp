@@ -4,8 +4,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import {
+  buildMessagesDropSkipResult,
+  type MessagesCoverage,
+  newMessagesCoverage,
+} from "../../packages/polyfill-connectors/connectors/gmail/index.ts";
 import { deriveStreamCoverageCondition } from "../server/connector-coverage-policy.ts";
-import type { RuntimeCollectionFact } from "../server/ref-control.ts";
+import type { RuntimeCollectionFact, RuntimeCollectionFactSkip } from "../server/ref-control.ts";
 
 function fact(overrides: Partial<RuntimeCollectionFact> = {}): RuntimeCollectionFact {
   return {
@@ -161,4 +166,123 @@ test("raw local coverage statuses defer accepted absence to manifest policy and 
     }),
     "retryable_gap"
   );
+});
+
+// ─── Gmail `messages`: dropped-row SKIP_RESULT closes the false-complete gap ─
+//
+// Unit D of the fleet evidence-contract gate (2026-07-31) found that a Gmail
+// run containing ONLY metadata rows missing X-GM-MSGID, or ONLY per-message
+// errors `emitMessagesPass` catches and swallows, populates neither
+// `considered` nor `covered` in `MessagesCoverage` — those rows have no
+// natural, non-fabricated id to record. A bare `considered: 0, covered: 0`
+// fact plus a committed `messages` checkpoint would otherwise satisfy
+// `deriveGapFreeStreamCoverageCondition`'s checkpoint-proves-coverage path
+// (rule 4) and read `complete`, silently hiding real dropped rows.
+//
+// The fix mirrors Amazon's `unparseable_order_date` SKIP_RESULT
+// (amazon/index.ts:1377-1390): `buildMessagesDropSkipResult` emits one
+// bounded, count-only `SKIP_RESULT` for `stream: "messages"` whenever either
+// drop class occurred. These tests drive the CONNECTOR'S ACTUAL EMITTED
+// MESSAGE through the runtime's skip-fact shape and the real read-side
+// policy function, proving the full projection — not just the connector's
+// internal accumulator — never reads `complete` for either drop class alone,
+// even with a committed checkpoint and a real (unrelated) considered/covered
+// pair satisfied.
+
+/**
+ * Narrow the connector's actual `SKIP_RESULT` emission down to exactly the
+ * fields the runtime's `handleSkipResultMessage` (reference-implementation/
+ * runtime/index.ts) carries onto `RuntimeCollectionFactSkip` — `reason` and
+ * an optional `recovery_action` sourced from `recovery_hint`. Gmail's
+ * `buildMessagesDropSkipResult` sets no `recovery_hint`, matching Amazon's
+ * `unparseable_order_date` emission, so there is no automatic retry path.
+ */
+function skipFactFromEmittedSkipResult(
+  skipResult: ReturnType<typeof buildMessagesDropSkipResult>
+): RuntimeCollectionFactSkip {
+  assert.ok(skipResult, "expected the connector to emit a SKIP_RESULT for this drop");
+  return { reason: skipResult.reason };
+}
+
+test("buildMessagesDropSkipResult: a droppedNoId-only run emits SKIP_RESULT with the dropped count, no fabricated id", () => {
+  const coverage: MessagesCoverage = { ...newMessagesCoverage(), droppedNoId: 3 };
+  const skipResult = buildMessagesDropSkipResult(coverage);
+  assert.ok(skipResult);
+  assert.equal(skipResult.type, "SKIP_RESULT");
+  assert.equal(skipResult.stream, "messages");
+  assert.deepEqual(skipResult.diagnostics, { caught_errors: 0, dropped_no_id: 3 });
+  // No id/key field anywhere on the message — count-only, mirroring Amazon.
+  assert.ok(!("id" in skipResult));
+  assert.ok(!("record_key" in skipResult));
+});
+
+test("buildMessagesDropSkipResult: a caughtErrors-only run emits SKIP_RESULT with the caught-error count, no fabricated id", () => {
+  const coverage: MessagesCoverage = { ...newMessagesCoverage(), caughtErrors: 2 };
+  const skipResult = buildMessagesDropSkipResult(coverage);
+  assert.ok(skipResult);
+  assert.equal(skipResult.stream, "messages");
+  assert.deepEqual(skipResult.diagnostics, { caught_errors: 2, dropped_no_id: 0 });
+});
+
+test("buildMessagesDropSkipResult: a clean run (nothing dropped) emits nothing", () => {
+  assert.equal(buildMessagesDropSkipResult(newMessagesCoverage()), null);
+});
+
+test("end-to-end: an only-missing-ID run projects NOT complete despite a committed checkpoint and satisfied considered/covered", () => {
+  // Satisfied denominator + committed checkpoint alone would read `complete`
+  // (see the first test in this file) — this proves the dropped-row skip
+  // fact is what changes the projection, not an unrelated shortfall.
+  const coverage: MessagesCoverage = { ...newMessagesCoverage(), droppedNoId: 5 };
+  const skipResult = buildMessagesDropSkipResult(coverage);
+  const condition = deriveStreamCoverageCondition(
+    fact({
+      checkpoint: "committed",
+      collected: 10,
+      considered: 10,
+      covered: 10,
+      skipped: skipFactFromEmittedSkipResult(skipResult),
+      stream: "messages",
+    }),
+    { coverage_strategy: "checkpoint_window", freshness_strategy: "scheduled_window" }
+  );
+  assert.notEqual(condition, "complete", "a run that dropped unaccounted rows must never read complete");
+  assert.equal(condition, "terminal_gap", "no retryable/deferred/unavailable/unsupported reason pattern matches");
+});
+
+test("end-to-end: an only-caught-error run projects NOT complete despite a committed checkpoint and satisfied considered/covered", () => {
+  const coverage: MessagesCoverage = { ...newMessagesCoverage(), caughtErrors: 4 };
+  const skipResult = buildMessagesDropSkipResult(coverage);
+  const condition = deriveStreamCoverageCondition(
+    fact({
+      checkpoint: "committed",
+      collected: 10,
+      considered: 10,
+      covered: 10,
+      skipped: skipFactFromEmittedSkipResult(skipResult),
+      stream: "messages",
+    }),
+    { coverage_strategy: "checkpoint_window", freshness_strategy: "scheduled_window" }
+  );
+  assert.notEqual(condition, "complete", "a run with only caught-and-swallowed errors must never read complete");
+  assert.equal(condition, "terminal_gap");
+});
+
+test("end-to-end: a zero-considered steady-state run with NO drops of either kind still reads complete", () => {
+  // Regression guard for the opposite failure mode: the new SKIP_RESULT must
+  // not fire on a genuinely clean run, or every honest zero-considered
+  // `messages`-only run would wrongly stop projecting complete.
+  const coverage = newMessagesCoverage();
+  assert.equal(buildMessagesDropSkipResult(coverage), null, "a clean run emits no SKIP_RESULT");
+  const condition = deriveStreamCoverageCondition(
+    fact({
+      checkpoint: "committed",
+      collected: 0,
+      considered: 0,
+      covered: 0,
+      skipped: null,
+      stream: "messages",
+    }),
+    { coverage_strategy: "checkpoint_window", freshness_strategy: "scheduled_window" }
+  );
+  assert.equal(condition, "complete");
 });

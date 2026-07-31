@@ -58,6 +58,7 @@ import {
   buildAttachmentDetailCoverageMessage,
   buildAttachmentDetailGap,
   buildMessagesCoverageMessage,
+  buildMessagesDropSkipResult,
   createAttachmentBackfillSummary,
   DEFAULT_ATTACHMENT_BACKFILL_WINDOW_UIDS,
   DEFAULT_MAX_ATTACHMENT_BYTES,
@@ -3035,6 +3036,7 @@ test("buildMessagesCoverageMessage: emits complete zero-message coverage", () =>
 
 test("buildMessagesCoverageMessage: reports considered/covered self-referentially on the messages stream", () => {
   const coverage: MessagesCoverage = {
+    caughtErrors: 0,
     considered: ["gmmsgid-1", "gmmsgid-2"],
     covered: ["gmmsgid-1", "gmmsgid-2"],
     droppedNoId: 0,
@@ -3203,4 +3205,64 @@ test("emitMessagesPass: a caught per-message error does not halt the batch or co
   // rather than silently double-counting or crashing the loop.
   assert.equal(emitted.length, 0, "a rejected fetchBodies throws before any record emits");
   assert.deepEqual(coverage.considered, [], "a per-message throw never reaches the messages accounting decision");
+  // Neither throw reaches `considered`, but both are still surfaced via the
+  // bounded `caughtErrors` count so the run can emit a SKIP_RESULT rather
+  // than silently vanishing both from the denominator AND from any evidence.
+  assert.equal(coverage.caughtErrors, 2, "both caught throws are counted, even with no id to key them on");
+});
+
+// ─── Unit D follow-up: dropped rows must outrank a bare committed checkpoint ─
+//
+// Prior to this fix, `droppedNoId` and a caught-and-swallowed per-message
+// error were tracked on the accumulator but never reached the wire: a run
+// containing ONLY one of these classes emitted a bare `considered: 0,
+// covered: 0` DETAIL_COVERAGE alongside a committed `messages` checkpoint,
+// which the read-side policy (`connector-coverage-policy.ts`,
+// `deriveGapFreeStreamCoverageCondition`, rule 4) reads as `complete` — a
+// false-complete blind spot. `buildMessagesDropSkipResult` closes it with a
+// bounded, count-only `SKIP_RESULT` mirroring Amazon's `unparseable_order_date`
+// (no fabricated per-record id — there is none to fabricate for either drop
+// class).
+
+test("buildMessagesDropSkipResult: a clean run (nothing dropped) emits nothing", () => {
+  assert.equal(buildMessagesDropSkipResult(newMessagesCoverage()), null);
+});
+
+test("buildMessagesDropSkipResult: droppedNoId alone emits a bounded count-only SKIP_RESULT for messages", () => {
+  const coverage: MessagesCoverage = { ...newMessagesCoverage(), droppedNoId: 3 };
+  const skipResult = buildMessagesDropSkipResult(coverage);
+  assert.ok(skipResult);
+  assert.equal(skipResult.type, "SKIP_RESULT");
+  assert.equal(skipResult.stream, "messages");
+  assert.deepEqual(skipResult.diagnostics, { caught_errors: 0, dropped_no_id: 3 });
+  assert.ok(!("id" in skipResult), "no fabricated per-record id — count-only, like Amazon's dated-drop skip");
+});
+
+test("buildMessagesDropSkipResult: caughtErrors alone emits a bounded count-only SKIP_RESULT for messages", () => {
+  const coverage: MessagesCoverage = { ...newMessagesCoverage(), caughtErrors: 2 };
+  const skipResult = buildMessagesDropSkipResult(coverage);
+  assert.ok(skipResult);
+  assert.equal(skipResult.stream, "messages");
+  assert.deepEqual(skipResult.diagnostics, { caught_errors: 2, dropped_no_id: 0 });
+});
+
+test("buildMessagesDropSkipResult: both drop classes present combine into one SKIP_RESULT", () => {
+  const coverage: MessagesCoverage = { ...newMessagesCoverage(), caughtErrors: 1, droppedNoId: 4 };
+  const skipResult = buildMessagesDropSkipResult(coverage);
+  assert.ok(skipResult);
+  assert.deepEqual(skipResult.diagnostics, { caught_errors: 1, dropped_no_id: 4 });
+});
+
+test("processMessage + emitMessagesPass: an only-missing-ID run still emits a droppedNoId SKIP_RESULT signal, no coverage entry", async () => {
+  const coverage = newMessagesCoverage();
+  const { deps } = makeHarness({ messagesCoverage: coverage, wantMessages: true });
+  const { emailId: _emailId, ...rest } = makeMsg();
+
+  await emitMessagesPass(deps, [rest]);
+
+  assert.deepEqual(coverage.considered, [], "no coverage entry for a row with no natural id");
+  assert.equal(coverage.droppedNoId, 1);
+  const skipResult = buildMessagesDropSkipResult(coverage);
+  assert.ok(skipResult, "the run-level accumulator now carries a signal a committed checkpoint cannot mask");
+  assert.deepEqual(skipResult.diagnostics, { caught_errors: 0, dropped_no_id: 1 });
 });
