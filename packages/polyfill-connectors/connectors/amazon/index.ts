@@ -1328,11 +1328,20 @@ export function shouldEmitTrailingOrdersState(
  * order count seen for the year (used for freeze-once-stable policy) and the
  * count of rows we could not emit because their order date was unparseable.
  */
-async function runYear(page: Page, deps: EmitDeps, flags: RunFlags, year: number): Promise<YearRunResult> {
+export async function runYear(page: Page, deps: EmitDeps, flags: RunFlags, year: number): Promise<YearRunResult> {
   let startIndex = 0;
   let pageCount = 0;
   let yearOrderCount = 0;
   let unparseableDateCount = 0;
+  // Run-scoped dedup, mirroring H-E-B's runForwardScan seenOrderIds: a
+  // pagination-boundary repeat (the last order on a page reappearing as the
+  // first order on the next `startIndex` page) would otherwise be counted
+  // and processed twice — double list/item records, a doubled
+  // considered/covered count in ordersCoverage, and two DETAIL_GAPs for one
+  // logical order. `yearOrderCount` (the frozen-year stability count) stays
+  // the raw page-length sum on purpose — see YearRunResult below — but every
+  // downstream accounting/emit decision keys off the deduped id.
+  const seenOrderIds = new Set<string>();
   while (pageCount < PAGE_LIMIT) {
     await deps.progress(`Amazon year ${year}: scanning page ${pageCount + 1}`, { stream: "orders" });
     const orders = await scrapeListPage(page, deps.capture, year, startIndex, deps.emit);
@@ -1349,6 +1358,10 @@ async function runYear(page: Page, deps: EmitDeps, flags: RunFlags, year: number
         `Amazon year ${year}: processing order ${index + 1}/${orders.length} on page ${pageCount + 1}`,
         { stream: "orders" }
       );
+      if (seenOrderIds.has(o.orderId)) {
+        continue;
+      }
+      seenOrderIds.add(o.orderId);
       const processed = await processListOrder(page, deps, flags, o);
       if (!processed) {
         // biome-ignore lint/style/noIncrementDecrement: integration.test.ts asserts this literal `unparseableDateCount++` source text (source-regex oracle); switching to += would fail that pre-existing test for a purely cosmetic change.

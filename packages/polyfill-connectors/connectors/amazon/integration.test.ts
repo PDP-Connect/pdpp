@@ -60,6 +60,7 @@ import {
   recordDetailOutcome,
   recoverPendingOrderItemDetailGaps,
   recoverPendingOrderItemDetailGapsBeforeForwardRun,
+  runYear,
   shouldEmitTrailingOrdersState,
 } from "./index.ts";
 import { buildOrderRecord, parseOrderDate } from "./parsers.ts";
@@ -380,6 +381,117 @@ test("processListOrder: empty/null order date is also a drop", async () => {
     assert.equal(dropped, false);
   }
   assert.equal(emitted.length, 0);
+});
+
+// ─── runYear: pagination-boundary repeat must not double-count ────────────
+//
+// Amazon paginates a year's order list via `startIndex` increments
+// (scrapeListPage). If the live list shifts between page loads, the last
+// order on one page can reappear as the first order on the next page — the
+// same boundary-repeat failure mode H-E-B's `runForwardScan` already guards
+// with a run-scoped `seenOrderIds` set. Without an equivalent guard, `runYear`
+// would call `processListOrder` twice for that one logical order: double
+// `orders`/`order_items` records and a doubled considered/covered count in
+// `ordersCoverage` — the accumulator would silently overstate the fleet's
+// real evidence.
+
+function orderCardHtml(orderId: string, dateText: string): string {
+  return `<div class="order-card js-order-card">
+    <div class="order-header">
+      <div class="yohtmlc-order-id">
+        <span class="a-color-secondary a-text-caps">Order #</span>
+        <span class="a-color-secondary" dir="ltr">${orderId}</span>
+      </div>
+      <ul>
+        <li class="order-header__header-list-item"><div><span class="a-color-secondary a-text-caps">Order placed</span><span>${dateText}</span></div></li>
+        <li class="order-header__header-list-item"><div><span class="a-color-secondary a-text-caps">Total</span><span>$10.00</span></div></li>
+      </ul>
+    </div>
+    <div class="delivery-box"><div class="delivery-box__primary-text yohtmlc-shipment-status-primaryText">Delivered</div></div>
+    <div class="item-box"><div class="a-fixed-left-grid"><a href="/dp/B0FAKE?ref=fake"><img src="https://example.com/img.jpg" /></a><span class="yohtmlc-product-title">Fake Widget</span></div></div>
+  </div>`;
+}
+
+function ordersListPageHtml(cards: string[]): string {
+  return `<!doctype html><html><body><div id="ordersContainer">${cards.join("\n")}</div></body></html>`;
+}
+
+/** A minimal Page stub driving `runYear`'s real startIndex-paginated walk:
+ *  page 1 (startIndex=0) returns two orders, page 2 (startIndex=10) repeats
+ *  the last order from page 1 and adds one new order (the boundary-repeat
+ *  shape), page 3 (startIndex=20) is empty and terminates the year cleanly
+ *  via the `startIndex > 0` "pagination_exhausted" classification. */
+function makeOverlappingPagesPageStub(): Page {
+  const pagesByStartIndex: Record<number, string> = {
+    0: ordersListPageHtml([
+      orderCardHtml("111-1111111-0000001", "January 5, 2026"),
+      orderCardHtml("111-1111111-0000002", "January 4, 2026"),
+    ]),
+    10: ordersListPageHtml([
+      // Boundary repeat: same order as the last card on page 1 (startIndex=0).
+      orderCardHtml("111-1111111-0000002", "January 4, 2026"),
+      orderCardHtml("111-1111111-0000003", "January 3, 2026"),
+    ]),
+    20: ordersListPageHtml([]),
+  };
+  let currentStartIndex = 0;
+  return new Proxy(
+    {},
+    {
+      get(_target, prop): unknown {
+        if (prop === "goto") {
+          return (url: string): Promise<null> => {
+            const m = /startIndex=(\d+)/.exec(url);
+            currentStartIndex = m?.[1] ? Number(m[1]) : 0;
+            return Promise.resolve(null);
+          };
+        }
+        if (prop === "locator") {
+          return () => ({
+            first: () => ({ waitFor: (): Promise<null> => Promise.resolve(null) }),
+          });
+        }
+        if (prop === "content") {
+          return (): Promise<string> => Promise.resolve(pagesByStartIndex[currentStartIndex] ?? "");
+        }
+        if (prop === "evaluate") {
+          // The empty-page diagnostics probe runs in a real browser context;
+          // rejecting here drives classifyEmptyListPageDiagnostics down the
+          // `diag === null` + `startIndex > 0` -> "pagination_exhausted"
+          // terminal path, cleanly ending the year without an error.
+          return (): Promise<never> => Promise.reject(new Error("no page.evaluate in this stub"));
+        }
+        throw new Error(`unexpected page.${String(prop)} in overlapping-pages test stub`);
+      },
+    }
+  ) as Page;
+}
+
+test("runYear: an order id repeated across a pagination boundary is only processed once", async () => {
+  const orderItemsCoverage = newOrderItemsCoverage();
+  const ordersCoverage = newOrdersCoverage();
+  const { deps, emitted } = makeRecordingDeps({ orderItemsCoverage, ordersCoverage, skipDetail: true });
+  const page = makeOverlappingPagesPageStub();
+
+  await runYear(page, deps, makeRunFlags(), 2026);
+
+  const stringSort = (a: unknown, b: unknown): number => {
+    const left = String(a);
+    const right = String(b);
+    return left < right ? -1 : Number(left > right);
+  };
+  const orderRecordIds = emitted.filter((r) => r.stream === "orders").map((r) => r.data.id);
+  assert.deepEqual(
+    orderRecordIds.sort(stringSort),
+    ["111-1111111-0000001", "111-1111111-0000002", "111-1111111-0000003"],
+    "each distinct order id emits exactly once even though the boundary order appears on both pages"
+  );
+  assert.deepEqual(
+    ordersCoverage.considered.slice().sort(stringSort),
+    ["111-1111111-0000001", "111-1111111-0000002", "111-1111111-0000003"],
+    "ordersCoverage.considered must not double-count the boundary-repeated order id"
+  );
+  assert.deepEqual(ordersCoverage.covered.slice().sort(stringSort), ordersCoverage.considered.slice().sort(stringSort));
 });
 
 test("processListOrder: parseable order date returns true and emits the order", async () => {
