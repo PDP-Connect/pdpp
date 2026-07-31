@@ -357,3 +357,58 @@
       two deltas had been deferred/never applied; this is an arithmetic derivation
       from known deltas, not a live-verified full authority-run count — flagged for
       confirmation on the next full `test-accounting:check` pass).
+
+## 12. FOURTH-PASS GATE REVISE (2026-07-30): duplicate composite key within scheduler_run_history
+
+- [x] Root cause: the fourth-pass adversarial gate found that `scheduler_run_history`
+      can itself contain multiple rows sharing the identical `(run_id,
+      connector_instance_id)` pair — structurally reachable because the
+      pre-generalization scheduler writer at the rolled-back revision `1392a386f` does
+      a plain `INSERT` with no `ON CONFLICT` clause at all (confirmed via direct
+      source read: `git show 1392a386f:.../scheduler-store.ts:528-566`), so a
+      retried/duplicate scheduled-run completion under that currently-live writer can
+      produce exactly this shape. On Postgres, `reconcilePostgresLegacySchedulerRunHistory`'s
+      composite-identity merge INSERT (`ON CONFLICT ... DO UPDATE`) throws `ON CONFLICT
+      DO UPDATE command cannot affect row a second time` whenever two source rows
+      target the same conflict key — a hard Postgres restriction independent of
+      `ORDER BY`. This is on the exact backend (Postgres) and exact code path
+      (interrupted-migration reconciliation) the live incident is about; if the real
+      database's `scheduler_run_history` contains even one such duplicate pair, the
+      migration would throw on every boot attempt, permanently blocking that database
+      until manual intervention — the exact outcome this reconciliation effort exists
+      to avoid. The SQLite path does not have this bug (`INSERT ... SELECT ... ON
+      CONFLICT DO UPDATE` applies duplicate source rows in order, last one wins, no
+      error) — a genuine backend asymmetry.
+- [x] `reconcilePostgresLegacySchedulerRunHistory` (Postgres): the composite-identity
+      merge's source is now pre-deduplicated via `SELECT DISTINCT ON (run_id,
+      connector_instance_id) ... ORDER BY run_id, connector_instance_id, id DESC`,
+      keeping only the highest `id` (the latest write) per pair — extending the same
+      "scheduler's newer write wins" semantics the merge already establishes for the
+      cross-table overlap case (via `ON CONFLICT DO UPDATE`) to the intra-table case.
+- [x] `reconcileLegacySchedulerRunHistory` (SQLite): the equivalent dedup added for
+      defense-in-depth and cross-backend consistency (`ROW_NUMBER() OVER (PARTITION BY
+      run_id, connector_instance_id ORDER BY id DESC) ... WHERE rn = 1`), rather than
+      relying on the undocumented, backend-specific tolerance for duplicate
+      `ON CONFLICT` source rows.
+- [x] `test/run-history-interrupted-migration-reconciliation.test.ts`: 2 new tests
+      (dual-backend) reproducing the exact gate-probe fixture shape — two
+      `scheduler_run_history` rows sharing the identical composite key, different
+      `attempt`/`status` — proving the migration no longer throws, exactly one row
+      survives for that composite key, and it reflects the highest-`id` (latest)
+      source row's fields. The Postgres test was independently verified to reproduce
+      the exact gate-reported error (`ON CONFLICT DO UPDATE command cannot affect row
+      a second time`) when run against the pre-fix code (`git stash` of the two
+      migration files), confirming it is a genuine discriminating regression test, not
+      merely a fixture that happens to pass.
+- [x] All previously-gated behavior preserved and re-verified in the same run: fresh
+      install, legacy-only migration, composite-identity overlap merge (scheduler
+      wins), disjoint-row preservation (both directions), `run_id IS NULL` handling,
+      duplicate `run_id` across two *different* connections, idempotency on a second
+      boot, and crash-before-commit safety — all 7 pre-existing tests in this file
+      still pass unchanged, alongside the 2 new ones (9/9 total, dual-backend, zero
+      skips against the sanctioned Postgres instance).
+- [x] Per direct instruction, only focused discriminating tests were run (this file,
+      both profiles), plus `openspec validate --strict` and the touched-file gates
+      (`pnpm typecheck`, `ultracite check`, mass ratchet) — the broad suite was not
+      re-run, consistent with the third and fourth gate passes' own guidance that
+      already-settled ground need not be re-verified.

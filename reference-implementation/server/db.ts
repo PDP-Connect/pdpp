@@ -3647,7 +3647,19 @@ function reconcileLegacySchedulerRunHistory(raw: SqliteDatabase): void {
 
   // Composite-identity rows (run_id IS NOT NULL): reuse the exact upsert
   // contract insert-run-history.sql already defines for this conflict
-  // shape.
+  // shape. FOURTH-PASS GATE FIX (2026-07-30): pre-deduplicate the source
+  // by (run_id, connector_instance_id), keeping only the highest `id`
+  // (the latest write) per pair — the same "scheduler's newer write wins"
+  // semantics this merge already establishes for the cross-table overlap
+  // case, extended to a duplicate composite key WITHIN scheduler_run_history
+  // itself (structurally reachable: the pre-generalization scheduler
+  // writer does a plain INSERT with no ON CONFLICT clause at all, so a
+  // retried/duplicate scheduled-run completion can produce this shape).
+  // SQLite's own INSERT ... SELECT ... ON CONFLICT DO UPDATE does not
+  // throw on duplicate source rows the way Postgres does (verified: it
+  // applies them in source order, last one wins) — this dedup is added
+  // here anyway for defense-in-depth and cross-backend consistency,
+  // rather than relying on that undocumented, backend-specific tolerance.
   raw.exec(`
 INSERT INTO run_history(
   connector_instance_id, connector_id, source_json, status, records_emitted,
@@ -3660,8 +3672,14 @@ SELECT
   reported_records_emitted, checkpoint_summary_json, known_gaps_json,
   connector_error_json, run_id, trace_id, failure_reason, terminal_reason,
   started_at, completed_at, error, attempt, 1
-FROM scheduler_run_history
-WHERE run_id IS NOT NULL
+FROM (
+  SELECT *, ROW_NUMBER() OVER (
+    PARTITION BY run_id, connector_instance_id ORDER BY id DESC
+  ) AS rn
+  FROM scheduler_run_history
+  WHERE run_id IS NOT NULL
+) deduped
+WHERE rn = 1
 ORDER BY id ASC
 ON CONFLICT(run_id, connector_instance_id) WHERE run_id IS NOT NULL DO UPDATE SET
   source_json = excluded.source_json,

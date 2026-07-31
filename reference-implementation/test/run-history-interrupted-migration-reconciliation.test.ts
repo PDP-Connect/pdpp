@@ -458,6 +458,84 @@ test("SQLite: a crash before the reconciliation transaction commits leaves sched
   }
 });
 
+// ─── FOURTH-PASS GATE FIX: duplicate composite key WITHIN scheduler_run_history ──
+
+// FOURTH PASS (2026-07-30): the gate found that scheduler_run_history can
+// itself contain multiple rows sharing the identical (run_id,
+// connector_instance_id) pair — structurally reachable because the
+// pre-generalization scheduler writer at the rolled-back revision
+// (1392a386f) does a plain INSERT with no ON CONFLICT clause at all, so a
+// retried/duplicate scheduled-run completion under that currently-live
+// writer produces exactly this shape. On Postgres, the composite-identity
+// merge's INSERT ... SELECT ... ON CONFLICT DO UPDATE threw "ON CONFLICT
+// DO UPDATE command cannot affect row a second time" whenever two source
+// rows targeted the same conflict key — a hard Postgres restriction,
+// independent of ORDER BY, meaning the previous fix could never complete
+// on a database with this shape (permanently blocked, not merely slow to
+// retry). SQLite's own INSERT ... SELECT ... ON CONFLICT DO UPDATE does
+// NOT throw on duplicate source rows (applies them in source order, last
+// one wins) — but both backends now explicitly pre-deduplicate the
+// source by (run_id, connector_instance_id), keeping only the highest
+// `id` (the latest write), rather than relying on that backend asymmetry.
+test("SQLite: two scheduler_run_history rows sharing the identical composite key deduplicate to the latest (highest id) before merge", () => {
+  const dbPath = makeTemporaryDbPath("pdpp-rh-interrupted-mig-dup-composite-");
+  initDb(dbPath);
+  buildSqliteLegacySchedulerRunHistoryTable();
+  insertSqliteRunHistoryRow({
+    completedAt: "2026-07-29T10:05:00Z",
+    connectorId: "https://test/dup",
+    connectorInstanceId: "cin_dup",
+    runId: "run_dup_composite",
+    schedulerManaged: false,
+    startedAt: "2026-07-29T10:00:00Z",
+    status: "succeeded",
+  });
+  // Two legacy rows, SAME (run_id, connector_instance_id), different
+  // attempt/status — the exact fixture shape the gate's probe used. The
+  // second insert (higher id) is the later, "winning" write.
+  insertSqliteSchedulerRunHistoryRow({
+    attempt: 1,
+    completedAt: "2026-07-30T11:01:00Z",
+    connectorId: "https://test/dup",
+    connectorInstanceId: "cin_dup",
+    runId: "run_dup_composite",
+    startedAt: "2026-07-30T11:00:00Z",
+    status: "failed",
+  });
+  insertSqliteSchedulerRunHistoryRow({
+    attempt: 2,
+    completedAt: "2026-07-30T11:05:00Z",
+    connectorId: "https://test/dup",
+    connectorInstanceId: "cin_dup",
+    runId: "run_dup_composite",
+    startedAt: "2026-07-30T11:00:00Z",
+    status: "succeeded",
+  });
+  closeDb();
+
+  // Re-open: migration must not throw despite the intra-table duplicate
+  // composite key.
+  initDb(dbPath);
+  try {
+    assert.equal(
+      sqliteTableExists("scheduler_run_history"),
+      false,
+      "migration completed, legacy table reconciled away"
+    );
+    const rows = sqliteAllRunHistoryRows().filter((r) => r.run_id === "run_dup_composite");
+    assert.equal(rows.length, 1, "exactly one row survives for the duplicated composite key — no throw, no split");
+    assert.equal(rows[0]?.status, "succeeded", "the highest-id (latest) source row's status wins");
+    assert.equal(rows[0]?.attempt, 2, "the highest-id (latest) source row's attempt wins");
+    assert.equal(
+      rows[0]?.completed_at,
+      "2026-07-30T11:05:00Z",
+      "the highest-id (latest) source row's completed_at wins"
+    );
+  } finally {
+    closeDb();
+  }
+});
+
 // ─── PostgreSQL: identical proof set against the real backend ──────────
 
 const PG_LEGACY_SCHEDULER_RUN_HISTORY_DDL = `
@@ -649,6 +727,68 @@ test("PostgreSQL: a crash before the reconciliation transaction commits leaves s
       assert.equal(legacyAfterRetry.rows[0]?.exists, false, "the retry reconciles and drops the legacy table");
       const rowsAfterRetry = await postgresQuery("SELECT COUNT(*)::int AS n FROM run_history");
       assert.equal(rowsAfterRetry.rows[0].n, 2, "both rows present after the clean retry");
+    }
+  );
+});
+
+test("PostgreSQL: two scheduler_run_history rows sharing the identical composite key deduplicate to the latest (highest id) before merge — the exact fourth-pass gate reproduction", {
+  skip: !POSTGRES_URL,
+}, async () => {
+  assert.ok(POSTGRES_URL, "Postgres URL is configured when this test runs");
+  await withTemporaryPostgresDatabase(
+    {
+      closeConnections: closePostgresStorage,
+      connectionString: POSTGRES_URL,
+      databaseName: `pdpp_test_rh_dup_composite_${process.pid}`,
+    },
+    async (url) => {
+      await initPostgresStorage({ backend: "postgres", databaseUrl: url });
+      // The legacy table's own DDL has NO unique constraint on (run_id,
+      // connector_instance_id) — that constraint never existed
+      // pre-generalization — so this fixture shape is directly
+      // constructible, exactly as the gate's probe built it.
+      await postgresQuery(PG_LEGACY_SCHEDULER_RUN_HISTORY_DDL);
+
+      await postgresQuery(
+        `INSERT INTO run_history(run_id, connector_instance_id, connector_id, source_json, status, records_emitted, known_gaps_json, started_at, completed_at, attempt, scheduler_managed)
+         VALUES ('run_dup_composite', 'cin_dup', 'https://test/dup', '{}', 'succeeded', 1, '[]', '2026-07-29T10:00:00Z', '2026-07-29T10:05:00Z', 1, false)`
+      );
+      // Two legacy rows, SAME (run_id, connector_instance_id), different
+      // attempt/status — before this fix, Postgres's ON CONFLICT DO
+      // UPDATE throws "cannot affect row a second time" on exactly this
+      // shape.
+      await postgresQuery(
+        `INSERT INTO scheduler_run_history(run_id, connector_instance_id, connector_id, source_json, status, records_emitted, known_gaps_json, started_at, completed_at, attempt)
+         VALUES
+         ('run_dup_composite', 'cin_dup', 'https://test/dup', '{}', 'failed', 1, '[]', '2026-07-30T11:00:00Z', '2026-07-30T11:01:00Z', 1),
+         ('run_dup_composite', 'cin_dup', 'https://test/dup', '{}', 'succeeded', 1, '[]', '2026-07-30T11:00:00Z', '2026-07-30T11:05:00Z', 2)`
+      );
+
+      // Re-bootstrap: this must NOT throw.
+      await closePostgresStorage();
+      await initPostgresStorage({ backend: "postgres", databaseUrl: url });
+
+      const legacyStillExists = await postgresQuery<{ exists: boolean }>(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'scheduler_run_history') AS exists"
+      );
+      assert.equal(legacyStillExists.rows[0]?.exists, false, "migration completed, legacy table reconciled away");
+
+      const rows = await postgresQuery<{ attempt: number; completed_at: string | null; status: string }>(
+        "SELECT status, attempt, completed_at FROM run_history WHERE run_id = $1",
+        ["run_dup_composite"]
+      );
+      assert.equal(
+        rows.rows.length,
+        1,
+        "exactly one row survives for the duplicated composite key — no throw, no split"
+      );
+      assert.equal(rows.rows[0]?.status, "succeeded", "the highest-id (latest) source row's status wins");
+      assert.equal(rows.rows[0]?.attempt, 2, "the highest-id (latest) source row's attempt wins");
+      assert.equal(
+        rows.rows[0]?.completed_at,
+        "2026-07-30T11:05:00Z",
+        "the highest-id (latest) source row's completed_at wins"
+      );
     }
   );
 });

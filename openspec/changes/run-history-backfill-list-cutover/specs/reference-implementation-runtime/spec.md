@@ -295,6 +295,20 @@ execute as one all-or-nothing transaction. No `scheduler_run_history` row's nume
   SHALL be left exactly as they were in the pre-existing `run_history` row
 - **AND** exactly one row SHALL exist afterward for this identity — never two
 
+#### Scenario: Multiple scheduler_run_history rows sharing the identical composite key deduplicate to the latest before merge
+
+- **GIVEN** `scheduler_run_history` itself contains two or more rows sharing the
+  identical `(run_id, connector_instance_id)` pair (reachable because the
+  pre-generalization scheduler writer performs a plain `INSERT` with no `ON CONFLICT`
+  clause, so a retried/duplicate scheduled-run completion can produce this shape)
+- **WHEN** the interrupted-migration reconciliation runs
+- **THEN** the migration SHALL NOT throw or fail
+- **AND** exactly one `run_history` row SHALL exist afterward for that composite key
+- **AND** that row SHALL reflect the highest-`id` (latest) `scheduler_run_history`
+  source row's field values — the same "newer write wins" semantics already applied
+  to the cross-table overlap case, extended to this intra-table case
+- **AND** this SHALL hold on both the SQLite and PostgreSQL backends
+
 #### Scenario: Rows present in only one table are preserved exactly
 
 - **GIVEN** a `scheduler_run_history` row whose `(run_id, connector_instance_id)` has

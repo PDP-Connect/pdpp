@@ -2926,7 +2926,21 @@ async function reconcilePostgresLegacySchedulerRunHistory(client: PoolClient): P
 
   // Composite-identity rows (run_id IS NOT NULL): reuse the exact upsert
   // contract insert-run-history.sql already defines for this conflict
-  // shape.
+  // shape. FOURTH-PASS GATE FIX (2026-07-30): scheduler_run_history itself
+  // can contain MULTIPLE rows sharing the identical (run_id,
+  // connector_instance_id) pair — the pre-generalization scheduler writer
+  // at the rolled-back revision (1392a386f) does a plain INSERT with no
+  // ON CONFLICT clause at all, so a retried/duplicate scheduled-run
+  // completion under that currently-live writer produces exactly this
+  // shape. Postgres's INSERT ... SELECT ... ON CONFLICT DO UPDATE throws
+  // "ON CONFLICT DO UPDATE command cannot affect row a second time"
+  // whenever two rows in the SAME statement's source set target the same
+  // conflict key — this is a hard Postgres restriction, unrelated to
+  // ORDER BY. The source is therefore pre-deduplicated via SELECT
+  // DISTINCT ON, keeping only the highest `id` (the latest write) per
+  // composite key — the same "scheduler's newer write wins" semantics
+  // this merge already establishes for the cross-table overlap case
+  // (ON CONFLICT DO UPDATE), extended to the intra-table case.
   await client.query(`
     INSERT INTO run_history(
       connector_instance_id, connector_id, source_json, status, records_emitted,
@@ -2939,8 +2953,12 @@ async function reconcilePostgresLegacySchedulerRunHistory(client: PoolClient): P
       reported_records_emitted, checkpoint_summary_json, known_gaps_json,
       connector_error_json, run_id, trace_id, failure_reason, terminal_reason,
       started_at, completed_at, error, attempt, true
-    FROM scheduler_run_history
-    WHERE run_id IS NOT NULL
+    FROM (
+      SELECT DISTINCT ON (run_id, connector_instance_id) *
+      FROM scheduler_run_history
+      WHERE run_id IS NOT NULL
+      ORDER BY run_id, connector_instance_id, id DESC
+    ) deduped
     ORDER BY id ASC
     ON CONFLICT(run_id, connector_instance_id) WHERE run_id IS NOT NULL DO UPDATE SET
       source_json = excluded.source_json,
