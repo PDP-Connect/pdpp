@@ -656,16 +656,20 @@ test("keeps every terminal-LIST PostgreSQL skip title in the exact receipt mappi
 });
 // SECOND LIVE CANARY REVISE (2026-07-30): the interrupted-migration
 // reconciliation test file added two PostgreSQL tests using the same
-// bare-boolean `skip: !POSTGRES_URL` shape.
+// bare-boolean `skip: !POSTGRES_URL` shape. FOURTH-PASS GATE REVISE
+// (2026-07-30): a third PostgreSQL test (the duplicate-composite-key
+// dedup regression) was added to the same file, using the same shape.
 test("keeps every run-history-interrupted-migration-reconciliation PostgreSQL skip title in the exact receipt mapping", () => {
   assert.deepEqual(
     [
       "PostgreSQL: interrupted migration reconciles losslessly against real Postgres — overlap merges, disjoint rows preserved, duplicate run_id across connections survives",
       "PostgreSQL: a crash before the reconciliation transaction commits leaves scheduler_run_history fully intact for a clean retry",
+      "PostgreSQL: two scheduler_run_history rows sharing the identical composite key deduplicate to the latest (highest id) before merge — the exact fourth-pass gate reproduction",
     ].filter((name) => POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name)),
     [
       "PostgreSQL: interrupted migration reconciles losslessly against real Postgres — overlap merges, disjoint rows preserved, duplicate run_id across connections survives",
       "PostgreSQL: a crash before the reconciliation transaction commits leaves scheduler_run_history fully intact for a clean retry",
+      "PostgreSQL: two scheduler_run_history rows sharing the identical composite key deduplicate to the latest (highest id) before merge — the exact fourth-pass gate reproduction",
     ]
   );
 });
