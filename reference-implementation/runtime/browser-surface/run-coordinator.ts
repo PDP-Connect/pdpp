@@ -1080,7 +1080,7 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     }
     const { connectorId, runId, traceContext } = ctx;
     if (reclaimedResult.lease.status === "starting_surface") {
-      return await handleStartingSurfaceWaitForRun(ctx, reclaimedResult.lease);
+      return await handleStartingSurfaceWaitForRun(ctx, reclaimedResult.lease, { allowStartFailureRetry: false });
     }
     if (reclaimedResult.lease.status === "leased" && reclaimedResult.surface) {
       pendingBrowserSurfaceLaunches.delete(reclaimedResult.lease.run_id);
@@ -1109,7 +1109,8 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
 
   async function handleStartingSurfaceWaitForRun(
     ctx: ManagedSurfaceContext,
-    startingLease: BrowserSurfaceLease
+    startingLease: BrowserSurfaceLease,
+    options: { readonly allowStartFailureRetry: boolean }
   ): Promise<ManagedSurfaceAcquireResult> {
     if (!browserSurfaceLeaseManager) {
       return { env: null, kind: "ready", lease: startingLease };
@@ -1125,6 +1126,23 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
         traceContext,
         readyResult.lease
       );
+      // The allocator's ensureSurface/getSurfaceStatus call threw (Docker
+      // daemon hiccup, transient allocator timeout, etc) and remote-surface's
+      // lease manager collapses that into a bare surface_failed/
+      // surface_start_failed terminal lease with no error detail attached —
+      // see the 2026-07-31 USAA incident (alternating fail/succeed/fail
+      // across otherwise-identical acquires against the same profile_key,
+      // each against a freshly allocator-minted surface_id). A fresh acquire
+      // for the same profile always gets a brand-new surface_id
+      // (#resolveNewLease never reuses a non-ready surface), so retrying once
+      // cannot loop against the same dead container. Bounded to one retry,
+      // and only for a dynamic allocator-backed surface — a static/operator-
+      // owned surface has no allocator to retry against.
+      if (options.allowStartFailureRetry && shouldRetryReadinessFailure()) {
+        return await acquireManagedBrowserSurfaceAttempt(ctx, startingLease.priority_class, {
+          allowReadinessRetry: false,
+        });
+      }
       return { kind: "early_return", result: buildBrowserSurfaceEarlyReturn(ctx, readyResult.lease, "surface_failed") };
     }
     const readySurface =
@@ -1190,7 +1208,8 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     ctx: ManagedSurfaceContext,
     currentLease: BrowserSurfaceLease | null,
     leaseResult: { lease: BrowserSurfaceLease },
-    envFromReclaim: Record<string, string> | null
+    envFromReclaim: Record<string, string> | null,
+    options: { readonly allowStartFailureRetry: boolean }
   ): Promise<ManagedSurfaceAcquireResult> {
     if (envFromReclaim) {
       // Capacity-pressure reclaim may have already promoted and readied this lease.
@@ -1209,7 +1228,7 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
       return { kind: "early_return", result: buildBrowserSurfaceEarlyReturn(ctx, currentLease, currentLease.status) };
     }
     if (currentLease?.status === "starting_surface") {
-      return await handleStartingSurfaceWaitForRun(ctx, currentLease);
+      return await handleStartingSurfaceWaitForRun(ctx, currentLease, options);
     }
     if (currentLease?.status === "leased" && currentLease.surface_id) {
       return await handleLeasedSurfaceForRun(ctx, currentLease);
@@ -1364,7 +1383,9 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
       };
     }
 
-    const dispatchResult = await dispatchCurrentLeaseState(ctx, refreshedLease, leaseResult, reclaim.env);
+    const dispatchResult = await dispatchCurrentLeaseState(ctx, refreshedLease, leaseResult, reclaim.env, {
+      allowStartFailureRetry: options.allowReadinessRetry,
+    });
     if (dispatchResult.kind === "early_return") {
       return dispatchResult;
     }

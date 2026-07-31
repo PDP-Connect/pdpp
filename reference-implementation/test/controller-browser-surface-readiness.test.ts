@@ -182,9 +182,11 @@ function createManagerWithReadySurface(
 
 function createDynamicManagerWithReadySurface({
   initialActiveLease = false,
+  noInitialSurface = false,
   runId = "run_dynamic_1",
 }: {
   initialActiveLease?: boolean;
+  noInitialSurface?: boolean;
   runId?: string;
 } = {}) {
   let leaseSeq = 0;
@@ -200,20 +202,22 @@ function createDynamicManagerWithReadySurface({
       surfaceCap: 1,
       surfaceMode: "dynamic",
     },
-    initialSurfaces: [
-      {
-        backend: "neko",
-        cdp_url: "http://stale:9223",
-        connector_id: "managed",
-        created_at: "2026-05-12T11:00:00.000Z",
-        health: "ready",
-        last_used_at: "2026-05-12T11:00:00.000Z",
-        profile_key: "managed-profile",
-        stream_base_url: "http://stale:8080",
-        surface_id: "surface_stale",
-        ...(initialActiveLease ? { active_lease_id: "lease_dynamic_1" } : {}),
-      },
-    ],
+    initialSurfaces: noInitialSurface
+      ? []
+      : [
+          {
+            backend: "neko",
+            cdp_url: "http://stale:9223",
+            connector_id: "managed",
+            created_at: "2026-05-12T11:00:00.000Z",
+            health: "ready",
+            last_used_at: "2026-05-12T11:00:00.000Z",
+            profile_key: "managed-profile",
+            stream_base_url: "http://stale:8080",
+            surface_id: "surface_stale",
+            ...(initialActiveLease ? { active_lease_id: "lease_dynamic_1" } : {}),
+          },
+        ],
     makeLeaseId: () => {
       leaseSeq += 1;
       return `lease_${leaseSeq}`;
@@ -797,6 +801,129 @@ test("readiness probe failure on a stale dynamic surface reacquires once and lau
   assert.equal(events.filter((event) => event === "run.browser_surface_leased").length, 2);
   assert.equal(events.filter((event) => event === "run.browser_surface_probe_failed").length, 1);
   assert.equal(events.filter((event) => event === "run.browser_surface_ready").length, 1);
+});
+
+/**
+ * Reproduces the 2026-07-31 live USAA incident: an interactive run's
+ * browser-surface acquire calls the allocator's ensureSurface/getSurfaceStatus
+ * while the lease is in `starting_surface`, that call throws (Docker daemon
+ * hiccup, allocator timeout, etc — remote-surface's
+ * BrowserSurfaceLeaseManager.ensureStartingSurfaceReady catches it and
+ * collapses it to a bare `surface_failed` / `surface_start_failed` terminal
+ * lease with no error detail preserved anywhere), and a run against the SAME
+ * profile a few minutes later succeeds because a fresh acquire always mints a
+ * brand-new surface_id. Before this fix, `handleStartingSurfaceWaitForRun`
+ * had zero retry on that path (unlike the analogous post-lease readiness-
+ * probe failure, which already reacquired once) — this reproduces the gap and
+ * proves the bounded-once reacquire against a NEW allocator-minted surface_id
+ * closes it, converging to a live surface within one interactive run instead
+ * of surfacing surface_failed straight to the owner.
+ */
+test("starting-surface allocator failure reacquires once and launches on the fresh surface", async (t) => {
+  const leaseManager = createDynamicManagerWithReadySurface({ noInitialSurface: true });
+  let ensureCalls = 0;
+  const ensureRequests: EnsureBrowserSurfaceRequest[] = [];
+  const stopRequests: StopBrowserSurfaceRequest[] = [];
+  const surfaces = new Map<string, BrowserSurface>();
+  const allocator: BrowserSurfaceAllocator = {
+    ensureSurface: async (request) => {
+      ensureRequests.push(request);
+      ensureCalls += 1;
+      if (ensureCalls === 1) {
+        throw new Error("Docker POST /containers/create failed: connect ECONNREFUSED");
+      }
+      const surface: BrowserSurface = {
+        backend: "neko",
+        cdp_url: `http://${request.surfaceId}:9223`,
+        connector_id: request.connectorId,
+        created_at: "2026-05-12T12:00:01.000Z",
+        health: "ready",
+        last_used_at: "2026-05-12T12:00:01.000Z",
+        profile_key: request.profileKey,
+        stream_base_url: `http://${request.surfaceId}:8080`,
+        surface_id: request.surfaceId,
+      };
+      surfaces.set(request.surfaceId, surface);
+      return await Promise.resolve(surface);
+    },
+    getSurfaceStatus: async (surfaceId) => await Promise.resolve(surfaces.get(surfaceId) ?? null),
+    listSurfaces: async () => await Promise.resolve([...surfaces.values()]),
+    stopSurface: async (request) => {
+      stopRequests.push(request);
+      const surface = surfaces.get(request.surfaceId) ?? null;
+      surfaces.delete(request.surfaceId);
+      return await Promise.resolve(surface ? { ...surface, health: "stopping" } : null);
+    },
+  };
+  const probe: BrowserSurfaceReadinessProbe = {
+    probe: async () => await Promise.resolve({ browserVersion: "Chrome/124.0", ok: true, pageTargetCount: 1 }),
+  };
+  const { controller, runConnectorCalls } = setup(t, {
+    browserSurfaceAllocator: allocator,
+    leaseManager,
+    probe,
+  });
+
+  const result = await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_start_failed_reacquire",
+  });
+  await controller.drainActiveRuns(1000);
+
+  assert.equal(result.status, "started", "the bounded reacquire recovers within the same interactive run");
+  assert.equal(ensureCalls, 2, "first ensureSurface throws, second (fresh surface_id) succeeds");
+  assert.equal(at(ensureRequests, 0).surfaceId, "surface_dynamic_1");
+  assert.equal(
+    at(ensureRequests, 1).surfaceId,
+    "surface_dynamic_2",
+    "retry mints a brand-new surface_id, never reuses the dead one"
+  );
+  assert.equal(runConnectorCalls.length, 1);
+  const surfaceEnv = at(runConnectorCalls, 0).browserSurfaceEnv;
+  assert.ok(surfaceEnv);
+  assert.equal(surfaceEnv.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL, "http://surface_dynamic_2:9223");
+
+  const events = listRunEvents("run_start_failed_reacquire").map((e) => e.event_type);
+  assert.equal(events.filter((event) => event === "run.browser_surface_requested").length, 2);
+  assert.equal(events.filter((event) => event === "run.browser_surface_failed").length, 1);
+  assert.ok(
+    events.filter((event) => event === "run.browser_surface_ready").length >= 1,
+    "the fresh surface reaches readiness after the reacquire"
+  );
+});
+
+test("starting-surface allocator failure on the reacquire attempt does not retry a second time", async (t) => {
+  const leaseManager = createDynamicManagerWithReadySurface({ noInitialSurface: true });
+  let ensureCalls = 0;
+  const allocator: BrowserSurfaceAllocator = {
+    ensureSurface: (request) => {
+      ensureCalls += 1;
+      throw new Error(`Docker POST /containers/create failed: connect ECONNREFUSED (attempt for ${request.surfaceId})`);
+    },
+    getSurfaceStatus: async () => await Promise.resolve(null),
+    listSurfaces: async () => await Promise.resolve([]),
+    stopSurface: async () => await Promise.resolve(null),
+  };
+  const { controller, runConnectorCalls } = setup(t, {
+    browserSurfaceAllocator: allocator,
+    leaseManager,
+  });
+
+  const result = await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_start_failed_persistent",
+  });
+  await controller.drainActiveRuns(1000);
+
+  assert.equal(
+    result.status,
+    "surface_failed",
+    "a persistently broken allocator still fails closed, not an infinite loop"
+  );
+  assert.equal(ensureCalls, 2, "bounded to exactly one reacquire attempt");
+  assert.equal(runConnectorCalls.length, 0, "connector is never spawned when the surface never starts");
 });
 
 test("boot reconciliation retires an idle stale-capability surface and recreates its profile", async (t) => {
