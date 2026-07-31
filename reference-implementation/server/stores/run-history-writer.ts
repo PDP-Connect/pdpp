@@ -54,7 +54,16 @@ import type { PoolClient } from "pg";
 import { exec, referenceQueries } from "../../lib/db.ts";
 
 const RUN_STARTED_EVENT_TYPE = "run.started";
-const RUN_TERMINAL_EVENT_TYPES = new Set(["run.completed", "run.failed", "run.cancelled"]);
+// Keep this in lock-step with Spine's canonical terminal set. In particular,
+// browser-surface acquisition can fail before connector execution begins, so
+// it has no later run.failed event to repair the durable projection.
+const RUN_TERMINAL_EVENT_TYPES = new Set([
+  "run.completed",
+  "run.failed",
+  "run.browser_surface_failed",
+  "run.cancelled",
+  "run.abandoned",
+]);
 const RUN_PROGRESS_EVENT_TYPE = "run.progress_reported";
 
 export function isRunHistoryRelevantEventType(eventType: string | null | undefined): boolean {
@@ -81,6 +90,15 @@ function toTerminalStatus(eventType: string, status: string): string {
   }
   if (eventType === "run.cancelled") {
     return "cancelled";
+  }
+  if (eventType === "run.abandoned") {
+    return "abandoned";
+  }
+  if (eventType === "run.browser_surface_failed") {
+    // The browser lease's terminal vocabulary (`surface_failed`) is already
+    // the established run-summary status for this pre-launch path. Preserve
+    // it so live writes match historical backfill's existing Spine fold.
+    return status || "surface_failed";
   }
   return "failed";
 }
@@ -113,9 +131,18 @@ const FACTS_JSON_KEYS = [
 
 function factsJsonFromTerminalData(data: Record<string, unknown>): string {
   const facts: Record<string, unknown> = {};
+  // Browser-surface lifecycle events carry their projection as a bounded
+  // nested object. Persist the same whitelisted fields as flattened terminal
+  // data so product readers remain run_history-only.
+  const browserSurface =
+    typeof data.browser_surface === "object" && data.browser_surface !== null && !Array.isArray(data.browser_surface)
+      ? (data.browser_surface as Record<string, unknown>)
+      : null;
   for (const key of FACTS_JSON_KEYS) {
     if (data[key] !== undefined) {
       facts[key] = data[key];
+    } else if (key.startsWith("browser_surface_") && browserSurface?.[key] !== undefined) {
+      facts[key] = browserSurface[key];
     }
   }
   return JSON.stringify(facts);

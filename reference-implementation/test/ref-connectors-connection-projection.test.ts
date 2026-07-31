@@ -249,7 +249,9 @@ async function seedBrowserSurfaceRun({
         browser_surface_wait_reason: waitReason ?? undefined,
         pending_run_id: runId,
       },
+      connection_id: connectorInstanceId,
       connector_id: CONNECTOR_ID,
+      connector_instance_id: connectorInstanceId,
       source: { id: CONNECTOR_ID, kind: "connector" },
     },
     event_type: status === "succeeded" ? "run.browser_surface_released" : "run.browser_surface_failed",
@@ -319,19 +321,42 @@ async function seedManualRunWithCollectionFacts({
   streams,
 }: SeedRunWithCollectionFactsOptions): Promise<void> {
   const profileKey = `${CONNECTOR_ID}:${connectorInstanceId}`;
+  const baseData = {
+    connection_id: connectorInstanceId,
+    connector_instance_id: connectorInstanceId,
+    source: { id: CONNECTOR_ID, kind: "connector" },
+  };
   // Manual/direct runs bind to a connection through spine lifecycle facts, not
   // scheduler_run_history. This mirrors controller.runNow.
   await emitSpineEvent({
     actor_id: CONNECTOR_ID,
     actor_type: "runtime",
     data: {
+      ...baseData,
+      boot_epoch: "00000000-0000-4000-8000-000000000003",
+      seq: 1,
+    },
+    event_type: "run.started",
+    object_id: runId,
+    object_type: "run",
+    occurred_at: occurredAt,
+    run_id: runId,
+    source_id: CONNECTOR_ID,
+    source_kind: "connector",
+    status: "started",
+    trace_id: `trc_${runId}`,
+  });
+  await emitSpineEvent({
+    actor_id: CONNECTOR_ID,
+    actor_type: "runtime",
+    data: {
+      ...baseData,
       browser_surface: {
         browser_surface_lease_id: `lease_${runId}`,
         browser_surface_profile_key: profileKey,
         browser_surface_status: "released",
       },
       connector_id: CONNECTOR_ID,
-      source: { id: CONNECTOR_ID, kind: "connector" },
     },
     event_type: "run.browser_surface_released",
     object_id: runId,
@@ -347,9 +372,9 @@ async function seedManualRunWithCollectionFacts({
     actor_id: CONNECTOR_ID,
     actor_type: "runtime",
     data: {
+      ...baseData,
       collection_facts: { streams },
       connector_id: CONNECTOR_ID,
-      source: { id: CONNECTOR_ID, kind: "connector" },
     },
     event_type: "run.completed",
     object_id: runId,

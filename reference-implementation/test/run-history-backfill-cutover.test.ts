@@ -97,7 +97,7 @@ function startedEvent(
 function terminalEvent(
   runId: string,
   connectorInstanceId: string | null,
-  eventType: "run.cancelled" | "run.completed" | "run.failed",
+  eventType: "run.browser_surface_failed" | "run.cancelled" | "run.completed" | "run.failed",
   status: string,
   overrides: Record<string, unknown> = {}
 ) {
@@ -285,6 +285,44 @@ test("backfill round: candidate discovery + fold lands scheduled/manual/browser/
       "cin_legacy_singleton",
       "legacy run attributed to the sole active instance"
     );
+  } finally {
+    closeDb();
+  }
+});
+
+test("backfill preserves nested browser-surface terminal facts for a pre-launch failure", async () => {
+  const dbPath = makeTemporaryDbPath("pdpp-run-history-backfill-browser-surface-");
+  initDb(dbPath);
+  try {
+    seedManifestConnector();
+    const connectorInstanceId = "cin_browser_surface_backfill";
+    const runId = "run_browser_surface_backfill";
+    seedInstance(connectorInstanceId);
+    await emitSpineEvent(
+      terminalEvent(runId, connectorInstanceId, "run.browser_surface_failed", "surface_failed", {
+        browser_surface: {
+          browser_surface_lease_id: "lease_browser_surface_backfill",
+          browser_surface_profile_key: `${CONNECTOR_ID}:${connectorInstanceId}`,
+          browser_surface_status: "surface_failed",
+          browser_surface_wait_reason: "surface_unhealthy",
+        },
+      })
+    );
+    // Make the durable input historical so this exercises the backfill
+    // writer rather than the live run-history hook.
+    getDb().prepare("DELETE FROM run_history WHERE run_id = ?").run(runId);
+
+    const result = await runRunHistoryBackfillRound({ afterSeq: 0, batchSize: 25, maxDurationMs: 5000 });
+    assert.equal(result.backfilled, 1);
+    const row = readRunHistoryRow(runId);
+    assert.equal(row?.status, "surface_failed");
+    assert.deepEqual(JSON.parse(row?.facts_json ?? "{}"), {
+      browser_surface_lease_id: "lease_browser_surface_backfill",
+      browser_surface_profile_key: `${CONNECTOR_ID}:${connectorInstanceId}`,
+      browser_surface_status: "surface_failed",
+      browser_surface_wait_reason: "surface_unhealthy",
+      origin: "backfill",
+    });
   } finally {
     closeDb();
   }

@@ -1172,10 +1172,17 @@ function productRunHistoryToConnectorRunSummary(
     status = isLive ? "in_progress" : "failed";
   }
   const terminalKnownGaps = readKnownGapsFromTerminalData(facts);
+  // Browser-surface acquisition fails before the connector executor can emit
+  // a conventional failure reason. Its canonical terminal event stores the
+  // operational reason in the bounded browser-surface facts instead.
+  const browserSurfaceFailureReason =
+    facts?.browser_surface_status === "surface_failed" && typeof facts.browser_surface_wait_reason === "string"
+      ? facts.browser_surface_wait_reason
+      : null;
   return {
     collection_facts: readCollectionFactsFromTerminalData(facts),
     event_count: 0,
-    failure_reason: history.failureReason ?? history.error ?? null,
+    failure_reason: history.failureReason ?? history.error ?? browserSurfaceFailureReason,
     finished_at: isActiveRunSummaryStatus(status) ? null : history.completedAt,
     first_at: history.startedAt,
     known_gaps: terminalKnownGaps.length > 0 ? terminalKnownGaps : [...history.knownGaps],

@@ -30,6 +30,7 @@ interface RunHistoryTestRow {
   readonly completed_at: string | null;
   readonly connector_id: string;
   readonly connector_instance_id: string;
+  readonly facts_json: string | null;
   readonly run_id: string;
   readonly scheduler_managed: 0 | 1;
   readonly started_at: string;
@@ -74,7 +75,7 @@ function startedEvent(runId: string, connectorInstanceId: string, triggerKind?: 
 function terminalEvent(
   runId: string,
   connectorInstanceId: string,
-  eventType: "run.cancelled" | "run.completed" | "run.failed",
+  eventType: "run.abandoned" | "run.browser_surface_failed" | "run.cancelled" | "run.completed" | "run.failed",
   status: string
 ) {
   return {
@@ -95,7 +96,7 @@ function terminalEvent(
   };
 }
 
-test("run.started creates a running row; the terminal event finalizes it — for scheduled/manual/browser/cancelled run kinds", async () => {
+test("run.started creates a running row; every canonical terminal event finalizes it", async () => {
   const dbPath = makeTemporaryDbPath("pdpp-run-history-writer-kinds-");
   initDb(dbPath);
   try {
@@ -109,6 +110,7 @@ test("run.started creates a running row; the terminal event finalizes it — for
       { eventType: "run.completed" as const, runId: "run_manual_case", status: "succeeded", triggerKind: "manual" },
       { eventType: "run.completed" as const, runId: "run_browser_case", status: "succeeded", triggerKind: "webhook" },
       { eventType: "run.cancelled" as const, runId: "run_cancelled_case", status: "cancelled", triggerKind: "manual" },
+      { eventType: "run.abandoned" as const, runId: "run_abandoned_case", status: "abandoned", triggerKind: "manual" },
     ];
 
     for (const testCase of cases) {
@@ -128,6 +130,43 @@ test("run.started creates a running row; the terminal event finalizes it — for
       assert.ok(finalRow?.completed_at, `${testCase.runId}: finalized row has completed_at`);
       assert.equal(countRunHistoryRows(testCase.runId), 1, `${testCase.runId}: exactly one row for the run_id`);
     }
+  } finally {
+    closeDb();
+  }
+});
+
+test("a terminal-only browser-surface failure is durable with its bounded nested facts", async () => {
+  const dbPath = makeTemporaryDbPath("pdpp-run-history-writer-browser-surface-terminal-");
+  initDb(dbPath);
+  try {
+    const runId = "run_browser_surface_terminal_only";
+    const connectorInstanceId = "cin_browser_surface_terminal_only";
+    // Browser acquisition fails before connector execution, so this is the
+    // canonical terminal event and intentionally has no run.started row.
+    await emitSpineEvent({
+      ...terminalEvent(runId, connectorInstanceId, "run.browser_surface_failed", "surface_failed"),
+      data: {
+        browser_surface: {
+          browser_surface_lease_id: "lease_terminal_only",
+          browser_surface_profile_key: `${CONNECTOR_ID}:${connectorInstanceId}`,
+          browser_surface_status: "surface_failed",
+          browser_surface_wait_reason: "surface_unhealthy",
+        },
+        connection_id: connectorInstanceId,
+        connector_instance_id: connectorInstanceId,
+        source: { id: CONNECTOR_ID, kind: "connector" },
+      },
+    });
+
+    const row = readRunHistoryRow(runId);
+    assert.equal(row?.status, "surface_failed", "the pre-launch terminal event must not be dropped or normalized away");
+    assert.deepEqual(JSON.parse(row?.facts_json ?? "{}"), {
+      browser_surface_lease_id: "lease_terminal_only",
+      browser_surface_profile_key: `${CONNECTOR_ID}:${connectorInstanceId}`,
+      browser_surface_status: "surface_failed",
+      browser_surface_wait_reason: "surface_unhealthy",
+    });
+    assert.equal(countRunHistoryRows(runId), 1, "terminal fallback creates exactly one fenced row");
   } finally {
     closeDb();
   }

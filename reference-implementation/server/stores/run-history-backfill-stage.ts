@@ -237,8 +237,17 @@ const FACTS_JSON_KEYS = [
 function factsJsonForBackfill(terminalData: Record<string, unknown> | null): string {
   const facts: Record<string, unknown> = { origin: "backfill" };
   if (terminalData) {
+    const browserSurface =
+      typeof terminalData.browser_surface === "object" &&
+      terminalData.browser_surface !== null &&
+      !Array.isArray(terminalData.browser_surface)
+        ? (terminalData.browser_surface as Record<string, unknown>)
+        : null;
     for (const key of FACTS_JSON_KEYS) {
-      const value = terminalData[key];
+      let value = terminalData[key];
+      if (value === undefined && key.startsWith("browser_surface_")) {
+        value = browserSurface?.[key];
+      }
       if (value !== undefined) {
         facts[key] = value;
       }

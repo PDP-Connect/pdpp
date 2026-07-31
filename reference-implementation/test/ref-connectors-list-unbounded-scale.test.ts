@@ -106,6 +106,7 @@ async function closeServer(server: StartedServer | null): Promise<void> {
   server.abortStartupBackfill("unbounded scale proof shutdown");
   server.schedulerManager?.stop?.();
   server.stopBrowserSurfaceLeaseSweep();
+  server.stopConnectorMaintenanceSweep();
   server.asServer.closeAllConnections?.();
   server.rsServer.closeAllConnections?.();
   await Promise.allSettled([
@@ -113,6 +114,7 @@ async function closeServer(server: StartedServer | null): Promise<void> {
     new Promise((resolve) => server.rsServer.close(resolve)),
     server.controller.drainActiveRuns(5000),
     server.startupBackfillDone,
+    server.startupRunHistoryBackfillDone,
     server.startupSummaryEvidenceSweepDone,
     server.stopClientEventDeliveryWorker(),
   ]);
@@ -129,7 +131,13 @@ async function withMountedRoute(databaseUrl: string | null, fn: (asUrl: string) 
   try {
     server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     await server.startupBackfillDone.catch(() => undefined);
+    await server.startupRunHistoryBackfillDone.catch(() => undefined);
     await server.startupSummaryEvidenceSweepDone.catch(() => undefined);
+    // This suite counts writes caused by its GET. The server's periodic
+    // maintenance is independently responsible for shell retirement, so stop
+    // it before seeding/measuring rather than allowing a concurrent tick to
+    // be attributed to the read under test.
+    server.stopConnectorMaintenanceSweep();
     await fn(`http://localhost:${server.asPort}`);
   } finally {
     await closeServer(server);
