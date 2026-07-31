@@ -184,23 +184,29 @@ function flushAndExit(code: number): void {
  * (called from ~8 sites, some nested deep inside runAllMailPasses),
  * main().catch(handleMainRejection), and the process-level
  * unhandledRejection/uncaughtException handlers. The last two can fire
- * AFTER main() has already returned normally, because
- * flushAndExitAfterRuntimeAck() does not exit synchronously — it waits (up
- * to 30 minutes) for the runtime to close stdin, and the process is fully
- * alive during that wait. Coordinating each of those five sites
- * individually (the prior fix's approach, via a ConnectorFailure marker on
- * the fail() path only) is exactly the kind of per-call-site discipline
- * that misses a path — live evidence (run_1785522735922: all batches
- * ingest cleanly, 159 records, THEN "Connector emitted DONE after DONE")
- * proved a second terminal reaches stdout even with every known fail()
- * site fixed.
+ * AFTER main() has already returned normally, because the exit handshake
+ * does not exit the process synchronously — it waits (up to 30 minutes)
+ * for the runtime to close stdin, and the process is fully alive during
+ * that wait. Coordinating each of those five sites individually (checked
+ * markers on one specific catch site) is exactly the kind of per-call-site
+ * discipline that misses a path — live evidence (run_1785522735922: all
+ * batches ingest cleanly, 159 records, THEN "Connector emitted DONE after
+ * DONE") proved a second terminal reaches stdout even with every known
+ * fail() site fixed.
  *
- * Every terminal DONE from any of the five sites goes through this one
- * gate. The first call wins unconditionally; every later call is a no-op
- * on the wire, independent of which site fires or how long after the
- * first one resolves. Errors after a terminal DONE are never masked — they
- * still reach stderr — they just never reach the DONE protocol channel a
- * second time.
+ * ONE BOUNDED ATTEMPT (see terminal-once.ts): exactly one of the five
+ * sites wins the gate and gets to run the real write+exit sequence. If
+ * that write fails — synchronously (stringifyForJsonl throws) or
+ * asynchronously (the write's returned Promise rejects) — the gate does
+ * NOT retry with a different payload (no payload is provably safe against
+ * an already-broken stdout) and does NOT start the normal ACK-wait exit
+ * handshake (that handshake itself depends on stdout/stdin, which just
+ * proved unreliable). Instead it logs visibly to stderr and forces a
+ * deterministic nonzero-code process exit directly. Every other path
+ * through the gate is a no-op on the wire from that point on — including
+ * `fail()`'s ~8 call sites, which still all throw ConnectorFailure so
+ * `main()`'s control flow halts regardless of whether this particular
+ * attempt won or lost the gate.
  */
 interface TerminalDoneArgs {
   error?: { message: string; retryable: boolean };
@@ -208,22 +214,46 @@ interface TerminalDoneArgs {
   status: "succeeded" | "failed";
 }
 
-const terminalGate = createTerminalOnceGate<TerminalDoneArgs>((args) => {
-  emit({ type: "DONE", ...args }).catch((): undefined => undefined);
+// Last-resort exit: the gate's own onEmit failed (stdout is unreliable), so
+// the normal ACK-wait handshake — which depends on stdout/stdin — cannot be
+// trusted either. Exiting directly guarantees the process does not hang
+// forever with no DONE and no exit, the worse failure mode this replaces.
+function forceExitAfterEmitFailure(error: unknown, attemptedStatus: "succeeded" | "failed"): void {
+  const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+  process.stderr.write(
+    `[gmail] terminal DONE write failed for a ${attemptedStatus} run; forcing exit(1) without retry: ${detail}\n`
+  );
+  process.exit(1);
+}
+
+const terminalGate = createTerminalOnceGate<TerminalDoneArgs>(async (args) => {
+  await emit({ type: "DONE", ...args });
+  // Only reached if the write above genuinely completed — exit-handshake
+  // start is gated on successful terminal write initiation/completion, not
+  // merely attempted.
   flushAndExit(args.status === "succeeded" ? 0 : 1);
 });
 
-function emitTerminalDone(args: TerminalDoneArgs): void {
-  terminalGate.attempt(args);
+/**
+ * Route a terminal-DONE candidate through the single gate. Every caller
+ * fires this and, for the paths that need to observe the outcome (the
+ * success tail; `fail()`), awaits the returned promise. Losing callers get
+ * `{ kind: "lost" }` immediately and must not build any fallback emission.
+ * A caller whose attempt WON but whose write FAILED must not call this
+ * again — the gate is permanently closed either way, and
+ * `forceExitAfterEmitFailure` has already handled the deterministic exit.
+ */
+async function emitTerminalDone(args: TerminalDoneArgs): Promise<void> {
+  const outcome = await terminalGate.attempt(args);
+  if (outcome.kind === "won" && outcome.result === "failed") {
+    forceExitAfterEmitFailure(outcome.error, args.status);
+  }
 }
 
-/**
- * Marks an error as already having gone through `emitTerminalDone()` (via
- * `fail()`), so callers that catch it know not to build their own DONE
- * payload — `emitTerminalDone()`'s own flag already makes a second wire
- * emission impossible, but this keeps failure messages from being computed
- * and discarded for no reason.
- */
+/** Marks that `fail()` already routed through `emitTerminalDone()`, so
+ *  `handleMainRejection` skips building a redundant DONE payload — the gate
+ *  is closed either way (committed or force-exited) by the time
+ *  `fail()`'s throw reaches any catch. */
 class ConnectorFailure extends Error {
   readonly doneEmitted = true;
 }
@@ -232,15 +262,29 @@ class ConnectorFailure extends Error {
  * Emit a terminal failed DONE and throw, so every caller propagates the
  * failure up to `main()`'s single top-level catch instead of returning
  * normally into a caller that might still reach a later success DONE.
- * MUST be used as `throw fail(...)` (or awaited via a rejecting call) —
- * never call-and-continue, or the caller can still fall through to a
- * success path and attempt a second DONE (harmless now — emitTerminalDone
- * silently drops it — but the thrown ConnectorFailure still short-circuits
- * the rest of that caller's work, which matters for anything after the
- * fail() call site that shouldn't run once the run is over).
+ * MUST be used as `throw fail(...)` — never call-and-continue, or the
+ * caller can still fall through to a success path and attempt a second
+ * DONE (harmless on the wire — the gate drops or has already force-exited
+ * — but the thrown ConnectorFailure still short-circuits the rest of that
+ * caller's work, which matters for anything after the fail() call site
+ * that shouldn't run once the run is over).
+ *
+ * Fire-and-observe, not fire-and-await: `fail()` itself stays synchronous
+ * (`never`-returning) so its ~8 call sites keep halting execution
+ * immediately via the thrown error, exactly like before. The gate attempt
+ * still runs to completion asynchronously in the background — including
+ * `forceExitAfterEmitFailure`'s deterministic exit if the write fails —
+ * independent of `fail()`'s own synchronous throw.
  */
 function fail(m: string, retryable = false): never {
-  emitTerminalDone({ error: { message: m, retryable }, records_emitted: 0, status: "failed" });
+  emitTerminalDone({ error: { message: m, retryable }, records_emitted: 0, status: "failed" }).catch((err: unknown) => {
+    // emitTerminalDone() itself does not throw (terminalGate.attempt
+    // never rejects — createTerminalOnceGate catches onEmit's failure
+    // internally), so this only fires on a truly unexpected defect in
+    // the gate plumbing. Still must not be swallowed silently.
+    process.stderr.write(`[gmail] unexpected error routing fail() through the terminal gate: ${String(err)}\n`);
+    process.exit(1);
+  });
   throw new ConnectorFailure(m);
 }
 
@@ -2801,7 +2845,13 @@ async function main(): Promise<void> {
     await client.logout().catch((): undefined => undefined);
   }
 
-  emitTerminalDone({ records_emitted: totalEmitted, status: "succeeded" });
+  // Await: the success tail is the one path that can meaningfully wait for
+  // the write to settle before main() returns. If the win fails, the gate
+  // has already forced a deterministic exit(1) via
+  // forceExitAfterEmitFailure — nothing further to do here, and definitely
+  // no retry (see terminal-once.ts: one bounded attempt, not
+  // retry-with-a-different-payload).
+  await emitTerminalDone({ records_emitted: totalEmitted, status: "succeeded" });
 }
 
 // Named (not inline) so its own internal `emit(...).catch(...)` isn't a
@@ -2818,7 +2868,14 @@ function handleMainRejection(e: unknown): void {
   }
   const msg = e instanceof Error ? e.message : String(e);
   const retryable = RETRYABLE_ERROR_RE.test(msg);
-  emitTerminalDone({ error: { message: msg, retryable }, records_emitted: 0, status: "failed" });
+  // Fire-and-observe: handleMainRejection is a synchronous catch callback
+  // with nothing to await it. emitTerminalDone() resolves once the gate
+  // attempt settles either way (committed, or force-exited on failure);
+  // it never rejects, so this is not swallowing an error, just not
+  // blocking a caller that has no way to wait.
+  emitTerminalDone({ error: { message: msg, retryable }, records_emitted: 0, status: "failed" }).catch(
+    (): undefined => undefined
+  );
 }
 
 // Guarded so `import "./index.ts"` in tests doesn't spin up the runtime
@@ -2845,11 +2902,13 @@ if (isMainModule(import.meta.url)) {
       return;
     }
     const summary = reason instanceof Error ? reason.message : String(reason);
+    // Fire-and-observe (see handleMainRejection): a process event callback
+    // has nothing to await this with, and emitTerminalDone() never rejects.
     emitTerminalDone({
       error: { message: `unhandledRejection: ${summary.slice(0, ERROR_MSG_TAIL)}`, retryable: false },
       records_emitted: 0,
       status: "failed",
-    });
+    }).catch((): undefined => undefined);
   });
   process.on("uncaughtException", (err: Error) => {
     const msg = err.stack ?? err.message;
@@ -2858,7 +2917,7 @@ if (isMainModule(import.meta.url)) {
       error: { message: `uncaughtException: ${err.message.slice(0, ERROR_MSG_TAIL)}`, retryable: false },
       records_emitted: 0,
       status: "failed",
-    });
+    }).catch((): undefined => undefined);
   });
 
   main().catch(handleMainRejection);
