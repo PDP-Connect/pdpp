@@ -2819,6 +2819,17 @@ export interface BoundedSweepResult {
    * rather than skipping past them.
    */
   readonly incomplete: boolean;
+  /**
+   * Every connector_instance_id whose page this call processed (discovery +
+   * fold + repair ran for it), across every page, in page order. A caller
+   * that needs to act on exactly the connections this call touched — e.g.
+   * assembling and publishing their terminal LIST projection once their
+   * evidence is current — uses this instead of re-deriving the id set (which
+   * would race a concurrent insert/delete between the sweep and the
+   * caller's own read). Bounded by construction: this call itself is
+   * bounded by `maxPages`/`maxDurationMs`.
+   */
+  readonly observedIds: readonly string[];
   /** Complete-set orphan pruning only ran when the sweep covered every page AND every page's fold genuinely converged this call (see below). */
   readonly prunedComplete: boolean;
   readonly repaired: number;
@@ -2886,6 +2897,7 @@ export async function runBoundedSummaryEvidenceSweep(options: {
   let discovered = 0;
   let repaired = 0;
   let skipped = 0;
+  const observedIds: string[] = [];
   let cursor = options.afterId ?? null;
   // The cursor position BEFORE the page currently being processed — used
   // as the resume point when that page's OWN fold is incomplete, so a
@@ -2950,6 +2962,7 @@ export async function runBoundedSummaryEvidenceSweep(options: {
       cursor = cursorBeforeCurrentPage;
       break;
     }
+    observedIds.push(...pageIds);
     cursor = pageIds.at(-1) ?? cursor;
     if (pageIds.length < pageSize) {
       // Short page: this was genuinely the last page of the complete set.
@@ -2980,6 +2993,7 @@ export async function runBoundedSummaryEvidenceSweep(options: {
   return {
     discovered,
     incomplete,
+    observedIds,
     prunedComplete,
     repaired,
     resumeAfterId: incomplete ? cursor : null,

@@ -1355,6 +1355,24 @@ export function createSqliteConnectorInstanceStore() {
       ).rows.map(mapInstance);
     },
 
+    // Bounded owner-scoped batch lookup for an explicit `connector_instance_id`
+    // set (e.g. one maintenance-sweep page). Never enumerates the owner's
+    // full inventory; the LIMIT is exactly the caller's own distinct-id count,
+    // mirroring `countActiveByOwnerConnectorIds`'s json_each pattern.
+    listByIds(connectorInstanceIds: readonly string[], ownerSubjectId: string): ConnectorInstance[] {
+      const ids = [...new Set(connectorInstanceIds.filter((id) => id.length > 0))];
+      if (ids.length === 0) {
+        return [];
+      }
+      assertConnectorIdentityPageLimit(ids.length);
+      const { rows } = getMany<ConnectorInstanceRow>(
+        referenceQueries.connectorInstancesListByIds,
+        [JSON.stringify(ids), ownerSubjectId],
+        { limit: ids.length }
+      );
+      return rows.map(mapInstance);
+    },
+
     listByOwner(ownerSubjectId: string, { limit = LIST_LIMIT }: { limit?: number } = {}): ConnectorInstance[] {
       // Draft instances are invisible to this read; the
       // `connectorInstancesListByOwner` query excludes `status = 'draft'` in
@@ -2024,6 +2042,30 @@ export function createPostgresConnectorInstanceStore() {
         [ownerSubjectId, connectorId, limit]
       );
       return (result.rows as ConnectorInstanceRow[]).map(mapInstance);
+    },
+
+    // Postgres peer of the SQLite `listByIds` above. `unnest` is bounded by
+    // the one caller-supplied id set; the result is bounded again by that
+    // same cardinality.
+    async listByIds(connectorInstanceIds: readonly string[], ownerSubjectId: string): Promise<ConnectorInstance[]> {
+      const ids = [...new Set(connectorInstanceIds.filter((id) => id.length > 0))];
+      if (ids.length === 0) {
+        return [];
+      }
+      assertConnectorIdentityPageLimit(ids.length);
+      const result = await postgresQuery<ConnectorInstanceRow>(
+        `SELECT ci.connector_instance_id, ci.owner_subject_id, ci.connector_id, ci.display_name, ci.status,
+                ci.source_kind, ci.source_binding_key, ci.source_binding_json, ci.created_at, ci.updated_at,
+                ci.revoked_at
+         FROM connector_instances AS ci
+         JOIN unnest($2::text[]) AS page_instance_ids(connector_instance_id)
+           ON page_instance_ids.connector_instance_id = ci.connector_instance_id
+         WHERE ci.owner_subject_id = $1
+         ORDER BY ci.connector_instance_id ASC
+         LIMIT $3`,
+        [ownerSubjectId, ids, ids.length]
+      );
+      return result.rows.map(mapInstance);
     },
 
     async listByOwner(

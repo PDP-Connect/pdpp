@@ -141,6 +141,7 @@ import {
   setConnectorSummaryReconcileObservationSink,
 } from "./connector-summary-read-model.ts";
 import { createConnectorSummaryReconcileObservationSink } from "./connector-summary-reconcile-observability.ts";
+import { publishConnectorListSummaryTerminalProjectionsForIds } from "./connector-summary-terminal-publisher.ts";
 import {
   applyDatasetSummaryBlobDelta,
   getDatasetSummaryProjection,
@@ -6655,12 +6656,29 @@ export async function startServer(opts: ServerOpts = {}) {
         "connector-maintenance sweep phase failed"
       );
     },
-    runEvidenceSweep: (args) =>
-      runBoundedSummaryEvidenceSweep({
+    runEvidenceSweep: async (args) => {
+      const result = await runBoundedSummaryEvidenceSweep({
         ...(args.afterId === undefined ? {} : { afterId: args.afterId }),
         maxDurationMs: args.maxDurationMs,
         pageSize: args.pageSize ?? CONNECTOR_MAINTENANCE_EVIDENCE_SWEEP_PAGE_SIZE,
-      }),
+      });
+      // Assemble + publish the terminal owner-LIST projection for exactly
+      // the connections this call's evidence sweep just converged to
+      // current — never a separate fleet scan, never before the evidence is
+      // current (the publisher's own CAS fencing would just reject it).
+      // Best-effort and independently reported: a publish failure must
+      // never turn an otherwise-successful evidence sweep into a failed
+      // maintenance tick.
+      if (result.observedIds.length > 0) {
+        await publishConnectorListSummaryTerminalProjectionsForIds(result.observedIds).catch((err) => {
+          logger.warn?.(
+            { err: err instanceof Error ? err.message : String(err) },
+            "connector-maintenance terminal-projection publish failed"
+          );
+        });
+      }
+      return result;
+    },
     runHistoryBackfillStage,
   });
   const connectorMaintenanceSweepTimer = createBrowserSurfaceLeaseSweepTimer({
