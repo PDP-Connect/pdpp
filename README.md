@@ -93,6 +93,8 @@ or compete with the normative specs.
 
 ## Participate
 
+- **Community sessions:** [`docs/community/session-reading.md`](docs/community/session-reading.md)
+  contains the current reading for PDP-Connect community sessions.
 - **Contributing:** [`CONTRIBUTING.md`](CONTRIBUTING.md) — the spec-first
   workflow, test expectations, and pull-request conventions.
 - **Maintainers:** [`MAINTAINERS.md`](MAINTAINERS.md) — active maintainers and
