@@ -11,7 +11,11 @@
 // Extracted from runtime/index.js: pure Error->reason mapping with no runtime
 // state, secret handling, or grant/scope enforcement.
 
-type FailureReason = "interaction_handler_invalid_response" | "connector_protocol_violation" | "runtime_error";
+type FailureReason =
+  | "interaction_handler_invalid_response"
+  | "connector_protocol_violation"
+  | "ingest_rejected"
+  | "runtime_error";
 
 interface RuntimeError extends Error {
   failure_reason?: string;
@@ -61,6 +65,9 @@ export function classifyRuntimeFailure(err: unknown): FailureReason {
     (message.startsWith("Connector emitted ") && message.includes(" after DONE"))
   ) {
     return "connector_protocol_violation";
+  }
+  if (message.startsWith("Resource server rejected ") && message.includes(" ingested record(s) across stream(s):")) {
+    return "ingest_rejected";
   }
   return "runtime_error";
 }

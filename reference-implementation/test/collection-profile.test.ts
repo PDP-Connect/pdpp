@@ -162,6 +162,7 @@ interface RuntimeRunConnectorError extends Error {
   readonly checkpoint_summary?: Record<string, unknown> | null;
   readonly connector_error?: { message?: string; code?: string; retryable?: boolean | null } | null;
   readonly failure_reason?: string;
+  readonly known_gaps?: readonly KnownGap[] | null;
   readonly run_id?: string | null;
   readonly terminal_reason?: string | null;
   readonly trace_id?: string | null;
@@ -1538,6 +1539,95 @@ test("Collection Profile conformance", async (t) => {
       assert.equal(failedEvent.data.state_streams_staged, 1);
       assert.equal(failedEvent.data.state_streams_committed, 0);
       assert.equal(failedEvent.data.checkpoint_commit_status, "not_committed");
+    } finally {
+      cleanup();
+      await closeServer(server);
+    }
+  });
+
+  // Regression for the fleet-green Gmail ingest-rejection defect: a batch
+  // where the RS accepts zero of N records (records_accepted: 0,
+  // records_rejected: N) must not be reported as a successful run, and must
+  // not advance the STATE checkpoint. Before this fix, `executeRecordsIngest`
+  // returned a normal HTTP 200 envelope for an all-rejected batch and the
+  // runtime's `run.batch_ingested` event hardcoded `status: "succeeded"` —
+  // real data could silently fail to persist while the run (and connection
+  // health) still reported green. Forces a real RS-side rejection via
+  // `assertRecordIdentity` (key/data.id mismatch -> invalid_record_identity)
+  // rather than mocking the HTTP response, so this exercises the real
+  // executeRecordsIngest envelope shape.
+  await t.test("a fully-rejected ingest batch fails the run and does not commit STATE", async () => {
+    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const { asPort, rsPort } = server;
+    const { ownerToken, connectorId } = await setupConnector(server, asPort);
+
+    const { connectorPath, cleanup } = createTestConnector([
+      {
+        // key ("item_1") disagrees with data.id ("mismatched_id") — the RS's
+        // assertRecordIdentity guard throws invalid_record_identity for this
+        // line, so executeRecordsIngest counts it as rejected, not accepted.
+        data: { id: "mismatched_id", value: "bad" },
+        emitted_at: new Date().toISOString(),
+        key: "item_1",
+        stream: "items",
+        type: "RECORD",
+      },
+      { cursor: { cursor: "cursor_should_not_persist" }, stream: "items", type: "STATE" },
+      { records_emitted: 1, status: "succeeded", type: "DONE" },
+    ]);
+
+    try {
+      let runtimeErr: RuntimeRunConnectorError | undefined;
+      try {
+        await runTestConnector({
+          collectionMode: "full_refresh",
+          connectorId,
+          connectorPath,
+          manifest: MINIMAL_MANIFEST,
+          onInteraction: async () => ({}),
+          ownerToken,
+          persistState: true,
+          rsUrl: `http://localhost:${rsPort}`,
+          state: null,
+        });
+        assert.fail("expected the fully-rejected ingest batch to fail the run");
+      } catch (err) {
+        runtimeErr = asRuntimeError(err);
+      }
+      assert.ok(runtimeErr, "expected a captured runtime error");
+      // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
+      assert.match(runtimeErr.message, /Resource server rejected 1 ingested record\(s\) across stream\(s\): items/);
+      assert.equal(runtimeErr.failure_reason, "ingest_rejected");
+
+      const rejectionGap = runtimeErr.known_gaps?.find((gap) => gap.kind === "ingest_rejected");
+      assert.ok(rejectionGap, "expected an ingest_rejected known gap on the thrown error");
+      assert.equal(rejectionGap?.stream, "items");
+      assert.equal(rejectionGap?.recovery_hint?.action, "retry_by_runtime");
+
+      // STATE must NOT have been committed even though DONE.status was
+      // "succeeded" — an unexplained ingest rejection must block the
+      // checkpoint from advancing.
+      const state = await loadSyncState(connectorId, ownerToken, { rsUrl: `http://localhost:${rsPort}` });
+      assert.ok(
+        !state?.items || asRecord(state.items).cursor !== "cursor_should_not_persist",
+        "STATE should not be persisted when an ingest batch was fully rejected"
+      );
+
+      const asUrl = `http://localhost:${asPort}`;
+      const { body: runTimeline } = await fetchJson<TimelineBody>(
+        `${asUrl}/_ref/runs/${encodeURIComponent(requireRunId(runtimeErr))}/timeline`
+      );
+      const runTypes = (runTimeline.data || []).map((event) => event.event_type);
+      assert.ok(runTypes.includes("run.failed"));
+      assert.ok(!runTypes.includes("run.state_advanced"));
+
+      // The per-batch event must report the rejection honestly rather than
+      // hardcoding "succeeded" on every HTTP 200 ingest response.
+      const batchEvent = (runTimeline.data || []).find((event) => event.event_type === "run.batch_ingested");
+      assert.ok(batchEvent, "expected a run.batch_ingested timeline event");
+      assert.equal(batchEvent.status, "failed");
+      assert.equal(batchEvent.data.records_accepted, 0);
+      assert.equal(batchEvent.data.records_rejected, 1);
     } finally {
       cleanup();
       await closeServer(server);

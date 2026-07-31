@@ -28,6 +28,7 @@ import {
   boundConnectorErrorMessage,
   boundConsideredCount,
   boundGapString,
+  boundGapStringList,
   boundString,
   boundStringList,
   buildCollectionFacts,
@@ -135,6 +136,7 @@ interface AvailableBindings {
 
 /** RS ingest response, after `readIngestResponse` proves the two counters. */
 interface IngestResult {
+  errors?: unknown;
   records_accepted: number;
   records_rejected: number;
 }
@@ -2571,6 +2573,45 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
   const recordBatch: Record<string, BufferedRecord[]> = {};
   const BATCH_SIZE = Number(process.env.PDPP_RUNTIME_BATCH_SIZE) || 500;
 
+  // Per-stream tally of RS ingest rejections this run. A nonzero
+  // `records_rejected` on a `run.batch_ingested` response is real emitted
+  // data that never reached durable storage; it MUST NOT be allowed to
+  // advance a STATE checkpoint or be reported as a successful run without
+  // explicit evidence. A bounded sample of the RS-returned error strings
+  // (via `boundGapStringList`) is kept per stream for the terminal known_gap.
+  // See openspec/changes harden-ingest-rejection-checkpoint-gate.
+  const INGEST_REJECTION_SAMPLE_MAX = 20;
+  const ingestRejectionsByStream = new Map<string, { rejected: number; sampleErrors: string[] }>();
+
+  function recordIngestRejections(stream: string, rejected: number, errors: readonly string[]): void {
+    if (rejected <= 0) {
+      return;
+    }
+    const existing = ingestRejectionsByStream.get(stream) ?? { rejected: 0, sampleErrors: [] };
+    existing.rejected += rejected;
+    if (existing.sampleErrors.length < INGEST_REJECTION_SAMPLE_MAX) {
+      const bounded = boundGapStringList(errors) || [];
+      for (const err of bounded) {
+        if (existing.sampleErrors.length >= INGEST_REJECTION_SAMPLE_MAX) {
+          break;
+        }
+        existing.sampleErrors.push(err);
+      }
+    }
+    ingestRejectionsByStream.set(stream, existing);
+  }
+
+  function assertNoUnexplainedIngestRejectionsBeforeCommit(): void {
+    if (ingestRejectionsByStream.size === 0) {
+      return;
+    }
+    const totalRejected = [...ingestRejectionsByStream.values()].reduce((sum, entry) => sum + entry.rejected, 0);
+    const streams = [...ingestRejectionsByStream.keys()].sort();
+    throw new Error(
+      `Resource server rejected ${totalRejected} ingested record(s) across stream(s): ${streams.join(", ")}`
+    );
+  }
+
   function countBufferedRecords(): number {
     return Object.values(recordBatch).reduce((sum, batch) => sum + (batch?.length || 0), 0);
   }
@@ -2638,6 +2679,18 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
           message: connectorError?.message || null,
           reason: reason || "run_failed",
           recoveryHint: recoveryHintFromTerminalConnectorError(connectorError),
+        })
+      );
+    }
+    for (const [stream, entry] of ingestRejectionsByStream) {
+      terminalGaps.push(
+        buildKnownGap({
+          diagnostics: { rejected: entry.rejected, sample_errors: entry.sampleErrors },
+          kind: "ingest_rejected",
+          message: `Resource server rejected ${entry.rejected} record(s) for stream '${stream}'`,
+          reason: "ingest_rejected",
+          recoveryHint: "retry_by_runtime",
+          stream,
         })
       );
     }
@@ -3055,6 +3108,9 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       throw err;
     }
     totalFlushed += batch.length;
+    if (result.records_rejected > 0) {
+      recordIngestRejections(stream, result.records_rejected, Array.isArray(result.errors) ? result.errors : []);
+    }
     await emitSpineEventTracked({
       actor_id: connectorId,
       actor_type: "runtime",
@@ -3071,7 +3127,12 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       object_type: "run",
       run_id: runId,
       scenario_id: traceContext.scenario_id,
-      status: "succeeded",
+      // A batch with any rejected record did not fully reach durable storage —
+      // report it honestly rather than hardcoding "succeeded" on every 200
+      // response. `assertNoUnexplainedIngestRejectionsBeforeCommit` (called
+      // before STATE commit) is the enforcement point; this status keeps the
+      // per-batch event legible with what it enforces.
+      status: result.records_rejected > 0 ? "failed" : "succeeded",
       stream_id: stream,
       trace_id: traceContext.trace_id,
     });
@@ -4529,6 +4590,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
 
       if (done.status === "succeeded" && persistState) {
         assertDetailCoverageSatisfiedBeforeCommit();
+        assertNoUnexplainedIngestRejectionsBeforeCommit();
         await Object.entries(newState).reduce(
           (previous, [stream, cursor]) => previous.then(() => commitState(stream, cursor)),
           Promise.resolve()
