@@ -356,6 +356,19 @@ interface DeviceExporterStore {
     createdAt: string;
     rotatedAt: string;
   }) => Promise<void>;
+  // Revoke every OTHER already-completed device still bound to this exact
+  // (owner, connector, source_kind, binding) after a fresh enrollment
+  // resolved a genuinely new device for the same binding. Returns the
+  // superseded device ids (empty when none existed). See device-exporter-
+  // store.ts for the full contract.
+  supersedePriorDevicesForBinding: (params: {
+    ownerSubjectId: string;
+    connectorId: string;
+    sourceKind: string;
+    localBindingId: string;
+    keepDeviceId: string;
+    revokedAt: string;
+  }) => Promise<string[]>;
   upsertSourceInstance: (params: {
     sourceInstanceId: string;
     deviceId: string;
@@ -841,6 +854,28 @@ async function performFirstEnrollment(
     sourceKind,
     updatedAt: now.toISOString(),
   });
+
+  // Lifecycle invariant: a genuinely NEW device for this binding
+  // (`resolved.adopted === false`) means any OTHER active device still
+  // durably bound to the same (owner, connector, source_kind, binding) is now
+  // stale — its enrollment code is already spent, so it can never again be
+  // adopted or heartbeat, yet its `device_source_instances` row would
+  // otherwise sit "trusted but never-heartbeated" forever, poisoning this
+  // connector_instance's outbox-axis aggregation (connector-outbox-axis.ts)
+  // to `unknown` and pinning freshness to a stale snapshot even while the
+  // NEW device heartbeats normally. `resolved.adopted === true` reuses the
+  // SAME device (an unconsumed-code orphan), so no other device can share
+  // this binding yet and superseding would be a no-op — skip the read.
+  if (!resolved.adopted) {
+    await ctx.deviceExporterStore.supersedePriorDevicesForBinding({
+      connectorId: enrollConnectorKey,
+      keepDeviceId: deviceId,
+      localBindingId: enrollment.localBindingId,
+      ownerSubjectId: enrollment.ownerSubjectId,
+      revokedAt: now.toISOString(),
+      sourceKind,
+    });
+  }
 
   // Test-only interruption point: identity (device, connector instance,
   // source instance) is now fully durable; the code is still pending. This is

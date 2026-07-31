@@ -1739,6 +1739,108 @@ test("re-enrolling the same connector + local_binding_name resumes one stable co
   });
 });
 
+test("re-enrolling the same binding supersedes (revokes) the prior device, closing the fleet-local-collector-evidence-completeness lifecycle gap", async () => {
+  // Live-incident regression (fix-fleet-local-collector-evidence-completeness):
+  // re-enrolling under an already-COMPLETED (owner, connector, source_kind,
+  // binding) intentionally mints a fresh device_id and resumes the SAME
+  // connector_instance_id (proven above). Before this fix, the PRIOR device's
+  // device_source_instances row was left `active` forever — its enrollment
+  // code already spent, so it can never heartbeat again, yet it kept
+  // contributing "trusted but never-heartbeated" evidence to the
+  // connector_instance's outbox-axis aggregation (connector-outbox-axis.ts),
+  // permanently poisoning that connection's freshness axis to `unknown` even
+  // while the NEW device heartbeats normally. This is exactly the shape found
+  // live on pdpp.vivid.fish's "vivid-fish Codex" connection: a 2026-07-24
+  // enrollment left a dead device_source_instances row bound to the same
+  // connector_instance_id as the live, heartbeating device, forcing
+  // freshness=stale/outbox=unknown despite fresh ingest.
+  await withServer(async ({ asUrl }) => {
+    const first = await enrollDevice(asUrl, "vivid-fish");
+    const heartbeat = await postJson(
+      `${asUrl}/_ref/device-exporters/${encodeURIComponent(first.device_id)}/heartbeat`,
+      {
+        connector_id: "codex",
+        records_pending: 0,
+        source_instance_id: first.source_instance_id,
+        status: "healthy",
+      },
+      authHeaders(first.device_token)
+    );
+    assert.equal(heartbeat.status, 200);
+
+    // Re-enroll under the SAME local_binding_name: a fresh enrollment code,
+    // fresh device, same connector_instance_id (per the sibling test above).
+    const second = await enrollDevice(asUrl, "vivid-fish");
+    assert.equal(second.connector_instance_id, first.connector_instance_id);
+    assert.notEqual(second.device_id, first.device_id);
+
+    // The prior device is now revoked, cascading to its credential and
+    // source-instance — never a bare device flip that leaves the source
+    // instance dangling as `active`.
+    const priorDevice = selectRow<{ status: string; revoked_at: string | null }>(
+      "SELECT status, revoked_at FROM device_exporters WHERE device_id = ?",
+      first.device_id
+    );
+    assert.equal(priorDevice.status, "revoked", "the superseded device must be revoked, not left active");
+    assert.ok(priorDevice.revoked_at, "revoked_at must be stamped");
+
+    const priorSourceInstance = selectRow<{ status: string }>(
+      "SELECT status FROM device_source_instances WHERE device_id = ? AND source_instance_id = ?",
+      first.device_id,
+      first.source_instance_id
+    );
+    assert.equal(
+      priorSourceInstance.status,
+      "revoked",
+      "the superseded device's source-instance must be revoked so it stops poisoning the outbox-axis aggregation"
+    );
+
+    // The connector_instance itself is untouched: the new device's active
+    // source-instance still references it, so revokeDevice's NOT EXISTS
+    // guard must spare it (the entire point of the stable-binding lane).
+    const connectorInstance = selectRow<{ status: string }>(
+      "SELECT status FROM connector_instances WHERE connector_instance_id = ?",
+      first.connector_instance_id
+    );
+    assert.equal(connectorInstance.status, "active", "the shared connector_instance must survive supersession");
+
+    // The new device's own source-instance is untouched.
+    const newSourceInstance = selectRow<{ status: string }>(
+      "SELECT status FROM device_source_instances WHERE device_id = ? AND source_instance_id = ?",
+      second.device_id,
+      second.source_instance_id
+    );
+    assert.equal(newSourceInstance.status, "active");
+
+    // Never discard a genuinely distinct device: a DIFFERENT binding name
+    // enrolling concurrently must not be touched by this connector_instance's
+    // supersession.
+    const untouchedOther = await enrollDevice(asUrl, "vivid-fish-office-desktop");
+    const untouchedOtherDevice = selectRow<{ status: string }>(
+      "SELECT status FROM device_exporters WHERE device_id = ?",
+      untouchedOther.device_id
+    );
+    assert.equal(untouchedOtherDevice.status, "active", "a distinct binding's device must never be superseded");
+
+    // Exactly one non-revoked device_source_instances row remains bound to
+    // this connector_instance — the untrusted-gap safety guard in
+    // connector-outbox-axis.ts (a trusted-but-never-heartbeated row poisons
+    // the whole axis) is fully preserved: it simply has nothing untrustworthy
+    // left to see for THIS connection.
+    const activeSourceInstances = getDb()
+      .prepare(
+        `SELECT device_id FROM device_source_instances
+          WHERE connector_instance_id = ? AND status != 'revoked'`
+      )
+      .all(first.connector_instance_id);
+    assert.equal(
+      activeSourceInstances.length,
+      1,
+      "exactly one active device_source_instances row must remain bound to the connector_instance"
+    );
+  });
+});
+
 test("enrollment against an owner-deleted binding fails closed with a typed 409, never resurrects", async () => {
   // Live incident regression (fix-owner-delete-resurrection): an owner
   // DELETE on a device-collected connection removes the connector_instances
