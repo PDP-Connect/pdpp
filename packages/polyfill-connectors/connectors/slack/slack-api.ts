@@ -47,6 +47,33 @@ const USER_AGENT = slackBrowserUserAgent();
 export const SLACK_API_RETRYABLE_FAILURE_RE = /slack_rate_limited|ECONN|ETIMEDOUT|timeout/i;
 
 /**
+ * A failure whose error message identifies it as an auth/session problem
+ * (`slack_auth_failed`, thrown by `parseSlackApiResponse` for a 401 or an
+ * `invalid_auth`/`not_authed`/`token_revoked` API-level error). Distinct
+ * from `SLACK_API_RETRYABLE_FAILURE_RE`: an auth failure will not clear by
+ * retrying the same call, so it must never be reported with the same
+ * `retry_by_runtime` recovery action a transient failure gets.
+ */
+export const SLACK_API_AUTH_FAILURE_RE = /slack_auth_failed/;
+
+/**
+ * Extract the stable, coded prefix `parseSlackApiResponse` throws
+ * (`slack_auth_failed`, `slack_api_http_<status>`, `slack_api_error_<code>`,
+ * `slack_api_invalid_json`) from an error message, for structured
+ * `SKIP_RESULT.diagnostics` — evidence a downstream report/health rollup can
+ * key on instead of substring-matching free text. Returns the coded prefix
+ * verbatim (no response body) when the message matches one of
+ * `parseSlackApiResponse`'s own throw shapes; `null` for anything else
+ * (a network-layer error, a thrown non-Slack-API exception).
+ */
+const SLACK_API_ERROR_CODE_RE = /^(slack_auth_failed|slack_api_http_\d+|slack_api_error_\S+|slack_api_invalid_json)\b/;
+
+export function parseSlackApiErrorCode(message: string): string | null {
+  const match = SLACK_API_ERROR_CODE_RE.exec(message);
+  return match?.[1] ?? null;
+}
+
+/**
  * Mirror slackdump's client-token cookie shape.
  *
  * Slackdump's upstream auth provider sends both the `d` cookie and a derived

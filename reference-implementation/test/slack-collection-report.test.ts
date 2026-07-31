@@ -215,6 +215,34 @@ test("slack co-emitted detail streams: child not_staged without parent proof sta
   assert.equal(entry.forward_disposition, "unmeasured");
 });
 
+test("slack optional-stream auth failure: SKIP_RESULT with no recovery action -> terminal_gap, not a misleading retryable_gap", () => {
+  // Regression for a real evidence gap in `runOptionalStream`
+  // (connectors/slack/index.ts): before the fix, every optional-stream
+  // failure — including a durable `slack_auth_failed` 401 on `stars.list`
+  // that will not clear by retrying — reported `recovery_hint.action:
+  // "retry_by_runtime"` unconditionally. `mapSkipCoverageCondition`
+  // (connector-coverage-policy.ts) checks that action BEFORE any reason
+  // text, so the durable failure was misclassified as a transient
+  // `retryable_gap`. The fix omits the action for an auth failure, so the
+  // real, non-self-healing severity (`terminal_gap`) surfaces instead.
+  const entries = report([fact({ collected: 0, skipped: { reason: "optional_stream_failed" }, stream: "stars" })]);
+  const entry = entryFor(entries, "stars");
+  assert.equal(entry.coverage_condition, "terminal_gap", "a durable auth failure must not read as self-healing");
+  assert.notEqual(entry.coverage_condition, "retryable_gap");
+});
+
+test("slack optional-stream transient failure: SKIP_RESULT with retry_by_runtime -> retryable_gap (unchanged)", () => {
+  const entries = report([
+    fact({
+      collected: 0,
+      skipped: { reason: "optional_stream_failed", recovery_action: "retry_by_runtime" },
+      stream: "reminders",
+    }),
+  ]);
+  const entry = entryFor(entries, "reminders");
+  assert.equal(entry.coverage_condition, "retryable_gap", "a transient failure still reads as self-healing");
+});
+
 test("slack mixed report: canvases complete alongside unknown messages and a terminal unsupported stream", () => {
   // The whole-connection shape an owner sees after a clean Slack run: canvases
   // carries a real complete, messages stays honestly unknown, and an

@@ -219,24 +219,66 @@ test("runOptionalStream: a succeeding optional stream runs to completion and emi
   assert.equal(messages.length, 0);
 });
 
-test("runOptionalStream: a retryable failure (rate limit) is flagged retryable in the recovery hint", async () => {
+test("runOptionalStream: a retryable failure (rate limit) is flagged retryable with a retry_by_runtime action", async () => {
   const { emit, messages } = captureEmitted();
 
   await runOptionalStream(emit, "reminders", () => Promise.reject(new Error("slack_rate_limited")));
 
   const [msg] = messages;
-  const hint = (msg as { recovery_hint?: { retryable?: boolean } }).recovery_hint;
+  const hint = (msg as { recovery_hint?: { action?: string; retryable?: boolean } }).recovery_hint;
   assert.equal(hint?.retryable, true);
+  assert.equal(hint?.action, "retry_by_runtime", "a transient failure claims retrying can help");
 });
 
-test("runOptionalStream: a non-retryable failure (auth) is flagged non-retryable in the recovery hint", async () => {
+test("runOptionalStream: an auth failure is flagged non-retryable and omits retry_by_runtime", async () => {
+  // Regression for a real evidence gap: `mapSkipCoverageCondition`
+  // (reference-implementation/server/connector-coverage-policy.ts) reads
+  // `recovery_action === "retry_by_runtime"` BEFORE it looks at the skip
+  // reason text, and projects that as `retryable_gap`. Before this fix,
+  // `runOptionalStream` set that action unconditionally, so a durable
+  // `stars.list` 401 (which will not clear by retrying) was misreported as
+  // a transient, self-healing gap instead of the terminal one it actually
+  // is. The action must be absent here so the coverage projection falls
+  // through to its reason-based classification instead.
   const { emit, messages } = captureEmitted();
 
   await runOptionalStream(emit, "stars", () => Promise.reject(new Error("slack_auth_failed")));
 
   const [msg] = messages;
-  const hint = (msg as { recovery_hint?: { retryable?: boolean } }).recovery_hint;
+  const hint = (msg as { recovery_hint?: { action?: string; retryable?: boolean } }).recovery_hint;
   assert.equal(hint?.retryable, false);
+  assert.equal(hint?.action, undefined, "an auth failure must not claim retry_by_runtime can help");
+});
+
+test("runOptionalStream: an auth failure reports a structured error_code diagnostic", async () => {
+  const { emit, messages } = captureEmitted();
+
+  await runOptionalStream(emit, "stars", () => Promise.reject(new Error("slack_auth_failed")));
+
+  const [msg] = messages;
+  const { diagnostics } = msg as { diagnostics?: { error_code?: string } };
+  assert.equal(diagnostics?.error_code, "slack_auth_failed");
+});
+
+test("runOptionalStream: an HTTP-status API failure reports its coded error_code, not the raw body", async () => {
+  const { emit, messages } = captureEmitted();
+
+  await runOptionalStream(emit, "user_groups", () =>
+    Promise.reject(new Error("slack_api_http_500: <html>internal error</html>"))
+  );
+
+  const [msg] = messages;
+  const { diagnostics } = msg as { diagnostics?: { error_code?: string } };
+  assert.equal(diagnostics?.error_code, "slack_api_http_500");
+});
+
+test("runOptionalStream: a non-Slack-API error (thrown by other code) reports no diagnostics", async () => {
+  const { emit, messages } = captureEmitted();
+
+  await runOptionalStream(emit, "reminders", () => Promise.reject(new Error("boom")));
+
+  const [msg] = messages;
+  assert.equal((msg as { diagnostics?: unknown }).diagnostics, undefined);
 });
 
 function seedUser(db: DatabaseSync, id: string): void {

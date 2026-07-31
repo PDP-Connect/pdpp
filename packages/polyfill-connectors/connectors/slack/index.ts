@@ -103,6 +103,8 @@ import {
   fetchAllStars,
   fetchAllUserGroups,
   fetchDmReadStates,
+  parseSlackApiErrorCode,
+  SLACK_API_AUTH_FAILURE_RE,
   SLACK_API_RETRYABLE_FAILURE_RE,
 } from "./slack-api.ts";
 import type {
@@ -2237,12 +2239,26 @@ export async function runOptionalStream(
     await run();
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
+    const retryable = SLACK_API_RETRYABLE_FAILURE_RE.test(message);
+    const isAuthFailure = SLACK_API_AUTH_FAILURE_RE.test(message);
+    const errorCode = parseSlackApiErrorCode(message);
     await emit({
       type: "SKIP_RESULT",
       stream,
       reason: OPTIONAL_STREAM_FAILED_REASON,
       message: `Slack: ${stream} failed and was skipped (optional stream): ${message}`,
-      recovery_hint: { action: "retry_by_runtime", retryable: SLACK_API_RETRYABLE_FAILURE_RE.test(message) },
+      // `action: "retry_by_runtime"` is a claim that retrying can help — true
+      // for a transient failure, false for a durable auth failure (retrying
+      // the same call with the same rejected session repeats the same
+      // outcome forever). Omitting it for an auth failure keeps the coverage
+      // projection (`mapSkipCoverageCondition`, which checks `action` before
+      // any reason text) from reading a persistent 401 as `retryable_gap`.
+      recovery_hint: isAuthFailure ? { retryable: false } : { action: "retry_by_runtime", retryable },
+      // Structured evidence beyond the free-text message: the stable coded
+      // prefix `parseSlackApiResponse` throws, when the failure came from a
+      // parsed Slack API response (absent for a network-layer error the
+      // HTTP governor itself threw).
+      ...(errorCode ? { diagnostics: { error_code: errorCode } } : {}),
     });
   }
 }
