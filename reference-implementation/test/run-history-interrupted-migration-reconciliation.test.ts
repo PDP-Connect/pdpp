@@ -671,7 +671,7 @@ test("PostgreSQL: interrupted migration reconciles losslessly against real Postg
       await closePostgresStorage();
       await initPostgresStorage({ backend: "postgres", databaseUrl: url });
       const rowsAfterSecondBoot = await postgresQuery("SELECT COUNT(*)::int AS n FROM run_history");
-      assert.equal(rowsAfterSecondBoot.rows[0].n, 7, "row count unchanged across the idempotent second boot");
+      assert.equal(rowsAfterSecondBoot.rows[0]?.n, 7, "row count unchanged across the idempotent second boot");
     }
   );
 });
@@ -711,7 +711,7 @@ test("PostgreSQL: a crash before the reconciliation transaction commits leaves s
       await postgresQuery("ROLLBACK");
 
       const rowsAfterCrash = await postgresQuery("SELECT COUNT(*)::int AS n FROM run_history");
-      assert.equal(rowsAfterCrash.rows[0].n, 1, "the crashed transaction's insert did not persist");
+      assert.equal(rowsAfterCrash.rows[0]?.n, 1, "the crashed transaction's insert did not persist");
       const legacyStillExists = await postgresQuery<{ exists: boolean }>(
         "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'scheduler_run_history') AS exists"
       );
@@ -726,7 +726,7 @@ test("PostgreSQL: a crash before the reconciliation transaction commits leaves s
       );
       assert.equal(legacyAfterRetry.rows[0]?.exists, false, "the retry reconciles and drops the legacy table");
       const rowsAfterRetry = await postgresQuery("SELECT COUNT(*)::int AS n FROM run_history");
-      assert.equal(rowsAfterRetry.rows[0].n, 2, "both rows present after the clean retry");
+      assert.equal(rowsAfterRetry.rows[0]?.n, 2, "both rows present after the clean retry");
     }
   );
 });

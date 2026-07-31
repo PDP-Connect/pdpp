@@ -618,12 +618,10 @@ test("keeps every active-run-summary-zero-spine PostgreSQL skip title in the exa
 // mapping, causing memory-default to reject it as an unexplained skip.
 test("keeps every browser-surface PostgreSQL skip title in the exact receipt mapping", () => {
   assert.deepEqual(
-    [
-      "Postgres scoped browser-surface reads match filtered global rows for 0, 1, and 25 identities",
-    ].filter((name) => POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name)),
-    [
-      "Postgres scoped browser-surface reads match filtered global rows for 0, 1, and 25 identities",
-    ]
+    ["Postgres scoped browser-surface reads match filtered global rows for 0, 1, and 25 identities"].filter((name) =>
+      POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name)
+    ),
+    ["Postgres scoped browser-surface reads match filtered global rows for 0, 1, and 25 identities"]
   );
 });
 // Aggregate gate regression (2026-07-30, terminal-read-integration closure, receipt 70bfe0b9):
@@ -646,12 +644,10 @@ test("keeps every fleet-migration and scheduler-upgrade PostgreSQL skip title in
 });
 test("keeps every terminal-LIST PostgreSQL skip title in the exact receipt mapping", () => {
   assert.deepEqual(
-    [
-      "Postgres terminal LIST projection rejects late canonical snapshots",
-    ].filter((name) => POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name)),
-    [
-      "Postgres terminal LIST projection rejects late canonical snapshots",
-    ]
+    ["Postgres terminal LIST projection rejects late canonical snapshots"].filter((name) =>
+      POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name)
+    ),
+    ["Postgres terminal LIST projection rejects late canonical snapshots"]
   );
 });
 // SECOND LIVE CANARY REVISE (2026-07-30): the interrupted-migration
