@@ -89,6 +89,7 @@ interface RunSummary {
   known_gaps?: unknown;
   run_id: string;
   status: string;
+  terminal_reason?: string | null;
 }
 
 interface RefConnectorScheduleSummary {
@@ -198,6 +199,11 @@ interface AttentionRow {
 
 interface CountRow {
   count: number;
+}
+
+interface RunHistoryTerminalRow {
+  facts_json: string | null;
+  status: string;
 }
 
 async function closeServer(server: TestServer): Promise<void> {
@@ -351,6 +357,8 @@ async function emitSyntheticRun({
   // canonicalize-connector-keys Decision 1.
   const connectorId = canonicalConnectorKey(rawConnectorId) ?? rawConnectorId;
   const source: SourceObject = rawSource ?? { id: connectorId, kind: "connector" };
+  const connectorInstanceId =
+    connectorId === SPOTIFY_CONNECTOR_KEY ? SPOTIFY_INSTANCE_ID : `cin_synthetic_${connectorId}`;
   const trace = createTraceContext({ scenarioId: `scn_${runId}` });
   // The spine-layer enforcement requires every run.started to carry
   // boot_epoch+seq. Synthetic-run fixtures use the harness's current
@@ -367,8 +375,7 @@ async function emitSyntheticRun({
       bindings: { filesystem: {}, interactive: {}, network: {} },
       boot_epoch: _epoch.boot_epoch,
       collection_mode: "incremental",
-      connector_instance_id:
-        connectorId === SPOTIFY_CONNECTOR_KEY ? SPOTIFY_INSTANCE_ID : `cin_synthetic_${connectorId}`,
+      connector_instance_id: connectorInstanceId,
       controller_id: _epoch.controller_id,
       persist_state: true,
       scope: { streams: [{ name: "top_artists" }] },
@@ -395,6 +402,8 @@ async function emitSyntheticRun({
       buffered_records_dropped: 0,
       checkpoint_commit_status: "not_committed",
       checkpoint_mode: "checkpointed_streaming",
+      connection_id: connectorInstanceId,
+      connector_instance_id: connectorInstanceId,
       persist_state: true,
       records_emitted: 0,
       records_flushed: 0,
@@ -567,6 +576,16 @@ test("GET /_ref/connectors projects known gaps from the latest run summary", asy
       runId: "run_spotify_known_gap",
       status: "succeeded",
     });
+
+    const history = getDb()
+      .prepare("SELECT status, facts_json FROM run_history WHERE run_id = ?")
+      .get("run_spotify_known_gap") as RunHistoryTerminalRow | undefined;
+    assert.equal(history?.status, "succeeded", "terminal event finalizes its matching run-history row");
+    assert.deepEqual(
+      JSON.parse(history?.facts_json ?? "{}") as { known_gaps?: unknown },
+      { known_gaps: knownGaps },
+      "terminal facts persist on the run-history authority"
+    );
 
     const { status, body } = await fetchJson<RefConnectorListBody>(`${asUrl}/_ref/connectors?limit=100`);
     assert.equal(status, 200);
@@ -968,9 +987,9 @@ test("controller startup reconciles abandoned controller-managed runs after rest
     const startedAt = "2026-04-24T09:00:00.000Z";
 
     db.prepare(`
-      INSERT INTO controller_active_runs(connector_id, run_id, trace_id, scenario_id, started_at)
-      VALUES(?, ?, ?, ?, ?)
-    `).run(connectorId, runId, trace.trace_id, trace.scenario_id, startedAt);
+      INSERT INTO controller_active_runs(connector_instance_id, connector_id, run_id, trace_id, scenario_id, started_at)
+      VALUES(?, ?, ?, ?, ?, ?)
+    `).run(SPOTIFY_INSTANCE_ID, connectorId, runId, trace.trace_id, trace.scenario_id, startedAt);
 
     await emitSpineEvent(
       {
@@ -1083,7 +1102,7 @@ test("controller startup reconciles abandoned controller-managed runs after rest
     assert.ok(entry, "configured spotify connection should still be listed after restart");
     assert.equal(entry.last_run?.run_id, runId);
     assert.equal(entry.last_run?.status, "failed");
-    assert.equal(entry.last_run?.failure_reason, "controller_restarted");
+    assert.equal(entry.last_run?.terminal_reason, "controller_restarted");
 
     const remainingRows = getDb().prepare("SELECT COUNT(*) AS count FROM controller_active_runs").get() as CountRow;
     assert.equal(remainingRows.count, 0, "reconciliation should clear stale controller_active_runs rows");
