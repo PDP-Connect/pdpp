@@ -105,6 +105,56 @@ test("groupDuplicateBindingRows: no duplicates at all yields an empty plan", () 
   assert.deepEqual(groupDuplicateBindingRows(rows), []);
 });
 
+test("groupDuplicateBindingRows: two genuinely DISTINCT identity 4-tuples that collide under a plain space-join must NOT be merged into one group", () => {
+  // Hardening regression (independent-gate non-blocking finding): the
+  // grouping key used to be `[owner, connector, sourceKind, binding].join(" ")`
+  // — a non-injective encoding. Shifting a space across the owner/connector
+  // field boundary produces two DIFFERENT 4-tuples that join to the IDENTICAL
+  // string:
+  //   owner="a b", connector="c"   -> joined "a b c local_device x"
+  //   owner="a",   connector="b c" -> joined "a b c local_device x"
+  // Under the old join-based key these two rows — which belong to two
+  // completely unrelated owners/connectors — would have been merged into one
+  // "duplicate" group, and buildRepairPlan would then propose superseding one
+  // real device on behalf of an unrelated owner: a misleading, unsafe
+  // candidate plan (the actual write path in applyRepairPlanEntry revalidates
+  // against the exact discrete SQL fields under lock, so this class of bug
+  // was confined to the candidate-plan grouping, never a live write — but a
+  // misleading plan is still a real defect this test closes).
+  const collidingA = fakeRow({
+    connectorId: "c",
+    deviceId: "dexp_collide_a",
+    localBindingId: "x",
+    ownerSubjectId: "a b",
+    sourceKind: "local_device",
+  });
+  const collidingB = fakeRow({
+    connectorId: "b c",
+    deviceId: "dexp_collide_b",
+    localBindingId: "x",
+    ownerSubjectId: "a",
+    sourceKind: "local_device",
+  });
+  // Sanity: prove the two rows genuinely collide under the OLD (rejected)
+  // space-join encoding, so this test would have caught the original defect.
+  const oldSpaceJoinKey = (row: DuplicateBindingRow) =>
+    [row.ownerSubjectId, row.connectorId, row.sourceKind, row.localBindingId].join(" ");
+  assert.equal(
+    oldSpaceJoinKey(collidingA),
+    oldSpaceJoinKey(collidingB),
+    "these two rows must genuinely collide under a plain space-join — otherwise this is not the counterexample the fix addresses"
+  );
+
+  // The FIXED (JSON.stringify-based) grouping must treat them as two
+  // distinct, unrelated singleton owners — never merged into one group.
+  const groups = groupDuplicateBindingRows([collidingA, collidingB]);
+  assert.deepEqual(
+    groups,
+    [],
+    "two distinct identity 4-tuples must never be merged into a duplicate group merely because they collide under a naive delimiter join"
+  );
+});
+
 test("selectAuthoritativeRow: prefers the most recently heartbeated row over one that never heartbeated", () => {
   const stale = fakeRow({ deviceId: "dexp_dead", lastHeartbeatAt: null });
   const healthy = fakeRow({ deviceId: "dexp_live", lastHeartbeatAt: "2026-07-31T19:15:02.056Z" });

@@ -242,10 +242,11 @@ async function selectGroupRows(
  * `resolveOrCreateEnrollmentDevice` uses (owner, connector, source_kind,
  * binding), then keeps only groups with more than one row. Exported and
  * tested standalone so the "what counts as a duplicate" decision is
- * provable without a database. The key uses a NUL-free, human-inspectable
- * delimiter (a single space) between fields — never a raw control
- * character embedded in source, which risks silent binary corruption of
- * the tracked file.
+ * provable without a database. The key (`duplicateBindingGroupKey`) is an
+ * injective `JSON.stringify` encoding of the four fields — never a plain
+ * delimiter join, which can collide across a field boundary (see that
+ * function's doc comment), and never a raw control character embedded in
+ * source, which risks silent binary corruption of the tracked file.
  */
 export function groupDuplicateBindingRows(rows: readonly DuplicateBindingRow[]): DuplicateBindingGroup[] {
   const groups = new Map<string, DuplicateBindingRow[]>();
@@ -278,11 +279,31 @@ export function groupDuplicateBindingRows(rows: readonly DuplicateBindingRow[]):
   return out;
 }
 
-/** The exact identity key `resolveOrCreateEnrollmentDevice` uses to decide "same binding". */
+/**
+ * The exact identity key `resolveOrCreateEnrollmentDevice` uses to decide
+ * "same binding" — encoded as `JSON.stringify` of the four fields in a
+ * fixed order. This is INJECTIVE (distinct 4-tuples always produce distinct
+ * strings): JSON.stringify escapes every quote and backslash in each string
+ * field and wraps each in its own `"..."`, so no field's content can ever
+ * bleed across the fixed array-index boundaries into an adjacent field —
+ * unlike a plain delimiter join (e.g. `.join(" ")`), where a field
+ * containing the delimiter character can collide with a different 4-tuple
+ * whose fields split differently around the same delimiter (e.g.
+ * `ownerSubjectId="a b", connectorId="c"` and `ownerSubjectId="a",
+ * connectorId="b c"` join to the identical string `"a b c ..."`). A
+ * collision here would silently MERGE two genuinely distinct identity keys
+ * into one grouped "duplicate", producing a misleading repair plan — see
+ * the collision regression in the test file for a concrete counterexample.
+ * This is a grouping-decision safeguard only: `applyRepairPlanEntry`'s
+ * actual revalidation-under-lock query always reads the four discrete SQL
+ * fields (`entry.group.ownerSubjectId` etc.), never this string key, so the
+ * write path was never exposed to this collision class — only the
+ * candidate-plan grouping was.
+ */
 function duplicateBindingGroupKey(
   row: Pick<DuplicateBindingRow, "connectorId" | "localBindingId" | "ownerSubjectId" | "sourceKind">
 ): string {
-  return [row.ownerSubjectId, row.connectorId, row.sourceKind, row.localBindingId].join(" ");
+  return JSON.stringify([row.ownerSubjectId, row.connectorId, row.sourceKind, row.localBindingId]);
 }
 
 /**
