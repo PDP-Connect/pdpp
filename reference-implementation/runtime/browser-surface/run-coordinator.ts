@@ -1073,14 +1073,15 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
 
   async function tryPromoteReclaimedWaitingLease(
     ctx: ManagedSurfaceContext,
-    reclaimedResult: { lease: BrowserSurfaceLease; surface?: BrowserSurface }
+    reclaimedResult: { lease: BrowserSurfaceLease; surface?: BrowserSurface },
+    options: { readonly allowStartFailureRetry: boolean }
   ): Promise<ManagedSurfaceAcquireResult | null> {
     if (!browserSurfaceLeaseManager) {
       return null;
     }
     const { connectorId, runId, traceContext } = ctx;
     if (reclaimedResult.lease.status === "starting_surface") {
-      return await handleStartingSurfaceWaitForRun(ctx, reclaimedResult.lease, { allowStartFailureRetry: false });
+      return await handleStartingSurfaceWaitForRun(ctx, reclaimedResult.lease, options);
     }
     if (reclaimedResult.lease.status === "leased" && reclaimedResult.surface) {
       pendingBrowserSurfaceLaunches.delete(reclaimedResult.lease.run_id);
@@ -1321,7 +1322,8 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
 
   async function reclaimWaitingLeaseIfNeeded(
     ctx: ManagedSurfaceContext,
-    initialLease: BrowserSurfaceLease
+    initialLease: BrowserSurfaceLease,
+    options: { readonly allowStartFailureRetry: boolean }
   ): Promise<ReclaimResolution> {
     if (initialLease.status !== "waiting_for_browser_surface") {
       return { env: null, lease: initialLease };
@@ -1331,7 +1333,7 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     if (reclaimed.run_id !== ctx.runId || reclaimed.status === "waiting_for_browser_surface") {
       return { env: null, lease: initialLease };
     }
-    const promoted = await tryPromoteReclaimedWaitingLease(ctx, reclaimedResult);
+    const promoted = await tryPromoteReclaimedWaitingLease(ctx, reclaimedResult, options);
     if (!promoted) {
       return { env: null, lease: initialLease };
     }
@@ -1378,7 +1380,9 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
   ): Promise<ManagedSurfaceAcquireResult> {
     const leaseManager = requireBrowserSurfaceLeaseManager();
     const leaseResult = await acquireInitialBrowserSurfaceLease(ctx, priorityClass);
-    const reclaim = await reclaimWaitingLeaseIfNeeded(ctx, leaseResult.lease);
+    const reclaim = await reclaimWaitingLeaseIfNeeded(ctx, leaseResult.lease, {
+      allowStartFailureRetry: options.allowReadinessRetry,
+    });
     if (reclaim.earlyReturn) {
       return reclaim.earlyReturn;
     }

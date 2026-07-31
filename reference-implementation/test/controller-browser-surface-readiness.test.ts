@@ -1068,6 +1068,156 @@ test("starting-surface allocator failure recovery durably records a succeeded ru
   );
 });
 
+/**
+ * Reproduces the live 2026-07-31 Chase incident (run_1785523408084,
+ * candidate 0c8d25c57): the bounded starting-surface retry never fired even
+ * though PDPP_NEKO_SURFACE_MODE=dynamic and the allocator were both
+ * correctly configured (confirmed against the live container's actual env
+ * via parseNekoBrowserSurfaceRuntimeConfig). The live spine showed the
+ * queuing request admitted as waiting_for_browser_surface with
+ * wait_reason=capacity_full, then promoted straight to starting_surface
+ * within the SAME acquire call (no separate run.browser_surface_queued
+ * event) -- the inline capacity-pressure reclaim path
+ * (reclaimWaitingLeaseIfNeeded -> tryPromoteReclaimedWaitingLease), which
+ * hardcoded allowStartFailureRetry: false regardless of the caller's actual
+ * retry-eligibility, unlike the direct dispatch path which threads the
+ * caller's option through correctly.
+ *
+ * Setup: surfaceCap=1, one already-ready idle surface for a DIFFERENT
+ * profile_key (so it's reclaimable but not reusable by this run's lease),
+ * and this run's own profile has no ready idle match -- exactly the
+ * precondition BrowserSurfaceLeaseManager#planCapacityPressureReclaim
+ * requires (surfaceMode dynamic, waiting_for_browser_surface,
+ * wait_reason capacity_full, no compatible idle surface, activeSurfaceCount
+ * >= surfaceCap).
+ */
+test("capacity-pressure reclaim promotes inline to starting_surface and still retries once on allocator failure", async (t) => {
+  let leaseSeq = 0;
+  let surfaceSeq = 0;
+  let tokenSeq = 0;
+  const leaseManager = new BrowserSurfaceLeaseManager({
+    config: {
+      defaultPriorityClass: "background",
+      idleTtlMs: 600_000,
+      leaseWaitTimeoutMs: 60_000,
+      managedConnectors: new Set(["managed"]),
+      priorityRanks: DEFAULT_NEKO_PRIORITY_RANKS,
+      surfaceCap: 1,
+      surfaceMode: "dynamic",
+    },
+    initialSurfaces: [
+      {
+        backend: "neko",
+        cdp_url: "http://other-managed-instance-2:9223",
+        connector_id: "managed",
+        created_at: "2026-05-12T11:00:00.000Z",
+        health: "ready",
+        last_used_at: "2026-05-12T11:00:00.000Z",
+        // Distinct profile_key from this run's own connectorInstanceId
+        // ("managed" -> "managed-profile") so it is reclaimable
+        // (incompatible with the queued lease) but never directly reused.
+        profile_key: "managed-profile:other-managed-instance-2",
+        stream_base_url: "http://other-managed-instance-2:8080",
+        surface_id: "surface_idle_other",
+      },
+    ],
+    makeLeaseId: () => {
+      leaseSeq += 1;
+      return `lease_${leaseSeq}`;
+    },
+    makeSurfaceId: () => {
+      surfaceSeq += 1;
+      return `surface_reclaimed_${surfaceSeq}`;
+    },
+    nextFencingToken: () => {
+      tokenSeq += 1;
+      return tokenSeq;
+    },
+    now: () => new Date("2026-05-12T12:00:00.000Z"),
+  });
+
+  let ensureCalls = 0;
+  const ensureRequests: EnsureBrowserSurfaceRequest[] = [];
+  const stopRequests: StopBrowserSurfaceRequest[] = [];
+  const surfaces = new Map<string, BrowserSurface>();
+  const allocator: BrowserSurfaceAllocator = {
+    ensureSurface: async (request) => {
+      ensureRequests.push(request);
+      ensureCalls += 1;
+      if (ensureCalls === 1) {
+        throw new Error("Docker POST /containers/create failed: connect ECONNREFUSED");
+      }
+      const surface: BrowserSurface = {
+        backend: "neko",
+        cdp_url: `http://${request.surfaceId}:9223`,
+        connector_id: request.connectorId,
+        created_at: "2026-05-12T12:00:01.000Z",
+        health: "ready",
+        last_used_at: "2026-05-12T12:00:01.000Z",
+        profile_key: request.profileKey,
+        stream_base_url: `http://${request.surfaceId}:8080`,
+        surface_id: request.surfaceId,
+      };
+      surfaces.set(request.surfaceId, surface);
+      return await Promise.resolve(surface);
+    },
+    getSurfaceStatus: async (surfaceId) => await Promise.resolve(surfaces.get(surfaceId) ?? null),
+    listSurfaces: async () => await Promise.resolve([...surfaces.values()]),
+    stopSurface: async (request) => {
+      stopRequests.push(request);
+      const surface = surfaces.get(request.surfaceId) ?? null;
+      surfaces.delete(request.surfaceId);
+      return await Promise.resolve(surface ? { ...surface, health: "stopping" } : null);
+    },
+  };
+  const probe: BrowserSurfaceReadinessProbe = {
+    probe: async () => await Promise.resolve({ browserVersion: "Chrome/124.0", ok: true, pageTargetCount: 1 }),
+  };
+  const runId = "run_capacity_reclaim_start_failed";
+  const { controller, runConnectorCalls } = setup(t, {
+    browserSurfaceAllocator: allocator,
+    leaseManager,
+    probe,
+  });
+
+  const result = await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId,
+  });
+  await controller.drainActiveRuns(1000);
+
+  const events = listRunEvents(runId);
+  const eventTypes = events.map((e) => e.event_type);
+  assert.ok(
+    eventTypes.includes("run.browser_surface_requested"),
+    `expected an initial request event; got ${eventTypes.join(",")}`
+  );
+  const firstEvent = at(events, 0);
+  const firstData = firstEvent.data as { browser_surface?: { browser_surface_wait_reason?: string } } | null;
+  assert.equal(
+    firstData?.browser_surface?.browser_surface_wait_reason,
+    "capacity_full",
+    "this run must genuinely queue on capacity first, matching the live incident's exact route"
+  );
+
+  assert.equal(result.status, "started", "the bounded reacquire must recover on the reclaim/promotion path too");
+  assert.equal(ensureCalls, 2, "first ensureSurface throws, second (fresh surface_id) succeeds");
+  assert.equal(stopRequests.length, 1, "the idle other-profile surface was reclaimed exactly once");
+  assert.equal(runConnectorCalls.length, 1);
+
+  assert.equal(
+    eventTypes.filter((event) => event === "run.browser_surface_failed").length,
+    0,
+    "the reclaim/promotion path must not emit the terminal event on a retried attempt either"
+  );
+  assert.equal(
+    eventTypes.filter((event) => event === "run.browser_surface_retried").length,
+    1,
+    "the reclaim/promotion path must surface the same non-terminal retry signal as the direct dispatch path"
+  );
+});
+
 test("boot reconciliation retires an idle stale-capability surface and recreates its profile", async (t) => {
   const leaseManager = createDynamicManagerWithReadySurface();
   const staleSurface = leaseManager.getSurface("surface_stale");
