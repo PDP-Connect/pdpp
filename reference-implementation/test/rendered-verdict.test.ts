@@ -1391,6 +1391,27 @@ test("progress: scheduled privileges records committed", () => {
   assert.equal(v.progress.records_committed_last_run, 42);
 });
 
+// Idle scheduled eligibility must never imply active work: a scheduled
+// connection that has never committed a run and is not currently syncing
+// must not say "Collecting" (see chatgpt-wedge-systemic-0730).
+test("progress: idle scheduled eligibility (no active run, no committed run) does not claim active collecting", () => {
+  const v = synthesizeRenderedVerdict(snapshot({ badges: { syncing: false } }), [stream()], null, true, {
+    mode: "scheduled",
+    records_committed_last_run: null,
+  });
+  assert.equal(v.progress.mode, "scheduled");
+  assert.equal(v.progress.headline, "Refreshes on schedule.");
+});
+
+test("progress: an active scheduled run does say collecting", () => {
+  const v = synthesizeRenderedVerdict(snapshot({ badges: { syncing: true } }), [stream()], null, true, {
+    mode: "scheduled",
+    records_committed_last_run: null,
+  });
+  assert.equal(v.progress.mode, "scheduled");
+  assert.equal(v.progress.headline, "Collecting on schedule.");
+});
+
 test("progress: terminal manual source never says refresh to update", () => {
   const v = synthesizeRenderedVerdict(
     snapshot({
