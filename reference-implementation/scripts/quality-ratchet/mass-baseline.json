@@ -42,7 +42,7 @@
     "server/aggregate-request-validation.ts": 16,
     "server/attention-urgency.ts": 4,
     "server/auth-middleware.ts": 18,
-    "server/auth.ts": 395,
+    "server/auth.ts": 388,
     "server/auto-enroll-eligible-schedules.ts": 9,
     "server/cimd.ts": 11,
     "server/client-event-delivery-worker.ts": 35,
@@ -189,7 +189,7 @@
     "server/version-disposition.ts": 6,
     "server/web-push-notifications.ts": 11
   },
-  "total": 6960,
+  "total": 6953,
   "meta": {
     "biomeVersion": "2.5.6",
     "maxAllowedComplexity": 5
