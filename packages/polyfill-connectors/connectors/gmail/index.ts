@@ -2709,48 +2709,127 @@ async function runDeltaPass(
   }
 }
 
+const DELTA_SYNC_DETAIL_LOCATOR_KIND = "gmail.delta_sync";
+
 /**
- * Isolate the delta pass's own failure from the rest of the run.
- *
- * The delta pass is best-effort flag/label sync for already-seen messages —
- * it has no coverage contract of its own (no DETAIL_COVERAGE, no gap-key
- * accounting), and the messages/attachments STATE cursor committed right
- * after it runs (`runAllMailPasses`) is derived from
- * `session.highestModseqCursor`/`uidnext`, captured once at the top of
- * `runAllMailPasses` from the mailbox's own reported state — it does not
- * depend on anything the delta pass reads or writes.
- *
- * Before this wrapper, a transient IMAP failure inside `runDeltaPass`
- * (connection reset, server error — plausible after minutes holding one
- * IMAP connection open through a large attachment backfill) propagated out
- * of `runAllMailPasses` uncaught. That aborted the whole run before it
- * reached the messages STATE commit, discarding real, already-ingested
- * messages/attachments/thread progress and forcing the next run to
- * re-fetch and re-emit the identical range. Proven live: gmail
- * `run_1785535147325_1` and its retry `run_1785535845977_2` (2026-07-31)
- * both emitted exactly 206 records with no committed checkpoint between
- * them — the retry replayed the first attempt's work byte-for-byte.
- *
- * A caught delta-pass failure degrades to a non-fatal `PROGRESS` note
- * (the delta pass carries no gap/coverage vocabulary of its own to defer
- * into) and the run proceeds to commit the cursor for the work it did
- * complete. The next run naturally re-attempts the delta sync from the
- * same `priorModseq`, since that cursor is untouched by this pass either
- * way.
+ * The delta pass has no natural per-record key (it is a whole-mailbox
+ * `CHANGEDSINCE` scan, not a per-item detail fetch), but the served
+ * DETAIL_GAP/DETAIL_GAP_RECOVERED protocol requires one to identify "the
+ * same gap" across runs. `priorModseq` is the right key: it is exactly the
+ * boundary the delta pass is trying to sync past, stable across retries of
+ * the same un-advanced cursor, and — critically — it changes on its own
+ * once a delta sync actually succeeds (the next run's `priorModseq` becomes
+ * the mailbox's new `highestModseq`), so a stale served gap can never be
+ * mistaken for the current cursor's gap.
  */
-export async function runDeltaPassIsolated(
+export function buildDeltaSyncGapKey(priorModseq: number | string | bigint): string {
+  return String(priorModseq);
+}
+
+/**
+ * Build the recoverable DETAIL_GAP for a delta-pass failure. Reuses the
+ * existing per-record detail-gap vocabulary (the same one gmail already
+ * uses for attachment recovery) rather than inventing new terminal
+ * semantics: `reason: "temporary_unavailable"` / `retryable: true` is the
+ * same shape connectors use for any transient, safely-retryable failure
+ * (mirrors `buildAttachmentDetailGap`'s "failed" bucket).
+ */
+export function buildDeltaSyncGap(priorModseq: number | string | bigint, error: unknown): DetailGapMessage {
+  const message = error instanceof Error ? error.message : String(error);
+  return {
+    type: "DETAIL_GAP",
+    reference_only: true,
+    status: "pending",
+    stream: "messages",
+    record_key: buildDeltaSyncGapKey(priorModseq),
+    detail_locator: { kind: DELTA_SYNC_DETAIL_LOCATOR_KIND, modseq: buildDeltaSyncGapKey(priorModseq) },
+    reason: "temporary_unavailable",
+    retryable: true,
+    last_error: { class: "delta_sync_failed", message },
+  };
+}
+
+/**
+ * Find a served pending delta-sync gap matching this run's current
+ * `priorModseq`. A match proves the runtime never saw this cursor's delta
+ * sync complete — the exact condition that should trigger a retry attempt
+ * rather than silently skipping the pass again.
+ */
+export function findServedDeltaSyncGap(
+  detailGaps: readonly DetailGapStartEntry[] | undefined,
+  priorModseq: number | string | bigint
+): DetailGapStartEntry | undefined {
+  if (!Array.isArray(detailGaps)) {
+    return;
+  }
+  const key = buildDeltaSyncGapKey(priorModseq);
+  return detailGaps.find(
+    (gap) =>
+      gap?.stream === "messages" &&
+      gap.detail_locator?.kind === DELTA_SYNC_DETAIL_LOCATOR_KIND &&
+      String(gap.record_key ?? "") === key
+  );
+}
+
+/**
+ * Run the delta pass with typed, self-clearing gap accounting instead of
+ * either (a) letting its failure abort the whole run, or (b) silently
+ * swallowing the failure behind a bare informational note.
+ *
+ * Both alternatives were live defects. (a): a transient IMAP failure inside
+ * `runDeltaPass` (connection reset, server error — plausible after minutes
+ * holding one IMAP connection open through a large attachment backfill)
+ * propagated out of `runAllMailPasses` uncaught, aborting the whole run
+ * before it reached the messages STATE commit and discarding real,
+ * already-ingested messages/attachments/thread progress. Proven live:
+ * gmail `run_1785535147325_1` and its retry `run_1785535845977_2`
+ * (2026-07-31) both emitted exactly 206 records with no committed
+ * checkpoint between them — the retry replayed the first attempt's work
+ * byte-for-byte. (b): isolating the failure behind only a `PROGRESS` note
+ * fixed the checkpoint-loss but made the skipped flag/label sync invisible
+ * to coverage/health projections — a `succeeded` run with a silently
+ * unsynced delta window is indistinguishable, from the terminal record
+ * alone, from one that actually completed it. Neither is acceptable.
+ *
+ * The fix: emit the same durable, retryable DETAIL_GAP vocabulary this
+ * connector already uses for attachment recovery. A failure records a
+ * pending gap keyed by `priorModseq` (see `buildDeltaSyncGapKey`) — visible
+ * in terminal `known_gaps` via the runtime's existing `detail_gap` kind,
+ * with `recovery_hint: "retry_by_runtime"` — while the messages/attachments
+ * STATE cursor still commits right after, since that cursor is derived
+ * from `session.highestModseqCursor`/`uidnext` (captured once at the top of
+ * `runAllMailPasses` from the mailbox's own reported state) and never
+ * depends on anything the delta pass reads or writes. A later run that
+ * finds this same gap served back (`findServedDeltaSyncGap`) retries the
+ * sync; success there emits DETAIL_GAP_RECOVERED, clearing it.
+ */
+export async function runDeltaPassWithGapAccounting(
   runPass: () => Promise<void>,
+  priorModseq: number | string | bigint | null | undefined,
+  detailGaps: readonly DetailGapStartEntry[] | undefined,
   emitProtocol: (msg: EmittedMessage) => Promise<void>
 ): Promise<void> {
+  if (priorModseq === null || priorModseq === undefined) {
+    // Full resync: there is no prior cursor for a delta gap to key off, and
+    // `runDeltaPass` itself is a no-op in this case (see its own guard).
+    await runPass();
+    return;
+  }
+  const servedGap = findServedDeltaSyncGap(detailGaps, priorModseq);
   try {
     await runPass();
   } catch (err) {
+    await emitProtocol(buildDeltaSyncGap(priorModseq, err));
+    return;
+  }
+  if (servedGap) {
     await emitProtocol({
-      type: "PROGRESS",
+      type: "DETAIL_GAP_RECOVERED",
+      reference_only: true,
+      gap_id: servedGap.gap_id,
+      ...(servedGap.lease_id ? { lease_id: servedGap.lease_id } : {}),
+      record_key: buildDeltaSyncGapKey(priorModseq),
       stream: "messages",
-      message: `Flag/label delta sync failed and was skipped for this run; retried automatically next run: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
     });
   }
 }
@@ -3039,10 +3118,14 @@ async function runAllMailPasses(
   await emitAttachmentDetailGaps(attachmentCoverage);
 
   // Pass 2: detect flag/label changes on already-seen messages (incremental
-  // only). See `runDeltaPassIsolated`'s doc comment for why this pass's own
-  // failure must never abort the run.
-  await runDeltaPassIsolated(
+  // only). See `runDeltaPassWithGapAccounting`'s doc comment for why this
+  // pass's own failure must never abort the run, and why its failure must
+  // still be visible as a typed, retryable gap rather than silently
+  // swallowed.
+  await runDeltaPassWithGapAccounting(
     () => runDeltaPass(client, session, deps.requested, deps.emitRecord, deps.emittedAt),
+    session.priorModseq,
+    deps.detailGaps,
     emit
   );
 

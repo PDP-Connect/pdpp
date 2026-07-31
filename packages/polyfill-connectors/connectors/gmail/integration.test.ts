@@ -57,6 +57,8 @@ import {
   attachmentBackfillPageByteBudget,
   buildAttachmentDetailCoverageMessage,
   buildAttachmentDetailGap,
+  buildDeltaSyncGap,
+  buildDeltaSyncGapKey,
   buildMessagesCoverageMessage,
   buildMessagesDropSkipResult,
   createAttachmentBackfillSummary,
@@ -66,6 +68,7 @@ import {
   emitMessagesPass,
   type FetchBodiesFn,
   type FetchedBodies,
+  findServedDeltaSyncGap,
   formatAttachmentBackfillSummary,
   type HydrateAttachmentFn,
   type MessagesCoverage,
@@ -84,7 +87,7 @@ import {
   resolveGmailPasswordFromEnv,
   resolveMaxAttachmentBytes,
   runAttachmentBackfillAndRecoveryPass,
-  runDeltaPassIsolated,
+  runDeltaPassWithGapAccounting,
   selectAllMailFetchRange,
   selectAttachmentBackfillFetchRange,
   shouldBackfillAttachments,
@@ -1121,61 +1124,175 @@ test("recoverServedAttachmentGaps: a completed historical cursor still drains a 
 // ran between the last successful attachment ingest and the messages STATE
 // commit, and its own IMAP failure propagated uncaught out of
 // `runAllMailPasses`, discarding the whole run's real progress before the
-// cursor that would have made it durable ever committed. `runDeltaPassIsolated`
-// is the fix: the delta pass's own failure must never reach the caller.
-test("runDeltaPassIsolated: a thrown delta-pass failure does not propagate, and emits a non-fatal PROGRESS note instead", async () => {
+// cursor that would have made it durable ever committed.
+//
+// An earlier fix isolated the failure behind a bare PROGRESS note. That
+// closed the checkpoint-loss but reopened a different gap (REVISE,
+// 2026-07-31): a `succeeded` run with a silently-skipped delta sync is
+// indistinguishable, from the terminal record and coverage projection
+// alone, from a run that actually completed it -- a false-green path.
+// `runDeltaPassWithGapAccounting` is the corrected fix: a caught failure
+// still lets the run commit its checkpoint and terminalize `succeeded`,
+// but now via the SAME typed, retryable DETAIL_GAP/DETAIL_GAP_RECOVERED
+// vocabulary this connector already uses for attachment recovery -- no new
+// terminal semantic, no Gmail-specific gap kind.
+test("buildDeltaSyncGapKey: stable across number/string/bigint representations of the same modseq", () => {
+  assert.equal(buildDeltaSyncGapKey(42), "42");
+  assert.equal(buildDeltaSyncGapKey("42"), "42");
+  assert.equal(buildDeltaSyncGapKey(42n), "42");
+});
+
+test("buildDeltaSyncGap: builds a retryable, reference-only DETAIL_GAP keyed by priorModseq with the caught error preserved", () => {
+  const gap = buildDeltaSyncGap(42, new Error("IMAP connection reset while fetching flag/label deltas"));
+  assert.equal(gap.type, "DETAIL_GAP");
+  assert.equal(gap.stream, "messages");
+  assert.equal(gap.record_key, "42");
+  assert.equal(gap.status, "pending");
+  assert.equal(gap.reason, "temporary_unavailable");
+  assert.equal(gap.retryable, true);
+  assert.equal(gap.reference_only, true);
+  assert.equal(gap.detail_locator.kind, "gmail.delta_sync");
+  assert.match(gap.last_error?.message ?? "", /IMAP connection reset/);
+});
+
+test("findServedDeltaSyncGap: matches only a pending gap for the current priorModseq on the messages stream", () => {
+  const currentGap = {
+    detail_locator: { kind: "gmail.delta_sync", modseq: "42" },
+    gap_id: "gap-delta-42",
+    record_key: "42",
+    status: "pending" as const,
+    stream: "messages",
+  };
+  const staleGap = {
+    detail_locator: { kind: "gmail.delta_sync", modseq: "17" },
+    gap_id: "gap-delta-17",
+    record_key: "17",
+    status: "pending" as const,
+    stream: "messages",
+  };
+  const unrelatedGap = {
+    detail_locator: { kind: "gmail.attachment_detail" },
+    gap_id: "gap-attachment",
+    record_key: "42",
+    status: "pending" as const,
+    stream: "attachments",
+  };
+
+  assert.equal(findServedDeltaSyncGap([staleGap, currentGap, unrelatedGap], 42)?.gap_id, "gap-delta-42");
+  assert.equal(findServedDeltaSyncGap([staleGap, unrelatedGap], 42), undefined, "no match for a different modseq");
+  assert.equal(findServedDeltaSyncGap(undefined, 42), undefined, "no detail_gaps array at all");
+  assert.equal(findServedDeltaSyncGap([], 42), undefined, "empty detail_gaps array");
+});
+
+test("runDeltaPassWithGapAccounting: a thrown delta-pass failure emits a typed DETAIL_GAP, not a bare PROGRESS note, and does not propagate", async () => {
   const harness = makeRecordingEmit();
   const deltaPassError = new Error("IMAP connection reset while fetching flag/label deltas");
 
-  await runDeltaPassIsolated(() => {
-    throw deltaPassError;
-  }, harness.emit);
-
-  const progressMessages = harness.protocolMessages.filter(
-    (msg): msg is Extract<typeof msg, { type: "PROGRESS" }> => msg.type === "PROGRESS"
+  await runDeltaPassWithGapAccounting(
+    () => {
+      throw deltaPassError;
+    },
+    42,
+    undefined,
+    harness.emit
   );
-  assert.equal(progressMessages.length, 1, "the caught failure surfaces as exactly one PROGRESS note");
-  assert.match(progressMessages[0]?.message ?? "", /delta sync failed/i);
-  assert.match(progressMessages[0]?.message ?? "", /IMAP connection reset/);
-  assert.equal(progressMessages[0]?.stream, "messages");
 
-  // No DETAIL_GAP, SKIP_RESULT, or any other terminal-affecting message was
-  // emitted — the failure is fully absorbed as an informational note, never
-  // escalated into anything that could mark the run's coverage incomplete
-  // or block the messages/attachments checkpoint that commits right after
-  // this call in `runAllMailPasses`.
-  assert.equal(harness.protocolMessages.length, 1, "no other protocol message is emitted for the caught failure");
+  assert.equal(harness.protocolMessages.length, 1, "the caught failure surfaces as exactly one protocol message");
+  const [onlyMessage] = harness.protocolMessages;
+  assert.equal(onlyMessage?.type, "DETAIL_GAP", "a typed, retryable gap -- not a silent/invisible PROGRESS note");
+  if (onlyMessage?.type === "DETAIL_GAP") {
+    assert.equal(onlyMessage.record_key, "42");
+    assert.equal(onlyMessage.reason, "temporary_unavailable");
+    assert.equal(onlyMessage.retryable, true);
+    assert.equal(onlyMessage.stream, "messages");
+  }
 });
 
-test("runDeltaPassIsolated: a rejected (async) delta-pass failure is isolated the same as a synchronous throw", async () => {
+test("runDeltaPassWithGapAccounting: a rejected (async) delta-pass failure is isolated and gap-accounted the same as a synchronous throw", async () => {
   const harness = makeRecordingEmit();
 
-  await runDeltaPassIsolated(
+  await runDeltaPassWithGapAccounting(
     () => Promise.reject(new Error("Unexpected server response after FETCH CHANGEDSINCE")),
+    "42",
+    undefined,
     harness.emit
   );
 
   assert.equal(harness.protocolMessages.length, 1);
-  assert.equal(harness.protocolMessages[0]?.type, "PROGRESS");
+  assert.equal(harness.protocolMessages[0]?.type, "DETAIL_GAP");
 });
 
-test("runDeltaPassIsolated: a successful delta pass emits no extra diagnostic and does not swallow its own output", async () => {
+test("runDeltaPassWithGapAccounting: a successful delta pass with no served gap emits no extra diagnostic and does not swallow its own output", async () => {
   const harness = makeRecordingEmit();
   let ran = false;
 
-  await runDeltaPassIsolated(async () => {
-    ran = true;
-    await harness.emit({ type: "PROGRESS", message: "Fetching flag/label deltas since modseq=42" });
-  }, harness.emit);
+  await runDeltaPassWithGapAccounting(
+    async () => {
+      ran = true;
+      await harness.emit({ type: "PROGRESS", message: "Fetching flag/label deltas since modseq=42" });
+    },
+    42,
+    undefined,
+    harness.emit
+  );
 
   assert.ok(ran, "the wrapped pass actually runs");
-  assert.equal(harness.protocolMessages.length, 1, "only the pass's own message is present, no extra failure note");
+  assert.equal(harness.protocolMessages.length, 1, "only the pass's own message is present, no extra note or gap");
   const [onlyMessage] = harness.protocolMessages;
   assert.equal(onlyMessage?.type, "PROGRESS");
   assert.equal(
     onlyMessage && onlyMessage.type === "PROGRESS" ? onlyMessage.message : undefined,
     "Fetching flag/label deltas since modseq=42"
   );
+});
+
+test("runDeltaPassWithGapAccounting: a successful delta pass that resolves a previously-served gap emits DETAIL_GAP_RECOVERED with the served lease", async () => {
+  const harness = makeRecordingEmit();
+  const servedGap = {
+    detail_locator: { kind: "gmail.delta_sync", modseq: "42" },
+    gap_id: "gap-delta-42",
+    lease_id: "lease-delta-42",
+    record_key: "42",
+    status: "pending" as const,
+    stream: "messages",
+  };
+
+  await runDeltaPassWithGapAccounting(
+    async () => {
+      // No IMAP work needed for this test -- only the recovery-emission path is under test.
+    },
+    42,
+    [servedGap],
+    harness.emit
+  );
+
+  assert.equal(harness.protocolMessages.length, 1, "success clears the served gap it resolved");
+  const [onlyMessage] = harness.protocolMessages;
+  assert.equal(onlyMessage?.type, "DETAIL_GAP_RECOVERED");
+  if (onlyMessage?.type === "DETAIL_GAP_RECOVERED") {
+    assert.equal(onlyMessage.gap_id, "gap-delta-42");
+    assert.equal(onlyMessage.lease_id, "lease-delta-42");
+    assert.equal(onlyMessage.record_key, "42");
+    assert.equal(onlyMessage.stream, "messages");
+  }
+});
+
+test("runDeltaPassWithGapAccounting: a full-resync run (priorModseq null/undefined) has no gap to key off and runs the pass plainly", async () => {
+  const harness = makeRecordingEmit();
+  let ran = false;
+
+  await runDeltaPassWithGapAccounting(
+    () => {
+      ran = true;
+      return Promise.resolve();
+    },
+    null,
+    undefined,
+    harness.emit
+  );
+
+  assert.ok(ran);
+  assert.equal(harness.protocolMessages.length, 0, "no gap accounting is possible or needed without a prior cursor");
 });
 
 test("runAttachmentBackfillAndRecoveryPass: served gaps preempt historical attachment backfill and keep the cursor unchanged", async () => {
