@@ -31,32 +31,30 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { DashboardDataSource } from "../lib/data-source.ts";
-import type { ExploreTimelinePage, ListResponse, RefConnectorSummary } from "../lib/ref-client.ts";
+import type { ExploreTimelinePage, ListResponse, RefConnectorIdentitySummary } from "../lib/ref-client.ts";
 import type { ConnectorManifest, SearchResultHit, SearchResultPage } from "../lib/rs-client.ts";
 import { assembleExplorerData } from "./explore-data-assembler.ts";
 
 // ── Fixtures: two connections, each with a stream that DECLARES a time field ──
 // (the manifest `consent_time_field` is what makes a stream a chart target).
 
-function makeSummary(over: { connection_id: string; connector_id: string; streams?: string[] }): RefConnectorSummary {
+function makeSummary(over: {
+  connection_id: string;
+  connector_id: string;
+  streams?: string[];
+}): RefConnectorIdentitySummary {
   return {
-    connection_health: {} as RefConnectorSummary["connection_health"],
     connection_id: over.connection_id,
+    connector_display_name: over.connector_id,
     connector_id: over.connector_id,
     connector_instance_id: over.connection_id,
     display_name: over.connection_id,
-    freshness: {},
-    last_run: null,
-    last_successful_run: null,
-    manifest_version: null,
-    next_action: null,
-    schedule: null,
+    membership_state: "complete",
     streams: over.streams ?? ["transactions"],
-    total_records: 0,
-  } as RefConnectorSummary;
+  };
 }
 
-function summaryListResponse(summaries: RefConnectorSummary[]): ListResponse<RefConnectorSummary> {
+function summaryListResponse(summaries: RefConnectorIdentitySummary[]): ListResponse<RefConnectorIdentitySummary> {
   return { data: summaries, has_more: false, object: "list" };
 }
 
@@ -123,11 +121,11 @@ function chartDs(opts?: {
     kind: "sandbox" as const,
     listConnectorManifests: async () =>
       opts?.manifests ?? [timeManifest("ynab", ["transactions"]), timeManifest("chase", ["transactions"])],
-    listConnectorSummaries: async () =>
+    listConnectorSummaries: (async () =>
       summaryListResponse([
         makeSummary({ connection_id: "cin_ynab", connector_id: "ynab", streams: ["transactions"] }),
         makeSummary({ connection_id: "cin_chase", connector_id: "chase", streams: ["transactions"] }),
-      ]),
+      ])) as unknown as DashboardDataSource["listConnectorSummaries"],
     listExploreRecordBuckets: () => {
       if (opts?.inlineBucketCallCount) {
         opts.inlineBucketCallCount.value += 1;
@@ -146,7 +144,7 @@ function chartDs(opts?: {
     searchRecordsLexical: () =>
       Promise.resolve({ data: opts?.searchHits ?? [], has_more: false, object: "list" } as SearchResultPage),
     searchRecordsSemantic: notStubbed,
-  } as DashboardDataSource;
+  };
 }
 
 // ── The decouple: the assembler NEVER awaits the bucket aggregate inline ──────

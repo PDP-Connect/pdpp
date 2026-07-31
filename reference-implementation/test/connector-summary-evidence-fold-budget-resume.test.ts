@@ -47,7 +47,9 @@ import {
   getConnectorSummaryEvidence,
   rebuildConnectorSummaryEvidence,
   runBoundedSummaryEvidenceSweep,
+  setConnectorSummaryReconcileObservationSink,
 } from "../server/connector-summary-read-model.ts";
+import type { ConnectorSummaryReconcileObservation } from "../server/connector-summary-reconcile-observability.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
 import { closePostgresStorage, initPostgresStorage, postgresQuery } from "../server/postgres-storage.ts";
 import { dedicatedPostgresTestUrl } from "./helpers/dedicated-postgres-test-url.ts";
@@ -172,6 +174,8 @@ test(
     const result = await foldConnectorSummaryStreamFacts(["cin_budget_target"], { maxEvents: 500 });
 
     assert.equal(result.incomplete, true, "the fold genuinely stopped before reaching the full 2,001-event history");
+    assert.equal(result.eventsRead, 500, "the bounded SQL batch reads exactly the configured 500 events, never 2,000");
+    assert.equal(result.resumeAfterSeq, 500, "the resume checkpoint is exactly the 500th event");
     assert.ok(
       result.resumeAfterSeq !== null && result.resumeAfterSeq < targetSeq,
       "the resume cursor is a real partial position, not the final high-water mark"
@@ -181,8 +185,8 @@ test(
     assert.ok(evidence, "the evidence row exists after the initial fold");
     assert.equal(
       Number(evidence.stream_facts_event_seq),
-      result.resumeAfterSeq,
-      "the durable checkpoint is written at the PARTIAL position the drain reached, not the full maxSeq"
+      500,
+      "the durable checkpoint is exactly the configured 500-event boundary, not the full maxSeq"
     );
     assert.notEqual(
       Number(evidence.stream_facts_event_seq),
@@ -233,25 +237,43 @@ test(
   withTempDb(async () => {
     seedSqliteConnection("cin_sweep_budget");
     await rebuildConnectorSummaryEvidence();
-    seedSqliteTerminalEvents("cin_sweep_budget", EVENT_COUNT);
+    const targetSeq = seedSqliteTerminalEvents("cin_sweep_budget", EVENT_COUNT);
+    const observations: ConnectorSummaryReconcileObservation[] = [];
+    setConnectorSummaryReconcileObservationSink((observation) => observations.push(observation));
 
-    const result = await runBoundedSummaryEvidenceSweep({
-      maxDurationMs: 60_000,
-      maxEventsPerFold: 500,
-      pageSize: 25,
-    });
+    try {
+      const result = await runBoundedSummaryEvidenceSweep({
+        maxDurationMs: 60_000,
+        maxEventsPerFold: 500,
+        pageSize: 25,
+      });
 
-    assert.equal(
-      result.incomplete,
-      true,
-      "the sweep is incomplete because the page's own fold did not converge, even though discovery+repair for the page finished"
-    );
-    assert.equal(
-      result.prunedComplete,
-      false,
-      "complete-set pruning must NOT run when a page's fold left terminal history unfolded"
-    );
-    assert.ok(result.resumeAfterId !== undefined, "a resume cursor is returned");
+      assert.equal(
+        result.incomplete,
+        true,
+        "the sweep is incomplete because the page's own fold did not converge, even though discovery+repair for the page finished"
+      );
+      assert.equal(
+        result.prunedComplete,
+        false,
+        "complete-set pruning must NOT run when a page's fold left terminal history unfolded"
+      );
+      assert.equal(
+        result.resumeAfterId,
+        null,
+        "an incomplete first page resumes from its cursor-before-page: NULL means retry that same page"
+      );
+      assert.equal(
+        observations.at(-1)?.terminalFoldEventsRead,
+        500,
+        "the default bounded sweep reads exactly 500 events"
+      );
+      const partial = await getConnectorSummaryEvidence("cin_sweep_budget");
+      assert.ok(partial);
+      assert.equal(Number(partial.stream_facts_event_seq), targetSeq - (EVENT_COUNT - 500));
+    } finally {
+      setConnectorSummaryReconcileObservationSink(null);
+    }
   })
 );
 
@@ -294,6 +316,56 @@ test(
     assert.ok(untouchedEvidence, "the untouched connection has an evidence row");
     assert.equal(Number(untouchedEvidence.stream_facts_event_seq), 0);
     assert.ok(rounds > 1, "genuinely required multiple rounds — proves resumption, not a single lucky sweep");
+  })
+);
+
+test(
+  "SQLite mutation: a 1ms existing-participant fold reads no more than its finite 500-event slice and resumes 2,001 events",
+  withTempDb(async () => {
+    seedSqliteConnection("cin_deadline_event_cap");
+    await rebuildConnectorSummaryEvidence();
+    const targetSeq = seedSqliteTerminalEvents("cin_deadline_event_cap", EVENT_COUNT);
+    const observations: ConnectorSummaryReconcileObservation[] = [];
+    setConnectorSummaryReconcileObservationSink((observation) => observations.push(observation));
+    try {
+      const first = await runBoundedSummaryEvidenceSweep({ maxDurationMs: 1, pageSize: 25 });
+      assert.equal(first.incomplete, true, "the finite fold slice leaves 2,001 events resumable");
+      assert.equal(first.resumeAfterId, null, "the first incomplete page retains its durable page cursor");
+      const receipt = observations.at(-1);
+      assert.equal(
+        "terminalFoldBudgetMs" in (receipt ?? {}),
+        false,
+        "the receipt exposes no invented one-millisecond fold budget"
+      );
+      assert.ok(
+        (receipt?.terminalFoldEventsRead ?? 0) <= 500,
+        "the one-millisecond bounded sweep may defer its first batch but never exceeds the finite 500-event cap"
+      );
+      const partial = await getConnectorSummaryEvidence("cin_deadline_event_cap");
+      assert.ok(partial, "the existing participant remains durable after the bounded attempt");
+      assert.ok(
+        Number(partial.stream_facts_event_seq) >= 0 && Number(partial.stream_facts_event_seq) <= 500,
+        "the one-millisecond durable checkpoint remains within the same finite event cap"
+      );
+
+      const { last } = await converge(first, 1, 20, (current) =>
+        runBoundedSummaryEvidenceSweep({
+          afterId: current.resumeAfterId,
+          maxDurationMs: 60_000,
+          pageSize: 25,
+        })
+      );
+      assert.equal(last.incomplete, false, "later rounds converge the same durable participant");
+      const complete = await getConnectorSummaryEvidence("cin_deadline_event_cap");
+      assert.ok(complete);
+      assert.equal(
+        Number(complete.stream_facts_event_seq),
+        targetSeq,
+        "eventual checkpoint reaches the 2,001-event high-water"
+      );
+    } finally {
+      setConnectorSummaryReconcileObservationSink(null);
+    }
   })
 );
 
@@ -373,11 +445,13 @@ test("real PostgreSQL: foldConnectorSummaryStreamFacts respects an explicit maxE
 
     const first = await foldConnectorSummaryStreamFacts(["cin_budget_target_pg"], { maxEvents: 500 });
     assert.equal(first.incomplete, true);
+    assert.equal(first.eventsRead, 500, "the PostgreSQL bounded SQL batch reads exactly 500 events");
+    assert.equal(first.resumeAfterSeq, 500, "the PostgreSQL resume checkpoint is exactly the 500th event");
     assert.ok(first.resumeAfterSeq !== null && first.resumeAfterSeq < targetSeq);
 
     const afterFirst = await getConnectorSummaryEvidence("cin_budget_target_pg");
     assert.ok(afterFirst, "the evidence row exists after the first bounded fold on real PostgreSQL");
-    assert.equal(Number(afterFirst.stream_facts_event_seq), first.resumeAfterSeq);
+    assert.equal(Number(afterFirst.stream_facts_event_seq), 500);
     assert.notEqual(Number(afterFirst.stream_facts_event_seq), targetSeq);
 
     const { rounds } = await converge(first, 1, 20, () =>
@@ -412,6 +486,8 @@ test("real PostgreSQL: runBoundedSummaryEvidenceSweep reports incomplete and ski
     await seedPostgresConnection("cin_sweep_budget_pg");
     await rebuildConnectorSummaryEvidence();
     const targetSeq = await seedPostgresTerminalEvents("cin_sweep_budget_pg", EVENT_COUNT);
+    const observations: ConnectorSummaryReconcileObservation[] = [];
+    setConnectorSummaryReconcileObservationSink((observation) => observations.push(observation));
 
     const first = await runBoundedSummaryEvidenceSweep({
       maxDurationMs: 60_000,
@@ -424,6 +500,19 @@ test("real PostgreSQL: runBoundedSummaryEvidenceSweep reports incomplete and ski
       "the sweep is incomplete on real PostgreSQL because the page's own fold did not converge"
     );
     assert.equal(first.prunedComplete, false, "complete-set pruning must not run on real PostgreSQL either");
+    assert.equal(first.resumeAfterId, null, "the real PostgreSQL first page also retries from NULL");
+    assert.equal(
+      observations.at(-1)?.terminalFoldEventsRead,
+      500,
+      "the PostgreSQL default bounded sweep reads exactly 500 events"
+    );
+    const partial = await getConnectorSummaryEvidence("cin_sweep_budget_pg");
+    assert.ok(partial);
+    assert.equal(
+      Number(partial.stream_facts_event_seq),
+      500,
+      "the PostgreSQL default cap persists exactly the 500th event"
+    );
 
     const { last, rounds } = await converge(first, 1, 30, (current) =>
       runBoundedSummaryEvidenceSweep({
@@ -444,6 +533,243 @@ test("real PostgreSQL: runBoundedSummaryEvidenceSweep reports incomplete and ski
     );
     assert.ok(rounds > 1);
   } finally {
+    setConnectorSummaryReconcileObservationSink(null);
+    await cleanupPostgres();
+    await closePostgresStorage();
+  }
+});
+
+test("real PostgreSQL: the 25-row first-page starvation shape folds before slow generic repairs and survives restart/resume", {
+  skip: !POSTGRES_URL,
+}, async () => {
+  await initPostgresStorage(postgresStorageConfig());
+  const triggerName = "test_summary_starvation_slow_generic";
+  const functionName = "test_summary_starvation_slow_generic_fn";
+  try {
+    await cleanupPostgres();
+    const ids = Array.from({ length: 25 }, (_, index) => `cin_starvation_pg_${String(index).padStart(2, "0")}`);
+    for (const id of ids) {
+      // biome-ignore lint/performance/noAwaitInLoops: test setup advances a shared durable fixture in order.
+      await seedPostgresConnection(id);
+    }
+    await rebuildConnectorSummaryEvidence();
+    const targetSeq = await seedPostgresTerminalEvents(ids[0] as string, 274);
+    await postgresQuery("UPDATE connector_summary_evidence SET dirty = 1 WHERE connector_id = $1", ["c1_pg_budget"]);
+    await postgresQuery(
+      `CREATE FUNCTION ${functionName}() RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN PERFORM pg_sleep(0.08); RETURN NEW; END;
+       $$`
+    );
+    await postgresQuery(
+      `CREATE TRIGGER ${triggerName}
+         BEFORE UPDATE OF computed_at ON connector_summary_evidence
+         FOR EACH ROW EXECUTE FUNCTION ${functionName}()`
+    );
+    const observations: ConnectorSummaryReconcileObservation[] = [];
+    setConnectorSummaryReconcileObservationSink((emitted) => observations.push(emitted));
+    const first = await runBoundedSummaryEvidenceSweep({ maxDurationMs: 300, pageSize: 25 });
+    assert.equal(first.incomplete, true, "slow generic repairs exhaust the remaining bounded round");
+    assert.equal(first.resumeAfterId, null, "an incomplete first page retries from its durable NULL cursor");
+    const checkpoints = await postgresQuery(
+      "SELECT stream_facts_event_seq FROM connector_summary_evidence WHERE connector_id = $1 ORDER BY connector_instance_id",
+      ["c1_pg_budget"]
+    );
+    assert.deepEqual(
+      checkpoints.rows.map((row) => Number((row as { stream_facts_event_seq: number }).stream_facts_event_seq)),
+      Array.from({ length: 25 }, () => targetSeq),
+      "every existing first-page participant advances at the real PostgreSQL seam"
+    );
+    const receipt = observations.at(-1);
+    assert.equal(receipt?.terminalFoldParticipants, 25);
+    assert.equal(receipt?.terminalFoldMinimumCheckpointBefore, 0);
+    assert.equal(receipt?.terminalFoldMinimumCheckpointAfter, targetSeq);
+    assert.equal(receipt?.terminalFoldEventsRead, targetSeq);
+    assert.equal(receipt?.terminalFoldZeroProgress, false);
+    assert.equal(
+      "terminalFoldBudgetMs" in (receipt ?? {}),
+      false,
+      "the cooperative deadline has no invented fold budget"
+    );
+
+    await postgresQuery(`DROP TRIGGER IF EXISTS ${triggerName} ON connector_summary_evidence`);
+    await postgresQuery(`DROP FUNCTION IF EXISTS ${functionName}()`);
+    const restarted = await runBoundedSummaryEvidenceSweep({
+      afterId: first.resumeAfterId,
+      maxDurationMs: 300,
+      pageSize: 25,
+    });
+    assert.equal(restarted.incomplete, false, "restart from the durable NULL first-page cursor converges");
+    assert.equal(restarted.resumeAfterId, null);
+  } finally {
+    setConnectorSummaryReconcileObservationSink(null);
+    await postgresQuery(`DROP TRIGGER IF EXISTS ${triggerName} ON connector_summary_evidence`);
+    await postgresQuery(`DROP FUNCTION IF EXISTS ${functionName}()`);
+    await cleanupPostgres();
+    await closePostgresStorage();
+  }
+});
+
+test("real PostgreSQL mutation: a 1ms cold 25-row page starts at most one slow repair and later converges", {
+  skip: !POSTGRES_URL,
+}, async () => {
+  await initPostgresStorage(postgresStorageConfig());
+  const triggerName = "test_summary_cold_deadline_slow_repair";
+  const functionName = "test_summary_cold_deadline_slow_repair_fn";
+  try {
+    await cleanupPostgres();
+    const ids = Array.from({ length: 25 }, (_, index) => `cin_cold_deadline_pg_${String(index).padStart(2, "0")}`);
+    for (const id of ids) {
+      // biome-ignore lint/performance/noAwaitInLoops: test setup advances a shared durable fixture in order.
+      await seedPostgresConnection(id);
+    }
+    await seedPostgresTerminalEvents(ids[0] as string, 1);
+    await postgresQuery(
+      `CREATE FUNCTION ${functionName}() RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN PERFORM pg_sleep(0.08); RETURN NEW; END;
+       $$`
+    );
+    await postgresQuery(
+      `CREATE TRIGGER ${triggerName}
+         BEFORE UPDATE OF computed_at ON connector_summary_evidence
+         FOR EACH ROW EXECUTE FUNCTION ${functionName}()`
+    );
+    const observations: ConnectorSummaryReconcileObservation[] = [];
+    setConnectorSummaryReconcileObservationSink((emitted) => observations.push(emitted));
+    const startedAt = Date.now();
+    const first = await runBoundedSummaryEvidenceSweep({ maxDurationMs: 1, pageSize: 25 });
+    const elapsedMs = Date.now() - startedAt;
+    assert.equal(first.incomplete, true);
+    assert.equal(first.resumeAfterId, null, "the expired first page retains its durable resume point");
+    const evidenceRows = await postgresQuery(
+      "SELECT COUNT(*)::int AS count FROM connector_summary_evidence WHERE connector_id = $1",
+      ["c1_pg_budget"]
+    );
+    assert.ok(
+      Number((evidenceRows.rows[0] as { count: number }).count) <= 1,
+      "no page-sized set of delayed repairs starts"
+    );
+    assert.ok(elapsedMs < 750, "one started PostgreSQL repair is the only permitted cooperative overshoot");
+    const receipt = observations.at(-1);
+    assert.equal("terminalFoldBudgetMs" in (receipt ?? {}), false, "no post-expiry fold timeout is invented");
+    assert.ok((receipt?.terminalFoldEventsRead ?? 0) <= 500);
+
+    await postgresQuery(`DROP TRIGGER IF EXISTS ${triggerName} ON connector_summary_evidence`);
+    await postgresQuery(`DROP FUNCTION IF EXISTS ${functionName}()`);
+    setConnectorSummaryReconcileObservationSink(null);
+    const resumed = await runBoundedSummaryEvidenceSweep({ maxDurationMs: 60_000, pageSize: 25 });
+    assert.equal(resumed.incomplete, false, "a later round converges all cold evidence");
+    const checkpoint = await postgresQuery(
+      "SELECT stream_facts_event_seq FROM connector_summary_evidence WHERE connector_instance_id = $1",
+      [ids[0] as string]
+    );
+    assert.equal(Number((checkpoint.rows[0] as { stream_facts_event_seq: number }).stream_facts_event_seq), 1);
+  } finally {
+    setConnectorSummaryReconcileObservationSink(null);
+    await postgresQuery(`DROP TRIGGER IF EXISTS ${triggerName} ON connector_summary_evidence`);
+    await postgresQuery(`DROP FUNCTION IF EXISTS ${functionName}()`);
+    await cleanupPostgres();
+    await closePostgresStorage();
+  }
+});
+
+test("real PostgreSQL mutation: a 1ms 2,001-event fold is capped and resumes from its durable checkpoint", {
+  skip: !POSTGRES_URL,
+}, async () => {
+  await initPostgresStorage(postgresStorageConfig());
+  try {
+    await cleanupPostgres();
+    await seedPostgresConnection("cin_deadline_event_cap_pg");
+    await rebuildConnectorSummaryEvidence();
+    const targetSeq = await seedPostgresTerminalEvents("cin_deadline_event_cap_pg", EVENT_COUNT);
+    const observations: ConnectorSummaryReconcileObservation[] = [];
+    setConnectorSummaryReconcileObservationSink((emitted) => observations.push(emitted));
+    const first = await runBoundedSummaryEvidenceSweep({ maxDurationMs: 1, pageSize: 25 });
+    assert.equal(first.incomplete, true);
+    const receipt = observations.at(-1);
+    assert.equal("terminalFoldBudgetMs" in (receipt ?? {}), false);
+    assert.ok(
+      (receipt?.terminalFoldEventsRead ?? 0) <= 500,
+      "a one-millisecond deadline may defer the batch but can never start a 2,000-event read"
+    );
+    const partial = await getConnectorSummaryEvidence("cin_deadline_event_cap_pg");
+    assert.ok(partial);
+    assert.ok(
+      Number(partial.stream_facts_event_seq) <= 500,
+      "a one-millisecond deadline may defer checkpoint writes but cannot leap beyond the finite batch"
+    );
+    const { last } = await converge(first, 1, 20, (current) =>
+      runBoundedSummaryEvidenceSweep({
+        afterId: current.resumeAfterId,
+        maxDurationMs: 60_000,
+        pageSize: 25,
+      })
+    );
+    assert.equal(last.incomplete, false);
+    const complete = await getConnectorSummaryEvidence("cin_deadline_event_cap_pg");
+    assert.ok(complete);
+    assert.equal(Number(complete.stream_facts_event_seq), targetSeq);
+  } finally {
+    setConnectorSummaryReconcileObservationSink(null);
+    await cleanupPostgres();
+    await closePostgresStorage();
+  }
+});
+
+test("real PostgreSQL mutation: an expired fold stops its delayed participant checkpoint-write tail after one started write", {
+  skip: !POSTGRES_URL,
+}, async () => {
+  await initPostgresStorage(postgresStorageConfig());
+  const triggerName = "test_summary_deadline_checkpoint_tail";
+  const functionName = "test_summary_deadline_checkpoint_tail_fn";
+  try {
+    await cleanupPostgres();
+    const ids = Array.from(
+      { length: 25 },
+      (_, index) => `cin_deadline_checkpoint_pg_${String(index).padStart(2, "0")}`
+    );
+    for (const id of ids) {
+      // biome-ignore lint/performance/noAwaitInLoops: ordered durable fixture setup is intentional.
+      await seedPostgresConnection(id);
+    }
+    await rebuildConnectorSummaryEvidence();
+    const targetSeq = await seedPostgresTerminalEvents(ids[0] as string, 1);
+    await postgresQuery(
+      `CREATE FUNCTION ${functionName}() RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN PERFORM pg_sleep(0.08); RETURN NEW; END;
+       $$`
+    );
+    await postgresQuery(
+      `CREATE TRIGGER ${triggerName}
+         BEFORE UPDATE OF stream_facts_event_seq ON connector_summary_evidence
+         FOR EACH ROW EXECUTE FUNCTION ${functionName}()`
+    );
+    const startedAt = Date.now();
+    const result = await foldConnectorSummaryStreamFacts(ids, { deadline: startedAt + 20, maxEvents: 500 });
+    const elapsedMs = Date.now() - startedAt;
+    assert.equal(result.eventsRead, 1);
+    assert.equal(result.incomplete, true, "checkpoint-write expiry remains a resumable incomplete fold");
+    assert.equal(result.resumeAfterSeq, 0, "the incomplete participant set retains its minimum durable checkpoint");
+    assert.ok(elapsedMs < 750, "only one already-started 80ms checkpoint write may overshoot the deadline");
+    const checkpointWrites = await postgresQuery(
+      "SELECT COUNT(*)::int AS count FROM connector_summary_evidence WHERE connector_id = $1 AND stream_facts_event_seq = $2",
+      ["c1_pg_budget", targetSeq]
+    );
+    assert.ok(
+      Number((checkpointWrites.rows[0] as { count: number }).count) <= 1,
+      "expiry prevents the remaining 24 independent checkpoint writes from starting"
+    );
+    await postgresQuery(`DROP TRIGGER IF EXISTS ${triggerName} ON connector_summary_evidence`);
+    await postgresQuery(`DROP FUNCTION IF EXISTS ${functionName}()`);
+    const resumed = await foldConnectorSummaryStreamFacts(ids, { maxEvents: 500 });
+    assert.equal(resumed.incomplete, false, "a later fold resumes every unfinished participant");
+    const converged = await postgresQuery(
+      "SELECT COUNT(*)::int AS count FROM connector_summary_evidence WHERE connector_id = $1 AND stream_facts_event_seq = $2",
+      ["c1_pg_budget", targetSeq]
+    );
+    assert.equal(Number((converged.rows[0] as { count: number }).count), 25);
+  } finally {
+    await postgresQuery(`DROP TRIGGER IF EXISTS ${triggerName} ON connector_summary_evidence`);
+    await postgresQuery(`DROP FUNCTION IF EXISTS ${functionName}()`);
     await cleanupPostgres();
     await closePostgresStorage();
   }

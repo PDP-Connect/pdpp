@@ -88,6 +88,44 @@ export interface RefConnectorsListItem {
   readonly total_retained_bytes?: number | null;
 }
 
+/**
+ * `identity_inventory` profile row (Fable ruling terminal-read-architecture-
+ * fable-0730.md §8, R8.1): the pinned field set, no health/evidence/run/
+ * schedule/runtime field. Mirrors `server/ref-control.ts`'s
+ * `ConnectorIdentityInventorySummary`.
+ */
+export interface RefConnectorsListIdentityItem {
+  readonly connection_id: string;
+  readonly connector_display_name: string;
+  readonly connector_id: string;
+  readonly connector_instance_id: string;
+  readonly display_name: string;
+  /** `"pending"` when no `connector_summary_evidence` row exists yet (declared-only). */
+  readonly membership_state: "complete" | "pending";
+  readonly streams: string[];
+}
+
+/**
+ * `retained_count_summary` profile row (design doc add-source-perf-design-
+ * agy-0730.md; Fable ruling terminal-read-architecture-fable-0730.md R4/R5):
+ * the pinned field set for Add Source — identity + `total_records`/
+ * `total_records_state`/`acquisition_coverage.latest_batch`, no health/run/
+ * schedule/runtime field. Mirrors `server/ref-control.ts`'s
+ * `ConnectorRetainedCountSummary`.
+ */
+export interface RefConnectorsListRetainedCountItem {
+  readonly acquisition_coverage: { readonly latest_batch: Record<string, unknown> | null } | null;
+  readonly connection_id: string;
+  readonly connector_display_name: string;
+  readonly connector_id: string;
+  readonly connector_instance_id: string;
+  readonly display_name: string;
+  readonly revoked_at: string | null;
+  readonly status: string;
+  readonly total_records: number;
+  readonly total_records_state: "known" | "known_zero" | "unobserved" | "stale" | "unknown";
+}
+
 export interface RefConnectorsRuntimeStatus {
   readonly label: string;
   readonly message: string | null;
@@ -111,7 +149,15 @@ export interface RefConnectorsListDependencies {
    * — the operation preserves insertion order so the host can choose the
    * canonical sort.
    */
-  listConnectorSummaries: () => Promise<readonly RefConnectorsListItem[]> | readonly RefConnectorsListItem[];
+  listConnectorSummaries: () =>
+    | Promise<
+        | readonly RefConnectorsListItem[]
+        | readonly RefConnectorsListIdentityItem[]
+        | readonly RefConnectorsListRetainedCountItem[]
+      >
+    | readonly RefConnectorsListItem[]
+    | readonly RefConnectorsListIdentityItem[]
+    | readonly RefConnectorsListRetainedCountItem[];
   /**
    * Explicit keyset-page mode for the unscoped summary feed. Compatibility
    * callers keep using `listConnectorSummaries`, preserving their historical
@@ -121,13 +167,18 @@ export interface RefConnectorsListDependencies {
 }
 
 export interface RefConnectorsListPage {
-  readonly data: readonly RefConnectorsListItem[];
+  readonly data:
+    | readonly RefConnectorsListItem[]
+    | readonly RefConnectorsListIdentityItem[]
+    | readonly RefConnectorsListRetainedCountItem[];
+  readonly fleet_health?: unknown;
   readonly has_more: boolean;
   readonly next_cursor: string | null;
 }
 
 export interface RefConnectorsListEnvelope {
-  readonly data: RefConnectorsListItem[];
+  readonly data: (RefConnectorsListItem | RefConnectorsListIdentityItem | RefConnectorsListRetainedCountItem)[];
+  readonly fleet_health?: unknown;
   readonly has_more?: boolean;
   readonly next_cursor?: string | null;
   readonly object: "list";
@@ -152,11 +203,14 @@ export async function executeRefConnectorsList(
     dependencies.getRuntimeStatus ? dependencies.getRuntimeStatus() : Promise.resolve(undefined),
   ]);
   const page = dependencies.listConnectorSummariesPage ? (result as RefConnectorsListPage) : null;
-  const summaries = page ? page.data : (result as readonly RefConnectorsListItem[]);
+  const summaries = page
+    ? page.data
+    : (result as readonly RefConnectorsListItem[] | readonly RefConnectorsListIdentityItem[]);
   const envelope: RefConnectorsListEnvelope = {
     data: [...summaries],
     object: "list",
     ...(page ? { has_more: page.has_more, next_cursor: page.next_cursor } : {}),
+    ...(page?.fleet_health === undefined ? {} : { fleet_health: page.fleet_health }),
   };
   return runtime ? { ...envelope, runtime } : envelope;
 }

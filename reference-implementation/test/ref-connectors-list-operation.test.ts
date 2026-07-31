@@ -330,6 +330,21 @@ test("ref.connectors.list carries one owner-only runtime status when supplied", 
   assert.equal(envelope.data.length, 1);
 });
 
+test("ref.connectors.list carries optional complete-page fleet health without inventing it", async () => {
+  const fleetHealth = { state: "healthy" };
+  const complete = await executeRefConnectorsList({
+    listConnectorSummaries: () => [],
+    listConnectorSummariesPage: () => ({ data: [], fleet_health: fleetHealth, has_more: false, next_cursor: null }),
+  });
+  assert.deepEqual(complete.fleet_health, fleetHealth);
+
+  const incomplete = await executeRefConnectorsList({
+    listConnectorSummaries: () => [],
+    listConnectorSummariesPage: () => ({ data: [], has_more: true, next_cursor: "cursor" }),
+  });
+  assert.equal("fleet_health" in incomplete, false, "incomplete pages must omit rather than infer fleet health");
+});
+
 test("reference connector catalog hides manifest opt-outs", () => {
   assert.equal(
     isPublicReferenceConnector(

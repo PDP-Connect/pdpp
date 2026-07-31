@@ -4,26 +4,19 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { attributeSearchHit, shouldIncludeSearchHit } from "@pdpp/operator-ui/explore/search-hit-attribution";
-import type { RefConnectorSummary } from "../lib/ref-client.ts";
+import type { RefConnectorIdentitySummary } from "../lib/ref-client.ts";
 
 function summary(
-  over: Partial<RefConnectorSummary> & { connection_id: string; connector_id: string }
-): RefConnectorSummary {
+  over: Partial<RefConnectorIdentitySummary> & { connection_id: string; connector_id: string }
+): RefConnectorIdentitySummary {
   return {
-    connection_health: {} as RefConnectorSummary["connection_health"],
     connection_id: over.connection_id,
-    connector_display_name: over.connector_display_name,
+    connector_display_name: over.connector_display_name ?? over.connector_id,
     connector_id: over.connector_id,
-    connector_instance_id: over.connector_instance_id,
+    connector_instance_id: over.connector_instance_id ?? over.connection_id,
     display_name: over.display_name ?? "",
-    freshness: {},
-    last_run: null,
-    last_successful_run: null,
-    manifest_version: null,
-    next_action: null,
-    schedule: null,
+    membership_state: "complete",
     streams: over.streams ?? [],
-    total_records: 0,
   };
 }
 

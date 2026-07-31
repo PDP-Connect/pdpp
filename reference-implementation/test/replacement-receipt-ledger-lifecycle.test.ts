@@ -785,6 +785,7 @@ function lifecyclePersistence(initialSurface: BrowserSurfaceWithPersistenceMetad
     listLeases: async () => notImplementedInLifecycleFake("listLeases"),
     listNonTerminalLeases: async () => notImplementedInLifecycleFake("listNonTerminalLeases"),
     listSurfaces: async () => notImplementedInLifecycleFake("listSurfaces"),
+    readForConnectionIdentities: async () => notImplementedInLifecycleFake("readForConnectionIdentities"),
     repairStaleSurfaceActiveLeases: async () => notImplementedInLifecycleFake("repairStaleSurfaceActiveLeases"),
     // biome-ignore lint/suspicious/useAwait: localized test assertion preserves its explicit contract.
     updateBrowserGenerationHash: async (_surfaceId, browserGenerationHash) => {

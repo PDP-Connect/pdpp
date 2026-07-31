@@ -25,26 +25,24 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { DashboardDataSource } from "../lib/data-source.ts";
-import type { ExploreTimelinePage, ListResponse, RefConnectorSummary } from "../lib/ref-client.ts";
+import type { ExploreTimelinePage, ListResponse, RefConnectorIdentitySummary } from "../lib/ref-client.ts";
 import type { ConnectorManifest } from "../lib/rs-client.ts";
 import { assembleExplorerData } from "./explore-data-assembler.ts";
 
-function makeSummary(over: { connection_id: string; connector_id: string; streams?: string[] }): RefConnectorSummary {
+function makeSummary(over: {
+  connection_id: string;
+  connector_id: string;
+  streams?: string[];
+}): RefConnectorIdentitySummary {
   return {
-    connection_health: {} as RefConnectorSummary["connection_health"],
     connection_id: over.connection_id,
+    connector_display_name: over.connector_id,
     connector_id: over.connector_id,
     connector_instance_id: over.connection_id,
     display_name: over.connection_id,
-    freshness: {},
-    last_run: null,
-    last_successful_run: null,
-    manifest_version: null,
-    next_action: null,
-    schedule: null,
+    membership_state: "complete",
     streams: over.streams ?? ["records"],
-    total_records: 0,
-  } as RefConnectorSummary;
+  };
 }
 
 function makeManifest(connectorId: string, streams: string[]): ConnectorManifest {
@@ -107,7 +105,7 @@ function twoPageFleetDs(opts?: {
     kind: "sandbox" as const,
     listConnectorManifests: async () => [makeManifest("acme", ["records"])],
     // biome-ignore lint/suspicious/useAwait: mocks the DashboardDataSource async method contract; async is required to satisfy the type even though this fixture body never awaits.
-    listConnectorSummaries: async (options) => {
+    listConnectorSummaries: (async (options?: { connectionRouteId?: string; cursor?: string; limit?: number }) => {
       if (options?.connectionRouteId) {
         opts?.connectionRouteCalls?.push(options.connectionRouteId);
         // Scoped lookup: a 0-or-1 list, exact identity, independent of facet paging.
@@ -116,16 +114,16 @@ function twoPageFleetDs(opts?: {
             data: [makeSummary({ connection_id: PAGE_2_ONLY_ID, connector_id: "acme" })],
             has_more: false,
             object: "list",
-          } as ListResponse<RefConnectorSummary>;
+          } as ListResponse<RefConnectorIdentitySummary>;
         }
         if (PAGE_1_IDS.includes(options.connectionRouteId)) {
           return {
             data: [makeSummary({ connection_id: options.connectionRouteId, connector_id: "acme" })],
             has_more: false,
             object: "list",
-          } as ListResponse<RefConnectorSummary>;
+          } as ListResponse<RefConnectorIdentitySummary>;
         }
-        return { data: [], has_more: false, object: "list" } as ListResponse<RefConnectorSummary>;
+        return { data: [], has_more: false, object: "list" } as ListResponse<RefConnectorIdentitySummary>;
       }
       opts?.facetPageCalls?.push(options?.cursor);
       // Unscoped, PAGED facet rail request: page 1 = PAGE_1_IDS, page 2 = PAGE_2_ONLY_ID.
@@ -134,15 +132,15 @@ function twoPageFleetDs(opts?: {
           data: [makeSummary({ connection_id: PAGE_2_ONLY_ID, connector_id: "acme" })],
           has_more: false,
           object: "list",
-        } as ListResponse<RefConnectorSummary>;
+        } as ListResponse<RefConnectorIdentitySummary>;
       }
       return {
         data: PAGE_1_IDS.map((id) => makeSummary({ connection_id: id, connector_id: "acme" })),
         has_more: true,
         next_cursor: "page2",
         object: "list",
-      } as ListResponse<RefConnectorSummary>;
-    },
+      } as ListResponse<RefConnectorIdentitySummary>;
+    }) as unknown as DashboardDataSource["listConnectorSummaries"],
     listExploreRecordBuckets: notStubbed,
     listExploreTimeline: (o) => {
       // Server-side honors connectionIds scope; only PAGE_2_ONLY_ID has a record.
@@ -162,7 +160,7 @@ function twoPageFleetDs(opts?: {
     searchRecordsHybrid: notStubbed,
     searchRecordsLexical: notStubbed,
     searchRecordsSemantic: notStubbed,
-  } as DashboardDataSource;
+  };
 }
 
 test("GATE COUNTEREXAMPLE FIXED: a selected connection on facet page 2 still yields its record while the rail shows facet page 1", async () => {

@@ -527,7 +527,10 @@ export function createReferenceSchedulerManager({
       },
       // Durable cross-path "latest successful run at" probe, read from the spine
       // run timeline so it sees EVERY success — including manual/owner
-      // `controller.runNow` runs that never touch `scheduler_run_history`. Lets
+      // `controller.runNow` runs, which write a `run_history` row via the
+      // generalized run.started/terminal writer (server/stores/
+      // run-history-writer.ts) but are NOT `scheduler_managed` and so stay
+      // invisible to `listRunHistory`'s cadence/backoff callers. Lets
       // the back-off gate clear a stale failure streak when a genuine success
       // has occurred since, so automation resumes. Returns null on no success or
       // probe error (never fabricates a success that would suppress back-off).

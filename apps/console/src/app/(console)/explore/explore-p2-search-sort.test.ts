@@ -26,7 +26,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { assembleExplorerData } from "@pdpp/operator-ui/explore/explore-data-assembler";
 import type { DashboardDataSource } from "@pdpp/operator-ui/lib/data-source";
-import type { ListResponse, RefConnectorSummary } from "@pdpp/operator-ui/lib/ref-client";
+import type { ListResponse, RefConnectorIdentitySummary } from "@pdpp/operator-ui/lib/ref-client";
 import type {
   ConnectorManifest,
   RecordsPage,
@@ -41,20 +41,15 @@ function makeSummary(over: {
   connector_id: string;
   streams?: string[];
   display_name?: string;
-}): RefConnectorSummary {
+}): RefConnectorIdentitySummary {
   return {
-    connection_health: {} as RefConnectorSummary["connection_health"],
     connection_id: over.connection_id,
+    connector_display_name: over.connector_id,
     connector_id: over.connector_id,
+    connector_instance_id: over.connection_id,
     display_name: over.display_name ?? over.connection_id,
-    freshness: {},
-    last_run: null,
-    last_successful_run: null,
-    manifest_version: null,
-    next_action: null,
-    schedule: null,
+    membership_state: "complete",
     streams: over.streams ?? ["records"],
-    total_records: 0,
   };
 }
 
@@ -111,7 +106,7 @@ function makeRecordsPage(ids: string[], opts?: { has_more?: boolean; next_cursor
   };
 }
 
-function summaryListResponse(summaries: RefConnectorSummary[]): ListResponse<RefConnectorSummary> {
+function summaryListResponse(summaries: RefConnectorIdentitySummary[]): ListResponse<RefConnectorIdentitySummary> {
   return { data: summaries, has_more: false, object: "list" };
 }
 
@@ -181,7 +176,8 @@ test("P2 lexical Most-relevant: has_more and next_cursor wired into searchHasMor
   const ds = makeDataSource({
     isHybridRetrievalAdvertised: () => Promise.resolve(false),
     listConnectorManifests: () => Promise.resolve([makeManifest("ynab", ["transactions"])]),
-    listConnectorSummaries: () => Promise.resolve(summaryListResponse([summary])),
+    listConnectorSummaries: (() =>
+      Promise.resolve(summaryListResponse([summary]))) as unknown as DashboardDataSource["listConnectorSummaries"],
     // Recall proven complete: the lexical page is exhaustively pageable, so the
     // descriptor is keyword_pageable and the cursor trail is honest.
     searchRecordsLexical: async () =>
@@ -218,7 +214,8 @@ test("P2 lexical Load-more: passing cursor= calls searchRecordsLexical with that
   const ds = makeDataSource({
     isHybridRetrievalAdvertised: () => Promise.resolve(false),
     listConnectorManifests: () => Promise.resolve([makeManifest("ynab", ["transactions"])]),
-    listConnectorSummaries: () => Promise.resolve(summaryListResponse([summary])),
+    listConnectorSummaries: (() =>
+      Promise.resolve(summaryListResponse([summary]))) as unknown as DashboardDataSource["listConnectorSummaries"],
     searchRecordsLexical: (_q, opts) => {
       capturedCursors.push(opts?.cursor);
       if (opts?.cursor === "cursor-page2") {
@@ -268,7 +265,8 @@ test("P2 Most-recent single-stream: lexical is called (not queryRecords); return
   const ds = makeDataSource({
     isHybridRetrievalAdvertised: () => Promise.resolve(false),
     listConnectorManifests: () => Promise.resolve([makeManifest("ynab", ["transactions"])]),
-    listConnectorSummaries: () => Promise.resolve(summaryListResponse([summary])),
+    listConnectorSummaries: (() =>
+      Promise.resolve(summaryListResponse([summary]))) as unknown as DashboardDataSource["listConnectorSummaries"],
     // queryRecords must NOT be called (F2 fix: was the display path, returned ALL records).
     queryRecords: () => {
       queryRecordsCalled = true;
@@ -317,7 +315,8 @@ test("P2 Most-recent single-stream: second page (cursor forwarded to lexical) re
   const ds = makeDataSource({
     isHybridRetrievalAdvertised: () => Promise.resolve(false),
     listConnectorManifests: () => Promise.resolve([makeManifest("ynab", ["transactions"])]),
-    listConnectorSummaries: () => Promise.resolve(summaryListResponse([summary])),
+    listConnectorSummaries: (() =>
+      Promise.resolve(summaryListResponse([summary]))) as unknown as DashboardDataSource["listConnectorSummaries"],
     // queryRecords must NOT be called (F2 fix).
     queryRecords: () => Promise.reject(new Error("queryRecords must not be called (F2 fix)")),
     searchRecordsLexical: (_q, opts) => {
@@ -366,7 +365,8 @@ test("P2 hybrid Most-relevant: searchHasMore false and searchNextCursor null (no
   const ds = makeDataSource({
     isHybridRetrievalAdvertised: () => Promise.resolve(true),
     listConnectorManifests: () => Promise.resolve([makeManifest("gmail", ["messages"])]),
-    listConnectorSummaries: () => Promise.resolve(summaryListResponse([summary])),
+    listConnectorSummaries: (() =>
+      Promise.resolve(summaryListResponse([summary]))) as unknown as DashboardDataSource["listConnectorSummaries"],
     searchRecordsHybrid: () => Promise.resolve(makeLexicalPage([hit1, hit2], { has_more: false })),
     // Hybrid mode should NOT call lexical
     searchRecordsLexical: () => Promise.reject(new Error("lexical must not be called when hybrid is used")),
@@ -400,7 +400,8 @@ test("P2 hybrid + search_sort=recent: uses lexical hit to detect stream door, th
   const ds = makeDataSource({
     isHybridRetrievalAdvertised: () => Promise.resolve(true),
     listConnectorManifests: () => Promise.resolve([makeManifest("gmail", ["messages"])]),
-    listConnectorSummaries: () => Promise.resolve(summaryListResponse([summary])),
+    listConnectorSummaries: (() =>
+      Promise.resolve(summaryListResponse([summary]))) as unknown as DashboardDataSource["listConnectorSummaries"],
     // queryRecords must NOT be called (F2 fix: it returned ALL records ignoring query)
     queryRecords: () => Promise.reject(new Error("queryRecords must not be called in Most-recent mode (F2 fix)")),
     // Hybrid must NOT be called when search_sort=recent
@@ -456,7 +457,10 @@ test("P2 multi-stream Most-recent: returns matching records via lexical with wir
     isHybridRetrievalAdvertised: () => Promise.resolve(false),
     listConnectorManifests: () =>
       Promise.resolve([makeManifest("ynab", ["transactions"]), makeManifest("gmail", ["messages"])]),
-    listConnectorSummaries: () => Promise.resolve(summaryListResponse([summaryA, summaryB])),
+    listConnectorSummaries: (() =>
+      Promise.resolve(
+        summaryListResponse([summaryA, summaryB])
+      )) as unknown as DashboardDataSource["listConnectorSummaries"],
     // queryRecords must NOT be called (multi-stream has no single-stream path)
     queryRecords: () => Promise.reject(new Error("queryRecords must not be called for multi-stream Most-recent")),
     // Both the stream-door probe and the display fetch are lexical.
@@ -502,7 +506,8 @@ test("P2 stream door: populated when all hits share one connector+stream", async
   const ds = makeDataSource({
     isHybridRetrievalAdvertised: () => Promise.resolve(false),
     listConnectorManifests: () => Promise.resolve([makeManifest("ynab", ["transactions"])]),
-    listConnectorSummaries: () => Promise.resolve(summaryListResponse([summary])),
+    listConnectorSummaries: (() =>
+      Promise.resolve(summaryListResponse([summary]))) as unknown as DashboardDataSource["listConnectorSummaries"],
     searchRecordsLexical: () => Promise.resolve(makeLexicalPage([hit1, hit2], { has_more: false })),
   });
 
@@ -528,7 +533,10 @@ test("P2 stream door: null when hits span multiple connectors", async () => {
     isHybridRetrievalAdvertised: () => Promise.resolve(false),
     listConnectorManifests: () =>
       Promise.resolve([makeManifest("ynab", ["transactions"]), makeManifest("gmail", ["messages"])]),
-    listConnectorSummaries: () => Promise.resolve(summaryListResponse([summaryA, summaryB])),
+    listConnectorSummaries: (() =>
+      Promise.resolve(
+        summaryListResponse([summaryA, summaryB])
+      )) as unknown as DashboardDataSource["listConnectorSummaries"],
     searchRecordsLexical: () => Promise.resolve(makeLexicalPage([hitA, hitB], { has_more: false })),
   });
 
@@ -575,7 +583,8 @@ test("P2 searchSort defaults to 'relevance' on non-search (empty-query) feeds", 
   const ds = makeDataSource({
     isHybridRetrievalAdvertised: () => Promise.resolve(false),
     listConnectorManifests: () => Promise.resolve([makeManifest("ynab", ["transactions"])]),
-    listConnectorSummaries: () => Promise.resolve(summaryListResponse([summary])),
+    listConnectorSummaries: (() =>
+      Promise.resolve(summaryListResponse([summary]))) as unknown as DashboardDataSource["listConnectorSummaries"],
     queryRecords: () => Promise.resolve(makeRecordsPage(["rec-1"], { has_more: false })),
   });
 

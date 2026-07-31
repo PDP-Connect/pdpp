@@ -9,7 +9,12 @@
 
 import { randomUUID } from "node:crypto";
 
-import { postgresQuery } from "../server/postgres-storage.ts";
+import { postgresQuery, withPostgresTransaction } from "../server/postgres-storage.ts";
+import {
+  isRunHistoryRelevantEventType,
+  type RunHistorySpineEvent,
+  writePostgresRunHistoryForSpineEvent,
+} from "../server/stores/run-history-writer.ts";
 
 type SourceKind = "connector" | "provider_native";
 type JsonObject = Record<string, unknown>;
@@ -76,7 +81,13 @@ interface NormalizedSpineEvent {
   readonly version: string;
 }
 
-interface SpineEventRow {
+// Exported for the run-history backfill stage
+// (server/stores/run-history-backfill-stage.ts), which filters the
+// `connector_instance_id` field directly (a real, indexed column, not
+// JSON) to scope a run_id-fetched window down to one candidate's own
+// connection before folding (run_id alone is not a unique identity — see
+// openspec/changes/run-history-backfill-list-cutover).
+export interface SpineEventRow {
   readonly actor_id: string;
   readonly actor_type: string;
   readonly client_id: string | null;
@@ -157,7 +168,7 @@ interface SummaryAggregate {
   readonly last_at?: string;
 }
 
-interface Summary {
+export interface Summary {
   readonly actor_id: string | null;
   readonly actor_type: string | null;
   readonly browser_surface_lease_id?: string;
@@ -495,7 +506,13 @@ function connectionIdFromBrowserSurfaceProfileKey(projection: JsonObject | null)
   return suffix?.startsWith("cin_") ? suffix : null;
 }
 
-function connectionIdFromEventData(event: SpineEventRecord): string | null {
+// Exported for the run-history backfill stage
+// (server/stores/run-history-backfill-stage.ts), which must filter a
+// batched-fetched event window down to one candidate's own connection
+// before folding it via summarizeRows — run_id alone is not a unique
+// identity (see openspec/changes/run-history-backfill-list-cutover), so a
+// window fetched by run_id can contain more than one connection's events.
+export function connectionIdFromEventData(event: SpineEventRecord): string | null {
   const data =
     event.data && typeof event.data === "object" && !Array.isArray(event.data) ? (event.data as JsonObject) : null;
   if (!data) {
@@ -742,7 +759,17 @@ function assembleSummaryObject(
   };
 }
 
-async function summarizeRows(id: string, rows: SpineEventRow[], aggregate: SummaryAggregate = {}): Promise<Summary> {
+// Exported for the run-history backfill stage
+// (server/stores/run-history-backfill-stage.ts), which folds a
+// connection-scoped row window (pre-filtered by connectionIdFromEventData,
+// since run_id alone is not a unique identity) directly with this
+// function rather than through postgresFoldRunSummariesByIds, whose own
+// fetchRowsForSummaries has no connection-scoping input.
+export async function summarizeRows(
+  id: string,
+  rows: SpineEventRow[],
+  aggregate: SummaryAggregate = {}
+): Promise<Summary> {
   const events = rows.map(hydrate).filter(isPresent);
   const eventFields = selectSummaryEventFields(events);
   const sourceProjection = selectSummarySourceProjection(events);
@@ -845,7 +872,15 @@ function mergeRunEventWindows(
 // trips per row), using a partitioned window function to keep the same
 // per-id LIMIT semantics. Returns a Map<id, rows[]> so callers can look up
 // each row's events the same way the per-row version did.
-async function fetchRowsForSummaries(
+//
+// Exported for the run-history backfill stage
+// (server/stores/run-history-backfill-stage.ts), which calls this
+// unmodified with column="run_id" (the SAME fetch postgresFoldRunSummariesByIds
+// uses internally) and then filters the returned rows by
+// `connector_instance_id` in memory before folding each candidate's own
+// connection-scoped window with summarizeRows — run_id alone is not a
+// unique identity (see openspec/changes/run-history-backfill-list-cutover).
+export async function fetchRowsForSummaries(
   kind: CorrelationKind,
   column: CorrelationColumn,
   ids: string[]
@@ -906,6 +941,28 @@ async function fetchRowsForSummaries(
   ]);
 
   return mergeRunEventWindows(ids, [head.rows, tail.rows, terminal.rows], column);
+}
+
+/**
+ * Fold a bounded set of run ids into `Summary` objects, keyed by run_id —
+ * the SAME batched event-window fetch (`fetchRowsForSummaries`) and fold
+ * (`summarizeRows`) `postgresListRunSummariesByConnectorIds` uses
+ * internally, reused unmodified for the run-history backfill stage
+ * (server/stores/run-history-backfill-stage.ts,
+ * terminal-read-architecture-fable-0730.md §9/R9.2) instead of re-deriving
+ * run status from spine events. Callers own their own candidate-run
+ * discovery query; this only folds an already-bounded id list.
+ */
+export async function postgresFoldRunSummariesByIds(runIds: readonly string[]): Promise<Map<string, Summary>> {
+  const ids = [...new Set(runIds.filter((id) => typeof id === "string" && id.length > 0))];
+  if (ids.length === 0) {
+    return new Map();
+  }
+  const eventsById = await fetchRowsForSummaries("run", "run_id", ids);
+  const entries = await Promise.all(
+    ids.map(async (id): Promise<[string, Summary]> => [id, await summarizeRows(id, eventsById.get(id) || [])])
+  );
+  return new Map(entries);
 }
 
 function hasOnlyFirstPageRecentFilters(filters: SpineCorrelationFilters): boolean {
@@ -1030,10 +1087,7 @@ async function listRecentCorrelationAggregates(
     .sort(compareSummaryRows);
 }
 
-export async function postgresEmitSpineEvent(input: SpineEventInput = {}): Promise<SpineEventRecord | null> {
-  const event = normalize(input);
-  const result = await postgresQuery<SpineEventRow>(
-    `INSERT INTO spine_events (
+const SPINE_INSERT_EVENT_SQL = `INSERT INTO spine_events (
        event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
        actor_type, actor_id, subject_type, subject_id, object_type, object_id,
        status, request_id, grant_id, run_id, source_kind, source_id, client_id, stream_id,
@@ -1044,36 +1098,68 @@ export async function postgresEmitSpineEvent(input: SpineEventInput = {}): Promi
        $13, $14, $15, $16, $17, $18, $19, $20,
        $21, $22, $23, $24::jsonb, $25
      )
-     RETURNING *`,
-    [
-      event.event_id,
-      event.event_type,
-      event.occurred_at,
-      event.recorded_at,
-      event.scenario_id,
-      event.trace_id,
-      event.actor_type,
-      event.actor_id,
-      event.subject_type,
-      event.subject_id,
-      event.object_type,
-      event.object_id,
-      event.status,
-      event.request_id,
-      event.grant_id,
-      event.run_id,
-      event.source_kind,
-      event.source_id,
-      event.client_id,
-      event.stream_id,
-      event.token_id,
-      event.interaction_id,
-      event.connector_instance_id,
-      event.data_json,
-      event.version,
-    ]
-  );
-  return hydrate(result.rows[0]);
+     RETURNING *`;
+
+function spineInsertEventParams(event: NormalizedSpineEvent): unknown[] {
+  return [
+    event.event_id,
+    event.event_type,
+    event.occurred_at,
+    event.recorded_at,
+    event.scenario_id,
+    event.trace_id,
+    event.actor_type,
+    event.actor_id,
+    event.subject_type,
+    event.subject_id,
+    event.object_type,
+    event.object_id,
+    event.status,
+    event.request_id,
+    event.grant_id,
+    event.run_id,
+    event.source_kind,
+    event.source_id,
+    event.client_id,
+    event.stream_id,
+    event.token_id,
+    event.interaction_id,
+    event.connector_instance_id,
+    event.data_json,
+    event.version,
+  ];
+}
+
+function toRunHistorySpineEvent(event: NormalizedSpineEvent, rawData: unknown): RunHistorySpineEvent {
+  const data =
+    rawData && typeof rawData === "object" && !Array.isArray(rawData) ? (rawData as Record<string, unknown>) : {};
+  return {
+    connectorId: event.source_kind === "connector" ? event.source_id : null,
+    connectorInstanceId: event.connector_instance_id,
+    data,
+    eventType: event.event_type,
+    occurredAt: event.occurred_at,
+    runId: event.run_id,
+    status: event.status,
+  };
+}
+
+export async function postgresEmitSpineEvent(input: SpineEventInput = {}): Promise<SpineEventRecord | null> {
+  const event = normalize(input);
+
+  if (!isRunHistoryRelevantEventType(event.event_type)) {
+    const result = await postgresQuery<SpineEventRow>(SPINE_INSERT_EVENT_SQL, spineInsertEventParams(event));
+    return hydrate(result.rows[0]);
+  }
+
+  // Run/terminal events also write run_history (Authority Slice A): wrap
+  // both writes in one transaction so the spine event and its run-history
+  // row cannot diverge. See server/stores/run-history-writer.ts.
+  return withPostgresTransaction(async (client) => {
+    const result = await client.query<SpineEventRow>(SPINE_INSERT_EVENT_SQL, spineInsertEventParams(event));
+    await writePostgresRunHistoryForSpineEvent(client, toRunHistorySpineEvent(event, input.data));
+    return hydrate(result.rows[0]);
+  });
 }
 
 export async function postgresListSpineEventsPage(
@@ -1325,6 +1411,78 @@ export async function postgresListSpineCorrelations(
     nextCursor: hasMore ? encodeSummaryCursor(summaries.at(-1)) : null,
     summaries,
   };
+}
+
+/**
+ * Page-scoped connector run hydration.  This is deliberately not another
+ * public correlation-list shape: the caller has already selected an exact
+ * connector-summary identity page, and needs the same bounded run candidates
+ * for each of those connector ids.  One partitioned aggregate replaces the
+ * old one-list-query-per-connector pattern; `fetchRowsForSummaries` retains
+ * the established head/tail/terminal event windows for every selected run.
+ */
+export async function postgresListRunSummariesByConnectorIds(
+  connectorIds: readonly string[],
+  status: string | null
+): Promise<Map<string, Summary[]>> {
+  const ids = [...new Set(connectorIds.filter((id) => typeof id === "string" && id.length > 0))];
+  const byConnector = new Map<string, Summary[]>(ids.map((id) => [id, []]));
+  if (ids.length === 0) {
+    return byConnector;
+  }
+  // Mirrors postgresListSpineCorrelations: fetch its 64-row page plus one
+  // lookahead candidate for EACH requested status before projecting it.
+  const limit = 65;
+  const aggregates = await postgresQuery<CorrelationAggregateRow & { readonly source_id: string }>(
+    `WITH candidate_runs AS (
+       SELECT DISTINCT run_id
+       FROM spine_events
+       WHERE run_id IS NOT NULL AND source_kind = 'connector' AND source_id = ANY($1)
+     ), latest_terminal AS (
+       SELECT DISTINCT ON (terminal.run_id) terminal.run_id, terminal.status
+       FROM spine_events terminal
+       INNER JOIN candidate_runs candidate ON candidate.run_id = terminal.run_id
+       WHERE terminal.event_type = ANY($2::text[])
+       ORDER BY terminal.run_id, terminal.occurred_at DESC, terminal.event_seq DESC
+     ), grouped AS (
+       SELECT event.source_id, event.run_id AS id, MIN(event.occurred_at) AS first_at, MAX(event.occurred_at) AS last_at, COUNT(*)::int AS event_count
+       FROM spine_events event
+       LEFT JOIN latest_terminal terminal ON terminal.run_id = event.run_id
+       WHERE event.run_id IS NOT NULL
+         AND event.source_kind = 'connector'
+         AND event.source_id = ANY($1)
+         AND ($3::text IS NULL OR terminal.status = $3)
+       GROUP BY event.source_id, event.run_id
+     ), ranked AS (
+       SELECT *, ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY last_at DESC, id ASC) AS rn
+       FROM grouped
+     )
+     SELECT source_id, id, first_at, last_at, event_count
+     FROM ranked
+     WHERE rn <= $4
+     ORDER BY source_id ASC, last_at DESC, id ASC`,
+    [ids, RUN_TERMINAL_EVENT_TYPE_LIST, status, limit]
+  );
+  const eventsById = await fetchRowsForSummaries(
+    "run",
+    "run_id",
+    aggregates.rows.map((row) => row.id)
+  );
+  const summaries = await Promise.all(
+    aggregates.rows.map(async (row) => ({
+      sourceId: row.source_id,
+      summary: await summarizeRows(row.id, eventsById.get(row.id) || [], row),
+    }))
+  );
+  for (const { sourceId, summary } of summaries) {
+    if (status === null || summary.status === status) {
+      const bucket = byConnector.get(sourceId);
+      if (bucket && bucket.length < 64) {
+        bucket.push(summary);
+      }
+    }
+  }
+  return byConnector;
 }
 
 interface SearchExactRow {

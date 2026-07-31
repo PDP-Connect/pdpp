@@ -14,12 +14,13 @@
 
 // biome-ignore lint/correctness/noUnresolvedImports: Biome cannot resolve this installed package export; Node and TypeScript resolve it.
 import type { BrowserSurface, BrowserSurfaceLease } from "@opendatalabs/remote-surface/leases";
-import { allowUnboundedReadAcknowledged, getOne, iterateDynamicSqlAcknowledged, referenceQueries } from "../lib/db.ts";
+import { allowUnboundedReadAcknowledged, iterateDynamicSqlAcknowledged, referenceQueries } from "../lib/db.ts";
 import { isNullish } from "../lib/nullish.ts";
-import { listSpineCorrelations, type SpineSummary } from "../lib/spine.ts";
+import type { SpineSummary } from "../lib/spine.ts";
 import {
   CONNECTOR_SUMMARY_PAGE_LIMIT_MAX,
   type ConnectorIdentityPageBoundary,
+  type ConnectorSummaryPageProfile,
   decodeConnectorSummaryPageCursor,
   encodeConnectorSummaryPageCursor,
 } from "../operations/ref-connectors-list/pagination.ts";
@@ -174,7 +175,7 @@ import {
 import {
   type ActiveRunRecord,
   getDefaultSchedulerStore,
-  type SchedulerRunHistoryRecord,
+  type ProductRunHistoryRecord,
 } from "./stores/scheduler-store.ts";
 
 // ─── Shared domain types ────────────────────────────────────────────────────
@@ -292,7 +293,12 @@ const NON_PUBLIC_CONNECTOR_ID_PARTS = [
   // any owner-facing source list.
   "pg_lexical_backfill_",
 ];
-const REFERENCE_OWNER_SUBJECT_ID = "owner_local";
+// Exported for the run-history backfill stage
+// (server/stores/run-history-backfill-stage.ts), which applies the legacy
+// connector-wide singleton-attribution rule once, at backfill time, using
+// this same single-owner reference identity — terminal-read-architecture-
+// fable-0730.md §9/R9.2.
+export const REFERENCE_OWNER_SUBJECT_ID = "owner_local";
 
 type Freshness = ReferenceFreshness;
 
@@ -815,6 +821,49 @@ export interface ConnectorSummary {
   readonly total_retained_bytes?: number | null;
 }
 
+/**
+ * Fable ruling (terminal-read-architecture-fable-0730.md §8, R8.1): the
+ * `identity_inventory` profile's pinned field set. Pure connection identity +
+ * stream membership — no health, evidence-component, run, schedule, or
+ * runtime field. `streams` is the evidence-row's declared∪observed union
+ * (R8.2), read as stored, never re-derived from record tables. `toConnectionFacet`
+ * (`explore-data-assembler.ts`) accepts this shape or the full `ConnectorSummary`
+ * interchangeably — both carry the same five identity fields plus `streams`.
+ */
+export interface ConnectorIdentityInventorySummary {
+  readonly connection_id: string;
+  readonly connector_display_name: string;
+  readonly connector_id: string;
+  readonly connector_instance_id: string;
+  readonly display_name: string;
+  /** `"pending"` when no `connector_summary_evidence` row exists yet (declared-only). */
+  readonly membership_state: "complete" | "pending";
+  readonly streams: string[];
+}
+
+/**
+ * `retained_count_summary` profile (design doc add-source-perf-design-agy-
+ * 0730.md; Fable ruling terminal-read-architecture-fable-0730.md §2 R4/R5,
+ * §3 G2/G4 — same one-projection-N-profiles pattern as `identity_inventory`,
+ * R8.1). The pinned field set is exactly Add Source's `existing-sources-by-
+ * connector.ts` consumption: identity + `total_records`/`total_records_state`
+ * (evidence-row canonical count) + `acquisition_coverage.latest_batch`
+ * (owner acquisition provenance) — no health/run/schedule/runtime field, no
+ * `recent_batches` (Add Source renders only the latest batch).
+ */
+export interface ConnectorRetainedCountSummary {
+  readonly acquisition_coverage: { readonly latest_batch: AcquisitionBatchSummary | null } | null;
+  readonly connection_id: string;
+  readonly connector_display_name: string;
+  readonly connector_id: string;
+  readonly connector_instance_id: string;
+  readonly display_name: string;
+  readonly revoked_at: string | null;
+  readonly status: string;
+  readonly total_records: number;
+  readonly total_records_state: "known" | "known_zero" | "unobserved" | "stale" | "unknown";
+}
+
 export interface ConnectorDetail {
   readonly acquisition_coverage: AcquisitionCoverageSummary | null;
   /** See {@link ConnectorSummary.collection_report}. Derived on read on the detail surface too. */
@@ -1036,7 +1085,10 @@ interface SummaryManifestResolution {
  * fields closed (empty streams, no capabilities) rather than crashing or
  * inventing a plausible-looking manifest.
  */
-function resolveSummaryManifest(raw: string): SummaryManifestResolution {
+// Exported for the run-history backfill stage's legacy connector-wide
+// singleton-attribution rule (needs the same manifest-visibility check
+// `listConnectorSummaryPage`'s activeVisibleConnectionCount uses).
+export function resolveSummaryManifest(raw: string): SummaryManifestResolution {
   try {
     const manifest: unknown = JSON.parse(raw);
     if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
@@ -1060,56 +1112,6 @@ function buildFreshness(lastUpdated: string | null = null): Freshness {
   return deriveReferenceFreshness({ recordLastUpdatedAt: lastUpdated });
 }
 
-interface RunTerminalEventRow {
-  readonly data_json: string | null;
-  readonly event_type: string;
-  readonly occurred_at: string;
-  readonly status: string;
-}
-
-/**
- * Read a run's terminal-event payload (the `run.completed` / `run.failed` /
- * `run.browser_surface_failed` / `run.cancelled` spine event) without scanning the run's full event list. The
- * single SQL lookup is bounded by the SQL `LIMIT 1` clause; for runs without a
- * terminal event yet (still in progress, or controller_restarted), returns
- * `null`.
- *
- * This is the single read both `known_gaps` and the runtime `collection_facts`
- * block (the Tranche B per-stream fact block) ride on, so the projection reads
- * the terminal payload once rather than issuing two spine queries.
- */
-async function readRunTerminalEventData(runId: string): Promise<Record<string, unknown> | null> {
-  const row = isPostgresStorageBackend()
-    ? ((
-        await postgresQuery(
-          `SELECT data_json::text AS data_json, event_type, occurred_at, status
-         FROM spine_events
-         WHERE run_id = $1
-           AND (event_type = 'run.completed'
-                OR event_type = 'run.failed'
-                OR event_type = 'run.browser_surface_failed'
-                OR event_type = 'run.cancelled')
-         ORDER BY event_seq DESC
-         LIMIT 1`,
-          [runId]
-        )
-      ).rows[0] as RunTerminalEventRow | undefined)
-    : getOne<RunTerminalEventRow>(referenceQueries.spineGetRunTerminalEvent, [runId]);
-  if (!row?.data_json) {
-    return null;
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(row.data_json);
-  } catch {
-    return null;
-  }
-  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-    return parsed as Record<string, unknown>;
-  }
-  return null;
-}
-
 function readKnownGapsFromTerminalData(data: Record<string, unknown> | null): unknown[] {
   if (data && Array.isArray(data.known_gaps)) {
     return data.known_gaps;
@@ -1118,115 +1120,79 @@ function readKnownGapsFromTerminalData(data: Record<string, unknown> | null): un
 }
 
 /**
- * Read the latest adaptive collection rate controller snapshot for a run.
- *
- * For completed runs the snapshot is stamped on the terminal event by the
- * runtime (`buildRunTerminalData`), so we read it from there with no extra
- * query. For in-progress runs (no terminal event yet) we fall back to the
- * most recent `run.progress_reported` spine event that carries a
- * `collection_rate` payload. Returns `null` when no rate evidence exists
- * (controller never fired a rate-change transition, or the run predates the
- * adaptive rate controller).
+ * Read the latest adaptive collection rate controller snapshot for a run,
+ * from the already-loaded `run_history.facts_json` — never a spine read
+ * (G1). Covers both a terminal row (the rate snapshot is stamped on the
+ * terminal event by the runtime, `buildRunTerminalData`) and a still-
+ * `running` row: `run.progress_reported` merges `collection_rate` into
+ * the running row's `facts_json` at write time
+ * (`run-history-writer.ts`'s `RUN_PROGRESS_EVENT_TYPE` branch), so both
+ * cases are the same read. Returns `null` when no rate evidence exists
+ * (controller never fired a rate-change transition, or the run predates
+ * the adaptive rate controller).
  */
-async function readLatestCollectionRateForRun(
-  runId: string,
-  terminalData: Record<string, unknown> | null
-): Promise<CollectionRateSnapshot | null> {
-  // Fast path: terminal event already carries the final rate snapshot.
-  if (!isNullish(terminalData)) {
-    return parseCollectionRatePayload(terminalData.collection_rate);
-  }
-  // Slow path: run still in progress — query the latest progress event.
-  const row = isPostgresStorageBackend()
-    ? ((
-        await postgresQuery(
-          `SELECT data_json::text AS data_json
-           FROM spine_events
-           WHERE run_id = $1
-             AND event_type = 'run.progress_reported'
-             AND data_json::jsonb ? 'collection_rate'
-           ORDER BY event_seq DESC
-           LIMIT 1`,
-          [runId]
-        )
-      ).rows[0] as { data_json?: string } | undefined)
-    : getOne<{ data_json?: string }>(referenceQueries.spineGetRunLatestCollectionRateEvent, [runId]);
-  if (!row?.data_json) {
+function readLatestCollectionRateForRun(facts: Record<string, unknown> | null): CollectionRateSnapshot | null {
+  if (isNullish(facts)) {
     return null;
   }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(row.data_json);
-  } catch {
-    return null;
-  }
-  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-    return parseCollectionRatePayload((parsed as Record<string, unknown>).collection_rate);
-  }
-  return null;
-}
-
-async function toConnectorRunSummary(summary: SpineSummary | null): Promise<ConnectorRunSummary | null> {
-  if (!summary) {
-    return null;
-  }
-  const runId = summary.id || summary.run_id || null;
-  const terminalData = runId ? await readRunTerminalEventData(runId) : null;
-  const terminalReason =
-    terminalData && typeof terminalData.reason === "string" && terminalData.reason.length > 0
-      ? terminalData.reason
-      : null;
-  const browserSurfaceFailureReason =
-    summary.status === "surface_failed"
-      ? summary.browser_surface_wait_reason || summary.browser_surface_status || "browser_surface_failed"
-      : null;
-  return {
-    collection_facts: readCollectionFactsFromTerminalData(terminalData),
-    event_count: summary.event_count,
-    failure_reason: summary.failure?.reason || browserSurfaceFailureReason,
-    finished_at: isActiveRunSummaryStatus(summary.status) ? null : summary.last_at,
-    first_at: summary.first_at,
-    known_gaps: readKnownGapsFromTerminalData(terminalData),
-    last_at: summary.last_at,
-    recovery_only: terminalData?.recovery_only === true,
-    run_id: runId || undefined,
-    started_at: summary.first_at,
-    status: summary.status,
-    terminal_reason: terminalReason,
-  };
-}
-
-async function schedulerRunHistoryToConnectorRunSummary(
-  history: SchedulerRunHistoryRecord | null
-): Promise<ConnectorRunSummary | null> {
-  if (!history) {
-    return null;
-  }
-  const runId = history.runId || null;
-  const terminalData = runId ? await readRunTerminalEventData(runId) : null;
-  const terminalReason =
-    terminalData && typeof terminalData.reason === "string" && terminalData.reason.length > 0
-      ? terminalData.reason
-      : (history.terminalReason ?? null);
-  const terminalKnownGaps = readKnownGapsFromTerminalData(terminalData);
-  return {
-    collection_facts: readCollectionFactsFromTerminalData(terminalData),
-    event_count: 0,
-    failure_reason: history.failureReason ?? history.error ?? null,
-    finished_at: history.completedAt,
-    first_at: history.startedAt,
-    known_gaps: terminalKnownGaps.length > 0 ? terminalKnownGaps : [...history.knownGaps],
-    last_at: history.completedAt,
-    recovery_only: terminalData?.recovery_only === true,
-    run_id: runId || undefined,
-    started_at: history.startedAt,
-    status: history.status,
-    terminal_reason: terminalReason,
-  };
+  return parseCollectionRatePayload(facts.collection_rate);
 }
 
 function isActiveRunSummaryStatus(status: string): boolean {
   return status === "pending" || status === "started" || status === "in_progress";
+}
+
+/**
+ * Product LIST/detail composition (terminal-read-architecture-fable-0730.md
+ * §9/R9.2): a `run_history` row for ANY run kind, composed with the
+ * page-scoped active-run/lease overlay. No spine read — `facts_json`
+ * (written by the generalized writer and the backfill stage) already
+ * carries `collection_facts`/`known_gaps`/`recovery_only`, so this never
+ * calls `readRunTerminalEventData`. Read-time synthesis rule is exactly
+ * R7.2/R9.2's, using the EXISTING `summarizeEvents` status vocabulary
+ * (`in_progress` / `failed` — never a new enum):
+ *   row `running` + live lease  -> `in_progress`
+ *   row `running` + no lease    -> `failed` (orphaned; same as the old
+ *                                  fold's `pickSummaryStatus` outcome for
+ *                                  a `run.started`-only window with no
+ *                                  active lease)
+ *   terminal row                -> stored status, unchanged
+ */
+function productRunHistoryToConnectorRunSummary(
+  history: ProductRunHistoryRecord | null,
+  activeRun: ActiveRunRecord | null
+): ConnectorRunSummary | null {
+  if (!history) {
+    return null;
+  }
+  const facts = history.factsJson ?? null;
+  const isLive = Boolean(activeRun && history.runId && activeRun.run_id === history.runId);
+  let status: string = history.status;
+  if (status === "running") {
+    status = isLive ? "in_progress" : "failed";
+  }
+  const terminalKnownGaps = readKnownGapsFromTerminalData(facts);
+  // Browser-surface acquisition fails before the connector executor can emit
+  // a conventional failure reason. Its canonical terminal event stores the
+  // operational reason in the bounded browser-surface facts instead.
+  const browserSurfaceFailureReason =
+    facts?.browser_surface_status === "surface_failed" && typeof facts.browser_surface_wait_reason === "string"
+      ? facts.browser_surface_wait_reason
+      : null;
+  return {
+    collection_facts: readCollectionFactsFromTerminalData(facts),
+    event_count: 0,
+    failure_reason: history.failureReason ?? history.error ?? browserSurfaceFailureReason,
+    finished_at: isActiveRunSummaryStatus(status) ? null : history.completedAt,
+    first_at: history.startedAt,
+    known_gaps: terminalKnownGaps.length > 0 ? terminalKnownGaps : [...history.knownGaps],
+    last_at: isActiveRunSummaryStatus(status) ? history.startedAt : history.completedAt,
+    recovery_only: facts?.recovery_only === true,
+    run_id: history.runId || undefined,
+    started_at: history.startedAt,
+    status,
+    terminal_reason: history.terminalReason ?? null,
+  };
 }
 
 function runSummaryMatchesConnection(
@@ -1265,46 +1231,6 @@ export function canUseConnectorWideRunSummaryFallback(input: {
   // visible connection for that connector type, the connector-wide run is the
   // only honest source of last-run/freshness evidence for that row.
   return true;
-}
-
-async function getLatestRunSummaryForConnection({
-  activeVisibleConnectionCount,
-  browserSurfaceProfileKey,
-  connectorId,
-  connectorInstanceId,
-  getLatestRunHistoryForConnection,
-  listRunSummariesForConnector,
-  status = null,
-}: {
-  readonly activeVisibleConnectionCount: number;
-  readonly browserSurfaceProfileKey: string | null;
-  readonly connectorId: string;
-  readonly connectorInstanceId: string;
-  readonly getLatestRunHistoryForConnection: ConnectorSummaryProjectionDeps["getLatestRunHistoryForConnection"];
-  readonly listRunSummariesForConnector: ConnectorSummaryProjectionDeps["listRunSummariesForConnector"];
-  readonly status?: string | null;
-}): Promise<ConnectorRunSummary | null> {
-  const summaries = await listRunSummariesForConnector(connectorId, status);
-  const match = summaries.find((summary) =>
-    runSummaryMatchesConnection(summary, connectorInstanceId, browserSurfaceProfileKey)
-  );
-  if (match) {
-    return toConnectorRunSummary(match);
-  }
-  const schedulerHistory = await getLatestRunHistoryForConnection(connectorInstanceId, status);
-  if (schedulerHistory) {
-    return schedulerRunHistoryToConnectorRunSummary(schedulerHistory);
-  }
-  const fallback =
-    summaries.find((summary) =>
-      canUseConnectorWideRunSummaryFallback({
-        activeVisibleConnectionCount,
-        browserSurfaceProfileKey,
-        connectorInstanceId,
-        summary,
-      })
-    ) ?? null;
-  return toConnectorRunSummary(fallback);
 }
 
 // A connection's retained-size projection is reliable evidence for synthesizing
@@ -1710,7 +1636,9 @@ function buildStreamSummary(
   };
 }
 
-async function listRegisteredConnectorRows(): Promise<readonly ConnectorRow[]> {
+// Exported for the run-history backfill stage's legacy connector-wide
+// singleton-attribution rule (see REFERENCE_OWNER_SUBJECT_ID above).
+export async function listRegisteredConnectorRows(): Promise<readonly ConnectorRow[]> {
   if (isPostgresStorageBackend()) {
     const result = await postgresQuery(
       `SELECT connector_id, manifest::text AS manifest
@@ -1723,7 +1651,9 @@ async function listRegisteredConnectorRows(): Promise<readonly ConnectorRow[]> {
   return allowUnboundedReadAcknowledged<ConnectorRow>(referenceQueries.listRegisteredConnectors);
 }
 
-function getConnectorInstanceStore() {
+// Exported for the run-history backfill stage's legacy connector-wide
+// singleton-attribution rule.
+export function getConnectorInstanceStore() {
   return isPostgresStorageBackend() ? createPostgresConnectorInstanceStore() : createSqliteConnectorInstanceStore();
 }
 
@@ -1893,7 +1823,11 @@ export async function listOwnerVisibleConnectorInstancePage(
     after = null,
     limit,
     connectorId = null,
-  }: { after?: ConnectorIdentityPageBoundary | null; limit: number; connectorId?: string | null }
+  }: {
+    after?: ConnectorIdentityPageBoundary | null;
+    limit: number;
+    connectorId?: string | readonly string[] | null;
+  }
 ): Promise<{ readonly hasMore: boolean; readonly rows: readonly ConnectorInstanceRow[] }> {
   return await getConnectorInstanceStore().listOwnerVisibleIdentityPage(ownerSubjectId, { after, connectorId, limit });
 }
@@ -4597,21 +4531,35 @@ interface ConnectorSummaryProjectionDeps {
    * identically to "no evidence row exists yet" (design.md task 5.4).
    */
   readonly evidenceReadFailed: boolean;
-  readonly getLatestRunHistoryForConnection: (
+  /**
+   * Product LIST/detail run facts for ONE connection — the newest
+   * `run_history` row of every kind (no `scheduler_managed` scope, no
+   * spine fallback), composed with the page-scoped active-run/lease
+   * overlay via `productRunHistoryToConnectorRunSummary`.
+   * terminal-read-architecture-fable-0730.md §9/R9.2; replaces the R7
+   * transitional `getLatestRunHistoryForConnection` +
+   * `listRunSummariesForConnector` spine-first composition.
+   */
+  readonly getLatestRunSummaryForConnectionId: (
     connectorInstanceId: string,
     status?: string | null
-  ) => Promise<SchedulerRunHistoryRecord | null>;
+  ) => Promise<ConnectorRunSummary | null>;
   readonly includeRunSummaries: ConnectorRunSummaryInclusion;
+  /**
+   * `run_history.facts_json` for a run_id, keyed from the SAME batched
+   * `run_history` read `getLatestRunSummaryForConnectionId` already
+   * performed — zero new reads. `readLatestCollectionRateForRun` sources
+   * `collection_rate` from here for both a terminal and a still-running
+   * row (the latter merged in at `run.progress_reported` write time by
+   * `run-history-writer.ts`) — never a per-run spine read (G1).
+   */
+  readonly latestRunFactsJsonByRunId: ReadonlyMap<string, Record<string, unknown> | null>;
   /**
    * Durable per-stream latest-attempt evidence per connection, read from the
    * connector-summary read model in ONE batched query for the whole list
    * render — never per-connection history walking on the hot path.
    */
   readonly latestStreamFactsByInstanceId: ReadonlyMap<string, ReadonlyMap<string, LatestStreamFactRecord>>;
-  readonly listRunSummariesForConnector: (
-    connectorId: string,
-    status?: string | null
-  ) => Promise<readonly SpineSummary[]>;
   /**
    * The parse-layer result for each connector's manifest (design.md
    * "Orthogonal projection evidence" — manifest_declaration is independent
@@ -4680,22 +4628,6 @@ function shouldHydrateRunSummariesForInstance(
   // `connector_instance_id` / browser-profile matches for multi-account
   // connectors and render them as indefinitely "checking".
   return instance.status === "active";
-}
-
-function createConnectorRunSummariesReader(): ConnectorSummaryProjectionDeps["listRunSummariesForConnector"] {
-  const cache = new Map<string, Promise<readonly SpineSummary[]>>();
-  return (connectorId, status = null) => {
-    const key = `${connectorId}\n${status ?? ""}`;
-    let promise = cache.get(key);
-    if (!promise) {
-      const filters = status
-        ? { limit: 64, sourceId: connectorId, sourceKind: "connector", status }
-        : { limit: 64, sourceId: connectorId, sourceKind: "connector" };
-      promise = listSpineCorrelations("run", filters).then((page) => page.summaries);
-      cache.set(key, promise);
-    }
-    return promise;
-  };
 }
 
 function groupRetainedSizeRowsByInstance(
@@ -5328,8 +5260,7 @@ async function projectConnectorSummaryForInstance(
   const {
     activeRunsByInstanceId,
     controller,
-    getLatestRunHistoryForConnection,
-    listRunSummariesForConnector,
+    getLatestRunSummaryForConnectionId,
     manifestsByConnectorId,
     manifestDeclarationByConnectorId,
     pageProductEvidence,
@@ -5444,27 +5375,8 @@ async function projectConnectorSummaryForInstance(
     credentialMetadata,
   ] = await Promise.all([
     schedulePromise,
-    hydrateRunSummaries
-      ? getLatestRunSummaryForConnection({
-          activeVisibleConnectionCount,
-          browserSurfaceProfileKey,
-          connectorId,
-          connectorInstanceId,
-          getLatestRunHistoryForConnection,
-          listRunSummariesForConnector,
-        })
-      : Promise.resolve(null),
-    hydrateRunSummaries
-      ? getLatestRunSummaryForConnection({
-          activeVisibleConnectionCount,
-          browserSurfaceProfileKey,
-          connectorId,
-          connectorInstanceId,
-          getLatestRunHistoryForConnection,
-          listRunSummariesForConnector,
-          status: "succeeded",
-        })
-      : Promise.resolve(null),
+    hydrateRunSummaries ? getLatestRunSummaryForConnectionId(connectorInstanceId) : Promise.resolve(null),
+    hydrateRunSummaries ? getLatestRunSummaryForConnectionId(connectorInstanceId, "succeeded") : Promise.resolve(null),
     pageProductEvidence
       ? Promise.resolve(
           pageProductEvidence.detailGapsByInstanceId?.get(connectorInstanceId) ?? {
@@ -5536,15 +5448,15 @@ async function projectConnectorSummaryForInstance(
         remoteSurface: remoteSurface.evidence,
       });
   const refreshPolicy = extractRefreshPolicy(manifest);
-  // Adaptive rate controller snapshot: read from the latest run's terminal
-  // event (fast path) or its most recent rate-change progress event (in-
-  // progress run). `null` when no controller has fired for this connection.
+  // Adaptive rate controller snapshot: read from the latest run's
+  // already-loaded `run_history.facts_json` — no spine read, R9.2/G1.
+  // `run.progress_reported` merges `collection_rate` into a still-running
+  // row's `facts_json` at write time, so this single read covers both a
+  // terminal and an in-progress run. `null` when no controller has fired
+  // for this connection.
   const collectionRate =
     !localDeviceBacked && lastRun?.run_id
-      ? await readLatestCollectionRateForRun(
-          lastRun.run_id,
-          lastRun.status === "pending" ? null : await readRunTerminalEventData(lastRun.run_id)
-        )
+      ? readLatestCollectionRateForRun(deps.latestRunFactsJsonByRunId.get(lastRun.run_id) ?? null)
       : null;
   return synthesizeConnectorSummary({
     acquisitionCoverage,
@@ -5600,6 +5512,63 @@ async function readSummaryEvidenceRowsOrFailure(connectorInstanceIds: readonly s
   }
 }
 
+// R9.2 composition, extracted out of loadConnectorSummaryProjectionDeps's
+// returned closure to keep that function's cognitive complexity bounded.
+// Page-batch hit is the common case; the per-connection fallback (used
+// only when the caller did not pre-load a page batch — e.g. an unscoped
+// call) also records its own facts_json into the shared map so a later
+// `readLatestCollectionRateForRun` lookup for this run_id still avoids a
+// spine read.
+function resolveLatestRunSummaryForConnectionId({
+  activeRunsByInstanceId,
+  connectorInstanceId,
+  latestRunFactsJsonByRunId,
+  latestRunHistoryByInstanceId,
+  latestSuccessfulRunHistoryByInstanceId,
+  schedulerStore,
+  status,
+}: {
+  readonly activeRunsByInstanceId: ReadonlyMap<string, ActiveRunRecord>;
+  readonly connectorInstanceId: string;
+  readonly latestRunFactsJsonByRunId: Map<string, Record<string, unknown> | null>;
+  readonly latestRunHistoryByInstanceId: ReadonlyMap<string, ProductRunHistoryRecord> | null;
+  readonly latestSuccessfulRunHistoryByInstanceId: ReadonlyMap<string, ProductRunHistoryRecord> | null;
+  readonly schedulerStore: ReturnType<typeof getDefaultSchedulerStore>;
+  readonly status: string | null;
+}): Promise<ConnectorRunSummary | null> {
+  const batched = status === "succeeded" ? latestSuccessfulRunHistoryByInstanceId : latestRunHistoryByInstanceId;
+  const activeRun = activeRunsByInstanceId.get(connectorInstanceId) ?? null;
+  if (batched !== null) {
+    // The batch already covers exactly this render's connection scope —
+    // a miss here is a genuine "no run history for this connection", not
+    // a reason to fall back to a live per-connection read.
+    return Promise.resolve(productRunHistoryToConnectorRunSummary(batched.get(connectorInstanceId) ?? null, activeRun));
+  }
+  return Promise.resolve(schedulerStore.getLatestRunHistoryForProductByConnectionId?.(connectorInstanceId, status))
+    .then((history) => {
+      if (history?.runId) {
+        latestRunFactsJsonByRunId.set(history.runId, history.factsJson ?? null);
+      }
+      return productRunHistoryToConnectorRunSummary(history ?? null, activeRun);
+    })
+    .catch(() => null);
+}
+
+function indexProductRunHistoryByInstanceId(
+  rows: readonly ProductRunHistoryRecord[] | null
+): ReadonlyMap<string, ProductRunHistoryRecord> | null {
+  if (rows === null) {
+    return null;
+  }
+  return new Map(
+    rows
+      .filter((row): row is ProductRunHistoryRecord & { connectorInstanceId: string } =>
+        Boolean(row.connectorInstanceId)
+      )
+      .map((row) => [row.connectorInstanceId, row])
+  );
+}
+
 async function loadConnectorSummaryProjectionDeps(
   controller?: ControllerLike | null,
   options: {
@@ -5616,6 +5585,9 @@ async function loadConnectorSummaryProjectionDeps(
      * option.
      */
     readonly connectorInstanceIds?: readonly string[] | null;
+    /** Connector ids belonging to the exact identity page.  Run correlation
+     * hydration is one bounded page-scoped map, never a per-row fallback. */
+    readonly connectorIds?: readonly string[];
   } = {}
 ): Promise<ConnectorSummaryProjectionDeps> {
   const schedulerStore = getDefaultSchedulerStore();
@@ -5634,16 +5606,11 @@ async function loadConnectorSummaryProjectionDeps(
   // than force-repaired inline. `evidenceReadFailed` and each evidence row's
   // own `state`/`dirty` fields already carry that honesty through to the
   // projection unchanged — nothing here fabricates freshness.
-  // Perf-2026-07-29: `getLatestRunSummaryForConnection`'s scheduler-history
-  // fallback previously called `schedulerStore.getLatestRunHistoryForConnection`
-  // once per connection per status (last-attempt + last-successful = 2 calls
-  // per connection). `listLatestRunHistoryByConnectionIds` already exists on
-  // both backends (added alongside the other page-scoped batch readers) but
-  // was never wired to this shared loader. Batching it here, keyed by
-  // `connectorInstanceId`, fixes the identical per-connection cost in every
-  // caller of this function — the unscoped list, the paginated list, and the
-  // two scoped single-connection routes alike (a batch of size 1 costs the
-  // same as the single-connection call it replaces).
+  // R9.2 cutover (terminal-read-architecture-fable-0730.md §9): product run
+  // facts come from ONE batched `run_history` read per status — no
+  // `scheduler_managed` scope, no spine read/fallback — composed with the
+  // page-scoped active-run/lease overlay already loaded below. Replaces the
+  // R7 transitional two-tier (scheduler-history-then-spine) composition.
   // Terminal-gate revision (2026-07-29): `getScheduleFrom`'s live per-
   // connection fallback (`controller.getSchedule(connectorId, ...)`) fired
   // once per non-local-device connection whenever `schedulesByInstanceId`
@@ -5679,38 +5646,31 @@ async function loadConnectorSummaryProjectionDeps(
     // closed downstream via `evidenceReadFailed`), never to a projection
     // error.
     readSummaryEvidenceRowsOrFailure(options.connectorInstanceIds ?? null),
-    runHistoryScopeIds && typeof schedulerStore.listLatestRunHistoryByConnectionIds === "function"
-      ? Promise.resolve(schedulerStore.listLatestRunHistoryByConnectionIds(runHistoryScopeIds, null)).catch(() => null)
-      : Promise.resolve(null),
-    runHistoryScopeIds && typeof schedulerStore.listLatestRunHistoryByConnectionIds === "function"
-      ? Promise.resolve(schedulerStore.listLatestRunHistoryByConnectionIds(runHistoryScopeIds, "succeeded")).catch(
+    runHistoryScopeIds && typeof schedulerStore.listLatestRunHistoryForProductByConnectionIds === "function"
+      ? Promise.resolve(schedulerStore.listLatestRunHistoryForProductByConnectionIds(runHistoryScopeIds, null)).catch(
           () => null
         )
+      : Promise.resolve(null),
+    runHistoryScopeIds && typeof schedulerStore.listLatestRunHistoryForProductByConnectionIds === "function"
+      ? Promise.resolve(
+          schedulerStore.listLatestRunHistoryForProductByConnectionIds(runHistoryScopeIds, "succeeded")
+        ).catch(() => null)
       : Promise.resolve(null),
     runHistoryScopeIds && typeof controller?.listSchedulesForConnections === "function"
       ? Promise.resolve(controller.listSchedulesForConnections(runHistoryScopeIds)).catch(() => null)
       : Promise.resolve(null),
   ]);
-  const latestRunHistoryByInstanceId =
-    latestRunHistoryRows === null
-      ? null
-      : new Map(
-          latestRunHistoryRows
-            .filter((row): row is SchedulerRunHistoryRecord & { connectorInstanceId: string } =>
-              Boolean(row.connectorInstanceId)
-            )
-            .map((row) => [row.connectorInstanceId, row])
-        );
-  const latestSuccessfulRunHistoryByInstanceId =
-    latestSuccessfulRunHistoryRows === null
-      ? null
-      : new Map(
-          latestSuccessfulRunHistoryRows
-            .filter((row): row is SchedulerRunHistoryRecord & { connectorInstanceId: string } =>
-              Boolean(row.connectorInstanceId)
-            )
-            .map((row) => [row.connectorInstanceId, row])
-        );
+  const latestRunHistoryByInstanceId = indexProductRunHistoryByInstanceId(latestRunHistoryRows);
+  const latestSuccessfulRunHistoryByInstanceId = indexProductRunHistoryByInstanceId(latestSuccessfulRunHistoryRows);
+  // Populated from the SAME batched rows above (zero new reads); a
+  // singular-fallback lookup (unscoped list census) adds its own entry as
+  // it resolves, below.
+  const latestRunFactsJsonByRunId = new Map<string, Record<string, unknown> | null>();
+  for (const row of [...(latestRunHistoryRows ?? []), ...(latestSuccessfulRunHistoryRows ?? [])]) {
+    if (row.runId) {
+      latestRunFactsJsonByRunId.set(row.runId, row.factsJson ?? null);
+    }
+  }
   const evidenceReadFailed = summaryEvidenceRead.failed;
   // Terminal-gate revision (2026-07-29): this read used to merge an
   // in-memory failure overlay from the (now-removed) inline reconcile call
@@ -5759,21 +5719,19 @@ async function loadConnectorSummaryProjectionDeps(
     controller,
     evidenceByInstanceId,
     evidenceReadFailed,
-    getLatestRunHistoryForConnection: (connectorInstanceId, status = null) => {
-      const batched = status === "succeeded" ? latestSuccessfulRunHistoryByInstanceId : latestRunHistoryByInstanceId;
-      if (batched !== null) {
-        // The batch already covers exactly this render's connection scope —
-        // a miss here is a genuine "no run history for this connection", not
-        // a reason to fall back to a live per-connection read.
-        return Promise.resolve(batched.get(connectorInstanceId) ?? null);
-      }
-      return Promise.resolve(schedulerStore.getLatestRunHistoryForConnection(connectorInstanceId, status)).catch(
-        () => null
-      );
-    },
+    getLatestRunSummaryForConnectionId: (connectorInstanceId, status = null) =>
+      resolveLatestRunSummaryForConnectionId({
+        activeRunsByInstanceId,
+        connectorInstanceId,
+        latestRunFactsJsonByRunId,
+        latestRunHistoryByInstanceId,
+        latestSuccessfulRunHistoryByInstanceId,
+        schedulerStore,
+        status,
+      }),
     includeRunSummaries: options.includeRunSummaries ?? true,
+    latestRunFactsJsonByRunId,
     latestStreamFactsByInstanceId,
-    listRunSummariesForConnector: createConnectorRunSummariesReader(),
     manifestDeclarationByConnectorId,
     manifestsByConnectorId,
     ...(retainedSizeSnapshot ? { retainedSizeSnapshot } : {}),
@@ -5993,6 +5951,152 @@ export function listConnectorSummaries(
 }
 
 /**
+ * Project an already-authorized identity page under the `identity_inventory`
+ * profile (Fable ruling §8, R8.1): pure connection identity + stream
+ * membership, no health/evidence-synthesis/run/schedule/runtime dependency
+ * family. Dependency matrix (R8.1): the identity page (already read by the
+ * caller) + one evidence-row batch + one declared-manifest lookup — exactly
+ * two reads here, three total with the caller's identity-page read, zero
+ * spine/runtime/browser-surface/history, zero writes.
+ *
+ * Membership authority (R8.2): `streams` is the evidence row's stored
+ * declared∪observed union (`stream_records`, excluding `unavailable` entries
+ * which mean "not declared and never observed"), read exactly as stored —
+ * never re-derived from record tables. No evidence row yet (new connection,
+ * pre-sweep) serves declared-only from the manifest with
+ * `membership_state: "pending"`; an evidence row present serves
+ * `membership_state: "complete"` regardless of each entry's own
+ * `declaration_state` (a `dormant`/`unexpected` stream is still an observed,
+ * complete membership fact — never a reason to relabel the whole row pending).
+ */
+async function projectConnectorIdentityInventoryPage(
+  rows: readonly ConnectorInstanceRow[]
+): Promise<readonly ConnectorIdentityInventorySummary[]> {
+  const pageIds = rows.map((row) => row.connectorInstanceId);
+  const [connectorRows, summaryEvidenceRead] = await Promise.all([
+    listRegisteredConnectorRows(),
+    readSummaryEvidenceRowsOrFailure(pageIds),
+  ]);
+  const manifestsByConnectorId = new Map(
+    connectorRows.map((row) => [row.connector_id, resolveSummaryManifest(row.manifest).manifest])
+  );
+  const evidenceByInstanceId = buildEvidenceIndex(summaryEvidenceRead.rows);
+  return rows.flatMap((instance): readonly ConnectorIdentityInventorySummary[] => {
+    const manifest = manifestsByConnectorId.get(instance.connectorId);
+    if (!manifest) {
+      return [];
+    }
+    const connectorDisplayName = manifest.display_name || instance.connectorId;
+    const evidence = evidenceByInstanceId.get(instance.connectorInstanceId) ?? null;
+    const streams = evidence
+      ? [
+          ...new Set(
+            evidence.stream_records
+              .filter((entry) => entry.declaration_state !== "unavailable")
+              .map((entry) => entry.stream)
+          ),
+        ]
+      : (manifest.streams || []).map((stream) => stream.name);
+    return [
+      {
+        connection_id: instance.connectorInstanceId,
+        connector_display_name: connectorDisplayName,
+        connector_id: instance.connectorId,
+        connector_instance_id: instance.connectorInstanceId,
+        display_name: instance.displayName || connectorDisplayName,
+        membership_state: evidence ? "complete" : "pending",
+        streams,
+      },
+    ];
+  });
+}
+
+/**
+ * Project an already-authorized identity page under the `retained_count_summary`
+ * profile (design doc add-source-perf-design-agy-0730.md; Fable ruling
+ * terminal-read-architecture-fable-0730.md R4/R5): identity + the exact three
+ * fields Add Source's existing-sources card renders — `total_records`,
+ * `total_records_state`, and `acquisition_coverage.latest_batch`. Dependency
+ * matrix: the identity page (already read by the caller) + one evidence-row
+ * batch (canonical `total_records`/`record_snapshot.state`) + one
+ * acquisition-batch-store batch (latest batch per instance, `limit: 1`) — the
+ * SAME two page-scoped batch reads `loadPageProductEvidence` already proves
+ * flat per page, minus the other nine families the full profile also loads.
+ * Zero spine/runtime/browser-surface/schedule/run-history, zero writes.
+ *
+ * `total_records`/`total_records_state` mirror `projectConnectorSummaryForInstance`'s
+ * evidence-first derivation exactly (ref-control.ts lines ~5142-5158): when an
+ * evidence row exists, its canonical `total_records` is authoritative and
+ * `total_records_state` is `known`/`known_zero` when the row's
+ * `record_snapshot.state === "current"`, else `stale` (a non-authoritative
+ * carried-over hint); no evidence row yet is `total_records: 0`,
+ * `total_records_state: "unobserved"` — never a fabricated exact zero. This
+ * profile does NOT fall back to the live per-connection record projection the
+ * full profile uses when evidence is absent: that fallback is itself a
+ * per-connection read this profile exists to avoid, and `unobserved` is
+ * already the honest, typed answer for "no evidence yet."
+ */
+// Mirrors `projectConnectorSummaryForInstance`'s evidence-first total_records_state
+// derivation (ref-control.ts lines ~5142-5158) exactly, extracted so
+// `projectConnectorRetainedCountSummaryPage`'s per-row closure stays under the
+// cognitive-complexity budget.
+function deriveRetainedCountState(
+  evidence: ConnectorSummaryEvidenceRow | null,
+  totalRecords: number
+): ConnectorRetainedCountSummary["total_records_state"] {
+  if (!evidence) {
+    return "unobserved";
+  }
+  if (evidence.record_snapshot.state !== "current") {
+    return "stale";
+  }
+  return totalRecords > 0 ? "known" : "known_zero";
+}
+
+async function projectConnectorRetainedCountSummaryPage(
+  rows: readonly ConnectorInstanceRow[]
+): Promise<readonly ConnectorRetainedCountSummary[]> {
+  const pageIds = rows.map((row) => row.connectorInstanceId);
+  const [connectorRows, summaryEvidenceRead, latestBatchByInstanceIdRaw] = await Promise.all([
+    listRegisteredConnectorRows(),
+    readSummaryEvidenceRowsOrFailure(pageIds),
+    Promise.resolve(getAcquisitionBatchStore().listByConnectionIds(pageIds, { limit: 1 })).catch(
+      () => new Map<string, AcquisitionBatchRow[]>()
+    ),
+  ]);
+  const latestBatchByInstanceId = latestBatchByInstanceIdRaw as ReadonlyMap<string, readonly AcquisitionBatchRow[]>;
+  const manifestsByConnectorId = new Map(
+    connectorRows.map((row) => [row.connector_id, resolveSummaryManifest(row.manifest).manifest])
+  );
+  const evidenceByInstanceId = buildEvidenceIndex(summaryEvidenceRead.rows);
+  return rows.flatMap((instance): readonly ConnectorRetainedCountSummary[] => {
+    const manifest = manifestsByConnectorId.get(instance.connectorId);
+    if (!manifest) {
+      return [];
+    }
+    const connectorDisplayName = manifest.display_name || instance.connectorId;
+    const evidence = evidenceByInstanceId.get(instance.connectorInstanceId) ?? null;
+    const totalRecords = evidence ? evidence.total_records : 0;
+    const totalRecordsState = deriveRetainedCountState(evidence, totalRecords);
+    const latestBatch = latestBatchByInstanceId.get(instance.connectorInstanceId)?.[0] ?? null;
+    return [
+      {
+        acquisition_coverage: latestBatch ? { latest_batch: projectAcquisitionBatchSummary(latestBatch) } : null,
+        connection_id: instance.connectorInstanceId,
+        connector_display_name: connectorDisplayName,
+        connector_id: instance.connectorId,
+        connector_instance_id: instance.connectorInstanceId,
+        display_name: instance.displayName || connectorDisplayName,
+        revoked_at: instance.revokedAt ?? null,
+        status: instance.status,
+        total_records: totalRecords,
+        total_records_state: totalRecordsState,
+      },
+    ];
+  });
+}
+
+/**
  * Project an already-authorized identity page. Both the public keyset route
  * and fleet health use this one batch/evidence path; fleet health supplies
  * the exact inventory it already read for its scope rather than querying the
@@ -6014,6 +6118,7 @@ async function projectConnectorSummaryIdentityPage(
   const [pageEvidence, deps, activeConnectionCounts] = await Promise.all([
     loadPageProductEvidence(pageIds),
     loadConnectorSummaryProjectionDeps(controller, {
+      connectorIds: rows.map((row) => row.connectorId),
       connectorInstanceIds: pageIds,
       includeRunSummaries,
     }),
@@ -6056,6 +6161,58 @@ async function projectConnectorSummaryIdentityPage(
  * fact is gathered once through exact-id batch APIs and the page is never put
  * into the rendered-summary cache.
  */
+interface ListConnectorSummaryPageOptions {
+  readonly after?: ConnectorIdentityPageBoundary | null;
+  /**
+   * Optional owner-scoped filter narrowing this SAME keyset page to one
+   * connector's connections, OR a bounded SET of connectors (design doc
+   * add-source-perf-design-agy-0730.md "Minimal contract": 1..100 canonical
+   * distinct ids). Composes with `limit`/`cursor` unconditionally (fixed
+   * query family — see `SQLITE_OWNER_VISIBLE_IDENTITY_PAGE_SQL`/`_SET_SQL`).
+   * Distinct from the `?connection=` exact-connection selector: `connectorId`
+   * still returns a keyset PAGE (0, 1, or many rows across one or more
+   * calls), never a single resolved connection. A cursor issued under one
+   * `connectorId` scope is not valid for a request omitting it, naming a
+   * different connector, or naming a different set — see
+   * `encodeConnectorSummaryPageCursor`'s `connectorId` binding.
+   */
+  readonly connectorId?: string | readonly string[] | null;
+  readonly includeRunSummaries?: ConnectorRunSummaryInclusion;
+  readonly limit: number;
+  readonly ownerSubjectId: string;
+  /**
+   * Named semantic profile (Fable ruling §8). `undefined` = the full
+   * (`detail`-shaped) response, unchanged. `identity_inventory` = R8.1's
+   * pure identity + stream-membership profile. `retained_count_summary` =
+   * R4/R5's identity + total_records/total_records_state/acquisition_coverage
+   * profile for Add Source. Both option-gate which dependency families
+   * load — the same pattern `includeRunSummaries` already establishes, never
+   * a second projection implementation.
+   */
+  readonly profile?: ConnectorSummaryPageProfile;
+}
+
+interface ListConnectorSummaryPageResult<TSummary> {
+  readonly data: readonly TSummary[];
+  readonly has_more: boolean;
+  /** Internal exact identity inventory for callers composing a complete-page
+   * verdict.  It never crosses the route envelope. */
+  readonly inventory: readonly ConnectorInstanceRow[];
+  readonly next_cursor: string | null;
+}
+
+export function listConnectorSummaryPage(
+  controller: ControllerLike | null | undefined,
+  options: ListConnectorSummaryPageOptions & { readonly profile: "identity_inventory" }
+): Promise<ListConnectorSummaryPageResult<ConnectorIdentityInventorySummary>>;
+export function listConnectorSummaryPage(
+  controller: ControllerLike | null | undefined,
+  options: ListConnectorSummaryPageOptions & { readonly profile: "retained_count_summary" }
+): Promise<ListConnectorSummaryPageResult<ConnectorRetainedCountSummary>>;
+export function listConnectorSummaryPage(
+  controller: ControllerLike | null | undefined,
+  options: ListConnectorSummaryPageOptions & { readonly profile?: undefined }
+): Promise<ListConnectorSummaryPageResult<ConnectorSummary>>;
 export async function listConnectorSummaryPage(
   controller: ControllerLike | null | undefined,
   {
@@ -6064,39 +6221,38 @@ export async function listConnectorSummaryPage(
     includeRunSummaries = "singleton-active",
     limit,
     ownerSubjectId,
-  }: {
-    readonly after?: ConnectorIdentityPageBoundary | null;
-    /**
-     * Optional owner-scoped filter narrowing this SAME keyset page to one
-     * connector's connections. Composes with `limit`/`cursor` unconditionally
-     * (fixed query family — see `SQLITE_OWNER_VISIBLE_IDENTITY_PAGE_SQL`'s
-     * `connector_id = ? OR ? IS NULL` clause). Distinct from the `?connection=`
-     * exact-connection selector: `connectorId` still returns a keyset PAGE
-     * (0, 1, or many rows across one or more calls), never a single resolved
-     * connection. A cursor issued under one `connectorId` is not valid for a
-     * request omitting it or naming a different one — see
-     * `encodeConnectorSummaryPageCursor`'s `connectorId` binding.
-     */
-    readonly connectorId?: string | null;
-    readonly includeRunSummaries?: ConnectorRunSummaryInclusion;
-    readonly limit: number;
-    readonly ownerSubjectId: string;
-  }
-): Promise<{
-  readonly data: readonly ConnectorSummary[];
-  readonly has_more: boolean;
-  readonly next_cursor: string | null;
-}> {
+    profile,
+  }: ListConnectorSummaryPageOptions
+): Promise<
+  | ListConnectorSummaryPageResult<ConnectorSummary>
+  | ListConnectorSummaryPageResult<ConnectorIdentityInventorySummary>
+  | ListConnectorSummaryPageResult<ConnectorRetainedCountSummary>
+> {
   const identityPage = await listOwnerVisibleConnectorInstancePage(ownerSubjectId, { after, connectorId, limit });
-  const data = await projectConnectorSummaryIdentityPage(controller, {
-    includeRunSummaries,
-    ownerSubjectId,
-    rows: identityPage.rows,
-  });
+  let data:
+    | readonly ConnectorSummary[]
+    | readonly ConnectorIdentityInventorySummary[]
+    | readonly ConnectorRetainedCountSummary[];
+  if (profile === "identity_inventory") {
+    data = await projectConnectorIdentityInventoryPage(identityPage.rows);
+  } else if (profile === "retained_count_summary") {
+    data = await projectConnectorRetainedCountSummaryPage(identityPage.rows);
+  } else {
+    data = await projectConnectorSummaryIdentityPage(controller, {
+      includeRunSummaries,
+      ownerSubjectId,
+      rows: identityPage.rows,
+    });
+  }
   const last = identityPage.rows.at(-1);
+  // The runtime branch above already guarantees `data`'s element type matches
+  // `profile`; the two-overload public signature exists so callers that omit
+  // `profile` keep inferring the narrow `ConnectorSummary[]` result without a
+  // cast at every existing call site.
   return {
     data,
     has_more: identityPage.hasMore,
+    inventory: identityPage.rows,
     next_cursor:
       identityPage.hasMore && last?.createdAt
         ? encodeConnectorSummaryPageCursor(
@@ -6110,7 +6266,10 @@ export async function listConnectorSummaryPage(
             connectorId
           )
         : null,
-  };
+  } as
+    | ListConnectorSummaryPageResult<ConnectorSummary>
+    | ListConnectorSummaryPageResult<ConnectorIdentityInventorySummary>
+    | ListConnectorSummaryPageResult<ConnectorRetainedCountSummary>;
 }
 
 /**
@@ -6189,13 +6348,37 @@ async function resolveOwnerVisibleConnectionForRoute(routeId: string): Promise<C
 // only that connection. Exact stable connection identity is preferred. Connector
 // id fallback is allowed only when it is unambiguous; otherwise a connector-key
 // route would silently pick the first source and attach sibling evidence to it.
+export function getConnectorSummaryForRoute(
+  routeId: string,
+  controller: ControllerLike | null | undefined,
+  options: { readonly profile: "identity_inventory" }
+): Promise<ConnectorIdentityInventorySummary | null>;
+export function getConnectorSummaryForRoute(
+  routeId: string,
+  controller: ControllerLike | null | undefined,
+  options: { readonly profile: "retained_count_summary" }
+): Promise<ConnectorRetainedCountSummary | null>;
+export function getConnectorSummaryForRoute(
+  routeId: string,
+  controller?: ControllerLike | null,
+  options?: { readonly profile?: ConnectorSummaryPageProfile }
+): Promise<ConnectorSummary | null>;
 export async function getConnectorSummaryForRoute(
   routeId: string,
-  controller?: ControllerLike | null
-): Promise<ConnectorSummary | null> {
+  controller?: ControllerLike | null,
+  options: { readonly profile?: ConnectorSummaryPageProfile } = {}
+): Promise<ConnectorSummary | ConnectorIdentityInventorySummary | ConnectorRetainedCountSummary | null> {
   const { match } = await resolveOwnerVisibleConnectionForRoute(routeId);
   if (match === null) {
     return null;
+  }
+  if (options.profile === "identity_inventory") {
+    const rows = await projectConnectorIdentityInventoryPage([match]);
+    return rows[0] ?? null;
+  }
+  if (options.profile === "retained_count_summary") {
+    const rows = await projectConnectorRetainedCountSummaryPage([match]);
+    return rows[0] ?? null;
   }
   // Scoped to exactly the one resolved connection: by this point the
   // unambiguous match is already known, so the observation barrier must not

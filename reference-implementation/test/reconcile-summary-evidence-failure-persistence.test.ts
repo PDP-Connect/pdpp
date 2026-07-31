@@ -590,7 +590,11 @@ test("probe 3: simultaneous fold failure AND terminal-facts-failed-marker write 
 
     // The maintenance-sweep barrier's own in-memory accounting must still
     // surface the fold failure even though nothing durable reflects it.
-    assert.equal(outcome.failed, 1, "the barrier's own outcome counts the double failure as failed, not silently repaired");
+    assert.equal(
+      outcome.failed,
+      1,
+      "the barrier's own outcome counts the double failure as failed, not silently repaired"
+    );
     assert.ok(
       outcome.failureClasses.includes("terminal_facts"),
       "the failure is attributed to the terminal_facts component, not laundered as some other class"
@@ -684,7 +688,11 @@ test("probe 4: simultaneous discovery failure AND discovery-failed-marker write 
 
     // The maintenance-sweep barrier's own in-memory accounting must still
     // surface the discovery failure even though nothing durable reflects it.
-    assert.equal(outcome.failed, 1, "the barrier's own outcome counts the double failure as failed, not silently repaired");
+    assert.equal(
+      outcome.failed,
+      1,
+      "the barrier's own outcome counts the double failure as failed, not silently repaired"
+    );
 
     // A plain read taken AFTER the fault is removed (discovery restored,
     // trigger dropped) reflects the durable row exactly as it stands —

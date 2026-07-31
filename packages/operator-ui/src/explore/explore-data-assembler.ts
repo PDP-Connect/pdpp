@@ -39,7 +39,7 @@ import {
 } from "../lib/declared-field-roles.ts";
 import { classifyRecordKind, type DeclaredFieldTypes } from "../lib/record-kind.ts";
 import { buildRecordPreview } from "../lib/record-preview.ts";
-import type { ExploreTimelinePage, RefConnectorSummary } from "../lib/ref-client.ts";
+import type { ExploreTimelinePage, RefConnectorIdentitySummary } from "../lib/ref-client.ts";
 import type { RecordsWindowMeta, SearchRecallMeta, SearchResultPage, StreamMetadata } from "../lib/rs-client.ts";
 import {
   lookupSearchTimestampMetadata,
@@ -175,7 +175,17 @@ function parseCursorTrail(value: string | string[] | undefined): string[] {
   return out;
 }
 
-function toConnectionFacet(summary: RefConnectorSummary): ExplorerConnectionFacet {
+/**
+ * Explore's whole connector-summary consumption is the `identity_inventory`
+ * profile's pinned field set (Fable ruling §8, R8.1/R8.4: the facet pager,
+ * exact-selection lookup, and peek path all read only identity + `streams`,
+ * never a health/evidence/run/schedule/runtime field — see the sweep gate
+ * grep in the OpenSpec scenario delta). `toConnectionFacet(identityRow)`
+ * is therefore already provably equal to what it would compute from a full
+ * `ConnectorSummary`/`RefConnectorSummary` row for the same connection: both
+ * carry identical values for every field this function reads.
+ */
+function toConnectionFacet(summary: RefConnectorIdentitySummary): ExplorerConnectionFacet {
   return {
     connectionId: summary.connection_id,
     connectorId: summary.connector_id,
@@ -185,7 +195,7 @@ function toConnectionFacet(summary: RefConnectorSummary): ExplorerConnectionFace
   };
 }
 
-function connectorSummaryDisplayName(summary: RefConnectorSummary): string {
+function connectorSummaryDisplayName(summary: RefConnectorIdentitySummary): string {
   return formatConnectorNameForDisplay({
     connectorId: summary.connector_id,
     displayName: summary.display_name,
@@ -193,8 +203,10 @@ function connectorSummaryDisplayName(summary: RefConnectorSummary): string {
   });
 }
 
-function summaryByConnectionId(summaries: RefConnectorSummary[]): Map<string, RefConnectorSummary> {
-  const map = new Map<string, RefConnectorSummary>();
+function summaryByConnectionId(
+  summaries: readonly RefConnectorIdentitySummary[]
+): Map<string, RefConnectorIdentitySummary> {
+  const map = new Map<string, RefConnectorIdentitySummary>();
   for (const s of summaries) {
     map.set(s.connection_id, s);
   }
@@ -216,12 +228,14 @@ function summaryByConnectionId(summaries: RefConnectorSummary[]): Map<string, Re
 async function resolveExactSelectedSummaries(
   selectedConnectionIds: readonly string[],
   dataSource: DashboardDataSource
-): Promise<RefConnectorSummary[]> {
+): Promise<RefConnectorIdentitySummary[]> {
   if (selectedConnectionIds.length === 0) {
     return [];
   }
   const pages = await Promise.all(
-    selectedConnectionIds.map((connectionRouteId) => dataSource.listConnectorSummaries({ connectionRouteId }))
+    selectedConnectionIds.map((connectionRouteId) =>
+      dataSource.listConnectorSummaries({ connectionRouteId, profile: "identity_inventory" })
+    )
   );
   return pages.flatMap((page) => page.data);
 }
@@ -254,11 +268,11 @@ async function resolveExactSelectedSummaries(
  * Either rejection surfaces as an explicit restart affordance via
  * `connectionsPageError` — never silently treated as "no more pages."
  */
-function validateFacetPageEnvelope(
+function validateFacetPageEnvelope<T>(
   requestedCursor: string | undefined,
   response: { data: unknown; has_more: unknown; next_cursor?: unknown; object: unknown }
-): { error: string | null; hasMore: boolean; items: RefConnectorSummary[]; nextCursor: string | undefined } {
-  const validation = validateListEnvelope<RefConnectorSummary>(response);
+): { error: string | null; hasMore: boolean; items: T[]; nextCursor: string | undefined } {
+  const validation = validateListEnvelope<T>(response);
   if (validation.kind === "invalid") {
     return {
       error: `The server returned a malformed connections page (${validation.reason}). Please restart from page 1.`,
@@ -621,14 +635,14 @@ function streamUiMetadataFromManifest(
 
 async function loadStreamUiMetadata(
   dataSource: DashboardDataSource,
-  summary: RefConnectorSummary,
+  summary: RefConnectorIdentitySummary,
   streamName: string,
   fallbackDeclaredTypes: DeclaredFieldTypes | undefined,
   fallbackFieldNames: readonly string[] | undefined
 ): Promise<{ metadata: StreamUiMetadata; warning: ExplorerWarning | null }> {
   try {
     const metadata = await dataSource.getStreamMetadata(summary.connector_id, streamName, {
-      connectorInstanceId: summary.connector_instance_id ?? summary.connection_id,
+      connectorInstanceId: summary.connector_instance_id,
     });
     const fieldCapabilities = fieldCapabilitiesFromMetadata(metadata);
     return {
@@ -737,7 +751,7 @@ function activitySummaryForFeed(feed: FeedLoadResult): RecordsExplorerData["acti
  */
 function timelineRecordToEntry(
   rec: ExploreTimelinePage["data"][number],
-  filteredSummaries: readonly RefConnectorSummary[],
+  filteredSummaries: readonly RefConnectorIdentitySummary[],
   declaredFieldTypes: ReadonlyMap<string, DeclaredFieldTypes>,
   declaredFieldRoles: ReadonlyMap<string, DeclaredFieldRoles>,
   manifestFieldNames: ReadonlyMap<string, readonly string[]>,
@@ -817,7 +831,7 @@ function timelineRecordToEntry(
  */
 function mergedTimelinePageEntries(
   page: ExploreTimelinePage,
-  filteredSummaries: RefConnectorSummary[],
+  filteredSummaries: RefConnectorIdentitySummary[],
   declaredFieldTypes: ReadonlyMap<string, DeclaredFieldTypes>,
   declaredFieldRoles: ReadonlyMap<string, DeclaredFieldRoles>,
   manifestFieldNames: ReadonlyMap<string, readonly string[]>,
@@ -875,7 +889,7 @@ function mergedTimelinePageEntries(
  */
 function buildAllowedInstanceIds(
   filterConnections: ReadonlySet<string>,
-  filteredSummaries: readonly RefConnectorSummary[]
+  filteredSummaries: readonly RefConnectorIdentitySummary[]
 ): Set<string> {
   const allowed = new Set<string>();
   if (filterConnections.size === 0) {
@@ -898,7 +912,7 @@ function buildAllowedInstanceIds(
  */
 function buildExcludedInstanceIds(
   excludeConnections: ReadonlySet<string>,
-  allSummaries: readonly RefConnectorSummary[]
+  allSummaries: readonly RefConnectorIdentitySummary[]
 ): Set<string> {
   const excluded = new Set<string>();
   if (excludeConnections.size === 0) {
@@ -995,7 +1009,7 @@ interface UpcomingPresentationCtx {
   /** EXCLUDED instance ids / streams (facet "is not"); future records are excluded too. */
   exclude: { instanceIds: ReadonlySet<string>; streams: ReadonlySet<string> };
   filterConnections: ReadonlySet<string>;
-  filteredSummaries: RefConnectorSummary[];
+  filteredSummaries: RefConnectorIdentitySummary[];
   filterStreams: ReadonlySet<string>;
   manifestFieldNames: ReadonlyMap<string, readonly string[]>;
   timestampMetadata: ReadonlyMap<string, SearchTimestampMetadata>;
@@ -1091,7 +1105,7 @@ async function loadMergedTimelineFeed(
   cursorTrail: readonly string[],
   upcomingTrail: readonly string[],
   snapshotAnchorParam: string | null,
-  filteredSummaries: RefConnectorSummary[],
+  filteredSummaries: RefConnectorIdentitySummary[],
   declaredFieldTypes: ReadonlyMap<string, DeclaredFieldTypes>,
   declaredFieldRoles: ReadonlyMap<string, DeclaredFieldRoles>,
   manifestFieldNames: ReadonlyMap<string, readonly string[]>,
@@ -1304,7 +1318,7 @@ function toTimeRangeEntry({
   recordId: string;
   sinceMs: number | null;
   streamName: string;
-  summary: RefConnectorSummary;
+  summary: RefConnectorIdentitySummary;
   untilMs: number | null;
 }): ExplorerFeedEntry | null {
   const ms = parseRecordTimestamp(data[consentTimeField]);
@@ -1335,7 +1349,7 @@ function toTimeRangeEntry({
 }
 
 function timeRangeStreamTargets(
-  summary: RefConnectorSummary,
+  summary: RefConnectorIdentitySummary,
   timestampMetadata: ReadonlyMap<string, SearchTimestampMetadata>,
   filterStreams: ReadonlySet<string>
 ): Array<{ consentTimeField: string; streamName: string }> {
@@ -1420,7 +1434,7 @@ function collectStreamFetchResults(results: StreamFetchResult[]): CollectedStrea
 }
 
 async function fetchOneTimeRangeStream(
-  summary: RefConnectorSummary,
+  summary: RefConnectorIdentitySummary,
   streamName: string,
   consentTimeField: string,
   sinceMs: number | null,
@@ -1440,7 +1454,7 @@ async function fetchOneTimeRangeStream(
         manifestFieldNames.get(metaKey)
       ),
       dataSource.queryRecords(summary.connector_id, streamName, {
-        connectorInstanceId: summary.connector_instance_id ?? summary.connection_id,
+        connectorInstanceId: summary.connector_instance_id,
         limit: TIME_RANGE_RECORDS_PER_STREAM,
         order: "desc",
         window: "exact",
@@ -1489,7 +1503,7 @@ async function fetchOneTimeRangeStream(
 async function loadTimeRangeFeed(
   since: string,
   until: string,
-  filteredSummaries: RefConnectorSummary[],
+  filteredSummaries: RefConnectorIdentitySummary[],
   timestampMetadata: ReadonlyMap<string, SearchTimestampMetadata>,
   declaredFieldTypes: ReadonlyMap<string, DeclaredFieldTypes>,
   manifestFieldNames: ReadonlyMap<string, readonly string[]>,
@@ -1508,8 +1522,7 @@ async function loadTimeRangeFeed(
     // EXCLUDE: skip an excluded connection entirely (by either identity).
     if (
       exclude.instanceIds.size > 0 &&
-      (exclude.instanceIds.has(summary.connector_instance_id ?? summary.connection_id) ||
-        exclude.instanceIds.has(summary.connection_id))
+      (exclude.instanceIds.has(summary.connector_instance_id) || exclude.instanceIds.has(summary.connection_id))
     ) {
       continue;
     }
@@ -1598,7 +1611,7 @@ async function loadTimeRangeFeed(
  */
 function detectSingleStreamDoor(
   filtered: Array<{ connector_id: string; stream: string }>,
-  filteredSummaries: RefConnectorSummary[]
+  filteredSummaries: RefConnectorIdentitySummary[]
 ): ExplorerStreamDoor | null {
   if (filtered.length === 0) {
     return null;
@@ -1643,7 +1656,7 @@ function detectSingleStreamDoor(
  */
 async function loadMostRecentSingleStream(
   query: string,
-  summary: RefConnectorSummary,
+  summary: RefConnectorIdentitySummary,
   streamName: string,
   cursor: string | null,
   timestampMetadata: ReadonlyMap<string, SearchTimestampMetadata>,
@@ -1838,7 +1851,7 @@ async function loadSearchFeed(
   query: string,
   searchSort: "relevance" | "recent",
   searchCursor: string | null,
-  filteredSummaries: RefConnectorSummary[],
+  filteredSummaries: RefConnectorIdentitySummary[],
   filterStreams: ReadonlySet<string>,
   timestampMetadata: ReadonlyMap<string, SearchTimestampMetadata>,
   manifestFieldNames: ReadonlyMap<string, readonly string[]>,
@@ -2162,7 +2175,7 @@ async function dispatchFeed(args: {
   snapshotAnchorParam: string | null;
   since: string;
   until: string;
-  filteredSummaries: RefConnectorSummary[];
+  filteredSummaries: RefConnectorIdentitySummary[];
   filterStreamSet: ReadonlySet<string>;
   timestampMetadata: ReadonlyMap<string, SearchTimestampMetadata>;
   manifestFieldNames: ReadonlyMap<string, readonly string[]>;
@@ -2175,7 +2188,7 @@ async function dispatchFeed(args: {
   /** EXCLUDED stream names (facet "is not" / `-stream:`). Applied on the recent lens. */
   excludeStreamSet: ReadonlySet<string>;
   /** All summaries (unfiltered) so exclusion can resolve instance ids for excluded connections. */
-  summaries: RefConnectorSummary[];
+  summaries: RefConnectorIdentitySummary[];
   /**
    * Recent-lens feed direction: "desc" (newest-first browse, default) or "asc"
    * (the order=oldest re-page — pages the merged-timeline keyset ascending from
@@ -2438,7 +2451,7 @@ function serverFilterableFieldsForStream(
  * `assembleExplorerData` to keep that function within its complexity budget.
  */
 function unionServerFilterableFields(
-  filteredSummaries: readonly RefConnectorSummary[],
+  filteredSummaries: readonly RefConnectorIdentitySummary[],
   filterStreamSet: ReadonlySet<string>,
   serverFilterableFields: ReadonlyMap<string, Set<string>>
 ): Set<string> {
@@ -2538,8 +2551,8 @@ async function buildManifestMetadata(dataSource: DashboardDataSource): Promise<M
 
 function resolvePeekConnection(
   parsed: { connectorId: string; connectionId: string | null },
-  byConnectionId: ReadonlyMap<string, RefConnectorSummary>
-): RefConnectorSummary | null {
+  byConnectionId: ReadonlyMap<string, RefConnectorIdentitySummary>
+): RefConnectorIdentitySummary | null {
   // Prefer the concrete `connection_id` carried in the peek param.
   if (parsed.connectionId) {
     const direct = byConnectionId.get(parsed.connectionId);
@@ -2555,7 +2568,7 @@ function resolvePeekConnection(
   }
   // No concrete connection: resolve only when exactly one visible connection
   // has that connector type. Otherwise use connector-id default scope.
-  const matches: RefConnectorSummary[] = [];
+  const matches: RefConnectorIdentitySummary[] = [];
   for (const summary of byConnectionId.values()) {
     if (summary.connector_id === parsed.connectorId) {
       matches.push(summary);
@@ -2566,7 +2579,7 @@ function resolvePeekConnection(
 
 async function buildPeek(
   raw: string | undefined,
-  byConnectionId: ReadonlyMap<string, RefConnectorSummary>,
+  byConnectionId: ReadonlyMap<string, RefConnectorIdentitySummary>,
   dataSource: DashboardDataSource,
   rsBaseUrl: string
 ): Promise<ExplorerPeekData | null> {
@@ -2751,7 +2764,7 @@ interface ChartTarget {
  * endpoint, or null when it is out of scope (filtered/excluded).
  */
 function resolveChartTarget(
-  summary: RefConnectorSummary,
+  summary: RefConnectorIdentitySummary,
   streamName: string,
   filterStreams: ReadonlySet<string>,
   excludeStreams: ReadonlySet<string>
@@ -2774,7 +2787,7 @@ function resolveChartTarget(
 
 /** Resolve the in-scope (connection, stream) targets that declare a time field. */
 function chartTargets(
-  filteredSummaries: readonly RefConnectorSummary[],
+  filteredSummaries: readonly RefConnectorIdentitySummary[],
   filterStreams: ReadonlySet<string>,
   excludeStreams: ReadonlySet<string>
 ): { targets: ChartTarget[]; partial: boolean } {
@@ -2815,7 +2828,7 @@ function computeBucketRequest(args: {
    * caption-vs-bars lie. A search result-set is not an honest time-distribution.
    */
   fromSearch: boolean;
-  filteredSummaries: readonly RefConnectorSummary[];
+  filteredSummaries: readonly RefConnectorIdentitySummary[];
   filterStreams: ReadonlySet<string>;
   excludeConnections: ReadonlySet<string>;
   excludeStreams: ReadonlySet<string>;
@@ -2911,7 +2924,7 @@ interface ExploreConnectionsFacetResult {
   connectionsPageIsPaged: boolean;
   connectionsPageNextCursor: string | undefined;
   /** Facet page summaries merged with the exact-selection lookup — the authoritative set for filtering. */
-  summaries: RefConnectorSummary[];
+  summaries: RefConnectorIdentitySummary[];
 }
 
 /**
@@ -2937,12 +2950,16 @@ async function loadExploreConnectionsFacet(
 
   const [facetPageResult, exactSelectedSummaries] = await Promise.all([
     dataSource
-      .listConnectorSummaries({ cursor: requestedFacetCursor, limit: EXPLORE_CONNECTIONS_PAGE_LIMIT })
-      .then((page) => validateFacetPageEnvelope(requestedFacetCursor, page))
+      .listConnectorSummaries({
+        cursor: requestedFacetCursor,
+        limit: EXPLORE_CONNECTIONS_PAGE_LIMIT,
+        profile: "identity_inventory",
+      })
+      .then((page) => validateFacetPageEnvelope<RefConnectorIdentitySummary>(requestedFacetCursor, page))
       .catch((err: unknown) => ({
         error: err instanceof Error ? err.message : "Could not load the connections list.",
         hasMore: false,
-        items: [],
+        items: [] as RefConnectorIdentitySummary[],
         nextCursor: undefined,
       })),
     resolveExactSelectedSummaries(selectedConnectionIds, dataSource),

@@ -257,15 +257,19 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly connectorSummaryEvidenceMarkDirtyByConnectorInstance: MutationQuery;
   readonly controllerDeleteActiveRun: MutationQuery;
   readonly controllerDeleteSchedule: MutationQuery;
-  readonly controllerGetLatestSchedulerRunHistoryForConnection: ReadOneQuery;
+  readonly controllerFinalizeRunHistory: MutationQuery;
+  readonly controllerGetLatestRunHistoryForConnection: ReadOneQuery;
   readonly controllerGetScheduleByConnector: ReadOneQuery;
+  readonly controllerInsertFinalizedRunHistory: MutationQuery;
+  readonly controllerInsertRunHistory: MutationQuery;
   readonly controllerInsertSchedule: MutationQuery;
   // Controller — schedule + active-run persistence for runtime/controller.
-  readonly controllerInsertSchedulerRunHistory: MutationQuery;
   readonly controllerListActiveRuns: SmallEnumerationQuery;
+  readonly controllerListRunHistory: ReadManyQuery;
   readonly controllerListSchedulerLastRunTimes: SmallEnumerationQuery;
-  readonly controllerListSchedulerRunHistory: ReadManyQuery;
   readonly controllerListSchedules: SmallEnumerationQuery;
+  readonly controllerMergeRunHistoryCollectionRate: MutationQuery;
+  readonly controllerStartRunHistory: MutationQuery;
   readonly controllerUpdateSchedule: MutationQuery;
   readonly controllerUpdateScheduleEnabled: MutationQuery;
   readonly controllerUpsertActiveRun: MutationQuery;
@@ -438,7 +442,6 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly sourceWebhooksClaimEvent: MutationQuery;
   // Spine — controller-side terminal-event existence probe.
   readonly spineCheckRunTerminal: ReadOneQuery;
-  readonly spineGetRunLatestCollectionRateEvent: ReadOneQuery;
   // Spine — run-handle status lookups (bounded LIMIT 1 lifecycle reads).
   readonly spineGetRunStartedEvent: ReadOneQuery;
   readonly spineGetRunTerminalEvent: ReadOneQuery;
@@ -690,7 +693,6 @@ export function loadReferenceQueries(queryDir = QUERIES_DIR): ReferenceQueryRegi
     "spineListEventsByRunId",
     "spineGetRunStartedEvent",
     "spineGetRunTerminalEvent",
-    "spineGetRunLatestCollectionRateEvent",
     // Auth — pending_consents
     "authPendingConsentsGetByDeviceCode",
     "authPendingConsentsGetByApprovalId",
@@ -813,15 +815,19 @@ export function loadReferenceQueries(queryDir = QUERIES_DIR): ReferenceQueryRegi
     "controllerListActiveRuns",
     "controllerUpsertActiveRun",
     "controllerDeleteActiveRun",
-    "controllerGetLatestSchedulerRunHistoryForConnection",
+    "controllerGetLatestRunHistoryForConnection",
     "controllerGetScheduleByConnector",
     "controllerListSchedules",
     "controllerInsertSchedule",
     "controllerUpdateSchedule",
     "controllerUpdateScheduleEnabled",
     "controllerDeleteSchedule",
-    "controllerInsertSchedulerRunHistory",
-    "controllerListSchedulerRunHistory",
+    "controllerInsertRunHistory",
+    "controllerListRunHistory",
+    "controllerStartRunHistory",
+    "controllerFinalizeRunHistory",
+    "controllerMergeRunHistoryCollectionRate",
+    "controllerInsertFinalizedRunHistory",
     "controllerListSchedulerLastRunTimes",
     "controllerUpsertSchedulerLastRunTime",
     // Source webhooks — replay/idempotency guard.

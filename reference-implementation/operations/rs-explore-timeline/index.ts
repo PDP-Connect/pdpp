@@ -107,6 +107,28 @@ export interface PartitionCursorPosition {
  *       v2 cursor's keyset key no longer matches the sort, so v2 cursors are
  *       rejected as invalid_cursor (the version check below) and stale tabs
  *       re-anchor a fresh snapshot rather than mis-seek.
+ *   v4: added `nowCeiling` — the PINNED past/future boundary (server-side past/
+ *       future split; the main feed clamps to <= nowCeiling, future-dated rows
+ *       surface separately via fetchUpcoming). `nowCeiling` and `snapshotAt` are
+ *       both the wall clock at first-page capture time. Wire shape is otherwise
+ *       unchanged from v3, so no cursor-rejection bump was needed for this field
+ *       alone (v4 predates this doc entry; documented here for completeness).
+ *   snapshotAt meaning fixed (still v4, no wire-format or version-number change):
+ *       snapshotAt is now the operation's captured wall-clock instant at
+ *       first-page time — the SAME instant as nowCeiling, captured exactly once
+ *       — not a MAX(emitted_at) aggregate over records. A record's emitted_at
+ *       (backfilled, future-dated, or otherwise) can never influence it. This
+ *       matches the OpenSpec contract text ("an ISO-8601 timestamp corresponding
+ *       to the ingest-sequence anchor") more precisely than a record aggregate
+ *       ever did, and removes the only unqualified full-table-scan query left in
+ *       this path (see fetchSnapshotAnchor doc) without adding an index. Existing
+ *       encoded v4 cursors still decode correctly — the field's TYPE (ISO-8601
+ *       string) and position are unchanged; only which value the OPERATION writes
+ *       into it changed, entirely on the write side. A cursor minted before this
+ *       change simply carries an emitted_at-derived snapshotAt from its own
+ *       first-page capture, which remains valid display data for that page's
+ *       traversal (rewind restores the cursor's own snapshotAt verbatim, per the
+ *       rewind requirement — it was never re-derived from records on resume).
  */
 export interface CompositeCursorPayload {
   /**
@@ -384,10 +406,15 @@ export interface ExploreTimelineDependencies {
 
   /**
    * Fetch the current maximum ingest sequence (MAX(id)) across all records
-   * visible to the owner, together with the corresponding MAX(emitted_at) for
-   * display. Returns null for both if no records exist (empty corpus).
+   * visible to the owner — the point-in-time MEMBERSHIP anchor. Returns null
+   * if no records exist (empty corpus; the operation uses snapshotSeq = 0).
+   *
+   * Does NOT return a display timestamp: snapshot_at is wall-clock capture
+   * time (see CompositeCursorPayload v4 doc), captured directly by the
+   * operation via deps.now — it is never derived from a record's emitted_at,
+   * so a future-dated or backfilled record can never distort it.
    */
-  fetchSnapshotAnchor: () => Promise<{ snapshotSeq: number; snapshotAt: string } | null>;
+  fetchSnapshotAnchor: () => Promise<{ snapshotSeq: number } | null>;
 
   /**
    * OPTIONAL: fetch the FUTURE-dated set — records whose semantic time is strictly
@@ -398,7 +425,10 @@ export interface ExploreTimelineDependencies {
    * `id <= snapshotSeq` (same snapshot as the main feed). When ABSENT, the
    * operation returns an empty upcoming set (legacy: no future/past split).
    */
-  fetchUpcoming?: (input: UpcomingFetchInput) => Promise<UpcomingFetchResult>;
+  fetchUpcoming?: (
+    input: UpcomingFetchInput,
+    options?: { readonly onInFlightChange?: (inFlight: number) => void }
+  ) => Promise<UpcomingFetchResult>;
   /**
    * List ALL distinct (connector_instance_id, stream) partitions visible to the
    * owner, with no limit. Returns an empty array when no records exist yet.
@@ -952,23 +982,30 @@ export async function executeExploreTimeline(
       initialPositions = new Map(decoded.partitions.map((p) => [`${p.connectorId}\0${p.stream}`, p]));
     }
   } else {
-    // First page: capture the ingest-sequence snapshot anchor now.
+    // First page: capture ONE operation-clock value and use it for BOTH
+    // snapshotAt (the wall-clock moment this snapshot was captured — v4, see
+    // CompositeCursorPayload doc) and nowCeiling (the PINNED past/future
+    // boundary). Their meanings are intentionally identical: both are "the
+    // wall clock at first-page capture time," so there is exactly one capture
+    // moment, not two independently-timed reads. `deps.now` is injectable for
+    // deterministic tests; production uses the real wall clock.
+    const capturedNow = deps.now ? deps.now() : new Date().toISOString();
+    // Capture the ingest-sequence snapshot anchor. This no longer reads any
+    // emitted_at value: snapshotAt is wall-clock capture time, not a record
+    // aggregate, so it can never be distorted by a future-dated or backfilled
+    // record's emitted_at.
     const anchor = await deps.fetchSnapshotAnchor();
-    if (anchor === null) {
-      // Empty corpus: use sentinel values that exclude nothing (seq 0 means no
-      // rows exist; future rows will have id >= 1 so new_since_snapshot will
-      // correctly count them if the corpus grows between pages).
-      snapshotSeq = 0;
-      snapshotAt = "1970-01-01T00:00:00.000Z";
-    } else {
-      // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
-      snapshotSeq = anchor.snapshotSeq;
-      // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
-      snapshotAt = anchor.snapshotAt;
-    }
-    // PIN the past/future boundary at first-page capture. `deps.now` is injectable
-    // for deterministic tests; production uses the real wall clock.
-    nowCeiling = deps.now ? deps.now() : new Date().toISOString();
+    // Empty corpus: seq 0 excludes nothing (no rows exist; future rows will
+    // have id >= 1 so new_since_snapshot will correctly count them if the
+    // corpus grows between pages). snapshotAt is still the real capture time,
+    // not an epoch sentinel — there is no documented contract requiring a
+    // placeholder value for the empty-corpus case, and the actual capture
+    // moment is equally well-defined whether or not any records exist yet.
+    snapshotSeq = anchor === null ? 0 : anchor.snapshotSeq;
+    snapshotAt = capturedNow;
+    // PIN the past/future boundary at first-page capture — the SAME instant
+    // as snapshotAt (see comment above).
+    nowCeiling = capturedNow;
     // Fresh page: the request picks the direction (oldest-first re-page or the
     // default newest-first browse). It is then pinned into this page's cursor.
     direction = requestedDirection;

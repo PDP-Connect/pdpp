@@ -60,7 +60,9 @@ import {
 } from "../server/stores/scheduler-store.ts";
 import {
   type BrowserSurfaceRuntimeInventorySnapshot,
+  type BrowserSurfaceRuntimeSurfaceObservation,
   observeDynamicBrowserSurfaceRuntimeInventory,
+  observeDynamicBrowserSurfaceRuntimeSurfaces,
 } from "./browser-surface/allocator-observation.ts";
 import {
   type BrowserSurfaceManagerDeps,
@@ -579,7 +581,10 @@ export interface BrowserSurfaceRuntimeManagement {
  * attachment repair while it derives readiness; it never creates, stops,
  * restarts, or leases a surface.
  */
-export type { BrowserSurfaceRuntimeInventorySnapshot } from "./browser-surface/allocator-observation.ts";
+export type {
+  BrowserSurfaceRuntimeInventorySnapshot,
+  BrowserSurfaceRuntimeSurfaceObservation,
+} from "./browser-surface/allocator-observation.ts";
 
 /**
  * Resolves the connection-scoped static-secret env fragment for one run.
@@ -715,6 +720,13 @@ export interface Controller {
    * calls.
    */
   observeBrowserSurfaceRuntimeInventory: () => Promise<BrowserSurfaceRuntimeInventorySnapshot>;
+  /**
+   * Reads only caller-known dynamic allocator surface ids. This scoped seam
+   * never expands to the global allocator inventory diagnostic.
+   */
+  observeBrowserSurfaceRuntimeSurfaces: (
+    surfaceIds: readonly string[]
+  ) => Promise<BrowserSurfaceRuntimeSurfaceObservation>;
   promoteBrowserSurfaceLeasesAfterBoot: () => Promise<void>;
   reconcileBrowserSurfaceLeasesAfterBoot: () => Promise<void>;
   respondToInteraction: (runId: string, input?: RunInteractionResponseInput) => RunInteractionAck;
@@ -1986,7 +1998,9 @@ function buildSchedulerBackoffApi(
   // back-off gate clears a stale streak even when that success was recorded by
   // a path whose record has rolled off the bounded `recentRuns` window (or, on
   // a fresh boot, before the scheduler re-appended it). `latestSuccessfulAt`
-  // already accounts for every success in `scheduler_run_history`; passing it
+  // already accounts for every success in `run_history` (scoped to
+  // `scheduler_managed` rows — see server/queries/controller/
+  // list-run-history.sql); passing it
   // explicitly keeps this read-model's `consecutive_failures` honest with the
   // same semantic the runtime scheduler now applies. `null` → legacy behaviour.
   const lastSuccessAtMs =
@@ -2326,6 +2340,17 @@ export function createController(opts: ControllerOptions = {}): Controller {
     }
     return await observeDynamicBrowserSurfaceRuntimeInventory({
       allocator: browserSurfaceAllocator,
+      ttl_ms: browserSurfaceHealthObservationTtlMs,
+    });
+  }
+
+  async function observeBrowserSurfaceRuntimeSurfaces(
+    surfaceIds: readonly string[]
+  ): Promise<BrowserSurfaceRuntimeSurfaceObservation> {
+    const dynamicManaged = browserSurfaceLeaseManager?.config.surfaceMode === "dynamic";
+    return await observeDynamicBrowserSurfaceRuntimeSurfaces({
+      allocator: dynamicManaged ? browserSurfaceAllocator : undefined,
+      surface_ids: surfaceIds,
       ttl_ms: browserSurfaceHealthObservationTtlMs,
     });
   }
@@ -2672,7 +2697,9 @@ export function createController(opts: ControllerOptions = {}): Controller {
     return apis.flatMap((api) => (api ? [api] : []));
   }
 
-  async function listSchedulesForConnections(connectorInstanceIds: readonly string[]): Promise<Map<string, ScheduleApi>> {
+  async function listSchedulesForConnections(
+    connectorInstanceIds: readonly string[]
+  ): Promise<Map<string, ScheduleApi>> {
     const result = new Map<string, ScheduleApi>();
     if (connectorInstanceIds.length === 0 || typeof schedulerStore.listSchedulesByConnectionIds !== "function") {
       return result;
@@ -2693,7 +2720,12 @@ export function createController(opts: ControllerOptions = {}): Controller {
           browserSurfaceLeaseManager,
           historyIndex
         );
-        const api = scheduleToApi(schedule, runtimeProjection, policy, historyIndex.get(schedule.connector_instance_id));
+        const api = scheduleToApi(
+          schedule,
+          runtimeProjection,
+          policy,
+          historyIndex.get(schedule.connector_instance_id)
+        );
         if (api) {
           result.set(schedule.connector_instance_id, api);
         }
@@ -4064,6 +4096,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     listSchedulesForConnections,
     markNeedsHuman,
     observeBrowserSurfaceRuntimeInventory,
+    observeBrowserSurfaceRuntimeSurfaces,
     promoteBrowserSurfaceLeasesAfterBoot: () => browserSurface.promoteBrowserSurfaceLeasesAfterBoot(),
     reconcileBrowserSurfaceLeasesAfterBoot: () => browserSurface.reconcileBrowserSurfaceLeasesAfterBoot(),
     respondToInteraction,

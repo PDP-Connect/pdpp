@@ -1139,10 +1139,19 @@ CREATE TABLE IF NOT EXISTS browser_surface_replacement_selection_override_audit_
   UNIQUE(replacement_batch_id, operation)
 );
 
-CREATE TABLE IF NOT EXISTS scheduler_run_history (
+-- Kind-neutral, run-grain durable projection. Historically scheduler-only
+-- (scheduler_run_history); generalized so the general run executor writes
+-- one row per run (scheduled/manual/browser/cancelled) -- see
+-- openspec/changes/generalize-run-history-write-authority. completed_at
+-- is nullable to hold the row created at run.started (status 'running')
+-- before the terminal write finalizes it; existing scheduler-era readers
+-- filter status <> 'running' so their visible output is unchanged.
+CREATE TABLE IF NOT EXISTS run_history (
   id                         INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id                     TEXT,
   connector_instance_id      TEXT NOT NULL,
   connector_id               TEXT NOT NULL,
+  trigger_kind               TEXT,
   source_json                TEXT NOT NULL,
   status                     TEXT NOT NULL,
   records_emitted            INTEGER NOT NULL DEFAULT 0,
@@ -1150,18 +1159,40 @@ CREATE TABLE IF NOT EXISTS scheduler_run_history (
   checkpoint_summary_json    TEXT,
   known_gaps_json            TEXT NOT NULL DEFAULT '[]',
   connector_error_json       TEXT,
-  run_id                     TEXT,
   trace_id                   TEXT,
   failure_reason             TEXT,
   terminal_reason            TEXT,
   started_at                 TEXT NOT NULL,
-  completed_at               TEXT NOT NULL,
+  completed_at               TEXT,
   error                      TEXT,
-  attempt                    INTEGER NOT NULL
+  attempt                    INTEGER NOT NULL DEFAULT 1,
+  facts_json                 TEXT,
+  -- Provenance flag: true only for rows the SCHEDULER's own write path
+  -- (server/stores/scheduler-store.ts appendRunHistory, called from
+  -- runtime/scheduler/run-executor.ts) has touched. The run.started/
+  -- terminal spine-event hook (server/stores/run-history-writer.ts) sets
+  -- this false — it fires for every run kind, including ones that never
+  -- pass through the scheduler (e.g. runtime/controller.ts runNow calling
+  -- runConnector directly). Scheduler cadence/backoff readers
+  -- (runtime/scheduler.ts hydratePersistence, dispatch-governor.ts
+  -- evaluateBackoffDispatch) filter on this column so a run newly visible
+  -- in run_history via the generalized writer does not silently start
+  -- influencing scheduler backoff math — see terminal-read-architecture-
+  -- fable-0730.md R7.5 and openspec/changes/
+  -- generalize-run-history-write-authority.
+  scheduler_managed          INTEGER NOT NULL DEFAULT 0
 );
 
-CREATE INDEX IF NOT EXISTS idx_scheduler_run_history_connector_completed
-  ON scheduler_run_history(connector_id, completed_at, id);
+CREATE INDEX IF NOT EXISTS idx_run_history_connector_completed
+  ON run_history(connector_id, completed_at, id);
+
+-- run_id alone is NOT globally unique: two different connections can
+-- independently mint the same run_id (Date.now()-based generators with no
+-- connection-scoped entropy — confirmed live). (run_id,
+-- connector_instance_id) is the real identity. See
+-- openspec/changes/run-history-backfill-list-cutover.
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_run_history_run_id_instance
+  ON run_history(run_id, connector_instance_id) WHERE run_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS scheduler_last_run_times (
   connector_instance_id TEXT PRIMARY KEY,
@@ -1799,6 +1830,11 @@ CREATE TABLE IF NOT EXISTS connector_summary_evidence (
   state                         TEXT NOT NULL DEFAULT 'rebuilding',
   -- Sanitized last error (credentials redacted, bounded length).
   last_error                    TEXT,
+  -- Opaque compare-and-set revision for publishers of the terminal owner
+  -- LIST projection. Every canonical rebuild/reconcile or dirty transition
+  -- advances it, so a payload derived from an older bounded read cannot
+  -- publish after the row has moved on.
+  canonical_evidence_revision   INTEGER NOT NULL DEFAULT 0,
   -- Durable connection-scoped declaration identity. This is the only
   -- eligibility boundary for terminal, coverage, and heartbeat proof.
   manifest_generation INTEGER NOT NULL DEFAULT 0,
@@ -1820,15 +1856,23 @@ CREATE TABLE IF NOT EXISTS connector_summary_evidence (
   -- this connection -- catches a run-lifecycle event (e.g. run.started)
   -- whose best-effort dirty marker was lost, using the spine's own
   -- already-durable, atomically-assigned sequence as the repair receipt.
-  run_lifecycle_event_seq INTEGER
+  run_lifecycle_event_seq INTEGER,
+  -- Complete owner LIST-item projection, published only by bounded
+  -- maintenance after all durable axes have converged. This is deliberately
+  -- one named projection payload, not a generic cache: its state is coupled
+  -- to this row's canonical evidence envelope and is invalidated with it.
+  list_summary_projection_json TEXT,
+  list_summary_projection_state TEXT NOT NULL DEFAULT 'unobserved',
+  list_summary_projection_reason_code TEXT,
+  list_summary_projection_computed_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_connector_summary_evidence_connector
   ON connector_summary_evidence(connector_id);
 
--- One durable scheduling cursor for the bounded, periodic summary-evidence
--- sweep. It is not evidence and does not participate in owner projections.
+-- Durable scheduling cursors for bounded, periodic maintenance sweeps
+-- (name-keyed, one row per stage). Not evidence, not owner-visible data.
 CREATE TABLE IF NOT EXISTS connector_maintenance_cursor (
-  name                         TEXT PRIMARY KEY CHECK(name = 'connector_summary_evidence'),
+  name                         TEXT PRIMARY KEY CHECK(name IN ('connector_summary_evidence', 'run_history_backfill')),
   resume_after_id              TEXT,
   updated_at                   TEXT NOT NULL,
   generation                   INTEGER NOT NULL DEFAULT 0,
@@ -2014,8 +2058,18 @@ function ensureConnectorSummaryEvidenceColumns(raw: SqliteDatabase): void {
   addColumnIfMissing(raw, "connector_summary_evidence", "retained_bytes_state", "TEXT NOT NULL DEFAULT 'unobserved'");
   addColumnIfMissing(raw, "connector_summary_evidence", "retained_bytes_reason_code", "TEXT");
   addColumnIfMissing(raw, "connector_summary_evidence", "manifest_generation", "INTEGER NOT NULL DEFAULT 0");
+  addColumnIfMissing(raw, "connector_summary_evidence", "canonical_evidence_revision", "INTEGER NOT NULL DEFAULT 0");
   addColumnIfMissing(raw, "connector_summary_evidence", "schedule_checkpoint", "TEXT NOT NULL DEFAULT 'unobserved'");
   addColumnIfMissing(raw, "connector_summary_evidence", "run_lifecycle_event_seq", "INTEGER");
+  addColumnIfMissing(raw, "connector_summary_evidence", "list_summary_projection_json", "TEXT");
+  addColumnIfMissing(
+    raw,
+    "connector_summary_evidence",
+    "list_summary_projection_state",
+    "TEXT NOT NULL DEFAULT 'unobserved'"
+  );
+  addColumnIfMissing(raw, "connector_summary_evidence", "list_summary_projection_reason_code", "TEXT");
+  addColumnIfMissing(raw, "connector_summary_evidence", "list_summary_projection_computed_at", "TEXT");
 }
 
 function ensureConnectorMaintenanceCursorColumns(raw: SqliteDatabase): void {
@@ -3340,6 +3394,20 @@ CREATE INDEX IF NOT EXISTS idx_connector_detail_gaps_pending
 }
 
 function migrateSchedulerInstanceColumns(raw: SqliteDatabase) {
+  // This entire migration operates on the legacy scheduler_run_history
+  // table name (drop/recreate by that name, below) and predates the
+  // run_history generalization. A DB that never had scheduler_run_history
+  // at all — every fresh install, since SCHEMA now creates run_history
+  // directly — has nothing for this function to do; run_history's own
+  // connector_instance_id/schedule/active-run instance columns are already
+  // correct in that case (SCHEMA declares them NOT NULL from the start).
+  const legacyHistoryTableExists = raw
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'scheduler_run_history'")
+    .get();
+  if (!legacyHistoryTableExists) {
+    return;
+  }
+
   const schedulesHaveInstance = hasTableColumn(raw, "connector_schedules", "connector_instance_id");
   const activeRunsHaveInstance = hasTableColumn(raw, "controller_active_runs", "connector_instance_id");
   const historyHaveInstance = hasTableColumn(raw, "scheduler_run_history", "connector_instance_id");
@@ -3498,6 +3566,354 @@ DROP INDEX IF EXISTS idx_scheduler_run_history_connector_completed;
 CREATE INDEX IF NOT EXISTS idx_controller_active_runs_run_id ON controller_active_runs(run_id);
 CREATE INDEX IF NOT EXISTS idx_scheduler_run_history_connector_completed ON scheduler_run_history(connector_instance_id, completed_at, id);
 `);
+}
+
+// Widen `connector_maintenance_cursor.name`'s CHECK to admit the
+// `run_history_backfill` cursor row alongside the existing
+// `connector_summary_evidence` one. SQLite has no ALTER-CHECK; rebuild the
+// table (it holds at most one scheduling row per stage, never owner data)
+// and copy through unchanged. No-op once the CHECK already admits both
+// names.
+function migrateConnectorMaintenanceCursorNameCheck(raw: SqliteDatabase): void {
+  const table = raw
+    .prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'connector_maintenance_cursor'`)
+    .get<SqliteMasterRow>();
+  if (!table?.sql || table.sql.includes("run_history_backfill")) {
+    return;
+  }
+
+  raw.transaction(() => {
+    raw.exec(`
+      ALTER TABLE connector_maintenance_cursor RENAME TO connector_maintenance_cursor_old_name_check;
+
+      CREATE TABLE connector_maintenance_cursor (
+        name                         TEXT PRIMARY KEY CHECK(name IN ('connector_summary_evidence', 'run_history_backfill')),
+        resume_after_id              TEXT,
+        updated_at                   TEXT NOT NULL,
+        generation                   INTEGER NOT NULL DEFAULT 0,
+        lease_token                  TEXT,
+        lease_expires_at             TEXT
+      );
+
+      INSERT INTO connector_maintenance_cursor(
+        name, resume_after_id, updated_at, generation, lease_token, lease_expires_at
+      )
+      SELECT name, resume_after_id, updated_at, generation, lease_token, lease_expires_at
+      FROM connector_maintenance_cursor_old_name_check;
+
+      DROP TABLE connector_maintenance_cursor_old_name_check;
+    `);
+  })();
+}
+
+// Rename `scheduler_run_history` -> `run_history` and add the columns the
+// generalized run-grain writer needs (`trigger_kind`, `facts_json`,
+// nullable `completed_at`/`run_id`/`attempt` default). A pure rename plus
+// `ADD COLUMN` is safe and lossless — no row data changes shape. Guarded
+// so it is a no-op once the legacy table no longer exists (fresh installs
+// get `run_history` directly from SCHEMA; a DB already migrated has
+// nothing left under the old name).
+//
+// The legacy-table check MUST come first, ahead of any `run_history`
+// existence check: SCHEMA's own `CREATE TABLE IF NOT EXISTS run_history`
+// always runs earlier in `initDb` (it is one monolithic exec'd string),
+// so on a DB that still has `scheduler_run_history`, SCHEMA will have
+// already created a second, EMPTY `run_history` table by the time this
+// function runs. If this function bailed out on `run_history` existing,
+// the real data would be stranded under the old name forever. Instead,
+// drop that empty placeholder (verified empty first — see below) and
+// proceed with the rename.
+// SECOND LIVE CANARY REVISE (2026-07-30): an interrupted migration attempt
+// can leave a database with BOTH scheduler_run_history (still receiving
+// live scheduler writes from a rolled-back-to older revision that has no
+// idea run_history/the rename ever existed) AND a non-empty run_history
+// (frozen at whatever the interrupted candidate's brief live window
+// produced). Genuine, provable, lossless-mergeable state, not an anomaly
+// to refuse — see the Postgres twin
+// (reconcilePostgresLegacySchedulerRunHistory, server/postgres-storage.ts)
+// for the full incident/design rationale; this is its SQLite mirror.
+// scheduler_run_history's own numeric `id` values are NEVER reused (they
+// collide with run_history's own id sequence on a real interrupted
+// migration — confirmed live).
+//
+// Crash/idempotency: raw.transaction() wraps the caller's entire
+// migrateRunHistoryRename body (this function included) — SQLite commits
+// or rolls back the whole thing atomically, so table existence itself is
+// the only idempotency marker needed, exactly as on Postgres.
+function reconcileLegacySchedulerRunHistory(raw: SqliteDatabase): void {
+  const rhNullCountBefore = (
+    raw.prepare("SELECT COUNT(*) AS n FROM run_history WHERE run_id IS NULL").get() as { n: number }
+  ).n;
+
+  // Composite-identity rows (run_id IS NOT NULL): reuse the exact upsert
+  // contract insert-run-history.sql already defines for this conflict
+  // shape. FOURTH-PASS GATE FIX (2026-07-30): pre-deduplicate the source
+  // by (run_id, connector_instance_id), keeping only the highest `id`
+  // (the latest write) per pair — the same "scheduler's newer write wins"
+  // semantics this merge already establishes for the cross-table overlap
+  // case, extended to a duplicate composite key WITHIN scheduler_run_history
+  // itself (structurally reachable: the pre-generalization scheduler
+  // writer does a plain INSERT with no ON CONFLICT clause at all, so a
+  // retried/duplicate scheduled-run completion can produce this shape).
+  // SQLite's own INSERT ... SELECT ... ON CONFLICT DO UPDATE does not
+  // throw on duplicate source rows the way Postgres does (verified: it
+  // applies them in source order, last one wins) — this dedup is added
+  // here anyway for defense-in-depth and cross-backend consistency,
+  // rather than relying on that undocumented, backend-specific tolerance.
+  raw.exec(`
+INSERT INTO run_history(
+  connector_instance_id, connector_id, source_json, status, records_emitted,
+  reported_records_emitted, checkpoint_summary_json, known_gaps_json,
+  connector_error_json, run_id, trace_id, failure_reason, terminal_reason,
+  started_at, completed_at, error, attempt, scheduler_managed
+)
+SELECT
+  connector_instance_id, connector_id, source_json, status, records_emitted,
+  reported_records_emitted, checkpoint_summary_json, known_gaps_json,
+  connector_error_json, run_id, trace_id, failure_reason, terminal_reason,
+  started_at, completed_at, error, attempt, 1
+FROM (
+  SELECT *, ROW_NUMBER() OVER (
+    PARTITION BY run_id, connector_instance_id ORDER BY id DESC
+  ) AS rn
+  FROM scheduler_run_history
+  WHERE run_id IS NOT NULL
+) deduped
+WHERE rn = 1
+ORDER BY id ASC
+ON CONFLICT(run_id, connector_instance_id) WHERE run_id IS NOT NULL DO UPDATE SET
+  source_json = excluded.source_json,
+  status = excluded.status,
+  records_emitted = excluded.records_emitted,
+  reported_records_emitted = excluded.reported_records_emitted,
+  checkpoint_summary_json = excluded.checkpoint_summary_json,
+  known_gaps_json = excluded.known_gaps_json,
+  connector_error_json = excluded.connector_error_json,
+  trace_id = excluded.trace_id,
+  failure_reason = excluded.failure_reason,
+  terminal_reason = excluded.terminal_reason,
+  completed_at = excluded.completed_at,
+  error = excluded.error,
+  attempt = excluded.attempt,
+  scheduler_managed = 1;
+`);
+
+  // run_id IS NULL rows always insert as new rows (never conflict under a
+  // WHERE run_id IS NOT NULL partial unique index) — exactly once, since
+  // this whole function only ever runs inside the caller's single
+  // all-or-nothing transaction.
+  raw.exec(`
+INSERT INTO run_history(
+  connector_instance_id, connector_id, source_json, status, records_emitted,
+  reported_records_emitted, checkpoint_summary_json, known_gaps_json,
+  connector_error_json, run_id, trace_id, failure_reason, terminal_reason,
+  started_at, completed_at, error, attempt, scheduler_managed
+)
+SELECT
+  connector_instance_id, connector_id, source_json, status, records_emitted,
+  reported_records_emitted, checkpoint_summary_json, known_gaps_json,
+  connector_error_json, run_id, trace_id, failure_reason, terminal_reason,
+  started_at, completed_at, error, attempt, 1
+FROM scheduler_run_history
+WHERE run_id IS NULL
+ORDER BY id ASC;
+`);
+
+  // Verify the invariant before the caller is permitted to drop
+  // scheduler_run_history — see the Postgres twin's identical comment for
+  // the full reasoning (composite-identity existence check for run_id IS
+  // NOT NULL rows; before/after NULL-count delta for run_id IS NULL rows).
+  const unreconciledNamed = raw
+    .prepare(
+      `SELECT COUNT(*) AS n
+       FROM scheduler_run_history srh
+       WHERE srh.run_id IS NOT NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM run_history rh
+           WHERE rh.run_id = srh.run_id AND rh.connector_instance_id = srh.connector_instance_id
+         )`
+    )
+    .get() as { n: number };
+  if (unreconciledNamed.n > 0) {
+    throw new Error(
+      `reconcileLegacySchedulerRunHistory: ${unreconciledNamed.n} scheduler_run_history row(s) with a run_id could not be verified present in run_history after the merge — refusing to drop scheduler_run_history with unreconciled data. This should never happen (the merge INSERT above covers every run_id IS NOT NULL row); investigate before retrying.`
+    );
+  }
+
+  const rhNullCountAfter = (
+    raw.prepare("SELECT COUNT(*) AS n FROM run_history WHERE run_id IS NULL").get() as { n: number }
+  ).n;
+  const srhNullCount = (
+    raw.prepare("SELECT COUNT(*) AS n FROM scheduler_run_history WHERE run_id IS NULL").get() as { n: number }
+  ).n;
+  const nullRowsAddedByThisMerge = rhNullCountAfter - rhNullCountBefore;
+  if (nullRowsAddedByThisMerge !== srhNullCount) {
+    throw new Error(
+      `reconcileLegacySchedulerRunHistory: this merge added ${nullRowsAddedByThisMerge} run_id-IS-NULL row(s) to run_history but scheduler_run_history has ${srhNullCount} — refusing to drop scheduler_run_history with unreconciled data. This should never happen (the merge INSERT above is unconditional and unfiltered); investigate before retrying.`
+    );
+  }
+}
+
+function migrateRunHistoryRename(raw: SqliteDatabase): void {
+  const legacyExists = raw
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'scheduler_run_history'")
+    .get();
+  if (!legacyExists) {
+    return;
+  }
+
+  raw.transaction(() => {
+    const staleEmptyRunHistory = raw
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'run_history'")
+      .get();
+    if (staleEmptyRunHistory) {
+      const rowCount = raw.prepare("SELECT COUNT(*) AS n FROM run_history").get() as { n: number };
+      if (rowCount.n > 0) {
+        // Interrupted-migration state: both tables carry real data.
+        // Reconcile losslessly rather than refuse — see
+        // reconcileLegacySchedulerRunHistory's own header. run_history
+        // already carries the full current column set (it exists and is
+        // non-empty, so its own CREATE TABLE IF NOT EXISTS or an earlier
+        // completed rename already established it) — only the merge and
+        // the legacy DROP are needed here.
+        reconcileLegacySchedulerRunHistory(raw);
+        raw.exec("DROP TABLE scheduler_run_history;");
+        return;
+      }
+      raw.exec("DROP TABLE run_history;");
+    }
+    raw.exec("ALTER TABLE scheduler_run_history RENAME TO run_history;");
+    addColumnIfMissing(raw, "run_history", "trigger_kind", "TEXT");
+    addColumnIfMissing(raw, "run_history", "facts_json", "TEXT");
+    // Every pre-existing row was written exclusively by the scheduler's own
+    // appendRunHistory (the generalized writer did not exist yet) — mark
+    // them scheduler_managed=1 so cadence/backoff readers keep seeing
+    // exactly the rows they saw before this migration.
+    addColumnIfMissing(raw, "run_history", "scheduler_managed", "INTEGER NOT NULL DEFAULT 1");
+
+    // completed_at nullability is repaired separately by
+    // migrateRunHistoryCompletedAtNullable, called unconditionally (not
+    // gated on legacyExists) right after this function — see that
+    // function's own header for why the repair cannot live inside this
+    // legacy-table-gated branch.
+    raw.exec(`
+DROP INDEX IF EXISTS idx_scheduler_run_history_connector_completed;
+CREATE INDEX IF NOT EXISTS idx_run_history_connector_completed
+  ON run_history(connector_id, completed_at, id);
+`);
+  })();
+
+  // Separate, non-transactional step, mirroring the original migration's
+  // shape. run_id alone is NOT globally unique — two different
+  // connections can legitimately share a run_id (confirmed live; see
+  // openspec/changes/run-history-backfill-list-cutover) — so the real
+  // identity, and the only key this index can be built on without
+  // colliding on legitimate historical data, is (run_id,
+  // connector_instance_id). Unlike the bare-run_id index this replaces,
+  // this one is NOT wrapped in a swallow-and-log try/catch: a duplicate
+  // (run_id, connector_instance_id) pair would mean a genuine data
+  // anomaly (the same connection's same run recorded twice under
+  // different rows), which must fail the migration loudly rather than
+  // leave the writer's ON CONFLICT target unindexed and silently
+  // degraded.
+  raw.exec(`
+DROP INDEX IF EXISTS uniq_run_history_run_id;
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_run_history_run_id_instance
+  ON run_history(run_id, connector_instance_id) WHERE run_id IS NOT NULL;
+`);
+}
+
+// REVISE fix (fleet-migration gap, 2026-07-30 second gate pass): the
+// completed_at nullable repair e44bf3391 added lived INSIDE
+// migrateRunHistoryRename's `legacyExists`-gated branch, which returns
+// immediately once `scheduler_run_history` no longer exists. A database
+// whose scheduler_run_history -> run_history rename already executed
+// under an EARLIER deployment of this migration (i.e. before e44bf3391
+// shipped the completed_at fix) is permanently stuck on the legacy NOT
+// NULL constraint: the repair's own guard (`legacyExists`) is false by
+// the time that fix ships, so the repair never reaches it, and every
+// run.started write throws forever on that database. This is a distinct,
+// unconditional repair: it runs whenever `run_history` exists and its
+// completed_at column is still NOT NULL, independent of whether
+// scheduler_run_history exists. SQLite has no ALTER COLUMN; rebuild the
+// table with the fresh-install (nullable-completed_at) column defs, copy
+// every row by explicit column list (preserving `id` exactly — callers
+// order by it as a tie-breaker), drop the old table, rename the rebuild
+// into place. Idempotent (a second run finds completed_at already
+// nullable and no-ops); a no-op on fresh installs (run_history is
+// created nullable from the start).
+function migrateRunHistoryCompletedAtNullable(raw: SqliteDatabase): void {
+  const runHistoryExists = raw
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'run_history'")
+    .get();
+  if (!runHistoryExists) {
+    return;
+  }
+  const completedAtColumn = raw
+    .prepare("SELECT \"notnull\" FROM pragma_table_info('run_history') WHERE name = 'completed_at'")
+    .get() as { notnull: number } | undefined;
+  if (!completedAtColumn?.notnull) {
+    return;
+  }
+  raw.transaction(() => {
+    raw.exec(`
+CREATE TABLE run_history_new (
+  id                         INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id                     TEXT,
+  connector_instance_id      TEXT NOT NULL,
+  connector_id               TEXT NOT NULL,
+  trigger_kind               TEXT,
+  source_json                TEXT NOT NULL,
+  status                     TEXT NOT NULL,
+  records_emitted            INTEGER NOT NULL DEFAULT 0,
+  reported_records_emitted   INTEGER,
+  checkpoint_summary_json    TEXT,
+  known_gaps_json            TEXT NOT NULL DEFAULT '[]',
+  connector_error_json       TEXT,
+  trace_id                   TEXT,
+  failure_reason             TEXT,
+  terminal_reason            TEXT,
+  started_at                 TEXT NOT NULL,
+  completed_at               TEXT,
+  error                      TEXT,
+  attempt                    INTEGER NOT NULL DEFAULT 1,
+  facts_json                 TEXT,
+  scheduler_managed          INTEGER NOT NULL DEFAULT 0
+);
+INSERT INTO run_history_new (
+  id, run_id, connector_instance_id, connector_id, trigger_kind, source_json, status,
+  records_emitted, reported_records_emitted, checkpoint_summary_json, known_gaps_json,
+  connector_error_json, trace_id, failure_reason, terminal_reason, started_at,
+  completed_at, error, attempt, facts_json, scheduler_managed
+)
+SELECT
+  id, run_id, connector_instance_id, connector_id, trigger_kind, source_json, status,
+  records_emitted, reported_records_emitted, checkpoint_summary_json, known_gaps_json,
+  connector_error_json, trace_id, failure_reason, terminal_reason, started_at,
+  completed_at, error, attempt, facts_json, scheduler_managed
+FROM run_history;
+DROP TABLE run_history;
+ALTER TABLE run_history_new RENAME TO run_history;
+`);
+    // The rebuild drops every index the source table carried (SQLite does
+    // not preserve indexes across a table rename-in-place substitution
+    // here since run_history_new never had them) — recreate both indexes
+    // this table is known to carry so a repair on an already-migrated
+    // database does not silently lose them. The unique index is
+    // (run_id, connector_instance_id), not run_id alone — run_id is NOT
+    // globally unique (see migrateRunHistoryRename above and
+    // openspec/changes/run-history-backfill-list-cutover) — and, unlike
+    // the bare-run_id index this replaces, is NOT wrapped in a
+    // swallow-and-log try/catch: a duplicate (run_id,
+    // connector_instance_id) pair is a genuine data anomaly that must
+    // fail this migration loudly.
+    raw.exec(`
+CREATE INDEX IF NOT EXISTS idx_run_history_connector_completed
+  ON run_history(connector_id, completed_at, id);
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_run_history_run_id_instance
+  ON run_history(run_id, connector_instance_id) WHERE run_id IS NOT NULL;
+`);
+  })();
 }
 
 // Reference tables that hold a direct `connector_instance_id` reference.
@@ -4674,6 +5090,9 @@ CREATE INDEX IF NOT EXISTS idx_record_changes_emitted ON record_changes(connecto
 CREATE INDEX IF NOT EXISTS idx_blob_bindings_record ON blob_bindings(connector_instance_id, stream, record_key);
 `);
   runWithSqliteBusyRetrySync(() => migrateSchedulerInstanceColumns(raw));
+  runWithSqliteBusyRetrySync(() => migrateRunHistoryRename(raw));
+  runWithSqliteBusyRetrySync(() => migrateRunHistoryCompletedAtNullable(raw));
+  runWithSqliteBusyRetrySync(() => migrateConnectorMaintenanceCursorNameCheck(raw));
   runWithSqliteBusyRetrySync(() => migrateLegacyConnectorInstancesToDefaultAccount(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateConnectorInstancesSourceKindCheck(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateConnectorInstancesSourceKindBrowserCollector(raw, opts));

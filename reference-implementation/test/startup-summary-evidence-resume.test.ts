@@ -215,20 +215,26 @@ test("onRound is invoked once per round with the round number, in order", async 
   ]);
 });
 
-test("a resumeAfterId of null on an incomplete result (no further cursor available) still stops the walk rather than looping with a null cursor", async () => {
-  // Defensive case: an incomplete result with no cursor at all (should not
-  // happen in practice, but must not spin forever if it did).
+test("an incomplete first-page fold with a null cursor repeats only through the bounded startup cap", async () => {
+  // A bounded sweep uses the cursor before an incomplete page. For the first
+  // page that is NULL, so the same page must be retried; maxRounds prevents a
+  // genuinely heavy fold from making startup unbounded.
   const { calls, runSweep } = fakeSweep([
+    { discovered: 25, incomplete: true, repaired: 0, resumeAfterId: null, skipped: 0 },
+    { discovered: 25, incomplete: true, repaired: 0, resumeAfterId: null, skipped: 0 },
     { discovered: 25, incomplete: true, repaired: 0, resumeAfterId: null, skipped: 0 },
   ]);
   const rounds = await runStartupSummaryEvidenceSweepToCompletion({
     maxDurationMs: 5000,
-    maxRounds: 20,
+    maxRounds: 3,
     pageSize: 25,
     runSweep,
   });
-  assert.equal(rounds.length, 1);
-  assert.equal(calls.length, 1, "no resume is attempted without a genuine cursor to resume from");
+  assert.equal(rounds.length, 3);
+  assert.deepEqual(
+    calls.map((call) => call.afterId),
+    [null, null, null]
+  );
 });
 
 test("every round's maxDurationMs/pageSize are passed through unchanged across the whole walk", async () => {

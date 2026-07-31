@@ -17,9 +17,16 @@ import { closePostgresStorage, initPostgresStorage, postgresQuery } from "../ser
 import {
   type BrowserSurfaceLeaseStore,
   type BrowserSurfaceWithPersistenceMetadata,
+  browserSurfaceConnectionIdentityKey,
   createPostgresBrowserSurfaceLeaseStore,
   createSqliteBrowserSurfaceLeaseStore,
 } from "../server/stores/browser-surface-lease-store.ts";
+
+const POSTGRES_SCOPED_IDENTITY_PREDICATE =
+  /WHERE \(connector_id = \$1 AND profile_key = \$2 AND surface_subject_id IS NOT DISTINCT FROM \$3\)/;
+const UNFILTERED_BROWSER_SURFACE_QUERY = /SELECT \* FROM browser_(surface_leases|surfaces) ORDER BY/;
+const OVER_CAP_CONNECTION_IDENTITIES = /at most 25 connection identities/;
+const INDUCED_POSTGRES_SCOPED_FIXTURE_FAILURE = /induced Postgres scoped-fixture setup failure/;
 
 function surface(
   overrides: Partial<BrowserSurfaceWithPersistenceMetadata> = {}
@@ -76,6 +83,29 @@ function mustExist<T>(value: T | null, description: string): T {
 function mustRow<T>(value: T | undefined, description: string): T {
   assert.ok(value, description);
   return value;
+}
+
+function matchesIdentity(
+  row: { readonly connector_id: string; readonly profile_key: string; readonly surface_subject_id?: string },
+  identity: { readonly connector_id: string; readonly profile_key: string; readonly surface_subject_id: string | null }
+): boolean {
+  return (
+    row.connector_id === identity.connector_id &&
+    row.profile_key === identity.profile_key &&
+    (row.surface_subject_id ?? null) === identity.surface_subject_id
+  );
+}
+
+function identityKeyForRow(row: {
+  readonly connector_id: string;
+  readonly profile_key: string;
+  readonly surface_subject_id?: string;
+}): string {
+  return browserSurfaceConnectionIdentityKey({
+    connector_id: row.connector_id,
+    profile_key: row.profile_key,
+    surface_subject_id: row.surface_subject_id ?? null,
+  });
 }
 
 function typedDb(): Database.Database {
@@ -213,6 +243,294 @@ test("persists and reloads browser surfaces and leases as domain objects", async
     assert.deepEqual(await store.listNonTerminalLeases(), [persistedLease]);
   } finally {
     teardown();
+  }
+});
+
+test("SQLite scoped browser-surface reads match filtered global rows for 0, 1, and 25 identities", async () => {
+  const store = setup();
+  try {
+    const identities = Array.from({ length: 25 }, (_, index) => ({
+      connector_id: "shared_connector",
+      profile_key: "shared_profile",
+      surface_subject_id: `subject_${String(index).padStart(2, "0")}`,
+    }));
+    await Promise.all(
+      identities.flatMap((identity, index) => [
+        store.upsertSurface(
+          surface({
+            connector_id: identity.connector_id,
+            profile_key: identity.profile_key,
+            surface_id: `surface_${index}`,
+            surface_subject_id: identity.surface_subject_id,
+          })
+        ),
+        store.upsertLease(
+          lease({
+            connector_id: identity.connector_id,
+            lease_id: `lease_${index}`,
+            profile_key: identity.profile_key,
+            run_id: `run_${index}`,
+            surface_id: `surface_${index}`,
+            surface_subject_id: identity.surface_subject_id,
+          })
+        ),
+      ])
+    );
+    const cases = [[], identities.slice(0, 1), identities] as const;
+    const [globalLeases, globalNonTerminalLeases, globalSurfaces, batches] = await Promise.all([
+      store.listLeases(),
+      store.listNonTerminalLeases(),
+      store.listSurfaces(),
+      Promise.all(cases.map((requested) => store.readForConnectionIdentities(requested))),
+    ]);
+    for (const [caseIndex, requested] of cases.entries()) {
+      const batch = mustRow(batches[caseIndex], `scope ${caseIndex} has a batch result`);
+      assert.equal(batch.size, requested.length, "every requested identity remains explicit");
+      for (const identity of requested) {
+        const key = browserSurfaceConnectionIdentityKey(identity);
+        const rows = mustRow(batch.get(key), `requested identity ${key} is explicit`);
+        assert.deepEqual(
+          rows.leases,
+          globalLeases.filter((row) => matchesIdentity(row, identity))
+        );
+        assert.deepEqual(
+          rows.non_terminal_leases,
+          globalNonTerminalLeases.filter((row) => matchesIdentity(row, identity))
+        );
+        assert.deepEqual(
+          rows.surfaces,
+          globalSurfaces.filter((row) => matchesIdentity(row, identity))
+        );
+      }
+    }
+    const missing = { connector_id: "missing_connector", profile_key: "missing_profile", surface_subject_id: null };
+    const missingRows = mustRow(
+      (await store.readForConnectionIdentities([missing])).get(browserSurfaceConnectionIdentityKey(missing)),
+      "missing identity remains explicit"
+    );
+    assert.deepEqual(missingRows, { identity: missing, leases: [], non_terminal_leases: [], surfaces: [] });
+    assert.throws(
+      () =>
+        store.readForConnectionIdentities([
+          ...identities,
+          { connector_id: "overflow", profile_key: "overflow", surface_subject_id: "overflow" },
+        ]),
+      OVER_CAP_CONNECTION_IDENTITIES
+    );
+  } finally {
+    teardown();
+  }
+});
+
+test("Postgres scoped browser-surface reads use two bounded identity queries and never global lists", async () => {
+  const calls: { params: unknown[]; sql: string }[] = [];
+  const identities = Array.from({ length: 25 }, (_, index) => ({
+    connector_id: "shared_connector",
+    profile_key: "shared_profile",
+    surface_subject_id: `subject_${index}`,
+  }));
+  const leases = identities.map((identity, index) =>
+    lease({
+      connector_id: identity.connector_id,
+      lease_id: `lease_${index}`,
+      profile_key: identity.profile_key,
+      run_id: `run_${index}`,
+      surface_id: `surface_${index}`,
+      surface_subject_id: identity.surface_subject_id,
+    })
+  );
+  const surfaces = identities.map((identity, index) =>
+    surface({
+      connector_id: identity.connector_id,
+      profile_key: identity.profile_key,
+      surface_id: `surface_${index}`,
+      surface_subject_id: identity.surface_subject_id,
+    })
+  );
+  const store = createPostgresBrowserSurfaceLeaseStore({
+    // biome-ignore lint/suspicious/useAwait: async test double preserves the store dependency contract.
+    async query(sql: string, params: unknown[] = []) {
+      calls.push({ params, sql });
+      assert.match(sql, POSTGRES_SCOPED_IDENTITY_PREDICATE);
+      assert.doesNotMatch(sql, UNFILTERED_BROWSER_SURFACE_QUERY);
+      const keys = new Set(
+        Array.from({ length: params.length / 3 }, (_, index) =>
+          browserSurfaceConnectionIdentityKey({
+            connector_id: String(params[index * 3]),
+            profile_key: String(params[index * 3 + 1]),
+            surface_subject_id: (params[index * 3 + 2] as string | null) ?? null,
+          })
+        )
+      );
+      const rows = sql.includes("browser_surface_leases") ? leases : surfaces;
+      return {
+        rows: rows.filter((row) => keys.has(identityKeyForRow(row))) as never,
+      };
+    },
+  });
+
+  assert.equal((await store.readForConnectionIdentities([])).size, 0);
+  assert.equal(calls.length, 0, "empty scope makes no database query");
+  const firstIdentity = mustRow(identities[0], "first identity");
+  const firstLease = mustRow(leases[0], "first lease");
+  const firstSurface = mustRow(surfaces[0], "first surface");
+  const one = await store.readForConnectionIdentities([firstIdentity]);
+  assert.equal(one.size, 1);
+  assert.equal(calls.length, 2, "one leases query and one surfaces query for one identity");
+  assert.deepEqual(calls[0]?.params, ["shared_connector", "shared_profile", "subject_0"]);
+  assert.deepEqual(mustRow(one.get(browserSurfaceConnectionIdentityKey(firstIdentity)), "one identity result"), {
+    identity: firstIdentity,
+    leases: [firstLease],
+    non_terminal_leases: [firstLease],
+    surfaces: [firstSurface],
+  });
+  calls.length = 0;
+
+  const all = await store.readForConnectionIdentities(identities);
+  const lastIdentity = mustRow(identities[24], "25th identity");
+  const lastLease = mustRow(leases[24], "25th lease");
+  const lastSurface = mustRow(surfaces[24], "25th surface");
+  assert.equal(all.size, 25);
+  assert.equal(calls.length, 2, "one leases query and one surfaces query for 25 identities");
+  assert.equal(mustRow(calls[0], "leases query").params.length, 75);
+  assert.equal(mustRow(calls[1], "surfaces query").params.length, 75);
+  assert.deepEqual(mustRow(all.get(browserSurfaceConnectionIdentityKey(lastIdentity)), "25th identity result"), {
+    identity: lastIdentity,
+    leases: [lastLease],
+    non_terminal_leases: [lastLease],
+    surfaces: [lastSurface],
+  });
+});
+
+interface PostgresScopedFixtureIdentity {
+  readonly connector_id: string;
+  readonly profile_key: string;
+  readonly surface_subject_id: string;
+}
+
+async function assertNoPostgresScopedFixtureRows(connectorId: string): Promise<void> {
+  const [leases, surfaces] = await Promise.all([
+    postgresQuery<{ count: number }>(
+      "SELECT count(*)::int AS count FROM browser_surface_leases WHERE connector_id = $1",
+      [connectorId]
+    ),
+    postgresQuery<{ count: number }>("SELECT count(*)::int AS count FROM browser_surfaces WHERE connector_id = $1", [
+      connectorId,
+    ]),
+  ]);
+  assert.equal(Number(leases.rows[0]?.count ?? -1), 0, "fixture cleanup leaves no browser-surface leases");
+  assert.equal(Number(surfaces.rows[0]?.count ?? -1), 0, "fixture cleanup leaves no browser surfaces");
+}
+
+async function cleanupPostgresScopedFixture(connectorId: string): Promise<void> {
+  await postgresQuery("DELETE FROM browser_surface_leases WHERE connector_id = $1", [connectorId]);
+  await postgresQuery("DELETE FROM browser_surfaces WHERE connector_id = $1", [connectorId]);
+  await assertNoPostgresScopedFixtureRows(connectorId);
+}
+
+async function withPostgresScopedFixture<T>(
+  input: {
+    readonly fail_after_surface_index?: number;
+    readonly identities: readonly PostgresScopedFixtureIdentity[];
+    readonly run_prefix: string;
+    readonly store: BrowserSurfaceLeaseStore;
+  },
+  body: () => Promise<T>
+): Promise<T> {
+  const connectorId = input.identities[0]?.connector_id;
+  assert.ok(connectorId, "Postgres fixture requires at least one identity");
+  try {
+    for (const [index, identity] of input.identities.entries()) {
+      const surfaceId = `${input.run_prefix}_surface_${index}`;
+      // biome-ignore lint/performance/noAwaitInLoops: each surface must commit before its FK-linked lease.
+      await input.store.upsertSurface(
+        surface({
+          connector_id: identity.connector_id,
+          profile_key: identity.profile_key,
+          surface_id: surfaceId,
+          surface_subject_id: identity.surface_subject_id,
+        })
+      );
+      if (index === input.fail_after_surface_index) {
+        throw new Error("induced Postgres scoped-fixture setup failure");
+      }
+      await input.store.upsertLease(
+        lease({
+          connector_id: identity.connector_id,
+          lease_id: `${input.run_prefix}_lease_${index}`,
+          profile_key: identity.profile_key,
+          run_id: `${input.run_prefix}_run_${index}`,
+          surface_id: surfaceId,
+          surface_subject_id: identity.surface_subject_id,
+        })
+      );
+    }
+    return await body();
+  } finally {
+    await cleanupPostgresScopedFixture(connectorId);
+  }
+}
+
+test("Postgres scoped browser-surface reads match filtered global rows for 0, 1, and 25 identities", {
+  skip: !POSTGRES_URL,
+}, async () => {
+  const databaseUrl = mustExist(POSTGRES_URL ?? null, "PDPP_TEST_POSTGRES_URL is set (test is skipped otherwise)");
+  const runPrefix = `scoped_observation_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  const connectorId = `${runPrefix}_connector`;
+  const profileKey = `${runPrefix}_profile`;
+  const identities = Array.from({ length: 25 }, (_, index) => ({
+    connector_id: connectorId,
+    profile_key: profileKey,
+    surface_subject_id: `${runPrefix}_subject_${index}`,
+  }));
+  await initPostgresStorage({ backend: "postgres", databaseUrl });
+  const store = createPostgresBrowserSurfaceLeaseStore();
+  try {
+    await withPostgresScopedFixture({ identities, run_prefix: runPrefix, store }, async () => {
+      const cases = [[], identities.slice(0, 1), identities] as const;
+      const [globalLeases, globalNonTerminalLeases, globalSurfaces, batches] = await Promise.all([
+        store.listLeases(),
+        store.listNonTerminalLeases(),
+        store.listSurfaces(),
+        Promise.all(cases.map((requested) => store.readForConnectionIdentities(requested))),
+      ]);
+      for (const [caseIndex, requested] of cases.entries()) {
+        const batch = mustRow(batches[caseIndex], `Postgres scope ${caseIndex} has a batch result`);
+        assert.equal(batch.size, requested.length);
+        for (const identity of requested) {
+          const rows = mustRow(batch.get(browserSurfaceConnectionIdentityKey(identity)), "Postgres identity result");
+          assert.deepEqual(
+            rows.leases,
+            globalLeases.filter((row) => matchesIdentity(row, identity))
+          );
+          assert.deepEqual(
+            rows.non_terminal_leases,
+            globalNonTerminalLeases.filter((row) => matchesIdentity(row, identity))
+          );
+          assert.deepEqual(
+            rows.surfaces,
+            globalSurfaces.filter((row) => matchesIdentity(row, identity))
+          );
+        }
+      }
+    });
+    const failedRunPrefix = `${runPrefix}_failed_setup`;
+    const failedConnectorId = `${failedRunPrefix}_connector`;
+    await assert.rejects(
+      withPostgresScopedFixture(
+        {
+          fail_after_surface_index: 1,
+          identities: identities.slice(0, 3).map((identity) => ({ ...identity, connector_id: failedConnectorId })),
+          run_prefix: failedRunPrefix,
+          store,
+        },
+        async () => assert.fail("induced fixture setup failure must prevent the test body")
+      ),
+      INDUCED_POSTGRES_SCOPED_FIXTURE_FAILURE
+    );
+    await assertNoPostgresScopedFixtureRows(failedConnectorId);
+  } finally {
+    await closePostgresStorage();
   }
 });
 

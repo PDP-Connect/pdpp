@@ -41,7 +41,11 @@ import test from "node:test";
 // biome-ignore lint/correctness/noUnresolvedImports: Biome resolver cannot model this installed package export
 import Database from "better-sqlite3";
 import { reconcileConnectorSummaryEvidence } from "../server/connector-summary-evidence-engine.ts";
-import { runBoundedSummaryEvidenceSweep } from "../server/connector-summary-read-model.ts";
+import {
+  runBoundedSummaryEvidenceSweep,
+  setConnectorSummaryReconcileObservationSink,
+} from "../server/connector-summary-read-model.ts";
+import type { ConnectorSummaryReconcileObservation } from "../server/connector-summary-reconcile-observability.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
 
 const NOW = "2026-07-17T00:00:00.000Z";
@@ -90,6 +94,38 @@ function evidenceRowCount() {
   return row.n;
 }
 
+function seedTerminalEvents(connectorInstanceId: string, count: number): number {
+  for (let eventSeq = 1; eventSeq <= count; eventSeq += 1) {
+    getDb()
+      .prepare(
+        `INSERT INTO spine_events(
+           event_id, event_seq, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+           actor_type, actor_id, object_type, object_id, status, run_id, connector_instance_id, data_json, version
+         ) VALUES(?, ?, 'run.completed', ?, ?, 'test', ?, 'runtime', 'test', 'run', ?, 'succeeded', ?, ?, ?, '1')`
+      )
+      .run(
+        `evt_starvation_${eventSeq}`,
+        eventSeq,
+        NOW,
+        NOW,
+        `trace_starvation_${eventSeq}`,
+        `run_starvation_${eventSeq}`,
+        `run_starvation_${eventSeq}`,
+        connectorInstanceId,
+        JSON.stringify({
+          collection_facts: {
+            reference_only: true,
+            schema_version: 1,
+            streams: [{ record_count: eventSeq, resolved: true, stream: "messages" }],
+          },
+          connection_id: connectorInstanceId,
+          connector_instance_id: connectorInstanceId,
+        })
+      );
+  }
+  return count;
+}
+
 test(
   "a sweep whose deadline is exhausted mid-set stops early, reports incomplete, and never runs complete-set pruning",
   withTempDb(async () => {
@@ -102,7 +138,11 @@ test(
     const result = await runBoundedSummaryEvidenceSweep({ maxDurationMs: 1, pageSize: 10 });
 
     assert.equal(result.incomplete, true, "a near-zero deadline cannot cover 50 connections in 10-per-page pages");
-    assert.ok(result.resumeAfterId, "an incomplete sweep returns a resume cursor");
+    assert.equal(
+      result.resumeAfterId,
+      null,
+      "a deadline-cut first page resumes from its durable cursor-before-page rather than skipping it"
+    );
     assert.equal(result.prunedComplete, false, "an incomplete sweep must never run complete-set orphan pruning");
     assert.ok(result.discovered < n, "fewer than the complete set was discovered this call");
     assert.ok(result.discovered > 0, "at least the first page ran before the deadline check stopped further pages");
@@ -250,5 +290,134 @@ test(
       calls50,
       `one page against N=200 total connections issued ${calls200} prepare calls vs N=50's ${calls50} — a single bounded page's discovery+fold+repair must not scale with total N`
     );
+  })
+);
+
+test(
+  "SQLite: a 25-row first page folds before slow generic repairs, advances its durable checkpoints, and records non-zero-progress evidence",
+  withTempDb(async () => {
+    const ids = seedConnections(25);
+    await reconcileConnectorSummaryEvidence(null);
+    const targetSeq = seedTerminalEvents(ids[0] as string, 274);
+    getDb().prepare("UPDATE connector_summary_evidence SET dirty = 1").run();
+
+    const observations: ConnectorSummaryReconcileObservation[] = [];
+    setConnectorSummaryReconcileObservationSink((observation) => observations.push(observation));
+    process.env.PDPP_TEST_REPAIR_CANDIDATE_SQLITE_DELAY_MS = "80";
+    try {
+      const first = await runBoundedSummaryEvidenceSweep({ maxDurationMs: 300, pageSize: 25 });
+      assert.equal(first.incomplete, true, "slow generic repairs consume the bounded round after the fold phase");
+      assert.equal(
+        first.resumeAfterId,
+        null,
+        "generic repair deferral retries the same durable page while preserving its completed fold checkpoints"
+      );
+      const checkpoints = getDb()
+        .prepare("SELECT stream_facts_event_seq FROM connector_summary_evidence ORDER BY connector_instance_id")
+        .all<{ stream_facts_event_seq: number }>();
+      assert.deepEqual(
+        checkpoints.map((row) => Number(row.stream_facts_event_seq)),
+        Array.from({ length: 25 }, () => targetSeq),
+        "every existing first-page participant reaches the scoped terminal high-water before generic repair latency"
+      );
+      const observation = observations.at(-1);
+      assert.equal(observation?.terminalFoldParticipants, 25);
+      assert.equal(observation?.terminalFoldMinimumCheckpointBefore, 0);
+      assert.equal(observation?.terminalFoldMinimumCheckpointAfter, targetSeq);
+      assert.equal(observation?.terminalFoldEventsRead, targetSeq);
+      assert.equal(observation?.terminalFoldZeroProgress, false);
+      assert.ok(Number(observation?.repairDurationMs) >= 80, "the receipt distinguishes repair time from the fold");
+      assert.equal(
+        "terminalFoldBudgetMs" in (observation ?? {}),
+        false,
+        "the receipt does not invent a per-phase time budget"
+      );
+
+      delete process.env.PDPP_TEST_REPAIR_CANDIDATE_SQLITE_DELAY_MS;
+      const restart = await runBoundedSummaryEvidenceSweep({
+        afterId: first.resumeAfterId,
+        maxDurationMs: 300,
+        pageSize: 25,
+      });
+      assert.equal(restart.incomplete, false, "a restarted maintenance process accepts the advanced durable cursor");
+      assert.equal(restart.resumeAfterId, null, "the completed resumed walk clears the cursor normally");
+      assert.equal(
+        observations.filter(
+          (receipt) => receipt.incomplete && receipt.terminalFoldParticipants > 0 && receipt.terminalFoldZeroProgress
+        ).length,
+        0,
+        "no accepted bounded round leaves this first-page terminal checkpoint vector unchanged"
+      );
+    } finally {
+      delete process.env.PDPP_TEST_REPAIR_CANDIDATE_SQLITE_DELAY_MS;
+      setConnectorSummaryReconcileObservationSink(null);
+    }
+  })
+);
+
+test(
+  "SQLite: a newer terminal event on page two does not reclassify already-current page-one evidence for generic repair",
+  withTempDb(async () => {
+    const ids = seedConnections(26);
+    await reconcileConnectorSummaryEvidence(null);
+    const pageOneComputedAt = getDb()
+      .prepare(
+        "SELECT connector_instance_id, computed_at FROM connector_summary_evidence WHERE connector_instance_id < ? ORDER BY connector_instance_id"
+      )
+      .all<{ computed_at: string; connector_instance_id: string }>(ids[25] as string);
+    seedTerminalEvents(ids[25] as string, 1);
+
+    const result = await reconcileConnectorSummaryEvidence(null);
+    assert.equal(result.repaired, 1, "only page two's lifecycle receipt needs generic repair");
+    assert.equal(result.candidateReasonCounts.lifecycle_checkpoint_lag, 1);
+    assert.equal(
+      "terminal_checkpoint_lag" in result.candidateReasonCounts,
+      false,
+      "terminal checkpoints are exclusively folded, never classified by generic repair"
+    );
+    const pageOneAfter = getDb()
+      .prepare(
+        "SELECT connector_instance_id, computed_at FROM connector_summary_evidence WHERE connector_instance_id < ? ORDER BY connector_instance_id"
+      )
+      .all<{ computed_at: string; connector_instance_id: string }>(ids[25] as string);
+    assert.deepEqual(pageOneAfter, pageOneComputedAt, "the unrelated newer event does not rewrite page one");
+  })
+);
+
+test(
+  "SQLite mutation: a 1ms cold page starts at most one slow repair, invents no fold budget, and later converges",
+  withTempDb(async () => {
+    const ids = seedConnections(25);
+    seedTerminalEvents(ids[0] as string, 1);
+    const observations: ConnectorSummaryReconcileObservation[] = [];
+    setConnectorSummaryReconcileObservationSink((observation) => observations.push(observation));
+    process.env.PDPP_TEST_REPAIR_CANDIDATE_SQLITE_DELAY_MS = "80";
+    try {
+      const startedAt = Date.now();
+      const first = await runBoundedSummaryEvidenceSweep({ maxDurationMs: 1, pageSize: 25 });
+      const elapsedMs = Date.now() - startedAt;
+      assert.equal(first.incomplete, true, "the expired cold page retains its durable cursor-before-page");
+      assert.equal(first.resumeAfterId, null, "the first page is retried rather than skipped");
+      assert.ok(evidenceRowCount() <= 1, "at most one 80ms writer-fenced cold repair started before expiry");
+      assert.ok(elapsedMs < 250, "overshoot is bounded by one configured repair unit, never 25 repairs");
+      const receipt = observations.at(-1);
+      assert.equal(
+        "terminalFoldBudgetMs" in (receipt ?? {}),
+        false,
+        "no positive fold timeout is invented after expiry"
+      );
+      assert.ok((receipt?.terminalFoldEventsRead ?? 0) <= 500, "a started fold cannot exceed its finite event cap");
+    } finally {
+      delete process.env.PDPP_TEST_REPAIR_CANDIDATE_SQLITE_DELAY_MS;
+      setConnectorSummaryReconcileObservationSink(null);
+    }
+
+    const resumed = await runBoundedSummaryEvidenceSweep({ maxDurationMs: 60_000, pageSize: 25 });
+    assert.equal(resumed.incomplete, false, "a normal later round converges the cold page");
+    assert.equal(evidenceRowCount(), 25, "all cold evidence rows eventually exist");
+    const checkpoint = getDb()
+      .prepare("SELECT stream_facts_event_seq FROM connector_summary_evidence WHERE connector_instance_id = ?")
+      .get<{ stream_facts_event_seq: number }>(ids[0] as string);
+    assert.equal(Number(checkpoint?.stream_facts_event_seq), 1, "the durable fold resumes from created evidence");
   })
 );

@@ -3,7 +3,12 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { emitSpineEvent, listSpineCorrelations, listSpineEventsPage } from "../lib/spine.ts";
+import {
+  emitSpineEvent,
+  listRunSummariesByConnectorIds,
+  listSpineCorrelations,
+  listSpineEventsPage,
+} from "../lib/spine.ts";
 import { closePostgresStorage, initPostgresStorage, postgresQuery } from "../server/postgres-storage.ts";
 
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
@@ -87,6 +92,50 @@ test("Postgres preserves new run identity and rejects an unbound writer", { skip
     await postgresQuery("DELETE FROM spine_events WHERE event_id IN ($1, $2)", [EVENT_ID, HISTORICAL_EVENT_ID]).catch(
       () => undefined
     );
+    await closePostgresStorage();
+  }
+});
+
+test("Postgres page-batched succeeded runs retain an older success behind 70 newer failures", {
+  skip: POSTGRES_URL ? false : "PDPP_TEST_POSTGRES_URL is required for PostgreSQL status-window authority",
+}, async () => {
+  assert.ok(POSTGRES_URL);
+  const connectorId = "batched_status_window_postgres";
+  await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
+  try {
+    await postgresQuery("DELETE FROM spine_events WHERE source_id = $1", [connectorId]);
+    for (let index = 0; index < 70; index += 1) {
+      // biome-ignore lint/performance/noAwaitInLoops: each fixture run has a distinct ordered terminal event.
+      await emitSpineEvent({
+        event_id: `evt_batched_status_failed_${index}`,
+        event_type: "run.failed",
+        object_id: `run_new_failed_${index}`,
+        object_type: "run",
+        occurred_at: `2026-04-02T00:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}Z`,
+        run_id: `run_new_failed_${index}`,
+        source_id: connectorId,
+        source_kind: "connector",
+        status: "failed",
+      });
+    }
+    await emitSpineEvent({
+      event_id: "evt_batched_status_success",
+      event_type: "run.completed",
+      object_id: "run_old_success",
+      object_type: "run",
+      occurred_at: "2026-04-01T00:00:00Z",
+      run_id: "run_old_success",
+      source_id: connectorId,
+      source_kind: "connector",
+      status: "succeeded",
+    });
+    const succeeded = await listRunSummariesByConnectorIds([connectorId], "succeeded");
+    assert.deepEqual(
+      (succeeded.get(connectorId) ?? []).map((summary) => [summary.run_id, summary.status]),
+      [["run_old_success", "succeeded"]]
+    );
+  } finally {
+    await postgresQuery("DELETE FROM spine_events WHERE source_id = $1", [connectorId]).catch(() => undefined);
     await closePostgresStorage();
   }
 });

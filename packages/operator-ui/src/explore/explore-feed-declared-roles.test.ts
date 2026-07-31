@@ -31,6 +31,7 @@ import type { DashboardDataSource } from "../lib/data-source.ts";
 import type { ExploreTimelinePage, ExploreTimelineRecord, RefConnectorSummary } from "../lib/ref-client.ts";
 import type { ConnectorManifest, RecordsPage, StreamMetadata } from "../lib/rs-client.ts";
 import { assembleExplorerData } from "./explore-data-assembler.ts";
+import { mockListConnectorSummaries } from "./test-mock-connector-summaries.ts";
 
 const SNAPSHOT_AT = "2026-12-31T00:00:00Z";
 
@@ -131,8 +132,7 @@ function makeDataSource(page: ExploreTimelinePage): DashboardDataSource {
     isSemanticRetrievalAdvertised: () => Promise.resolve(false),
     kind: "live",
     listConnectorManifests: () => Promise.resolve([chatgptManifest()]),
-    listConnectorSummaries: () =>
-      Promise.resolve({ data: [chatgptSummary()], has_more: false, object: "list" as const }),
+    listConnectorSummaries: mockListConnectorSummaries([chatgptSummary()]),
     listExploreRecordBuckets: notStubbed,
     listExploreTimeline: (): Promise<ExploreTimelinePage> => Promise.resolve(page),
     listGrants: () => Promise.resolve({ data: [], has_more: false, object: "list" as const }),

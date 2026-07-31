@@ -35,6 +35,8 @@
  */
 
 import { iterateDynamicSqlAcknowledged } from "../lib/db.ts";
+import type { EphemeralBrowserRuntimeProjection } from "../runtime/browser-surface/ephemeral-health-projection.ts";
+import type { RepairCandidateReason } from "./connector-summary-evidence-engine.ts";
 import {
   pruneOrphanedEvidenceComplete,
   readAllInstanceIdsForPruning,
@@ -49,6 +51,34 @@ import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.ts";
 type Row = Record<string, unknown>;
 
 type ConnectorSummaryReconcileObservationSink = (observation: ConnectorSummaryReconcileObservation) => void;
+
+const GENERIC_REPAIR_CANDIDATE_REASONS: readonly RepairCandidateReason[] = [
+  "dirty",
+  "record_checkpoint_mismatch",
+  "identity_mismatch",
+  "manifest_mismatch",
+  "retained_bytes_changed_or_unavailable",
+  "schedule_mismatch",
+  "lifecycle_checkpoint_lag",
+];
+
+/** Bounded maintenance never creates more than one ordinary page of cold evidence. */
+const BOUNDED_MISSING_REPAIR_CANDIDATES = 25;
+/** A bounded fold reads at most this many terminal events in one started batch. */
+const BOUNDED_FOLD_MAX_EVENTS = 500;
+
+function resolveCooperativeDeadline(options: {
+  readonly deadline?: number;
+  readonly maxDurationMs?: number;
+}): number | null {
+  if (typeof options.deadline === "number") {
+    return options.deadline;
+  }
+  if (typeof options.maxDurationMs === "number") {
+    return Date.now() + options.maxDurationMs;
+  }
+  return null;
+}
 
 let connectorSummaryReconcileObservationSink: ConnectorSummaryReconcileObservationSink | null = null;
 
@@ -129,6 +159,53 @@ function parseEvidenceJson(value: unknown, fallback: unknown): unknown {
   }
 }
 
+/**
+ * Narrow handoff for the separately-owned scoped runtime observer. The
+ * terminal list projection stores the observer's already-classified result;
+ * it never discovers surfaces, reads runtime history, or treats an omitted
+ * observation as healthy.
+ */
+export interface ConnectorListSummaryRuntimeEvidence {
+  readonly observed_at: string;
+  readonly projection: EphemeralBrowserRuntimeProjection | null;
+}
+
+export interface ConnectorListSummaryTerminalProjection {
+  readonly runtime: ConnectorListSummaryRuntimeEvidence | null;
+  /** Exact owner LIST-item shape, retained as one named projection payload. */
+  readonly summary: Record<string, unknown>;
+}
+
+export interface ConnectorListSummaryTerminalProjectionEnvelope {
+  readonly computed_at: string | null;
+  readonly projection: ConnectorListSummaryTerminalProjection | null;
+  readonly reason_code: string | null;
+  readonly state: "current" | "stale" | "unobserved" | "failed";
+}
+
+const TERMINAL_PROJECTION_STATES = new Set(["current", "stale", "failed"]);
+
+function terminalProjectionState(value: unknown): ConnectorListSummaryTerminalProjectionEnvelope["state"] {
+  return typeof value === "string" && TERMINAL_PROJECTION_STATES.has(value)
+    ? (value as ConnectorListSummaryTerminalProjectionEnvelope["state"])
+    : "unobserved";
+}
+
+function parseTerminalProjection(value: unknown): ConnectorListSummaryTerminalProjection | null {
+  const parsed = parseEvidenceJson(value, null);
+  if (!(parsed && typeof parsed === "object" && !Array.isArray(parsed))) {
+    return null;
+  }
+  const candidate = parsed as Record<string, unknown>;
+  if (!(candidate.summary && typeof candidate.summary === "object" && !Array.isArray(candidate.summary))) {
+    return null;
+  }
+  return {
+    runtime: (candidate.runtime as ConnectorListSummaryRuntimeEvidence | null | undefined) ?? null,
+    summary: candidate.summary as Record<string, unknown>,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Domain-local store: connector_summary_evidence
 //
@@ -178,7 +255,10 @@ function createConnectorSummaryStore() {
                   retained_bytes_state, retained_bytes_reason_code,
                   stream_latest_facts_json, stream_facts_event_seq, stream_facts_fold_version,
                   dirty, computed_at, source_event_seq, state, last_error,
-                  manifest_generation, schedule_checkpoint, run_lifecycle_event_seq
+                  canonical_evidence_revision,
+                  manifest_generation, schedule_checkpoint, run_lifecycle_event_seq,
+                  list_summary_projection_json, list_summary_projection_state,
+                  list_summary_projection_reason_code, list_summary_projection_computed_at
              FROM connector_summary_evidence
              ${where}
              ORDER BY connector_instance_id ASC`,
@@ -187,9 +267,16 @@ function createConnectorSummaryStore() {
         return result.rows;
       },
       async markAllDirty({ sanitized }: { sanitized?: string | null }) {
-        await postgresQuery(`UPDATE connector_summary_evidence SET dirty = 1, state = 'stale', last_error = $1`, [
-          sanitized,
-        ]);
+        await postgresQuery(
+          `UPDATE connector_summary_evidence
+              SET dirty = 1,
+                  state = 'stale',
+                  last_error = $1,
+                  canonical_evidence_revision = canonical_evidence_revision + 1,
+                  list_summary_projection_state = 'stale',
+                  list_summary_projection_reason_code = 'canonical_evidence_dirty'`,
+          [sanitized]
+        );
       },
       async markAllDiscoveryFailed({
         sanitized,
@@ -211,6 +298,9 @@ function createConnectorSummaryStore() {
               SET dirty = 1,
                   state = 'stale',
                   last_error = $1,
+                  canonical_evidence_revision = canonical_evidence_revision + 1,
+                  list_summary_projection_state = 'stale',
+                  list_summary_projection_reason_code = 'canonical_evidence_dirty',
                   record_snapshot_state = 'failed',
                   record_snapshot_reason_code = $2,
                   manifest_declaration_state = 'failed',
@@ -243,6 +333,9 @@ function createConnectorSummaryStore() {
               SET dirty = 1,
                   state = 'stale',
                   last_error = $1,
+                  canonical_evidence_revision = canonical_evidence_revision + 1,
+                  list_summary_projection_state = 'stale',
+                  list_summary_projection_reason_code = 'canonical_evidence_dirty',
                   terminal_facts_state = $2,
                   terminal_facts_reason_code = $3
               ${where}`,
@@ -276,6 +369,9 @@ function createConnectorSummaryStore() {
               SET dirty = 1,
                   state = 'stale',
                   last_error = $2,
+                  canonical_evidence_revision = canonical_evidence_revision + 1,
+                  list_summary_projection_state = 'stale',
+                  list_summary_projection_reason_code = 'canonical_evidence_dirty',
                   source_event_seq = COALESCE($3, source_event_seq)
             WHERE connector_instance_id = $1`,
           [connectorInstanceId, sanitized, boundSourceEventSeq]
@@ -302,7 +398,10 @@ function createConnectorSummaryStore() {
                     retained_bytes_state, retained_bytes_reason_code,
                     stream_latest_facts_json, stream_facts_event_seq, stream_facts_fold_version,
                     dirty, computed_at, source_event_seq, state, last_error,
-                    manifest_generation, schedule_checkpoint, run_lifecycle_event_seq`;
+                    canonical_evidence_revision,
+                    manifest_generation, schedule_checkpoint, run_lifecycle_event_seq,
+                    list_summary_projection_json, list_summary_projection_state,
+                    list_summary_projection_reason_code, list_summary_projection_computed_at`;
       if (connectorInstanceId) {
         return db
           .prepare(
@@ -333,7 +432,15 @@ function createConnectorSummaryStore() {
     },
     markAllDirty({ sanitized }: { sanitized?: string | null }) {
       getDb()
-        .prepare(`UPDATE connector_summary_evidence SET dirty = 1, state = 'stale', last_error = ?`)
+        .prepare(
+          `UPDATE connector_summary_evidence
+              SET dirty = 1,
+                  state = 'stale',
+                  last_error = ?,
+                  canonical_evidence_revision = canonical_evidence_revision + 1,
+                  list_summary_projection_state = 'stale',
+                  list_summary_projection_reason_code = 'canonical_evidence_dirty'`
+        )
         .run(sanitized);
     },
     markAllDiscoveryFailed({
@@ -355,6 +462,9 @@ function createConnectorSummaryStore() {
               SET dirty = 1,
                   state = 'stale',
                   last_error = ?,
+                  canonical_evidence_revision = canonical_evidence_revision + 1,
+                  list_summary_projection_state = 'stale',
+                  list_summary_projection_reason_code = 'canonical_evidence_dirty',
                   record_snapshot_state = 'failed',
                   record_snapshot_reason_code = ?,
                   manifest_declaration_state = 'failed',
@@ -386,6 +496,9 @@ function createConnectorSummaryStore() {
               SET dirty = 1,
                   state = 'stale',
                   last_error = ?,
+                  canonical_evidence_revision = canonical_evidence_revision + 1,
+                  list_summary_projection_state = 'stale',
+                  list_summary_projection_reason_code = 'canonical_evidence_dirty',
                   terminal_facts_state = ?,
                   terminal_facts_reason_code = ?
               ${where}`
@@ -407,6 +520,9 @@ function createConnectorSummaryStore() {
               SET dirty = 1,
                   state = 'stale',
                   last_error = ?,
+                  canonical_evidence_revision = canonical_evidence_revision + 1,
+                  list_summary_projection_state = 'stale',
+                  list_summary_projection_reason_code = 'canonical_evidence_dirty',
                   source_event_seq = COALESCE(?, source_event_seq)
             WHERE connector_instance_id = ?`
         )
@@ -449,6 +565,161 @@ export async function getConnectorSummaryEvidence(connectorInstanceId: string | 
   }
   const rows = await listConnectorSummaryEvidence({ connectorInstanceId });
   return rows[0] ?? null;
+}
+
+/**
+ * Return the stored terminal owner-LIST projection for exactly one
+ * connection. This is a read-only evidence lookup: it never reconciles,
+ * rebuilds, observes runtime state, or upgrades a stale payload to current.
+ */
+export async function getConnectorListSummaryTerminalProjection(
+  connectorInstanceId: string | null | undefined
+): Promise<ConnectorListSummaryTerminalProjectionEnvelope> {
+  if (!connectorInstanceId) {
+    return unobservedTerminalProjectionEnvelope();
+  }
+  const batch = await getConnectorListSummaryTerminalProjectionBatch([connectorInstanceId]);
+  return batch.get(connectorInstanceId) ?? unobservedTerminalProjectionEnvelope();
+}
+
+/** Maximum connection ids accepted by one bounded terminal-projection batch read. */
+export const MAX_TERMINAL_PROJECTION_BATCH_IDS = 100;
+
+function unobservedTerminalProjectionEnvelope(): ConnectorListSummaryTerminalProjectionEnvelope {
+  return { computed_at: null, projection: null, reason_code: "summary_missing", state: "unobserved" };
+}
+
+function shapeTerminalProjectionRow(row: Row): ConnectorListSummaryTerminalProjectionEnvelope {
+  const state = terminalProjectionState(row.list_summary_projection_state);
+  const projection = state === "current" ? parseTerminalProjection(row.list_summary_projection_json) : null;
+  return {
+    computed_at:
+      typeof row.list_summary_projection_computed_at === "string" ? row.list_summary_projection_computed_at : null,
+    projection,
+    reason_code:
+      typeof row.list_summary_projection_reason_code === "string" ? row.list_summary_projection_reason_code : null,
+    state: projection === null && state === "current" ? "failed" : state,
+  };
+}
+
+/**
+ * Batched, read-only lookup of the stored terminal owner-LIST projection for
+ * every requested connection id, in ONE bounded evidence read (`IN (...)`/
+ * `= ANY`, never one query per id — the N+1 shape this batch getter exists
+ * to replace). Never reconciles, rebuilds, observes runtime state, or
+ * upgrades a stale payload to current; a read that finds no row, or a
+ * non-current row, returns that connection's honest `unobserved`/`stale`/
+ * `failed` envelope rather than silently omitting it.
+ *
+ * Every requested id has exactly one entry in the returned map, including
+ * ids with no durable evidence row at all (`unobserved`, `summary_missing`).
+ * Duplicate ids collapse to one entry. Bounded to
+ * `MAX_TERMINAL_PROJECTION_BATCH_IDS` requested ids per call.
+ */
+export async function getConnectorListSummaryTerminalProjectionBatch(
+  connectorInstanceIds: readonly string[]
+): Promise<ReadonlyMap<string, ConnectorListSummaryTerminalProjectionEnvelope>> {
+  const uniqueIds = [...new Set(connectorInstanceIds.filter((id): id is string => Boolean(id)))];
+  if (uniqueIds.length === 0) {
+    return new Map();
+  }
+  if (uniqueIds.length > MAX_TERMINAL_PROJECTION_BATCH_IDS) {
+    throw new RangeError(
+      `terminal connector summary projection batch accepts at most ${MAX_TERMINAL_PROJECTION_BATCH_IDS} connection ids`
+    );
+  }
+  const store = createConnectorSummaryStore();
+  const rows = (await store.listEvidence({ connectorInstanceIds: uniqueIds })) as Row[];
+  const byId = new Map<string, Row>();
+  for (const row of rows) {
+    byId.set(String(row.connector_instance_id), row);
+  }
+  const result = new Map<string, ConnectorListSummaryTerminalProjectionEnvelope>();
+  for (const id of uniqueIds) {
+    const row = byId.get(id);
+    result.set(id, row ? shapeTerminalProjectionRow(row) : unobservedTerminalProjectionEnvelope());
+  }
+  return result;
+}
+
+/**
+ * Publish a complete owner LIST item after a bounded maintenance reader has
+ * assembled every durable axis and supplied its runtime observation. The
+ * conditional update makes a concurrent canonical mutation win: a payload
+ * may only become current while the canonical evidence envelope is current.
+ */
+export async function publishConnectorListSummaryTerminalProjection(input: {
+  /** Captured with the bounded canonical evidence read used to derive `projection`. */
+  readonly canonicalEvidenceRevision: string;
+  readonly connectorInstanceId: string;
+  readonly computedAt: string;
+  readonly projection: ConnectorListSummaryTerminalProjection;
+}): Promise<boolean> {
+  const { canonicalEvidenceRevision, connectorInstanceId, computedAt, projection } = input;
+  const summaryConnectionId = projection.summary.connection_id ?? projection.summary.connector_instance_id;
+  if (summaryConnectionId !== connectorInstanceId) {
+    throw new Error("Terminal connector summary projection identity does not match its evidence row.");
+  }
+  const encoded = JSON.stringify(projection);
+  const currentEvidenceWhere = `dirty = 0
+    AND state = 'fresh'
+    AND record_snapshot_state = 'current'
+    AND terminal_facts_state = 'current'
+    AND manifest_declaration_state = 'current'`;
+  if (isPostgresStorageBackend()) {
+    const result = await postgresQuery(
+      `UPDATE connector_summary_evidence
+          SET list_summary_projection_json = $2::jsonb,
+              list_summary_projection_state = 'current',
+              list_summary_projection_reason_code = NULL,
+              list_summary_projection_computed_at = $3
+        WHERE connector_instance_id = $1
+          AND canonical_evidence_revision = $4
+          AND ${currentEvidenceWhere}`,
+      [connectorInstanceId, encoded, computedAt, canonicalEvidenceRevision]
+    );
+    return result.rowCount === 1;
+  }
+  const result = getDb()
+    .prepare(
+      `UPDATE connector_summary_evidence
+          SET list_summary_projection_json = ?,
+              list_summary_projection_state = 'current',
+              list_summary_projection_reason_code = NULL,
+              list_summary_projection_computed_at = ?
+        WHERE connector_instance_id = ?
+          AND canonical_evidence_revision = ?
+          AND ${currentEvidenceWhere}`
+    )
+    .run(encoded, computedAt, connectorInstanceId, canonicalEvidenceRevision);
+  return result.changes === 1;
+}
+
+async function invalidateAllConnectorListSummaryTerminalProjections(reasonCode: string): Promise<void> {
+  if (isPostgresStorageBackend()) {
+    await postgresQuery(
+      "UPDATE connector_summary_evidence SET canonical_evidence_revision = canonical_evidence_revision + 1"
+    );
+    await postgresQuery(
+      `UPDATE connector_summary_evidence
+          SET list_summary_projection_state = 'stale',
+              list_summary_projection_reason_code = $1
+        WHERE list_summary_projection_state = 'current'`,
+      [reasonCode]
+    );
+    return;
+  }
+  getDb()
+    .prepare("UPDATE connector_summary_evidence SET canonical_evidence_revision = canonical_evidence_revision + 1")
+    .run();
+  getDb()
+    .prepare(
+      `UPDATE connector_summary_evidence
+          SET list_summary_projection_state = 'stale',
+              list_summary_projection_reason_code = ?
+        WHERE list_summary_projection_state = 'current'`
+    )
+    .run(reasonCode);
 }
 
 /**
@@ -506,9 +777,22 @@ function shapeComponentEnvelope(row: Row, state: unknown, reasonCode: unknown) {
   };
 }
 
+function shapeListSummaryProjection(row: Row): ConnectorListSummaryTerminalProjectionEnvelope {
+  const state = terminalProjectionState(row.list_summary_projection_state);
+  return {
+    computed_at:
+      typeof row.list_summary_projection_computed_at === "string" ? row.list_summary_projection_computed_at : null,
+    projection: state === "current" ? parseTerminalProjection(row.list_summary_projection_json) : null,
+    reason_code:
+      typeof row.list_summary_projection_reason_code === "string" ? row.list_summary_projection_reason_code : null,
+    state,
+  };
+}
+
 export function shapeEvidenceRow(row: Row) {
   const retainedBytesState = String(row.retained_bytes_state || "unobserved");
   return {
+    canonical_evidence_revision: String(row.canonical_evidence_revision ?? "0"),
     computed_at: row.computed_at || null,
     connector_id: row.connector_id,
     connector_instance_id: row.connector_instance_id,
@@ -516,6 +800,7 @@ export function shapeEvidenceRow(row: Row) {
     display_name: row.display_name,
     last_error: row.last_error || null,
     last_record_updated_at: row.last_record_updated_at || null,
+    list_summary_projection: shapeListSummaryProjection(row),
     manifest_declaration: shapeComponentEnvelope(
       row,
       row.manifest_declaration_state || "unavailable",
@@ -1022,7 +1307,8 @@ function createStreamFactsFoldStore() {
                   stream_facts_event_seq = $3,
                   stream_facts_fold_version = $5,
                   terminal_facts_state = $6,
-                  terminal_facts_reason_code = $7
+                  terminal_facts_reason_code = $7,
+                  canonical_evidence_revision = canonical_evidence_revision + 1
             WHERE connector_instance_id = $1
               AND stream_facts_event_seq IS NOT DISTINCT FROM $4
               AND stream_facts_fold_version IS NOT DISTINCT FROM $8`,
@@ -1101,7 +1387,8 @@ function createStreamFactsFoldStore() {
                   stream_facts_event_seq = ?,
                   stream_facts_fold_version = ?,
                   terminal_facts_state = ?,
-                  terminal_facts_reason_code = ?
+                  terminal_facts_reason_code = ?,
+                  canonical_evidence_revision = canonical_evidence_revision + 1
             WHERE connector_instance_id = ?
               AND stream_facts_event_seq IS ?
               AND stream_facts_fold_version IS ?`
@@ -1490,6 +1777,8 @@ function seedFoldState(participants: readonly Row[]): {
 export interface FoldStreamFactsResult {
   /** Participant ids whose CAS write still lost after the bounded replay attempts. */
   readonly casRejectedInstanceIds: readonly string[];
+  /** Terminal events read from the scoped event log during this pass. */
+  readonly eventsRead: number;
   readonly folded: number;
   /**
    * `true` when this call's own work budget (`maxDurationMs`/`maxEvents`)
@@ -1500,6 +1789,10 @@ export interface FoldStreamFactsResult {
    * budgeted call that genuinely finished within its budget.
    */
   readonly incomplete: boolean;
+  /** The checkpoint written for this pass, or null without participants. */
+  readonly minimumCheckpointAfter: number | null;
+  /** The oldest participating checkpoint before this pass, or null without participants. */
+  readonly minimumCheckpointBefore: number | null;
   readonly participants: number;
   readonly refused: number;
   /**
@@ -1596,12 +1889,14 @@ function rowNeedsFoldParticipation(row: Row, maxSeq: number | null): boolean {
 
 /**
  * No terminal events exist yet for this scope: stamp a zero checkpoint on
- * every participant so fresh rows do not re-participate on every pass. This
- * is always a genuinely CONVERGED state — there is no partial replay to
- * complete when there is no terminal history at all — so every write here
- * is `terminal_facts_state = 'current'` with a fresh `stream_latest_facts_json
- * = NULL` (exact replacement, never a stale carry-forward from a superseded
- * fold-logic version). `participants` never includes a fold-logic-version-
+ * every participant so fresh rows do not re-participate on every pass. An
+ * unbounded pass converges because there is no terminal history to replay;
+ * a bounded pass checks its cooperative deadline before every durable stamp
+ * and returns incomplete when it defers remaining rows. Every accepted write
+ * is `terminal_facts_state = 'current'` with a fresh
+ * `stream_latest_facts_json = NULL` (exact replacement, never a stale
+ * carry-forward from a superseded fold-logic version). `participants` never
+ * includes a fold-logic-version-
  * AHEAD row (`rowNeedsFoldParticipation` already excludes it before this is
  * called) — this binary must never overwrite output a newer fold contract
  * produced. Guarded by the same CAS as the main write path: a participant's
@@ -1612,10 +1907,14 @@ function rowNeedsFoldParticipation(row: Row, maxSeq: number | null): boolean {
  */
 async function stampZeroCheckpointForBootstrap(
   foldStore: ReturnType<typeof createStreamFactsFoldStore>,
-  participants: readonly Row[]
-): Promise<readonly string[]> {
+  participants: readonly Row[],
+  deadline: number | null
+): Promise<{ readonly casRejectedInstanceIds: readonly string[]; readonly incomplete: boolean }> {
   const casRejectedInstanceIds: string[] = [];
   for (const row of participants) {
+    if (deadline !== null && Date.now() >= deadline) {
+      return { casRejectedInstanceIds, incomplete: true };
+    }
     const connectorInstanceId = String(row.connector_instance_id);
     // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
     const accepted = await foldStore.updateStreamFacts({
@@ -1632,7 +1931,7 @@ async function stampZeroCheckpointForBootstrap(
       casRejectedInstanceIds.push(connectorInstanceId);
     }
   }
-  return casRejectedInstanceIds;
+  return { casRejectedInstanceIds, incomplete: false };
 }
 
 /**
@@ -1699,15 +1998,15 @@ async function drainTerminalEventBatches({
   startCursor: number;
   deadline: number | null;
   maxEvents: number | null;
-}): Promise<{ cursor: number; budgetExhausted: boolean }> {
+}): Promise<{ cursor: number; budgetExhausted: boolean; eventsRead: number }> {
   let cursor = startCursor;
   let eventsProcessed = 0;
   for (;;) {
     if (cursor >= maxSeq) {
-      return { budgetExhausted: false, cursor };
+      return { budgetExhausted: false, cursor, eventsRead: eventsProcessed };
     }
     if ((deadline !== null && Date.now() >= deadline) || (maxEvents !== null && eventsProcessed >= maxEvents)) {
-      return { budgetExhausted: true, cursor };
+      return { budgetExhausted: true, cursor, eventsRead: eventsProcessed };
     }
     const limit =
       maxEvents === null ? STREAM_FACTS_FOLD_BATCH : Math.min(STREAM_FACTS_FOLD_BATCH, maxEvents - eventsProcessed);
@@ -1733,17 +2032,20 @@ async function drainTerminalEventBatches({
       cursor = Number((batch.at(-1) as Row).event_seq);
     }
     if (batch.length < limit) {
-      return { budgetExhausted: false, cursor };
+      return { budgetExhausted: false, cursor, eventsRead: eventsProcessed };
     }
   }
 }
 
 export async function foldConnectorSummaryStreamFacts(
   connectorInstanceIds: readonly string[] | null = null,
-  options: { readonly maxDurationMs?: number; readonly maxEvents?: number } = {}
+  options: { readonly deadline?: number; readonly maxDurationMs?: number; readonly maxEvents?: number } = {}
 ): Promise<FoldStreamFactsResult> {
   let result: FoldStreamFactsResult | null = null;
   for (let attempt = 0; attempt < STREAM_FACTS_CAS_REPLAY_ATTEMPTS; attempt += 1) {
+    if (result !== null && typeof options.deadline === "number" && Date.now() >= options.deadline) {
+      return result;
+    }
     // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
     result = await foldConnectorSummaryStreamFactsOnce(connectorInstanceIds, options);
     if (result.casRejectedInstanceIds.length === 0) {
@@ -1756,7 +2058,7 @@ export async function foldConnectorSummaryStreamFacts(
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This protocol transition owns ordered state invariants that must remain local.
 async function foldConnectorSummaryStreamFactsOnce(
   connectorInstanceIds: readonly string[] | null,
-  options: { readonly maxDurationMs?: number; readonly maxEvents?: number }
+  options: { readonly deadline?: number; readonly maxDurationMs?: number; readonly maxEvents?: number }
 ): Promise<FoldStreamFactsResult> {
   const store = createConnectorSummaryStore();
   const foldStore = createStreamFactsFoldStore();
@@ -1764,8 +2066,11 @@ async function foldConnectorSummaryStreamFactsOnce(
   if (rows.length === 0) {
     return {
       casRejectedInstanceIds: [],
+      eventsRead: 0,
       folded: 0,
       incomplete: false,
+      minimumCheckpointAfter: null,
+      minimumCheckpointBefore: null,
       participants: 0,
       refused: 0,
       resumeAfterSeq: null,
@@ -1776,22 +2081,45 @@ async function foldConnectorSummaryStreamFactsOnce(
   if (participants.length === 0) {
     return {
       casRejectedInstanceIds: [],
+      eventsRead: 0,
       folded: 0,
       incomplete: false,
+      minimumCheckpointAfter: null,
+      minimumCheckpointBefore: null,
       participants: 0,
       refused: 0,
       resumeAfterSeq: null,
     };
   }
-  if (maxSeq === null) {
-    const casRejectedInstanceIds = await stampZeroCheckpointForBootstrap(foldStore, participants);
+  const deadline = resolveCooperativeDeadline(options);
+  const minimumCheckpointBefore = Math.min(
+    ...participants.map((participant) => Number(participant.stream_facts_event_seq ?? 0))
+  );
+  if (deadline !== null && Date.now() >= deadline) {
     return {
-      casRejectedInstanceIds,
+      casRejectedInstanceIds: [],
+      eventsRead: 0,
       folded: 0,
-      incomplete: false,
+      incomplete: true,
+      minimumCheckpointAfter: minimumCheckpointBefore,
+      minimumCheckpointBefore,
       participants: participants.length,
       refused: 0,
-      resumeAfterSeq: null,
+      resumeAfterSeq: minimumCheckpointBefore,
+    };
+  }
+  if (maxSeq === null) {
+    const bootstrap = await stampZeroCheckpointForBootstrap(foldStore, participants, deadline);
+    return {
+      casRejectedInstanceIds: bootstrap.casRejectedInstanceIds,
+      eventsRead: 0,
+      folded: 0,
+      incomplete: bootstrap.incomplete,
+      minimumCheckpointAfter: 0,
+      minimumCheckpointBefore: null,
+      participants: participants.length,
+      refused: 0,
+      resumeAfterSeq: bootstrap.incomplete ? 0 : null,
     };
   }
   const {
@@ -1816,7 +2144,7 @@ async function foldConnectorSummaryStreamFactsOnce(
     checkpointByInstance,
     connectorInstanceIds,
     counters,
-    deadline: typeof options.maxDurationMs === "number" ? Date.now() + options.maxDurationMs : null,
+    deadline,
     factsByInstance,
     foldStore,
     generationByInstance,
@@ -1825,7 +2153,7 @@ async function foldConnectorSummaryStreamFactsOnce(
     maxSeq,
     startCursor: Number.isFinite(sinceSeq) ? sinceSeq : 0,
   });
-  const { cursor, budgetExhausted } = drain;
+  const { cursor, budgetExhausted, eventsRead } = drain;
   // Every participant advances to the pass's max sequence when the drain
   // genuinely reached it — all attributable events at or below it have
   // been folded, so later passes read only the delta. When the budget was
@@ -1859,7 +2187,18 @@ async function foldConnectorSummaryStreamFactsOnce(
   // state machine is needed on top of it.
   const replayConverged = !budgetExhausted;
   const casRejectedInstanceIds: string[] = [];
+  let writePhaseIncomplete = false;
   for (const [instanceId, facts] of factsByInstance) {
+    // The same absolute cooperative deadline gates EVERY independent
+    // participant checkpoint write. A write already entered below may finish
+    // after the deadline, but this guard prevents a delayed first write from
+    // turning into a page-sized tail of new writes. Unwritten participants
+    // retain their prior checkpoint and therefore re-participate safely on
+    // the next durable page retry.
+    if (deadline !== null && Date.now() >= deadline) {
+      writePhaseIncomplete = true;
+      break;
+    }
     // Every participant is seeded above (`generationCurrentSeedByInstance`)
     // from its OWN incoming `terminal_facts_state`, so this is never an
     // absent-key default — a row that entered the pass already non-current
@@ -1889,13 +2228,26 @@ async function foldConnectorSummaryStreamFactsOnce(
       casRejectedInstanceIds.push(instanceId);
     }
   }
+  const incomplete = budgetExhausted || writePhaseIncomplete;
+  let resumeAfterSeq: number | null = null;
+  if (writePhaseIncomplete) {
+    resumeAfterSeq = minimumCheckpointBefore;
+  } else if (budgetExhausted) {
+    resumeAfterSeq = writeSeq;
+  }
   return {
     casRejectedInstanceIds,
+    eventsRead,
     folded: counters.folded,
-    incomplete: budgetExhausted,
+    incomplete,
+    // A write-phase cutoff can leave later participants at their original
+    // checkpoint, so the durable minimum remains the pre-pass minimum even
+    // when an earlier, already-started write finished successfully.
+    minimumCheckpointAfter: writePhaseIncomplete ? minimumCheckpointBefore : writeSeq,
+    minimumCheckpointBefore: sinceSeq,
     participants: participants.length,
     refused: counters.refused,
-    resumeAfterSeq: budgetExhausted ? writeSeq : null,
+    resumeAfterSeq,
   };
 }
 
@@ -1986,11 +2338,15 @@ async function writeParticipantStreamFacts(
  */
 async function foldStreamFactsBestEffort(
   connectorInstanceIds: readonly string[] | null = null,
-  options: { readonly maxDurationMs?: number; readonly maxEvents?: number } = {}
+  options: { readonly deadline?: number; readonly maxDurationMs?: number; readonly maxEvents?: number } = {}
 ): Promise<{
+  eventsRead: number;
   ok: boolean;
   failedRows: ReadonlyMap<string, Row>;
   incomplete: boolean;
+  minimumCheckpointAfter: number | null;
+  minimumCheckpointBefore: number | null;
+  participants: number;
   resumeAfterSeq: number | null;
 }> {
   try {
@@ -2010,13 +2366,26 @@ async function foldStreamFactsBestEffort(
       // trustworthy until the next fold happens to converge it.
       const failedRows = await markTerminalFactsContentionForRows(result.casRejectedInstanceIds);
       return {
+        eventsRead: result.eventsRead,
         failedRows,
         incomplete: false,
+        minimumCheckpointAfter: result.minimumCheckpointAfter,
+        minimumCheckpointBefore: result.minimumCheckpointBefore,
         ok: false,
+        participants: result.participants,
         resumeAfterSeq: null,
       };
     }
-    return { failedRows: new Map(), incomplete: result.incomplete, ok: true, resumeAfterSeq: result.resumeAfterSeq };
+    return {
+      eventsRead: result.eventsRead,
+      failedRows: new Map(),
+      incomplete: result.incomplete,
+      minimumCheckpointAfter: result.minimumCheckpointAfter,
+      minimumCheckpointBefore: result.minimumCheckpointBefore,
+      ok: true,
+      participants: result.participants,
+      resumeAfterSeq: result.resumeAfterSeq,
+    };
   } catch (err) {
     // A fold failure is specifically a terminal-facts failure: nothing this
     // pass could verify about any row's per-stream latest-attempt facts.
@@ -2026,8 +2395,127 @@ async function foldStreamFactsBestEffort(
     // failure-mark here would degrade every OTHER connection's terminal
     // facts too, which is not what a scoped fold's own failure proves.
     const failedRows = await markTerminalFactsFailedForAllRows(err, connectorInstanceIds);
-    return { failedRows, incomplete: false, ok: false, resumeAfterSeq: null };
+    return {
+      eventsRead: 0,
+      failedRows,
+      incomplete: false,
+      minimumCheckpointAfter: null,
+      minimumCheckpointBefore: null,
+      ok: false,
+      participants: 0,
+      resumeAfterSeq: null,
+    };
   }
+}
+
+type ReconcilePhaseResult = Awaited<ReturnType<typeof reconcileConnectorSummaryEvidence>>;
+type FoldOutcome = Awaited<ReturnType<typeof foldStreamFactsBestEffort>>;
+
+function emptyReconcilePhaseResult(): ReconcilePhaseResult {
+  return {
+    candidateReasonCounts: {} as ReconcilePhaseResult["candidateReasonCounts"],
+    candidatesInspected: 0,
+    discovered: 0,
+    failed: 0,
+    failedRows: new Map(),
+    repaired: 0,
+    skipped: 0,
+  };
+}
+
+function emptyFoldOutcome(): FoldOutcome {
+  return {
+    eventsRead: 0,
+    failedRows: new Map(),
+    incomplete: false,
+    minimumCheckpointAfter: null,
+    minimumCheckpointBefore: null,
+    ok: true,
+    participants: 0,
+    resumeAfterSeq: null,
+  };
+}
+
+function mergeReconcilePhaseResults(first: ReconcilePhaseResult, second: ReconcilePhaseResult): ReconcilePhaseResult {
+  const candidateReasonCounts: Record<string, number> = { ...first.candidateReasonCounts };
+  for (const [reason, count] of Object.entries(second.candidateReasonCounts)) {
+    candidateReasonCounts[reason] = (candidateReasonCounts[reason] ?? 0) + count;
+  }
+  return {
+    candidateReasonCounts: candidateReasonCounts as ReconcilePhaseResult["candidateReasonCounts"],
+    candidatesInspected: Math.max(first.candidatesInspected, second.candidatesInspected),
+    discovered: Math.max(first.discovered, second.discovered),
+    failed: first.failed + second.failed,
+    failedRows: new Map([...first.failedRows, ...second.failedRows]),
+    repaired: first.repaired + second.repaired,
+    skipped: first.skipped + second.skipped,
+  };
+}
+
+interface BoundedObservationPhases {
+  readonly foldOutcome: FoldOutcome;
+  readonly incomplete: boolean;
+  readonly repairDurationMs: number;
+  readonly result: ReconcilePhaseResult;
+}
+
+/**
+ * Run bounded phases under one cooperative deadline. The helper owns the
+ * time-versus-work policy: a fold batch or writer-fenced repair may finish
+ * after entry, but no later unit starts once the absolute deadline expires.
+ */
+async function runBoundedObservationPhases(
+  connectorInstanceIds: readonly string[] | null,
+  deadline: number,
+  options: { readonly maxCandidates?: number; readonly maxEvents?: number }
+): Promise<BoundedObservationPhases> {
+  let repairDurationMs = 0;
+  let maintenanceIncomplete = false;
+  let foldOutcome = emptyFoldOutcome();
+  const canStartWork = () => Date.now() < deadline;
+  const startFold = (): Promise<FoldOutcome | null> => {
+    if (!canStartWork()) {
+      maintenanceIncomplete = true;
+      return Promise.resolve(null);
+    }
+    return foldStreamFactsBestEffort(connectorInstanceIds, {
+      deadline,
+      maxEvents: options.maxEvents ?? BOUNDED_FOLD_MAX_EVENTS,
+    });
+  };
+  const startRepair = async (
+    candidateReasons: readonly RepairCandidateReason[],
+    maxCandidates: number | undefined
+  ): Promise<ReconcilePhaseResult> => {
+    if (!canStartWork()) {
+      maintenanceIncomplete = true;
+      return emptyReconcilePhaseResult();
+    }
+    const startedAt = Date.now();
+    const result = await reconcileConnectorSummaryEvidence(connectorInstanceIds, {
+      candidateReasons,
+      deadline,
+      ...(maxCandidates === undefined ? {} : { maxCandidates }),
+    });
+    repairDurationMs += Date.now() - startedAt;
+    return result;
+  };
+
+  const firstFold = await startFold();
+  if (firstFold !== null) {
+    foldOutcome = firstFold;
+  }
+  const missing = await startRepair(["missing"], BOUNDED_MISSING_REPAIR_CANDIDATES);
+  if (foldOutcome.participants === 0 && missing.repaired > 0) {
+    const coldFold = await startFold();
+    if (coldFold !== null) {
+      foldOutcome = coldFold;
+    }
+  }
+  const generic = await startRepair(GENERIC_REPAIR_CANDIDATE_REASONS, options.maxCandidates);
+  const result = mergeReconcilePhaseResults(missing, generic);
+  maintenanceIncomplete ||= result.skipped > 0 || foldOutcome.incomplete || Date.now() >= deadline;
+  return { foldOutcome, incomplete: maintenanceIncomplete, repairDurationMs, result };
 }
 
 // ---------------------------------------------------------------------------
@@ -2038,9 +2526,9 @@ async function foldStreamFactsBestEffort(
  * The one internal observation barrier (design.md "Central consumer and
  * cache boundary"): discover+repair every row the complete canonical
  * `connector_instances` set classifies as needing it (missing, dirty,
- * checkpoint-mismatched, manifest-mismatched, terminal-lagging,
- * retained-bytes-changed — see `reconcileConnectorSummaryEvidence` in
- * `connector-summary-evidence-engine.ts`), THEN fold terminal-event deltas
+ * checkpoint-mismatched, manifest-mismatched, and retained-bytes-changed —
+ * see `reconcileConnectorSummaryEvidence` in
+ * `connector-summary-evidence-engine.ts`), then fold terminal-event deltas
  * against the now-current row set. Reconcile must run first: a row that
  * does not exist yet (first-ever observation) has nothing for the fold to
  * touch, and a newly (re)inserted row carries a NULL fold checkpoint, which
@@ -2064,31 +2552,31 @@ async function foldStreamFactsBestEffort(
  * census. Defaults to `null` (complete census), preserving the exact prior
  * behavior for every caller that does not pass a scope.
  *
- * `options.maxDurationMs`, when provided, bounds TOTAL wall-clock time
- * across BOTH the repair phase AND the fold phase together (Sol fourth-
- * verdict P1.2: "the fold itself must be budgeted... within a
- * connection"): the repair phase spends first, and whatever remains of the
- * budget (never less than zero) is what the fold phase itself receives via
- * `foldConnectorSummaryStreamFacts`'s own `maxDurationMs` — the fold is no
- * longer unconditionally unbounded merely because `observeConnectorSummaryEvidence`
- * itself was called with a budget. `options.maxEvents`, when provided, is
- * the fold's own separate max-events budget (repair has no per-candidate
- * event count to bound by). Omitting both preserves the exact prior
- * complete/unbounded behavior for every existing caller (every read-time
- * consumer; only startup's bounded sweep passes these).
+ * For an unbounded call, repair runs before the fold and retains the
+ * one-pass cold-start behavior above. A bounded maintenance page carries one
+ * cooperative absolute deadline through every phase. Existing participants
+ * get the first finite fold batch; a cold page may start one capped missing
+ * repair phase, then resumes from its existing durable evidence/checkpoint on
+ * a later round. No repair or fold batch starts after the deadline, although
+ * one already-started SQL unit can finish cooperatively. Omitting both
+ * bounds preserves complete, unbounded behavior for existing callers.
  *
  * Returns `{ reconciled, incomplete, resumeAfterSeq }`: `reconciled` is the
  * count of candidates repaired plus rows dropped by orphan cleanup.
- * `incomplete`/`resumeAfterSeq` surface the FOLD's own budget outcome (Sol
- * P1.2) — `true`/non-null only when a fold budget was supplied and
- * genuinely exhausted before every participant reached the pass's
- * high-water mark.
+ * `incomplete`/`resumeAfterSeq` surface a bounded fold's cooperative deadline
+ * or finite-event outcome — `true`/non-null only when it stopped before every
+ * participant reached the pass's high-water mark.
  *
  * Spec: openspec/changes/reconcile-active-summary-evidence/design.md
  */
 async function observeConnectorSummaryEvidence(
   connectorInstanceIds: readonly string[] | null = null,
-  options: { readonly maxCandidates?: number; readonly maxDurationMs?: number; readonly maxEvents?: number } = {}
+  options: {
+    readonly deadline?: number;
+    readonly maxCandidates?: number;
+    readonly maxDurationMs?: number;
+    readonly maxEvents?: number;
+  } = {}
 ): Promise<{
   candidateReasonCounts: Readonly<Record<string, number>>;
   candidatesInspected: number;
@@ -2098,19 +2586,35 @@ async function observeConnectorSummaryEvidence(
   skipped: number;
   failedRows: ReadonlyMap<string, Row>;
   incomplete: boolean;
+  repairDurationMs: number;
   resumeAfterSeq: number | null;
+  terminalFoldEventsRead: number;
+  terminalFoldMinimumCheckpointAfter: number | null;
+  terminalFoldMinimumCheckpointBefore: number | null;
+  terminalFoldParticipants: number;
+  terminalFoldZeroProgress: boolean;
 }> {
-  const overallDeadline = typeof options.maxDurationMs === "number" ? Date.now() + options.maxDurationMs : null;
-  let result: {
-    candidateReasonCounts: Readonly<Record<string, number>>;
-    candidatesInspected: number;
-    failed: number;
-    repaired: number;
-    skipped: number;
-    failedRows: ReadonlyMap<string, Row>;
-  };
+  const overallDeadline = resolveCooperativeDeadline(options);
+  let result: ReconcilePhaseResult;
+  let foldOutcome = emptyFoldOutcome();
+  let repairDurationMs = 0;
+  let maintenanceIncomplete = false;
   try {
-    result = await reconcileConnectorSummaryEvidence(connectorInstanceIds, options);
+    if (overallDeadline === null) {
+      const repairStartedAt = Date.now();
+      result = await reconcileConnectorSummaryEvidence(connectorInstanceIds, options);
+      repairDurationMs = Date.now() - repairStartedAt;
+      foldOutcome = await foldStreamFactsBestEffort(connectorInstanceIds, {
+        ...(typeof options.maxEvents === "number" ? { maxEvents: options.maxEvents } : {}),
+      });
+    } else {
+      ({
+        foldOutcome,
+        incomplete: maintenanceIncomplete,
+        repairDurationMs,
+        result,
+      } = await runBoundedObservationPhases(connectorInstanceIds, overallDeadline, options));
+    }
   } catch (err) {
     // Discovery itself failed (e.g. a canonical-authority table is
     // unreadable) — broader than any one row's repair failure: NOTHING
@@ -2119,15 +2623,6 @@ async function observeConnectorSummaryEvidence(
     // itself is responsible for classifying) must not keep reading
     // `current`. Durably degrade both, in addition to the generic
     // dirty/stale marking. The next call's discovery retries from scratch.
-    // Scoped to the same set discovery itself was scoped to (Sol P1.2) — a
-    // scoped caller's discovery failure says nothing about every OTHER
-    // connection's canonical facts, so an unscoped caller here would
-    // degrade siblings this pass never even attempted to read.
-    //
-    // The returned overlay (Sol P1.1) carries the ids whose durable
-    // discovery-failure marker ALSO failed this call — this observation's
-    // `failedRows` result surfaces them even though nothing durable
-    // reflects the failure.
     const failedRows = await markAllConnectorSummaryEvidenceDiscoveryFailed(err, connectorInstanceIds);
     return {
       candidateReasonCounts: {},
@@ -2137,8 +2632,14 @@ async function observeConnectorSummaryEvidence(
       failureClasses: ["discovery"],
       incomplete: false,
       reconciled: 0,
+      repairDurationMs,
       resumeAfterSeq: null,
       skipped: 0,
+      terminalFoldEventsRead: 0,
+      terminalFoldMinimumCheckpointAfter: null,
+      terminalFoldMinimumCheckpointBefore: null,
+      terminalFoldParticipants: 0,
+      terminalFoldZeroProgress: false,
     };
   }
   // The fold's own in-memory overlay (Sol P1.1) is merged in alongside the
@@ -2150,18 +2651,6 @@ async function observeConnectorSummaryEvidence(
   // beyond the generic durable stale-mark the fold failure applies to it
   // too, which this overlay only supersedes with strictly MORE specific
   // typed failure detail, never less).
-  const foldBudget: { maxDurationMs?: number; maxEvents?: number } = {};
-  if (overallDeadline !== null) {
-    // Whatever remains of the overall budget after repair spent its share —
-    // floored at 0 so a repair phase that already exhausted the budget
-    // still gives the fold phase a genuine (zero-work) bounded call rather
-    // than an unbounded one.
-    foldBudget.maxDurationMs = Math.max(0, overallDeadline - Date.now());
-  }
-  if (typeof options.maxEvents === "number") {
-    foldBudget.maxEvents = options.maxEvents;
-  }
-  const foldOutcome = await foldStreamFactsBestEffort(connectorInstanceIds, foldBudget);
   const failedRows =
     foldOutcome.failedRows.size === 0 ? result.failedRows : new Map([...result.failedRows, ...foldOutcome.failedRows]);
   return {
@@ -2170,10 +2659,19 @@ async function observeConnectorSummaryEvidence(
     failed: result.failed + foldOutcome.failedRows.size,
     failedRows,
     failureClasses: foldOutcome.ok ? [] : ["terminal_facts"],
-    incomplete: foldOutcome.incomplete,
+    incomplete: maintenanceIncomplete || foldOutcome.incomplete,
     reconciled: result.repaired,
+    repairDurationMs,
     resumeAfterSeq: foldOutcome.resumeAfterSeq,
     skipped: result.skipped,
+    terminalFoldEventsRead: foldOutcome.eventsRead,
+    terminalFoldMinimumCheckpointAfter: foldOutcome.minimumCheckpointAfter,
+    terminalFoldMinimumCheckpointBefore: foldOutcome.minimumCheckpointBefore,
+    terminalFoldParticipants: foldOutcome.participants,
+    terminalFoldZeroProgress:
+      foldOutcome.incomplete &&
+      foldOutcome.participants > 0 &&
+      foldOutcome.minimumCheckpointBefore === foldOutcome.minimumCheckpointAfter,
   };
 }
 
@@ -2190,6 +2688,7 @@ async function observeConnectorSummaryEvidence(
  */
 export async function rebuildConnectorSummaryEvidence() {
   await observeConnectorSummaryEvidence();
+  await invalidateAllConnectorListSummaryTerminalProjections("canonical_evidence_rebuilt");
   return listConnectorSummaryEvidence();
 }
 
@@ -2209,8 +2708,8 @@ export async function rebuildConnectorSummaryEvidence() {
  * repaired, so an idle system with no changes still does a fixed number of
  * reads and zero repairs — this is not "always touch every row."
  *
- * Delegates to the same reconcile-then-fold barrier `rebuildConnectorSummaryEvidence`
- * uses, so a single call from a cold (missing-row) start fully converges:
+ * Delegates to the same observation barrier `rebuildConnectorSummaryEvidence`
+ * uses, so an unbounded call from a cold (missing-row) start fully converges:
  * creates the row, then folds its terminal history — never leaving a
  * caller needing a second call to reach `current`.
  *
@@ -2223,8 +2722,8 @@ export async function rebuildConnectorSummaryEvidence() {
  * interactive reads do not call this function.
  *
  * `options.maxCandidates`/`options.maxDurationMs`, when provided, bound the
- * repair loop AND the fold THIS call runs — by candidate count and/or total
- * wall-clock time spanning both phases together (design.md "Startup is
+ * repair loop and the fold this call runs — by candidate count and/or
+ * wall-clock time spanning the phase units (design.md "Startup is
  * acceleration, not authority"; Sol P2.2 closed the gap where a small
  * candidate count did not bound total time when individual repairs are
  * slow; Sol fourth-verdict P1.2 closed the further gap where the fold
@@ -2257,11 +2756,17 @@ export async function reconcileDirtyConnectorSummaryEvidence(
       failed: outcome.failed,
       failureClasses: outcome.failureClasses,
       incomplete: outcome.incomplete,
+      repairDurationMs: outcome.repairDurationMs,
       repaired: outcome.reconciled,
       resumePending: outcome.resumeAfterSeq !== null,
       scopeKind: connectorInstanceIds === null ? "complete" : "scoped",
       scopeSize: connectorInstanceIds === null ? outcome.candidatesInspected : connectorInstanceIds.length,
       skipped: outcome.skipped,
+      terminalFoldEventsRead: outcome.terminalFoldEventsRead,
+      terminalFoldMinimumCheckpointAfter: outcome.terminalFoldMinimumCheckpointAfter,
+      terminalFoldMinimumCheckpointBefore: outcome.terminalFoldMinimumCheckpointBefore,
+      terminalFoldParticipants: outcome.terminalFoldParticipants,
+      terminalFoldZeroProgress: outcome.terminalFoldZeroProgress,
     });
     return outcome;
   } catch (err) {
@@ -2272,11 +2777,17 @@ export async function reconcileDirtyConnectorSummaryEvidence(
       failed: 0,
       failureClasses: ["discovery"],
       incomplete: false,
+      repairDurationMs: 0,
       repaired: 0,
       resumePending: false,
       scopeKind: connectorInstanceIds === null ? "complete" : "scoped",
       scopeSize: connectorInstanceIds?.length ?? 0,
       skipped: 0,
+      terminalFoldEventsRead: 0,
+      terminalFoldMinimumCheckpointAfter: null,
+      terminalFoldMinimumCheckpointBefore: null,
+      terminalFoldParticipants: 0,
+      terminalFoldZeroProgress: false,
     });
     throw err;
   }
@@ -2352,18 +2863,14 @@ export interface BoundedSweepResult {
  * or a page whose fold left terminal history unfolded, would look
  * indistinguishable from truly orphaned/current ones).
  *
- * `options.maxDurationMs` bounds total wall-clock time across every phase
- * of every page — checked before starting each page's full
- * discovery+fold+repair+prune, so it genuinely bounds the phases Sol's
- * verdict named, not merely the repair loop inside one page; each page's
- * OWN discovery+repair+fold additionally receives the SAME remaining-time
- * budget as its own per-page deadline (via `observeConnectorSummaryEvidence`'s
- * `maxDurationMs`), so a single expensive page cannot itself blow through
- * the deadline unnoticed. `options.maxEventsPerFold`, when provided,
- * additionally bounds each page's fold by event count, independent of
- * time. `options.maxPages` additionally caps the number of pages processed
- * this call. `options.pageSize` controls how many connections each page
- * covers.
+ * `options.maxDurationMs` creates one cooperative absolute deadline for the
+ * complete sweep and every started page passes that same deadline to its
+ * repair and fold units. A unit that already started may finish, but no later
+ * repair or fold batch starts after expiry. Each bounded fold has a finite
+ * event cap (the caller's `maxEventsPerFold` or the local default), and a
+ * cold page has a one-page missing-evidence cap. `options.maxPages`
+ * additionally caps the number of pages processed; `options.pageSize`
+ * controls how many connections each page covers.
  */
 export async function runBoundedSummaryEvidenceSweep(options: {
   readonly maxDurationMs: number;
@@ -2404,18 +2911,35 @@ export async function runBoundedSummaryEvidenceSweep(options: {
     cursorBeforeCurrentPage = cursor;
     // Full discovery + fold + repair + scoped-prune for exactly this page —
     // the same barrier a scoped read-time consumer runs, so the whole unit
-    // is bounded by pageSize, not by N. Never started once the deadline has
-    // already passed (checked above); once started, it always completes
-    // its discovery+repair phases, and its fold phase is itself genuinely
-    // bounded by this page's remaining time (and optionally event count).
-    const remainingMs = Math.max(0, deadline - Date.now());
+    // is bounded by pageSize, not by N. The page receives the sweep's one
+    // absolute cooperative deadline; it never fabricates another duration.
+    const pageStartedAt = Date.now();
     const pageResult = await observeConnectorSummaryEvidence(pageIds, {
-      maxDurationMs: remainingMs,
+      deadline,
       ...(typeof options.maxEventsPerFold === "number" ? { maxEvents: options.maxEventsPerFold } : {}),
     });
     discovered += pageIds.length;
     repaired += pageResult.reconciled;
     skipped += pageResult.skipped;
+    emitConnectorSummaryReconcileObservation({
+      candidateReasonCounts: pageResult.candidateReasonCounts,
+      candidatesInspected: pageResult.candidatesInspected,
+      durationMs: Date.now() - pageStartedAt,
+      failed: pageResult.failed,
+      failureClasses: pageResult.failureClasses,
+      incomplete: pageResult.incomplete,
+      repairDurationMs: pageResult.repairDurationMs,
+      repaired: pageResult.reconciled,
+      resumePending: pageResult.resumeAfterSeq !== null,
+      scopeKind: "scoped",
+      scopeSize: pageIds.length,
+      skipped: pageResult.skipped,
+      terminalFoldEventsRead: pageResult.terminalFoldEventsRead,
+      terminalFoldMinimumCheckpointAfter: pageResult.terminalFoldMinimumCheckpointAfter,
+      terminalFoldMinimumCheckpointBefore: pageResult.terminalFoldMinimumCheckpointBefore,
+      terminalFoldParticipants: pageResult.terminalFoldParticipants,
+      terminalFoldZeroProgress: pageResult.terminalFoldZeroProgress,
+    });
     if (pageResult.incomplete) {
       // This page's fold did not fully converge within its budget — the
       // sweep as a whole is incomplete regardless of how many pages

@@ -32,11 +32,14 @@ import {
 } from "../../operations/ref-connectors-detail/index.ts";
 import {
   executeRefConnectorsList,
+  type RefConnectorsListIdentityItem,
   type RefConnectorsListItem,
   type RefConnectorsListPage,
+  type RefConnectorsListRetainedCountItem,
   type RefConnectorsRuntimeStatus,
 } from "../../operations/ref-connectors-list/index.ts";
 import {
+  type ConnectorSummaryPageProfile,
   type ConnectorSummaryPageRequest,
   ConnectorSummaryPageRequestError,
   parseConnectorSummaryPageRequest,
@@ -168,7 +171,10 @@ export interface MountRefConnectorsContext {
   emitSpineEvent: (event: Record<string, unknown>) => Promise<unknown>;
   ensureRequestId: (res: RouteResponse) => string;
   getConnectorDetail: (connectorId: string) => Promise<Record<string, unknown> | null>;
-  getConnectorSummaryForRoute: (routeId: string) => Promise<unknown | null> | unknown | null;
+  getConnectorSummaryForRoute: (
+    routeId: string,
+    options?: { readonly profile?: ConnectorSummaryPageProfile }
+  ) => Promise<unknown | null> | unknown | null;
   getFleetHealthVerdict: () => Promise<FleetHealthVerdict> | FleetHealthVerdict;
   getOwnerSubjectId: (req: unknown) => string;
   getRuntimeStatus: () => RefConnectorsRuntimeStatus;
@@ -179,8 +185,18 @@ export interface MountRefConnectorsContext {
     ownerSubjectId: string,
     request: ConnectorSummaryPageRequest
   ) =>
-    | Promise<{ readonly data: readonly unknown[]; readonly has_more: boolean; readonly next_cursor: string | null }>
-    | { readonly data: readonly unknown[]; readonly has_more: boolean; readonly next_cursor: string | null };
+    | Promise<{
+        readonly data: readonly unknown[];
+        readonly fleet_health?: unknown;
+        readonly has_more: boolean;
+        readonly next_cursor: string | null;
+      }>
+    | {
+        readonly data: readonly unknown[];
+        readonly fleet_health?: unknown;
+        readonly has_more: boolean;
+        readonly next_cursor: string | null;
+      };
   listSchedules: () => Promise<ScheduleRow[]> | ScheduleRow[];
   // Marks the maintained connector-summary read-model evidence for exactly one
   // connection dirty after a cookie-authed `/_ref` mutation (run / schedule /
@@ -346,11 +362,35 @@ async function sendConnectionScopedConnectorSummary(
       "limit, cursor, and connector_id are available only on the unscoped connector-summary list"
     );
   }
+  const rawProfile = req.query.profile;
+  if (rawProfile !== undefined && rawProfile !== "identity_inventory" && rawProfile !== "retained_count_summary") {
+    throw new ConnectorSummaryPageRequestError(
+      "profile",
+      "profile must be one of: identity_inventory, retained_count_summary"
+    );
+  }
+  const profile = rawProfile as ConnectorSummaryPageProfile | undefined;
   const envelope = await executeRefConnectorsList({
     getRuntimeStatus: ctx.getRuntimeStatus,
     listConnectorSummaries: async () => {
-      const summary = await ctx.getConnectorSummaryForRoute(connectionSelector);
-      return summary === null || summary === undefined ? [] : [summary as RefConnectorsListItem];
+      let summary: unknown;
+      if (profile === "identity_inventory") {
+        summary = await ctx.getConnectorSummaryForRoute(connectionSelector, { profile });
+      } else if (profile === "retained_count_summary") {
+        summary = await ctx.getConnectorSummaryForRoute(connectionSelector, { profile });
+      } else {
+        summary = await ctx.getConnectorSummaryForRoute(connectionSelector);
+      }
+      if (summary === null || summary === undefined) {
+        return [];
+      }
+      if (profile === "identity_inventory") {
+        return [summary as RefConnectorsListIdentityItem];
+      }
+      if (profile === "retained_count_summary") {
+        return [summary as RefConnectorsListRetainedCountItem];
+      }
+      return [summary as RefConnectorsListItem];
     },
   });
   res.json(envelope);
@@ -403,8 +443,17 @@ export function mountRefConnectorsList(app: AppLike, ctx: MountRefConnectorsCont
         const ownerSubjectId = ctx.getOwnerSubjectId(req);
         // Non-null: `parseConnectorSummaryPageRequest` returns null only when
         // none of limit/cursor/connector_id are present, and `limit` is
-        // already confirmed present above.
-        const pageRequest = parseConnectorSummaryPageRequest(req.query, ownerSubjectId) as ConnectorSummaryPageRequest;
+        // already confirmed present above. A repeated `connector_id` SET
+        // scope canonicalizes each member through the SAME boundary rule the
+        // single-id filter already uses (`ctx.canonicalConnectorKey`,
+        // falling back to the raw id when it is not a known URL-shaped
+        // registry id — mirrors `canonicalizeConnectorId` in
+        // `routes/rs-mutation.ts`).
+        const pageRequest = parseConnectorSummaryPageRequest(
+          req.query,
+          ownerSubjectId,
+          (id) => ctx.canonicalConnectorKey(id) ?? id
+        ) as ConnectorSummaryPageRequest;
         const { listConnectorSummaryPage } = ctx;
         if (!listConnectorSummaryPage) {
           throw new Error("Connector summary page capability is not configured.");

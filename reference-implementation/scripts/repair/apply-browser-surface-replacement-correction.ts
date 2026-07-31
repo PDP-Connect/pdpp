@@ -21,7 +21,7 @@ import { resolve } from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 
-import { closePostgresStorage, initPostgresStorage } from "../../server/postgres-storage.ts";
+import { closePostgresStorage, initExistingPostgresRepairStorage } from "../../server/postgres-storage.ts";
 import {
   createPostgresBrowserSurfaceReplacementReceiptStore,
   type ReplacementReceiptSelectionOverrideBatchInput,
@@ -111,7 +111,7 @@ async function main(): Promise<void> {
   }
   const raw = await readFile(resolve(args.artifact || ""), "utf8");
   const input = artifactInput(raw);
-  await initPostgresStorage({ backend: "postgres", databaseUrl });
+  await initExistingPostgresRepairStorage({ backend: "postgres", databaseUrl });
   try {
     const store = createPostgresBrowserSurfaceReplacementReceiptStore();
     let snapshot: ReplacementReceiptSelectionOverrideBatchVerification | null;

@@ -93,54 +93,70 @@ async function safe<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
  * everything" instead of silently claiming an all-clear it cannot back for
  * the un-fetched remainder of the fleet.
  */
-async function loadOverviewConnectors(): Promise<{ complete: boolean; connectors: RefConnectorSummary[] }> {
+async function loadOverviewConnectors(): Promise<{
+  complete: boolean;
+  connectors: RefConnectorSummary[];
+  fleetHealth: Awaited<ReturnType<typeof getFleetHealthVerdict>> | null;
+}> {
   // Page 1, one shot, no Next/Restart navigation here.
   const page = await loadConnectorSummaryPage({ cursor: undefined }, (opts) =>
-    liveDashboardDataSource.listConnectorSummaries(opts)
+    liveDashboardDataSource.listConnectorSummaries({ ...opts, includeFleetHealth: true })
   );
   if (page.kind === "error") {
-    return { complete: false, connectors: [] };
+    return { complete: false, connectors: [], fleetHealth: null };
   }
-  return { complete: !page.hasMore, connectors: [...page.items] };
+  // The reference sends fleet_health only for a page it explicitly marked
+  // terminal.  Do not turn a short/partial page into a fleet verdict.
+  return {
+    complete: !page.hasMore,
+    connectors: [...page.items],
+    fleetHealth: page.hasMore ? null : (page.fleetHealth ?? null),
+  };
 }
 
 async function loadStandingInputs(): Promise<StandingInputs> {
   const ds = liveDashboardDataSource;
-  const [summary, grantsRes, tracesRes, pendingRes, clientsRes, connectorsResult, fleetHealthRes, packageCountRes] =
-    await Promise.all([
-      safeRead("dataset_summary", () => ds.getDatasetSummary(), null),
-      safeRead("grants", () => ds.listGrants({ limit: 12 }), {
-        data: [] as GrantSummary[],
-        has_more: false,
-        object: "list" as const,
-      }),
-      safeRead("traces", () => ds.listTraces({ limit: 6 }), {
-        data: [] as TraceSummary[],
-        has_more: false,
-        object: "list" as const,
-      }),
-      safeRead("pending_approvals", () => ds.listPendingApprovals(), {
-        data: [] as PendingApproval[],
-        has_more: false,
-        object: "list" as const,
-      }),
-      safeRead("owner_tokens", () => listOwnerIssuedClients(), {
-        data: [] as OwnerIssuedClient[],
-        has_more: false,
-        object: "list" as const,
-      }),
-      // The SINGLE source of attention truth — same `_ref/connectors` family `/runs` uses.
-      // ONE bounded page; see loadOverviewConnectors for the `complete` signal.
-      safeRead("source_status", () => loadOverviewConnectors(), {
-        complete: true,
-        connectors: [] as RefConnectorSummary[],
-      }),
-      safeRead("fleet_health", () => getFleetHealthVerdict(), null),
-      // Authoritative grant-package count so the overview badge need not page the
-      // full grants/packages list. Fails soft to a null count, which makes the
-      // view-model fall back to the loaded-grants floor.
-      safeRead<{ count: number | null }>("grant_package_count", () => getGrantPackageCount(), { count: null }),
-    ]);
+  const [summary, grantsRes, tracesRes, pendingRes, clientsRes, connectorsResult, packageCountRes] = await Promise.all([
+    safeRead("dataset_summary", () => ds.getDatasetSummary(), null),
+    safeRead("grants", () => ds.listGrants({ limit: 12 }), {
+      data: [] as GrantSummary[],
+      has_more: false,
+      object: "list" as const,
+    }),
+    safeRead("traces", () => ds.listTraces({ limit: 6 }), {
+      data: [] as TraceSummary[],
+      has_more: false,
+      object: "list" as const,
+    }),
+    safeRead("pending_approvals", () => ds.listPendingApprovals(), {
+      data: [] as PendingApproval[],
+      has_more: false,
+      object: "list" as const,
+    }),
+    safeRead("owner_tokens", () => listOwnerIssuedClients(), {
+      data: [] as OwnerIssuedClient[],
+      has_more: false,
+      object: "list" as const,
+    }),
+    // The SINGLE source of attention truth — same `_ref/connectors` family `/runs` uses.
+    // ONE bounded page; see loadOverviewConnectors for the `complete` signal.
+    safeRead("source_status", () => loadOverviewConnectors(), {
+      complete: true,
+      connectors: [] as RefConnectorSummary[],
+      fleetHealth: null,
+    }),
+    // Authoritative grant-package count so the overview badge need not page the
+    // full grants/packages list. Fails soft to a null count, which makes the
+    // view-model fall back to the loaded-grants floor.
+    safeRead<{ count: number | null }>("grant_package_count", () => getGrantPackageCount(), { count: null }),
+  ]);
+  // The complete page is the exact inventory used to project its optional
+  // verdict.  If it is not complete (or an older reference omitted the
+  // optional field), take the explicit full-fleet path instead.
+  const fleetHealthRes =
+    connectorsResult.issue === null && connectorsResult.value.complete && connectorsResult.value.fleetHealth !== null
+      ? { issue: null, value: connectorsResult.value.fleetHealth }
+      : await safeRead("fleet_health", () => getFleetHealthVerdict(), null);
   const overviewLoadIssues = [summary, grantsRes, tracesRes, pendingRes, clientsRes, connectorsResult, fleetHealthRes]
     .map((result) => result.issue)
     .filter((issue): issue is string => issue !== null);

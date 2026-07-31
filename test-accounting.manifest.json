@@ -14,13 +14,14 @@
           "required": true,
           "skip_reasons": {
             "set PDPP_TEST_LIVE_NEKO_CAP=1 inside the Docker reference service": 1,
-            "PDPP_TEST_POSTGRES_URL unset": 117,
+            "PDPP_TEST_POSTGRES_URL unset": 138,
             "dedicated disposable URL not selected": 1,
             "set PDPP_TEST_LIVE_NEKO=1 and NEKO_ORIGIN to run": 2,
             "set PDPP_MULTILINGUAL_MINILM_SMOKE=1 to run the external model-download smoke": 1,
             "set PDPP_TEST_LIVE_CDP=1 and PDPP_TEST_CDP_BIN or PDPP_TEST_CDP_WS_URL to run": 1,
             "set PDPP_LIVE_CONNECTOR_HEALTH_GATE=1 to run": 1,
-            "set PDPP_TEST_POSTGRES_URL to the dedicated loopback listener": 12
+            "set PDPP_TEST_POSTGRES_URL to the dedicated loopback listener": 13,
+            "PDPP_TEST_POSTGRES_URL is required for PostgreSQL status-window authority": 1
           }
         },
         {
@@ -164,7 +165,9 @@
       "loader": "node-test",
       "authority_argument": null,
       "execution": "direct",
-      "environment": { "TSX_TSCONFIG_PATH": "packages/list-envelope/tsconfig.json" },
+      "environment": {
+        "TSX_TSCONFIG_PATH": "packages/list-envelope/tsconfig.json"
+      },
       "profiles": [{ "id": "default", "required": true, "skip_reasons": {} }],
       "command": [
         "node",

@@ -108,6 +108,11 @@ List configured connection summaries with manifest, latest run, schedule, and fr
 ### Query parameters
 
 - `connection` — string
+- `connector_id` — any
+- `cursor` — string
+- `include_fleet_health` — enum `0 | 1`
+- `limit` — integer · min: 1 · max: 100
+- `profile` — enum `identity_inventory | retained_count_summary`
 
 ### Responses
 

@@ -25,9 +25,8 @@
  *
  * This file re-targets the same generically useful SQLite/Postgres
  * statement-counting harnesses at the bounded `?limit=` route instead, and
- * proves, for N=1 vs N=1000 (not the old N=1 vs N=200 — the independent gate
- * flagged that tolerance as too loose to catch a real per-connection
- * regression):
+ * proves, including an exact 50-to-200 fleet slope (and the larger historical
+ * N=1-to-1000 guard):
  *   (a) executed-SQL-statement count for one bounded page stays ~constant
  *       between N=1 and N=1000 — a page-bounded implementation must not pay
  *       per-connection cost for connections outside the requested page;
@@ -75,6 +74,7 @@ type StartedServer = Awaited<ReturnType<typeof startServer>>;
 
 interface ListEnvelope {
   readonly data?: readonly Record<string, unknown>[];
+  readonly fleet_health?: unknown;
   readonly has_more?: boolean;
   readonly next_cursor?: string | null;
   readonly object?: string;
@@ -106,6 +106,7 @@ async function closeServer(server: StartedServer | null): Promise<void> {
   server.abortStartupBackfill("unbounded scale proof shutdown");
   server.schedulerManager?.stop?.();
   server.stopBrowserSurfaceLeaseSweep();
+  server.stopConnectorMaintenanceSweep();
   server.asServer.closeAllConnections?.();
   server.rsServer.closeAllConnections?.();
   await Promise.allSettled([
@@ -113,6 +114,7 @@ async function closeServer(server: StartedServer | null): Promise<void> {
     new Promise((resolve) => server.rsServer.close(resolve)),
     server.controller.drainActiveRuns(5000),
     server.startupBackfillDone,
+    server.startupRunHistoryBackfillDone,
     server.startupSummaryEvidenceSweepDone,
     server.stopClientEventDeliveryWorker(),
   ]);
@@ -129,7 +131,13 @@ async function withMountedRoute(databaseUrl: string | null, fn: (asUrl: string) 
   try {
     server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     await server.startupBackfillDone.catch(() => undefined);
+    await server.startupRunHistoryBackfillDone.catch(() => undefined);
     await server.startupSummaryEvidenceSweepDone.catch(() => undefined);
+    // This suite counts writes caused by its GET. The server's periodic
+    // maintenance is independently responsible for shell retirement, so stop
+    // it before seeding/measuring rather than allowing a concurrent tick to
+    // be attributed to the read under test.
+    server.stopConnectorMaintenanceSweep();
     await fn(`http://localhost:${server.asPort}`);
   } finally {
     await closeServer(server);
@@ -419,6 +427,20 @@ async function countPostgresWrites<T>(
  */
 async function assertBoundedListIsPageBoundedAndWriteFree(asUrl: string): Promise<void> {
   await seedOwner(0, 1);
+  const completeWithHealth = await getPage(asUrl, { include_fleet_health: "1" });
+  const fleetHealthResponse = await fetch(`${asUrl}/_ref/fleet-health`);
+  assert.equal(fleetHealthResponse.status, 200);
+  assert.deepEqual(
+    completeWithHealth.fleet_health,
+    await fleetHealthResponse.json(),
+    "a terminal page's optional fleet health must use its exact inventory and summaries"
+  );
+  const connectorFilteredHealth = await getPage(asUrl, { connector_id: CONNECTOR_ID, include_fleet_health: "1" });
+  assert.equal(
+    "fleet_health" in connectorFilteredHealth,
+    false,
+    "a terminal connector-filtered page must omit fleet health"
+  );
   const measureQueries = isPostgresStorageBackend()
     ? async (fn: () => Promise<ListEnvelope>) => {
         const { calls, result } = await countPostgresQueries(fn);
@@ -446,7 +468,29 @@ async function assertBoundedListIsPageBoundedAndWriteFree(asUrl: string): Promis
   const small = await measureQueries(() => getPage(asUrl));
   assert.equal(small.result.data?.length, 1);
 
-  await seedOwner(1, LARGE_OWNER_COUNT - 1);
+  // Exact regression requested for the connector/run hydration change: grow
+  // an ordinary page from 50 to 200 identities and prove the SQL call family
+  // does not turn into one correlation read per connector.
+  await seedOwner(1, 49);
+  const fifty = await measureQueries(() => getPage(asUrl));
+  assert.equal(fifty.result.data?.length, 50);
+  await seedOwner(50, 150);
+  const twoHundred = await measureQueries(() => getPage(asUrl));
+  assert.equal(twoHundred.result.data?.length, PAGE_LIMIT);
+  const incompleteWithHealth = await getPage(asUrl, { include_fleet_health: "1" });
+  assert.equal("fleet_health" in incompleteWithHealth, false, "an incomplete page must omit fleet health");
+  assert.ok(incompleteWithHealth.next_cursor);
+  const continuationWithHealth = await getPage(asUrl, {
+    cursor: incompleteWithHealth.next_cursor,
+    include_fleet_health: "1",
+  });
+  assert.equal("fleet_health" in continuationWithHealth, false, "a terminal continuation page must omit fleet health");
+  assert.ok(
+    twoHundred.calls <= fifty.calls + 12,
+    `50-to-200 page SQL calls must stay bounded (N=50:${fifty.calls}, N=200:${twoHundred.calls})`
+  );
+
+  await seedOwner(200, LARGE_OWNER_COUNT - 200);
 
   // N=large: a fresh, never-before-observed batch of connections, read for
   // the first time. Same expectation: zero writes on the first read, and a

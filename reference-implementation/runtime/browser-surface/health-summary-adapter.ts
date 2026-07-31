@@ -6,7 +6,11 @@ import type { BrowserSurface, BrowserSurfaceLease } from "@opendatalabs/remote-s
 
 import { listSpineEventsPage, type SpineEventRecord } from "../../lib/spine.ts";
 import type { ConnectionRemoteSurfaceEvidence } from "../connection-health.ts";
-import type { BrowserSurfaceRuntimeInventorySnapshot, BrowserSurfaceRuntimeManagement } from "../controller.ts";
+import type {
+  BrowserSurfaceRuntimeInventorySnapshot,
+  BrowserSurfaceRuntimeManagement,
+  BrowserSurfaceRuntimeSurfaceObservation,
+} from "../controller.ts";
 import {
   type ActiveLeaseExecution,
   type CredentialContinuity,
@@ -58,6 +62,9 @@ interface RuntimeSummaryInstance {
 interface BrowserSurfaceRuntimeManagementReader {
   getBrowserSurfaceRuntimeManagement?: (connectorId: string) => BrowserSurfaceRuntimeManagement;
   observeBrowserSurfaceRuntimeInventory?: () => Promise<BrowserSurfaceRuntimeInventorySnapshot>;
+  observeBrowserSurfaceRuntimeSurfaces?: (
+    surfaceIds: readonly string[]
+  ) => Promise<BrowserSurfaceRuntimeSurfaceObservation>;
 }
 
 export interface BrowserSurfaceHealthRemoteProjection {
@@ -312,6 +319,20 @@ export function readBrowserSurfaceRuntimeInventory(
     return Promise.resolve(null);
   }
   return controller.observeBrowserSurfaceRuntimeInventory().catch(() => null);
+}
+
+/**
+ * Scoped runtime counterpart for bounded summary/detail maintenance. It never
+ * falls back to the global allocator inventory diagnostic.
+ */
+export function readBrowserSurfaceRuntimeSurfaces(
+  controller: BrowserSurfaceRuntimeManagementReader | null | undefined,
+  surfaceIds: readonly string[]
+): Promise<BrowserSurfaceRuntimeSurfaceObservation | null> {
+  if (!controller?.observeBrowserSurfaceRuntimeSurfaces) {
+    return Promise.resolve(null);
+  }
+  return controller.observeBrowserSurfaceRuntimeSurfaces(surfaceIds).catch(() => null);
 }
 
 function noCurrentReceiptEvidence(execution: RuntimeLeaseFacts): ConnectorRuntimeReceiptEvidence {

@@ -43,6 +43,7 @@ import type {
   UpcomingFetchResult,
   UpcomingPartitionPosition,
 } from "../operations/rs-explore-timeline/index.ts";
+import { mapWithConcurrency } from "./concurrency.ts";
 import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.ts";
 
 // Wall-clock helper. Isolated so the cursor TTL has a single time source.
@@ -276,18 +277,17 @@ function sqliteListPartitions(scope?: ExploreTimelineScope): readonly ExploreTim
   return results;
 }
 
-function sqliteFetchSnapshotAnchor(): { snapshotSeq: number; snapshotAt: string } | null {
+function sqliteFetchSnapshotAnchor(): { snapshotSeq: number } | null {
   // REVIEWED-DYNAMIC: aggregate query, no caller-controlled values.
-  // MAX(id) gives the monotonic ingest sequence; MAX(emitted_at) gives the display timestamp.
-  const sql = "SELECT MAX(id) AS maxSeq, MAX(emitted_at) AS maxAt FROM records WHERE deleted = 0";
-  for (const row of iterateDynamicSqlAcknowledged<{ maxSeq: number | null; maxAt: string | null }>(sql)) {
+  // MAX(id) gives the monotonic ingest sequence — the ONLY value this returns;
+  // snapshot_at is the operation's captured wall clock, never a record aggregate
+  // (see CompositeCursorPayload doc in operations/rs-explore-timeline/index.ts).
+  const sql = "SELECT MAX(id) AS maxSeq FROM records WHERE deleted = 0";
+  for (const row of iterateDynamicSqlAcknowledged<{ maxSeq: number | null }>(sql)) {
     if (row.maxSeq === null || row.maxSeq === undefined) {
       return null;
     }
-    return {
-      snapshotAt: row.maxAt ?? "1970-01-01T00:00:00.000Z",
-      snapshotSeq: row.maxSeq,
-    };
+    return { snapshotSeq: row.maxSeq };
   }
   return null;
 }
@@ -760,14 +760,54 @@ export function buildSqliteExploreTimelineDeps(): ExploreTimelineDependencies {
  */
 async function postgresListPartitions(scope?: ExploreTimelineScope): Promise<readonly ExploreTimelinePartition[]> {
   // No LIMIT: all (connector_instance_id, stream) pairs must be returned so
-  // every record is reachable. The DISTINCT scan over the indexed columns is cheap.
+  // every record is reachable.
+  //
+  // A plain `SELECT DISTINCT ... WHERE deleted = FALSE` (no scope) has no
+  // leading-indexed-column filter to seek on — every index on this table starts
+  // with connector_instance_id/connector_id — so it forces a full parallel seq
+  // scan (proven live: ~600ms over 4.29M rows for 153 distinct partitions).
+  // A LOOSE INDEX SCAN (a standard Postgres pattern for DISTINCT-over-a-prefix
+  // when no native skip-scan exists) walks only the O(distinct pairs) index
+  // entries instead: seed with the first live row in (connector_instance_id,
+  // stream) order, then repeatedly seek the next row strictly greater than the
+  // current pair via `idx_pg_records_stream_cursor`. Proven live: ~2-18ms, same
+  // result set (verified byte-identical against the plain DISTINCT across
+  // unscoped/scoped/mixed/empty/deleted-only/special-character cases).
+  //
+  // `connector_id` is taken from the SAME row as the winning (connector_instance_id,
+  // stream) pair rather than aggregated separately: a stream belongs to exactly one
+  // connector_id per instance (verified: zero (instance, stream) pairs have more
+  // than one distinct connector_id on live data), so this is not a new invariant,
+  // just reading a column that was already functionally determined.
+  //
+  // The seed step and the lateral seek step both scan the SAME unaliased `records`
+  // table in their own FROM clause, so the scope predicate below (unqualified
+  // column names) is reused byte-identical in both places — Postgres resolves
+  // connector_instance_id/stream/deleted against each step's own scan; only the
+  // seek predicate needs the outer `t.` qualifier to name the previous row.
   const whereParts = ["deleted = FALSE"];
   const params: (string | number | readonly string[])[] = [];
   appendPostgresScope(whereParts, params, scope);
+  const whereClause = whereParts.join(" AND ");
   const result = await postgresQuery<{ connectorId: string; connectorType: string; stream: string }>(
-    `SELECT DISTINCT connector_instance_id AS "connectorId", connector_id AS "connectorType", stream
-     FROM records
-     WHERE ${whereParts.join(" AND ")}`,
+    `WITH RECURSIVE t AS (
+       (SELECT connector_instance_id, connector_id, stream FROM records
+        WHERE ${whereClause}
+        ORDER BY connector_instance_id, stream, deleted
+        LIMIT 1)
+       UNION ALL
+       SELECT nxt.connector_instance_id, nxt.connector_id, nxt.stream
+       FROM t, LATERAL (
+         SELECT connector_instance_id, connector_id, stream FROM records
+         WHERE ${whereClause} AND (connector_instance_id, stream) > (t.connector_instance_id, t.stream)
+         ORDER BY connector_instance_id, stream, deleted
+         LIMIT 1
+       ) nxt
+       WHERE t.connector_instance_id IS NOT NULL
+     )
+     SELECT connector_instance_id AS "connectorId", connector_id AS "connectorType", stream
+     FROM t
+     WHERE connector_instance_id IS NOT NULL`,
     params
   );
   return result.rows.map((r: { connectorId: string; connectorType: string; stream: string }) => ({
@@ -777,22 +817,21 @@ async function postgresListPartitions(scope?: ExploreTimelineScope): Promise<rea
   }));
 }
 
-async function postgresFetchSnapshotAnchor(): Promise<{ snapshotSeq: number; snapshotAt: string } | null> {
-  // MAX(id) gives the monotonic ingest sequence for snapshot stability.
-  // MAX(emitted_at) gives the display timestamp.
-  const result = await postgresQuery(
-    `SELECT MAX(id) AS "maxSeq", MAX(emitted_at) AS "maxAt" FROM records WHERE deleted = FALSE`,
-    []
-  );
+async function postgresFetchSnapshotAnchor(): Promise<{ snapshotSeq: number } | null> {
+  // MAX(id) gives the monotonic ingest sequence for snapshot stability — the
+  // ONLY value this returns; snapshot_at is the operation's captured wall clock
+  // (see CompositeCursorPayload doc), never a record aggregate. A single-column
+  // MAX(id) with no companion aggregate lets Postgres use its built-in MIN/MAX
+  // index optimization (backward records_pkey scan, stops at the first live
+  // row) instead of a full scan: proven live, 0.16ms vs the ~560-600ms a
+  // combined MAX(id)/MAX(emitted_at) aggregate previously forced.
+  const result = await postgresQuery(`SELECT MAX(id) AS "maxSeq" FROM records WHERE deleted = FALSE`, []);
   // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const row = result.rows[0];
   if (!row || row.maxSeq === null || row.maxSeq === undefined) {
     return null;
   }
-  return {
-    snapshotAt: (row.maxAt as string | null | undefined) ?? "1970-01-01T00:00:00.000Z",
-    snapshotSeq: Number(row.maxSeq),
-  };
+  return { snapshotSeq: Number(row.maxSeq) };
 }
 
 function postgresPartitionPageNowCeilingClause(
@@ -904,29 +943,47 @@ async function postgresCountNewSinceSnapshot(input: CountNewSinceSnapshotInput):
   return Number(result.rows[0]?.cnt ?? 0);
 }
 
+// Empirically calibrated, not copied by precedent: benchmarked live against the
+// production database (153 partitions) at caps 1/4/6/8 under concurrent
+// representative run_history writes (see
+// /home/tnunamak/.tmp/explore-live-terminal-tail-0730.md for the exact evidence).
+// Serial (1) was 47ms p50 with no writer-admission regression either; 4 already
+// cuts that to ~15ms with the same zero-regression profile, and further cap
+// increases (6, 8) bought under 6ms more at no measured benefit — Upcoming is not
+// the tail's bottleneck (the snapshot-anchor query dominates at ~560-600ms), so
+// there is no case for holding more pool headroom than 4 buys back.
+export const POSTGRES_UPCOMING_PARTITION_CONCURRENCY = 4;
+
 // The separate FUTURE projection (Postgres): records with semantic time > nowCeiling,
 // soonest-first, capped, plus a TRUE COUNT. Snapshot-bound. Probed PER-PARTITION so
 // the partition-prefixed idx_pg_records_semantic_time index serves it (a global query
 // Seq-Scans, cost ~472K live). Per-partition heads merged soonest-first; counts summed.
-async function postgresFetchUpcoming(input: UpcomingFetchInput): Promise<UpcomingFetchResult> {
+// Outer partition reads are bounded by POSTGRES_UPCOMING_PARTITION_CONCURRENCY (8) to
+// prevent connection pool saturation while turning O(partitions) serial roundtrips
+// into bounded concurrent batches.
+async function postgresFetchUpcoming(
+  input: UpcomingFetchInput,
+  options: { readonly onInFlightChange?: (inFlight: number) => void } = {}
+): Promise<UpcomingFetchResult> {
   const semExpr = "COALESCE(NULLIF(semantic_time, ''), emitted_at)";
   const computeTotal = input.computeTotal !== false;
   const afterByKey = upcomingAfterPositionMap(input.afterPositions);
+
+  const partitionResults = await mapWithConcurrency(
+    input.partitions,
+    POSTGRES_UPCOMING_PARTITION_CONCURRENCY,
+    (partition, partitionIndex) => {
+      const after = afterByKey.get(upcomingPartitionKey(partition.connectorId, partition.stream)) ?? null;
+      return postgresFetchUpcomingPartition(input, semExpr, computeTotal, partition, partitionIndex, after);
+    },
+    options
+  );
+
   let total = 0;
   const tagged: TaggedUpcomingRow[] = [];
   const partitionOverflow: boolean[] = [];
 
-  for (const [partitionIndex, partition] of input.partitions.entries()) {
-    const after = afterByKey.get(upcomingPartitionKey(partition.connectorId, partition.stream)) ?? null;
-    // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
-    const fetched = await postgresFetchUpcomingPartition(
-      input,
-      semExpr,
-      computeTotal,
-      partition,
-      partitionIndex,
-      after
-    );
+  for (const [partitionIndex, fetched] of partitionResults.entries()) {
     total += fetched.total;
     tagged.push(...fetched.tagged);
     partitionOverflow[partitionIndex] = fetched.overflow;

@@ -181,12 +181,28 @@ const FleetHealthVerdictResponseSchema = {
 // `connector_id` matches); when absent, the route lists every configured
 // connection. The response stays `ConnectorListResponseSchema` — a list of 0 or
 // 1 when the selector is supplied.
+//
+// The paged (non-`connection`) form accepts `connector_id` as either a single
+// string or a bounded repeated-value set (1..100 canonical distinct ids,
+// design doc add-source-perf-design-agy-0730.md "Minimal contract"); it stays
+// mutually exclusive with `connection`. `profile` selects a named,
+// option-gated dependency-family subset of the one shared projection
+// (`identity_inventory`, `retained_count_summary`) — omitted preserves the
+// full (`detail`-shaped) response.
 const ConnectorListQuerySchema = {
   additionalProperties: false,
   properties: {
     connection: { minLength: 1, type: "string" },
+    connector_id: {
+      oneOf: [
+        { minLength: 1, type: "string" },
+        { items: { minLength: 1, type: "string" }, maxItems: 100, minItems: 1, type: "array" },
+      ],
+    },
     cursor: { minLength: 1, type: "string" },
+    include_fleet_health: { enum: ["0", "1"], type: "string" },
     limit: { maximum: 100, minimum: 1, type: "integer" },
+    profile: { enum: ["identity_inventory", "retained_count_summary"], type: "string" },
   },
   type: "object",
 };

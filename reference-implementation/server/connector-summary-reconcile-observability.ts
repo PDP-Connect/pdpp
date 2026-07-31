@@ -19,7 +19,6 @@ const CANDIDATE_REASON_CLASSES = new Set([
   "record_checkpoint_mismatch",
   "identity_mismatch",
   "manifest_mismatch",
-  "terminal_checkpoint_lag",
   "retained_bytes_changed_or_unavailable",
 ]);
 
@@ -32,11 +31,18 @@ export interface ConnectorSummaryReconcileObservation {
   readonly failed: number;
   readonly failureClasses: readonly string[];
   readonly incomplete: boolean;
+  readonly repairDurationMs: number;
   readonly repaired: number;
   readonly resumePending: boolean;
   readonly scopeKind: "complete" | "scoped";
   readonly scopeSize: number;
   readonly skipped: number;
+  readonly terminalFoldEventsRead: number;
+  readonly terminalFoldMinimumCheckpointAfter: number | null;
+  readonly terminalFoldMinimumCheckpointBefore: number | null;
+  readonly terminalFoldParticipants: number;
+  /** An incomplete fold had participants but advanced none of their shared replay cursor. */
+  readonly terminalFoldZeroProgress: boolean;
 }
 
 interface StructuredLogger {
@@ -133,12 +139,24 @@ export function createConnectorSummaryReconcileObservationSink(
           failure_classes: sanitizedFailureClasses(observation.failureClasses),
           incomplete: observation.incomplete === true,
           observation: "connector_summary_reconcile",
+          repair_duration_ms: nonNegativeInteger(observation.repairDurationMs),
           repaired: nonNegativeInteger(observation.repaired),
           resume_state: observation.resumePending ? "pending" : "none",
           sampling_epoch_started_at: samplingEpochStartedAt,
           scope_kind: observation.scopeKind === "scoped" ? "scoped" : "complete",
           scope_size: nonNegativeInteger(observation.scopeSize),
           skipped: nonNegativeInteger(observation.skipped),
+          terminal_fold_events_read: nonNegativeInteger(observation.terminalFoldEventsRead),
+          terminal_fold_minimum_checkpoint_after:
+            observation.terminalFoldMinimumCheckpointAfter === null
+              ? null
+              : nonNegativeInteger(observation.terminalFoldMinimumCheckpointAfter),
+          terminal_fold_minimum_checkpoint_before:
+            observation.terminalFoldMinimumCheckpointBefore === null
+              ? null
+              : nonNegativeInteger(observation.terminalFoldMinimumCheckpointBefore),
+          terminal_fold_participants: nonNegativeInteger(observation.terminalFoldParticipants),
+          terminal_fold_zero_progress: observation.terminalFoldZeroProgress === true,
           ...(exceptional
             ? {}
             : {

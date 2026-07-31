@@ -193,8 +193,7 @@ test("a failed terminal fold does not launder a current, correct canonical recor
     // record_snapshot component is already current from the repair above.
     // NOTE: renaming `spine_events` (as this test previously did) does not
     // isolate a pure fold failure in this codebase — discovery's own fixed
-    // query (`readSqliteDiscoveryContext`'s `maxTerminalEventSeq` lookup)
-    // ALSO reads `spine_events` unconditionally, so that fault breaks
+    // lifecycle-checkpoint query ALSO reads `spine_events`, so that fault breaks
     // discovery too (see `reconcile-summary-evidence-failure-persistence
     // .test.js` probe 2, and the reconcile-active-summary-evidence 2026-07
     // fail-open fix report). A trigger scoped to exactly the fold's write

@@ -242,6 +242,10 @@ test("scheduler run history and last-run time round-trip through semantic method
       connectorError: null,
       connectorId: SEMANTIC_CONNECTOR,
       connectorInstanceId: "cin_semantic_history",
+      // listRunHistory's column set does not select facts_json (R9.2 added
+      // it only to the product-reader column set); rowToRunHistoryRecord's
+      // shared hydration always includes the field, so it round-trips null.
+      factsJson: null,
       failureReason: null,
       knownGaps: [],
       recordsEmitted: 7,
@@ -408,7 +412,7 @@ test("scheduler storage migration backfills legacy rows to deterministic default
         scenario_id TEXT NOT NULL,
         started_at TEXT NOT NULL
       );
-      DROP TABLE scheduler_run_history;
+      DROP TABLE run_history;
       CREATE TABLE scheduler_run_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         connector_id TEXT NOT NULL,
@@ -679,7 +683,7 @@ test("PostgreSQL scheduler page batches match SQLite semantics and use one typed
   const ids = fixtures.map((fixture) => fixture.connectorInstanceId);
   await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
   try {
-    await postgresQuery("DELETE FROM scheduler_run_history WHERE connector_instance_id = ANY($1::text[])", [ids]);
+    await postgresQuery("DELETE FROM run_history WHERE connector_instance_id = ANY($1::text[])", [ids]);
     await postgresQuery("DELETE FROM scheduler_last_run_times WHERE connector_instance_id = ANY($1::text[])", [ids]);
     await postgresQuery("DELETE FROM connector_schedules WHERE connector_instance_id = ANY($1::text[])", [ids]);
     const store = createPostgresSchedulerStore();
@@ -754,7 +758,7 @@ test("PostgreSQL scheduler page batches match SQLite semantics and use one typed
       pool.query = originalQuery;
     }
   } finally {
-    await postgresQuery("DELETE FROM scheduler_run_history WHERE connector_instance_id = ANY($1::text[])", [ids]);
+    await postgresQuery("DELETE FROM run_history WHERE connector_instance_id = ANY($1::text[])", [ids]);
     await postgresQuery("DELETE FROM scheduler_last_run_times WHERE connector_instance_id = ANY($1::text[])", [ids]);
     await postgresQuery("DELETE FROM connector_schedules WHERE connector_instance_id = ANY($1::text[])", [ids]);
     await closePostgresStorage();

@@ -36,6 +36,10 @@ import {
   searchSpine,
 } from "../lib/spine.ts";
 import { buildEventPayload } from "../operations/as-client-event-subscriptions/index.ts";
+import type {
+  ConnectorIdentityPageBoundary,
+  ConnectorSummaryPageProfile,
+} from "../operations/ref-connectors-list/pagination.ts";
 import { deriveClientEventsFromRecordChange } from "../operations/rs-client-event-derive/index.ts";
 import { isHealthRelevant as isAttentionHealthRelevant } from "../runtime/attention.ts";
 import { createOptionalBrowserSurfaceLeaseManager } from "../runtime/browser-surface/remote-surface-optional.ts";
@@ -456,6 +460,10 @@ import {
   type PresentationScreenStateStore,
 } from "./stores/presentation-screen-state-store.ts";
 import { resolveProviderAuthRunEnv } from "./stores/provider-auth-run-credentials.ts";
+import {
+  createResumableRunHistoryBackfillStage,
+  runStartupRunHistoryBackfillToCompletion,
+} from "./stores/run-history-backfill-stage.ts";
 import { getDefaultSchedulerStore, type SchedulerStore } from "./stores/scheduler-store.ts";
 import { getDefaultSourceWebhookEventStore } from "./stores/source-webhook-event-store.ts";
 import { resolveStaticSecretRunEnv } from "./stores/static-secret-run-credentials.ts";
@@ -784,6 +792,14 @@ const STARTUP_SUMMARY_EVIDENCE_MAX_RESUME_ROUNDS = 20;
 const CONNECTOR_MAINTENANCE_SWEEP_INTERVAL_MS = 60_000;
 const CONNECTOR_MAINTENANCE_EVIDENCE_SWEEP_MAX_DURATION_MS = 2000;
 const CONNECTOR_MAINTENANCE_EVIDENCE_SWEEP_PAGE_SIZE = 25;
+// Run-history backfill (terminal-read-architecture-fable-0730.md §9):
+// same acceleration-not-authority shape as the summary-evidence startup
+// pass above, on its own name-keyed cursor. NOT a traffic gate (R9.1) —
+// fired via setImmediate/fire-and-forget below, never awaited before the
+// listener opens.
+const STARTUP_RUN_HISTORY_BACKFILL_MAX_DURATION_MS = 2000;
+const STARTUP_RUN_HISTORY_BACKFILL_BATCH_SIZE = 25;
+const STARTUP_RUN_HISTORY_BACKFILL_MAX_ROUNDS = 20;
 
 /**
  * Walks `runBoundedSummaryEvidenceSweep` to completion across up to
@@ -855,13 +871,13 @@ export async function runStartupSummaryEvidenceSweepToCompletion({
     if (typeof onRound === "function") {
       onRound(summary, round);
     }
-    if (!(summary.incomplete && summary.resumeAfterId)) {
+    if (!summary.incomplete) {
       return rounds;
     }
     if (maxRounds !== undefined && round >= maxRounds) {
       return rounds;
     }
-    afterId = summary.resumeAfterId;
+    afterId = summary.resumeAfterId ?? null;
   }
 }
 
@@ -4779,7 +4795,8 @@ export function buildAsApp(opts: ServerOpts = {}) {
     emitSpineEvent,
     ensureRequestId,
     getConnectorDetail: (id: string) => getConnectorDetail(id, controller),
-    getConnectorSummaryForRoute: (routeId: string) => getConnectorSummaryForRoute(routeId, controller),
+    getConnectorSummaryForRoute: (routeId: string, options?: { readonly profile?: ConnectorSummaryPageProfile }) =>
+      getConnectorSummaryForRoute(routeId, controller, options),
     getFleetHealthVerdict: async () => {
       const ownerSubjectId = ownerAuth.subjectId || OWNER_AUTH_DEFAULT_SUBJECT_ID;
       // Inventory and summaries consume one owner-visible snapshot. This
@@ -4806,17 +4823,87 @@ export function buildAsApp(opts: ServerOpts = {}) {
         : null,
     handleError,
     invalidateConnectorSummariesCache,
-    listConnectorSummaryPage: (
+    listConnectorSummaryPage: async (
       ownerSubjectId: string,
-      page: { connectorId?: string | null; cursor: unknown; limit: number }
-    ) =>
-      listConnectorSummaryPage(controller, {
-        after: (page.cursor as Parameters<typeof listConnectorSummaryPage>[1]["after"]) ?? null,
-        connectorId: page.connectorId ?? null,
-        includeRunSummaries: "singleton-active",
-        limit: page.limit,
-        ownerSubjectId,
-      }),
+      page: {
+        connectorId?: string | readonly string[] | null;
+        cursor: unknown;
+        includeFleetHealth?: boolean;
+        limit: number;
+        profile?: ConnectorSummaryPageProfile;
+      }
+    ) => {
+      const after = (page.cursor as ConnectorIdentityPageBoundary | null) ?? null;
+      // The three profile branches return different `data` element types
+      // (`ConnectorSummary` / `ConnectorIdentityInventorySummary` /
+      // `ConnectorRetainedCountSummary`); this closure's return type is
+      // already the widened `{data: readonly unknown[], ...}` shape the
+      // `MountRefConnectorsContext.listConnectorSummaryPage` capability
+      // declares, so each branch's narrow result is captured as `unknown`
+      // rather than forcing a single (necessarily wrong) common element type.
+      let summaryPage: {
+        readonly data: readonly unknown[];
+        readonly fleet_health?: unknown;
+        readonly has_more: boolean;
+        readonly inventory: readonly unknown[];
+        readonly next_cursor: string | null;
+      };
+      if (page.profile === "identity_inventory") {
+        summaryPage = await listConnectorSummaryPage(controller, {
+          after,
+          connectorId: page.connectorId ?? null,
+          includeRunSummaries: "singleton-active",
+          limit: page.limit,
+          ownerSubjectId,
+          profile: page.profile,
+        });
+      } else if (page.profile === "retained_count_summary") {
+        summaryPage = await listConnectorSummaryPage(controller, {
+          after,
+          connectorId: page.connectorId ?? null,
+          includeRunSummaries: "singleton-active",
+          limit: page.limit,
+          ownerSubjectId,
+          profile: page.profile,
+        });
+      } else {
+        summaryPage = await listConnectorSummaryPage(controller, {
+          after,
+          connectorId: page.connectorId ?? null,
+          includeRunSummaries: "singleton-active",
+          limit: page.limit,
+          ownerSubjectId,
+        });
+      }
+      const { inventory, ...envelope } = summaryPage;
+      // A fleet verdict is truthful only when the page itself is the complete
+      // owner-visible inventory.  Never infer that from a short page: the
+      // storage page's explicit has_more bit is the authority. The
+      // `identity_inventory` profile never requests a fleet verdict (Explore
+      // never sets `include_fleet_health`), so `summaryPage.data` here is
+      // always full `ConnectorSummary[]` when this branch runs.
+      if (!(page.includeFleetHealth && page.connectorId === null && page.cursor === null && !summaryPage.has_more)) {
+        return envelope;
+      }
+      const fullSummaries = summaryPage.data as unknown as Parameters<typeof auditStreamHealth>[0];
+      // Reachable only from the unfiltered, no-profile branch (the guard
+      // above requires `page.connectorId === null` AND `page.profile` was
+      // never set to reach this fleet-health composition), so `inventory`
+      // here is always the full owner-visible `FleetConfiguredConnection[]`
+      // inventory the unfiltered branch reads — the closure-wide `unknown[]`
+      // type only exists to let the three profile branches share one
+      // variable without forcing a single wrong common element type.
+      const fleetInventory = inventory as unknown as Parameters<typeof composeFleetHealthVerdict>[0]["inventory"];
+      return {
+        ...envelope,
+        fleet_health: composeFleetHealthVerdict({
+          coverageAudit: auditStreamHealth(fullSummaries),
+          inventory: fleetInventory,
+          runtime: getRuntimeStatus(),
+          summaries: fullSummaries as unknown as Parameters<typeof composeFleetHealthVerdict>[0]["summaries"],
+        }),
+      };
+    },
     listSchedules: async () => (controller ? await controller.listSchedules() : []),
     markConnectorSummaryEvidenceDirty,
     onScheduleMutation: opts.onScheduleMutation,
@@ -6558,6 +6645,7 @@ export async function startServer(opts: ServerOpts = {}) {
   // function so a boot failure anywhere before that point can never leave
   // an orphaned running timer (identical reasoning to the browser-surface
   // lease sweep's own comment on this).
+  const runHistoryBackfillStage = createResumableRunHistoryBackfillStage();
   const connectorMaintenanceSweep = createResumableConnectorMaintenanceSweep({
     evidenceSweepMaxDurationMs: CONNECTOR_MAINTENANCE_EVIDENCE_SWEEP_MAX_DURATION_MS,
     evidenceSweepPageSize: CONNECTOR_MAINTENANCE_EVIDENCE_SWEEP_PAGE_SIZE,
@@ -6573,6 +6661,7 @@ export async function startServer(opts: ServerOpts = {}) {
         maxDurationMs: args.maxDurationMs,
         pageSize: args.pageSize ?? CONNECTOR_MAINTENANCE_EVIDENCE_SWEEP_PAGE_SIZE,
       }),
+    runHistoryBackfillStage,
   });
   const connectorMaintenanceSweepTimer = createBrowserSurfaceLeaseSweepTimer({
     intervalMs: CONNECTOR_MAINTENANCE_SWEEP_INTERVAL_MS,
@@ -6974,6 +7063,42 @@ export async function startServer(opts: ServerOpts = {}) {
         .finally(resolve);
     });
   });
+  // Run-history backfill startup accelerator (terminal-read-architecture-
+  // fable-0730.md §9): same fire-and-forget shape as the evidence sweep
+  // above — NOT a traffic gate (R9.1 struck the blocking-startup-loop
+  // proposal). A connection this walk does not finish reaching converges
+  // on the next periodic tick; LIST renders `not yet observed
+  // (backfilling)` for any run not yet in run_history in the meantime,
+  // never a spine fallback.
+  const startupRunHistoryBackfillDone = new Promise<void>((resolve) => {
+    setImmediate(() => {
+      // biome-ignore lint/complexity/noVoid: The side effect is intentionally fire-and-forget by this runtime contract.
+      void runStartupRunHistoryBackfillToCompletion({
+        batchSize: STARTUP_RUN_HISTORY_BACKFILL_BATCH_SIZE,
+        maxDurationMs: STARTUP_RUN_HISTORY_BACKFILL_MAX_DURATION_MS,
+        maxRounds: STARTUP_RUN_HISTORY_BACKFILL_MAX_ROUNDS,
+        onRound: (result, round) => {
+          if (result.backfilled > 0 || result.incomplete) {
+            logger.info({ ...result, round }, "startup run-history backfill observation");
+          }
+        },
+        stage: runHistoryBackfillStage,
+      })
+        .then((rounds) => {
+          const last = rounds.at(-1);
+          if (last?.incomplete) {
+            logger.info(
+              { resumeAfterSeq: last.resumeAfterSeq, rounds: rounds.length },
+              "startup run-history backfill stopped after the resume-round cap; the periodic sweep covers the remainder"
+            );
+          }
+        })
+        .catch((err) => {
+          logger.warn({ err }, "startup run-history backfill failed; the periodic sweep will retry");
+        })
+        .finally(resolve);
+    });
+  });
   if (opts.awaitStartupBackfill === true) {
     await startupBackfillDone;
   }
@@ -7032,6 +7157,7 @@ export async function startServer(opts: ServerOpts = {}) {
     rsServer,
     schedulerManager,
     startupBackfillDone,
+    startupRunHistoryBackfillDone,
     startupSummaryEvidenceSweepDone,
     // Exposed so the CLI shutdown path (and tests that start/stop many
     // server instances per process) can clear the periodic browser-surface
@@ -7507,7 +7633,10 @@ function createReferenceSchedulerManager({
       },
       // Durable cross-path "latest successful run at" probe, read from the spine
       // run timeline so it sees EVERY success — including manual/owner
-      // `controller.runNow` runs that never touch `scheduler_run_history`. Lets
+      // `controller.runNow` runs, which write a `run_history` row via the
+      // generalized run.started/terminal writer (server/stores/
+      // run-history-writer.ts) but are NOT `scheduler_managed` and so stay
+      // invisible to `listRunHistory`'s cadence/backoff callers. Lets
       // the back-off gate clear a stale failure streak when a genuine success
       // has occurred since, so automation resumes. Returns null on no success or
       // probe error (never fabricates a success that would suppress back-off).
@@ -7928,6 +8057,7 @@ if (process.argv[1]?.endsWith("server/index.ts")) {
     rsServer: StartServerResult["rsServer"] | null;
     abortStartupBackfill: StartServerResult["abortStartupBackfill"] | null;
     startupBackfillDone: StartServerResult["startupBackfillDone"] | null;
+    startupRunHistoryBackfillDone: StartServerResult["startupRunHistoryBackfillDone"] | null;
     startupSummaryEvidenceSweepDone: StartServerResult["startupSummaryEvidenceSweepDone"] | null;
     schedulerManager: StartServerResult["schedulerManager"] | null;
     controller: StartServerResult["controller"] | null;
@@ -7941,6 +8071,7 @@ if (process.argv[1]?.endsWith("server/index.ts")) {
     rsServer: null,
     schedulerManager: null,
     startupBackfillDone: null,
+    startupRunHistoryBackfillDone: null,
     startupSummaryEvidenceSweepDone: null,
     stopBrowserSurfaceLeaseSweep: null,
     stopClientEventDeliveryWorker: null,
@@ -8013,7 +8144,11 @@ if (process.argv[1]?.endsWith("server/index.ts")) {
       // biome-ignore lint/suspicious/noEmptyBlockStatements: The empty handler intentionally absorbs this best-effort cleanup failure.
     } catch {}
     const backfillDeadline = new Promise((resolve) => setTimeout(resolve, 2000));
-    const awaitStartupTasks = Promise.allSettled([server.startupBackfillDone, server.startupSummaryEvidenceSweepDone]);
+    const awaitStartupTasks = Promise.allSettled([
+      server.startupBackfillDone,
+      server.startupRunHistoryBackfillDone,
+      server.startupSummaryEvidenceSweepDone,
+    ]);
     try {
       server.schedulerManager?.stop?.();
       // biome-ignore lint/suspicious/noEmptyBlockStatements: The empty handler intentionally absorbs this best-effort cleanup failure.
@@ -8056,6 +8191,7 @@ if (process.argv[1]?.endsWith("server/index.ts")) {
       server.rsServer = result.rsServer;
       server.abortStartupBackfill = result.abortStartupBackfill;
       server.startupBackfillDone = result.startupBackfillDone;
+      server.startupRunHistoryBackfillDone = result.startupRunHistoryBackfillDone;
       server.startupSummaryEvidenceSweepDone = result.startupSummaryEvidenceSweepDone;
       server.schedulerManager = result.schedulerManager;
       server.controller = result.controller;

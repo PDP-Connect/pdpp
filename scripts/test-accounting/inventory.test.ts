@@ -30,6 +30,7 @@ import {
 } from "./inventory.ts";
 import {
   assertNamedSkipMappingsFullyConsumed,
+  POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS,
   repositoryPaths,
   riConfiguredNamedSkipMappingIdentities,
   structuredNodeSummary,
@@ -572,6 +573,102 @@ test("rejects a duplicate configured named-skip mapping row before any lookup se
   }
   assert.ok(duplicateDetected, "array-first duplicate detection must see a repeated configured row");
 });
+test("keeps every candidate-added PostgreSQL skip title in the exact receipt mapping", () => {
+  assert.deepEqual(
+    [
+      "real PostgreSQL: the 25-row first-page starvation shape folds before slow generic repairs and survives restart/resume",
+      "real PostgreSQL mutation: a 1ms cold 25-row page starts at most one slow repair and later converges",
+      "real PostgreSQL mutation: a 1ms 2,001-event fold is capped and resumes from its durable checkpoint",
+      "real PostgreSQL mutation: an expired fold stops its delayed participant checkpoint-write tail after one started write",
+    ].filter((name) => POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name)),
+    [
+      "real PostgreSQL: the 25-row first-page starvation shape folds before slow generic repairs and survives restart/resume",
+      "real PostgreSQL mutation: a 1ms cold 25-row page starts at most one slow repair and later converges",
+      "real PostgreSQL mutation: a 1ms 2,001-event fold is capped and resumes from its durable checkpoint",
+      "real PostgreSQL mutation: an expired fold stops its delayed participant checkpoint-write tail after one started write",
+    ]
+  );
+});
+// Aggregate gate regression (2026-07-30, run-history-backfill-cutover REVISE):
+// test/active-run-summary-zero-spine.test.ts (reference-implementation) added
+// three PostgreSQL tests using the bare-boolean `skip: !POSTGRES_URL` shape
+// (in-progress/terminal/no-run cases), and memory-default rejected the first
+// one encountered as an unexplained skip because none of the three exact
+// names were in POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS. The accounting parser
+// aborts on the FIRST unexplained skip per run, so all three names must be
+// present together or a memory-default run fails serially, one at a time,
+// across repeated fix attempts.
+test("keeps every active-run-summary-zero-spine PostgreSQL skip title in the exact receipt mapping", () => {
+  assert.deepEqual(
+    [
+      "PostgreSQL: zero spine_events statements for an in-progress run's GET (collection_rate merged via run.progress_reported)",
+      "PostgreSQL: zero spine_events statements for a terminal run's GET",
+      "PostgreSQL: zero spine_events statements for a connection with no run at all",
+    ].filter((name) => POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name)),
+    [
+      "PostgreSQL: zero spine_events statements for an in-progress run's GET (collection_rate merged via run.progress_reported)",
+      "PostgreSQL: zero spine_events statements for a terminal run's GET",
+      "PostgreSQL: zero spine_events statements for a connection with no run at all",
+    ]
+  );
+});
+// Aggregate gate regression (2026-07-30, terminal-read-integration closure):
+// test/browser-surface.test.ts (reference-implementation) test for scoped
+// browser-surface reads was not in the POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS
+// mapping, causing memory-default to reject it as an unexplained skip.
+test("keeps every browser-surface PostgreSQL skip title in the exact receipt mapping", () => {
+  assert.deepEqual(
+    ["Postgres scoped browser-surface reads match filtered global rows for 0, 1, and 25 identities"].filter((name) =>
+      POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name)
+    ),
+    ["Postgres scoped browser-surface reads match filtered global rows for 0, 1, and 25 identities"]
+  );
+});
+// Aggregate gate regression (2026-07-30, terminal-read-integration closure, receipt 70bfe0b9):
+// Four additional PostgreSQL tests were not in the POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS
+// mapping: fleet-migration repair, scheduler_run_history legacy database migration,
+// and terminal LIST projection tests. All emitted 135 skips now mapped.
+test("keeps every fleet-migration and scheduler-upgrade PostgreSQL skip title in the exact receipt mapping", () => {
+  assert.deepEqual(
+    [
+      "PostgreSQL: a fresh install is unaffected by the fleet-migration repair",
+      "PostgreSQL: a pre-renamed-stuck database is repaired on the next boot, idempotently, with row/id/index preservation",
+      "PostgreSQL: a run.started write succeeds against a database migrated from legacy scheduler_run_history",
+    ].filter((name) => POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name)),
+    [
+      "PostgreSQL: a fresh install is unaffected by the fleet-migration repair",
+      "PostgreSQL: a pre-renamed-stuck database is repaired on the next boot, idempotently, with row/id/index preservation",
+      "PostgreSQL: a run.started write succeeds against a database migrated from legacy scheduler_run_history",
+    ]
+  );
+});
+test("keeps every terminal-LIST PostgreSQL skip title in the exact receipt mapping", () => {
+  assert.deepEqual(
+    ["Postgres terminal LIST projection rejects late canonical snapshots"].filter((name) =>
+      POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name)
+    ),
+    ["Postgres terminal LIST projection rejects late canonical snapshots"]
+  );
+});
+// SECOND LIVE CANARY REVISE (2026-07-30): the interrupted-migration
+// reconciliation test file added two PostgreSQL tests using the same
+// bare-boolean `skip: !POSTGRES_URL` shape. FOURTH-PASS GATE REVISE
+// (2026-07-30): a third PostgreSQL test (the duplicate-composite-key
+// dedup regression) was added to the same file, using the same shape.
+test("keeps every run-history-interrupted-migration-reconciliation PostgreSQL skip title in the exact receipt mapping", () => {
+  assert.deepEqual(
+    [
+      "PostgreSQL: interrupted migration reconciles losslessly against real Postgres — overlap merges, disjoint rows preserved, duplicate run_id across connections survives",
+      "PostgreSQL: a crash before the reconciliation transaction commits leaves scheduler_run_history fully intact for a clean retry",
+      "PostgreSQL: two scheduler_run_history rows sharing the identical composite key deduplicate to the latest (highest id) before merge — the exact fourth-pass gate reproduction",
+    ].filter((name) => POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name)),
+    [
+      "PostgreSQL: interrupted migration reconciles losslessly against real Postgres — overlap merges, disjoint rows preserved, duplicate run_id across connections survives",
+      "PostgreSQL: a crash before the reconciliation transaction commits leaves scheduler_run_history fully intact for a clean retry",
+      "PostgreSQL: two scheduler_run_history rows sharing the identical composite key deduplicate to the latest (highest id) before merge — the exact fourth-pass gate reproduction",
+    ]
+  );
+});
 test("the exact named-skip mapping join fails closed on stale rows and on unconfigured consumed identities", () => {
   // Property 3, stale/unmatched arm. A configured row that no emitted skip
   // consumed (e.g. a test renamed so its title now self-describes, or deleted)
@@ -813,6 +910,28 @@ test("the PostgreSQL profile declares its exact live-gate skip baseline", async 
     "set PDPP_MULTILINGUAL_MINILM_SMOKE=1 to run the external model-download smoke": 1,
     "set PDPP_TEST_LIVE_CDP=1 and PDPP_TEST_CDP_BIN or PDPP_TEST_CDP_WS_URL to run": 1,
     "set PDPP_LIVE_CONNECTOR_HEALTH_GATE=1 to run": 1,
+  });
+});
+// FIFTH-PASS GATE FIX (2026-07-30): this hardcoded literal must track
+// test-accounting.manifest.json's memory-default "PDPP_TEST_POSTGRES_URL
+// unset" count exactly. The integration branch already carried a verified
+// baseline of 135; interrupted-migration reconciliation adds three more
+// PostgreSQL-only tests, for a final baseline of 138.
+test("the memory-default profile declares the exact current skip baseline", async () => {
+  const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
+  const manifestValue = await readManifest(join(root, "test-accounting.manifest.json"), { root });
+  const suite = manifestValue.suites.find((entry) => entry.id === "ri-default");
+  const memoryDefault = suite?.profiles?.find((entry) => typeof entry !== "string" && entry.id === "memory-default");
+  assert.deepEqual(typeof memoryDefault === "string" ? undefined : memoryDefault?.skip_reasons, {
+    "PDPP_TEST_POSTGRES_URL unset": 138,
+    "set PDPP_TEST_POSTGRES_URL to the dedicated loopback listener": 13,
+    "dedicated disposable URL not selected": 1,
+    "set PDPP_LIVE_CONNECTOR_HEALTH_GATE=1 to run": 1,
+    "set PDPP_TEST_LIVE_NEKO_CAP=1 inside the Docker reference service": 1,
+    "PDPP_TEST_POSTGRES_URL is required for PostgreSQL status-window authority": 1,
+    "set PDPP_TEST_LIVE_CDP=1 and PDPP_TEST_CDP_BIN or PDPP_TEST_CDP_WS_URL to run": 1,
+    "set PDPP_TEST_LIVE_NEKO=1 and NEKO_ORIGIN to run": 2,
+    "set PDPP_MULTILINGUAL_MINILM_SMOKE=1 to run the external model-download smoke": 1,
   });
 });
 test("the optional PostgreSQL profile is not selected by the required default and rejects implicit execution", async () => {

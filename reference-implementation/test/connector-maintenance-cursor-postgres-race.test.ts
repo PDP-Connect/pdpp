@@ -15,6 +15,7 @@ const T0 = "2026-07-30T00:00:00.000Z";
 const T1 = "2026-07-30T00:00:01.000Z";
 const T2 = "2026-07-30T00:00:02.000Z";
 const CURSOR_NAME = "connector_summary_evidence";
+const INVALID_RESUMABLE_RESULT = /invalid resumable result/;
 
 function runner(
   nowIso: string,
@@ -60,6 +61,66 @@ test("real PostgreSQL lease ownership ignores replica clock skew and recovers a 
     assert.ok(recovered, "a slow replica clock must recover after the database lease expires");
     assert.equal(recovered.generation, owner.generation + 1);
     await replicaB.release(recovered);
+  } finally {
+    await closePostgresStorage();
+  }
+});
+
+test("real PostgreSQL retries a heavy first-page fold across restart and completes it", {
+  skip: POSTGRES_URL ? false : "PDPP_TEST_POSTGRES_URL unset",
+}, async () => {
+  await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL ?? "" });
+  try {
+    await postgresQuery("DELETE FROM connector_maintenance_cursor WHERE name = $1", [CURSOR_NAME]);
+    const received: Array<string | null | undefined> = [];
+    const firstProcess = runner(T0, (afterId) => {
+      received.push(afterId);
+      return Promise.resolve({ incomplete: true, resumeAfterId: null });
+    });
+    assert.deepEqual(await firstProcess.runEvidenceSweepRound({ maxDurationMs: 1 }), {
+      incomplete: true,
+      resumeAfterId: null,
+    });
+
+    await closePostgresStorage();
+    await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL ?? "" });
+    let remainingFoldBatches = 2;
+    const restartedProcess = runner(T1, (afterId) => {
+      received.push(afterId);
+      remainingFoldBatches -= 1;
+      return Promise.resolve(
+        remainingFoldBatches === 0
+          ? { incomplete: false, resumeAfterId: null }
+          : { incomplete: true, resumeAfterId: null }
+      );
+    });
+    await restartedProcess.runEvidenceSweepRound({ maxDurationMs: 1 });
+    await restartedProcess.runEvidenceSweepRound({ maxDurationMs: 1 });
+
+    assert.deepEqual(received, [null, null, null]);
+    assert.equal(remainingFoldBatches, 0, "repeated PostgreSQL rounds complete the first-page fold");
+  } finally {
+    await closePostgresStorage();
+  }
+});
+
+test("real PostgreSQL rejects a null cursor that would lose non-null progress", {
+  skip: POSTGRES_URL ? false : "PDPP_TEST_POSTGRES_URL unset",
+}, async () => {
+  await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL ?? "" });
+  try {
+    await postgresQuery("DELETE FROM connector_maintenance_cursor WHERE name = $1", [CURSOR_NAME]);
+    const seeded = runner(T0, () => Promise.resolve({ incomplete: true, resumeAfterId: "cin_keep" }));
+    await seeded.runEvidenceSweepRound({ maxDurationMs: 1 });
+
+    const invalid = runner(T1, () => Promise.resolve({ incomplete: true, resumeAfterId: null }));
+    await assert.rejects(invalid.runEvidenceSweepRound({ maxDurationMs: 1 }), INVALID_RESUMABLE_RESULT);
+
+    const resumed = runner(T2, (afterId) => {
+      assert.equal(afterId, "cin_keep");
+      return Promise.resolve({ incomplete: false, resumeAfterId: null });
+    });
+    await resumed.runEvidenceSweepRound({ maxDurationMs: 1 });
   } finally {
     await closePostgresStorage();
   }

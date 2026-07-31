@@ -36,6 +36,7 @@ import type {
   RunSummary as LiveRunSummary,
   TraceSummary as LiveTraceSummary,
   PendingApproval,
+  RefConnectorIdentitySummary,
   RefConnectorRunSummary,
   RefConnectorSummary,
   RefSchedule,
@@ -232,6 +233,26 @@ function buildRefConnectorSummary(connectorId: string): RefConnectorSummary {
     schedule: connector?.schedule ? buildDemoSchedule(connectorId, connector.schedule) : null,
     streams: streams.map((s) => s.key),
     total_records: totalRecordsForConnector(connectorId),
+  };
+}
+
+/**
+ * `identity_inventory` profile analogue (Fable ruling §8, R8.1) for the
+ * deterministic demo dataset: same pinned field set the live reference
+ * returns, sourced from the same demo connector/stream fixtures — never a
+ * separate mock authority.
+ */
+function buildRefConnectorIdentitySummary(connectorId: string): RefConnectorIdentitySummary {
+  const connector = getDemoConnectors().find((c) => c.connector_id === connectorId);
+  const streams = streamsForConnector(connectorId);
+  return {
+    connection_id: connectorId,
+    connector_display_name: connector?.display_name ?? connectorId,
+    connector_id: connectorId,
+    connector_instance_id: connectorId,
+    display_name: connector?.display_name ?? connectorId,
+    membership_state: "complete",
+    streams: streams.map((s) => s.key),
   };
 }
 
@@ -743,14 +764,15 @@ export const sandboxDashboardDataSource: DashboardDataSource = {
     return getDemoConnectors().map((c) => buildConnectorManifest(c.connector_id));
   },
 
-  async listConnectorSummaries(options?: {
-    connectionRouteId?: string;
-    cursor?: string;
-    limit?: number;
-  }): Promise<ListResponse<RefConnectorSummary>> {
+  listConnectorSummaries: (async (
+    options: { connectionRouteId?: string; cursor?: string; limit?: number; profile?: "identity_inventory" } = {}
+  ): Promise<ListResponse<RefConnectorSummary | RefConnectorIdentitySummary>> => {
     const connectors = getDemoConnectors();
-    const summaries = connectors.map((c) => buildRefConnectorSummary(c.connector_id));
-    if (options?.connectionRouteId) {
+    const summaries: (RefConnectorSummary | RefConnectorIdentitySummary)[] =
+      options.profile === "identity_inventory"
+        ? connectors.map((c) => buildRefConnectorIdentitySummary(c.connector_id))
+        : connectors.map((c) => buildRefConnectorSummary(c.connector_id));
+    if (options.connectionRouteId) {
       // Mirror the live reference's resolution precedence (ref-control.ts
       // `resolveUnambiguousConnectionForConnectorId`): exact connection/instance
       // identity first, then a connector-id fallback ONLY when exactly one
@@ -775,8 +797,8 @@ export const sandboxDashboardDataSource: DashboardDataSource = {
     // the same as the live path: an unscoped caller that forgets `limit`
     // still gets a bounded default, never the fleet-wide unbounded read this
     // migration exists to remove.
-    const limit = options?.limit && options.limit > 0 ? options.limit : CONNECTOR_SUMMARY_DEFAULT_PAGE_LIMIT;
-    const offset = options?.cursor ? Number(options.cursor) : 0;
+    const limit = options.limit && options.limit > 0 ? options.limit : CONNECTOR_SUMMARY_DEFAULT_PAGE_LIMIT;
+    const offset = options.cursor ? Number(options.cursor) : 0;
     const page = summaries.slice(offset, offset + limit);
     const nextOffset = offset + page.length;
     const hasMore = nextOffset < summaries.length;
@@ -786,7 +808,7 @@ export const sandboxDashboardDataSource: DashboardDataSource = {
       next_cursor: hasMore ? String(nextOffset) : undefined,
       object: "list",
     };
-  },
+  }) as DashboardDataSource["listConnectorSummaries"],
 
   async listExploreRecordBuckets(opts: {
     connections?: readonly string[];

@@ -18,7 +18,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { DashboardDataSource } from "../lib/data-source.ts";
-import type { ExploreTimelinePage, ListResponse, RefConnectorSummary } from "../lib/ref-client.ts";
+import type { ExploreTimelinePage, ListResponse, RefConnectorIdentitySummary } from "../lib/ref-client.ts";
 import type {
   ConnectorManifest,
   RecordsPage,
@@ -33,25 +33,19 @@ function makeSummary(over: {
   connector_id: string;
   streams?: string[];
   display_name?: string;
-}): RefConnectorSummary {
+}): RefConnectorIdentitySummary {
   return {
-    connection_health: {} as RefConnectorSummary["connection_health"],
     connection_id: over.connection_id,
+    connector_display_name: over.connector_id,
     connector_id: over.connector_id,
     connector_instance_id: over.connection_id,
     display_name: over.display_name ?? over.connection_id,
-    freshness: {},
-    last_run: null,
-    last_successful_run: null,
-    manifest_version: null,
-    next_action: null,
-    schedule: null,
+    membership_state: "complete",
     streams: over.streams ?? ["records"],
-    total_records: 0,
-  } as RefConnectorSummary;
+  };
 }
 
-function summaryListResponse(summaries: RefConnectorSummary[]): ListResponse<RefConnectorSummary> {
+function summaryListResponse(summaries: RefConnectorIdentitySummary[]): ListResponse<RefConnectorIdentitySummary> {
   return { data: summaries, has_more: false, object: "list" };
 }
 
@@ -131,11 +125,11 @@ function twoConnectorDs(capture?: {
       makeManifest("ynab", ["transactions", "budget_months"]),
       makeManifest("chase", ["transactions"]),
     ],
-    listConnectorSummaries: async () =>
+    listConnectorSummaries: (async () =>
       summaryListResponse([
         makeSummary({ connection_id: "cin_ynab", connector_id: "ynab", streams: ["transactions", "budget_months"] }),
         makeSummary({ connection_id: "cin_chase", connector_id: "chase", streams: ["transactions"] }),
-      ]),
+      ])) as unknown as DashboardDataSource["listConnectorSummaries"],
     listExploreRecordBuckets: notStubbed,
     listExploreTimeline: (o) => {
       // Record the exclude scope the assembler sent (proves server-side exclusion).
@@ -161,7 +155,7 @@ function twoConnectorDs(capture?: {
     searchRecordsHybrid: notStubbed,
     searchRecordsLexical: notStubbed,
     searchRecordsSemantic: notStubbed,
-  } as DashboardDataSource;
+  };
 }
 
 test("baseline: with no exclusion the feed carries BOTH connections", async () => {
@@ -308,7 +302,7 @@ function twoConnectorSearchDs(capture?: { lexicalCalls: number }): DashboardData
       }
       return Promise.resolve(lexicalPage(SEARCH_HITS));
     },
-  } as DashboardDataSource;
+  };
 }
 
 test("SEARCH baseline: q with no exclusion returns hits from BOTH connections", async () => {
@@ -444,7 +438,7 @@ function twoConnectorTimeRangeDs(capture: {
       capture.queryCalls.push({ connectorId, stream });
       return Promise.resolve(recordsPage([`${connectorId}-${stream}-1`], stream));
     },
-  } as DashboardDataSource;
+  };
 }
 
 const TIME_WINDOW = { since: "2026-06-01", until: "2026-06-30" } as const;

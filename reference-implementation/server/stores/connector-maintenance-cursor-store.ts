@@ -1,13 +1,13 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-/** Durable fenced ownership for the bounded summary-evidence maintenance pass. */
+/** Durable fenced ownership for bounded, name-keyed maintenance passes. */
 import { randomUUID } from "node:crypto";
 
 import { execDynamicSqlAcknowledged, iterateDynamicSqlAcknowledged, writeTransaction } from "../../lib/db.ts";
 import { isPostgresStorageBackend, postgresQuery } from "../postgres-storage.ts";
 
-const CURSOR_NAME = "connector_summary_evidence";
+export type ConnectorMaintenanceCursorName = "connector_summary_evidence" | "run_history_backfill";
 
 interface CursorRow {
   readonly generation: number | string;
@@ -56,7 +56,9 @@ function leaseExpiresAt(nowIso: string, leaseDurationMs: number): string {
   return new Date(now + leaseDurationMs).toISOString();
 }
 
-function createSqliteConnectorMaintenanceCursorStore(): ConnectorMaintenanceCursorStore {
+function createSqliteConnectorMaintenanceCursorStore(
+  cursorName: ConnectorMaintenanceCursorName
+): ConnectorMaintenanceCursorStore {
   return {
     acquire({ leaseDurationMs, nowIso }) {
       const token = randomUUID();
@@ -67,14 +69,14 @@ function createSqliteConnectorMaintenanceCursorStore(): ConnectorMaintenanceCurs
           `INSERT INTO connector_maintenance_cursor(name, resume_after_id, updated_at, generation, lease_token, lease_expires_at)
            VALUES (?, NULL, ?, 0, NULL, NULL)
            ON CONFLICT(name) DO NOTHING`,
-          [CURSOR_NAME, nowIso]
+          [cursorName, nowIso]
         );
         // REVIEWED-DYNAMIC: BEGIN IMMEDIATE encloses the lease predicate and its fencing-token write.
         const before = [
           ...iterateDynamicSqlAcknowledged<CursorRow>(
             `SELECT resume_after_id, generation FROM connector_maintenance_cursor
              WHERE name = ? AND (lease_token IS NULL OR lease_expires_at <= ?)`,
-            [CURSOR_NAME, nowIso]
+            [cursorName, nowIso]
           ),
         ].at(0);
         if (!before) {
@@ -85,7 +87,7 @@ function createSqliteConnectorMaintenanceCursorStore(): ConnectorMaintenanceCurs
           `UPDATE connector_maintenance_cursor
              SET generation = generation + 1, lease_token = ?, lease_expires_at = ?
            WHERE name = ? AND generation = ? AND (lease_token IS NULL OR lease_expires_at <= ?)`,
-          [token, expiresAt, CURSOR_NAME, before.generation, nowIso]
+          [token, expiresAt, cursorName, before.generation, nowIso]
         );
         if (claimed.changes !== 1) {
           return null;
@@ -105,7 +107,7 @@ function createSqliteConnectorMaintenanceCursorStore(): ConnectorMaintenanceCurs
         `UPDATE connector_maintenance_cursor
            SET resume_after_id = ?, updated_at = ?, lease_token = NULL, lease_expires_at = NULL
          WHERE name = ? AND generation = ? AND lease_token = ?`,
-        [resumeAfterId, updatedAt, CURSOR_NAME, lease.generation, lease.token]
+        [resumeAfterId, updatedAt, cursorName, lease.generation, lease.token]
       );
       return Promise.resolve(result.changes === 1);
     },
@@ -115,14 +117,16 @@ function createSqliteConnectorMaintenanceCursorStore(): ConnectorMaintenanceCurs
         `UPDATE connector_maintenance_cursor
            SET lease_token = NULL, lease_expires_at = NULL
          WHERE name = ? AND generation = ? AND lease_token = ?`,
-        [CURSOR_NAME, lease.generation, lease.token]
+        [cursorName, lease.generation, lease.token]
       );
       return Promise.resolve(result.changes === 1);
     },
   };
 }
 
-function createPostgresConnectorMaintenanceCursorStore(): ConnectorMaintenanceCursorStore {
+function createPostgresConnectorMaintenanceCursorStore(
+  cursorName: ConnectorMaintenanceCursorName
+): ConnectorMaintenanceCursorStore {
   return {
     async acquire({ leaseDurationMs }) {
       const token = randomUUID();
@@ -131,7 +135,7 @@ function createPostgresConnectorMaintenanceCursorStore(): ConnectorMaintenanceCu
         `INSERT INTO connector_maintenance_cursor(name, resume_after_id, updated_at, generation, lease_token, lease_expires_at)
          VALUES ($1, NULL, clock_timestamp()::text, 0, NULL, NULL)
          ON CONFLICT(name) DO NOTHING`,
-        [CURSOR_NAME]
+        [cursorName]
       );
       const result = await postgresQuery<CursorRow>(
         `UPDATE connector_maintenance_cursor
@@ -140,7 +144,7 @@ function createPostgresConnectorMaintenanceCursorStore(): ConnectorMaintenanceCu
                lease_expires_at = (clock_timestamp() + ($3::bigint * INTERVAL '1 millisecond'))::text
          WHERE name = $1 AND (lease_token IS NULL OR lease_expires_at::timestamptz <= clock_timestamp())
          RETURNING resume_after_id, generation`,
-        [CURSOR_NAME, token, leaseDurationMs]
+        [cursorName, token, leaseDurationMs]
       );
       const [row] = result.rows;
       if (!row) {
@@ -157,7 +161,7 @@ function createPostgresConnectorMaintenanceCursorStore(): ConnectorMaintenanceCu
         `UPDATE connector_maintenance_cursor
            SET resume_after_id = $4, updated_at = $5, lease_token = NULL, lease_expires_at = NULL
          WHERE name = $1 AND generation = $2 AND lease_token = $3`,
-        [CURSOR_NAME, lease.generation, lease.token, resumeAfterId, updatedAt]
+        [cursorName, lease.generation, lease.token, resumeAfterId, updatedAt]
       );
       return result.rowCount === 1;
     },
@@ -166,15 +170,17 @@ function createPostgresConnectorMaintenanceCursorStore(): ConnectorMaintenanceCu
         `UPDATE connector_maintenance_cursor
            SET lease_token = NULL, lease_expires_at = NULL
          WHERE name = $1 AND generation = $2 AND lease_token = $3`,
-        [CURSOR_NAME, lease.generation, lease.token]
+        [cursorName, lease.generation, lease.token]
       );
       return result.rowCount === 1;
     },
   };
 }
 
-export function createConnectorMaintenanceCursorStore(): ConnectorMaintenanceCursorStore {
+export function createConnectorMaintenanceCursorStore(
+  cursorName: ConnectorMaintenanceCursorName = "connector_summary_evidence"
+): ConnectorMaintenanceCursorStore {
   return isPostgresStorageBackend()
-    ? createPostgresConnectorMaintenanceCursorStore()
-    : createSqliteConnectorMaintenanceCursorStore();
+    ? createPostgresConnectorMaintenanceCursorStore(cursorName)
+    : createSqliteConnectorMaintenanceCursorStore(cursorName);
 }

@@ -41,6 +41,7 @@ import {
   listRuns,
   listTraces,
   type PendingApproval,
+  type RefConnectorIdentitySummariesResponse,
   type RefConnectorSummariesResponse,
   type RunSummary,
   refSearch,
@@ -113,11 +114,27 @@ export interface DashboardDataSource {
   readonly kind: "live" | "sandbox";
   listConnectorManifests: () => Promise<ConnectorManifest[]>;
   // ── Records ────────────────────────────────────────────────────────────
-  listConnectorSummaries: (options?: {
-    connectionRouteId?: string;
-    cursor?: string;
-    limit?: number;
-  }) => Promise<RefConnectorSummariesResponse>;
+  /**
+   * `profile: "identity_inventory"` (Fable ruling §8, R8.1) returns the
+   * pinned identity + stream-membership field set instead of the full
+   * summary. Omitting `profile` preserves the exact prior behavior.
+   */
+  listConnectorSummaries: {
+    (options: {
+      connectionRouteId?: string;
+      cursor?: string;
+      includeFleetHealth?: boolean;
+      limit?: number;
+      profile: "identity_inventory";
+    }): Promise<RefConnectorIdentitySummariesResponse>;
+    (options?: {
+      connectionRouteId?: string;
+      cursor?: string;
+      includeFleetHealth?: boolean;
+      limit?: number;
+      profile?: undefined;
+    }): Promise<RefConnectorSummariesResponse>;
+  };
   /**
    * Index-backed, single-call over-time bucket aggregate for the Explore chart —
    * the honest replacement for the per-(connection, stream) `aggregateRecordsByTime`

@@ -486,7 +486,7 @@ test("legacy connector-keyed stores migrate to one deterministic default account
         scenario_id TEXT NOT NULL,
         started_at TEXT NOT NULL
       );
-      DROP TABLE scheduler_run_history;
+      DROP TABLE run_history;
       CREATE TABLE scheduler_run_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         connector_id TEXT NOT NULL,

@@ -691,6 +691,27 @@ export interface RefConnectorSummary {
 }
 
 /**
+ * `GET /_ref/connectors?profile=identity_inventory` row (Fable ruling
+ * terminal-read-architecture-fable-0730.md §8, R8.1): the pinned field set
+ * for the `identity_inventory` named profile — pure connection identity +
+ * stream membership, no health/evidence/run/schedule/runtime field. Mirrors
+ * `reference-implementation/server/ref-control.ts`'s
+ * `ConnectorIdentityInventorySummary`. Structurally a subset of
+ * `RefConnectorSummary`'s identity fields, so `toConnectionFacet`
+ * (`explore-data-assembler.ts`) accepts either interchangeably.
+ */
+export interface RefConnectorIdentitySummary {
+  connection_id: string;
+  connector_display_name: string;
+  connector_id: string;
+  connector_instance_id: string;
+  display_name: string;
+  /** `"pending"` when no `connector_summary_evidence` row exists yet (declared-only). */
+  membership_state: "complete" | "pending";
+  streams: string[];
+}
+
+/**
  * Shared shape for the `record_snapshot` / `manifest_declaration` evidence
  * components. Mirrors the server's inline object types in `ref-control.ts`.
  */
@@ -729,6 +750,12 @@ export interface RefConnectorRuntimeStatus {
 }
 
 export interface RefConnectorSummariesResponse extends ListResponse<RefConnectorSummary> {
+  fleet_health?: RefFleetHealthVerdict;
+  runtime?: RefConnectorRuntimeStatus;
+}
+
+/** `identity_inventory` profile response envelope — never carries `fleet_health` (Explore never requests it). */
+export interface RefConnectorIdentitySummariesResponse extends ListResponse<RefConnectorIdentitySummary> {
   runtime?: RefConnectorRuntimeStatus;
 }
 
@@ -1216,7 +1243,7 @@ class RefRequestError extends Error {
 // The `/_ref/explore/*` routes are mounted on the AS under the owner session.
 export async function refFetch(
   path: string,
-  params?: Record<string, string | number | undefined>,
+  params?: Record<string, string | number | undefined | readonly string[]>,
   init: RequestInit = {}
 ) {
   // DAL gate: verify owner session before any AS read. The proxy already
@@ -1227,9 +1254,20 @@ export async function refFetch(
   const url = new URL(`${getAsInternalUrl()}${path}`);
   if (params) {
     for (const [k, v] of Object.entries(params)) {
-      if (v !== undefined && v !== null && v !== "") {
-        url.searchParams.set(k, String(v));
+      if (v === undefined || v === null || v === "") {
+        continue;
       }
+      // A readonly-array value appends ONE repeated query param per element
+      // (`?connector_id=A&connector_id=B`) — the reference's bounded SET
+      // scope contract (design doc add-source-perf-design-agy-0730.md
+      // "Minimal contract"), never a CSV-encoded single value.
+      if (Array.isArray(v)) {
+        for (const item of v) {
+          url.searchParams.append(k, String(item));
+        }
+        continue;
+      }
+      url.searchParams.set(k, String(v));
     }
   }
   let res: Response;
@@ -1497,16 +1535,93 @@ export async function listExploreTimeline(
 /** Max page size the reference accepts (`CONNECTOR_SUMMARY_PAGE_LIMIT_MAX`). */
 export const CONNECTOR_SUMMARY_PAGE_LIMIT_MAX = 100;
 const CONNECTOR_SUMMARY_DEFAULT_PAGE_LIMIT = 100;
+/** Accepted maximum for a repeated `connector_id` SET scope (design doc add-source-perf-design-agy-0730.md "Minimal contract"). */
+export const CONNECTOR_SUMMARY_CONNECTOR_ID_SET_MAX = 100;
 
+/**
+ * Named semantic profile on `GET /_ref/connectors` (Fable ruling §8, R8.1).
+ * Omitted = full (`detail`-shaped) response, unchanged. `retained_count_summary`
+ * (design doc add-source-perf-design-agy-0730.md, R4/R5) is the Add Source
+ * batched-profile: identity + `total_records`/`total_records_state`/
+ * `acquisition_coverage.latest_batch` only.
+ */
+export type ConnectorSummaryProfile = "identity_inventory" | "retained_count_summary";
+
+/**
+ * `GET /_ref/connectors?profile=retained_count_summary` row (design doc
+ * add-source-perf-design-agy-0730.md; Fable ruling terminal-read-
+ * architecture-fable-0730.md R4/R5): the pinned field set for Add Source —
+ * pure identity + the three fields the existing-sources card renders.
+ * Mirrors `reference-implementation/server/ref-control.ts`'s
+ * `ConnectorRetainedCountSummary`.
+ */
+export interface RefConnectorRetainedCountSummary {
+  acquisition_coverage: RefAcquisitionCoverageSummary | null;
+  connection_id: string;
+  connector_display_name: string;
+  connector_id: string;
+  connector_instance_id: string;
+  display_name: string;
+  revoked_at: string | null;
+  status: string;
+  total_records: number;
+  total_records_state: RefCountState;
+}
+
+/** `retained_count_summary` profile response envelope — never carries `fleet_health`. */
+export interface RefConnectorRetainedCountSummariesResponse extends ListResponse<RefConnectorRetainedCountSummary> {
+  runtime?: RefConnectorRuntimeStatus;
+}
+
+export function listConnectorSummaries(options: {
+  connectionRouteId?: string;
+  connectorId?: readonly string[];
+  cursor?: string;
+  includeFleetHealth?: boolean;
+  limit?: number;
+  profile: "identity_inventory";
+}): Promise<RefConnectorIdentitySummariesResponse>;
+export function listConnectorSummaries(options: {
+  connectionRouteId?: string;
+  connectorId?: readonly string[];
+  cursor?: string;
+  includeFleetHealth?: boolean;
+  limit?: number;
+  profile: "retained_count_summary";
+}): Promise<RefConnectorRetainedCountSummariesResponse>;
+export function listConnectorSummaries(options?: {
+  connectionRouteId?: string;
+  connectorId?: readonly string[];
+  cursor?: string;
+  includeFleetHealth?: boolean;
+  limit?: number;
+  profile?: undefined;
+}): Promise<RefConnectorSummariesResponse>;
 export async function listConnectorSummaries(
-  options: { connectionRouteId?: string; cursor?: string; limit?: number } = {}
-): Promise<RefConnectorSummariesResponse> {
+  options: {
+    connectionRouteId?: string;
+    /**
+     * Bounded repeated-value SET scope on the paged (non-`connectionRouteId`)
+     * form — design doc "Minimal contract": 1..
+     * {@link CONNECTOR_SUMMARY_CONNECTOR_ID_SET_MAX} canonical distinct ids,
+     * sent as repeated `connector_id` query values, never CSV-encoded.
+     */
+    connectorId?: readonly string[];
+    cursor?: string;
+    includeFleetHealth?: boolean;
+    limit?: number;
+    profile?: ConnectorSummaryProfile;
+  } = {}
+): Promise<
+  RefConnectorSummariesResponse | RefConnectorIdentitySummariesResponse | RefConnectorRetainedCountSummariesResponse
+> {
   // When a record subpage knows the connection it wants, pass the route id so
   // the reference projects only that one connection (a 0-or-1 list) instead of
   // running the per-connection fan-out for every configured connection.
   if (options.connectionRouteId) {
     return (await refFetch("/_ref/connectors", {
       connection: options.connectionRouteId,
+      profile: options.profile,
     })) as RefConnectorSummariesResponse;
   }
   // Unscoped callers always page — the reference's unbounded compat branch
@@ -1514,8 +1629,11 @@ export async function listConnectorSummaries(
   // full-fleet-scoped evidence reconcile on every request; there is no
   // first-party reason to ever take that branch anymore.
   return (await refFetch("/_ref/connectors", {
+    connector_id: options.connectorId,
     cursor: options.cursor,
+    include_fleet_health: options.includeFleetHealth ? 1 : undefined,
     limit: options.limit ?? CONNECTOR_SUMMARY_DEFAULT_PAGE_LIMIT,
+    profile: options.profile,
   })) as RefConnectorSummariesResponse;
 }
 

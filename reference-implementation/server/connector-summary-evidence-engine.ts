@@ -88,7 +88,6 @@ export type RepairCandidateReason =
   | "record_checkpoint_mismatch"
   | "identity_mismatch"
   | "manifest_mismatch"
-  | "terminal_checkpoint_lag"
   | "retained_bytes_changed_or_unavailable"
   | "schedule_mismatch"
   | "lifecycle_checkpoint_lag";
@@ -239,7 +238,6 @@ interface DiscoveryInput {
   readonly existingEvidence: Row | null;
   readonly instance: Row;
   readonly manifest: ManifestDeclaration;
-  readonly maxTerminalEventSeq: number | null;
   readonly retainedByteRow: Row | null;
 }
 
@@ -292,14 +290,6 @@ function classifyCandidate(input: DiscoveryInput): RepairCandidateReason | null 
   }
   if (Number(existingEvidence.manifest_generation ?? 0) !== Number(instance.manifest_generation ?? 0)) {
     return "manifest_mismatch";
-  }
-  const storedTerminalSeq =
-    existingEvidence.stream_facts_event_seq === null ? null : Number(existingEvidence.stream_facts_event_seq);
-  if (
-    input.maxTerminalEventSeq !== null &&
-    (storedTerminalSeq === null || storedTerminalSeq < input.maxTerminalEventSeq)
-  ) {
-    return "terminal_checkpoint_lag";
   }
   // Terminal-gate revision (2026-07-29): schedule mutations (pause/resume/
   // delete/upsert) have no other durable backstop — `connector_schedules.
@@ -435,7 +425,6 @@ function readSqliteDiscoveryContext(connectorInstanceIds: readonly string[] | nu
       instanceRows: [] as Row[],
       manifestByConnector: new Map<string, string>(),
       maxLifecycleEventSeqByInstance: new Map<string, number>(),
-      maxTerminalEventSeq: null,
       retainedByteByInstance: new Map<string, Row>(),
       scheduleUpdatedAtByInstance: new Map<string, string>(),
       versionCountersByInstance: new Map<string, Row[]>(),
@@ -528,12 +517,6 @@ function readSqliteDiscoveryContext(connectorInstanceIds: readonly string[] | nu
   const canonicalTotalRecordsByInstance = new Map(
     canonicalCountRows.map((row) => [String(row.connector_instance_id), Number(row.total_records || 0)])
   );
-  const maxTerminalSeqRow = db
-    .prepare(
-      `SELECT MAX(event_seq) AS max_seq FROM spine_events
-        WHERE event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')`
-    )
-    .get() as Row | undefined;
   // Terminal-gate revision (2026-07-29): schedule mutations have NO existing
   // dirty-independent backstop — `connector_schedules.updated_at` is already
   // written atomically with every schedule mutation on both backends (a
@@ -553,8 +536,9 @@ function readSqliteDiscoveryContext(connectorInstanceIds: readonly string[] | nu
     scheduleRows.map((row) => [String(row.connector_instance_id), String(row.updated_at)])
   );
   // Terminal-gate revision (2026-07-29): run-lifecycle events (e.g.
-  // `run.started`) have no existing dirty-independent backstop either — the
-  // terminal-only `maxTerminalEventSeq` above deliberately excludes them.
+  // `run.started`) have no existing dirty-independent backstop either. This
+  // per-connection lifecycle receipt deliberately excludes terminal outcomes,
+  // which are solely owned by the terminal-fold path.
   // Reuses the spine's own already-durable, atomically-assigned `event_seq`
   // as the repair receipt, scoped per connection (unlike the fleet-wide
   // terminal scalar, since run-lifecycle freshness is a per-connection fact).
@@ -583,10 +567,6 @@ function readSqliteDiscoveryContext(connectorInstanceIds: readonly string[] | nu
     instanceRows: instanceRows as Row[],
     manifestByConnector,
     maxLifecycleEventSeqByInstance,
-    maxTerminalEventSeq:
-      maxTerminalSeqRow?.max_seq === null || maxTerminalSeqRow?.max_seq === undefined
-        ? null
-        : Number(maxTerminalSeqRow.max_seq),
     retainedByteByInstance,
     scheduleUpdatedAtByInstance,
     versionCountersByInstance,
@@ -607,7 +587,6 @@ async function readPostgresDiscoveryContext(connectorInstanceIds: readonly strin
       instanceRows: [] as Row[],
       manifestByConnector: new Map<string, string>(),
       maxLifecycleEventSeqByInstance: new Map<string, number>(),
-      maxTerminalEventSeq: null,
       retainedByteByInstance: new Map<string, Row>(),
       scheduleUpdatedAtByInstance: new Map<string, string>(),
       versionCountersByInstance: new Map<string, Row[]>(),
@@ -684,11 +663,6 @@ async function readPostgresDiscoveryContext(connectorInstanceIds: readonly strin
       Number(row.total_records || 0),
     ])
   );
-  const maxTerminalSeqResult = await postgresQuery(
-    `SELECT MAX(event_seq) AS max_seq FROM spine_events
-      WHERE event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')`
-  );
-  const maxSeq = (maxTerminalSeqResult.rows[0] as Row | undefined)?.max_seq;
   // Terminal-gate revision (2026-07-29): schedule mutations have NO existing
   // dirty-independent backstop — `connector_schedules.updated_at` is already
   // written atomically with every schedule mutation on both backends (a
@@ -705,8 +679,9 @@ async function readPostgresDiscoveryContext(connectorInstanceIds: readonly strin
     (scheduleResult.rows as Row[]).map((row) => [String(row.connector_instance_id), String(row.updated_at)])
   );
   // Terminal-gate revision (2026-07-29): run-lifecycle events (e.g.
-  // `run.started`) have no existing dirty-independent backstop either — the
-  // terminal-only `maxTerminalEventSeq` above deliberately excludes them.
+  // `run.started`) have no existing dirty-independent backstop either. This
+  // per-connection lifecycle receipt deliberately excludes terminal outcomes,
+  // which are solely owned by the terminal-fold path.
   // Reuses the spine's own already-durable, atomically-assigned `event_seq`
   // as the repair receipt, scoped per connection.
   const maxLifecycleSeqResult = scoped
@@ -730,7 +705,6 @@ async function readPostgresDiscoveryContext(connectorInstanceIds: readonly strin
     instanceRows: instanceResult.rows as Row[],
     manifestByConnector,
     maxLifecycleEventSeqByInstance,
-    maxTerminalEventSeq: maxSeq === null ? null : Number(maxSeq),
     retainedByteByInstance,
     scheduleUpdatedAtByInstance,
     versionCountersByInstance,
@@ -771,7 +745,6 @@ async function discoverCandidates(
       existingEvidence,
       instance,
       manifest,
-      maxTerminalEventSeq: ctx.maxTerminalEventSeq,
       retainedByteRow: ctx.retainedByteByInstance.get(instanceId) ?? null,
     });
     if (reason) {
@@ -904,7 +877,8 @@ function persistFailedEvidenceSqlite(connectorInstanceId: string, failedRow: Row
               terminal_facts_reason_code = ?,
               dirty = 1,
               state = 'failed',
-              last_error = ?
+              last_error = ?,
+              canonical_evidence_revision = canonical_evidence_revision + 1
         WHERE connector_instance_id = ?`
     )
     .run(
@@ -947,7 +921,8 @@ function persistFailedEvidenceSqlite(connectorInstanceId: string, failedRow: Row
        terminal_facts_reason_code = excluded.terminal_facts_reason_code,
        dirty = 1,
        state = 'failed',
-       last_error = excluded.last_error`,
+       last_error = excluded.last_error,
+       canonical_evidence_revision = canonical_evidence_revision + 1`,
     [
       connectorInstanceId,
       failedRow.record_snapshot_state,
@@ -984,7 +959,8 @@ async function persistFailedEvidencePostgres(connectorInstanceId: string, failed
             terminal_facts_reason_code = $9,
             dirty = 1,
             state = 'failed',
-            last_error = $10
+            last_error = $10,
+            canonical_evidence_revision = canonical_evidence_revision + 1
       WHERE connector_instance_id = $1`,
     [
       connectorInstanceId,
@@ -1023,7 +999,8 @@ async function persistFailedEvidencePostgres(connectorInstanceId: string, failed
        terminal_facts_reason_code = EXCLUDED.terminal_facts_reason_code,
        dirty = 1,
        state = 'failed',
-       last_error = EXCLUDED.last_error`,
+       last_error = EXCLUDED.last_error,
+       canonical_evidence_revision = connector_summary_evidence.canonical_evidence_revision + 1`,
     [
       connectorInstanceId,
       failedRow.record_snapshot_state,
@@ -1457,9 +1434,12 @@ function upsertSqliteEvidenceRow(db: Db, row: Row): void {
        computed_at = excluded.computed_at,
        state = 'fresh',
        last_error = NULL,
+       canonical_evidence_revision = canonical_evidence_revision + 1,
        manifest_generation = excluded.manifest_generation,
        schedule_checkpoint = excluded.schedule_checkpoint,
-       run_lifecycle_event_seq = excluded.run_lifecycle_event_seq`,
+       run_lifecycle_event_seq = excluded.run_lifecycle_event_seq,
+       list_summary_projection_state = 'stale',
+       list_summary_projection_reason_code = 'canonical_evidence_rebuilt'`,
     [
       row.connector_instance_id,
       row.connector_id,
@@ -1552,9 +1532,12 @@ async function upsertPostgresEvidenceRow(client: Db, row: Row): Promise<void> {
        computed_at = EXCLUDED.computed_at,
        state = 'fresh',
        last_error = NULL,
+       canonical_evidence_revision = connector_summary_evidence.canonical_evidence_revision + 1,
        manifest_generation = EXCLUDED.manifest_generation,
        schedule_checkpoint = EXCLUDED.schedule_checkpoint,
-       run_lifecycle_event_seq = EXCLUDED.run_lifecycle_event_seq`,
+       run_lifecycle_event_seq = EXCLUDED.run_lifecycle_event_seq,
+       list_summary_projection_state = 'stale',
+       list_summary_projection_reason_code = 'canonical_evidence_rebuilt'`,
     [
       row.connector_instance_id,
       row.connector_id,
@@ -1646,6 +1629,33 @@ export interface ReconcileResult {
   readonly skipped: number;
 }
 
+function resolveReconcileDeadline(options: {
+  readonly deadline?: number;
+  readonly maxDurationMs?: number;
+}): number | null {
+  if (typeof options.deadline === "number") {
+    return options.deadline;
+  }
+  if (typeof options.maxDurationMs === "number" && options.maxDurationMs >= 0) {
+    return Date.now() + options.maxDurationMs;
+  }
+  return null;
+}
+
+function pruneReconciledEvidence(
+  connectorInstanceIds: readonly string[] | null,
+  instanceRows: readonly Row[],
+  deadline: number | null
+): Promise<number> {
+  if (deadline !== null && Date.now() >= deadline) {
+    return Promise.resolve(0);
+  }
+  if (connectorInstanceIds === null) {
+    return pruneOrphanedEvidenceComplete(instanceRows);
+  }
+  return pruneOrphanedEvidenceScoped(connectorInstanceIds, instanceRows);
+}
+
 /**
  * The one scope-safe reconciliation primitive: batched fixed-query
  * discovery, then writer-fenced repair for exactly the classified
@@ -1662,6 +1672,12 @@ export interface ReconcileResult {
  * bound skips is repaired on the next read, not lost). Leave unset for every
  * read-time consumer, which genuinely needs the complete unbounded pass —
  * only startup's one-shot acceleration call bounds itself.
+ *
+ * `options.deadline`, when provided, is an absolute cooperative deadline for
+ * the repair loop. It is checked before each repair unit; a unit already
+ * under its writer fence finishes cleanly, but no later repair begins after
+ * the deadline. `options.maxDurationMs` remains the standalone relative
+ * form for callers that do not already own an absolute deadline.
  *
  * `options.maxDurationMs`, when provided, ALSO bounds the repair loop's
  * total WALL-CLOCK time — checked between candidates (never mid-repair, so
@@ -1680,20 +1696,28 @@ export interface ReconcileResult {
  */
 export async function reconcileConnectorSummaryEvidence(
   connectorInstanceIds: readonly string[] | null = null,
-  options: { readonly maxCandidates?: number; readonly maxDurationMs?: number } = {}
+  options: {
+    readonly candidateReasons?: readonly RepairCandidateReason[];
+    readonly deadline?: number;
+    readonly maxCandidates?: number;
+    readonly maxDurationMs?: number;
+  } = {}
 ): Promise<ReconcileResult> {
   const { instanceRows, candidates } = await discoverCandidates(connectorInstanceIds);
 
-  const candidateEntries = [...candidates];
+  const allowedReasons = options.candidateReasons === undefined ? null : new Set(options.candidateReasons);
+  const candidateEntries = [...candidates].filter(
+    ([, reason]) => allowedReasons === null || allowedReasons.has(reason)
+  );
   const candidateReasonCounts = {} as Record<RepairCandidateReason, number>;
   for (const [, reason] of candidateEntries) {
     candidateReasonCounts[reason] = (candidateReasonCounts[reason] ?? 0) + 1;
   }
   const countBounded = typeof options.maxCandidates === "number" && options.maxCandidates >= 0;
-  const timeBounded = typeof options.maxDurationMs === "number" && options.maxDurationMs >= 0;
   const countLimited = countBounded ? candidateEntries.slice(0, options.maxCandidates) : candidateEntries;
-  // biome-ignore lint/style/noNonNullAssertion: The trusted boundary invariant is established by the preceding validation.
-  const deadline = timeBounded ? Date.now() + options.maxDurationMs! : null;
+  // A maintenance caller passes its one absolute deadline through every
+  // phase. Standalone callers retain the existing relative-duration API.
+  const deadline = resolveReconcileDeadline(options);
 
   let repaired = 0;
   let failed = 0;
@@ -1717,14 +1741,10 @@ export async function reconcileConnectorSummaryEvidence(
   }
   const skipped = candidateEntries.length - repaired;
 
-  // Orphan cleanup is a fixed-cost batched delete (not a per-candidate
-  // repair loop), so it is never bounded — a startup pass that hit its
-  // repair cap still fully prunes evidence for connections that no longer
-  // exist at all.
-  const dropped =
-    connectorInstanceIds === null
-      ? await pruneOrphanedEvidenceComplete(instanceRows)
-      : await pruneOrphanedEvidenceScoped(connectorInstanceIds, instanceRows);
+  // A deadline-expired maintenance round defers even the fixed-cost prune:
+  // it must not begin another SQL work unit after its owner deadline. An
+  // unbounded or still-live call retains the original complete cleanup.
+  const dropped = await pruneReconciledEvidence(connectorInstanceIds, instanceRows, deadline);
 
   return {
     candidateReasonCounts,

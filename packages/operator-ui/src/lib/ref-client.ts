@@ -304,6 +304,27 @@ export interface RefConnectorSummary {
 }
 
 /**
+ * `GET /_ref/connectors?profile=identity_inventory` row (Fable ruling
+ * terminal-read-architecture-fable-0730.md §8, R8.1): the pinned field set
+ * for the `identity_inventory` named profile — pure connection identity +
+ * stream membership, no health/evidence/run/schedule/runtime field. Mirrors
+ * `reference-implementation/server/ref-control.ts`'s
+ * `ConnectorIdentityInventorySummary`. Structurally a subset of
+ * `RefConnectorSummary`'s identity fields, so `toConnectionFacet`
+ * (`explore-data-assembler.ts`) accepts either interchangeably.
+ */
+export interface RefConnectorIdentitySummary {
+  connection_id: string;
+  connector_display_name: string;
+  connector_id: string;
+  connector_instance_id: string;
+  display_name: string;
+  /** `"pending"` when no `connector_summary_evidence` row exists yet (declared-only). */
+  membership_state: "complete" | "pending";
+  streams: string[];
+}
+
+/**
  * Owner-facing, non-secret call to action surfaced alongside the health
  * snapshot. Mirrors the reference-implementation contract at
  * reference-implementation/runtime/connection-health.ts. The dashboard

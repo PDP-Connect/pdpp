@@ -5,6 +5,11 @@ import { randomBytes } from "node:crypto";
 import { getDb } from "../server/db.ts";
 import { isPostgresStorageBackend } from "../server/postgres-storage.ts";
 import {
+  isRunHistoryRelevantEventType,
+  type RunHistorySpineEvent,
+  writeSqliteRunHistoryForSpineEvent,
+} from "../server/stores/run-history-writer.ts";
+import {
   execNamedOn,
   getMany,
   getOne,
@@ -17,6 +22,7 @@ import {
   postgresEmitSpineEvent,
   postgresGetRunStartedEvent,
   postgresGetRunTerminalEvent,
+  postgresListRunSummariesByConnectorIds,
   postgresListSpineCorrelations,
   postgresListSpineEventsPage,
   postgresSearchSpine,
@@ -497,7 +503,27 @@ export function emitSpineEvent(
 
   execNamedOn(db, referenceQueries.spineInsertEvent, event);
 
+  if (isRunHistoryRelevantEventType(event.event_type)) {
+    // Same synchronous single-connection handle as the insert above — no
+    // partial-commit window on SQLite. See run-history-writer.ts header.
+    writeSqliteRunHistoryForSpineEvent(toRunHistorySpineEvent(event, input.data));
+  }
+
   return Promise.resolve(hydrateNormalizedEvent(event));
+}
+
+function toRunHistorySpineEvent(event: NormalizedSpineEvent, rawData: unknown): RunHistorySpineEvent {
+  const data =
+    rawData && typeof rawData === "object" && !Array.isArray(rawData) ? (rawData as Record<string, unknown>) : {};
+  return {
+    connectorId: event.source_kind === "connector" ? event.source_id : null,
+    connectorInstanceId: event.connector_instance_id,
+    data,
+    eventType: event.event_type ?? "",
+    occurredAt: event.occurred_at,
+    runId: event.run_id,
+    status: event.status,
+  };
 }
 
 /**
@@ -877,8 +903,16 @@ const EVENT_ROW_ORDER_ASC = "(event_seq IS NULL), event_seq ASC, event_id ASC";
  * `fetchRowsForSummaries` batching (`lib/postgres-spine.js`) — a
  * `ROW_NUMBER() OVER (PARTITION BY ...)` keeps the same per-id LIMIT
  * semantics a per-row `LIMIT ?` query would have.
+ *
+ * Exported for the run-history backfill stage
+ * (server/stores/run-history-backfill-stage.ts) to fetch each candidate
+ * run's event window before folding it with `summarizeEvents` — the SAME
+ * batched fetch+hydrate this module's own run-summary readers use.
  */
-function loadEventsForSummaries(kind: SpineCorrelationKind, ids: readonly string[]): Map<string, SpineEventRecord[]> {
+export function loadEventsForSummaries(
+  kind: SpineCorrelationKind,
+  ids: readonly string[]
+): Map<string, SpineEventRecord[]> {
   const byId = new Map<string, SpineEventRecord[]>();
   if (ids.length === 0) {
     return byId;
@@ -1136,7 +1170,14 @@ function connectionIdFromBrowserSurfaceProfileKey(projection: Record<string, unk
   return suffix?.startsWith("cin_") ? suffix : null;
 }
 
-function connectionIdFromEventData(event: SpineEventRecord): string | null {
+// Exported for the run-history backfill stage
+// (server/stores/run-history-backfill-stage.ts), which must filter a
+// batched-fetched event window down to one candidate's own connection
+// before folding it with the unmodified summarizeEvents — run_id alone is
+// not a unique identity (see openspec/changes/
+// run-history-backfill-list-cutover), so a window fetched by run_id can
+// contain more than one connection's events.
+export function connectionIdFromEventData(event: SpineEventRecord): string | null {
   const data = event.data && typeof event.data === "object" && !Array.isArray(event.data) ? event.data : null;
   if (!data) {
     return null;
@@ -1161,7 +1202,11 @@ function findFirstConnectionId(events: readonly SpineEventRecord[]): string | nu
   return null;
 }
 
-function summarizeEvents(events: readonly SpineEventRecord[]): SpineSummary | null {
+// Exported for the run-history backfill stage
+// (server/stores/run-history-backfill-stage.ts,
+// terminal-read-architecture-fable-0730.md §9/R9.2), which reuses this fold
+// UNCHANGED rather than re-deriving run status from spine events itself.
+export function summarizeEvents(events: readonly SpineEventRecord[]): SpineSummary | null {
   if (events.length === 0) {
     return null;
   }
@@ -1390,6 +1435,62 @@ export function listSpineCorrelations(
     return postgresListSpineCorrelations(key, filters) as Promise<SpineCorrelationPage>;
   }
   return Promise.resolve(listSpineCorrelationsSqlite(key, filters));
+}
+
+/**
+ * Return the bounded run-correlation candidate set for every connector in an
+ * already-authorized connector-summary page.  The map is keyed by connector
+ * id, never instance id: callers still perform the existing exact
+ * connection/browser-profile match and singleton-active fallback themselves.
+ */
+export function listRunSummariesByConnectorIds(
+  connectorIds: readonly string[],
+  status: string | null = null
+): Promise<ReadonlyMap<string, readonly SpineSummary[]>> {
+  const ids = [...new Set(connectorIds.filter((id) => typeof id === "string" && id.length > 0))];
+  if (isPostgresStorageBackend()) {
+    return postgresListRunSummariesByConnectorIds(ids, status) as Promise<ReadonlyMap<string, readonly SpineSummary[]>>;
+  }
+  const byConnector = new Map<string, SpineSummary[]>(ids.map((id) => [id, []]));
+  if (ids.length === 0 || !(getDb() as SpineDatabase | undefined)) {
+    return Promise.resolve(byConnector);
+  }
+  const placeholders = ids.map(() => "?").join(", ");
+  const rows = [
+    ...iterateDynamicSqlAcknowledged<CorrelationAggregateRow & { readonly source_id: string }>(
+      `WITH grouped AS (
+         SELECT source_id, run_id AS id, MIN(occurred_at) AS first_at, MAX(occurred_at) AS last_at, COUNT(*) AS event_count
+         FROM spine_events
+         WHERE run_id IS NOT NULL AND source_kind = 'connector' AND source_id IN (${placeholders})
+         GROUP BY source_id, run_id
+       ), ranked AS (
+         SELECT *, ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY last_at DESC, id ASC) AS rn
+         FROM grouped
+       )
+       SELECT source_id, id, first_at, last_at, event_count
+       FROM ranked
+       WHERE rn <= ?
+       ORDER BY source_id ASC, last_at DESC, id ASC`,
+      // Mirrors listSpineCorrelationsSqlite's `limit * 4` candidate window
+      // for a 64-row reader. Status is projected from hydrated events, so it
+      // must filter this full bounded window before the 64-item page cap.
+      [...ids, 256]
+    ),
+  ];
+  const eventsById = loadEventsForSummaries(
+    "run",
+    rows.map((row) => row.id)
+  );
+  for (const row of rows) {
+    const summary = hydrateAggregateRow(row, "run", { sourceId: row.source_id, sourceKind: "connector" }, eventsById);
+    if (summary && (status === null || summary.status === status)) {
+      const bucket = byConnector.get(row.source_id);
+      if (bucket && bucket.length < 64) {
+        bucket.push(summary);
+      }
+    }
+  }
+  return Promise.resolve(byConnector);
 }
 
 interface CorrelationAggregateSql {

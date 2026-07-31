@@ -6,6 +6,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { observeDynamicBrowserSurfaceRuntimeSurfaces } from "../runtime/browser-surface/allocator-observation.ts";
+import { readBrowserSurfaceRuntimeSurfaces } from "../runtime/browser-surface/health-summary-adapter.ts";
 import type { BrowserSurfaceRuntimeInventorySnapshot, BrowserSurfaceRuntimeManagement } from "../runtime/controller.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
 import {
@@ -34,6 +36,7 @@ interface TestController {
 const OWNER_SUBJECT_ID = "owner_local";
 const CONNECTORS = ["heb", "reddit"];
 const NOW = "2026-07-16T12:00:00.000Z";
+const OVER_CAP_SURFACE_IDS = /at most 25 surface ids/;
 
 function withTmpDb(fn: () => Promise<void>): () => Promise<void> {
   return async () => {
@@ -162,7 +165,10 @@ test(
     const controller = nonMutatingDynamicController(calls);
 
     const first = await listConnectorSummaries(controller);
-    assert.deepEqual(first.map((summary) => summary.connector_id).sort(), CONNECTORS);
+    assert.deepEqual(
+      first.map((summary) => summary.connector_id).sort((left, right) => left.localeCompare(right)),
+      CONNECTORS
+    );
     assert.equal(calls.observe, 1, "one full refresh shares one inventory observation across H-E-B and Reddit");
 
     const second = await listConnectorSummaries(controller);
@@ -197,3 +203,105 @@ test(
     );
   })
 );
+
+test("scoped runtime observation reads only requested surfaces and keeps missing and unknown ids explicit", async () => {
+  const known = new Map(
+    Array.from({ length: 25 }, (_, index) => [
+      `surface_${index}`,
+      {
+        backend: "neko" as const,
+        cdp_url: `http://neko/${index}`,
+        connector_id: `connector_${index}`,
+        created_at: NOW,
+        health: "ready" as const,
+        last_used_at: NOW,
+        profile_key: `profile_${index}`,
+        stream_base_url: `http://stream/${index}`,
+        surface_id: `surface_${index}`,
+      },
+    ])
+  );
+  let listCalls = 0;
+  const statusCalls: string[] = [];
+  const allocator = {
+    ensureSurface: () => Promise.reject(new Error("scoped observation must not allocate")),
+    getSurfaceStatus(surfaceId: string) {
+      statusCalls.push(surfaceId);
+      if (surfaceId === "unknown_surface") {
+        return Promise.reject(new Error("temporary allocator failure"));
+      }
+      return Promise.resolve(known.get(surfaceId) ?? null);
+    },
+    listSurfaces() {
+      listCalls += 1;
+      return Promise.reject(new Error("scoped observation must not list the global inventory"));
+    },
+    stopSurface: () => Promise.resolve(null),
+  };
+
+  const scopedObservation = (surfaceIds: readonly string[]) =>
+    observeDynamicBrowserSurfaceRuntimeSurfaces({
+      allocator,
+      now: new Date(NOW),
+      surface_ids: surfaceIds,
+      ttl_ms: 1000,
+    });
+  const requestedCases = [[], ["surface_0"], [...known.keys()]] as const;
+  const observations = await Promise.all(requestedCases.map(scopedObservation));
+  for (const [caseIndex, requested] of requestedCases.entries()) {
+    const observation = mustObservation(observations[caseIndex], `scope ${caseIndex} returned an observation`);
+    assert.deepEqual(
+      observation.surfaces,
+      requested.flatMap((surfaceId) => {
+        const surface = known.get(surfaceId);
+        return surface ? [surface] : [];
+      }),
+      "scoped output matches a global inventory filtered to the requested ids"
+    );
+  }
+  assert.equal(statusCalls.length, 26, "one bounded status call per known requested surface");
+
+  const incomplete = await scopedObservation(["surface_0", "missing_surface", "unknown_surface"]);
+  assert.deepEqual(incomplete.missing_surface_ids, ["missing_surface"]);
+  assert.deepEqual(incomplete.unknown_surface_ids, ["unknown_surface"]);
+  assert.equal(incomplete.allocator_observation?.status, "unavailable");
+  assert.equal(listCalls, 0, "the scoped path never calls the global allocator inventory");
+  await assert.rejects(
+    () => scopedObservation(Array.from({ length: 26 }, (_, index) => `overflow_${index}`)),
+    OVER_CAP_SURFACE_IDS
+  );
+});
+
+test("scoped runtime adapter never falls back to the global controller observation", async () => {
+  let globalCalls = 0;
+  let scopedCalls = 0;
+  const observation = mustObservation(
+    await readBrowserSurfaceRuntimeSurfaces(
+      {
+        observeBrowserSurfaceRuntimeInventory: () => {
+          globalCalls += 1;
+          return Promise.reject(new Error("scoped runtime adapter must not call the global observation"));
+        },
+        observeBrowserSurfaceRuntimeSurfaces(surfaceIds: readonly string[]) {
+          scopedCalls += 1;
+          return Promise.resolve({
+            allocator_observation: null,
+            missing_surface_ids: surfaceIds,
+            surfaces: [],
+            unknown_surface_ids: [],
+          });
+        },
+      },
+      ["missing_surface"]
+    ),
+    "scoped controller observation is available"
+  );
+  assert.deepEqual(observation.missing_surface_ids, ["missing_surface"]);
+  assert.equal(scopedCalls, 1);
+  assert.equal(globalCalls, 0);
+});
+
+function mustObservation<T>(value: T | null | undefined, description: string): T {
+  assert.ok(value, description);
+  return value;
+}
