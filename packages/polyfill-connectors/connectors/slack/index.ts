@@ -107,6 +107,7 @@ import {
   fetchDmReadStates,
   parseSlackApiErrorCode,
   SLACK_API_AUTH_FAILURE_RE,
+  SLACK_API_BROWSER_CAPABILITY_FAILURE_RE,
   SLACK_API_RETRYABLE_FAILURE_RE,
   type SlackApiBrowserPage,
   type SlackApiTransport,
@@ -150,6 +151,21 @@ function safeAll<T>(db: DatabaseSync, sql: string): T[] {
 
 const SOURCE_PARTITION_MISSING_REASON = "source_partition_missing";
 const OPTIONAL_STREAM_FAILED_REASON = "optional_stream_failed";
+/**
+ * Reason for a gap stream (`stars`/`user_groups`/`reminders`/`dm_read_states`)
+ * skipped because THIS RUNTIME has no browser binding to acquire, distinct
+ * from `OPTIONAL_STREAM_FAILED_REASON` (a live Slack API/auth failure).
+ * Matches `reference-implementation/server/connector-coverage-policy.ts`'s
+ * `UNSUPPORTED_SKIP_REASON_PATTERN` (`/capability/`) and NOT its
+ * `UNAVAILABLE_SKIP_REASON_PATTERN` (verified: contains no `unavailable`/
+ * `not_available`/`blocked`/`locked`/`upstream` substring) — the coverage
+ * projection is a pure text match on `reason`, so this string's exact
+ * wording is what routes the run to `unsupported` (a local-runtime
+ * capability limit) rather than `terminal_gap` (an unclassified failure)
+ * or `unavailable` (a source-side limit, which this is not — Slack itself
+ * never rejected anything on this path).
+ */
+const OPTIONAL_STREAM_CAPABILITY_MISSING_REASON = "optional_stream_capability_missing";
 const MAX_MISSING_CHANNEL_IDS_IN_DIAGNOSTIC = 100;
 
 function normalizeStringRecord(value: unknown): Record<string, string> {
@@ -2263,9 +2279,37 @@ export async function runOptionalStream(
     await run();
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
+    const errorCode = parseSlackApiErrorCode(message);
+    // A missing browser capability on THIS runtime (Chromium unavailable,
+    // launch error, cookie-seed failure) is checked first and reported with
+    // its own reason/recovery_hint, distinct from both a live Slack API
+    // failure and a session/auth rejection. It is neither: Slack was never
+    // contacted, so it is not a `slack_auth_failed` the operator should
+    // "re-authenticate" for, and it will not clear by retrying on the same
+    // runtime, so it must not get `optional_stream_failed` +
+    // `retry_by_runtime` (which `mapSkipCoverageCondition` would otherwise
+    // read no differently than an actual API rejection) — see
+    // `OPTIONAL_STREAM_CAPABILITY_MISSING_REASON`'s own comment for exactly
+    // which coverage axis this reason string routes to and why.
+    if (SLACK_API_BROWSER_CAPABILITY_FAILURE_RE.test(message)) {
+      await emit({
+        type: "SKIP_RESULT",
+        stream,
+        reason: OPTIONAL_STREAM_CAPABILITY_MISSING_REASON,
+        message: `Slack: ${stream} skipped — this runtime has no browser available (required for this optional stream, not for Slack's core streams): ${message}`,
+        // Not `retry_by_runtime`: retrying the SAME runtime will not
+        // conjure a browser binding into existence. `retryable: false` is
+        // accurate — the remedy is running this connector (or just these
+        // four streams) on a runtime that advertises `browser`, which is
+        // an operational/placement change, not a transient condition that
+        // clears on its own.
+        recovery_hint: { action: "requires_browser_runtime", retryable: false },
+        ...(errorCode ? { diagnostics: { error_code: errorCode } } : {}),
+      });
+      return;
+    }
     const retryable = SLACK_API_RETRYABLE_FAILURE_RE.test(message);
     const isAuthFailure = SLACK_API_AUTH_FAILURE_RE.test(message);
-    const errorCode = parseSlackApiErrorCode(message);
     await emit({
       type: "SKIP_RESULT",
       stream,

@@ -39,6 +39,7 @@
   "private": true,
   "description": "Polyfill connectors for non-PDPP platforms (YNAB, Gmail, Amazon, ChatGPT, USAA).",
   "devDependencies": {
+    "@babel/parser": "7.29.2",
     "@biomejs/biome": "2.5.6",
     "@types/ws": "^8.18.1",
     "ultracite": "7.9.4"

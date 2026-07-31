@@ -3,10 +3,46 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { CollectionReportEntry, RuntimeCollectionFact } from "../server/ref-control.ts";
+import { runOptionalStream } from "../../packages/polyfill-connectors/connectors/slack/index.ts";
+import type { EmittedMessage } from "../../packages/polyfill-connectors/src/connector-runtime.ts";
+import type { CollectionReportEntry, RuntimeCollectionFact, RuntimeCollectionFactSkip } from "../server/ref-control.ts";
 import { buildCollectionReport } from "../server/ref-control.ts";
 
 type ManifestStreamFixture = Parameters<typeof buildCollectionReport>[0]["manifestStreams"][number];
+
+/**
+ * Runs the REAL `runOptionalStream` (the connector's own exported failure-
+ * isolation wrapper) against a rejecting `run` and returns the
+ * `RuntimeCollectionFactSkip` the runtime would actually build from its
+ * emitted `SKIP_RESULT` — mirroring `runtime/index.ts`'s own
+ * `recovery_hint.action` -> `recovery_action` unwrap (see e.g.
+ * `runtime/index.ts:4058`, `server/runtime-collection-facts.ts:109-110`).
+ * This closes the exact gap a prior review found: a test asserting only
+ * `runOptionalStream`'s emitted `message`/`recovery_hint` fields, never
+ * fed through the actual downstream coverage classifier, would not have
+ * caught two structurally different failure causes collapsing to the
+ * identical classification.
+ */
+async function skipFromRealRunOptionalStream(rejection: Error): Promise<RuntimeCollectionFactSkip> {
+  const messages: EmittedMessage[] = [];
+  await runOptionalStream(
+    (emitted) => {
+      messages.push(emitted);
+      return Promise.resolve();
+    },
+    "stars",
+    () => Promise.reject(rejection)
+  );
+  const [msg] = messages;
+  assert.equal(msg?.type, "SKIP_RESULT", "runOptionalStream must emit exactly one SKIP_RESULT on a rejecting run");
+  const skip = msg as Extract<EmittedMessage, { type: "SKIP_RESULT" }>;
+  const hint = skip.recovery_hint;
+  const action = typeof hint === "object" && hint !== null ? hint.action : undefined;
+  return {
+    reason: skip.reason,
+    ...(typeof action === "string" ? { recovery_action: action } : {}),
+  };
+}
 
 // Slack-specific projection proofs for OpenSpec task 4.2
 // (`define-connector-progress-evidence-contract`): the Slack connector declares
@@ -241,6 +277,71 @@ test("slack optional-stream transient failure: SKIP_RESULT with retry_by_runtime
   ]);
   const entry = entryFor(entries, "reminders");
   assert.equal(entry.coverage_condition, "retryable_gap", "a transient failure still reads as self-healing");
+});
+
+// ─── Browser-capability-missing vs. auth-failure: true end-to-end proof ────
+//
+// Regression for a real gap a prior review found: `acquireSlackApiBrowserTransport`
+// failing (this RUNTIME has no browser to acquire — a structural/placement
+// fact) and a live Slack API auth rejection (this SESSION was rejected — a
+// credential fact) both threw an `Error`, both were caught by the SAME
+// `runOptionalStream` catch block, and both produced the identical
+// `reason: "optional_stream_failed"` + `recovery_hint: { retryable: false }`
+// shape — indistinguishable to `mapSkipCoverageCondition`, and therefore to
+// any operator or downstream system reading only `reason`/`recovery_hint`.
+// These tests call the REAL exported `runOptionalStream` (not a synthetic
+// `skipped:` fixture built by hand) and feed its REAL emitted SKIP_RESULT
+// through the REAL `buildCollectionReport` projection, proving the fix holds
+// at every hop of the actual pipeline, not just at the connector's own
+// SKIP_RESULT shape (which `gap-streams.test.ts` already covers) or the
+// classifier in isolation (which `connector-coverage-policy.test.ts` covers).
+
+test("slack browser-capability-missing: real runOptionalStream + real coverage projection reads unsupported, distinct from an auth failure's terminal_gap", async () => {
+  const capabilitySkip = await skipFromRealRunOptionalStream(
+    new Error("slack_api_browser_unavailable: chromium_not_installed")
+  );
+  const authSkip = await skipFromRealRunOptionalStream(new Error("slack_auth_failed"));
+
+  // The two real, distinct root causes must not collapse to the same reason
+  // string once they reach the runtime fact the coverage layer actually
+  // reads — this is the field `mapSkipCoverageCondition` classifies on.
+  assert.notEqual(
+    capabilitySkip.reason,
+    authSkip.reason,
+    "a missing browser capability and a rejected session must carry different reasons, not the same optional_stream_failed"
+  );
+
+  const entries = report([
+    fact({ collected: 0, skipped: capabilitySkip, stream: "stars" }),
+    fact({ collected: 0, skipped: authSkip, stream: "user_groups" }),
+  ]);
+  const capabilityEntry = entryFor(entries, "stars");
+  const authEntry = entryFor(entries, "user_groups");
+
+  assert.equal(
+    capabilityEntry.coverage_condition,
+    "unsupported",
+    "a runtime with no browser binding reads as a capability limit, not an unclassified terminal_gap"
+  );
+  assert.equal(authEntry.coverage_condition, "terminal_gap", "an auth failure keeps its existing classification");
+  assert.notEqual(
+    capabilityEntry.coverage_condition,
+    authEntry.coverage_condition,
+    "the two root causes must project to genuinely different coverage conditions"
+  );
+});
+
+test("slack browser-capability-missing: real runOptionalStream never claims retry_by_runtime for a structural runtime gap", async () => {
+  const skip = await skipFromRealRunOptionalStream(new Error("slack_api_browser_setup_failed: context_closed"));
+  assert.notEqual(
+    skip.recovery_action,
+    "retry_by_runtime",
+    "retrying on the SAME runtime cannot conjure a browser binding into existence"
+  );
+
+  const entries = report([fact({ collected: 0, skipped: skip, stream: "dm_read_states" })]);
+  const entry = entryFor(entries, "dm_read_states");
+  assert.notEqual(entry.coverage_condition, "retryable_gap", "a missing capability is not a self-healing condition");
 });
 
 test("slack mixed report: canvases complete alongside unknown messages and a terminal unsupported stream", () => {

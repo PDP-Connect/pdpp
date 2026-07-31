@@ -6,29 +6,12 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { connectorUsesBrowserRuntimeTransitively } from "./browser-runtime-usage.ts";
 
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const CONNECTORS_DIR = join(PACKAGE_ROOT, "connectors");
 const MANIFESTS_DIR = join(PACKAGE_ROOT, "manifests");
-
-// Two distinct ways a connector can touch the reference browser runtime:
-//
-// 1. The whole-run framework mode: `runConnector({ ..., browser: {...} })`.
-//    The `browser:` token here is an object-literal key (always followed by
-//    `{` or another value), not a TS type annotation like `let browser:
-//    SomeType` — requiring `{` after the colon distinguishes the two so a
-//    local variable named `browser` cannot false-positive this check.
-// 2. A scoped, ad-hoc acquisition for a bounded subset of a connector's own
-//    logic, via the lower-level `acquireBrowserForConnector` primitive
-//    directly (e.g. Slack's stars/user_groups/reminders/dm_read_states),
-//    bypassing `runConnector`'s `browser:` config entirely. Importing that
-//    primitive is what makes this reachable, regardless of what any local
-//    variable is named.
-export function connectorUsesBrowserRuntime(source: string): boolean {
-  const usesRunConnectorBrowserConfig = /\brunConnector\s*\(/u.test(source) && /\bbrowser\s*:\s*\{/u.test(source);
-  const usesScopedBrowserAcquisition = /\bacquireBrowserForConnector\b/u.test(source);
-  return usesRunConnectorBrowserConfig || usesScopedBrowserAcquisition;
-}
+const FIXTURES_DIR = join(dirname(fileURLToPath(import.meta.url)), "browser-manifest-honesty-fixtures");
 
 test("browser-backed connectors declare the browser runtime binding", () => {
   const missing: string[] = [];
@@ -38,8 +21,7 @@ test("browser-backed connectors declare the browser runtime binding", () => {
     if (!existsSync(connectorPath)) {
       continue;
     }
-    const source = readFileSync(connectorPath, "utf8");
-    if (!connectorUsesBrowserRuntime(source)) {
+    if (!connectorUsesBrowserRuntimeTransitively(connectorPath)) {
       continue;
     }
     const manifestPath = join(MANIFESTS_DIR, `${name}.json`);
@@ -66,35 +48,42 @@ test("browser-backed connectors declare the browser runtime binding", () => {
   );
 });
 
-test("connectorUsesBrowserRuntime does not false-positive on a TS type annotation named browser", () => {
-  const source = `
-    runConnector({ name: "example" });
-    async function f() {
-      let browser: SomeIsolatedBrowserType;
-      browser = await acquire();
-    }
-  `;
-  assert.equal(connectorUsesBrowserRuntime(source), false);
+test("connectorUsesBrowserRuntimeTransitively does not false-positive on a TS type annotation named browser", () => {
+  const entry = join(FIXTURES_DIR, "no-browser-type-annotation", "index.ts");
+  assert.equal(connectorUsesBrowserRuntimeTransitively(entry), false);
 });
 
-test("connectorUsesBrowserRuntime detects the real runConnector({ browser: {...} }) shape", () => {
-  const source = `
-    runConnector({
-      name: "example",
-      browser: { profileName: "example" },
-    });
-  `;
-  assert.equal(connectorUsesBrowserRuntime(source), true);
+test("connectorUsesBrowserRuntimeTransitively detects the real runConnector({ browser: {...} }) shape", () => {
+  const entry = join(FIXTURES_DIR, "run-connector-literal-browser", "index.ts");
+  assert.equal(connectorUsesBrowserRuntimeTransitively(entry), true);
 });
 
-test("connectorUsesBrowserRuntime detects a scoped acquireBrowserForConnector() call outside runConnector's browser config", () => {
-  const source = `
-    import { acquireBrowserForConnector } from "../../src/browser-launch.ts";
-    runConnector({ name: "example" });
-    async function acquireScopedTransport() {
-      const browser = await acquireBrowserForConnector({ headless: true, profileName: "example" });
-      return browser;
-    }
-  `;
-  assert.equal(connectorUsesBrowserRuntime(source), true);
+test("connectorUsesBrowserRuntimeTransitively detects a scoped acquireBrowserForConnector() call outside runConnector's browser config", () => {
+  const entry = join(FIXTURES_DIR, "scoped-acquire-direct", "index.ts");
+  assert.equal(connectorUsesBrowserRuntimeTransitively(entry), true);
+});
+
+test("connectorUsesBrowserRuntimeTransitively catches a browser-acquisition helper factored into a separate imported module (helper-indirection bypass)", () => {
+  const entry = join(FIXTURES_DIR, "helper-module-indirection", "index.ts");
+  assert.equal(connectorUsesBrowserRuntimeTransitively(entry), true);
+});
+
+test("connectorUsesBrowserRuntimeTransitively catches runConnector({ browser: configVariable }) where the value is a variable, not a literal (non-literal-config bypass)", () => {
+  const entry = join(FIXTURES_DIR, "run-connector-variable-browser", "index.ts");
+  assert.equal(connectorUsesBrowserRuntimeTransitively(entry), true);
+});
+
+test("connectorUsesBrowserRuntimeTransitively catches an aliased import of acquireBrowserForConnector", () => {
+  const entry = join(FIXTURES_DIR, "aliased-acquire-import", "index.ts");
+  assert.equal(connectorUsesBrowserRuntimeTransitively(entry), true);
+});
+
+test("connectorUsesBrowserRuntimeTransitively catches a helper two hops deep (helper imports a helper)", () => {
+  const entry = join(FIXTURES_DIR, "two-hop-helper-indirection", "index.ts");
+  assert.equal(connectorUsesBrowserRuntimeTransitively(entry), true);
+});
+
+test("connectorUsesBrowserRuntimeTransitively returns false for a connector with no browser touch anywhere in its import closure", () => {
+  const entry = join(FIXTURES_DIR, "no-browser-at-all", "index.ts");
+  assert.equal(connectorUsesBrowserRuntimeTransitively(entry), false);
 });

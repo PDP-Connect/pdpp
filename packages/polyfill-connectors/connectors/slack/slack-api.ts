@@ -76,16 +76,37 @@ export const SLACK_API_RETRYABLE_FAILURE_RE = /slack_rate_limited|ECONN|ETIMEDOU
 export const SLACK_API_AUTH_FAILURE_RE = /slack_auth_failed/;
 
 /**
- * Extract the stable, coded prefix `parseSlackApiResponse` throws
- * (`slack_auth_failed`, `slack_api_http_<status>`, `slack_api_error_<code>`,
- * `slack_api_invalid_json`) from an error message, for structured
+ * A failure whose error message identifies it as this RUNTIME structurally
+ * lacking a browser (`slack_api_browser_unavailable`/`slack_api_browser_setup_failed`,
+ * thrown by `acquireSlackApiBrowserTransport` in `index.ts` when Chromium
+ * acquisition or cookie-seeding fails). Distinct from both
+ * `SLACK_API_AUTH_FAILURE_RE` (the session/token was rejected — an
+ * operator should re-authenticate) and `SLACK_API_RETRYABLE_FAILURE_RE` (a
+ * transient upstream condition that clears on its own): a missing browser
+ * capability will not clear by retrying on the SAME runtime, and it is not
+ * a Slack-side rejection at all — the fix is to run this connector on a
+ * runtime that advertises a `browser` binding, not to re-authenticate or
+ * wait. Must resolve to its own `reason`/`recovery_hint` in
+ * `runOptionalStream`, never collapsed into the generic
+ * `optional_stream_failed` an API-layer failure gets — see
+ * `OPTIONAL_STREAM_CAPABILITY_MISSING_REASON`.
+ */
+export const SLACK_API_BROWSER_CAPABILITY_FAILURE_RE = /slack_api_browser_(unavailable|setup_failed)/;
+
+/**
+ * Extract the stable, coded prefix an error message carries, for structured
  * `SKIP_RESULT.diagnostics` — evidence a downstream report/health rollup can
  * key on instead of substring-matching free text. Returns the coded prefix
  * verbatim (no response body) when the message matches one of
- * `parseSlackApiResponse`'s own throw shapes; `null` for anything else
+ * `parseSlackApiResponse`'s own throw shapes (`slack_auth_failed`,
+ * `slack_api_http_<status>`, `slack_api_error_<code>`,
+ * `slack_api_invalid_json`) or `acquireSlackApiBrowserTransport`'s own throw
+ * shapes (`slack_api_browser_unavailable`, `slack_api_browser_setup_failed`,
+ * see `SLACK_API_BROWSER_CAPABILITY_FAILURE_RE`); `null` for anything else
  * (a network-layer error, a thrown non-Slack-API exception).
  */
-const SLACK_API_ERROR_CODE_RE = /^(slack_auth_failed|slack_api_http_\d+|slack_api_error_\S+|slack_api_invalid_json)\b/;
+const SLACK_API_ERROR_CODE_RE =
+  /^(slack_auth_failed|slack_api_http_\d+|slack_api_error_\S+|slack_api_invalid_json|slack_api_browser_unavailable|slack_api_browser_setup_failed)\b/;
 
 export function parseSlackApiErrorCode(message: string): string | null {
   const match = SLACK_API_ERROR_CODE_RE.exec(message);

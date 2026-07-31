@@ -434,6 +434,19 @@ test("acquireSlackApiBrowserTransport: a failed run through runOptionalStream st
   // shape: runOptionalStream wraps a stream runner that depends on the
   // (failed) transport, and the SKIP_RESULT still carries a real, specific
   // error — not a generic/opaque failure — for the operator to diagnose.
+  //
+  // Regression for a real evidence gap a prior review found: this test used
+  // to assert ONLY the free-text `message` field, never `reason` or
+  // `recovery_hint` — the exact fields `mapSkipCoverageCondition`
+  // (reference-implementation/server/connector-coverage-policy.ts) actually
+  // classifies on. A browser-acquisition failure and a live Slack API auth
+  // failure both produced `reason: "optional_stream_failed"` +
+  // `recovery_hint: { retryable: false }` — bitwise identical — and this
+  // test would not have caught it because it never looked at those fields.
+  // See `reference-implementation/test/slack-collection-report.test.ts`'s
+  // "browser-capability-missing" tests for the further proof that this
+  // distinct reason also produces a distinct downstream coverage
+  // classification, not just a distinct connector-local shape.
   const { messages, emit } = captureEmitted();
   const handle = await acquireSlackApiBrowserTransport(
     () => Promise.resolve(),
@@ -450,6 +463,37 @@ test("acquireSlackApiBrowserTransport: a failed run through runOptionalStream st
   assert.equal(msg?.type, "SKIP_RESULT");
   assert.match((msg as { message?: string }).message ?? "", /slack_api_browser_unavailable/);
   assert.match((msg as { message?: string }).message ?? "", /headed_browser_unavailable/);
+
+  const typed = msg as {
+    diagnostics?: { error_code?: string };
+    reason?: string;
+    recovery_hint?: { action?: string; retryable?: boolean };
+  };
+  assert.equal(
+    typed.reason,
+    "optional_stream_capability_missing",
+    "a missing browser capability must NOT carry the same reason a live Slack API/auth failure gets"
+  );
+  assert.notEqual(
+    typed.reason,
+    "optional_stream_failed",
+    "must be distinguishable from a live Slack API failure at the reason field, not just in free text"
+  );
+  assert.equal(
+    typed.recovery_hint?.retryable,
+    false,
+    "retrying on the SAME runtime cannot conjure a browser binding into existence"
+  );
+  assert.notEqual(
+    typed.recovery_hint?.action,
+    "retry_by_runtime",
+    "must not claim a structural runtime gap is a self-healing condition"
+  );
+  assert.equal(
+    typed.diagnostics?.error_code,
+    "slack_api_browser_unavailable",
+    "the coded error prefix must survive into diagnostics"
+  );
 });
 
 test("acquireSlackApiBrowserTransport: a cookie-seeding failure is isolated the same way as an acquisition failure", async () => {
