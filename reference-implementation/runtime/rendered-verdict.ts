@@ -743,6 +743,23 @@ function hasOpenAttention(snapshot: ConnectionHealthSnapshot): boolean {
   return snapshot.axes.attention !== "none";
 }
 
+/**
+ * An `add_info`/`provider_interaction` CTA is only honest when the owner has
+ * somewhere real to go: a durable attention record (`id`) or a concrete
+ * action target. Schedule-fallback evidence synthesized purely from a
+ * `human_attention_needed` boolean (`connection-health.ts::selectAttentionEvidence`)
+ * carries neither — `id`, `actionTarget`, and `ownerAction` are all `null` — and
+ * must never manufacture a "Complete the requested action" CTA with no action
+ * behind it. Such evidence still degrades the pill/tone (see `hasOpenAttention`);
+ * it just does not get to invent a dead owner-facing button.
+ */
+function hasActionableAttention(attention: ConnectionAttentionEvidence | null): boolean {
+  if (attention === null) {
+    return false;
+  }
+  return attention.id !== null || attention.actionTarget !== null || attention.ownerAction !== null;
+}
+
 function exactSyncTargetFromAttention(attention: ConnectionAttentionEvidence | null): RequiredActionTarget | null {
   if (attention === null || attention.runId === null) {
     return null;
@@ -1075,7 +1092,11 @@ function buildRequiredActions(
   }
 
   // Open structured attention (OTP / manual action / re-consent) — owner-satisfiable.
-  if (hasOpenAttention(snapshot) && !hasCredentialFailure(snapshot)) {
+  // Gated on `hasActionableAttention` so schedule-fallback evidence with no real
+  // id/target/owner-action (synthesized from a bare `human_attention_needed` flag)
+  // cannot manufacture a dead "Complete the requested action" CTA — see doc comment
+  // on `hasActionableAttention`.
+  if (hasOpenAttention(snapshot) && hasActionableAttention(attention) && !hasCredentialFailure(snapshot)) {
     const target = exactSyncTargetFromAttention(attention);
     actions.push({
       affects: [],
@@ -1588,7 +1609,13 @@ function progressHeadline(
   actions: readonly RequiredAction[],
   syncing: boolean
 ): string {
-  if (disposition === "terminal") {
+  // A `reauth` action can be open on a non-terminal disposition too (credential
+  // failure and coverage-driven disposition are derived independently — see
+  // `deriveConnectionForwardDisposition`). Without the `!syncing` check below,
+  // `deferred`/`scheduled` mode copy ("Collecting in the background.") would
+  // claim active progress while the owner is actually blocked and no run is
+  // running.
+  if (disposition === "terminal" || (!syncing && actions.some((action) => action.kind === "reauth"))) {
     return terminalProgressHeadline(retained, actions);
   }
   if (actions.some((action) => action.kind === "retry_gap" && action.audience === "owner")) {

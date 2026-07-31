@@ -815,6 +815,106 @@ test("surface: a browser_session reauth is satisfied by a confirming run, NOT a 
   );
 });
 
+// ─── Regression: phantom provider_interaction CTA from schedule fallback ────
+//
+// Live sequence (connection cin_11deac1e728b244aaeb56765): five hourly
+// ChatGPT runs succeeded, then a run failed with an explicit
+// chatgpt_session_required / refresh_credentials / browser-session-not-active
+// reason. No connector_attention_records row exists for this failure (a
+// terminal DONE/connector_error failure never goes through
+// runtime/attention-writer.ts, which only reacts to INTERACTION/ASSISTANCE
+// wire messages). The scheduler's owner-action-gate fallback then reads a
+// `human_attention_needed`-style signal with no durable record behind it,
+// which used to flow into `buildRequiredActions` as a dead "Complete the
+// requested action" `add_info`/`provider_interaction` CTA (null
+// action_target, null attention_id) — AND into `progressHeadline` as
+// "Collecting in the background.", even though no run is active and the
+// owner is actually blocked on reconnecting the browser session.
+test("regression: schedule-fallback attention with no real target does not manufacture a provider_interaction CTA", () => {
+  const scheduleFallbackAttention: ConnectionAttentionEvidence = {
+    actionTarget: null,
+    expiresAt: null,
+    id: null,
+    lifecycle: "open",
+    notificationState: null,
+    ownerAction: null,
+    reasonCode: "chatgpt_session_required",
+    responseContract: null,
+    runId: null,
+  };
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      axes: { attention: "open" },
+      badges: { syncing: false },
+      conditions: [credentialConditionWithSurface("browser_session")],
+      forward_disposition: "complete",
+      state: "needs_attention",
+    }),
+    [stream()],
+    null,
+    true,
+    { mode: "deferred" },
+    null,
+    scheduleFallbackAttention
+  );
+
+  const providerInteraction = v.required_actions.find(
+    (a) => a.kind === "add_info" && a.surface?.kind === "provider_interaction"
+  );
+  assert.equal(
+    providerInteraction,
+    undefined,
+    "schedule-fallback evidence with no id/target/owner_action must not produce a provider_interaction CTA"
+  );
+
+  const reauth = v.required_actions.find((a) => a.kind === "reauth");
+  assert.equal(reauth?.surface?.kind, "browser_session");
+
+  assert.notEqual(
+    v.progress.headline,
+    "Collecting in the background.",
+    "progress copy must not claim active background collection while the owner is blocked and no run is active"
+  );
+});
+
+test("regression: an actionable (id-bearing) attention record still produces the provider_interaction CTA", () => {
+  // Guard against over-correction: real structured attention (OTP, manual
+  // action, re-consent) must keep producing the CTA — only bare
+  // schedule-fallback evidence with zero real identity is suppressed.
+  const structuredAttention: ConnectionAttentionEvidence = {
+    actionTarget: "dashboard",
+    expiresAt: null,
+    id: "att_real",
+    lifecycle: "open",
+    notificationState: "sent",
+    ownerAction: "provide_value",
+    reasonCode: "otp_required",
+    responseContract: "response_required",
+    runId: "run_123",
+    sensitivity: "non_secret",
+  };
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      axes: { attention: "open" },
+      badges: { syncing: false },
+      forward_disposition: "complete",
+      state: "needs_attention",
+    }),
+    [stream()],
+    null,
+    true,
+    null,
+    null,
+    structuredAttention
+  );
+
+  const providerInteraction = v.required_actions.find(
+    (a) => a.kind === "add_info" && a.surface?.kind === "provider_interaction"
+  );
+  assert.notEqual(providerInteraction, undefined, "a real structured attention record must still produce the CTA");
+  assert.equal(providerInteraction?.target?.kind, "sync");
+});
+
 test("surface: a browser_session reauth never routes to stored-credential capture (no provider-page password path)", () => {
   // Regression for complete-connection-repair-action-surfaces: a session_required
   // failure must route the owner to browser-session repair, never to a
@@ -984,6 +1084,12 @@ test("channel: structured attention carries the exact sync target from its own r
 });
 
 test("channel: fallback add_info guidance stays plain text when no exact sync target exists", () => {
+  // Real (id-bearing) structured attention with no causative run id: the CTA
+  // still fires, but `exactSyncTargetFromAttention` has nothing to attach —
+  // `target` stays undefined rather than a fabricated sync reference. Distinct
+  // from the schedule-fallback-with-no-identity-at-all case (see the
+  // "phantom provider_interaction CTA" regressions above), which must not
+  // produce a CTA at all.
   const v = synthesizeRenderedVerdict(
     snapshot({
       axes: { attention: "open", freshness: "stale" },
@@ -993,7 +1099,20 @@ test("channel: fallback add_info guidance stays plain text when no exact sync ta
     }),
     [stream({ coverage: "complete" })],
     null,
-    true
+    true,
+    null,
+    null,
+    {
+      actionTarget: null,
+      expiresAt: null,
+      id: "att_needs_human",
+      lifecycle: "open",
+      notificationState: "pending",
+      ownerAction: "act_elsewhere",
+      reasonCode: "needs_human_attention",
+      responseContract: null,
+      runId: null,
+    }
   );
   // biome-ignore lint/style/useDestructuring: localized test assertion preserves its explicit contract.
   const action = v.required_actions[0];
