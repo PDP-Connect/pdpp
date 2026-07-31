@@ -629,7 +629,7 @@ test("keeps every browser-surface PostgreSQL skip title in the exact receipt map
 // Aggregate gate regression (2026-07-30, terminal-read-integration closure, receipt 70bfe0b9):
 // Four additional PostgreSQL tests were not in the POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS
 // mapping: fleet-migration repair, scheduler_run_history legacy database migration,
-// and terminal LIST projection tests. All emitted 133 skips now mapped.
+// and terminal LIST projection tests. All emitted 135 skips now mapped.
 test("keeps every fleet-migration and scheduler-upgrade PostgreSQL skip title in the exact receipt mapping", () => {
   assert.deepEqual(
     [
@@ -903,7 +903,7 @@ test("the memory-default profile declares the exact current skip baseline", asyn
   const suite = manifestValue.suites.find((entry) => entry.id === "ri-default");
   const memoryDefault = suite?.profiles?.find((entry) => typeof entry !== "string" && entry.id === "memory-default");
   assert.deepEqual(typeof memoryDefault === "string" ? undefined : memoryDefault?.skip_reasons, {
-    "PDPP_TEST_POSTGRES_URL unset": 133,
+    "PDPP_TEST_POSTGRES_URL unset": 135,
     "set PDPP_TEST_POSTGRES_URL to the dedicated loopback listener": 13,
     "dedicated disposable URL not selected": 1,
     "set PDPP_LIVE_CONNECTOR_HEALTH_GATE=1 to run": 1,
