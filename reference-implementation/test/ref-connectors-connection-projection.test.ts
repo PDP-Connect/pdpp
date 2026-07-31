@@ -35,6 +35,7 @@ const NOW = "2026-05-20T12:00:00.000Z";
 const REVOKED_AT = "2026-06-10T19:10:28.476Z";
 const TEST_CREDENTIAL_KEY = "ref-connectors-connection-projection-test-key";
 const REJECTED_PATTERN = /rejected/i;
+const COLLECTING_PATTERN = /collecting/i;
 
 // `getDefaultConnectorDetailGapStore()` returns `unknown` (server/stores/
 // connector-detail-gap-store.ts) because the SQLite/Postgres backends are
@@ -1736,6 +1737,104 @@ test(
     // The connection carries its browser-session binding so owner surfaces route
     // repair binding-first (browser/session repair, not static-secret capture).
     assert.equal(scoped.source_binding_kind, "browser_collector");
+  })
+);
+
+// Live wedge regression (dondochaka, cin_e4ab231c7d49b8f59e4c80ed): after an
+// attended browser-session repair times out, the next scheduled run's
+// DOM/API auth probe reports a definitive auth failure (401/unauthorized)
+// wrapped in ChatGPT's `_session_failed` terminal-error prefix. The known-gap
+// classifier flattens this to the generic "credential_rejected" reason
+// literal, which — matched only against MESSAGE TEXT — would route to
+// stored-credential capture. This connection has no credential row at all
+// (`credential === null`) and IS browser-session-bound
+// (`browserSessionRepairCapable === true`): the durable connection-binding
+// authority in `credentialsValidCondition` (connection-health.ts) must win
+// over that generic message-text classification and route to browser-session
+// repair instead, per reference-connection-health's connection-binding-scoped
+// stored-credential-presence rule.
+test(
+  "ChatGPT-shaped browser_collector connection with no credential row: a generic credential_rejected reason still projects browser_session repair, never stored_credential (binding authority beats message text)",
+  withTmpDb(async () => {
+    seedBrowserBoundStaticSecretConnector();
+    await seedInstance({
+      connectorId: CHATGPT_SHAPED_CONNECTOR_ID,
+      connectorInstanceId: CHATGPT_SHAPED_INSTANCE_ID,
+      displayName: "ChatGPT - dondochaka-like",
+      sourceBinding: { device: "personal", kind: "browser_collector" },
+      sourceBindingKey: "browser-static-secret",
+      sourceKind: "account",
+    });
+    const scheduler = createSqliteSchedulerStore();
+    await Promise.resolve(
+      scheduler.appendRunHistory({
+        attempt: 1,
+        checkpointSummary: null,
+        completedAt: NOW,
+        connectorError: null,
+        connectorId: CHATGPT_SHAPED_CONNECTOR_ID,
+        connectorInstanceId: CHATGPT_SHAPED_INSTANCE_ID,
+        failureReason: "connector_reported_failed",
+        knownGaps: [
+          {
+            kind: "run_failed",
+            message:
+              "chatgpt_session_failed: apiFetch got 401 on GET /backend-api/conversations (auth - not retryable)",
+            reason: "connector_reported_failed",
+            recovery_hint: { action: "refresh_credentials", retryable: false },
+            severity: "actionable",
+            stream: null,
+          },
+        ],
+        recordsEmitted: 0,
+        reportedRecordsEmitted: 0,
+        runId: "run_session_failed_401",
+        source: { id: CHATGPT_SHAPED_CONNECTOR_ID, kind: "connector" },
+        startedAt: NOW,
+        status: "failed",
+        terminalReason: null,
+        traceId: "trc_session_failed_401",
+      })
+    );
+    await Promise.resolve(
+      scheduler.upsertLastRunTime(CHATGPT_SHAPED_INSTANCE_ID, Date.parse(NOW), NOW, CHATGPT_SHAPED_CONNECTOR_ID)
+    );
+
+    const scoped = await getConnectorSummaryForRoute(CHATGPT_SHAPED_INSTANCE_ID);
+    assert.ok(scoped, "the browser_collector connection projects a summary");
+
+    const credentials = scoped.connection_health.conditions?.find((c) => c.type === "CredentialsValid");
+    assert.equal(credentials?.status, "false");
+    assert.notEqual(
+      credentials?.reason,
+      CONNECTION_CONDITION_REASONS.CREDENTIAL_REJECTED,
+      "a definitive auth failure wrapped in session_failed must not collapse to credential_rejected"
+    );
+    assert.equal(
+      credentials?.remediation?.surface?.kind,
+      "browser_session",
+      "browser-session-bound connection must repair by session, never stored_credential capture"
+    );
+    assert.doesNotMatch(credentials?.message ?? "", REJECTED_PATTERN);
+    assert.equal(
+      scoped.rendered_verdict.required_actions.find((action) => action.kind === "reauth")?.surface?.kind,
+      "browser_session"
+    );
+
+    // No prior attended-repair interaction was seeded (it timed out and
+    // resolved/expired) and no run is currently active: the connection must
+    // read as idle-blocked, never as an in-progress "Collecting" state, and
+    // must carry exactly one reauth action — not a second, conflicting
+    // credential-capture action for the same failure.
+    assert.equal(scoped.connection_health.axes.attention, "none", "no open attention after a timed-out repair");
+    assert.equal(scoped.connection_health.badges.syncing, false, "no active run is in flight");
+    assert.doesNotMatch(
+      scoped.rendered_verdict.progress.headline,
+      COLLECTING_PATTERN,
+      "idle blocked connection must not claim active collection"
+    );
+    const reauthActions = scoped.rendered_verdict.required_actions.filter((action) => action.kind === "reauth");
+    assert.equal(reauthActions.length, 1, "exactly one reauth action — no conflicting stored-credential action too");
   })
 );
 

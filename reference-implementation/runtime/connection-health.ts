@@ -2015,7 +2015,18 @@ function credentialsValidCondition(input: ComputeConnectionHealthInput): Connect
   if (reason && isCredentialReason(reason)) {
     const browserSessionRepairReason = isBrowserSessionRepairReason(reason);
     const definitiveStoredCredentialRejection = isDefinitiveStoredCredentialRejectionReason(reason);
-    if (credentialRejectedDurably || definitiveStoredCredentialRejection) {
+    // A "stored credential rejected" verdict requires STANDING stored-credential
+    // capability for this connection (`credential.capable === true`, set only
+    // when `deriveCredentialEvidence` found this connection static-secret-BOUND).
+    // A browser-session-bound connection always has `credential === null` — it
+    // has no stored credential to reject. Without this guard, a generic/legacy
+    // run-reason string containing a definitive auth marker (401/unauthorized)
+    // that also happens to name a session failure collapses to the stored-
+    // credential surface via `definitiveStoredCredentialRejection`, contradicting
+    // the connection's own binding. Durable connection-binding authority wins
+    // over message-text pattern-matching, per reference-connection-health:
+    // "Stored-credential-presence evidence SHALL be connection-binding-scoped."
+    if (credentialRejectedDurably || (definitiveStoredCredentialRejection && credential?.capable === true)) {
       return credentialRejectedCondition(reason);
     }
     if (credentialAbsent) {
@@ -2024,14 +2035,24 @@ function credentialsValidCondition(input: ComputeConnectionHealthInput): Connect
     if (browserSessionRepairReason && browserSessionRepairAuthorized(input)) {
       return browserSessionRequiredCondition(reason);
     }
-    if (browserSessionRepairReason) {
+    if (browserSessionRepairReason || (definitiveStoredCredentialRejection && input.browserSessionRepairCapable)) {
       if (browserSessionRepairAlreadyRecorded(input)) {
         return credentialsNotProvenCondition();
       }
       if (input.browserSessionRepairCapable === true) {
-        return browserSessionRequiredCondition(reason);
+        // A generic/legacy reason (e.g. a flattened "credential_rejected"
+        // literal) carries no session-shaped text of its own when it only
+        // reached this branch via the binding-authority guard above, not
+        // `browserSessionRepairReason`. Passing it through verbatim would
+        // label the condition "credential_rejected" while its remediation
+        // says browser_session — a contradiction. Use the honest
+        // "session_required" fallback instead of the misleading raw reason.
+        return browserSessionRequiredCondition(browserSessionRepairReason ? reason : null);
       }
       return browserSessionRepairCapabilityUnknownCondition(reason);
+    }
+    if (definitiveStoredCredentialRejection) {
+      return credentialRejectedCondition(reason);
     }
     if (credential?.capable === true && credential.present === true && credential.rejected !== true) {
       return credentialsNotProvenCondition();

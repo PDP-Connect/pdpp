@@ -25,7 +25,7 @@
     "runtime/progress-validators.ts": 27,
     "runtime/recovery-decision.ts": 30,
     "runtime/recovery-quarantine.ts": 1,
-    "runtime/rendered-verdict.ts": 77,
+    "runtime/rendered-verdict.ts": 75,
     "runtime/run-automation-policy.ts": 6,
     "runtime/schedule-history-projection.ts": 9,
     "runtime/scheduler-backoff.ts": 15,
@@ -189,7 +189,7 @@
     "server/version-disposition.ts": 6,
     "server/web-push-notifications.ts": 11
   },
-  "total": 6962,
+  "total": 6960,
   "meta": {
     "biomeVersion": "2.5.6",
     "maxAllowedComplexity": 5
