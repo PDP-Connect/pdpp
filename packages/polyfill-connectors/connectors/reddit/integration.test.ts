@@ -390,6 +390,55 @@ test("collect loop shape: only requested streams drive a fetch", async () => {
   assert.ok(calls.every((c) => c.startsWith(`${USER_PATH}/submitted.json`)));
 });
 
+// ─── Invariant 10: every stream commits a checkpoint, even zero-item runs ─
+//
+// The manifest (manifests/reddit.json) declares `coverage_strategy:
+// checkpoint_window` and `freshness_strategy: manual_as_of` for all six
+// streams. Per the accepted-strategy contract (openspec/changes/
+// define-stream-coverage-freshness-evidence/specs/polyfill-runtime/spec.md
+// "flat stream uses a non-detail strategy"), a checkpoint_window stream with
+// no detail lane proves coverage through its committed STATE cursor alone —
+// no DETAIL_COVERAGE/considered-covered declaration is required or wanted
+// here (this connector doesn't know its source-side inventory size and must
+// not invent one). The proof only holds if STATE is emitted unconditionally,
+// including a run that collects zero new items (the steady-state case) —
+// otherwise a quiet run would leave that stream's coverage classified
+// `unknown` forever instead of `complete`. This test pins that invariant for
+// every declared stream so a future refactor can't silently make STATE
+// conditional on `items.length > 0` for one of them.
+
+test("collectStream: commits a STATE checkpoint for every stream even when zero items are returned", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const streams = buildStreamTable(USER_PATH, EMITTED_AT);
+  const script: Record<string, RedditFetchResult[]> = Object.fromEntries(
+    streams.map((s) => [s.endpoint, [okResult(listing([], null))]])
+  );
+  const { fetch } = makeScriptedFetch(script);
+
+  for (const stream of streams) {
+    await collectStream({
+      stream,
+      fetchPath: fetch,
+      state: {},
+      emit: harness.emit,
+      emitRecord: harness.emitRecord,
+      progress: async () => undefined,
+      capture: null,
+      delay: NO_DELAY,
+    });
+  }
+
+  const stateStreams = harness.protocolMessages
+    .filter((m) => m.type === "STATE")
+    .map((m) => (m as { stream: string }).stream);
+  assert.deepEqual(
+    [...stateStreams].sort((a, b) => a.localeCompare(b)),
+    streams.map((s) => s.name).sort((a, b) => a.localeCompare(b)),
+    "every declared stream must commit a STATE checkpoint on a zero-item run"
+  );
+  assert.equal(harness.emitted.length, 0, "a zero-item run must not fabricate records");
+});
+
 // ─── Invariant 9: shape-check catches a drifted record ──────────────────
 
 test("collectStream: a record missing required created_utc lands in SKIP_RESULT, not RECORD", async () => {
