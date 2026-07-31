@@ -160,17 +160,65 @@ function getReadline(): ReadlineInterface {
 // control chars out of body text before encoding. The JSONL encoding
 // itself — BigInt coercion + U+2028/U+2029 escaping — lives in
 // `stringifyForJsonl`.
-function emit(msg: EmittedMessage): Promise<void> {
+/**
+ * The minimal shape `emit()`/`waitForDrainOrError()` need from a write
+ * target — narrow enough to fake in tests without reimplementing Node's
+ * stream event contract, wide enough that `process.stdout` satisfies it
+ * with no adapter.
+ */
+export interface EmitWritable {
+  off: (event: "drain" | "error", listener: (err?: Error) => void) => unknown;
+  once: (event: "drain" | "error", listener: (err?: Error) => void) => unknown;
+  write: (chunk: string) => boolean;
+}
+
+/**
+ * A backpressured write (`write()` returned `false`) must settle on EITHER
+ * `drain` (bytes flushed — resolve) OR a stream `error` (e.g. EPIPE —
+ * reject), with both listeners removed regardless of which fires. Without
+ * the `error` listener, a write that never drains because the pipe broke
+ * left the returned promise permanently pending: the terminal gate's one
+ * bounded attempt (terminal-once.ts) would then wait forever, never
+ * reaching its `"failed"` outcome, so `forceExitAfterEmitFailure` (below)
+ * never runs and the process hangs instead of exiting deterministically —
+ * the exact P1 an independent check found in this function after the gate
+ * itself was hardened against synchronous/async `onEmit` failure. The
+ * rejection this produces is what lets a DONE write failure reach the
+ * gate's `"failed"` outcome at all.
+ *
+ * Exported (with `EmitWritable`) so tests can drive the REAL write+wait
+ * logic against a fake stream that returns `false` then fires `error`
+ * before `drain` — the exact P1 shape — without reimplementing this
+ * function's composition as test-only code.
+ */
+export function waitForDrainOrError(stream: EmitWritable): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const onDrain = (): void => {
+      stream.off("error", onError);
+      resolve();
+    };
+    const onError = (err?: Error): void => {
+      stream.off("drain", onDrain);
+      reject(err ?? new Error("stream error"));
+    };
+    stream.once("drain", onDrain);
+    stream.once("error", onError);
+  });
+}
+
+/**
+ * @param stdout Defaults to the real `process.stdout`. Overridable only so
+ *   tests can exercise this exact function (not a reimplementation of it)
+ *   against a fake stream — every production call site omits this and gets
+ *   the real stdout.
+ */
+export function emit(msg: EmittedMessage, stdout: EmitWritable = process.stdout): Promise<void> {
   const line = stringifyForJsonl(sanitizeForJsonl(msg));
-  const ok = process.stdout.write(line);
+  const ok = stdout.write(line);
   if (ok) {
     return Promise.resolve();
   }
-  return new Promise<void>((resolve) => {
-    process.stdout.once("drain", () => {
-      resolve();
-    });
-  });
+  return waitForDrainOrError(stdout);
 }
 
 function flushAndExit(code: number): void {
