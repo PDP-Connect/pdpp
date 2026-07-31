@@ -25,6 +25,7 @@ INSERT INTO run_history(
   failure_reason,
   terminal_reason,
   facts_json,
+  checkpoint_summary_json,
   attempt
-) VALUES(?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?, ?, 1)
+) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
 ON CONFLICT(run_id, connector_instance_id) WHERE run_id IS NOT NULL DO NOTHING

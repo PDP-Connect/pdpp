@@ -27,10 +27,13 @@ const POSTGRES_URL = dedicatedPostgresTestUrl(process.env.PDPP_TEST_POSTGRES_URL
 
 interface RunHistoryTestRow {
   readonly attempt: number;
+  readonly checkpoint_summary_json: string | null;
   readonly completed_at: string | null;
   readonly connector_id: string;
   readonly connector_instance_id: string;
   readonly facts_json: string | null;
+  readonly known_gaps_json: string;
+  readonly records_emitted: number;
   readonly run_id: string;
   readonly scheduler_managed: 0 | 1;
   readonly started_at: string;
@@ -214,6 +217,160 @@ test("retried terminal event is idempotent (finalize no-ops once already termina
     const afterRetry = readRunHistoryRow(runId);
     assert.equal(afterRetry?.status, "succeeded", "first terminal status wins; retry does not flip it");
     assert.equal(countRunHistoryRows(runId), 1, "still exactly one row");
+  } finally {
+    closeDb();
+  }
+});
+
+// Regression coverage for the live-canary finding (2026-07-31, gmail
+// run_1785535147325_1): the spine-hook writer (this file) is the writer of
+// record for any run whose scheduler-side `appendRunHistory` write loses
+// the race against — or never overwrites — the finalize UPDATE that fires
+// synchronously off the terminal spine event inside runtime/index.ts. That
+// writer previously omitted `checkpoint_summary_json` from both its UPDATE
+// and INSERT-fallback entirely, and hardcoded `known_gaps_json = '[]'`
+// regardless of what the runtime actually reported. The net effect: a run
+// that stopped inside a designed per-run budget (`run_cap_deferred`) with
+// its staged messages/attachments cursor never durably committed looked,
+// from the row alone, identical to a run with a fully healthy, silently-
+// discarded checkpoint — indistinguishable from data loss, and with no
+// `known_gaps` evidence a reader could use to tell the two apart.
+test("a terminal event carrying checkpoint-commit accounting durably persists checkpoint_summary_json and the real known_gaps_json, not a fabricated empty array", async () => {
+  const dbPath = makeTemporaryDbPath("pdpp-run-history-writer-checkpoint-summary-");
+  initDb(dbPath);
+  try {
+    const runId = "run_checkpoint_not_committed";
+    const connectorInstanceId = "cin_checkpoint_not_committed";
+    const notCommittedGap = {
+      kind: "checkpoint_commit",
+      message: "Staged stream state was not committed",
+      reason: "not_committed",
+      recovery_hint: { action: "retry_by_runtime", retryable: true },
+      severity: "actionable",
+      stream: null,
+    };
+    await emitSpineEvent(startedEvent(runId, connectorInstanceId, "scheduled"));
+    await emitSpineEvent({
+      ...terminalEvent(runId, connectorInstanceId, "run.failed", "failed"),
+      data: {
+        buffered_records_dropped: 0,
+        checkpoint_commit_status: "not_committed",
+        connection_id: connectorInstanceId,
+        connector_instance_id: connectorInstanceId,
+        known_gaps: [notCommittedGap],
+        reason: "runtime_error",
+        records_emitted: 206,
+        records_flushed: 206,
+        source: { id: CONNECTOR_ID, kind: "connector" },
+        state_streams_committed: 0,
+        state_streams_staged: 3,
+      },
+    });
+
+    const row = readRunHistoryRow(runId);
+    assert.ok(row, "the terminal event lands a row");
+    assert.equal(row?.status, "failed");
+    assert.equal(row?.records_emitted, 206, "the real emitted count is preserved (already worked before this fix)");
+
+    assert.ok(
+      row?.checkpoint_summary_json,
+      "checkpoint_summary_json must not be null when the runtime reported checkpoint accounting"
+    );
+    const checkpointSummary = JSON.parse(row?.checkpoint_summary_json ?? "null");
+    assert.equal(
+      checkpointSummary.commit_status,
+      "not_committed",
+      "commit_status is carried through, not silently dropped"
+    );
+    assert.equal(checkpointSummary.state_streams_committed, 0);
+    assert.equal(checkpointSummary.state_streams_staged, 3);
+
+    const knownGaps = JSON.parse(row.known_gaps_json) as Record<string, unknown>[];
+    assert.equal(knownGaps.length, 1, "the real known_gaps array is persisted, not hardcoded to []");
+    const gap = knownGaps[0] as { kind: string; reason: string; recovery_hint?: { retryable?: boolean } };
+    assert.equal(gap.kind, "checkpoint_commit");
+    assert.equal(gap.reason, "not_committed");
+    assert.equal(
+      gap.recovery_hint?.retryable,
+      true,
+      "the gap's own retryable signal survives — a reader does not need to re-derive retry eligibility from terminal_reason alone"
+    );
+  } finally {
+    closeDb();
+  }
+});
+
+// The inverse case: a terminal event with NO checkpoint accounting at all
+// (e.g. a pre-launch admission failure that never reached the runtime's
+// checkpoint bookkeeping) must leave checkpoint_summary_json as a genuine
+// SQL NULL, not a fabricated zeroed object — a reader must be able to tell
+// "no checkpoint data was ever computed" apart from "checkpoint data was
+// computed and nothing had committed yet".
+test("a terminal event with no checkpoint accounting at all leaves checkpoint_summary_json null (not a fabricated zero object)", async () => {
+  const dbPath = makeTemporaryDbPath("pdpp-run-history-writer-no-checkpoint-data-");
+  initDb(dbPath);
+  try {
+    const runId = "run_no_checkpoint_data";
+    const connectorInstanceId = "cin_no_checkpoint_data";
+    await emitSpineEvent(terminalEvent(runId, connectorInstanceId, "run.browser_surface_failed", "surface_failed"));
+    const row = readRunHistoryRow(runId);
+    assert.ok(row, "the terminal event lands a row");
+    assert.equal(row.checkpoint_summary_json, null);
+    assert.deepEqual(JSON.parse(row.known_gaps_json), []);
+  } finally {
+    closeDb();
+  }
+});
+
+// Idempotency for the new columns specifically: a retried/duplicate
+// terminal emission for an already-terminal run must not touch
+// checkpoint_summary_json a second time (the finalize UPDATE is fenced on
+// `status = 'running'`, same as every other terminal column).
+test("retried terminal event does not overwrite an already-committed checkpoint_summary_json", async () => {
+  const dbPath = makeTemporaryDbPath("pdpp-run-history-writer-checkpoint-retry-");
+  initDb(dbPath);
+  try {
+    const runId = "run_checkpoint_retry";
+    const connectorInstanceId = "cin_checkpoint_retry";
+    await emitSpineEvent(startedEvent(runId, connectorInstanceId, "scheduled"));
+    await emitSpineEvent({
+      ...terminalEvent(runId, connectorInstanceId, "run.completed", "succeeded"),
+      data: {
+        checkpoint_commit_status: "committed",
+        connection_id: connectorInstanceId,
+        connector_instance_id: connectorInstanceId,
+        known_gaps: [],
+        records_emitted: 10,
+        source: { id: CONNECTOR_ID, kind: "connector" },
+        state_streams_committed: 2,
+        state_streams_staged: 2,
+      },
+    });
+    const firstFinal = readRunHistoryRow(runId);
+    const firstCheckpoint = firstFinal?.checkpoint_summary_json;
+    assert.ok(firstCheckpoint);
+
+    await emitSpineEvent({
+      ...terminalEvent(runId, connectorInstanceId, "run.failed", "failed"),
+      data: {
+        checkpoint_commit_status: "not_committed",
+        connection_id: connectorInstanceId,
+        connector_instance_id: connectorInstanceId,
+        known_gaps: [{ kind: "checkpoint_commit", reason: "not_committed" }],
+        records_emitted: 999,
+        source: { id: CONNECTOR_ID, kind: "connector" },
+        state_streams_committed: 0,
+        state_streams_staged: 2,
+      },
+      event_id: "evt_checkpoint_retry_dup",
+    });
+    const afterRetry = readRunHistoryRow(runId);
+    assert.equal(afterRetry?.status, "succeeded", "first terminal status wins");
+    assert.equal(
+      afterRetry?.checkpoint_summary_json,
+      firstCheckpoint,
+      "the retried terminal event's checkpoint data does not clobber the already-committed row"
+    );
   } finally {
     closeDb();
   }

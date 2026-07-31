@@ -148,6 +148,41 @@ function factsJsonFromTerminalData(data: Record<string, unknown>): string {
   return JSON.stringify(facts);
 }
 
+// The runtime already computes a per-run checkpoint-commit accounting object
+// (`buildCheckpointSummary()`, runtime/index.ts) and folds it onto every
+// terminal spine event's `data` as flattened scalars (`checkpoint_commit_status`,
+// `state_streams_committed`, `state_streams_staged`, `buffered_records_dropped`,
+// `records_flushed`) rather than as a nested object — mirroring
+// `connectorErrorJsonFromTerminalData`'s reassembly pattern below. Absent
+// only for terminal events emitted before a run reached checkpoint
+// accounting at all (e.g. a pre-launch admission failure); this writer
+// leaves the column null in that case rather than fabricating zeros.
+function checkpointSummaryJsonFromTerminalData(data: Record<string, unknown>): string | null {
+  if (data.checkpoint_commit_status === undefined) {
+    return null;
+  }
+  return JSON.stringify({
+    buffered_records_dropped: data.buffered_records_dropped ?? 0,
+    commit_status: data.checkpoint_commit_status,
+    mode: "checkpointed_streaming",
+    records_flushed: data.records_flushed ?? 0,
+    state_streams_committed: data.state_streams_committed ?? 0,
+    state_streams_staged: data.state_streams_staged ?? 0,
+  });
+}
+
+// `buildTerminalGapData` (runtime/index.ts) already puts the run's real
+// known-gaps array on `data.known_gaps` when any gap exists (including the
+// `checkpoint_commit`/`not_committed` gap that flags an uncommitted staged
+// cursor — see classify-runtime-failure.ts / recovery-decision.ts). Slice A
+// previously hardcoded `'[]'` here regardless of what the runtime reported;
+// that silently hid every gap (including checkpoint-commit gaps) for any
+// run finalized through this writer instead of the scheduler's own
+// `appendRunHistory`.
+function knownGapsJsonFromTerminalData(data: Record<string, unknown>): string {
+  return JSON.stringify(Array.isArray(data.known_gaps) ? data.known_gaps : []);
+}
+
 function connectorErrorJsonFromTerminalData(data: Record<string, unknown>): string | null {
   // The executor flattens connector-error fields onto the terminal event's
   // data (buildTerminalConnectorFields, runtime/index.ts) rather than
@@ -250,6 +285,8 @@ export function writeSqliteRunHistoryForSpineEvent(event: RunHistorySpineEvent):
   const failureReason: string | null = null;
   const factsJson = factsJsonFromTerminalData(event.data);
   const recordsEmitted = typeof event.data.records_emitted === "number" ? event.data.records_emitted : 0;
+  const checkpointSummaryJson = checkpointSummaryJsonFromTerminalData(event.data);
+  const knownGapsJson = knownGapsJsonFromTerminalData(event.data);
 
   const finalizeResult = exec(referenceQueries.controllerFinalizeRunHistory, [
     terminalStatus,
@@ -259,6 +296,8 @@ export function writeSqliteRunHistoryForSpineEvent(event: RunHistorySpineEvent):
     failureReason,
     terminalReason,
     factsJson,
+    checkpointSummaryJson,
+    knownGapsJson,
     event.runId,
     event.connectorInstanceId,
   ]);
@@ -273,6 +312,7 @@ export function writeSqliteRunHistoryForSpineEvent(event: RunHistorySpineEvent):
     typeof event.data.trigger_kind === "string" ? event.data.trigger_kind : null,
     sourceJsonForStart(event.data),
     terminalStatus,
+    knownGapsJson,
     event.occurredAt,
     event.occurredAt,
     recordsEmitted,
@@ -280,6 +320,7 @@ export function writeSqliteRunHistoryForSpineEvent(event: RunHistorySpineEvent):
     failureReason,
     terminalReason,
     factsJson,
+    checkpointSummaryJson,
   ]);
 }
 
@@ -341,6 +382,8 @@ export async function writePostgresRunHistoryForSpineEvent(
   const failureReason: string | null = null;
   const factsJson = factsJsonFromTerminalData(event.data);
   const recordsEmitted = typeof event.data.records_emitted === "number" ? event.data.records_emitted : 0;
+  const checkpointSummaryJson = checkpointSummaryJsonFromTerminalData(event.data);
+  const knownGapsJson = knownGapsJsonFromTerminalData(event.data);
 
   const finalizeResult = await client.query(
     `UPDATE run_history
@@ -350,9 +393,11 @@ export async function writePostgresRunHistoryForSpineEvent(
          connector_error_json = $4::jsonb,
          failure_reason = $5,
          terminal_reason = $6,
-         facts_json = $7::jsonb
-     WHERE run_id = $8
-       AND connector_instance_id = $9
+         facts_json = $7::jsonb,
+         checkpoint_summary_json = $8::jsonb,
+         known_gaps_json = $9::jsonb
+     WHERE run_id = $10
+       AND connector_instance_id = $11
        AND status = 'running'`,
     [
       terminalStatus,
@@ -362,6 +407,8 @@ export async function writePostgresRunHistoryForSpineEvent(
       failureReason,
       terminalReason,
       factsJson,
+      checkpointSummaryJson,
+      knownGapsJson,
       event.runId,
       event.connectorInstanceId,
     ]
@@ -374,8 +421,8 @@ export async function writePostgresRunHistoryForSpineEvent(
     `INSERT INTO run_history(
        run_id, connector_instance_id, connector_id, trigger_kind, source_json,
        status, known_gaps_json, started_at, completed_at, records_emitted,
-       connector_error_json, failure_reason, terminal_reason, facts_json, attempt
-     ) VALUES($1, $2, $3, $4, $5::jsonb, $6, '[]'::jsonb, $7, $8, $9, $10::jsonb, $11, $12, $13::jsonb, 1)
+       connector_error_json, failure_reason, terminal_reason, facts_json, checkpoint_summary_json, attempt
+     ) VALUES($1, $2, $3, $4, $5::jsonb, $6, $7::jsonb, $8, $9, $10, $11::jsonb, $12, $13, $14::jsonb, $15::jsonb, 1)
      ON CONFLICT(run_id, connector_instance_id) WHERE run_id IS NOT NULL DO NOTHING`,
     [
       event.runId,
@@ -384,6 +431,7 @@ export async function writePostgresRunHistoryForSpineEvent(
       typeof event.data.trigger_kind === "string" ? event.data.trigger_kind : null,
       sourceJsonForStart(event.data),
       terminalStatus,
+      knownGapsJson,
       event.occurredAt,
       event.occurredAt,
       recordsEmitted,
@@ -391,6 +439,7 @@ export async function writePostgresRunHistoryForSpineEvent(
       failureReason,
       terminalReason,
       factsJson,
+      checkpointSummaryJson,
     ]
   );
 }
