@@ -37,6 +37,7 @@ import {
   buildServedAccountGapLookup,
   type EmitDeps,
   recoverServedAccountGaps,
+  servedAccountGapKey,
 } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
 import type { TransactionCursor, TransactionsStateShape } from "./types.ts";
@@ -106,14 +107,27 @@ function servedGap(accountId: string, gapId: string): DetailGapStartEntry {
 
 // ─── buildServedAccountGapLookup: only account-level chase gaps ──────────
 
-test("buildServedAccountGapLookup: maps served chase.account transaction gaps by account id", () => {
+test("buildServedAccountGapLookup: maps served chase.account transaction gaps by stream+account id", () => {
   const lookup = buildServedAccountGapLookup([servedGap("ACC-1", "gap-1"), servedGap("ACC-2", "gap-2")]);
-  assert.equal(lookup.get("ACC-1"), "gap-1");
-  assert.equal(lookup.get("ACC-2"), "gap-2");
+  assert.equal(lookup.get(servedAccountGapKey("transactions", "ACC-1")), "gap-1");
+  assert.equal(lookup.get(servedAccountGapKey("transactions", "ACC-2")), "gap-2");
   assert.equal(lookup.size, 2);
 });
 
-test("buildServedAccountGapLookup: ignores foreign, non-transactions, or malformed served gaps", () => {
+test("buildServedAccountGapLookup: a balances-stream served gap is kept independently of a transactions one", () => {
+  // A live run (run_1784917888575, 2026-07-24) proved balances and
+  // transactions gaps for the SAME account must recover independently — they
+  // are distinct durable rows, not aliases of one gap.
+  const lookup = buildServedAccountGapLookup([
+    servedGap("ACC-1", "gap-txn"),
+    { ...servedGap("ACC-1", "gap-bal"), stream: "balances" },
+  ]);
+  assert.equal(lookup.get(servedAccountGapKey("transactions", "ACC-1")), "gap-txn");
+  assert.equal(lookup.get(servedAccountGapKey("balances", "ACC-1")), "gap-bal");
+  assert.equal(lookup.size, 2);
+});
+
+test("buildServedAccountGapLookup: ignores foreign, unrelated-stream, or malformed served gaps", () => {
   const lookup = buildServedAccountGapLookup([
     // foreign connector locator kind
     {
@@ -122,7 +136,7 @@ test("buildServedAccountGapLookup: ignores foreign, non-transactions, or malform
       status: "pending",
       detail_locator: { kind: "amazon.order_detail", order_id: "O1" },
     },
-    // wrong stream
+    // unrelated stream
     {
       gap_id: "g2",
       stream: "statements",
@@ -136,7 +150,7 @@ test("buildServedAccountGapLookup: ignores foreign, non-transactions, or malform
     // a valid one survives the filter
     servedGap("ACC-OK", "g5"),
   ] as readonly DetailGapStartEntry[]);
-  assert.deepEqual([...lookup.entries()], [["ACC-OK", "g5"]]);
+  assert.deepEqual([...lookup.entries()], [[servedAccountGapKey("transactions", "ACC-OK"), "g5"]]);
 });
 
 // ─── recoverServedAccountGaps: reached accounts are recovered ────────────
@@ -145,7 +159,7 @@ test("recoverServedAccountGaps: a served gap whose account is hydrated with 0 tr
   // The exact live case: retry reaches the account, parses a 0-transaction QFX
   // (valid coverage), and the served gap must move to recovered.
   const { deps, messages } = makeHarness({
-    servedAccountGaps: new Map([["ACC-1", "gap-09e85901"]]),
+    servedAccountGaps: new Map([[servedAccountGapKey("transactions", "ACC-1"), "gap-09e85901"]]),
   });
   const outcomes: AccountDetailOutcome[] = [{ kind: "hydrated", accountId: "ACC-1" }];
   await recoverServedAccountGaps(deps, outcomes);
@@ -162,9 +176,32 @@ test("recoverServedAccountGaps: a served gap whose account is hydrated with 0 tr
   ]);
 });
 
+test("recoverServedAccountGaps: transactions AND balances gaps for the same reached account both recover", async () => {
+  // The systemic fix: a run that emitted BOTH a transactions and a balances
+  // gap for the same failing account (see buildAccountDetailGap) must recover
+  // both independently once the account is reached again.
+  const { deps, messages } = makeHarness({
+    servedAccountGaps: new Map([
+      [servedAccountGapKey("transactions", "ACC-1"), "gap-txn"],
+      [servedAccountGapKey("balances", "ACC-1"), "gap-bal"],
+    ]),
+  });
+  const outcomes: AccountDetailOutcome[] = [{ kind: "hydrated", accountId: "ACC-1" }];
+  await recoverServedAccountGaps(deps, outcomes);
+
+  const recoveries = recoveriesOf(messages);
+  assert.deepEqual(
+    recoveries.map((r) => ({ gap_id: r.gap_id, stream: r.stream })).sort((a, b) => a.stream.localeCompare(b.stream)),
+    [
+      { gap_id: "gap-bal", stream: "balances" },
+      { gap_id: "gap-txn", stream: "transactions" },
+    ]
+  );
+});
+
 test("recoverServedAccountGaps: a served gap whose account reports no-activity is recovered (source-limited coverage)", async () => {
   const { deps, messages } = makeHarness({
-    servedAccountGaps: new Map([["ACC-1", "gap-1"]]),
+    servedAccountGaps: new Map([[servedAccountGapKey("transactions", "ACC-1"), "gap-1"]]),
   });
   const outcomes: AccountDetailOutcome[] = [{ kind: "no_activity", accountId: "ACC-1" }];
   await recoverServedAccountGaps(deps, outcomes);
@@ -178,8 +215,8 @@ test("recoverServedAccountGaps: recovers ONLY the reached served account, not ot
   // Two gaps served; only ACC-1 reached. ACC-2 still fails and must NOT recover.
   const { deps, messages } = makeHarness({
     servedAccountGaps: new Map([
-      ["ACC-1", "gap-1"],
-      ["ACC-2", "gap-2"],
+      [servedAccountGapKey("transactions", "ACC-1"), "gap-1"],
+      [servedAccountGapKey("transactions", "ACC-2"), "gap-2"],
     ]),
   });
   const outcomes: AccountDetailOutcome[] = [
@@ -199,7 +236,7 @@ test("recoverServedAccountGaps: recovers ONLY the reached served account, not ot
 test("recoverServedAccountGaps: a served gap for an account not enumerated this run is never recovered", async () => {
   // Runtime served a gap for ACC-GONE, but this run only reached ACC-1.
   const { deps, messages } = makeHarness({
-    servedAccountGaps: new Map([["ACC-GONE", "gap-gone"]]),
+    servedAccountGaps: new Map([[servedAccountGapKey("transactions", "ACC-GONE"), "gap-gone"]]),
   });
   const outcomes: AccountDetailOutcome[] = [{ kind: "hydrated", accountId: "ACC-1" }];
   await recoverServedAccountGaps(deps, outcomes);

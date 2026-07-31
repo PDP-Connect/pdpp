@@ -276,3 +276,103 @@ test("runTransactionsAndBalances: zero filtered accounts (a real scoped-filter r
 // is a real resource-filter result for BOTH producers, never a stand-in for
 // unknown/session-dead scope — an unknown-scope run emits NEITHER stream's
 // DETAIL_COVERAGE, because it never reaches this function at all.
+
+// ─── runTransactionsAndBalances: cross-stream gap emission (run_1784917888575) ──
+//
+// Live run_1784917888575 (2026-07-24) proved a QFX download failure for one
+// account aborted the ENTIRE run as connector_protocol_violation, even though
+// current_activity and statements had already succeeded that run. Root cause:
+// the runtime's pre-commit assertion requires a DETAIL_GAP whose `stream`
+// exactly matches each DETAIL_COVERAGE entry's `stream`
+// (reference-implementation/runtime/index.ts,
+// assertDetailCoverageSatisfiedBeforeCommit). `runTransactionsAndBalances`
+// emitted only ONE gap (`stream: "transactions"`) per failed account, but
+// ALSO declared that account required in `balances` DETAIL_COVERAGE (both
+// ride the same QFX pass) — so `balances` had a required-but-unaccounted key
+// and the assertion threw, killing the whole run's commit.
+//
+// This builds a minimal Page mock that drives a real `qfx_download_failed`
+// outcome (activity_control_unavailable — the exact live failure signature)
+// through the real `downloadQfx` / `processAccountDownload` path, proving
+// `runTransactionsAndBalances` now emits a correctly-tagged gap per declared
+// stream rather than only ever tagging `transactions`.
+
+function makeUnclickableLocator() {
+  return {
+    click: () => Promise.reject(new Error("mock: control not clickable")),
+    count: () => Promise.resolve(0),
+    first() {
+      return this;
+    },
+    waitFor: () => Promise.resolve(undefined),
+  };
+}
+
+/** Simulates the exact live failure: the QFX form loads, but every strategy
+ *  for opening the Activity mds-select rejects (activity_control_unavailable). */
+function makeActivitySelectFailingPage(): Page {
+  return Object.assign({} as Page, {
+    getByRole: () => makeUnclickableLocator(),
+    goto: () => Promise.resolve(null),
+    locator: () => makeUnclickableLocator(),
+  });
+}
+
+function gapMessagesOf(messages: EmittedMessage[]): Extract<EmittedMessage, { type: "DETAIL_GAP" }>[] {
+  return messages.filter((m): m is Extract<EmittedMessage, { type: "DETAIL_GAP" }> => m.type === "DETAIL_GAP");
+}
+
+test("runTransactionsAndBalances: a QFX activity-select failure emits a DETAIL_GAP for EVERY in-scope stream, not just transactions", async () => {
+  const { deps, messages } = makeDeps();
+  const account = {
+    internal_id: "1212486749",
+    last_four: "9241",
+    name: "Sapphire Preferred",
+    type: "credit_card" as const,
+  };
+
+  await runTransactionsAndBalances(deps, makeActivitySelectFailingPage(), [account]);
+
+  const gaps = gapMessagesOf(messages);
+  assert.deepEqual(
+    gaps.map((g) => g.stream).sort((a, b) => a.localeCompare(b)),
+    ["balances", "transactions"],
+    "both declared streams that rode the failed QFX pass must get their own gap"
+  );
+  for (const gap of gaps) {
+    assert.equal(gap.record_key, "1212486749");
+    assert.equal(gap.status, "pending");
+    assert.equal(gap.reason, "temporary_unavailable");
+  }
+
+  // The exact live symptom this closes: balances coverage declared the
+  // account required without a matching-stream gap to account for it.
+  const coverage = balancesCoverage(messages);
+  assert.ok(coverage);
+  assert.deepEqual(coverage.gap_keys, ["1212486749"]);
+});
+
+test("runTransactionsAndBalances: a QFX failure emits ONLY a transactions gap when balances is out of scope", async () => {
+  const { deps, messages } = makeDeps({
+    requested: new Map([
+      ["accounts", { name: "accounts" }],
+      ["transactions", { name: "transactions" }],
+    ]),
+    wantsBalances: false,
+  });
+  const account = {
+    internal_id: "1212486749",
+    last_four: "9241",
+    name: "Sapphire Preferred",
+    type: "credit_card" as const,
+  };
+
+  await runTransactionsAndBalances(deps, makeActivitySelectFailingPage(), [account]);
+
+  const gaps = gapMessagesOf(messages);
+  assert.deepEqual(
+    gaps.map((g) => g.stream),
+    ["transactions"],
+    "a stream that never declares DETAIL_COVERAGE must not get an orphan gap"
+  );
+});

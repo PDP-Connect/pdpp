@@ -77,6 +77,7 @@ import {
   runCurrentActivity,
   snapshotDashboardHtmlForCurrentActivity,
   statementRowOutsideTimeRange,
+  waitForQfxActivityControlAttached,
 } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
 import type {
@@ -307,6 +308,57 @@ test("QFX form-loaded wait uses the same file-type selector family as selection"
   assert.equal(htmlMatchesAnySelector(oldFixture, [CHASE_QFX_FILE_TYPE_SELECT_SELECTOR]), true);
   assert.equal(htmlMatchesAnySelector(currentFixture, [CHASE_QFX_FILE_TYPE_SELECT_SELECTOR]), true);
   assert.equal(CHASE_QFX_FILE_TYPE_SELECT_SELECTOR, CHASE_QFX_FILE_TYPE_SELECT_SELECTORS.join(", "));
+});
+
+test("waitForQfxActivityControlAttached: waits on the activity selector family with the full DOM budget", async () => {
+  // Live run_1784917888575 (2026-07-24) proved the QFX activity mds-select
+  // can still be hydrating when clickActivityControl's own click-timeout
+  // budget begins, even though the file-type select (which IS waited on
+  // before this point in downloadQfx) was already interactable — the
+  // activity host had no equivalent attach-wait. This proves the wait now
+  // exists, targets the same selector family the click uses, and is bounded
+  // (not a fixed sleep, not the shorter click-timeout).
+  let waitedSelector: string | null = null;
+  let waitedTimeout = 0;
+  const page = {
+    locator(selector: string) {
+      return {
+        first() {
+          return {
+            waitFor(options: { state: string; timeout: number }) {
+              waitedSelector = selector;
+              waitedTimeout = options.timeout;
+              assert.equal(options.state, "attached");
+              return Promise.resolve();
+            },
+          };
+        },
+      };
+    },
+  };
+
+  await waitForQfxActivityControlAttached(page);
+
+  assert.equal(waitedSelector, CHASE_QFX_ACTIVITY_SELECT_SELECTOR);
+  assert.ok(waitedTimeout > 0, "expected a bounded, non-zero wait budget");
+});
+
+test("waitForQfxActivityControlAttached: a timeout is swallowed, not thrown — the click still gets a chance", async () => {
+  const page = {
+    locator() {
+      return {
+        first() {
+          return {
+            waitFor() {
+              return Promise.reject(new Error("attach timeout"));
+            },
+          };
+        },
+      };
+    },
+  };
+
+  await assert.doesNotReject(waitForQfxActivityControlAttached(page));
 });
 
 /** Build an EmitDeps that records every emit() and emitRecord() call.

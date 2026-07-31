@@ -378,6 +378,35 @@ async function selectActivity(page: Page, optionLabel: string): Promise<void> {
   await opt.click({ timeout: OPTION_WAIT_MS });
 }
 
+interface AttachWaitablePage {
+  locator: (selector: string) => {
+    first: () => {
+      waitFor: (options: { state: "attached"; timeout: number }) => Promise<unknown>;
+    };
+  };
+}
+
+/**
+ * Wait for the QFX activity `mds-select` host to attach before any click is
+ * attempted against it. `downloadQfx` already proves the file-type host is
+ * attached via the same pattern before reading the form; the activity host is
+ * a separate custom element with no equivalent wait. Live evidence
+ * (run_1784917888575, 2026-07-24) showed `clickActivityControl`'s own click
+ * timeout (half of `DOM_WAIT_MS`) can expire while the activity host is still
+ * hydrating, well after the file-type host was already interactable —
+ * producing `activity_control_unavailable` on an ordinary hydration race, not
+ * a genuine selector drift. This wait is best-effort: a timeout here is not
+ * treated as failure, it only means the subsequent click races against
+ * whatever state the control is actually in, exactly as before this fix.
+ */
+export async function waitForQfxActivityControlAttached(page: AttachWaitablePage): Promise<void> {
+  await page
+    .locator(CHASE_QFX_ACTIVITY_SELECT_SELECTOR)
+    .first()
+    .waitFor({ state: "attached", timeout: DOM_WAIT_MS })
+    .catch((): undefined => undefined);
+}
+
 // Open the Activity mds-select. Chase re-renders and occasionally re-ids the
 // download form's controls, so the CSS-id click alone is brittle. Mirror the
 // two-tier strategy used for File Type: CSS ids first, then the semantic label.
@@ -676,6 +705,7 @@ async function downloadQfx(
   const label = ACTIVITY_LABELS[activity];
 
   if (activity !== "current") {
+    await waitForQfxActivityControlAttached(page);
     try {
       await selectActivity(page, label);
       await capturePageCheckpoint(capture, page, `download-qfx-${account.internal_id}-${activity}-activity-selected`);
@@ -1962,15 +1992,30 @@ async function processAccountDownload(
  * pass retries exactly this account. Mirrors the chatgpt DETAIL_GAP contract
  * (reference_only, retryable, pending) so the runtime persists one resumable
  * gap per failed key and the per-account coverage stays honest.
+ *
+ * Callers must emit one of these per DECLARED stream the failed QFX pass owed
+ * coverage for (`transactions`, and `balances` when in scope) — the runtime's
+ * `assertDetailCoverageSatisfiedBeforeCommit` matches a DETAIL_GAP to a
+ * DETAIL_COVERAGE entry by exact `stream` equality (see
+ * `reference-implementation/runtime/index.ts`), so a single `transactions`-
+ * only gap does NOT account for the same account's `balances` coverage even
+ * though both ride the same QFX artifact. A live run (run_1784917888575,
+ * 2026-07-24) proved this: `balances` DETAIL_COVERAGE declared the failed
+ * account as required but no `balances`-stream gap existed to cover it, so
+ * the runtime's pre-commit assertion threw `Connector detail coverage
+ * incomplete`, which aborted the ENTIRE run (including already-succeeded
+ * current_activity and statements coverage) as `connector_protocol_violation`
+ * — not a QFX-specific failure, but this cross-stream gap-emission bug.
  */
 export function buildAccountDetailGap(outcome: {
   accountId: string;
   reason: DetailGapMessage["reason"];
   errorClass: string;
+  stream: "transactions" | "balances";
 }): DetailGapMessage {
   return {
     type: "DETAIL_GAP",
-    stream: "transactions",
+    stream: outcome.stream,
     parent_stream: "accounts",
     record_key: outcome.accountId,
     status: "pending",
@@ -2026,23 +2071,31 @@ export async function emitTransactionsDetailCoverage(
   );
 }
 
+/** Composite key for the served-gap lookup — one served gap per (stream, account). */
+export function servedAccountGapKey(stream: string, accountId: string): string {
+  return `${stream}:${accountId}`;
+}
+
 /**
- * Build the `account_id → served gap_id` lookup from the pending detail gaps the
- * runtime served this run at START (`ctx.detailGaps`). Filtered to Chase
- * account-level transaction gaps — the exact shape `buildAccountDetailGap`
- * writes: `stream === "transactions"`, `detail_locator.kind === "chase.account"`,
- * and a non-empty `account_id`. Any other served gap (a different connector's
- * locator, a non-transactions stream, a malformed locator) is ignored so the
- * connector can only ever recover a gap it actually understands. Sourcing the
- * `gap_id` from the served gap — never synthesizing one — is what guarantees the
- * connector cannot mark an unrelated or unserved gap recovered.
+ * Build the `"stream:account_id" → served gap_id` lookup from the pending detail
+ * gaps the runtime served this run at START (`ctx.detailGaps`). Filtered to Chase
+ * account-level QFX gaps — the exact shape `buildAccountDetailGap` writes:
+ * `stream` is `transactions` or `balances`, `detail_locator.kind ===
+ * "chase.account"`, and a non-empty `account_id`. Any other served gap (a
+ * different connector's locator, an unrelated stream, a malformed locator) is
+ * ignored so the connector can only ever recover a gap it actually understands.
+ * Sourcing the `gap_id` from the served gap — never synthesizing one — is what
+ * guarantees the connector cannot mark an unrelated or unserved gap recovered.
+ * Keyed by stream because a single account can have independently pending
+ * `transactions` and `balances` gaps (see `buildAccountDetailGap`'s doc
+ * comment) that recover together but are distinct durable rows.
  */
 export function buildServedAccountGapLookup(
   detailGaps: readonly BrowserCollectContext["detailGaps"][number][]
 ): Map<string, string> {
   const lookup = new Map<string, string>();
   for (const gap of detailGaps) {
-    if (gap.stream !== "transactions" || gap.status !== "pending") {
+    if ((gap.stream !== "transactions" && gap.stream !== "balances") || gap.status !== "pending") {
       continue;
     }
     const locator = gap.detail_locator;
@@ -2053,11 +2106,12 @@ export function buildServedAccountGapLookup(
     if (typeof accountId !== "string" || accountId.length === 0 || typeof gap.gap_id !== "string" || !gap.gap_id) {
       continue;
     }
-    // First served gap per account wins; the runtime serves at most one pending
-    // gap per (instance, stream, record_key) so a duplicate would be a store
-    // anomaly, not an expected state.
-    if (!lookup.has(accountId)) {
-      lookup.set(accountId, gap.gap_id);
+    // First served gap per (stream, account) wins; the runtime serves at most
+    // one pending gap per (instance, stream, record_key) so a duplicate would
+    // be a store anomaly, not an expected state.
+    const key = servedAccountGapKey(gap.stream, accountId);
+    if (!lookup.has(key)) {
+      lookup.set(key, gap.gap_id);
     }
   }
   return lookup;
@@ -2073,7 +2127,10 @@ export function buildServedAccountGapLookup(
  * path in `runTransactionsAndBalances` and is never recovered here. A served gap
  * whose account was not reached (still failing, or no longer enumerated) is left
  * untouched so the runtime's existing served-but-unrecovered reset returns it to
- * `pending` — lose-no-data preserved.
+ * `pending` — lose-no-data preserved. Recovers the `transactions` and `balances`
+ * served gaps independently — a reached account may have one, the other, or
+ * both pending, depending on which streams were in scope when the gap(s) were
+ * originally recorded.
  */
 export async function recoverServedAccountGaps(
   deps: EmitDeps,
@@ -2087,17 +2144,19 @@ export async function recoverServedAccountGaps(
     if (outcome.kind !== "hydrated" && outcome.kind !== "no_activity") {
       continue;
     }
-    const gapId = served.get(outcome.accountId);
-    if (!gapId) {
-      continue;
+    for (const stream of ["transactions", "balances"] as const) {
+      const gapId = served.get(servedAccountGapKey(stream, outcome.accountId));
+      if (!gapId) {
+        continue;
+      }
+      await deps.emit({
+        type: "DETAIL_GAP_RECOVERED",
+        reference_only: true,
+        gap_id: gapId,
+        stream,
+        record_key: outcome.accountId,
+      });
     }
-    await deps.emit({
-      type: "DETAIL_GAP_RECOVERED",
-      reference_only: true,
-      gap_id: gapId,
-      stream: "transactions",
-      record_key: outcome.accountId,
-    });
   }
 }
 
@@ -2129,7 +2188,17 @@ export async function runTransactionsAndBalances(
     });
     outcomes.push(outcome);
     if (outcome.kind === "gap") {
-      await deps.emit(buildAccountDetailGap(outcome));
+      // One gap per DECLARED stream this account's DETAIL_COVERAGE will
+      // claim as required — both ride the same failed QFX artifact, but the
+      // runtime matches DETAIL_GAP to DETAIL_COVERAGE by exact `stream`
+      // equality, so each declared stream needs its own gap record (see
+      // buildAccountDetailGap's doc comment).
+      if (deps.wantsTransactions && deps.wantsAccounts) {
+        await deps.emit(buildAccountDetailGap({ ...outcome, stream: "transactions" }));
+      }
+      if (deps.wantsBalances && deps.wantsAccounts) {
+        await deps.emit(buildAccountDetailGap({ ...outcome, stream: "balances" }));
+      }
     }
   }
   // Recover any served pending gaps whose account we reached this run, then

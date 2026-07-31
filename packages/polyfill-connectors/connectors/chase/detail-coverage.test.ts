@@ -100,6 +100,7 @@ test("buildAccountDetailGap: a transient QFX failure becomes a retryable, refere
     accountId: "INTACC123",
     reason: "temporary_unavailable",
     errorClass: "qfx_download_failed",
+    stream: "transactions",
   });
   assert.deepEqual(gap, {
     type: "DETAIL_GAP",
@@ -119,11 +120,36 @@ test("buildAccountDetailGap: a transient QFX failure becomes a retryable, refere
   });
 });
 
+test("buildAccountDetailGap: stream=balances produces an independently-keyed gap for the same account", () => {
+  // A live run (run_1784917888575, 2026-07-24) proved balances DETAIL_COVERAGE
+  // requires its own gap: the runtime matches DETAIL_GAP to DETAIL_COVERAGE by
+  // exact `stream` equality, so a `transactions`-only gap left `balances`
+  // required-but-unaccounted and the runtime's pre-commit assertion aborted
+  // the whole run as connector_protocol_violation. This pins that the same
+  // failed account now produces a distinct, correctly-tagged gap per stream.
+  const transactionsGap = buildAccountDetailGap({
+    accountId: "INTACC123",
+    reason: "temporary_unavailable",
+    errorClass: "qfx_download_failed",
+    stream: "transactions",
+  });
+  const balancesGap = buildAccountDetailGap({
+    accountId: "INTACC123",
+    reason: "temporary_unavailable",
+    errorClass: "qfx_download_failed",
+    stream: "balances",
+  });
+  assert.equal(balancesGap.stream, "balances");
+  assert.equal(balancesGap.record_key, "INTACC123");
+  assert.notDeepEqual(balancesGap, transactionsGap);
+});
+
 test("buildAccountDetailGap: locator carries only the account id, never PII (name/last_four)", () => {
   const gap = buildAccountDetailGap({
     accountId: "INTACC123",
     reason: "temporary_unavailable",
     errorClass: "qfx_parse_failed",
+    stream: "transactions",
   });
   const locatorValues = Object.values(gap.detail_locator).map((v) => String(v));
   assert.ok(!locatorValues.includes("Sapphire Preferred"), "no account name in locator");
