@@ -1567,6 +1567,17 @@ function terminalProgressHeadline(retained: number | null, actions: readonly Req
   return `${held}; this source cannot collect more until the terminal issue is fixed.`;
 }
 
+// Idle scheduled eligibility is not active work: only claim "Collecting"
+// while a run is actually in flight (badges.syncing). Otherwise use the same
+// neutral eligibility phrase already used for manual-default schedules
+// (staleRefreshPolicyText).
+function scheduledProgressHeadline(committed: number | null, syncing: boolean): string {
+  if (committed !== null) {
+    return `Committed ${committed.toLocaleString()} records last run.`;
+  }
+  return syncing ? "Collecting on schedule." : "Refreshes on schedule.";
+}
+
 function progressHeadline(
   mode: ProgressMode,
   gapsDrained: number | null,
@@ -1574,7 +1585,8 @@ function progressHeadline(
   retained: number | null,
   refreshedAt: string | null,
   disposition: ForwardDisposition,
-  actions: readonly RequiredAction[]
+  actions: readonly RequiredAction[],
+  syncing: boolean
 ): string {
   if (disposition === "terminal") {
     return terminalProgressHeadline(retained, actions);
@@ -1588,9 +1600,7 @@ function progressHeadline(
     case "deferred":
       return deferredHeadline(gapsDrained, retained);
     case "scheduled":
-      return committed === null
-        ? "Collecting on schedule."
-        : `Committed ${committed.toLocaleString()} records last run.`;
+      return scheduledProgressHeadline(committed, syncing);
     case "manual":
       return manualHeadline(retained, refreshedAt);
     case "local_device":
@@ -1607,7 +1617,8 @@ function progressHeadline(
 function buildProgress(
   evidence: ProgressEvidence | null,
   disposition: ForwardDisposition,
-  actions: readonly RequiredAction[]
+  actions: readonly RequiredAction[],
+  syncing: boolean
 ): RenderedProgress {
   // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const mode: ProgressMode = evidence?.mode ?? "scheduled";
@@ -1618,7 +1629,7 @@ function buildProgress(
 
   return {
     gaps_drained_last_run: null,
-    headline: progressHeadline(mode, gapsDrained, committed, retained, refreshedAt, disposition, actions),
+    headline: progressHeadline(mode, gapsDrained, committed, retained, refreshedAt, disposition, actions, syncing),
     last_refreshed_at: refreshedAt,
     mode,
     records_committed_last_run: mode === "scheduled" ? committed : null,
@@ -1948,7 +1959,7 @@ function safeGreyVerdict(snapshot: ConnectionHealthSnapshot): RenderedVerdict {
     detail: buildDetail(snapshot, "complete", []),
     forward_statement: "Status could not be classified.",
     pill: { label: "Not measured", tone: "grey" },
-    progress: buildProgress(null, "checking", []),
+    progress: buildProgress(null, "checking", [], snapshot.badges.syncing),
     required_actions: [],
     streams: [],
     trace: {
@@ -2016,7 +2027,7 @@ export function synthesizeRenderedVerdict(
   const annotations = buildAnnotations(snapshot, channel, tone, refresh, scheduleEvidence, progress, actions);
   const forwardStatement = buildForwardStatement(disposition, actions, snapshot);
   const streamRows = buildStreamRows(streams, snapshot, refresh, scheduleEvidence, actions);
-  const renderedProgress = buildProgress(progress, disposition, actions);
+  const renderedProgress = buildProgress(progress, disposition, actions, snapshot.badges.syncing);
 
   // ── inspection layer: suppressed signals routed to detail, never deleted ──
   const suppressed = buildSuppressed(snapshot, channel, runtime_ok);
