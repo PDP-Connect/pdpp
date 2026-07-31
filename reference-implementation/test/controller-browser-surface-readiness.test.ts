@@ -292,6 +292,8 @@ function createReadyDynamicAllocator(initialSurfaces: readonly BrowserSurface[] 
 interface SetupOptions {
   browserSurfaceAllocator?: BrowserSurfaceAllocator;
   browserSurfaceLeaseStore?: BrowserSurfaceLeaseStore;
+  browserSurfaceStartingPollRetryAttempts?: number;
+  browserSurfaceStartingPollRetryDelayMs?: number;
   leaseManager?: BrowserSurfaceLeaseManager;
   probe?: BrowserSurfaceReadinessProbe;
   runConnectorImpl?: (
@@ -301,7 +303,15 @@ interface SetupOptions {
 
 function setup(
   t: TestContext,
-  { browserSurfaceAllocator, browserSurfaceLeaseStore, probe, leaseManager, runConnectorImpl }: SetupOptions = {}
+  {
+    browserSurfaceAllocator,
+    browserSurfaceLeaseStore,
+    browserSurfaceStartingPollRetryAttempts,
+    browserSurfaceStartingPollRetryDelayMs,
+    probe,
+    leaseManager,
+    runConnectorImpl,
+  }: SetupOptions = {}
 ) {
   closeDb();
   initDb(tempDbPath());
@@ -316,6 +326,8 @@ function setup(
     admitRunConnection: admitManagedFixtureRun,
     ...(browserSurfaceAllocator ? { browserSurfaceAllocator } : {}),
     ...(browserSurfaceLeaseStore ? { browserSurfaceLeaseStore } : {}),
+    ...(browserSurfaceStartingPollRetryAttempts === undefined ? {} : { browserSurfaceStartingPollRetryAttempts }),
+    ...(browserSurfaceStartingPollRetryDelayMs === undefined ? {} : { browserSurfaceStartingPollRetryDelayMs }),
     browserSurfaceLeaseManager: leaseManager || createManagerWithReadySurface(),
     ...(probe ? { browserSurfaceReadinessProbe: probe } : {}),
     connectorPathResolver: () => "/tmp/connector.js",
@@ -804,22 +816,22 @@ test("readiness probe failure on a stale dynamic surface reacquires once and lau
 });
 
 /**
- * Reproduces the 2026-07-31 live USAA incident: an interactive run's
- * browser-surface acquire calls the allocator's ensureSurface/getSurfaceStatus
- * while the lease is in `starting_surface`, that call throws (Docker daemon
- * hiccup, allocator timeout, etc — remote-surface's
- * BrowserSurfaceLeaseManager.ensureStartingSurfaceReady catches it and
- * collapses it to a bare `surface_failed` / `surface_start_failed` terminal
- * lease with no error detail preserved anywhere), and a run against the SAME
- * profile a few minutes later succeeds because a fresh acquire always mints a
- * brand-new surface_id. Before this fix, `handleStartingSurfaceWaitForRun`
- * had zero retry on that path (unlike the analogous post-lease readiness-
- * probe failure, which already reacquired once) — this reproduces the gap and
- * proves the bounded-once reacquire against a NEW allocator-minted surface_id
- * closes it, converging to a live surface within one interactive run instead
- * of surfacing surface_failed straight to the owner.
+ * Reproduces the 2026-07-31 live Amazon Personal canary
+ * (run_1785535443538, superseding the 2026-07-31 USAA incident this test
+ * previously modeled): an interactive run's browser-surface acquire calls
+ * the allocator's ensureSurface/getSurfaceStatus while the lease is in
+ * `starting_surface`, and that call throws (Docker daemon hiccup, transient
+ * allocator timeout, etc). The live incident proved this is frequently a
+ * PURE POLL HICCUP, not real container death: the exact surface minted by
+ * the failing attempt went on to become healthy moments later. The fix is a
+ * bounded in-place retry of the allocator call AGAINST THE SAME surface_id
+ * (wrapAllocatorWithTransientPollRetry, run-coordinator.ts) — no new
+ * container is minted, no capacity is spent twice, and the outer
+ * reacquire-once path (handleStartingSurfaceWaitForRun's
+ * remainingStartFailureRetries-free single retry, unchanged) is never even
+ * reached for a merely-transient hiccup.
  */
-test("starting-surface allocator failure reacquires once and launches on the fresh surface", async (t) => {
+test("starting-surface transient allocator hiccup retries in place against the SAME surface_id, never mints a replacement", async (t) => {
   const leaseManager = createDynamicManagerWithReadySurface({ noInitialSurface: true });
   let ensureCalls = 0;
   const ensureRequests: EnsureBrowserSurfaceRequest[] = [];
@@ -860,6 +872,7 @@ test("starting-surface allocator failure reacquires once and launches on the fre
   };
   const { controller, runConnectorCalls } = setup(t, {
     browserSurfaceAllocator: allocator,
+    browserSurfaceStartingPollRetryDelayMs: 0,
     leaseManager,
     probe,
   });
@@ -871,38 +884,139 @@ test("starting-surface allocator failure reacquires once and launches on the fre
   });
   await controller.drainActiveRuns(1000);
 
-  assert.equal(result.status, "started", "the bounded reacquire recovers within the same interactive run");
-  assert.equal(ensureCalls, 2, "first ensureSurface throws, second (fresh surface_id) succeeds");
+  assert.equal(result.status, "started", "the in-place poll retry recovers within the same interactive run");
+  assert.equal(ensureCalls, 2, "first ensureSurface call throws, the in-place retry's second call succeeds");
   assert.equal(at(ensureRequests, 0).surfaceId, "surface_dynamic_1");
   assert.equal(
     at(ensureRequests, 1).surfaceId,
-    "surface_dynamic_2",
-    "retry mints a brand-new surface_id, never reuses the dead one"
+    "surface_dynamic_1",
+    "the in-place retry targets the SAME surface_id — it must never mint a replacement for a transient hiccup"
   );
   assert.equal(runConnectorCalls.length, 1);
   const surfaceEnv = at(runConnectorCalls, 0).browserSurfaceEnv;
   assert.ok(surfaceEnv);
-  assert.equal(surfaceEnv.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL, "http://surface_dynamic_2:9223");
+  assert.equal(surfaceEnv.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL, "http://surface_dynamic_1:9223");
+  assert.equal(stopRequests.length, 0, "an in-place poll retry never stops/discards the surface it is retrying");
 
   const events = listRunEvents("run_start_failed_reacquire").map((e) => e.event_type);
-  assert.equal(events.filter((event) => event === "run.browser_surface_requested").length, 2);
+  assert.equal(
+    events.filter((event) => event === "run.browser_surface_requested").length,
+    1,
+    "exactly one acquire — the in-place retry does not re-enter the outer acquire pipeline"
+  );
   assert.equal(
     events.filter((event) => event === "run.browser_surface_failed").length,
     0,
-    "the retried attempt must never emit the terminal event — it would latch run_history to surface_failed on a run that goes on to succeed"
+    "a transient hiccup absorbed in place must never emit the terminal event"
+  );
+  assert.equal(
+    events.filter((event) => event === "run.browser_surface_retried").length,
+    0,
+    "the non-terminal sibling event is reserved for the OUTER reacquire path (a confirmed-dead surface), not an in-place poll retry"
+  );
+  assert.ok(
+    events.filter((event) => event === "run.browser_surface_ready").length >= 1,
+    "the same surface reaches readiness after the in-place retry"
+  );
+});
+
+/**
+ * The in-place poll retry (previous test) is bounded — it must not paper
+ * over a genuinely dead surface forever. Once its budget
+ * (browserSurfaceStartingPollRetryAttempts) is exhausted, the error reaches
+ * remote-surface's ensureStartingSurfaceReady exactly as before this fix,
+ * which terminalizes that ONE surface to surface_failed, and the pre-
+ * existing, UNCHANGED outer reacquire-once path
+ * (handleStartingSurfaceWaitForRun) takes over: exactly one fresh
+ * acquire against a brand-new surface_id.
+ */
+test("starting-surface allocator failure persisting past the in-place poll-retry budget still reacquires once on a fresh surface", async (t) => {
+  const leaseManager = createDynamicManagerWithReadySurface({ noInitialSurface: true });
+  let ensureCalls = 0;
+  const ensureRequests: EnsureBrowserSurfaceRequest[] = [];
+  const surfaces = new Map<string, BrowserSurface>();
+  const allocator: BrowserSurfaceAllocator = {
+    ensureSurface: async (request) => {
+      ensureRequests.push(request);
+      ensureCalls += 1;
+      // The first surface_id (surface_dynamic_1) is genuinely, persistently
+      // dead — every poll against it fails, exhausting the in-place retry
+      // budget. The second surface_id (surface_dynamic_2, minted by the
+      // OUTER reacquire) succeeds immediately.
+      if (request.surfaceId === "surface_dynamic_1") {
+        throw new Error(
+          `Docker POST /containers/create failed: connect ECONNREFUSED (attempt for ${request.surfaceId})`
+        );
+      }
+      const surface: BrowserSurface = {
+        backend: "neko",
+        cdp_url: `http://${request.surfaceId}:9223`,
+        connector_id: request.connectorId,
+        created_at: "2026-05-12T12:00:01.000Z",
+        health: "ready",
+        last_used_at: "2026-05-12T12:00:01.000Z",
+        profile_key: request.profileKey,
+        stream_base_url: `http://${request.surfaceId}:8080`,
+        surface_id: request.surfaceId,
+      };
+      surfaces.set(request.surfaceId, surface);
+      return await Promise.resolve(surface);
+    },
+    getSurfaceStatus: async (surfaceId) => await Promise.resolve(surfaces.get(surfaceId) ?? null),
+    listSurfaces: async () => await Promise.resolve([...surfaces.values()]),
+    stopSurface: async () => await Promise.resolve(null),
+  };
+  const probe: BrowserSurfaceReadinessProbe = {
+    probe: async () => await Promise.resolve({ browserVersion: "Chrome/124.0", ok: true, pageTargetCount: 1 }),
+  };
+  const { controller, runConnectorCalls } = setup(t, {
+    browserSurfaceAllocator: allocator,
+    browserSurfaceStartingPollRetryDelayMs: 0,
+    leaseManager,
+    probe,
+  });
+
+  const result = await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_start_failed_reacquire_after_budget",
+  });
+  await controller.drainActiveRuns(1000);
+
+  assert.equal(
+    result.status,
+    "started",
+    "the outer reacquire-once path still recovers after the surface is confirmed dead"
+  );
+  assert.equal(
+    ensureCalls,
+    4,
+    "3 in-place poll attempts against the dead surface (default browserSurfaceStartingPollRetryAttempts=3), then 1 against the fresh reacquired surface"
+  );
+  assert.equal(at(ensureRequests, 0).surfaceId, "surface_dynamic_1");
+  assert.equal(at(ensureRequests, 1).surfaceId, "surface_dynamic_1");
+  assert.equal(at(ensureRequests, 2).surfaceId, "surface_dynamic_1");
+  assert.equal(
+    at(ensureRequests, 3).surfaceId,
+    "surface_dynamic_2",
+    "only once the in-place budget is exhausted does the outer path mint a fresh surface_id"
+  );
+  assert.equal(runConnectorCalls.length, 1);
+
+  const events = listRunEvents("run_start_failed_reacquire_after_budget").map((e) => e.event_type);
+  assert.equal(
+    events.filter((event) => event === "run.browser_surface_failed").length,
+    0,
+    "the run recovers on the outer reacquire, so no terminal event fires"
   );
   assert.equal(
     events.filter((event) => event === "run.browser_surface_retried").length,
     1,
-    "the dead surface_id stays observable via the non-terminal sibling event"
-  );
-  assert.ok(
-    events.filter((event) => event === "run.browser_surface_ready").length >= 1,
-    "the fresh surface reaches readiness after the reacquire"
+    "exactly one outer reacquire, only after the confirmed-dead surface's in-place budget was exhausted"
   );
 });
 
-test("starting-surface allocator failure on the reacquire attempt does not retry a second time", async (t) => {
+test("starting-surface allocator failure on every poll (in-place AND the outer reacquire) still fails closed, not an infinite loop", async (t) => {
   const leaseManager = createDynamicManagerWithReadySurface({ noInitialSurface: true });
   let ensureCalls = 0;
   const allocator: BrowserSurfaceAllocator = {
@@ -916,6 +1030,7 @@ test("starting-surface allocator failure on the reacquire attempt does not retry
   };
   const { controller, runConnectorCalls } = setup(t, {
     browserSurfaceAllocator: allocator,
+    browserSurfaceStartingPollRetryDelayMs: 0,
     leaseManager,
   });
 
@@ -931,14 +1046,18 @@ test("starting-surface allocator failure on the reacquire attempt does not retry
     "surface_failed",
     "a persistently broken allocator still fails closed, not an infinite loop"
   );
-  assert.equal(ensureCalls, 2, "bounded to exactly one reacquire attempt");
+  assert.equal(
+    ensureCalls,
+    6,
+    "bounded, never unbounded: 3 in-place poll attempts on surface 1 (default browserSurfaceStartingPollRetryAttempts=3), then 3 more on the reacquired surface 2 — each surface's budget exhaustion consuming exactly one of the two outer acquire attempts (initial + 1 reacquire)"
+  );
   assert.equal(runConnectorCalls.length, 0, "connector is never spawned when the surface never starts");
 
   const events = listRunEvents("run_start_failed_persistent").map((e) => e.event_type);
   assert.equal(
     events.filter((event) => event === "run.browser_surface_retried").length,
     1,
-    "the first (retried) attempt emits the non-terminal sibling"
+    "the first (outer, reacquired) attempt emits the non-terminal sibling"
   );
   assert.equal(
     events.filter((event) => event === "run.browser_surface_failed").length,
@@ -1175,7 +1294,7 @@ function assertReclaimRouteWasTaken(events: ReturnType<typeof listRunEvents>): v
  * retry-eligibility, unlike the direct dispatch path which threads the
  * caller's option through correctly.
  */
-test("capacity-pressure reclaim promotes inline to starting_surface and still retries once on allocator failure", async (t) => {
+test("capacity-pressure reclaim promotes inline to starting_surface and a transient allocator hiccup retries in place, never spraying a replacement", async (t) => {
   const leaseManager = createReclaimScenarioLeaseManager();
 
   let ensureCalls = 0;
@@ -1218,6 +1337,7 @@ test("capacity-pressure reclaim promotes inline to starting_surface and still re
   const runId = "run_capacity_reclaim_start_failed";
   const { controller, runConnectorCalls } = setup(t, {
     browserSurfaceAllocator: allocator,
+    browserSurfaceStartingPollRetryDelayMs: 0,
     leaseManager,
     probe,
   });
@@ -1237,48 +1357,44 @@ test("capacity-pressure reclaim promotes inline to starting_surface and still re
   );
   assertReclaimRouteWasTaken(events);
 
-  assert.equal(result.status, "started", "the bounded reacquire must recover on the reclaim/promotion path too");
-  assert.equal(ensureCalls, 2, "first ensureSurface throws, second (fresh surface_id) succeeds");
-  assert.equal(stopRequests.length, 1, "the idle other-profile surface was reclaimed exactly once");
+  assert.equal(result.status, "started", "the in-place poll retry must recover on the reclaim/promotion path too");
+  assert.equal(ensureCalls, 2, "first ensureSurface call throws, the in-place retry's second call succeeds");
+  assert.equal(
+    stopRequests.length,
+    1,
+    "the idle other-profile surface was reclaimed exactly once by the inline reclaim — an in-place poll retry stops nothing"
+  );
   assert.equal(runConnectorCalls.length, 1);
 
-  // Fresh surface AND fresh lease identity across the retry: the retried
-  // attempt's dead lease/surface must never be reused by the recovering
-  // attempt. #resolveNewLease/#findReadyIdleSurface only ever match a
-  // health: "ready" surface, so a fresh acquireInitialBrowserSurfaceLease
-  // call on retry mints a brand-new lease_id via BrowserSurfaceLeaseManager
-  // #acquire's own makeLeaseId() call, and a brand-new surface_id via
-  // #createSurfaceForLease's makeSurfaceId() call -- proven empirically (not
-  // assumed) against the real BrowserSurfaceLeaseManager before writing this
-  // assertion.
-  assert.equal(at(ensureRequests, 0).surfaceId, "surface_reclaimed_1", "first (failing) attempt's surface_id");
+  // The in-place retry targets the SAME surface_id/lease_id the inline
+  // reclaim promoted — proven empirically (not assumed) against the real
+  // BrowserSurfaceLeaseManager. A transient allocator hiccup on the reclaim
+  // route must not spray a second replacement container any more than it
+  // does on the direct-dispatch route.
+  assert.equal(at(ensureRequests, 0).surfaceId, "surface_reclaimed_1", "first (throwing) poll attempt's surface_id");
   assert.equal(
     at(ensureRequests, 1).surfaceId,
-    "surface_reclaimed_2",
-    "retry mints a brand-new surface_id, never reuses the dead reclaimed one"
+    "surface_reclaimed_1",
+    "the in-place retry targets the SAME surface_id — it must never mint a replacement for a transient hiccup"
   );
   const leases = leaseManager.listLeases().filter((lease) => lease.run_id === runId);
-  const failedLease = leases.find((lease) => lease.status === "surface_failed");
-  const settledLease = leases.find((lease) => lease.lease_id !== failedLease?.lease_id);
-  assert.ok(failedLease, "the first (retried) attempt's lease is recorded as surface_failed");
-  assert.ok(settledLease, "the retry's own, distinct lease exists");
-  assert.notEqual(
-    failedLease?.lease_id,
-    settledLease?.lease_id,
-    "the retry acquires a brand-new lease_id, never reuses the dead one"
+  assert.equal(
+    leases.length,
+    1,
+    "no second lease is created — the in-place retry never re-enters the acquire pipeline"
   );
-  assert.equal(failedLease?.surface_id, "surface_reclaimed_1");
-  assert.equal(settledLease?.surface_id, "surface_reclaimed_2");
+  assert.equal(at(leases, 0).status, "released", "the run completed and its lease was released during cleanup");
+  assert.equal(at(leases, 0).surface_id, "surface_reclaimed_1");
 
   assert.equal(
     eventTypes.filter((event) => event === "run.browser_surface_failed").length,
     0,
-    "the reclaim/promotion path must not emit the terminal event on a retried attempt either"
+    "a transient hiccup absorbed in place must never emit the terminal event on the reclaim/promotion path either"
   );
   assert.equal(
     eventTypes.filter((event) => event === "run.browser_surface_retried").length,
-    1,
-    "the reclaim/promotion path must surface the same non-terminal retry signal as the direct dispatch path"
+    0,
+    "the non-terminal outer-retry sibling event is reserved for a CONFIRMED-dead surface, not an in-place poll retry"
   );
 });
 
@@ -1410,7 +1526,7 @@ test("capacity-pressure reclaim recovery durably records a succeeded run_history
  * loop, and no leaked reclaimed surface (the idle other-profile surface is
  * stopped exactly once, not once per attempt).
  */
-test("capacity-pressure reclaim persistent allocator failure retries exactly once then fails closed, no third acquire or loop", async (t) => {
+test("capacity-pressure reclaim persistent allocator failure exhausts the in-place poll budget on each surface, then fails closed after the bounded outer reacquire, no third acquire or loop", async (t) => {
   const leaseManager = createReclaimScenarioLeaseManager();
 
   let ensureCalls = 0;
@@ -1432,6 +1548,7 @@ test("capacity-pressure reclaim persistent allocator failure retries exactly onc
   const runId = "run_capacity_reclaim_persistent_failure";
   const { controller, runConnectorCalls } = setup(t, {
     browserSurfaceAllocator: allocator,
+    browserSurfaceStartingPollRetryDelayMs: 0,
     leaseManager,
   });
 
@@ -1449,30 +1566,36 @@ test("capacity-pressure reclaim persistent allocator failure retries exactly onc
     "surface_failed",
     "a persistently broken allocator still fails closed on the reclaim route, not an infinite loop"
   );
-  assert.equal(ensureCalls, 2, "bounded to exactly one reacquire attempt — no third acquire");
-  assert.equal(runConnectorCalls.length, 0, "connector is never spawned when the surface never starts");
+  assert.equal(
+    ensureCalls,
+    6,
+    "bounded, never unbounded: 3 in-place poll attempts on the reclaimed surface (default browserSurfaceStartingPollRetryAttempts=3), then 3 more on the one bounded outer reacquire's fresh surface — no third outer acquire"
+  );
   assert.equal(
     stopRequests.length,
     1,
-    "the idle other-profile surface is reclaimed (stopped) exactly once — no leak from a repeated reclaim per attempt"
+    "the idle other-profile surface is reclaimed (stopped) exactly once — no leak from a repeated reclaim per in-place poll retry"
   );
   assert.equal(at(ensureRequests, 0).surfaceId, "surface_reclaimed_1");
+  assert.equal(at(ensureRequests, 1).surfaceId, "surface_reclaimed_1", "in-place retries target the same surface_id");
+  assert.equal(at(ensureRequests, 2).surfaceId, "surface_reclaimed_1");
   assert.equal(
-    at(ensureRequests, 1).surfaceId,
+    at(ensureRequests, 3).surfaceId,
     "surface_reclaimed_2",
-    "the bounded retry still mints a fresh surface_id even though it also fails"
+    "only once the in-place budget is exhausted does the bounded OUTER reacquire mint a fresh surface_id"
   );
+  assert.equal(runConnectorCalls.length, 0, "connector is never spawned when the surface never starts");
 
   const eventTypes = events.map((e) => e.event_type);
   assert.equal(
     eventTypes.filter((event) => event === "run.browser_surface_retried").length,
     1,
-    "exactly one non-terminal retry signal on the reclaim route"
+    "exactly one non-terminal OUTER retry signal on the reclaim route, once surface 1 is confirmed dead"
   );
   assert.equal(
     eventTypes.filter((event) => event === "run.browser_surface_failed").length,
     1,
-    "exactly one terminal failure on the reclaim route — the bounded retry does not itself retry again"
+    "exactly one terminal failure on the reclaim route — the bounded outer retry does not itself retry again"
   );
 });
 
