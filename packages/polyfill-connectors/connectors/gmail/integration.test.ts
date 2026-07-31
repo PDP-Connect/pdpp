@@ -57,16 +57,20 @@ import {
   attachmentBackfillPageByteBudget,
   buildAttachmentDetailCoverageMessage,
   buildAttachmentDetailGap,
+  buildMessagesCoverageMessage,
   createAttachmentBackfillSummary,
   DEFAULT_ATTACHMENT_BACKFILL_WINDOW_UIDS,
   DEFAULT_MAX_ATTACHMENT_BYTES,
+  emitMessagesCoverage,
   emitMessagesPass,
   type FetchBodiesFn,
   type FetchedBodies,
   formatAttachmentBackfillSummary,
   type HydrateAttachmentFn,
+  type MessagesCoverage,
   makeAttachmentDetailCoverage,
   makeAttachmentHydrator,
+  newMessagesCoverage,
   type PerMessageDeps,
   processMessage,
   recordAttachmentCoverage,
@@ -125,6 +129,7 @@ interface HarnessOverrides {
   detailGaps?: readonly DetailGapStartEntry[];
   fetchBodies?: FetchBodiesFn;
   hydrateAttachment?: HydrateAttachmentFn;
+  messagesCoverage?: MessagesCoverage;
   nowIso?: () => string;
   requested?: Map<string, StreamRequest>;
   timeRange?: { since?: string; until?: string };
@@ -153,6 +158,7 @@ function makeHarness(overrides: HarnessOverrides = {}): RecordingHarness {
     },
     fetchBodies: overrides.fetchBodies ?? defaultFetchBodies,
     hydrateAttachment: overrides.hydrateAttachment ?? ((_, attachment) => Promise.resolve(hydratedResult(attachment))),
+    ...(overrides.messagesCoverage ? { messagesCoverage: overrides.messagesCoverage } : {}),
     recoveredAttachmentGapIds: new Set<string>(),
     nowIso: overrides.nowIso ?? ((): string => FROZEN_NOW),
     requested,
@@ -2998,4 +3004,203 @@ test("emitMessagesPass: accumulates honest coverage across hydrated, gap, and sk
   // hydration_error string (which could echo upstream URLs/text) ever crosses.
   assert.equal(gaps[0]?.detail, undefined);
   assert.equal(gaps[0]?.last_error, undefined);
+});
+
+// ─── messages list-stream coverage evidence ────────────────────────────────
+//
+// The manifest declares `messages` coverage_strategy: checkpoint_window, but
+// prior to this fix the connector never emitted DETAIL_COVERAGE for the
+// `messages` stream itself — only for `attachments` (a detail child anchored
+// on the `messages` state_stream). A run scoped to `messages` alone (no
+// message_bodies, no attachments) left the messages list stream permanently
+// unmeasured at the connector-level projection even though real messages
+// were being collected. These tests pin the fix: processMessage/emitMessagesPass
+// record `messages` considered/covered independent of whether attachments or
+// message_bodies is in scope, and emitMessagesCoverage reports it via the
+// same self-referential DETAIL_COVERAGE shape Amazon/H-E-B's orders and
+// USAA/GitHub's bare list streams use.
+
+test("buildMessagesCoverageMessage: emits complete zero-message coverage", () => {
+  assert.deepEqual(buildMessagesCoverageMessage(newMessagesCoverage()), {
+    type: "DETAIL_COVERAGE",
+    reference_only: true,
+    stream: "messages",
+    state_stream: "messages",
+    required_keys: [],
+    hydrated_keys: [],
+    considered: 0,
+    covered: 0,
+  });
+});
+
+test("buildMessagesCoverageMessage: reports considered/covered self-referentially on the messages stream", () => {
+  const coverage: MessagesCoverage = {
+    considered: ["gmmsgid-1", "gmmsgid-2"],
+    covered: ["gmmsgid-1", "gmmsgid-2"],
+    droppedNoId: 0,
+    timeRangeDropped: [],
+  };
+  const msg = buildMessagesCoverageMessage(coverage);
+  assert.equal(msg.stream, "messages", "messages reports on itself — no separate detail-hydration phase");
+  assert.equal(msg.state_stream, "messages");
+  assert.deepEqual(msg.required_keys, []);
+  assert.deepEqual(msg.hydrated_keys, []);
+  assert.equal(msg.considered, 2);
+  assert.equal(msg.covered, 2);
+});
+
+test("emitMessagesCoverage: a steady-state run with zero considered messages still emits considered 0 / covered 0", async () => {
+  const harness = makeRecordingEmit();
+  await emitMessagesCoverage(harness.emit, newMessagesCoverage());
+
+  const msg = harness.protocolMessages.find((m) => m.type === "DETAIL_COVERAGE");
+  assert.ok(msg, "a zero-considered run still emits DETAIL_COVERAGE");
+  assert.equal((msg as { stream?: string }).stream, "messages");
+  assert.equal((msg as { considered?: number }).considered, 0);
+  assert.equal((msg as { covered?: number }).covered, 0);
+});
+
+test("processMessage: records a message as considered+covered in messagesCoverage on a normal emit", async () => {
+  const coverage = newMessagesCoverage();
+  const { deps } = makeHarness({ messagesCoverage: coverage, wantMessages: true });
+
+  await processMessage(deps, makeMsg());
+
+  assert.deepEqual(coverage.considered, ["gmmsgid-1111"]);
+  assert.deepEqual(coverage.covered, ["gmmsgid-1111"]);
+  assert.equal(coverage.droppedNoId, 0);
+  assert.deepEqual(coverage.timeRangeDropped, []);
+});
+
+test("processMessage: records messages coverage even when message_bodies/attachments are out of scope", async () => {
+  const coverage = newMessagesCoverage();
+  const { deps, emitted } = makeHarness({
+    messagesCoverage: coverage,
+    requested: makeRequested(["messages"]),
+    wantBodies: false,
+    wantMessages: true,
+  });
+
+  await processMessage(deps, makeMsg());
+
+  assert.deepEqual(coverage.considered, ["gmmsgid-1111"], "messages coverage does not depend on sibling scope");
+  assert.deepEqual(coverage.covered, ["gmmsgid-1111"]);
+  assert.ok(
+    emitted.some((r) => r.stream === "messages"),
+    "the messages record itself still emits"
+  );
+  assert.ok(!emitted.some((r) => r.stream === "message_bodies"), "message_bodies stays out of scope");
+});
+
+test("processMessage: nothing recorded in messagesCoverage when messages is out of scope (wantMessages: false)", async () => {
+  const coverage = newMessagesCoverage();
+  const { deps } = makeHarness({ messagesCoverage: coverage, wantMessages: false });
+
+  await processMessage(deps, makeMsg());
+
+  assert.deepEqual(coverage.considered, [], "messages out of scope means no messages-coverage accounting at all");
+  assert.deepEqual(coverage.covered, []);
+});
+
+test("processMessage: leaves no coverage trace and still emits when no messagesCoverage accumulator is wired", async () => {
+  const { deps, emitted } = makeHarness({ wantMessages: true });
+
+  await processMessage(deps, makeMsg());
+
+  assert.equal(deps.messagesCoverage, undefined, "no accumulator wired");
+  assert.ok(
+    emitted.some((r) => r.stream === "messages"),
+    "messages record still emits without coverage accounting"
+  );
+});
+
+test("processMessage: a message missing X-GM-MSGID is dropped from messagesCoverage (not considered)", async () => {
+  const coverage = newMessagesCoverage();
+  const { deps, emitted } = makeHarness({ messagesCoverage: coverage, wantMessages: true });
+  const { emailId: _emailId, ...rest } = makeMsg();
+
+  const processed = await processMessage(deps, rest);
+
+  assert.equal(processed, false);
+  assert.equal(emitted.length, 0);
+  assert.deepEqual(coverage.considered, [], "no id means the row never reaches a messages accounting decision");
+  assert.deepEqual(coverage.covered, []);
+  assert.equal(coverage.droppedNoId, 1);
+});
+
+test("processMessage: a message excluded by time_range is considered but not covered in messagesCoverage", async () => {
+  const coverage = newMessagesCoverage();
+  const { deps, emitted } = makeHarness({
+    messagesCoverage: coverage,
+    timeRange: { since: "2030-01-01T00:00:00.000Z" }, // in the future
+    wantMessages: true,
+  });
+
+  const processed = await processMessage(deps, makeMsg());
+
+  assert.equal(processed, false);
+  assert.equal(emitted.length, 0);
+  assert.deepEqual(coverage.considered, ["gmmsgid-1111"], "the fetch range still enumerated this message");
+  assert.deepEqual(coverage.covered, [], "no accounting decision was made for its messages record");
+  assert.deepEqual(coverage.timeRangeDropped, ["gmmsgid-1111"]);
+});
+
+test("emitMessagesPass: accumulates honest messages coverage across covered, time-range-dropped, and no-id outcomes", async () => {
+  const coverage = newMessagesCoverage();
+  const { deps, emitted } = makeHarness({
+    messagesCoverage: coverage,
+    timeRange: { since: "2026-04-20T10:00:04.000Z" },
+    wantMessages: true,
+  });
+  const inRange = makeMsg({ emailId: "gmmsgid-in-range" });
+  const outOfRange = makeMsg({
+    emailId: "gmmsgid-out-of-range",
+    internalDate: new Date("2020-01-01T00:00:00.000Z"),
+  });
+  const { emailId: _emailId, ...noIdMsg } = makeMsg();
+
+  await emitMessagesPass(deps, [inRange, outOfRange, noIdMsg]);
+
+  assert.deepEqual(coverage.considered, ["gmmsgid-in-range", "gmmsgid-out-of-range"]);
+  assert.deepEqual(coverage.covered, ["gmmsgid-in-range"]);
+  assert.deepEqual(coverage.timeRangeDropped, ["gmmsgid-out-of-range"]);
+  assert.equal(coverage.droppedNoId, 1);
+
+  assert.equal(emitted.filter((r) => r.stream === "messages").length, 1, "only the in-range message emits");
+
+  // The honest DETAIL_COVERAGE wire shape the connector builds from this
+  // accumulator: no separate detail-hydration phase, so required/hydrated
+  // stay empty and considered/covered carry the whole signal, anchored to
+  // the `messages` stream on itself. reference_only.
+  assert.deepEqual(buildMessagesCoverageMessage(coverage), {
+    type: "DETAIL_COVERAGE",
+    reference_only: true,
+    stream: "messages",
+    state_stream: "messages",
+    required_keys: [],
+    hydrated_keys: [],
+    considered: 2,
+    covered: 1,
+  });
+});
+
+test("emitMessagesPass: a caught per-message error does not halt the batch or corrupt messagesCoverage", async () => {
+  const coverage = newMessagesCoverage();
+  const throwingFetchBodies: FetchBodiesFn = () => Promise.reject(new Error("boom"));
+  const { deps, emitted } = makeHarness({
+    fetchBodies: throwingFetchBodies,
+    messagesCoverage: coverage,
+    wantBodies: true,
+    wantMessages: true,
+  });
+
+  await emitMessagesPass(deps, [makeMsg({ emailId: "gmmsgid-throws" }), makeMsg({ emailId: "gmmsgid-ok" })]);
+
+  // fetchBodies rejects for BOTH messages here (it's a single fixed fn), so
+  // processMessage itself throws before any coverage accounting runs for
+  // either — this pins the existing swallow-and-continue behavior of
+  // emitMessagesPass (no coverage entry for a message whose processing threw)
+  // rather than silently double-counting or crashing the loop.
+  assert.equal(emitted.length, 0, "a rejected fetchBodies throws before any record emits");
+  assert.deepEqual(coverage.considered, [], "a per-message throw never reaches the messages accounting decision");
 });

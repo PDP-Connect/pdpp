@@ -771,6 +771,68 @@ async function emitAttachmentDetailGaps(coverage: AttachmentDetailCoverage | und
   }
 }
 
+/**
+ * Per-run, `messages` list-stream coverage accumulator — a distinct
+ * denominator from `AttachmentDetailCoverage` (that one tracks the
+ * `attachments` detail-page enrichment; this one tracks the `messages` list
+ * stream itself, so `messages`/`checkpoint_window` can report honest evidence
+ * even on a run that requests only `messages`, no `message_bodies` or
+ * `attachments`). Mirrors Amazon/H-E-B's `OrdersCoverage` (fix a4d411307):
+ * every metadata row `collectMetadata` enumerated for the fetch range and
+ * that reaches `processMessage` is "considered" (the denominator). It is
+ * "covered" once a real accounting decision was made for its `messages`
+ * record: the record was emitted (there is no per-message fingerprint gate
+ * on `messages` today, so every in-scope, in-range message is emitted
+ * unconditionally). A message dropped for lacking X-GM-MSGID, or excluded by
+ * the `time_range` scope filter, is considered but not covered — no
+ * accounting decision was made for its `messages` record.
+ */
+export interface MessagesCoverage {
+  considered: string[];
+  covered: string[];
+  droppedNoId: number;
+  timeRangeDropped: string[];
+}
+
+export function newMessagesCoverage(): MessagesCoverage {
+  return { considered: [], covered: [], droppedNoId: 0, timeRangeDropped: [] };
+}
+
+/**
+ * Build the run-level `messages` DETAIL_COVERAGE, using the shared
+ * `buildDetailCoverageMessage` helper self-referentially (`stream` and
+ * `stateStream` both `"messages"` — there is no separate detail-hydration
+ * phase for the list stream itself, so `requiredKeys`/`hydratedKeys` stay
+ * empty and the denominator/numerator live entirely in
+ * `considered`/`covered`, mirroring Amazon's `emitOrdersCoverage` and the
+ * pattern already used by USAA's `inbox_messages` and GitHub's
+ * `declareListConsidered` streams).
+ */
+export function buildMessagesCoverageMessage(coverage: MessagesCoverage): DetailCoverageMessage {
+  return buildDetailCoverageMessage({
+    stream: "messages",
+    stateStream: "messages",
+    requiredKeys: [],
+    hydratedKeys: [],
+    considered: coverage.considered.length,
+    covered: coverage.covered.length,
+  });
+}
+
+/**
+ * Emit the per-run `messages` DETAIL_COVERAGE after the forward walk
+ * settles. Always emits when the caller invokes it (messages in scope) —
+ * including a zero-considered steady-state run — for the same reason
+ * `emitAttachmentDetailCoverage` always emits: a completed sweep that
+ * considered zero messages is a real measured zero, not silence.
+ */
+export async function emitMessagesCoverage(
+  emitProtocol: (msg: EmittedMessage) => Promise<void>,
+  coverage: MessagesCoverage
+): Promise<void> {
+  await emitProtocol(buildMessagesCoverageMessage(coverage));
+}
+
 export interface PerMessageDeps {
   /**
    * Optional accumulator for the `attachments` detail-coverage report. When
@@ -785,6 +847,15 @@ export interface PerMessageDeps {
   emitRecord: EmitRecordFn;
   fetchBodies: FetchBodiesFn;
   hydrateAttachment: HydrateAttachmentFn;
+  /**
+   * Optional accumulator for the `messages` list-stream coverage report. When
+   * present and `wantMessages` is true, `processMessage` records every
+   * message's `messages`-record accounting outcome here (considered, dropped
+   * for missing X-GM-MSGID, dropped by time_range, or covered) so the run
+   * can emit one honest DETAIL_COVERAGE after the pass settles. Absent for
+   * passes that have no messages denominator (messages not in scope).
+   */
+  messagesCoverage?: MessagesCoverage;
   nowIso: () => string;
   recoveredAttachmentGapIds?: Set<string>;
   requested: Map<string, StreamRequest>;
@@ -824,12 +895,25 @@ export async function processMessage(deps: PerMessageDeps, msg: FetchMessageObje
   const gmMsgid = String(msg.emailId ?? "");
   const gmThrid = String(msg.threadId ?? "");
   if (!gmMsgid) {
+    // No X-GM-MSGID: this metadata row never reaches a `messages` accounting
+    // decision. Counted separately (not by id, since there is none) so the
+    // denominator still reflects every row the fetch range returned.
+    if (deps.wantMessages && deps.messagesCoverage) {
+      deps.messagesCoverage.droppedNoId += 1;
+    }
     return false;
   }
 
   const env = msg.envelope ?? {};
   const receivedAt = perMessageInternalDateToIso(msg.internalDate, deps.nowIso);
   if (!isInTimeRange(receivedAt, deps.timeRange)) {
+    // Enumerated by the fetch range, but the time_range scope filter
+    // excluded it before any `messages` accounting decision was made:
+    // considered, but not covered.
+    if (deps.wantMessages && deps.messagesCoverage) {
+      deps.messagesCoverage.considered.push(gmMsgid);
+      deps.messagesCoverage.timeRangeDropped.push(gmMsgid);
+    }
     return false;
   }
   const dateHeader = env.date ? new Date(env.date).toISOString() : null;
@@ -875,6 +959,14 @@ export async function processMessage(deps: PerMessageDeps, msg: FetchMessageObje
         snippet,
       })
     );
+    // No fingerprint gate exists on `messages` today — every in-scope,
+    // in-range message is unconditionally emitted, so this is always a real
+    // accounting decision (unlike Amazon's orders, which can also count a
+    // fingerprint-suppressed re-scrape as covered).
+    if (deps.messagesCoverage) {
+      deps.messagesCoverage.considered.push(gmMsgid);
+      deps.messagesCoverage.covered.push(gmMsgid);
+    }
   }
 
   await emitAttachmentRecords(deps, msg, attachments);
@@ -2624,6 +2716,12 @@ async function runAllMailPasses(
     deps.requested.has("attachments") || attachmentBackfillRequested || servedAttachmentRecoveryRequested;
   const attachmentCoverage = wantsAttachments ? makeAttachmentDetailCoverage() : undefined;
   const recoveredAttachmentGapIds = new Set<string>();
+  // `messages` list-stream coverage is only meaningful when `messages` itself
+  // is in scope — mirrors the `wantsAttachments`-gated accumulator above.
+  // Recovery-only runs return before the forward walk that would populate
+  // this accumulator, so they never emit a `messages` DETAIL_COVERAGE.
+  const wantsMessages = deps.requested.has("messages");
+  const messagesCoverage = wantsMessages ? newMessagesCoverage() : undefined;
 
   if (deps.recoveryOnly === true) {
     if (servedAttachmentRecoveryRequested) {
@@ -2711,12 +2809,13 @@ async function runAllMailPasses(
     emitRecord: deps.emitRecord,
     fetchBodies: fetchBodiesBound,
     hydrateAttachment,
+    ...(messagesCoverage ? { messagesCoverage } : {}),
     recoveredAttachmentGapIds,
     nowIso,
     requested: deps.requested,
     timeRange,
     wantBodies: deps.requested.has("message_bodies"),
-    wantMessages: deps.requested.has("messages"),
+    wantMessages: wantsMessages,
   };
   await emitMessagesPass(perMessageDeps, metas);
 
@@ -2747,6 +2846,14 @@ async function runAllMailPasses(
 
   // Pass 2: detect flag/label changes on already-seen messages (incremental only)
   await runDeltaPass(client, session, deps.requested, deps.emitRecord, deps.emittedAt);
+
+  // Same honesty posture as attachments: emit once the forward walk
+  // completes, including the zero-considered steady-state case, so the
+  // `messages` list stream is never left permanently unmeasured — even on a
+  // run that requests only `messages` (no message_bodies, no attachments).
+  if (messagesCoverage) {
+    await emitMessagesCoverage(emit, messagesCoverage);
+  }
 
   // Keep the cursor value (possibly string if out of safe-integer range) on STATE.
   await emit({
