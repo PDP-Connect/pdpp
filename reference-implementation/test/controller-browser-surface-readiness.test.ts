@@ -921,6 +921,230 @@ test("starting-surface transient allocator hiccup retries in place against the S
 });
 
 /**
+ * wrapAllocatorWithTransientPollRetry wraps BOTH ensureSurface AND
+ * getSurfaceStatus (run-coordinator.ts) — remote-surface's
+ * ensureStartingSurfaceReady calls getSurfaceStatus in the same try block
+ * immediately after a successful ensureSurface, and a throw there hits the
+ * IDENTICAL bare catch{} that collapses to surface_failed/
+ * surface_start_failed. The previous test only ever throws from
+ * ensureSurface; deleting the getSurfaceStatus retry wrapping would leave
+ * that test green while silently reintroducing the exact live-incident
+ * failure mode for this second call site. This test throws ONLY from
+ * getSurfaceStatus's POST-ENSURE poll call (the package's own call site at
+ * ensureStartingSurfaceReady's `const status = await
+ * request.allocator.getSurfaceStatus(...)`) to prove that call site is
+ * independently covered.
+ *
+ * Two nested getSurfaceStatus call sites exist and must be told apart: the
+ * OBSERVED allocator (replacementAwareAllocator, createReplacementObservingAllocator
+ * in replacement-observing-allocator.ts) ALSO calls getSurfaceStatus as a
+ * pre-flight "before" snapshot inside its own ensureSurface wrapper, before
+ * delegating to the real ensureSurface — that pre-flight call happens before
+ * this surface has ever been ensured (its container_id is unset), while the
+ * package's own post-ensure poll call happens only after ensureSurface
+ * already returned a surface WITH a container_id. Keying the mock's
+ * throw/succeed branch on `surfaces.get(surfaceId)?.container_id` isolates
+ * the package's call site from the unrelated observation-layer call site.
+ */
+test("starting-surface transient getSurfaceStatus hiccup retries in place against the SAME surface_id, never mints a replacement", async (t) => {
+  const leaseManager = createDynamicManagerWithReadySurface({ noInitialSurface: true });
+  let ensureCalls = 0;
+  let postEnsureStatusCalls = 0;
+  const postEnsureStatusRequests: string[] = [];
+  const stopRequests: StopBrowserSurfaceRequest[] = [];
+  const surfaces = new Map<string, BrowserSurface>();
+  const allocator: BrowserSurfaceAllocator = {
+    ensureSurface: async (request) => {
+      ensureCalls += 1;
+      const surface: BrowserSurface = {
+        backend: "neko",
+        cdp_url: `http://${request.surfaceId}:9223`,
+        connector_id: request.connectorId,
+        container_id: `container_${request.surfaceId}`,
+        created_at: "2026-05-12T12:00:01.000Z",
+        health: "starting",
+        last_used_at: "2026-05-12T12:00:01.000Z",
+        profile_key: request.profileKey,
+        stream_base_url: `http://${request.surfaceId}:8080`,
+        surface_id: request.surfaceId,
+      };
+      surfaces.set(request.surfaceId, surface);
+      return await Promise.resolve(surface);
+    },
+    getSurfaceStatus: async (surfaceId) => {
+      const existing = surfaces.get(surfaceId);
+      if (!existing?.container_id) {
+        // The replacement-observing allocator's pre-flight "before" snapshot,
+        // called before ensureSurface has ever run for this surface_id.
+        // Unrelated to the retry under test — must always succeed cleanly.
+        return await Promise.resolve(existing ?? null);
+      }
+      // The package's own post-ensure poll call (ensureStartingSurfaceReady's
+      // `const status = await request.allocator.getSurfaceStatus(...)`).
+      postEnsureStatusRequests.push(surfaceId);
+      postEnsureStatusCalls += 1;
+      if (postEnsureStatusCalls === 1) {
+        throw new Error("GET http://surface_dynamic_1:9223/json/version failed: fetch failed");
+      }
+      const ready = { ...existing, health: "ready" as const };
+      surfaces.set(surfaceId, ready);
+      return await Promise.resolve(ready);
+    },
+    listSurfaces: async () => await Promise.resolve([...surfaces.values()]),
+    stopSurface: async (request) => {
+      stopRequests.push(request);
+      const surface = surfaces.get(request.surfaceId) ?? null;
+      surfaces.delete(request.surfaceId);
+      return await Promise.resolve(surface ? { ...surface, health: "stopping" } : null);
+    },
+  };
+  const probe: BrowserSurfaceReadinessProbe = {
+    probe: async () => await Promise.resolve({ browserVersion: "Chrome/124.0", ok: true, pageTargetCount: 1 }),
+  };
+  const { controller, runConnectorCalls } = setup(t, {
+    browserSurfaceAllocator: allocator,
+    browserSurfaceStartingPollRetryDelayMs: 0,
+    leaseManager,
+    probe,
+  });
+
+  const result = await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_start_failed_status_reacquire",
+  });
+  await controller.drainActiveRuns(1000);
+
+  assert.equal(result.status, "started", "the in-place poll retry recovers within the same interactive run");
+  assert.equal(
+    ensureCalls,
+    1,
+    "ensureSurface itself never throws in this scenario — only the post-ensure getSurfaceStatus poll does"
+  );
+  assert.equal(
+    postEnsureStatusCalls,
+    2,
+    "first post-ensure getSurfaceStatus call throws, the in-place retry's second call succeeds"
+  );
+  assert.equal(at(postEnsureStatusRequests, 0), "surface_dynamic_1");
+  assert.equal(
+    at(postEnsureStatusRequests, 1),
+    "surface_dynamic_1",
+    "the in-place retry targets the SAME surface_id — it must never mint a replacement for a transient hiccup"
+  );
+  assert.equal(runConnectorCalls.length, 1);
+  const surfaceEnv = at(runConnectorCalls, 0).browserSurfaceEnv;
+  assert.ok(surfaceEnv);
+  assert.equal(surfaceEnv.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL, "http://surface_dynamic_1:9223");
+  assert.equal(stopRequests.length, 0, "an in-place poll retry never stops/discards the surface it is retrying");
+
+  const events = listRunEvents("run_start_failed_status_reacquire").map((e) => e.event_type);
+  assert.equal(
+    events.filter((event) => event === "run.browser_surface_requested").length,
+    1,
+    "exactly one acquire — the in-place retry does not re-enter the outer acquire pipeline"
+  );
+  assert.equal(
+    events.filter((event) => event === "run.browser_surface_failed").length,
+    0,
+    "a transient getSurfaceStatus hiccup absorbed in place must never emit the terminal event"
+  );
+  assert.equal(
+    events.filter((event) => event === "run.browser_surface_retried").length,
+    0,
+    "the non-terminal sibling event is reserved for the OUTER reacquire path (a confirmed-dead surface), not an in-place poll retry"
+  );
+});
+
+/**
+ * Fail-closed boundary for the getSurfaceStatus call site specifically
+ * (mirroring the persistent-ensureSurface-failure test above): a
+ * persistently throwing post-ensure getSurfaceStatus poll must still
+ * exhaust the in-place poll-retry budget and fail closed via the
+ * pre-existing outer reacquire-once path, never loop, never paper over
+ * real death. Uses the same container_id-gated mock shape as the
+ * transient-recovery test above to isolate the package's post-ensure poll
+ * call site from the replacement-observing allocator's unrelated
+ * pre-flight snapshot call.
+ */
+test("starting-surface getSurfaceStatus failure on every post-ensure poll (in-place AND the outer reacquire) still fails closed, not an infinite loop", async (t) => {
+  const leaseManager = createDynamicManagerWithReadySurface({ noInitialSurface: true });
+  let ensureCalls = 0;
+  let postEnsureStatusCalls = 0;
+  const surfaces = new Map<string, BrowserSurface>();
+  const allocator: BrowserSurfaceAllocator = {
+    ensureSurface: async (request) => {
+      ensureCalls += 1;
+      const surface: BrowserSurface = {
+        backend: "neko",
+        cdp_url: `http://${request.surfaceId}:9223`,
+        connector_id: request.connectorId,
+        container_id: `container_${request.surfaceId}`,
+        created_at: "2026-05-12T12:00:01.000Z",
+        health: "starting",
+        last_used_at: "2026-05-12T12:00:01.000Z",
+        profile_key: request.profileKey,
+        stream_base_url: `http://${request.surfaceId}:8080`,
+        surface_id: request.surfaceId,
+      };
+      surfaces.set(request.surfaceId, surface);
+      return await Promise.resolve(surface);
+    },
+    getSurfaceStatus: async (surfaceId) => {
+      const existing = surfaces.get(surfaceId);
+      if (!existing?.container_id) {
+        return await Promise.resolve(existing ?? null);
+      }
+      postEnsureStatusCalls += 1;
+      throw new Error(`GET http://${surfaceId}:9223/json/version failed: fetch failed`);
+    },
+    listSurfaces: async () => await Promise.resolve([...surfaces.values()]),
+    stopSurface: async () => await Promise.resolve(null),
+  };
+  const { controller, runConnectorCalls } = setup(t, {
+    browserSurfaceAllocator: allocator,
+    browserSurfaceStartingPollRetryDelayMs: 0,
+    leaseManager,
+  });
+
+  const result = await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_start_failed_status_persistent",
+  });
+  await controller.drainActiveRuns(1000);
+
+  assert.equal(
+    result.status,
+    "surface_failed",
+    "a persistently broken post-ensure getSurfaceStatus poll still fails closed, not an infinite loop"
+  );
+  assert.equal(
+    ensureCalls,
+    2,
+    "ensureSurface succeeds once per outer acquire attempt (initial + 1 reacquire) — it is not the failing call, and the poll loop only re-enters ensureStartingSurfaceReady while status stays starting_surface, not once per in-place status retry"
+  );
+  assert.equal(
+    postEnsureStatusCalls,
+    6,
+    "3 in-place poll attempts against the post-ensure getSurfaceStatus call per surface (default browserSurfaceStartingPollRetryAttempts=3), across the 2 outer acquire attempts — bounded, never unbounded"
+  );
+  assert.equal(runConnectorCalls.length, 0, "connector is never spawned when the surface never reaches ready");
+
+  const events = listRunEvents("run_start_failed_status_persistent").map((e) => e.event_type);
+  assert.equal(
+    events.filter((event) => event === "run.browser_surface_retried").length,
+    1,
+    "exactly one outer reacquire, only after the first surface's getSurfaceStatus is confirmed persistently broken"
+  );
+  assert.equal(
+    events.filter((event) => event === "run.browser_surface_failed").length,
+    1,
+    "exactly one terminal failure — the bounded outer retry does not itself retry again"
+  );
+});
+
+/**
  * The in-place poll retry (previous test) is bounded — it must not paper
  * over a genuinely dead surface forever. Once its budget
  * (browserSurfaceStartingPollRetryAttempts) is exhausted, the error reaches
