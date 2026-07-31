@@ -357,7 +357,7 @@ function getMany<R extends SemanticDbRow = SemanticDbRow>(
 }
 
 async function getConnectorManifest(connectorId: string): Promise<SemanticSearchManifest | null> {
-  const auth = await import(new URL("./auth.js", import.meta.url).href);
+  const auth = await import(new URL("./auth.ts", import.meta.url).href);
   return (await auth.getConnectorManifest(connectorId)) as unknown as SemanticSearchManifest | null;
 }
 

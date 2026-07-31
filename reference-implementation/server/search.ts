@@ -291,7 +291,7 @@ async function runSequential<T>(values: Iterable<T>, operation: (value: T) => Pr
 }
 
 async function getConnectorManifest(connectorId: string): Promise<LexicalManifest | null> {
-  const auth = await import(new URL("./auth.js", import.meta.url).href);
+  const auth = await import(new URL("./auth.ts", import.meta.url).href);
   return (await auth.getConnectorManifest(connectorId)) as unknown as LexicalManifest | null;
 }
 
@@ -555,7 +555,7 @@ function getSearchIndexStore(): LexicalSearchStore {
  * the connector manifest. Returns an array of top-level scalar string field
  * names, or null if the stream does not participate in lexical retrieval.
  *
- * Manifest validator (auth.js) already enforces v1 shape constraints, so we
+ * Manifest validator (auth.ts) already enforces v1 shape constraints, so we
  * trust the declaration here.
  */
 async function getStreamLexicalFields(connectorId: string, stream: string): Promise<string[] | null> {
