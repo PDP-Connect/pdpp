@@ -371,6 +371,32 @@ export function newOrderItemsCoverage(): OrderItemsCoverage {
 }
 
 /**
+ * Per-run, `orders` list-stream coverage accumulator — a distinct denominator
+ * from `OrderItemsCoverage` (that one tracks the `order_items` detail-page
+ * enrichment; this one tracks the `orders` list stream itself, so
+ * `orders`/`checkpoint_window` can report honest evidence even on a run that
+ * skips order_items entirely — H-E-B usage is genuinely light and orders-only
+ * scans are a real steady-state).
+ *
+ * Every list-page order `runForwardScan` reaches `emitOrderAndItems` for is
+ * "considered" (the denominator). An order is "covered" once the connector
+ * made a real accounting decision for its `orders` record: either it
+ * emitted, or the per-order fingerprint cursor deliberately suppressed a
+ * byte-identical re-scrape. An order whose date never parses never reaches
+ * `emitOrderAndItems`, so it is recorded separately as `dateDropped` —
+ * considered, but not covered.
+ */
+export interface OrdersCoverage {
+  considered: string[];
+  covered: string[];
+  dateDropped: string[];
+}
+
+export function newOrdersCoverage(): OrdersCoverage {
+  return { considered: [], covered: [], dateDropped: [] };
+}
+
+/**
  * The detail-hydration outcome for one considered order.
  *  - `hydrated` — the detail page fetched and parsed.
  *  - `gap`      — the detail fetch was attempted but degraded.
@@ -434,6 +460,7 @@ export interface EmitDeps extends HydrationDeps {
   emitRecord: BrowserCollectContext["emitRecord"];
   emittedAt: string;
   orderItemsCoverage: OrderItemsCoverage | undefined;
+  ordersCoverage: OrdersCoverage | undefined;
   ordersFingerprintCursor: FingerprintCursor | undefined;
   progress: BrowserCollectContext["progress"];
   sendInteraction: BrowserCollectContext["sendInteraction"];
@@ -701,6 +728,13 @@ async function emitOrderAndItems(
     if (!deps.ordersFingerprintCursor || deps.ordersFingerprintCursor.shouldEmit(orderRecord)) {
       await deps.emitRecord("orders", orderRecord);
     }
+    // A fingerprint-suppressed re-scrape and a fresh emit are both a real
+    // accounting decision for this order's `orders` record, so both count as
+    // covered.
+    if (deps.ordersCoverage) {
+      deps.ordersCoverage.considered.push(listOrder.orderId);
+      deps.ordersCoverage.covered.push(listOrder.orderId);
+    }
   }
   if (deps.wantsItems && detail) {
     for (const [itemIndex, item] of detail.items.entries()) {
@@ -764,6 +798,13 @@ export async function processListOrder(
     // every order classifies hydrated | gap | skipped).
     if (deps.orderItemsCoverage) {
       recordDetailOutcome(deps.orderItemsCoverage, listOrder.orderId, "skipped");
+    }
+    // The list scan still enumerated this order, so the `orders` denominator
+    // must not silently drop it either: considered, but not covered (no
+    // accounting decision was made for its `orders` record).
+    if (deps.ordersCoverage) {
+      deps.ordersCoverage.considered.push(listOrder.orderId);
+      deps.ordersCoverage.dateDropped.push(listOrder.orderId);
     }
     return;
   }
@@ -942,6 +983,28 @@ export async function emitOrderItemsCoverage(deps: EmitDeps, coverage: OrderItem
   });
 }
 
+/**
+ * Emit the run-level `orders` DETAIL_COVERAGE once after the forward scan,
+ * using the shared `emitDetailCoverage` helper self-referentially (`stream`
+ * and `stateStream` both `"orders"` — there is no separate detail-hydration
+ * phase for the list stream itself, mirroring the pattern used for USAA's
+ * `inbox_messages` and GitHub's `declareListConsidered` streams). Always
+ * emits when the caller invokes it (orders in scope), including a
+ * zero-considered steady-state run, so an account with no orders this run
+ * (H-E-B usage is often genuinely light) still reads as measured, not
+ * unknown.
+ */
+export async function emitOrdersCoverage(deps: EmitDeps, coverage: OrdersCoverage): Promise<void> {
+  await emitDetailCoverage(deps, {
+    stream: "orders",
+    stateStream: "orders",
+    requiredKeys: [],
+    hydratedKeys: [],
+    considered: coverage.considered.length,
+    covered: coverage.covered.length,
+  });
+}
+
 // ─── Checkpoint / incremental planning ─────────────────────────────────────
 
 interface OrdersStateShape {
@@ -1020,6 +1083,9 @@ if (isMainModule(import.meta.url)) {
         ? openFingerprintCursor(state.orders, { excludeFromFingerprint: ["fetched_at"] })
         : undefined;
       const orderItemsCoverage = wantsItems ? newOrderItemsCoverage() : undefined;
+      // `orders` list-stream coverage is only meaningful when `orders` itself
+      // is in scope — mirrors the `wantsItems`-gated accumulator above.
+      const ordersCoverage = wantsOrders ? newOrdersCoverage() : undefined;
 
       const flags: RunFlags = {
         detailAttempts: 0,
@@ -1033,6 +1099,7 @@ if (isMainModule(import.meta.url)) {
         emitRecord,
         emittedAt,
         orderItemsCoverage,
+        ordersCoverage,
         ordersFingerprintCursor,
         progress,
         sendInteraction,
@@ -1074,6 +1141,12 @@ if (isMainModule(import.meta.url)) {
 
       if (orderItemsCoverage) {
         await emitOrderItemsCoverage(deps, orderItemsCoverage);
+      }
+      // Same honesty posture as order_items: emit once the forward scan
+      // completes, including the zero-considered steady-state case, so the
+      // `orders` list stream is never left permanently unmeasured.
+      if (ordersCoverage) {
+        await emitOrdersCoverage(deps, ordersCoverage);
       }
     },
   });
