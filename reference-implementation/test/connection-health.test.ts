@@ -2238,7 +2238,13 @@ test("current replacement continuity overlays allocator availability without inv
     const replacementHealth = computeConnectionHealth(
       healthInput({ ...replacementPending, credential_continuity: continuity })
     );
-    assert.equal(replacementHealth.state, "degraded");
+    // Regression (2026-07-31, fleet health semantics): `CredentialContinuity`
+    // is a diagnostic overlay, never a repair authority — it must not alone
+    // push an otherwise healthy, fully-collected connection into `degraded`.
+    // A real ChatGPT connection with proven runtime availability and complete,
+    // fresh coverage stays `healthy`; unproven continuity is visible only as a
+    // non-degrading, actionless condition (no dominant condition, no CTA).
+    assert.equal(replacementHealth.state, "healthy", `${continuity} alone must not degrade an otherwise healthy state`);
     assert.equal(findCondition(replacementHealth, "RuntimeAvailable")?.status, "true");
     assert.equal(findCondition(replacementHealth, "CredentialContinuity")?.status, "false");
     assert.equal(replacementHealth.next_action, null, `${continuity} is not repair authority`);

@@ -434,6 +434,44 @@ test("acceptance 7.1: succeeded run + complete coverage + fresh + no attention p
   assert.equal(snap.next_action, null);
 });
 
+// Regression (2026-07-31, fleet health semantics): a fresh, fully-collected
+// ChatGPT connection whose only "problem" is that process-bound browser-session
+// continuity is unproven after a runtime replacement must stay `healthy` — the
+// doc comment on `credentialContinuityCondition` (runtime/connection-health.ts)
+// is explicit that it is "a diagnostic health overlay, never a repair
+// authority", yet `isDegradingCondition` had no exclusion for
+// `CredentialContinuity` (unlike the analogous `CredentialsValid` exclusion),
+// so a "warning"-severity continuity condition forced `state: "degraded"` on an
+// otherwise perfectly healthy source. Worse, `pickDominantConditionId`'s
+// `"degraded"` case never lists `CredentialContinuity`, so the resulting pill
+// had no dominant condition and no reason code — an unlabeled degraded state
+// masking real connector health, not honestly naming missing instrumentation.
+test("acceptance: unproven credential continuity alone does not degrade an otherwise healthy connection", () => {
+  const run = succeededRun();
+  const snap = projectConnectorSummaryConnectionHealth({
+    ephemeralBrowserRuntime: {
+      active_lease: null,
+      allocator_observation: null,
+      connection_kind: "browser-runtime",
+      credential_continuity: "replacement_pending",
+      current_compatible_idle_surfaces: 1,
+      current_replacement_receipt: null,
+      demand: "none",
+      health_eligible: true,
+      last_successful_runtime_receipt: null,
+      surface_mode: "dynamic-managed",
+    },
+    freshness: FRESH,
+    lastRun: run,
+    lastSuccessfulRun: run,
+    outbox: { axis: "idle" },
+    schedule: { enabled: true },
+  });
+  assertHeadline(snap, "healthy");
+  assert.equal(snap.reason_code, null);
+  assert.equal(snap.next_action, null);
+});
+
 test("acceptance 7.1: newer successful run clears stale scheduler backoff evidence", () => {
   const run = succeededRun({
     finished_at: "2026-05-24T23:20:25.909Z",

@@ -1640,6 +1640,15 @@ function isDegradingCondition(item: ConnectionHealthCondition): boolean {
   if (item.type === "CredentialsValid") {
     return false;
   }
+  // `CredentialContinuity` is a diagnostic overlay, never a repair authority
+  // (see the doc comment on `credentialContinuityCondition`): an unproven
+  // process-bound continuity check must never alone push an otherwise healthy,
+  // fully-collected connection into `degraded` — that would mask real health
+  // behind an unlabeled pill, since `pickDominantConditionId`'s `"degraded"`
+  // case does not surface this condition type at all.
+  if (item.type === "CredentialContinuity") {
+    return false;
+  }
   return item.severity === "warning" || item.severity === "error" || item.severity === "blocked";
 }
 
