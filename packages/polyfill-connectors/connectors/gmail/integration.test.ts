@@ -84,6 +84,7 @@ import {
   resolveGmailPasswordFromEnv,
   resolveMaxAttachmentBytes,
   runAttachmentBackfillAndRecoveryPass,
+  runDeltaPassIsolated,
   selectAllMailFetchRange,
   selectAttachmentBackfillFetchRange,
   shouldBackfillAttachments,
@@ -1110,6 +1111,71 @@ test("recoverServedAttachmentGaps: a completed historical cursor still drains a 
   const attachments = harness.emitted.filter((record) => record.stream === "attachments");
   assert.equal(attachments.length, 1, "the unadmitted gap must not emit an attachment record");
   assert.equal(attachments[0]?.data.id, "gmmsgid-recovery:1");
+});
+
+// Regression coverage for the live-canary root cause (2026-07-31): gmail
+// run_1785535147325_1 and its retry run_1785535845977_2 each emitted exactly
+// 206 records with no committed messages/attachments STATE cursor between
+// them — the retry replayed the first attempt's already-ingested work
+// byte-for-byte. The delta pass (flag/label sync for already-seen messages)
+// ran between the last successful attachment ingest and the messages STATE
+// commit, and its own IMAP failure propagated uncaught out of
+// `runAllMailPasses`, discarding the whole run's real progress before the
+// cursor that would have made it durable ever committed. `runDeltaPassIsolated`
+// is the fix: the delta pass's own failure must never reach the caller.
+test("runDeltaPassIsolated: a thrown delta-pass failure does not propagate, and emits a non-fatal PROGRESS note instead", async () => {
+  const harness = makeRecordingEmit();
+  const deltaPassError = new Error("IMAP connection reset while fetching flag/label deltas");
+
+  await runDeltaPassIsolated(() => {
+    throw deltaPassError;
+  }, harness.emit);
+
+  const progressMessages = harness.protocolMessages.filter(
+    (msg): msg is Extract<typeof msg, { type: "PROGRESS" }> => msg.type === "PROGRESS"
+  );
+  assert.equal(progressMessages.length, 1, "the caught failure surfaces as exactly one PROGRESS note");
+  assert.match(progressMessages[0]?.message ?? "", /delta sync failed/i);
+  assert.match(progressMessages[0]?.message ?? "", /IMAP connection reset/);
+  assert.equal(progressMessages[0]?.stream, "messages");
+
+  // No DETAIL_GAP, SKIP_RESULT, or any other terminal-affecting message was
+  // emitted — the failure is fully absorbed as an informational note, never
+  // escalated into anything that could mark the run's coverage incomplete
+  // or block the messages/attachments checkpoint that commits right after
+  // this call in `runAllMailPasses`.
+  assert.equal(harness.protocolMessages.length, 1, "no other protocol message is emitted for the caught failure");
+});
+
+test("runDeltaPassIsolated: a rejected (async) delta-pass failure is isolated the same as a synchronous throw", async () => {
+  const harness = makeRecordingEmit();
+
+  await runDeltaPassIsolated(
+    () => Promise.reject(new Error("Unexpected server response after FETCH CHANGEDSINCE")),
+    harness.emit
+  );
+
+  assert.equal(harness.protocolMessages.length, 1);
+  assert.equal(harness.protocolMessages[0]?.type, "PROGRESS");
+});
+
+test("runDeltaPassIsolated: a successful delta pass emits no extra diagnostic and does not swallow its own output", async () => {
+  const harness = makeRecordingEmit();
+  let ran = false;
+
+  await runDeltaPassIsolated(async () => {
+    ran = true;
+    await harness.emit({ type: "PROGRESS", message: "Fetching flag/label deltas since modseq=42" });
+  }, harness.emit);
+
+  assert.ok(ran, "the wrapped pass actually runs");
+  assert.equal(harness.protocolMessages.length, 1, "only the pass's own message is present, no extra failure note");
+  const [onlyMessage] = harness.protocolMessages;
+  assert.equal(onlyMessage?.type, "PROGRESS");
+  assert.equal(
+    onlyMessage && onlyMessage.type === "PROGRESS" ? onlyMessage.message : undefined,
+    "Fetching flag/label deltas since modseq=42"
+  );
 });
 
 test("runAttachmentBackfillAndRecoveryPass: served gaps preempt historical attachment backfill and keep the cursor unchanged", async () => {

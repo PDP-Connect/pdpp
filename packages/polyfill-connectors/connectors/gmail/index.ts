@@ -2709,6 +2709,52 @@ async function runDeltaPass(
   }
 }
 
+/**
+ * Isolate the delta pass's own failure from the rest of the run.
+ *
+ * The delta pass is best-effort flag/label sync for already-seen messages —
+ * it has no coverage contract of its own (no DETAIL_COVERAGE, no gap-key
+ * accounting), and the messages/attachments STATE cursor committed right
+ * after it runs (`runAllMailPasses`) is derived from
+ * `session.highestModseqCursor`/`uidnext`, captured once at the top of
+ * `runAllMailPasses` from the mailbox's own reported state — it does not
+ * depend on anything the delta pass reads or writes.
+ *
+ * Before this wrapper, a transient IMAP failure inside `runDeltaPass`
+ * (connection reset, server error — plausible after minutes holding one
+ * IMAP connection open through a large attachment backfill) propagated out
+ * of `runAllMailPasses` uncaught. That aborted the whole run before it
+ * reached the messages STATE commit, discarding real, already-ingested
+ * messages/attachments/thread progress and forcing the next run to
+ * re-fetch and re-emit the identical range. Proven live: gmail
+ * `run_1785535147325_1` and its retry `run_1785535845977_2` (2026-07-31)
+ * both emitted exactly 206 records with no committed checkpoint between
+ * them — the retry replayed the first attempt's work byte-for-byte.
+ *
+ * A caught delta-pass failure degrades to a non-fatal `PROGRESS` note
+ * (the delta pass carries no gap/coverage vocabulary of its own to defer
+ * into) and the run proceeds to commit the cursor for the work it did
+ * complete. The next run naturally re-attempts the delta sync from the
+ * same `priorModseq`, since that cursor is untouched by this pass either
+ * way.
+ */
+export async function runDeltaPassIsolated(
+  runPass: () => Promise<void>,
+  emitProtocol: (msg: EmittedMessage) => Promise<void>
+): Promise<void> {
+  try {
+    await runPass();
+  } catch (err) {
+    await emitProtocol({
+      type: "PROGRESS",
+      stream: "messages",
+      message: `Flag/label delta sync failed and was skipped for this run; retried automatically next run: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    });
+  }
+}
+
 // ─── Threads pass ───────────────────────────────────────────────────────
 
 async function runThreadsPass(client: ImapFlow, emitRecord: EmitRecordFn, cursor: FingerprintCursor): Promise<void> {
@@ -2992,8 +3038,13 @@ async function runAllMailPasses(
   // advances, re-fetching the same window every run.
   await emitAttachmentDetailGaps(attachmentCoverage);
 
-  // Pass 2: detect flag/label changes on already-seen messages (incremental only)
-  await runDeltaPass(client, session, deps.requested, deps.emitRecord, deps.emittedAt);
+  // Pass 2: detect flag/label changes on already-seen messages (incremental
+  // only). See `runDeltaPassIsolated`'s doc comment for why this pass's own
+  // failure must never abort the run.
+  await runDeltaPassIsolated(
+    () => runDeltaPass(client, session, deps.requested, deps.emitRecord, deps.emittedAt),
+    emit
+  );
 
   // A bounded, count-only SKIP_RESULT for rows this run could not account
   // for at all (no X-GM-MSGID, or a caught per-message exception) — emitted
