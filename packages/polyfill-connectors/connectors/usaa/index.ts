@@ -280,6 +280,17 @@ export async function emitAccountsStream(
   // the gate; a future pre-gate drop would raise `considered` (accounts.length)
   // without raising `covered`, leaving an honest `partial`.
   let entityCovered = 0;
+  // Stats-stream coverage: distinct from `entityCovered` above and from the
+  // `accounts` self-coverage message below. The append-key/idempotency
+  // rationale (no cursor, no suppression — a same-day re-pull collapses via
+  // the runtime's byte-equivalence check, not a fingerprint gate) is about
+  // *versioning*, not *measurability*: "did this run successfully sample
+  // every enumerated account's balance" is a real, honestly-measured
+  // denominator (`accounts.length`) and numerator (records actually
+  // emitted) — `buildAccountStatsRecord` never drops a row, so a future
+  // per-account stats failure would show up as `covered < considered`
+  // instead of silently disappearing.
+  let statsCovered = 0;
   for (const a of accounts) {
     if (emitEntity) {
       const rec = buildAccountRecord(a, emittedAt);
@@ -299,9 +310,22 @@ export async function emitAccountsStream(
     // already makes same-day re-pulls idempotent.
     if (emitStats) {
       await deps.emitRecord("account_stats", buildAccountStatsRecord(a, observedOn));
+      statsCovered += 1;
     }
   }
   if (emitStats) {
+    // Own self-coverage message, keyed to the `account_stats` stream itself
+    // (not `accounts`) — an account_stats-only request (emitEntity: false)
+    // still gets a measured denominator, and a combined request gets two
+    // independent coverage reports for the two independently-scoped streams.
+    await emitDetailCoverage(deps, {
+      stream: "account_stats",
+      stateStream: "account_stats",
+      requiredKeys: [],
+      hydratedKeys: [],
+      considered: accounts.length,
+      covered: statsCovered,
+    });
     await deps.emit({
       type: "STATE",
       stream: "account_stats",
@@ -327,8 +351,11 @@ export async function emitAccountsStream(
   // `complete` instead of a false `partial`
   // (define-connector-progress-evidence-contract task 4.4). This self-coverage
   // message (`stream === state_stream === "accounts"`, empty required/hydrated
-  // keys) describes the entity inventory; `account_stats` is an append-keyed
-  // daily observation, not an inventory, so it declares no denominator.
+  // keys) describes the entity inventory only; `account_stats` is an
+  // append-keyed daily observation with no fingerprint suppression to reason
+  // about, but it still has its own real per-run denominator (every account
+  // this run sampled a stat for) — see its own `emitDetailCoverage` call
+  // above, under a distinct `stream: "account_stats"` self-coverage message.
   await emitDetailCoverage(deps, {
     stream: "accounts",
     stateStream: "accounts",
@@ -428,12 +455,26 @@ export async function emitDeferredStreams(emit: EmitFn, requested: RequestedScop
  * the ladder recorded:
  *
  *   - `source_structure_changed` — the export affordance or its date-range
- *     dialog was missing/unrecognized (`no_export_affordance`,
- *     `export_dialog_unexpected_shape`). These are the two phases the ladder
- *     already treats as fatal (`isFatalDiagPhase`): they don't get better with
- *     a shorter window, so retrying is pointless until the connector's
+ *     dialog was missing/unrecognized (`export_dialog_unexpected_shape`, or
+ *     `no_export_affordance` with `no_export_observation.route === "expected"`
+ *     — i.e. the page really was the account/transaction detail page and the
+ *     export button was genuinely gone). These are the phases the ladder
+ *     treats as fatal (`isFatalDiagPhase`): they don't get better with a
+ *     shorter window, so retrying is pointless until the connector's
  *     selectors are revisited. This is the "source UI/API changed or terminally
  *     unsupported" outcome.
+ *   - `navigation_drifted` — `no_export_affordance` where
+ *     `no_export_observation.route` is `"unknown"` or `"interstitial"`: the
+ *     page we ended up on was NOT confirmed to be the account/transaction
+ *     detail page (e.g. a marketing/promo detour, a stale `accountId` query
+ *     param, or a logon/security interstitial). This is a navigation/routing
+ *     failure, not evidence the source's export UI changed — so unlike
+ *     `source_structure_changed` it is NOT ladder-fatal (the ladder keeps
+ *     trying remaining candidate windows) and it is NOT reported as
+ *     "structure changed". A same-run retry with the same stale URL will
+ *     likely drift again, so the account's per-run DETAIL_GAP (below) is
+ *     what actually recovers it: the next run re-derives the account URL from
+ *     a fresh dashboard scan.
  *   - `export_pressure` — the affordance and dialog were found and the export
  *     was submitted, but the download/body never materialized, the click
  *     failed, or the dialog reported a transient error
@@ -448,12 +489,27 @@ export async function emitDeferredStreams(emit: EmitFn, requested: RequestedScop
  * vetted reason/copy the dashboard sees and a machine-readable `outcome`
  * discriminator on the diagnostics object. No new protocol field is added.
  */
-export type ExportLadderOutcome = "export_pressure" | "source_structure_changed" | "unknown";
+export type ExportLadderOutcome = "export_pressure" | "navigation_drifted" | "source_structure_changed" | "unknown";
+
+/**
+ * True iff `no_export_affordance`'s route observation confirms the ladder
+ * really reached the account/transaction detail page. Only this route value
+ * makes a missing export affordance genuinely structural — any other route
+ * (a marketing detour, a logon/security interstitial, or any page we can't
+ * positively identify) means navigation never reliably reached the page
+ * whose UI we'd be judging, so "the button is gone" cannot be concluded.
+ */
+function noExportRouteConfirmsAccountPage(diag: DiagnosticInfo): boolean {
+  return diag.no_export_observation?.route === "expected";
+}
 
 /** Map the ladder's last diagnostic phase to a terminal outcome class. */
 export function classifyExportLadderOutcome(lastDiag: DiagnosticInfo | null): ExportLadderOutcome {
   if (!lastDiag) {
     return "unknown";
+  }
+  if (lastDiag.phase === "no_export_affordance" && !noExportRouteConfirmsAccountPage(lastDiag)) {
+    return "navigation_drifted";
   }
   if (isFatalDiagPhase(lastDiag)) {
     return "source_structure_changed";
@@ -480,7 +536,10 @@ export async function emitExportFailure(
   const outcome = classifyExportLadderOutcome(lastDiag);
   const isNoExportAffordance = lastDiag?.phase === "no_export_affordance";
   let baseMessage = "USAA transaction export affordance was not found on the observed browser surface";
-  if (!isNoExportAffordance) {
+  if (outcome === "navigation_drifted") {
+    baseMessage =
+      "USAA navigation did not confirm reaching the account/transaction page before looking for the export affordance (marketing detour or interstitial) — treating as a recoverable navigation drift, not a source UI change";
+  } else if (!isNoExportAffordance) {
     baseMessage = lastDiag
       ? `Export ladder exhausted (${outcome}): ${formatDiagnosticInfo(lastDiag)}`
       : "Export dialog didn't produce a download across all ranges and the source never reported an empty account — outcome unknown (transient pressure or shifted selectors)";
@@ -491,14 +550,24 @@ export async function emitExportFailure(
   // Credit-card exports keep their own unverified-flow reason regardless of
   // outcome (the flow itself was never confirmed live), but still carry the
   // structural-vs-pressure discriminator in diagnostics. For non-credit-card
-  // accounts, a missing affordance/dialog is reported as a distinct
-  // structure-changed reason so the dashboard stops conflating "the connector
-  // is broken" with "the export was momentarily unavailable".
+  // accounts:
+  //   - a confirmed missing affordance/dialog (`source_structure_changed`) is
+  //     reported as a distinct structure-changed reason so the dashboard stops
+  //     conflating "the connector is broken" with "the export was momentarily
+  //     unavailable";
+  //   - a `navigation_drifted` outcome (no_export_affordance where the route
+  //     observation did NOT confirm we reached the account page) is reported
+  //     under its own reason — it is neither a structure change nor ordinary
+  //     export pressure, and collapsing it into `export_no_download` would
+  //     hide the "we don't even know we were on the right page" distinction
+  //     that made this case retryable in the first place.
   let reason: string;
   if (isCreditCard) {
     reason = "credit_card_export_unverified";
   } else if (outcome === "source_structure_changed") {
     reason = "export_affordance_missing";
+  } else if (outcome === "navigation_drifted") {
+    reason = "navigation_drifted";
   } else {
     reason = "export_no_download";
   }
@@ -1584,8 +1653,26 @@ export async function runSingleLadderAttempt({
   }
 }
 
+/**
+ * True iff the ladder should stop retrying remaining candidate windows for
+ * this account. `export_dialog_unexpected_shape` is unconditionally fatal (no
+ * route signal is available there — the export dialog itself was reached and
+ * didn't match). `no_export_affordance` is fatal ONLY when the route
+ * observation confirms the ladder actually reached the account/transaction
+ * detail page (`route === "expected"`); when the route is `"unknown"` or
+ * `"interstitial"` we can't conclude the export UI changed — the ladder may
+ * simply have drifted to the wrong page (stale accountId, promo interstitial)
+ * — so retrying the remaining candidate windows (and, ultimately, a future
+ * run's fresh dashboard scan) stays worthwhile. See `classifyExportLadderOutcome`.
+ */
 function isFatalDiagPhase(diag: DiagnosticInfo | null): diag is DiagnosticInfo {
-  return Boolean(diag && (diag.phase === "no_export_affordance" || diag.phase === "export_dialog_unexpected_shape"));
+  if (!diag) {
+    return false;
+  }
+  if (diag.phase === "export_dialog_unexpected_shape") {
+    return true;
+  }
+  return diag.phase === "no_export_affordance" && noExportRouteConfirmsAccountPage(diag);
 }
 
 async function tryExportLadder(
@@ -2026,9 +2113,18 @@ async function processAccountTransactions(
       };
     }
     await emitExportFailure(deps, a, lastDiag);
+    // `errorClass` mirrors the ladder outcome so a gap left by a drifted
+    // navigation (stale account URL / promo interstitial — recoverable by a
+    // fresh dashboard scan next run) is distinguishable from the generic
+    // no-download pressure case, without inventing a new DETAIL_GAP `reason`
+    // (the protocol's closed reason vocabulary has no "wrong page" value —
+    // `temporary_unavailable` is still the honest fit: this account is
+    // expected to be reachable again, just not necessarily via this URL).
+    const errorClass =
+      classifyExportLadderOutcome(lastDiag) === "navigation_drifted" ? "navigation_drifted" : "export_no_download";
     return {
       last_date: priorLastDate,
-      outcome: { accountId, kind: "gap", reason: "temporary_unavailable", errorClass: "export_no_download" },
+      outcome: { accountId, kind: "gap", reason: "temporary_unavailable", errorClass },
     };
   }
   const csvResult = await emitCsvTransactions(
@@ -2408,7 +2504,7 @@ function scrapeInboxRows(page: Page): Promise<InboxRow[]> {
   });
 }
 
-async function runInboxStream(deps: EmitDeps, page: Page, state: Record<string, unknown>): Promise<void> {
+export async function runInboxStream(deps: EmitDeps, page: Page, state: Record<string, unknown>): Promise<void> {
   try {
     await deps.emit({
       type: "PROGRESS",
@@ -2437,6 +2533,13 @@ async function runInboxStream(deps: EmitDeps, page: Page, state: Record<string, 
       priorFingerprints: readPriorInboxMessageFingerprints(state),
     });
     const year = new Date().getFullYear();
+    // `covered` counts rows this run actually accounted for: emitted plus
+    // suppressed-because-unchanged. A row `buildInboxMessageRecord` drops
+    // (missing `date_short` — the row can't be keyed) is neither emitted nor
+    // suppressed-unchanged, so it stays out of `covered` and the run reads an
+    // honest `partial` rather than a false `complete` — same discipline as
+    // `emitAccountsStream`'s `entityCovered`.
+    let covered = 0;
     for (const m of msgs) {
       const record = buildInboxMessageRecord(m, year, nowIso());
       if (!record) {
@@ -2445,7 +2548,23 @@ async function runInboxStream(deps: EmitDeps, page: Page, state: Record<string, 
       if (fingerprintCursor.shouldEmit(record)) {
         await deps.emitRecord("inbox_messages", record);
       }
+      covered += 1;
     }
+    // The inbox listing is a full scan of the inbox page, with a real,
+    // measurable denominator (rows found on the page): `considered` is the
+    // enumerated row count and `covered` is the objective per-row outcome
+    // count above — never aliased to the post-suppression emitted count, so a
+    // steady-state run (nothing changed → nothing emitted) still reads
+    // `complete` (define-connector-progress-evidence-contract task 4.4,
+    // mirroring `emitAccountsStream`'s self-coverage message).
+    await emitDetailCoverage(deps, {
+      stream: "inbox_messages",
+      stateStream: "inbox_messages",
+      requiredKeys: [],
+      hydratedKeys: [],
+      considered: msgs.length,
+      covered,
+    });
     // The inbox listing is a full scan of the inbox page: prune fingerprints
     // for messages no longer listed so a re-appearance re-emits.
     fingerprintCursor.pruneStale();
@@ -2520,14 +2639,65 @@ export function readPriorCreditCardBillingFingerprints(state: Record<string, unk
  *  (`credit_card_billing`) and the observation (`credit_card_billing_stats`)
  *  are independently scoped. `observedOn` is the UTC sample date. The entity
  *  cursor is only supplied when the entity is requested. */
-interface CreditCardBillingEmitOptions {
+export interface CreditCardBillingEmitOptions {
   emitEntity: boolean;
   emitStats: boolean;
   fingerprintCursor: FingerprintCursor | undefined;
   observedOn: string;
 }
 
-async function runCreditCardBillingStream(
+/** Per-card outcome of one credit-card billing pass: whether the entity was
+ *  counted as covered (only meaningful when `emitEntity` + a fingerprint
+ *  cursor are active) and whether a stats observation was emitted. Extracted
+ *  from `runCreditCardBillingStream`'s loop body to keep that function under
+ *  the cognitive-complexity budget. */
+interface CreditCardBillingCardOutcome {
+  entityCovered: boolean;
+  statsEmitted: boolean;
+}
+
+/** Navigate to one card's account page, scrape its billing details, and emit
+ *  the entity/stats records per `options`. Entity gate: a per-card
+ *  fingerprint that excludes the run-clock `fetched_at`. After the Family-2
+ *  split the entity body carries only card identity/settings (account_id,
+ *  nickname, credit_limit_cents, APRs, card_holders), so it re-emits only on
+ *  a real settings change — a balance/rewards/cycle-status tick no longer
+ *  versions it. The volatile per-cycle fields go to
+ *  `credit_card_billing_stats`, keyed `{card_id}:{observed_on}` so same-day
+ *  re-pulls are idempotent and a later day appends a new point in the
+ *  series. */
+async function processCreditCardBillingAccount(
+  deps: EmitDeps,
+  page: Page,
+  a: DashboardAccount,
+  options: CreditCardBillingEmitOptions
+): Promise<CreditCardBillingCardOutcome> {
+  const { emitEntity, emitStats, fingerprintCursor, observedOn } = options;
+  await page
+    .goto(`https://www.usaa.com${a.account_url}`, {
+      waitUntil: "domcontentloaded",
+      timeout: ACCOUNT_NAV_TIMEOUT_MS,
+    })
+    .catch((): undefined => undefined);
+  await politeDelay(CC_SETTLE_DELAY_MS);
+  const billing = await scrapeCreditCardBilling(page);
+  let entityCovered = false;
+  if (emitEntity) {
+    const rec = buildCreditCardBillingRecord(a, billing, nowIso());
+    if (!fingerprintCursor || fingerprintCursor.shouldEmit(rec)) {
+      await deps.emitRecord("credit_card_billing", rec);
+    }
+    entityCovered = Boolean(fingerprintCursor);
+  }
+  let statsEmitted = false;
+  if (emitStats) {
+    await deps.emitRecord("credit_card_billing_stats", buildCreditCardBillingStatsRecord(a, billing, observedOn));
+    statsEmitted = true;
+  }
+  return { entityCovered, statsEmitted };
+}
+
+export async function runCreditCardBillingStream(
   deps: EmitDeps,
   page: Page,
   accounts: readonly DashboardAccount[],
@@ -2541,34 +2711,37 @@ async function runCreditCardBillingStream(
       message: "Fetching credit card billing details",
     });
     const cards = accounts.filter((a) => CREDIT_CARD_TYPE_RE.test(a.account_type));
+    // `entityCovered` is the in-boundary cards this entity pass accounted
+    // for: emitted plus suppressed-because-unchanged (mirrors
+    // `emitAccountsStream`'s `entityCovered`) — `buildCreditCardBillingRecord`
+    // never drops a row, so every scraped card reaches the gate.
+    // `statsCovered` is the stats-stream numerator, reported under its own
+    // `stream: "credit_card_billing_stats"` self-coverage message (mirrors
+    // `account_stats` in `emitAccountsStream`): the append-key idempotency of
+    // that observation stream is about versioning, not measurability — "did
+    // this run sample every enumerated card's billing stats" is a real
+    // denominator (`cards.length`) and a real numerator
+    // (`buildCreditCardBillingStatsRecord` never drops a row).
+    let entityCovered = 0;
+    let statsCovered = 0;
     for (const a of cards) {
-      await page
-        .goto(`https://www.usaa.com${a.account_url}`, {
-          waitUntil: "domcontentloaded",
-          timeout: ACCOUNT_NAV_TIMEOUT_MS,
-        })
-        .catch((): undefined => undefined);
-      await politeDelay(CC_SETTLE_DELAY_MS);
-      const billing = await scrapeCreditCardBilling(page);
-      // Entity gate: a per-card fingerprint that excludes the run-clock
-      // `fetched_at`. After the Family-2 split the entity body carries only
-      // card identity/settings (account_id, nickname, credit_limit_cents,
-      // APRs, card_holders), so it re-emits only on a real settings change —
-      // a balance/rewards/cycle-status tick no longer versions it. The
-      // volatile per-cycle fields go to `credit_card_billing_stats`, keyed
-      // `{card_id}:{observed_on}` so same-day re-pulls are idempotent and a
-      // later day appends a new point in the series.
-      if (emitEntity) {
-        const rec = buildCreditCardBillingRecord(a, billing, nowIso());
-        if (!fingerprintCursor || fingerprintCursor.shouldEmit(rec)) {
-          await deps.emitRecord("credit_card_billing", rec);
-        }
+      const outcome = await processCreditCardBillingAccount(deps, page, a, options);
+      if (outcome.entityCovered) {
+        entityCovered += 1;
       }
-      if (emitStats) {
-        await deps.emitRecord("credit_card_billing_stats", buildCreditCardBillingStatsRecord(a, billing, observedOn));
+      if (outcome.statsEmitted) {
+        statsCovered += 1;
       }
     }
     if (emitStats) {
+      await emitDetailCoverage(deps, {
+        stream: "credit_card_billing_stats",
+        stateStream: "credit_card_billing_stats",
+        requiredKeys: [],
+        hydratedKeys: [],
+        considered: cards.length,
+        covered: statsCovered,
+      });
       await deps.emit({
         type: "STATE",
         stream: "credit_card_billing_stats",
@@ -2586,6 +2759,23 @@ async function runCreditCardBillingStream(
       });
       return;
     }
+    // Credit-card billing is a full scan of the credit-card accounts, with a
+    // real, measurable denominator: `considered = cards.length` (the
+    // enumerated boundary) with the objective `covered` count, so a
+    // steady-state run (all cards fingerprint-suppressed, `collected` 0)
+    // reads `complete` instead of a false `partial`
+    // (define-connector-progress-evidence-contract task 4.4, mirroring
+    // `emitAccountsStream`'s self-coverage message). Only declared when the
+    // fingerprint cursor is present — the legacy no-cursor path emits
+    // unconditionally and has no suppressed-vs-emitted distinction to report.
+    await emitDetailCoverage(deps, {
+      stream: "credit_card_billing",
+      stateStream: "credit_card_billing",
+      requiredKeys: [],
+      hydratedKeys: [],
+      considered: cards.length,
+      covered: entityCovered,
+    });
     // Credit-card billing is a full scan of the credit-card accounts: prune
     // fingerprints for cards no longer present so a re-added card re-emits.
     fingerprintCursor.pruneStale();

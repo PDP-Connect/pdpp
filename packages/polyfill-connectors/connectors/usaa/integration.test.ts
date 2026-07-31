@@ -50,6 +50,7 @@ import type { CaptureSession } from "../../src/fixture-capture.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import {
   buildIndexRows,
+  classifyExportLadderOutcome,
   classifyUsaaNoExportRoute,
   DEFERRED_STREAMS,
   driveExport,
@@ -73,6 +74,7 @@ import type {
   HydrationResult,
   HydrationResultSuccess,
   IndexRow,
+  NoExportAffordanceObservation,
 } from "./types.ts";
 
 interface RecordingHarness {
@@ -616,6 +618,119 @@ test("driveExport records account, challenge, and unrelated routes through the a
       },
     ]);
   }
+});
+
+// ─── Regression: navigation-drift no-export-affordance (2026-07-14 live capture) ─
+//
+// Real DOM captures from pdpp-reference-1's 2026-07-14T20-58-01-128Z USAA run
+// (fixture-captures/usaa/raw/.../dom/transaction-export-Checking-3602-...-
+// no-export-affordance.html and transaction-export-Family_Checking-9932-...-
+// no-export-affordance.html) show `<title>Find an ATM | USAA</title>` and
+// canonical URL https://www.usaa.com/my/banking-offer/ — a marketing/promo
+// detour page, NOT the account detail page `locateExportPage` navigated
+// toward. The account never reached the export UI; navigation drifted
+// somewhere unrelated (a stale accountId query param or a promo interstitial
+// are the two live suspects). Before this fix, `isFatalDiagPhase` treated
+// EVERY `no_export_affordance` phase as fatal regardless of where we actually
+// landed, so this drifted-navigation case was misclassified as
+// `source_structure_changed` / `export_affordance_missing` — "USAA's export
+// UI changed, don't bother retrying" — when the real problem was routing, not
+// the UI. `classifyUsaaNoExportRoute` already computed the right answer
+// (`"unknown"` — hostname is www.usaa.com but the pathname matches neither
+// the account-detail nor interstitial regex) but nothing consulted it.
+
+const USAA_MARKETING_DETOUR_URL = "https://www.usaa.com/my/banking-offer/";
+
+test("classifyUsaaNoExportRoute: the real live marketing-detour URL (ATM finder / banking-offer) is 'unknown', never 'expected'", () => {
+  // Mirrors the actual 2026-07-14 capture: hostname is www.usaa.com (so not
+  // an off-domain redirect) but the pathname is the banking-offer promo page,
+  // not an account-detail route — this must NOT read as a confirmed account
+  // page regardless of whether stray structural markers happen to be present.
+  assert.equal(classifyUsaaNoExportRoute(USAA_MARKETING_DETOUR_URL, true), "unknown");
+  assert.equal(classifyUsaaNoExportRoute(USAA_MARKETING_DETOUR_URL, false), "unknown");
+});
+
+test("classifyExportLadderOutcome: a marketing-detour no_export_affordance is navigation_drifted, not source_structure_changed", () => {
+  const drifted: DiagnosticInfo = {
+    diag: null,
+    no_export_observation: {
+      account_detail_marker_count: 0,
+      navigation_marker_count: 0,
+      route: classifyUsaaNoExportRoute(USAA_MARKETING_DETOUR_URL, false),
+      target_count: 0,
+      transaction_marker_count: 0,
+    },
+    phase: "no_export_affordance",
+  };
+  assert.equal(classifyExportLadderOutcome(drifted), "navigation_drifted");
+
+  // Contrast: the SAME phase with route "expected" (the ladder actually
+  // reached the account/transaction page and the button was genuinely gone)
+  // stays the truly-fatal source_structure_changed outcome — this fix must
+  // not weaken that case.
+  const confirmed: DiagnosticInfo = {
+    ...drifted,
+    no_export_observation: { ...(drifted.no_export_observation as NoExportAffordanceObservation), route: "expected" },
+  };
+  assert.equal(classifyExportLadderOutcome(confirmed), "source_structure_changed");
+});
+
+test("isFatalDiagPhase (via driveExport→no_export_affordance ladder wiring): a drifted route does not halt the export ladder", async () => {
+  // Exercise the real no-export path through driveExport (as tryExportLadder
+  // does), landing on the marketing-detour URL with zero structural markers —
+  // exactly the live capture's shape.
+  const diagnostics: DiagnosticInfo[] = [];
+  const outcome = await driveExport(
+    makeNoExportPage(USAA_MARKETING_DETOUR_URL, {
+      account_detail_marker_count: 0,
+      navigation_marker_count: 0,
+      target_count: 0,
+      transaction_marker_count: 0,
+    }),
+    "https://www.usaa.com/my/checking?accountId=stale",
+    {
+      settleDelayMs: 0,
+      sinceDate: "2026-06-10",
+      untilDate: "2026-07-14",
+      onDiagnostics: (info) => diagnostics.push(info),
+    }
+  );
+  assert.deepEqual(outcome, { kind: "failed" });
+  const [diag] = diagnostics;
+  assert.ok(diag, "expected a no_export_affordance diagnostic");
+  assert.equal(
+    diag.no_export_observation?.route,
+    "unknown",
+    "the marketing detour classifies as unknown, not expected"
+  );
+  // This is the crux of the fix: classifyExportLadderOutcome (what
+  // tryExportLadder's `isFatalDiagPhase` check now agrees with) must read
+  // this as retryable, not the terminal structure-changed outcome.
+  assert.equal(classifyExportLadderOutcome(diag), "navigation_drifted");
+});
+
+test("emitExportFailure: a drifted-navigation no-export-affordance is reported under its own reason, distinct from a confirmed structure change", async () => {
+  const { deps, messages } = makeHarness();
+  const driftedDiag: DiagnosticInfo = {
+    diag: null,
+    no_export_observation: {
+      account_detail_marker_count: 0,
+      navigation_marker_count: 0,
+      route: "unknown",
+      target_count: 0,
+      transaction_marker_count: 0,
+    },
+    phase: "no_export_affordance",
+  };
+  await emitExportFailure(deps, makeAccount(), driftedDiag);
+  const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
+  assert.ok(skip);
+  assert.equal(skip.reason, "navigation_drifted", "a drifted route must not be reported as export_affordance_missing");
+  assert.notEqual(
+    skip.reason,
+    "export_affordance_missing",
+    "must be distinguishable from the genuinely-fatal confirmed-account-page case"
+  );
 });
 
 /** A page with a recognized export button but no date-range select ever
