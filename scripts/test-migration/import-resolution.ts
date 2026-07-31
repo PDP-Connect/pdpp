@@ -61,6 +61,27 @@ function importLikeSpecifier(typed: BabelNodeWithLoc): ImportSpecifierOccurrence
     : undefined;
 }
 
+/** Executable static imports/re-exports; type-only forms do not affect the runtime import closure. */
+function runtimeImportLikeSpecifier(typed: BabelNodeWithLoc): ImportSpecifierOccurrence | undefined {
+  const declaration = typed as {
+    exportKind?: string;
+    importKind?: string;
+    source?: { type?: string; value?: string };
+  };
+  const isExecutableImport = typed.type === "ImportDeclaration" && declaration.importKind !== "type";
+  const isExecutableReExport =
+    (typed.type === "ExportAllDeclaration" || typed.type === "ExportNamedDeclaration") &&
+    declaration.exportKind !== "type";
+  const source = isExecutableImport || isExecutableReExport ? declaration.source : undefined;
+  const isRelativeSpecifier =
+    source?.type === "StringLiteral" &&
+    typeof source.value === "string" &&
+    RELATIVE_SPECIFIER_PATTERN.test(source.value);
+  return isRelativeSpecifier && source?.value !== undefined
+    ? { specifier: source.value, line: typed.loc.start.line }
+    : undefined;
+}
+
 /** `require('./relative/specifier')` call expressions. */
 function requireCallSpecifier(typed: BabelNodeWithLoc): ImportSpecifierOccurrence | undefined {
   const { callee } = typed as { callee?: { name?: string; type?: string } };
@@ -74,6 +95,48 @@ function requireCallSpecifier(typed: BabelNodeWithLoc): ImportSpecifierOccurrenc
     : undefined;
 }
 
+/** `import('./relative/specifier')` and `import(new URL('./relative/specifier', import.meta.url).href)` call expressions. */
+function dynamicImportSpecifier(typed: BabelNodeWithLoc): ImportSpecifierOccurrence | undefined {
+  const { callee } = typed as { callee?: { type?: string } };
+  const args = (typed as { arguments?: unknown[] }).arguments ?? [];
+  const directArgument = args[0] as { type?: string; value?: string } | undefined;
+  const directSpecifier =
+    typed.type === "CallExpression" &&
+    callee?.type === "Import" &&
+    directArgument?.type === "StringLiteral" &&
+    typeof directArgument.value === "string"
+      ? directArgument.value
+      : undefined;
+  const memberArgument = directArgument as {
+    computed?: boolean;
+    object?: {
+      arguments?: Array<{ type?: string; value?: string }>;
+      callee?: { name?: string; type?: string };
+      type?: string;
+    };
+    property?: { name?: string; type?: string };
+    type?: string;
+  };
+  const urlSpecifier =
+    typed.type === "CallExpression" &&
+    callee?.type === "Import" &&
+    memberArgument.type === "MemberExpression" &&
+    !memberArgument.computed &&
+    memberArgument.property?.type === "Identifier" &&
+    memberArgument.property.name === "href" &&
+    memberArgument.object?.type === "NewExpression" &&
+    memberArgument.object.callee?.type === "Identifier" &&
+    memberArgument.object.callee.name === "URL" &&
+    memberArgument.object.arguments?.[0]?.type === "StringLiteral" &&
+    typeof memberArgument.object.arguments[0].value === "string"
+      ? memberArgument.object.arguments[0].value
+      : undefined;
+  const specifier = directSpecifier ?? urlSpecifier;
+  return specifier && RELATIVE_SPECIFIER_PATTERN.test(specifier)
+    ? { specifier, line: typed.loc.start.line }
+    : undefined;
+}
+
 /** Extracts every static relative import/re-export/require specifier from source text. */
 export function relativeImportSpecifiers(sourceText: string, fileName: string): ImportSpecifierOccurrence[] {
   const ast = parse(sourceText, { sourceType: "module", plugins: ["typescript"], sourceFilename: fileName });
@@ -81,6 +144,26 @@ export function relativeImportSpecifiers(sourceText: string, fileName: string): 
   walkBabelAst(ast.program, (node) => {
     const typed = node as BabelNodeWithLoc;
     const occurrence = importLikeSpecifier(typed) ?? requireCallSpecifier(typed);
+    if (occurrence) {
+      found.push(occurrence);
+    }
+  });
+  return found;
+}
+
+/**
+ * Extracts every executable relative import specifier, including static,
+ * CommonJS, dynamic-string, and dynamic-new-URL forms. Unlike source-text
+ * regexes, parser traversal ignores comments and accepts whitespace/comments
+ * between grammar tokens.
+ */
+export function relativeRuntimeImportSpecifiers(sourceText: string, fileName: string): ImportSpecifierOccurrence[] {
+  const ast = parse(sourceText, { sourceType: "module", plugins: ["typescript"], sourceFilename: fileName });
+  const found: ImportSpecifierOccurrence[] = [];
+  walkBabelAst(ast.program, (node) => {
+    const typed = node as BabelNodeWithLoc;
+    const occurrence =
+      runtimeImportLikeSpecifier(typed) ?? requireCallSpecifier(typed) ?? dynamicImportSpecifier(typed);
     if (occurrence) {
       found.push(occurrence);
     }
