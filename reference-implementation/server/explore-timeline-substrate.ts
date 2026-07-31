@@ -277,18 +277,17 @@ function sqliteListPartitions(scope?: ExploreTimelineScope): readonly ExploreTim
   return results;
 }
 
-function sqliteFetchSnapshotAnchor(): { snapshotSeq: number; snapshotAt: string } | null {
+function sqliteFetchSnapshotAnchor(): { snapshotSeq: number } | null {
   // REVIEWED-DYNAMIC: aggregate query, no caller-controlled values.
-  // MAX(id) gives the monotonic ingest sequence; MAX(emitted_at) gives the display timestamp.
-  const sql = "SELECT MAX(id) AS maxSeq, MAX(emitted_at) AS maxAt FROM records WHERE deleted = 0";
-  for (const row of iterateDynamicSqlAcknowledged<{ maxSeq: number | null; maxAt: string | null }>(sql)) {
+  // MAX(id) gives the monotonic ingest sequence — the ONLY value this returns;
+  // snapshot_at is the operation's captured wall clock, never a record aggregate
+  // (see CompositeCursorPayload doc in operations/rs-explore-timeline/index.ts).
+  const sql = "SELECT MAX(id) AS maxSeq FROM records WHERE deleted = 0";
+  for (const row of iterateDynamicSqlAcknowledged<{ maxSeq: number | null }>(sql)) {
     if (row.maxSeq === null || row.maxSeq === undefined) {
       return null;
     }
-    return {
-      snapshotAt: row.maxAt ?? "1970-01-01T00:00:00.000Z",
-      snapshotSeq: row.maxSeq,
-    };
+    return { snapshotSeq: row.maxSeq };
   }
   return null;
 }
@@ -818,22 +817,21 @@ async function postgresListPartitions(scope?: ExploreTimelineScope): Promise<rea
   }));
 }
 
-async function postgresFetchSnapshotAnchor(): Promise<{ snapshotSeq: number; snapshotAt: string } | null> {
-  // MAX(id) gives the monotonic ingest sequence for snapshot stability.
-  // MAX(emitted_at) gives the display timestamp.
-  const result = await postgresQuery(
-    `SELECT MAX(id) AS "maxSeq", MAX(emitted_at) AS "maxAt" FROM records WHERE deleted = FALSE`,
-    []
-  );
+async function postgresFetchSnapshotAnchor(): Promise<{ snapshotSeq: number } | null> {
+  // MAX(id) gives the monotonic ingest sequence for snapshot stability — the
+  // ONLY value this returns; snapshot_at is the operation's captured wall clock
+  // (see CompositeCursorPayload doc), never a record aggregate. A single-column
+  // MAX(id) with no companion aggregate lets Postgres use its built-in MIN/MAX
+  // index optimization (backward records_pkey scan, stops at the first live
+  // row) instead of a full scan: proven live, 0.16ms vs the ~560-600ms a
+  // combined MAX(id)/MAX(emitted_at) aggregate previously forced.
+  const result = await postgresQuery(`SELECT MAX(id) AS "maxSeq" FROM records WHERE deleted = FALSE`, []);
   // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const row = result.rows[0];
   if (!row || row.maxSeq === null || row.maxSeq === undefined) {
     return null;
   }
-  return {
-    snapshotAt: (row.maxAt as string | null | undefined) ?? "1970-01-01T00:00:00.000Z",
-    snapshotSeq: Number(row.maxSeq),
-  };
+  return { snapshotSeq: Number(row.maxSeq) };
 }
 
 function postgresPartitionPageNowCeilingClause(
