@@ -1091,11 +1091,23 @@ test("starting-surface allocator failure recovery durably records a succeeded ru
  * wait_reason capacity_full, no compatible idle surface, activeSurfaceCount
  * >= surfaceCap).
  */
-test("capacity-pressure reclaim promotes inline to starting_surface and still retries once on allocator failure", async (t) => {
+/**
+ * Shared setup for the capacity-pressure reclaim/promotion route: one
+ * managed connector at surfaceCap=1, one already-ready idle surface under a
+ * DIFFERENT profile_key (reclaimable — incompatible with the queued lease —
+ * but never directly reusable), so the run under test has no ready idle
+ * match of its own and must go through
+ * BrowserSurfaceLeaseManager#planCapacityPressureReclaim's exact
+ * precondition set (surfaceMode dynamic, waiting_for_browser_surface,
+ * wait_reason capacity_full, no compatible idle surface, activeSurfaceCount
+ * >= surfaceCap). makeLeaseId/makeSurfaceId are sequenced so tests can
+ * assert on exact fresh-identity values across a retry.
+ */
+function createReclaimScenarioLeaseManager() {
   let leaseSeq = 0;
   let surfaceSeq = 0;
   let tokenSeq = 0;
-  const leaseManager = new BrowserSurfaceLeaseManager({
+  return new BrowserSurfaceLeaseManager({
     config: {
       defaultPriorityClass: "background",
       idleTtlMs: 600_000,
@@ -1123,7 +1135,7 @@ test("capacity-pressure reclaim promotes inline to starting_surface and still re
     ],
     makeLeaseId: () => {
       leaseSeq += 1;
-      return `lease_${leaseSeq}`;
+      return `lease_reclaim_${leaseSeq}`;
     },
     makeSurfaceId: () => {
       surfaceSeq += 1;
@@ -1135,6 +1147,36 @@ test("capacity-pressure reclaim promotes inline to starting_surface and still re
     },
     now: () => new Date("2026-05-12T12:00:00.000Z"),
   });
+}
+
+/** Asserts the run's first spine event genuinely queued on capacity_full, matching the live incident's exact route. */
+function assertReclaimRouteWasTaken(events: ReturnType<typeof listRunEvents>): void {
+  const firstEvent = at(events, 0);
+  const firstData = firstEvent.data as { browser_surface?: { browser_surface_wait_reason?: string } } | null;
+  assert.equal(
+    firstData?.browser_surface?.browser_surface_wait_reason,
+    "capacity_full",
+    "this run must genuinely queue on capacity first, matching the live incident's exact route"
+  );
+}
+
+/**
+ * Reproduces the live 2026-07-31 Chase incident (run_1785523408084,
+ * candidate 0c8d25c57): the bounded starting-surface retry never fired even
+ * though PDPP_NEKO_SURFACE_MODE=dynamic and the allocator were both
+ * correctly configured (confirmed against the live container's actual env
+ * via parseNekoBrowserSurfaceRuntimeConfig). The live spine showed the
+ * queuing request admitted as waiting_for_browser_surface with
+ * wait_reason=capacity_full, then promoted straight to starting_surface
+ * within the SAME acquire call (no separate run.browser_surface_queued
+ * event) -- the inline capacity-pressure reclaim path
+ * (reclaimWaitingLeaseIfNeeded -> tryPromoteReclaimedWaitingLease), which
+ * hardcoded allowStartFailureRetry: false regardless of the caller's actual
+ * retry-eligibility, unlike the direct dispatch path which threads the
+ * caller's option through correctly.
+ */
+test("capacity-pressure reclaim promotes inline to starting_surface and still retries once on allocator failure", async (t) => {
+  const leaseManager = createReclaimScenarioLeaseManager();
 
   let ensureCalls = 0;
   const ensureRequests: EnsureBrowserSurfaceRequest[] = [];
@@ -1193,18 +1235,40 @@ test("capacity-pressure reclaim promotes inline to starting_surface and still re
     eventTypes.includes("run.browser_surface_requested"),
     `expected an initial request event; got ${eventTypes.join(",")}`
   );
-  const firstEvent = at(events, 0);
-  const firstData = firstEvent.data as { browser_surface?: { browser_surface_wait_reason?: string } } | null;
-  assert.equal(
-    firstData?.browser_surface?.browser_surface_wait_reason,
-    "capacity_full",
-    "this run must genuinely queue on capacity first, matching the live incident's exact route"
-  );
+  assertReclaimRouteWasTaken(events);
 
   assert.equal(result.status, "started", "the bounded reacquire must recover on the reclaim/promotion path too");
   assert.equal(ensureCalls, 2, "first ensureSurface throws, second (fresh surface_id) succeeds");
   assert.equal(stopRequests.length, 1, "the idle other-profile surface was reclaimed exactly once");
   assert.equal(runConnectorCalls.length, 1);
+
+  // Fresh surface AND fresh lease identity across the retry: the retried
+  // attempt's dead lease/surface must never be reused by the recovering
+  // attempt. #resolveNewLease/#findReadyIdleSurface only ever match a
+  // health: "ready" surface, so a fresh acquireInitialBrowserSurfaceLease
+  // call on retry mints a brand-new lease_id via BrowserSurfaceLeaseManager
+  // #acquire's own makeLeaseId() call, and a brand-new surface_id via
+  // #createSurfaceForLease's makeSurfaceId() call -- proven empirically (not
+  // assumed) against the real BrowserSurfaceLeaseManager before writing this
+  // assertion.
+  assert.equal(at(ensureRequests, 0).surfaceId, "surface_reclaimed_1", "first (failing) attempt's surface_id");
+  assert.equal(
+    at(ensureRequests, 1).surfaceId,
+    "surface_reclaimed_2",
+    "retry mints a brand-new surface_id, never reuses the dead reclaimed one"
+  );
+  const leases = leaseManager.listLeases().filter((lease) => lease.run_id === runId);
+  const failedLease = leases.find((lease) => lease.status === "surface_failed");
+  const settledLease = leases.find((lease) => lease.lease_id !== failedLease?.lease_id);
+  assert.ok(failedLease, "the first (retried) attempt's lease is recorded as surface_failed");
+  assert.ok(settledLease, "the retry's own, distinct lease exists");
+  assert.notEqual(
+    failedLease?.lease_id,
+    settledLease?.lease_id,
+    "the retry acquires a brand-new lease_id, never reuses the dead one"
+  );
+  assert.equal(failedLease?.surface_id, "surface_reclaimed_1");
+  assert.equal(settledLease?.surface_id, "surface_reclaimed_2");
 
   assert.equal(
     eventTypes.filter((event) => event === "run.browser_surface_failed").length,
@@ -1215,6 +1279,200 @@ test("capacity-pressure reclaim promotes inline to starting_surface and still re
     eventTypes.filter((event) => event === "run.browser_surface_retried").length,
     1,
     "the reclaim/promotion path must surface the same non-terminal retry signal as the direct dispatch path"
+  );
+});
+
+/**
+ * Durable-layer counterpart to the reclaim-route recovery test above,
+ * mirroring "starting-surface allocator failure recovery durably records a
+ * succeeded run_history row with records, not a latched surface_failed" for
+ * the direct dispatch path. The gate-2 emit-ordering fix
+ * (handleStartingSurfaceWaitForRun) is shared code, but the reclaim route
+ * reaches it through a structurally different call chain
+ * (reclaimWaitingLeaseIfNeeded -> tryPromoteReclaimedWaitingLease), so only
+ * a real run_history read on THIS route proves the durable projection
+ * is correct here too, not just on the direct path.
+ */
+test("capacity-pressure reclaim recovery durably records a succeeded run_history row with records, not a latched surface_failed", async (t) => {
+  const leaseManager = createReclaimScenarioLeaseManager();
+
+  let ensureCalls = 0;
+  const surfaces = new Map<string, BrowserSurface>();
+  const allocator: BrowserSurfaceAllocator = {
+    ensureSurface: async (request) => {
+      ensureCalls += 1;
+      if (ensureCalls === 1) {
+        throw new Error("Docker POST /containers/create failed: connect ECONNREFUSED");
+      }
+      const surface: BrowserSurface = {
+        backend: "neko",
+        cdp_url: `http://${request.surfaceId}:9223`,
+        connector_id: request.connectorId,
+        created_at: "2026-05-12T12:00:01.000Z",
+        health: "ready",
+        last_used_at: "2026-05-12T12:00:01.000Z",
+        profile_key: request.profileKey,
+        stream_base_url: `http://${request.surfaceId}:8080`,
+        surface_id: request.surfaceId,
+      };
+      surfaces.set(request.surfaceId, surface);
+      return await Promise.resolve(surface);
+    },
+    getSurfaceStatus: async (surfaceId) => await Promise.resolve(surfaces.get(surfaceId) ?? null),
+    listSurfaces: async () => await Promise.resolve([...surfaces.values()]),
+    stopSurface: async (request) => await Promise.resolve(surfaces.get(request.surfaceId) ?? null),
+  };
+  const probe: BrowserSurfaceReadinessProbe = {
+    probe: async () => await Promise.resolve({ browserVersion: "Chrome/124.0", ok: true, pageTargetCount: 1 }),
+  };
+  const runId = "run_capacity_reclaim_recovers_durably";
+  const { controller, runConnectorCalls } = setup(t, {
+    browserSurfaceAllocator: allocator,
+    leaseManager,
+    probe,
+    // Matches the direct-path durable-history test's fake: the real
+    // runtime emits run.completed with the real records_emitted once
+    // collection finishes. run.started is deliberately skipped -- it
+    // requires data.boot_epoch/data.seq (assertRunStartedIsStamped in
+    // lib/spine.ts), stamped only after setCurrentBootEpoch, which this
+    // test suite never calls -- the run-history writer's own documented
+    // fallback-insert path covers a terminal event with no prior started
+    // row.
+    runConnectorImpl: async (opts) => {
+      await emitSpineEvent({
+        actor_id: opts.connectorId,
+        actor_type: "runtime",
+        data: { connector_instance_id: "managed", records_emitted: 17 },
+        event_type: "run.completed",
+        object_id: opts.runId ?? null,
+        object_type: "run",
+        run_id: opts.runId ?? null,
+        scenario_id: opts.traceContext?.scenario_id ?? null,
+        status: "succeeded",
+        trace_id: opts.traceContext?.trace_id ?? "trace",
+      });
+      return {
+        checkpoint_summary: null,
+        records_emitted: 17,
+        state: null,
+        status: "succeeded",
+      };
+    },
+  });
+
+  const result = await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId,
+  });
+  await controller.drainActiveRuns(1000);
+
+  assertReclaimRouteWasTaken(listRunEvents(runId));
+  assert.equal(result.status, "started", "the bounded reacquire must recover on the reclaim/promotion path too");
+  assert.equal(ensureCalls, 2, "first ensureSurface throws, second (fresh surface_id) succeeds");
+  assert.equal(runConnectorCalls.length, 1, "the connector runs exactly once, only after the retry recovers");
+
+  interface RunHistoryTestRow {
+    readonly records_emitted: number;
+    readonly run_id: string;
+    readonly status: string;
+  }
+  const row = getDb().prepare("SELECT run_id, status, records_emitted FROM run_history WHERE run_id = ?").get(runId) as
+    | RunHistoryTestRow
+    | undefined;
+  assert.ok(row, "run_history must have exactly one row for this run_id");
+  assert.equal(
+    row.status,
+    "succeeded",
+    `durable run_history must report the recovered reclaim-route run as succeeded, not latched at the retried attempt's surface_failed (got: ${row.status})`
+  );
+  assert.equal(
+    row.records_emitted,
+    17,
+    `durable run_history must report the real record count, not 0 from the retried attempt's terminal write (got: ${row.records_emitted})`
+  );
+
+  const countRow = getDb().prepare("SELECT COUNT(*) AS n FROM run_history WHERE run_id = ?").get(runId) as {
+    n: number;
+  };
+  assert.equal(
+    countRow.n,
+    1,
+    "exactly one run_history row on the reclaim route too — the retried attempt must not have created or finalized its own row"
+  );
+});
+
+/**
+ * Reclaim-route counterpart to "starting-surface allocator failure on the
+ * reacquire attempt does not retry a second time": a persistently broken
+ * allocator on the capacity-pressure reclaim/promotion path must still fail
+ * closed after exactly one bounded retry -- no third acquire attempt, no
+ * loop, and no leaked reclaimed surface (the idle other-profile surface is
+ * stopped exactly once, not once per attempt).
+ */
+test("capacity-pressure reclaim persistent allocator failure retries exactly once then fails closed, no third acquire or loop", async (t) => {
+  const leaseManager = createReclaimScenarioLeaseManager();
+
+  let ensureCalls = 0;
+  const ensureRequests: EnsureBrowserSurfaceRequest[] = [];
+  const stopRequests: StopBrowserSurfaceRequest[] = [];
+  const allocator: BrowserSurfaceAllocator = {
+    ensureSurface: (request) => {
+      ensureRequests.push(request);
+      ensureCalls += 1;
+      throw new Error(`Docker POST /containers/create failed: connect ECONNREFUSED (attempt for ${request.surfaceId})`);
+    },
+    getSurfaceStatus: async () => await Promise.resolve(null),
+    listSurfaces: async () => await Promise.resolve([]),
+    stopSurface: async (request) => {
+      stopRequests.push(request);
+      return await Promise.resolve(null);
+    },
+  };
+  const runId = "run_capacity_reclaim_persistent_failure";
+  const { controller, runConnectorCalls } = setup(t, {
+    browserSurfaceAllocator: allocator,
+    leaseManager,
+  });
+
+  const result = await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId,
+  });
+  await controller.drainActiveRuns(1000);
+
+  const events = listRunEvents(runId);
+  assertReclaimRouteWasTaken(events);
+  assert.equal(
+    result.status,
+    "surface_failed",
+    "a persistently broken allocator still fails closed on the reclaim route, not an infinite loop"
+  );
+  assert.equal(ensureCalls, 2, "bounded to exactly one reacquire attempt — no third acquire");
+  assert.equal(runConnectorCalls.length, 0, "connector is never spawned when the surface never starts");
+  assert.equal(
+    stopRequests.length,
+    1,
+    "the idle other-profile surface is reclaimed (stopped) exactly once — no leak from a repeated reclaim per attempt"
+  );
+  assert.equal(at(ensureRequests, 0).surfaceId, "surface_reclaimed_1");
+  assert.equal(
+    at(ensureRequests, 1).surfaceId,
+    "surface_reclaimed_2",
+    "the bounded retry still mints a fresh surface_id even though it also fails"
+  );
+
+  const eventTypes = events.map((e) => e.event_type);
+  assert.equal(
+    eventTypes.filter((event) => event === "run.browser_surface_retried").length,
+    1,
+    "exactly one non-terminal retry signal on the reclaim route"
+  );
+  assert.equal(
+    eventTypes.filter((event) => event === "run.browser_surface_failed").length,
+    1,
+    "exactly one terminal failure on the reclaim route — the bounded retry does not itself retry again"
   );
 });
 
