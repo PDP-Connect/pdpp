@@ -779,15 +779,10 @@ async function postgresListPartitions(scope?: ExploreTimelineScope): Promise<rea
 }
 
 async function postgresFetchSnapshotAnchor(): Promise<{ snapshotSeq: number; snapshotAt: string } | null> {
-  // MAX(id) gives the monotonic ingest sequence for snapshot stability. snapshotAt
-  // is display-only (never used for membership/ordering — see the module doc and
-  // executeExploreTimeline's cursor-versioning note), so it is read from the SAME
-  // highest-id row rather than a separate MAX(emitted_at) aggregate: an unqualified
-  // MAX(id)/MAX(emitted_at) pair both force a full parallel seq scan on this table
-  // (no index has `deleted` as a leading column), while `ORDER BY id DESC LIMIT 1`
-  // is a backward records_pkey index scan that stops at the first live row.
+  // MAX(id) gives the monotonic ingest sequence for snapshot stability.
+  // MAX(emitted_at) gives the display timestamp.
   const result = await postgresQuery(
-    `SELECT id AS "maxSeq", emitted_at AS "maxAt" FROM records WHERE deleted = FALSE ORDER BY id DESC LIMIT 1`,
+    `SELECT MAX(id) AS "maxSeq", MAX(emitted_at) AS "maxAt" FROM records WHERE deleted = FALSE`,
     []
   );
   // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
