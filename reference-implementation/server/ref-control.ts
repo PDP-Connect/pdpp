@@ -356,6 +356,30 @@ interface RecordProjectionRow {
   readonly stream: string;
 }
 
+// `retained_size_stream`/`retained_size_connection` rows (shapeStreamRow,
+// retained-size-read-model.ts) carry the write-time timestamp as
+// `computed_at`, never `last_updated` — `RecordProjectionRow.last_updated`
+// is a projection-layer name, not a column name. Map it explicitly here so
+// a batched/instance-scoped retained-size row's real timestamp survives
+// into freshness derivation (buildRecordProjectionFromRetainedRows,
+// deriveReferenceFreshness) instead of silently reading as `undefined`/null
+// through an unchecked cast.
+function recordProjectionRowFromRetainedSizeRow(row: {
+  readonly computed_at?: string | null;
+  readonly connector_id?: string | null;
+  readonly connector_instance_id?: string | null;
+  readonly record_count?: number | string | null;
+  readonly stream: string;
+}): RecordProjectionRow {
+  return {
+    connector_id: row.connector_id ?? null,
+    connector_instance_id: row.connector_instance_id ?? null,
+    last_updated: row.computed_at ?? null,
+    record_count: row.record_count ?? null,
+    stream: row.stream,
+  };
+}
+
 export interface RetainedBytesBreakdown {
   readonly blob_bytes: number;
   readonly record_changes_json_bytes: number;
@@ -1363,21 +1387,17 @@ async function getConnectorRecordProjection(
   if (connectorInstanceId) {
     rows = (
       (await listRetainedSizeStreams({ connectorInstanceId })) as unknown as Array<{
+        computed_at?: string | null;
         connector_id?: string;
         connector_instance_id?: string;
         stream: string;
         record_count?: number;
       }>
-    ).map((row: { connector_id?: string; connector_instance_id?: string; stream: string; record_count?: number }) => ({
-      connector_id: row.connector_id,
-      connector_instance_id: row.connector_instance_id,
-      last_updated: null,
-      record_count: Number(row.record_count || 0),
-      stream: row.stream,
-    })) as unknown as RecordProjectionRow[];
+    ).map(recordProjectionRowFromRetainedSizeRow);
   } else {
     rows = (
       (await listRetainedSizeStreams({})) as unknown as Array<{
+        computed_at?: string | null;
         connector_id?: string;
         connector_instance_id?: string;
         stream: string;
@@ -1385,13 +1405,7 @@ async function getConnectorRecordProjection(
       }>
     )
       .filter((row: { connector_id?: string }) => row.connector_id === connectorId)
-      .map((row: { connector_id?: string; connector_instance_id?: string; stream: string; record_count?: number }) => ({
-        connector_id: row.connector_id,
-        connector_instance_id: row.connector_instance_id,
-        last_updated: null,
-        record_count: Number(row.record_count || 0),
-        stream: row.stream,
-      })) as unknown as RecordProjectionRow[];
+      .map(recordProjectionRowFromRetainedSizeRow);
   }
   const connectionRow = connectorInstanceId ? await getRetainedSizeConnectionRow(connectorInstanceId) : undefined;
   return buildRecordProjectionFromRetainedRows({
@@ -3421,7 +3435,18 @@ async function loadPageProductEvidence(connectorInstanceIds: readonly string[]):
   }
   const streamsByInstanceId = new Map<string, readonly RecordProjectionRow[]>();
   for (const [id, rows] of streams) {
-    streamsByInstanceId.set(id, rows as unknown as readonly RecordProjectionRow[]);
+    streamsByInstanceId.set(
+      id,
+      (
+        rows as unknown as Array<{
+          readonly computed_at?: string | null;
+          readonly connector_id?: string | null;
+          readonly connector_instance_id?: string | null;
+          readonly record_count?: number | string | null;
+          readonly stream: string;
+        }>
+      ).map(recordProjectionRowFromRetainedSizeRow)
+    );
   }
   const detailGapsByInstanceId =
     pending && recovered && terminal && terminalByStream
@@ -4661,10 +4686,19 @@ function groupRetainedSizeRowsByConnector(
 }
 
 async function loadRetainedSizeProjectionSnapshot(): Promise<RetainedSizeProjectionSnapshot> {
-  const [streamRows, connectionRows] = await Promise.all([
-    listRetainedSizeStreams({}) as unknown as Promise<readonly RecordProjectionRow[]>,
+  const [rawStreamRows, connectionRows] = await Promise.all([
+    listRetainedSizeStreams({}) as unknown as Promise<
+      Array<{
+        readonly computed_at?: string | null;
+        readonly connector_id?: string | null;
+        readonly connector_instance_id?: string | null;
+        readonly record_count?: number | string | null;
+        readonly stream: string;
+      }>
+    >,
     listRetainedSizeConnections({}) as unknown as Promise<readonly RetainedSizeConnectionProjectionRow[]>,
   ]);
+  const streamRows = rawStreamRows.map(recordProjectionRowFromRetainedSizeRow);
   const connectionsByInstanceId = new Map<string, RetainedSizeConnectionProjectionRow>();
   for (const row of connectionRows) {
     if (row.connector_instance_id) {
