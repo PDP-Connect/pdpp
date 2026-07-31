@@ -176,7 +176,25 @@ function flushAndExit(code: number): void {
   flushAndExitAfterRuntimeAck(code);
 }
 
-function fail(m: string, retryable = false): void {
+/**
+ * Marks an error as already having emitted its own terminal DONE (via
+ * `fail()`). `main().catch(handleMainRejection)` checks for this marker so it
+ * doesn't emit a second DONE for a failure that already sent one — the exact
+ * shape of the "Connector emitted DONE after DONE" protocol violation.
+ */
+class ConnectorFailure extends Error {
+  readonly doneEmitted = true;
+}
+
+/**
+ * Emit a terminal failed DONE and throw, so every caller propagates the
+ * failure up to `main()`'s single top-level catch instead of returning
+ * normally into a caller that might still reach a later success DONE.
+ * MUST be used as `throw fail(...)` (or awaited via a rejecting call) —
+ * never call-and-continue, or the caller can still fall through to a
+ * success path and emit a second DONE.
+ */
+function fail(m: string, retryable = false): never {
   emit({
     type: "DONE",
     status: "failed",
@@ -184,6 +202,7 @@ function fail(m: string, retryable = false): void {
     error: { message: m, retryable },
   }).catch((): undefined => undefined);
   flushAndExit(1);
+  throw new ConnectorFailure(m);
 }
 
 const nowIso = (): string => new Date().toISOString();
@@ -809,7 +828,6 @@ async function resolvePassword(): Promise<string | null> {
     return creds.GOOGLE_APP_PASSWORD_PDPP ?? null;
   } catch (e) {
     fail(e instanceof Error ? e.message : String(e), false);
-    return null;
   }
 }
 
@@ -2441,12 +2459,10 @@ async function runAllMailPasses(
   const { mailbox } = client;
   if (!mailbox) {
     fail("mailbox not selected after lock");
-    return;
   }
   const session = deriveAllMailSession(mailbox, state);
   if (!session) {
     fail("missing UIDVALIDITY on All Mail mailbox");
-    return;
   }
 
   // Determine fetch range.
@@ -2666,27 +2682,24 @@ async function main(): Promise<void> {
   const startMsg = await readStartMessage(getReadline());
   if (startMsg.type !== "START") {
     fail("Expected START");
-    return;
   }
 
   const password = await resolvePassword();
   if (!password) {
-    // resolvePassword already calls fail() on error path; the early-fail
-    // exits the process, so reaching here means the prompt returned null.
+    // resolvePassword() itself throws (via fail()) on its own error path,
+    // so reaching here means the prompt resolved to an empty value, not an
+    // error — a distinct terminal condition that still needs its own DONE.
     fail("no Gmail app password provided");
-    return;
   }
 
   const address = await resolveAddress();
   if (!address) {
     fail("no Gmail address provided");
-    return;
   }
 
   const requested = new Map<string, StreamRequest>((startMsg.scope?.streams || []).map((s) => [s.name, s]));
   if (!requested.size) {
     fail("START.scope.streams is required");
-    return;
   }
   const recoveryOnly = startMsg.recovery_only === true;
   const preflightError = validateAttachmentHydrationPreflight({
@@ -2696,7 +2709,6 @@ async function main(): Promise<void> {
   });
   if (preflightError) {
     fail(preflightError);
-    return;
   }
 
   const resFilters = new Map<string, Set<string> | null>();
@@ -2731,7 +2743,6 @@ async function main(): Promise<void> {
     const allMail = await findAllMailbox(client);
     if (!allMail) {
       fail("could not find [Gmail]/All Mail mailbox; is this a Gmail account?");
-      return;
     }
 
     const lock = await client.getMailboxLock(allMail.path);
@@ -2762,10 +2773,16 @@ async function main(): Promise<void> {
 // Named (not inline) so its own internal `emit(...).catch(...)` isn't a
 // promise chain nested inside another chain's callback.
 function handleMainRejection(e: unknown): void {
+  const trace = e instanceof Error ? (e.stack ?? e.message) : String(e);
+  process.stderr.write(`[gmail] main rejected: ${trace}\n`);
+  // fail() already emitted a terminal DONE and called flushAndExit before
+  // throwing ConnectorFailure — emitting another one here would itself be
+  // the "DONE after DONE" protocol violation this type exists to prevent.
+  if (e instanceof ConnectorFailure) {
+    return;
+  }
   const msg = e instanceof Error ? e.message : String(e);
   const retryable = RETRYABLE_ERROR_RE.test(msg);
-  const trace = e instanceof Error ? (e.stack ?? msg) : msg;
-  process.stderr.write(`[gmail] main rejected: ${trace}\n`);
   emit({
     type: "DONE",
     status: "failed",
@@ -2783,6 +2800,10 @@ if (isMainModule(import.meta.url)) {
   process.on("unhandledRejection", (reason: unknown) => {
     const msg = reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
     process.stderr.write(`[gmail] unhandledRejection: ${msg}\n`);
+    // See handleMainRejection: fail() already emitted DONE for this failure.
+    if (reason instanceof ConnectorFailure) {
+      return;
+    }
     const summary = reason instanceof Error ? reason.message : String(reason);
     emit({
       type: "DONE",
