@@ -5,7 +5,8 @@
  * Concurrency bound and bit-identical ordering test for postgresFetchUpcoming.
  *
  * PROVES:
- *   1. Max in-flight partition workers never exceed POSTGRES_UPCOMING_PARTITION_CONCURRENCY (8).
+ *   1. Max in-flight partition workers never exceed POSTGRES_UPCOMING_PARTITION_CONCURRENCY (4;
+ *      empirically calibrated — see explore-live-terminal-tail-0730.md).
  *   2. Output totals, row ordering, partition overflow flags, and nextPositions are bit-identical
  *      to single-worker sequential execution.
  *   3. Operates safely under both SQLite and PostgreSQL.
@@ -29,7 +30,7 @@ const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 const SUFFIX = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
 const PINNED_NOW = "2026-06-21T00:00:00.000Z";
 
-// Build 20 distinct partitions to exceed the concurrency limit of 8.
+// Build 20 distinct partitions to exceed the concurrency limit.
 const PARTITION_COUNT = 20;
 const PARTITIONS: ExploreTimelinePartition[] = Array.from({ length: PARTITION_COUNT }, (_, i) => ({
   connectorId: `conc_cin${i}_${SUFFIX}`,
@@ -43,8 +44,8 @@ function futureTs(dayOffset: number) {
   return `2026-06-${dd}T00:00:00.000Z`;
 }
 
-test("postgresFetchUpcoming concurrency constant equals 8 and mapWithConcurrency respects bound", async () => {
-  assert.equal(POSTGRES_UPCOMING_PARTITION_CONCURRENCY, 8);
+test("postgresFetchUpcoming concurrency constant equals 4 and mapWithConcurrency respects bound", async () => {
+  assert.equal(POSTGRES_UPCOMING_PARTITION_CONCURRENCY, 4);
 
   let peakInFlight = 0;
   const items = Array.from({ length: 25 }, (_, i) => i);
@@ -72,7 +73,7 @@ test("postgresFetchUpcoming concurrency constant equals 8 and mapWithConcurrency
   );
 });
 
-test("postgresFetchUpcoming: live Postgres in-flight partition workers never exceed limit of 8", async (t) => {
+test("postgresFetchUpcoming: live Postgres in-flight partition workers never exceed the configured limit", async (t) => {
   if (!POSTGRES_URL) {
     t.skip("Skipped because PDPP_TEST_POSTGRES_URL is unset");
     return;
@@ -183,7 +184,10 @@ test("sqliteFetchUpcoming & postgresFetchUpcoming: output is bit-identical and d
         },
       });
 
-      assert.ok(maxInFlightPg <= 8, `Postgres in-flight ${maxInFlightPg} exceeded 8`);
+      assert.ok(
+        maxInFlightPg <= POSTGRES_UPCOMING_PARTITION_CONCURRENCY,
+        `Postgres in-flight ${maxInFlightPg} exceeded ${POSTGRES_UPCOMING_PARTITION_CONCURRENCY}`
+      );
       assert.equal(pgResult.total, sqliteResult.total, "Postgres and SQLite totals must be identical");
       assert.equal(pgResult.hasMore, sqliteResult.hasMore, "hasMore flag must match");
       assert.deepEqual(pgResult.rows, sqliteResult.rows, "Returned rows must be bit-identical");

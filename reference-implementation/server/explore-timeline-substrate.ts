@@ -945,7 +945,16 @@ async function postgresCountNewSinceSnapshot(input: CountNewSinceSnapshotInput):
   return Number(result.rows[0]?.cnt ?? 0);
 }
 
-export const POSTGRES_UPCOMING_PARTITION_CONCURRENCY = 8;
+// Empirically calibrated, not copied by precedent: benchmarked live against the
+// production database (153 partitions) at caps 1/4/6/8 under concurrent
+// representative run_history writes (see
+// /home/tnunamak/.tmp/explore-live-terminal-tail-0730.md for the exact evidence).
+// Serial (1) was 47ms p50 with no writer-admission regression either; 4 already
+// cuts that to ~15ms with the same zero-regression profile, and further cap
+// increases (6, 8) bought under 6ms more at no measured benefit — Upcoming is not
+// the tail's bottleneck (the snapshot-anchor query dominates at ~560-600ms), so
+// there is no case for holding more pool headroom than 4 buys back.
+export const POSTGRES_UPCOMING_PARTITION_CONCURRENCY = 4;
 
 // The separate FUTURE projection (Postgres): records with semantic time > nowCeiling,
 // soonest-first, capped, plus a TRUE COUNT. Snapshot-bound. Probed PER-PARTITION so
