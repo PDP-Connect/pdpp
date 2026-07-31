@@ -217,6 +217,24 @@ interface DeviceExporterStore {
     getCurrentSemanticCapabilityIdentity: () => string;
   }) => Promise<BatchOutcomeRow>;
   consumeEnrollmentCode: (enrollmentCodeId: string, deviceId: string, at: string) => Promise<boolean>;
+  // Atomically consumes the enrollment code AND (only if this attempt wins
+  // the code-consume race, and only for a genuinely new device) supersedes
+  // any prior active completed device still bound to the same (owner,
+  // connector, source_kind, local_binding_id) — in ONE durable transaction.
+  // A losing attempt (returns false) rolls back BOTH the consume attempt and
+  // any would-be supersession, so a failed or non-winning replacement
+  // enrollment can never revoke the device it was trying to replace. See
+  // device-exporter-store.ts for the full contract.
+  consumeEnrollmentCodeAndSupersedePriorDevices: (params: {
+    connectorId: string;
+    deviceId: string;
+    enrollmentCodeId: string;
+    isNewDevice: boolean;
+    localBindingId: string;
+    now: string;
+    ownerSubjectId: string;
+    sourceKind: string;
+  }) => Promise<boolean>;
   createCredential: (params: {
     credentialId: string;
     deviceId: string;
@@ -356,19 +374,6 @@ interface DeviceExporterStore {
     createdAt: string;
     rotatedAt: string;
   }) => Promise<void>;
-  // Revoke every OTHER already-completed device still bound to this exact
-  // (owner, connector, source_kind, binding) after a fresh enrollment
-  // resolved a genuinely new device for the same binding. Returns the
-  // superseded device ids (empty when none existed). See device-exporter-
-  // store.ts for the full contract.
-  supersedePriorDevicesForBinding: (params: {
-    ownerSubjectId: string;
-    connectorId: string;
-    sourceKind: string;
-    localBindingId: string;
-    keepDeviceId: string;
-    revokedAt: string;
-  }) => Promise<string[]>;
   upsertSourceInstance: (params: {
     sourceInstanceId: string;
     deviceId: string;
@@ -855,28 +860,6 @@ async function performFirstEnrollment(
     updatedAt: now.toISOString(),
   });
 
-  // Lifecycle invariant: a genuinely NEW device for this binding
-  // (`resolved.adopted === false`) means any OTHER active device still
-  // durably bound to the same (owner, connector, source_kind, binding) is now
-  // stale — its enrollment code is already spent, so it can never again be
-  // adopted or heartbeat, yet its `device_source_instances` row would
-  // otherwise sit "trusted but never-heartbeated" forever, poisoning this
-  // connector_instance's outbox-axis aggregation (connector-outbox-axis.ts)
-  // to `unknown` and pinning freshness to a stale snapshot even while the
-  // NEW device heartbeats normally. `resolved.adopted === true` reuses the
-  // SAME device (an unconsumed-code orphan), so no other device can share
-  // this binding yet and superseding would be a no-op — skip the read.
-  if (!resolved.adopted) {
-    await ctx.deviceExporterStore.supersedePriorDevicesForBinding({
-      connectorId: enrollConnectorKey,
-      keepDeviceId: deviceId,
-      localBindingId: enrollment.localBindingId,
-      ownerSubjectId: enrollment.ownerSubjectId,
-      revokedAt: now.toISOString(),
-      sourceKind,
-    });
-  }
-
   // Test-only interruption point: identity (device, connector instance,
   // source instance) is now fully durable; the code is still pending. This is
   // the exact partial state a live writer-pressure failure or transport drop
@@ -916,11 +899,27 @@ async function performFirstEnrollment(
   // never installs this hook.
   await maybeEnrollPhaseFault("after_rotation_before_consume");
 
-  const consumed = await ctx.deviceExporterStore.consumeEnrollmentCode(
-    enrollment.enrollmentCodeId,
+  // Completion (consuming the code) and supersession (revoking any prior
+  // device this replacement enrollment displaces) commit as ONE durable,
+  // binding-serialized transaction — never two separate writes. If this
+  // attempt loses the code-consume race (a concurrent attempt already
+  // consumed it), the transaction rolls back BOTH the consume attempt AND
+  // any prior-device revocation, so a failed or non-winning replacement
+  // enrollment can never revoke the device it was trying to replace. Only a
+  // winning, fully-committed replacement ever supersedes a prior device —
+  // `resolved.adopted === true` reuses the SAME device (an unconsumed-code
+  // orphan), so nothing else can share this binding yet and superseding
+  // would be a no-op; that case is skipped inside the atomic method.
+  const consumed = await ctx.deviceExporterStore.consumeEnrollmentCodeAndSupersedePriorDevices({
+    connectorId: enrollConnectorKey,
     deviceId,
-    now.toISOString()
-  );
+    enrollmentCodeId: enrollment.enrollmentCodeId,
+    isNewDevice: !resolved.adopted,
+    localBindingId: enrollment.localBindingId,
+    now: now.toISOString(),
+    ownerSubjectId: enrollment.ownerSubjectId,
+    sourceKind,
+  });
   if (!consumed) {
     // A concurrent attempt for the SAME code already consumed it first. Two
     // distinct shapes are possible, both legitimate under real concurrency:

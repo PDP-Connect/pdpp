@@ -21,7 +21,10 @@ import {
   setClientEventEnqueueHook,
   teardownConnectionSearchProjection,
 } from "../server/records.ts";
-import { __setDeviceIngestStoreFaultHookForTest } from "../server/routes/ref-device-exporters.ts";
+import {
+  __setDeviceIngestStoreFaultHookForTest,
+  __setEnrollPhaseFaultHookForTest,
+} from "../server/routes/ref-device-exporters.ts";
 import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 
 const PROTOCOL_HEADERS = { "X-PDPP-Collector-Protocol": COLLECTOR_PROTOCOL_VERSION };
@@ -1837,6 +1840,150 @@ test("re-enrolling the same binding supersedes (revokes) the prior device, closi
       activeSourceInstances.length,
       1,
       "exactly one active device_source_instances row must remain bound to the connector_instance"
+    );
+  });
+});
+
+test("a replacement enrollment that fails before completion never revokes the prior working device", async () => {
+  // Independent-gate regression: `consumeEnrollmentCodeAndSupersedePriorDevices`
+  // folds completion (consuming the code) and supersession (revoking the
+  // prior device this replacement displaces) into ONE transaction, gated on
+  // this attempt actually winning the code-consume race. Before this fix,
+  // supersession ran right after identity creation — BEFORE credential
+  // rotation and BEFORE consumeEnrollmentCode — so a failure anywhere in
+  // between (a writer-pressure throw, a lost race to a concurrent attempt)
+  // would already have revoked the prior healthy device while the
+  // replacement itself never completed, stranding the owner with NO working
+  // device at all. This test injects that exact failure point
+  // (`after_identity_before_consume`, the same seam
+  // device-enroll-postgres-admission-decoupling.test.ts uses) on a
+  // replacement enrollment for an ALREADY-BOUND binding, and proves the
+  // prior device survives.
+  await withServer(async ({ asUrl }) => {
+    const first = await enrollDevice(asUrl, "vivid-fish");
+    const heartbeat = await postJson(
+      `${asUrl}/_ref/device-exporters/${encodeURIComponent(first.device_id)}/heartbeat`,
+      {
+        connector_id: "codex",
+        records_pending: 0,
+        source_instance_id: first.source_instance_id,
+        status: "healthy",
+      },
+      authHeaders(first.device_token)
+    );
+    assert.equal(heartbeat.status, 200);
+
+    // Mint a fresh code for the SAME binding, then inject a fault between
+    // identity creation and consume — the exact partial state a real
+    // writer-pressure failure or transport drop leaves.
+    const codeResp = await postJson(`${asUrl}/_ref/device-exporters/enrollment-codes`, {
+      connector_id: "codex",
+      local_binding_name: "vivid-fish",
+    });
+    assert.equal(codeResp.status, 201);
+    const enrollmentCode = stringField(bodyOf(codeResp), "enrollment_code");
+
+    __setEnrollPhaseFaultHookForTest((point) => {
+      if (point === "after_identity_before_consume") {
+        throw new Error("injected: writer-pressure failure after identity creation, before consume");
+      }
+    });
+    try {
+      await postJson(`${asUrl}/_ref/device-exporters/enroll`, { enrollment_code: enrollmentCode }, PROTOCOL_HEADERS);
+    } finally {
+      __setEnrollPhaseFaultHookForTest(null);
+    }
+
+    // The FIRST device — the one this failed replacement was trying to
+    // supersede — must still be active. This is the load-bearing assertion:
+    // a failed or incomplete replacement enrollment must NEVER strand the
+    // owner by revoking the device that was still working.
+    const priorDevice = selectRow<{ status: string; revoked_at: string | null }>(
+      "SELECT status, revoked_at FROM device_exporters WHERE device_id = ?",
+      first.device_id
+    );
+    assert.equal(priorDevice.status, "active", "the prior working device must survive a failed replacement enrollment");
+    assert.equal(priorDevice.revoked_at, null);
+
+    const priorSourceInstance = selectRow<{ status: string }>(
+      "SELECT status FROM device_source_instances WHERE device_id = ? AND source_instance_id = ?",
+      first.device_id,
+      first.source_instance_id
+    );
+    assert.equal(priorSourceInstance.status, "active");
+
+    // The code must remain pending — the failed attempt never consumed it —
+    // so a genuine retry can still resume, matching D5's partial-write
+    // resume contract.
+    const codeRow = selectRow<{ status: string }>(
+      "SELECT status FROM device_enrollment_codes WHERE enrollment_code_id = (SELECT enrollment_code_id FROM device_enrollment_codes ORDER BY created_at DESC LIMIT 1)"
+    );
+    assert.equal(codeRow.status, "pending", "the code must remain pending after the partial replacement attempt");
+
+    // The prior device's original heartbeat evidence is untouched, so the
+    // connector_instance's outbox axis stays trustworthy throughout.
+    const connectorInstance = selectRow<{ status: string }>(
+      "SELECT status FROM connector_instances WHERE connector_instance_id = ?",
+      first.connector_instance_id
+    );
+    assert.equal(connectorInstance.status, "active");
+
+    // A genuine retry of the SAME still-pending code (fault cleared) must
+    // still succeed and resume normally — the failed attempt left durable
+    // identity rows behind (D5's partial-write resume contract). This retry
+    // ADOPTS that same orphaned device (resolveOrCreateEnrollmentDevice's
+    // `adopted: true` branch) rather than minting a genuinely new one, so
+    // supersession correctly does NOT fire here either — adopting an orphan
+    // is resuming the SAME in-flight replacement, not a fresh one, and
+    // `first` (the ORIGINAL prior device, unrelated to this orphan) stays
+    // untouched throughout. Supersession only ever fires for a genuinely NEW
+    // device completing successfully — proven by the sibling test
+    // "re-enrolling the same binding supersedes (revokes) the prior device...".
+    const retryResp = await postJson(
+      `${asUrl}/_ref/device-exporters/enroll`,
+      { enrollment_code: enrollmentCode },
+      PROTOCOL_HEADERS
+    );
+    assert.equal(retryResp.status, 201, JSON.stringify(retryResp.body));
+    const retryDeviceId = stringField(bodyOf(retryResp), "device_id");
+    assert.notEqual(
+      retryDeviceId,
+      first.device_id,
+      "the retry resumes the orphaned device, not the original prior device"
+    );
+
+    const priorDeviceAfterRetry = selectRow<{ status: string }>(
+      "SELECT status FROM device_exporters WHERE device_id = ?",
+      first.device_id
+    );
+    assert.equal(
+      priorDeviceAfterRetry.status,
+      "active",
+      "the original prior device must remain untouched: this retry adopted an unrelated orphan, it never won a genuinely new device"
+    );
+    const retryDevice = selectRow<{ status: string }>(
+      "SELECT status FROM device_exporters WHERE device_id = ?",
+      retryDeviceId
+    );
+    assert.equal(retryDevice.status, "active");
+
+    // Exactly two live devices now durably back this ONE binding — the
+    // original (`first`) and the resumed orphan (`retryDeviceId`) — both
+    // active, sharing the same connector_instance. This is the residual
+    // duplicate the historical-repair tool exists to clean up; it is
+    // reproduced faithfully here rather than papered over.
+    const liveSourceInstances = getDb()
+      .prepare(`SELECT device_id FROM device_source_instances WHERE connector_instance_id = ? AND status != 'revoked'`)
+      .all(first.connector_instance_id) as Array<{ device_id: string }>;
+    const stringSort = (a: string, b: string): number => {
+      if (a === b) {
+        return 0;
+      }
+      return a < b ? -1 : 1;
+    };
+    assert.deepEqual(
+      liveSourceInstances.map((row) => row.device_id).sort(stringSort),
+      [first.device_id, retryDeviceId].sort(stringSort)
     );
   });
 });

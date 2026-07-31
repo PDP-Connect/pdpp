@@ -532,6 +532,77 @@ export function createSqliteDeviceExporterStore() {
       return result.changes === 1;
     },
 
+    // Atomically consume the enrollment code AND — only if this attempt wins
+    // the code-consume race, and only for a genuinely new device
+    // (`params.isNewDevice`, i.e. `resolveOrCreateEnrollmentDevice`'s
+    // `adopted: false` branch) — supersede (revoke) every OTHER active
+    // already-completed device still durably bound to the same (owner,
+    // connector, source_kind, local_binding_id). A completed binding is
+    // never adopted, so a new device here is genuinely new; any other active
+    // device sharing the binding is now stale: its enrollment code is
+    // already spent, so it can never again be adopted or heartbeat, yet its
+    // `device_source_instances` row would otherwise sit "trusted but
+    // never-heartbeated" forever, poisoning the connector_instance's
+    // outbox-axis aggregation to `unknown` (see
+    // fix-fleet-local-collector-evidence-completeness).
+    //
+    // Completion (consume) and supersession commit as ONE transaction, never
+    // two separate writes: consume + supersede wrapped in writeTransaction
+    // means a throw anywhere inside rolls back BOTH. If `consumeEnrollmentCode`
+    // does not win the race (a concurrent attempt already consumed it), the
+    // method returns `false` immediately WITHOUT touching any prior device —
+    // a losing or failed replacement enrollment can never revoke the device
+    // it was trying to replace. Superseding is folded into the SAME
+    // transaction as consume (not a separate call after it returns) so a
+    // throw during the revoke cascade also rolls back the consume, instead of
+    // leaving the code consumed with a half-applied supersession.
+    //
+    // Each superseded device is revoked through the SAME cascade an
+    // owner-initiated revoke uses — never a raw status flip — which safely
+    // spares the connector_instance because the fresh device's own
+    // non-revoked source-instance still references it. SQLite: single-writer
+    // connection, synchronous — writeTransaction still wraps this so a throw
+    // mid-sequence rolls back cleanly rather than leaving a partial write.
+    consumeEnrollmentCodeAndSupersedePriorDevices(params: {
+      connectorId: string;
+      deviceId: string;
+      enrollmentCodeId: string;
+      isNewDevice: boolean;
+      localBindingId: string;
+      now: string;
+      ownerSubjectId: string;
+      sourceKind: string;
+    }): boolean {
+      return writeTransaction(() => {
+        const result = exec(referenceQueries.deviceExportersConsumeEnrollmentCode, [
+          params.deviceId,
+          params.now,
+          params.enrollmentCodeId,
+        ]);
+        if (result.changes !== 1) {
+          return false;
+        }
+        if (!params.isNewDevice) {
+          return true;
+        }
+        const superseded = allowUnboundedReadAcknowledged<{ device_id: string; source_instance_id: string }>(
+          referenceQueries.deviceExportersFindSupersededDevicesForBinding,
+          [params.ownerSubjectId, params.connectorId, params.sourceKind, params.localBindingId, params.deviceId]
+        );
+        for (const row of superseded) {
+          exec(referenceQueries.deviceExportersRevokeDevice, [params.now, params.now, row.device_id]);
+          exec(referenceQueries.deviceExportersRevokeCredentialsForDevice, [params.now, row.device_id]);
+          exec(referenceQueries.deviceExportersRevokeSourceInstancesForDevice, [params.now, params.now, row.device_id]);
+          exec(referenceQueries.deviceExportersRevokeConnectorInstancesForDevice, [
+            params.now,
+            params.now,
+            row.device_id,
+          ]);
+        }
+        return true;
+      });
+    },
+
     createCredential(record: Row) {
       exec(referenceQueries.deviceExportersInsertCredential, [
         record.credentialId,
@@ -844,53 +915,6 @@ export function createSqliteDeviceExporterStore() {
       ]);
     },
 
-    // Revoke every OTHER already-completed device still durably bound to this
-    // exact (owner, connector, source_kind, binding) after a fresh enrollment
-    // just resolved a NEW device for the same binding
-    // (resolveOrCreateEnrollmentDevice's `adopted: false` branch). A
-    // completed binding is never adopted, so the fresh device is genuinely
-    // new — any other active device sharing the binding is now stale: it can
-    // never heartbeat again (its enrollment code is spent, its credential is
-    // superseded), yet its `device_source_instances` row keeps contributing
-    // "trusted but never-heartbeated" evidence to the connector_instance's
-    // outbox-axis aggregation forever, permanently poisoning that
-    // connection's freshness to `unknown`/stale (see
-    // fix-fleet-local-collector-evidence-completeness). Each match is
-    // revoked through the SAME revokeDevice cascade an owner-initiated revoke
-    // uses — never a raw status flip — which safely spares the
-    // connector_instance because the fresh device's own non-revoked
-    // source-instance still references it. No-op when no such device exists
-    // (SQLite: single-writer connection, synchronous — no lock needed, same
-    // reasoning as resolveOrCreateEnrollmentDevice above).
-    supersedePriorDevicesForBinding(params: {
-      ownerSubjectId: string;
-      connectorId: string;
-      sourceKind: string;
-      localBindingId: string;
-      keepDeviceId: string;
-      revokedAt: string;
-    }) {
-      const superseded = allowUnboundedReadAcknowledged<{ device_id: string; source_instance_id: string }>(
-        referenceQueries.deviceExportersFindSupersededDevicesForBinding,
-        [params.ownerSubjectId, params.connectorId, params.sourceKind, params.localBindingId, params.keepDeviceId]
-      );
-      for (const row of superseded) {
-        exec(referenceQueries.deviceExportersRevokeDevice, [params.revokedAt, params.revokedAt, row.device_id]);
-        exec(referenceQueries.deviceExportersRevokeCredentialsForDevice, [params.revokedAt, row.device_id]);
-        exec(referenceQueries.deviceExportersRevokeSourceInstancesForDevice, [
-          params.revokedAt,
-          params.revokedAt,
-          row.device_id,
-        ]);
-        exec(referenceQueries.deviceExportersRevokeConnectorInstancesForDevice, [
-          params.revokedAt,
-          params.revokedAt,
-          row.device_id,
-        ]);
-      }
-      return superseded.map((row) => row.device_id);
-    },
-
     upsertSourceInstance(record: Row) {
       exec(referenceQueries.deviceExportersUpsertSourceInstance, [
         record.sourceInstanceId,
@@ -980,6 +1004,120 @@ export function createPostgresDeviceExporterStore() {
         [deviceId, consumedAt, enrollmentCodeId]
       );
       return result.rowCount === 1;
+    },
+
+    // Atomically consume the enrollment code AND — only if this attempt wins
+    // the code-consume race, and only for a genuinely new device
+    // (`params.isNewDevice`, i.e. `resolveOrCreateEnrollmentDevice`'s
+    // `adopted: false` branch) — supersede (revoke) every OTHER active
+    // already-completed device still durably bound to the same (owner,
+    // connector, source_kind, local_binding_id). A completed binding is
+    // never adopted, so a new device here is genuinely new; any other active
+    // device sharing the binding is now stale: its enrollment code is
+    // already spent, so it can never again be adopted or heartbeat, yet its
+    // `device_source_instances` row would otherwise sit "trusted but
+    // never-heartbeated" forever, poisoning the connector_instance's
+    // outbox-axis aggregation to `unknown` (see
+    // fix-fleet-local-collector-evidence-completeness).
+    //
+    // Completion (consume) and supersession commit as ONE Postgres
+    // transaction, never two separate writes: the consume UPDATE runs first
+    // inside `withPostgresTransaction`; if its `rowCount !== 1` (a
+    // concurrent attempt already won the race), the method returns `false`
+    // immediately WITHOUT touching any prior device, and the transaction
+    // (which made no other writes) commits a no-op. A losing or failed
+    // replacement enrollment can therefore never revoke the device it was
+    // trying to replace. If the consume wins, the supersede scan+revoke runs
+    // in the SAME transaction — a throw anywhere in the revoke cascade rolls
+    // back the consume too, so the code never ends up consumed with a
+    // half-applied supersession.
+    //
+    // Each superseded device is revoked through the SAME cascade an
+    // owner-initiated revoke uses — never a raw status flip — which safely
+    // spares the connector_instance because the fresh device's own
+    // non-revoked source-instance still references it.
+    async consumeEnrollmentCodeAndSupersedePriorDevices(params: {
+      connectorId: string;
+      deviceId: string;
+      enrollmentCodeId: string;
+      isNewDevice: boolean;
+      localBindingId: string;
+      now: string;
+      ownerSubjectId: string;
+      sourceKind: string;
+    }): Promise<boolean> {
+      return await withPostgresTransaction(async (client: PostgresTransactionClient) => {
+        const consumeResult = await client.query(
+          `UPDATE device_enrollment_codes SET status = 'consumed', device_id = $1, consumed_at = $2
+           WHERE enrollment_code_id = $3 AND status = 'pending'`,
+          [params.deviceId, params.now, params.enrollmentCodeId]
+        );
+        if (consumeResult.rowCount !== 1) {
+          return false;
+        }
+        if (!params.isNewDevice) {
+          return true;
+        }
+        const superseded = await client.query(
+          `SELECT dsi.device_id, dsi.source_instance_id
+             FROM device_source_instances dsi
+             JOIN device_exporters de ON de.device_id = dsi.device_id
+            WHERE de.owner_subject_id = $1
+              AND dsi.connector_id = $2
+              AND dsi.source_kind = $3
+              AND dsi.local_binding_id = $4
+              AND dsi.device_id != $5
+              AND dsi.status != 'revoked'
+              AND de.status != 'revoked'
+              AND EXISTS (
+                SELECT 1 FROM device_enrollment_codes dec
+                WHERE dec.device_id = dsi.device_id AND dec.status = 'consumed'
+              )
+            ORDER BY dsi.created_at DESC`,
+          [params.ownerSubjectId, params.connectorId, params.sourceKind, params.localBindingId, params.deviceId]
+        );
+        // Intentionally sequential across rows AND across each row's four
+        // statements — the connector_instance revoke's NOT EXISTS guard must
+        // observe every prior row's device_source_instances revoke before it
+        // runs, or two rows superseded in the same call could race the guard.
+        for (const row of superseded.rows) {
+          const supersededDeviceId = row.device_id as string;
+          // biome-ignore lint/performance/noAwaitInLoops: sequential-per-row, see comment above the loop.
+          await client.query(
+            `UPDATE device_exporters SET status = 'revoked', revoked_at = $1, updated_at = $1 WHERE device_id = $2`,
+            [params.now, supersededDeviceId]
+          );
+          await client.query(
+            `UPDATE device_ingest_credentials SET status = 'revoked', revoked_at = $1 WHERE device_id = $2 AND status <> 'revoked'`,
+            [params.now, supersededDeviceId]
+          );
+          await client.query(
+            `UPDATE device_source_instances
+                SET status = 'revoked', revoked_at = $1, updated_at = $1
+              WHERE device_id = $2 AND status <> 'revoked'`,
+            [params.now, supersededDeviceId]
+          );
+          await client.query(
+            `UPDATE connector_instances ci
+                SET status = 'revoked', revoked_at = $1, updated_at = $1
+              WHERE ci.status <> 'revoked'
+                AND ci.connector_instance_id IN (
+                  SELECT connector_instance_id
+                  FROM device_source_instances
+                  WHERE device_id = $2
+                    AND connector_instance_id IS NOT NULL
+                )
+                AND NOT EXISTS (
+                  SELECT 1
+                  FROM device_source_instances active
+                  WHERE active.connector_instance_id = ci.connector_instance_id
+                    AND active.status <> 'revoked'
+                )`,
+            [params.now, supersededDeviceId]
+          );
+        }
+        return true;
+      });
     },
 
     async createCredential(record: Row) {
@@ -1552,96 +1690,6 @@ export function createPostgresDeviceExporterStore() {
            VALUES($1, $2, $3, 'active', $4, NULL, NULL)`,
           [record.credentialId, record.deviceId, record.tokenHash, record.createdAt]
         );
-      });
-    },
-
-    // Revoke every OTHER already-completed device still durably bound to this
-    // exact (owner, connector, source_kind, binding) after a fresh enrollment
-    // just resolved a NEW device for the same binding
-    // (resolveOrCreateEnrollmentDevice's `adopted: false` branch). A
-    // completed binding is never adopted, so the fresh device is genuinely
-    // new — any other active device sharing the binding is now stale: it can
-    // never heartbeat again (its enrollment code is spent, its credential is
-    // superseded), yet its `device_source_instances` row keeps contributing
-    // "trusted but never-heartbeated" evidence to the connector_instance's
-    // outbox-axis aggregation forever, permanently poisoning that
-    // connection's freshness to `unknown`/stale (see
-    // fix-fleet-local-collector-evidence-completeness). Each match is
-    // revoked through the SAME cascade `revokeDevice` uses — never a raw
-    // status flip — which safely spares the connector_instance because the
-    // fresh device's own non-revoked source-instance still references it.
-    // Wrapped in one transaction so the find-then-revoke sequence cannot race
-    // a concurrent enrollment attempt for the same binding — matches the
-    // durable-lock discipline resolveOrCreateEnrollmentDevice already
-    // requires for this identity key.
-    async supersedePriorDevicesForBinding(params: {
-      ownerSubjectId: string;
-      connectorId: string;
-      sourceKind: string;
-      localBindingId: string;
-      keepDeviceId: string;
-      revokedAt: string;
-    }) {
-      return await withPostgresTransaction(async (client: PostgresTransactionClient) => {
-        const superseded = await client.query(
-          `SELECT dsi.device_id, dsi.source_instance_id
-             FROM device_source_instances dsi
-             JOIN device_exporters de ON de.device_id = dsi.device_id
-            WHERE de.owner_subject_id = $1
-              AND dsi.connector_id = $2
-              AND dsi.source_kind = $3
-              AND dsi.local_binding_id = $4
-              AND dsi.device_id != $5
-              AND dsi.status != 'revoked'
-              AND de.status != 'revoked'
-              AND EXISTS (
-                SELECT 1 FROM device_enrollment_codes dec
-                WHERE dec.device_id = dsi.device_id AND dec.status = 'consumed'
-              )
-            ORDER BY dsi.created_at DESC`,
-          [params.ownerSubjectId, params.connectorId, params.sourceKind, params.localBindingId, params.keepDeviceId]
-        );
-        // Intentionally sequential across rows AND across each row's four
-        // statements — the connector_instance revoke's NOT EXISTS guard must
-        // observe every prior row's device_source_instances revoke before it
-        // runs, or two rows superseded in the same call could race the guard.
-        for (const row of superseded.rows) {
-          const deviceId = row.device_id as string;
-          // biome-ignore lint/performance/noAwaitInLoops: sequential-per-row, see comment above the loop.
-          await client.query(
-            `UPDATE device_exporters SET status = 'revoked', revoked_at = $1, updated_at = $1 WHERE device_id = $2`,
-            [params.revokedAt, deviceId]
-          );
-          await client.query(
-            `UPDATE device_ingest_credentials SET status = 'revoked', revoked_at = $1 WHERE device_id = $2 AND status <> 'revoked'`,
-            [params.revokedAt, deviceId]
-          );
-          await client.query(
-            `UPDATE device_source_instances
-                SET status = 'revoked', revoked_at = $1, updated_at = $1
-              WHERE device_id = $2 AND status <> 'revoked'`,
-            [params.revokedAt, deviceId]
-          );
-          await client.query(
-            `UPDATE connector_instances ci
-                SET status = 'revoked', revoked_at = $1, updated_at = $1
-              WHERE ci.status <> 'revoked'
-                AND ci.connector_instance_id IN (
-                  SELECT connector_instance_id
-                  FROM device_source_instances
-                  WHERE device_id = $2
-                    AND connector_instance_id IS NOT NULL
-                )
-                AND NOT EXISTS (
-                  SELECT 1
-                  FROM device_source_instances active
-                  WHERE active.connector_instance_id = ci.connector_instance_id
-                    AND active.status <> 'revoked'
-                )`,
-            [params.revokedAt, deviceId]
-          );
-        }
-        return superseded.rows.map((row) => row.device_id as string);
       });
     },
 

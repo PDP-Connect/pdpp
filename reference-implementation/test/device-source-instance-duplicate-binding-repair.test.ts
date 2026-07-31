@@ -478,7 +478,9 @@ test("PostgreSQL: scanDuplicateBindings + buildRepairPlan + applyRepairPlanEntry
         assert.equal(entry.authoritative.deviceId, second.deviceId);
         assert.equal(entry.superseded[0]?.deviceId, first.deviceId);
 
-        await applyRepairPlanEntry(pool, entry, new Date().toISOString());
+        const applied = await applyRepairPlanEntry(pool, entry, new Date().toISOString());
+        assert.equal(applied.authoritativeDeviceId, second.deviceId);
+        assert.deepEqual(applied.supersededDeviceIds, [first.deviceId]);
 
         const firstDevice = await deviceStore.getDevice(first.deviceId);
         assert.equal(firstDevice?.status, "revoked");
@@ -490,6 +492,329 @@ test("PostgreSQL: scanDuplicateBindings + buildRepairPlan + applyRepairPlanEntry
         // Idempotent: re-running the scan finds nothing left to repair.
         const groupsAfter = await scanDuplicateBindings(pool, { connectorId, ownerSubjectId: owner });
         assert.equal(groupsAfter.length, 0, "re-running after apply finds zero duplicate groups");
+      } finally {
+        await pool.end();
+      }
+    }
+  );
+});
+
+// Independent-gate regression: `applyRepairPlanEntry` must never trust a
+// candidate plan's authoritative pick — it must revalidate under a fresh
+// lock immediately before writing. This test builds a STALE plan (captured
+// from an earlier scan) that names the WRONG device as authoritative, then
+// mutates the database so the OTHER device becomes genuinely authoritative
+// (a real heartbeat lands) BEFORE `applyRepairPlanEntry` runs — simulating
+// exactly the race a concurrent heartbeat, re-enrollment, or another repair
+// run could cause between scan and apply. Proves the newly-authoritative
+// device is NEVER revoked, contradicting the stale plan, because the
+// transaction re-derives truth from a `SELECT ... FOR UPDATE` read taken
+// inside the transaction, not from the plan object passed in.
+test("PostgreSQL: applyRepairPlanEntry revalidates under lock and never revokes a device that became authoritative after the plan was built", {
+  skip: POSTGRES_URL ? false : "skipped: PDPP_TEST_POSTGRES_URL unset",
+}, async () => {
+  const postgresUrl = POSTGRES_URL as string;
+  await withTemporaryPostgresDatabase(
+    {
+      closeConnections: closePostgresStorage,
+      connectionString: postgresUrl,
+      databaseName: `pdpp_test_dupbind_stale_${process.pid}_${Date.now()}`,
+    },
+    async (url) => {
+      await initPostgresStorage({ backend: "postgres", databaseUrl: url });
+      await ensureReferenceConnectorCatalogEntry("codex", "vivid-fish Codex");
+
+      const deviceStore = createPostgresDeviceExporterStore();
+      const connectorStore = createPostgresConnectorInstanceStore();
+      const owner = "owner_ref";
+      const connectorId = "codex";
+      const sourceKind = "local_device";
+      const bindingId = "vivid-fish";
+      const now = new Date().toISOString();
+
+      // Neither device has heartbeated yet: authoritative selection falls
+      // back to most-recently-created, so `second` (created after `first`)
+      // is the candidate authoritative row at scan time.
+      const first = await deviceStore.resolveOrCreateEnrollmentDevice({
+        candidateDeviceId: "dexp_stale_first",
+        candidateSourceInstanceId: "dsrc_stale_first",
+        collectorProtocolVersion: null,
+        connectorId,
+        displayName: "vivid-fish Codex",
+        localBindingId: bindingId,
+        now,
+        ownerSubjectId: owner,
+        sourceKind,
+      });
+      const connectorInstanceOrNull = await connectorStore.upsertForEnrollment({
+        connectorId,
+        createdAt: now,
+        displayName: "vivid-fish Codex",
+        ownerSubjectId: owner,
+        sourceBinding: {
+          device_id: first.deviceId,
+          kind: sourceKind,
+          local_binding_name: bindingId,
+          source_instance_id: first.sourceInstanceId,
+        },
+        sourceBindingKey: `local_device:${bindingId}`,
+        sourceKind,
+        status: "active",
+        updatedAt: now,
+      });
+      assert.ok(connectorInstanceOrNull);
+      const connectorInstance = connectorInstanceOrNull;
+      await deviceStore.upsertSourceInstance({
+        connectorId,
+        connectorInstanceId: connectorInstance.connectorInstanceId,
+        createdAt: now,
+        deviceId: first.deviceId,
+        displayName: null,
+        localBindingId: bindingId,
+        sourceInstanceId: first.sourceInstanceId,
+        sourceKind,
+        updatedAt: now,
+      });
+      await deviceStore.createEnrollmentCode({
+        codeHash: "hash_stale_1",
+        connectorId,
+        createdAt: now,
+        displayName: null,
+        enrollmentCodeId: "denroll_stale_1",
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        localBindingId: bindingId,
+        ownerSubjectId: owner,
+      });
+      await deviceStore.consumeEnrollmentCode("denroll_stale_1", first.deviceId, now);
+
+      const later = new Date(Date.now() + 1000).toISOString();
+      const second = await deviceStore.resolveOrCreateEnrollmentDevice({
+        candidateDeviceId: "dexp_stale_second",
+        candidateSourceInstanceId: "dsrc_stale_second",
+        collectorProtocolVersion: null,
+        connectorId,
+        displayName: "vivid-fish Codex",
+        localBindingId: bindingId,
+        now: later,
+        ownerSubjectId: owner,
+        sourceKind,
+      });
+      await deviceStore.upsertSourceInstance({
+        connectorId,
+        connectorInstanceId: connectorInstance.connectorInstanceId,
+        createdAt: later,
+        deviceId: second.deviceId,
+        displayName: null,
+        localBindingId: bindingId,
+        sourceInstanceId: second.sourceInstanceId,
+        sourceKind,
+        updatedAt: later,
+      });
+
+      const pool = new pg.Pool({ connectionString: url });
+      try {
+        // Build the CANDIDATE plan now: neither device has heartbeated, so
+        // `second` (most recently created) is the stale plan's pick.
+        const groups = await scanDuplicateBindings(pool, { connectorId, ownerSubjectId: owner });
+        assert.equal(groups.length, 1);
+        const plan = buildRepairPlan(groups);
+        const [staleEntry] = plan;
+        assert.ok(staleEntry);
+        assert.equal(
+          staleEntry.authoritative.deviceId,
+          second.deviceId,
+          "the stale plan (correctly, at scan time) names `second` authoritative"
+        );
+        assert.equal(staleEntry.superseded[0]?.deviceId, first.deviceId);
+
+        // THE RACE: between scan and apply, `first` heartbeats — a real
+        // collector coming back online, or a concurrent enrollment
+        // completing. `first` is now the genuinely authoritative device,
+        // even though the plan captured above still names `second`.
+        const raceHeartbeatAt = new Date(Date.now() + 2000).toISOString();
+        await deviceStore.markDeviceHeartbeat(first.deviceId, {
+          agentVersion: null,
+          lastError: undefined,
+          receivedAt: raceHeartbeatAt,
+        });
+        await deviceStore.markSourceInstanceHeartbeat(first.deviceId, first.sourceInstanceId, {
+          lastError: undefined,
+          outboxDiagnostics: undefined,
+          receivedAt: raceHeartbeatAt,
+          recordsPending: 0,
+          status: "healthy",
+        });
+
+        // Apply the STALE plan. It must revalidate under lock and protect
+        // `first` (now genuinely authoritative) instead of blindly
+        // executing what the stale plan said.
+        const applied = await applyRepairPlanEntry(pool, staleEntry, new Date().toISOString());
+        assert.equal(
+          applied.authoritativeDeviceId,
+          first.deviceId,
+          "revalidation under lock must pick the NOW-authoritative device, not the stale plan's pick"
+        );
+        assert.deepEqual(
+          applied.supersededDeviceIds,
+          [second.deviceId],
+          "only the now-non-authoritative device is revoked — never the newly-authoritative one"
+        );
+
+        const firstDevice = await deviceStore.getDevice(first.deviceId);
+        assert.equal(
+          firstDevice?.status,
+          "active",
+          "the newly-authoritative device must survive, contradicting the stale plan's pick"
+        );
+        const secondDevice = await deviceStore.getDevice(second.deviceId);
+        assert.equal(secondDevice?.status, "revoked");
+        const connectorInstanceRow = await connectorStore.get(connectorInstance.connectorInstanceId);
+        assert.equal(connectorInstanceRow?.status, "active", "the shared connector_instance must survive");
+
+        // Idempotent under the race too: re-scanning finds nothing left.
+        const groupsAfter = await scanDuplicateBindings(pool, { connectorId, ownerSubjectId: owner });
+        assert.equal(groupsAfter.length, 0);
+      } finally {
+        await pool.end();
+      }
+    }
+  );
+});
+
+// Independent-gate regression: applying the SAME (now-stale) plan a second
+// time — simulating two concurrent repair runs, or a retried repair after a
+// transient failure — must be a safe no-op, never double-revoking or
+// erroring. Proves idempotency holds even when the group has already
+// converged to a single survivor by the time this call's lock acquires.
+test("PostgreSQL: applyRepairPlanEntry is a safe no-op when the group already converged to one survivor", {
+  skip: POSTGRES_URL ? false : "skipped: PDPP_TEST_POSTGRES_URL unset",
+}, async () => {
+  const postgresUrl = POSTGRES_URL as string;
+  await withTemporaryPostgresDatabase(
+    {
+      closeConnections: closePostgresStorage,
+      connectionString: postgresUrl,
+      databaseName: `pdpp_test_dupbind_reapply_${process.pid}_${Date.now()}`,
+    },
+    async (url) => {
+      await initPostgresStorage({ backend: "postgres", databaseUrl: url });
+      await ensureReferenceConnectorCatalogEntry("codex", "vivid-fish Codex");
+
+      const deviceStore = createPostgresDeviceExporterStore();
+      const connectorStore = createPostgresConnectorInstanceStore();
+      const owner = "owner_ref";
+      const connectorId = "codex";
+      const sourceKind = "local_device";
+      const bindingId = "vivid-fish";
+      const now = new Date().toISOString();
+
+      const first = await deviceStore.resolveOrCreateEnrollmentDevice({
+        candidateDeviceId: "dexp_reapply_first",
+        candidateSourceInstanceId: "dsrc_reapply_first",
+        collectorProtocolVersion: null,
+        connectorId,
+        displayName: "vivid-fish Codex",
+        localBindingId: bindingId,
+        now,
+        ownerSubjectId: owner,
+        sourceKind,
+      });
+      const connectorInstanceOrNull = await connectorStore.upsertForEnrollment({
+        connectorId,
+        createdAt: now,
+        displayName: "vivid-fish Codex",
+        ownerSubjectId: owner,
+        sourceBinding: {
+          device_id: first.deviceId,
+          kind: sourceKind,
+          local_binding_name: bindingId,
+          source_instance_id: first.sourceInstanceId,
+        },
+        sourceBindingKey: `local_device:${bindingId}`,
+        sourceKind,
+        status: "active",
+        updatedAt: now,
+      });
+      assert.ok(connectorInstanceOrNull);
+      const connectorInstance = connectorInstanceOrNull;
+      await deviceStore.upsertSourceInstance({
+        connectorId,
+        connectorInstanceId: connectorInstance.connectorInstanceId,
+        createdAt: now,
+        deviceId: first.deviceId,
+        displayName: null,
+        localBindingId: bindingId,
+        sourceInstanceId: first.sourceInstanceId,
+        sourceKind,
+        updatedAt: now,
+      });
+      await deviceStore.createEnrollmentCode({
+        codeHash: "hash_reapply_1",
+        connectorId,
+        createdAt: now,
+        displayName: null,
+        enrollmentCodeId: "denroll_reapply_1",
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        localBindingId: bindingId,
+        ownerSubjectId: owner,
+      });
+      await deviceStore.consumeEnrollmentCode("denroll_reapply_1", first.deviceId, now);
+
+      const second = await deviceStore.resolveOrCreateEnrollmentDevice({
+        candidateDeviceId: "dexp_reapply_second",
+        candidateSourceInstanceId: "dsrc_reapply_second",
+        collectorProtocolVersion: null,
+        connectorId,
+        displayName: "vivid-fish Codex",
+        localBindingId: bindingId,
+        now,
+        ownerSubjectId: owner,
+        sourceKind,
+      });
+      await deviceStore.upsertSourceInstance({
+        connectorId,
+        connectorInstanceId: connectorInstance.connectorInstanceId,
+        createdAt: now,
+        deviceId: second.deviceId,
+        displayName: null,
+        localBindingId: bindingId,
+        sourceInstanceId: second.sourceInstanceId,
+        sourceKind,
+        updatedAt: now,
+      });
+      await deviceStore.markDeviceHeartbeat(second.deviceId, {
+        agentVersion: null,
+        lastError: undefined,
+        receivedAt: now,
+      });
+      await deviceStore.markSourceInstanceHeartbeat(second.deviceId, second.sourceInstanceId, {
+        lastError: undefined,
+        outboxDiagnostics: undefined,
+        receivedAt: now,
+        recordsPending: 0,
+        status: "healthy",
+      });
+
+      const pool = new pg.Pool({ connectionString: url });
+      try {
+        const groups = await scanDuplicateBindings(pool, { connectorId, ownerSubjectId: owner });
+        const plan = buildRepairPlan(groups);
+        const [entry] = plan;
+        assert.ok(entry);
+
+        const firstApply = await applyRepairPlanEntry(pool, entry, new Date().toISOString());
+        assert.deepEqual(firstApply.supersededDeviceIds, [first.deviceId]);
+
+        // Re-apply the SAME (now-stale) plan entry a second time — the
+        // group has already converged to one non-revoked survivor
+        // (`second`). This must be a safe no-op: no error, nothing
+        // additionally revoked, `second` still active.
+        const secondApply = await applyRepairPlanEntry(pool, entry, new Date().toISOString());
+        assert.deepEqual(secondApply.supersededDeviceIds, [], "a converged group has nothing left to revoke");
+        assert.equal(secondApply.authoritativeDeviceId, second.deviceId);
+
+        const secondDevice = await deviceStore.getDevice(second.deviceId);
+        assert.equal(secondDevice?.status, "active", "the sole survivor must remain active after a redundant re-apply");
       } finally {
         await pool.end();
       }
