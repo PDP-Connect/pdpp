@@ -541,6 +541,81 @@ test("acceptance 7.1: expired prompt does not heal unresolved session-readiness 
   );
 });
 
+// Regression (2026-07-31, phantom provider_interaction CTA / owner-gate revision):
+// live connection cin_11deac1e728b244aaeb56765 ran 5 successful hourly ChatGPT
+// syncs, then a run failed with an explicit chatgpt_session_required /
+// refresh_credentials / "browser session is not active" known gap (the SAME
+// `chatGptSessionRequiredRun()` fixture used above — top-level `failure_reason`
+// is the generic `connector_reported_failed` placeholder; the specific reason
+// lives in the known gap, recovered by `credentialReasonFromGenericFailure`).
+// No `connector_attention_records` row exists (a terminal DONE/connector_error
+// failure never routes through attention-writer.ts). The scheduler then logged
+// two skips: first `reauth:browser_session:confirming_run_succeeded:connector_reported_failed`,
+// then a later, more generic `scheduler_error` `add_info:provider_interaction:attention_resolved`
+// — and that LATER, less specific scheduler error code is what durably lands in
+// `schedule.last_error_code` (`schedule.human_attention_needed` also flips true).
+// Before this fix, `classifyOpenAttention` (an earlier classification step than
+// the readiness/credential-failure steps) claimed the dominant state purely
+// because `schedule.human_attention_needed` synthesized non-null (but fully
+// identity-less: no id/target/owner-action) attention evidence — replacing the
+// honest `blocked`/browser_session-reauth verdict with a generic
+// `needs_attention` carrying the scheduler's own generic later error code, and
+// (at the rendered-verdict layer) a dead "Complete the requested action"
+// provider_interaction CTA plus false "Collecting in the background." progress
+// copy.
+test("regression: terminal session-required run outranks a later generic scheduler_error fallback", () => {
+  const snap = projectConnectorSummaryConnectionHealth({
+    attentionRecords: [],
+    browserSessionRepairCapable: true,
+    freshness: FRESH,
+    lastRun: chatGptSessionRequiredRun(),
+    lastSuccessfulRun: null,
+    nowIso: NOW,
+    remoteSurface: readyBrowserSurface(),
+    schedule: {
+      enabled: true,
+      human_attention_needed: true,
+      last_error_code: "scheduler_error",
+    },
+  });
+
+  assertHeadline(snap, "blocked");
+  assert.equal(
+    snap.reason_code,
+    "session_required",
+    "the specific terminal session-required evidence must outrank the generic later scheduler_error fallback"
+  );
+  assert.equal(
+    snap.next_action,
+    null,
+    "no CTA should be manufactured from identity-less schedule-fallback evidence once a real readiness defect is classified"
+  );
+  const credentialCondition = snap.conditions?.find((c) => c.type === "CredentialsValid");
+  assert.equal(credentialCondition?.status, "false");
+  assert.equal(credentialCondition?.remediation?.surface?.kind, "browser_session");
+  assert.equal(credentialCondition?.remediation?.target, "browser_session");
+  assert.equal(credentialCondition?.remediation?.retryable, false);
+});
+
+test("acceptance: real structured attention still outranks a bare schedule fallback and other states", () => {
+  // Guard against over-correction: a REAL structured attention record (has an
+  // id/target, even without a durable `id` field populated by every caller)
+  // must still win `needs_attention` over backoff/idle — unaffected by the
+  // `readinessBlockedCondition` deferral, which only applies to fully
+  // identity-less schedule-fallback evidence.
+  const snap = projectConnectorSummaryConnectionHealth({
+    attentionRecords: [openOtpAttention()],
+    freshness: FRESH,
+    lastRun: failedRun(),
+    lastSuccessfulRun: null,
+    nowIso: NOW,
+    schedule: null,
+  });
+  assertHeadline(snap, "needs_attention");
+  assert.equal(snap.reason_code, "otp_required");
+  assert.equal(snap.next_action?.attention_id, "att_otp");
+});
+
 test("acceptance 7.1: cooling_off when scheduler backoff is delaying a retry below the give-up threshold", () => {
   const snap = projectConnectorSummaryConnectionHealth({
     freshness: STALE_FRESHNESS,

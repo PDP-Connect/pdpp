@@ -1531,10 +1531,19 @@ test("summary connection health: secret-sensitive structured attention suppresse
   assert.equal(snapshot.next_action?.reason_code, "otp_required");
 });
 
-test("summary connection health: schedule.human_attention_needed projects schedule_fallback CTA when no structured record exists", () => {
-  // Controllers that have not yet adopted the durable attention store
-  // still get a CTA, but the source is `schedule_fallback` so the
-  // dashboard renders a caveated label.
+test("summary connection health: schedule.human_attention_needed defers to a more specific readiness defect, no dead CTA", () => {
+  // `browser_runtime_not_configured` durably classifies as a real
+  // `RuntimeAvailable: false` readiness condition. The bare schedule
+  // fallback (no id/target/owner-action of its own — controllers that have
+  // not adopted the durable attention store) must defer to that specific,
+  // already-classified defect rather than mask it behind a generic
+  // `needs_attention`/`schedule_fallback` CTA with nothing real behind it.
+  // Regression (2026-07-31, phantom provider_interaction CTA / owner-gate
+  // revision): this test previously asserted the schedule fallback wins,
+  // which is exactly the precedence bug that let a live ChatGPT connection
+  // (terminal chatgpt_session_required failure, then a generic later
+  // scheduler_error skip) show a dead CTA instead of the honest
+  // blocked/browser_session reauth verdict.
   const snapshot = projectConnectorSummaryConnectionHealth({
     freshness: { captured_at: "2026-05-19T12:00:00.000Z", status: "current" },
     lastRun: failedRun({ failure_reason: "browser_runtime_not_configured" }),
@@ -1545,11 +1554,9 @@ test("summary connection health: schedule.human_attention_needed projects schedu
       last_error_code: "browser_runtime_not_configured",
     },
   });
-  assert.equal(snapshot.state, "needs_attention");
-  assert.equal(snapshot.next_action?.source, "schedule_fallback");
-  assert.equal(snapshot.next_action?.attention_id, null);
-  assert.equal(snapshot.next_action?.owner_action, null);
-  assert.equal(snapshot.next_action?.reason_code, "browser_runtime_not_configured");
+  assert.equal(snapshot.state, "blocked");
+  assert.equal(snapshot.reason_code, "browser_runtime_not_configured");
+  assert.equal(snapshot.next_action, null);
 });
 
 test("summary connection health: most-urgent picker prefers response_required over informational", () => {

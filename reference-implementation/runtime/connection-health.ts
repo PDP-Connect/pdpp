@@ -1252,11 +1252,39 @@ function classifyUnreliableProjection(ctx: ClassificationContext): ReturnType<Cl
   };
 }
 
+/**
+ * Schedule-fallback attention evidence synthesized purely from a
+ * `human_attention_needed` boolean (`server/ref-control.ts::selectAttentionEvidence`)
+ * carries no real `id`/`actionTarget`/`ownerAction` — nothing an owner can act on
+ * beyond the reason code. Real structured attention (OTP, manual action,
+ * re-consent) always has at least one of these set.
+ */
+function attentionHasRealIdentity(attention: ConnectionAttentionEvidence | null): boolean {
+  if (attention === null) {
+    return false;
+  }
+  return attention.id !== null || attention.actionTarget !== null || attention.ownerAction !== null;
+}
+
 function classifyOpenAttention(ctx: ClassificationContext): ReturnType<ClassificationStep> {
   // 2. Required attention open -> needs_attention. Current owner action is
   //    actionable even before the first terminal run exists.
+  //
+  //    Exception: bare schedule-fallback evidence (no id/target/owner-action)
+  //    must not outrank a more specific, already-classified readiness defect
+  //    (e.g. a durable CredentialsValid/RuntimeAvailable failure) — doing so
+  //    replaced an honest `blocked`/browser_session-reauth verdict with a
+  //    generic `needs_attention` carrying the scheduler's own later, less
+  //    specific error code (reproduced from live evidence: a terminal
+  //    chatgpt_session_required run failure followed by a generic
+  //    scheduler_error skip). Real structured attention (has an id or a
+  //    concrete target/owner-action) is unaffected and keeps winning per the
+  //    existing precedence tests.
   const attention = ctx.conditionSet.get("AttentionClear");
   if (attention?.status !== "false") {
+    return null;
+  }
+  if (!attentionHasRealIdentity(ctx.input.attention) && readinessBlockedCondition(ctx.conditions)) {
     return null;
   }
   return {

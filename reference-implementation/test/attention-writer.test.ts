@@ -554,13 +554,20 @@ test(
 );
 
 test(
-  "runConnector without structured rows still lets schedule fallback drive needs_attention",
+  "runConnector without structured rows defers bare schedule fallback to a more specific readiness defect",
   withTempDb(async () => {
     // No attention writes happen because the connector emits no
-    // INTERACTION/ASSISTANCE. The schedule fallback (caller-provided
-    // `human_attention_needed`) must still be honored — guards against
-    // a regression where the structured pathway accidentally suppresses
-    // the existing schedule fallback.
+    // INTERACTION/ASSISTANCE. `browser_runtime_not_configured` durably
+    // classifies as a `RuntimeAvailable: false` readiness condition — a real,
+    // specific defect the schedule's bare `human_attention_needed` fallback
+    // (no id/target/owner-action of its own) must defer to, not mask with a
+    // generic `needs_attention` pill. Regression (2026-07-31, phantom
+    // provider_interaction CTA / owner-gate revision): the earlier version of
+    // this test asserted the opposite precedence, which is exactly the bug
+    // that let a bare schedule-fallback signal outrank an honest
+    // blocked/CredentialsValid-or-RuntimeAvailable verdict on a live ChatGPT
+    // connection (chatgpt_session_required terminal failure followed by a
+    // generic scheduler_error skip).
     // biome-ignore lint/style/useDestructuring: localized test assertion preserves its explicit contract.
     const records = (await getConnectorAttentionProjection("codex_idle")).records;
     assert.equal(records.length, 0);
@@ -590,8 +597,9 @@ test(
         last_error_code: "browser_runtime_not_configured",
       },
     });
-    assert.equal(snapshot.state, "needs_attention");
-    assert.equal(snapshot.next_action?.source, "schedule_fallback");
+    assert.equal(snapshot.state, "blocked");
+    assert.equal(snapshot.reason_code, "browser_runtime_not_configured");
+    assert.equal(snapshot.next_action, null);
   })
 );
 
