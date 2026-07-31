@@ -50,6 +50,7 @@ import {
 } from "../../src/reference-blob-uploader.ts";
 import { stringifyForJsonl } from "../../src/safe-emit.ts";
 import { requireCredentialsOrAsk, resourceSet } from "../../src/scope-filters.ts";
+import { createTerminalOnceGate } from "../../src/terminal-once.ts";
 import {
   type BodyPartSelection,
   bigintToCursor,
@@ -177,10 +178,51 @@ function flushAndExit(code: number): void {
 }
 
 /**
- * Marks an error as already having emitted its own terminal DONE (via
- * `fail()`). `main().catch(handleMainRejection)` checks for this marker so it
- * doesn't emit a second DONE for a failure that already sent one — the exact
- * shape of the "Connector emitted DONE after DONE" protocol violation.
+ * Single terminal-emission authority (see `../../src/terminal-once.ts` for
+ * the full rationale). The connector has FIVE independent code paths that
+ * can each decide the run is over: main()'s own success tail, fail()
+ * (called from ~8 sites, some nested deep inside runAllMailPasses),
+ * main().catch(handleMainRejection), and the process-level
+ * unhandledRejection/uncaughtException handlers. The last two can fire
+ * AFTER main() has already returned normally, because
+ * flushAndExitAfterRuntimeAck() does not exit synchronously — it waits (up
+ * to 30 minutes) for the runtime to close stdin, and the process is fully
+ * alive during that wait. Coordinating each of those five sites
+ * individually (the prior fix's approach, via a ConnectorFailure marker on
+ * the fail() path only) is exactly the kind of per-call-site discipline
+ * that misses a path — live evidence (run_1785522735922: all batches
+ * ingest cleanly, 159 records, THEN "Connector emitted DONE after DONE")
+ * proved a second terminal reaches stdout even with every known fail()
+ * site fixed.
+ *
+ * Every terminal DONE from any of the five sites goes through this one
+ * gate. The first call wins unconditionally; every later call is a no-op
+ * on the wire, independent of which site fires or how long after the
+ * first one resolves. Errors after a terminal DONE are never masked — they
+ * still reach stderr — they just never reach the DONE protocol channel a
+ * second time.
+ */
+interface TerminalDoneArgs {
+  error?: { message: string; retryable: boolean };
+  records_emitted: number;
+  status: "succeeded" | "failed";
+}
+
+const terminalGate = createTerminalOnceGate<TerminalDoneArgs>((args) => {
+  emit({ type: "DONE", ...args }).catch((): undefined => undefined);
+  flushAndExit(args.status === "succeeded" ? 0 : 1);
+});
+
+function emitTerminalDone(args: TerminalDoneArgs): void {
+  terminalGate.attempt(args);
+}
+
+/**
+ * Marks an error as already having gone through `emitTerminalDone()` (via
+ * `fail()`), so callers that catch it know not to build their own DONE
+ * payload — `emitTerminalDone()`'s own flag already makes a second wire
+ * emission impossible, but this keeps failure messages from being computed
+ * and discarded for no reason.
  */
 class ConnectorFailure extends Error {
   readonly doneEmitted = true;
@@ -192,16 +234,13 @@ class ConnectorFailure extends Error {
  * normally into a caller that might still reach a later success DONE.
  * MUST be used as `throw fail(...)` (or awaited via a rejecting call) —
  * never call-and-continue, or the caller can still fall through to a
- * success path and emit a second DONE.
+ * success path and attempt a second DONE (harmless now — emitTerminalDone
+ * silently drops it — but the thrown ConnectorFailure still short-circuits
+ * the rest of that caller's work, which matters for anything after the
+ * fail() call site that shouldn't run once the run is over).
  */
 function fail(m: string, retryable = false): never {
-  emit({
-    type: "DONE",
-    status: "failed",
-    records_emitted: 0,
-    error: { message: m, retryable },
-  }).catch((): undefined => undefined);
-  flushAndExit(1);
+  emitTerminalDone({ error: { message: m, retryable }, records_emitted: 0, status: "failed" });
   throw new ConnectorFailure(m);
 }
 
@@ -2762,12 +2801,7 @@ async function main(): Promise<void> {
     await client.logout().catch((): undefined => undefined);
   }
 
-  await emit({
-    type: "DONE",
-    status: "succeeded",
-    records_emitted: totalEmitted,
-  });
-  flushAndExit(0);
+  emitTerminalDone({ records_emitted: totalEmitted, status: "succeeded" });
 }
 
 // Named (not inline) so its own internal `emit(...).catch(...)` isn't a
@@ -2775,21 +2809,16 @@ async function main(): Promise<void> {
 function handleMainRejection(e: unknown): void {
   const trace = e instanceof Error ? (e.stack ?? e.message) : String(e);
   process.stderr.write(`[gmail] main rejected: ${trace}\n`);
-  // fail() already emitted a terminal DONE and called flushAndExit before
-  // throwing ConnectorFailure — emitting another one here would itself be
-  // the "DONE after DONE" protocol violation this type exists to prevent.
+  // fail() already routed through emitTerminalDone() before throwing
+  // ConnectorFailure — skip building a redundant payload. emitTerminalDone's
+  // own flag would drop it on the wire regardless; this just avoids the
+  // wasted work and a misleading duplicate stderr write shape.
   if (e instanceof ConnectorFailure) {
     return;
   }
   const msg = e instanceof Error ? e.message : String(e);
   const retryable = RETRYABLE_ERROR_RE.test(msg);
-  emit({
-    type: "DONE",
-    status: "failed",
-    records_emitted: 0,
-    error: { message: msg, retryable },
-  }).catch((): undefined => undefined);
-  flushAndExit(1);
+  emitTerminalDone({ error: { message: msg, retryable }, records_emitted: 0, status: "failed" });
 }
 
 // Guarded so `import "./index.ts"` in tests doesn't spin up the runtime
@@ -2797,38 +2826,39 @@ function handleMainRejection(e: unknown): void {
 // Node event loop. Only fires when this module IS the process entry
 // point (i.e. `tsx connectors/gmail/index.ts`).
 if (isMainModule(import.meta.url)) {
+  // These two handlers are the crux of the DONE-after-DONE class:
+  // flushAndExitAfterRuntimeAck() does not exit synchronously after a
+  // terminal DONE — it waits (up to 30 minutes) for the runtime to close
+  // stdin, and the process stays fully alive during that wait. A late
+  // rejection/exception from that window (e.g. IMAP socket teardown noise
+  // after client.logout(), a stray timer) used to reach these handlers
+  // AFTER main() had already sent a real success DONE, and each one wrote
+  // its own second DONE straight to stdout — the exact live-observed
+  // "Connector emitted DONE after DONE" shape, with zero fail() call
+  // involved. Routing both through emitTerminalDone() makes them no-ops on
+  // the wire once a terminal DONE has already gone out, while still always
+  // writing to stderr so the failure is never silently swallowed.
   process.on("unhandledRejection", (reason: unknown) => {
     const msg = reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
     process.stderr.write(`[gmail] unhandledRejection: ${msg}\n`);
-    // See handleMainRejection: fail() already emitted DONE for this failure.
     if (reason instanceof ConnectorFailure) {
       return;
     }
     const summary = reason instanceof Error ? reason.message : String(reason);
-    emit({
-      type: "DONE",
-      status: "failed",
+    emitTerminalDone({
+      error: { message: `unhandledRejection: ${summary.slice(0, ERROR_MSG_TAIL)}`, retryable: false },
       records_emitted: 0,
-      error: {
-        message: `unhandledRejection: ${summary.slice(0, ERROR_MSG_TAIL)}`,
-        retryable: false,
-      },
-    }).catch((): undefined => undefined);
-    flushAndExit(1);
+      status: "failed",
+    });
   });
   process.on("uncaughtException", (err: Error) => {
     const msg = err.stack ?? err.message;
     process.stderr.write(`[gmail] uncaughtException: ${msg}\n`);
-    emit({
-      type: "DONE",
-      status: "failed",
+    emitTerminalDone({
+      error: { message: `uncaughtException: ${err.message.slice(0, ERROR_MSG_TAIL)}`, retryable: false },
       records_emitted: 0,
-      error: {
-        message: `uncaughtException: ${err.message.slice(0, ERROR_MSG_TAIL)}`,
-        retryable: false,
-      },
-    }).catch((): undefined => undefined);
-    flushAndExit(1);
+      status: "failed",
+    });
   });
 
   main().catch(handleMainRejection);
