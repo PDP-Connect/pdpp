@@ -1119,13 +1119,6 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     const readyResult = await waitForStartingBrowserSurface(startingLease, connectorId, runId, traceContext);
     if (readyResult.lease.status === "surface_failed") {
       pendingBrowserSurfaceLaunches.delete(runId);
-      await emitBrowserSurfaceLeaseEvent(
-        "run.browser_surface_failed",
-        connectorId,
-        runId,
-        traceContext,
-        readyResult.lease
-      );
       // The allocator's ensureSurface/getSurfaceStatus call threw (Docker
       // daemon hiccup, transient allocator timeout, etc) and remote-surface's
       // lease manager collapses that into a bare surface_failed/
@@ -1138,11 +1131,34 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
       // cannot loop against the same dead container. Bounded to one retry,
       // and only for a dynamic allocator-backed surface — a static/operator-
       // owned surface has no allocator to retry against.
+      //
+      // The retry decision MUST be resolved before emitting any terminal
+      // event: run.browser_surface_failed is in RUN_TERMINAL_EVENT_TYPES
+      // (lib/spine.ts) and latches run_history's status='running' finalize
+      // (run-history-writer.ts) — emitting it on an attempt that then
+      // recovers would durably record a succeeded, record-producing run as a
+      // zero-record failure. run.browser_surface_retried is deliberately a
+      // non-terminal sibling (absent from every terminal allowlist) so the
+      // dead surface_id stays observable without poisoning run_history.
       if (options.allowStartFailureRetry && shouldRetryReadinessFailure()) {
+        await emitBrowserSurfaceLeaseEvent(
+          "run.browser_surface_retried",
+          connectorId,
+          runId,
+          traceContext,
+          readyResult.lease
+        );
         return await acquireManagedBrowserSurfaceAttempt(ctx, startingLease.priority_class, {
           allowReadinessRetry: false,
         });
       }
+      await emitBrowserSurfaceLeaseEvent(
+        "run.browser_surface_failed",
+        connectorId,
+        runId,
+        traceContext,
+        readyResult.lease
+      );
       return { kind: "early_return", result: buildBrowserSurfaceEarlyReturn(ctx, readyResult.lease, "surface_failed") };
     }
     const readySurface =

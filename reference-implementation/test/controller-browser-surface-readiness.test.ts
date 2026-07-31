@@ -886,7 +886,16 @@ test("starting-surface allocator failure reacquires once and launches on the fre
 
   const events = listRunEvents("run_start_failed_reacquire").map((e) => e.event_type);
   assert.equal(events.filter((event) => event === "run.browser_surface_requested").length, 2);
-  assert.equal(events.filter((event) => event === "run.browser_surface_failed").length, 1);
+  assert.equal(
+    events.filter((event) => event === "run.browser_surface_failed").length,
+    0,
+    "the retried attempt must never emit the terminal event — it would latch run_history to surface_failed on a run that goes on to succeed"
+  );
+  assert.equal(
+    events.filter((event) => event === "run.browser_surface_retried").length,
+    1,
+    "the dead surface_id stays observable via the non-terminal sibling event"
+  );
   assert.ok(
     events.filter((event) => event === "run.browser_surface_ready").length >= 1,
     "the fresh surface reaches readiness after the reacquire"
@@ -924,6 +933,139 @@ test("starting-surface allocator failure on the reacquire attempt does not retry
   );
   assert.equal(ensureCalls, 2, "bounded to exactly one reacquire attempt");
   assert.equal(runConnectorCalls.length, 0, "connector is never spawned when the surface never starts");
+
+  const events = listRunEvents("run_start_failed_persistent").map((e) => e.event_type);
+  assert.equal(
+    events.filter((event) => event === "run.browser_surface_retried").length,
+    1,
+    "the first (retried) attempt emits the non-terminal sibling"
+  );
+  assert.equal(
+    events.filter((event) => event === "run.browser_surface_failed").length,
+    1,
+    "the second (bounded, non-retried) attempt emits exactly one terminal failure"
+  );
+});
+
+/**
+ * Durable-layer counterpart to "starting-surface allocator failure
+ * reacquires once and launches on the fresh surface": the event-stream
+ * assertions above proved the SPINE projection is correct, but the gate
+ * finding was that run_history's finalize (`UPDATE ... WHERE status =
+ * 'running'`) LATCHES on the first terminal event for a run_id, so an
+ * intermediate run.browser_surface_failed emitted before a successful retry
+ * would durably record a recovered, record-producing run as
+ * status='surface_failed', records_emitted=0 — even though the spine's
+ * newest-status projection reports the run correctly. Only a real read of
+ * the run_history table proves the durable projection was fixed, not just
+ * the event stream.
+ */
+test("starting-surface allocator failure recovery durably records a succeeded run_history row with records, not a latched surface_failed", async (t) => {
+  const leaseManager = createDynamicManagerWithReadySurface({ noInitialSurface: true });
+  let ensureCalls = 0;
+  const surfaces = new Map<string, BrowserSurface>();
+  const allocator: BrowserSurfaceAllocator = {
+    ensureSurface: async (request) => {
+      ensureCalls += 1;
+      if (ensureCalls === 1) {
+        throw new Error("Docker POST /containers/create failed: connect ECONNREFUSED");
+      }
+      const surface: BrowserSurface = {
+        backend: "neko",
+        cdp_url: `http://${request.surfaceId}:9223`,
+        connector_id: request.connectorId,
+        created_at: "2026-05-12T12:00:01.000Z",
+        health: "ready",
+        last_used_at: "2026-05-12T12:00:01.000Z",
+        profile_key: request.profileKey,
+        stream_base_url: `http://${request.surfaceId}:8080`,
+        surface_id: request.surfaceId,
+      };
+      surfaces.set(request.surfaceId, surface);
+      return await Promise.resolve(surface);
+    },
+    getSurfaceStatus: async (surfaceId) => await Promise.resolve(surfaces.get(surfaceId) ?? null),
+    listSurfaces: async () => await Promise.resolve([...surfaces.values()]),
+    stopSurface: async () => await Promise.resolve(null),
+  };
+  const probe: BrowserSurfaceReadinessProbe = {
+    probe: async () => await Promise.resolve({ browserVersion: "Chrome/124.0", ok: true, pageTargetCount: 1 }),
+  };
+  const runId = "run_start_failed_recovers_durably";
+  const { controller, runConnectorCalls } = setup(t, {
+    browserSurfaceAllocator: allocator,
+    leaseManager,
+    probe,
+    // The real runtime emits run.completed with the real records_emitted
+    // once collection finishes. This fake stands in for that, matching the
+    // pattern the existing attach-exhausted test already established at
+    // this file's setup site. It deliberately skips run.started: that event
+    // requires data.boot_epoch/data.seq (assertRunStartedIsStamped in
+    // lib/spine.ts, stamped only after setCurrentBootEpoch, which this test
+    // suite never calls) — the run-history writer's own documented
+    // fallback-insert path (a terminal event with no prior started row
+    // still lands, run-history-writer.ts) covers this without it.
+    runConnectorImpl: async (opts) => {
+      await emitSpineEvent({
+        actor_id: opts.connectorId,
+        actor_type: "runtime",
+        data: { connector_instance_id: "managed", records_emitted: 42 },
+        event_type: "run.completed",
+        object_id: opts.runId ?? null,
+        object_type: "run",
+        run_id: opts.runId ?? null,
+        scenario_id: opts.traceContext?.scenario_id ?? null,
+        status: "succeeded",
+        trace_id: opts.traceContext?.trace_id ?? "trace",
+      });
+      return {
+        checkpoint_summary: null,
+        records_emitted: 42,
+        state: null,
+        status: "succeeded",
+      };
+    },
+  });
+
+  const result = await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId,
+  });
+  await controller.drainActiveRuns(1000);
+
+  assert.equal(result.status, "started", "the bounded reacquire recovers within the same interactive run");
+  assert.equal(ensureCalls, 2, "first ensureSurface throws, second (fresh surface_id) succeeds");
+
+  interface RunHistoryTestRow {
+    readonly records_emitted: number;
+    readonly run_id: string;
+    readonly status: string;
+  }
+  const row = getDb().prepare("SELECT run_id, status, records_emitted FROM run_history WHERE run_id = ?").get(runId) as
+    | RunHistoryTestRow
+    | undefined;
+  assert.ok(row, "run_history must have exactly one row for this run_id");
+  assert.equal(runConnectorCalls.length, 1, "the connector runs exactly once, only after the retry recovers");
+  assert.equal(
+    row.status,
+    "succeeded",
+    `durable run_history must report the recovered run as succeeded, not latched at the retried attempt's surface_failed (got: ${row.status})`
+  );
+  assert.equal(
+    row.records_emitted,
+    42,
+    `durable run_history must report the real record count, not 0 from the retried attempt's terminal write (got: ${row.records_emitted})`
+  );
+
+  const countRow = getDb().prepare("SELECT COUNT(*) AS n FROM run_history WHERE run_id = ?").get(runId) as {
+    n: number;
+  };
+  assert.equal(
+    countRow.n,
+    1,
+    "exactly one run_history row — the retried attempt must not have created or finalized its own row"
+  );
 });
 
 test("boot reconciliation retires an idle stale-capability surface and recreates its profile", async (t) => {
