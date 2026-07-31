@@ -654,6 +654,21 @@ test("keeps every terminal-LIST PostgreSQL skip title in the exact receipt mappi
     ]
   );
 });
+// SECOND LIVE CANARY REVISE (2026-07-30): the interrupted-migration
+// reconciliation test file added two PostgreSQL tests using the same
+// bare-boolean `skip: !POSTGRES_URL` shape.
+test("keeps every run-history-interrupted-migration-reconciliation PostgreSQL skip title in the exact receipt mapping", () => {
+  assert.deepEqual(
+    [
+      "PostgreSQL: interrupted migration reconciles losslessly against real Postgres — overlap merges, disjoint rows preserved, duplicate run_id across connections survives",
+      "PostgreSQL: a crash before the reconciliation transaction commits leaves scheduler_run_history fully intact for a clean retry",
+    ].filter((name) => POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name)),
+    [
+      "PostgreSQL: interrupted migration reconciles losslessly against real Postgres — overlap merges, disjoint rows preserved, duplicate run_id across connections survives",
+      "PostgreSQL: a crash before the reconciliation transaction commits leaves scheduler_run_history fully intact for a clean retry",
+    ]
+  );
+});
 test("the exact named-skip mapping join fails closed on stale rows and on unconfigured consumed identities", () => {
   // Property 3, stale/unmatched arm. A configured row that no emitted skip
   // consumed (e.g. a test renamed so its title now self-describes, or deleted)

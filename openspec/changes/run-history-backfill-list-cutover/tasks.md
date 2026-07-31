@@ -280,3 +280,80 @@
       `scripts/test-accounting/receipt.ts`'s exact named-skip mapping; verified via a
       real memory-default run through `structuredNodeSummary` (both skips explained,
       zero "unexplained skip" throws).
+
+## 11. SECOND LIVE CANARY REVISE (2026-07-30): interrupted-migration reconciliation
+
+- [x] Root cause: candidate `f2b1ebe20` failed startup because
+      `migratePostgresRunHistoryRename` found BOTH `scheduler_run_history` and a
+      non-empty `run_history` and threw ("refusing to guess which is authoritative").
+      A real interrupted migration: the first rejected canary (candidate `1a4d32971`)
+      had already renamed `scheduler_run_history` -> `run_history` and
+      backfilled/live-wrote into it before being rolled back to old revision
+      `1392a386f`, which predates the entire `run_history` generalization (commit
+      `998028a82`) and has zero knowledge of `run_history`/the rename — it recreates
+      `scheduler_run_history` fresh via its own `CREATE TABLE IF NOT EXISTS` and
+      resumes writing to it. Live read-only measurement (2026-07-30 19:23 CDT):
+      `scheduler_run_history`=22 rows (actively growing since rollback),
+      `run_history`=11,415 rows (frozen since the interrupted candidate stopped),
+      composite-identity overlap=0 (a pure disjoint union on the actual live data) —
+      but numeric `id` values DO overlap between the two tables, so legacy ids must
+      never be reused/preserved blindly. No live data edits were made; the live
+      instance stayed on old revision `1392a386f` throughout this investigation.
+- [x] `reconcilePostgresLegacySchedulerRunHistory` (Postgres) /
+      `reconcileLegacySchedulerRunHistory` (SQLite): both
+      `migratePostgresRunHistoryRename`/`migrateRunHistoryRename` no longer throw on
+      "both tables non-empty" — they reconcile losslessly. Composite-identity
+      (`run_id IS NOT NULL`) rows merge via the SAME `ON CONFLICT(run_id,
+      connector_instance_id) DO UPDATE SET field = excluded.field` upsert contract
+      `insert-run-history.sql` already establishes for "a scheduler row meets an
+      existing `run_history` row" (scheduler-owned fields win; `facts_json`/
+      `trigger_kind`, which `scheduler_run_history` never carried, are left
+      untouched). `run_id IS NULL` rows (never conflict under the partial unique
+      index) insert unconditionally, exactly once, since the whole merge runs inside
+      ONE all-or-nothing transaction — table existence is therefore the only
+      idempotency marker needed; no persisted provenance marker on `run_history` rows
+      (a synthetic `facts_json` marker was considered and explicitly rejected —
+      contaminates product facts with migration metadata and is unnecessary given the
+      atomic-transaction guarantee). A genuine count-based invariant (every legacy row
+      traceable in `run_history` — existence check for `run_id IS NOT NULL`,
+      before/after NULL-count delta for `run_id IS NULL`) is verified BEFORE
+      `DROP TABLE scheduler_run_history`; a mismatch throws loudly rather than
+      dropping unreconciled data. Legacy numeric `id` values are never reused — every
+      merged row gets a fresh `run_history` id from that table's own sequence
+      (confirmed necessary live: the two tables' ids overlap).
+- [x] `test/run-history-interrupted-migration-reconciliation.test.ts` (new, 7 tests,
+      dual-backend): fresh install unaffected; legacy-only migration (no interruption)
+      still a pure rename; interrupted-migration reconciliation merges losslessly
+      (composite-identity overlap via the established upsert contract, disjoint rows
+      from both tables preserved, `run_id IS NULL` rows preserved without collision,
+      duplicate `run_id` across two different connections survives without
+      collapsing, no legacy id reused); idempotent on a second boot (already-gone
+      legacy table = pure no-op); a simulated crash mid-reconciliation (transaction
+      never commits) leaves `scheduler_run_history` fully intact for a clean retry.
+      Every scenario proven on both SQLite and real Postgres (2/2 Postgres-specific
+      tests run live against the sanctioned instance, zero skips when
+      `PDPP_TEST_POSTGRES_URL` is set).
+- [x] Regression sweep: this file's own 7/7 (5/5 SQLite + 2/2 live Postgres); combined
+      with `run-history-completed-at-fleet-migration.test.ts`,
+      `run-history-backfill-cutover.test.ts`, `run-history-writer-authority.test.ts`,
+      `run-history-duplicate-run-id-identity.test.ts`,
+      `active-run-summary-zero-spine.test.ts` — 38/38. Full RI suite
+      (`node scripts/run-tests.ts`, memory-default) diffed byte-for-byte against
+      unmodified HEAD (`378cac600`, captured before this turn's changes): identical
+      set of 10 pre-existing failures on both runs, zero new regressions.
+      `pnpm typecheck` clean (same pre-existing unrelated errors, unchanged);
+      `ultracite check` clean on every touched file; `node
+      scripts/quality-ratchet/check-mass-ratchet.ts --files server/db.ts,server/postgres-storage.ts`
+      passes with no justification bump needed.
+- [x] Test-accounting: 2 new PostgreSQL bare-boolean-skip test names added to
+      `scripts/test-accounting/receipt.ts`'s exact named-skip mapping; a matching
+      narrow regression added to `scripts/test-accounting/inventory.test.ts`; verified
+      via a real memory-default run through `structuredNodeSummary` (both skips
+      explained, zero "unexplained skip" throws).
+      `test-accounting.manifest.json`'s memory-default `"PDPP_TEST_POSTGRES_URL
+      unset"` baseline updated `129 -> 136` (129 original + 3 from
+      `active-run-summary-zero-spine.test.ts` + 2 from
+      `run-history-duplicate-run-id-identity.test.ts` + 2 from this turn — the prior
+      two deltas had been deferred/never applied; this is an arithmetic derivation
+      from known deltas, not a live-verified full authority-run count — flagged for
+      confirmation on the next full `test-accounting:check` pass).

@@ -3623,6 +3623,119 @@ function migrateConnectorMaintenanceCursorNameCheck(raw: SqliteDatabase): void {
 // the real data would be stranded under the old name forever. Instead,
 // drop that empty placeholder (verified empty first — see below) and
 // proceed with the rename.
+// SECOND LIVE CANARY REVISE (2026-07-30): an interrupted migration attempt
+// can leave a database with BOTH scheduler_run_history (still receiving
+// live scheduler writes from a rolled-back-to older revision that has no
+// idea run_history/the rename ever existed) AND a non-empty run_history
+// (frozen at whatever the interrupted candidate's brief live window
+// produced). Genuine, provable, lossless-mergeable state, not an anomaly
+// to refuse — see the Postgres twin
+// (reconcilePostgresLegacySchedulerRunHistory, server/postgres-storage.ts)
+// for the full incident/design rationale; this is its SQLite mirror.
+// scheduler_run_history's own numeric `id` values are NEVER reused (they
+// collide with run_history's own id sequence on a real interrupted
+// migration — confirmed live).
+//
+// Crash/idempotency: raw.transaction() wraps the caller's entire
+// migrateRunHistoryRename body (this function included) — SQLite commits
+// or rolls back the whole thing atomically, so table existence itself is
+// the only idempotency marker needed, exactly as on Postgres.
+function reconcileLegacySchedulerRunHistory(raw: SqliteDatabase): void {
+  const rhNullCountBefore = (
+    raw.prepare("SELECT COUNT(*) AS n FROM run_history WHERE run_id IS NULL").get() as { n: number }
+  ).n;
+
+  // Composite-identity rows (run_id IS NOT NULL): reuse the exact upsert
+  // contract insert-run-history.sql already defines for this conflict
+  // shape.
+  raw.exec(`
+INSERT INTO run_history(
+  connector_instance_id, connector_id, source_json, status, records_emitted,
+  reported_records_emitted, checkpoint_summary_json, known_gaps_json,
+  connector_error_json, run_id, trace_id, failure_reason, terminal_reason,
+  started_at, completed_at, error, attempt, scheduler_managed
+)
+SELECT
+  connector_instance_id, connector_id, source_json, status, records_emitted,
+  reported_records_emitted, checkpoint_summary_json, known_gaps_json,
+  connector_error_json, run_id, trace_id, failure_reason, terminal_reason,
+  started_at, completed_at, error, attempt, 1
+FROM scheduler_run_history
+WHERE run_id IS NOT NULL
+ORDER BY id ASC
+ON CONFLICT(run_id, connector_instance_id) WHERE run_id IS NOT NULL DO UPDATE SET
+  source_json = excluded.source_json,
+  status = excluded.status,
+  records_emitted = excluded.records_emitted,
+  reported_records_emitted = excluded.reported_records_emitted,
+  checkpoint_summary_json = excluded.checkpoint_summary_json,
+  known_gaps_json = excluded.known_gaps_json,
+  connector_error_json = excluded.connector_error_json,
+  trace_id = excluded.trace_id,
+  failure_reason = excluded.failure_reason,
+  terminal_reason = excluded.terminal_reason,
+  completed_at = excluded.completed_at,
+  error = excluded.error,
+  attempt = excluded.attempt,
+  scheduler_managed = 1;
+`);
+
+  // run_id IS NULL rows always insert as new rows (never conflict under a
+  // WHERE run_id IS NOT NULL partial unique index) — exactly once, since
+  // this whole function only ever runs inside the caller's single
+  // all-or-nothing transaction.
+  raw.exec(`
+INSERT INTO run_history(
+  connector_instance_id, connector_id, source_json, status, records_emitted,
+  reported_records_emitted, checkpoint_summary_json, known_gaps_json,
+  connector_error_json, run_id, trace_id, failure_reason, terminal_reason,
+  started_at, completed_at, error, attempt, scheduler_managed
+)
+SELECT
+  connector_instance_id, connector_id, source_json, status, records_emitted,
+  reported_records_emitted, checkpoint_summary_json, known_gaps_json,
+  connector_error_json, run_id, trace_id, failure_reason, terminal_reason,
+  started_at, completed_at, error, attempt, 1
+FROM scheduler_run_history
+WHERE run_id IS NULL
+ORDER BY id ASC;
+`);
+
+  // Verify the invariant before the caller is permitted to drop
+  // scheduler_run_history — see the Postgres twin's identical comment for
+  // the full reasoning (composite-identity existence check for run_id IS
+  // NOT NULL rows; before/after NULL-count delta for run_id IS NULL rows).
+  const unreconciledNamed = raw
+    .prepare(
+      `SELECT COUNT(*) AS n
+       FROM scheduler_run_history srh
+       WHERE srh.run_id IS NOT NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM run_history rh
+           WHERE rh.run_id = srh.run_id AND rh.connector_instance_id = srh.connector_instance_id
+         )`
+    )
+    .get() as { n: number };
+  if (unreconciledNamed.n > 0) {
+    throw new Error(
+      `reconcileLegacySchedulerRunHistory: ${unreconciledNamed.n} scheduler_run_history row(s) with a run_id could not be verified present in run_history after the merge — refusing to drop scheduler_run_history with unreconciled data. This should never happen (the merge INSERT above covers every run_id IS NOT NULL row); investigate before retrying.`
+    );
+  }
+
+  const rhNullCountAfter = (
+    raw.prepare("SELECT COUNT(*) AS n FROM run_history WHERE run_id IS NULL").get() as { n: number }
+  ).n;
+  const srhNullCount = (
+    raw.prepare("SELECT COUNT(*) AS n FROM scheduler_run_history WHERE run_id IS NULL").get() as { n: number }
+  ).n;
+  const nullRowsAddedByThisMerge = rhNullCountAfter - rhNullCountBefore;
+  if (nullRowsAddedByThisMerge !== srhNullCount) {
+    throw new Error(
+      `reconcileLegacySchedulerRunHistory: this merge added ${nullRowsAddedByThisMerge} run_id-IS-NULL row(s) to run_history but scheduler_run_history has ${srhNullCount} — refusing to drop scheduler_run_history with unreconciled data. This should never happen (the merge INSERT above is unconditional and unfiltered); investigate before retrying.`
+    );
+  }
+}
+
 function migrateRunHistoryRename(raw: SqliteDatabase): void {
   const legacyExists = raw
     .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'scheduler_run_history'")
@@ -3638,9 +3751,16 @@ function migrateRunHistoryRename(raw: SqliteDatabase): void {
     if (staleEmptyRunHistory) {
       const rowCount = raw.prepare("SELECT COUNT(*) AS n FROM run_history").get() as { n: number };
       if (rowCount.n > 0) {
-        throw new Error(
-          "migrateRunHistoryRename: both scheduler_run_history and a non-empty run_history exist; refusing to guess which is authoritative — this should never happen since SCHEMA only ever creates an empty run_history ahead of this migration"
-        );
+        // Interrupted-migration state: both tables carry real data.
+        // Reconcile losslessly rather than refuse — see
+        // reconcileLegacySchedulerRunHistory's own header. run_history
+        // already carries the full current column set (it exists and is
+        // non-empty, so its own CREATE TABLE IF NOT EXISTS or an earlier
+        // completed rename already established it) — only the merge and
+        // the legacy DROP are needed here.
+        reconcileLegacySchedulerRunHistory(raw);
+        raw.exec("DROP TABLE scheduler_run_history;");
+        return;
       }
       raw.exec("DROP TABLE run_history;");
     }

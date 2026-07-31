@@ -269,3 +269,76 @@ swallowed/fail-open index-creation error, SHALL exist for this key.
   never a window blended with the other connection's events
 - **AND** two separate `run_history` rows SHALL result, each with status/facts
   reflecting only its own connection's actual event history
+
+### Requirement: An interrupted `scheduler_run_history` -> `run_history` rename migration SHALL reconcile losslessly, never refuse or delete data
+
+If a database's rename migration is interrupted after `run_history` has already been
+populated (via a completed rename plus live/backfill writes) but before
+`scheduler_run_history` was dropped — leaving both tables present with real data, for
+example because a candidate deployment carrying the migration was rolled back to a
+revision that predates `run_history` entirely and resumed writing to a
+freshly-recreated `scheduler_run_history` — the migration SHALL reconcile
+`scheduler_run_history`'s rows into `run_history` rather than throw. The merge, its
+completeness verification, and the eventual `DROP TABLE scheduler_run_history` SHALL
+execute as one all-or-nothing transaction. No `scheduler_run_history` row's numeric
+`id` SHALL ever be reused as a `run_history` id.
+
+#### Scenario: A composite-identity row present in both tables merges via the established upsert contract
+
+- **GIVEN** a `run_history` row and a `scheduler_run_history` row share the same
+  `(run_id, connector_instance_id)` pair, with divergent field values
+- **WHEN** the interrupted-migration reconciliation runs
+- **THEN** the `scheduler_run_history` row's fields SHALL win on every field the
+  scheduler's own `appendRunHistory` upsert contract already updates (`status`,
+  `attempt`, `completed_at`, `records_emitted`, etc.)
+- **AND** fields `scheduler_run_history` never carried (`facts_json`, `trigger_kind`)
+  SHALL be left exactly as they were in the pre-existing `run_history` row
+- **AND** exactly one row SHALL exist afterward for this identity — never two
+
+#### Scenario: Rows present in only one table are preserved exactly
+
+- **GIVEN** a `scheduler_run_history` row whose `(run_id, connector_instance_id)` has
+  no matching `run_history` row (a write that landed only after the interrupted
+  candidate's rename completed), and a `run_history` row with no matching
+  `scheduler_run_history` row (e.g. a backfilled historical run)
+- **WHEN** the interrupted-migration reconciliation runs
+- **THEN** both rows SHALL be preserved in `run_history` afterward, unmodified
+  (the `scheduler_run_history`-only row landing under a freshly-assigned `run_history`
+  id, never its own legacy numeric id)
+
+#### Scenario: A duplicate run_id across two different connections, split across the two tables, never collapses
+
+- **GIVEN** `run_history` holds a row for `(run_id, connector_instance_id_A)` and
+  `scheduler_run_history` holds a row for the SAME `run_id` but
+  `connector_instance_id_B` (a genuine cross-connection collision, not a duplicate
+  write)
+- **WHEN** the interrupted-migration reconciliation runs
+- **THEN** both rows SHALL exist afterward in `run_history`, each under its own
+  connection's identity — neither overwriting nor merging with the other
+
+#### Scenario: A run_id-IS-NULL scheduler_run_history row is preserved without collision
+
+- **GIVEN** a `scheduler_run_history` row has no `run_id` (e.g. a skipped run)
+- **WHEN** the interrupted-migration reconciliation runs
+- **THEN** this row SHALL be inserted into `run_history` exactly once, under a fresh
+  `run_history` id
+
+#### Scenario: The reconciliation is idempotent across a crash before commit
+
+- **GIVEN** a reconciliation transaction inserts rows into `run_history` but crashes
+  (or is otherwise interrupted) before it commits
+- **WHEN** the process restarts and the transaction is never committed
+- **THEN** `scheduler_run_history` SHALL remain completely unmodified (no partial
+  merge state), `run_history` SHALL contain none of the crashed attempt's inserted
+  rows, and a subsequent clean boot SHALL reconcile successfully from the untouched
+  pre-crash state
+- **AND** this SHALL hold on both the SQLite and PostgreSQL backends
+
+#### Scenario: A legacy-only migration (no interruption) is unaffected
+
+- **GIVEN** `scheduler_run_history` exists and `run_history` does not exist, or exists
+  but is empty
+- **WHEN** the rename migration runs
+- **THEN** the existing pure-rename behavior SHALL apply unchanged — this requirement
+  adds a new branch for the both-non-empty case only, and does not alter the
+  already-established fresh-install or legacy-only-migration paths

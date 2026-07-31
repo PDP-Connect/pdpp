@@ -2887,6 +2887,145 @@ async function migratePostgresSchedulerInstanceColumns(client: PoolClient): Prom
 // `run_history` existing, the real data would be stranded under the old
 // name forever. Instead, drop that empty placeholder (verified empty
 // first) and proceed with the rename.
+// SECOND LIVE CANARY REVISE (2026-07-30): an interrupted migration attempt
+// can leave a database with BOTH scheduler_run_history (still receiving
+// live scheduler writes from a rolled-back-to older revision that has no
+// idea run_history/the rename ever existed) AND a non-empty run_history
+// (frozen at whatever the interrupted candidate's brief live window
+// produced — a rename + backfill + some live writer rows). This is a
+// genuine, provable, lossless-mergeable state, not an anomaly to refuse:
+// scheduler_run_history's rows are reconciled INTO run_history via the
+// SAME (run_id, connector_instance_id) upsert contract
+// insert-run-history.sql already establishes for "a scheduler row meets an
+// existing run_history row" (scheduler-owned fields win via
+// excluded.field; facts_json/trigger_kind, which scheduler_run_history
+// never carried, are left untouched) — see reconcilePostgresLegacySchedulerRunHistory.
+// scheduler_run_history's own numeric `id` values are NEVER reused (they
+// collide with run_history's own id sequence on a real interrupted
+// migration — confirmed live) — every merged row gets a fresh run_history
+// id from that table's own sequence.
+//
+// Crash/idempotency: the caller wraps this merge, the verification below,
+// and the eventual DROP TABLE scheduler_run_history in ONE transaction.
+// Either everything commits together, or Postgres rolls the whole
+// transaction back and scheduler_run_history is untouched for the next
+// boot to retry fresh. Table existence itself is therefore the only
+// idempotency marker needed — no persisted provenance marker on
+// run_history rows, and no run_id-IS-NULL special case: a rolled-back
+// attempt leaves nothing partially merged to re-guard against.
+async function reconcilePostgresLegacySchedulerRunHistory(client: PoolClient): Promise<void> {
+  // Snapshot run_history's OWN pre-existing run_id-IS-NULL row count
+  // before the merge — needed below to isolate exactly how many NULL rows
+  // this merge itself added, since run_history may already carry its own
+  // NULL-run_id rows (e.g. from the interrupted candidate's own
+  // backfill/live writes) that predate this reconciliation entirely.
+  const preMergeNullCount = await client.query<{ n: string }>(
+    "SELECT COUNT(*)::text AS n FROM run_history WHERE run_id IS NULL"
+  );
+  const rhNullCountBefore = Number(preMergeNullCount.rows[0]?.n ?? "0");
+
+  // Composite-identity rows (run_id IS NOT NULL): reuse the exact upsert
+  // contract insert-run-history.sql already defines for this conflict
+  // shape.
+  await client.query(`
+    INSERT INTO run_history(
+      connector_instance_id, connector_id, source_json, status, records_emitted,
+      reported_records_emitted, checkpoint_summary_json, known_gaps_json,
+      connector_error_json, run_id, trace_id, failure_reason, terminal_reason,
+      started_at, completed_at, error, attempt, scheduler_managed
+    )
+    SELECT
+      connector_instance_id, connector_id, source_json, status, records_emitted,
+      reported_records_emitted, checkpoint_summary_json, known_gaps_json,
+      connector_error_json, run_id, trace_id, failure_reason, terminal_reason,
+      started_at, completed_at, error, attempt, true
+    FROM scheduler_run_history
+    WHERE run_id IS NOT NULL
+    ORDER BY id ASC
+    ON CONFLICT(run_id, connector_instance_id) WHERE run_id IS NOT NULL DO UPDATE SET
+      source_json = excluded.source_json,
+      status = excluded.status,
+      records_emitted = excluded.records_emitted,
+      reported_records_emitted = excluded.reported_records_emitted,
+      checkpoint_summary_json = excluded.checkpoint_summary_json,
+      known_gaps_json = excluded.known_gaps_json,
+      connector_error_json = excluded.connector_error_json,
+      trace_id = excluded.trace_id,
+      failure_reason = excluded.failure_reason,
+      terminal_reason = excluded.terminal_reason,
+      completed_at = excluded.completed_at,
+      error = excluded.error,
+      attempt = excluded.attempt,
+      scheduler_managed = true
+  `);
+
+  // run_id IS NULL rows (e.g. skipped runs never assigned a run_id) can
+  // never conflict under a WHERE run_id IS NOT NULL partial unique index,
+  // so they always insert as new rows — exactly once, since this whole
+  // function only ever runs inside the caller's single all-or-nothing
+  // transaction.
+  await client.query(`
+    INSERT INTO run_history(
+      connector_instance_id, connector_id, source_json, status, records_emitted,
+      reported_records_emitted, checkpoint_summary_json, known_gaps_json,
+      connector_error_json, run_id, trace_id, failure_reason, terminal_reason,
+      started_at, completed_at, error, attempt, scheduler_managed
+    )
+    SELECT
+      connector_instance_id, connector_id, source_json, status, records_emitted,
+      reported_records_emitted, checkpoint_summary_json, known_gaps_json,
+      connector_error_json, run_id, trace_id, failure_reason, terminal_reason,
+      started_at, completed_at, error, attempt, true
+    FROM scheduler_run_history
+    WHERE run_id IS NULL
+    ORDER BY id ASC
+  `);
+
+  // Verify the invariant before the caller is permitted to drop
+  // scheduler_run_history — a genuine count-based proof, not an
+  // assumption that the two INSERTs above "must have worked":
+  //  - every run_id IS NOT NULL legacy row must be traceable by composite
+  //    identity in run_history (the ON CONFLICT upsert guarantees exactly
+  //    one row per distinct (run_id, connector_instance_id) pair, so an
+  //    existence check is exact, not merely a count).
+  //  - every run_id IS NULL legacy row was copied by an unconditional,
+  //    unfiltered INSERT ... SELECT (no WHERE NOT EXISTS narrowing — see
+  //    the header above for why that is safe here), so the exact number
+  //    of NULL rows this merge added to run_history (its post-merge NULL
+  //    count minus the pre-merge snapshot taken above) must equal
+  //    scheduler_run_history's own NULL row count.
+  const unreconciledNamed = await client.query<{ n: string }>(`
+    SELECT COUNT(*)::text AS n
+    FROM scheduler_run_history srh
+    WHERE srh.run_id IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM run_history rh
+        WHERE rh.run_id = srh.run_id AND rh.connector_instance_id = srh.connector_instance_id
+      )
+  `);
+  const unreconciledNamedCount = Number(unreconciledNamed.rows[0]?.n ?? "1");
+  if (unreconciledNamedCount > 0) {
+    throw new Error(
+      `reconcilePostgresLegacySchedulerRunHistory: ${unreconciledNamedCount} scheduler_run_history row(s) with a run_id could not be verified present in run_history after the merge — refusing to drop scheduler_run_history with unreconciled data. This should never happen (the merge INSERT above covers every run_id IS NOT NULL row); investigate before retrying.`
+    );
+  }
+
+  const postMergeNullCount = await client.query<{ n: string }>(
+    "SELECT COUNT(*)::text AS n FROM run_history WHERE run_id IS NULL"
+  );
+  const rhNullCountAfter = Number(postMergeNullCount.rows[0]?.n ?? "0");
+  const srhNullCount = await client.query<{ n: string }>(
+    "SELECT COUNT(*)::text AS n FROM scheduler_run_history WHERE run_id IS NULL"
+  );
+  const srhNullCountValue = Number(srhNullCount.rows[0]?.n ?? "0");
+  const nullRowsAddedByThisMerge = rhNullCountAfter - rhNullCountBefore;
+  if (nullRowsAddedByThisMerge !== srhNullCountValue) {
+    throw new Error(
+      `reconcilePostgresLegacySchedulerRunHistory: this merge added ${nullRowsAddedByThisMerge} run_id-IS-NULL row(s) to run_history but scheduler_run_history has ${srhNullCountValue} — refusing to drop scheduler_run_history with unreconciled data. This should never happen (the merge INSERT above is unconditional and unfiltered); investigate before retrying.`
+    );
+  }
+}
+
 async function migratePostgresRunHistoryRename(client: PoolClient): Promise<void> {
   const legacyExists = await hasPostgresTable(client, "scheduler_run_history");
   if (!legacyExists) {
@@ -2900,31 +3039,52 @@ async function migratePostgresRunHistoryRename(client: PoolClient): Promise<void
       const countResult = await client.query<{ n: string }>("SELECT COUNT(*)::text AS n FROM run_history");
       const rowCount = Number(countResult.rows[0]?.n ?? "0");
       if (rowCount > 0) {
-        throw new Error(
-          "migratePostgresRunHistoryRename: both scheduler_run_history and a non-empty run_history exist; refusing to guess which is authoritative — this should never happen since the schema bootstrap only ever creates an empty run_history ahead of this migration"
+        // Interrupted-migration state: both tables carry real data.
+        // Reconcile losslessly (below) rather than refuse — see
+        // reconcilePostgresLegacySchedulerRunHistory's own header for the
+        // full incident/design rationale. run_history already carries the
+        // full current column set (it exists and is non-empty, so its own
+        // CREATE TABLE IF NOT EXISTS or an earlier completed rename
+        // already established it) — only the merge and the legacy DROP
+        // are needed here, not the ALTER/ADD COLUMN/index-rename steps
+        // the fresh-rename branch below performs on a table that just
+        // became run_history for the first time.
+        await reconcilePostgresLegacySchedulerRunHistory(client);
+        await client.query("DROP TABLE scheduler_run_history");
+      } else {
+        await client.query("DROP TABLE run_history");
+        await client.query("ALTER TABLE scheduler_run_history RENAME TO run_history");
+        await client.query("ALTER TABLE run_history ADD COLUMN IF NOT EXISTS trigger_kind TEXT");
+        await client.query("ALTER TABLE run_history ADD COLUMN IF NOT EXISTS facts_json JSONB");
+        // Every pre-existing row was written exclusively by the scheduler's
+        // own appendRunHistory (the generalized writer did not exist yet)
+        // — mark them scheduler_managed=true so cadence/backoff readers
+        // keep seeing exactly the rows they saw before this migration.
+        await client.query(
+          "ALTER TABLE run_history ADD COLUMN IF NOT EXISTS scheduler_managed BOOLEAN NOT NULL DEFAULT true"
+        );
+        await client.query("DROP INDEX IF EXISTS idx_pg_scheduler_run_history_connector_completed");
+        await client.query(
+          "CREATE INDEX IF NOT EXISTS idx_pg_run_history_connector_completed ON run_history(connector_id, completed_at, id)"
         );
       }
-      await client.query("DROP TABLE run_history");
+    } else {
+      await client.query("ALTER TABLE scheduler_run_history RENAME TO run_history");
+      await client.query("ALTER TABLE run_history ADD COLUMN IF NOT EXISTS trigger_kind TEXT");
+      await client.query("ALTER TABLE run_history ADD COLUMN IF NOT EXISTS facts_json JSONB");
+      await client.query(
+        "ALTER TABLE run_history ADD COLUMN IF NOT EXISTS scheduler_managed BOOLEAN NOT NULL DEFAULT true"
+      );
+      // completed_at nullability is repaired separately by
+      // migratePostgresRunHistoryCompletedAtNullable, called
+      // unconditionally (not gated on legacyExists) right after this
+      // function — see that function's own header for why the repair
+      // cannot live inside this legacy-table-gated branch.
+      await client.query("DROP INDEX IF EXISTS idx_pg_scheduler_run_history_connector_completed");
+      await client.query(
+        "CREATE INDEX IF NOT EXISTS idx_pg_run_history_connector_completed ON run_history(connector_id, completed_at, id)"
+      );
     }
-    await client.query("ALTER TABLE scheduler_run_history RENAME TO run_history");
-    await client.query("ALTER TABLE run_history ADD COLUMN IF NOT EXISTS trigger_kind TEXT");
-    await client.query("ALTER TABLE run_history ADD COLUMN IF NOT EXISTS facts_json JSONB");
-    // Every pre-existing row was written exclusively by the scheduler's own
-    // appendRunHistory (the generalized writer did not exist yet) — mark
-    // them scheduler_managed=true so cadence/backoff readers keep seeing
-    // exactly the rows they saw before this migration.
-    await client.query(
-      "ALTER TABLE run_history ADD COLUMN IF NOT EXISTS scheduler_managed BOOLEAN NOT NULL DEFAULT true"
-    );
-    // completed_at nullability is repaired separately by
-    // migratePostgresRunHistoryCompletedAtNullable, called unconditionally
-    // (not gated on legacyExists) right after this function — see that
-    // function's own header for why the repair cannot live inside this
-    // legacy-table-gated branch.
-    await client.query("DROP INDEX IF EXISTS idx_pg_scheduler_run_history_connector_completed");
-    await client.query(
-      "CREATE INDEX IF NOT EXISTS idx_pg_run_history_connector_completed ON run_history(connector_id, completed_at, id)"
-    );
     await client.query("COMMIT");
   } catch (err) {
     try {
