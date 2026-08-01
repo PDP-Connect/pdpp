@@ -437,6 +437,8 @@ export interface ControllerOptions {
    * low to make detection synchronous without real timers.
    */
   browserSurfaceMidWaitPollIntervalMs?: number;
+  /** Injectable clock for orphan-surface idle-TTL staleness checks. Defaults to Date.now. Tests inject a fake clock. */
+  browserSurfaceNowMs?: () => number;
   /**
    * Optional preflight readiness probe. Production wiring installs a default
    * HTTP-based probe once the lease manager and allocator both report a
@@ -2214,6 +2216,7 @@ function browserSurfaceReclaimOverridesFor(
     | "browserSurfaceStartingPollRetryAttempts"
     | "browserSurfaceStartingPollRetryDelayMs"
     | "sleep"
+    | "nowMs"
   >
 > {
   return {
@@ -2230,6 +2233,7 @@ function browserSurfaceReclaimOverridesFor(
       ? {}
       : { browserSurfaceStartingPollRetryDelayMs: opts.browserSurfaceStartingPollRetryDelayMs }),
     ...(opts.browserSurfaceSleep ? { sleep: opts.browserSurfaceSleep } : {}),
+    ...(opts.browserSurfaceNowMs ? { nowMs: opts.browserSurfaceNowMs } : {}),
   };
 }
 

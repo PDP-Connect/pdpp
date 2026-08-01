@@ -39,6 +39,16 @@ import { createWindowSettleReconciliation } from "./window-settle-reconciliation
 
 // ─── Internal types ──────────────────────────────────────────────────────────
 
+// Fleet-scale bound: a live deployment can accumulate hundreds of historical
+// unhealthy/no-lease durable rows (each one a past surface_failed/host-loss
+// terminalization). Reprocessing all of them every sweep tick (default 30s)
+// would mean unbounded sequential allocator.stopSurface calls per tick. Each
+// retired row transitions out of the "unhealthy, no lease" eligibility set
+// (to "stopping") the moment its stop succeeds OR the allocator confirms it
+// is already gone, so a small per-tick batch still converges over a few
+// ticks without needing new pagination machinery in the store.
+const MAX_ORPHAN_SURFACE_RETIREMENTS_PER_SWEEP = 5;
+
 interface ControllerLogger {
   error?: (message: string) => void;
   warn?: (message: string) => void;
@@ -147,6 +157,8 @@ export interface BrowserSurfaceManagerDeps {
     ReadonlyArray<{ readonly connector_instance_id?: string | null; readonly run_id: string }>
   >;
   readonly log: ControllerLogger;
+  /** Injectable clock for orphan-surface idle-TTL staleness checks. Defaults to Date.now. */
+  readonly nowMs?: () => number;
   readonly pendingBrowserSurfaceLaunches: Map<string, RunNowOptions>;
   /**
    * Resolves the durable owner of an admitted connection when a process restart
@@ -255,6 +267,7 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     browserSurfaceStartingPollRetryAttempts = 3,
     browserSurfaceStartingPollRetryDelayMs = 250,
     sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+    nowMs = () => Date.now(),
     listPersistedActiveRuns,
     log,
     pendingBrowserSurfaceLaunches,
@@ -1556,6 +1569,110 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     return cleanupResult.promoted.map((lease) => projectBrowserSurfaceLease(lease));
   }
 
+  /**
+   * Retire a durable browser_surfaces row that is health="unhealthy", has no
+   * active lease, and has aged past idleTtlMs since last_used_at — even
+   * though the row is no longer (or never was) present in the lease
+   * manager's in-memory map. This is the fix for the 2026-07-31 orphan-
+   * capacity incident: reconcileSurfacesWithAllocator's own eviction branch
+   * (`live.health === "unhealthy"` -> invalidateSurface) removes a wedged
+   * surface from `#surfaces` and persists it "unhealthy", but
+   * invalidateSurface never calls allocator.stopSurface — and
+   * cleanupIdleSurfaces only ever considers surfaces still present in
+   * `#surfaces` at health "ready". Once a surface reaches persisted
+   * "unhealthy" with no lease, no other code path in this file or in
+   * @opendatalabs/remote-surface ever calls stopSurface for it, so its
+   * allocator container (and the host port/capacity slot it holds) leaks
+   * forever. This reads the durable store directly — not the manager's
+   * `#surfaces` map — because the whole point is to catch rows the manager
+   * has already forgotten about.
+   */
+  async function retireOrphanedUnhealthyBrowserSurfaces(): Promise<void> {
+    if (!(browserSurfaceLeaseStore && replacementAwareAllocator && browserSurfaceLeaseManager)) {
+      return;
+    }
+    const { idleTtlMs, surfaceMode } = browserSurfaceLeaseManager.config;
+    if (surfaceMode !== "dynamic") {
+      return;
+    }
+    const now = nowMs();
+    const persistedSurfaces = await browserSurfaceLeaseStore.listSurfaces();
+    const orphans = persistedSurfaces
+      .filter(
+        (surface) =>
+          surface.backend === "neko" &&
+          surface.health === "unhealthy" &&
+          !surface.active_lease_id &&
+          !surface.retained &&
+          now - Date.parse(surface.last_used_at) >= idleTtlMs
+      )
+      // Deterministic, stable ordering (oldest-stale first, surface_id as a
+      // tiebreaker) so a fleet with more orphans than one tick's budget
+      // makes visible forward progress across ticks instead of the same
+      // prefix winning a race against store ordering every time, and so the
+      // most-overdue rows are retired first.
+      .sort(
+        (left, right) =>
+          Date.parse(left.last_used_at) - Date.parse(right.last_used_at) ||
+          left.surface_id.localeCompare(right.surface_id)
+      )
+      .slice(0, MAX_ORPHAN_SURFACE_RETIREMENTS_PER_SWEEP);
+    for (const orphan of orphans) {
+      // One orphan's allocator failure must not block the rest of this
+      // tick's bounded batch — retireOrphanedUnhealthyBrowserSurface already
+      // catches and logs per-item, leaving a failed row untouched (still
+      // "unhealthy", still eligible) so it is naturally retried on the next
+      // tick without any separate retry bookkeeping.
+      // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
+      await retireOrphanedUnhealthyBrowserSurface(orphan);
+    }
+  }
+
+  async function retireOrphanedUnhealthyBrowserSurface(orphan: BrowserSurface): Promise<void> {
+    if (!(browserSurfaceLeaseStore && replacementAwareAllocator && browserSurfaceLeaseManager)) {
+      return;
+    }
+    // The manager may still independently track this surface_id (e.g. this
+    // exact tick's own reconcileSurfacesWithAllocator pass has not yet run,
+    // or the row predates this manager instance's boot). Only ever act when
+    // the manager agrees no non-terminal lease owns it — never race a live
+    // starting_surface/leased ownership, matching cleanupIdleSurfaces' own
+    // active_lease_id guard plus the equivalent check for a not-yet-leased
+    // starting_surface.
+    const trackedSurface = browserSurfaceLeaseManager.getSurface(orphan.surface_id);
+    if (trackedSurface?.active_lease_id) {
+      return;
+    }
+    const ownsNonTerminalLease = browserSurfaceLeaseManager
+      .listLeases()
+      .some(
+        (lease) =>
+          lease.surface_id === orphan.surface_id && (lease.status === "starting_surface" || lease.status === "leased")
+      );
+    if (ownsNonTerminalLease) {
+      return;
+    }
+    try {
+      const stopped = await replacementAwareAllocator.stopSurface({
+        reason: "reconcile",
+        surfaceId: orphan.surface_id,
+      });
+      await browserSurfaceLeaseStore.withLeaseTransaction(async (store) => {
+        await store.upsertSurface({
+          ...(stopped ?? orphan),
+          backend: "neko",
+          connector_id: orphan.connector_id,
+          health: "stopping",
+          profile_key: orphan.profile_key,
+          surface_id: orphan.surface_id,
+        });
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log.warn?.(`[controller] orphan surface retirement stopSurface(${orphan.surface_id}) failed: ${message}`);
+    }
+  }
+
   async function expireBrowserSurfaceWaitsWithoutPromotion(): Promise<BrowserSurfaceLease[]> {
     if (!browserSurfaceLeaseManager) {
       return [];
@@ -1663,6 +1780,7 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     try {
       await reconcileBrowserSurfacesWithAllocatorAtBoot();
       await cleanupIdleBrowserSurfaces();
+      await retireOrphanedUnhealthyBrowserSurfaces();
       await expireBrowserSurfaceWaits();
       await sweepReclaimStillQueuedLeases(browserSurfaceLeaseManager);
     } finally {

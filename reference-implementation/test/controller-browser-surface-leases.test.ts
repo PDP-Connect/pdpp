@@ -390,6 +390,7 @@ interface SetupOptions {
   beforeBrowserSurfaceLeaseRelease?: (args: { readonly runId: string }) => Promise<void> | void;
   browserSurfaceAllocator?: BrowserSurfaceAllocator;
   browserSurfaceLeaseStore?: BrowserSurfaceLeaseStore;
+  browserSurfaceNowMs?: () => number;
   browserSurfaceReadinessProbe?: BrowserSurfaceReadinessProbe;
   browserSurfaceReadinessTimeoutMs?: number;
   browserSurfaceReclaimRetryAttempts?: number;
@@ -416,6 +417,7 @@ function setup(
     manager = createManager(),
     browserSurfaceAllocator,
     browserSurfaceLeaseStore,
+    browserSurfaceNowMs,
     browserSurfaceReadinessProbe,
     browserSurfaceReadinessTimeoutMs,
     browserSurfaceReclaimRetryAttempts,
@@ -454,6 +456,7 @@ function setup(
     ...(browserSurfaceAllocator ? { browserSurfaceAllocator } : {}),
     browserSurfaceLeaseManager: manager,
     ...(browserSurfaceLeaseStore ? { browserSurfaceLeaseStore } : {}),
+    ...(browserSurfaceNowMs ? { browserSurfaceNowMs } : {}),
     ...(browserSurfaceReadinessProbe ? { browserSurfaceReadinessProbe } : {}),
     ...(browserSurfaceReadinessTimeoutMs === undefined ? {} : { browserSurfaceReadinessTimeoutMs }),
     ...(beforeBrowserSurfaceLeaseRelease ? { beforeBrowserSurfaceLeaseRelease } : {}),
@@ -2427,4 +2430,433 @@ test("overlapping sweep calls: the second is a no-op while the first is in fligh
 
   unblockAllocator();
   await firstSweep;
+});
+
+// 2026-07-31 second stale-capacity incident, distinct from the boot-reconcile
+// "unhealthy -> starting" downgrade case above. Live evidence: the periodic
+// sweep ran and moved four OTHER surfaces to "stopping", but two allocator
+// containers (pdpp-neko-amazon-dd6ffc79c80ddfd3 / pdpp-neko-amazon-
+// 83b5b114cb3b7f72) stayed running+Docker-healthy and capacity-consuming at
+// the allocator/Docker layer, while their durable browser_surfaces rows sat
+// at health="unhealthy", no active lease, last_used_at ~23:51, untouched by
+// every sweep tick since. Root cause: `getSurfaceStatus` for these two
+// reports health "unhealthy" directly (not null, not "starting") because
+// each is genuinely wedged in a state #readiness() classifies unhealthy
+// (e.g. a live-but-non-Chromium CDP response) rather than merely cold. That
+// drives reconcileSurfacesWithAllocator's OTHER branch: `live.health ===
+// "unhealthy"` -> `invalidateSurface`, which deletes the in-memory/manager
+// row and persists health="unhealthy" — but invalidateSurface never calls
+// `allocator.stopSurface`. cleanupIdleSurfaces only reaps `health ===
+// "ready"` surfaces still present in the manager's map, so once a surface is
+// evicted to "unhealthy" it is invisible to every reap path forever: nothing
+// in the whole periodic sweep ever calls stopSurface for it, and the
+// container — and the allocator port it holds — leaks permanently.
+test("periodic sweep retires a stale allocator-orphaned unhealthy surface with no lease, even though it is invisible to idle cleanup", async (t) => {
+  const now = new Date("2026-08-01T01:20:00.000Z");
+  const stopRequests: StopBrowserSurfaceRequest[] = [];
+  const orphanSurfaces: BrowserSurface[] = [
+    {
+      backend: "neko",
+      cdp_url: "http://127.0.0.1:9222/surface_amazon_orphan_1",
+      connector_id: "managed",
+      container_id: "pdpp-neko-amazon-dd6ffc79c80ddfd3",
+      created_at: "2026-07-31T23:00:00.000Z",
+      health: "unhealthy",
+      last_used_at: "2026-07-31T23:51:00.000Z",
+      profile_key: "managed-profile:acct-a",
+      stream_base_url: "http://127.0.0.1:8080/surface_amazon_orphan_1",
+      surface_id: "bs_4f3d919a",
+      surface_subject_id: "acct-a",
+    },
+    {
+      backend: "neko",
+      cdp_url: "http://127.0.0.1:9222/surface_amazon_orphan_2",
+      connector_id: "managed",
+      container_id: "pdpp-neko-amazon-83b5b114cb3b7f72",
+      created_at: "2026-07-31T23:00:00.000Z",
+      health: "unhealthy",
+      last_used_at: "2026-07-31T23:51:00.000Z",
+      profile_key: "managed-profile:acct-b",
+      stream_base_url: "http://127.0.0.1:8080/surface_amazon_orphan_2",
+      surface_id: "bs_1ec177c0",
+      surface_subject_id: "acct-b",
+    },
+  ];
+  const manager = new BrowserSurfaceLeaseManager({
+    config: {
+      defaultPriorityClass: "background",
+      idleTtlMs: 600_000,
+      leaseWaitTimeoutMs: 1_800_000,
+      managedConnectors: new Set(["managed"]),
+      priorityRanks: DEFAULT_NEKO_PRIORITY_RANKS,
+      surfaceCap: 100,
+      surfaceMode: "dynamic",
+    },
+    initialSurfaces: orphanSurfaces,
+    makeLeaseId: () => "unused-lease",
+    makeSurfaceId: () => "unused-surface",
+    nextFencingToken: () => 1,
+    now: () => now,
+  });
+  const browserSurfaceLeaseStore = createMemoryBrowserSurfaceLeaseStore({ surfaces: orphanSurfaces });
+  // The container is genuinely still running and Docker-healthy (matching
+  // the live evidence) — the allocator's own readiness classification is
+  // what pins it at "unhealthy" (not a transient/absent probe), so
+  // getSurfaceStatus reports the same health every poll, forever.
+  const allocator: BrowserSurfaceAllocator = {
+    ensureSurface: (request) =>
+      Promise.reject(new Error(`unexpected ensureSurface for ${request.surfaceId} in orphan-reconcile test`)),
+    getSurfaceStatus: (surfaceId) => {
+      const match = orphanSurfaces.find((surface) => surface.surface_id === surfaceId);
+      return Promise.resolve(match ? { ...match, health: "unhealthy" as const } : null);
+    },
+    listSurfaces: () =>
+      Promise.resolve(orphanSurfaces.map((surface) => ({ ...surface, health: "unhealthy" as const }))),
+    stopSurface: (request) => {
+      stopRequests.push(request);
+      const match = orphanSurfaces.find((surface) => surface.surface_id === request.surfaceId);
+      return Promise.resolve(match ? { ...match, health: "stopping" as const } : null);
+    },
+  };
+  const { controller } = setup(t, {
+    browserSurfaceAllocator: allocator,
+    browserSurfaceLeaseStore,
+    browserSurfaceNowMs: () => now.getTime(),
+    manager,
+  });
+
+  // Reproduce the exact live sequence: boot reconcile runs first (as it does
+  // in every sweep tick), then the rest of the periodic sweep.
+  await controller.sweepBrowserSurfaceLeases();
+
+  // reconcileSurfacesWithAllocator's eviction branch already removed both
+  // surfaces from the manager's in-memory map on this very tick.
+  assert.equal(manager.getSurface("bs_4f3d919a"), undefined);
+  assert.equal(manager.getSurface("bs_1ec177c0"), undefined);
+
+  // The decisive assertion: the sweep must retire the orphaned allocator
+  // containers, not just forget about them in-memory. Before the fix, this
+  // fails — stopRequests stays empty forever, exactly matching the live
+  // symptom (containers still running+Docker-healthy after every sweep).
+  assert.deepEqual(
+    stopRequests.map((request) => request.surfaceId).sort((left, right) => left.localeCompare(right)),
+    ["bs_1ec177c0", "bs_4f3d919a"]
+  );
+  assert.ok(
+    stopRequests.every((request) => request.reason === "reconcile"),
+    "orphan retirement is a reconcile-driven stop, not idle_ttl/capacity_pressure/operator/surface_failed"
+  );
+
+  // Preserved invariant: the durable row is updated to reflect the retirement
+  // (still not leaseable, but no longer silently orphaned).
+  const persisted1 = await browserSurfaceLeaseStore.getSurface("bs_4f3d919a");
+  const persisted2 = await browserSurfaceLeaseStore.getSurface("bs_1ec177c0");
+  assert.equal(persisted1?.health, "stopping");
+  assert.equal(persisted2?.health, "stopping");
+});
+
+// Preserved-invariant counterpart to the orphan-retirement test above: an
+// unhealthy, no-lease surface that is still WITHIN its idle grace window
+// (last_used_at recent) must not be retired yet — orphan reconcile must obey
+// the same idleTtlMs bound as ordinary idle cleanup, not an instant sweep.
+test("periodic sweep does not retire an unhealthy no-lease surface before it ages past idleTtlMs", async (t) => {
+  const now = new Date("2026-08-01T01:20:00.000Z");
+  const stopRequests: StopBrowserSurfaceRequest[] = [];
+  const freshOrphan: BrowserSurface = {
+    backend: "neko",
+    cdp_url: "http://127.0.0.1:9222/surface_amazon_fresh",
+    connector_id: "managed",
+    container_id: "pdpp-neko-amazon-fresh",
+    created_at: "2026-08-01T01:15:00.000Z",
+    health: "unhealthy",
+    last_used_at: "2026-08-01T01:19:00.000Z",
+    profile_key: "managed-profile:acct-c",
+    stream_base_url: "http://127.0.0.1:8080/surface_amazon_fresh",
+    surface_id: "bs_fresh_orphan",
+    surface_subject_id: "acct-c",
+  };
+  const manager = new BrowserSurfaceLeaseManager({
+    config: {
+      defaultPriorityClass: "background",
+      idleTtlMs: 600_000,
+      leaseWaitTimeoutMs: 1_800_000,
+      managedConnectors: new Set(["managed"]),
+      priorityRanks: DEFAULT_NEKO_PRIORITY_RANKS,
+      surfaceCap: 100,
+      surfaceMode: "dynamic",
+    },
+    initialSurfaces: [freshOrphan],
+    makeLeaseId: () => "unused-lease",
+    makeSurfaceId: () => "unused-surface",
+    nextFencingToken: () => 1,
+    now: () => now,
+  });
+  const browserSurfaceLeaseStore = createMemoryBrowserSurfaceLeaseStore({ surfaces: [freshOrphan] });
+  const allocator: BrowserSurfaceAllocator = {
+    ensureSurface: (request) => Promise.reject(new Error(`unexpected ensureSurface for ${request.surfaceId}`)),
+    getSurfaceStatus: (surfaceId) =>
+      Promise.resolve(surfaceId === freshOrphan.surface_id ? { ...freshOrphan, health: "unhealthy" as const } : null),
+    listSurfaces: () => Promise.resolve([{ ...freshOrphan, health: "unhealthy" as const }]),
+    stopSurface: (request) => {
+      stopRequests.push(request);
+      return Promise.resolve({ ...freshOrphan, health: "stopping" as const });
+    },
+  };
+  const { controller } = setup(t, {
+    browserSurfaceAllocator: allocator,
+    browserSurfaceLeaseStore,
+    browserSurfaceNowMs: () => now.getTime(),
+    manager,
+  });
+
+  await controller.sweepBrowserSurfaceLeases();
+
+  assert.equal(stopRequests.length, 0, "must not retire a surface still inside its idle grace window");
+});
+
+// Fleet-scale: a live deployment can accumulate far more than one sweep
+// tick's worth of stale unhealthy/no-lease rows (hundreds, per historical
+// incident volume). Orphan retirement must bound its per-tick allocator
+// calls rather than firing one stopSurface per historical row every 30s, and
+// the bounded batch must still make full forward progress across ticks
+// (each retired row leaves the eligibility set, so the next tick's query
+// naturally picks up the next-oldest batch) rather than silently dropping
+// the excess forever.
+test("orphan retirement bounds allocator calls to a small per-tick batch and converges across ticks", async (t) => {
+  const now = new Date("2026-08-01T01:20:00.000Z");
+  const stopRequests: StopBrowserSurfaceRequest[] = [];
+  const totalOrphans = 12;
+  const manyOrphans: BrowserSurface[] = Array.from({ length: totalOrphans }, (_, index) => ({
+    backend: "neko" as const,
+    cdp_url: `http://127.0.0.1:9222/surface_fleet_${index}`,
+    connector_id: "managed",
+    container_id: `pdpp-neko-fleet-${index}`,
+    created_at: "2026-07-31T20:00:00.000Z",
+    health: "unhealthy" as const,
+    // Strictly increasing last_used_at so oldest-first ordering is
+    // observable and deterministic across the whole fleet.
+    last_used_at: new Date(Date.parse("2026-07-31T20:00:00.000Z") + index * 1000).toISOString(),
+    profile_key: `managed-profile:acct-${index}`,
+    stream_base_url: `http://127.0.0.1:8080/surface_fleet_${index}`,
+    surface_id: `bs_fleet_${String(index).padStart(2, "0")}`,
+    surface_subject_id: `acct-${index}`,
+  }));
+  const manager = new BrowserSurfaceLeaseManager({
+    config: {
+      defaultPriorityClass: "background",
+      idleTtlMs: 600_000,
+      leaseWaitTimeoutMs: 1_800_000,
+      managedConnectors: new Set(["managed"]),
+      priorityRanks: DEFAULT_NEKO_PRIORITY_RANKS,
+      surfaceCap: 100,
+      surfaceMode: "dynamic",
+    },
+    initialSurfaces: manyOrphans,
+    makeLeaseId: () => "unused-lease",
+    makeSurfaceId: () => "unused-surface",
+    nextFencingToken: () => 1,
+    now: () => now,
+  });
+  const browserSurfaceLeaseStore = createMemoryBrowserSurfaceLeaseStore({ surfaces: manyOrphans });
+  const allocator: BrowserSurfaceAllocator = {
+    ensureSurface: (request) => Promise.reject(new Error(`unexpected ensureSurface for ${request.surfaceId}`)),
+    getSurfaceStatus: (surfaceId) => {
+      const match = manyOrphans.find((surface) => surface.surface_id === surfaceId);
+      return Promise.resolve(match ? { ...match, health: "unhealthy" as const } : null);
+    },
+    listSurfaces: () => Promise.resolve(manyOrphans.map((surface) => ({ ...surface, health: "unhealthy" as const }))),
+    stopSurface: (request) => {
+      stopRequests.push(request);
+      const match = manyOrphans.find((surface) => surface.surface_id === request.surfaceId);
+      return Promise.resolve(match ? { ...match, health: "stopping" as const } : null);
+    },
+  };
+  const { controller } = setup(t, {
+    browserSurfaceAllocator: allocator,
+    browserSurfaceLeaseStore,
+    browserSurfaceNowMs: () => now.getTime(),
+    manager,
+  });
+
+  await controller.sweepBrowserSurfaceLeases();
+
+  // First tick: bounded batch, not all 12 — and the oldest (lowest index)
+  // rows win, proving deterministic oldest-first ordering.
+  assert.equal(stopRequests.length, 5, "one tick must not exceed the small per-tick batch bound");
+  assert.deepEqual(
+    stopRequests.map((request) => request.surfaceId),
+    ["bs_fleet_00", "bs_fleet_01", "bs_fleet_02", "bs_fleet_03", "bs_fleet_04"]
+  );
+  const persistedAfterFirstTick = await Promise.all(
+    stopRequests.map((request) => browserSurfaceLeaseStore.getSurface(request.surfaceId))
+  );
+  assert.ok(persistedAfterFirstTick.every((surface) => surface?.health === "stopping"));
+
+  // Second tick: the first batch already transitioned to "stopping" (no
+  // longer eligible — health !== "unhealthy"), so this tick's bounded batch
+  // picks up the NEXT five oldest rows, not a repeat of the first five.
+  await controller.sweepBrowserSurfaceLeases();
+  assert.equal(stopRequests.length, 10);
+  assert.deepEqual(
+    stopRequests.slice(5).map((request) => request.surfaceId),
+    ["bs_fleet_05", "bs_fleet_06", "bs_fleet_07", "bs_fleet_08", "bs_fleet_09"]
+  );
+
+  // Third tick: only 2 remain eligible — the batch is naturally smaller than
+  // the bound, and the whole fleet has now converged to zero remaining
+  // "unhealthy"/no-lease orphans.
+  await controller.sweepBrowserSurfaceLeases();
+  assert.equal(stopRequests.length, 12);
+  const stillUnhealthy = (await browserSurfaceLeaseStore.listSurfaces()).filter(
+    (surface) => surface.health === "unhealthy" && !surface.active_lease_id
+  );
+  assert.equal(stillUnhealthy.length, 0, "the whole fleet converges to zero orphans across a few bounded ticks");
+});
+
+// The allocator may report a surface as already gone (stopSurface resolves
+// null — e.g. the container was already removed out-of-band). That must
+// still count as a successful retirement, not a failure to retry forever:
+// the durable row transitions to "stopping" exactly like a live stop, so it
+// leaves the "unhealthy, no lease" eligibility set for good.
+test("orphan retirement transitions the durable row even when the allocator reports the surface already gone", async (t) => {
+  const now = new Date("2026-08-01T01:20:00.000Z");
+  const stopRequests: StopBrowserSurfaceRequest[] = [];
+  const alreadyGoneOrphan: BrowserSurface = {
+    backend: "neko",
+    cdp_url: "http://127.0.0.1:9222/surface_already_gone",
+    connector_id: "managed",
+    container_id: "pdpp-neko-already-gone",
+    created_at: "2026-07-31T20:00:00.000Z",
+    health: "unhealthy",
+    last_used_at: "2026-07-31T23:51:00.000Z",
+    profile_key: "managed-profile:acct-gone",
+    stream_base_url: "http://127.0.0.1:8080/surface_already_gone",
+    surface_id: "bs_already_gone",
+    surface_subject_id: "acct-gone",
+  };
+  const manager = new BrowserSurfaceLeaseManager({
+    config: {
+      defaultPriorityClass: "background",
+      idleTtlMs: 600_000,
+      leaseWaitTimeoutMs: 1_800_000,
+      managedConnectors: new Set(["managed"]),
+      priorityRanks: DEFAULT_NEKO_PRIORITY_RANKS,
+      surfaceCap: 100,
+      surfaceMode: "dynamic",
+    },
+    initialSurfaces: [alreadyGoneOrphan],
+    makeLeaseId: () => "unused-lease",
+    makeSurfaceId: () => "unused-surface",
+    nextFencingToken: () => 1,
+    now: () => now,
+  });
+  const browserSurfaceLeaseStore = createMemoryBrowserSurfaceLeaseStore({ surfaces: [alreadyGoneOrphan] });
+  const allocator: BrowserSurfaceAllocator = {
+    ensureSurface: (request) => Promise.reject(new Error(`unexpected ensureSurface for ${request.surfaceId}`)),
+    getSurfaceStatus: () => Promise.resolve(null),
+    listSurfaces: () => Promise.resolve([]),
+    stopSurface: (request) => {
+      stopRequests.push(request);
+      // The allocator has no record of this container anymore.
+      return Promise.resolve(null);
+    },
+  };
+  const { controller } = setup(t, {
+    browserSurfaceAllocator: allocator,
+    browserSurfaceLeaseStore,
+    browserSurfaceNowMs: () => now.getTime(),
+    manager,
+  });
+
+  await controller.sweepBrowserSurfaceLeases();
+  assert.equal(stopRequests.length, 1);
+  assert.equal((await browserSurfaceLeaseStore.getSurface("bs_already_gone"))?.health, "stopping");
+
+  // A second tick must not re-stop it — the row already left the eligibility
+  // set, so it is not retried forever just because the allocator's answer
+  // was "already gone" rather than a fresh in-place transition.
+  await controller.sweepBrowserSurfaceLeases();
+  assert.equal(stopRequests.length, 1, "an already-gone surface must not be retried forever");
+});
+
+// A transient allocator failure for one candidate in the bounded batch must
+// not block retirement of the other, healthy-to-retire candidates in the
+// same tick — matching cleanupIdleSurfaces' own per-item resilience.
+test("one orphan's allocator stopSurface failure does not block retirement of the rest of the batch", async (t) => {
+  const now = new Date("2026-08-01T01:20:00.000Z");
+  const stopRequests: StopBrowserSurfaceRequest[] = [];
+  const orphans: BrowserSurface[] = ["bs_ok_1", "bs_fails", "bs_ok_2"].map((surfaceId, index) => ({
+    backend: "neko" as const,
+    cdp_url: `http://127.0.0.1:9222/${surfaceId}`,
+    connector_id: "managed",
+    container_id: `pdpp-neko-${surfaceId}`,
+    created_at: "2026-07-31T20:00:00.000Z",
+    health: "unhealthy" as const,
+    last_used_at: new Date(Date.parse("2026-07-31T20:00:00.000Z") + index * 1000).toISOString(),
+    profile_key: `managed-profile:acct-${index}`,
+    stream_base_url: `http://127.0.0.1:8080/${surfaceId}`,
+    surface_id: surfaceId,
+    surface_subject_id: `acct-${index}`,
+  }));
+  const manager = new BrowserSurfaceLeaseManager({
+    config: {
+      defaultPriorityClass: "background",
+      idleTtlMs: 600_000,
+      leaseWaitTimeoutMs: 1_800_000,
+      managedConnectors: new Set(["managed"]),
+      priorityRanks: DEFAULT_NEKO_PRIORITY_RANKS,
+      surfaceCap: 100,
+      surfaceMode: "dynamic",
+    },
+    initialSurfaces: orphans,
+    makeLeaseId: () => "unused-lease",
+    makeSurfaceId: () => "unused-surface",
+    nextFencingToken: () => 1,
+    now: () => now,
+  });
+  const browserSurfaceLeaseStore = createMemoryBrowserSurfaceLeaseStore({ surfaces: orphans });
+  const allocator: BrowserSurfaceAllocator = {
+    ensureSurface: (request) => Promise.reject(new Error(`unexpected ensureSurface for ${request.surfaceId}`)),
+    getSurfaceStatus: (surfaceId) => {
+      const match = orphans.find((surface) => surface.surface_id === surfaceId);
+      return Promise.resolve(match ? { ...match, health: "unhealthy" as const } : null);
+    },
+    listSurfaces: () => Promise.resolve(orphans.map((surface) => ({ ...surface, health: "unhealthy" as const }))),
+    stopSurface: (request) => {
+      stopRequests.push(request);
+      if (request.surfaceId === "bs_fails") {
+        return Promise.reject(new Error("transient allocator error"));
+      }
+      const match = orphans.find((surface) => surface.surface_id === request.surfaceId);
+      return Promise.resolve(match ? { ...match, health: "stopping" as const } : null);
+    },
+  };
+  const { controller } = setup(t, {
+    browserSurfaceAllocator: allocator,
+    browserSurfaceLeaseStore,
+    browserSurfaceNowMs: () => now.getTime(),
+    manager,
+  });
+
+  await controller.sweepBrowserSurfaceLeases();
+
+  // All three were attempted (batch of 3 is within the bound) despite the
+  // middle one failing.
+  assert.deepEqual(
+    stopRequests.map((request) => request.surfaceId),
+    ["bs_ok_1", "bs_fails", "bs_ok_2"]
+  );
+  assert.equal((await browserSurfaceLeaseStore.getSurface("bs_ok_1"))?.health, "stopping");
+  assert.equal((await browserSurfaceLeaseStore.getSurface("bs_ok_2"))?.health, "stopping");
+  // The failed one is untouched — still unhealthy, still eligible, naturally
+  // retried on the next tick with no separate retry bookkeeping needed.
+  assert.equal((await browserSurfaceLeaseStore.getSurface("bs_fails"))?.health, "unhealthy");
+
+  // Next tick retries exactly the one that failed (the other two already
+  // left the eligibility set).
+  await controller.sweepBrowserSurfaceLeases();
+  assert.deepEqual(
+    stopRequests.slice(3).map((request) => request.surfaceId),
+    ["bs_fails"]
+  );
 });
