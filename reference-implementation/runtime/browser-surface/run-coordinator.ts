@@ -39,6 +39,12 @@ import { createWindowSettleReconciliation } from "./window-settle-reconciliation
 
 // ─── Internal types ──────────────────────────────────────────────────────────
 
+/** run_id/lease_id context threaded into wrapAllocatorWithTransientPollRetry's exhaustion warning. leaseId is a thunk because the same wrapper instance outlives lease reacquisition within one starting-surface wait loop. */
+interface TransientPollRetryContext {
+  readonly leaseId: () => string;
+  readonly runId: string;
+}
+
 // Fleet-scale bound: a live deployment can accumulate hundreds of historical
 // unhealthy/no-lease durable rows (each one a past surface_failed/host-loss
 // terminalization). Reprocessing all of them every sweep tick (default 30s)
@@ -843,8 +849,11 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
    * package and the lease manager's own terminal-lease bookkeeping, which is
    * unchanged and still fails closed for a genuinely dead surface.
    */
-  function wrapAllocatorWithTransientPollRetry(allocator: BrowserSurfaceAllocator): BrowserSurfaceAllocator {
-    async function withRetry<T>(call: () => Promise<T>): Promise<T> {
+  function wrapAllocatorWithTransientPollRetry(
+    allocator: BrowserSurfaceAllocator,
+    context: TransientPollRetryContext
+  ): BrowserSurfaceAllocator {
+    async function withRetry<T>(operation: string, surfaceId: string, call: () => Promise<T>): Promise<T> {
       const attempts = Math.max(1, browserSurfaceStartingPollRetryAttempts);
       let lastError: unknown;
       for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -858,14 +867,74 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
           }
         }
       }
+      emitExhaustedTransientPollRetryWarning({ attempts, context, error: lastError, operation, surfaceId });
       throw lastError;
     }
     return {
-      ensureSurface: (request) => withRetry(() => allocator.ensureSurface(request)),
-      getSurfaceStatus: (surfaceId) => withRetry(() => allocator.getSurfaceStatus(surfaceId)),
+      ensureSurface: (request) => withRetry("ensureSurface", request.surfaceId, () => allocator.ensureSurface(request)),
+      getSurfaceStatus: (surfaceId) =>
+        withRetry("getSurfaceStatus", surfaceId, () => allocator.getSurfaceStatus(surfaceId)),
       listSurfaces: () => allocator.listSurfaces(),
       stopSurface: (request) => allocator.stopSurface(request),
     };
+  }
+
+  /**
+   * Emits exactly one bounded, allowlisted warning per exhausted
+   * ensureSurface/getSurfaceStatus retry budget, immediately before the
+   * error reaches remote-surface's ensureStartingSurfaceReady (whose bare
+   * catch{} erases it into an untyped surface_start_failed with no
+   * operation, HTTP status, client code, category, or retryable bit — see
+   * the 2026-08-01 Amazon UAT root-cause gate). Reads every error field
+   * defensively (`unknown`, optional chaining, scalar-only), since the
+   * thrown value can be a NekoSurfaceAllocatorError, a category-carrying
+   * allocator error, or a bare Error/thrown non-error. Never includes
+   * message, stack, cause, response body, URL, profile key, or credentials.
+   */
+  function emitExhaustedTransientPollRetryWarning(input: {
+    attempts: number;
+    context: TransientPollRetryContext;
+    error: unknown;
+    operation: string;
+    surfaceId: string;
+  }): void {
+    const { attempts, context, error, operation, surfaceId } = input;
+    const record = {
+      attempts,
+      category: readBoundedErrorField(error, "category"),
+      code: readBoundedErrorField(error, "code"),
+      error_name: readBoundedErrorField(error, "name"),
+      lease_id: context.leaseId(),
+      operation,
+      retryable: readBoundedErrorField(error, "retryable"),
+      run_id: context.runId,
+      status: readBoundedErrorField(error, "status"),
+      surface_id: surfaceId,
+    };
+    log.warn?.(`[controller] browser-surface allocator poll retry exhausted: ${JSON.stringify(record)}`);
+  }
+
+  /**
+   * Reads one field off an unknown thrown value and returns it ONLY if it
+   * is a closed, bounded scalar (string/number/boolean, string capped at
+   * 200 chars). Anything else — objects, arrays, functions, long strings,
+   * or a missing/non-object error — becomes null. This is the allowlist
+   * boundary: it is the only place that touches the thrown error's shape,
+   * so it cannot leak message/stack/cause/body/URL/credentials even if a
+   * future error type adds them under a scalar-looking name.
+   */
+  function readBoundedErrorField(error: unknown, field: string): string | number | boolean | null {
+    if (!(error && typeof error === "object")) {
+      return null;
+    }
+    const value = (error as Record<string, unknown>)[field];
+    if (typeof value === "number" || typeof value === "boolean") {
+      return value;
+    }
+    if (typeof value === "string") {
+      return value.length > 200 ? value.slice(0, 200) : value;
+    }
+    return null;
   }
 
   async function waitForStartingBrowserSurface(
@@ -881,7 +950,8 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
 
     let current = lease;
     const allocator = wrapAllocatorWithTransientPollRetry(
-      replacementAwareAllocator ?? UNCONFIGURED_BROWSER_SURFACE_ALLOCATOR
+      replacementAwareAllocator ?? UNCONFIGURED_BROWSER_SURFACE_ALLOCATOR,
+      { leaseId: () => current.lease_id, runId }
     );
     while (current.status === "starting_surface") {
       // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.

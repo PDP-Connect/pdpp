@@ -50,6 +50,10 @@ import type { ActiveRunRecord, SchedulerStore } from "../server/stores/scheduler
 import { makeTemporaryDbPath } from "./helpers/temp-dir.ts";
 
 const REGEXP_FIXTURE_ADMISSION_REJECTED = /fixture admission rejected/;
+const REGEXP_LEAKED_SECRET = /secret-token-xyz/;
+const REGEXP_LEAKED_BEARER = /Bearer/;
+const REGEXP_LEAKED_STACK_TRACE = /\.ts:\d+|at Object|at async/;
+const REGEXP_LEAKED_NON_ALLOWLISTED_FIELD = /surfaceIdSeen/;
 
 const MANIFEST = {
   capabilities: {
@@ -295,6 +299,7 @@ interface SetupOptions {
   browserSurfaceStartingPollRetryAttempts?: number;
   browserSurfaceStartingPollRetryDelayMs?: number;
   leaseManager?: BrowserSurfaceLeaseManager;
+  onWarn?: (message: string) => void;
   probe?: BrowserSurfaceReadinessProbe;
   runConnectorImpl?: (
     opts: RuntimeRunConnectorOptions
@@ -308,6 +313,7 @@ function setup(
     browserSurfaceLeaseStore,
     browserSurfaceStartingPollRetryAttempts,
     browserSurfaceStartingPollRetryDelayMs,
+    onWarn,
     probe,
     leaseManager,
     runConnectorImpl,
@@ -331,7 +337,7 @@ function setup(
     browserSurfaceLeaseManager: leaseManager || createManagerWithReadySurface(),
     ...(probe ? { browserSurfaceReadinessProbe: probe } : {}),
     connectorPathResolver: () => "/tmp/connector.js",
-    logger: { error: () => undefined, warn: () => undefined },
+    logger: { error: () => undefined, warn: onWarn ?? (() => undefined) },
     resolveOwnerSubjectIdForConnectorInstance: async (connectorInstanceId) =>
       FIXTURE_CONNECTION_OWNERS[connectorInstanceId] ?? null,
     runConnectorImpl: async (opts) => {
@@ -1256,6 +1262,275 @@ test("starting-surface allocator failure persisting past the in-place poll-retry
     events.filter((event) => event === "run.browser_surface_retried").length,
     1,
     "exactly one outer reacquire, only after the confirmed-dead surface's in-place budget was exhausted"
+  );
+});
+
+/**
+ * The 2026-08-01 Amazon UAT root-cause gate: the deployed lease manager's
+ * bare `catch {}` erases the exhausted allocator error's operation, HTTP
+ * status, client code, category, and retryable bit into an untyped
+ * `surface_start_failed`, leaving no way to distinguish a port-binding race
+ * from any other non-retryable class. wrapAllocatorWithTransientPollRetry
+ * must emit exactly one bounded, allowlisted warning immediately before
+ * that erasure — only after the retry budget (default 3 attempts) is fully
+ * exhausted, never on an earlier attempt that still has budget left.
+ */
+function throwingAllocatorError(overrides: Record<string, unknown> = {}) {
+  const error = new Error(
+    "should never appear in the warning: contains an auth header Bearer secret-token-xyz and a stack trace"
+  );
+  error.name = "NekoSurfaceAllocatorError";
+  return Object.assign(error, {
+    category: "docker_malformed_response",
+    code: "docker_malformed_response",
+    retryable: false,
+    status: 502,
+    ...overrides,
+  });
+}
+
+test("exhausted ensureSurface poll retry emits exactly one allowlisted warning, only after the third failed attempt", async (t) => {
+  const leaseManager = createDynamicManagerWithReadySurface({ noInitialSurface: true });
+  let ensureCalls = 0;
+  const surfaces = new Map<string, BrowserSurface>();
+  const allocator: BrowserSurfaceAllocator = {
+    ensureSurface: (request) => {
+      ensureCalls += 1;
+      if (request.surfaceId === "surface_dynamic_1") {
+        throw throwingAllocatorError({ surfaceIdSeen: request.surfaceId });
+      }
+      const surface: BrowserSurface = {
+        backend: "neko",
+        cdp_url: `http://${request.surfaceId}:9223`,
+        connector_id: request.connectorId,
+        created_at: "2026-05-12T12:00:01.000Z",
+        health: "ready",
+        last_used_at: "2026-05-12T12:00:01.000Z",
+        profile_key: request.profileKey,
+        stream_base_url: `http://${request.surfaceId}:8080`,
+        surface_id: request.surfaceId,
+      };
+      surfaces.set(request.surfaceId, surface);
+      return Promise.resolve(surface);
+    },
+    getSurfaceStatus: async (surfaceId) => await Promise.resolve(surfaces.get(surfaceId) ?? null),
+    listSurfaces: async () => await Promise.resolve([...surfaces.values()]),
+    stopSurface: async () => await Promise.resolve(null),
+  };
+  const probe: BrowserSurfaceReadinessProbe = {
+    probe: async () => await Promise.resolve({ browserVersion: "Chrome/124.0", ok: true, pageTargetCount: 1 }),
+  };
+  const warnings: string[] = [];
+  const { controller } = setup(t, {
+    browserSurfaceAllocator: allocator,
+    browserSurfaceStartingPollRetryDelayMs: 0,
+    leaseManager,
+    onWarn: (message) => warnings.push(message),
+    probe,
+  });
+
+  const result = await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_instrument_ensure_exhausted",
+  });
+  await controller.drainActiveRuns(1000);
+
+  assert.equal(
+    result.status,
+    "started",
+    "the outer reacquire recovers on a fresh surface after the dead one exhausts its budget"
+  );
+  assert.equal(ensureCalls, 4, "3 in-place attempts on the first dead surface, then 1 on the outer-reacquired surface");
+  const instrumentationWarnings = warnings.filter((message) => message.includes("poll retry exhausted"));
+  assert.equal(
+    instrumentationWarnings.length,
+    1,
+    "exactly one record — the reacquired surface succeeds on its first try, so only the original surface's exhausted budget produces a warning; never one per attempt"
+  );
+
+  const firstWarning = at(instrumentationWarnings, 0);
+  const record = JSON.parse(firstWarning.slice(firstWarning.indexOf("{")));
+  assert.deepEqual(
+    new Set(Object.keys(record)),
+    new Set([
+      "run_id",
+      "lease_id",
+      "surface_id",
+      "operation",
+      "attempts",
+      "error_name",
+      "code",
+      "status",
+      "category",
+      "retryable",
+    ]),
+    "exact allowlist — no extra and no missing fields"
+  );
+  assert.equal(record.operation, "ensureSurface");
+  assert.equal(record.attempts, 3, "the warning fires only once the full retry budget (3) is exhausted");
+  assert.equal(record.run_id, "run_instrument_ensure_exhausted");
+  assert.equal(record.category, "docker_malformed_response");
+  assert.equal(record.retryable, false);
+  assert.equal(record.code, "docker_malformed_response");
+  assert.equal(record.status, 502);
+  assert.equal(record.error_name, "NekoSurfaceAllocatorError");
+  assert.ok(typeof record.lease_id === "string" && record.lease_id.length > 0);
+  assert.ok(typeof record.surface_id === "string" && record.surface_id.length > 0);
+
+  for (const message of instrumentationWarnings) {
+    assert.doesNotMatch(message, REGEXP_LEAKED_SECRET, "must never leak error.message");
+    assert.doesNotMatch(message, REGEXP_LEAKED_BEARER, "must never leak credentials embedded in message/stack");
+    assert.doesNotMatch(message, REGEXP_LEAKED_STACK_TRACE, "must never leak a stack trace");
+    assert.doesNotMatch(
+      message,
+      REGEXP_LEAKED_NON_ALLOWLISTED_FIELD,
+      "must never leak arbitrary error fields outside the allowlist"
+    );
+  }
+});
+
+test("exhausted getSurfaceStatus poll retry emits exactly one allowlisted warning naming the getSurfaceStatus operation", async (t) => {
+  const leaseManager = createDynamicManagerWithReadySurface({ noInitialSurface: true });
+  let postEnsureStatusCalls = 0;
+  const surfaces = new Map<string, BrowserSurface>();
+  const allocator: BrowserSurfaceAllocator = {
+    ensureSurface: async (request) => {
+      const surface: BrowserSurface = {
+        backend: "neko",
+        cdp_url: `http://${request.surfaceId}:9223`,
+        connector_id: request.connectorId,
+        container_id: `container_${request.surfaceId}`,
+        created_at: "2026-05-12T12:00:01.000Z",
+        health: "starting",
+        last_used_at: "2026-05-12T12:00:01.000Z",
+        profile_key: request.profileKey,
+        stream_base_url: `http://${request.surfaceId}:8080`,
+        surface_id: request.surfaceId,
+      };
+      surfaces.set(request.surfaceId, surface);
+      return await Promise.resolve(surface);
+    },
+    getSurfaceStatus: (surfaceId) => {
+      const existing = surfaces.get(surfaceId);
+      if (!existing?.container_id) {
+        return Promise.resolve(existing ?? null);
+      }
+      postEnsureStatusCalls += 1;
+      throw throwingAllocatorError({ category: "docker_http_error", code: "docker_http_error", status: 503 });
+    },
+    listSurfaces: async () => await Promise.resolve([...surfaces.values()]),
+    stopSurface: async () => await Promise.resolve(null),
+  };
+  const warnings: string[] = [];
+  const { controller } = setup(t, {
+    browserSurfaceAllocator: allocator,
+    browserSurfaceStartingPollRetryDelayMs: 0,
+    leaseManager,
+    onWarn: (message) => warnings.push(message),
+  });
+
+  await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_instrument_status_exhausted",
+  });
+  await controller.drainActiveRuns(1000);
+
+  assert.ok(postEnsureStatusCalls >= 3, "at least the first surface's 3-attempt budget was exhausted");
+  const instrumentationWarnings = warnings.filter((message) => message.includes("poll retry exhausted"));
+  assert.ok(instrumentationWarnings.length >= 1);
+  const firstWarning = at(instrumentationWarnings, 0);
+  const record = JSON.parse(firstWarning.slice(firstWarning.indexOf("{")));
+  assert.equal(record.operation, "getSurfaceStatus");
+  assert.equal(record.attempts, 3);
+  assert.equal(record.category, "docker_http_error");
+  assert.equal(record.status, 503);
+});
+
+test("successful ensureSurface (no retry needed) never emits the exhaustion warning", async (t) => {
+  const leaseManager = createDynamicManagerWithReadySurface({ noInitialSurface: true });
+  const { allocator } = createReadyDynamicAllocator();
+  const probe: BrowserSurfaceReadinessProbe = {
+    probe: async () => await Promise.resolve({ browserVersion: "Chrome/124.0", ok: true, pageTargetCount: 1 }),
+  };
+  const warnings: string[] = [];
+  const { controller } = setup(t, {
+    browserSurfaceAllocator: allocator,
+    browserSurfaceStartingPollRetryDelayMs: 0,
+    leaseManager,
+    onWarn: (message) => warnings.push(message),
+    probe,
+  });
+
+  const result = await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_instrument_success_no_warn",
+  });
+  await controller.drainActiveRuns(1000);
+
+  assert.equal(result.status, "started");
+  assert.equal(
+    warnings.filter((message) => message.includes("poll retry exhausted")).length,
+    0,
+    "a clean, non-retried success must never emit the exhaustion warning"
+  );
+});
+
+test("a transient hiccup that recovers before the retry budget is exhausted never emits the exhaustion warning", async (t) => {
+  const leaseManager = createDynamicManagerWithReadySurface({ noInitialSurface: true });
+  let ensureCalls = 0;
+  const surfaces = new Map<string, BrowserSurface>();
+  const allocator: BrowserSurfaceAllocator = {
+    ensureSurface: async (request) => {
+      ensureCalls += 1;
+      if (ensureCalls === 1) {
+        throw throwingAllocatorError();
+      }
+      const surface: BrowserSurface = {
+        backend: "neko",
+        cdp_url: `http://${request.surfaceId}:9223`,
+        connector_id: request.connectorId,
+        created_at: "2026-05-12T12:00:01.000Z",
+        health: "ready",
+        last_used_at: "2026-05-12T12:00:01.000Z",
+        profile_key: request.profileKey,
+        stream_base_url: `http://${request.surfaceId}:8080`,
+        surface_id: request.surfaceId,
+      };
+      surfaces.set(request.surfaceId, surface);
+      return await Promise.resolve(surface);
+    },
+    getSurfaceStatus: async (surfaceId) => await Promise.resolve(surfaces.get(surfaceId) ?? null),
+    listSurfaces: async () => await Promise.resolve([...surfaces.values()]),
+    stopSurface: async () => await Promise.resolve(null),
+  };
+  const probe: BrowserSurfaceReadinessProbe = {
+    probe: async () => await Promise.resolve({ browserVersion: "Chrome/124.0", ok: true, pageTargetCount: 1 }),
+  };
+  const warnings: string[] = [];
+  const { controller } = setup(t, {
+    browserSurfaceAllocator: allocator,
+    browserSurfaceStartingPollRetryDelayMs: 0,
+    leaseManager,
+    onWarn: (message) => warnings.push(message),
+    probe,
+  });
+
+  const result = await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_instrument_transient_no_warn",
+  });
+  await controller.drainActiveRuns(1000);
+
+  assert.equal(result.status, "started", "recovers within the retry budget");
+  assert.equal(ensureCalls, 2, "only 2 of the 3 available attempts were needed");
+  assert.equal(
+    warnings.filter((message) => message.includes("poll retry exhausted")).length,
+    0,
+    "a hiccup absorbed within budget must never emit the exhaustion warning — only exhaustion does"
   );
 });
 
