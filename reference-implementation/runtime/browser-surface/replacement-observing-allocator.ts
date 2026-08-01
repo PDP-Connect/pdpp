@@ -43,38 +43,6 @@ interface EnsureObservation {
 }
 
 /**
- * Per-allocator-instance set of `started`-phase replacement_ids whose
- * durable persist is known to have failed (2026-08-01 gate revision,
- * Blocker 2). `ledger.start` mutates the ledger's in-memory receipt list
- * unconditionally, before `record` even attempts to persist it — so a
- * rejected first write still leaves a "started, unresolved" receipt
- * sitting in memory, and `findPendingInMemory` (used by
- * `recordContainerTransition`'s pending-transition check) would treat it
- * as an in-flight claim forever, silently suppressing every later real
- * container-rotation receipt for that surface until process restart.
- * Membership here means "do not let this specific in-memory receipt block
- * a later observation" — it does NOT mean "this replacement never
- * happened": the receipt itself, and any later resolution of it, are
- * untouched.
- *
- * An entry is retired in exactly two ways, both unconditional so the set
- * cannot grow across a long-lived process: (1) a LATER persist attempt for
- * the SAME receipt succeeds (`record` deletes it on success); or (2) the
- * receipt reaches a terminal outcome (`recordTerminal` deletes it
- * regardless of whether the terminal event itself persists). Case (2) also
- * enforces the durable-topology invariant this policy exists for: a
- * terminal/completed event is never durably appended for a `started`
- * predecessor known not to be durable — `recordTerminal` suppresses that
- * one durable write instead of retrying the stale `started` write or
- * inventing a parallel state machine, so the durable store can never hold
- * a resolution with no `started` row beneath it.
- *
- * Scoped to one allocator instance (not module-level) so independent
- * allocators/tests never leak failure state into each other.
- */
-type DurablePersistFailureTracker = Set<string>;
-
-/**
  * Reports a bookkeeping fault to the caller-supplied diagnostic hook. This
  * must NEVER be able to replace or block whatever real result/error the
  * caller is in the middle of returning: `onPersistenceError` is
@@ -98,33 +66,30 @@ export function createReplacementObservingAllocator(
   allocator: BrowserSurfaceAllocator,
   options: ReplacementObservingAllocatorOptions
 ): BrowserSurfaceAllocator {
-  const durableFailures: DurablePersistFailureTracker = new Set();
   return {
-    ensureSurface: (request) => ensureSurfaceWithObservation(allocator, options, durableFailures, request),
+    ensureSurface: (request) => ensureSurfaceWithObservation(allocator, options, request),
     getSurfaceStatus: (surfaceId) => allocator.getSurfaceStatus(surfaceId),
     listSurfaces: () => allocator.listSurfaces(),
-    stopSurface: (request) => stopSurfaceWithObservation(allocator, options, durableFailures, request),
+    stopSurface: (request) => stopSurfaceWithObservation(allocator, options, request),
   };
 }
 
 async function ensureSurfaceWithObservation(
   allocator: BrowserSurfaceAllocator,
   options: ReplacementObservingAllocatorOptions,
-  durableFailures: DurablePersistFailureTracker,
   request: EnsureBrowserSurfaceRequest
 ): Promise<BrowserSurface> {
-  const observation = await prepareEnsureObservation(allocator, options, durableFailures, request);
-  const after = await performEnsureEffect(allocator, options, durableFailures, request, observation);
+  const observation = await prepareEnsureObservation(allocator, options, request);
+  const after = await performEnsureEffect(allocator, options, request, observation);
   // Bookkeeping only — never allowed to turn a real allocator success into
   // an apparent failure. See recordEnsureSuccessObserved's doc comment.
-  await recordEnsureSuccessObserved(options, durableFailures, request, observation, after);
+  await recordEnsureSuccessObserved(options, request, observation, after);
   return after;
 }
 
 async function prepareEnsureObservation(
   allocator: BrowserSurfaceAllocator,
   options: ReplacementObservingAllocatorOptions,
-  durableFailures: DurablePersistFailureTracker,
   request: EnsureBrowserSurfaceRequest
 ): Promise<EnsureObservation> {
   // `before` is a real allocator read: a genuine failure here is a genuine
@@ -147,25 +112,18 @@ async function prepareEnsureObservation(
   // and exists purely to make idempotency keys deterministic in tests — it
   // has no legitimate reason to be trusted more than the lookups it feeds,
   // so it is computed inside this same protected boundary, once, below.
-  const { attemptId, preclaimed } = await observePendingReplacement(options, durableFailures, request, before);
+  const { attemptId, preclaimed } = await observePendingReplacement(options, request, before);
   return { attemptId, before, preclaimed };
 }
 
 async function observePendingReplacement(
   options: ReplacementObservingAllocatorOptions,
-  durableFailures: DurablePersistFailureTracker,
   request: EnsureBrowserSurfaceRequest,
   before: BrowserSurface | null
 ): Promise<{ attemptId: string; preclaimed: ReplacementReceipt | null }> {
   try {
     const attemptId = options.createEnsureAttemptId?.(request) ?? randomUUID();
-    const advertisedReplacement = await startAdvertisedReplacement(
-      options,
-      durableFailures,
-      request,
-      before,
-      attemptId
-    );
+    const advertisedReplacement = await startAdvertisedReplacement(options, request, before, attemptId);
     const preclaimed = advertisedReplacement ?? (await pendingReplacementForRequest(options, request));
     return { attemptId, preclaimed };
   } catch (error) {
@@ -195,7 +153,6 @@ function pendingReplacementForRequest(
 async function performEnsureEffect(
   allocator: BrowserSurfaceAllocator,
   options: ReplacementObservingAllocatorOptions,
-  durableFailures: DurablePersistFailureTracker,
   request: EnsureBrowserSurfaceRequest,
   observation: EnsureObservation
 ): Promise<BrowserSurface> {
@@ -204,22 +161,21 @@ async function performEnsureEffect(
   } catch (error) {
     // Bookkeeping only — a failure recording THIS failure must never replace
     // or mask the real allocator error being rethrown below.
-    await recordEnsureFailureBoundaryObserved(options, durableFailures, request, observation);
+    await recordEnsureFailureBoundaryObserved(options, request, observation);
     throw error;
   }
 }
 
 async function recordEnsureFailureBoundaryObserved(
   options: ReplacementObservingAllocatorOptions,
-  durableFailures: DurablePersistFailureTracker,
   request: EnsureBrowserSurfaceRequest,
   observation: EnsureObservation
 ): Promise<void> {
   try {
     if (observation.preclaimed) {
-      await recordTerminal(options, durableFailures, observation.preclaimed, "failed");
+      await recordTerminal(options, observation.preclaimed, "failed");
     } else {
-      await recordEnsureFailure(options, durableFailures, request, observation.before, observation.attemptId);
+      await recordEnsureFailure(options, request, observation.before, observation.attemptId);
     }
   } catch (error) {
     reportPersistenceError(options, error);
@@ -240,24 +196,16 @@ async function recordEnsureFailureBoundaryObserved(
  */
 async function recordEnsureSuccessObserved(
   options: ReplacementObservingAllocatorOptions,
-  durableFailures: DurablePersistFailureTracker,
   request: EnsureBrowserSurfaceRequest,
   observation: EnsureObservation,
   after: BrowserSurface
 ): Promise<void> {
   try {
     if (observation.preclaimed) {
-      await recordPreclaimedEnsureResult(options, durableFailures, observation.preclaimed, observation.before, after);
+      await recordPreclaimedEnsureResult(options, observation.preclaimed, observation.before, after);
       return;
     }
-    await recordContainerTransition(
-      options,
-      durableFailures,
-      request,
-      observation.before,
-      after,
-      observation.attemptId
-    );
+    await recordContainerTransition(options, request, observation.before, after, observation.attemptId);
   } catch (error) {
     reportPersistenceError(options, error);
   }
@@ -265,32 +213,29 @@ async function recordEnsureSuccessObserved(
 
 async function recordPreclaimedEnsureResult(
   options: ReplacementObservingAllocatorOptions,
-  durableFailures: DurablePersistFailureTracker,
   preclaimed: ReplacementReceipt,
   before: BrowserSurface | null,
   after: BrowserSurface
 ): Promise<void> {
   if (!after.container_id || after.container_id === before?.container_id) {
-    await recordTerminal(options, durableFailures, preclaimed, "abandoned");
+    await recordTerminal(options, preclaimed, "abandoned");
   }
 }
 
-function startAdvertisedReplacement(
+async function startAdvertisedReplacement(
   options: ReplacementObservingAllocatorOptions,
-  durableFailures: DurablePersistFailureTracker,
   request: EnsureBrowserSurfaceRequest,
   before: BrowserSurface | null,
   attemptId: string
 ): Promise<ReplacementReceipt | null> {
   if (!before?.container_id || before.allocator_metadata?.ensure_disposition !== "replace") {
-    return Promise.resolve(null);
+    return null;
   }
-  return ensureReceipt(options, durableFailures, request, before, before.container_id, attemptId);
+  return await ensureReceipt(options, request, before, before.container_id, attemptId);
 }
 
 async function recordContainerTransition(
   options: ReplacementObservingAllocatorOptions,
-  durableFailures: DurablePersistFailureTracker,
   request: EnsureBrowserSurfaceRequest,
   before: BrowserSurface | null,
   after: BrowserSurface,
@@ -300,22 +245,27 @@ async function recordContainerTransition(
   if (!(previousContainerId && after.container_id) || previousContainerId === after.container_id) {
     return;
   }
-  const existing = await pendingForSurface(options, durableFailures, after.surface_id);
+  const existing = await pendingForSurface(options, after.surface_id);
   if (existing) {
     return;
   }
-  await ensureReceipt(options, durableFailures, request, after, previousContainerId, attemptId, after.container_id);
+  await ensureReceipt(options, request, after, previousContainerId, attemptId, after.container_id);
 }
 
+/**
+ * Starts (attempts to durably admit) a replacement receipt for the given
+ * surface. Returns `null` if the durable persist fails — see `record`'s
+ * doc comment for why that means the receipt was never effectively
+ * admitted at all, not merely "admitted but not yet resolved."
+ */
 function ensureReceipt(
   options: ReplacementObservingAllocatorOptions,
-  durableFailures: DurablePersistFailureTracker,
   request: EnsureBrowserSurfaceRequest,
   surface: BrowserSurface,
   previousContainerId: string,
   attemptId: string,
   nextContainerId?: string
-): Promise<ReplacementReceipt> {
+): Promise<ReplacementReceipt | null> {
   const previousHash = deriveOpaqueGenerationHash(previousContainerId);
   const nextHash = nextContainerId ? `:${deriveOpaqueGenerationHash(nextContainerId)}` : "";
   const started = options.ledger.start({
@@ -328,12 +278,11 @@ function ensureReceipt(
     idempotency_key: `ensure:${surface.surface_id}:${previousHash}${nextHash}:${attemptId}`,
     previous_generation_hash: previousHash,
   });
-  return record(options, durableFailures, started);
+  return record(options, started);
 }
 
 async function recordEnsureFailure(
   options: ReplacementObservingAllocatorOptions,
-  durableFailures: DurablePersistFailureTracker,
   request: EnsureBrowserSurfaceRequest,
   before: BrowserSurface | null,
   attemptId: string
@@ -350,38 +299,35 @@ async function recordEnsureFailure(
     idempotency_key: `ensure-failed:${request.surfaceId}:${deriveOpaqueGenerationHash(before.container_id)}:${attemptId}`,
     previous_generation_hash: deriveOpaqueGenerationHash(before.container_id),
   });
-  await record(options, durableFailures, started);
-  await recordTerminal(options, durableFailures, started, "failed");
+  const admitted = await record(options, started);
+  // If `started` was never durably admitted (rolled back by `record`),
+  // there is nothing to resolve — a receipt that was never effectively
+  // created cannot be terminalized, and attempting to would either no-op
+  // against the ledger (it has no started row for this replacement_id
+  // anymore) or, worse, attempt to durably persist an orphan terminal.
+  if (admitted) {
+    await recordTerminal(options, admitted, "failed");
+  }
 }
 
 /**
- * Resolves a `started` receipt to a terminal outcome. This is the ONLY
- * place a receipt's non-durable-lifecycle policy is decided (2026-08-01
- * gate revision, Blocker 2): if `started`'s own persist is known to have
- * failed (tracked in `durableFailures`), its durable predecessor event was
- * never written — appending a `terminal` event for it would leave the
- * durable store holding a resolution with no `started` row beneath it,
- * which downstream ledger logic (and the store's own topology) assumes
- * cannot happen. Rather than retry the stale `started` write or invent a
- * parallel state machine, the whole non-durable lifecycle is suppressed
- * and explicitly retired here: `ledger.terminate` still runs (pure
- * in-memory resolution, so `hasResolution`/`pendingForSurface` correctly
- * stop treating this replacement_id as pending), but the durable
- * `record`/`persist` call is skipped entirely for this event, and the
- * tracker entry is deleted unconditionally — so a resolved (or abandoned)
- * non-durable receipt can never linger in `durableFailures` and can never
- * produce an orphan durable terminal/completed row.
+ * Resolves a `started` receipt to a terminal outcome. Unlike the prior
+ * (2026-08-01 second gate revision) design, this performs NO non-durable
+ * bookkeeping of its own: by the time any receipt reaches this function,
+ * `ensureReceipt`/`startStopReceipt` already guaranteed (via `record`'s
+ * transactional admission) that it is durably persisted, or that it was
+ * rolled back and this function is never called for it at all (every
+ * caller checks the `ReplacementReceipt | null` result of the start before
+ * proceeding to a resolution). A durable terminal/completed receipt can
+ * therefore never be orphaned with no `started` predecessor beneath it —
+ * that invariant is enforced at admission time, not at resolution time,
+ * so there is no parallel state to leak on any success or failure path.
  */
 async function recordTerminal(
   options: ReplacementObservingAllocatorOptions,
-  durableFailures: DurablePersistFailureTracker,
-  started: ReplacementReceipt | null,
+  started: ReplacementReceipt,
   outcome: "failed" | "abandoned"
 ): Promise<void> {
-  if (!started) {
-    return;
-  }
-  const wasNonDurable = durableFailures.has(started.replacement_id);
   const terminated = options.ledger.terminate({
     connection_id: started.connection_id,
     profile_key: started.profile_key,
@@ -391,28 +337,19 @@ async function recordTerminal(
     cause: started.cause,
     outcome,
   });
-  // The receipt is resolved in-memory either way; stop tracking it before
-  // any further await so this entry cannot be observed as "still pending"
-  // by a concurrent call, and cannot linger regardless of what happens
-  // below.
-  durableFailures.delete(started.replacement_id);
-  if (wasNonDurable) {
-    return;
-  }
-  await record(options, durableFailures, terminated);
+  await record(options, terminated);
 }
 
 async function stopSurfaceWithObservation(
   allocator: BrowserSurfaceAllocator,
   options: ReplacementObservingAllocatorOptions,
-  durableFailures: DurablePersistFailureTracker,
   request: StopBrowserSurfaceRequest
 ): Promise<BrowserSurface | null> {
   const before = await allocator.getSurfaceStatus(request.surfaceId);
   // Bookkeeping only — must never abort a real stopSurface call before the
   // allocator is even asked. Same masking hazard as ensureSurface's
   // observation step (see prepareEnsureObservation's doc comment).
-  const started = await startStopReceiptObserved(options, durableFailures, before, request);
+  const started = await startStopReceiptObserved(options, before, request);
   try {
     return await allocator.stopSurface(request);
   } catch (error) {
@@ -422,18 +359,20 @@ async function stopSurfaceWithObservation(
     // synchronously, before record()'s own try/catch can intervene — a
     // throwing ledger, exactly like a throwing reporter, must not be able
     // to surface in place of the real stopSurface error).
-    await recordStopFailureObserved(options, durableFailures, started);
+    await recordStopFailureObserved(options, started);
     throw error;
   }
 }
 
 async function recordStopFailureObserved(
   options: ReplacementObservingAllocatorOptions,
-  durableFailures: DurablePersistFailureTracker,
   started: ReplacementReceipt | null
 ): Promise<void> {
+  if (!started) {
+    return;
+  }
   try {
-    await recordTerminal(options, durableFailures, started, "failed");
+    await recordTerminal(options, started, "failed");
   } catch (error) {
     reportPersistenceError(options, error);
   }
@@ -441,12 +380,11 @@ async function recordStopFailureObserved(
 
 async function startStopReceiptObserved(
   options: ReplacementObservingAllocatorOptions,
-  durableFailures: DurablePersistFailureTracker,
   before: BrowserSurface | null,
   request: StopBrowserSurfaceRequest
 ): Promise<ReplacementReceipt | null> {
   try {
-    return await startStopReceipt(options, durableFailures, before, request);
+    return await startStopReceipt(options, before, request);
   } catch (error) {
     reportPersistenceError(options, error);
     return null;
@@ -455,7 +393,6 @@ async function startStopReceiptObserved(
 
 function startStopReceipt(
   options: ReplacementObservingAllocatorOptions,
-  durableFailures: DurablePersistFailureTracker,
   before: BrowserSurface | null,
   request: StopBrowserSurfaceRequest
 ): Promise<ReplacementReceipt | null> {
@@ -474,43 +411,48 @@ function startStopReceipt(
     previous_generation_hash: deriveOpaqueGenerationHash(before.container_id),
     surface_id: before.surface_id,
   });
-  return record(options, durableFailures, started);
+  return record(options, started);
 }
 
 /**
- * Persists a replacement receipt. This is durable bookkeeping ABOUT an
- * allocator operation, not the operation itself: a persistence failure here
- * must never propagate to callers observing an ensureSurface/stopSurface
- * call, or a real allocator success/failure becomes indistinguishable from
- * "the audit trail had a hiccup" to any wrapping retry logic (2026-08-01
- * Amazon incident root cause). Failures are reported via
- * `onPersistenceError` and swallowed; the in-memory receipt shape is
- * returned unchanged so callers' bookkeeping (which does not depend on
- * durable persistence having succeeded) still proceeds consistently.
+ * Persists a replacement receipt via transactional admission (2026-08-01
+ * third gate revision — replaces a parallel "non-durable tracker" design
+ * that required every resolution path to remember a cleanup step, and
+ * leaked on the successful-replacement and successful-stop paths that
+ * never called it). This is durable bookkeeping ABOUT an allocator
+ * operation, not the operation itself: a persistence failure here must
+ * never propagate to callers observing an ensureSurface/stopSurface call
+ * (2026-08-01 Amazon incident root cause).
  *
- * A rejected `started`-phase persist marks `receipt.replacement_id` in
- * `durableFailures` (2026-08-01 gate revision, Blocker 2): the ledger's
- * `start()` already pushed this receipt into in-memory state before this
- * call ran, so without this tracking a later real container rotation for
- * the SAME surface would find it via `pendingForSurface`'s in-memory
- * lookup and treat it as still-in-flight, permanently suppressing every
- * later durable transition receipt for that surface. A successful persist
- * for a replacement_id already in the tracker (the same receipt recovering
- * on a later attempt) clears the entry.
+ * For a `started` receipt (the only phase `ledger.start` can produce,
+ * which is also the only phase `ledger.discardUnresolvedStart` can roll
+ * back), a rejected persist immediately rolls the admission back out of
+ * the ledger's in-memory state via `discardUnresolvedStart` and this
+ * returns `null`: to every caller, it is exactly as if that `started` call
+ * had never happened. There is nothing left to track, nothing that can
+ * suppress a later observation, and nothing that can later be resolved
+ * into an orphan durable terminal/completed event — the invariant "a
+ * durable resolution always has a durable started predecessor" holds by
+ * construction, not by every call site remembering a side-tracker.
+ *
+ * For a `terminal`/`completed` receipt, there is no analogous rollback: an
+ * in-memory resolution of an already-durably-admitted `started` receipt is
+ * valid regardless of whether ITS OWN durable write succeeds (the ledger's
+ * own `hasResolution`/pending-lookup logic already reflects the correct
+ * in-memory truth), so a persist failure here is reported and the
+ * unresolved-but-in-memory-resolved receipt is returned unchanged.
  */
 async function record(
   options: ReplacementObservingAllocatorOptions,
-  durableFailures: DurablePersistFailureTracker,
   receipt: ReplacementReceipt
-): Promise<ReplacementReceipt> {
+): Promise<ReplacementReceipt | null> {
   try {
-    const persisted = await (options.persist ?? (async (value: ReplacementReceipt) => value))(receipt);
-    durableFailures.delete(receipt.replacement_id);
-    return persisted;
+    return await (options.persist ?? (async (value: ReplacementReceipt) => value))(receipt);
   } catch (error) {
     reportPersistenceError(options, error);
     if (receipt.phase === "started") {
-      durableFailures.add(receipt.replacement_id);
+      options.ledger.discardUnresolvedStart(receipt.replacement_id);
+      return null;
     }
     return receipt;
   }
@@ -518,24 +460,15 @@ async function record(
 
 function pendingForSurface(
   options: ReplacementObservingAllocatorOptions,
-  durableFailures: DurablePersistFailureTracker,
   surfaceId: string
 ): Promise<ReplacementReceipt | null> {
-  const inMemory = findPendingInMemory(options.ledger.list(), durableFailures, surfaceId);
+  const inMemory = findPendingInMemory(options.ledger.list(), surfaceId);
   return inMemory ? Promise.resolve(inMemory) : (options.findPending?.(surfaceId) ?? Promise.resolve(null));
 }
 
-function findPendingInMemory(
-  receipts: readonly ReplacementReceipt[],
-  durableFailures: DurablePersistFailureTracker,
-  surfaceId: string
-): ReplacementReceipt | null {
+function findPendingInMemory(receipts: readonly ReplacementReceipt[], surfaceId: string): ReplacementReceipt | null {
   return (
-    receipts
-      .filter(
-        (receipt) => isPendingForSurface(receipt, receipts, surfaceId) && !durableFailures.has(receipt.replacement_id)
-      )
-      .sort(compareReceipts)[0] ?? null
+    receipts.filter((receipt) => isPendingForSurface(receipt, receipts, surfaceId)).sort(compareReceipts)[0] ?? null
   );
 }
 

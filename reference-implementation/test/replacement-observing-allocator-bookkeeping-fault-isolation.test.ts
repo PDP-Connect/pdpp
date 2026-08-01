@@ -327,9 +327,9 @@ test("a failed first persist does not suppress a later durable transition receip
   assert.equal(persisted.length, 0, "nothing durable yet — the store was down for rotation 1");
 
   // Store recovers before rotation 2. Rotation 2: container-2 -> container-3
-  // on the SAME allocator instance (same in-memory ledger, same
-  // durableFailures tracker) — the rejected rotation-1 receipt must not
-  // suppress rotation 2's own receipt via the in-memory pending lookup.
+  // on the SAME allocator instance (same in-memory ledger) — the rejected
+  // rotation-1 receipt was rolled back out of the ledger entirely, so it
+  // must not suppress rotation 2's own receipt via the pending lookup.
   storeState.down = false;
   nextSurface = container3;
   const secondResult = await observed.ensureSurface({
@@ -451,44 +451,52 @@ test("a synchronous ledger.terminate failure PLUS a throwing reporter still does
   );
 });
 
-// 2026-08-01 second gate revision, Blocker 2: a `started` receipt whose
-// durable persist failed must never produce an orphan durable
-// terminal/completed receipt once it resolves, and its volatile tracking
-// must be explicitly retired — not merely bounded by luck — so it cannot
-// grow indefinitely or keep suppressing later observations after its own
-// lifecycle has closed.
+// 2026-08-01 third gate revision, P1: the second revision's `durableFailures`
+// side-tracker required EVERY resolution path to remember to delete its
+// entry — but the successful-replacement and successful-stop paths never
+// call `recordTerminal` at all (a successful advertised replacement is
+// resolved via `recordPreclaimedEnsureResult`'s "abandoned" branch only
+// when the container did NOT change; a genuinely successful replacement's
+// preclaimed receipt is simply left `started` forever, and a successful
+// `stopSurface` never resolves its `started` retirement receipt either).
+// A same-instance probe reproduced three leaked successful lifecycles: the
+// tracker entries for their non-durable `started` writes were never
+// retired. These tests prove the replacement design — transactional
+// admission via `ledger.discardUnresolvedStart` — has no such leak: a
+// `started` receipt whose persist fails is rolled back out of the ledger
+// entirely (via `record` returning `null`), so there is no side-tracker
+// state to ever leak on ANY path, successful or not.
 
-test("a failed start's own resolution never durably persists terminal alone, even when the store recovers before that resolution's own write", async () => {
+test("a failed start is rolled back so a genuinely successful advertised replacement leaves nothing to leak", async () => {
   // Single allocator instance: matches production (one
   // createReplacementObservingAllocator per BrowserSurfaceManager, reused
-  // for its lifetime).
+  // for its lifetime). This is exactly the leak the third gate found: a
+  // successful advertised replacement (container DID change) never calls
+  // recordTerminal for its preclaimed receipt at all.
   const ledger = createBrowserSurfaceReplacementLedger();
   const persistedPhases: string[] = [];
-  // The store fails EXACTLY the first persist call (the started write for
-  // the preclaimed advertised-replacement) and then recovers for every
-  // subsequent call, including that SAME resolution's own terminal write
-  // moments later — this is the precise shape the gate's repro found:
-  // `started` fails, but the store is back up by the time `terminal` for
-  // the SAME replacement_id is attempted. Without the fix, that terminal
-  // write durably succeeds with no started predecessor beneath it.
-  let persistCalls = 0;
-  const before: BrowserSurface = { ...surface, allocator_metadata: { ensure_disposition: "replace" } };
-  const realError = new Error("real allocator ensureSurface failure");
+  const storeState = { down: true };
+  const before: BrowserSurface = {
+    ...surface,
+    allocator_metadata: { ensure_disposition: "replace" },
+    container_id: "container-before",
+  };
+  const after: BrowserSurface = { ...surface, container_id: "container-after" };
 
   const observed = createReplacementObservingAllocator(
     {
-      ensureSurface: () => Promise.reject(realError),
+      ensureSurface: async () => after,
       getSurfaceStatus: async () => before,
-      listSurfaces: async () => [before],
+      listSurfaces: async () => [after],
       stopSurface: async () => null,
     },
     {
       ledger,
       // biome-ignore lint/suspicious/useAwait: localized test assertion preserves its explicit contract.
       persist: async (receipt) => {
-        persistCalls += 1;
-        if (persistCalls === 1) {
-          throw new Error("simulated store outage — only the started write fails");
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: storeState.down is mutated later via a shared object reference, which biome's narrowing cannot see across the closure.
+        if (storeState.down) {
+          throw new Error("simulated store outage on the preclaimed started write");
         }
         persistedPhases.push(receipt.phase);
         return receipt;
@@ -496,71 +504,121 @@ test("a failed start's own resolution never durably persists terminal alone, eve
     }
   );
 
-  // The `started` write for the preclaimed advertised-replacement fails to
-  // persist; the SAME attempt's failure path immediately resolves it to
-  // `terminal`, and by then the store has "recovered" (persistCalls > 1).
-  // Per the fix, a `started` receipt known to be non-durable must never
-  // produce a durable `terminal` for the SAME replacement_id — the whole
-  // non-durable lifecycle is suppressed and retired instead of leaving an
-  // orphan terminal in the durable store.
-  await assert.rejects(
-    observed.ensureSurface({
-      connectorId: surface.connector_id,
-      profileKey: surface.profile_key,
-      surfaceId: surface.surface_id,
-    }),
-    (error: unknown) => error === realError
-  );
+  // The store is down: the advertised replacement's `started` write fails,
+  // is rolled back (never admitted to the ledger), and the real
+  // ensureSurface call still succeeds with a genuinely new container.
+  // recordPreclaimedEnsureResult's "abandoned" branch is never reached
+  // (the container DID change) — under the old tracker design, this exact
+  // path left its entry forever, since nothing else ever resolved it.
+  const result = await observed.ensureSurface({
+    connectorId: surface.connector_id,
+    profileKey: surface.profile_key,
+    surfaceId: surface.surface_id,
+  });
+  assert.deepEqual(result, after, "the real allocator's successful replacement must still resolve");
+  assert.equal(persistedPhases.length, 0, "nothing durable yet — the store was down for the preclaimed start");
   assert.deepEqual(
-    persistedPhases,
+    ledger.list(),
     [],
-    "terminal must never durably persist alone once its started predecessor is known non-durable"
+    "the rolled-back started receipt must leave nothing in the ledger's own observable state"
   );
 
-  // A later, independent replacement for the SAME surface (its own
-  // replacement_id) must still durably persist started before terminal, in
-  // order — proving the suppressed lifecycle above did not leave any
-  // lingering state that corrupts a later, unrelated resolution's topology.
-  await assert.rejects(
-    observed.ensureSurface({
-      connectorId: surface.connector_id,
-      profileKey: surface.profile_key,
-      surfaceId: surface.surface_id,
-    }),
-    (error: unknown) => error === realError
+  // Store recovers. A LATER, independent replacement for the SAME surface
+  // must still durably persist its own started receipt — proving the
+  // rolled-back receipt above left no suppression behind.
+  storeState.down = false;
+  const laterBefore: BrowserSurface = {
+    ...after,
+    allocator_metadata: { ensure_disposition: "replace" },
+  };
+  const laterAfter: BrowserSurface = { ...surface, container_id: "container-later" };
+  const laterObserved = createReplacementObservingAllocator(
+    {
+      ensureSurface: async () => laterAfter,
+      getSurfaceStatus: async () => laterBefore,
+      listSurfaces: async () => [laterAfter],
+      stopSurface: async () => null,
+    },
+    {
+      ledger,
+      // biome-ignore lint/suspicious/useAwait: localized test assertion preserves its explicit contract.
+      persist: async (receipt) => {
+        persistedPhases.push(receipt.phase);
+        return receipt;
+      },
+    }
   );
-  assert.deepEqual(
-    persistedPhases,
-    ["started", "terminal"],
-    "a later, independent resolution must durably persist started before terminal, in order"
-  );
+  const laterResult = await laterObserved.ensureSurface({
+    connectorId: surface.connector_id,
+    profileKey: surface.profile_key,
+    surfaceId: surface.surface_id,
+  });
+  assert.deepEqual(laterResult, laterAfter);
+  assert.deepEqual(persistedPhases, ["started"], "a later replacement's own started receipt must reach the store");
 });
 
-test("repeated failed-start-then-resolved lifecycles leave no retained tracker state or stale suppression", async () => {
-  // Single allocator instance across every attempt, matching production.
-  // Each iteration is its OWN preclaimed ensure failure: started fails to
-  // persist, the store "recovers" by the time that SAME attempt's terminal
-  // write runs (persistCalls counts every call, not just started), and the
-  // whole non-durable lifecycle must retire — never an orphan terminal, and
-  // never a lingering tracker entry that could suppress a later,
-  // independent attempt for the same surface. Three such lifecycles in a
-  // row, each resolved before the next begins, stress-test that retirement
-  // is tied to the receipt's own resolution (not merely to a later
-  // rotation happening to reuse its id, which a single-iteration test
-  // cannot distinguish from a correctly bounded policy).
+test("a failed stop's started receipt is rolled back so a genuinely successful stop leaves nothing to leak", async () => {
+  // The third gate's other leaked path: a successful stopSurface never
+  // resolves its started retirement receipt to terminal/completed at all
+  // (only a FAILED stopSurface calls recordTerminal, in the catch block).
   const ledger = createBrowserSurfaceReplacementLedger();
   const persistedPhases: string[] = [];
-  const nonDurableLifecycles = { remaining: 3 };
-  const before: BrowserSurface = { ...surface, allocator_metadata: { ensure_disposition: "replace" } };
-  const realError = new Error("real allocator ensureSurface failure");
+  const storeState = { down: true };
 
-  // Same allocator instance (same in-memory ledger, same durableFailures
-  // tracker) for all 3 non-durable lifecycles AND the final fully-durable
-  // one — reusing a fresh instance for the final check would trivially
-  // have an empty tracker and prove nothing about accumulation.
+  const observed = createReplacementObservingAllocator(
+    baseAllocator({
+      getSurfaceStatus: async () => surface,
+      stopSurface: async () => null,
+    }),
+    {
+      ledger,
+      // biome-ignore lint/suspicious/useAwait: localized test assertion preserves its explicit contract.
+      persist: async (receipt) => {
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: storeState.down is mutated later via a shared object reference, which biome's narrowing cannot see across the closure.
+        if (storeState.down) {
+          throw new Error("simulated store outage on the stop-retirement started write");
+        }
+        persistedPhases.push(receipt.phase);
+        return receipt;
+      },
+    }
+  );
+
+  const result = await observed.stopSurface({ reason: "capacity_pressure", surfaceId: surface.surface_id });
+  assert.equal(result, null, "the real allocator's successful stop must still resolve");
+  assert.equal(persistedPhases.length, 0, "nothing durable yet — the store was down for the retirement start");
+  assert.deepEqual(
+    ledger.list(),
+    [],
+    "the rolled-back started receipt must leave nothing in the ledger's own observable state"
+  );
+
+  // Store recovers. A LATER, independent stop for the SAME surface must
+  // still durably persist its own started receipt.
+  storeState.down = false;
+  const laterResult = await observed.stopSurface({ reason: "capacity_pressure", surfaceId: surface.surface_id });
+  assert.equal(laterResult, null);
+  assert.deepEqual(persistedPhases, ["started"], "a later stop's own started receipt must reach the store");
+});
+
+test("repeated failed-then-successful lifecycles (ensure and stop) leave nothing retained across many iterations", async () => {
+  // Stress-test on a SINGLE allocator instance: many rolled-back started
+  // receipts in a row, interleaving ensure and stop, followed by a final
+  // fully-durable lifecycle of each kind — proving there is no accumulating
+  // state of any kind (not bounded by luck, bounded by construction: a
+  // rolled-back receipt is removed from the ledger, not merely marked).
+  const ledger = createBrowserSurfaceReplacementLedger();
+  const persistedPhases: string[] = [];
+  const storeState = { down: true };
+  const before: BrowserSurface = {
+    ...surface,
+    allocator_metadata: { ensure_disposition: "replace" },
+    container_id: "container-before",
+  };
+
   const observed = createReplacementObservingAllocator(
     {
-      ensureSurface: () => Promise.reject(realError),
+      ensureSurface: async () => ({ ...surface, container_id: "container-after" }),
       getSurfaceStatus: async () => before,
       listSurfaces: async () => [before],
       stopSurface: async () => null,
@@ -569,14 +627,9 @@ test("repeated failed-start-then-resolved lifecycles leave no retained tracker s
       ledger,
       // biome-ignore lint/suspicious/useAwait: localized test assertion preserves its explicit contract.
       persist: async (receipt) => {
-        // The first `remaining` non-durable lifecycles each fail exactly
-        // their OWN started write, then "recover" for their own terminal
-        // write moments later (mirrors the single-lifecycle test above,
-        // repeated) — the shape that could accumulate stale tracker
-        // entries without an explicit per-lifecycle retirement policy.
-        if (receipt.phase === "started" && nonDurableLifecycles.remaining > 0) {
-          nonDurableLifecycles.remaining -= 1;
-          throw new Error("simulated store outage on this lifecycle's started write");
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: storeState.down is mutated later via a shared object reference, which biome's narrowing cannot see across the closure.
+        if (storeState.down) {
+          throw new Error("simulated store outage");
         }
         persistedPhases.push(receipt.phase);
         return receipt;
@@ -586,39 +639,34 @@ test("repeated failed-start-then-resolved lifecycles leave no retained tracker s
 
   for (let i = 0; i < 3; i += 1) {
     // biome-ignore lint/performance/noAwaitInLoops: sequential, resolved-before-the-next lifecycles are the point of this test.
-    await assert.rejects(
-      observed.ensureSurface({
-        connectorId: surface.connector_id,
-        profileKey: surface.profile_key,
-        surfaceId: surface.surface_id,
-      }),
-      (error: unknown) => error === realError,
-      `lifecycle ${i} must still reject with the real allocator error`
-    );
-  }
-
-  assert.deepEqual(
-    persistedPhases,
-    [],
-    "none of the three lifecycles may durably persist a terminal without its started predecessor"
-  );
-
-  // A final lifecycle on the SAME instance — persist now succeeds for both
-  // of its calls (nonDurableLifecycles.remaining is exhausted) — must
-  // still durably persist started before terminal, in order, proving none
-  // of the three prior non-durable lifecycles left any lingering
-  // suppression behind on this instance's tracker.
-  await assert.rejects(
-    observed.ensureSurface({
+    await observed.ensureSurface({
       connectorId: surface.connector_id,
       profileKey: surface.profile_key,
       surfaceId: surface.surface_id,
-    }),
-    (error: unknown) => error === realError
+    });
+    await observed.stopSurface({ reason: "capacity_pressure", surfaceId: surface.surface_id });
+  }
+
+  assert.equal(persistedPhases.length, 0, "nothing durable across 3 interleaved failed ensure+stop lifecycles");
+  assert.deepEqual(
+    ledger.list(),
+    [],
+    "no rolled-back receipt from any of the 3 interleaved lifecycles may remain in the ledger"
   );
+
+  // Store recovers. Both a final ensure and a final stop must still
+  // durably persist their own started receipts.
+  storeState.down = false;
+  await observed.ensureSurface({
+    connectorId: surface.connector_id,
+    profileKey: surface.profile_key,
+    surfaceId: surface.surface_id,
+  });
+  await observed.stopSurface({ reason: "capacity_pressure", surfaceId: surface.surface_id });
+
   assert.deepEqual(
     persistedPhases,
-    ["started", "terminal"],
-    "a later, fully-durable lifecycle on the SAME instance must persist started before terminal, in order, after 3 prior non-durable ones"
+    ["started", "started"],
+    "the final ensure and stop must each durably persist their own started receipt, after 3 prior rolled-back lifecycles"
   );
 });

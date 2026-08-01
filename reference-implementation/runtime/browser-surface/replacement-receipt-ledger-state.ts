@@ -82,6 +82,23 @@ export interface BrowserSurfaceReplacementLedgerOptions {
 
 export interface BrowserSurfaceReplacementLedger {
   complete: (input: ReplacementCompletionInput) => ReplacementReceipt;
+  /**
+   * Rolls back a `started` admission that is not durable, so it was never
+   * effectively admitted to this ledger's observable state (2026-08-01
+   * third gate revision — replaces a parallel "non-durable tracker" design
+   * that required every caller path to remember a cleanup step and leaked
+   * on the paths that did not). Only removes a receipt that is STILL
+   * exactly `phase: "started"` with no resolution recorded — discarding an
+   * already-resolved or already-observed-elsewhere receipt would corrupt
+   * the ledger's own topology invariants, so this is a no-op (not a throw)
+   * for any replacement_id that is not in that exact discardable state,
+   * including an unknown id. After a successful discard,
+   * `start()`/`terminate()`/`complete()` for the SAME idempotency_key
+   * behave exactly as if that `started` call had never happened — a caller
+   * that immediately retries the same logical attempt gets a fresh
+   * admission, not a replay of the discarded one.
+   */
+  discardUnresolvedStart: (replacementId: string) => void;
   hydrate: (receipts: readonly ReplacementReceipt[]) => void;
   list: () => readonly ReplacementReceipt[];
   selectCurrent: (
@@ -307,6 +324,7 @@ export function createBrowserSurfaceReplacementLedger(
 
   return {
     complete,
+    discardUnresolvedStart,
     hydrate(hydratedReceipts) {
       hydrateReceipts(hydratedReceipts, append);
     },
@@ -327,6 +345,41 @@ export function createBrowserSurfaceReplacementLedger(
       throw new Error(`replacement ${replacementId} has no started receipt`);
     }
     return started;
+  }
+
+  function discardUnresolvedStart(replacementId: string): void {
+    const events = byReplacement.get(replacementId);
+    if (!(events?.length === 1 && events[0]?.phase === "started")) {
+      // Not in the exact discardable state (unknown id, already resolved,
+      // or somehow more than one event) — a no-op, never a throw, since
+      // this runs from a fail-open bookkeeping boundary that must never
+      // gain a new failure mode of its own.
+      return;
+    }
+    const [started] = events;
+    byReplacement.delete(replacementId);
+    removeFromIndex(byIdempotency, started.idempotency_key, started);
+    removeFromReceipts(started);
+  }
+
+  function removeFromReceipts(receipt: ReplacementReceipt): void {
+    const index = receipts.indexOf(receipt);
+    if (index !== -1) {
+      receipts.splice(index, 1);
+    }
+  }
+}
+
+function removeFromIndex(index: Map<string, ReplacementReceipt[]>, key: string, receipt: ReplacementReceipt): void {
+  const rows = index.get(key);
+  if (!rows) {
+    return;
+  }
+  const remaining = rows.filter((row) => row !== receipt);
+  if (remaining.length > 0) {
+    index.set(key, remaining);
+  } else {
+    index.delete(key);
   }
 }
 

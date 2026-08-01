@@ -1177,3 +1177,116 @@ test("current selection follows the newest started boundary across interleaved e
     "a newer pending start remains authoritative over an interleaved older completion"
   );
 });
+
+// 2026-08-01 third gate revision: discardUnresolvedStart replaces a
+// parallel "non-durable tracker" design (a side Set of replacement_ids
+// requiring every caller path to remember a cleanup step, which leaked on
+// the success paths that didn't call it) with true transactional
+// admission — a `started` receipt whose durable persist fails is rolled
+// back out of the ledger's own in-memory state entirely, so there is
+// nothing left to track or leak.
+
+test("discardUnresolvedStart removes an unresolved started receipt from every index", () => {
+  const ledger = createBrowserSurfaceReplacementLedger();
+  const started = ledger.start({
+    cause: "allocator_internal_ensure_surface",
+    connection_id: "discard-connection",
+    idempotency_key: "discard-key",
+    profile_key: "discard-profile",
+    surface_id: "discard-surface",
+  });
+
+  ledger.discardUnresolvedStart(started.replacement_id);
+
+  assert.deepEqual(ledger.list(), [], "the discarded receipt must not appear in list()");
+  assert.equal(
+    ledger.selectCurrent("discard-connection"),
+    null,
+    "the discarded receipt must not be selectable as a current generation"
+  );
+});
+
+test("discardUnresolvedStart lets a subsequent start for the same idempotency_key mint a fresh admission, not a replay", () => {
+  const ledger = createBrowserSurfaceReplacementLedger();
+  const startInput = {
+    cause: "allocator_internal_ensure_surface" as const,
+    connection_id: "discard-retry-connection",
+    idempotency_key: "discard-retry-key",
+    profile_key: "discard-retry-profile",
+    surface_id: "discard-retry-surface",
+  };
+  const first = ledger.start(startInput);
+  ledger.discardUnresolvedStart(first.replacement_id);
+
+  const second = ledger.start(startInput);
+
+  assert.notEqual(
+    second.event_seq,
+    first.event_seq,
+    "a fresh start after discard must be a genuinely new admission, not a cached replay of the discarded one"
+  );
+  assert.deepEqual(
+    ledger.list().map((receipt) => receipt.replacement_id),
+    [second.replacement_id],
+    "only the fresh admission remains — the discarded one is fully gone"
+  );
+});
+
+test("discardUnresolvedStart is a no-op (never a throw) for an unknown replacement_id", () => {
+  const ledger = createBrowserSurfaceReplacementLedger();
+  assert.doesNotThrow(() => ledger.discardUnresolvedStart("replacement_does-not-exist"));
+  assert.deepEqual(ledger.list(), []);
+});
+
+test("discardUnresolvedStart is a no-op that preserves the receipt once it has been resolved (terminal)", () => {
+  const ledger = createBrowserSurfaceReplacementLedger();
+  const started = ledger.start({
+    cause: "readiness_invalidated",
+    connection_id: "discard-resolved-connection",
+    idempotency_key: "discard-resolved-key",
+    profile_key: "discard-resolved-profile",
+    surface_id: "discard-resolved-surface",
+  });
+  const terminal = ledger.terminate({
+    cause: started.cause,
+    connection_id: started.connection_id,
+    outcome: "failed",
+    profile_key: started.profile_key,
+    replacement_id: started.replacement_id,
+    ...(started.surface_id ? { surface_id: started.surface_id } : {}),
+  });
+
+  ledger.discardUnresolvedStart(started.replacement_id);
+
+  assert.deepEqual(
+    ledger.list(),
+    [started, terminal],
+    "a resolved receipt's started/terminal pair must survive an attempted discard unchanged"
+  );
+});
+
+test("discardUnresolvedStart is a no-op that preserves the receipt once it has been resolved (completed)", () => {
+  const ledger = createBrowserSurfaceReplacementLedger();
+  const started = ledger.start({
+    cause: "allocator_internal_ensure_surface",
+    connection_id: "discard-completed-connection",
+    idempotency_key: "discard-completed-key",
+    profile_key: "discard-completed-profile",
+    surface_id: "discard-completed-surface",
+  });
+  const completed = ledger.complete({
+    connection_id: started.connection_id,
+    next_generation_hash: "a".repeat(64),
+    profile_key: started.profile_key,
+    replacement_id: started.replacement_id,
+    ...(started.surface_id ? { surface_id: started.surface_id } : {}),
+  });
+
+  ledger.discardUnresolvedStart(started.replacement_id);
+
+  assert.deepEqual(
+    ledger.list(),
+    [started, completed],
+    "a resolved receipt's started/completed pair must survive an attempted discard unchanged"
+  );
+});
