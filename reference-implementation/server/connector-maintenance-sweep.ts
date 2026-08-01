@@ -89,11 +89,17 @@ function readResumableEvidenceSweepResult(
   if (!result.incomplete && result.resumeAfterId !== null) {
     return null;
   }
-  // An incomplete first page legitimately resumes from NULL: the bounded
-  // sweep uses its cursor-before-page, so a heavy first-page fold must revisit
-  // that same page. After a non-null cursor, however, NULL loses known-good
-  // progress and remains invalid. The fenced lease is the durable authority
-  // for which of those two meanings applies.
+  // `runBoundedSummaryEvidenceSweep`'s cursor always ADVANCES past every
+  // page it processes, converged or not (2026-08-01: it no longer rewinds
+  // to before a non-converging page — see that function's own doc for why
+  // rewinding could permanently starve the rest of the fleet). So an
+  // incomplete result legitimately resumes from NULL only when this call's
+  // walk never advanced past its starting cursor at all — i.e. the
+  // deadline expired before even reading the first page — which can only
+  // happen when the walk STARTED from NULL (`currentCursor === null`).
+  // After a non-null starting cursor, an incomplete result reporting NULL
+  // would lose known-good progress and is invalid; the fenced lease is the
+  // durable authority for which of those two meanings applies.
   if (result.incomplete && (result.resumeAfterId === "" || (result.resumeAfterId === null && currentCursor !== null))) {
     return null;
   }

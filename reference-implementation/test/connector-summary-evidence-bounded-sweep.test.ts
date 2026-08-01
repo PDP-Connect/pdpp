@@ -138,10 +138,17 @@ test(
     const result = await runBoundedSummaryEvidenceSweep({ maxDurationMs: 1, pageSize: 10 });
 
     assert.equal(result.incomplete, true, "a near-zero deadline cannot cover 50 connections in 10-per-page pages");
+    // The cursor ADVANCES past the deadline-cut page rather than rewinding
+    // before it (2026-08-01: rewinding is what let a single non-converging
+    // page permanently starve every connection after it in keyset order —
+    // see `runBoundedSummaryEvidenceSweep`'s own doc). The still-unrepaired
+    // row(s) on that page remain classified as candidates by their own
+    // dirty/missing state regardless of cursor position, so a follow-up
+    // call still repairs them once keyset wraparound reaches them again.
     assert.equal(
       result.resumeAfterId,
-      null,
-      "a deadline-cut first page resumes from its durable cursor-before-page rather than skipping it"
+      "c1_cin_0009",
+      "the deadline-cut first page's cursor advances to its own last id, not rewound to before the page"
     );
     assert.equal(result.prunedComplete, false, "an incomplete sweep must never run complete-set orphan pruning");
     assert.ok(result.discovered < n, "fewer than the complete set was discovered this call");
@@ -164,13 +171,26 @@ test(
     assert.equal(first.resumeAfterId, ids[9], "the cursor is exactly the last id the first page covered");
 
     // Second sweep: resume from the first sweep's cursor, no page cap —
-    // must cover every remaining connection and reach completion.
+    // must cover every remaining connection.
     const second = await runBoundedSummaryEvidenceSweep({
       afterId: first.resumeAfterId,
       maxDurationMs: 60_000,
       pageSize: 10,
     });
-    assert.equal(second.incomplete, false, "resuming from the cursor with no further cap reaches the end of the set");
+    // A resumed sweep — one that did NOT start from the very beginning of
+    // keyset order — reports `incomplete: true` even though ITS OWN walk
+    // reached the end of the set (2026-08-01: a mid-fleet-started call
+    // never re-examines the ids before its own starting cursor, so it
+    // cannot honestly claim the COMPLETE set converged — see
+    // `runBoundedSummaryEvidenceSweep`'s "clean full pass" contract). The
+    // cursor wraps to `null` (a forced validation pass from position zero),
+    // not "done."
+    assert.equal(
+      second.incomplete,
+      true,
+      "a sweep that resumed mid-fleet must not claim complete convergence merely because its own walk reached the end"
+    );
+    assert.equal(second.resumeAfterId, null, "the wrap forces the next pass to validate from position zero");
     assert.equal(
       second.discovered,
       20,
@@ -194,6 +214,19 @@ test(
       evidenceRowCount(),
       n,
       "the two-part resumed sweep together produced evidence for every connection, none silently skipped forever"
+    );
+
+    // The forced validation pass, genuinely starting from position zero,
+    // is what actually reports the clean-convergence signal.
+    const third = await runBoundedSummaryEvidenceSweep({
+      afterId: second.resumeAfterId,
+      maxDurationMs: 60_000,
+      pageSize: 10,
+    });
+    assert.equal(
+      third.incomplete,
+      false,
+      "the validation pass genuinely starting from position zero reports clean convergence"
     );
   })
 );
@@ -307,10 +340,16 @@ test(
     try {
       const first = await runBoundedSummaryEvidenceSweep({ maxDurationMs: 300, pageSize: 25 });
       assert.equal(first.incomplete, true, "slow generic repairs consume the bounded round after the fold phase");
+      // The cursor ADVANCES past this page's last id rather than rewinding
+      // before it (2026-08-01: rewinding is what let a single
+      // non-converging page permanently starve every connection after it —
+      // see `runBoundedSummaryEvidenceSweep`'s own doc). The skipped
+      // candidates remain classified as repair candidates by their own
+      // dirty flag regardless of cursor position.
       assert.equal(
         first.resumeAfterId,
-        null,
-        "generic repair deferral retries the same durable page while preserving its completed fold checkpoints"
+        ids.at(-1),
+        "generic repair deferral advances the cursor past this page while the skipped rows stay classified as candidates by their own dirty flag"
       );
       const checkpoints = getDb()
         .prepare("SELECT stream_facts_event_seq FROM connector_summary_evidence ORDER BY connector_instance_id")
@@ -339,14 +378,38 @@ test(
         maxDurationMs: 300,
         pageSize: 25,
       });
-      assert.equal(restart.incomplete, false, "a restarted maintenance process accepts the advanced durable cursor");
-      assert.equal(restart.resumeAfterId, null, "the completed resumed walk clears the cursor normally");
+      // The resumed round genuinely repairs every remaining candidate and
+      // reaches the end of keyset order, but — because it did not start
+      // from the very beginning — it cannot yet claim complete
+      // convergence (2026-08-01 "clean full pass" contract: see
+      // `runBoundedSummaryEvidenceSweep`'s own doc). It wraps the cursor to
+      // `null` to force one more validation pass rather than reporting
+      // done.
+      assert.equal(
+        restart.incomplete,
+        true,
+        "a sweep that resumed mid-fleet must not claim complete convergence merely because its own walk reached the end"
+      );
+      assert.equal(restart.resumeAfterId, null, "the wrap forces the next pass to validate from position zero");
       assert.equal(
         observations.filter(
           (receipt) => receipt.incomplete && receipt.terminalFoldParticipants > 0 && receipt.terminalFoldZeroProgress
         ).length,
         0,
         "no accepted bounded round leaves this first-page terminal checkpoint vector unchanged"
+      );
+
+      // The forced validation pass, genuinely starting from position zero,
+      // is what actually reports the clean-convergence signal.
+      const validation = await runBoundedSummaryEvidenceSweep({
+        afterId: restart.resumeAfterId,
+        maxDurationMs: 300,
+        pageSize: 25,
+      });
+      assert.equal(
+        validation.incomplete,
+        false,
+        "the validation pass genuinely starting from position zero reports clean convergence"
       );
     } finally {
       delete process.env.PDPP_TEST_REPAIR_CANDIDATE_SQLITE_DELAY_MS;
@@ -396,8 +459,18 @@ test(
       const startedAt = Date.now();
       const first = await runBoundedSummaryEvidenceSweep({ maxDurationMs: 1, pageSize: 25 });
       const elapsedMs = Date.now() - startedAt;
-      assert.equal(first.incomplete, true, "the expired cold page retains its durable cursor-before-page");
-      assert.equal(first.resumeAfterId, null, "the first page is retried rather than skipped");
+      assert.equal(first.incomplete, true, "the expired cold page reports incomplete");
+      // The cursor ADVANCES past this page's last id rather than rewinding
+      // before it (2026-08-01: rewinding is what let a single
+      // non-converging page permanently starve every connection after it —
+      // see `runBoundedSummaryEvidenceSweep`'s own doc). The still-missing
+      // rows on this page remain classified as repair candidates
+      // (`missing`) regardless of cursor position.
+      assert.equal(
+        first.resumeAfterId,
+        ids.at(-1),
+        "the expired cold page's cursor advances to its own last id, not rewound to before the page"
+      );
       assert.ok(evidenceRowCount() <= 1, "at most one 80ms writer-fenced cold repair started before expiry");
       assert.ok(elapsedMs < 250, "overshoot is bounded by one configured repair unit, never 25 repairs");
       const receipt = observations.at(-1);
@@ -412,8 +485,10 @@ test(
       setConnectorSummaryReconcileObservationSink(null);
     }
 
+    // A clean full pass genuinely starting from position zero (not
+    // resuming `first.resumeAfterId`) is what reports convergence.
     const resumed = await runBoundedSummaryEvidenceSweep({ maxDurationMs: 60_000, pageSize: 25 });
-    assert.equal(resumed.incomplete, false, "a normal later round converges the cold page");
+    assert.equal(resumed.incomplete, false, "a normal later round starting from position zero converges the cold page");
     assert.equal(evidenceRowCount(), 25, "all cold evidence rows eventually exist");
     const checkpoint = getDb()
       .prepare("SELECT stream_facts_event_seq FROM connector_summary_evidence WHERE connector_instance_id = ?")

@@ -2813,10 +2813,15 @@ export interface BoundedSweepResult {
    * should NOT treat this as a correctness gate (design.md "Startup is
    * acceleration, not authority": the unbounded read-time barrier always
    * covers whatever this sweep missed). `resumeAfterId`, when set, is the
-   * exact cursor position to resume from on a follow-up call — for a
-   * fold-incomplete page this is the id BEFORE that page (not past it), so
-   * a follow-up call revisits the SAME still-incomplete page's connections
-   * rather than skipping past them.
+   * exact cursor position to resume from on a follow-up call — always PAST
+   * the last page this call attempted, whether or not that page's own fold
+   * genuinely converged (2026-08-01: a page that never converges must not
+   * be able to pin the cursor before itself forever, permanently starving
+   * every connection after it in keyset order — see this function's own
+   * doc). A row a non-converging page left unrepaired remains classified as
+   * a candidate by its own dirty flag / checkpoint lag independent of
+   * cursor position, so it is genuinely revisited once round-robin
+   * wraparound brings the cursor back to it, never silently lost.
    */
   readonly incomplete: boolean;
   /**
@@ -2863,6 +2868,34 @@ export interface BoundedSweepResult {
  * that allotment is what genuinely bounds the fold's OWN batch-drain loop
  * within the page (never mid-batch).
  *
+ * Fairness is ACROSS calls: when a page reports `incomplete` (its own
+ * fold/repair did not converge within the shared deadline — the
+ * overwhelmingly common cause is simply that the deadline itself is spent,
+ * leaving zero budget for this call to try a later page anyway), the walk
+ * does NOT stop or rewind — it keeps going (subject to the same top-of-loop
+ * deadline/`maxPages` check every page already obeys), and the DURABLE
+ * resume cursor this call ultimately returns advances PAST that page rather
+ * than staying pinned before it (2026-08-01 live symptom:
+ * 18+ consecutive periodic-tick rounds inspecting the identical first page
+ * with the identical `resumeAfterId`, because a page that reported
+ * `incomplete` used to pin the cursor there forever — permanently starving
+ * discovery of every connection after it in keyset order, not merely
+ * slowing that one page's own convergence). Advancing past an incomplete
+ * page loses nothing: this function never trusts a page's OWN completeness
+ * to know whether a row is repaired — the row's `dirty` flag / canonical
+ * checkpoint mismatch (`reconcileConnectorSummaryEvidence`'s classification
+ * in `connector-summary-evidence-engine.ts`) is the actual authority, and a
+ * genuinely not-yet-converged row stays classified as a candidate
+ * regardless of how many times the cursor has already passed it. Round-
+ * robin keyset wraparound (this same cursor naturally returns to id 0 once
+ * `readInstanceIdPage` reports the complete set exhausted) is what
+ * guarantees the stuck page is revisited — not a second durable queue, and
+ * not an unbounded in-call retry of the same page. `incomplete: true` is
+ * still reported to the caller whenever ANY page failed to converge this
+ * call, so the correctness backstop (design.md "Startup is acceleration,
+ * not authority": the unbounded read-time barrier) still applies exactly as
+ * before; only the ACCELERATION cursor's fairness changed.
+ *
  * Complete-set orphan pruning (deleting evidence for connections whose
  * connector_instances row is entirely gone — distinct from the scoped
  * per-page pruning each page's `observeConnectorSummaryEvidence` call
@@ -2883,6 +2916,75 @@ export interface BoundedSweepResult {
  * additionally caps the number of pages processed; `options.pageSize`
  * controls how many connections each page covers.
  */
+/**
+ * `incomplete: false` — "the fleet is genuinely converged, stop scheduling
+ * follow-up rounds" — is reported ONLY after a clean pass that (a) STARTED
+ * at the very beginning of keyset order and (b) reached the true end of
+ * the set and (c) had zero pages fail to converge along the way. Anything
+ * less is `incomplete: true`, specifically including a call that started
+ * mid-fleet (resuming a prior round) and reached the end: that walk never
+ * re-examined the ids before its own starting cursor, so it cannot
+ * honestly claim the complete set converged — it must still force one more
+ * round, a validation pass starting over from position zero.
+ *
+ * The resume cursor is the walk's own advancing position — past every page
+ * this call processed, converged or not — never rewound to before a
+ * non-converging page (2026-08-01: rewinding is exactly what let a single
+ * non-converging page pin the durable cursor before itself forever,
+ * starving every connection after it in keyset order). EXCEPT once the
+ * walk reaches the true end of keyset order: the cursor then wraps back to
+ * `null` rather than staying past-the-end (which would make the next call
+ * read zero pages forever, silently never restarting the walk). When that
+ * wrap coincides with anything short of a genuinely clean full pass,
+ * `incomplete: true` is reported ALONGSIDE the wrapped `null` cursor —
+ * forcing the very next call to run a fresh validation pass from position
+ * zero rather than declaring victory. A still-dirty/checkpoint-lagging row
+ * a prior page could not finish is repaired by that validation pass via
+ * the ordinary classification `reconcileConnectorSummaryEvidence` already
+ * runs on every page — no separate retry queue needed: dirty/checkpoint
+ * state IS the durable memory of what still needs repair, this cursor is
+ * only an acceleration hint for where to look first.
+ */
+function resolveBoundedSweepOutcome(walk: {
+  readonly startedFromBeginning: boolean;
+  readonly coveredCompleteSet: boolean;
+  readonly anyFoldIncomplete: boolean;
+  readonly cursor: string | null;
+}): { readonly incomplete: boolean; readonly resumeAfterId: string | null } {
+  const cleanFullPass = walk.startedFromBeginning && walk.coveredCompleteSet && !walk.anyFoldIncomplete;
+  const incomplete = !cleanFullPass;
+  if (!incomplete) {
+    return { incomplete, resumeAfterId: null };
+  }
+  return { incomplete, resumeAfterId: walk.coveredCompleteSet ? null : walk.cursor };
+}
+
+function emitBoundedSweepPageObservation(
+  pageResult: Awaited<ReturnType<typeof observeConnectorSummaryEvidence>>,
+  pageIds: readonly string[],
+  pageStartedAt: number
+): void {
+  emitConnectorSummaryReconcileObservation({
+    candidateReasonCounts: pageResult.candidateReasonCounts,
+    candidatesInspected: pageResult.candidatesInspected,
+    durationMs: Date.now() - pageStartedAt,
+    failed: pageResult.failed,
+    failureClasses: pageResult.failureClasses,
+    incomplete: pageResult.incomplete,
+    repairDurationMs: pageResult.repairDurationMs,
+    repaired: pageResult.reconciled,
+    resumePending: pageResult.resumeAfterSeq !== null,
+    scopeKind: "scoped",
+    scopeSize: pageIds.length,
+    skipped: pageResult.skipped,
+    terminalFoldEventsRead: pageResult.terminalFoldEventsRead,
+    terminalFoldMinimumCheckpointAfter: pageResult.terminalFoldMinimumCheckpointAfter,
+    terminalFoldMinimumCheckpointBefore: pageResult.terminalFoldMinimumCheckpointBefore,
+    terminalFoldParticipants: pageResult.terminalFoldParticipants,
+    terminalFoldZeroProgress: pageResult.terminalFoldZeroProgress,
+  });
+}
+
 export async function runBoundedSummaryEvidenceSweep(options: {
   readonly maxDurationMs: number;
   readonly maxPages?: number;
@@ -2898,13 +3000,8 @@ export async function runBoundedSummaryEvidenceSweep(options: {
   let repaired = 0;
   let skipped = 0;
   const observedIds: string[] = [];
+  const startedFromBeginning = (options.afterId ?? null) === null;
   let cursor = options.afterId ?? null;
-  // The cursor position BEFORE the page currently being processed — used
-  // as the resume point when that page's OWN fold is incomplete, so a
-  // follow-up call revisits this exact page's connections rather than
-  // advancing past them (the connection-page cursor alone cannot express
-  // "this page started but its fold did not finish").
-  let cursorBeforeCurrentPage = cursor;
   let pages = 0;
   let coveredCompleteSet = false;
   let anyFoldIncomplete = false;
@@ -2920,7 +3017,6 @@ export async function runBoundedSummaryEvidenceSweep(options: {
       break;
     }
     pages += 1;
-    cursorBeforeCurrentPage = cursor;
     // Full discovery + fold + repair + scoped-prune for exactly this page —
     // the same barrier a scoped read-time consumer runs, so the whole unit
     // is bounded by pageSize, not by N. The page receives the sweep's one
@@ -2933,36 +3029,29 @@ export async function runBoundedSummaryEvidenceSweep(options: {
     discovered += pageIds.length;
     repaired += pageResult.reconciled;
     skipped += pageResult.skipped;
-    emitConnectorSummaryReconcileObservation({
-      candidateReasonCounts: pageResult.candidateReasonCounts,
-      candidatesInspected: pageResult.candidatesInspected,
-      durationMs: Date.now() - pageStartedAt,
-      failed: pageResult.failed,
-      failureClasses: pageResult.failureClasses,
-      incomplete: pageResult.incomplete,
-      repairDurationMs: pageResult.repairDurationMs,
-      repaired: pageResult.reconciled,
-      resumePending: pageResult.resumeAfterSeq !== null,
-      scopeKind: "scoped",
-      scopeSize: pageIds.length,
-      skipped: pageResult.skipped,
-      terminalFoldEventsRead: pageResult.terminalFoldEventsRead,
-      terminalFoldMinimumCheckpointAfter: pageResult.terminalFoldMinimumCheckpointAfter,
-      terminalFoldMinimumCheckpointBefore: pageResult.terminalFoldMinimumCheckpointBefore,
-      terminalFoldParticipants: pageResult.terminalFoldParticipants,
-      terminalFoldZeroProgress: pageResult.terminalFoldZeroProgress,
-    });
+    emitBoundedSweepPageObservation(pageResult, pageIds, pageStartedAt);
     if (pageResult.incomplete) {
-      // This page's fold did not fully converge within its budget — the
-      // sweep as a whole is incomplete regardless of how many pages
-      // followed, and the resume point is BEFORE this page (not past it),
-      // so a follow-up call revisits exactly the connections that did not
-      // finish rather than skipping them.
+      // This page's own fold/repair did not converge within the shared
+      // deadline. Do NOT stop the walk here and do NOT rewind the cursor:
+      // it still advances PAST this page below, exactly like a converged
+      // page, so a page that fails to converge on every attempt can never
+      // permanently block discovery of every connection after it in keyset
+      // order (2026-08-01 live symptom: the old "rewind and stop" behavior
+      // pinned the durable cursor before the same stuck page forever).
+      // Nothing about this page's own repair/fold correctness is lost by
+      // advancing past it: the row(s) that did not converge stay classified
+      // as candidates by their own dirty flag or checkpoint lag
+      // (`reconcileConnectorSummaryEvidence`'s classification in
+      // connector-summary-evidence-engine.ts), independent of where this
+      // walk's cursor sits. Round-robin keyset wraparound — this same
+      // cursor naturally returns to the start once a later call's walk
+      // reaches the true end of the set (`coveredCompleteSet` below) — is
+      // what guarantees the stuck page is revisited, using the EXISTING
+      // dirty/checkpoint authority rather than a second durable queue.
       anyFoldIncomplete = true;
-      cursor = cursorBeforeCurrentPage;
-      break;
+    } else {
+      observedIds.push(...pageIds);
     }
-    observedIds.push(...pageIds);
     cursor = pageIds.at(-1) ?? cursor;
     if (pageIds.length < pageSize) {
       // Short page: this was genuinely the last page of the complete set.
@@ -2989,14 +3078,19 @@ export async function runBoundedSummaryEvidenceSweep(options: {
     prunedComplete = true;
   }
 
-  const incomplete = !coveredCompleteSet || anyFoldIncomplete;
+  const { incomplete, resumeAfterId } = resolveBoundedSweepOutcome({
+    anyFoldIncomplete,
+    coveredCompleteSet,
+    cursor,
+    startedFromBeginning,
+  });
   return {
     discovered,
     incomplete,
     observedIds,
     prunedComplete,
     repaired,
-    resumeAfterId: incomplete ? cursor : null,
+    resumeAfterId,
     skipped,
   };
 }
