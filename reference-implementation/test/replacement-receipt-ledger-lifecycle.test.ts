@@ -156,20 +156,28 @@ test("pre-claim ensure persists started before the replacement effect in SQLite"
   }
 });
 
-test("pre-claim persistence failure fails closed before the replacement effect", async () => {
+test("pre-claim persistence failure does not block the replacement effect (2026-08-01 Amazon incident fix)", async () => {
+  // Prior behavior (the incident's root cause): a receipt-store failure
+  // during pre-claim observation prevented the real allocator call from
+  // ever being attempted, and surfaced as a plain, unwrapped error
+  // indistinguishable from an actual allocator failure to any wrapping
+  // retry logic. Bookkeeping failures must be reported (onPersistenceError)
+  // and swallowed, never allowed to block or mask the real effect.
   const ledger = createBrowserSurfaceReplacementLedger();
   const before: BrowserSurface = {
     ...advertisedReplacementSurface("container-old"),
     surface_id: "preclaim-persist-failure",
   };
+  const after: BrowserSurface = { ...before, container_id: "container-new" };
   const persistenceError = new Error("receipt store unavailable");
+  const persistenceErrors: unknown[] = [];
   let ensureCalls = 0;
   const observed = createReplacementObservingAllocator(
     {
       // biome-ignore lint/suspicious/useAwait: localized test assertion preserves its explicit contract.
       ensureSurface: async () => {
         ensureCalls += 1;
-        return { ...before, container_id: "container-new" };
+        return after;
       },
       getSurfaceStatus: async () => before,
       listSurfaces: async () => [before],
@@ -177,6 +185,7 @@ test("pre-claim persistence failure fails closed before the replacement effect",
     },
     {
       ledger,
+      onPersistenceError: (error) => persistenceErrors.push(error),
       // biome-ignore lint/suspicious/useAwait: localized test assertion preserves its explicit contract.
       persist: async () => {
         throw persistenceError;
@@ -184,11 +193,18 @@ test("pre-claim persistence failure fails closed before the replacement effect",
     }
   );
 
-  await assert.rejects(
-    () => observed.ensureSurface({ connectorId: "chatgpt", profileKey: "chatgpt", surfaceId: before.surface_id }),
-    persistenceError
+  const result = await observed.ensureSurface({
+    connectorId: "chatgpt",
+    profileKey: "chatgpt",
+    surfaceId: before.surface_id,
+  });
+
+  assert.deepEqual(result, after, "the real allocator's successful result must be returned, not masked");
+  assert.equal(ensureCalls, 1, "the real allocator must actually be called despite the bookkeeping fault");
+  assert.ok(
+    persistenceErrors.includes(persistenceError),
+    "the bookkeeping fault must be reported, not silently dropped"
   );
-  assert.equal(ensureCalls, 0);
 });
 
 test("independent pre-claim ensure attempts have distinct receipt identities", async () => {
@@ -525,9 +541,16 @@ test("independent stop attempts survive SQLite terminality and exact rotated rea
   }
 });
 
-test("durable receipt persistence failures are not converted into successful lifecycle calls", async () => {
+test("durable receipt persistence failures do not block the real stopSurface call (2026-08-01 Amazon incident fix)", async () => {
+  // Prior behavior (the incident's root cause): a durable persistence
+  // failure while recording the stop receipt prevented the real allocator
+  // stopSurface call from ever being attempted, and surfaced as a plain,
+  // unwrapped error. Persistence failures are bookkeeping about the
+  // operation, not the operation itself — they must be reported
+  // (onPersistenceError) and swallowed, never allowed to block the effect.
   const ledger = createBrowserSurfaceReplacementLedger();
   const persistenceError = new Error("database unavailable");
+  const persistenceErrors: unknown[] = [];
   let stopCalled = false;
   const observed = createReplacementObservingAllocator(
     // biome-ignore lint/suspicious/useAwait: localized test assertion preserves its explicit contract.
@@ -537,6 +560,7 @@ test("durable receipt persistence failures are not converted into successful lif
     }),
     {
       ledger,
+      onPersistenceError: (error) => persistenceErrors.push(error),
       // biome-ignore lint/suspicious/useAwait: localized test assertion preserves its explicit contract.
       persist: async () => {
         throw persistenceError;
@@ -544,16 +568,26 @@ test("durable receipt persistence failures are not converted into successful lif
     }
   );
 
-  await assert.rejects(
-    () => observed.stopSurface({ reason: "operator", surfaceId: surface.surface_id }),
-    persistenceError
+  const result = await observed.stopSurface({ reason: "operator", surfaceId: surface.surface_id });
+
+  assert.equal(result, null);
+  assert.equal(stopCalled, true, "the real allocator stopSurface must still be called despite the bookkeeping fault");
+  assert.ok(
+    persistenceErrors.includes(persistenceError),
+    "the bookkeeping fault must be reported, not silently dropped"
   );
-  assert.equal(stopCalled, false);
 });
 
-test("successful ensure followed by receipt persistence failure does not invoke ensure-failure recording", async () => {
+test("successful ensure followed by receipt persistence failure still resolves the real result (2026-08-01 Amazon incident fix)", async () => {
+  // Prior behavior (the incident's root cause): a real allocator success
+  // was discarded and reported to the caller as a rejection whenever
+  // persisting its receipt failed — indistinguishable, to
+  // wrapAllocatorWithTransientPollRetry, from the allocator itself having
+  // failed. That masking is exactly what exhausted the retry budget and
+  // terminalized an otherwise-healthy lease in the 2026-08-01 incident.
   const ledger = createBrowserSurfaceReplacementLedger();
   const persistenceError = new Error("database unavailable");
+  const persistenceErrors: unknown[] = [];
   const attempted: ReplacementReceipt[] = [];
   const oldSurface: BrowserSurface = { ...surface, container_id: "container-old" };
   const newSurface: BrowserSurface = { ...surface, container_id: "container-new" };
@@ -571,6 +605,7 @@ test("successful ensure followed by receipt persistence failure does not invoke 
     },
     {
       ledger,
+      onPersistenceError: (error) => persistenceErrors.push(error),
       // biome-ignore lint/suspicious/useAwait: localized test assertion preserves its explicit contract.
       persist: async (receipt) => {
         attempted.push(receipt);
@@ -582,16 +617,14 @@ test("successful ensure followed by receipt persistence failure does not invoke 
     }
   );
 
-  await assert.rejects(
-    () =>
-      observed.ensureSurface({
-        connectorId: surface.connector_id,
-        profileKey: surface.profile_key,
-        surfaceId: surface.surface_id,
-        ...(surface.surface_subject_id ? { surfaceSubjectId: surface.surface_subject_id } : {}),
-      }),
-    persistenceError
-  );
+  const result = await observed.ensureSurface({
+    connectorId: surface.connector_id,
+    profileKey: surface.profile_key,
+    surfaceId: surface.surface_id,
+    ...(surface.surface_subject_id ? { surfaceSubjectId: surface.surface_subject_id } : {}),
+  });
+
+  assert.deepEqual(result, newSurface, "a real allocator success must resolve even when persisting its receipt fails");
   assert.equal(ensureCalls, 1, "the allocator succeeded exactly once");
   assert.deepEqual(
     attempted.map((receipt) => receipt.phase),
@@ -600,6 +633,10 @@ test("successful ensure followed by receipt persistence failure does not invoke 
   const [firstAttempted] = attempted;
   assert.ok(firstAttempted, "expected the first attempted receipt");
   assert.equal(firstAttempted.cause, "allocator_internal_ensure_surface");
+  assert.ok(
+    persistenceErrors.includes(persistenceError),
+    "the bookkeeping fault must be reported, not silently dropped"
+  );
 });
 
 test("complete and terminate replay paths validate every supplied immutable field", () => {

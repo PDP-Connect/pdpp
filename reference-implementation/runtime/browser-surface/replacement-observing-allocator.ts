@@ -61,7 +61,9 @@ async function ensureSurfaceWithObservation(
 ): Promise<BrowserSurface> {
   const observation = await prepareEnsureObservation(allocator, options, request);
   const after = await performEnsureEffect(allocator, options, request, observation);
-  await recordEnsureSuccess(options, request, observation, after);
+  // Bookkeeping only — never allowed to turn a real allocator success into
+  // an apparent failure. See recordEnsureSuccessObserved's doc comment.
+  await recordEnsureSuccessObserved(options, request, observation, after);
   return after;
 }
 
@@ -70,11 +72,37 @@ async function prepareEnsureObservation(
   options: ReplacementObservingAllocatorOptions,
   request: EnsureBrowserSurfaceRequest
 ): Promise<EnsureObservation> {
+  // `before` is a real allocator read: a genuine failure here is a genuine
+  // allocator-health signal and must propagate like any other ensureSurface
+  // failure.
   const before = await allocator.getSurfaceStatus(request.surfaceId);
   const attemptId = options.createEnsureAttemptId?.(request) ?? randomUUID();
-  const advertisedReplacement = await startAdvertisedReplacement(options, request, before, attemptId);
-  const preclaimed = advertisedReplacement ?? (await pendingReplacementForRequest(options, request));
+  // Everything past this point is replacement-ledger bookkeeping (in-memory
+  // and durable-store lookups), not a property of the allocator call itself.
+  // A throw here (e.g. a transient receipt-store error) must never abort an
+  // ensureSurface attempt before the real allocator is even asked — that
+  // would masquerade as an allocator failure to callers/retry wrappers that
+  // cannot tell the difference (2026-08-01 Amazon incident: a plain,
+  // unwrapped receipt-store error here exhausted the starting-surface poll
+  // retry budget and terminalized the lease, even though the allocator
+  // itself was never given the chance to succeed or fail).
+  const preclaimed = await observePendingReplacement(options, request, before, attemptId);
   return { attemptId, before, preclaimed };
+}
+
+async function observePendingReplacement(
+  options: ReplacementObservingAllocatorOptions,
+  request: EnsureBrowserSurfaceRequest,
+  before: BrowserSurface | null,
+  attemptId: string
+): Promise<ReplacementReceipt | null> {
+  try {
+    const advertisedReplacement = await startAdvertisedReplacement(options, request, before, attemptId);
+    return advertisedReplacement ?? (await pendingReplacementForRequest(options, request));
+  } catch (error) {
+    options.onPersistenceError?.(error);
+    return null;
+  }
 }
 
 function pendingReplacementForRequest(
@@ -101,34 +129,56 @@ async function performEnsureEffect(
   try {
     return await allocator.ensureSurface(request);
   } catch (error) {
-    await recordEnsureFailureBoundary(options, request, observation);
+    // Bookkeeping only — a failure recording THIS failure must never replace
+    // or mask the real allocator error being rethrown below.
+    await recordEnsureFailureBoundaryObserved(options, request, observation);
     throw error;
   }
 }
 
-async function recordEnsureFailureBoundary(
+async function recordEnsureFailureBoundaryObserved(
   options: ReplacementObservingAllocatorOptions,
   request: EnsureBrowserSurfaceRequest,
   observation: EnsureObservation
 ): Promise<void> {
-  if (observation.preclaimed) {
-    await recordTerminal(options, observation.preclaimed, "failed");
-  } else {
-    await recordEnsureFailure(options, request, observation.before, observation.attemptId);
+  try {
+    if (observation.preclaimed) {
+      await recordTerminal(options, observation.preclaimed, "failed");
+    } else {
+      await recordEnsureFailure(options, request, observation.before, observation.attemptId);
+    }
+  } catch (error) {
+    options.onPersistenceError?.(error);
   }
 }
 
-async function recordEnsureSuccess(
+/**
+ * Records the replacement-ledger side effects of a successful ensureSurface
+ * call. This is pure observability/audit-trail bookkeeping ABOUT the
+ * allocator's result, not a property of the result itself: a real,
+ * successful allocator surface must never be discarded — and reported to
+ * the caller and any wrapping retry logic as an error — merely because this
+ * bookkeeping failed to persist (2026-08-01 Amazon incident root cause: a
+ * plain, unwrapped receipt-store error here was indistinguishable from an
+ * allocator failure to `wrapAllocatorWithTransientPollRetry`, which
+ * exhausted its retry budget and terminalized an otherwise-healthy lease).
+ * Failures are reported via `onPersistenceError` and swallowed.
+ */
+async function recordEnsureSuccessObserved(
   options: ReplacementObservingAllocatorOptions,
   request: EnsureBrowserSurfaceRequest,
   observation: EnsureObservation,
   after: BrowserSurface
 ): Promise<void> {
-  if (observation.preclaimed) {
-    await recordPreclaimedEnsureResult(options, observation.preclaimed, observation.before, after);
-    return;
+  try {
+    if (observation.preclaimed) {
+      await recordPreclaimedEnsureResult(options, observation.preclaimed, observation.before, after);
+      return;
+    }
+    await recordContainerTransition(options, request, observation.before, after, observation.attemptId);
+  } catch (error) {
+    options.onPersistenceError?.(error);
   }
-  await recordContainerTransition(options, request, observation.before, after, observation.attemptId);
 }
 
 async function recordPreclaimedEnsureResult(
@@ -245,12 +295,28 @@ async function stopSurfaceWithObservation(
   request: StopBrowserSurfaceRequest
 ): Promise<BrowserSurface | null> {
   const before = await allocator.getSurfaceStatus(request.surfaceId);
-  const started = await startStopReceipt(options, before, request);
+  // Bookkeeping only — must never abort a real stopSurface call before the
+  // allocator is even asked. Same masking hazard as ensureSurface's
+  // observation step (see prepareEnsureObservation's doc comment).
+  const started = await startStopReceiptObserved(options, before, request);
   try {
     return await allocator.stopSurface(request);
   } catch (error) {
     await recordTerminal(options, started, "failed");
     throw error;
+  }
+}
+
+async function startStopReceiptObserved(
+  options: ReplacementObservingAllocatorOptions,
+  before: BrowserSurface | null,
+  request: StopBrowserSurfaceRequest
+): Promise<ReplacementReceipt | null> {
+  try {
+    return await startStopReceipt(options, before, request);
+  } catch (error) {
+    options.onPersistenceError?.(error);
+    return null;
   }
 }
 
@@ -277,6 +343,17 @@ function startStopReceipt(
   return record(options, started);
 }
 
+/**
+ * Persists a replacement receipt. This is durable bookkeeping ABOUT an
+ * allocator operation, not the operation itself: a persistence failure here
+ * must never propagate to callers observing an ensureSurface/stopSurface
+ * call, or a real allocator success/failure becomes indistinguishable from
+ * "the audit trail had a hiccup" to any wrapping retry logic (2026-08-01
+ * Amazon incident root cause). Failures are reported via
+ * `onPersistenceError` and swallowed; the in-memory receipt shape is
+ * returned unchanged so callers' bookkeeping (which does not depend on
+ * durable persistence having succeeded) still proceeds consistently.
+ */
 async function record(
   options: ReplacementObservingAllocatorOptions,
   receipt: ReplacementReceipt
@@ -285,7 +362,7 @@ async function record(
     return await (options.persist ?? (async (value: ReplacementReceipt) => value))(receipt);
   } catch (error) {
     options.onPersistenceError?.(error);
-    throw error;
+    return receipt;
   }
 }
 
