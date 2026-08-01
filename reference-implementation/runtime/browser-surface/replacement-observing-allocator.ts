@@ -55,11 +55,22 @@ interface EnsureObservation {
  * Membership here means "do not let this specific in-memory receipt block
  * a later observation" — it does NOT mean "this replacement never
  * happened": the receipt itself, and any later resolution of it, are
- * untouched. Entries are removed once that replacement_id resolves
- * (terminal/completed) or its persist succeeds on a later attempt for the
- * SAME receipt, so this cannot grow without bound across a long-lived
- * process. Scoped to one allocator instance (not module-level) so
- * independent allocators/tests never leak failure state into each other.
+ * untouched.
+ *
+ * An entry is retired in exactly two ways, both unconditional so the set
+ * cannot grow across a long-lived process: (1) a LATER persist attempt for
+ * the SAME receipt succeeds (`record` deletes it on success); or (2) the
+ * receipt reaches a terminal outcome (`recordTerminal` deletes it
+ * regardless of whether the terminal event itself persists). Case (2) also
+ * enforces the durable-topology invariant this policy exists for: a
+ * terminal/completed event is never durably appended for a `started`
+ * predecessor known not to be durable — `recordTerminal` suppresses that
+ * one durable write instead of retrying the stale `started` write or
+ * inventing a parallel state machine, so the durable store can never hold
+ * a resolution with no `started` row beneath it.
+ *
+ * Scoped to one allocator instance (not module-level) so independent
+ * allocators/tests never leak failure state into each other.
  */
 type DurablePersistFailureTracker = Set<string>;
 
@@ -343,6 +354,24 @@ async function recordEnsureFailure(
   await recordTerminal(options, durableFailures, started, "failed");
 }
 
+/**
+ * Resolves a `started` receipt to a terminal outcome. This is the ONLY
+ * place a receipt's non-durable-lifecycle policy is decided (2026-08-01
+ * gate revision, Blocker 2): if `started`'s own persist is known to have
+ * failed (tracked in `durableFailures`), its durable predecessor event was
+ * never written — appending a `terminal` event for it would leave the
+ * durable store holding a resolution with no `started` row beneath it,
+ * which downstream ledger logic (and the store's own topology) assumes
+ * cannot happen. Rather than retry the stale `started` write or invent a
+ * parallel state machine, the whole non-durable lifecycle is suppressed
+ * and explicitly retired here: `ledger.terminate` still runs (pure
+ * in-memory resolution, so `hasResolution`/`pendingForSurface` correctly
+ * stop treating this replacement_id as pending), but the durable
+ * `record`/`persist` call is skipped entirely for this event, and the
+ * tracker entry is deleted unconditionally — so a resolved (or abandoned)
+ * non-durable receipt can never linger in `durableFailures` and can never
+ * produce an orphan durable terminal/completed row.
+ */
 async function recordTerminal(
   options: ReplacementObservingAllocatorOptions,
   durableFailures: DurablePersistFailureTracker,
@@ -352,24 +381,25 @@ async function recordTerminal(
   if (!started) {
     return;
   }
-  await record(
-    options,
-    durableFailures,
-    options.ledger.terminate({
-      connection_id: started.connection_id,
-      profile_key: started.profile_key,
-      replacement_id: started.replacement_id,
-      ...(started.surface_subject_id ? { surface_subject_id: started.surface_subject_id } : {}),
-      ...(started.surface_id ? { surface_id: started.surface_id } : {}),
-      cause: started.cause,
-      outcome,
-    })
-  );
-  // Resolved (successfully or not — the resolution attempt itself may also
-  // have failed to persist, but the receipt is no longer a "started,
-  // unresolved" claim either way): stop tracking it as a durable-persist
-  // failure so the tracker cannot grow across a resolved replacement_id.
+  const wasNonDurable = durableFailures.has(started.replacement_id);
+  const terminated = options.ledger.terminate({
+    connection_id: started.connection_id,
+    profile_key: started.profile_key,
+    replacement_id: started.replacement_id,
+    ...(started.surface_subject_id ? { surface_subject_id: started.surface_subject_id } : {}),
+    ...(started.surface_id ? { surface_id: started.surface_id } : {}),
+    cause: started.cause,
+    outcome,
+  });
+  // The receipt is resolved in-memory either way; stop tracking it before
+  // any further await so this entry cannot be observed as "still pending"
+  // by a concurrent call, and cannot linger regardless of what happens
+  // below.
   durableFailures.delete(started.replacement_id);
+  if (wasNonDurable) {
+    return;
+  }
+  await record(options, durableFailures, terminated);
 }
 
 async function stopSurfaceWithObservation(
@@ -386,8 +416,26 @@ async function stopSurfaceWithObservation(
   try {
     return await allocator.stopSurface(request);
   } catch (error) {
-    await recordTerminal(options, durableFailures, started, "failed");
+    // Bookkeeping only — recording THIS failure must never replace or mask
+    // the real allocator error being rethrown below (2026-08-01 gate
+    // revision, Blocker 1: recordTerminal's ledger.terminate runs
+    // synchronously, before record()'s own try/catch can intervene — a
+    // throwing ledger, exactly like a throwing reporter, must not be able
+    // to surface in place of the real stopSurface error).
+    await recordStopFailureObserved(options, durableFailures, started);
     throw error;
+  }
+}
+
+async function recordStopFailureObserved(
+  options: ReplacementObservingAllocatorOptions,
+  durableFailures: DurablePersistFailureTracker,
+  started: ReplacementReceipt | null
+): Promise<void> {
+  try {
+    await recordTerminal(options, durableFailures, started, "failed");
+  } catch (error) {
+    reportPersistenceError(options, error);
   }
 }
 
