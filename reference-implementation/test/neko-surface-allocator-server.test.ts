@@ -1151,6 +1151,128 @@ test("does not create beyond the configured host port range", async () => {
   );
 });
 
+type AllocatorErrorTaxonomyCase = {
+  name: string;
+  status: number;
+  category: string;
+  retryable: boolean;
+  options?: Partial<Omit<typeof BASE_OPTIONS, "webrtcHostPortStart" | "webrtcHostPortEnd">> & {
+    webrtcHostPortStart?: number;
+    webrtcHostPortEnd?: number;
+  };
+  seed?: (client: NekoSurfaceAllocatorClient) => Promise<unknown>;
+  request: (baseUrl: string, docker: FakeDocker) => Promise<Response>;
+};
+
+test("HTTP error responses carry a category and retryable flag matching the error taxonomy", async () => {
+  const cases: AllocatorErrorTaxonomyCase[] = [
+    {
+      name: "bad_request",
+      status: 400,
+      category: "bad_request",
+      retryable: false,
+      request: async (baseUrl) =>
+        fetch(new URL("/surfaces", baseUrl), {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({}),
+        }),
+    },
+    {
+      name: "foreign_resource",
+      status: 409,
+      category: "foreign_resource",
+      retryable: false,
+      request: async (baseUrl, docker) => {
+        docker.addOwnedSummaryForForeignInspect("foreign_inspect", "surface_1");
+        return fetch(new URL("/surfaces/surface_1", baseUrl));
+      },
+    },
+    {
+      name: "port_capacity_exhausted",
+      status: 503,
+      category: "port_capacity_exhausted",
+      retryable: false,
+      options: { webrtcHostPortStart: 59_000, webrtcHostPortEnd: 59_000 },
+      seed: async (client) => client.ensureSurface({ surfaceId: "surface_1", connectorId: "chatgpt", profileKey: "profile_1" }),
+      request: async (baseUrl) =>
+        fetch(new URL("/surfaces", baseUrl), {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ surface_id: "surface_2", connector_id: "chatgpt", profile_key: "profile_2" }),
+        }),
+    },
+    {
+      name: "docker_malformed_response",
+      status: 502,
+      category: "docker_malformed_response",
+      retryable: false,
+      request: async (baseUrl, docker) => {
+        docker.malformContainerList = true;
+        return fetch(new URL("/surfaces", baseUrl));
+      },
+    },
+    {
+      name: "docker_http_error",
+      status: 502,
+      category: "docker_http_error",
+      retryable: true,
+      seed: async (client) => client.ensureSurface({ surfaceId: "surface_1", connectorId: "chatgpt", profileKey: "profile_1" }),
+      request: async (baseUrl, docker) => {
+        // GET has no start-time port-collision retry loop, so an inspect-time
+        // docker_http_error propagates straight through the HTTP error
+        // boundary, which is what this test needs to observe.
+        docker.inspectFailureIds.add("container_1");
+        return fetch(new URL("/surfaces/surface_1", baseUrl));
+      },
+    },
+    {
+      name: "docker_request_failed",
+      status: 502,
+      category: "docker_request_failed",
+      retryable: true,
+      request: async (baseUrl, docker) => {
+        docker.transportFailure = true;
+        return fetch(new URL("/surfaces", baseUrl));
+      },
+    },
+    {
+      name: "unknown (non-taxonomy throw)",
+      status: 500,
+      category: "unknown",
+      retryable: false,
+      request: async (baseUrl, docker) => {
+        docker.throwPlainErrorOnList = true;
+        return fetch(new URL("/surfaces", baseUrl));
+      },
+    },
+  ];
+
+  for (const testCase of cases) {
+    const docker = new FakeDocker();
+    const server = await startNekoSurfaceAllocatorServer({
+      ...BASE_OPTIONS,
+      docker,
+      fetchImpl: readyFetch(),
+      ...(testCase.options ?? {}),
+    });
+    try {
+      if (testCase.seed) {
+        const client = new NekoSurfaceAllocatorClient({ baseUrl: server.url });
+        await testCase.seed(client);
+      }
+      const response = await testCase.request(server.url, docker);
+      const body = (await response.json()) as { category?: unknown; retryable?: unknown; error?: unknown };
+      assert.equal(response.status, testCase.status, `[${testCase.name}] status`);
+      assert.equal(body.category, testCase.category, `[${testCase.name}] category`);
+      assert.equal(body.retryable, testCase.retryable, `[${testCase.name}] retryable`);
+      assert.equal(typeof body.error, "string", `[${testCase.name}] error message present`);
+    } finally {
+      await server.close();
+    }
+  }
+});
+
 test("reclaims stopped containers when the dynamic host port range is otherwise full", async () => {
   const docker = new FakeDocker();
   const service = new NekoSurfaceAllocatorService({
@@ -1494,11 +1616,35 @@ class FakeDocker implements DockerEngineTransport {
   networkConnectFailFor = new Set<string>();
   networkDisconnectFailFor = new Set<string>();
   ipAssignments = new Map<string, number>();
+  malformContainerList = false;
+  transportFailure = false;
+  throwPlainErrorOnList = false;
+  inspectFailureIds = new Set<string>();
 
   // biome-ignore lint/suspicious/useAwait: Async callback preserves the dependency contract and rejection timing.
   async requestJson(path: string, init: DockerEngineRequestInit = {}): Promise<unknown> {
     const call = { init: init as DockerCall["init"], path };
     this.calls.push(call);
+    if (path === "/containers/json") {
+      if (this.transportFailure) {
+        throw new NekoSurfaceAllocatorServiceError("docker_request_failed", "Docker GET /containers/json failed");
+      }
+      if (this.throwPlainErrorOnList) {
+        throw new Error("simulated non-taxonomy failure");
+      }
+      if (this.malformContainerList) {
+        return { not: "an array" };
+      }
+    }
+    {
+      const inspectFailMatch = path.match(/^\/containers\/([^/]+)\/json$/);
+      if (inspectFailMatch?.[1] !== undefined && this.inspectFailureIds.has(inspectFailMatch[1])) {
+        throw new NekoSurfaceAllocatorServiceError(
+          "docker_http_error",
+          `Docker GET /containers/${inspectFailMatch[1]}/json returned HTTP 500: simulated inspect failure`,
+        );
+      }
+    }
     // Internal dispatch below duck-types the body by path, unlike the
     // narrower DockerCreateContainerBody | DockerNetworkCall union the test
     // bodies assert against at each specific call site.

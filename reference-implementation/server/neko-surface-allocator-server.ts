@@ -999,7 +999,12 @@ export function createNekoSurfaceAllocatorHttpHandler(service: NekoSurfaceAlloca
       await routeAllocatorRequest(service, req, res);
     } catch (cause) {
       const error = cause instanceof Error ? cause : new Error(String(cause));
-      sendJson(res, statusForError(error), { error: error.message });
+      const category = categoryForError(error);
+      sendJson(res, statusForError(error), {
+        error: error.message,
+        category,
+        retryable: retryableForCategory(category),
+      });
     }
   };
 }
@@ -1221,6 +1226,23 @@ function statusForError(error: Error): number {
     return 503;
   }
   return 502;
+}
+
+function categoryForError(error: Error): NekoSurfaceAllocatorServiceError["code"] | "unknown" {
+  if (!(error instanceof NekoSurfaceAllocatorServiceError)) {
+    return "unknown";
+  }
+  return error.code;
+}
+
+function retryableForCategory(category: NekoSurfaceAllocatorServiceError["code"] | "unknown"): boolean {
+  if (category === "docker_http_error") {
+    return true;
+  }
+  if (category === "docker_request_failed") {
+    return true;
+  }
+  return false;
 }
 
 function parseContainerSummary(value: unknown): DockerContainerSummary {
