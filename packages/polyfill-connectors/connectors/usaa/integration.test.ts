@@ -151,6 +151,7 @@ function makeNoExportPage(
   finalUrl: string,
   counts: {
     account_detail_marker_count: number;
+    export_affordance_candidates?: NoExportAffordanceObservation["export_affordance_candidates"];
     navigation_marker_count: number;
     target_count: number;
     transaction_marker_count: number;
@@ -518,6 +519,7 @@ test("emitExportFailure: a missing export affordance is reported as a structure-
     phase: "no_export_affordance",
     no_export_observation: {
       account_detail_marker_count: 1,
+      export_affordance_candidates: [],
       navigation_marker_count: 2,
       route: "expected",
       target_count: 0,
@@ -576,6 +578,7 @@ test("driveExport records account, challenge, and unrelated routes through the a
     {
       counts: {
         account_detail_marker_count: 1,
+        export_affordance_candidates: [],
         navigation_marker_count: 1,
         target_count: 0,
         transaction_marker_count: 0,
@@ -586,6 +589,7 @@ test("driveExport records account, challenge, and unrelated routes through the a
     {
       counts: {
         account_detail_marker_count: 0,
+        export_affordance_candidates: [],
         navigation_marker_count: 0,
         target_count: 0,
         transaction_marker_count: 0,
@@ -596,6 +600,7 @@ test("driveExport records account, challenge, and unrelated routes through the a
     {
       counts: {
         account_detail_marker_count: 0,
+        export_affordance_candidates: [],
         navigation_marker_count: 0,
         target_count: 0,
         transaction_marker_count: 0,
@@ -658,6 +663,7 @@ test("classifyExportLadderOutcome: a marketing-detour no_export_affordance is na
     diag: null,
     no_export_observation: {
       account_detail_marker_count: 0,
+      export_affordance_candidates: [],
       navigation_marker_count: 0,
       route: classifyUsaaNoExportRoute(USAA_MARKETING_DETOUR_URL, false),
       target_count: 0,
@@ -718,6 +724,7 @@ test("emitExportFailure: a drifted-navigation no-export-affordance is reported u
     diag: null,
     no_export_observation: {
       account_detail_marker_count: 0,
+      export_affordance_candidates: [],
       navigation_marker_count: 0,
       route: "unknown",
       target_count: 0,
@@ -1310,6 +1317,104 @@ test("emitExportFailure: credit-card account uses credit_card_export_unverified 
   assert.ok(skip);
   assert.equal(skip.reason, "credit_card_export_unverified", "credit-card export flow is not yet live-verified");
   assert.match(skip.message, /credit-card export flow not verified/, "message carries the design-notes pointer");
+});
+
+/**
+ * Regression for the 2026-08-01 REVISE gate (run_a6568f40d5004a3f843a2a2b5a73df55,
+ * account 1/4): a confirmed account-detail page with zero clickable export
+ * buttons resolves `no_export_affordance`/`export_affordance_missing` with
+ * only structural counts — no bounded evidence of *why* the button wasn't
+ * clickable (e.g. present but disabled, or hidden). This test drives
+ * `driveExport` through a disabled, hidden-from-a11y export button — the
+ * account-4-style shape (button exists in the DOM, `target_count` would be
+ * 0 for a strict "clickable" selector match) — and asserts the bounded
+ * actionability descriptor (tag/role/type/disabled/aria_disabled/visible)
+ * reaches the stored SKIP_RESULT diagnostics, while raw `id`/`text`/page
+ * HTML/account data are redacted the same way `export_candidates` already are.
+ */
+test("driveExport surfaces bounded export-affordance actionability evidence on a no-affordance account-detail page", async () => {
+  const diagnostics: DiagnosticInfo[] = [];
+  const page: Page = Object.assign({} as Page, {
+    evaluate(_fn: (...args: unknown[]) => unknown, arg?: unknown) {
+      if (arg && typeof arg === "object" && "exportAffordance" in (arg as Record<string, unknown>)) {
+        return Promise.resolve({
+          account_detail_marker_count: 1,
+          export_affordance_candidates: [
+            {
+              aria_disabled: true,
+              cls: "ent-as-utility-bar__item export",
+              disabled: true,
+              id: "export-btn-acct-4-secret",
+              role: "button",
+              tag: "BUTTON",
+              text: "Export (account 0001-SECRET)",
+              type: "button",
+              visible: false,
+            },
+          ],
+          navigation_marker_count: 2,
+          target_count: 0,
+          transaction_marker_count: 1,
+        });
+      }
+      return Promise.resolve(null);
+    },
+    goto() {
+      return Promise.resolve(null);
+    },
+    locator() {
+      return {
+        count: () => Promise.resolve(0),
+        filter(): unknown {
+          return this;
+        },
+        first(): unknown {
+          return this;
+        },
+      };
+    },
+    url: () => "https://www.usaa.com/my/checking?accountId=ACCT-CHK-0004",
+  });
+
+  const outcome = await driveExport(page, "https://www.usaa.com/my/checking?accountId=ACCT-CHK-0004", {
+    onDiagnostics: (d) => diagnostics.push(d),
+    settleDelayMs: 0,
+    sinceDate: "2026-01-01",
+    untilDate: "2026-07-16",
+  });
+
+  assert.deepEqual(outcome, { kind: "failed" });
+  const noAffordance = diagnostics.find((d) => d.phase === "no_export_affordance");
+  assert.ok(noAffordance, "expected a no_export_affordance diagnostic");
+  const [candidate] = noAffordance?.no_export_observation?.export_affordance_candidates ?? [];
+  assert.ok(candidate, "expected an in-memory export-affordance candidate");
+  assert.equal(candidate.disabled, true);
+  assert.equal(candidate.aria_disabled, true);
+  assert.equal(candidate.visible, false);
+  assert.equal(candidate.role, "button");
+  assert.equal(candidate.tag, "BUTTON");
+
+  const { deps, messages } = makeHarness();
+  await emitExportFailure(deps, makeAccount({ account_type: "checking" }), noAffordance ?? null);
+  const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
+  assert.ok(skip);
+  const stored = skip.diagnostics as {
+    export_affordance_candidates?: Record<string, unknown>[];
+  };
+  const [storedCandidate] = stored.export_affordance_candidates ?? [];
+  assert.ok(storedCandidate, "bounded actionability evidence must reach the stored SKIP_RESULT diagnostics");
+  assert.equal(storedCandidate.disabled, true, "actionability fact survives into stored diagnostics");
+  assert.equal(storedCandidate.aria_disabled, true);
+  assert.equal(storedCandidate.visible, false);
+  assert.equal(storedCandidate.role, "button");
+  assert.equal(storedCandidate.tag, "BUTTON");
+  assert.equal(storedCandidate.id, null, "raw id must be redacted before durable storage");
+  assert.equal(storedCandidate.text, "", "free-text (which could carry account data) must be redacted");
+  assert.equal(
+    JSON.stringify(skip.diagnostics).includes("SECRET"),
+    false,
+    "no raw account-derived text may reach stored diagnostics"
+  );
 });
 
 test("isNoDataExportMessage: distinguishes source-empty export dialogs from generic failures", () => {

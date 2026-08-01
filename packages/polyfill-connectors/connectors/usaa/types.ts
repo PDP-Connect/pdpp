@@ -178,9 +178,29 @@ export interface DiagnosticInfo {
   phase: string;
 }
 
+/**
+ * Bounded actionability descriptor for an element matched by the export-
+ * affordance selector when no clickable export button was resolved. Never
+ * carries raw page HTML or account data — `text` is truncated the same way
+ * as `DiagnosticCandidate.text`, and `id` is nulled by the same redaction
+ * pass (see `sanitizeDiagnosticInfo`).
+ */
+export interface ExportAffordanceCandidate {
+  aria_disabled: boolean;
+  cls: string;
+  disabled: boolean;
+  id: string | null;
+  role: string | null;
+  tag: string;
+  text: string;
+  type: string | null;
+  visible: boolean;
+}
+
 /** Closed facts collected only for the no-export terminal diagnostic. */
 export interface NoExportAffordanceObservation {
   account_detail_marker_count: number;
+  export_affordance_candidates: ExportAffordanceCandidate[];
   navigation_marker_count: number;
   route: BrowserSurfaceRoute;
   target_count: number;

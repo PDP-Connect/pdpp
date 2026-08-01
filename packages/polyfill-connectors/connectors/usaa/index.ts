@@ -583,12 +583,20 @@ export async function emitExportFailure(
     ? noExportAffordanceDiagnostic(lastDiag, deps.browserSurface ?? "unknown")
     : null;
   const baseDiagnostics = !isNoExportAffordance && lastDiag ? sanitizeDiagnosticInfo(lastDiag) : null;
+  const exportAffordanceCandidates = isNoExportAffordance
+    ? sanitizeExportAffordanceCandidates(lastDiag?.no_export_observation?.export_affordance_candidates)
+    : null;
   await deps.emit({
     type: "SKIP_RESULT",
     stream: "transactions",
     reason,
     message: `${baseMessage}${ccSuffix}`,
-    diagnostics: noExportDiagnostic ? { browser_surface: noExportDiagnostic } : { outcome, ...(baseDiagnostics ?? {}) },
+    diagnostics: noExportDiagnostic
+      ? {
+          browser_surface: noExportDiagnostic,
+          ...(exportAffordanceCandidates?.length ? { export_affordance_candidates: exportAffordanceCandidates } : {}),
+        }
+      : { outcome, ...(baseDiagnostics ?? {}) },
   });
 }
 
@@ -636,6 +644,26 @@ function sanitizeDiagnosticInfo(diag: DiagnosticInfo): DiagnosticInfo {
       : diag.download;
   }
   return sanitized;
+}
+
+/**
+ * Redact export-affordance candidates the same way `sanitizeDiagnosticInfo`
+ * redacts `export_candidates`/`nav_candidates` — `id` and free-text `text`
+ * never reach durable storage, but the bounded actionability facts
+ * (tag/role/type/disabled/aria_disabled/visible) survive, since those are
+ * the evidence a no-affordance diagnostic exists to carry.
+ */
+function sanitizeExportAffordanceCandidates(
+  candidates: NoExportAffordanceObservation["export_affordance_candidates"] | undefined
+): NoExportAffordanceObservation["export_affordance_candidates"] {
+  if (!candidates) {
+    return [];
+  }
+  return candidates.map((candidate) => ({
+    ...candidate,
+    id: null,
+    text: "",
+  }));
 }
 
 function summarizeArtifactDiagnostics(diag: DiagnosticInfo): string | null {
@@ -1039,12 +1067,29 @@ export function classifyUsaaNoExportRoute(
 async function captureNoExportAffordanceObservation(page: Page): Promise<NoExportAffordanceObservation> {
   const counts = await page
     .evaluate(
-      ({ accountDetail, exportAffordance, navigation, transaction }) => ({
-        account_detail_marker_count: document.querySelectorAll(accountDetail).length,
-        navigation_marker_count: document.querySelectorAll(navigation).length,
-        target_count: document.querySelectorAll(exportAffordance).length,
-        transaction_marker_count: document.querySelectorAll(transaction).length,
-      }),
+      ({ accountDetail, exportAffordance, navigation, transaction }) => {
+        // biome-ignore-start lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
+        const WS_RE = /\s+/g;
+        // biome-ignore-end lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
+        const candidates = [...document.querySelectorAll<HTMLElement>(exportAffordance)].slice(0, 8).map((el) => ({
+          aria_disabled: el.getAttribute("aria-disabled") === "true",
+          cls: (el.className ? String(el.className) : "").slice(0, 80),
+          disabled: "disabled" in el ? Boolean((el as HTMLButtonElement).disabled) : false,
+          id: el.id || null,
+          role: el.getAttribute("role"),
+          tag: el.tagName,
+          text: (el.innerText || "").replace(WS_RE, " ").trim().slice(0, 50),
+          type: el.getAttribute("type"),
+          visible: el.offsetParent !== null,
+        }));
+        return {
+          account_detail_marker_count: document.querySelectorAll(accountDetail).length,
+          export_affordance_candidates: candidates,
+          navigation_marker_count: document.querySelectorAll(navigation).length,
+          target_count: document.querySelectorAll(exportAffordance).length,
+          transaction_marker_count: document.querySelectorAll(transaction).length,
+        };
+      },
       {
         accountDetail: USAA_ACCOUNT_DETAIL_MARKER_SELECTOR,
         exportAffordance: USAA_EXPORT_AFFORDANCE_SELECTOR,
@@ -1054,6 +1099,7 @@ async function captureNoExportAffordanceObservation(page: Page): Promise<NoExpor
     )
     .catch(() => ({
       account_detail_marker_count: 0,
+      export_affordance_candidates: [] as NoExportAffordanceObservation["export_affordance_candidates"],
       navigation_marker_count: 0,
       target_count: 0,
       transaction_marker_count: 0,
