@@ -342,14 +342,29 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
   });
   const { allocator: replacementAwareAllocator } = replacementHooks;
   const connectorInstanceIdByRunId = new Map<string, string>();
+  // Per-derived-session-id ownership token for the CURRENT invocation of
+  // withPhaseSessionIdentity holding that session id's connectorInstanceIdByRunId
+  // entry. Overlapping calls for the SAME sessionId (a release racing a
+  // reacquire for the same run) each get a distinct token; an invocation's
+  // finally only deletes the shared cache entry if this map still names ITS
+  // token as current owner, so a slower invocation's stale cleanup can never
+  // delete or shadow a newer invocation's freshly-installed identity.
+  const phaseSessionIdentityOwnerBySessionId = new Map<string, symbol>();
   // Ownership record for phase-scoped (mid-run) browser-surface leases, keyed
   // by the REAL run id (not the derived session id). Tracks exactly which
-  // lease this run currently holds and the fencing token it was granted
-  // under, so `releaseManagedBrowserSurfaceForPhase` can release the right
-  // lease and a stale/duplicate release call cannot free a different one.
+  // lease this run currently holds, the connector instance it was granted
+  // under (so release resolves the SAME identity acquisition cached — not
+  // the connector type), and the fencing token it was granted under, so
+  // `releaseManagedBrowserSurfaceForPhase` can release the right lease and a
+  // stale/duplicate release call cannot free a different one.
   const phaseLeasesByRunId = new Map<
     string,
-    { readonly connectorId: string; readonly fencingToken: number; readonly leaseId: string }
+    {
+      readonly connectorId: string;
+      readonly connectorInstanceId: string;
+      readonly fencingToken: number;
+      readonly leaseId: string;
+    }
   >();
   let browserSurfaceSweepInFlight = false;
   const windowSettleReconciliation = createWindowSettleReconciliation({
@@ -1681,20 +1696,34 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
   // falls through this same `finally`, so a future branch added to either
   // function cannot silently reintroduce the leak: it would have to
   // deliberately opt out via `keepAfterReturn`.
+  //
+  // Ownership-token guarded: two invocations can legitimately overlap for
+  // the SAME sessionId (a release racing a reacquire for the same run, or
+  // two overlapping failed acquires). Each invocation mints its own token
+  // and installs it as the current owner in
+  // phaseSessionIdentityOwnerBySessionId. The `finally` only deletes the
+  // shared connectorInstanceIdByRunId entry (and its own ownership record)
+  // if that map still names THIS invocation's token as current owner —
+  // otherwise a newer, still-live invocation already overwrote both maps
+  // with its own identity/token, and this (older, now-finishing) invocation
+  // must leave that newer state completely untouched.
   async function withPhaseSessionIdentity<T>(
     sessionId: string,
     connectorInstanceId: string,
     body: () => Promise<{ result: T; keepAfterReturn: boolean }>
   ): Promise<T> {
+    const ownershipToken = Symbol("phaseSessionIdentityOwner");
     connectorInstanceIdByRunId.set(sessionId, connectorInstanceId);
+    phaseSessionIdentityOwnerBySessionId.set(sessionId, ownershipToken);
     let keepAfterReturn = false;
     try {
       const { keepAfterReturn: shouldKeep, result } = await body();
       keepAfterReturn = shouldKeep;
       return result;
     } finally {
-      if (!keepAfterReturn) {
+      if (!keepAfterReturn && phaseSessionIdentityOwnerBySessionId.get(sessionId) === ownershipToken) {
         connectorInstanceIdByRunId.delete(sessionId);
+        phaseSessionIdentityOwnerBySessionId.delete(sessionId);
       }
     }
   }
@@ -1744,9 +1773,13 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
         return { keepAfterReturn: false, result: { kind: "unavailable", reason: "surface_failed" } };
       }
       // Granted: the identity must outlive this call for the eventual
-      // release to resolve run.browser_surface_released against it.
+      // release to resolve run.browser_surface_released against it. Persist
+      // connectorInstanceId (not just connectorId) — they can legitimately
+      // differ, and release must resolve the SAME identity this acquisition
+      // was granted under, not the connector type.
       phaseLeasesByRunId.set(runId, {
         connectorId,
+        connectorInstanceId,
         fencingToken: attempt.lease.fencing_token,
         leaseId: attempt.lease.lease_id,
       });
@@ -1764,7 +1797,7 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     // entry and no-ops, rather than both racing the same fenced release.
     phaseLeasesByRunId.delete(runId);
     const sessionId = browserSurfacePhaseSessionId(runId);
-    await withPhaseSessionIdentity(sessionId, entry.connectorId, async () => {
+    await withPhaseSessionIdentity(sessionId, entry.connectorInstanceId, async () => {
       const lease = browserSurfaceLeaseManager?.getLease(entry.leaseId);
       if (!lease) {
         return { keepAfterReturn: false, result: undefined };

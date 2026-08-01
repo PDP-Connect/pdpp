@@ -173,10 +173,10 @@ function setup<TAllocator extends BrowserSurfaceAllocator>(
   return { allocator, leaseManager, manager };
 }
 
-function phaseInput(runId: string, connectorId = "slack") {
+function phaseInput(runId: string, connectorId = "slack", connectorInstanceId = connectorId) {
   return {
     connectorId,
-    connectorInstanceId: connectorId,
+    connectorInstanceId,
     runId,
     traceContext: createTraceContext(),
   };
@@ -787,5 +787,155 @@ test("I14 (regression): a normal successful release evicts the phase session ide
     leaked,
     false,
     "after a normal release completes, the session identity must be evicted — it must not persist indefinitely"
+  );
+});
+
+// ─── I15-I16: connectorInstanceId identity + ownership-safe cleanup ───────
+//
+// Gate REVISE #2 found two defects the probe above could not distinguish
+// (phaseInput deliberately made connectorId === connectorInstanceId, and
+// the identity-cache helper's set/delete were unconditional):
+//   1. Release resolved the phase's connectorId, not its connectorInstanceId
+//      — silently wrong whenever a connector's instance id differs from its
+//      connector type (the real production shape; see runtime/index.ts's
+//      resolvedConnectorInstanceId).
+//   2. withPhaseSessionIdentity's cache set/delete were not ownership-aware:
+//      an overlapping release/reacquire for the SAME run could have the
+//      slower invocation's cleanup delete or shadow the other's identity.
+
+test("I15 (regression): release resolves the phase's connectorInstanceId, not its connectorId, when they differ", async (t) => {
+  const { manager } = setup(t, createReadyAllocator(), {
+    listPersistedActiveRuns: async () => [{ run_id: "run_x" }],
+  });
+
+  const granted = await manager.acquireManagedBrowserSurfaceForPhase(phaseInput("run_x", "slack", "cin_42"));
+  assert.equal(granted.kind, "granted");
+
+  await manager.releaseManagedBrowserSurfaceForPhase("run_x");
+
+  const sessionId = browserSurfacePhaseSessionId("run_x");
+  const releasedRows = getDb()
+    .prepare("SELECT data_json FROM spine_events WHERE run_id = ? AND event_type = 'run.browser_surface_released'")
+    .all(sessionId) as { data_json: string }[];
+  assert.equal(releasedRows.length, 1, "run.browser_surface_released must be persisted for the phase session id");
+  const [releasedRow] = releasedRows;
+  assert.ok(releasedRow);
+  const releasedData = JSON.parse(releasedRow.data_json);
+  assert.equal(
+    releasedData.connector_instance_id,
+    "cin_42",
+    "release must resolve the phase's connectorInstanceId (cin_42), not its connectorId (slack) — these are " +
+      "DISTINCT identities in production (runtime/index.ts's resolvedConnectorInstanceId), and confusing them " +
+      "would misattribute the released-surface event to the wrong connection"
+  );
+  assert.notEqual(
+    releasedData.connector_instance_id,
+    "slack",
+    "the connectorId must never leak into the connector_instance_id field"
+  );
+});
+
+test("I16 (regression): an overlapping release racing a reacquire for the SAME run cannot delete or overwrite the newer identity", async (t) => {
+  const warnCalls: string[] = [];
+  const leaseManager = createManager({ managedConnectors: new Set(["slack", "other"]), surfaceCap: 2 });
+  const { manager } = setup(t, createReadyAllocator(), {
+    leaseManager,
+    listPersistedActiveRuns: async () => [{ run_id: "run_x" }],
+    warnCalls,
+  });
+
+  // First phase: connector "slack", instance "cin_slack_1".
+  const firstGrant = await manager.acquireManagedBrowserSurfaceForPhase(phaseInput("run_x", "slack", "cin_slack_1"));
+  assert.equal(firstGrant.kind, "granted");
+  assert.ok(firstGrant.kind === "granted");
+
+  // Deterministic interleaving, no timers/sleeps: withPhaseSessionIdentity's
+  // cache writes (set the identity + mint this invocation's ownership
+  // token) happen SYNCHRONOUSLY before either call's first await. Starting
+  // release A without awaiting it, then immediately starting reacquire B
+  // (also not yet awaited) reproduces gate REVISE #2's exact window: A's
+  // identity/token installs first, then — before A's async body resumes —
+  // B's acquire runs its synchronous prefix and installs its OWN identity/
+  // token for the same sessionId, overwriting A's. Only once both have run
+  // their synchronous prefixes do we await them to completion, at which
+  // point A's finally must observe it no longer owns the shared entry.
+  const releasePromise = manager.releaseManagedBrowserSurfaceForPhase("run_x");
+  const acquirePromise = manager.acquireManagedBrowserSurfaceForPhase(phaseInput("run_x", "other", "cin_other_2"));
+
+  const [, secondGrant] = await Promise.all([releasePromise, acquirePromise]);
+
+  // The corruption this test guards against happens DURING the race itself
+  // (B's own acquire-time run.browser_surface_starting/leased events),
+  // not only in the final release event — an unguarded shared cache would
+  // have A's finally delete the entry out from under B's still-in-flight
+  // acquire, so B's own starting/leased emissions fail with "refusing to
+  // persist an unbound run event" even though B's acquisition itself still
+  // reports "granted". Assert the whole race produced zero such failures
+  // before checking anything else.
+  assert.deepEqual(
+    warnCalls,
+    [],
+    "B's acquire-time event emissions (starting/leased) must not fail with the refusing-to-persist-an-unbound-" +
+      `run-event guard due to A's release deleting the shared identity cache entry out from under B's ` +
+      `still-in-flight acquire; got: ${JSON.stringify(warnCalls)}`
+  );
+
+  assert.equal(secondGrant.kind, "granted");
+  assert.ok(secondGrant.kind === "granted");
+  assert.notEqual(
+    secondGrant.leaseId,
+    firstGrant.leaseId,
+    "reacquire B must have been granted a genuinely new lease, not A's stale one"
+  );
+
+  // B's phase lease must still be live: A's release finishing after B's
+  // reacquire must not have torn down B's lease. Un-guarded (gate REVISE
+  // #2's defect), the shared identity cache could be left empty or pointing
+  // at A's stale identity after A's finally ran last — this assertion also
+  // guards the pre-existing per-lease_id fencing invariant (I3).
+  assert.equal(
+    leaseManager.getLease(secondGrant.leaseId)?.status,
+    "leased",
+    "A's release finishing after B's reacquire must not release B's lease"
+  );
+
+  // Probe B's identity cache entry DIRECTLY, before B's own release runs:
+  // this is the moment the unguarded pre-revision helper would have already
+  // been corrupted — either wiped by A's unconditional delete, or never
+  // properly holding B's identity at all. listPersistedActiveRuns is
+  // stubbed above to resolve run_id "run_x" (never the session id), so a
+  // cache HIT (leaked === true, meaning "identity still found cached" in
+  // this probe's polarity — see probeSessionIdentityLeaked above, where
+  // I10-I14 want the OPPOSITE outcome, eviction) is the correct/desired
+  // result here: B's identity must still be live in the cache.
+  const sessionId = browserSurfacePhaseSessionId("run_x");
+  const leaked = await probeSessionIdentityLeaked(manager, sessionId, warnCalls);
+  assert.equal(
+    leaked,
+    true,
+    "B's identity cache entry must survive A's finally intact — an unguarded shared delete would wipe it " +
+      "(probe would then warn / return leaked===false) right after the race, before B's own release ever runs"
+  );
+
+  // Release B for real and confirm B's OWN identity (cin_other_2, never
+  // A's cin_slack_1 and never the bare connectorId "other") is what gets
+  // persisted to run.browser_surface_released — proving the cache held B's
+  // identity throughout, never an empty entry A's finally deleted out from
+  // under B, nor A's stale identity.
+  await manager.releaseManagedBrowserSurfaceForPhase("run_x");
+
+  const releasedRows = getDb()
+    .prepare(
+      "SELECT data_json FROM spine_events WHERE run_id = ? AND event_type = 'run.browser_surface_released' ORDER BY event_seq"
+    )
+    .all(sessionId) as { data_json: string }[];
+  const identities = releasedRows.map((row) => JSON.parse(row.data_json).connector_instance_id);
+  assert.ok(
+    identities.includes("cin_other_2"),
+    `B's release must persist B's own connector_instance_id (cin_other_2); got ${JSON.stringify(identities)}`
+  );
+  assert.ok(
+    !(identities.includes("cin_slack_1") || identities.includes("other")),
+    `B's release event must never carry A's stale identity (cin_slack_1) or a bare connectorId ("other"); got ${JSON.stringify(identities)}`
   );
 });
