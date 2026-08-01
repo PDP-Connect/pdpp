@@ -37,7 +37,10 @@ import {
   // biome-ignore lint/correctness/noUnresolvedImports: the test runner resolves this runtime fixture import outside Biome static resolution.
 } from "@opendatalabs/remote-surface/leases";
 import { createTraceContext, emitSpineEvent } from "../lib/spine.ts";
-import { createBrowserSurfaceManager } from "../runtime/browser-surface/run-coordinator.ts";
+import {
+  createBrowserSurfaceManager,
+  wrapAllocatorWithTransientPollRetry,
+} from "../runtime/browser-surface/run-coordinator.ts";
 import type { BrowserSurfaceReadinessProbe } from "../runtime/browser-surface-readiness.ts";
 import type { RunNowOptions } from "../runtime/controller.ts";
 import { __resetControllerInteractionStateForTests, createController } from "../runtime/controller.ts";
@@ -57,7 +60,6 @@ const REGEXP_LEAKED_NON_ALLOWLISTED_FIELD = /surfaceIdSeen/;
 const REGEXP_LEAKED_PROFILE = /private-profile/;
 const REGEXP_LEAKED_USER_PASSWORD = /user:password/;
 const REGEXP_LEAKED_SQL = /DROP TABLE/;
-const REGEXP_LEASE_ID_SHAPE = /^lease_\d+$/;
 
 const MANIFEST = {
   capabilities: {
@@ -1407,10 +1409,10 @@ test("exhausted ensureSurface poll retry emits exactly one allowlisted warning, 
     "surface_dynamic_1",
     "must name the exact dead surface_id the exhausted call was made against, not just a non-empty string"
   );
-  assert.match(
-    String(record.lease_id),
-    REGEXP_LEASE_ID_SHAPE,
-    "must be the exact current lease_id shape this harness mints"
+  assert.equal(
+    record.lease_id,
+    "lease_1",
+    "must be the exact current lease_id (createDynamicManagerWithReadySurface's makeLeaseId deterministically mints lease_1 first) — not merely a matching shape"
   );
 });
 
@@ -1506,7 +1508,11 @@ test("exhausted getSurfaceStatus poll retry emits exactly one allowlisted warnin
     "surface_dynamic_1",
     "must name the exact first surface_id, not just a non-empty string"
   );
-  assert.match(String(firstRecord.lease_id), REGEXP_LEASE_ID_SHAPE);
+  assert.equal(
+    firstRecord.lease_id,
+    "lease_1",
+    "must be the exact original lease_id (createDynamicManagerWithReadySurface's makeLeaseId deterministically mints lease_1 first)"
+  );
 
   assertRecordIsSafeAndAllowlisted(secondRecord, secondRaw);
   assert.equal(secondRecord.operation, "getSurfaceStatus");
@@ -1516,10 +1522,10 @@ test("exhausted getSurfaceStatus poll retry emits exactly one allowlisted warnin
     "surface_dynamic_2",
     "the outer reacquire's own exhaustion must be attributed to the SECOND (reacquired) surface_id, not the first"
   );
-  assert.notEqual(
+  assert.equal(
     secondRecord.lease_id,
-    firstRecord.lease_id,
-    "the outer reacquire mints a new lease; the second record must carry that new lease_id, not the stale first one"
+    "lease_2",
+    "must be the exact reacquired lease_id (makeLeaseId's second call) — a stale/hard-coded lease_id or an arbitrary-but-different value must not pass; this asserts the deterministic value itself, not merely inequality with the first"
   );
 });
 
@@ -1634,32 +1640,19 @@ test("known allocator error values (client contract codes) pass through unchange
  * ORIGINAL allocator error or a hijacked replacement propagated. Confirmed
  * by hand: deleting the non-interference try/catch around
  * emitExhaustedTransientPollRetryWarning left the controller-level version
- * of this test green. Calling
- * manager.__wrapAllocatorWithTransientPollRetryForTests directly (a
- * test-only seam) bypasses that swallow-everything layer, so the exact
- * rejected error's identity/message can be asserted.
+ * of this test green. Importing wrapAllocatorWithTransientPollRetry
+ * directly by relative path (it is exported ONLY from run-coordinator.ts,
+ * never re-exported from index.ts or any package barrel — production code
+ * calls this exact same export) bypasses that swallow-everything layer, so
+ * the exact rejected error's identity can be asserted.
  */
-function createBareBrowserSurfaceManagerForRetrySeamTest(options: {
-  onWarn: (message: string) => void;
-  pollRetryAttempts?: number;
-}) {
-  return createBrowserSurfaceManager({
-    activeRunInteractions: new Map(),
-    browserSurfaceAllocator: null,
-    browserSurfaceLeaseManager: null,
-    browserSurfaceLeaseStore: null,
-    browserSurfaceMidWaitPollIntervalMs: undefined,
-    browserSurfaceReadinessProbe: null,
-    browserSurfaceReadinessTimeoutMs: undefined,
-    browserSurfaceReplacementReceiptStore: null,
-    browserSurfaceStartingPollRetryAttempts: options.pollRetryAttempts ?? 3,
-    browserSurfaceStartingPollRetryDelayMs: 0,
-    listPersistedActiveRuns: async () => await Promise.resolve([]),
-    log: { error: () => undefined, warn: options.onWarn },
-    pendingBrowserSurfaceLaunches: new Map(),
-    scheduleRun: () => undefined,
-    startupControllerRunReconciliation: Promise.resolve(),
-  });
+function directRetryDeps(onWarn: (message: string) => void) {
+  return {
+    attempts: 3,
+    delayMs: 0,
+    log: { error: () => undefined, warn: onWarn },
+    sleep: async () => await Promise.resolve(),
+  };
 }
 
 test("an error whose property getters throw never prevents the ORIGINAL error object from being rethrown", async () => {
@@ -1673,7 +1666,6 @@ test("an error whose property getters throw never prevents the ORIGINAL error ob
     });
   }
   const warnings: string[] = [];
-  const manager = createBareBrowserSurfaceManagerForRetrySeamTest({ onWarn: (message) => warnings.push(message) });
   const allocator: BrowserSurfaceAllocator = {
     ensureSurface: () => {
       throw sentinelError;
@@ -1682,10 +1674,11 @@ test("an error whose property getters throw never prevents the ORIGINAL error ob
     listSurfaces: async () => await Promise.resolve([]),
     stopSurface: async () => await Promise.resolve(null),
   };
-  const wrapped = manager.__wrapAllocatorWithTransientPollRetryForTests(allocator, {
-    leaseId: () => "lease_seam_test",
-    runId: "run_seam_test",
-  });
+  const wrapped = wrapAllocatorWithTransientPollRetry(
+    allocator,
+    { leaseId: () => "lease_seam_test", runId: "run_seam_test" },
+    directRetryDeps((message) => warnings.push(message))
+  );
 
   await assert.rejects(
     wrapped.ensureSurface({ connectorId: "managed", profileKey: "managed-profile", surfaceId: "surface_seam_test" }),
@@ -1708,19 +1701,13 @@ test("an error whose property getters throw never prevents the ORIGINAL error ob
  * Blocker 2, second half: an injected logger.warn that itself throws must
  * not prevent the rethrow either — the try/catch must wrap the ENTIRE emit
  * call (including the log.warn?.() invocation), not just individual field
- * reads. Uses the same direct seam so the assertion is on the exact
+ * reads. Uses the same direct import so the assertion is on the exact
  * rejected error, not merely on a terminal lease status two swallow-layers
  * away.
  */
 test("a logger.warn that throws never prevents the ORIGINAL error object from being rethrown", async () => {
   const originalError = throwingAllocatorError();
   let warnCalls = 0;
-  const manager = createBareBrowserSurfaceManagerForRetrySeamTest({
-    onWarn: () => {
-      warnCalls += 1;
-      throw new Error("hostile logger: warn() itself throws");
-    },
-  });
   const allocator: BrowserSurfaceAllocator = {
     ensureSurface: () => {
       throw originalError;
@@ -1729,10 +1716,14 @@ test("a logger.warn that throws never prevents the ORIGINAL error object from be
     listSurfaces: async () => await Promise.resolve([]),
     stopSurface: async () => await Promise.resolve(null),
   };
-  const wrapped = manager.__wrapAllocatorWithTransientPollRetryForTests(allocator, {
-    leaseId: () => "lease_seam_test",
-    runId: "run_seam_test",
-  });
+  const wrapped = wrapAllocatorWithTransientPollRetry(
+    allocator,
+    { leaseId: () => "lease_seam_test", runId: "run_seam_test" },
+    directRetryDeps(() => {
+      warnCalls += 1;
+      throw new Error("hostile logger: warn() itself throws");
+    })
+  );
 
   await assert.rejects(
     wrapped.ensureSurface({ connectorId: "managed", profileKey: "managed-profile", surfaceId: "surface_seam_test" }),
@@ -1746,6 +1737,65 @@ test("a logger.warn that throws never prevents the ORIGINAL error object from be
     }
   );
   assert.ok(warnCalls >= 1, "the throwing logger must actually have been invoked by the emit path (not skipped)");
+});
+
+/**
+ * Blocker 2 revision follow-up (missing proof flagged by the re-gate): the
+ * catch around the entire emit call must also protect the rethrow when
+ * JSON.stringify itself throws — not just when a property getter or the
+ * logger throws. A hostile runtime context ID value (the run_id, sourced
+ * from context.runId, which flows straight into the JSON-serialized
+ * record) that throws from its own toJSON forces JSON.stringify to throw
+ * mid-serialization. The exact original error object must still reject.
+ */
+test("a hostile run_id whose toJSON throws (forcing JSON.stringify to throw) never prevents the ORIGINAL error object from being rethrown", async () => {
+  const originalError = throwingAllocatorError();
+  const hostileRunId = {
+    toJSON() {
+      throw new Error("hostile run_id: toJSON throws mid-serialization");
+    },
+    toString() {
+      return "run_hostile_tojson";
+    },
+  };
+  let warnCalls = 0;
+  const allocator: BrowserSurfaceAllocator = {
+    ensureSurface: () => {
+      throw originalError;
+    },
+    getSurfaceStatus: async () => await Promise.resolve(null),
+    listSurfaces: async () => await Promise.resolve([]),
+    stopSurface: async () => await Promise.resolve(null),
+  };
+  const wrapped = wrapAllocatorWithTransientPollRetry(
+    allocator,
+    // TransientPollRetryContext.runId is typed `string`, but the emit path
+    // must survive ANY runtime value reaching JSON.stringify, including one
+    // an upstream caller passed in that isn't really a plain string at
+    // runtime (this is exactly why the try/catch wraps the WHOLE emit call,
+    // not a typed field read) — hence the deliberate unknown-cast here.
+    { leaseId: () => "lease_seam_test", runId: hostileRunId as unknown as string },
+    directRetryDeps(() => {
+      warnCalls += 1;
+    })
+  );
+
+  await assert.rejects(
+    wrapped.ensureSurface({ connectorId: "managed", profileKey: "managed-profile", surfaceId: "surface_seam_test" }),
+    (thrown: unknown) => {
+      assert.strictEqual(
+        thrown,
+        originalError,
+        "the exact original error OBJECT (===) must be what rejects even when JSON.stringify itself throws"
+      );
+      return true;
+    }
+  );
+  assert.equal(
+    warnCalls,
+    0,
+    "JSON.stringify throwing before log.warn is ever called means the logger must not have been invoked — the whole emit call failed closed silently"
+  );
 });
 
 test("successful ensureSurface (no retry needed) never emits the exhaustion warning", async (t) => {

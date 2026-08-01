@@ -233,20 +233,6 @@ export interface BrowserSurfaceManagerDeps {
 
 export interface BrowserSurfaceManager {
   /**
-   * TEST-ONLY seam onto wrapAllocatorWithTransientPollRetry. Exists solely so
-   * a test can prove the exhausted-retry warning is non-interfering (a
-   * throwing logger/getter never blocks rethrow of the ORIGINAL allocator
-   * error) by asserting on the exact rejected error's identity/message
-   * directly — remote-surface's ensureStartingSurfaceReady swallows any
-   * thrown error into an untyped surface_failed with no detail, so that
-   * path alone cannot distinguish the original error from a hijacked one.
-   * Not part of the real controller API; never called outside tests.
-   */
-  __wrapAllocatorWithTransientPollRetryForTests: (
-    allocator: BrowserSurfaceAllocator,
-    context: TransientPollRetryContext
-  ) => BrowserSurfaceAllocator;
-  /**
    * Acquire a bounded, phase-scoped managed browser surface for a run that
    * does not hold a run-level lease (`surfaceScope: "phase"`). Idempotent per
    * run: a repeat call while a phase lease is already live for this `runId`
@@ -327,6 +313,240 @@ export interface BrowserSurfaceManager {
     traceContext: SpineTraceContext,
     handler: (interaction: unknown) => Promise<unknown>
   ) => (interaction: unknown) => Promise<unknown>;
+}
+
+// ─── Transient poll retry (module-level; exported ONLY for relative test
+// import — not re-exported from index.ts or any package barrel) ────────────
+
+/**
+ * Wraps a starting-surface allocator so a single transient
+ * `ensureSurface`/`getSurfaceStatus` failure cannot reach
+ * remote-surface's `ensureStartingSurfaceReady`, which treats ANY thrown
+ * error as definitive surface death and immediately, irrevocably
+ * terminalizes the lease to `surface_failed` (bare `catch {}`, no
+ * distinction between "container is actually dead" and "one HTTP call to
+ * the allocator hiccuped mid-boot"). This is the fix for the 2026-07-31
+ * Amazon Personal canary (run_1785535443538): two consecutive ~1s-fast
+ * allocator throws terminalized the run while the SAME two surfaces it had
+ * already minted went on to become healthy moments later — proving the
+ * throws were transient poll hiccups, not real container death.
+ *
+ * Both wrapped calls are safe to retry in place against the SAME
+ * `surfaceId`: `ensureSurface`'s existing-container branch
+ * (`neko-surface-allocator-server.ts`'s `#findOwnedContainer` ->
+ * inspect-and-reuse) is idempotent, and `getSurfaceStatus` is a pure read.
+ * Neither call creates a new container on retry, so this keeps ownership
+ * of the one replacement surface through its readiness lifecycle instead
+ * of minting additional containers per hiccup. Bounded to `attempts`
+ * (default 3) consecutive failures; only after that budget is exhausted
+ * does the error reach the package and the lease manager's own
+ * terminal-lease bookkeeping, which is unchanged and still fails closed
+ * for a genuinely dead surface.
+ *
+ * Module-level and exported (not through any barrel/index.ts) purely so
+ * `test/controller-browser-surface-readiness.test.ts` can import it by
+ * relative path and exercise the exhaustion-warning behavior directly,
+ * without the full controller/lease-manager path — remote-surface's
+ * ensureStartingSurfaceReady swallows any thrown error into an untyped
+ * surface_failed with no retained detail, so that path alone cannot prove
+ * the original error's identity survives a throwing logger/getter/
+ * serializer. This is the ONLY function production code calls for this
+ * retry — createBrowserSurfaceManager's internal call site below invokes
+ * this exact export, not a duplicate.
+ */
+export function wrapAllocatorWithTransientPollRetry(
+  allocator: BrowserSurfaceAllocator,
+  context: TransientPollRetryContext,
+  deps: {
+    attempts: number;
+    delayMs: number;
+    log: ControllerLogger;
+    sleep: (ms: number) => Promise<void>;
+  }
+): BrowserSurfaceAllocator {
+  async function withRetry<T>(operation: string, surfaceId: string, call: () => Promise<T>): Promise<T> {
+    const attempts = Math.max(1, deps.attempts);
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        // biome-ignore lint/performance/noAwaitInLoops: Bounded sequential retry against the same surface; concurrency would multiply allocator load, not help it.
+        return await call();
+      } catch (err) {
+        lastError = err;
+        if (attempt < attempts && deps.delayMs > 0) {
+          await deps.sleep(deps.delayMs);
+        }
+      }
+    }
+    // The diagnostic is telemetry, not a retry decision: it must never be
+    // able to prevent or alter this rethrow, no matter what a hostile
+    // caught value's property getters do, what JSON.stringify does on a
+    // cyclic/throwing toJSON, or whether the injected logger itself
+    // throws. try/catch/ignore around the ENTIRE emit call is the only
+    // way to guarantee that — see the 2026-08-01 gate revision.
+    try {
+      emitExhaustedTransientPollRetryWarning({
+        attempts,
+        context,
+        error: lastError,
+        log: deps.log,
+        operation,
+        surfaceId,
+      });
+    } catch {
+      // Telemetry must never interfere with the exhausted-retry rethrow below.
+    }
+    throw lastError;
+  }
+  return {
+    ensureSurface: (request) => withRetry("ensureSurface", request.surfaceId, () => allocator.ensureSurface(request)),
+    getSurfaceStatus: (surfaceId) =>
+      withRetry("getSurfaceStatus", surfaceId, () => allocator.getSurfaceStatus(surfaceId)),
+    listSurfaces: () => allocator.listSurfaces(),
+    stopSurface: (request) => allocator.stopSurface(request),
+  };
+}
+
+/**
+ * Emits exactly one bounded, allowlisted warning per exhausted
+ * ensureSurface/getSurfaceStatus retry budget, immediately before the
+ * error reaches remote-surface's ensureStartingSurfaceReady (whose bare
+ * catch{} erases it into an untyped surface_start_failed with no
+ * operation, HTTP status, client code, category, or retryable bit — see
+ * the 2026-08-01 Amazon UAT root-cause gate). Every field is normalized
+ * through a closed known-value/type constraint (readKnownErrorCode,
+ * readKnownErrorCategory, readBoolean, readHttpStatus, readKnownErrorName)
+ * derived from the actual allocator error contracts
+ * (NekoSurfaceAllocatorError's client `code`, NekoSurfaceAllocatorServiceError's
+ * server `code`, and the server's categoryForError/retryableForCategory
+ * union) rather than accepting any scalar shape. An unrecognized value
+ * for a closed field becomes null, not a pass-through — this is what
+ * stops a hostile caught object like `{ code: "Bearer secret-token-xyz" }`
+ * from leaking, since regex redaction cannot enumerate every possible
+ * secret shape but a closed enum can only ever emit one of its known
+ * members. The caller wraps this whole function in try/catch so a
+ * throwing getter or throwing JSON.stringify can never block the
+ * exhausted-retry rethrow.
+ */
+function emitExhaustedTransientPollRetryWarning(input: {
+  attempts: number;
+  context: TransientPollRetryContext;
+  error: unknown;
+  log: ControllerLogger;
+  operation: string;
+  surfaceId: string;
+}): void {
+  const { attempts, context, error, log, operation, surfaceId } = input;
+  const record = {
+    attempts,
+    category: readKnownErrorCategory(error),
+    code: readKnownErrorCode(error),
+    error_name: readKnownErrorName(error),
+    lease_id: context.leaseId(),
+    operation,
+    retryable: readBoolean(error, "retryable"),
+    run_id: context.runId,
+    status: readHttpStatus(error),
+    surface_id: surfaceId,
+  };
+  log.warn?.(`[controller] browser-surface allocator poll retry exhausted: ${JSON.stringify(record)}`);
+}
+
+/**
+ * The full closed set of `code` values across both real allocator error
+ * contracts this wrapper can ever catch: the HTTP client's
+ * NekoSurfaceAllocatorError (@opendatalabs/remote-surface's
+ * allocator-client.ts) and the server-side
+ * NekoSurfaceAllocatorServiceError (neko-surface-allocator-server.ts),
+ * whose `code` a directly-injected/in-process allocator could also throw.
+ * Any other value — including a plausible-looking string that isn't one
+ * of these exact members — normalizes to null.
+ */
+const KNOWN_ALLOCATOR_ERROR_CODES: ReadonlySet<string> = new Set([
+  // client: NekoSurfaceAllocatorError["code"]
+  "allocator_http_error",
+  "allocator_fetch_error",
+  "allocator_timeout",
+  "allocator_malformed_response",
+  // server: NekoSurfaceAllocatorServiceError["code"]
+  "bad_request",
+  "docker_http_error",
+  "docker_malformed_response",
+  "docker_request_failed",
+  "foreign_resource",
+  "not_found",
+  "port_capacity_exhausted",
+  "readiness_failed",
+]);
+
+/**
+ * The closed set of `category` values the allocator's HTTP handler ever
+ * computes (neko-surface-allocator-server.ts's categoryForError): every
+ * NekoSurfaceAllocatorServiceError code, plus the literal "unknown"
+ * fallback for a non-service error. Any other value normalizes to null.
+ */
+const KNOWN_ALLOCATOR_ERROR_CATEGORIES: ReadonlySet<string> = new Set([
+  "bad_request",
+  "docker_http_error",
+  "docker_malformed_response",
+  "docker_request_failed",
+  "foreign_resource",
+  "not_found",
+  "port_capacity_exhausted",
+  "readiness_failed",
+  "unknown",
+]);
+
+/** Error class names actually thrown on this path. Any other value normalizes to null. */
+const KNOWN_ALLOCATOR_ERROR_NAMES: ReadonlySet<string> = new Set([
+  "Error",
+  "TypeError",
+  "NekoSurfaceAllocatorError",
+  "NekoSurfaceAllocatorServiceError",
+]);
+
+function readErrorProperty(error: unknown, field: string): unknown {
+  if (!(error && typeof error === "object")) {
+    return;
+  }
+  try {
+    return (error as Record<string, unknown>)[field];
+  } catch {
+    // A hostile caught value's getter for this property may itself throw;
+    // that must normalize to "unknown" (undefined), not propagate.
+    // biome-ignore lint/complexity/noUselessReturn: required by TypeScript noImplicitReturns — the try branch returns a value, so this branch must too.
+    return;
+  }
+}
+
+function readKnownErrorCode(error: unknown): string | null {
+  const value = readErrorProperty(error, "code");
+  return typeof value === "string" && KNOWN_ALLOCATOR_ERROR_CODES.has(value) ? value : null;
+}
+
+function readKnownErrorCategory(error: unknown): string | null {
+  const value = readErrorProperty(error, "category");
+  return typeof value === "string" && KNOWN_ALLOCATOR_ERROR_CATEGORIES.has(value) ? value : null;
+}
+
+function readKnownErrorName(error: unknown): string | null {
+  const value = readErrorProperty(error, "name");
+  return typeof value === "string" && KNOWN_ALLOCATOR_ERROR_NAMES.has(value) ? value : null;
+}
+
+/** Strict boolean type constraint — a truthy/falsy non-boolean (e.g. a string) normalizes to null, never coerced. */
+function readBoolean(error: unknown, field: string): boolean | null {
+  const value = readErrorProperty(error, field);
+  return typeof value === "boolean" ? value : null;
+}
+
+/** Bounded to the valid HTTP status-code integer range; any other numeric value (or non-number) normalizes to null. */
+function readHttpStatus(error: unknown): number | null {
+  const value = readErrorProperty(error, "status");
+  if (typeof value !== "number" || !Number.isInteger(value)) {
+    return null;
+  }
+  return value >= 100 && value <= 599 ? value : null;
 }
 
 // ─── Factory ──────────────────────────────────────────────────────────────────
@@ -838,212 +1058,6 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
 
   // ─── Lease lifecycle ───────────────────────────────────────────────────────
 
-  /**
-   * Wraps a starting-surface allocator so a single transient
-   * `ensureSurface`/`getSurfaceStatus` failure cannot reach
-   * remote-surface's `ensureStartingSurfaceReady`, which treats ANY thrown
-   * error as definitive surface death and immediately, irrevocably
-   * terminalizes the lease to `surface_failed` (bare `catch {}`, no
-   * distinction between "container is actually dead" and "one HTTP call to
-   * the allocator hiccuped mid-boot"). This is the fix for the 2026-07-31
-   * Amazon Personal canary (run_1785535443538): two consecutive ~1s-fast
-   * allocator throws terminalized the run while the SAME two surfaces it had
-   * already minted went on to become healthy moments later — proving the
-   * throws were transient poll hiccups, not real container death.
-   *
-   * Both wrapped calls are safe to retry in place against the SAME
-   * `surfaceId`: `ensureSurface`'s existing-container branch
-   * (`neko-surface-allocator-server.ts`'s `#findOwnedContainer` ->
-   * inspect-and-reuse) is idempotent, and `getSurfaceStatus` is a pure read.
-   * Neither call creates a new container on retry, so this keeps ownership
-   * of the one replacement surface through its readiness lifecycle instead
-   * of minting additional containers per hiccup. Bounded to
-   * browserSurfaceStartingPollRetryAttempts (default 3) consecutive
-   * failures; only after that budget is exhausted does the error reach the
-   * package and the lease manager's own terminal-lease bookkeeping, which is
-   * unchanged and still fails closed for a genuinely dead surface.
-   */
-  function wrapAllocatorWithTransientPollRetry(
-    allocator: BrowserSurfaceAllocator,
-    context: TransientPollRetryContext
-  ): BrowserSurfaceAllocator {
-    async function withRetry<T>(operation: string, surfaceId: string, call: () => Promise<T>): Promise<T> {
-      const attempts = Math.max(1, browserSurfaceStartingPollRetryAttempts);
-      let lastError: unknown;
-      for (let attempt = 1; attempt <= attempts; attempt += 1) {
-        try {
-          // biome-ignore lint/performance/noAwaitInLoops: Bounded sequential retry against the same surface; concurrency would multiply allocator load, not help it.
-          return await call();
-        } catch (err) {
-          lastError = err;
-          if (attempt < attempts && browserSurfaceStartingPollRetryDelayMs > 0) {
-            await sleep(browserSurfaceStartingPollRetryDelayMs);
-          }
-        }
-      }
-      // The diagnostic is telemetry, not a retry decision: it must never be
-      // able to prevent or alter this rethrow, no matter what a hostile
-      // caught value's property getters do, what JSON.stringify does on a
-      // cyclic/throwing toJSON, or whether the injected logger itself
-      // throws. try/catch/ignore around the ENTIRE emit call is the only
-      // way to guarantee that — see the 2026-08-01 gate revision.
-      try {
-        emitExhaustedTransientPollRetryWarning({ attempts, context, error: lastError, operation, surfaceId });
-      } catch {
-        // Telemetry must never interfere with the exhausted-retry rethrow below.
-      }
-      throw lastError;
-    }
-    return {
-      ensureSurface: (request) => withRetry("ensureSurface", request.surfaceId, () => allocator.ensureSurface(request)),
-      getSurfaceStatus: (surfaceId) =>
-        withRetry("getSurfaceStatus", surfaceId, () => allocator.getSurfaceStatus(surfaceId)),
-      listSurfaces: () => allocator.listSurfaces(),
-      stopSurface: (request) => allocator.stopSurface(request),
-    };
-  }
-
-  /**
-   * Emits exactly one bounded, allowlisted warning per exhausted
-   * ensureSurface/getSurfaceStatus retry budget, immediately before the
-   * error reaches remote-surface's ensureStartingSurfaceReady (whose bare
-   * catch{} erases it into an untyped surface_start_failed with no
-   * operation, HTTP status, client code, category, or retryable bit — see
-   * the 2026-08-01 Amazon UAT root-cause gate). Every field is normalized
-   * through a closed known-value/type constraint (readKnownErrorCode,
-   * readKnownErrorCategory, readBoolean, readHttpStatus, readKnownErrorName)
-   * derived from the actual allocator error contracts
-   * (NekoSurfaceAllocatorError's client `code`, NekoSurfaceAllocatorServiceError's
-   * server `code`, and the server's categoryForError/retryableForCategory
-   * union) rather than accepting any scalar shape. An unrecognized value
-   * for a closed field becomes null, not a pass-through — this is what
-   * stops a hostile caught object like `{ code: "Bearer secret-token-xyz" }`
-   * from leaking, since regex redaction cannot enumerate every possible
-   * secret shape but a closed enum can only ever emit one of its known
-   * members. The caller wraps this whole function in try/catch so a
-   * throwing getter or throwing JSON.stringify can never block the
-   * exhausted-retry rethrow.
-   */
-  function emitExhaustedTransientPollRetryWarning(input: {
-    attempts: number;
-    context: TransientPollRetryContext;
-    error: unknown;
-    operation: string;
-    surfaceId: string;
-  }): void {
-    const { attempts, context, error, operation, surfaceId } = input;
-    const record = {
-      attempts,
-      category: readKnownErrorCategory(error),
-      code: readKnownErrorCode(error),
-      error_name: readKnownErrorName(error),
-      lease_id: context.leaseId(),
-      operation,
-      retryable: readBoolean(error, "retryable"),
-      run_id: context.runId,
-      status: readHttpStatus(error),
-      surface_id: surfaceId,
-    };
-    log.warn?.(`[controller] browser-surface allocator poll retry exhausted: ${JSON.stringify(record)}`);
-  }
-
-  /**
-   * The full closed set of `code` values across both real allocator error
-   * contracts this wrapper can ever catch: the HTTP client's
-   * NekoSurfaceAllocatorError (@opendatalabs/remote-surface's
-   * allocator-client.ts) and the server-side
-   * NekoSurfaceAllocatorServiceError (neko-surface-allocator-server.ts),
-   * whose `code` a directly-injected/in-process allocator could also throw.
-   * Any other value — including a plausible-looking string that isn't one
-   * of these exact members — normalizes to null.
-   */
-  const KNOWN_ALLOCATOR_ERROR_CODES: ReadonlySet<string> = new Set([
-    // client: NekoSurfaceAllocatorError["code"]
-    "allocator_http_error",
-    "allocator_fetch_error",
-    "allocator_timeout",
-    "allocator_malformed_response",
-    // server: NekoSurfaceAllocatorServiceError["code"]
-    "bad_request",
-    "docker_http_error",
-    "docker_malformed_response",
-    "docker_request_failed",
-    "foreign_resource",
-    "not_found",
-    "port_capacity_exhausted",
-    "readiness_failed",
-  ]);
-
-  /**
-   * The closed set of `category` values the allocator's HTTP handler ever
-   * computes (neko-surface-allocator-server.ts's categoryForError): every
-   * NekoSurfaceAllocatorServiceError code, plus the literal "unknown"
-   * fallback for a non-service error. Any other value normalizes to null.
-   */
-  const KNOWN_ALLOCATOR_ERROR_CATEGORIES: ReadonlySet<string> = new Set([
-    "bad_request",
-    "docker_http_error",
-    "docker_malformed_response",
-    "docker_request_failed",
-    "foreign_resource",
-    "not_found",
-    "port_capacity_exhausted",
-    "readiness_failed",
-    "unknown",
-  ]);
-
-  /** Error class names actually thrown on this path. Any other value normalizes to null. */
-  const KNOWN_ALLOCATOR_ERROR_NAMES: ReadonlySet<string> = new Set([
-    "Error",
-    "TypeError",
-    "NekoSurfaceAllocatorError",
-    "NekoSurfaceAllocatorServiceError",
-  ]);
-
-  function readErrorProperty(error: unknown, field: string): unknown {
-    if (!(error && typeof error === "object")) {
-      return;
-    }
-    try {
-      return (error as Record<string, unknown>)[field];
-    } catch {
-      // A hostile caught value's getter for this property may itself throw;
-      // that must normalize to "unknown" (undefined), not propagate.
-      // biome-ignore lint/complexity/noUselessReturn: required by TypeScript noImplicitReturns — the try branch returns a value, so this branch must too.
-      return;
-    }
-  }
-
-  function readKnownErrorCode(error: unknown): string | null {
-    const value = readErrorProperty(error, "code");
-    return typeof value === "string" && KNOWN_ALLOCATOR_ERROR_CODES.has(value) ? value : null;
-  }
-
-  function readKnownErrorCategory(error: unknown): string | null {
-    const value = readErrorProperty(error, "category");
-    return typeof value === "string" && KNOWN_ALLOCATOR_ERROR_CATEGORIES.has(value) ? value : null;
-  }
-
-  function readKnownErrorName(error: unknown): string | null {
-    const value = readErrorProperty(error, "name");
-    return typeof value === "string" && KNOWN_ALLOCATOR_ERROR_NAMES.has(value) ? value : null;
-  }
-
-  /** Strict boolean type constraint — a truthy/falsy non-boolean (e.g. a string) normalizes to null, never coerced. */
-  function readBoolean(error: unknown, field: string): boolean | null {
-    const value = readErrorProperty(error, field);
-    return typeof value === "boolean" ? value : null;
-  }
-
-  /** Bounded to the valid HTTP status-code integer range; any other numeric value (or non-number) normalizes to null. */
-  function readHttpStatus(error: unknown): number | null {
-    const value = readErrorProperty(error, "status");
-    if (typeof value !== "number" || !Number.isInteger(value)) {
-      return null;
-    }
-    return value >= 100 && value <= 599 ? value : null;
-  }
-
   async function waitForStartingBrowserSurface(
     lease: BrowserSurfaceLease,
     connectorId: string,
@@ -1058,7 +1072,8 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     let current = lease;
     const allocator = wrapAllocatorWithTransientPollRetry(
       replacementAwareAllocator ?? UNCONFIGURED_BROWSER_SURFACE_ALLOCATOR,
-      { leaseId: () => current.lease_id, runId }
+      { leaseId: () => current.lease_id, runId },
+      { attempts: browserSurfaceStartingPollRetryAttempts, delayMs: browserSurfaceStartingPollRetryDelayMs, log, sleep }
     );
     while (current.status === "starting_surface") {
       // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
@@ -2460,7 +2475,6 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
   }
 
   return {
-    __wrapAllocatorWithTransientPollRetryForTests: wrapAllocatorWithTransientPollRetry,
     acquireManagedBrowserSurfaceForPhase,
     acquireManagedBrowserSurfaceForRun,
     cancelBrowserSurfaceRun,
