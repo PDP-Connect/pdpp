@@ -53,6 +53,7 @@ test("owner-action gate treats urgent owner reauth as unresolved automation-bloc
   assert.deepEqual(evidence, {
     key: "owner_action:cin_test:reauth:browser_session:credential_present_and_unrejected:session_required",
     reason: "session_required",
+    source: "synthesized",
   });
 });
 

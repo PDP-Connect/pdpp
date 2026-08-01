@@ -74,7 +74,7 @@ interface Controller {
       connectorInstanceId: string;
       ownerToken: string;
       priorityClass: "background";
-      triggerKind: "scheduled";
+      triggerKind: "revalidation" | "scheduled";
       rsUrl?: string;
       referenceBaseUrl?: string | null;
     }
@@ -212,7 +212,7 @@ function countNonPressureGaps(rows: readonly GapRow[], instanceKey: string): num
 function relevantAttentionRecord(records: readonly Parameters<typeof isAttentionHealthRelevant>[0][], nowIso: string) {
   for (const record of records) {
     if (isAttentionHealthRelevant(record, nowIso)) {
-      return { key: record.dedupe_key || record.id, reason: record.reason_code ?? null };
+      return { key: record.dedupe_key || record.id, reason: record.reason_code ?? null, source: "durable" as const };
     }
   }
   return null;

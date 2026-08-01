@@ -26,6 +26,11 @@ import type {
   TerminalGrantFailureReason,
   UnresolvedAttentionEvidence,
 } from "../scheduler-domain-types.ts";
+import {
+  decideSynthesizedRevalidation,
+  SYNTHESIZED_REVALIDATION_PENDING_MARKER,
+  type SynthesizedRevalidationOptions,
+} from "./synthesized-attention-revalidation.ts";
 
 // ─── Dep types ───────────────────────────────────────────────────────────────
 
@@ -36,6 +41,13 @@ import type {
 export interface PreRunGateRuntimeState {
   readonly disabledGrantFailures: Map<string, TerminalGrantFailureReason>;
   readonly exhaustedGrants: Set<string>;
+  /**
+   * Durable run history (hydrated from `run_history` on restart, same object
+   * the dispatch governor filters). `gateAttention` reads it — never
+   * writes — to compute `decideSynthesizedRevalidation`'s cadence for
+   * synthesized owner-action evidence.
+   */
+  readonly history: readonly RunRecord[];
   readonly notifiedAttentionSkips: Map<string, string>;
   readonly notifiedDisabledGrantFailures: Set<string>;
   readonly notifiedNeedsHumanSkips: Set<string>;
@@ -49,6 +61,12 @@ export interface PreRunGateDeps {
   readinessChecker: SchedulerReadinessChecker;
   recordAndNotify: (record: RunRecord) => RunRecord;
   runtime: PreRunGateRuntimeState;
+  /**
+   * Optional tuning for `decideSynthesizedRevalidation` (initial delay,
+   * backoff exponent cap, max delay). Defaults to production constants when
+   * omitted — tests use this to avoid waiting on real wall-clock cooldowns.
+   */
+  synthesizedRevalidationOptions?: SynthesizedRevalidationOptions;
 }
 
 // ─── Gate outcome type ───────────────────────────────────────────────────────
@@ -59,6 +77,17 @@ export interface PreRunGateDeps {
  * `executeRun` must return immediately (a recorded skip or `null` for silent).
  */
 export type GateOutcome = "proceed" | RunRecord | null;
+
+/**
+ * Outcome of `gateAttention` specifically: adds `"proceed-revalidation-only"`
+ * to `GateOutcome` — the gate is clear, but ONLY for the bounded,
+ * non-interactive confirming run `decideSynthesizedRevalidation` admitted for
+ * stale SYNTHESIZED evidence (never for durable evidence, which still blocks
+ * unconditionally like `"proceed"`'s durable-clear case). `executeRun` must
+ * dispatch with `triggerKind: "revalidation"` rather than the ordinary
+ * scheduled trigger kind when it sees this value.
+ */
+export type AttentionGateOutcome = GateOutcome | "proceed-revalidation-only";
 
 // ─── Local helpers (mirrored from scheduler.ts; kept in sync by extraction) ──
 
@@ -127,13 +156,21 @@ function buildUnresolvedAttentionSkip(
   connectorInstanceId?: string
 ): RunRecord {
   const tail = evidence.reason ? `: ${evidence.reason} (${evidence.key})` : `: ${evidence.key}`;
+  // The `SYNTHESIZED_REVALIDATION_PENDING_MARKER` prefix is added ONLY for
+  // synthesized evidence (`evidence.source === "synthesized"`) — it is the
+  // stable, server-owned discriminant `decideSynthesizedRevalidation` uses
+  // to find this connector instance's revalidation cooldown anchor in
+  // `history`. Durable evidence's `error` stays byte-identical to before
+  // (still starts with `attention_unresolved:`) since durable evidence is
+  // never eligible for revalidation and must keep blocking unconditionally.
+  const prefix = evidence.source === "synthesized" ? `${SYNTHESIZED_REVALIDATION_PENDING_MARKER}:` : "";
   return {
     attempt: 0,
     checkpointSummary: null,
     completedAt: nowIso(),
     connectorId,
     connectorInstanceId: connectorInstanceId ?? null,
-    error: `attention_unresolved${tail}`,
+    error: `${prefix}attention_unresolved${tail}`,
     knownGaps: [],
     recordsEmitted: 0,
     source: buildScheduledRunSource(connectorId),
@@ -199,7 +236,7 @@ function buildAutomationPolicySkip(
 export interface PreRunGate {
   decideDisabledGrant: (connectorId: string, connectorInstanceId: string) => "proceed" | "silent-skip" | RunRecord;
   decideNotReady: (schedule: ConnectorSchedule) => Promise<"proceed" | "silent-skip" | RunRecord>;
-  gateAttention: (connectorId: string, connectorInstanceId: string, key: string) => Promise<GateOutcome>;
+  gateAttention: (connectorId: string, connectorInstanceId: string, key: string) => Promise<AttentionGateOutcome>;
   gateAutomationPolicy: (
     connectorId: string,
     connectorInstanceId: string,
@@ -225,7 +262,7 @@ export interface PreRunGate {
     schedule: ConnectorSchedule,
     key: string,
     automationPolicy: ReturnType<typeof projectRunAutomationPolicy>
-  ) => Promise<GateOutcome>;
+  ) => Promise<AttentionGateOutcome>;
 }
 
 export function createPreRunGate(deps: PreRunGateDeps): PreRunGate {
@@ -236,6 +273,7 @@ export function createPreRunGate(deps: PreRunGateDeps): PreRunGate {
     readinessChecker,
     runtime,
     recordAndNotify,
+    synthesizedRevalidationOptions = {},
   } = deps;
 
   async function probeUnresolvedAttention(
@@ -305,17 +343,59 @@ export function createPreRunGate(deps: PreRunGateDeps): PreRunGate {
     return recordAndNotify(buildDisabledGrantSkip(connectorId, terminalReason, connectorInstanceId));
   }
 
-  async function gateAttention(connectorId: string, connectorInstanceId: string, key: string): Promise<GateOutcome> {
+  async function gateAttention(
+    connectorId: string,
+    connectorInstanceId: string,
+    key: string
+  ): Promise<AttentionGateOutcome> {
     const attentionEvidence = await probeUnresolvedAttention(connectorId, connectorInstanceId);
-    if (attentionEvidence?.key) {
+    if (!attentionEvidence?.key) {
+      runtime.notifiedAttentionSkips.delete(key);
+      return "proceed";
+    }
+
+    // Durable evidence (real ASSISTANCE/INTERACTION protocol records, their
+    // own lifecycle/expiry) blocks unconditionally, byte-identical to before
+    // this fix: never revalidated by the scheduler, only by the record's own
+    // lifecycle resolving or expiring.
+    if (attentionEvidence.source === "durable") {
       if (runtime.notifiedAttentionSkips.get(key) === attentionEvidence.key) {
         return null;
       }
       runtime.notifiedAttentionSkips.set(key, attentionEvidence.key);
       return recordAndNotify(buildUnresolvedAttentionSkip(connectorId, attentionEvidence, connectorInstanceId));
     }
-    runtime.notifiedAttentionSkips.delete(key);
-    return "proceed";
+
+    // Synthesized evidence: re-derived fresh from the last terminal run's
+    // reason every probe, no expiry of its own. Eligible for a bounded,
+    // non-interactive confirming run once `decideSynthesizedRevalidation`
+    // says it is due — computed from durable `history`, so this MUST be
+    // evaluated every tick (not short-circuited by a dedup return below), or
+    // a due revalidation would never be observed.
+    const connectorHistory = runtime.history.filter(
+      (record) => (record.connectorInstanceId || record.connectorId) === key
+    );
+    const revalidation = decideSynthesizedRevalidation(connectorHistory, Date.now(), synthesizedRevalidationOptions);
+    if (revalidation.admit) {
+      return "proceed-revalidation-only";
+    }
+    // Dedup by whether a revalidation-pending ANCHOR already exists in
+    // history for this connector instance — NOT by `attentionEvidence.key`
+    // (which embeds `reason` and can churn on every probe, e.g. alternating
+    // session_required/session_expired). Once a pending-skip record already
+    // exists, this connector instance already has its cooldown anchor and
+    // must not accumulate a fresh skip on every reason change — that would
+    // corrupt the cadence math into reading "now" as the anchor on every
+    // tick, defeating the doubling backoff under reason churn (the exact
+    // shape of the P1 the rejected v1 attempt failed on, there via a
+    // different mechanism — an in-memory Map keyed by the full evidence key).
+    const alreadyAnchored = connectorHistory.some((record) =>
+      (record.error ?? "").startsWith(SYNTHESIZED_REVALIDATION_PENDING_MARKER)
+    );
+    if (alreadyAnchored) {
+      return null;
+    }
+    return recordAndNotify(buildUnresolvedAttentionSkip(connectorId, attentionEvidence, connectorInstanceId));
   }
 
   function gateAutomationPolicy(
@@ -362,10 +442,19 @@ export function createPreRunGate(deps: PreRunGateDeps): PreRunGate {
     schedule: ConnectorSchedule,
     key: string,
     automationPolicy: ReturnType<typeof projectRunAutomationPolicy>
-  ): Promise<GateOutcome> {
+  ): Promise<AttentionGateOutcome> {
     const { connectorId, connectorInstanceId = connectorId } = schedule;
 
     const attention = await gateAttention(connectorId, connectorInstanceId, key);
+    if (attention === "proceed-revalidation-only") {
+      // The bounded confirming run bypasses the ordinary automation-policy /
+      // readiness / needs-human gates below: those decide whether an
+      // ORDINARY scheduled run should proceed, and may themselves be
+      // derived from the same stale state the probe exists to re-verify.
+      // The probe is narrow and bounded by construction (noninteractive,
+      // cadence-limited) — it does not need those additional gates.
+      return attention;
+    }
     if (attention !== "proceed") {
       return attention;
     }

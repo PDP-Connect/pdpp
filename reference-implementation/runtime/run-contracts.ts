@@ -39,7 +39,9 @@ export interface RunNowOptions {
   runId?: string;
   scenarioId?: string;
   traceContext?: SpineTraceContext;
-  triggerKind?: Extract<RunTriggerKind, "manual" | "webhook" | "scheduled">;
+  // Mirrors the same widening in controller.ts's `RunNowOptions` — see that
+  // type's doc comment for why `"revalidation"` is included.
+  triggerKind?: Extract<RunTriggerKind, "manual" | "revalidation" | "scheduled" | "webhook">;
 }
 
 export interface RunNowResult {

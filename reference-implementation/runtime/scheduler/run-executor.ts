@@ -106,14 +106,14 @@ export interface RunExecutor {
     schedule: ConnectorSchedule,
     isManual: boolean,
     automationPolicy: ReturnType<typeof projectRunAutomationPolicy>,
-    options?: { recoveryOnly?: boolean }
+    options?: { recoveryOnly?: boolean; revalidationOnly?: boolean }
   ) => Promise<RunRecord>;
 }
 
 // ─── Local helpers (pure — no runtime dep) ───────────────────────────────────
 
-function buildScheduledRunSource(connectorId: string): RunSource {
-  return { id: connectorId, kind: "connector" };
+function buildScheduledRunSource(connectorId: string, revalidationProbe = false): RunSource {
+  return { id: connectorId, kind: "connector", ...(revalidationProbe ? { revalidationProbe: true as const } : {}) };
 }
 
 function getManifestRefreshPolicy(manifest: SchedulerManifest | null | undefined): AutomationRefreshPolicy | null {
@@ -134,7 +134,21 @@ export function buildAttemptCall(
   call: RunConnectorCall,
   attempt: number
 ): RunConnectorCall {
-  const attemptTriggerKind: RunTriggerKind = attempt === 1 ? (call.triggerKind ?? "scheduled") : "retry";
+  // A revalidation probe (see run-automation-policy.ts's `RunTriggerKind` doc
+  // comment) must stay noninteractive by construction on EVERY attempt, not
+  // just the first: `projectRunAutomationPolicy`/`buildAvailableBindings`
+  // both key their noninteractive override on `triggerKind === "revalidation"`
+  // specifically, so collapsing attempt 2+ to the ordinary `"retry"` kind
+  // would silently regain interactivity on retry — reopening exactly the P1
+  // this trigger kind exists to close.
+  let attemptTriggerKind: RunTriggerKind;
+  if (call.triggerKind === "revalidation") {
+    attemptTriggerKind = "revalidation";
+  } else if (attempt === 1) {
+    attemptTriggerKind = call.triggerKind ?? "scheduled";
+  } else {
+    attemptTriggerKind = "retry";
+  }
   const attemptPolicy = projectRunAutomationPolicy({
     refreshPolicy: getManifestRefreshPolicy(schedule.manifest),
     triggerKind: attemptTriggerKind,
@@ -397,6 +411,7 @@ function buildSuccessOrFailureRecord({
   connectorId,
   connectorInstanceId,
   result,
+  revalidationProbe = false,
   startedAt,
   attempt,
 }: {
@@ -404,6 +419,7 @@ function buildSuccessOrFailureRecord({
   connectorId: string;
   connectorInstanceId?: string;
   result: RunConnectorResult;
+  revalidationProbe?: boolean;
   startedAt: string;
 }): RunRecord {
   return {
@@ -418,7 +434,7 @@ function buildSuccessOrFailureRecord({
     recordsEmitted: result.records_emitted || 0,
     reportedRecordsEmitted: result.reported_records_emitted ?? null,
     runId: result.run_id || null,
-    source: buildScheduledRunSource(connectorId),
+    source: buildScheduledRunSource(connectorId, revalidationProbe),
     startedAt,
     status: schedulerStatusFromRuntimeResult(result.status),
     terminalReason: result.terminal_reason || null,
@@ -431,11 +447,13 @@ function buildExhaustedFailureRecord({
   connectorInstanceId,
   lastError,
   attempt,
+  revalidationProbe = false,
 }: {
   attempt: number;
   connectorId: string;
   connectorInstanceId?: string;
   lastError: RunConnectorError | null;
+  revalidationProbe?: boolean;
 }): RunRecord {
   return {
     attempt,
@@ -450,7 +468,7 @@ function buildExhaustedFailureRecord({
     recordsEmitted: lastError?.records_emitted ?? 0,
     reportedRecordsEmitted: lastError?.reported_records_emitted ?? null,
     runId: lastError?.run_id || null,
-    source: buildScheduledRunSource(connectorId),
+    source: buildScheduledRunSource(connectorId, revalidationProbe),
     startedAt: nowIso(),
     status: "failed",
     terminalReason: lastError?.terminal_reason || null,
@@ -613,6 +631,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
       connectorId,
       connectorInstanceId,
       result,
+      revalidationProbe: call.triggerKind === "revalidation",
       startedAt,
     });
 
@@ -817,7 +836,8 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
   function finalizeExhaustedFailure(
     schedule: ConnectorSchedule,
     lastError: RunConnectorError | null,
-    attempt: number
+    attempt: number,
+    revalidationProbe = false
   ): RunRecord {
     const { connectorId, connectorInstanceId = connectorId } = schedule;
     const failRecord = buildExhaustedFailureRecord({
@@ -825,6 +845,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
       connectorId,
       connectorInstanceId,
       lastError,
+      revalidationProbe,
     });
     runtime.history.push(failRecord);
     if (schedulerStore) {
@@ -863,7 +884,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
       await sleep(backoffDelayMs(attempt));
     }
 
-    return finalizeExhaustedFailure(schedule, lastError, attempt);
+    return finalizeExhaustedFailure(schedule, lastError, attempt, call.triggerKind === "revalidation");
   }
 
   function scheduledManagedConnectorLacksRoutingSeam(
@@ -886,7 +907,8 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     connectorInstanceId: string,
     startedAt: string,
     message: string,
-    attempt = 1
+    attempt = 1,
+    revalidationProbe = false
   ): RunRecord {
     return {
       attempt,
@@ -898,7 +920,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
       error: `controller_run_now_failed: ${message}`,
       knownGaps: [],
       recordsEmitted: 0,
-      source: buildScheduledRunSource(connectorId),
+      source: buildScheduledRunSource(connectorId, revalidationProbe),
       startedAt,
       status: "failed",
     };
@@ -911,7 +933,8 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     connectorInstanceId: string,
     startedAt: string,
     runNowResult: NonNullable<Awaited<ReturnType<RunManagedConnectorViaController>>>,
-    attempt = 1
+    attempt = 1,
+    revalidationProbe = false
   ): RunRecord {
     return {
       attempt,
@@ -925,7 +948,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
       knownGaps: runNowResult.known_gaps || [],
       recordsEmitted: 0,
       runId: runNowResult.run_id ?? null,
-      source: buildScheduledRunSource(connectorId),
+      source: buildScheduledRunSource(connectorId, revalidationProbe),
       startedAt,
       status: schedulerStatusFromRuntimeResult(runNowResult.status),
       terminalReason: runNowResult.terminal_reason || null,
@@ -940,12 +963,13 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     connectorInstanceId: string,
     ownerToken: string,
     ownerSubjectId: string,
-    options: { maxRetries?: number; recoveryOnly?: boolean } = {}
+    options: { maxRetries?: number; recoveryOnly?: boolean; revalidationProbe?: boolean } = {}
   ): Promise<RunRecord | null> {
     const maxRetries =
       options.maxRetries !== undefined && Number.isFinite(options.maxRetries)
         ? Math.max(0, Math.trunc(options.maxRetries))
         : 2;
+    const revalidationProbe = options.revalidationProbe === true;
     let attempt = 0;
 
     while (attempt <= maxRetries) {
@@ -963,7 +987,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
           recoveryOnly: options.recoveryOnly === true,
           referenceBaseUrl,
           rsUrl,
-          triggerKind: "scheduled",
+          triggerKind: revalidationProbe ? "revalidation" : "scheduled",
         });
       } catch (err) {
         const deferReason = controllerRunNowDeferReason(err);
@@ -973,7 +997,14 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
         const message = err instanceof Error ? err.message : String(err);
         persistLastRunTime(connectorId, connectorInstanceId, Date.now());
         return recordAndNotify(
-          buildManagedRunControllerFailure(connectorId, connectorInstanceId, startedAt, message, attempt)
+          buildManagedRunControllerFailure(
+            connectorId,
+            connectorInstanceId,
+            startedAt,
+            message,
+            attempt,
+            revalidationProbe
+          )
         );
       }
 
@@ -1006,7 +1037,14 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
         markNeedsHuman(connectorId, connectorInstanceId);
       }
       return recordAndNotify(
-        buildManagedRunTerminalRecord(connectorId, connectorInstanceId, startedAt, runNowResult, attempt)
+        buildManagedRunTerminalRecord(
+          connectorId,
+          connectorInstanceId,
+          startedAt,
+          runNowResult,
+          attempt,
+          revalidationProbe
+        )
       );
     }
 
@@ -1097,7 +1135,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     schedule: ConnectorSchedule,
     isManual: boolean,
     automationPolicy: ReturnType<typeof projectRunAutomationPolicy>,
-    options: { recoveryOnly?: boolean } = {}
+    options: { recoveryOnly?: boolean; revalidationOnly?: boolean } = {}
   ): Promise<RunRecord> {
     const recoveryOnly = options.recoveryOnly === true;
     const {
@@ -1176,7 +1214,10 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     // from within the scheduler. Both guards stay intact.
     if (runManagedConnectorViaController && !isManual) {
       // Null return means connector is not managed — fall through to runWithRetries.
-      const managedRunOptions: { maxRetries?: number; recoveryOnly?: boolean } = { recoveryOnly };
+      const managedRunOptions: { maxRetries?: number; recoveryOnly?: boolean; revalidationProbe?: boolean } = {
+        recoveryOnly,
+        revalidationProbe: automationPolicy.trigger_kind === "revalidation",
+      };
       if (schedule.maxRetries !== undefined) {
         managedRunOptions.maxRetries = schedule.maxRetries;
       }

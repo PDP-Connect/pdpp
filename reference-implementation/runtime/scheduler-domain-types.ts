@@ -53,6 +53,19 @@ export interface ConnectorError {
 export interface RunSource {
   readonly id: string;
   readonly kind: "connector";
+  /**
+   * Set only for the bounded, non-interactive confirming run
+   * `pre-run-gate.ts` admits to re-probe stale SYNTHESIZED owner-action
+   * evidence (see `synthesized-attention-revalidation.ts`). Absent on every
+   * ordinary run. `source` round-trips as an opaque JSON blob column
+   * (`source_json`) in every scheduler-store backend, so this needs no
+   * schema change — it is the stable, server-owned marker
+   * `decideSynthesizedRevalidation` uses to recognize the dispatched
+   * probe's own terminal outcome in durable `history`, distinct from the
+   * pending-skip marker on `RunRecord.error` (which only ever tags a SKIP,
+   * never a dispatched run's real success/failure).
+   */
+  readonly revalidationProbe?: true;
 }
 
 /**
@@ -159,10 +172,25 @@ export type RegisterRunCancellationHandler = (registration: RunCancellationRegis
  * — the scheduler must never silently suppress launches when the durable
  * store is unreachable, because that would itself hide a real freshness
  * problem.
+ *
+ * `source` is set only by the trusted handler implementation (never derived
+ * by the scheduler from `key`, which is an opaque owner/connector-influenced
+ * string and must not be parsed for provenance):
+ *   - `"durable"` — a real `connector_attention_records` row, written only
+ *     from a live run's ASSISTANCE/INTERACTION protocol message. Has its own
+ *     lifecycle/expiry. Blocks automatic dispatch unconditionally, forever,
+ *     until the record resolves or expires.
+ *   - `"synthesized"` — re-derived on every probe from the last terminal
+ *     run's `rendered_verdict.required_actions` / `reason_code`. No expiry,
+ *     no independent timestamp: the SAME evidence shape is recomputed for as
+ *     long as the last terminal run's summary says so. Eligible for the
+ *     scheduler's bounded periodic revalidation probe (`gateAttention`)
+ *     instead of blocking forever.
  */
 export interface UnresolvedAttentionEvidence {
   readonly key: string;
   readonly reason?: string | null;
+  readonly source: "durable" | "synthesized";
 }
 export type HasUnresolvedAttentionHandler = (
   connectorId: string,
@@ -336,7 +364,14 @@ export type RunManagedConnectorViaController = (
     ownerToken: string;
     priorityClass: "background";
     recoveryOnly?: boolean;
-    triggerKind: "scheduled";
+    // `"revalidation"` lets a managed (browser-surface-leased) connector's
+    // bounded synthesized-evidence confirming probe route through the SAME
+    // warm-surface path ordinary scheduled runs use, instead of falling back
+    // to a cold `runConnector` launch that a bot-detecting provider would
+    // reliably challenge (see the routing comment in run-executor.ts's
+    // launchRun). controller.runNow forces this trigger kind noninteractive
+    // unconditionally (run-automation-policy.ts).
+    triggerKind: "revalidation" | "scheduled";
     runId?: string;
     traceContext?: unknown;
     rsUrl?: string;
@@ -414,4 +449,19 @@ export interface SchedulerOptions {
     | "upsertLastRunTime"
   >;
   setState?: SetStateHandler;
+  /**
+   * Optional tuning for the bounded synthesized-owner-action-evidence
+   * revalidation cadence (see `scheduler/synthesized-attention-revalidation.ts`,
+   * whose `SynthesizedRevalidationOptions` this mirrors structurally — defined
+   * inline rather than imported to avoid a type-only import edge from this
+   * pure-leaf module back into a `scheduler/` spoke). Defaults to production
+   * constants (30min initial, doubling, 24h cap) when omitted; tests pass
+   * fast delays instead of waiting on real wall-clock cooldowns. Production
+   * callers should leave this unset.
+   */
+  synthesizedRevalidationOptions?: {
+    readonly initialDelayMs?: number;
+    readonly maxBackoffExp?: number;
+    readonly maxDelayMs?: number;
+  };
 }

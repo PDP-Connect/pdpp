@@ -1,7 +1,16 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-export type RunTriggerKind = "manual" | "retry" | "scheduled" | "webhook";
+/**
+ * `"revalidation"` is scheduler-internal only: the bounded, non-interactive
+ * confirming run `pre-run-gate.ts` admits to re-probe stale SYNTHESIZED
+ * owner-action evidence (see `synthesized-attention-revalidation.ts`). It is
+ * never exposed through the public `runNow`/webhook trigger surface —
+ * `run-contracts.ts`/`controller.ts` narrow their public `triggerKind` to
+ * `Extract<RunTriggerKind, "manual" | "webhook" | "scheduled">`, which
+ * excludes it by construction.
+ */
+export type RunTriggerKind = "manual" | "retry" | "revalidation" | "scheduled" | "webhook";
 export type RunAutomationMode = "ask_before_run" | "assisted" | "manual_only" | "unattended";
 
 export interface AutomationRefreshPolicy {
@@ -131,9 +140,18 @@ export function projectRunAutomationPolicy(input: RunAutomationPolicyInput): Run
     });
   }
 
-  const automationMode: RunAutomationMode = canNotifyDuringRun(input.refreshPolicy, { isManualTrigger })
-    ? "assisted"
-    : "unattended";
+  // A revalidation probe must stay noninteractive by construction: it exists
+  // ONLY to prove a stale synthesized reason wrong via a clean terminal
+  // status, never to prompt for credentials/OTP/manual action. This does not
+  // depend on the connector's declared `interaction_posture` — the same
+  // posture that made ordinary scheduled runs interactive (the exact P1 this
+  // guards against) must not also make the probe interactive. Enforcement is
+  // structural (run-executor.ts refuses any interaction attempt for this
+  // trigger kind); this projection is the honest signal alongside it.
+  const automationMode: RunAutomationMode =
+    input.triggerKind !== "revalidation" && canNotifyDuringRun(input.refreshPolicy, { isManualTrigger })
+      ? "assisted"
+      : "unattended";
   return createRunAutomationPolicyProjection({
     allowedToStart: true,
     automationMode,

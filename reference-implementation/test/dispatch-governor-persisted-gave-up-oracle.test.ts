@@ -20,6 +20,7 @@ test("decideBackoffDispatch honors a persisted gave_up marker while preserving b
       persistedGaveUp: true,
       reasonClass: "source_pressure",
       recoveryOnly: true,
+      synthesizedRevalidationDue: false,
     }),
     {
       announcedBackoffMutation: "set",

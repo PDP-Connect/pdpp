@@ -17,6 +17,7 @@ function input(overrides = {}) {
     persistedGaveUp: false,
     reasonClass: "source_pressure",
     recoveryOnly: true,
+    synthesizedRevalidationDue: false,
     ...overrides,
   };
 }

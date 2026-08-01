@@ -263,7 +263,18 @@ export interface RunNowOptions {
   runId?: string;
   scenarioId?: string;
   traceContext?: SpineTraceContext;
-  triggerKind?: Extract<RunTriggerKind, "manual" | "webhook" | "scheduled">;
+  // `"revalidation"` is included so the scheduler's managed-connector routing
+  // (`runManagedConnectorViaController` → this `runNow`) can dispatch the
+  // bounded, noninteractive confirming probe for stale synthesized
+  // owner-action evidence through the SAME warm-browser-surface path
+  // ordinary managed runs use — see run-automation-policy.ts's
+  // `RunTriggerKind` doc comment. `runAutomationMetadata`/
+  // `projectRunAutomationPolicy` force `"revalidation"` to `unattended`
+  // regardless of caller, and `buildAvailableBindings` (runtime/index.ts)
+  // omits the `interactive` binding for it unconditionally, so a caller
+  // reaching this HTTP-adjacent surface with `triggerKind: "revalidation"`
+  // gets a safe no-op-if-interactive run, never a live prompt.
+  triggerKind?: Extract<RunTriggerKind, "manual" | "revalidation" | "scheduled" | "webhook">;
 }
 
 export interface ConnectorInstanceOptions {
@@ -341,7 +352,7 @@ function controllerErrorCode(err: unknown): string | undefined {
 
 function runAutomationMetadata(
   policy: RefreshPolicy | null,
-  triggerKind: Extract<RunTriggerKind, "manual" | "webhook" | "scheduled">
+  triggerKind: Extract<RunTriggerKind, "manual" | "revalidation" | "scheduled" | "webhook">
 ): Pick<RunNowResult, "automation_mode" | "automation_summary" | "trigger_kind"> {
   const projection = projectRunAutomationPolicy({
     refreshPolicy: policy,

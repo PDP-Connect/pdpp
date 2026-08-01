@@ -356,7 +356,9 @@ interface InteractionResponse {
 
 export type RuntimeCollectionMode = "full_refresh" | "incremental";
 export type RuntimeRunAutomationMode = "ask_before_run" | "assisted" | "manual_only" | "unattended";
-export type RuntimeRunTriggerKind = "manual" | "retry" | "scheduled" | "webhook";
+// Mirrors `RunTriggerKind` in run-automation-policy.ts — see that type's doc
+// comment for why `"revalidation"` is scheduler-internal only.
+export type RuntimeRunTriggerKind = "manual" | "retry" | "revalidation" | "scheduled" | "webhook";
 
 export interface RuntimeTraceContext {
   readonly request_id: string;
@@ -771,13 +773,24 @@ function buildScopeFields(
   return appendUniqueFields(streamScope.fields, [...requiredFields, ...primaryKeyFields, ...timeRangeFields]);
 }
 
-function buildAvailableBindings(onInteraction: unknown): AvailableBindings {
+function buildAvailableBindings(onInteraction: unknown, triggerKind?: RuntimeRunTriggerKind | null): AvailableBindings {
   // In this reference runtime, connectors run as local Node child processes
   // with full filesystem access by virtue of being child processes. We
   // advertise `filesystem` so file-based connectors can declare it as a
   // required binding per the Collection Profile spec.
   const bindings: AvailableBindings = { browser: {}, filesystem: {}, network: {} };
-  if (typeof onInteraction === "function") {
+  // A revalidation probe (the bounded, non-interactive confirming run
+  // pre-run-gate.ts admits for stale SYNTHESIZED owner-action evidence — see
+  // synthesized-attention-revalidation.ts) must stay noninteractive by
+  // construction, for every connector, without relying on any connector-side
+  // opt-in convention (contrast the ChatGPT/HEB-specific
+  // `*AllowsInteractiveAuthRepair` env-var checks, which only cover those two
+  // connectors). Omitting `interactive` here is unconditional and
+  // connector-agnostic: it works whether or not `onInteraction` exists, and a
+  // connector that still emits INTERACTION fails the run via the existing
+  // "START.bindings omitted interactive" protocol-violation guard below,
+  // rather than silently blocking on/receiving a live prompt.
+  if (typeof onInteraction === "function" && triggerKind !== "revalidation") {
     bindings.interactive = {};
   }
   return bindings;
@@ -1998,7 +2011,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
 
   // Check binding requirements
   const requiredBindings = manifest.runtime_requirements?.bindings || {};
-  const availableBindings = buildAvailableBindings(onInteraction);
+  const availableBindings = buildAvailableBindings(onInteraction, triggerKind);
 
   validateRequiredRuntimeBindings(requiredBindings, availableBindings);
 
@@ -4376,6 +4389,19 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       const interactionRequestId = msg.request_id as string;
       const interactionTimeoutSeconds = msg.timeout_seconds as number | null | undefined;
       const interactionStream = (msg.stream as string | undefined) || null;
+      // A revalidation probe (the bounded, non-interactive confirming run
+      // pre-run-gate.ts admits for stale SYNTHESIZED owner-action evidence —
+      // see synthesized-attention-revalidation.ts) must refuse ANY
+      // interaction attempt structurally, for every connector, regardless of
+      // whether a real `onInteraction` callback happens to be wired for this
+      // run (buildAvailableBindings already omits the `interactive` binding
+      // for this trigger kind, but that is only the informational signal
+      // sent to the connector — this is the actual enforcement point: a
+      // connector that emits INTERACTION anyway, cooperative or not, must
+      // never reach the real onInteraction callback).
+      if (triggerKind === "revalidation") {
+        throw new Error("Connector emitted INTERACTION during a non-interactive revalidation probe");
+      }
       if (typeof onInteraction !== "function") {
         throw new Error("Connector emitted INTERACTION but START.bindings omitted interactive");
       }

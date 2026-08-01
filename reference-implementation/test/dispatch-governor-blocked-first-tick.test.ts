@@ -20,6 +20,7 @@ test("decideBackoffDispatch emits ordered first blocked tick transitions while s
       persistedGaveUp: false,
       reasonClass: "source_pressure",
       recoveryOnly: true,
+      synthesizedRevalidationDue: false,
     }),
     {
       announcedBackoffMutation: "set",

@@ -39,6 +39,7 @@ interface Summary {
 interface UnresolvedOwnerActionEvidence {
   key: string;
   reason: string;
+  source: "synthesized";
 }
 
 function readString(value: unknown): string | null {
@@ -104,5 +105,6 @@ export function unresolvedOwnerActionEvidenceFromSummary(
   return {
     key: `owner_action:${connectionId}:${actionKind}:${surfaceKind}:${satisfiedWhen}:${reason}`,
     reason,
+    source: "synthesized",
   };
 }

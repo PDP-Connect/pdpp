@@ -7807,7 +7807,7 @@ function createReferenceSchedulerManager({
           if (!isAttentionHealthRelevant(record, nowIso)) {
             continue;
           }
-          return { key: record.dedupe_key || record.id, reason: record.reason_code };
+          return { key: record.dedupe_key || record.id, reason: record.reason_code, source: "durable" as const };
         }
         try {
           const routeId = connectorInstanceId || connectorId;

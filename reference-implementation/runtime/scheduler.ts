@@ -331,6 +331,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     registerRunCancellation,
     resolveStaticSecretRunEnv = null,
     runManagedConnectorViaController = null,
+    synthesizedRevalidationOptions,
   } = opts;
 
   const schedulerMaxRunWallClockMs = resolveMaxRunWallClockMs(
@@ -398,6 +399,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     readinessChecker,
     recordAndNotify,
     runtime,
+    ...(synthesizedRevalidationOptions ? { synthesizedRevalidationOptions } : {}),
   });
 
   const runExecutor = createRunExecutor({
@@ -433,7 +435,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     const key = connectorInstanceId;
     const recoveryOnly = options.recoveryOnly === true;
     const triggerKind: RunTriggerKind = isManual ? "manual" : "scheduled";
-    const automationPolicy = projectRunAutomationPolicy({
+    let automationPolicy = projectRunAutomationPolicy({
       refreshPolicy: getManifestRefreshPolicy(manifest),
       triggerKind,
     });
@@ -444,9 +446,23 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     runtime.activeRuns.add(key);
 
     try {
+      let revalidationOnly = false;
       if (!isManual) {
         const preflight = await preRunGate.runAutomaticPreflight(schedule, key, automationPolicy);
-        if (preflight !== "proceed") {
+        if (preflight === "proceed-revalidation-only") {
+          // Bounded, non-interactive confirming run for stale SYNTHESIZED
+          // owner-action evidence (see synthesized-attention-revalidation.ts).
+          // Recompute the automation policy with `triggerKind: "revalidation"`
+          // so run-automation-policy.ts's noninteractive override applies —
+          // this is the projection `buildAvailableBindings` (runtime/index.ts)
+          // and `chatGptAllowsInteractiveAuthRepair`-style connector gates key
+          // off, not `recoveryOnly` or `isManual`.
+          revalidationOnly = true;
+          automationPolicy = projectRunAutomationPolicy({
+            refreshPolicy: getManifestRefreshPolicy(manifest),
+            triggerKind: "revalidation",
+          });
+        } else if (preflight !== "proceed") {
           return preflight;
         }
       }
@@ -454,7 +470,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       if (grantDecision !== "proceed") {
         return grantDecision;
       }
-      return await runExecutor.launchRun(schedule, isManual, automationPolicy, { recoveryOnly });
+      return await runExecutor.launchRun(schedule, isManual, automationPolicy, { recoveryOnly, revalidationOnly });
     } finally {
       runtime.activeRuns.delete(key);
     }
@@ -487,8 +503,10 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     getLastSuccessfulRunAt,
     getNonPressureRecoverableCount,
     getSourcePressureGaps,
+    getUnresolvedAttention: hasUnresolvedAttention,
     onHumanRequiredStateEscalation,
     runtime,
+    ...(synthesizedRevalidationOptions ? { synthesizedRevalidationOptions } : {}),
   });
 
   function startScheduledLoops(): void {

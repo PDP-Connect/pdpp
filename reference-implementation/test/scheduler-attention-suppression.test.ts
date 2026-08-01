@@ -112,7 +112,7 @@ test("scheduler skips due runs while durable attention is unresolved and emits o
         ownerToken: "owner-token",
       },
     ],
-    hasUnresolvedAttention: () => ({ key: attentionKey, reason: "credentials_required" }),
+    hasUnresolvedAttention: () => ({ key: attentionKey, reason: "credentials_required", source: "durable" }),
     onInteraction: cancelledInteractionResponse,
     onRunComplete: (record) => completedRuns.push(record),
     rsUrl: "http://localhost.invalid",
@@ -161,7 +161,7 @@ test("scheduler emits a fresh suppression skip when the attention identity chang
         ownerToken: "owner-token",
       },
     ],
-    hasUnresolvedAttention: () => ({ key: attentionKey, reason: "reason_a" }),
+    hasUnresolvedAttention: () => ({ key: attentionKey, reason: "reason_a", source: "durable" }),
     onInteraction: cancelledInteractionResponse,
     onRunComplete: (record) => completedRuns.push(record),
     rsUrl: "http://localhost.invalid",
@@ -223,7 +223,9 @@ test("attention suppression does not bleed across connections", async () => {
       },
     ],
     hasUnresolvedAttention: (connectorId) =>
-      connectorId === "blocked-connector" ? { key: "att_blocked_only", reason: "manual_action_required" } : null,
+      connectorId === "blocked-connector"
+        ? { key: "att_blocked_only", reason: "manual_action_required", source: "durable" }
+        : null,
     onInteraction: cancelledInteractionResponse,
     onRunComplete: (record) => completedRuns.push(record),
     rsUrl: "http://localhost.invalid",
@@ -281,7 +283,12 @@ test("attention suppression does not bleed across connections", async () => {
 test("attention suppression is scoped by connector instance for duplicate connector types", async () => {
   // Two schedules for the same connector type mirror two ChatGPT accounts.
   // The rendered owner action for one connection must not suppress the peer
-  // just because both schedules share connectorId.
+  // just because both schedules share connectorId. The evidence `key` here is
+  // deliberately shaped like the synthesized owner-action key template
+  // (`owner_action:...`) while `source: "durable"` marks it as a real durable
+  // record — proving the gate keys off the explicit `source` field, not off
+  // parsing `key`'s prefix (a connector-controlled string is never trustworthy
+  // for that distinction).
   const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-attn-same-connector-"));
   const blockedConnector = writeUnusedConnector(tmpDir, "chatgpt-blocked.mjs");
   const peerConnector = writeUnusedConnector(tmpDir, "chatgpt-peer.mjs");
@@ -313,6 +320,7 @@ test("attention suppression is scoped by connector instance for duplicate connec
         ? {
             key: "owner_action:cin_chatgpt_blocked:reauth:browser_session:session_required",
             reason: "session_required",
+            source: "durable",
           }
         : null,
     onInteraction: cancelledInteractionResponse,
@@ -372,7 +380,11 @@ test("resolved attention does not replay missed ticks — latest-only catch-up",
   const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-attn-catchup-"));
   const { attemptsPath, connectorPath } = writeUnusedConnector(tmpDir);
   const completedRuns: RunRecord[] = [];
-  let attentionEvidence: UnresolvedAttentionEvidence | null = { key: "att_pending", reason: "manual_action_required" };
+  let attentionEvidence: UnresolvedAttentionEvidence | null = {
+    key: "att_pending",
+    reason: "manual_action_required",
+    source: "durable",
+  };
 
   const scheduler = createScheduler({
     connectors: [

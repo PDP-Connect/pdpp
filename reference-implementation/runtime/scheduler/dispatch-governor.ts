@@ -26,6 +26,7 @@ import type {
   GetLastSuccessfulRunAtHandler,
   GetNonPressureRecoverableCountHandler,
   GetSourcePressureGapsHandler,
+  HasUnresolvedAttentionHandler,
   HumanRequiredStateEscalationHandler,
   RunRecord,
   RunSource,
@@ -36,6 +37,10 @@ import {
   type PendingPressureGap,
   type SourcePressureCooldownDecision,
 } from "../scheduler-source-pressure-cooldown.ts";
+import {
+  decideSynthesizedRevalidation,
+  type SynthesizedRevalidationOptions as SynthesizedRevalidationOptionsInput,
+} from "./synthesized-attention-revalidation.ts";
 
 // ─── Dep types ───────────────────────────────────────────────────────────────
 
@@ -56,8 +61,24 @@ export interface DispatchGovernorDeps {
   getLastSuccessfulRunAt: GetLastSuccessfulRunAtHandler;
   getNonPressureRecoverableCount: GetNonPressureRecoverableCountHandler;
   getSourcePressureGaps: GetSourcePressureGapsHandler;
+  /**
+   * Same probe `pre-run-gate.ts::gateAttention` uses. Consulted ONLY when
+   * ordinary same-class-failure backoff has escalated a connection to
+   * `blocked`, to check whether the connection is blocked on SYNTHESIZED
+   * owner-action evidence with a due bounded revalidation probe — see
+   * `synthesizedRevalidationDue`'s doc comment on `DecideBackoffDispatchInputs`.
+   * A throw or `undefined` here (e.g. no attention handler configured, or
+   * the probe fails) is treated as "not due" — this preserves today's
+   * `blocked` behavior exactly and never widens eligibility on a probe
+   * failure (contrast `probeUnresolvedAttention`'s fail-OPEN stance, which
+   * governs whether an ORDINARY run is admitted; here fail-closed is
+   * correct because the default, pre-fix behavior — permanently blocked —
+   * is already the safe fallback).
+   */
+  getUnresolvedAttention?: HasUnresolvedAttentionHandler;
   onHumanRequiredStateEscalation: HumanRequiredStateEscalationHandler;
   runtime: DispatchGovernorRuntimeState;
+  synthesizedRevalidationOptions?: SynthesizedRevalidationOptionsInput;
 }
 
 // ─── Local helpers (duplicated from scheduler.ts; pure — no runtime dep) ─────
@@ -317,6 +338,28 @@ export interface DecideBackoffDispatchInputs {
   readonly reasonClass: string | null | undefined;
   /** Pre-computed recovery-only flag BEFORE the blocked override. */
   readonly recoveryOnly: boolean;
+  /**
+   * True when `decideSynthesizedRevalidation` (synthesized-attention-
+   * revalidation.ts) says a bounded, non-interactive confirming run is due
+   * for SYNTHESIZED owner-action evidence currently blocking this connector.
+   * Ordinary same-class-failure backoff (this module) has no knowledge of
+   * attention evidence — computed forever independently — so without this
+   * input, a connection that crosses `BLOCKED_PROMOTION_THRESHOLD` on
+   * ordinary failures stays `eligible=false` FOREVER even once the
+   * revalidation cadence says a probe is due: `executeRun` (and therefore
+   * `gateAttention`, the only place that actually admits the probe) is never
+   * reached, because `evaluateBackoffDispatch` gates whether `executeRun` is
+   * called at all. When `blocked && synthesizedRevalidationDue`, `eligible`
+   * is allowed through so the pre-run gate gets a chance to independently
+   * re-verify cadence and admit exactly the bounded probe — never an
+   * ordinary forward-walk dispatch (`recoveryOnly` stays forced `false`
+   * either way; the probe's own noninteractive-by-construction gate is
+   * `run-automation-policy.ts`'s `triggerKind: "revalidation"` projection,
+   * not this flag). Defaults to `false` when the caller doesn't probe it
+   * (e.g. no attention handler configured), preserving today's `blocked`
+   * behavior exactly.
+   */
+  readonly synthesizedRevalidationDue: boolean;
 }
 
 /**
@@ -407,8 +450,15 @@ export function decideBackoffDispatch(inputs: DecideBackoffDispatchInputs): Deci
       if (shouldEmitGaveUp) {
         transitions.push({ kind: "gave_up" });
       }
-      // Auto-dispatch is suppressed for blocked connectors (even recovery-only).
-      eligible = false;
+      // Auto-dispatch is suppressed for blocked connectors (even recovery-only)
+      // — EXCEPT a due bounded revalidation probe for synthesized owner-action
+      // evidence (see `synthesizedRevalidationDue`'s doc comment above): that
+      // is the ONE tick type still admitted through `blocked`, so a stale
+      // reason can eventually receive a fresh, noninteractive-by-construction
+      // probe even while ordinary same-class-failure backoff has escalated to
+      // `blocked`. `recoveryOnly` stays forced false either way — the probe is
+      // gated by `gateAttention`/`triggerKind: "revalidation"`, not recovery.
+      eligible = inputs.synthesizedRevalidationDue;
       recoveryOnly = false;
     }
   } else if (!inputs.backoffApplied) {
@@ -446,12 +496,38 @@ export interface DispatchGovernor {
 export function createDispatchGovernor(deps: DispatchGovernorDeps): DispatchGovernor {
   const {
     getForwardEvidenceDebt,
+    getUnresolvedAttention,
     getLastSuccessfulRunAt,
     getNonPressureRecoverableCount,
     getSourcePressureGaps,
     onHumanRequiredStateEscalation,
     runtime,
+    synthesizedRevalidationOptions = {},
   } = deps;
+
+  // Consulted ONLY when the tick is otherwise `blocked` — see
+  // `synthesizedRevalidationDue`'s doc comment on `DecideBackoffDispatchInputs`.
+  // Fail-closed (returns false) on any probe error or when no attention
+  // handler is configured: preserves today's `blocked` behavior exactly.
+  async function probeSynthesizedRevalidationDue(connectorId: string, key: string): Promise<boolean> {
+    if (!getUnresolvedAttention) {
+      return false;
+    }
+    try {
+      const evidence = await getUnresolvedAttention(connectorId, key);
+      if (!evidence?.key || evidence.source !== "synthesized") {
+        return false;
+      }
+      const connectorHistory = runtime.history.filter(
+        (record) => (record.connectorInstanceId || record.connectorId) === key
+      );
+      return decideSynthesizedRevalidation(connectorHistory, Date.now(), synthesizedRevalidationOptions).admit;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[scheduler] synthesized-revalidation probe failed for ${connectorId}: ${message}`);
+      return false;
+    }
+  }
 
   // Read the durable cross-path "latest successful run at" projection so the
   // back-off gate can clear a stale failure streak when a genuine success has
@@ -762,6 +838,13 @@ export function createDispatchGovernor(deps: DispatchGovernorDeps): DispatchGove
       }
     }
 
+    // Only probe synthesized-revalidation cadence when the tick is actually
+    // `blocked` — this is the ONLY branch `synthesizedRevalidationDue`
+    // affects (see its doc comment), so probing otherwise would be a wasted
+    // async round-trip on every eligible/backing-off tick.
+    const blocked = decision.recommendedHealthState === "blocked";
+    const synthesizedRevalidationDue = blocked ? await probeSynthesizedRevalidationDue(connectorId, key) : false;
+
     // Decide (pure) then apply (effectful). The pure core reads the current
     // dedup state as inputs and returns the dispatch flags, the dedup-map
     // mutations, and the one-shot transitions to fire — all as data.
@@ -769,7 +852,7 @@ export function createDispatchGovernor(deps: DispatchGovernorDeps): DispatchGove
       announcedBackoff: runtime.announcedBackoffClass.get(key),
       announcedBlocked: runtime.announcedBlockedClass.get(key),
       backoffApplied: decision.backoffApplied,
-      blocked: decision.recommendedHealthState === "blocked",
+      blocked,
       eligible,
       persistedBackoffStarted:
         decision.reasonClass !== null &&
@@ -781,6 +864,7 @@ export function createDispatchGovernor(deps: DispatchGovernorDeps): DispatchGove
         currentStreakHasSchedulerEvent(history, GAVE_UP_PREFIX, decision.reasonClass),
       reasonClass: decision.reasonClass,
       recoveryOnly,
+      synthesizedRevalidationDue,
     });
     // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
     eligible = backoffDecision.eligible;
