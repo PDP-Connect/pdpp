@@ -266,25 +266,34 @@ async function recordCurrentGeneration(
   const cause = stableContainerIdentity(input.surface, persistedSurface)
     ? "same_container_browser_generation_change"
     : "external_or_host_loss";
-  const started = await admitAndRecordStart(
+  const outcome = await admitAndRecordStart(
     input.admissionOptions,
     currentGenerationStartInput(input, previousGenerationHash, generationHash, cause)
   );
-  // `admitAndRecordStart` returns null when the scope's admission was
-  // refused (a different unresolved unknown already owns it) or confirmed
-  // absent after an uncertain-write rejection — either way there is no
-  // durably admitted `started` receipt beneath it, so completing it would
-  // throw (the ledger refuses to resolve a receipt it never durably
-  // admitted). Skipping the completion here is the correct terminal
-  // outcome for this observation, not a bypass: the next readiness
-  // observation for the same surface will retry admission from scratch.
-  if (started) {
+  // The typed outcome (2026-08-01 eighth/final gate revision — a bare
+  // `ReplacementReceipt | null` return previously let `"unknown"` and
+  // `"confirmed"` both read as truthy, so this call site completed an
+  // UNKNOWN receipt, which the ledger correctly refuses, throwing an
+  // uncaught error out of this lifecycle hook) is the ONLY thing branched
+  // on. Only `"confirmed"` has a durably admitted `started` receipt safe to
+  // complete AND advances the lease's stored generation hash — the whole
+  // point of this observation. `"unknown"` must never be completed (the
+  // ledger throws for it) and must never advance the hash either: if this
+  // observation's write is genuinely unresolved, the durable row backing it
+  // may not exist yet, so recording it as settled here would let a LATER,
+  // real observation take the `previousGenerationHash === generationHash`
+  // early-return branch above and silently skip retrying admission
+  // forever. `"absent"` (refused by scope gate, or confirmed rolled back)
+  // has nothing to complete and, for the same reason, must not advance the
+  // hash — the next readiness observation for this surface retries this
+  // whole admission from scratch instead.
+  if (outcome.outcome === "confirmed") {
     await persistReplacementReceipt(
       input.receiptStore,
-      input.ledger.complete(completionInput(started, generationHash))
+      input.ledger.complete(completionInput(outcome.receipt, generationHash))
     );
+    await input.leaseStore.updateBrowserGenerationHash(input.surface.surface_id, generationHash);
   }
-  await input.leaseStore.updateBrowserGenerationHash(input.surface.surface_id, generationHash);
 }
 
 async function recordRecoveredFailedSuccessor(
@@ -308,7 +317,7 @@ async function recordRecoveredFailedSuccessor(
   if (!failed) {
     return;
   }
-  const started = await admitAndRecordStart(input.admissionOptions, {
+  const outcome = await admitAndRecordStart(input.admissionOptions, {
     cause: "allocator_internal_ensure_surface",
     connection_id: failed.connection_id,
     connector_id: input.surface.connector_id,
@@ -317,10 +326,14 @@ async function recordRecoveredFailedSuccessor(
     surface_id: input.surface.surface_id,
     ...(input.surface.surface_subject_id ? { surface_subject_id: input.surface.surface_subject_id } : {}),
   });
-  // Same as `recordCurrentGeneration`: a refused or confirmed-absent
-  // admission has no durably admitted `started` receipt to complete.
-  if (started) {
-    await persistReplacementReceipt(store, input.ledger.complete(pendingCompletionInput(started, generationHash)));
+  // Same as `recordCurrentGeneration`: only `"confirmed"` has a durably
+  // admitted `started` receipt safe to complete — `"unknown"` must never be
+  // completed (the ledger throws) and `"absent"` has nothing to complete.
+  if (outcome.outcome === "confirmed") {
+    await persistReplacementReceipt(
+      store,
+      input.ledger.complete(pendingCompletionInput(outcome.receipt, generationHash))
+    );
   }
 }
 

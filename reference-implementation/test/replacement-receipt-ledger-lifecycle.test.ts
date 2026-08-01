@@ -904,6 +904,302 @@ function lifecyclePersistence(initialSurface: BrowserSurfaceWithPersistenceMetad
   };
 }
 
+/**
+ * Wraps a real `lifecyclePersistence` fixture's `receiptStore` so `append`
+ * and `findByReplacementId` can be toggled to reject on demand, simulating a
+ * receipt-store persist outage plus a reconciliation-read outage — the
+ * exact combination that leaves `admitAndRecordStart` returning `{outcome:
+ * "unknown"}` (2026-08-01 eighth/final gate revision). Everything else
+ * (`selectSystemActionable`, `findPendingForScope`, etc.) still delegates to
+ * the real fixture so `recordCurrentGeneration`/`recordRecoveredFailedSuccessor`
+ * behave exactly as they would against a real store once it recovers.
+ */
+function outageInjectableReceiptStore(store: BrowserSurfaceReplacementReceiptStore): {
+  readonly store: BrowserSurfaceReplacementReceiptStore;
+  appendShouldReject: boolean;
+  findByReplacementIdShouldReject: boolean;
+} {
+  let appendShouldReject = true;
+  let findByReplacementIdShouldReject = true;
+  const wrapped: BrowserSurfaceReplacementReceiptStore = {
+    ...store,
+    append: (receipt) => {
+      if (appendShouldReject) {
+        return Promise.reject(new Error("simulated receipt-store persist outage"));
+      }
+      return store.append(receipt);
+    },
+    findByReplacementId: (replacementId) => {
+      if (findByReplacementIdShouldReject) {
+        return Promise.reject(new Error("simulated reconciliation-read outage"));
+      }
+      return store.findByReplacementId(replacementId);
+    },
+  };
+  return {
+    get appendShouldReject() {
+      return appendShouldReject;
+    },
+    set appendShouldReject(value: boolean) {
+      appendShouldReject = value;
+    },
+    get findByReplacementIdShouldReject() {
+      return findByReplacementIdShouldReject;
+    },
+    set findByReplacementIdShouldReject(value: boolean) {
+      findByReplacementIdShouldReject = value;
+    },
+    store: wrapped,
+  };
+}
+
+// 2026-08-01 eighth (final) gate revision, P1: `admitAndRecordStart` used to
+// return a bare `ReplacementReceipt | null`, so a receipt marked
+// ledger-owned UNKNOWN (persist rejected AND reconciliation could not
+// resolve it) was truthy exactly like a durably CONFIRMED one.
+// `recordCurrentGeneration` completed it anyway, and the ledger correctly
+// refuses to complete an UNKNOWN receipt — throwing out of a lifecycle hook
+// that must never throw for a bookkeeping fault, and never advancing the
+// lease's stored generation hash so the SAME observation can retry later.
+test("recordCurrentGeneration under persist+reconcile outage does not throw, does not complete, and does not advance the lease hash", async () => {
+  const initial = lifecycleSurface({ browser_generation_hash: "a".repeat(64) });
+  const persistence = lifecyclePersistence(initial);
+  const outageStore = outageInjectableReceiptStore(persistence.receiptStore);
+  const hooks = createReplacementLifecycleHooks({
+    allocator: null,
+    leaseStore: persistence.leaseStore,
+    log: {},
+    receiptStore: outageStore.store,
+  });
+
+  await hooks.recordBrowserGeneration(
+    minimalLease("lease-outage"),
+    persistence.getSurface(),
+    initial.connector_id,
+    "run-outage",
+    { browserGenerationHash: "b".repeat(64), ok: true, pageTargetCount: 1 }
+  );
+
+  assert.equal(persistence.receipts.length, 0, "the outage prevents any receipt from durably persisting");
+  assert.equal(
+    persistence.getSurface().browser_generation_hash,
+    "a".repeat(64),
+    "an unresolved (unknown) admission must not advance the lease's stored generation hash — a later real observation must still retry this admission"
+  );
+
+  // The store recovers. The SAME generation observation must still be able
+  // to complete once retried — proving the outage above did not silently
+  // settle this generation as already-handled.
+  outageStore.appendShouldReject = false;
+  outageStore.findByReplacementIdShouldReject = false;
+  await hooks.recordBrowserGeneration(
+    minimalLease("lease-outage"),
+    persistence.getSurface(),
+    initial.connector_id,
+    "run-outage",
+    { browserGenerationHash: "b".repeat(64), ok: true, pageTargetCount: 1 }
+  );
+
+  assert.deepEqual(
+    persistence.receipts.map((receipt) => receipt.phase),
+    ["started", "completed"],
+    "once the store recovers, the retried observation durably admits and completes its own receipt"
+  );
+  assert.equal(
+    persistence.getSurface().browser_generation_hash,
+    "b".repeat(64),
+    "the lease hash advances only once the admission is durably confirmed"
+  );
+});
+
+// 2026-08-01 eighth (final) gate revision, P1 (confirmed-absence variant):
+// a scope refused by `admitStart` (a different unresolved unknown already
+// owns it) or confirmed rolled back must ALSO never advance the lease hash
+// — otherwise the next readiness observation takes the
+// `previousGenerationHash === generationHash` early-return branch and never
+// retries this current-generation admission at all.
+test("recordCurrentGeneration whose admission is refused by an unresolved same-scope unknown does not advance the lease hash, and a DIFFERENT admission attempt in that scope remains blocked until the stuck one is resolved", async () => {
+  const initial = lifecycleSurface({ browser_generation_hash: "a".repeat(64) });
+  const persistence = lifecyclePersistence(initial);
+  const outageStore = outageInjectableReceiptStore(persistence.receiptStore);
+  const hooks = createReplacementLifecycleHooks({
+    allocator: null,
+    leaseStore: persistence.leaseStore,
+    log: {},
+    receiptStore: outageStore.store,
+  });
+
+  // First, plant a same-scope unresolved unknown admission in the hooks'
+  // OWN internal ledger via the public API: an external-surface-loss
+  // observation whose store write fails, and whose reconciliation read also
+  // fails, leaves that ledger with its own stuck unknown for this exact
+  // connection/profile/surface-subject scope, under a DIFFERENT
+  // idempotency key (`external-loss:...`) than the current-generation
+  // attempt below (`browser-generation:...`).
+  await hooks.recordExternalSurfaceLoss(initial);
+  assert.equal(
+    persistence.receipts.filter((receipt) => receipt.phase === "started").length,
+    0,
+    "sanity: the external-loss admission never durably persisted under the outage"
+  );
+
+  // The store recovers for `append`, but `findByReplacementId` keeps
+  // rejecting — the planted unknown from above stays unresolved. A
+  // DIFFERENT admission attempt (current-generation, a different
+  // idempotency key) for the SAME scope must be refused outright by
+  // `ledger.admitStart` (an "absent" outcome, no persist even attempted)
+  // rather than minting a second receipt — the bounded per-scope cap this
+  // ledger enforces, not merely a same-ID replay.
+  outageStore.appendShouldReject = false;
+  await hooks.recordBrowserGeneration(
+    minimalLease("lease-absent"),
+    { ...initial, container_id: "container-absent-1" },
+    initial.connector_id,
+    "run-absent",
+    { browserGenerationHash: "c".repeat(64), ok: true, pageTargetCount: 1 }
+  );
+
+  assert.equal(
+    persistence.getSurface().browser_generation_hash,
+    "a".repeat(64),
+    "a refused (scope-gated) admission must not advance the lease hash — the next observation must retry it"
+  );
+  assert.equal(
+    persistence.receipts.filter((receipt) => receipt.phase === "started").length,
+    0,
+    "no new started receipt was minted for the current-generation attempt while the scope's unknown persisted"
+  );
+
+  // The store recovers fully. Retrying the ORIGINAL stuck call (same
+  // idempotency key: `ledger.start`'s append-time replay returns the same
+  // in-memory receipt) resolves it via the same-ID-adoption path — proving
+  // recovery resumes and this scope's cap is not permanent.
+  outageStore.findByReplacementIdShouldReject = false;
+  await hooks.recordExternalSurfaceLoss(initial);
+  assert.equal(
+    persistence.receipts.filter((receipt) => receipt.phase === "started").length,
+    1,
+    "the retried external-loss call durably persists its own receipt, resolving the scope's stuck unknown"
+  );
+
+  // The scope is now free: a fresh current-generation admission attempt
+  // succeeds and advances the lease hash.
+  await hooks.recordBrowserGeneration(
+    minimalLease("lease-absent"),
+    { ...initial, container_id: "container-absent-2" },
+    initial.connector_id,
+    "run-absent",
+    { browserGenerationHash: "c".repeat(64), ok: true, pageTargetCount: 1 }
+  );
+
+  assert.equal(
+    persistence.getSurface().browser_generation_hash,
+    "c".repeat(64),
+    "once the scope's unknown resolves, a later current-generation admission succeeds and advances the hash"
+  );
+});
+
+// 2026-08-01 eighth (final) gate revision, P1, sibling path: the exact same
+// unknown/confirmed-absent misuse in `recordRecoveredFailedSuccessor`.
+test("recordRecoveredFailedSuccessor under persist+reconcile outage does not throw and does not complete an unknown receipt", async () => {
+  const previous = lifecycleSurface({ surface_id: "surface-lost-outage" });
+  const persistence = lifecyclePersistence(previous);
+  const outageStore = outageInjectableReceiptStore(persistence.receiptStore);
+  const hooks = createReplacementLifecycleHooks({
+    allocator: {
+      ensureSurface: () => Promise.reject(new Error("allocator unavailable")),
+      getSurfaceStatus: () => Promise.resolve(null),
+      listSurfaces: () => Promise.resolve([]),
+      stopSurface: () => Promise.resolve(null),
+    },
+    leaseStore: persistence.leaseStore,
+    log: {},
+    receiptStore: persistence.receiptStore,
+  });
+
+  await hooks.recordExternalSurfaceLoss(previous);
+  await assert.rejects(
+    () =>
+      hooks.allocator?.ensureSurface({
+        connectorId: previous.connector_id,
+        profileKey: previous.profile_key,
+        surfaceId: "surface-successor-outage",
+        ...(previous.surface_subject_id ? { surfaceSubjectId: previous.surface_subject_id } : {}),
+      }) ?? Promise.reject(new Error("allocator wrapper missing")),
+    ALLOCATOR_UNAVAILABLE
+  );
+  assert.deepEqual(
+    persistence.receipts.map((receipt) => [receipt.phase, receipt.terminal_outcome]),
+    [
+      ["started", undefined],
+      ["terminal", "failed"],
+    ],
+    "sanity: the failed runtime boundary is durably recorded before the outage below"
+  );
+
+  // Recovery hooks share nothing with the ones above; a fresh internal
+  // ledger avoids interference from the terminalized receipt's own
+  // replacement_id and isolates the outage to the recovered-successor path.
+  const hooksUnderOutage = createReplacementLifecycleHooks({
+    allocator: null,
+    leaseStore: persistence.leaseStore,
+    log: {},
+    receiptStore: outageStore.store,
+  });
+
+  await hooksUnderOutage.recordBrowserGeneration(
+    minimalLease("lease-recovered-outage"),
+    { ...previous, container_id: "container-recovered-outage", surface_id: "surface-recovered-outage" },
+    previous.connector_id,
+    "run-recovered-outage",
+    { browserGenerationHash: "a".repeat(64), ok: true, pageTargetCount: 1 }
+  );
+
+  assert.equal(
+    persistence.receipts.filter((receipt) => receipt.phase === "completed").length,
+    0,
+    "an unresolved (unknown) recovered-successor admission must never be completed"
+  );
+  assert.equal(
+    await persistence.receiptStore.selectSystemActionable({
+      connection_id: previous.surface_subject_id ?? previous.connector_id,
+      profile_key: previous.profile_key,
+      ...(previous.surface_subject_id ? { surface_subject_id: previous.surface_subject_id } : {}),
+    }),
+    persistence.receipts.find((receipt) => receipt.phase === "terminal") ?? null,
+    "the failed runtime boundary remains system-actionable — the recovered-successor observation did not (falsely) clear it"
+  );
+
+  // The store recovers; retrying the EXACT SAME observation (same
+  // surface_id and generationHash, hence the same idempotency key) replays
+  // the same in-memory receipt and adopts it on this successful persist —
+  // proving recovery resumes for the retried observation itself.
+  outageStore.appendShouldReject = false;
+  outageStore.findByReplacementIdShouldReject = false;
+  await hooksUnderOutage.recordBrowserGeneration(
+    minimalLease("lease-recovered-outage"),
+    { ...previous, container_id: "container-recovered-outage", surface_id: "surface-recovered-outage" },
+    previous.connector_id,
+    "run-recovered-outage",
+    { browserGenerationHash: "a".repeat(64), ok: true, pageTargetCount: 1 }
+  );
+
+  assert.equal(
+    persistence.receipts.filter((receipt) => receipt.phase === "completed").length,
+    1,
+    "once the store recovers, the retried observation durably completes the recovered-successor receipt"
+  );
+  assert.equal(
+    await persistence.receiptStore.selectSystemActionable({
+      connection_id: previous.surface_subject_id ?? previous.connector_id,
+      profile_key: previous.profile_key,
+      ...(previous.surface_subject_id ? { surface_subject_id: previous.surface_subject_id } : {}),
+    }),
+    null,
+    "the confirming successor now clears the failed external-loss runtime boundary"
+  );
+});
+
 test("mid-wait browser generation records stable-container change, unchanged is a no-op, and unproven identity is external", async () => {
   const persistence = lifecyclePersistence(lifecycleSurface());
   const hooks = createReplacementLifecycleHooks({
