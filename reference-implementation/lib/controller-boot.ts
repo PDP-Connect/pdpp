@@ -27,6 +27,10 @@ import {
   writePostgresRunHistoryForSpineEvent,
   writeSqliteRunHistoryForSpineEvent,
 } from "../server/stores/run-history-writer.ts";
+import {
+  backfillRunHistoryFromTerminalSpinePostgres,
+  backfillRunHistoryFromTerminalSpineSqlite,
+} from "./run-history-terminal-backfill.ts";
 import { type BootEpoch, emitSpineEvent, setCurrentBootEpoch } from "./spine.ts";
 
 export interface BootControllerOpts {
@@ -155,15 +159,6 @@ export interface ReconcileResult {
   selected: number;
 }
 
-// Bound on the terminal-spine → run_history backfill pass below. This is a
-// convergent, self-draining catch-up (each boot repairs whatever the writer
-// authority missed since the last boot), NOT a perpetual sweep: once every
-// run_history row matches its terminal spine event, the join returns zero
-// rows and every subsequent boot's backfill pass is a cheap no-op. The cap
-// exists so a fleet with a large one-time backlog doesn't turn boot into an
-// unbounded scan; any remainder is picked up on the next boot.
-const RUN_HISTORY_BACKFILL_LIMIT = 500;
-
 interface OrphanRow {
   actor_id: string;
   connector_instance_id: string | null;
@@ -254,69 +249,6 @@ async function reconcilePostgres(epoch: BootEpoch): Promise<ReconcileResult> {
   });
 }
 
-interface TerminalBackfillRow {
-  connector_instance_id: string;
-  event_type: string;
-  occurred_at: string;
-  run_id: string;
-  source_id: string | null;
-  source_kind: string | null;
-  status: string;
-}
-
-/**
- * Repair historical drift: a `run_history` row can be stuck at
- * `status='running'` even though its run's terminal spine event already
- * exists — e.g. a run abandoned by a PRIOR incarnation of this reconciler
- * (before the writer-authority fix), where the spine write happened but the
- * run_history convergence call did not exist yet. This is not a new orphan
- * class — it replays the SAME single writer authority
- * (write*RunHistoryForSpineEvent) against terminal spine events that are
- * already durable, for run_history rows the writer never got a chance to
- * finalize. Identity-fenced by (run_id, connector_instance_id) + `status =
- * 'running'` exactly like every other writer call site, so it is idempotent
- * and cannot touch an already-terminal or unrelated row. Bounded by
- * RUN_HISTORY_BACKFILL_LIMIT per boot; self-draining (see the constant's
- * comment) rather than a perpetual sweep.
- */
-async function backfillRunHistoryFromTerminalSpinePostgres(client: PoolClient): Promise<number> {
-  const { rows } = await client.query<TerminalBackfillRow>(
-    `
-    SELECT DISTINCT ON (rh.run_id, rh.connector_instance_id)
-      rh.run_id,
-      rh.connector_instance_id,
-      s.event_type,
-      s.status,
-      s.occurred_at,
-      s.source_kind,
-      s.source_id
-    FROM run_history rh
-    JOIN spine_events s
-      ON s.run_id = rh.run_id
-     AND s.connector_instance_id = rh.connector_instance_id
-     AND s.event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled', 'run.abandoned')
-    WHERE rh.status = 'running'
-    ORDER BY rh.run_id, rh.connector_instance_id, s.occurred_at DESC
-    LIMIT $1
-    `,
-    [RUN_HISTORY_BACKFILL_LIMIT]
-  );
-
-  for (const row of rows) {
-    // biome-ignore lint/performance/noAwaitInLoops: Same transaction as the reconciler's own writes above; must stay ordered and atomic with it.
-    await writePostgresRunHistoryForSpineEvent(client, {
-      connectorId: row.source_kind === "connector" ? row.source_id : null,
-      connectorInstanceId: row.connector_instance_id,
-      data: {},
-      eventType: row.event_type,
-      occurredAt: row.occurred_at,
-      runId: row.run_id,
-      status: row.status,
-    });
-  }
-  return rows.length;
-}
-
 function reconcileSqlite(epoch: BootEpoch): Promise<ReconcileResult> {
   const db = getDb();
   // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
@@ -380,74 +312,6 @@ function reconcileSqlite(epoch: BootEpoch): Promise<ReconcileResult> {
 
   const backfilled = backfillRunHistoryFromTerminalSpineSqlite(raw);
   return Promise.resolve({ abandoned, backfilled, selected: orphans.length });
-}
-
-/**
- * Repair historical drift: a `run_history` row can be stuck at
- * `status='running'` even though its run's terminal spine event already
- * exists — e.g. a run abandoned by a PRIOR incarnation of this reconciler
- * (before the writer-authority fix), where the spine write happened but the
- * run_history convergence call did not exist yet. This is not a new orphan
- * class — it replays the SAME single writer authority
- * (write*RunHistoryForSpineEvent) against terminal spine events that are
- * already durable, for run_history rows the writer never got a chance to
- * finalize. Identity-fenced by (run_id, connector_instance_id) + `status =
- * 'running'` exactly like every other writer call site, so it is idempotent
- * and cannot touch an already-terminal or unrelated row. Bounded by
- * RUN_HISTORY_BACKFILL_LIMIT per boot; self-draining (see the constant's
- * comment) rather than a perpetual sweep.
- */
-function backfillRunHistoryFromTerminalSpineSqlite(raw: {
-  prepare: (sql: string) => { all: (...args: unknown[]) => unknown[] };
-}): number {
-  const rows = raw
-    .prepare(
-      `
-      SELECT
-        rh.run_id      AS run_id,
-        rh.connector_instance_id AS connector_instance_id,
-        s.event_type    AS event_type,
-        s.status        AS status,
-        s.occurred_at   AS occurred_at,
-        s.source_kind   AS source_kind,
-        s.source_id     AS source_id
-      FROM run_history rh
-      JOIN spine_events s
-        ON s.event_id = (
-          SELECT t.event_id
-          FROM spine_events t
-          WHERE t.run_id = rh.run_id
-            AND t.connector_instance_id = rh.connector_instance_id
-            AND t.event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled', 'run.abandoned')
-          ORDER BY t.occurred_at DESC
-          LIMIT 1
-        )
-      WHERE rh.status = 'running'
-      LIMIT ?
-      `
-    )
-    .all(RUN_HISTORY_BACKFILL_LIMIT) as {
-    run_id: string;
-    connector_instance_id: string;
-    event_type: string;
-    status: string;
-    occurred_at: string;
-    source_kind: string | null;
-    source_id: string | null;
-  }[];
-
-  for (const row of rows) {
-    writeSqliteRunHistoryForSpineEvent({
-      connectorId: row.source_kind === "connector" ? row.source_id : null,
-      connectorInstanceId: row.connector_instance_id,
-      data: {},
-      eventType: row.event_type,
-      occurredAt: row.occurred_at,
-      runId: row.run_id,
-      status: row.status,
-    });
-  }
-  return rows.length;
 }
 
 /**

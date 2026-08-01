@@ -532,6 +532,8 @@ function insertTerminalSpineEvent(
     event_type,
     status,
     occurred_at,
+    recorded_at,
+    data,
   }: {
     event_id: string;
     run_id: string;
@@ -540,6 +542,8 @@ function insertTerminalSpineEvent(
     event_type: string;
     status: string;
     occurred_at: string;
+    recorded_at?: string;
+    data?: Record<string, unknown>;
   }
 ) {
   const raw = new Database(dbPath);
@@ -551,11 +555,21 @@ function insertTerminalSpineEvent(
           (event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
            actor_type, actor_id, object_type, object_id, status, run_id, data_json, version,
            connector_instance_id, source_kind, source_id)
-        VALUES (@event_id, @event_type, @occurred_at, @occurred_at, 'default', 'trc_seed', 'runtime', @actor_id,
-                'run', @run_id, @status, @run_id, '{}', 'v1', @connector_instance_id, 'connector', @actor_id)
+        VALUES (@event_id, @event_type, @occurred_at, @recorded_at, 'default', 'trc_seed', 'runtime', @actor_id,
+                'run', @run_id, @status, @run_id, @data_json, 'v1', @connector_instance_id, 'connector', @actor_id)
         `
       )
-      .run({ actor_id, connector_instance_id, event_id, event_type, occurred_at, run_id, status });
+      .run({
+        actor_id,
+        connector_instance_id,
+        data_json: JSON.stringify(data ?? {}),
+        event_id,
+        event_type,
+        occurred_at,
+        recorded_at: recorded_at ?? occurred_at,
+        run_id,
+        status,
+      });
   } finally {
     raw.close();
   }
@@ -800,6 +814,290 @@ test("Postgres parity old-fail/new-pass: terminal spine already exists + stale r
   } finally {
     await postgresQuery("DELETE FROM run_history WHERE run_id LIKE 'run_hist_pg_%'").catch(() => undefined);
     await postgresQuery("DELETE FROM spine_events WHERE run_id LIKE 'run_hist_pg_%'").catch(() => undefined);
+    clearCurrentBootEpoch();
+    await closePostgresStorage();
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Faithful replay: the backfill must carry the terminal spine event's own
+// data_json into the writer, not an abandon-shaped empty payload. A
+// non-abandoned terminal event (run.failed) is the sharpest proof, since
+// run.abandoned's own data legitimately has no records_emitted/
+// connector_error/known_gaps — a bug that replaces `data` with `{}` would
+// be invisible on the abandoned case but would silently drop every
+// writer-consumed field for completed/failed/browser_surface_failed/
+// cancelled runs.
+// ─────────────────────────────────────────────────────────────────────────
+
+test("SQLite: backfill replay carries the terminal event's own data_json — records_emitted, connector_error, known_gaps, checkpoint accounting all converge", async () => {
+  const dbPath = tempDbPath();
+  initDb(dbPath);
+  try {
+    insertTerminalSpineEvent(dbPath, {
+      actor_id: "conn_facts",
+      connector_instance_id: "cin_facts_1",
+      data: {
+        checkpoint_commit_status: "committed",
+        connector_error_code: "RATE_LIMITED",
+        connector_error_message: "too many requests",
+        connector_error_retryable: true,
+        known_gaps: [{ reason: "rate_limited", stream: "orders" }],
+        reason: "connector_reported_failed",
+        records_emitted: 42,
+        records_flushed: 40,
+        state_streams_committed: 2,
+      },
+      event_id: "evt_facts_failed_1",
+      event_type: "run.failed",
+      occurred_at: "2026-05-10T12:45:00.000Z",
+      run_id: "run_facts_stale_1",
+      status: "failed",
+    });
+    insertRunningRunHistoryRow(dbPath, {
+      connector_id: "conn_facts",
+      connector_instance_id: "cin_facts_1",
+      run_id: "run_facts_stale_1",
+      started_at: "2026-05-10T12:00:00.000Z",
+    });
+
+    const epoch = await emitControllerBootedAndStashEpoch({ bootEpoch: "boot-facts-1", controllerId: "host-facts" });
+    const result = await reconcileOrphanedRunsAtBoot(epoch);
+    assert.equal(result.backfilled, 1);
+
+    const raw = new Database(dbPath);
+    try {
+      const row = raw
+        .prepare(
+          `SELECT status, completed_at, records_emitted, connector_error_json, known_gaps_json,
+                  checkpoint_summary_json, terminal_reason
+           FROM run_history WHERE run_id = ?`
+        )
+        .get("run_facts_stale_1") as {
+        status: string;
+        completed_at: string | null;
+        records_emitted: number;
+        connector_error_json: string | null;
+        known_gaps_json: string;
+        checkpoint_summary_json: string | null;
+        terminal_reason: string | null;
+      };
+
+      assert.equal(row.status, "failed");
+      assert.equal(row.records_emitted, 42, "records_emitted must be derived from the real terminal data_json");
+      assert.equal(row.terminal_reason, "connector_reported_failed");
+
+      const connectorError = JSON.parse(row.connector_error_json ?? "null");
+      assert.deepEqual(connectorError, { code: "RATE_LIMITED", message: "too many requests", retryable: true });
+
+      const knownGaps = JSON.parse(row.known_gaps_json);
+      assert.deepEqual(knownGaps, [{ reason: "rate_limited", stream: "orders" }]);
+
+      const checkpointSummary = JSON.parse(row.checkpoint_summary_json ?? "null");
+      assert.equal(checkpointSummary.commit_status, "committed");
+      assert.equal(checkpointSummary.records_flushed, 40);
+      assert.equal(checkpointSummary.state_streams_committed, 2);
+    } finally {
+      raw.close();
+    }
+  } finally {
+    clearCurrentBootEpoch();
+    closeDb();
+  }
+});
+
+test("Postgres parity: backfill replay carries the terminal event's own data_json", {
+  skip: !POSTGRES_URL,
+}, async () => {
+  // biome-ignore lint/style/noNonNullAssertion: guarded by { skip: !POSTGRES_URL } above.
+  await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL! });
+  try {
+    await postgresQuery(
+      `INSERT INTO spine_events
+           (event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+            actor_type, actor_id, object_type, object_id, status, run_id, data_json, version,
+            connector_instance_id, source_kind, source_id)
+         VALUES ($1, 'run.failed', $2, $2, 'default', 'trc_seed', 'runtime', $3, 'run', $4, 'failed', $4, $5::jsonb, 'v1', $6, 'connector', $3)`,
+      [
+        "evt_facts_pg_failed_1",
+        "2026-05-10T12:45:00.000Z",
+        "conn_facts_pg",
+        "run_facts_pg_stale_1",
+        JSON.stringify({
+          connector_error_code: "RATE_LIMITED",
+          connector_error_message: "too many requests",
+          connector_error_retryable: true,
+          known_gaps: [{ reason: "rate_limited", stream: "orders" }],
+          reason: "connector_reported_failed",
+          records_emitted: 42,
+        }),
+        "cin_facts_pg_1",
+      ]
+    );
+    await postgresQuery(
+      `INSERT INTO run_history (run_id, connector_instance_id, connector_id, source_json, status, known_gaps_json, started_at, attempt)
+         VALUES ($1, $2, $3, '{}'::jsonb, 'running', '[]'::jsonb, $4, 1)`,
+      ["run_facts_pg_stale_1", "cin_facts_pg_1", "conn_facts_pg", "2026-05-10T12:00:00.000Z"]
+    );
+
+    const epoch = await emitControllerBootedAndStashEpoch({
+      bootEpoch: "boot-facts-pg-1",
+      controllerId: "host-facts-pg",
+    });
+    const result = await reconcileOrphanedRunsAtBoot(epoch);
+    assert.equal(result.backfilled, 1);
+
+    const { rows } = await postgresQuery<{
+      status: string;
+      records_emitted: number;
+      connector_error_json: { code: string; message: string; retryable: boolean };
+      known_gaps_json: unknown[];
+      terminal_reason: string | null;
+    }>(
+      "SELECT status, records_emitted, connector_error_json, known_gaps_json, terminal_reason FROM run_history WHERE run_id = $1",
+      ["run_facts_pg_stale_1"]
+    );
+    assert.equal(rows[0]?.status, "failed");
+    assert.equal(rows[0]?.records_emitted, 42, "records_emitted must be derived from the real terminal data_json");
+    assert.equal(rows[0]?.terminal_reason, "connector_reported_failed");
+    assert.deepEqual(rows[0]?.connector_error_json, {
+      code: "RATE_LIMITED",
+      message: "too many requests",
+      retryable: true,
+    });
+    assert.deepEqual(rows[0]?.known_gaps_json, [{ reason: "rate_limited", stream: "orders" }]);
+  } finally {
+    await postgresQuery("DELETE FROM run_history WHERE run_id LIKE 'run_facts_pg_%'").catch(() => undefined);
+    await postgresQuery("DELETE FROM spine_events WHERE run_id LIKE 'run_facts_pg_%'").catch(() => undefined);
+    clearCurrentBootEpoch();
+    await closePostgresStorage();
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Deterministic tie-break: two terminal-shaped spine events for the same
+// run sharing the exact same occurred_at must be resolved identically on
+// SQLite and Postgres via recorded_at then event_id, not left to whatever
+// order the database happens to return rows in.
+// ─────────────────────────────────────────────────────────────────────────
+
+test("SQLite: equal occurred_at terminal events break ties on recorded_at, then event_id, deterministically", async () => {
+  const dbPath = tempDbPath();
+  initDb(dbPath);
+  try {
+    const sameOccurredAt = "2026-05-10T12:45:00.000Z";
+    // Two terminal-shaped events for the same run, identical occurred_at,
+    // different recorded_at — the later recorded_at must win.
+    insertTerminalSpineEvent(dbPath, {
+      actor_id: "conn_tie",
+      connector_instance_id: "cin_tie_1",
+      data: { records_emitted: 1 },
+      event_id: "evt_tie_a",
+      event_type: "run.failed",
+      occurred_at: sameOccurredAt,
+      recorded_at: "2026-05-10T12:45:00.100Z",
+      run_id: "run_tie_stale_1",
+      status: "failed",
+    });
+    insertTerminalSpineEvent(dbPath, {
+      actor_id: "conn_tie",
+      connector_instance_id: "cin_tie_1",
+      data: { records_emitted: 99 },
+      event_id: "evt_tie_b",
+      event_type: "run.completed",
+      occurred_at: sameOccurredAt,
+      recorded_at: "2026-05-10T12:45:00.200Z",
+      run_id: "run_tie_stale_1",
+      status: "succeeded",
+    });
+    insertRunningRunHistoryRow(dbPath, {
+      connector_id: "conn_tie",
+      connector_instance_id: "cin_tie_1",
+      run_id: "run_tie_stale_1",
+      started_at: "2026-05-10T12:00:00.000Z",
+    });
+
+    const epoch = await emitControllerBootedAndStashEpoch({ bootEpoch: "boot-tie-1", controllerId: "host-tie" });
+    const result = await reconcileOrphanedRunsAtBoot(epoch);
+    assert.equal(result.backfilled, 1);
+
+    const raw = new Database(dbPath);
+    try {
+      const row = raw
+        .prepare("SELECT status, records_emitted FROM run_history WHERE run_id = ?")
+        .get("run_tie_stale_1") as {
+        status: string;
+        records_emitted: number;
+      };
+      assert.equal(row.status, "succeeded", "the event with the later recorded_at must win the tie");
+      assert.equal(row.records_emitted, 99);
+    } finally {
+      raw.close();
+    }
+  } finally {
+    clearCurrentBootEpoch();
+    closeDb();
+  }
+});
+
+test("Postgres parity: equal occurred_at terminal events break ties on recorded_at deterministically", {
+  skip: !POSTGRES_URL,
+}, async () => {
+  // biome-ignore lint/style/noNonNullAssertion: guarded by { skip: !POSTGRES_URL } above.
+  await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL! });
+  try {
+    const sameOccurredAt = "2026-05-10T12:45:00.000Z";
+    await postgresQuery(
+      `INSERT INTO spine_events
+           (event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+            actor_type, actor_id, object_type, object_id, status, run_id, data_json, version,
+            connector_instance_id, source_kind, source_id)
+         VALUES ($1, 'run.failed', $2, $3, 'default', 'trc_seed', 'runtime', $4, 'run', $5, 'failed', $5, $6::jsonb, 'v1', $7, 'connector', $4)`,
+      [
+        "evt_tie_pg_a",
+        sameOccurredAt,
+        "2026-05-10T12:45:00.100Z",
+        "conn_tie_pg",
+        "run_tie_pg_stale_1",
+        JSON.stringify({ records_emitted: 1 }),
+        "cin_tie_pg_1",
+      ]
+    );
+    await postgresQuery(
+      `INSERT INTO spine_events
+           (event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+            actor_type, actor_id, object_type, object_id, status, run_id, data_json, version,
+            connector_instance_id, source_kind, source_id)
+         VALUES ($1, 'run.completed', $2, $3, 'default', 'trc_seed', 'runtime', $4, 'run', $5, 'succeeded', $5, $6::jsonb, 'v1', $7, 'connector', $4)`,
+      [
+        "evt_tie_pg_b",
+        sameOccurredAt,
+        "2026-05-10T12:45:00.200Z",
+        "conn_tie_pg",
+        "run_tie_pg_stale_1",
+        JSON.stringify({ records_emitted: 99 }),
+        "cin_tie_pg_1",
+      ]
+    );
+    await postgresQuery(
+      `INSERT INTO run_history (run_id, connector_instance_id, connector_id, source_json, status, known_gaps_json, started_at, attempt)
+         VALUES ($1, $2, $3, '{}'::jsonb, 'running', '[]'::jsonb, $4, 1)`,
+      ["run_tie_pg_stale_1", "cin_tie_pg_1", "conn_tie_pg", "2026-05-10T12:00:00.000Z"]
+    );
+
+    const epoch = await emitControllerBootedAndStashEpoch({ bootEpoch: "boot-tie-pg-1", controllerId: "host-tie-pg" });
+    const result = await reconcileOrphanedRunsAtBoot(epoch);
+    assert.equal(result.backfilled, 1);
+
+    const { rows } = await postgresQuery<{ status: string; records_emitted: number }>(
+      "SELECT status, records_emitted FROM run_history WHERE run_id = $1",
+      ["run_tie_pg_stale_1"]
+    );
+    assert.equal(rows[0]?.status, "succeeded", "the event with the later recorded_at must win the tie");
+    assert.equal(rows[0]?.records_emitted, 99);
+  } finally {
+    await postgresQuery("DELETE FROM run_history WHERE run_id LIKE 'run_tie_pg_%'").catch(() => undefined);
+    await postgresQuery("DELETE FROM spine_events WHERE run_id LIKE 'run_tie_pg_%'").catch(() => undefined);
     clearCurrentBootEpoch();
     await closePostgresStorage();
   }
