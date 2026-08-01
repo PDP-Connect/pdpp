@@ -173,6 +173,120 @@ test("base archive resume is throttled on the 90-minute follow-up without invoki
   }
 });
 
+// Live incident (fleet-slack-message-freshness-0731): a connection's
+// scheduled run reported `status: succeeded` with `messages: collected: 0,
+// checkpoint: "committed"` on every run for 6+ days while `channel_stats`
+// (which reads unconditionally, no cursor, no throttle) kept emitting a
+// stable non-zero count every run — masking the fact that `messages` was
+// never actually re-checked against Slack, only replaying the same stale
+// on-disk archive left by the last real `resume` (base-archive throttle,
+// `SLACK_LOOKBACK_DAYS`). OLD CODE: no signal distinguishes this from a
+// connection that is genuinely caught up with no new Slack activity — this
+// test's "old" behavior is documented below and would have failed the
+// `SKIP_RESULT` assertion. NEW CODE: a throttled run that also finds zero
+// new message rows past its cursor emits an honest `SKIP_RESULT` for
+// `messages` (reason `base_archive_resume_deferred`, `recovery_hint.action:
+// "retry_by_runtime"`), which the coverage projection
+// (`connector-coverage-policy.ts`'s `mapSkipCoverageCondition`) reads as
+// `retryable_gap`, never `complete` — without failing the run, losing
+// history, or triggering any replay.
+test("a throttled base archive resume that finds zero new messages reports an honest retryable SKIP_RESULT, not silent success", async () => {
+  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-base-throttle-honesty-"));
+  try {
+    const workspace = "base-throttle-honesty-ws";
+    // seedArchive plants exactly one MESSAGE row at ts 1714032849.123456.
+    const archiveDir = await seedArchive(homeDir, workspace, false);
+    const fakeSlackdump = await writeCountingSlackdump(homeDir);
+    const resumedAt = new Date(Date.now() - 90 * 60 * 1000).toISOString();
+    const state = baseArchiveState(archiveDir, resumedAt);
+    // Cursor already past the seeded archive's only message: this run's
+    // read of the (unrefreshed, throttled) archive is expected to find zero
+    // new rows — exactly the live connection's shape (a caught-up cursor
+    // against a stale, never-re-resumed archive).
+    (state.messages as Record<string, unknown>).last_ts = "1714032849.123456";
+    const result = await runConnectorProtocolSubprocess({
+      cwd: PACKAGE_ROOT,
+      entrypoint: SLACK_ENTRYPOINT,
+      env: {
+        HOME: homeDir,
+        SLACK_COOKIE: "d=fake",
+        SLACK_TOKEN: "xoxc-fake",
+        SLACK_WORKSPACE: workspace,
+        SLACKDUMP_BIN: fakeSlackdump.path,
+        TEST_SLACKDUMP_CALL_LOG: fakeSlackdump.callLog,
+      },
+      start: {
+        type: "START",
+        scope: { streams: [{ name: "messages" }] },
+        state,
+      },
+    });
+
+    assert.ok(!existsSync(fakeSlackdump.callLog), "throttled: zero slackdump resume subprocesses launched");
+    assert.equal(result.messages.findLast((message) => message.type === "DONE")?.status, "succeeded");
+    assert.ok(
+      result.messages.some((message) => message.type === "STATE"),
+      "the run still commits its checkpoint"
+    );
+
+    const skip = result.messages.find(
+      (message): message is Extract<EmittedMessage, { type: "SKIP_RESULT" }> =>
+        message.type === "SKIP_RESULT" && message.stream === "messages"
+    );
+    assert.ok(skip, "expected an honest SKIP_RESULT on messages when throttled-and-zero-new-rows");
+    assert.equal(skip?.reason, "base_archive_resume_deferred");
+    assert.equal(
+      (skip?.recovery_hint as { action?: string } | undefined)?.action,
+      "retry_by_runtime",
+      "the throttle clears on its own once the lookback window elapses"
+    );
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("a throttled base archive resume that DOES find new/backlogged messages reports no deferred SKIP_RESULT", async () => {
+  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-base-throttle-honesty-nonempty-"));
+  try {
+    const workspace = "base-throttle-honesty-nonempty-ws";
+    // seedArchive plants exactly one MESSAGE row at ts 1714032849.123456; no
+    // cursor is set below, so the throttled read of the stale archive still
+    // finds that one row as "new" — genuine work this run did, not silence.
+    const archiveDir = await seedArchive(homeDir, workspace, false);
+    const fakeSlackdump = await writeCountingSlackdump(homeDir);
+    const resumedAt = new Date(Date.now() - 90 * 60 * 1000).toISOString();
+    const result = await runConnectorProtocolSubprocess({
+      cwd: PACKAGE_ROOT,
+      entrypoint: SLACK_ENTRYPOINT,
+      env: {
+        HOME: homeDir,
+        SLACK_COOKIE: "d=fake",
+        SLACK_TOKEN: "xoxc-fake",
+        SLACK_WORKSPACE: workspace,
+        SLACKDUMP_BIN: fakeSlackdump.path,
+        TEST_SLACKDUMP_CALL_LOG: fakeSlackdump.callLog,
+      },
+      start: {
+        type: "START",
+        scope: { streams: [{ name: "messages" }] },
+        state: baseArchiveState(archiveDir, resumedAt),
+      },
+    });
+
+    assert.ok(!existsSync(fakeSlackdump.callLog), "throttled: zero slackdump resume subprocesses launched");
+    assert.ok(
+      result.messages.some((message) => message.type === "RECORD" && message.stream === "messages"),
+      "the stale archive's un-cursored backlog is still emitted this run"
+    );
+    assert.ok(
+      !result.messages.some((message) => message.type === "SKIP_RESULT" && message.stream === "messages"),
+      "a throttled run that actually emitted messages is genuine work, not a deferred no-check"
+    );
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("a failed base archive resume remains owed and retries successfully on the next run", async () => {
   const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-base-throttle-retry-"));
   try {
