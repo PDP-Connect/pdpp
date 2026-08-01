@@ -16,6 +16,7 @@ import test from "node:test";
 // biome-ignore lint/correctness/noUnresolvedImports: Biome resolver lacks this runtime-supported dependency export shape.
 import Database from "better-sqlite3";
 import { emitControllerBootedAndStashEpoch, reconcileOrphanedRunsAtBoot } from "../lib/controller-boot.ts";
+import { RUN_HISTORY_BACKFILL_LIMIT } from "../lib/run-history-terminal-backfill.ts";
 import { clearCurrentBootEpoch } from "../lib/spine.ts";
 import { closeDb, initDb } from "../server/db.ts";
 import { closePostgresStorage, initPostgresStorage, postgresQuery } from "../server/postgres-storage.ts";
@@ -1119,6 +1120,103 @@ test("SQLite: caused_by_event_id resolves true identity even when two connection
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────
+// Gate-2 finding: the caused_by_event_id resolution originally checked ONLY
+// event_id + connector_instance_id, with no constraint tying the resolved
+// row to event_type='run.started' OR to THIS event's own run_id. Neither
+// schema enforces that pairing (caused_by_event_id is an untyped data_json
+// field, not a foreign key), so a NULL-identity terminal for run X whose
+// caused_by_event_id happens to name a DIFFERENT run Y's run.started event
+// could wrongly borrow Y's connector_instance_id and apply it to a
+// colliding row under X. Reproduced live by the gate in SQLite: a
+// NULL-identity terminal for run X with colliding running A/B rows, with
+// caused_by_event_id pointed at B's run.started for run Y (not X),
+// wrongly converged B under X.
+// ─────────────────────────────────────────────────────────────────────────
+
+test("SQLite: caused_by_event_id pointing at a DIFFERENT run's run.started must NOT resolve identity or converge either colliding row", async () => {
+  const dbPath = tempDbPath();
+  initDb(dbPath);
+  try {
+    const raw = new Database(dbPath);
+    try {
+      // run.started for a COMPLETELY DIFFERENT run_id (Y), naming
+      // connector_instance_id cin_wrong_run_b. Its event_id is what the
+      // target run's abandon event will (wrongly, if unfixed) name as its
+      // caused_by_event_id.
+      raw
+        .prepare(
+          `INSERT INTO spine_events
+             (event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+              actor_type, actor_id, object_type, object_id, status, run_id, data_json, version,
+              connector_instance_id, source_kind, source_id)
+           VALUES ('evt_wrong_run_started_y', 'run.started', '2026-05-10T11:00:00.000Z', '2026-05-10T11:00:00.000Z',
+                   'default', 'trc_seed', 'runtime', 'conn_wrong_run_b', 'run', 'run_wrong_run_Y', 'running',
+                   'run_wrong_run_Y', '{}', 'v1', 'cin_wrong_run_b', 'connector', 'conn_wrong_run_b')`
+        )
+        .run();
+      // Target run X's NULL-identity terminal: caused_by_event_id points at
+      // Y's run.started above, NOT at any run.started for X itself.
+      raw
+        .prepare(
+          `INSERT INTO spine_events
+             (event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+              actor_type, actor_id, object_type, object_id, status, run_id, data_json, version)
+           VALUES ('evt_wrong_run_abandoned_x', 'run.abandoned', '2026-05-10T12:30:00.000Z', '2026-05-10T12:30:00.000Z',
+                   'default', 'trc_seed', 'runtime', 'controller', 'run', 'run_wrong_run_X', 'abandoned',
+                   'run_wrong_run_X', '{"caused_by_event_id":"evt_wrong_run_started_y"}', 'v1')`
+        )
+        .run();
+    } finally {
+      raw.close();
+    }
+    // Two connections collide on run X's run_id — neither is cin_wrong_run_b.
+    insertRunningRunHistoryRow(dbPath, {
+      connector_id: "conn_wrong_run_a",
+      connector_instance_id: "cin_wrong_run_a",
+      run_id: "run_wrong_run_X",
+      started_at: "2026-05-10T12:00:00.000Z",
+    });
+    insertRunningRunHistoryRow(dbPath, {
+      connector_id: "conn_wrong_run_b",
+      connector_instance_id: "cin_wrong_run_b",
+      run_id: "run_wrong_run_X",
+      started_at: "2026-05-10T12:00:00.000Z",
+    });
+
+    const epoch = await emitControllerBootedAndStashEpoch({
+      bootEpoch: "boot-wrong-run-y",
+      controllerId: "host-wrong-run-y",
+    });
+    const result = await reconcileOrphanedRunsAtBoot(epoch);
+
+    assert.equal(
+      result.backfilled,
+      0,
+      "caused_by_event_id resolving to a DIFFERENT run's run.started must not borrow its identity for this run's colliding rows"
+    );
+
+    const raw2 = new Database(dbPath);
+    try {
+      const rows = raw2
+        .prepare(
+          "SELECT connector_instance_id, status FROM run_history WHERE run_id = ? ORDER BY connector_instance_id"
+        )
+        .all("run_wrong_run_X") as { connector_instance_id: string; status: string }[];
+      assert.equal(rows.length, 2);
+      assert.ok(
+        rows.every((r) => r.status === "running"),
+        "both colliding rows under X remain running — Y's run.started must not resolve identity for X"
+      );
+    } finally {
+      raw2.close();
+    }
+  } finally {
+    clearCurrentBootEpoch();
+    closeDb();
+  }
+});
+
 test("Postgres parity old-fail/new-pass: terminal spine already exists + stale running run_history converges without re-emitting a spine event", {
   skip: !POSTGRES_URL,
 }, async () => {
@@ -1551,6 +1649,76 @@ test("Postgres parity: caused_by_event_id resolves true identity even when two c
   }
 });
 
+test("Postgres parity: caused_by_event_id pointing at a DIFFERENT run's run.started must NOT resolve identity or converge either colliding row", {
+  skip: !POSTGRES_URL,
+}, async () => {
+  // biome-ignore lint/style/noNonNullAssertion: guarded by { skip: !POSTGRES_URL } above.
+  await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL! });
+  try {
+    await postgresQuery(
+      `INSERT INTO spine_events
+           (event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+            actor_type, actor_id, object_type, object_id, status, run_id, data_json, version,
+            connector_instance_id, source_kind, source_id)
+         VALUES ($1, 'run.started', $2, $2, 'default', 'trc_seed', 'runtime', 'conn_wrong_run_pg_b', 'run', $3, 'running', $3, '{}'::jsonb, 'v1', $4, 'connector', 'conn_wrong_run_pg_b')`,
+      ["evt_pg_wrong_run_started_y", "2026-05-10T11:00:00.000Z", "run_pg_wrong_run_Y", "cin_pg_wrong_run_b"]
+    );
+    await postgresQuery(
+      `INSERT INTO spine_events
+           (event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+            actor_type, actor_id, object_type, object_id, status, run_id, data_json, version)
+         VALUES ($1, 'run.abandoned', $2, $2, 'default', 'trc_seed', 'runtime', 'controller', 'run', $3, 'abandoned', $3, $4::jsonb, 'v1')`,
+      [
+        "evt_pg_wrong_run_abandoned_x",
+        "2026-05-10T12:30:00.000Z",
+        "run_pg_wrong_run_X",
+        JSON.stringify({ caused_by_event_id: "evt_pg_wrong_run_started_y" }),
+      ]
+    );
+    await postgresQuery(
+      `INSERT INTO run_history (run_id, connector_instance_id, connector_id, source_json, status, known_gaps_json, started_at, attempt)
+         VALUES ($1, $2, $3, '{}'::jsonb, 'running', '[]'::jsonb, $4, 1)`,
+      ["run_pg_wrong_run_X", "cin_pg_wrong_run_a", "conn_wrong_run_pg_a", "2026-05-10T12:00:00.000Z"]
+    );
+    await postgresQuery(
+      `INSERT INTO run_history (run_id, connector_instance_id, connector_id, source_json, status, known_gaps_json, started_at, attempt)
+         VALUES ($1, $2, $3, '{}'::jsonb, 'running', '[]'::jsonb, $4, 1)`,
+      ["run_pg_wrong_run_X", "cin_pg_wrong_run_b", "conn_wrong_run_pg_b", "2026-05-10T12:00:00.000Z"]
+    );
+
+    const epoch = await emitControllerBootedAndStashEpoch({
+      bootEpoch: "boot-pg-wrong-run-y",
+      controllerId: "host-pg-wrong-run-y",
+    });
+    const result = await reconcileOrphanedRunsAtBoot(epoch);
+
+    assert.equal(
+      result.backfilled,
+      0,
+      "caused_by_event_id resolving to a DIFFERENT run's run.started must not borrow its identity for this run's colliding rows"
+    );
+
+    const { rows } = await postgresQuery<{ connector_instance_id: string; status: string }>(
+      "SELECT connector_instance_id, status FROM run_history WHERE run_id = $1 ORDER BY connector_instance_id",
+      ["run_pg_wrong_run_X"]
+    );
+    assert.equal(rows.length, 2);
+    assert.ok(
+      rows.every((r) => r.status === "running"),
+      "both colliding rows under X remain running — Y's run.started must not resolve identity for X"
+    );
+  } finally {
+    await postgresQuery("DELETE FROM run_history WHERE run_id IN ('run_pg_wrong_run_X', 'run_pg_wrong_run_Y')").catch(
+      () => undefined
+    );
+    await postgresQuery("DELETE FROM spine_events WHERE run_id IN ('run_pg_wrong_run_X', 'run_pg_wrong_run_Y')").catch(
+      () => undefined
+    );
+    clearCurrentBootEpoch();
+    await closePostgresStorage();
+  }
+});
+
 // ─────────────────────────────────────────────────────────────────────────
 // Faithful replay: the backfill must carry the terminal spine event's own
 // data_json into the writer, not an abandon-shaped empty payload. A
@@ -1830,6 +1998,165 @@ test("Postgres parity: equal occurred_at terminal events break ties on recorded_
   } finally {
     await postgresQuery("DELETE FROM run_history WHERE run_id LIKE 'run_tie_pg_%'").catch(() => undefined);
     await postgresQuery("DELETE FROM spine_events WHERE run_id LIKE 'run_tie_pg_%'").catch(() => undefined);
+    clearCurrentBootEpoch();
+    await closePostgresStorage();
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Gate-2 finding: source_kind='connector' does NOT guarantee source_id is
+// non-NULL on either backend — no NOT NULL/check constraint enforces that
+// pairing. A terminal row shaped that way selected by the NULL-instance
+// identity match still had its connectorId resolve to `null` (the old
+// ternary's true branch), so the writer's own `event.connectorId` guard
+// silently rejected it — the row stayed 'running' and was re-selected on
+// every subsequent boot forever. At RUN_HISTORY_BACKFILL_LIMIT rows of
+// this exact shape, the bounded pass would never drain: every boot
+// consumes the full 500-row budget re-selecting the same rows and
+// converging none of them.
+// ─────────────────────────────────────────────────────────────────────────
+
+test("SQLite: a full RUN_HISTORY_BACKFILL_LIMIT cohort of source_kind='connector'+source_id=NULL rows drains to zero, not repeated forever", async () => {
+  const dbPath = tempDbPath();
+  initDb(dbPath);
+  try {
+    const raw = new Database(dbPath);
+    try {
+      const insertSpine = raw.prepare(
+        `INSERT INTO spine_events
+           (event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+            actor_type, actor_id, object_type, object_id, status, run_id, data_json, version,
+            connector_instance_id, source_kind, source_id)
+         VALUES (@event_id, 'run.abandoned', @occurred_at, @occurred_at, 'default', 'trc_seed', 'runtime',
+                 'controller', 'run', @run_id, 'abandoned', @run_id, '{}', 'v1', NULL, 'connector', NULL)`
+      );
+      const insertRunHistory = raw.prepare(
+        `INSERT INTO run_history (run_id, connector_instance_id, connector_id, source_json, status, known_gaps_json, started_at, attempt)
+         VALUES (@run_id, @connector_instance_id, @connector_id, '{}', 'running', '[]', @started_at, 1)`
+      );
+      for (let i = 0; i < RUN_HISTORY_BACKFILL_LIMIT; i += 1) {
+        const runId = `run_partial_source_${i}`;
+        insertSpine.run({
+          event_id: `evt_partial_source_${i}`,
+          occurred_at: "2026-05-10T12:30:00.000Z",
+          run_id: runId,
+        });
+        insertRunHistory.run({
+          connector_id: `conn_partial_source_${i}`,
+          connector_instance_id: `cin_partial_source_${i}`,
+          run_id: runId,
+          started_at: "2026-05-10T12:00:00.000Z",
+        });
+      }
+    } finally {
+      raw.close();
+    }
+
+    const epoch1 = await emitControllerBootedAndStashEpoch({
+      bootEpoch: "boot-partial-source-1",
+      controllerId: "host-partial-source",
+    });
+    const result1 = await reconcileOrphanedRunsAtBoot(epoch1);
+    assert.equal(
+      result1.backfilled,
+      RUN_HISTORY_BACKFILL_LIMIT,
+      "the full cohort must actually convert on the first pass, not merely be selected and then rejected by the writer's connectorId guard"
+    );
+
+    const raw2 = new Database(dbPath);
+    let runningAfterFirstPass: number;
+    try {
+      runningAfterFirstPass = (
+        raw2
+          .prepare(
+            "SELECT COUNT(*) AS n FROM run_history WHERE run_id LIKE 'run_partial_source_%' AND status = 'running'"
+          )
+          .get() as { n: number }
+      ).n;
+    } finally {
+      raw2.close();
+    }
+    assert.equal(
+      runningAfterFirstPass,
+      0,
+      "zero rows remain running — the connectorId fallback must have applied to all of them"
+    );
+
+    clearCurrentBootEpoch();
+    const epoch2 = await emitControllerBootedAndStashEpoch({
+      bootEpoch: "boot-partial-source-2",
+      controllerId: "host-partial-source",
+    });
+    const result2 = await reconcileOrphanedRunsAtBoot(epoch2);
+    assert.equal(
+      result2.backfilled,
+      0,
+      "second pass must find nothing left — a non-draining bug would keep re-selecting and re-failing the same 500 rows forever"
+    );
+  } finally {
+    clearCurrentBootEpoch();
+    closeDb();
+  }
+});
+
+test("Postgres parity: a full RUN_HISTORY_BACKFILL_LIMIT cohort of source_kind='connector'+source_id=NULL rows drains to zero, not repeated forever", {
+  skip: !POSTGRES_URL,
+}, async () => {
+  // biome-ignore lint/style/noNonNullAssertion: guarded by { skip: !POSTGRES_URL } above.
+  await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL! });
+  try {
+    for (let i = 0; i < RUN_HISTORY_BACKFILL_LIMIT; i += 1) {
+      const runId = `run_pg_partial_source_${i}`;
+      // biome-ignore lint/performance/noAwaitInLoops: sequential seed setup, not perf-sensitive.
+      await postgresQuery(
+        `INSERT INTO spine_events
+             (event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+              actor_type, actor_id, object_type, object_id, status, run_id, data_json, version,
+              connector_instance_id, source_kind, source_id)
+           VALUES ($1, 'run.abandoned', $2, $2, 'default', 'trc_seed', 'runtime', 'controller', 'run', $3, 'abandoned', $3, '{}'::jsonb, 'v1', NULL, 'connector', NULL)`,
+        [`evt_pg_partial_source_${i}`, "2026-05-10T12:30:00.000Z", runId]
+      );
+      await postgresQuery(
+        `INSERT INTO run_history (run_id, connector_instance_id, connector_id, source_json, status, known_gaps_json, started_at, attempt)
+           VALUES ($1, $2, $3, '{}'::jsonb, 'running', '[]'::jsonb, $4, 1)`,
+        [runId, `cin_pg_partial_source_${i}`, `conn_pg_partial_source_${i}`, "2026-05-10T12:00:00.000Z"]
+      );
+    }
+
+    const epoch1 = await emitControllerBootedAndStashEpoch({
+      bootEpoch: "boot-pg-partial-source-1",
+      controllerId: "host-pg-partial-source",
+    });
+    const result1 = await reconcileOrphanedRunsAtBoot(epoch1);
+    assert.equal(
+      result1.backfilled,
+      RUN_HISTORY_BACKFILL_LIMIT,
+      "the full cohort must actually convert on the first pass, not merely be selected and then rejected by the writer's connectorId guard"
+    );
+
+    const { rows: runningAfterFirstPass } = await postgresQuery<{ n: string }>(
+      "SELECT COUNT(*)::text AS n FROM run_history WHERE run_id LIKE 'run_pg_partial_source_%' AND status = 'running'"
+    );
+    assert.equal(
+      runningAfterFirstPass[0]?.n,
+      "0",
+      "zero rows remain running — the connectorId fallback must have applied to all of them"
+    );
+
+    clearCurrentBootEpoch();
+    const epoch2 = await emitControllerBootedAndStashEpoch({
+      bootEpoch: "boot-pg-partial-source-2",
+      controllerId: "host-pg-partial-source",
+    });
+    const result2 = await reconcileOrphanedRunsAtBoot(epoch2);
+    assert.equal(
+      result2.backfilled,
+      0,
+      "second pass must find nothing left — a non-draining bug would keep re-selecting and re-failing the same 500 rows forever"
+    );
+  } finally {
+    await postgresQuery("DELETE FROM run_history WHERE run_id LIKE 'run_pg_partial_source_%'").catch(() => undefined);
+    await postgresQuery("DELETE FROM spine_events WHERE run_id LIKE 'run_pg_partial_source_%'").catch(() => undefined);
     clearCurrentBootEpoch();
     await closePostgresStorage();
   }

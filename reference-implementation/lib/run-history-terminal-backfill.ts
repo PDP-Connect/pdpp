@@ -54,6 +54,18 @@
  *    so it is tried first and is the only path that can converge a row
  *    when two connections collide on the same run_id.
  *
+ *    `event_id` is the PRIMARY KEY of `spine_events` and therefore globally
+ *    unique, but `caused_by_event_id` is an untyped `data_json` field with
+ *    no foreign-key or check constraint tying it to a `run.started` row for
+ *    THIS run_id — nothing in either schema stops it from resolving to some
+ *    OTHER event_type, or to a `run.started` for a completely different
+ *    run_id, if the value were ever malformed or (in a future incarnation)
+ *    pointed elsewhere. The resolving subquery therefore ALSO requires
+ *    `started.event_type = 'run.started'` and `started.run_id = s.run_id`
+ *    — both the positive-match EXISTS and its symmetric NOT EXISTS
+ *    exclusion (which must agree on what counts as "resolved" or neither
+ *    can trust the other) carry both predicates.
+ *
  * 2. FALLBACK — if `caused_by_event_id` is absent, unresolvable, or the
  *    event is some other terminal type (only `run.abandoned` ever carries
  *    it), fall back to treating the NULL connector_instance_id as a
@@ -126,8 +138,16 @@ function toRunHistorySpineEvent(row: TerminalBackfillRow): RunHistorySpineEvent 
     // event's own identity resolves to null here. Fall back to run_history's
     // own connector_id (NOT NULL in schema) rather than let the writer's
     // `event.connectorId` guard silently reject an otherwise-legitimate
-    // convergence.
-    connectorId: row.source_kind === "connector" ? row.source_id : row.connector_id,
+    // convergence. `source_kind === 'connector'` does NOT guarantee
+    // `source_id` is non-NULL (no NOT NULL/check constraint enforces that
+    // pairing on either backend) — a matching terminal row with
+    // source_kind='connector' AND source_id IS NULL would otherwise pass
+    // this ternary's true branch as `null`, get rejected by the writer's
+    // `event.connectorId` guard, stay 'running', and be re-selected on
+    // every subsequent boot forever (never draining the bounded pass for
+    // that shape). Falling back to `row.connector_id` whenever `source_id`
+    // itself is nullish — regardless of source_kind — closes that gap.
+    connectorId: row.source_kind === "connector" && row.source_id !== null ? row.source_id : row.connector_id,
     connectorInstanceId: row.connector_instance_id,
     data: terminalBackfillDataFromRow(row.data_json),
     eventType: row.event_type,
@@ -160,22 +180,29 @@ export async function backfillRunHistoryFromTerminalSpinePostgres(client: PoolCl
          AND (
            -- Primary: recover true identity via the abandon event's own
            -- durable relation to the run.started event it closes out. Only
-           -- accept a POSITIVE match — a resolved run.started with a
+           -- accept a POSITIVE match — a resolved run.started (for THIS
+           -- run_id, not merely an event_id that happens to match) with a
            -- different (non-NULL) connector_instance_id proves this event
            -- belongs to a DIFFERENT connection and must never fall through
            -- to the singleton fallback below.
            EXISTS (
              SELECT 1 FROM spine_events started
              WHERE started.event_id = s.data_json->>'caused_by_event_id'
+               AND started.event_type = 'run.started'
+               AND started.run_id = s.run_id
                AND started.connector_instance_id = rh.connector_instance_id
            )
            OR (
              -- Fallback: only when caused_by_event_id is absent/unresolvable
-             -- or itself NULL-identity, AND no run_history row of ANY status
-             -- shares this run_id with a different connector_instance_id.
+             -- (or resolves to something other than a run.started for this
+             -- run_id) or itself NULL-identity, AND no run_history row of
+             -- ANY status shares this run_id with a different
+             -- connector_instance_id.
              NOT EXISTS (
                SELECT 1 FROM spine_events started
                WHERE started.event_id = s.data_json->>'caused_by_event_id'
+                 AND started.event_type = 'run.started'
+                 AND started.run_id = s.run_id
                  AND started.connector_instance_id IS NOT NULL
              )
              AND NOT EXISTS (
@@ -234,23 +261,30 @@ export function backfillRunHistoryFromTerminalSpineSqlite(raw: SqliteStatementLi
                   -- Primary: recover true identity via the abandon event's
                   -- own durable relation to the run.started event it closes
                   -- out. Only accept a POSITIVE match — a resolved
-                  -- run.started with a different (non-NULL)
+                  -- run.started (for THIS run_id, not merely an event_id
+                  -- that happens to match) with a different (non-NULL)
                   -- connector_instance_id proves this event belongs to a
                   -- DIFFERENT connection and must never fall through to the
                   -- singleton fallback below.
                   EXISTS (
                     SELECT 1 FROM spine_events started
                     WHERE started.event_id = json_extract(t.data_json, '$.caused_by_event_id')
+                      AND started.event_type = 'run.started'
+                      AND started.run_id = t.run_id
                       AND started.connector_instance_id = rh.connector_instance_id
                   )
                   OR (
                     -- Fallback: only when caused_by_event_id is
-                    -- absent/unresolvable or itself NULL-identity, AND no
-                    -- run_history row of ANY status shares this run_id with
-                    -- a different connector_instance_id.
+                    -- absent/unresolvable (or resolves to something other
+                    -- than a run.started for this run_id) or itself
+                    -- NULL-identity, AND no run_history row of ANY status
+                    -- shares this run_id with a different
+                    -- connector_instance_id.
                     NOT EXISTS (
                       SELECT 1 FROM spine_events started
                       WHERE started.event_id = json_extract(t.data_json, '$.caused_by_event_id')
+                        AND started.event_type = 'run.started'
+                        AND started.run_id = t.run_id
                         AND started.connector_instance_id IS NOT NULL
                     )
                     AND NOT EXISTS (
