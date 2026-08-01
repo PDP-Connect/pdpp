@@ -1580,6 +1580,19 @@ export async function bootstrapPostgresSchema({
         updated_at TEXT NOT NULL
       );
 
+      -- Durable per-connection cadence anchor for bounded periodic
+      -- revalidation of stale SYNTHESIZED owner-action evidence (see
+      -- runtime/scheduler/synthesized-attention-revalidation.ts). One row
+      -- per connector instance, independent of run_history retention/
+      -- eviction and restart-safe.
+      CREATE TABLE IF NOT EXISTS synthesized_revalidation_state (
+        connector_instance_id TEXT PRIMARY KEY,
+        connector_id TEXT NOT NULL,
+        attempt BIGINT NOT NULL DEFAULT 0,
+        anchor_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS records (
         id BIGSERIAL PRIMARY KEY,
         connector_id TEXT NOT NULL,

@@ -263,18 +263,51 @@ export interface RunNowOptions {
   runId?: string;
   scenarioId?: string;
   traceContext?: SpineTraceContext;
-  // `"revalidation"` is included so the scheduler's managed-connector routing
-  // (`runManagedConnectorViaController` → this `runNow`) can dispatch the
-  // bounded, noninteractive confirming probe for stale synthesized
-  // owner-action evidence through the SAME warm-browser-surface path
-  // ordinary managed runs use — see run-automation-policy.ts's
-  // `RunTriggerKind` doc comment. `runAutomationMetadata`/
-  // `projectRunAutomationPolicy` force `"revalidation"` to `unattended`
-  // regardless of caller, and `buildAvailableBindings` (runtime/index.ts)
-  // omits the `interactive` binding for it unconditionally, so a caller
-  // reaching this HTTP-adjacent surface with `triggerKind: "revalidation"`
-  // gets a safe no-op-if-interactive run, never a live prompt.
+  // `"revalidation"` is deliberately EXCLUDED from this PUBLIC contract — it
+  // is scheduler-internal only (see run-automation-policy.ts's
+  // `RunTriggerKind` doc comment). A caller reaching `runNow` through this
+  // type (owner run-now routes, webhook routes, autoresume) can never
+  // select it. The managed-connector scheduler bridge
+  // (`runManagedConnectorViaController` → `controller.runNow`) that
+  // legitimately needs to pass `"revalidation"` through uses
+  // `ManagedSchedulerRunNowOptions` below instead.
+  triggerKind?: Extract<RunTriggerKind, "manual" | "scheduled" | "webhook">;
+}
+
+/**
+ * Scheduler-internal widening of `RunNowOptions`: the ONLY type that admits
+ * `triggerKind: "revalidation"`. Used exclusively at the managed-connector
+ * scheduler bridge (`server/index.ts`'s `runManagedConnectorViaController`
+ * wiring) so the bounded, noninteractive confirming probe for stale
+ * synthesized owner-action evidence can dispatch through the SAME
+ * warm-browser-surface path ordinary managed runs use —
+ * `runAutomationMetadata`/`projectRunAutomationPolicy` force
+ * `"revalidation"` to `unattended` regardless of caller, and
+ * `buildAvailableBindings` (runtime/index.ts) omits the `interactive`
+ * binding for it unconditionally, so this is safe even though it is wider
+ * than the public contract. Not exported from `run-contracts.ts` and not
+ * reachable from any HTTP route's option shape (owner-connection-run.ts,
+ * ref-connectors.ts never construct a `triggerKind` field at all).
+ */
+export type ManagedSchedulerRunNowOptions = Omit<RunNowOptions, "triggerKind"> & {
   triggerKind?: Extract<RunTriggerKind, "manual" | "revalidation" | "scheduled" | "webhook">;
+};
+
+/**
+ * Narrows a `ManagedSchedulerRunNowOptions` down to the public
+ * `RunNowOptions` shape for internal call sites that hand the options
+ * object to code outside the `runNow` closure (`ConnectorPathResolver`,
+ * `run-coordinator.ts`'s `ManagedSurfaceContext`, the recovery-continuation
+ * input) — none of which read `triggerKind`, so this is a pure type
+ * narrowing, not a behavior change. `triggerKind: "revalidation"` never
+ * reaches those call sites' public-typed parameters.
+ */
+function toPublicRunNowOptions(options: ManagedSchedulerRunNowOptions): RunNowOptions {
+  if (options.triggerKind === "revalidation") {
+    const { triggerKind: _revalidationInternalOnly, ...rest } = options;
+    return rest;
+  }
+  return options as RunNowOptions;
 }
 
 export interface ConnectorInstanceOptions {
@@ -3267,7 +3300,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
   async function resolveEffectiveRecoveryOnly(
     connectorId: string,
     connectorInstanceId: string,
-    options: RunNowOptions,
+    options: ManagedSchedulerRunNowOptions,
     scopedToResources: boolean
   ): Promise<boolean> {
     const nonPressureRecoveryEligible =
@@ -3348,7 +3381,10 @@ export function createController(opts: ControllerOptions = {}): Controller {
   // cross-run cooldown the scheduler uses; throws `provider_pressure_cooldown`
   // when the connector is still cooling off. An explicit `force: true` skips the
   // gate entirely (a separately-named action, never the default "Sync now" button).
-  async function assertNotSourcePressureCoolingOff(connectorId: string, options: RunNowOptions): Promise<void> {
+  async function assertNotSourcePressureCoolingOff(
+    connectorId: string,
+    options: ManagedSchedulerRunNowOptions
+  ): Promise<void> {
     if (options.force) {
       return;
     }
@@ -3394,7 +3430,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
 
   async function validateRunNowPreconditions(
     connectorId: string,
-    options: RunNowOptions,
+    options: ManagedSchedulerRunNowOptions,
     key: string
   ): Promise<{ readonly connectorPath: string; readonly manifest: ConnectorManifest }> {
     const manifest = options.manifest ?? (await getConnectorManifest(connectorId));
@@ -3406,7 +3442,9 @@ export function createController(opts: ControllerOptions = {}): Controller {
 
     await assertNotSourcePressureCoolingOff(connectorId, options);
 
-    const connectorPath = await Promise.resolve(resolveConnectorPath(connectorId, manifest, options));
+    const connectorPath = await Promise.resolve(
+      resolveConnectorPath(connectorId, manifest, toPublicRunNowOptions(options))
+    );
     if (!connectorPath) {
       throw new ControllerError(`No runnable connector implementation is available for ${connectorId}`, "not_found");
     }
@@ -3531,7 +3569,17 @@ export function createController(opts: ControllerOptions = {}): Controller {
     );
   }
 
-  async function runNow(connectorId: string, options: RunNowOptions = {}): Promise<RunNowResult> {
+  // Accepts the wider `ManagedSchedulerRunNowOptions` at the implementation
+  // level so the managed-connector scheduler bridge's `triggerKind:
+  // "revalidation"` call satisfies this signature directly (no `as` cast
+  // needed at that call site). The PUBLICLY exported `Controller.runNow`
+  // interface member below stays narrowed to `RunNowOptions` — TypeScript's
+  // structural typing accepts this wider function for that narrower
+  // interface member (a function accepting MORE is assignable where LESS is
+  // expected), so ordinary callers (owner run-now, webhooks, autoresume)
+  // can never construct a `triggerKind: "revalidation"` options object in
+  // the first place; only this module's own scheduler-bridge caller can.
+  async function runNow(connectorId: string, options: ManagedSchedulerRunNowOptions = {}): Promise<RunNowResult> {
     const runOwnerSubjectId = options.ownerSubjectId || ownerSubjectId;
     const admittedConnection = await resolveAdmittedRunConnection(
       opts,
@@ -3618,7 +3666,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
             connectorId,
             connectorInstanceId,
             manifest,
-            options,
+            options: toPublicRunNowOptions(options),
             runId,
             traceContext,
           })
@@ -3886,7 +3934,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
           connectorId,
           connectorInstanceId,
           manifest,
-          options,
+          options: toPublicRunNowOptions(options),
           ownerSubjectId: runOwnerSubjectId,
           ownerToken,
           result: runResult,

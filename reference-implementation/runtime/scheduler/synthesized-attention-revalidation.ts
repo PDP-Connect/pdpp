@@ -15,27 +15,34 @@
  * This module decides WHEN a bounded, non-interactive confirming run
  * (`triggerKind: "revalidation"`, see run-automation-policy.ts) is due for a
  * connector currently blocked on SYNTHESIZED evidence — mirroring
- * `scheduler-backoff.ts`'s doubling-and-capped shape, but keyed off the
- * SAME durable `history` the ordinary backoff decision already reads
- * (`runtime.history`, hydrated from `run_history` on restart, so the cadence
- * survives a process restart exactly as well as ordinary backoff does). No
- * new Map, no new table: the two anchors are (1) the single pending-skip
- * record `pre-run-gate.ts` emits the first time it observes this evidence
- * (tagged with a stable, server-owned `error` prefix — never derived from
- * `key`, which is opaque and may be connector-influenced) and (2) any
- * subsequent FAILED confirming-run attempts (tagged via
- * `RunRecord.source.revalidationProbe`, also server-owned). A cleared
- * `notifiedAttentionSkips` dedup cell (pre-run-gate.ts) means `gateAttention`
- * must call this decision on EVERY tick while evidence persists, not just
- * once — the pending-skip record itself is still emitted at most once per
- * evidence-key sighting, exactly like the durable-attention path.
+ * `scheduler-backoff.ts`'s doubling-and-capped shape.
  *
- * Pure: no I/O, no timers, no side effects. `decideSynthesizedRevalidation`
- * takes recent history + now and returns a decision; the pre-run gate
- * consumes it.
+ * Durability: the cadence anchor is a SEPARATE, explicit, per-connection
+ * durable record (`SchedulerStore.getSynthesizedRevalidationState` /
+ * `upsertSynthesizedRevalidationState` / `clearSynthesizedRevalidationState`,
+ * backed by the `synthesized_revalidation_state` table — see
+ * server/stores/scheduler-store.ts) — NOT derived from `runtime.history` /
+ * `run_history`. This is deliberate:
+ *
+ *   - `run_history` hydration is a fleet-global newest-N window
+ *     (`schedulerStore.listRunHistory(500)`); a busy fleet can evict a
+ *     quiet connector's anchor row before its cooldown elapses, silently
+ *     re-arming the initial delay. A dedicated per-connector-instance
+ *     row (primary-keyed, one row total) cannot be evicted by unrelated
+ *     connector activity.
+ *   - `RunRecord.source` on a hydrated history row is reconstructed as
+ *     `{ id, kind: "connector" }` only (`fromStoredRunRecord`,
+ *     scheduler.ts) — a `source.revalidationProbe` marker embedded in a
+ *     persisted `RunRecord` does NOT round-trip through that hydration
+ *     path. A dedicated typed column has no such lossy projection.
+ *   - A malformed `source_json` value on some OTHER row does not touch
+ *     this table at all (row-scoped by connector_instance_id, not a
+ *     shared bulk JSON parse across an unrelated read).
+ *
+ * Pure decision function: no I/O, no timers, no side effects. Takes the
+ * durable state record (or null) + now and returns a decision; the
+ * pre-run gate reads/writes the durable record around this call.
  */
-
-import type { RunRecord } from "../scheduler-domain-types.ts";
 
 // ─── Tunables (mirror scheduler-backoff.ts's shape) ────────────────────────
 
@@ -48,20 +55,46 @@ export const DEFAULT_MAX_REVALIDATION_BACKOFF_EXP = 8;
 /** Absolute ceiling (ms) on the revalidation cooldown — 24h, same as ordinary backoff's cap, so a stale reason is reprobed at least once a day even while the connection is otherwise `blocked`. */
 export const DEFAULT_MAX_REVALIDATION_DELAY_MS = 24 * 60 * 60 * 1000;
 
-/**
- * Stable, server-owned marker prefixed onto the `error` field of the skip
- * record this module's caller emits while a bounded confirming run is not
- * yet due. Never derived from or compared against `evidence.key`/`reason`
- * (connector/owner-influenced, opaque) — this is authored exclusively by
- * `pre-run-gate.ts` and is the sole discriminant `decideSynthesizedRevalidation`
- * uses to identify its own prior skips in `history`.
- */
-export const SYNTHESIZED_REVALIDATION_PENDING_MARKER = "synthesized_attention_revalidation_pending";
-
 export interface SynthesizedRevalidationOptions {
   readonly initialDelayMs?: number;
   readonly maxBackoffExp?: number;
   readonly maxDelayMs?: number;
+}
+
+/**
+ * The durable per-connection cadence anchor this module reads and advances.
+ * Structurally matches `SynthesizedRevalidationStateRecord` (server/stores/
+ * scheduler-store.ts) minus the identity columns the caller already owns —
+ * defined locally so this pure leaf module has no store-layer import.
+ */
+export interface SynthesizedRevalidationAnchor {
+  /** ISO timestamp of the last observed activity (pending sighting or failed probe). */
+  readonly anchorAt: string;
+  /** Consecutive prior FAILED confirming-run attempts observed. */
+  readonly attempt: number;
+}
+
+/**
+ * Durable per-connection cadence-anchor persistence for bounded synthesized
+ * owner-action revalidation. Backed by `SchedulerStore`'s
+ * `synthesized_revalidation_state` methods (server/stores/
+ * scheduler-store.ts) — deliberately NOT `runtime.history` (see this
+ * module's doc comment for why). Shared by both `pre-run-gate.ts::gateAttention`
+ * (the admit/anchor-create/clear path) and `dispatch-governor.ts`'s
+ * blocked-tick due-probe (a read-only consult of the same anchor) — defined
+ * here, the pure leaf both spokes already import from, so neither spoke
+ * gains a new cross-spoke edge.
+ */
+export interface SynthesizedRevalidationStore {
+  clear: (connectorInstanceId: string) => Promise<void> | void;
+  get: (
+    connectorInstanceId: string
+  ) => Promise<SynthesizedRevalidationAnchor | null> | SynthesizedRevalidationAnchor | null;
+  upsert: (
+    connectorInstanceId: string,
+    connectorId: string,
+    anchor: SynthesizedRevalidationAnchor
+  ) => Promise<void> | void;
 }
 
 export interface SynthesizedRevalidationDecision {
@@ -73,37 +106,6 @@ export interface SynthesizedRevalidationDecision {
   readonly delayMs: number;
   /** ISO timestamp of the next eligible confirming run (informational). */
   readonly nextEligibleAt: string;
-}
-
-function isRevalidationPendingSkip(record: RunRecord): boolean {
-  return record.status === "skipped" && (record.error ?? "").startsWith(SYNTHESIZED_REVALIDATION_PENDING_MARKER);
-}
-
-/**
- * True for a FAILED dispatched confirming run — `RunRecord.source.revalidationProbe`
- * is set only by run-executor.ts's `buildScheduledRunSource` when the call's
- * `triggerKind` was `"revalidation"` (server-owned, never connector-supplied).
- * A failed probe must extend the same streak the pending-skip records anchor
- * (so the doubling backoff actually doubles across repeated failed probes,
- * instead of resetting to the initial delay every time a probe consumes its
- * one admitted attempt and fails) — but a SUCCEEDED probe does NOT match
- * here: a success means the stale reason was disproven, so the next probe
- * for a genuinely new failure must start the streak (and the initial delay)
- * over, exactly like `scheduler-backoff.ts` breaks its streak on success.
- */
-function isFailedRevalidationProbe(record: RunRecord): boolean {
-  return record.status === "failed" && record.source.revalidationProbe === true;
-}
-
-function recordTimestampMs(record: RunRecord): number | null {
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
-  const completed = Date.parse(record.completedAt ?? "");
-  if (Number.isFinite(completed)) {
-    return completed;
-  }
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
-  const started = Date.parse(record.startedAt ?? "");
-  return Number.isFinite(started) ? started : null;
 }
 
 function normalizeNonNegativeInteger(value: number | undefined, fallback: number): number {
@@ -120,55 +122,6 @@ function normalizeFiniteNonNegativeMs(value: number | undefined, fallback: numbe
   return value;
 }
 
-/**
- * Trailing run of consecutive revalidation-pending skips AND failed
- * revalidation probes for a connector instance, walking `history` newest →
- * oldest and stopping at the first record that is neither (a SUCCEEDED
- * probe, an ordinary scheduled run, or an unrelated skip all break the
- * streak — exactly like `scheduler-backoff.ts`'s same-class-failure walk
- * breaks on a differently classed record).
- *
- * `attempt` counts only FAILED PROBES (not pending-skip records) — the
- * pending skip is emitted once per evidence-key sighting by `gateAttention`
- * (deduped exactly like the durable-attention path was before this fix, so
- * `history` does not gain one row per scheduler tick), so it cannot serve as
- * a per-tick attempt counter; a failed probe is a genuine bounded attempt
- * and IS the right unit for the doubling exponent, mirroring
- * `scheduler-backoff.ts`'s `consecutiveFailures`.
- *
- * `lastActivityAtMs` is the NEWEST timestamp in the trailing run (the most
- * recent pending-skip sighting or failed-probe attempt) — the point the
- * cooldown counts forward from, mirroring ordinary backoff's
- * `lastRunAtMs + effectiveIntervalMs` (elapsed-since-last-activity, not
- * elapsed-since-first-sighting, so tick frequency cannot skew the cadence).
- */
-function trailingRevalidationPendingStreak(history: readonly RunRecord[]): {
-  readonly attempt: number;
-  readonly lastActivityAtMs: number | null;
-} {
-  let attempt = 0;
-  let lastActivityAtMs: number | null = null;
-  // biome-ignore lint/style/noIncrementDecrement: Explicit counter update mirrors scheduler-backoff.ts's walk for auditability.
-  for (let i = history.length - 1; i >= 0; i--) {
-    const record = history[i];
-    if (!record) {
-      break;
-    }
-    const isFailedProbe = isFailedRevalidationProbe(record);
-    if (!(isFailedProbe || isRevalidationPendingSkip(record))) {
-      break;
-    }
-    if (lastActivityAtMs === null) {
-      // First (newest) record of the streak anchors the cooldown.
-      lastActivityAtMs = recordTimestampMs(record);
-    }
-    if (isFailedProbe) {
-      attempt += 1;
-    }
-  }
-  return { attempt, lastActivityAtMs };
-}
-
 function toIsoTimestamp(ms: number): string {
   return new Date(ms).toISOString();
 }
@@ -177,13 +130,14 @@ function toIsoTimestamp(ms: number): string {
  * Decide whether a bounded, non-interactive confirming run is due for
  * synthesized evidence currently blocking automatic dispatch.
  *
- * `history` MUST already be filtered to this connector instance (same
- * convention as `computeNextRunWithBackoff`'s `history` parameter) — the
- * caller (pre-run-gate.ts, via the same `runtime.history` the dispatch
- * governor already filters) owns that scoping.
+ * `anchor` is this connector instance's durable cadence record, or `null`
+ * when no pending-skip/failed-probe activity has been observed yet (first
+ * sighting this tick, or the anchor was cleared by a resolved/succeeded
+ * probe). A `null` anchor never admits immediately — the caller is
+ * expected to create the anchor on this same tick's pending-skip emission.
  */
 export function decideSynthesizedRevalidation(
-  history: readonly RunRecord[],
+  anchor: SynthesizedRevalidationAnchor | null,
   now: number,
   options: SynthesizedRevalidationOptions = {}
 ): SynthesizedRevalidationDecision {
@@ -191,20 +145,29 @@ export function decideSynthesizedRevalidation(
   const maxExp = normalizeNonNegativeInteger(options.maxBackoffExp, DEFAULT_MAX_REVALIDATION_BACKOFF_EXP);
   const maxDelayMs = normalizeFiniteNonNegativeMs(options.maxDelayMs, DEFAULT_MAX_REVALIDATION_DELAY_MS);
 
-  const { attempt, lastActivityAtMs } = trailingRevalidationPendingStreak(history);
-
-  if (lastActivityAtMs === null) {
-    // No pending-skip or failed-probe activity observed yet: not currently
-    // blocked on synthesized evidence, or first sighting is still being
-    // recorded by the caller this same tick. Never admit immediately.
+  if (!anchor) {
     return {
       admit: false,
-      attempt,
+      attempt: 0,
       delayMs: initialDelayMs,
       nextEligibleAt: toIsoTimestamp(now + initialDelayMs),
     };
   }
 
+  const lastActivityAtMs = Date.parse(anchor.anchorAt);
+  if (!Number.isFinite(lastActivityAtMs)) {
+    // Malformed/unparseable durable timestamp: treat exactly like no
+    // anchor rather than crashing the gate or admitting immediately —
+    // the caller's next pending-skip sighting re-anchors cleanly.
+    return {
+      admit: false,
+      attempt: anchor.attempt,
+      delayMs: initialDelayMs,
+      nextEligibleAt: toIsoTimestamp(now + initialDelayMs),
+    };
+  }
+
+  const attempt = Math.max(0, Math.floor(anchor.attempt));
   const exponent = Math.min(attempt, maxExp);
   const delayMs = Math.min(initialDelayMs * 2 ** exponent, maxDelayMs);
   const elapsed = now - lastActivityAtMs;

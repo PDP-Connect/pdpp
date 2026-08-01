@@ -28,7 +28,7 @@ import {
   type RunTriggerKind,
 } from "./run-automation-policy.ts";
 import { createDispatchGovernor } from "./scheduler/dispatch-governor.ts";
-import { createPreRunGate } from "./scheduler/pre-run-gate.ts";
+import { createPreRunGate, type SynthesizedRevalidationStore } from "./scheduler/pre-run-gate.ts";
 import { createRunExecutor } from "./scheduler/run-executor.ts";
 import { isTerminalGrantFailure, type TerminalReason } from "./scheduler-retry-classifier.ts";
 
@@ -237,6 +237,16 @@ function fromStoredRunRecord(record: SchedulerRunHistoryRecord): RunRecord {
   if (typeof record.source.id === "string") {
     sourceId = record.source.id;
   }
+  // Round-trip `revalidationProbe` exactly: it is a stable, server-owned
+  // marker on the persisted `source_json` blob (see RunSource's doc
+  // comment), not something safe to silently drop on rehydration. Any
+  // consumer that keys behavior off it (e.g. scheduler.ts's
+  // advanceFailedRevalidationProbeAnchor) must see the same value before
+  // and after a restart.
+  const restoredSource: RunRecord["source"] =
+    record.source.revalidationProbe === true
+      ? { id: sourceId, kind: "connector", revalidationProbe: true }
+      : { id: sourceId, kind: "connector" };
   const restored: RunRecord = {
     attempt: record.attempt,
     checkpointSummary: record.checkpointSummary,
@@ -248,10 +258,7 @@ function fromStoredRunRecord(record: SchedulerRunHistoryRecord): RunRecord {
     recordsEmitted: record.recordsEmitted,
     reportedRecordsEmitted: record.reportedRecordsEmitted ?? null,
     runId: record.runId ?? null,
-    source: {
-      id: sourceId,
-      kind: "connector",
-    },
+    source: restoredSource,
     startedAt: record.startedAt,
     status: record.status,
     terminalReason: (record.terminalReason ?? null) as TerminalReason | null,
@@ -342,6 +349,68 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
   const runtime = buildRuntime();
   let hydrationStarted = false;
 
+  // Durable per-connection cadence-anchor store for bounded synthesized
+  // owner-action revalidation (see synthesized-attention-revalidation.ts).
+  // Backed by `schedulerStore`'s dedicated methods when the injected store
+  // implements them (both production backends do); `undefined` here lets
+  // pre-run-gate.ts fall back to its process-local in-memory anchor for
+  // callers/tests that inject a `schedulerStore` without them.
+  const synthesizedRevalidationStore: SynthesizedRevalidationStore | undefined =
+    schedulerStore?.getSynthesizedRevalidationState &&
+    schedulerStore.upsertSynthesizedRevalidationState &&
+    schedulerStore.clearSynthesizedRevalidationState
+      ? {
+          clear: (connectorInstanceId) =>
+            // biome-ignore lint/style/noNonNullAssertion: narrowed non-null by the enclosing conditional.
+            schedulerStore.clearSynthesizedRevalidationState!(connectorInstanceId),
+          get: async (connectorInstanceId) => {
+            // biome-ignore lint/style/noNonNullAssertion: narrowed non-null by the enclosing conditional.
+            const record = await Promise.resolve(schedulerStore.getSynthesizedRevalidationState!(connectorInstanceId));
+            return record ? { anchorAt: record.anchorAt, attempt: record.attempt } : null;
+          },
+          upsert: (connectorInstanceId, connectorId, anchor) =>
+            // biome-ignore lint/style/noNonNullAssertion: narrowed non-null by the enclosing conditional.
+            schedulerStore.upsertSynthesizedRevalidationState!({
+              anchorAt: anchor.anchorAt,
+              attempt: anchor.attempt,
+              connectorId,
+              connectorInstanceId,
+              updatedAt: nowIso(),
+            }),
+        }
+      : undefined;
+
+  // Advances the durable synthesized-revalidation cadence anchor's attempt
+  // count when `record` is a FAILED dispatched revalidation probe
+  // (`source.revalidationProbe === true`) — the doubling backoff's per-
+  // attempt unit (see synthesized-attention-revalidation.ts's doc comment).
+  // A no-op for every other record shape (ordinary runs, skips). Shared
+  // with run-executor.ts, which is the actual funnel for dispatched-run
+  // terminal outcomes (`recordAndNotify` below only ever sees pre-dispatch
+  // skip records, never a real success/failure RunRecord).
+  function advanceFailedRevalidationProbeAnchor(record: RunRecord): void {
+    if (!(schedulerStore && synthesizedRevalidationStore)) {
+      return;
+    }
+    if (!(record.status === "failed" && record.source.revalidationProbe === true)) {
+      return;
+    }
+    const connectorInstanceId = record.connectorInstanceId || record.connectorId;
+    Promise.resolve(synthesizedRevalidationStore.get(connectorInstanceId))
+      .then((existing) =>
+        synthesizedRevalidationStore.upsert(connectorInstanceId, record.connectorId, {
+          anchorAt: record.completedAt || nowIso(),
+          attempt: (existing?.attempt ?? 0) + 1,
+        })
+      )
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(
+          `[scheduler] failed to advance synthesized-revalidation anchor for ${record.connectorId}: ${message}`
+        );
+      });
+  }
+
   function recordAndNotify(record: RunRecord): RunRecord {
     runtime.history.push(record);
     if (schedulerStore) {
@@ -350,6 +419,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
         console.error(`[scheduler] failed to persist run history for ${record.connectorId}: ${message}`);
       });
     }
+    advanceFailedRevalidationProbeAnchor(record);
     onRunComplete(record);
     return record;
   }
@@ -400,10 +470,12 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     recordAndNotify,
     runtime,
     ...(synthesizedRevalidationOptions ? { synthesizedRevalidationOptions } : {}),
+    ...(synthesizedRevalidationStore ? { synthesizedRevalidationStore } : {}),
   });
 
   const runExecutor = createRunExecutor({
     admitRunConnection,
+    advanceFailedRevalidationProbeAnchor,
     getState,
     handleGrantFailureDisable,
     isManagedConnector,
@@ -507,6 +579,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     onHumanRequiredStateEscalation,
     runtime,
     ...(synthesizedRevalidationOptions ? { synthesizedRevalidationOptions } : {}),
+    ...(synthesizedRevalidationStore ? { synthesizedRevalidationStore } : {}),
   });
 
   function startScheduledLoops(): void {

@@ -120,11 +120,34 @@ export interface SchedulerLastRunTimeRecord {
   readonly updated_at: string;
 }
 
+/**
+ * Durable per-connection cadence anchor for bounded periodic revalidation of
+ * stale SYNTHESIZED owner-action evidence (see runtime/scheduler/
+ * synthesized-attention-revalidation.ts). Independent of run_history
+ * retention/eviction: the doubling-and-capped cooldown is computed from
+ * this record alone, never from fleet-global run_history.
+ */
+export interface SynthesizedRevalidationStateRecord {
+  readonly anchorAt: string;
+  readonly attempt: number;
+  readonly connectorId: string;
+  readonly connectorInstanceId: string;
+  readonly updatedAt: string;
+}
+
 // ─── Public store surface ───────────────────────────────────────────────────
 
 export interface SchedulerStore {
   // Scheduler run history + interval gate timestamps.
   appendRunHistory: (record: SchedulerRunHistoryRecord) => Promise<void> | void;
+
+  // Synthesized-revalidation cadence anchor — durable, per-connection,
+  // independent of run_history retention. Optional: both production
+  // backends (SQLite, Postgres) implement it; ad-hoc test fakes that don't
+  // exercise the synthesized-revalidation path may omit it, in which case
+  // the scheduler falls back to a process-local (non-restart-durable) anchor
+  // for that path only — see pre-run-gate.ts's in-memory fallback.
+  clearSynthesizedRevalidationState?: (connectorInstanceId: string) => Promise<void> | void;
 
   // Schedule registry — semantic lifecycle verbs.
   createSchedule: (record: ScheduleCreate) => Promise<void> | void;
@@ -149,6 +172,9 @@ export interface SchedulerStore {
     status?: string | null
   ) => Promise<ProductRunHistoryRecord | null> | ProductRunHistoryRecord | null;
   getSchedule: (connectorInstanceId: string) => Promise<ScheduleRecord | null> | ScheduleRecord | null;
+  getSynthesizedRevalidationState?: (
+    connectorInstanceId: string
+  ) => Promise<SynthesizedRevalidationStateRecord | null> | SynthesizedRevalidationStateRecord | null;
   listActiveRuns: () => Promise<readonly ActiveRunRecord[]> | readonly ActiveRunRecord[];
   listLastRunTimes: () => Promise<readonly SchedulerLastRunTimeRecord[]> | readonly SchedulerLastRunTimeRecord[];
   listLastRunTimesByConnectionIds?: (
@@ -187,7 +213,26 @@ export interface SchedulerStore {
     updatedAt: string,
     connectorId?: string
   ) => Promise<void> | void;
+  upsertSynthesizedRevalidationState?: (record: SynthesizedRevalidationStateRecord) => Promise<void> | void;
 }
+
+/**
+ * `SchedulerStore` with the synthesized-revalidation methods required
+ * rather than optional. Both production factories (`createSqliteSchedulerStore`,
+ * `createPostgresSchedulerStore`) always implement them — they are optional
+ * on the base interface only so ad-hoc test fakes that don't exercise the
+ * synthesized-revalidation path may omit them (see `SchedulerStore`'s
+ * `clearSynthesizedRevalidationState` doc comment). Callers that know they
+ * hold a REAL production store (e.g. durability tests) can use this type to
+ * call the methods directly without an optional-chaining/non-null dance.
+ */
+export type SchedulerStoreWithSynthesizedRevalidation = SchedulerStore &
+  Required<
+    Pick<
+      SchedulerStore,
+      "clearSynthesizedRevalidationState" | "getSynthesizedRevalidationState" | "upsertSynthesizedRevalidationState"
+    >
+  >;
 
 // SQLite's variable limit is configurable. Keep the page batch well below its
 // historical 999 floor so a future query can add a small fixed bind set without
@@ -260,6 +305,26 @@ interface ScheduleSqliteRow {
   readonly updated_at: string;
 }
 
+interface SynthesizedRevalidationStateRow {
+  readonly anchor_at: string;
+  readonly attempt: number | string;
+  readonly connector_id: string;
+  readonly connector_instance_id: string;
+  readonly updated_at: string;
+}
+
+function rowToSynthesizedRevalidationStateRecord(
+  row: SynthesizedRevalidationStateRow
+): SynthesizedRevalidationStateRecord {
+  return {
+    anchorAt: row.anchor_at,
+    attempt: Number(row.attempt),
+    connectorId: row.connector_id,
+    connectorInstanceId: row.connector_instance_id,
+    updatedAt: row.updated_at,
+  };
+}
+
 interface SchedulerRunHistoryRow extends Record<string, unknown> {
   readonly attempt: number;
   readonly checkpoint_summary_json: unknown;
@@ -293,14 +358,29 @@ function rowToScheduleRecord(row: ScheduleSqliteRow): ScheduleRecord {
   };
 }
 
+/**
+ * Parses one stored JSON column value, falling back (never throwing) on a
+ * malformed value. A single corrupted historical row's JSON column must not
+ * abort the whole batch read (`listRunHistory`'s `Promise.all` hydration in
+ * scheduler.ts) — that would discard every OTHER connector's durable
+ * cadence/backoff state on restart for an unrelated row's corruption. Errors
+ * are logged (not silently swallowed) so operators can find and repair the
+ * offending row.
+ */
 function parseJsonValue(value: unknown, fallback: unknown): unknown {
   if (value === null || value === undefined) {
     return fallback;
   }
-  if (typeof value === "string") {
-    return JSON.parse(value);
+  if (typeof value !== "string") {
+    return value;
   }
-  return value;
+  try {
+    return JSON.parse(value);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[scheduler-store] malformed stored JSON column value, using fallback: ${message}`);
+    return fallback;
+  }
 }
 
 function asObjectOrNull(value: unknown): Record<string, unknown> | null {
@@ -365,7 +445,7 @@ function requireRunHistoryConnectorInstanceId(record: SchedulerRunHistoryRecord)
   return record.connectorInstanceId;
 }
 
-export function createSqliteSchedulerStore(): SchedulerStore {
+export function createSqliteSchedulerStore(): SchedulerStoreWithSynthesizedRevalidation {
   return {
     appendRunHistory(record) {
       const connectorInstanceId = requireRunHistoryConnectorInstanceId(record);
@@ -388,6 +468,10 @@ export function createSqliteSchedulerStore(): SchedulerStore {
         record.error ?? null,
         record.attempt,
       ]);
+    },
+
+    clearSynthesizedRevalidationState(connectorInstanceId) {
+      exec(referenceQueries.controllerClearSynthesizedRevalidationState, [connectorInstanceId]);
     },
 
     createSchedule(record) {
@@ -447,6 +531,13 @@ export function createSqliteSchedulerStore(): SchedulerStore {
     getSchedule(connectorInstanceId) {
       const row = getOne<ScheduleSqliteRow>(referenceQueries.controllerGetScheduleByConnector, [connectorInstanceId]);
       return row ? rowToScheduleRecord(row) : null;
+    },
+
+    getSynthesizedRevalidationState(connectorInstanceId) {
+      const row = getOne<SynthesizedRevalidationStateRow>(referenceQueries.controllerGetSynthesizedRevalidationState, [
+        connectorInstanceId,
+      ]);
+      return row ? rowToSynthesizedRevalidationStateRecord(row) : null;
     },
 
     listActiveRuns() {
@@ -654,10 +745,20 @@ export function createSqliteSchedulerStore(): SchedulerStore {
         updatedAt,
       ]);
     },
+
+    upsertSynthesizedRevalidationState(record) {
+      exec(referenceQueries.controllerUpsertSynthesizedRevalidationState, [
+        record.connectorInstanceId,
+        record.connectorId,
+        record.attempt,
+        record.anchorAt,
+        record.updatedAt,
+      ]);
+    },
   };
 }
 
-export function createPostgresSchedulerStore(): SchedulerStore {
+export function createPostgresSchedulerStore(): SchedulerStoreWithSynthesizedRevalidation {
   return {
     async appendRunHistory(record) {
       const connectorInstanceId = requireRunHistoryConnectorInstanceId(record);
@@ -717,6 +818,12 @@ export function createPostgresSchedulerStore(): SchedulerStore {
           record.attempt,
         ]
       );
+    },
+
+    async clearSynthesizedRevalidationState(connectorInstanceId) {
+      await postgresQuery("DELETE FROM synthesized_revalidation_state WHERE connector_instance_id = $1", [
+        connectorInstanceId,
+      ]);
     },
 
     async createSchedule(record) {
@@ -817,6 +924,18 @@ export function createPostgresSchedulerStore(): SchedulerStore {
         [connectorInstanceId]
       );
       return result.rows[0] ? rowToScheduleRecord(result.rows[0] as ScheduleSqliteRow) : null;
+    },
+
+    async getSynthesizedRevalidationState(connectorInstanceId) {
+      const result = await postgresQuery(
+        `SELECT connector_instance_id, connector_id, attempt, anchor_at, updated_at
+         FROM synthesized_revalidation_state
+         WHERE connector_instance_id = $1`,
+        [connectorInstanceId]
+      );
+      return result.rows[0]
+        ? rowToSynthesizedRevalidationStateRecord(result.rows[0] as SynthesizedRevalidationStateRow)
+        : null;
     },
 
     async listActiveRuns() {
@@ -1091,6 +1210,19 @@ export function createPostgresSchedulerStore(): SchedulerStore {
            last_run_time_ms = EXCLUDED.last_run_time_ms,
            updated_at = EXCLUDED.updated_at`,
         [connectorInstanceId, connectorId, lastRunTimeMs, updatedAt]
+      );
+    },
+
+    async upsertSynthesizedRevalidationState(record) {
+      await postgresQuery(
+        `INSERT INTO synthesized_revalidation_state(connector_instance_id, connector_id, attempt, anchor_at, updated_at)
+         VALUES($1, $2, $3, $4, $5)
+         ON CONFLICT(connector_instance_id) DO UPDATE SET
+           connector_id = EXCLUDED.connector_id,
+           attempt = EXCLUDED.attempt,
+           anchor_at = EXCLUDED.anchor_at,
+           updated_at = EXCLUDED.updated_at`,
+        [record.connectorInstanceId, record.connectorId, record.attempt, record.anchorAt, record.updatedAt]
       );
     },
   };

@@ -442,11 +442,14 @@ export interface SchedulerOptions {
   schedulerStore?: Pick<
     SchedulerStore,
     | "appendRunHistory"
+    | "clearSynthesizedRevalidationState"
     | "deleteActiveRun"
+    | "getSynthesizedRevalidationState"
     | "listLastRunTimes"
     | "listRunHistory"
     | "upsertActiveRun"
     | "upsertLastRunTime"
+    | "upsertSynthesizedRevalidationState"
   >;
   setState?: SetStateHandler;
   /**

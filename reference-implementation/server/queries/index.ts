@@ -256,11 +256,13 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly connectorInstancesUpdateDisplayName: MutationQuery;
   readonly connectorInstancesUpdateStatus: MutationQuery;
   readonly connectorSummaryEvidenceMarkDirtyByConnectorInstance: MutationQuery;
+  readonly controllerClearSynthesizedRevalidationState: MutationQuery;
   readonly controllerDeleteActiveRun: MutationQuery;
   readonly controllerDeleteSchedule: MutationQuery;
   readonly controllerFinalizeRunHistory: MutationQuery;
   readonly controllerGetLatestRunHistoryForConnection: ReadOneQuery;
   readonly controllerGetScheduleByConnector: ReadOneQuery;
+  readonly controllerGetSynthesizedRevalidationState: ReadOneQuery;
   readonly controllerInsertFinalizedRunHistory: MutationQuery;
   readonly controllerInsertRunHistory: MutationQuery;
   readonly controllerInsertSchedule: MutationQuery;
@@ -275,6 +277,7 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly controllerUpdateScheduleEnabled: MutationQuery;
   readonly controllerUpsertActiveRun: MutationQuery;
   readonly controllerUpsertSchedulerLastRunTime: MutationQuery;
+  readonly controllerUpsertSynthesizedRevalidationState: MutationQuery;
   readonly deviceExportersAdvanceProcessingPrefix: MutationQuery;
   readonly deviceExportersClearSourceInstanceConnectorRef: MutationQuery;
   readonly deviceExportersCompleteProcessingBatch: MutationQuery;
@@ -832,6 +835,9 @@ export function loadReferenceQueries(queryDir = QUERIES_DIR): ReferenceQueryRegi
     "controllerInsertFinalizedRunHistory",
     "controllerListSchedulerLastRunTimes",
     "controllerUpsertSchedulerLastRunTime",
+    "controllerGetSynthesizedRevalidationState",
+    "controllerUpsertSynthesizedRevalidationState",
+    "controllerClearSynthesizedRevalidationState",
     // Source webhooks — replay/idempotency guard.
     "sourceWebhooksClaimEvent",
     // Client event subscriptions (outbound, reference-only).

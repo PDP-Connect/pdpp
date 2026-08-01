@@ -1201,6 +1201,21 @@ CREATE TABLE IF NOT EXISTS scheduler_last_run_times (
   updated_at         TEXT NOT NULL
 );
 
+-- Durable per-connection cadence anchor for bounded periodic revalidation of
+-- stale SYNTHESIZED owner-action evidence (see runtime/scheduler/
+-- synthesized-attention-revalidation.ts). One row per connector instance,
+-- independent of run_history retention/eviction and restart-safe: the
+-- doubling-and-capped cooldown is computed from this row alone, never from
+-- fleet-global run_history. Cleared when the evidence resolves or a probe
+-- succeeds so the next fresh sighting starts the streak over.
+CREATE TABLE IF NOT EXISTS synthesized_revalidation_state (
+  connector_instance_id TEXT PRIMARY KEY,
+  connector_id       TEXT NOT NULL,
+  attempt            INTEGER NOT NULL DEFAULT 0,
+  anchor_at          TEXT NOT NULL,
+  updated_at         TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS oauth_clients (
   client_id                  TEXT PRIMARY KEY,
   registration_mode          TEXT NOT NULL,

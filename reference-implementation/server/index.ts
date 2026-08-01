@@ -7570,6 +7570,16 @@ function createReferenceSchedulerManager({
           if (!bslm.isManagedConnector(connectorId)) {
             return null;
           }
+          // `triggerKind` here may be `"revalidation"` (the scheduler's
+          // bounded, noninteractive confirming probe for stale synthesized
+          // owner-action evidence) — `Controller.runNow`'s PUBLIC parameter
+          // type deliberately excludes that value (see
+          // `ManagedSchedulerRunNowOptions`'s doc comment in controller.ts),
+          // so ordinary callers (owner run-now, webhooks, autoresume) can
+          // never construct it. This is the ONE sanctioned internal seam
+          // that legitimately needs the wider type — the managed-connector
+          // scheduler bridge routing a due revalidation probe through the
+          // same warm-browser-surface path ordinary managed runs use.
           const handle = await controller.runNow(connectorId, {
             connectorInstanceId: opts.connectorInstanceId,
             ownerToken: opts.ownerToken,
@@ -7577,7 +7587,7 @@ function createReferenceSchedulerManager({
             recoveryOnly: opts.recoveryOnly === true,
             rsUrl: opts.rsUrl,
             triggerKind: opts.triggerKind,
-          } as import("../runtime/controller.ts").RunNowOptions);
+          } as import("../runtime/controller.ts").ManagedSchedulerRunNowOptions as import("../runtime/controller.ts").RunNowOptions);
           const surfaceUnavailableStatuses = new Set([
             "run_browser_surface_queued",
             "browser_surface_probe_failed",

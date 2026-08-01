@@ -28,9 +28,14 @@ import type {
 } from "../scheduler-domain-types.ts";
 import {
   decideSynthesizedRevalidation,
-  SYNTHESIZED_REVALIDATION_PENDING_MARKER,
+  type SynthesizedRevalidationAnchor,
   type SynthesizedRevalidationOptions,
+  type SynthesizedRevalidationStore,
 } from "./synthesized-attention-revalidation.ts";
+
+// Re-exported so existing consumers (scheduler.ts) can import this dep type
+// from either this module or the shared leaf without breaking.
+export type { SynthesizedRevalidationStore } from "./synthesized-attention-revalidation.ts";
 
 // ─── Dep types ───────────────────────────────────────────────────────────────
 
@@ -41,13 +46,6 @@ import {
 export interface PreRunGateRuntimeState {
   readonly disabledGrantFailures: Map<string, TerminalGrantFailureReason>;
   readonly exhaustedGrants: Set<string>;
-  /**
-   * Durable run history (hydrated from `run_history` on restart, same object
-   * the dispatch governor filters). `gateAttention` reads it — never
-   * writes — to compute `decideSynthesizedRevalidation`'s cadence for
-   * synthesized owner-action evidence.
-   */
-  readonly history: readonly RunRecord[];
   readonly notifiedAttentionSkips: Map<string, string>;
   readonly notifiedDisabledGrantFailures: Set<string>;
   readonly notifiedNeedsHumanSkips: Set<string>;
@@ -67,6 +65,11 @@ export interface PreRunGateDeps {
    * omitted — tests use this to avoid waiting on real wall-clock cooldowns.
    */
   synthesizedRevalidationOptions?: SynthesizedRevalidationOptions;
+  /**
+   * Durable per-connection cadence-anchor store. See
+   * `SynthesizedRevalidationStore`'s doc comment.
+   */
+  synthesizedRevalidationStore?: SynthesizedRevalidationStore;
 }
 
 // ─── Gate outcome type ───────────────────────────────────────────────────────
@@ -156,21 +159,18 @@ function buildUnresolvedAttentionSkip(
   connectorInstanceId?: string
 ): RunRecord {
   const tail = evidence.reason ? `: ${evidence.reason} (${evidence.key})` : `: ${evidence.key}`;
-  // The `SYNTHESIZED_REVALIDATION_PENDING_MARKER` prefix is added ONLY for
-  // synthesized evidence (`evidence.source === "synthesized"`) — it is the
-  // stable, server-owned discriminant `decideSynthesizedRevalidation` uses
-  // to find this connector instance's revalidation cooldown anchor in
-  // `history`. Durable evidence's `error` stays byte-identical to before
-  // (still starts with `attention_unresolved:`) since durable evidence is
-  // never eligible for revalidation and must keep blocking unconditionally.
-  const prefix = evidence.source === "synthesized" ? `${SYNTHESIZED_REVALIDATION_PENDING_MARKER}:` : "";
+  // No marker prefix on `error` — the revalidation cadence anchor lives in
+  // the durable `synthesized_revalidation_state` table (see
+  // synthesized-attention-revalidation.ts's doc comment), not in this
+  // record's text, so this skip's shape is identical for durable and
+  // synthesized evidence.
   return {
     attempt: 0,
     checkpointSummary: null,
     completedAt: nowIso(),
     connectorId,
     connectorInstanceId: connectorInstanceId ?? null,
-    error: `${prefix}attention_unresolved${tail}`,
+    error: `attention_unresolved${tail}`,
     knownGaps: [],
     recordsEmitted: 0,
     source: buildScheduledRunSource(connectorId),
@@ -265,6 +265,29 @@ export interface PreRunGate {
   ) => Promise<AttentionGateOutcome>;
 }
 
+// In-memory fallback anchor store used only when the caller does not inject
+// a durable `synthesizedRevalidationStore` (e.g. tests exercising the pure
+// gate cascade in isolation). Production wiring (scheduler.ts) always
+// injects the SchedulerStore-backed implementation — see
+// `createSchedulerSynthesizedRevalidationStore` there — so this fallback
+// never runs with production persistence and does NOT survive a real
+// process restart; it exists solely so callers that omit the option keep
+// working structurally.
+function createInMemorySynthesizedRevalidationStore(): SynthesizedRevalidationStore {
+  const anchors = new Map<string, SynthesizedRevalidationAnchor>();
+  return {
+    clear(connectorInstanceId) {
+      anchors.delete(connectorInstanceId);
+    },
+    get(connectorInstanceId) {
+      return anchors.get(connectorInstanceId) ?? null;
+    },
+    upsert(connectorInstanceId, _connectorId, anchor) {
+      anchors.set(connectorInstanceId, anchor);
+    },
+  };
+}
+
 export function createPreRunGate(deps: PreRunGateDeps): PreRunGate {
   const {
     hasUnresolvedAttention,
@@ -274,6 +297,7 @@ export function createPreRunGate(deps: PreRunGateDeps): PreRunGate {
     runtime,
     recordAndNotify,
     synthesizedRevalidationOptions = {},
+    synthesizedRevalidationStore = createInMemorySynthesizedRevalidationStore(),
   } = deps;
 
   async function probeUnresolvedAttention(
@@ -351,6 +375,12 @@ export function createPreRunGate(deps: PreRunGateDeps): PreRunGate {
     const attentionEvidence = await probeUnresolvedAttention(connectorId, connectorInstanceId);
     if (!attentionEvidence?.key) {
       runtime.notifiedAttentionSkips.delete(key);
+      // Evidence resolved (any trigger's success re-derives a clean
+      // `rendered_verdict`, or durable evidence's own lifecycle resolved) —
+      // clear the durable cadence anchor so the next fresh sighting starts
+      // the streak (and initial delay) over, exactly like ordinary backoff
+      // breaks its streak on success.
+      await Promise.resolve(synthesizedRevalidationStore.clear(connectorInstanceId));
       return "proceed";
     }
 
@@ -369,32 +399,34 @@ export function createPreRunGate(deps: PreRunGateDeps): PreRunGate {
     // Synthesized evidence: re-derived fresh from the last terminal run's
     // reason every probe, no expiry of its own. Eligible for a bounded,
     // non-interactive confirming run once `decideSynthesizedRevalidation`
-    // says it is due — computed from durable `history`, so this MUST be
-    // evaluated every tick (not short-circuited by a dedup return below), or
-    // a due revalidation would never be observed.
-    const connectorHistory = runtime.history.filter(
-      (record) => (record.connectorInstanceId || record.connectorId) === key
-    );
-    const revalidation = decideSynthesizedRevalidation(connectorHistory, Date.now(), synthesizedRevalidationOptions);
+    // says it is due — computed from the DURABLE per-connection cadence
+    // anchor (synthesizedRevalidationStore), never from `runtime.history`
+    // (a lossy, fleet-global, evictable window — see synthesized-attention-
+    // revalidation.ts's doc comment). This MUST be evaluated every tick (not
+    // short-circuited by a dedup return below), or a due revalidation would
+    // never be observed.
+    const existingAnchor = await Promise.resolve(synthesizedRevalidationStore.get(connectorInstanceId));
+    const revalidation = decideSynthesizedRevalidation(existingAnchor, Date.now(), synthesizedRevalidationOptions);
     if (revalidation.admit) {
       return "proceed-revalidation-only";
     }
-    // Dedup by whether a revalidation-pending ANCHOR already exists in
-    // history for this connector instance — NOT by `attentionEvidence.key`
-    // (which embeds `reason` and can churn on every probe, e.g. alternating
-    // session_required/session_expired). Once a pending-skip record already
-    // exists, this connector instance already has its cooldown anchor and
-    // must not accumulate a fresh skip on every reason change — that would
-    // corrupt the cadence math into reading "now" as the anchor on every
-    // tick, defeating the doubling backoff under reason churn (the exact
-    // shape of the P1 the rejected v1 attempt failed on, there via a
-    // different mechanism — an in-memory Map keyed by the full evidence key).
-    const alreadyAnchored = connectorHistory.some((record) =>
-      (record.error ?? "").startsWith(SYNTHESIZED_REVALIDATION_PENDING_MARKER)
-    );
-    if (alreadyAnchored) {
+    // Dedup by whether a revalidation-pending ANCHOR already exists for this
+    // connector instance — NOT by `attentionEvidence.key` (which embeds
+    // `reason` and can churn on every probe, e.g. alternating
+    // session_required/session_expired). Once the anchor already exists,
+    // this connector instance must not accumulate a fresh skip record (or
+    // reset the anchor) on every reason change — that would corrupt the
+    // cadence math into reading "now" as the anchor on every tick, defeating
+    // the doubling backoff under reason churn.
+    if (existingAnchor) {
       return null;
     }
+    await Promise.resolve(
+      synthesizedRevalidationStore.upsert(connectorInstanceId, connectorId, {
+        anchorAt: nowIso(),
+        attempt: 0,
+      })
+    );
     return recordAndNotify(buildUnresolvedAttentionSkip(connectorId, attentionEvidence, connectorInstanceId));
   }
 

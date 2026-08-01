@@ -77,6 +77,18 @@ export interface RunExecutorDeps {
         ownerSubjectId: string | null;
       }) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }>)
     | null;
+  /**
+   * Advances the durable synthesized-revalidation cadence anchor's attempt
+   * count when the passed record is a FAILED dispatched revalidation probe
+   * (`source.revalidationProbe === true`); a no-op otherwise. Shared with
+   * scheduler.ts's `recordAndNotify` (defined there since it owns
+   * `synthesizedRevalidationStore`'s construction) — called here because
+   * `finalizeSuccessOrFailure`/`finalizeExhaustedFailure` are the ACTUAL
+   * funnel for dispatched-run terminal outcomes, not `recordAndNotify`
+   * (which only ever sees pre-dispatch skip records in this module's
+   * calls).
+   */
+  advanceFailedRevalidationProbeAnchor: (record: RunRecord) => void;
   getState: GetStateHandler;
   handleGrantFailureDisable: (reason: string | null | undefined, connectorInstanceId: string) => void;
   isManagedConnector: IsManagedConnectorHandler;
@@ -599,6 +611,7 @@ function controllerRunNowDeferReason(err: unknown): string | null {
 export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
   const {
     admitRunConnection,
+    advanceFailedRevalidationProbeAnchor,
     getState,
     handleGrantFailureDisable,
     isManagedConnector,
@@ -664,6 +677,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     }
 
     onRunComplete(record);
+    advanceFailedRevalidationProbeAnchor(record);
 
     // Streak-cleared transition. Resets both announce-once maps so a
     // future degradation can re-promote (and re-announce). The
@@ -857,6 +871,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     persistLastRunTime(connectorId, connectorInstanceId, Date.now());
     handleGrantFailureDisable(failRecord.terminalReason ?? failRecord.failureReason, connectorInstanceId);
     onRunComplete(failRecord);
+    advanceFailedRevalidationProbeAnchor(failRecord);
     return failRecord;
   }
 

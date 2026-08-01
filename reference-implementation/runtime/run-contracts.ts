@@ -39,9 +39,13 @@ export interface RunNowOptions {
   runId?: string;
   scenarioId?: string;
   traceContext?: SpineTraceContext;
-  // Mirrors the same widening in controller.ts's `RunNowOptions` — see that
-  // type's doc comment for why `"revalidation"` is included.
-  triggerKind?: Extract<RunTriggerKind, "manual" | "revalidation" | "scheduled" | "webhook">;
+  // `"revalidation"` is deliberately EXCLUDED here — it is scheduler-internal
+  // only (see run-automation-policy.ts's `RunTriggerKind` doc comment). The
+  // managed-connector scheduler bridge that needs to pass it through to
+  // `controller.runNow` uses a separate, narrowly-scoped internal type
+  // (`ManagedSchedulerRunNowOptions` in controller.ts), not this public
+  // contract shape.
+  triggerKind?: Extract<RunTriggerKind, "manual" | "scheduled" | "webhook">;
 }
 
 export interface RunNowResult {

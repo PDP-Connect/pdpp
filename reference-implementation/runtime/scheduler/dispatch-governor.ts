@@ -40,6 +40,7 @@ import {
 import {
   decideSynthesizedRevalidation,
   type SynthesizedRevalidationOptions as SynthesizedRevalidationOptionsInput,
+  type SynthesizedRevalidationStore,
 } from "./synthesized-attention-revalidation.ts";
 
 // ─── Dep types ───────────────────────────────────────────────────────────────
@@ -79,6 +80,16 @@ export interface DispatchGovernorDeps {
   onHumanRequiredStateEscalation: HumanRequiredStateEscalationHandler;
   runtime: DispatchGovernorRuntimeState;
   synthesizedRevalidationOptions?: SynthesizedRevalidationOptionsInput;
+  /**
+   * Same durable per-connection cadence-anchor store `pre-run-gate.ts`
+   * consults — see `SynthesizedRevalidationStore`'s doc comment
+   * (synthesized-attention-revalidation.ts). Read-only here: this module
+   * never creates/advances/clears the anchor, only checks whether a due
+   * probe should be let through a `blocked` tick. Optional: when omitted,
+   * `probeSynthesizedRevalidationDue` always returns `false` (today's
+   * `blocked` behavior).
+   */
+  synthesizedRevalidationStore?: SynthesizedRevalidationStore;
 }
 
 // ─── Local helpers (duplicated from scheduler.ts; pure — no runtime dep) ─────
@@ -503,14 +514,16 @@ export function createDispatchGovernor(deps: DispatchGovernorDeps): DispatchGove
     onHumanRequiredStateEscalation,
     runtime,
     synthesizedRevalidationOptions = {},
+    synthesizedRevalidationStore,
   } = deps;
 
   // Consulted ONLY when the tick is otherwise `blocked` — see
   // `synthesizedRevalidationDue`'s doc comment on `DecideBackoffDispatchInputs`.
-  // Fail-closed (returns false) on any probe error or when no attention
-  // handler is configured: preserves today's `blocked` behavior exactly.
+  // Fail-closed (returns false) on any probe error, when no attention
+  // handler is configured, or when no durable anchor store is injected:
+  // preserves today's `blocked` behavior exactly.
   async function probeSynthesizedRevalidationDue(connectorId: string, key: string): Promise<boolean> {
-    if (!getUnresolvedAttention) {
+    if (!(getUnresolvedAttention && synthesizedRevalidationStore)) {
       return false;
     }
     try {
@@ -518,10 +531,8 @@ export function createDispatchGovernor(deps: DispatchGovernorDeps): DispatchGove
       if (!evidence?.key || evidence.source !== "synthesized") {
         return false;
       }
-      const connectorHistory = runtime.history.filter(
-        (record) => (record.connectorInstanceId || record.connectorId) === key
-      );
-      return decideSynthesizedRevalidation(connectorHistory, Date.now(), synthesizedRevalidationOptions).admit;
+      const anchor = await Promise.resolve(synthesizedRevalidationStore.get(key));
+      return decideSynthesizedRevalidation(anchor, Date.now(), synthesizedRevalidationOptions).admit;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[scheduler] synthesized-revalidation probe failed for ${connectorId}: ${message}`);
