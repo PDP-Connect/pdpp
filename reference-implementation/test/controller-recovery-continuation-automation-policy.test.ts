@@ -32,7 +32,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { closeDb, initDb } from '../server/db.js';
+import { closeDb, initDb } from '../server/db.ts';
 import { __resetControllerInteractionStateForTests, createController } from '../runtime/controller.ts';
 
 const CONNECTOR_ID = 'test/recovery-continuation';
@@ -40,7 +40,7 @@ const CONNECTOR_ID = 'test/recovery-continuation';
 // Fake detail-gap store with one pending non-pressure-recoverable gap
 // (`retry_exhausted`, no cooldown floor) so `hasEligibleNonPressureRecoveryWork`
 // is true and the continuation attempt is actually reached.
-function fakeDetailGapStoreWithRecoverableGap(connectorId) {
+function fakeDetailGapStoreWithRecoverableGap(connectorId: string) {
   const row = {
     connector_id: connectorId,
     connector_instance_id: connectorId,
@@ -54,7 +54,7 @@ function fakeDetailGapStoreWithRecoverableGap(connectorId) {
   };
 }
 
-function manifestWith(refreshPolicy) {
+function manifestWith(refreshPolicy: object) {
   return {
     connector_id: CONNECTOR_ID,
     version: '1.0.0',
@@ -76,7 +76,14 @@ const BACKGROUND_SAFE_REFRESH_POLICY = {
   background_safe: true,
 };
 
-function freshDb(t) {
+function fakeAdmitRunConnection() {
+  return ({ connectorId, connectorInstanceId }: { connectorId: string; connectorInstanceId: string | null }) => {
+    const exactId = connectorInstanceId ?? connectorId;
+    return Promise.resolve({ connectorId, connectorInstanceId: exactId, ownerSubjectId: 'owner_local' });
+  };
+}
+
+function freshDb(t: any) {
   closeDb();
   initDb(join(mkdtempSync(join(tmpdir(), 'pdpp-recovery-continuation-db-')), 'pdpp.sqlite'));
   __resetControllerInteractionStateForTests();
@@ -91,8 +98,8 @@ function freshDb(t) {
 // `maybeContinueRecoveryAfterProgress` requires before it will even consider
 // a continuation) and records each call so the test can assert how many runs
 // actually happened.
-function fakeRunConnectorImplReportingRecoveredGap(calls) {
-  return (opts) => {
+function fakeRunConnectorImplReportingRecoveredGap(calls: any[]) {
+  return (opts: any) => {
     calls.push(opts);
     return Promise.resolve({
       status: 'succeeded',
@@ -102,10 +109,11 @@ function fakeRunConnectorImplReportingRecoveredGap(calls) {
   };
 }
 
-async function withRecoveringController(t, fn) {
+async function withRecoveringController(t: any, fn: any) {
   freshDb(t);
-  const calls = [];
+  const calls: any[] = [];
   const controller = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
     connectorPathResolver: () => '/tmp/unused-connector-path.mjs',
     runConnectorImpl: fakeRunConnectorImplReportingRecoveredGap(calls),
     detailGapStore: fakeDetailGapStoreWithRecoverableGap(CONNECTOR_ID),
@@ -124,7 +132,7 @@ async function withRecoveringController(t, fn) {
 // resolves (`runNow` returns as soon as the run is admitted, not when it
 // settles). Poll briefly for the call count to stabilize instead of
 // asserting immediately.
-async function waitForCallCountToSettle(calls, { quietMs = 200, timeoutMs = 3000 } = {}) {
+async function waitForCallCountToSettle(calls: any[], { quietMs = 200, timeoutMs = 3000 } = {}) {
   const deadline = Date.now() + timeoutMs;
   let lastCount = calls.length;
   let lastChangeAt = Date.now();
@@ -141,7 +149,7 @@ async function waitForCallCountToSettle(calls, { quietMs = 200, timeoutMs = 3000
 }
 
 test('manual-only connector: successful manual run does NOT auto-launch a hidden recovery continuation', async (t) => {
-  await withRecoveringController(t, async (controller, calls) => {
+  await withRecoveringController(t, async (controller: any, calls: any[]) => {
     const result = await controller.runNow(CONNECTOR_ID, {
       manifest: manifestWith(USAA_LIKE_REFRESH_POLICY),
       ownerToken: 'owner-token',
@@ -167,7 +175,7 @@ test('manual-only connector: successful manual run does NOT auto-launch a hidden
 });
 
 test('background-safe connector: successful manual run MAY still auto-continue recovery', async (t) => {
-  await withRecoveringController(t, async (controller, calls) => {
+  await withRecoveringController(t, async (controller: any, calls: any[]) => {
     const result = await controller.runNow(CONNECTOR_ID, {
       manifest: manifestWith(BACKGROUND_SAFE_REFRESH_POLICY),
       ownerToken: 'owner-token',
