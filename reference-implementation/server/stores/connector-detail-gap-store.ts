@@ -169,6 +169,7 @@ interface CountByStream {
 }
 
 import { execDynamicSqlAcknowledged, iterateDynamicSqlAcknowledged } from "../../lib/db.ts";
+import { classifyRecoveryGap, PLANNED_STOP_RECOVERY_CLASSES } from "../../runtime/recovery-decision.ts";
 import { DEFAULT_QUARANTINE_POLICY } from "../../runtime/recovery-quarantine.ts";
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from "../owner-auth.ts";
 import { getStorageBackendKind, isPostgresStorageBackend, postgresQuery } from "../postgres-storage.ts";
@@ -443,6 +444,23 @@ function normalizeGapInput(input: UpsertGapInput): NormalizedGapInput {
 
 function nullableGapRowValue<T>(value: T | null | undefined): T | null {
   return value ?? null;
+}
+
+/**
+ * True when a re-defer represents a genuine no-progress attempt against the
+ * provider — false for a PLANNED, self-imposed stop (blast-radius cap,
+ * source-pressure cooldown, an owner-repair gate, or out-of-scope/disabled)
+ * that reflects a runtime/connector decision, not provider behavior. Used to
+ * gate `attempt_count`'s increment on `settleLeasedGapPending` so a long
+ * history of planned defers (each one a real, `DETAIL_GAP_ATTEMPTED`-marked
+ * lease that nonetheless performed no diagnostic work toward either
+ * `maybeQuarantineGap`'s no-progress budget or `maybeTerminateGap`'s
+ * non-transient budget) cannot poison the shared counter both budgets read.
+ * See `PLANNED_STOP_RECOVERY_CLASSES`'s doc comment for the full incident.
+ */
+function isGenuineNoProgressRedefer(reason: string | null, lastError: unknown): boolean {
+  const recoveryClass = classifyRecoveryGap({ last_error: lastError as { class?: unknown } | null, reason }).recoveryClass;
+  return !PLANNED_STOP_RECOVERY_CLASSES.has(recoveryClass);
 }
 
 function rowToGap(row: DetailGapRow | null): DetailGap | null {
@@ -1197,12 +1215,23 @@ export function createSqliteConnectorDetailGapStore() {
     }): Promise<DetailGap | null> {
       const owner = normalizeLease(lease);
       const now = nowIso();
+      // `DETAIL_GAP_ATTEMPTED` marks that the connector is ABOUT to try this
+      // lease — the outcome (recovered, genuine no-progress re-defer, or a
+      // planned run-cap/pressure/owner/informational stop) is not yet known.
+      // `attempt_count` therefore does NOT increment here: it increments
+      // exactly once, at settlement (`settleLeasedGapPending` /
+      // `settleLeasedGapRecovered`), gated by the settled outcome's own
+      // classification — never at declaration time, when a planned stop that
+      // performed no real diagnostic work looks identical to a genuine
+      // attempt. `lease_attempted`/`last_attempt_at` remain pure bookkeeping
+      // (crash/untouched-lease evidence for `releaseLeasedGaps`), decoupled
+      // from the no-progress/non-transient budgets both `maybeQuarantineGap`
+      // and `maybeTerminateGap` read `attempt_count` for. See
+      // `PLANNED_STOP_RECOVERY_CLASSES`'s doc comment for the full incident.
       const result = execDynamicSqlAcknowledged(
         `
         UPDATE connector_detail_gaps
-        SET attempt_count = attempt_count + CASE WHEN lease_attempted = 0 THEN 1 ELSE 0 END,
-            last_attempt_at = CASE WHEN lease_attempted = 0 THEN ? ELSE last_attempt_at END,
-            lease_attempted = 1, updated_at = ?
+        SET last_attempt_at = ?, lease_attempted = 1, updated_at = ?
         WHERE gap_id = ? AND status = 'in_progress'
           AND lease_run_id = ? AND lease_id = ?
       `,
@@ -1230,11 +1259,17 @@ export function createSqliteConnectorDetailGapStore() {
       const cii = nonEmptyString(connectorInstanceId) || defaultConnectorInstanceId(connectorId);
       const now = nowIso();
       // REVIEWED-DYNAMIC: bulk status reset for stranded in_progress gaps whose
-      // owner lease has expired.
+      // owner lease has expired. Same rationale as `releaseLeasedGaps`: a
+      // stranded lease never reached settlement, so `lease_attempted = 1`
+      // (the connector genuinely declared DETAIL_GAP_ATTEMPTED before its
+      // lease expired unclaimed — most commonly a crashed/hung run) counts
+      // toward the no-progress budget as an unknown-outcome real attempt;
+      // `lease_attempted = 0` (never even declared attempted) does not.
       execDynamicSqlAcknowledged(
         `
         UPDATE connector_detail_gaps
-        SET status = 'pending', updated_at = ?
+        SET status = 'pending', attempt_count = attempt_count + CASE WHEN lease_attempted = 1 THEN 1 ELSE 0 END,
+            updated_at = ?
         WHERE connector_instance_id = ?
           AND connector_id = ?
           AND (? IS NULL OR grant_id = ?)
@@ -1267,18 +1302,31 @@ export function createSqliteConnectorDetailGapStore() {
           lost += 1;
           continue;
         }
+        // A lease released here NEVER reached settlement (`settleLeasedGapPending`
+        // / `settleLeasedGapRecovered`), so no outcome was ever classified for
+        // it — most commonly a crashed/killed connector process. When
+        // `lease_attempted = 1`, the connector genuinely declared an attempt
+        // (DETAIL_GAP_ATTEMPTED) before going silent: an unknown outcome is
+        // NOT a planned stop, so it counts toward the no-progress budget the
+        // same as a real attempt — a poison item that always crashes right
+        // after attempting must still eventually quarantine. `lease_attempted
+        // = 0` (never even declared attempted, e.g. Gmail's byte-budget
+        // early-return before markServedAttachmentRecoveryAttempt) performed
+        // no real work and must not count — same PLANNED_STOP_RECOVERY_CLASSES
+        // rationale as settlement's own gate.
+        const attemptedThisLease = Number(row.lease_attempted || 0) === 1;
         const result = execDynamicSqlAcknowledged(
           `
           UPDATE connector_detail_gaps
           SET status = 'pending', lease_run_id = NULL, lease_id = NULL, lease_attempted = 0,
-              lease_expires_at = NULL, updated_at = ?
+              lease_expires_at = NULL, attempt_count = attempt_count + ?, updated_at = ?
           WHERE gap_id = ? AND status = 'in_progress' AND lease_run_id = ? AND lease_id = ?
         `,
-          [nowIso(), owner.gapId, owner.runId, owner.leaseId]
+          [attemptedThisLease ? 1 : 0, nowIso(), owner.gapId, owner.runId, owner.leaseId]
         );
         if (Number(result.changes || 0) === 1) {
           released += 1;
-          attemptedUnsettled += Number(row.lease_attempted || 0) === 1 ? 1 : 0;
+          attemptedUnsettled += attemptedThisLease ? 1 : 0;
         } else {
           lost += 1;
         }
@@ -1304,13 +1352,22 @@ export function createSqliteConnectorDetailGapStore() {
       const owner = normalizeLease(lease);
       const gap = normalizeGapInput(input);
       const detailLocatorJson = encodeJson(gap.detailLocator);
+      // Only a genuine no-progress re-defer (not a PLANNED, self-imposed stop
+      // like run_cap_deferred/provider_pressure/owner_required/informational)
+      // may increment `attempt_count` — see `isGenuineNoProgressRedefer`'s doc
+      // comment for why a planned defer must never poison the shared
+      // no-progress/non-transient budgets. Settlement is the SOLE increment
+      // site now (`markLeasedGapAttempt` no longer increments — see its own
+      // doc comment), so this always applies once per lease lifecycle; no
+      // `lease_attempted` dedup guard is needed on the increment itself.
+      const countsAsAttempt = isGenuineNoProgressRedefer(gap.reason, gap.lastError) ? 1 : 0;
       const result = execDynamicSqlAcknowledged(
         `
         UPDATE connector_detail_gaps
         SET source_json = ?, detail_locator_json = ?, list_cursor_json = ?, scope_json = ?, reason = ?,
             status = 'pending', next_attempt_after = ?, last_error_json = ?, last_run_id = ?,
-            attempt_count = attempt_count + CASE WHEN lease_attempted = 0 THEN 1 ELSE 0 END,
-            last_attempt_at = CASE WHEN lease_attempted = 0 THEN ? ELSE last_attempt_at END,
+            attempt_count = attempt_count + ?,
+            last_attempt_at = ?,
             lease_run_id = NULL, lease_id = NULL, lease_attempted = 0, lease_expires_at = NULL,
             updated_at = ?
         WHERE gap_id = ? AND status = 'in_progress'
@@ -1325,6 +1382,7 @@ export function createSqliteConnectorDetailGapStore() {
           gap.nextAttemptAfter,
           encodeJson(gap.lastError),
           gap.lastRunId,
+          countsAsAttempt,
           gap.now,
           gap.now,
           owner.gapId,
@@ -1346,12 +1404,15 @@ export function createSqliteConnectorDetailGapStore() {
     }): Promise<DetailGap | null> {
       const owner = normalizeLease(lease);
       const now = nowIso();
+      // A recovery is unconditionally real progress — always counts, same
+      // sole-increment-site design as `settleLeasedGapPending` (see its doc
+      // comment and `markLeasedGapAttempt`'s).
       const result = execDynamicSqlAcknowledged(
         `
         UPDATE connector_detail_gaps
         SET status = 'recovered', recovered_run_id = ?, last_run_id = ?,
-            attempt_count = attempt_count + CASE WHEN lease_attempted = 0 THEN 1 ELSE 0 END,
-            last_attempt_at = CASE WHEN lease_attempted = 0 THEN ? ELSE last_attempt_at END,
+            attempt_count = attempt_count + 1,
+            last_attempt_at = ?,
             lease_run_id = NULL, lease_id = NULL, lease_attempted = 0, lease_expires_at = NULL,
             updated_at = ?
         WHERE gap_id = ? AND status = 'in_progress'
@@ -1811,12 +1872,13 @@ export function createPostgresConnectorDetailGapStore() {
     }): Promise<DetailGap | null> {
       const owner = normalizeLease(lease);
       const now = nowIso();
+      // See the SQLite `markLeasedGapAttempt`'s identical comment: attempt
+      // declaration must not increment `attempt_count` — settlement does,
+      // gated by the settled outcome's own classification.
       const result = await postgresQuery<DetailGapRow>(
         `
         UPDATE connector_detail_gaps
-        SET attempt_count = attempt_count + CASE WHEN lease_attempted = 0 THEN 1 ELSE 0 END,
-            last_attempt_at = CASE WHEN lease_attempted = 0 THEN $1 ELSE last_attempt_at END,
-            lease_attempted = 1, updated_at = $1
+        SET last_attempt_at = $1, lease_attempted = 1, updated_at = $1
         WHERE gap_id = $2 AND status = 'in_progress' AND lease_run_id = $3 AND lease_id = $4
         RETURNING *
       `,
@@ -1839,10 +1901,12 @@ export function createPostgresConnectorDetailGapStore() {
     }): Promise<void> {
       const cii = nonEmptyString(connectorInstanceId) || defaultConnectorInstanceId(connectorId);
       const now = nowIso();
+      // See the SQLite `reclaimStrandedInProgressGaps`'s identical comment.
       await postgresQuery(
         `
         UPDATE connector_detail_gaps
-        SET status = 'pending', updated_at = $1
+        SET status = 'pending', attempt_count = attempt_count + CASE WHEN lease_attempted = 1 THEN 1 ELSE 0 END,
+            updated_at = $1
         WHERE connector_instance_id = $2
           AND connector_id = $3
           AND ($4::text IS NULL OR grant_id = $4)
@@ -1863,6 +1927,10 @@ export function createPostgresConnectorDetailGapStore() {
       let attemptedUnsettled = 0;
       for (const lease of leases || []) {
         const owner = normalizeLease(lease);
+        // See the SQLite `releaseLeasedGaps`'s identical comment: an unknown
+        // outcome (lease_attempted = 1, a crashed/killed connector went silent
+        // after declaring an attempt) counts toward the no-progress budget;
+        // never-attempted (lease_attempted = 0) does not.
         // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
         const result = await postgresQuery(
           `
@@ -1874,7 +1942,9 @@ export function createPostgresConnectorDetailGapStore() {
           )
           UPDATE connector_detail_gaps
           SET status = 'pending', lease_run_id = NULL, lease_id = NULL, lease_attempted = 0,
-              lease_expires_at = NULL, updated_at = $1
+              lease_expires_at = NULL,
+              attempt_count = attempt_count + CASE WHEN leased.lease_attempted = 1 THEN 1 ELSE 0 END,
+              updated_at = $1
           FROM leased
           WHERE connector_detail_gaps.gap_id = leased.gap_id
           RETURNING leased.lease_attempted
@@ -1908,17 +1978,23 @@ export function createPostgresConnectorDetailGapStore() {
     ): Promise<DetailGap | null> {
       const owner = normalizeLease(lease);
       const gap = normalizeGapInput(input);
+      // See the SQLite `settleLeasedGapPending`'s identical comment: only a
+      // genuine no-progress re-defer may increment `attempt_count` — a
+      // PLANNED, self-imposed stop must not poison the shared no-progress /
+      // non-transient budgets both `maybeQuarantineGap` and `maybeTerminateGap`
+      // read this column for. Settlement is the sole increment site now.
+      const countsAsAttempt = isGenuineNoProgressRedefer(gap.reason, gap.lastError) ? 1 : 0;
       const result = await postgresQuery<DetailGapRow>(
         `
         UPDATE connector_detail_gaps
         SET source_json = $1::jsonb, detail_locator_json = $2::jsonb, list_cursor_json = $3::jsonb,
             scope_json = $4::jsonb, reason = $5, status = 'pending', next_attempt_after = $6,
             last_error_json = $7::jsonb, last_run_id = $8,
-            attempt_count = attempt_count + CASE WHEN lease_attempted = 0 THEN 1 ELSE 0 END,
-            last_attempt_at = CASE WHEN lease_attempted = 0 THEN $9 ELSE last_attempt_at END,
+            attempt_count = attempt_count + $9,
+            last_attempt_at = $10,
             lease_run_id = NULL, lease_id = NULL, lease_attempted = 0, lease_expires_at = NULL,
-            updated_at = $9
-        WHERE gap_id = $10 AND status = 'in_progress' AND lease_run_id = $11 AND lease_id = $12
+            updated_at = $10
+        WHERE gap_id = $11 AND status = 'in_progress' AND lease_run_id = $12 AND lease_id = $13
         RETURNING *
       `,
         [
@@ -1930,6 +2006,7 @@ export function createPostgresConnectorDetailGapStore() {
           gap.nextAttemptAfter,
           encodeJson(gap.lastError),
           gap.lastRunId,
+          countsAsAttempt,
           gap.now,
           owner.gapId,
           owner.runId,
@@ -1946,12 +2023,14 @@ export function createPostgresConnectorDetailGapStore() {
     }): Promise<DetailGap | null> {
       const owner = normalizeLease(lease);
       const now = nowIso();
+      // A recovery is unconditionally real progress — always counts, same
+      // sole-increment-site design as `settleLeasedGapPending`.
       const result = await postgresQuery<DetailGapRow>(
         `
         UPDATE connector_detail_gaps
         SET status = 'recovered', recovered_run_id = $1, last_run_id = $1,
-            attempt_count = attempt_count + CASE WHEN lease_attempted = 0 THEN 1 ELSE 0 END,
-            last_attempt_at = CASE WHEN lease_attempted = 0 THEN $2 ELSE last_attempt_at END,
+            attempt_count = attempt_count + 1,
+            last_attempt_at = $2,
             lease_run_id = NULL, lease_id = NULL, lease_attempted = 0, lease_expires_at = NULL,
             updated_at = $2
         WHERE gap_id = $3 AND status = 'in_progress' AND lease_run_id = $1 AND lease_id = $4

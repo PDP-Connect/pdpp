@@ -541,7 +541,7 @@ test("processMessage: a served gap whose attachment fails hydration AGAIN is nev
     "the re-failed attachment must be a retryable gap key"
   );
   assert.deepEqual(
-    attachmentCoverage.failedRecords.map((r) => r.id),
+    attachmentCoverage.failedRecords.map((r) => r.record.id),
     ["gmmsgid-1111:2"],
     "the re-failed attachment must be retained so a fresh DETAIL_GAP is emitted for it"
   );
@@ -2174,10 +2174,10 @@ test("recoverServedAttachmentGaps: an unclassified plain blob failure remains re
   assert.ok(failedAttachment, "the failed attachment record must still be emitted");
   assert.equal(failedAttachment.hydration_status, "failed");
   assert.deepEqual(attachmentCoverage.gapKeys, [failedAttachment.id]);
-  assert.deepEqual(attachmentCoverage.failedRecords, [failedAttachment]);
+  assert.deepEqual(attachmentCoverage.failedRecords, [{ record: failedAttachment, stage: null }]);
   const [failedCoverageRecord] = attachmentCoverage.failedRecords;
   assert.ok(failedCoverageRecord, "failed recovery records must be retained for detail-gap emission");
-  assert.deepEqual(buildAttachmentDetailGap(failedCoverageRecord), {
+  assert.deepEqual(buildAttachmentDetailGap(failedCoverageRecord.record, failedCoverageRecord.stage), {
     type: "DETAIL_GAP",
     stream: "attachments",
     parent_stream: "messages",
@@ -2228,9 +2228,14 @@ const SETTLEMENT_TABLE = [
     expectReDeferReason: {},
   },
   {
-    name: "hydration_status=failed -> DETAIL_GAP re-defer (hydration_failed)",
+    // The re-defer's `last_error.class` carries the fake hydrator's classified
+    // failure stage (`failedResult` -> `blob_upload_transport_failed`), not
+    // the generic `hydration_failed` bucket — a real provider attempt was
+    // classified, and that classification must survive the re-defer so the
+    // runtime's eventual per-item quarantine sees WHICH stage kept failing.
+    name: "hydration_status=failed -> DETAIL_GAP re-defer (classified failure stage)",
     gaps: [{ hydrateOutcome: "failed" }],
-    expectReDeferReason: { 0: "hydration_failed" },
+    expectReDeferReason: { 0: "blob_upload_transport_failed" },
   },
   {
     name: "hydrated but emitRecord()=false (scope-filtered) -> DETAIL_GAP re-defer, not recovered",
@@ -2266,7 +2271,7 @@ const SETTLEMENT_TABLE = [
   {
     name: "two served gaps for the SAME attachment, hydration fails -> gap-0 re-defers, gap-1 reuses the memo and re-defers too (no cross-gap recovery before gap-1's own ATTEMPTED)",
     gaps: [{ hydrateOutcome: "failed" }, { hydrateOutcome: "failed", sameMessageAs: 0 }],
-    expectReDeferReason: { 0: "hydration_failed", 1: "hydration_failed" },
+    expectReDeferReason: { 0: "blob_upload_transport_failed", 1: "blob_upload_transport_failed" },
   },
   {
     name: "two served gaps for the SAME attachment, gap-0's OWN emitRecord rejects it -> gap-0 re-defers (never recovered), gap-1 reuses the memoized BYTES but makes its OWN accepted emit and recovers independently",
@@ -3386,7 +3391,7 @@ test("recordAttachmentCoverage: routes each hydration status into the honest buc
   // id is exactly the gap_keys entry, keeping the gap's record_key and the
   // coverage key a single source of truth. Only `failed` is retained.
   assert.deepEqual(
-    coverage.failedRecords.map((r) => r.id),
+    coverage.failedRecords.map((r) => r.record.id),
     ["b:1"]
   );
 });
@@ -3622,11 +3627,11 @@ test("emitMessagesPass: accumulates honest coverage across hydrated, gap, and sk
   // an otherwise-successful run aborts at commit and re-fetches the same window
   // forever. The failed record is retained on the accumulator; one gap per key.
   assert.deepEqual(
-    coverage.failedRecords.map((r) => r.id),
+    coverage.failedRecords.map((r) => r.record.id),
     coverage.gapKeys,
     "exactly one retained failed record per gap_keys entry"
   );
-  const gaps = coverage.failedRecords.map((r) => buildAttachmentDetailGap(r));
+  const gaps = coverage.failedRecords.map((r) => buildAttachmentDetailGap(r.record, r.stage));
   // The gate matches DETAIL_GAP.record_key against the DETAIL_COVERAGE key.
   assert.deepEqual(
     gaps.map((g) => g.record_key),
@@ -3634,7 +3639,9 @@ test("emitMessagesPass: accumulates honest coverage across hydrated, gap, and sk
   );
   // Exact wire shape of the gap for `bad:1`: bounded, non-secret locator
   // (message + part identifiers only), temporary_unavailable (retryable),
-  // pending, reference_only, and no error block (no raw error text crosses).
+  // pending, reference_only. The failure stage (a closed enum, never free
+  // text) rides `detail`/`last_error.class` so the runtime's per-item
+  // no-progress quarantine sees WHICH stage kept failing instead of nothing.
   assert.deepEqual(gaps[0], {
     type: "DETAIL_GAP",
     stream: "attachments",
@@ -3650,11 +3657,17 @@ test("emitMessagesPass: accumulates honest coverage across hydrated, gap, and sk
     },
     retryable: true,
     reference_only: true,
+    detail: { class: "blob_upload_transport_failed" },
+    last_error: { class: "blob_upload_transport_failed" },
   });
-  // Defense-in-depth: the gap carries no error/last_error block, so no raw
-  // hydration_error string (which could echo upstream URLs/text) ever crosses.
-  assert.equal(gaps[0]?.detail, undefined);
-  assert.equal(gaps[0]?.last_error, undefined);
+  // Defense-in-depth: only the closed stage enum crosses, never the raw
+  // hydration_error string (which could echo upstream URLs/text).
+  assert.deepEqual(gaps[0]?.detail, { class: "blob_upload_transport_failed" });
+  assert.deepEqual(gaps[0]?.last_error, { class: "blob_upload_transport_failed" });
+  assert.ok(
+    !JSON.stringify(gaps[0]).includes("hydration_error"),
+    "no raw hydration_error string crosses the wire, only the closed stage enum"
+  );
 });
 
 // ─── messages list-stream coverage evidence ────────────────────────────────

@@ -2438,6 +2438,15 @@ test(
 );
 
 test(
+  // Setup now runs the connector for real (through claim -> ATTEMPTED ->
+  // re-defer) rather than the raw `markGapStatus(..., "in_progress", ...)`
+  // store shortcut, which increments via a different path
+  // (normalizeGapStatusMutation's own attemptDelta) that never reflects real
+  // runtime traffic (grep confirms no production call site uses
+  // markGapStatus with "in_progress" — only claimPendingGaps/ATTEMPTED/
+  // settlement do). See the sibling test "a long run-cap-deferred history
+  // poisons attempt_count..." for the full incident this protects against:
+  // attempt_count must NOT increment on a planned run-cap re-defer at all.
   "runtime does not quarantine Amazon planned run-cap re-deferrals carried as retry_exhausted + run_cap_deferred class",
   withTempDb(async () => {
     const store = createSqliteConnectorDetailGapStore();
@@ -2455,11 +2464,41 @@ test(
     });
     assert.ok(seeded, "seeded is present");
 
+    const plannedDeferGap = {
+      detail_locator: detailLocator,
+      last_error: { class: "run_cap_deferred" },
+      parent_stream: "orders",
+      reason: "retry_exhausted",
+      record_key: orderId,
+      reference_only: true,
+      retryable: true,
+      stream: "order_items",
+      type: "DETAIL_GAP",
+    };
     // biome-ignore lint/style/noIncrementDecrement: the loop counter is local, unambiguous test setup state.
     for (let i = 0; i < 7; i++) {
-      // biome-ignore lint/performance/noAwaitInLoops: ordered setup is intentionally sequential because each iteration advances shared test state.
-      await store.markGapStatus(seeded.gap_id, "in_progress", { runId: `prior_run_${i}` });
-      await forcePendingForTest(store, [seeded.gap_id]);
+      const { connectorPath: priorPath, cleanup: cleanupPrior } = createConnector([
+        plannedDeferGap,
+        { records_emitted: 0, status: "succeeded", type: "DONE" },
+      ]);
+      try {
+        // biome-ignore lint/performance/noAwaitInLoops: ordered setup is intentionally sequential — each run must observe the prior run's durable state.
+        const priorResult = await runConnectorWithGapStore({
+          admitRunConnection: fakeAdmitRunConnection(),
+          connectorId: "amazon",
+          connectorPath: priorPath,
+          detailGapStore: store,
+          grantId: "grant_1",
+          manifest: { streams: [{ name: "order_items" }] },
+          // biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op test double represents an optional side effect.
+          onProgress: () => {},
+          ownerToken: "owner",
+          persistState: false,
+        });
+        assert.equal(priorResult.status, "succeeded");
+      } finally {
+        cleanupPrior();
+      }
     }
 
     const { connectorPath, cleanup } = createConnector([
@@ -2505,9 +2544,224 @@ test(
     const [pendingGap] = pending;
     assert.ok(pendingGap, "pendingGap is present");
     assert.equal(pendingGap.gap_id, seeded.gap_id);
-    assert.equal(pendingGap.attempt_count, 8, "the served attempt is counted without turning planned cap into poison");
+    assert.equal(
+      pendingGap.attempt_count,
+      0,
+      "8 planned run-cap re-defers with zero real diagnostic progress must not increment attempt_count at all"
+    );
     assert.equal(pendingGap.reason, "retry_exhausted");
     assert.equal(asJsonRecord(pendingGap.last_error, "pendingGap.last_error is a record").class, "run_cap_deferred");
+  })
+);
+
+test(
+  // Live-DB root cause (2026-08-01): connector_detail_gaps showed many Gmail
+  // attachment rows status=pending, attempt_count=55/56, last_error.class=
+  // run_cap_deferred — never quarantined (maybeQuarantineDetailGap's
+  // `eligible` gate at runtime/index.ts correctly excludes `run_cap_deferred`
+  // from quarantine ELIGIBILITY), but the counter itself keeps climbing on
+  // every planned-cap re-defer with ZERO real provider work performed.
+  // `attempt_count` has exactly one path back to 0
+  // (requeueQuarantinedTerminalGapsForConnectorInstance, gated on
+  // status='terminal' AND reason='quarantined' — an operator action AFTER
+  // quarantine, never a mid-flight reset). So a long-lived item that cycles
+  // through many honest run-cap defers, then genuinely fails ONE real
+  // attempt with an eligible reason (e.g. a real hydration failure), inherits
+  // the FULL stale count from attempts that never happened and can cross
+  // the no-progress threshold (8) on that single real failure — quarantining
+  // an item that has had at most one genuine no-progress attempt ever.
+  "a long run-cap-deferred history poisons attempt_count so ONE later real no-progress attempt wrongly quarantines",
+  withTempDb(async () => {
+    const store = createSqliteConnectorDetailGapStore();
+    const orderId = "111-2222222-3333336";
+    const detailLocator = { kind: "amazon.order_detail", order_date: "2026-01-05", order_id: orderId };
+    const seeded = await store.upsertPendingGap({
+      connectorId: "amazon",
+      detailLocator,
+      grantId: "grant_1",
+      lastError: { class: "run_cap_deferred" },
+      parentStream: "orders",
+      reason: "retry_exhausted",
+      recordKey: orderId,
+      stream: "order_items",
+    });
+    assert.ok(seeded, "seeded is present");
+
+    // Simulate a long history of PLANNED, no-real-work run-cap re-deferrals —
+    // each one a REAL prior run of the connector, through the SAME
+    // claim -> DETAIL_GAP_ATTEMPTED -> re-defer lease lifecycle production
+    // traffic uses (not a raw store shortcut), that re-defers this served
+    // gap with the SAME run_cap_deferred/retry_exhausted shape every time.
+    // This is the exact "eligible" exclusion the runtime relies on to
+    // protect these items from quarantine — proving the exclusion alone is
+    // not enough, because the counter it reads from is not reset by it.
+    const plannedDeferGap = {
+      detail_locator: detailLocator,
+      last_error: { class: "run_cap_deferred" },
+      parent_stream: "orders",
+      reason: "retry_exhausted",
+      record_key: orderId,
+      reference_only: true,
+      retryable: true,
+      stream: "order_items",
+      type: "DETAIL_GAP",
+    };
+    // biome-ignore lint/style/noIncrementDecrement: the loop counter is local, unambiguous test setup state.
+    for (let i = 0; i < 55; i++) {
+      const { connectorPath: plannedDeferPath, cleanup: cleanupPlannedDefer } = createConnector([
+        plannedDeferGap,
+        { records_emitted: 0, status: "succeeded", type: "DONE" },
+      ]);
+      try {
+        // biome-ignore lint/performance/noAwaitInLoops: ordered setup is intentionally sequential — each run must observe the prior run's durable state.
+        const priorResult = await runConnectorWithGapStore({
+          admitRunConnection: fakeAdmitRunConnection(),
+          connectorId: "amazon",
+          connectorPath: plannedDeferPath,
+          detailGapStore: store,
+          grantId: "grant_1",
+          manifest: { streams: [{ name: "order_items" }] },
+          // biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op test double represents an optional side effect.
+          onProgress: () => {},
+          ownerToken: "owner",
+          persistState: false,
+        });
+        assert.equal(priorResult.status, "succeeded");
+      } finally {
+        cleanupPlannedDefer();
+      }
+    }
+    const afterPlannedDefers = await store.getGapById(seeded.gap_id);
+    assert.ok(afterPlannedDefers, "afterPlannedDefers is present");
+    // THE FIX: a planned run-cap re-defer must NOT increment attempt_count —
+    // `settleLeasedGapPending`'s `countsAsAttempt` gate (server/stores/
+    // connector-detail-gap-store.ts, both SQLite and Postgres backends) only
+    // counts a genuine no-progress class (PLANNED_STOP_RECOVERY_CLASSES
+    // excludes run_cap_deferred/provider_pressure/owner_required/informational).
+    // 55 real runs of the connector, each re-deferring with run_cap_deferred,
+    // must leave the counter at 0.
+    assert.equal(
+      afterPlannedDefers.attempt_count,
+      0,
+      "55 planned run-cap defers with zero real diagnostic progress must not increment attempt_count"
+    );
+    assert.equal(afterPlannedDefers.status, "pending", "still pending — run_cap_deferred correctly never quarantines on its own");
+
+    // ONE later run genuinely attempts this item and it fails with a
+    // GENERIC no-progress reason (not run_cap_deferred) — a real, single
+    // no-progress attempt, its first ever.
+    const { connectorPath, cleanup } = createConnector([
+      {
+        detail_locator: detailLocator,
+        last_error: { class: "transient_no_progress" },
+        parent_stream: "orders",
+        reason: "temporary_unavailable",
+        record_key: orderId,
+        reference_only: true,
+        retryable: true,
+        stream: "order_items",
+        type: "DETAIL_GAP",
+      },
+      { records_emitted: 0, status: "succeeded", type: "DONE" },
+    ]);
+
+    try {
+      const result = await runConnectorWithGapStore({
+        admitRunConnection: fakeAdmitRunConnection(),
+        connectorId: "amazon",
+        connectorPath,
+        detailGapStore: store,
+        grantId: "grant_1",
+        manifest: { streams: [{ name: "order_items" }] },
+        // biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op test double represents an optional side effect.
+        onProgress: () => {},
+        ownerToken: "owner",
+        persistState: false,
+      });
+      assert.equal(result.status, "succeeded");
+    } finally {
+      cleanup();
+    }
+
+    const afterOneRealAttempt = await store.getGapById(seeded.gap_id);
+    assert.ok(afterOneRealAttempt, "afterOneRealAttempt is present");
+    assert.equal(
+      afterOneRealAttempt.attempt_count,
+      1,
+      "exactly one genuine no-progress attempt has ever been made against this item"
+    );
+    assert.equal(
+      afterOneRealAttempt.status,
+      "pending",
+      "a single real no-progress attempt (1 of an 8-attempt budget) must never quarantine an item whose entire prior history was planned run-cap defers"
+    );
+  })
+);
+
+test(
+  // Gmail's served-recovery path ALWAYS sends DETAIL_GAP_ATTEMPTED before it
+  // knows whether the lease will hydrate, hit the byte budget mid-lookup
+  // (settleServedAttachmentRecoveryDeferral(gap, "run_cap_deferred", ...),
+  // packages/polyfill-connectors/connectors/gmail/index.ts), or genuinely
+  // fail. This is the exact shape the live-DB incident reproduced: many
+  // attachment rows at status=pending, attempt_count=55/56,
+  // last_error.class=run_cap_deferred. Proves `markLeasedGapAttempt` no
+  // longer increments `attempt_count` at attempt-DECLARATION time — only
+  // settlement, classified by the settled outcome, does.
+  "a served gap that always declares ATTEMPTED before a planned run-cap re-defer never accrues attempt_count",
+  withTempDb(async () => {
+    const store = createSqliteConnectorDetailGapStore();
+    const seeded = await store.upsertPendingGap({
+      connectorId: "gmail",
+      detailLocator: { kind: "gmail.attachment_detail", message_id: "message_run_cap", part_index: "7" },
+      grantId: "grant_1",
+      lastError: { class: "run_cap_deferred" },
+      parentStream: "messages",
+      reason: "temporary_unavailable",
+      recordKey: "message_run_cap:7",
+      stream: "attachments",
+    });
+    assert.ok(seeded, "seeded is present");
+
+    // biome-ignore lint/style/noIncrementDecrement: the loop counter is local, unambiguous test setup state.
+    for (let i = 0; i < 55; i++) {
+      const runId = `run_${i}`;
+      const leaseId = `lease_${i}`;
+      // biome-ignore lint/performance/noAwaitInLoops: ordered setup is intentionally sequential — each iteration observes durable state from the prior one.
+      const [claimedGapId] = await store.claimPendingGaps([seeded.gap_id], {
+        leaseExpiresAt: "2030-01-01T00:00:00.000Z",
+        leaseId,
+        runId,
+      });
+      assert.equal(claimedGapId, seeded.gap_id, `iteration ${i}: gap must claim cleanly`);
+      // biome-ignore lint/performance/noAwaitInLoops: ordered setup is intentionally sequential — each iteration observes durable state from the prior one.
+      await store.markLeasedGapAttempt({ gapId: seeded.gap_id, leaseId, runId });
+      // biome-ignore lint/performance/noAwaitInLoops: ordered setup is intentionally sequential — each iteration observes durable state from the prior one.
+      await store.settleLeasedGapPending(
+        { gapId: seeded.gap_id, leaseId, runId },
+        {
+          connectorId: "gmail",
+          detailLocator: { kind: "gmail.attachment_detail", message_id: "message_run_cap", part_index: "7" },
+          discoveredRunId: seeded.discovered_run_id,
+          grantId: "grant_1",
+          lastError: { class: "run_cap_deferred" },
+          lastRunId: runId,
+          parentStream: "messages",
+          reason: "temporary_unavailable",
+          recordKey: "message_run_cap:7",
+          stream: "attachments",
+        }
+      );
+    }
+
+    const afterPlannedDefers = await store.getGapById(seeded.gap_id);
+    assert.ok(afterPlannedDefers, "afterPlannedDefers is present");
+    assert.equal(
+      afterPlannedDefers.attempt_count,
+      0,
+      "55 ATTEMPTED-then-run_cap_deferred cycles must not increment attempt_count — this is the exact live-DB shape (pending, attempt_count near budget, last_error.class=run_cap_deferred)"
+    );
+    assert.equal(afterPlannedDefers.status, "pending");
   })
 );
 
@@ -2565,6 +2819,20 @@ test(
         persistState: false,
       });
       assert.equal(result.status, "succeeded");
+      // The owner-facing known_gap this quarantine produces must resolve to
+      // `actionable` (routes to the maintainer-only `code_fix` status line,
+      // never an owner CTA — no owner action un-quarantines an item) rather
+      // than the shared detail_gap fallback of `recoverable` (which the
+      // connection-health coverage policy reads as "already fine", masking
+      // a real permanent data-completeness gap). The message must name the
+      // connector's own captured cause instead of a generic "quarantined"
+      // label with no explanation.
+      const quarantineKnownGap = result.known_gaps?.find(
+        (gap) => gap.kind === "detail_gap" && gap.reason === "quarantined"
+      );
+      assert.ok(quarantineKnownGap, "the quarantine must produce a visible detail_gap known_gap");
+      assert.equal(quarantineKnownGap?.severity, "actionable");
+      assert.match(quarantineKnownGap?.message as string, /transient_no_progress/);
     } finally {
       cleanup();
     }

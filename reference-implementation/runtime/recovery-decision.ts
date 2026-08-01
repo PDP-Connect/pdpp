@@ -109,6 +109,30 @@ export const NON_PRESSURE_RECOVERY_CLASSES: ReadonlySet<RecoveryClass> = new Set
   "unknown",
 ]);
 
+/**
+ * Recovery classes that represent a PLANNED, self-imposed stop with no
+ * diagnostic signal about provider availability — the runtime deferred this
+ * item on its own initiative (blast-radius cap, source-pressure cooldown,
+ * an owner-repair gate, or an out-of-scope/disabled decision) rather than
+ * because a real attempt against the provider made no progress. Shared by
+ * (1) `maybeQuarantineDetailGap`'s eligibility gate (`runtime/index.ts`) —
+ * an item cycling through only these classes must never quarantine, and (2)
+ * the detail-gap store's `attempt_count` write path (`settleLeasedGapPending`,
+ * `server/stores/connector-detail-gap-store.ts`) — a re-defer classified
+ * into one of these must NOT increment the shared no-progress counter both
+ * `maybeQuarantineGap` and `maybeTerminateGap` read their budgets from.
+ * Without (2), a long run-cap-deferred history silently poisons the counter
+ * so a single LATER genuine no-progress attempt (an eligible class) inherits
+ * the full stale count and can cross either budget immediately — quarantining
+ * or terminalizing an item that has had at most one real failed attempt.
+ */
+export const PLANNED_STOP_RECOVERY_CLASSES: ReadonlySet<RecoveryClass> = new Set<RecoveryClass>([
+  "run_cap_deferred",
+  "provider_pressure",
+  "owner_required",
+  "informational",
+]);
+
 // ─── Row projection ──────────────────────────────────────────────────────────
 
 /**

@@ -523,6 +523,18 @@ export function formatAttachmentBackfillSummary(summary: AttachmentBackfillSumma
  * attempt-per-key denominator (threads, labels, message_bodies) emit no
  * coverage rather than a fabricated one.
  */
+/**
+ * One failed attachment hydration, paired with the coarse cause bucket
+ * (`AttachmentHydrationFailureStage`, or `null` for an uncategorized
+ * failure — e.g. a size-cap rejection has no `hydration.failure`). The stage
+ * is a closed enum, never free text, so it carries real diagnostic signal
+ * with zero secret-leak surface when it later rides `DETAIL_GAP.last_error`.
+ */
+interface FailedAttachmentRecord {
+  record: AttachmentRecord;
+  stage: AttachmentHydrationFailureStage | null;
+}
+
 export interface AttachmentDetailCoverage {
   /**
    * Failed attachment records, retained so the run can emit one matching
@@ -532,7 +544,7 @@ export interface AttachmentDetailCoverage {
    * record's `id` is exactly the value that landed in `gapKeys`, keeping the
    * gap's `record_key` and the coverage key a single source of truth.
    */
-  failedRecords: AttachmentRecord[];
+  failedRecords: FailedAttachmentRecord[];
   gapKeys: string[];
   hydratedKeys: string[];
   optionalSkipKeys: string[];
@@ -549,8 +561,18 @@ export function makeAttachmentDetailCoverage(): AttachmentDetailCoverage {
  * its terminal `hydration_status`. A `deferred` status (never hydrated this
  * run) is still a considered key but has no terminal outcome bucket, so it
  * counts only toward the denominator. Pure: mutates the passed accumulator.
+ *
+ * `failureStage` is the coarse cause bucket from `hydrateAttachment`'s
+ * `AttachmentHydrationResult.failure` (IMAP download vs. blob-upload variant),
+ * carried alongside the record so `emitAttachmentDetailGaps` can put it on the
+ * DETAIL_GAP's `last_error.class` instead of discarding it. Omit for a caller
+ * with no `hydration.failure` available (never populated on `hydrated`).
  */
-export function recordAttachmentCoverage(coverage: AttachmentDetailCoverage, record: AttachmentRecord): void {
+export function recordAttachmentCoverage(
+  coverage: AttachmentDetailCoverage,
+  record: AttachmentRecord,
+  failureStage: AttachmentHydrationFailureStage | null = null
+): void {
   coverage.requiredKeys.push(record.id);
   switch (record.hydration_status) {
     case "hydrated":
@@ -561,7 +583,7 @@ export function recordAttachmentCoverage(coverage: AttachmentDetailCoverage, rec
       // Retain the record so a matching DETAIL_GAP is emitted for this key.
       // `gap_keys` on DETAIL_COVERAGE are not enough on their own: the host
       // commit-gate requires a durable pending DETAIL_GAP to credit the key.
-      coverage.failedRecords.push(record);
+      coverage.failedRecords.push({ record, stage: failureStage });
       return;
     case "too_large":
       coverage.optionalSkipKeys.push(record.id);
@@ -626,12 +648,23 @@ async function emitAttachmentDetailCoverage(coverage: AttachmentDetailCoverage |
  * download/network/parse errors with no exhaustion signal, mirroring Amazon's
  * order-detail gap; retrying next run is the honest, non-destructive default.
  *
+ * `failureStage` (from `AttachmentHydrationResult.failure`, `null` when the
+ * hydrator did not classify a failure) rides `last_error.class` when present —
+ * a closed enum (`AttachmentHydrationFailureStage`), never free text, so this
+ * stays within the "no raw error text" bound below. This is what lets the
+ * runtime's per-item no-progress quarantine (after repeated `temporary_unavailable`
+ * re-defers) see WHICH stage kept failing instead of a bare `class: "quarantined"`
+ * with no cause — see `runtime/index.ts`'s `recordQuarantinedDetailGap`.
+ *
  * Reference-only and bounded: only opaque message and part identifiers cross
  * (X-GM-MSGID, the BODYSTRUCTURE part index, and the attachment id). No
  * filename, content, blob bytes, raw error text, tokens, cookies, URLs, request
  * bodies, or payload snippets are carried.
  */
-export function buildAttachmentDetailGap(attachment: AttachmentRecord): DetailGapMessage {
+export function buildAttachmentDetailGap(
+  attachment: AttachmentRecord,
+  failureStage: AttachmentHydrationFailureStage | null = null
+): DetailGapMessage {
   return buildDetailGap({
     stream: "attachments",
     parentStream: "messages",
@@ -643,6 +676,7 @@ export function buildAttachmentDetailGap(attachment: AttachmentRecord): DetailGa
       part_index: attachment.part_index,
       attachment_id: attachment.id,
     },
+    ...(failureStage ? { error: { class: failureStage } } : {}),
   });
 }
 
@@ -776,7 +810,7 @@ async function emitAttachmentRecords(
     // attachment-emission call sites in this connector must agree on when
     // "considered" becomes real.)
     if (emitted && deps.attachmentCoverage) {
-      recordAttachmentCoverage(deps.attachmentCoverage, hydrated);
+      recordAttachmentCoverage(deps.attachmentCoverage, hydrated, hydration.failure?.stage ?? null);
     }
     // `emitted` only proves the record landed, not that hydration succeeded —
     // a `failed` (and `deferred`) attachment still emits a record, and IF
@@ -828,8 +862,8 @@ async function emitAttachmentDetailGaps(coverage: AttachmentDetailCoverage | und
   if (!coverage) {
     return;
   }
-  for (const attachment of coverage.failedRecords) {
-    await emit(buildAttachmentDetailGap(attachment));
+  for (const failed of coverage.failedRecords) {
+    await emit(buildAttachmentDetailGap(failed.record, failed.stage));
   }
 }
 
@@ -2054,7 +2088,7 @@ async function settleServedAttachmentRecoveryAttempt(
   const hydrated = hydration.record;
   const emitted = await deps.emitRecord("attachments", { ...hydrated });
   if (emitted && deps.attachmentCoverage) {
-    recordAttachmentCoverage(deps.attachmentCoverage, hydrated);
+    recordAttachmentCoverage(deps.attachmentCoverage, hydrated, hydration.failure?.stage ?? null);
   }
   // THIS served gap's own lease settles below via exactly one branch:
   // recovered (a matching DETAIL_GAP_RECOVERED, hydrated + emitted) or
@@ -2108,7 +2142,13 @@ async function settleServedAttachmentRecoveryAttempt(
   // exactly the same honest outcome the lookup-miss/byte-budget branches
   // already report, just reached via a different failure mode.
   if (!ownGapRecovered) {
-    await settleServedAttachmentRecoveryDeferral(gap, "hydration_failed", state, deps.emitProtocol);
+    await settleServedAttachmentRecoveryDeferral(
+      gap,
+      "hydration_failed",
+      state,
+      deps.emitProtocol,
+      hydration.failure?.stage ?? null
+    );
   }
   // Emit bounded, non-secret progress as each admitted attempt settles so a
   // long single hydration is visible before the whole recovery lane ends.
@@ -2134,9 +2174,22 @@ type ServedAttachmentRecoveryDeferReason =
   | "metadata_lookup_cap"
   | "run_cap_deferred";
 
+/**
+ * `errorClass` selects WHY the served gap is re-deferred (the fixed
+ * `ServedAttachmentRecoveryDeferReason` vocabulary) and is the default
+ * `last_error.class`. For the `hydration_failed` reason specifically, a real
+ * provider attempt ran and `hydrateAttachment` may have classified WHY it
+ * failed (`AttachmentHydrationFailureStage`, a closed enum) — when present,
+ * `failureStage` overrides `last_error.class` so that finer cause survives
+ * this re-defer instead of collapsing to the generic `hydration_failed`
+ * bucket. This is what lets the runtime's per-item no-progress quarantine
+ * (`runtime/index.ts`'s `recordQuarantinedDetailGap`, fired after repeated
+ * re-defers with no progress) see WHICH stage kept failing.
+ */
 function buildServedAttachmentRecoveryDeferredGap(
   gap: DetailGapStartEntry,
-  errorClass: ServedAttachmentRecoveryDeferReason
+  errorClass: ServedAttachmentRecoveryDeferReason,
+  failureStage: AttachmentHydrationFailureStage | null = null
 ): EmittedMessage {
   const locator =
     gap.detail_locator && typeof gap.detail_locator === "object" && !Array.isArray(gap.detail_locator)
@@ -2152,7 +2205,7 @@ function buildServedAttachmentRecoveryDeferredGap(
     detail_locator: locator,
     reason: "temporary_unavailable",
     retryable: true,
-    last_error: { class: errorClass },
+    last_error: { class: failureStage ?? errorClass },
     gap_id: gap.gap_id,
     ...(gap.lease_id ? { lease_id: gap.lease_id } : {}),
   };
@@ -2175,7 +2228,8 @@ async function settleServedAttachmentRecoveryDeferral(
   gap: DetailGapStartEntry,
   reason: ServedAttachmentRecoveryDeferReason,
   state: ServedAttachmentRecoveryState,
-  emitProtocol: (msg: EmittedMessage) => Promise<void>
+  emitProtocol: (msg: EmittedMessage) => Promise<void>,
+  failureStage: AttachmentHydrationFailureStage | null = null
 ): Promise<void> {
   // Marked settled BEFORE emitting, matching the recovered branch's
   // ordering in settleServedAttachmentRecoveryAttempt — this gap's lease is
@@ -2183,7 +2237,7 @@ async function settleServedAttachmentRecoveryDeferral(
   // hydration this same tick could still find it as an eligible recovery
   // candidate.
   state.settledGapIds.add(gap.gap_id);
-  await emitProtocol(buildServedAttachmentRecoveryDeferredGap(gap, reason));
+  await emitProtocol(buildServedAttachmentRecoveryDeferredGap(gap, reason, failureStage));
 }
 
 async function markServedAttachmentRecoveryAttempt(

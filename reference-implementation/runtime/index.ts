@@ -54,7 +54,7 @@ import {
   validateProgressCollectionRate,
   validateProgressProviderBudget,
 } from "./progress-validators.ts";
-import { classifyRecoveryGap } from "./recovery-decision.ts";
+import { classifyRecoveryGap, PLANNED_STOP_RECOVERY_CLASSES } from "./recovery-decision.ts";
 import { DEFAULT_QUARANTINE_POLICY } from "./recovery-quarantine.ts";
 import { redactStderrTail } from "./stderr-redact.ts";
 import type { StderrTail } from "./stderr-tail.ts";
@@ -3760,16 +3760,39 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         return false;
       }
       durableDetailGaps.push(outcome.gap);
+      // `failure_class` is the connector's OWN classification of why every
+      // no-progress attempt failed (e.g. Gmail's `imap_download_failed` /
+      // `blob_upload_http_4xx` — a closed, connector-declared enum; see
+      // `maybeQuarantineDetailGap`'s `evidence.failure_class`), captured on
+      // the FIRST attempt and threaded through every re-defer, not invented
+      // here. There is NEVER an owner action for a quarantined item (the
+      // per-item no-progress budget has already exhausted retry, and no
+      // credential/consent gap is involved) — `severity: "actionable"`
+      // therefore routes this to the maintainer-only `code_fix` status line
+      // (`runtime/rendered-verdict.ts`), never an owner CTA. The two message
+      // variants keep that status line honest about what is actually known:
+      // a captured cause names the specific connector/system fault, while an
+      // uncaptured one says plainly that the cause needs investigation
+      // instead of guessing "connector code needs a fix" when it might
+      // instead be a permanently-unavailable source item.
+      const failureClass = boundGapString(
+        outcome.gap.last_error && typeof outcome.gap.last_error === "object"
+          ? (outcome.gap.last_error as { failure_class?: unknown }).failure_class
+          : null
+      );
       appendKnownGap(
         buildKnownGap({
           kind: "detail_gap",
-          message: "Repeated no-progress on this item; quarantined for connector diagnosis (siblings keep recovering).",
+          message: failureClass
+            ? `Repeated no-progress on this item (cause: ${failureClass}); quarantined for connector diagnosis (siblings keep recovering).`
+            : "Repeated no-progress on this item with no captured cause; quarantined for connector diagnosis and needs investigation (siblings keep recovering).",
           reason: "quarantined",
           recoveryHint: "not_retriable",
           scope: {
             parent_stream: gapParentStream,
             record_key: isNullish(msg.record_key) ? null : String(msg.record_key),
           },
+          severity: "actionable",
           stream: gapStream,
         })
       );
@@ -3778,6 +3801,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         actor_type: "runtime",
         data: {
           attempt_count: outcome.gap.attempt_count,
+          failure_class: failureClass,
           gap_id: outcome.gap.gap_id,
           grant_id: grantId,
           reason: outcome.gap.reason,
@@ -3936,9 +3960,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         reason: gapReason,
         stream: gapStream,
       }).recoveryClass;
-      const eligible = !["run_cap_deferred", "provider_pressure", "owner_required", "informational"].includes(
-        redeferClass
-      );
+      const eligible = !PLANNED_STOP_RECOVERY_CLASSES.has(redeferClass);
       const outcome = eligible
         ? await maybeQuarantineGap(
             detailGapStore as unknown as Parameters<typeof maybeQuarantineGap>[0],
