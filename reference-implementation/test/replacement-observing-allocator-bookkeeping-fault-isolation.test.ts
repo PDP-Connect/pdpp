@@ -1206,7 +1206,7 @@ test("real Postgres commit-then-reject: a genuine post-INSERT-commit driver fail
   }
 });
 
-// 2026-08-01 fifth (final) gate revision, P1: the fourth revision's
+// 2026-08-01 fifth gate revision, P1: the fourth revision's
 // `reconcileAfterUncertainPersistRejection` returned the volatile
 // in-memory receipt UNCHANGED whenever reconciliation was unavailable or
 // itself failed — indistinguishable, to an ordinary pending lookup, from a
@@ -1219,11 +1219,18 @@ test("real Postgres commit-then-reject: a genuine post-INSERT-commit driver fail
 // lookup still saw rotation 1's stuck receipt as authoritative and never
 // even tried admitting a new one.
 //
-// The fix makes "unknown admission" ledger-owned state
-// (`markStartedAdmissionUnknown`/`isAdmissionUnknown`) that the preparation
-// boundary excludes from ordinary pending and reconciles once before every
-// later same-scope observation.
-test("reject-before-commit plus a transient reconciliation-read failure does not suppress three later successful rotations' audit receipts", async () => {
+// 2026-08-01 sixth (final) gate revision: when reconciliation is
+// PERMANENTLY unresolvable (as here — it always throws), each rotation
+// minting its own new receipt would let one continuous outage grow an
+// unbounded number of unknown admissions in the same scope, one per
+// rotation forever. The bounded fix caps this at one unresolved unknown per
+// connection/profile/surface-subject scope (`ledger.admitStart`): a
+// DIFFERENT new admission attempt in a scope that already owns an
+// unresolved unknown is refused (bookkeeping only — the real allocator call
+// already happened and its result is unaffected). Every later observation
+// still retries reconciliation once, so recovery resumes as soon as the
+// durable store answers again — see the companion scope-change test below.
+test("reject-before-commit plus a permanently unresolvable reconciliation caps unknown admissions and persist attempts at one per scope, while every rotation's real allocator result still survives", async () => {
   // Single allocator instance across all 4 rotations, matching production.
   const ledger = createBrowserSurfaceReplacementLedger();
   const persistedPhases: string[] = [];
@@ -1262,18 +1269,16 @@ test("reject-before-commit plus a transient reconciliation-read failure does not
       // biome-ignore lint/suspicious/useAwait: localized test assertion preserves its explicit contract.
       reconcileStartedAdmission: async () => {
         reconcileCalls += 1;
-        // Transient: the reconciliation READ ITSELF fails (distinct from
-        // "reconciliation confirms absence") — this is the exact
-        // combination the gate's probe used to leave rotation 1's receipt
-        // stuck as unresolved.
-        throw new Error("simulated transient reconciliation-read failure");
+        // Permanently unresolvable — every attempt fails, simulating a
+        // continuous outage rather than one transient blip.
+        throw new Error("simulated permanently unresolvable reconciliation read");
       },
     }
   );
 
   // Rotation 1: fails to persist, and its one reconciliation attempt (made
-  // eagerly inside `record`) is itself transient-unresolvable — the
-  // receipt is marked unknown admission, not rolled back, not resolved.
+  // eagerly inside `record`) is itself unresolvable — the receipt is
+  // marked unknown admission, not rolled back, not resolved.
   const first = await observed.ensureSurface({
     connectorId: surface.connector_id,
     profileKey: surface.profile_key,
@@ -1281,9 +1286,9 @@ test("reject-before-commit plus a transient reconciliation-read failure does not
   });
   allocatorResults.push(first.container_id ?? "");
 
-  // Three LATER, real, successful rotations for the SAME surface. Each
-  // must still get its own persist attempt — none may be silently
-  // suppressed by rotation 1's stuck, unresolved receipt.
+  // Three LATER rotations for the SAME surface/scope, with reconciliation
+  // still permanently down. Each must still get the REAL allocator result —
+  // the bookkeeping bound below only refuses minting further receipts.
   for (const containerId of ["container-2", "container-3", "container-4"]) {
     nextContainerId = containerId;
     // biome-ignore lint/performance/noAwaitInLoops: sequential, resolved-before-the-next rotations are the point of this test.
@@ -1300,28 +1305,29 @@ test("reject-before-commit plus a transient reconciliation-read failure does not
     ["container-1", "container-2", "container-3", "container-4"],
     "every rotation's real allocator result must survive regardless of the bookkeeping fault"
   );
-  // The exact defect: persistCalls stuck at 1 (only rotation 1 ever
-  // attempted, its own rejected write) meant rotations 2-4 never even
-  // tried to persist their own receipts.
+  // Bounded recovery policy: rotation 1's unknown never resolves, so
+  // rotations 2-4 are refused a new admission in the same scope by
+  // `admitStart` — persistCalls never advances past rotation 1's own
+  // rejected attempt.
   assert.equal(
     persistCalls,
-    4,
-    "each of the 4 rotations must attempt its own persist — none may be silently skipped because an earlier receipt is stuck unresolved"
+    1,
+    "a scope with a permanently unresolved unknown admission must not mint unbounded new receipts, one per rotation, forever"
   );
   assert.deepEqual(
     persistedPhases,
-    ["started", "started", "started"],
-    "rotations 2, 3, and 4 must each durably persist their own started receipt"
+    [],
+    "no rotation after the stuck one can durably persist a new receipt while the scope's unknown remains unresolved"
   );
   assert.equal(
     ledger.list().filter((receipt) => ledger.isAdmissionUnknown(receipt.replacement_id)).length,
     1,
-    "repeated reconciliation reads retain only the original unknown admission, not a per-read tracker entry"
+    "a continuous outage retains at most one unknown admission per scope, never one per rotation"
   );
   assert.equal(
     reconcileCalls,
     4,
-    "each observation makes one bounded reconciliation read for the stuck admission; repeated read faults cannot create an unbounded retry loop"
+    "each observation still makes its own bounded reconciliation read for the stuck admission, so recovery can resume as soon as the store answers"
   );
 });
 
@@ -1398,5 +1404,150 @@ test("a later observation for the same scope reconciles an unknown admission eve
     ledger.list().filter((receipt) => ledger.isAdmissionUnknown(receipt.replacement_id)).length,
     0,
     "the exact durable start must be adopted, not retained as unknown"
+  );
+});
+
+// 2026-08-01 sixth (final) gate revision, P1: a continuous run/write outage
+// spanning many rotations must retain at most one unresolved unknown
+// admission per connection/profile/surface-subject scope and a correspondingly
+// bounded number of persist attempts — not one new unknown per rotation.
+test("a continuous 20-rotation outage retains at most one unknown admission and a bounded number of persist attempts, while every rotation's real allocator result still survives", async () => {
+  const ledger = createBrowserSurfaceReplacementLedger();
+  let persistCalls = 0;
+  let reconcileCalls = 0;
+  let liveSurface: BrowserSurface = { ...surface, container_id: "container-0" };
+  let nextContainerId = "container-1";
+
+  const observed = createReplacementObservingAllocator(
+    {
+      // biome-ignore lint/suspicious/useAwait: localized test assertion preserves its explicit contract.
+      ensureSurface: async () => {
+        liveSurface = { ...liveSurface, container_id: nextContainerId };
+        return liveSurface;
+      },
+      getSurfaceStatus: async () => liveSurface,
+      listSurfaces: async () => [liveSurface],
+      stopSurface: async () => null,
+    },
+    {
+      ledger,
+      // biome-ignore lint/suspicious/useAwait: localized test assertion preserves its explicit contract.
+      persist: async () => {
+        persistCalls += 1;
+        throw new Error("simulated continuous outage: every persist rejects");
+      },
+      // biome-ignore lint/suspicious/useAwait: localized test assertion preserves its explicit contract.
+      reconcileStartedAdmission: async () => {
+        reconcileCalls += 1;
+        throw new Error("simulated continuous outage: every reconciliation read fails too");
+      },
+    }
+  );
+
+  const allocatorResults: string[] = [];
+  for (let rotation = 1; rotation <= 20; rotation += 1) {
+    nextContainerId = `container-${rotation}`;
+    // biome-ignore lint/performance/noAwaitInLoops: sequential rotations are the point of this test.
+    const result = await observed.ensureSurface({
+      connectorId: surface.connector_id,
+      profileKey: surface.profile_key,
+      surfaceId: surface.surface_id,
+    });
+    allocatorResults.push(result.container_id ?? "");
+  }
+
+  assert.deepEqual(
+    allocatorResults,
+    Array.from({ length: 20 }, (_, index) => `container-${index + 1}`),
+    "all 20 rotations' real allocator results must survive a continuous receipt-store outage"
+  );
+  assert.equal(
+    persistCalls,
+    1,
+    "only the first rotation's own start ever attempts a persist — the scope's stuck unknown admission blocks every later rotation from minting a new one"
+  );
+  assert.equal(
+    ledger.list().filter((receipt) => ledger.isAdmissionUnknown(receipt.replacement_id)).length,
+    1,
+    "at most one unknown admission is ever retained for the scope, regardless of how many rotations occur during the outage"
+  );
+  assert.equal(
+    reconcileCalls,
+    20,
+    "each rotation still makes its own bounded reconciliation attempt so recovery can resume the moment the store answers"
+  );
+});
+
+// 2026-08-01 sixth (final) gate revision, P1: a successful same-ID retry of
+// a receipt that a prior attempt marked ledger-owned UNKNOWN must adopt it —
+// not leave it stuck unknown forever even after it demonstrably persisted.
+test("a successful same-idempotency-key retry adopts a previously unknown admission", async () => {
+  const ledger = createBrowserSurfaceReplacementLedger();
+  let persistCalls = 0;
+  const liveSurface: BrowserSurface = { ...surface, container_id: "container-0" };
+
+  const observed = createReplacementObservingAllocator(
+    {
+      ensureSurface: () => Promise.resolve({ ...liveSurface, container_id: "container-1" }),
+      getSurfaceStatus: () => Promise.resolve(liveSurface),
+      listSurfaces: () => Promise.resolve([liveSurface]),
+      stopSurface: () => Promise.resolve(null),
+    },
+    {
+      // Fixed attempt id: both the failed first attempt and the later
+      // retry derive the SAME idempotency_key, so `ledger.start` replays
+      // the identical in-memory receipt on retry instead of minting a new
+      // one — the exact same-ID-replay scenario the report described.
+      createEnsureAttemptId: () => "fixed-attempt",
+      ledger,
+      // biome-ignore lint/suspicious/useAwait: localized test assertion preserves its explicit contract.
+      persist: async (receipt) => {
+        persistCalls += 1;
+        if (persistCalls === 1) {
+          throw new Error("simulated reject-before-commit on the first attempt's started write");
+        }
+        return receipt;
+      },
+      // biome-ignore lint/suspicious/useAwait: localized test assertion preserves its explicit contract.
+      reconcileStartedAdmission: async () => {
+        throw new Error("simulated transient reconciliation-read failure");
+      },
+    }
+  );
+
+  await observed.ensureSurface({
+    connectorId: surface.connector_id,
+    profileKey: surface.profile_key,
+    surfaceId: surface.surface_id,
+  });
+
+  const [unknownReceipt] = ledger.list();
+  assert.ok(unknownReceipt, "the first attempt's started receipt must still be in the ledger");
+  assert.equal(
+    ledger.isAdmissionUnknown(unknownReceipt.replacement_id),
+    true,
+    "sanity: marked unknown after rejection"
+  );
+
+  // The store recovers before the retry — persist now succeeds for the
+  // SAME idempotency_key (fixed attempt id, same before/after container
+  // transition), so `ledger.start`'s append-time idempotency replay returns
+  // the SAME in-memory receipt rather than minting a new one.
+  await observed.ensureSurface({
+    connectorId: surface.connector_id,
+    profileKey: surface.profile_key,
+    surfaceId: surface.surface_id,
+  });
+
+  assert.equal(persistCalls, 2, "sanity: the retry actually attempted its own persist");
+  assert.equal(
+    ledger.isAdmissionUnknown(unknownReceipt.replacement_id),
+    false,
+    "a successful same-ID persist retry must adopt the previously unknown admission, not leave it stuck unknown"
+  );
+  assert.equal(
+    ledger.list().filter((receipt) => receipt.replacement_id === unknownReceipt.replacement_id).length,
+    1,
+    "the retry must replay the SAME receipt, not mint a second one for the same idempotency key"
   );
 });

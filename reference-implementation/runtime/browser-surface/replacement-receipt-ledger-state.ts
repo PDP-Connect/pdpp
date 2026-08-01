@@ -80,7 +80,19 @@ export interface BrowserSurfaceReplacementLedgerOptions {
   readonly now?: () => string;
 }
 
+export interface ReplacementAdmissionScope {
+  readonly connection_id: string;
+  readonly profile_key: string;
+  readonly surface_subject_id?: string;
+}
+
 export interface BrowserSurfaceReplacementLedger {
+  /**
+   * Starts a receipt unless a different UNKNOWN admission already owns its
+   * connector/profile/surface scope. Replaying that exact unknown start is
+   * allowed so a later successful append can adopt it.
+   */
+  admitStart: (input: ReplacementStartInput) => ReplacementReceipt | null;
   /**
    * Marks a durably-CONFIRMED `started` admission — clears any "unknown"
    * marker for it (2026-08-01 fifth gate revision) so it is treated as
@@ -107,6 +119,8 @@ export interface BrowserSurfaceReplacementLedger {
    * any "unknown" marker for the id.
    */
   discardUnresolvedStart: (replacementId: string) => void;
+  /** The only selection API that may return ledger-owned UNKNOWN state. */
+  findUnknownAdmission: (scope: ReplacementAdmissionScope) => ReplacementReceipt | null;
   hydrate: (receipts: readonly ReplacementReceipt[]) => void;
   /**
    * True while a `started` receipt's durable admission is UNKNOWN — its
@@ -364,9 +378,11 @@ export function createBrowserSurfaceReplacementLedger(
   }
 
   return {
+    admitStart,
     adoptConfirmedStart,
     complete,
     discardUnresolvedStart,
+    findUnknownAdmission,
     hydrate(hydratedReceipts) {
       hydrateReceipts(hydratedReceipts, append);
     },
@@ -376,7 +392,8 @@ export function createBrowserSurfaceReplacementLedger(
     },
     markStartedAdmissionUnknown,
     selectCurrent(connectionId, surfaceSubjectId, currentGenerationHash) {
-      return selectCurrentForScope(receipts, connectionId, surfaceSubjectId, currentGenerationHash);
+      const selected = selectCurrentForScope(receipts, connectionId, surfaceSubjectId, currentGenerationHash);
+      return selected && !isAdmissionUnknown(selected.replacement_id) ? selected : null;
     },
     start,
     terminate,
@@ -404,6 +421,25 @@ export function createBrowserSurfaceReplacementLedger(
 
   function adoptConfirmedStart(replacementId: string): void {
     unknownAdmissions.delete(replacementId);
+  }
+
+  function admitStart(input: ReplacementStartInput): ReplacementReceipt | null {
+    const identity = startIdentity(input);
+    const idempotencyKey = input.idempotency_key ?? deriveIdempotencyKey("start", identity);
+    const unknown = findUnknownAdmission(admissionScope(identity));
+    if (unknown && unknown.idempotency_key !== idempotencyKey) {
+      return null;
+    }
+    return start(input);
+  }
+
+  function findUnknownAdmission(scope: ReplacementAdmissionScope): ReplacementReceipt | null {
+    return (
+      receipts.find(
+        (receipt) =>
+          receipt.phase === "started" && isAdmissionUnknown(receipt.replacement_id) && inAdmissionScope(receipt, scope)
+      ) ?? null
+    );
   }
 
   function markStartedAdmissionUnknown(replacementId: string): void {
@@ -439,6 +475,24 @@ export function createBrowserSurfaceReplacementLedger(
       receipts.splice(index, 1);
     }
   }
+}
+
+function admissionScope(
+  receipt: Pick<ReplacementReceipt, "connection_id" | "profile_key" | "surface_subject_id">
+): ReplacementAdmissionScope {
+  return {
+    connection_id: receipt.connection_id,
+    profile_key: receipt.profile_key,
+    ...(receipt.surface_subject_id ? { surface_subject_id: receipt.surface_subject_id } : {}),
+  };
+}
+
+function inAdmissionScope(receipt: ReplacementReceipt, scope: ReplacementAdmissionScope): boolean {
+  return (
+    receipt.connection_id === scope.connection_id &&
+    receipt.profile_key === scope.profile_key &&
+    receipt.surface_subject_id === scope.surface_subject_id
+  );
 }
 
 function removeFromIndex(index: Map<string, ReplacementReceipt[]>, key: string, receipt: ReplacementReceipt): void {

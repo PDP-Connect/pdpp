@@ -327,7 +327,7 @@ function ensureReceipt(
 ): Promise<ReplacementReceipt | null> {
   const previousHash = deriveOpaqueGenerationHash(previousContainerId);
   const nextHash = nextContainerId ? `:${deriveOpaqueGenerationHash(nextContainerId)}` : "";
-  const started = options.ledger.start({
+  const started = options.ledger.admitStart({
     ...correlation({
       connector_id: request.connectorId,
       profile_key: request.profileKey,
@@ -337,7 +337,14 @@ function ensureReceipt(
     idempotency_key: `ensure:${surface.surface_id}:${previousHash}${nextHash}:${attemptId}`,
     previous_generation_hash: previousHash,
   });
-  return record(options, started);
+  // `admitStart` returns null when a DIFFERENT unresolved unknown admission
+  // already owns this connection/profile/surface-subject scope — a bounded
+  // recovery policy (2026-08-01 sixth gate revision) that stops a
+  // continuous run of outages from minting one new unknown receipt per
+  // rotation forever. This is audit-receipt bookkeeping only: the real
+  // allocator effect above has already happened and is returned to the
+  // caller regardless.
+  return started ? record(options, started) : Promise.resolve(null);
 }
 
 async function recordEnsureFailure(
@@ -349,7 +356,7 @@ async function recordEnsureFailure(
   if (!before?.container_id) {
     return;
   }
-  const started = options.ledger.start({
+  const started = options.ledger.admitStart({
     ...correlation({
       connector_id: request.connectorId,
       profile_key: request.profileKey,
@@ -358,7 +365,11 @@ async function recordEnsureFailure(
     idempotency_key: `ensure-failed:${request.surfaceId}:${deriveOpaqueGenerationHash(before.container_id)}:${attemptId}`,
     previous_generation_hash: deriveOpaqueGenerationHash(before.container_id),
   });
-  const admitted = await record(options, started);
+  // Same bounded scope gate as `ensureReceipt`: a different unresolved
+  // unknown admission already owns this scope, so no new receipt is
+  // admitted — the real ensureSurface failure this records was already
+  // rethrown to the caller by `performEnsureEffect` regardless.
+  const admitted = started ? await record(options, started) : null;
   // If `started` was never durably admitted (rolled back by `record`),
   // there is nothing to resolve — a receipt that was never effectively
   // created cannot be terminalized, and attempting to would either no-op
@@ -461,7 +472,7 @@ function startStopReceipt(
   }
   const cause = mapStopReasonToReplacementCause(request.reason);
   const attemptId = options.createStopAttemptId?.(request) ?? randomUUID();
-  const started = options.ledger.start({
+  const started = options.ledger.admitStart({
     connection_id: before.surface_subject_id ?? before.connector_id,
     connector_id: before.connector_id,
     profile_key: before.profile_key,
@@ -471,7 +482,11 @@ function startStopReceipt(
     previous_generation_hash: deriveOpaqueGenerationHash(before.container_id),
     surface_id: before.surface_id,
   });
-  return record(options, started);
+  // Same bounded scope gate as `ensureReceipt`: this runs before the real
+  // `stopSurface` call but only as bookkeeping preparation — its caller
+  // (`startStopReceiptObserved`) already tolerates any failure here without
+  // blocking the real allocator call.
+  return started ? record(options, started) : Promise.resolve(null);
 }
 
 /**
@@ -512,7 +527,18 @@ async function record(
   receipt: ReplacementReceipt
 ): Promise<ReplacementReceipt | null> {
   try {
-    return await (options.persist ?? (async (value: ReplacementReceipt) => value))(receipt);
+    const persisted = await (options.persist ?? (async (value: ReplacementReceipt) => value))(receipt);
+    // A same-idempotency-key retry of a `started` receipt that a prior
+    // attempt already marked ledger-owned UNKNOWN (2026-08-01 sixth gate
+    // revision) replays the SAME in-memory receipt (`ledger.start`'s
+    // append-time idempotency replay) — so a persist success here proves
+    // the durable write now committed and the id must be adopted, exactly
+    // like a reconciliation-confirmed durable row. Not doing this left the
+    // receipt marked unknown forever even after it demonstrably persisted.
+    if (persisted.phase === "started" && options.ledger.isAdmissionUnknown(persisted.replacement_id)) {
+      options.ledger.adoptConfirmedStart(persisted.replacement_id);
+    }
+    return persisted;
   } catch (error) {
     reportPersistenceError(options, error);
     if (receipt.phase !== "started") {
