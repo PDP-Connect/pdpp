@@ -19,8 +19,14 @@
 
 import { randomUUID } from "node:crypto";
 import os from "node:os";
+import type { PoolClient } from "pg";
 import { getDb } from "../server/db.ts";
 import { isPostgresStorageBackend, postgresQuery, withPostgresTransaction } from "../server/postgres-storage.ts";
+import {
+  type RunHistorySpineEvent,
+  writePostgresRunHistoryForSpineEvent,
+  writeSqliteRunHistoryForSpineEvent,
+} from "../server/stores/run-history-writer.ts";
 import { type BootEpoch, emitSpineEvent, setCurrentBootEpoch } from "./spine.ts";
 
 export interface BootControllerOpts {
@@ -149,11 +155,14 @@ export interface ReconcileResult {
 
 interface OrphanRow {
   actor_id: string;
+  connector_instance_id: string | null;
   event_id: string;
   original_boot_epoch: string | null;
   original_controller_id: string | null;
   run_id: string | null;
   scenario_id: string | null;
+  source_id: string | null;
+  source_kind: string | null;
   trace_id: string | null;
 }
 
@@ -176,23 +185,23 @@ export function reconcileOrphanedRunsAtBoot(epoch: BootEpoch): Promise<Reconcile
   return reconcileSqlite(epoch);
 }
 
-interface PgClient {
-  query: <T = unknown>(sql: string, params?: unknown[]) => Promise<{ rows: T[]; rowCount: number | null }>;
-}
-
 async function reconcilePostgres(epoch: BootEpoch): Promise<ReconcileResult> {
-  // Single transaction: SELECT orphans, INSERT run.abandoned for each.
+  // Single transaction: SELECT orphans, INSERT run.abandoned for each, then
+  // converge the run_history projection through the same writer authority
+  // normal terminal spine events use (writePostgresRunHistoryForSpineEvent).
   // Unique-violation on spine_run_abandoned_cause_unique → idempotent no-op.
-  return await (withPostgresTransaction as (fn: (c: PgClient) => Promise<ReconcileResult>) => Promise<ReconcileResult>)(
-    async (client: PgClient) => {
-      const { rows } = await client.query<OrphanRow>(
-        `
+  return await withPostgresTransaction(async (client: PoolClient) => {
+    const { rows } = await client.query<OrphanRow>(
+      `
       SELECT
         s.event_id,
         s.run_id,
         s.actor_id,
         s.trace_id,
         s.scenario_id,
+        s.connector_instance_id,
+        s.source_kind,
+        s.source_id,
         s.data_json->>'boot_epoch'    AS original_boot_epoch,
         s.data_json->>'controller_id' AS original_controller_id
       FROM spine_events s
@@ -212,20 +221,25 @@ async function reconcilePostgres(epoch: BootEpoch): Promise<ReconcileResult> {
             AND (r.data_json->>'caused_by_event_id') = s.event_id
         )
       `,
-        [epoch.boot_epoch, epoch.controller_id]
-      );
+      [epoch.boot_epoch, epoch.controller_id]
+    );
 
-      let abandoned = 0;
-      for (const orphan of rows) {
-        // biome-ignore lint/performance/noAwaitInLoops: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
-        const inserted = await emitRunAbandoned(client, orphan, epoch, "postgres");
-        if (inserted) {
-          abandoned += 1;
-        }
+    let abandoned = 0;
+    for (const orphan of rows) {
+      // biome-ignore lint/performance/noAwaitInLoops: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
+      const occurredAt = await emitRunAbandoned(client, orphan, epoch, "postgres");
+      if (occurredAt !== null) {
+        abandoned += 1;
+        // Converge the run_history projection at the same recovery boundary,
+        // through the same writer authority normal terminal spine events use
+        // (writePostgresRunHistoryForSpineEvent) — never a second authority.
+        // No-op (by identity fence) if the row is missing or already terminal.
+        // biome-ignore lint/performance/noAwaitInLoops: Same transaction as the spine insert above; must stay ordered and atomic with it.
+        await writePostgresRunHistoryForSpineEvent(client, toRunHistoryAbandonEvent(orphan, occurredAt));
       }
-      return { abandoned, selected: rows.length };
     }
-  );
+    return { abandoned, selected: rows.length };
+  });
 }
 
 function reconcileSqlite(epoch: BootEpoch): Promise<ReconcileResult> {
@@ -250,6 +264,9 @@ function reconcileSqlite(epoch: BootEpoch): Promise<ReconcileResult> {
       s.actor_id,
       s.trace_id,
       s.scenario_id,
+      s.connector_instance_id,
+      s.source_kind,
+      s.source_id,
       json_extract(s.data_json, '$.boot_epoch')    AS original_boot_epoch,
       json_extract(s.data_json, '$.controller_id') AS original_controller_id
     FROM spine_events s
@@ -275,20 +292,45 @@ function reconcileSqlite(epoch: BootEpoch): Promise<ReconcileResult> {
     // emitSpineEvent handles the SQLite insert internally; idempotency is
     // enforced by the spine_run_abandoned_cause_unique partial index.
     // eslint-disable-next-line no-await-in-loop
-    const inserted = emitRunAbandonedSyncSqlite(orphan, epoch);
-    if (inserted) {
+    const occurredAt = emitRunAbandonedSyncSqlite(orphan, epoch);
+    if (occurredAt !== null) {
       abandoned += 1;
+      // Converge the run_history projection at the same recovery boundary,
+      // through the same writer authority normal terminal spine events use
+      // (writeSqliteRunHistoryForSpineEvent) — never a second authority.
+      // No-op (by identity guard) if the row is missing or already terminal.
+      writeSqliteRunHistoryForSpineEvent(toRunHistoryAbandonEvent(orphan, occurredAt));
     }
   }
   return Promise.resolve({ abandoned, selected: orphans.length });
 }
 
+/**
+ * Project an abandoned orphan onto the shape `writeSqliteRunHistoryForSpineEvent`
+ * / `writePostgresRunHistoryForSpineEvent` expect — the same writer authority
+ * normal terminal spine events flow through (see run-history-writer.ts). Kept
+ * intentionally minimal: an orphan carries no terminal payload of its own
+ * (no records_emitted, no connector_error, etc.), so `data` is empty and every
+ * derived field on the writer side falls back to its documented default.
+ */
+function toRunHistoryAbandonEvent(orphan: OrphanRow, occurredAt: string): RunHistorySpineEvent {
+  return {
+    connectorId: orphan.source_kind === "connector" ? orphan.source_id : null,
+    connectorInstanceId: orphan.connector_instance_id,
+    data: {},
+    eventType: "run.abandoned",
+    occurredAt,
+    runId: orphan.run_id,
+    status: "abandoned",
+  };
+}
+
 async function emitRunAbandoned(
-  client: PgClient,
+  client: PoolClient,
   orphan: OrphanRow,
   epoch: BootEpoch,
   _backend: "postgres" | "sqlite"
-): Promise<boolean> {
+): Promise<string | null> {
   const eventId = `evt_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
   const occurredAt = new Date().toISOString();
   const dataJson = JSON.stringify({
@@ -325,24 +367,24 @@ async function emitRunAbandoned(
         dataJson,
       ]
     );
-    return true;
+    return occurredAt;
   } catch (err) {
     // Idempotency: a prior reconciler already abandoned this orphan.
     // Catch ONLY the named constraint — never blanket-catch 23505.
     const e = err as { code?: string; constraint?: string };
     // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     if (e?.code === "23505" && e?.constraint === "spine_run_abandoned_cause_unique") {
-      return false;
+      return null;
     }
     throw err;
   }
 }
 
-function emitRunAbandonedSyncSqlite(orphan: OrphanRow, epoch: BootEpoch): boolean {
+function emitRunAbandonedSyncSqlite(orphan: OrphanRow, epoch: BootEpoch): string | null {
   const db = getDb();
   // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   if (!db) {
-    return false;
+    return null;
   }
   const raw = db as unknown as {
     prepare: (sql: string) => { run: (...args: unknown[]) => { changes: number } };
@@ -384,7 +426,7 @@ function emitRunAbandonedSyncSqlite(orphan: OrphanRow, epoch: BootEpoch): boolea
       orphan.run_id,
       dataJson
     );
-    return true;
+    return occurredAt;
   } catch (err) {
     // Idempotency on SQLite: better-sqlite3 throws SqliteError with
     // code 'SQLITE_CONSTRAINT_UNIQUE' and the message includes the
@@ -397,7 +439,7 @@ function emitRunAbandonedSyncSqlite(orphan: OrphanRow, epoch: BootEpoch): boolea
       typeof e.message === "string" &&
       e.message.includes("spine_run_abandoned_cause_unique")
     ) {
-      return false;
+      return null;
     }
     throw err;
   }
