@@ -1952,6 +1952,7 @@ async function settleServedAttachmentRecoveryAttempt(
     emitProtocol: (msg: EmittedMessage) => Promise<void>;
     emitRecord: EmitRecordFn;
   },
+  gap: DetailGapStartEntry,
   state: ServedAttachmentRecoveryState,
   hydration: AttachmentHydrationResult
 ): Promise<void> {
@@ -1960,6 +1961,16 @@ async function settleServedAttachmentRecoveryAttempt(
     recordAttachmentCoverage(deps.attachmentCoverage, hydrated);
   }
   const emitted = await deps.emitRecord("attachments", { ...hydrated });
+  // THIS served gap's own lease settles below via exactly one branch:
+  // recovered (a matching DETAIL_GAP_RECOVERED, hydrated + emitted) or
+  // re-deferred (a matching DETAIL_GAP, everything else — including a
+  // "hydrated" record whose emit was scope-filtered out, since `emitted`
+  // false means the host never actually got the blob for THIS lease either).
+  // `findRecoveredAttachmentDetailGaps` may ALSO recover other, unrelated
+  // served gaps that happen to match the same now-hydrated attachment
+  // (same-message dedup) — that loop is additive bookkeeping for those
+  // OTHER leases and does not substitute for settling this one.
+  let ownGapRecovered = false;
   if (emitted && hydrated.hydration_status === "hydrated") {
     const recoveredGaps = findRecoveredAttachmentDetailGaps(deps.detailGaps, hydrated, state.recoveredAttachmentGapIds);
     for (const recoveredGap of recoveredGaps) {
@@ -1973,6 +1984,9 @@ async function settleServedAttachmentRecoveryAttempt(
         stream: "attachments",
       });
       state.recovered += 1;
+      if (recoveredGap.gap_id === gap.gap_id) {
+        ownGapRecovered = true;
+      }
     }
   }
   if (hydrated.hydration_status === "failed") {
@@ -1982,6 +1996,15 @@ async function settleServedAttachmentRecoveryAttempt(
     } else {
       state.attachmentHydrationFailureOutcome.unclassified_failed += 1;
     }
+  }
+  // Uphold the settlement invariant for THIS gap's own lease regardless of
+  // why it wasn't recovered above: a genuine hydration failure, a "hydrated"
+  // record the host declined to emit (scope filter), or any other
+  // non-"hydrated" status all leave the served gap retryable next run —
+  // exactly the same honest outcome the lookup-miss/byte-budget branches
+  // already report, just reached via a different failure mode.
+  if (!ownGapRecovered) {
+    await settleServedAttachmentRecoveryDeferral(gap, "hydration_failed", deps.emitProtocol);
   }
   // Emit bounded, non-secret progress as each admitted attempt settles so a
   // long single hydration is visible before the whole recovery lane ends.
@@ -1993,9 +2016,23 @@ async function settleServedAttachmentRecoveryAttempt(
   });
 }
 
+// Every reason a served/leased attachment gap can be re-deferred as still
+// pending, still carrying its `lease_id` so the runtime settles the SAME
+// lease it granted rather than falling back to a lease_id-less record_key
+// match. `hydration_failed` covers a genuine provider attempt that ran but
+// did not produce a usable blob — previously this outcome was silently
+// dropped (see git history), leaving the runtime-owned lease `attempted`
+// with no settling message and hard-failing an otherwise-successful run at
+// `awaitLeaseAccounting` before STATE ever commits.
+type ServedAttachmentRecoveryDeferReason =
+  | "attachment_lookup_miss"
+  | "hydration_failed"
+  | "metadata_lookup_cap"
+  | "run_cap_deferred";
+
 function buildServedAttachmentRecoveryDeferredGap(
   gap: DetailGapStartEntry,
-  errorClass: "attachment_lookup_miss" | "run_cap_deferred"
+  errorClass: ServedAttachmentRecoveryDeferReason
 ): EmittedMessage {
   const locator =
     gap.detail_locator && typeof gap.detail_locator === "object" && !Array.isArray(gap.detail_locator)
@@ -2015,6 +2052,27 @@ function buildServedAttachmentRecoveryDeferredGap(
     gap_id: gap.gap_id,
     ...(gap.lease_id ? { lease_id: gap.lease_id } : {}),
   };
+}
+
+/**
+ * The ONE invariant this whole module exists to uphold: a served gap whose
+ * attempt was marked (`DETAIL_GAP_ATTEMPTED` sent, runtime-owned lease now
+ * `attempted=true`) must reach EXACTLY ONE explicit, lease_id-bearing
+ * terminal outcome — `DETAIL_GAP_RECOVERED` (settleServedAttachmentRecoveryAttempt's
+ * hydrated branch) or a `DETAIL_GAP` re-defer via this function — before
+ * `processServedAttachmentRecoveryGap` returns. The runtime's
+ * `awaitLeaseAccounting` hard-fails a nominally successful run if any
+ * attempted lease reaches DONE without one (reference-implementation/runtime/
+ * index.ts). Route every post-attempt exit through this function (or the
+ * DETAIL_GAP_RECOVERED emit in `settleServedAttachmentRecoveryAttempt`) —
+ * never let a post-attempt branch `return` without calling one of the two.
+ */
+async function settleServedAttachmentRecoveryDeferral(
+  gap: DetailGapStartEntry,
+  reason: ServedAttachmentRecoveryDeferReason,
+  emitProtocol: (msg: EmittedMessage) => Promise<void>
+): Promise<void> {
+  await emitProtocol(buildServedAttachmentRecoveryDeferredGap(gap, reason));
 }
 
 async function markServedAttachmentRecoveryAttempt(
@@ -2057,7 +2115,10 @@ async function processServedAttachmentRecoveryGap(
 
   // A metadata lookup is a real provider attempt even when it finds no
   // matching message/attachment. The host records this explicit outcome; it
-  // never infers attempt status from a successful DONE envelope.
+  // never infers attempt status from a successful DONE envelope. This check
+  // runs BEFORE the attempt is marked, so hitting the cap here never leaves
+  // a lease attempted-but-unsettled — the gap is simply never attempted this
+  // run and its lease is released untouched at process end.
   if (
     !state.messageCache.has(locator.messageId) &&
     state.metadataLookups >= SERVED_ATTACHMENT_RECOVERY_METADATA_LOOKUP_LIMIT
@@ -2066,18 +2127,30 @@ async function processServedAttachmentRecoveryGap(
   }
   state.attempted += 1;
   await markServedAttachmentRecoveryAttempt(gap, deps.emitProtocol);
+  // From this point on, the lease is attempted and MUST reach an explicit
+  // settlement before this function returns — every remaining branch below
+  // (including the cap hit mid-lookup, which the pre-check above cannot
+  // catch when a DIFFERENT gap's cache-miss lookup consumes the last slot)
+  // routes through settleServedAttachmentRecoveryDeferral or
+  // settleServedAttachmentRecoveryAttempt's DETAIL_GAP_RECOVERED emit.
   const loadedMessage = await loadServedAttachmentRecoveryMessage(client, locator.messageId, state);
   if (loadedMessage === "metadata_lookup_limit_reached") {
+    await settleServedAttachmentRecoveryDeferral(gap, "metadata_lookup_cap", deps.emitProtocol);
     return "metadata_lookup_cap";
   }
   if (!loadedMessage) {
     state.lookupMiss += 1;
-    await deps.emitProtocol(buildServedAttachmentRecoveryDeferredGap(gap, "attachment_lookup_miss"));
+    await settleServedAttachmentRecoveryDeferral(gap, "attachment_lookup_miss", deps.emitProtocol);
     return false;
   }
 
   const normalizedAttachmentKey = normalizeAttachmentRecoveryKey(gap.record_key);
   if (!normalizedAttachmentKey) {
+    // No usable record_key to match a decoded attachment against: this is a
+    // malformed served gap, not a transient miss, but the lease is still
+    // attempted and durable — re-defer it the same way as a lookup miss
+    // rather than leaving it dangling.
+    await settleServedAttachmentRecoveryDeferral(gap, "attachment_lookup_miss", deps.emitProtocol);
     return false;
   }
 
@@ -2089,14 +2162,14 @@ async function processServedAttachmentRecoveryGap(
   );
   if (!attachment) {
     state.lookupMiss += 1;
-    await deps.emitProtocol(buildServedAttachmentRecoveryDeferredGap(gap, "attachment_lookup_miss"));
+    await settleServedAttachmentRecoveryDeferral(gap, "attachment_lookup_miss", deps.emitProtocol);
     return false;
   }
 
   const attachmentBytes =
     typeof attachment.size_bytes === "number" ? attachment.size_bytes : ATTACHMENT_BACKFILL_UNKNOWN_SIZE_FALLBACK_BYTES;
   if (state.admitted > 0 && state.admittedBytesTotal + attachmentBytes > byteBudget) {
-    await deps.emitProtocol(buildServedAttachmentRecoveryDeferredGap(gap, "run_cap_deferred"));
+    await settleServedAttachmentRecoveryDeferral(gap, "run_cap_deferred", deps.emitProtocol);
     return "byte_budget";
   }
 
@@ -2111,7 +2184,7 @@ async function processServedAttachmentRecoveryGap(
   });
 
   const hydration = await deps.hydrateAttachment(loadedMessage, attachment);
-  await settleServedAttachmentRecoveryAttempt(deps, state, hydration);
+  await settleServedAttachmentRecoveryAttempt(deps, gap, state, hydration);
   return false;
 }
 
