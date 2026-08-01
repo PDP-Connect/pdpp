@@ -1589,17 +1589,41 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
   }
 
   /**
-   * Independent periodic sweep. Composes three already-correct operations
-   * that previously only ran boot-once (allocator reconcile) or as a lazy
-   * side effect of an unrelated run's acquire (expiry) — see the 2026-07-10
-   * capacity incident: a queued lease sat 5+ minutes past its own
-   * expires_at because nothing revisited it on a wall clock, and a stale
-   * ready surface over an exited container kept inflating the capacity
-   * count between restarts. This function is the sole periodic caller of
-   * all three; reentrancy-guarded so an overlapping tick is a no-op, and it
-   * never touches an active leased run (none of the composed operations
-   * mutate a leased lease unless the allocator itself reports the surface
-   * gone/unhealthy).
+   * Independent periodic sweep. Composes four already-correct operations
+   * that previously only ran boot-once (allocator reconcile), on-demand via
+   * an explicit controller call with no periodic caller (idle cleanup — see
+   * the 2026-07-31 stale-capacity incident below), or as a lazy side effect
+   * of an unrelated run's acquire (expiry) — see the 2026-07-10 capacity
+   * incident: a queued lease sat 5+ minutes past its own expires_at because
+   * nothing revisited it on a wall clock, and a stale ready surface over an
+   * exited container kept inflating the capacity count between restarts.
+   * This function is the sole periodic caller of all four; reentrancy-guarded
+   * so an overlapping tick is a no-op, and it never touches an active leased
+   * run (none of the composed operations mutate a leased lease unless the
+   * allocator itself reports the surface gone/unhealthy).
+   *
+   * Idle cleanup runs FIRST, before expiry/reclaim: it is the cheapest and
+   * most direct way to free a poisoned capacity slot (stop-and-promote, no
+   * allocator stopSurface retry budget, no reclaim-compatibility check), so
+   * running it first means expiry/reclaim only have to work on whatever
+   * idle cleanup could not already resolve. `cleanupIdleBrowserSurfaces`
+   * itself calls `persistAndPromoteBrowserSurfaceLeases`, which deletes each
+   * promoted lease's `run_id` from `pendingBrowserSurfaceLaunches` as part of
+   * promotion — so a lease this pass promotes is no longer
+   * `waiting_for_browser_surface` by the time `expireBrowserSurfaceWaits`/
+   * `sweepReclaimStillQueuedLeases` run later in the same tick, and cannot be
+   * promoted a second time.
+   *
+   * 2026-07-31 stale-capacity incident: the upstream remote-surface fix
+   * (widening `cleanupIdleSurfaces` past health "ready" so a surface stuck
+   * below "ready" with no active lease is reapable — see
+   * @opendatalabs/remote-surface commits 020f6a0/5705fba) was correct but
+   * inert in production: `cleanupIdleBrowserSurfaces` was only ever exposed
+   * on the Controller interface for on-demand/manual invocation and had NO
+   * periodic caller anywhere in this codebase, so the widened reap logic was
+   * unreachable on the periodic path and two >35-minute-old terminal Amazon
+   * surfaces stayed live and capacity-counted after deploy. Composing it
+   * into this sweep is the fix.
    */
   /** Re-attempt capacity-pressure reclaim for one still-queued lease during a sweep tick. No-op if it settled since the queued snapshot was taken. */
   async function sweepReclaimStillQueuedLease(
@@ -1638,6 +1662,7 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     browserSurfaceSweepInFlight = true;
     try {
       await reconcileBrowserSurfacesWithAllocatorAtBoot();
+      await cleanupIdleBrowserSurfaces();
       await expireBrowserSurfaceWaits();
       await sweepReclaimStillQueuedLeases(browserSurfaceLeaseManager);
     } finally {

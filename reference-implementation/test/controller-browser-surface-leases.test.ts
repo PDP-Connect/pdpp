@@ -338,11 +338,16 @@ function createStopFailingAllocator(): BrowserSurfaceAllocator & {
   };
 }
 
-function createBlockedAllocator(): { allocator: BrowserSurfaceAllocator; unblock: () => void } {
+function createBlockedAllocator(): {
+  allocator: BrowserSurfaceAllocator;
+  stopRequests: StopBrowserSurfaceRequest[];
+  unblock: () => void;
+} {
   let unblock: () => void = () => undefined;
   const ready = new Promise<void>((resolve) => {
     unblock = resolve;
   });
+  const stopRequests: StopBrowserSurfaceRequest[] = [];
   return {
     allocator: {
       ensureSurface: async (request) => {
@@ -371,8 +376,12 @@ function createBlockedAllocator(): { allocator: BrowserSurfaceAllocator; unblock
         surface_id: surfaceId,
       }),
       listSurfaces: async () => [],
-      stopSurface: async () => null,
+      stopSurface: (request) => {
+        stopRequests.push(request);
+        return Promise.resolve(null);
+      },
     },
+    stopRequests,
     unblock,
   };
 }
@@ -1930,6 +1939,227 @@ test("sweep DOES reconcile a leased run whose surface the allocator confirms is 
   assert.equal(managerRef.getSurface("surface_1"), undefined);
 
   releaseFirst();
+  await controller.drainActiveRuns(1000);
+});
+
+// The precise reboot sequence from the live incident, reconciled against
+// the "unhealthy is excluded from capacity" invariant: pdpp-neko-amazon-
+// 1a7d76f91e9df545's PERSISTED row was "unhealthy" (from a prior
+// surface_failed) at the moment reference-implementation restarted at
+// ~23:44. Boot's reconcileSurfacesWithAllocator then queried the STILL-
+// RUNNING (Docker-unhealthy, but not exited) container: the allocator's own
+// #readiness() reports health "starting" whenever its probes cannot
+// positively confirm ready OR see a mismatched-but-successful CDP payload
+// (see neko-surface-allocator-server.ts's #readiness — it fails safe to
+// "starting" for a container whose neko HTTP/CDP probes just don't
+// respond, regardless of Docker's own healthcheck verdict). Reconcile's own
+// downgrade branch (`live.health !== "ready"` → merge the allocator's
+// reported health into the in-memory/persisted surface) turns that
+// persisted "unhealthy" (excluded from capacity) back into "starting"
+// (NOT excluded from capacity) — with the originating lease still terminal
+// and no active lease. This is what let a genuinely-dead-for-2-hours
+// container keep consuming a capacity slot after every restart: without
+// this fix, nothing downstream of that downgrade could ever reap a
+// non-"ready" surface. With this fix, the periodic sweep's (now-composed)
+// idle cleanup reaps it once it ages past idleTtlMs and promotes the
+// queued same-profile run.
+test("boot reconcile downgrades a persisted unhealthy terminal surface back to starting via the allocator's fail-safe probe, and the periodic sweep idle-cleans it after TTL", async (t) => {
+  let now = new Date("2026-07-31T23:44:00.000Z");
+  let leaseSeqForRebootTest = 0;
+  const stopRequestsForRebootTest: StopBrowserSurfaceRequest[] = [];
+  const persistedUnhealthySurface: BrowserSurface = {
+    backend: "neko",
+    cdp_url: "http://127.0.0.1:9222/surface_amazon_stuck",
+    connector_id: "managed",
+    container_id: "pdpp-neko-amazon-1a7d76f91e9df545",
+    created_at: "2026-07-31T21:00:00.000Z",
+    health: "unhealthy",
+    last_used_at: "2026-07-31T21:00:00.000Z",
+    profile_key: "managed-profile",
+    stream_base_url: "http://127.0.0.1:8080/surface_amazon_stuck",
+    surface_id: "surface_amazon_stuck",
+  };
+  const priorTerminalLease: BrowserSurfaceLease = {
+    connector_id: "managed",
+    expires_at: "2026-07-31T21:05:00.000Z",
+    fencing_token: 1,
+    lease_id: "lease_amazon_prior",
+    priority_class: "background",
+    profile_key: "managed-profile",
+    requested_at: "2026-07-31T21:00:00.000Z",
+    run_id: "run_amazon_prior",
+    status: "surface_failed",
+    surface_id: "surface_amazon_stuck",
+    wait_reason: "surface_unhealthy",
+  };
+  const manager = new BrowserSurfaceLeaseManager({
+    config: {
+      defaultPriorityClass: "background",
+      idleTtlMs: 600_000,
+      leaseWaitTimeoutMs: 1_800_000,
+      managedConnectors: new Set(["managed", "other-managed"]),
+      priorityRanks: DEFAULT_NEKO_PRIORITY_RANKS,
+      surfaceCap: 1,
+      surfaceMode: "dynamic",
+    },
+    initialLeases: [priorTerminalLease],
+    initialSurfaces: [persistedUnhealthySurface],
+    makeLeaseId: () => {
+      leaseSeqForRebootTest += 1;
+      return `lease_reboot_${leaseSeqForRebootTest}`;
+    },
+    makeSurfaceId: () => "surface_reboot_new",
+    nextFencingToken: () => 2,
+    now: () => now,
+  });
+  const browserSurfaceLeaseStore = createMemoryBrowserSurfaceLeaseStore();
+  await browserSurfaceLeaseStore.upsertSurface(persistedUnhealthySurface);
+  // The container is STILL RUNNING at boot (Docker-unhealthy, never
+  // exited) — the allocator can still be asked and answers, it just cannot
+  // positively confirm "ready", matching #readiness()'s fail-safe-to-
+  // "starting" behavior for a wedged container whose HTTP/CDP probes don't
+  // respond.
+  const allocator: BrowserSurfaceAllocator = {
+    // The promoted successor run mints a brand-new container that comes up
+    // fine — this is the normal, unblocked replacement path; the point of
+    // this test is the boot-reconcile downgrade + idle-TTL reap of the OLD
+    // surface, not a second stuck container.
+    ensureSurface: (request) =>
+      Promise.resolve({
+        backend: "neko" as const,
+        cdp_url: `http://127.0.0.1:9222/${request.surfaceId}`,
+        connector_id: request.connectorId,
+        created_at: "2026-07-31T23:54:03.000Z",
+        health: "ready" as const,
+        last_used_at: "2026-07-31T23:54:03.000Z",
+        profile_key: request.profileKey,
+        stream_base_url: `http://127.0.0.1:8080/${request.surfaceId}`,
+        surface_id: request.surfaceId,
+      }),
+    getSurfaceStatus: (surfaceId) => {
+      if (surfaceId === persistedUnhealthySurface.surface_id) {
+        return Promise.resolve({ ...persistedUnhealthySurface, health: "starting" as const });
+      }
+      if (surfaceId === "surface_reboot_new") {
+        return Promise.resolve({
+          backend: "neko" as const,
+          cdp_url: `http://127.0.0.1:9222/${surfaceId}`,
+          connector_id: "managed",
+          created_at: "2026-07-31T23:54:03.000Z",
+          health: "ready" as const,
+          last_used_at: "2026-07-31T23:54:03.000Z",
+          profile_key: "managed-profile",
+          stream_base_url: `http://127.0.0.1:8080/${surfaceId}`,
+          surface_id: surfaceId,
+        });
+      }
+      return Promise.resolve(null);
+    },
+    listSurfaces: () => Promise.resolve([{ ...persistedUnhealthySurface, health: "starting" as const }]),
+    stopSurface: (request) => {
+      stopRequestsForRebootTest.push(request);
+      return Promise.resolve(null);
+    },
+  };
+  const { controller } = setup(t, {
+    browserSurfaceAllocator: allocator,
+    browserSurfaceLeaseStore,
+    manager,
+  });
+
+  await controller.reconcileBrowserSurfaceLeasesAfterBoot();
+
+  // The downgrade happened exactly as the incident evidence shows: still
+  // capacity-counted, no active lease.
+  assert.equal(manager.getSurface("surface_amazon_stuck")?.health, "starting");
+  assert.equal(manager.getSurface("surface_amazon_stuck")?.active_lease_id, undefined);
+  assert.deepEqual(await browserSurfaceLeaseStore.getSurface("surface_amazon_stuck"), {
+    ...persistedUnhealthySurface,
+    health: "starting",
+  });
+
+  // A same-profile Amazon run queues on capacity_full immediately after
+  // boot — the exact blocked-queue shape from the live incident.
+  now = new Date("2026-07-31T23:44:01.000Z");
+  const queued = await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_amazon_queued_after_boot",
+  });
+  assert.equal(queued.status, "waiting_for_browser_surface");
+  assert.equal(queued.browser_surface?.browser_surface_wait_reason, "capacity_full");
+  const queuedLeaseId = manager.listLeases().find((lease) => lease.run_id === "run_amazon_queued_after_boot")?.lease_id;
+  assert.ok(queuedLeaseId);
+
+  // The persisted surface's own last_used_at (21:00, from its original
+  // surface_failed) is already well past idleTtlMs by the time reference
+  // restarts (23:44) — exactly the live incident's "unhealthy for ~2h"
+  // timeline. The periodic sweep alone — no manual cleanupIdleBrowserSurfaces
+  // call, no second owner action — reaps the stale downgraded surface and
+  // promotes the queued Amazon run on its very next tick.
+  await controller.sweepBrowserSurfaceLeases();
+
+  assert.deepEqual(
+    stopRequestsForRebootTest.map((request) => request.surfaceId),
+    ["surface_amazon_stuck"]
+  );
+  assert.equal(manager.getSurface("surface_amazon_stuck"), undefined);
+  // Promotion (persistAndPromoteBrowserSurfaceLeases -> scheduleRun) is
+  // fire-and-forget from the sweep's own perspective — the run's surface
+  // creation happens asynchronously after the sweep call returns.
+  // The default mock connector resolves immediately, so by the time
+  // promotion's fire-and-forget scheduleRun actually runs, the lease may
+  // already have completed its whole lifecycle to "released" (same
+  // convention as "sweep retries capacity-pressure reclaim..." above) — the
+  // meaningful assertion is that it was promoted OUT of
+  // waiting_for_browser_surface/capacity_full at all, and the connector ran
+  // for a brand-new surface, not the reaped one.
+  await waitFor(
+    () => manager.getLease(queuedLeaseId)?.status !== "waiting_for_browser_surface",
+    "queued Amazon run should promote after the reaped slot frees up"
+  );
+  assert.equal(manager.getLease(queuedLeaseId)?.surface_id, "surface_reboot_new");
+
+  await controller.drainActiveRuns(1000);
+});
+
+test("sweep never reaps a surface still owned by a live starting_surface lease, even past idle TTL", async (t) => {
+  let now = new Date("2026-05-12T12:00:00.000Z");
+  const { allocator, stopRequests, unblock } = createBlockedAllocator();
+  const manager = createDynamicManager({ leaseWaitTimeoutMs: 1_800_000, now: () => now, surfaceCap: 2 });
+  const { controller } = setup(t, { browserSurfaceAllocator: allocator, manager });
+
+  // Fire-and-forget: this run's ensureSurface call is blocked, so its lease
+  // stays "starting_surface" (no active_lease_id yet, since active_lease_id
+  // is only set once a lease reaches "leased") with a live, in-flight poll
+  // loop — exactly the case the production integration must not race: idle
+  // cleanup composed ahead of expiry/reclaim in the sweep must not treat
+  // "no active_lease_id yet" as "orphaned and idle-reapable".
+  const stillStarting = controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_starting_protected",
+  });
+
+  await waitFor(
+    () => manager.getLease("lease_1")?.status === "starting_surface",
+    "lease should reach starting_surface"
+  );
+
+  now = new Date("2026-05-12T13:00:00.000Z");
+  await controller.sweepBrowserSurfaceLeases();
+  // Never stopped, regardless of what health value the allocator's (fake,
+  // instantly-"ready") status reports via the unrelated allocator-reconcile
+  // pass in the same sweep — the assertion that matters for THIS fix is
+  // that idle cleanup never issued a stop for a surface still owned by a
+  // live starting_surface lease, and the lease itself was never terminalized
+  // by the sweep.
+  assert.equal(stopRequests.length, 0);
+  assert.equal(manager.getLease("lease_1")?.status, "starting_surface");
+  assert.ok(manager.getSurface("surface_1"), "surface must still exist — not reaped");
+
+  unblock();
+  await stillStarting;
   await controller.drainActiveRuns(1000);
 });
 
