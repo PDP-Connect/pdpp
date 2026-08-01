@@ -2198,116 +2198,145 @@ test("recoverServedAttachmentGaps: an unclassified plain blob failure remains re
 
 // ─── Exhaustive settlement-invariant table ─────────────────────────────────
 //
-// THE INVARIANT: once a served gap's attempt is marked (a `DETAIL_GAP_ATTEMPTED`
+// THE INVARIANT: once a served gap's attempt is marked (`DETAIL_GAP_ATTEMPTED`
 // carrying its runtime-owned `lease_id` was emitted), `processServedAttachmentRecoveryGap`
 // must emit EXACTLY ONE explicit, lease_id-bearing terminal outcome for THAT
-// gap_id — `DETAIL_GAP_RECOVERED` or `DETAIL_GAP` — before returning. The
-// runtime (`reference-implementation/runtime/index.ts`, `awaitLeaseAccounting`)
-// hard-fails an otherwise-successful run and aborts STATE commit entirely if
-// any attempted lease reaches DONE unsettled. This table enumerates every
-// return point in `processServedAttachmentRecoveryGap` /
-// `settleServedAttachmentRecoveryAttempt` that can be reached AFTER the
-// attempt mark, plus the two pre-attempt short-circuits (control cases proving
-// a never-attempted gap correctly emits NO DETAIL_GAP_ATTEMPTED and needs no
-// settlement) — so a future branch added to either function without wiring
-// its settlement is a guaranteed local failure here, not a live-only crash six
-// retries deep.
+// gap_id — `DETAIL_GAP_RECOVERED` or `DETAIL_GAP` — AFTER its own ATTEMPTED,
+// before returning. The runtime (`reference-implementation/runtime/index.ts`)
+// enforces this in two independent ways: `awaitLeaseAccounting` hard-fails an
+// otherwise-successful run and aborts STATE commit if any attempted lease
+// reaches DONE unsettled; `handleDetailGapRecovered`/`handleDetailGapAttempted`
+// reject a message against a lease that isn't in the expected state (recovered
+// before attempted, or attempted after its lease was already deleted by an
+// earlier recovery). A single per-gap outcome COUNT is not sufficient to prove
+// this — a duplicate served gap for the same attachment can be recovered by a
+// SIBLING's hydration before its own ATTEMPTED ever fires, which still nets
+// "one recovery + one re-defer = two total, one each" per gap in isolation but
+// is wrong-ordered and fails the run at the runtime boundary. So this table
+// asserts, per attempted gap: exactly one outcome, AND that outcome's index in
+// the overall protocol stream strictly follows that gap's own ATTEMPTED index.
 //
-// `run_cap_deferred` (byte-budget) needs TWO served gaps to exercise the case
-// where a LATER gap in the same batch hits a cap that only becomes full
-// because an EARLIER gap in the same batch was admitted — the guard
-// (`state.admitted > 0 && ...`) is false for the first gap in any batch by
-// construction, so a single-gap scenario can never reach it.
+// `runOrder` accepts the array of served-gap indices in the exact order
+// `recoverServedAttachmentGaps`'s loop must serve them — `messageIds`/`leases`
+// are always index-parallel to gap position (`gap-0`/`lease-0`, ...), so a
+// `sameMessageAs` entry pins two gaps to the identical message/attachment
+// without duplicating message-fixture setup per scenario.
 const SETTLEMENT_TABLE = [
   {
-    name: "hydrated + emitted -> DETAIL_GAP_RECOVERED settles the lease, no DETAIL_GAP re-defer",
-    servedGapCount: 1,
-    hydrateOutcome: "hydrated",
-    expectAttempted: [true],
-    expectRecovered: [true],
-    expectReDeferred: [false],
-    expectReDeferReason: [null],
+    name: "hydrated + emitted -> DETAIL_GAP_RECOVERED, no re-defer",
+    gaps: [{ hydrateOutcome: "hydrated" }],
+    expectReDeferReason: {},
   },
   {
-    name: "hydration_status=failed -> DETAIL_GAP re-defer settles the lease (last_error.class=hydration_failed)",
-    servedGapCount: 1,
-    hydrateOutcome: "failed",
-    expectAttempted: [true],
-    expectRecovered: [false],
-    expectReDeferred: [true],
-    expectReDeferReason: ["hydration_failed"],
+    name: "hydration_status=failed -> DETAIL_GAP re-defer (hydration_failed)",
+    gaps: [{ hydrateOutcome: "failed" }],
+    expectReDeferReason: { 0: "hydration_failed" },
   },
   {
-    name: "Gmail metadata search returns no UID (lookup miss) -> DETAIL_GAP re-defer, last_error.class=attachment_lookup_miss",
-    servedGapCount: 1,
-    hydrateOutcome: "n/a",
-    searchReturnsNothing: true,
-    expectAttempted: [true],
-    expectRecovered: [false],
-    expectReDeferred: [true],
-    expectReDeferReason: ["attachment_lookup_miss"],
+    name: "hydrated but emitRecord()=false (scope-filtered) -> DETAIL_GAP re-defer, not recovered",
+    gaps: [{ emitRecordAccepts: false, hydrateOutcome: "hydrated" }],
+    expectReDeferReason: { 0: "hydration_failed" },
   },
   {
-    name: "message loads but decoded parts don't match the gap's locator -> DETAIL_GAP re-defer, attachment_lookup_miss",
-    servedGapCount: 1,
-    hydrateOutcome: "n/a",
-    attachmentNotFoundInBodystructure: true,
-    expectAttempted: [true],
-    expectRecovered: [false],
-    expectReDeferred: [true],
-    expectReDeferReason: ["attachment_lookup_miss"],
+    name: "Gmail metadata search returns no UID (lookup miss) -> DETAIL_GAP re-defer (attachment_lookup_miss)",
+    gaps: [{ hydrateOutcome: "n/a", searchReturnsNothing: true }],
+    expectReDeferReason: { 0: "attachment_lookup_miss" },
   },
   {
-    name: "byte-budget cap hit by a second served gap mid-run -> that gap's lease still settles (run_cap_deferred)",
-    servedGapCount: 2,
-    hydrateOutcome: "hydrated",
-    forceByteBudgetCapOnSecondGap: true,
-    expectAttempted: [true, true],
-    expectRecovered: [true, false],
-    expectReDeferred: [false, true],
-    expectReDeferReason: [null, "run_cap_deferred"],
+    name: "message loads but decoded parts don't match the gap's locator -> DETAIL_GAP re-defer (attachment_lookup_miss)",
+    gaps: [{ attachmentNotFoundInBodystructure: true, hydrateOutcome: "n/a" }],
+    expectReDeferReason: { 0: "attachment_lookup_miss" },
+  },
+  {
+    name: "malformed record_key (empty string) -> DETAIL_GAP re-defer (attachment_lookup_miss), never reaches the decoder",
+    gaps: [{ hydrateOutcome: "n/a", malformedRecordKey: true }],
+    expectReDeferReason: { 0: "attachment_lookup_miss" },
+  },
+  {
+    name: "byte-budget cap hit by a second served gap mid-run -> that gap re-defers (run_cap_deferred)",
+    gaps: [{ hydrateOutcome: "hydrated" }, { forceOversized: true, hydrateOutcome: "hydrated" }],
+    expectReDeferReason: { 1: "run_cap_deferred" },
+    tinyByteBudget: true,
+  },
+  {
+    name: "two served gaps for the SAME attachment, both hydrate cleanly -> gap-0 recovers, gap-1 reuses the memo and recovers too, gap-1's ATTEMPTED strictly precedes its own recovery (not gap-0's)",
+    gaps: [{ hydrateOutcome: "hydrated" }, { hydrateOutcome: "hydrated", sameMessageAs: 0 }],
+    expectReDeferReason: {},
+  },
+  {
+    name: "two served gaps for the SAME attachment, hydration fails -> gap-0 re-defers, gap-1 reuses the memo and re-defers too (no cross-gap recovery before gap-1's own ATTEMPTED)",
+    gaps: [{ hydrateOutcome: "failed" }, { hydrateOutcome: "failed", sameMessageAs: 0 }],
+    expectReDeferReason: { 0: "hydration_failed", 1: "hydration_failed" },
   },
 ] as const;
 
 for (const scenario of SETTLEMENT_TABLE) {
   test(`recoverServedAttachmentGaps settlement invariant: ${scenario.name}`, async () => {
     const originalBudget = process.env.PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES;
-    if ("forceByteBudgetCapOnSecondGap" in scenario && scenario.forceByteBudgetCapOnSecondGap) {
-      // A tiny budget that the first (small) attachment fits under but the
-      // second attachment — sized to exceed it — cannot.
+    if ("tinyByteBudget" in scenario && scenario.tinyByteBudget) {
       process.env.PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES = String(ATTACHMENT_BACKFILL_PAGE_MIN_BYTES);
     }
     try {
-      const gapCount = scenario.servedGapCount;
-      const notFoundLocator =
-        "attachmentNotFoundInBodystructure" in scenario && scenario.attachmentNotFoundInBodystructure;
       const messagesById = new Map<string, FetchMessageObject>();
       const servedGaps: DetailGapStartEntry[] = [];
-      for (let i = 0; i < gapCount; i += 1) {
-        const messageId = `gmmsgid-table-${scenario.name}-${i}`.replace(/[^a-z0-9-]/giu, "_");
-        const isCapTrigger =
-          i === gapCount - 1 && "forceByteBudgetCapOnSecondGap" in scenario && scenario.forceByteBudgetCapOnSecondGap;
-        const attachmentBytes = isCapTrigger ? 4 * 1024 * 1024 : 16;
-        const message = makeServedRecoveryMsg({
-          attachments: [attachmentBytes],
-          emailId: messageId,
-          threadId: `gmthrid-${messageId}`,
-          uid: 5000 + i,
-        });
-        messagesById.set(messageId, message);
+      // Keyed by attachment id (`${messageId}:1`, since every gap here uses
+      // partIndex 1), not by gap index or emitRecord call order — a
+      // memoized duplicate-attachment settlement never calls emitRecord
+      // again, so a call-order-keyed map would silently misalign.
+      const emitRecordAcceptsByAttachmentId = new Map<string, boolean>();
+      const searchReturnsNothingByMessageId = new Map<string, boolean>();
+      // Attachment id -> hydrate outcome, derived once during gap
+      // construction. Duplicate gaps for the same attachment (sameMessageAs)
+      // always specify the SAME hydrateOutcome as their sibling — the real
+      // provider result for one attachment id can't differ by which served
+      // gap asked for it.
+      const hydrateOutcomeByAttachmentId = new Map<string, "failed" | "hydrated" | "n/a">();
+      scenario.gaps.forEach((gapSpec, i) => {
+        const sameMessageAs = "sameMessageAs" in gapSpec ? gapSpec.sameMessageAs : undefined;
+        const messageId =
+          sameMessageAs === undefined ? `gmmsgid-${scenario.name}-${i}` : `gmmsgid-${scenario.name}-${sameMessageAs}`;
+        const normalizedMessageId = messageId.replace(/[^a-z0-9-]/giu, "_");
+        if (!messagesById.has(normalizedMessageId)) {
+          const attachmentBytes = "forceOversized" in gapSpec && gapSpec.forceOversized ? 4 * 1024 * 1024 : 16;
+          messagesById.set(
+            normalizedMessageId,
+            makeServedRecoveryMsg({
+              attachments: [attachmentBytes],
+              emailId: normalizedMessageId,
+              threadId: `gmthrid-${normalizedMessageId}`,
+              uid: 5000 + i,
+            })
+          );
+        }
+        if ("searchReturnsNothing" in gapSpec && gapSpec.searchReturnsNothing) {
+          searchReturnsNothingByMessageId.set(normalizedMessageId, true);
+        }
+        emitRecordAcceptsByAttachmentId.set(
+          `${normalizedMessageId}:1`,
+          !("emitRecordAccepts" in gapSpec && gapSpec.emitRecordAccepts === false)
+        );
+        hydrateOutcomeByAttachmentId.set(`${normalizedMessageId}:1`, gapSpec.hydrateOutcome);
         servedGaps.push(
           makeServedRecoveryGap({
-            ...(notFoundLocator ? { attachmentId: `${messageId}:nonexistent-part` } : {}),
+            ...("attachmentNotFoundInBodystructure" in gapSpec && gapSpec.attachmentNotFoundInBodystructure
+              ? { attachmentId: `${normalizedMessageId}:nonexistent-part` }
+              : {}),
             gapId: `gap-${i}`,
             leaseId: `lease-${i}`,
-            messageId,
+            messageId: normalizedMessageId,
+            // Duplicate served gaps for the same attachment share
+            // messageId+partIndex — attachmentId defaults to
+            // `${messageId}:${partIndex}` in makeServedRecoveryGap, so two
+            // gaps at partIndex 1 on the same messageId are, correctly, the
+            // exact same attachment.
             partIndex: 1,
+            ...("malformedRecordKey" in gapSpec && gapSpec.malformedRecordKey ? { attachmentId: "" } : {}),
           })
         );
-      }
+      });
 
       const search = mock.fn((query: { emailId?: string }) => {
-        if ("searchReturnsNothing" in scenario && scenario.searchReturnsNothing) {
+        if (query.emailId && searchReturnsNothingByMessageId.get(query.emailId)) {
           return Promise.resolve([]);
         }
         const message = query.emailId ? messagesById.get(query.emailId) : undefined;
@@ -2320,8 +2349,10 @@ for (const scenario of SETTLEMENT_TABLE) {
         return Promise.resolve(message);
       });
 
+      const hydrationCallsByAttachmentId = new Map<string, number>();
       const hydrateAttachment = mock.fn((_msg: FetchMessageObject, attachment: AttachmentRecord) => {
-        if (scenario.hydrateOutcome === "failed") {
+        hydrationCallsByAttachmentId.set(attachment.id, (hydrationCallsByAttachmentId.get(attachment.id) ?? 0) + 1);
+        if (hydrateOutcomeByAttachmentId.get(attachment.id) === "failed") {
           return Promise.resolve(
             failedResult({
               ...attachment,
@@ -2350,6 +2381,11 @@ for (const scenario of SETTLEMENT_TABLE) {
 
       const emitHarness = makeRecordingEmit();
       const emitRecord = async (stream: string, data: Record<string, unknown>): Promise<boolean> => {
+        const attachmentId = typeof data.id === "string" ? data.id : "";
+        const accepted = emitRecordAcceptsByAttachmentId.get(attachmentId) ?? true;
+        if (!accepted) {
+          return false;
+        }
         await emitHarness.emitRecord(stream, data);
         return true;
       };
@@ -2364,9 +2400,10 @@ for (const scenario of SETTLEMENT_TABLE) {
         }
       );
 
+      const gapCount = scenario.gaps.length;
       for (let i = 0; i < gapCount; i += 1) {
         const gapId = `gap-${i}`;
-        const attemptedMsgs = emitHarness.protocolMessages.filter(
+        const attemptedIndex = emitHarness.protocolMessages.findIndex(
           (msg) => msg.type === "DETAIL_GAP_ATTEMPTED" && (msg as { gap_id?: string }).gap_id === gapId
         );
         const recoveredMsgs = emitHarness.protocolMessages.filter(
@@ -2376,60 +2413,64 @@ for (const scenario of SETTLEMENT_TABLE) {
           (msg) => msg.type === "DETAIL_GAP" && (msg as { gap_id?: string }).gap_id === gapId
         );
 
-        assert.equal(
-          attemptedMsgs.length,
-          scenario.expectAttempted[i] ? 1 : 0,
-          `[${gapId}] DETAIL_GAP_ATTEMPTED count mismatch in scenario "${scenario.name}"`
-        );
-
-        if (!scenario.expectAttempted[i]) {
-          // A never-attempted gap must never receive ANY settlement message
-          // either — settling an untouched lease would be its own protocol
-          // violation on the runtime side (lease_id mismatch).
-          assert.equal(recoveredMsgs.length, 0, `[${gapId}] unattempted gap must not be recovered`);
-          assert.equal(reDeferMsgs.length, 0, `[${gapId}] unattempted gap must not be re-deferred`);
-          continue;
-        }
+        assert.notEqual(attemptedIndex, -1, `[${gapId}] scenario "${scenario.name}": must be attempted`);
 
         // THE CORE INVARIANT, per attempted gap: exactly one settlement,
-        // never zero (the production bug) and never both (double-settle
-        // would violate the runtime's single-owner lease CAS).
+        // never zero (the original production bug — a lease that never
+        // settles at all) and never both (a double-settle race against the
+        // runtime's single-owner lease CAS).
         const settlementCount = recoveredMsgs.length + reDeferMsgs.length;
         assert.equal(
           settlementCount,
           1,
           `[${gapId}] scenario "${scenario.name}": attempted lease must reach EXACTLY ONE explicit settlement ` +
-            `(got ${recoveredMsgs.length} DETAIL_GAP_RECOVERED + ${reDeferMsgs.length} DETAIL_GAP) — zero means ` +
-            "the runtime hard-fails an otherwise-successful run at awaitLeaseAccounting before STATE commits; " +
-            "more than one means a double-settle race against the runtime's single-owner lease CAS"
+            `(got ${recoveredMsgs.length} DETAIL_GAP_RECOVERED + ${reDeferMsgs.length} DETAIL_GAP)`
         );
 
-        assert.equal(
-          recoveredMsgs.length === 1,
-          Boolean(scenario.expectRecovered[i]),
-          `[${gapId}] DETAIL_GAP_RECOVERED presence mismatch in scenario "${scenario.name}"`
+        // ORDERING, not just cardinality: this gap's outcome message must
+        // come strictly AFTER this gap's own ATTEMPTED in the protocol
+        // stream — never a sibling's hydration recovering this gap before
+        // the runtime has even received an ATTEMPTED for its lease.
+        const settlementMsg = recoveredMsgs[0] ?? reDeferMsgs[0];
+        const settlementIndex = emitHarness.protocolMessages.indexOf(
+          settlementMsg as (typeof emitHarness.protocolMessages)[number]
         );
-        assert.equal(
-          reDeferMsgs.length === 1,
-          Boolean(scenario.expectReDeferred[i]),
-          `[${gapId}] DETAIL_GAP re-defer presence mismatch in scenario "${scenario.name}"`
+        assert.ok(
+          settlementIndex > attemptedIndex,
+          `[${gapId}] scenario "${scenario.name}": settlement (index ${settlementIndex}) must come strictly after ` +
+            `this gap's own DETAIL_GAP_ATTEMPTED (index ${attemptedIndex}) — a settlement at or before ATTEMPTED ` +
+            "means a sibling recovered this lease before the runtime knew it was attempted, which the runtime " +
+            "rejects (handleDetailGapRecovered/handleDetailGapAttempted, reference-implementation/runtime/index.ts)"
         );
 
-        // Every settlement message — recovered or re-deferred — must carry
-        // the SAME lease_id the runtime granted this gap, so the runtime
-        // settles the exact lease it owns rather than falling back to a
-        // weaker record_key match.
-        const settlementMsg = (recoveredMsgs[0] ?? reDeferMsgs[0]) as { lease_id?: string } | undefined;
+        const settlementLeaseId = (settlementMsg as { lease_id?: string } | undefined)?.lease_id;
         assert.equal(
-          settlementMsg?.lease_id,
+          settlementLeaseId,
           `lease-${i}`,
           `[${gapId}] settlement message must carry this gap's own runtime-granted lease_id`
         );
 
-        const expectedReason = scenario.expectReDeferReason[i];
+        const expectedReason = (scenario.expectReDeferReason as Partial<Record<number, string>> | undefined)?.[i];
         if (expectedReason) {
-          const reDeferMsg = reDeferMsgs[0] as { last_error?: { class?: string } } | undefined;
-          assert.equal(reDeferMsg?.last_error?.class, expectedReason, `[${gapId}] re-defer reason class mismatch`);
+          assert.equal(reDeferMsgs.length, 1, `[${gapId}] expected a re-defer to check its reason`);
+          const reDeferMsg = reDeferMsgs[0] as { last_error?: { class?: string } };
+          assert.equal(reDeferMsg.last_error?.class, expectedReason, `[${gapId}] re-defer reason class mismatch`);
+        } else {
+          assert.equal(recoveredMsgs.length, 1, `[${gapId}] expected a recovery (no re-defer reason specified)`);
+        }
+      }
+
+      // For the duplicate-attachment scenarios specifically: the real IMAP
+      // download + blob upload must only happen ONCE per distinct attachment
+      // id, even though two served gaps both settle against it — the second
+      // gap's turn must reuse the memoized outcome, not redo the provider work.
+      if (scenario.gaps.some((g) => "sameMessageAs" in g)) {
+        for (const [, count] of hydrationCallsByAttachmentId) {
+          assert.equal(
+            count,
+            1,
+            "each distinct attachment id must be hydrated at most once per run, even when served by two gaps"
+          );
         }
       }
     } finally {
@@ -2442,107 +2483,17 @@ for (const scenario of SETTLEMENT_TABLE) {
   });
 }
 
-test("recoverServedAttachmentGaps settlement invariant: the 32nd served gap's own lookup exactly fills the metadata-lookup cap and still settles cleanly (recovered)", async () => {
-  // Boundary proof for the multi-gap cap shape that shipped broken in
-  // production against a live Gmail connection with pending served gaps
-  // exceeding SERVED_ATTACHMENT_RECOVERY_METADATA_LOOKUP_LIMIT (32): the
-  // 32nd distinct-message served gap is the one whose OWN lookup pushes
-  // `metadataLookups` from 31 to exactly 32 (the pre-attempt short-circuit
-  // at `metadataLookups >= LIMIT` passes at 31, so the attempt IS marked)
-  // — and that lookup still resolves and hydrates normally, proving
-  // settlement isn't accidentally skipped anywhere near this boundary. The
-  // "33rd gap" test below covers the complementary case (a gap whose
-  // pre-check correctly short-circuits BEFORE any attempt is marked).
-  const gapCount = 32;
-  const messagesById = new Map<string, FetchMessageObject>();
-  const servedGaps: DetailGapStartEntry[] = [];
-  for (let i = 0; i < gapCount; i += 1) {
-    const messageId = `gmmsgid-owncap-${i}`;
-    const message = makeServedRecoveryMsg({
-      attachments: [16],
-      emailId: messageId,
-      threadId: `gmthrid-${messageId}`,
-      uid: 6000 + i,
-    });
-    messagesById.set(messageId, message);
-    servedGaps.push(makeServedRecoveryGap({ gapId: `gap-${i}`, leaseId: `lease-${i}`, messageId, partIndex: 1 }));
-  }
-
-  const search = mock.fn((query: { emailId?: string }) => {
-    const message = query.emailId ? messagesById.get(query.emailId) : undefined;
-    return Promise.resolve(message ? [message.uid ?? 0] : []);
-  });
-  const fetchOne = mock.fn((range: string) => {
-    const uid = Number(range);
-    const message = [...messagesById.values()].find((candidate) => candidate.uid === uid);
-    assert.ok(message, `unexpected uid lookup: ${range}`);
-    return Promise.resolve(message);
-  });
-  const hydrateAttachment = mock.fn((_msg: FetchMessageObject, attachment: AttachmentRecord) =>
-    Promise.resolve(
-      hydratedResult({
-        ...attachment,
-        blob_ref: {
-          blob_id: `blob-${attachment.id}`,
-          mime_type: attachment.content_type ?? "application/octet-stream",
-          sha256: `sha-${attachment.id}`,
-          size_bytes: attachment.size_bytes ?? 0,
-        },
-        content_sha256: `sha-${attachment.id}`,
-        hydration_error: null,
-        hydration_status: "hydrated" as const,
-      })
-    )
-  );
-
-  const emitHarness = makeRecordingEmit();
-  const emitRecord = async (stream: string, data: Record<string, unknown>): Promise<boolean> => {
-    await emitHarness.emitRecord(stream, data);
-    return true;
-  };
-
-  const summary = await recoverServedAttachmentGaps(
-    { search, fetchOne },
-    {
-      detailGaps: servedGaps,
-      emitProtocol: emitHarness.emit,
-      emitRecord,
-      hydrateAttachment: hydrateAttachment as HydrateAttachmentFn,
-    }
-  );
-
-  assert.equal(summary.attempted, gapCount, "all 32 served gaps against a 32-lookup cap are attempted");
-  assert.equal(summary.metadata_lookups, gapCount, "the cap is exactly filled, not exceeded");
-  for (let i = 0; i < gapCount; i += 1) {
-    const gapId = `gap-${i}`;
-    const attempted = emitHarness.protocolMessages.some(
-      (msg) => msg.type === "DETAIL_GAP_ATTEMPTED" && (msg as { gap_id?: string }).gap_id === gapId
-    );
-    const recovered = emitHarness.protocolMessages.filter(
-      (msg) => msg.type === "DETAIL_GAP_RECOVERED" && (msg as { gap_id?: string }).gap_id === gapId
-    ).length;
-    const reDeferred = emitHarness.protocolMessages.filter(
-      (msg) => msg.type === "DETAIL_GAP" && (msg as { gap_id?: string }).gap_id === gapId
-    ).length;
-    assert.ok(attempted, `[${gapId}] must be attempted`);
-    assert.equal(
-      recovered + reDeferred,
-      1,
-      `[${gapId}] attempted lease must reach exactly one settlement (recovered=${recovered}, re-deferred=${reDeferred})`
-    );
-  }
-});
-
-test("recoverServedAttachmentGaps: 33rd served gap past the metadata-lookup cap is never attempted, so it needs no settlement — but IS silently unaccounted (a distinct, non-crashing undercount, not the settlement invariant)", async () => {
-  // Companion to the SETTLEMENT_TABLE above: this is the pre-attempt
-  // short-circuit control case at scale, proving the settlement invariant
-  // holds vacuously for gaps the loop never reaches. `served: 33,
-  // attempted: 32` is intentional and correct — the 33rd gap's lease is
-  // released untouched at process end. This test does NOT assert the 33rd
-  // gap is accounted anywhere in the summary/protocol stream: it isn't,
-  // which is a separate, already-tracked undercounting behavior, not a
-  // crash risk. See the existing "33 distinct lookup misses cap out at 32
-  // unique metadata calls" test above for that behavior's own coverage.
+test("recoverServedAttachmentGaps: a served gap past the metadata-lookup cap is never attempted, so it needs no settlement (the invariant holds vacuously, not violated)", async () => {
+  // Control case at the real cap boundary (32): the 33rd of 33 served gaps
+  // for 33 DISTINCT messages never gets its attempt marked (the pre-check
+  // short-circuits before markServedAttachmentRecoveryAttempt), so it
+  // correctly needs no settlement. This is the complementary case to the
+  // SETTLEMENT_TABLE above, which only covers gaps that DO get attempted;
+  // this proves the invariant doesn't spuriously fire for one that doesn't.
+  // (The pre-existing "33 distinct lookup misses cap out at 32 unique
+  // metadata calls" test above covers the cap's summary/count behavior;
+  // this test only asserts the settlement-invariant angle, not duplicating
+  // that coverage.)
   const servedGaps = Array.from({ length: 33 }, (_unused, index) =>
     makeServedRecoveryGap({
       gapId: `gap-cap-${index}`,

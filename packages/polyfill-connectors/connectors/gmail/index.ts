@@ -689,10 +689,35 @@ function attachmentDetailGapMatches(
   return true;
 }
 
+// The fresh-discovery pass (emitAttachmentRecords) never marks any served
+// gap's attempt, so it always passes this shared empty set to
+// findRecoveredAttachmentDetailGaps — every served/leased gap is correctly
+// excluded from recovery there, leaving only non-leased gaps eligible.
+const EMPTY_ATTEMPTED_GAP_IDS: ReadonlySet<string> = new Set();
+
+/**
+ * A served gap (carries `lease_id`) is a runtime-owned lease with its own
+ * mandatory lifecycle: `DETAIL_GAP_ATTEMPTED` MUST precede any terminal
+ * outcome, or the runtime's `handleDetailGapAttempted`
+ * (reference-implementation/runtime/index.ts) rejects the attempt against a
+ * lease the recovery path already deleted, failing the run. Recovering a
+ * served gap here BEFORE its own turn in `recoverServedAttachmentGaps`'s loop
+ * marks its attempt — i.e. before this run ever sent `DETAIL_GAP_ATTEMPTED`
+ * for it — is exactly that failure, and it is reachable in practice: two
+ * served gaps can legitimately point at the same Gmail attachment (e.g. a
+ * stale duplicate row, or two distinct failure reasons recorded across
+ * retries before this attachment finally hydrates). `attemptedGapIds` gates
+ * this: a served gap only becomes recoverable once its own attempt has
+ * already been marked THIS run. A non-served gap (no `lease_id` — reached
+ * only via the fresh-discovery `emitAttachmentRecords` path, never through
+ * the leased/served recovery lane) has no lease lifecycle to violate and
+ * remains recoverable unconditionally, matching prior behavior.
+ */
 function findRecoveredAttachmentDetailGaps(
   detailGaps: readonly DetailGapStartEntry[] | undefined,
   attachment: AttachmentRecord,
-  recoveredGapIds: ReadonlySet<string>
+  recoveredGapIds: ReadonlySet<string>,
+  attemptedGapIds: ReadonlySet<string>
 ): DetailGapStartEntry[] {
   const normalizedAttachmentKey = normalizeAttachmentRecoveryKey(attachment.id);
   if (!(normalizedAttachmentKey && Array.isArray(detailGaps)) || detailGaps.length === 0) {
@@ -701,6 +726,13 @@ function findRecoveredAttachmentDetailGaps(
   const matches: DetailGapStartEntry[] = [];
   for (const gap of detailGaps) {
     if (!gap || recoveredGapIds.has(gap.gap_id)) {
+      continue;
+    }
+    if (gap.lease_id && !attemptedGapIds.has(gap.gap_id)) {
+      // A served/leased sibling that hasn't been attempted yet this run:
+      // skip it here — its own turn in the loop settles it through its own
+      // lifecycle (attempt, then lookup/hydrate, then its own recovery check
+      // will find ITS attachment already cached and recover cleanly).
       continue;
     }
     if (attachmentDetailGapMatches(gap, attachment, normalizedAttachmentKey)) {
@@ -742,7 +774,17 @@ async function emitAttachmentRecords(
     if (!emitted || hydrated.hydration_status !== "hydrated") {
       continue;
     }
-    const recoveredGaps = findRecoveredAttachmentDetailGaps(deps.detailGaps, hydrated, recoveredAttachmentGapIds);
+    // This is the fresh-discovery pass — it never sends DETAIL_GAP_ATTEMPTED
+    // for any served/leased gap, so it must never recover one either (an
+    // empty attempted-set correctly excludes every served gap from
+    // findRecoveredAttachmentDetailGaps' matches here; only non-leased gaps,
+    // which have no lease lifecycle to violate, can recover in this pass).
+    const recoveredGaps = findRecoveredAttachmentDetailGaps(
+      deps.detailGaps,
+      hydrated,
+      recoveredAttachmentGapIds,
+      EMPTY_ATTEMPTED_GAP_IDS
+    );
     for (const gap of recoveredGaps) {
       recoveredAttachmentGapIds.add(gap.gap_id);
       await deps.emitProtocol({
@@ -1915,6 +1957,20 @@ interface ServedAttachmentRecoveryState {
   admittedBytesTotal: number;
   attachmentHydrationFailureOutcome: AttachmentHydrationFailureOutcome;
   attempted: number;
+  // Every served gap_id for which DETAIL_GAP_ATTEMPTED has been sent THIS
+  // run — a served (leased) gap is only eligible for
+  // findRecoveredAttachmentDetailGaps until its OWN attempt is marked; before
+  // that, recovering it would settle a lease the runtime never received an
+  // ATTEMPTED for, which the runtime rejects (see findRecoveredAttachmentDetailGaps'
+  // doc comment).
+  attemptedGapIds: Set<string>;
+  // Per-attachment hydration memo, keyed by attachment id (`<X-GM-MSGID>:
+  // <part_index>`) — NOT by messageId (messageCache's key), since two
+  // served gaps for the SAME attachment id (a duplicate leased row) share
+  // one real hydration outcome. Reusing the memoized result instead of
+  // re-fetching/re-uploading avoids doing the actual IMAP download + blob
+  // upload twice for what is, from the provider's perspective, one attempt.
+  hydratedAttachments: Map<string, AttachmentHydrationResult>;
   hydrationFailed: number;
   lookupMiss: number;
   messageCache: Map<string, FetchMessageObject | null>;
@@ -1954,13 +2010,20 @@ async function settleServedAttachmentRecoveryAttempt(
   },
   gap: DetailGapStartEntry,
   state: ServedAttachmentRecoveryState,
-  hydration: AttachmentHydrationResult
+  hydration: AttachmentHydrationResult,
+  // A duplicate served gap for an attachment a sibling gap already hydrated
+  // THIS run reuses that memoized outcome: the coverage accumulator was
+  // already credited and the record was already emitted for the sibling's
+  // turn, so `alreadyEmitted=true` skips both here (never double-count the
+  // denominator, never re-emit the same attachments record) while still
+  // running this gap's own recovery-vs-re-defer decision below.
+  options: { alreadyEmitted: boolean } = { alreadyEmitted: false }
 ): Promise<void> {
   const hydrated = hydration.record;
-  if (deps.attachmentCoverage) {
+  if (!options.alreadyEmitted && deps.attachmentCoverage) {
     recordAttachmentCoverage(deps.attachmentCoverage, hydrated);
   }
-  const emitted = await deps.emitRecord("attachments", { ...hydrated });
+  const emitted = options.alreadyEmitted ? true : await deps.emitRecord("attachments", { ...hydrated });
   // THIS served gap's own lease settles below via exactly one branch:
   // recovered (a matching DETAIL_GAP_RECOVERED, hydrated + emitted) or
   // re-deferred (a matching DETAIL_GAP, everything else — including a
@@ -1972,7 +2035,12 @@ async function settleServedAttachmentRecoveryAttempt(
   // OTHER leases and does not substitute for settling this one.
   let ownGapRecovered = false;
   if (emitted && hydrated.hydration_status === "hydrated") {
-    const recoveredGaps = findRecoveredAttachmentDetailGaps(deps.detailGaps, hydrated, state.recoveredAttachmentGapIds);
+    const recoveredGaps = findRecoveredAttachmentDetailGaps(
+      deps.detailGaps,
+      hydrated,
+      state.recoveredAttachmentGapIds,
+      state.attemptedGapIds
+    );
     for (const recoveredGap of recoveredGaps) {
       state.recoveredAttachmentGapIds.add(recoveredGap.gap_id);
       await deps.emitProtocol({
@@ -2126,6 +2194,7 @@ async function processServedAttachmentRecoveryGap(
     return "metadata_lookup_cap";
   }
   state.attempted += 1;
+  state.attemptedGapIds.add(gap.gap_id);
   await markServedAttachmentRecoveryAttempt(gap, deps.emitProtocol);
   // From this point on, the lease is attempted and MUST reach an explicit
   // settlement before this function returns — every remaining branch below
@@ -2166,6 +2235,19 @@ async function processServedAttachmentRecoveryGap(
     return false;
   }
 
+  // A duplicate served gap for the SAME attachment id (a stale duplicate
+  // lease row, or two distinct failure reasons recorded across retries):
+  // reuse the memoized hydration outcome from the sibling gap that already
+  // did the real IMAP download + blob upload THIS run, rather than doing it
+  // again. This also sidesteps double-charging admitted_bytes for content
+  // that isn't actually re-fetched — the byte budget governs real provider
+  // work, not duplicate bookkeeping.
+  const memoizedHydration = state.hydratedAttachments.get(attachment.id);
+  if (memoizedHydration) {
+    await settleServedAttachmentRecoveryAttempt(deps, gap, state, memoizedHydration, { alreadyEmitted: true });
+    return false;
+  }
+
   const attachmentBytes =
     typeof attachment.size_bytes === "number" ? attachment.size_bytes : ATTACHMENT_BACKFILL_UNKNOWN_SIZE_FALLBACK_BYTES;
   if (state.admitted > 0 && state.admittedBytesTotal + attachmentBytes > byteBudget) {
@@ -2184,6 +2266,7 @@ async function processServedAttachmentRecoveryGap(
   });
 
   const hydration = await deps.hydrateAttachment(loadedMessage, attachment);
+  state.hydratedAttachments.set(attachment.id, hydration);
   await settleServedAttachmentRecoveryAttempt(deps, gap, state, hydration);
   return false;
 }
@@ -2220,6 +2303,8 @@ export async function recoverServedAttachmentGaps(
     admittedBytesTotal: 0,
     attachmentHydrationFailureOutcome: createAttachmentHydrationFailureOutcome(),
     attempted: 0,
+    attemptedGapIds: new Set<string>(),
+    hydratedAttachments: new Map<string, AttachmentHydrationResult>(),
     hydrationFailed: 0,
     lookupMiss: 0,
     metadataLookups: 0,
