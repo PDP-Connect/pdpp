@@ -89,18 +89,35 @@ function readResumableEvidenceSweepResult(
   if (!result.incomplete && result.resumeAfterId !== null) {
     return null;
   }
+  if (result.incomplete && result.resumeAfterId === "") {
+    return null;
+  }
   // `runBoundedSummaryEvidenceSweep`'s cursor always ADVANCES past every
   // page it processes, converged or not (2026-08-01: it no longer rewinds
   // to before a non-converging page — see that function's own doc for why
-  // rewinding could permanently starve the rest of the fleet). So an
-  // incomplete result legitimately resumes from NULL only when this call's
-  // walk never advanced past its starting cursor at all — i.e. the
-  // deadline expired before even reading the first page — which can only
-  // happen when the walk STARTED from NULL (`currentCursor === null`).
-  // After a non-null starting cursor, an incomplete result reporting NULL
-  // would lose known-good progress and is invalid; the fenced lease is the
-  // durable authority for which of those two meanings applies.
-  if (result.incomplete && (result.resumeAfterId === "" || (result.resumeAfterId === null && currentCursor !== null))) {
+  // rewinding could permanently starve the rest of the fleet), and reports
+  // `incomplete: true, resumeAfterId: null` as a deliberate round-robin
+  // WRAP whenever THIS call's own walk reaches the true end of keyset
+  // order — even when it started mid-fleet resuming a prior round (see
+  // `reachedKeysetTail` on `BoundedSweepResult` and `resolveBoundedSweepOutcome`
+  // in connector-summary-read-model.ts: a mid-fleet-started pass that
+  // reaches the tail cannot yet claim complete convergence, so it forces
+  // one more validation pass from position zero instead of reporting
+  // `incomplete: false`). That legitimate wrap is INDISTINGUISHABLE from a
+  // malformed/adapter-fabricated `null` cursor by `{incomplete,
+  // resumeAfterId}` alone — both are `incomplete: true, resumeAfterId:
+  // null` while `currentCursor !== null`. `reachedKeysetTail: true` is the
+  // caller-supplied proof that this call's walk genuinely ran out of ids
+  // to read (2026-08-02 gate finding: the guard rejected this exact
+  // legitimate shape on every real periodic/startup call that reached the
+  // tail from a non-null cursor, throwing "invalid resumable result" and
+  // blocking BOTH the periodic tick and the startup walk in production).
+  // Without that proof, an incomplete `null` cursor resuming from a
+  // non-null position remains invalid — accepting it blind would let a
+  // malformed adapter silently discard known-good progress and restart a
+  // starved fleet; the fenced lease is the durable authority either way.
+  const reachedKeysetTail = result.reachedKeysetTail === true;
+  if (result.incomplete && result.resumeAfterId === null && currentCursor !== null && !reachedKeysetTail) {
     return null;
   }
   return { incomplete: result.incomplete, resumeAfterId: result.resumeAfterId as string | null };

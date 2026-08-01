@@ -2837,6 +2837,23 @@ export interface BoundedSweepResult {
   readonly observedIds: readonly string[];
   /** Complete-set orphan pruning only ran when the sweep covered every page AND every page's fold genuinely converged this call (see below). */
   readonly prunedComplete: boolean;
+  /**
+   * `true` when THIS call's own page-walk reached the true end of keyset
+   * order (`readInstanceIdPage` returned fewer than `pageSize` ids, or
+   * zero) before its deadline/`maxPages` bound stopped it — regardless of
+   * whether every page along the way genuinely converged
+   * (`incomplete`/`anyFoldIncomplete` are independent axes; `prunedComplete`
+   * additionally requires a clean pass and is NOT a substitute for this
+   * flag). This is the signal a caller needs to distinguish a legitimate
+   * `resumeAfterId: null` wrap (the walk genuinely ran out of ids to read,
+   * so restarting from position zero next call is correct) from a
+   * malformed/adapter-fabricated `resumeAfterId: null` that would silently
+   * discard known-good progress (the walk never actually reached the tail
+   * — see `connector-maintenance-sweep.ts`'s
+   * `readResumableEvidenceSweepResult`, which accepts an incomplete `null`
+   * cursor resuming from a non-null position ONLY when this flag is true).
+   */
+  readonly reachedKeysetTail: boolean;
   readonly repaired: number;
   readonly resumeAfterId: string | null;
   readonly skipped: number;
@@ -3089,6 +3106,7 @@ export async function runBoundedSummaryEvidenceSweep(options: {
     incomplete,
     observedIds,
     prunedComplete,
+    reachedKeysetTail: coveredCompleteSet,
     repaired,
     resumeAfterId,
     skipped,
