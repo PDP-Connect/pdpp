@@ -687,7 +687,15 @@ test("real restart: a fresh scheduler instance reopening the SAME on-disk SQLite
 
     // Once the (fast) initial delay elapses relative to the PRE-restart
     // anchor timestamp, the probe becomes due and dispatches for real.
-    await waitFor(() => readAttempts(attemptsPath).length >= 1, 8000);
+    // Wait on the actual terminal-notification condition (onRunComplete),
+    // not just the connector process having started (readAttempts) — the
+    // anchor is now settled and awaited BEFORE onRunComplete fires (see
+    // settleRevalidationProbeAnchor's ordering guarantee in scheduler.ts),
+    // so onRunComplete firing is itself proof the anchor already advanced.
+    await waitFor(
+      () => completedRunsAfterRestart.some((r) => r.status === "failed" && r.source?.revalidationProbe === true),
+      8000
+    );
     schedulerAfterRestart.stop();
 
     const failedProbe = completedRunsAfterRestart.find(
@@ -695,16 +703,16 @@ test("real restart: a fresh scheduler instance reopening the SAME on-disk SQLite
     );
     assert.ok(failedProbe, "the probe dispatched after restart must be tagged as a real revalidation probe");
 
-    // The failed probe must ADVANCE the anchor's attempt count durably —
-    // proving the cross-restart cadence continues to double, not restart
-    // from attempt 0 on every process boundary. The durable write is
-    // fire-and-forget relative to `onRunComplete` (same convention as
-    // `appendRunHistory`'s own persistence), so poll for it rather than
-    // asserting immediately.
-    await waitForAsync(async () => {
-      const anchor = await storeAfterRestart.getSynthesizedRevalidationState(manifest.connector_id);
-      return anchor?.attempt === 1;
-    }, 5000);
+    // The failed probe's anchor advance is now awaited and ordered BEFORE
+    // onRunComplete (see settleRevalidationProbeAnchor's ordering
+    // guarantee) — since onRunComplete already fired above, the anchor
+    // must already be durably advanced; assert directly, no polling.
+    const anchorAfterOnRunComplete = await storeAfterRestart.getSynthesizedRevalidationState(manifest.connector_id);
+    assert.equal(
+      anchorAfterOnRunComplete?.attempt,
+      1,
+      "the anchor must already be advanced to attempt 1 the instant onRunComplete fires"
+    );
     closeDb();
     initDb(dbPath);
     const finalStore = createSqliteSchedulerStore();
@@ -723,7 +731,13 @@ test("alternating reasons do not reset the revalidation cadence — anchor is co
   const attemptsPath = join(tmpDir, "attempts.log");
   writeFileSync(attemptsPath, "", "utf8");
   const connectorPath = join(tmpDir, "connector.mjs");
-  writeFileSync(connectorPath, succeedingConnectorScript(attemptsPath), "utf8");
+  // FAILING (not succeeding) connector: a genuinely successful revalidation
+  // probe now durably CLEARS the anchor (see settleRevalidationProbeAnchor,
+  // scheduler.ts) — correct terminal behavior, but it would race this
+  // test's post-probe anchor-existence assertion below. A failing probe
+  // advances (never clears) the anchor, which is what this test's own
+  // assertion ("a single durable anchor must exist") actually needs.
+  writeFileSync(connectorPath, failingConnectorScript(attemptsPath), "utf8");
   const manifest = dispatchableManifest("alternating-connector");
   const dbPath = freshSqliteDbPath("pdpp-revalidation-alternating-db-");
 
@@ -785,18 +799,25 @@ test("alternating reasons do not reset the revalidation cadence — anchor is co
     // reach admission within a bounded window — proving the reason churn
     // did not reset the clock to zero on every tick.
     await waitFor(() => readAttempts(attemptsPath).length >= 1, 8000);
+    // The durable anchor's `attempt` count only advances via
+    // settleRevalidationProbeAnchor's FAILED-probe branch (see
+    // scheduler.ts), which is reachable only for a real DISPATCHED
+    // revalidation probe (source.revalidationProbe === true) — so
+    // `attempt >= 1` here is itself proof the bounded probe was admitted
+    // and failed, not merely that the connector process was invoked for
+    // some unrelated reason.
+    await waitForAsync(async () => {
+      const anchor = await schedulerStore.getSynthesizedRevalidationState(manifest.connector_id);
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: anchor is genuinely nullable before the first probe attempt lands; ?? 0 is the correct not-yet-reached fallback.
+      return (anchor?.attempt ?? 0) >= 1;
+    }, 5000);
     scheduler.stop();
-
-    assert.equal(
-      readAttempts(attemptsPath)[0],
-      "revalidation",
-      "the bounded probe must eventually admit despite reason churn on every tick"
-    );
 
     // Exactly one anchor row exists for this connector instance — reason
     // churn never created a second, reason-keyed anchor.
     const anchor = await schedulerStore.getSynthesizedRevalidationState(manifest.connector_id);
     assert.ok(anchor, "a single durable anchor must exist, keyed by connector instance only");
+    assert.ok(anchor.attempt >= 1, "the anchor must have advanced from a real dispatched, failed revalidation probe");
   } finally {
     closeDb();
     rmSync(tmpDir, { force: true, recursive: true });

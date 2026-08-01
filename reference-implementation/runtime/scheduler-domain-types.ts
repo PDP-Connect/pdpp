@@ -137,6 +137,19 @@ export interface RunRecord {
 }
 
 export type InteractionHandler = (...args: unknown[]) => unknown;
+/**
+ * Declared `void`-returning (not `Promise<void> | void`) so a plain
+ * synchronous handler — the overwhelming majority of existing callers,
+ * including every test fixture in this repo — keeps TypeScript's
+ * void-returning-context leniency (a function that happens to return a
+ * value, e.g. `(record) => calls.push(record)`, satisfies a declared `void`
+ * return; that leniency does NOT apply once `void` is part of a return-type
+ * union, which would force every such fixture to change). An async handler
+ * is still fully supported at runtime: both run-executor.ts terminal
+ * funnels (`finalizeSuccessOrFailure`, `finalizeExhaustedFailure`) call
+ * `await Promise.resolve(onRunComplete(record))`, which correctly awaits a
+ * real Promise return without the type needing to declare one.
+ */
 export type RunCompleteHandler = (record: RunRecord) => void;
 export type GetStateHandler = (connectorId: string, connectorInstanceId?: string) => Promise<unknown>;
 export type SetStateHandler = (connectorId: string, state: unknown, connectorInstanceId?: string) => Promise<void>;

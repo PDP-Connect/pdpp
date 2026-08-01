@@ -77,18 +77,6 @@ export interface RunExecutorDeps {
         ownerSubjectId: string | null;
       }) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }>)
     | null;
-  /**
-   * Advances the durable synthesized-revalidation cadence anchor's attempt
-   * count when the passed record is a FAILED dispatched revalidation probe
-   * (`source.revalidationProbe === true`); a no-op otherwise. Shared with
-   * scheduler.ts's `recordAndNotify` (defined there since it owns
-   * `synthesizedRevalidationStore`'s construction) — called here because
-   * `finalizeSuccessOrFailure`/`finalizeExhaustedFailure` are the ACTUAL
-   * funnel for dispatched-run terminal outcomes, not `recordAndNotify`
-   * (which only ever sees pre-dispatch skip records in this module's
-   * calls).
-   */
-  advanceFailedRevalidationProbeAnchor: (record: RunRecord) => void;
   getState: GetStateHandler;
   handleGrantFailureDisable: (reason: string | null | undefined, connectorInstanceId: string) => void;
   isManagedConnector: IsManagedConnectorHandler;
@@ -109,6 +97,20 @@ export interface RunExecutorDeps {
     | null
     | undefined;
   setState: SetStateHandler;
+  /**
+   * Settles the durable synthesized-revalidation cadence anchor for a
+   * terminal DISPATCHED revalidation probe record: a FAILED probe advances
+   * the attempt count, a SUCCEEDED probe clears the anchor. A no-op for
+   * every other record shape. Defined in scheduler.ts (which owns
+   * `synthesizedRevalidationStore`'s construction) — called here because
+   * `finalizeSuccessOrFailure`/`finalizeExhaustedFailure` are the ACTUAL
+   * funnel for dispatched-run terminal outcomes, not scheduler.ts's
+   * `recordAndNotify` (which only ever sees pre-dispatch skip records in
+   * this module's calls). MUST be awaited before the run's terminal
+   * completion becomes externally observable — see its doc comment in
+   * scheduler.ts.
+   */
+  settleRevalidationProbeAnchor: (record: RunRecord) => Promise<void>;
 }
 
 // ─── Public interface ─────────────────────────────────────────────────────────
@@ -611,7 +613,6 @@ function controllerRunNowDeferReason(err: unknown): string | null {
 export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
   const {
     admitRunConnection,
-    advanceFailedRevalidationProbeAnchor,
     getState,
     handleGrantFailureDisable,
     isManagedConnector,
@@ -629,6 +630,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     runManagedConnectorViaController,
     schedulerStore,
     setState,
+    settleRevalidationProbeAnchor,
   } = deps;
 
   async function finalizeSuccessOrFailure(
@@ -647,6 +649,40 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
       revalidationProbe: call.triggerKind === "revalidation",
       startedAt,
     });
+
+    // Load-bearing and MUST run before ANY terminal publication —
+    // `runtime.history.push` (synchronous, instantly makes the record
+    // in-process-visible to `getHistory()`/`getStats()`),
+    // `schedulerStore.appendRunHistory` (SQLite's `exec()` is itself
+    // synchronous — the row is durably committed before this async
+    // function's next `await` even runs, i.e. before the `.catch(...)`
+    // handler is attached), and `onRunComplete` (spine/UI notification).
+    // Settling first closes the crash window where a process death between
+    // history-append and anchor-settle would leave a durable terminal
+    // record with a stale/unsettled anchor. Awaited WITHOUT a catch: a
+    // durable-store failure here propagates out of
+    // `finalizeSuccessOrFailure` (and therefore out of `launchRun`/
+    // `runNow`) BEFORE any history row or notification exists for this
+    // record — no external consumer, on a crash immediately after, could
+    // ever observe this run at all, durably or otherwise.
+    //
+    // Crash-window safety of the two directions this can advance:
+    //   - FAILED probe (attempt count advances): conservative. A crash
+    //     between settling and history-append means the doubling delay was
+    //     applied slightly before the failure became visible elsewhere —
+    //     it can only make the NEXT probe wait longer or equal, never
+    //     admit more often than intended.
+    //   - SUCCEEDED probe (anchor cleared): also safe on a crash right
+    //     after. If the success record never durably lands (process dies
+    //     before `appendRunHistory` completes), the synthesized evidence
+    //     this cadence exists to reprobe is re-derived from `run_history`/
+    //     `connector_summary_evidence` on the next tick — since the
+    //     success never landed there, the stale evidence is still present,
+    //     `gateAttention` observes it as a FRESH sighting (no anchor), and
+    //     re-arms the FULL initial delay. Worst case is one extra
+    //     wait-the-initial-delay cycle, never a silently-suppressed
+    //     connector and never a faster-than-intended re-probe.
+    await settleRevalidationProbeAnchor(record);
 
     // Capture pre-success streak state so we can emit a one-shot
     // `schedule.back_off.cleared` transition marker iff this success
@@ -676,8 +712,15 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
       await setState(connectorId, result.state, connectorInstanceId);
     }
 
-    onRunComplete(record);
-    advanceFailedRevalidationProbeAnchor(record);
+    // `onRunComplete` is a general-purpose notification hook (spine events,
+    // UI, logging) — awaited so an async handler's work is ordered before
+    // this function returns, but its failure does not fail the run's
+    // terminal completion. Reached only once the anchor has already
+    // settled (above) AND history has already been appended.
+    await Promise.resolve(onRunComplete(record)).catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[scheduler] onRunComplete handler failed for ${connectorId}: ${message}`);
+    });
 
     // Streak-cleared transition. Resets both announce-once maps so a
     // future degradation can re-promote (and re-announce). The
@@ -796,6 +839,40 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     return { admitted, call: leasedCall, clear, watchdog };
   }
 
+  // Outcome of the connector-invocation phase alone (before
+  // `finalizeSuccessOrFailure` runs): "finalize" carries what that call
+  // needs; "retry"/"give-up" mirror `AttemptOutcome`'s same-named kinds one
+  // level up. Kept distinct from `AttemptOutcome` so a `finalizeSuccessOrFailure`
+  // rejection (handled by the caller, `runSingleAttempt`, OUTSIDE this
+  // phase's try/catch) can never be reclassified as a connector failure.
+  type InvocationOutcome =
+    | { kind: "finalize"; result: RunConnectorResult }
+    | { kind: "give-up"; error: RunConnectorError | null }
+    | { kind: "retry"; error: RunConnectorError };
+
+  async function invokeAndClassifyAttempt(
+    schedule: ConnectorSchedule,
+    attempt: number,
+    lease: Awaited<ReturnType<typeof createActiveRunAttemptLease>>
+  ): Promise<InvocationOutcome> {
+    const { maxRetries = 2 } = schedule;
+    const { watchdog } = lease;
+    const result = await invokeRunConnector(lease.call);
+    if (watchdog.timedOut()) {
+      return { error: runTimedOutError(result, maxRunWallClockMs), kind: "give-up" };
+    }
+    const candidateError: RunConnectorError = {
+      connector_error: result.connector_error || null,
+      failure_reason: result.terminal_reason === "connector_protocol_violation" ? result.terminal_reason : null,
+      known_gaps: result.known_gaps || null,
+      terminal_reason: result.terminal_reason || null,
+    };
+    if (result.status !== "succeeded" && attempt <= maxRetries && shouldRetryRunFailure(candidateError)) {
+      return { error: describeFailedRunResult(result), kind: "retry" };
+    }
+    return { kind: "finalize", result };
+  }
+
   async function runSingleAttempt(
     schedule: ConnectorSchedule,
     call: RunConnectorCall,
@@ -804,7 +881,6 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     const { maxRetries = 2 } = schedule;
     const startedAt = nowIso();
     const lease = await createActiveRunAttemptLease(schedule, call, attempt, startedAt);
-    const { watchdog } = lease;
 
     try {
       if (!lease.admitted) {
@@ -815,29 +891,35 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
           ),
         };
       }
-      const result = await invokeRunConnector(lease.call);
-      if (watchdog.timedOut()) {
-        return { error: runTimedOutError(result, maxRunWallClockMs), kind: "give-up" };
-      }
-      const candidateError: RunConnectorError = {
-        connector_error: result.connector_error || null,
-        failure_reason: result.terminal_reason === "connector_protocol_violation" ? result.terminal_reason : null,
-        known_gaps: result.known_gaps || null,
-        terminal_reason: result.terminal_reason || null,
-      };
 
-      if (result.status !== "succeeded" && attempt <= maxRetries && shouldRetryRunFailure(candidateError)) {
-        return { error: describeFailedRunResult(result), kind: "retry" };
+      let invocation: InvocationOutcome;
+      try {
+        invocation = await invokeAndClassifyAttempt(schedule, attempt, lease);
+      } catch (err) {
+        const error = coerceRunError(err);
+        if (attempt <= maxRetries && shouldRetryRunFailure(error)) {
+          return { error, kind: "retry" };
+        }
+        return { error, kind: "give-up" };
+      }
+      if (invocation.kind !== "finalize") {
+        return invocation;
       }
 
-      const record = await finalizeSuccessOrFailure(schedule, call, result, startedAt, attempt);
+      // `finalizeSuccessOrFailure` deliberately runs OUTSIDE the inner
+      // try/catch above: it has already built and persisted the terminal
+      // record (and may have already reported it via `onRunComplete`) by
+      // the time `settleRevalidationProbeAnchor` runs inside it. A
+      // rejection here is a durable-anchor persistence failure on an
+      // ALREADY-DETERMINED outcome (frequently a genuine SUCCESS), never a
+      // signal that the connector attempt itself should be
+      // retried/reclassified as a failure — reclassifying it that way
+      // would record a FALSE failed run (via `finalizeExhaustedFailure`)
+      // for a connector that actually succeeded. It propagates directly
+      // out of `runSingleAttempt` (uncaught here) and therefore out of
+      // `launchRun`.
+      const record = await finalizeSuccessOrFailure(schedule, call, invocation.result, startedAt, attempt);
       return { kind: "done", record };
-    } catch (err) {
-      const error = coerceRunError(err);
-      if (attempt <= maxRetries && shouldRetryRunFailure(error)) {
-        return { error, kind: "retry" };
-      }
-      return { error, kind: "give-up" };
     } finally {
       await lease.clear();
     }
@@ -847,12 +929,12 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
   // store append, last-run timestamp, terminal-grant handling, completion
   // notification. Pulled out so `runWithRetries` only orchestrates the retry
   // loop and trusts this helper for the failure tail.
-  function finalizeExhaustedFailure(
+  async function finalizeExhaustedFailure(
     schedule: ConnectorSchedule,
     lastError: RunConnectorError | null,
     attempt: number,
     revalidationProbe = false
-  ): RunRecord {
+  ): Promise<RunRecord> {
     const { connectorId, connectorInstanceId = connectorId } = schedule;
     const failRecord = buildExhaustedFailureRecord({
       attempt,
@@ -861,6 +943,14 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
       lastError,
       revalidationProbe,
     });
+    // See finalizeSuccessOrFailure's identical comment: settlement is
+    // load-bearing and MUST run before ANY terminal publication (history
+    // append, notification) — a `finalizeExhaustedFailure` record is
+    // always a FAILED record, so this is always the conservative
+    // attempt-count-advance direction (a crash right after can only make
+    // the next probe wait longer, never fire early).
+    await settleRevalidationProbeAnchor(failRecord);
+
     runtime.history.push(failRecord);
     if (schedulerStore) {
       Promise.resolve(schedulerStore.appendRunHistory(toStoredRunRecord(failRecord))).catch((err: unknown) => {
@@ -870,8 +960,10 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     }
     persistLastRunTime(connectorId, connectorInstanceId, Date.now());
     handleGrantFailureDisable(failRecord.terminalReason ?? failRecord.failureReason, connectorInstanceId);
-    onRunComplete(failRecord);
-    advanceFailedRevalidationProbeAnchor(failRecord);
+    await Promise.resolve(onRunComplete(failRecord)).catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[scheduler] onRunComplete handler failed for ${connectorId}: ${message}`);
+    });
     return failRecord;
   }
 

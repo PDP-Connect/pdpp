@@ -241,8 +241,8 @@ function fromStoredRunRecord(record: SchedulerRunHistoryRecord): RunRecord {
   // marker on the persisted `source_json` blob (see RunSource's doc
   // comment), not something safe to silently drop on rehydration. Any
   // consumer that keys behavior off it (e.g. scheduler.ts's
-  // advanceFailedRevalidationProbeAnchor) must see the same value before
-  // and after a restart.
+  // settleRevalidationProbeAnchor) must see the same value before and
+  // after a restart.
   const restoredSource: RunRecord["source"] =
     record.source.revalidationProbe === true
       ? { id: sourceId, kind: "connector", revalidationProbe: true }
@@ -380,35 +380,55 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
         }
       : undefined;
 
-  // Advances the durable synthesized-revalidation cadence anchor's attempt
-  // count when `record` is a FAILED dispatched revalidation probe
-  // (`source.revalidationProbe === true`) — the doubling backoff's per-
-  // attempt unit (see synthesized-attention-revalidation.ts's doc comment).
-  // A no-op for every other record shape (ordinary runs, skips). Shared
-  // with run-executor.ts, which is the actual funnel for dispatched-run
-  // terminal outcomes (`recordAndNotify` below only ever sees pre-dispatch
-  // skip records, never a real success/failure RunRecord).
-  function advanceFailedRevalidationProbeAnchor(record: RunRecord): void {
+  // Settles the durable synthesized-revalidation cadence anchor for a
+  // terminal DISPATCHED revalidation probe record (`source.revalidationProbe
+  // === true`): a FAILED probe advances the attempt count (the doubling
+  // backoff's per-attempt unit, see synthesized-attention-revalidation.ts's
+  // doc comment); a SUCCEEDED probe clears the anchor outright (the stale
+  // reason is disproven — no reason to wait for a later `gateAttention` tick
+  // to observe absent evidence and clear it lazily). A no-op for every other
+  // record shape (ordinary runs, skips, or when no durable store is wired).
+  //
+  // MUST be awaited by the caller before the run's terminal completion
+  // becomes externally observable (before `launchRun`/`runNow` resolves) —
+  // this is what makes the anchor transition restart-visible: a caller that
+  // stops the scheduler or the process immediately after `awaitRun`/`runNow`
+  // resolves must see the settled anchor on the very next store read, not a
+  // stale pre-transition value racing a detached write. Shared with
+  // run-executor.ts, which is the actual funnel for dispatched-run terminal
+  // outcomes (`recordAndNotify` below only ever sees pre-dispatch skip
+  // records, never a real success/failure RunRecord).
+  //
+  // Does NOT catch/log-and-swallow a persistence failure: the caller
+  // (run-executor.ts's two terminal funnels) awaits this and MUST let a
+  // rejection propagate through the run's terminal completion (fail the
+  // run rather than report a false-clean terminal state) — logging and
+  // resolving normally here would let `launchRun`/`runNow` resolve while
+  // the durable anchor is left in a stale, unsettled state, defeating the
+  // entire point of awaiting it.
+  async function settleRevalidationProbeAnchor(record: RunRecord): Promise<void> {
     if (!(schedulerStore && synthesizedRevalidationStore)) {
       return;
     }
-    if (!(record.status === "failed" && record.source.revalidationProbe === true)) {
+    if (record.source.revalidationProbe !== true) {
       return;
     }
     const connectorInstanceId = record.connectorInstanceId || record.connectorId;
-    Promise.resolve(synthesizedRevalidationStore.get(connectorInstanceId))
-      .then((existing) =>
-        synthesizedRevalidationStore.upsert(connectorInstanceId, record.connectorId, {
-          anchorAt: record.completedAt || nowIso(),
-          attempt: (existing?.attempt ?? 0) + 1,
-        })
-      )
-      .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        console.error(
-          `[scheduler] failed to advance synthesized-revalidation anchor for ${record.connectorId}: ${message}`
-        );
-      });
+    if (record.status === "succeeded") {
+      await Promise.resolve(synthesizedRevalidationStore.clear(connectorInstanceId));
+      return;
+    }
+    if (record.status !== "failed") {
+      return;
+    }
+    const existing = await Promise.resolve(synthesizedRevalidationStore.get(connectorInstanceId));
+    await Promise.resolve(
+      synthesizedRevalidationStore.upsert(connectorInstanceId, record.connectorId, {
+        anchorAt: record.completedAt || nowIso(),
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: `existing` is genuinely nullable (no prior anchor); ?? 0 is the correct first-attempt fallback.
+        attempt: (existing?.attempt ?? 0) + 1,
+      })
+    );
   }
 
   function recordAndNotify(record: RunRecord): RunRecord {
@@ -419,8 +439,21 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
         console.error(`[scheduler] failed to persist run history for ${record.connectorId}: ${message}`);
       });
     }
-    advanceFailedRevalidationProbeAnchor(record);
-    onRunComplete(record);
+    // `record` here is always a pre-dispatch SKIP (never a dispatched
+    // revalidation probe's real success/failure — see
+    // settleRevalidationProbeAnchor's doc comment), so this never actually
+    // has work to do; kept for defense-in-depth without forcing this
+    // synchronous, widely-called function to become async (the real,
+    // load-bearing await happens at run-executor.ts's two terminal
+    // funnels, the ACTUAL source of dispatched-run terminal records).
+    settleRevalidationProbeAnchor(record).catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[scheduler] unexpected error settling revalidation anchor for ${record.connectorId}: ${message}`);
+    });
+    Promise.resolve(onRunComplete(record)).catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[scheduler] onRunComplete handler failed for ${record.connectorId}: ${message}`);
+    });
     return record;
   }
 
@@ -475,7 +508,6 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
 
   const runExecutor = createRunExecutor({
     admitRunConnection,
-    advanceFailedRevalidationProbeAnchor,
     getState,
     handleGrantFailureDisable,
     isManagedConnector,
@@ -493,6 +525,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     runtime,
     schedulerStore,
     setState,
+    settleRevalidationProbeAnchor,
   });
 
   async function executeRun(
