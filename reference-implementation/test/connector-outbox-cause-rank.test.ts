@@ -156,16 +156,21 @@ test("an active rollup (no stalled instance) carries a null cause", () => {
 // Untrusted rows never contribute a cause (trust gate before escalation)
 // --------------------------------------------------------------------------
 
-test("an untrusted (revoked-device) stalled-looking row contributes no cause and marks unreliable", () => {
+test("an untrusted (revoked-device) stalled-looking row contributes no cause and does not poison a trusted sibling's reliability", () => {
   const rows = [
     // Revoked device: even though it looks blocked/dead-lettered, it is untrusted
-    // and must not drive the axis or cause; it only flips `unreliable`.
+    // and must not drive the axis or cause. A revoked device is expected
+    // churn (e.g. a superseded enrollment) — once a trusted sibling row
+    // supplies a conclusive read, the revoked row's own inherent
+    // unreliability must not degrade that reading (2026-08-01 live incident:
+    // a connection with one revoked historical device and one active healthy
+    // replacement read as `unreliable` connection-wide before this fix).
     deadLetterRow({ deviceRevokedAt: "2026-05-01T00:00:00.000Z", sourceInstanceId: "revoked" }),
     hbRow({ sourceInstanceId: "idle" }), // one trusted idle row
   ];
   const r = projectConnectorOutboxAxisFromHeartbeats(rows, { nowIso: NOW });
   assert.equal(r.axis, "idle", "only the trusted idle row counts");
   assert.equal(r.cause, null, "the untrusted dead-letter row contributes no cause");
-  assert.equal(r.unreliable, true, "the untrusted row still marks the rollup unreliable");
+  assert.equal(r.unreliable, false, "a trusted sibling's conclusive read is not poisoned by the revoked row");
   assert.equal(r.hasEvidence, true);
 });

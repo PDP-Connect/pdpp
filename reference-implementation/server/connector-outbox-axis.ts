@@ -66,6 +66,14 @@ export interface HeartbeatRow {
 interface OutboxAxisAccumulator {
   anyTrustedEvidence: boolean;
   anyUnreliable: boolean;
+  // A revoked/inactive row is *always* unreliable by construction
+  // (`deriveOutboxAxisFromHeartbeat` returns `unreliable: true` whenever
+  // `!evidenceTrusted`) — that is expected and not itself informative once a
+  // trusted sibling row exists. Tracked separately so it only surfaces in the
+  // final result when there is no trusted evidence at all (every row
+  // revoked/inactive), matching the existing honest "no evidence" fallback;
+  // it must never poison an otherwise-conclusive trusted read.
+  anyUntrustedUnreliable: boolean;
   sawTrustedIdle: boolean;
   sawTrustedUnknown: boolean;
   severity: "active" | "stalled" | null;
@@ -111,9 +119,17 @@ function escalateStalledCause(
 
 function accumulateOutboxAxisRow(acc: OutboxAxisAccumulator, row: HeartbeatRow, nowIso: string): void {
   const trusted = row.deviceStatus === "active" && row.sourceStatus === "active" && row.deviceRevokedAt === null;
-  if (trusted) {
-    acc.anyTrustedEvidence = true;
+  if (!trusted) {
+    // `deriveOutboxAxisFromHeartbeat` short-circuits to a constant
+    // `{axis:"unknown", cause:null, unreliable:true}` whenever
+    // `!evidence.evidenceTrusted` — no need to call it. Its unreliability
+    // is expected, not itself informative once a trusted sibling row
+    // exists, so it is tracked separately from `anyUnreliable` and only
+    // surfaces later when there is no trusted evidence at all.
+    acc.anyUntrustedUnreliable = true;
+    return;
   }
+  acc.anyTrustedEvidence = true;
   const result = deriveOutboxAxisFromHeartbeat(
     {
       deadLetterCount: row.outboxDiagnostics?.dead_letter ?? null,
@@ -130,9 +146,6 @@ function accumulateOutboxAxisRow(acc: OutboxAxisAccumulator, row: HeartbeatRow, 
   );
   if (result.unreliable) {
     acc.anyUnreliable = true;
-  }
-  if (!trusted) {
-    return;
   }
   acc.severity = escalateOutboxAxisSeverity(acc.severity, result.axis);
   acc.stalledCause = escalateStalledCause(acc.stalledCause, result.cause);
@@ -158,6 +171,7 @@ export function projectConnectorOutboxAxisFromHeartbeats(
   const acc: OutboxAxisAccumulator = {
     anyTrustedEvidence: false,
     anyUnreliable: false,
+    anyUntrustedUnreliable: false,
     sawTrustedIdle: false,
     sawTrustedUnknown: false,
     severity: null,
@@ -167,9 +181,16 @@ export function projectConnectorOutboxAxisFromHeartbeats(
     accumulateOutboxAxisRow(acc, row, options.nowIso);
   }
   // If every row is untrusted (e.g. all sources/devices revoked), there
-  // is no honest evidence — keep `unknown` rather than implying idle.
+  // is no honest evidence — keep `unknown` rather than implying idle. Only
+  // here does an untrusted row's unreliability surface: with no trusted
+  // evidence at all, it is the only signal available.
   if (!acc.anyTrustedEvidence) {
-    return { axis: "unknown", cause: null, hasEvidence: false, unreliable: acc.anyUnreliable };
+    return {
+      axis: "unknown",
+      cause: null,
+      hasEvidence: false,
+      unreliable: acc.anyUnreliable || acc.anyUntrustedUnreliable,
+    };
   }
   if (acc.severity !== null) {
     // Cause only travels with a stalled axis; an `active` rollup carries none.
