@@ -109,6 +109,46 @@ function attachPdfResponseQueue(page: Page): BodyResponseQueue {
   });
 }
 
+// ─── Popup/page event capture ───────────────────────────────────────────
+
+interface PopupWatcher {
+  detach: () => void;
+  urls: () => string[];
+}
+
+/**
+ * Attach a listener for `BrowserContext`'s `"page"` event — fired for every
+ * new page/tab/popup opened in the context, including one that opens and
+ * closes again before a caller gets a chance to poll `context().pages()`.
+ * A before/after page-count snapshot silently misses that case: if USAA's
+ * Download control opens a transient popup (e.g. to stage the file, then
+ * self-closes), the page-scoped download/CDP queues attached to the
+ * original `page` see nothing, and a snapshot taken only at timeout would
+ * show the same count before and after. This listener is attached before
+ * the click and stays live through the whole race, so a transient popup is
+ * always attributed even if it's already gone by the time a diagnostic is
+ * built.
+ */
+function attachPopupWatcher(page: Page): PopupWatcher {
+  const urls: string[] = [];
+  let context: ReturnType<Page["context"]> | null = null;
+  const onPage = (opened: Page): void => {
+    urls.push(opened.url());
+  };
+  try {
+    context = page.context();
+    context.on("page", onPage);
+  } catch {
+    /* ignore — context unavailable, watcher stays empty */
+  }
+  return {
+    detach(): void {
+      context?.off("page", onPage);
+    },
+    urls: () => [...urls],
+  };
+}
+
 // ─── Download orchestration ──────────────────────────────────────────────
 
 /**
@@ -171,6 +211,10 @@ async function consumeDownloadOrResponse({
       downloadPromise.then((raceDownload) => ({ download: raceDownload, kind: "download" as const })),
     ]);
     if (result.kind === "response") {
+      // The download arm lost the race and is never consumed on this path;
+      // detach() now settles it immediately (see download-queue.ts), so it
+      // must have a handler or that rejection is unhandled.
+      downloadPromise.catch((): undefined => undefined);
       return {
         buffer: result.response.body,
         suggestedFilename: result.response.suggestedFilename || "statement.pdf",
@@ -180,6 +224,10 @@ async function consumeDownloadOrResponse({
     try {
       const buffer = await readPlaywrightDownloadBuffer(result.download);
       if (buffer.length > 0) {
+        // The response arm lost the race and is never consumed on this
+        // path; neutralize it so detach()'s now-immediate rejection (see
+        // browser-artifact-response.ts) isn't left unhandled.
+        responsePromise.catch((): undefined => undefined);
         return { buffer, suggestedFilename: result.download.suggestedFilename() };
       }
     } catch (err) {
@@ -222,6 +270,7 @@ async function downloadViaDirectLink(page: Page, row: Locator): Promise<Download
   }
   const downloadQueue = attachDownloadQueue(page);
   const responseQueue = attachPdfResponseQueue(page);
+  const popupWatcher = attachPopupWatcher(page);
   await responseQueue.ready;
   try {
     await link.click({ timeout: CLICK_TIMEOUT_MS }).catch(() => {
@@ -229,21 +278,26 @@ async function downloadViaDirectLink(page: Page, row: Locator): Promise<Download
     });
     const result = await consumeDownloadOrResponse({ downloadQueue, responseQueue });
     if (!result) {
-      return { ok: false, reason: "download_empty" };
+      return { ok: false, reason: "download_empty", diag: { popup_urls: popupWatcher.urls() } };
     }
     if (result.buffer.length === 0) {
-      return { ok: false, reason: "download_timeout", diag: result.diag ?? null };
+      return {
+        ok: false,
+        reason: "download_timeout",
+        diag: { ...result.diag, popup_urls: popupWatcher.urls() },
+      };
     }
     return { ok: true, buffer: result.buffer, suggestedFilename: result.suggestedFilename };
   } catch (err) {
     return {
       ok: false,
       reason: "direct_link_failed",
-      diag: { error: errMsg(err) },
+      diag: { error: errMsg(err), popup_urls: popupWatcher.urls() },
     };
   } finally {
     downloadQueue.detach();
     responseQueue.detach();
+    popupWatcher.detach();
   }
 }
 
@@ -284,19 +338,21 @@ async function noDownloadMenuitemFailure(page: Page): Promise<DownloadFail> {
 async function clickDownloadAndConsume(page: Page, dlItem: Locator): Promise<DownloadResult> {
   const downloadQueue = attachDownloadQueue(page);
   const responseQueue = attachPdfResponseQueue(page);
+  const popupWatcher = attachPopupWatcher(page);
   await responseQueue.ready;
   try {
     await dlItem.click({ timeout: CLICK_TIMEOUT_MS });
   } catch (err) {
     downloadQueue.detach();
     responseQueue.detach();
+    popupWatcher.detach();
     await page.keyboard.press("Escape").catch(() => {
       /* ignore */
     });
     return {
       ok: false,
       reason: "download_click_failed",
-      diag: { error: errMsg(err) },
+      diag: { error: errMsg(err), popup_urls: popupWatcher.urls() },
     };
   }
   try {
@@ -305,10 +361,14 @@ async function clickDownloadAndConsume(page: Page, dlItem: Locator): Promise<Dow
       /* ignore */
     });
     if (!result) {
-      return { ok: false, reason: "download_empty" };
+      return { ok: false, reason: "download_empty", diag: { popup_urls: popupWatcher.urls() } };
     }
     if (result.buffer.length === 0) {
-      return { ok: false, reason: "download_timeout", diag: result.diag ?? null };
+      return {
+        ok: false,
+        reason: "download_timeout",
+        diag: { ...result.diag, popup_urls: popupWatcher.urls() },
+      };
     }
     return { ok: true, buffer: result.buffer, suggestedFilename: result.suggestedFilename };
   } catch (err) {
@@ -318,11 +378,12 @@ async function clickDownloadAndConsume(page: Page, dlItem: Locator): Promise<Dow
     return {
       ok: false,
       reason: "download_timeout",
-      diag: { error: errMsg(err) },
+      diag: { error: errMsg(err), popup_urls: popupWatcher.urls() },
     };
   } finally {
     downloadQueue.detach();
     responseQueue.detach();
+    popupWatcher.detach();
   }
 }
 
@@ -664,4 +725,7 @@ export const _internals = {
   detectStatementYear,
   currencyToCentsFromStatement: _currencyFromStatement,
   STATEMENT_ROOT,
+  attachPopupWatcher,
+  consumeDownloadOrResponse,
+  DOWNLOAD_TIMEOUT_MS,
 };

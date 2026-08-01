@@ -97,7 +97,11 @@ export function attachDownloadQueue(target: Page): DownloadQueue {
             return;
           }
           if (!dl) {
-            // Detached; let the timer fire the real rejection.
+            // Detached: reject immediately and clear the timer so it doesn't
+            // keep the event loop alive until its own deadline.
+            resolved = true;
+            clearTimeout(timer);
+            reject(new Error("download_queue_detached"));
             return;
           }
           resolved = true;

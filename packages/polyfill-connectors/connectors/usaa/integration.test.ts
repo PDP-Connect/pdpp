@@ -1074,7 +1074,14 @@ test("emitExportFailure: a transient artifact-wait failure stays export_no_downl
   // it must NOT be reported as a structure change.
   const { deps, messages } = makeHarness();
   const diag: DiagnosticInfo = {
-    artifact: { cdpError: null, cdpReady: true, candidates: [] },
+    artifact: {
+      cdpError: null,
+      cdpReady: true,
+      candidates: [],
+      totalCdpRequestsStarted: 0,
+      totalCdpResponsesSeen: 0,
+      totalResponsesSeen: 0,
+    },
     diag: null,
     error: "download_empty",
     phase: "export_artifact_wait_failed",
@@ -1108,6 +1115,9 @@ test("emitExportFailure: artifact diagnostics are summarized when page diagnosti
     artifact: {
       cdpError: null,
       cdpReady: true,
+      totalCdpRequestsStarted: 1,
+      totalCdpResponsesSeen: 1,
+      totalResponsesSeen: 1,
       candidates: [
         {
           bodyBytes: 128,
@@ -1161,6 +1171,9 @@ test("emitExportFailure: download diagnostics surface non-PII wait evidence when
       cdpError: null,
       cdpReady: true,
       candidates: [],
+      totalCdpRequestsStarted: 0,
+      totalCdpResponsesSeen: 0,
+      totalResponsesSeen: 0,
     },
     diag: null,
     download: {

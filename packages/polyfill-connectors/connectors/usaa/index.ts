@@ -1441,12 +1441,19 @@ async function waitForCsvArtifact(
     downloadPromise.then((downloadResult) => ({ download: downloadResult, kind: "download" as const })),
   ]);
   if (result.kind === "response") {
+    // The download arm lost the race and is never consumed on this path;
+    // detach() settles it immediately, so it must have a handler or that
+    // rejection is unhandled.
+    downloadPromise.catch((): undefined => undefined);
     return { buffer: result.response.body, suggestedFilename: result.response.suggestedFilename };
   }
   const { download } = result;
   try {
     const { buffer, outcome } = await readPlaywrightDownloadBufferDetailed(download);
     if (buffer.length > 0) {
+      // The response arm lost the race and is never consumed on this path;
+      // neutralize it so detach()'s now-immediate rejection isn't unhandled.
+      responsePromise.catch((): undefined => undefined);
       return { buffer, suggestedFilename: download.suggestedFilename() };
     }
     // saveAs + createReadStream both produced zero bytes. Capture the
@@ -2383,7 +2390,18 @@ async function hydratePdfsForIndex(deps: StatementsSubDeps, indexRows: readonly 
             stream: "statements",
             reason: `pdf_download_${reason}`,
             message: `Statement PDF download skipped at row ${statement.rowIndex + 1}: ${reason}`,
-            diagnostics: diag,
+            // row_id is statement.id, the same opaque hash
+            // (hashId(accountReference|date_delivered|title)) already used
+            // for cross-run correlation elsewhere in this connector (see
+            // emitStatementCoverage's statement_id). It is a presentation-
+            // derived, unsalted hash: stable enough to correlate repeated
+            // failures on the same row within/across runs, but not a
+            // guarantee of non-identifiability if diagnostics ever leave
+            // this owner-local boundary — it must never be paired with
+            // title/account text in the same emission. Always included,
+            // even when there are no other diagnostics, so every failure
+            // is correlatable.
+            diagnostics: { ...diag, row_id: statement.id },
           })
           .catch((): undefined => undefined);
       },

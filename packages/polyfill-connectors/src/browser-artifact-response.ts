@@ -35,6 +35,21 @@ export interface BodyResponseDiagnostics {
   candidates: BodyResponseCandidateDiagnostic[];
   cdpError: string | null;
   cdpReady: boolean;
+  // CDP `Network.requestWillBeSent` count, independent of whether any
+  // response (matching or not) ever arrived. Distinguishes "a request
+  // started and never got a terminal artifact" (nonzero, totalCdpResponsesSeen
+  // still 0) from "nothing was even requested" (both zero) — the former is
+  // consistent with a request that hung, was blocked, or whose response
+  // never reached this listener; the latter means the click had no network
+  // effect at all.
+  totalCdpRequestsStarted: number;
+  // Total network responses observed on each transport, independent of
+  // `shouldInspect` filtering. Lets a caller distinguish "no traffic
+  // occurred at all" (both zero) from "traffic occurred but nothing matched
+  // the expected content-type/disposition filter" (nonzero, candidates
+  // empty) — the two have very different root causes.
+  totalCdpResponsesSeen: number;
+  totalResponsesSeen: number;
 }
 
 export interface BodyResponseQueue {
@@ -123,13 +138,23 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+interface PendingWaiter {
+  reject: (err: Error) => void;
+  resolveOnce: (response: CapturedBodyResponse) => void;
+  timer: NodeJS.Timeout;
+}
+
 export function attachBodyResponseQueue(page: Page, options: BodyResponseQueueOptions): BodyResponseQueue {
   const pending: CapturedBodyResponse[] = [];
   const waiters: ((response: CapturedBodyResponse) => void)[] = [];
+  const pendingWaiters = new Set<PendingWaiter>();
   const diagnostics: BodyResponseDiagnostics = {
     candidates: [],
     cdpError: null,
     cdpReady: false,
+    totalCdpRequestsStarted: 0,
+    totalCdpResponsesSeen: 0,
+    totalResponsesSeen: 0,
   };
   const cdpMethodsByRequestId = new Map<string, string>();
   const cdpCandidatesByRequestId = new Map<
@@ -226,6 +251,7 @@ export function attachBodyResponseQueue(page: Page, options: BodyResponseQueueOp
   };
 
   const onResponse = (response: Response): void => {
+    diagnostics.totalResponsesSeen += 1;
     const headers = normalizeResponseHeaders(response.headers());
     const contentType = headers["content-type"] ?? "";
     const contentDisposition = headers["content-disposition"] ?? "";
@@ -267,6 +293,7 @@ export function attachBodyResponseQueue(page: Page, options: BodyResponseQueueOp
   page.on("response", onResponse);
 
   const onCdpRequestWillBeSent = (event: { request?: { method?: string }; requestId?: string }): void => {
+    diagnostics.totalCdpRequestsStarted += 1;
     if (event.requestId) {
       cdpMethodsByRequestId.set(event.requestId, event.request?.method ?? "");
     }
@@ -283,6 +310,7 @@ export function attachBodyResponseQueue(page: Page, options: BodyResponseQueueOp
     if (!(event.requestId && event.response)) {
       return;
     }
+    diagnostics.totalCdpResponsesSeen += 1;
     const headers = normalizeResponseHeaders(event.response.headers ?? {});
     if (!headers["content-type"] && event.response.mimeType) {
       headers["content-type"] = event.response.mimeType;
@@ -397,6 +425,16 @@ export function attachBodyResponseQueue(page: Page, options: BodyResponseQueueOp
         cdpSession.detach().catch((): undefined => undefined);
         cdpSession = null;
       }
+      // Reject and clear any outstanding waitForNextResponse callers so their
+      // setTimeout doesn't keep the event loop alive until its own deadline
+      // (a losing Promise.any race arm would otherwise hold a live timer for
+      // up to `timeoutMs` after the caller has already moved on).
+      for (const waiter of pendingWaiters) {
+        clearTimeout(waiter.timer);
+        waiter.reject(new Error("body_response_queue_detached"));
+      }
+      pendingWaiters.clear();
+      waiters.length = 0;
     },
     diagnostics(): BodyResponseDiagnostics {
       return {
@@ -411,15 +449,20 @@ export function attachBodyResponseQueue(page: Page, options: BodyResponseQueueOp
       }
       return new Promise<CapturedBodyResponse>((resolve, reject) => {
         let settled = false;
-        const timer = setTimeout(() => {
-          if (settled) {
-            return;
-          }
+        let entry: PendingWaiter;
+        const settleDone = (): void => {
           settled = true;
           const idx = waiters.indexOf(resolveOnce);
           if (idx >= 0) {
             waiters.splice(idx, 1);
           }
+          pendingWaiters.delete(entry);
+        };
+        const timer = setTimeout(() => {
+          if (settled) {
+            return;
+          }
+          settleDone();
           reject(new Error(`body_response_timeout after ${timeoutMs}ms`));
         }, timeoutMs);
         const resolveOnce = (response: CapturedBodyResponse): void => {
@@ -427,10 +470,22 @@ export function attachBodyResponseQueue(page: Page, options: BodyResponseQueueOp
             pending.unshift(response);
             return;
           }
-          settled = true;
+          settleDone();
           clearTimeout(timer);
           resolve(response);
         };
+        entry = {
+          reject: (err) => {
+            if (settled) {
+              return;
+            }
+            settleDone();
+            reject(err);
+          },
+          resolveOnce,
+          timer,
+        };
+        pendingWaiters.add(entry);
         waiters.push(resolveOnce);
       });
     },
