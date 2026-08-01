@@ -23,6 +23,7 @@ import {
 } from "../server/stores/browser-surface-replacement-ledger-store.ts";
 
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
+const REAL_ALLOCATOR_FAILURE = /real allocator failure/;
 
 // 2026-08-01 Amazon incident (run_227a4fbba7af49bea5a33cc55bb4f12c): the
 // replacement-ledger bookkeeping wrapped around ensureSurface/stopSurface
@@ -1549,5 +1550,287 @@ test("a successful same-idempotency-key retry adopts a previously unknown admiss
     ledger.list().filter((receipt) => receipt.replacement_id === unknownReceipt.replacement_id).length,
     1,
     "the retry must replay the SAME receipt, not mint a second one for the same idempotency key"
+  );
+});
+
+// 2026-08-01 seventh (final) gate revision, P1: `recordEnsureFailure`'s
+// receipt (line ~381) omitted `request.surfaceSubjectId` from `correlation`,
+// so a failed ensure for subject A produced a receipt scoped only to the
+// shared connector/profile — erasing the subject dimension. A second
+// subject B sharing that connector/profile then found "its" scope already
+// unknown (really A's) and was refused a receipt it should have gotten,
+// and A's own real unknown was never revisited under A's actual scope
+// either. Fixed by preserving `surface_subject_id` in that correlation
+// call. This proves per-subject isolation: A's continuing outage must
+// never block B's admissions, and B's own outage/recovery must behave
+// exactly as if A never existed.
+test("subject-scoped ensure failures are isolated per surface_subject_id: subject A's stuck unknown does not block subject B, and each subject recovers independently", async () => {
+  const ledger = createBrowserSurfaceReplacementLedger();
+  const persistedReceipts: ReplacementReceipt[] = [];
+  let ensureSurfaceCalls = 0;
+
+  const observed = createReplacementObservingAllocator(
+    {
+      ensureSurface: () => Promise.reject(new Error("real allocator failure")),
+      getSurfaceStatus: (surfaceId) =>
+        Promise.resolve({
+          ...surface,
+          connector_id: "shared-connector",
+          container_id: `container-${surfaceId}`,
+          profile_key: "shared-profile",
+          surface_id: surfaceId,
+          surface_subject_id: `subject-${surfaceId}`,
+        }),
+      listSurfaces: () => Promise.resolve([]),
+      stopSurface: () => Promise.resolve(null),
+    },
+    {
+      ledger,
+      persist: (receipt) => {
+        // The store is down for the first two observations (subject A's
+        // failure and subject B's failure), then recovers for every call
+        // after — including B's retry (3rd) and A's retry (4th).
+        if (ensureSurfaceCalls <= 2) {
+          return Promise.reject(new Error("simulated persist outage"));
+        }
+        persistedReceipts.push(receipt);
+        return Promise.resolve(receipt);
+      },
+      reconcileStartedAdmission: () =>
+        ensureSurfaceCalls <= 2
+          ? Promise.reject(new Error("simulated reconciliation-read outage"))
+          : Promise.resolve(null),
+    }
+  );
+
+  // Subject A's ensure fails (real allocator error) while persist AND
+  // reconciliation are both down — A's failed-ensure receipt is marked
+  // ledger-owned unknown, scoped to subject A specifically.
+  ensureSurfaceCalls += 1;
+  await assert.rejects(
+    observed.ensureSurface({
+      connectorId: "shared-connector",
+      profileKey: "shared-profile",
+      surfaceId: "a",
+      surfaceSubjectId: "subject-a",
+    }),
+    REAL_ALLOCATOR_FAILURE
+  );
+
+  const unknowns = ledger.list().filter((receipt) => ledger.isAdmissionUnknown(receipt.replacement_id));
+  assert.equal(unknowns.length, 1, "sanity: subject A's failed ensure left exactly one unknown admission");
+  assert.equal(
+    unknowns[0]?.surface_subject_id,
+    "subject-a",
+    "the unknown admission must carry subject A's OWN surface_subject_id, not an unscoped connector/profile-only scope"
+  );
+
+  // Subject B, same connector/profile, DIFFERENT subject, still down.
+  ensureSurfaceCalls += 1;
+  await assert.rejects(
+    observed.ensureSurface({
+      connectorId: "shared-connector",
+      profileKey: "shared-profile",
+      surfaceId: "b",
+      surfaceSubjectId: "subject-b",
+    }),
+    REAL_ALLOCATOR_FAILURE
+  );
+
+  const unknownsAfterB = ledger.list().filter((receipt) => ledger.isAdmissionUnknown(receipt.replacement_id));
+  assert.equal(
+    unknownsAfterB.length,
+    2,
+    "subject B must get its OWN unknown admission — A's stuck unknown must not be mistaken for B's scope and silently absorb B's failure"
+  );
+  assert.ok(
+    unknownsAfterB.some((receipt) => receipt.surface_subject_id === "subject-b"),
+    "subject B's unknown admission must be scoped to subject B specifically"
+  );
+
+  // The store recovers starting with this observation. Subject B's next
+  // ensure must succeed AND persist its own receipt, proving A's still-
+  // unresolved unknown never blocked B.
+  ensureSurfaceCalls += 1;
+  await assert.rejects(
+    observed.ensureSurface({
+      connectorId: "shared-connector",
+      profileKey: "shared-profile",
+      surfaceId: "b",
+      surfaceSubjectId: "subject-b",
+    }),
+    REAL_ALLOCATOR_FAILURE
+  );
+
+  assert.ok(
+    persistedReceipts.some((receipt) => receipt.surface_subject_id === "subject-b"),
+    "subject B must recover and durably persist a receipt in its own scope once the store returns, independent of subject A"
+  );
+  assert.equal(
+    ledger
+      .list()
+      .some(
+        (receipt) => receipt.surface_subject_id === "subject-b" && ledger.isAdmissionUnknown(receipt.replacement_id)
+      ),
+    false,
+    "subject B's admission must resolve (adopted via reconciliation), not remain stuck unknown"
+  );
+
+  // Subject A also recovers independently on its own next observation.
+  ensureSurfaceCalls += 1;
+  await assert.rejects(
+    observed.ensureSurface({
+      connectorId: "shared-connector",
+      profileKey: "shared-profile",
+      surfaceId: "a",
+      surfaceSubjectId: "subject-a",
+    }),
+    REAL_ALLOCATOR_FAILURE
+  );
+
+  assert.equal(
+    ledger
+      .list()
+      .some(
+        (receipt) => receipt.surface_subject_id === "subject-a" && ledger.isAdmissionUnknown(receipt.replacement_id)
+      ),
+    false,
+    "subject A must also recover once the store returns — its outage was never permanently entangled with subject B's"
+  );
+});
+
+// 2026-08-01 seventh (final) gate revision, required mutation gate 2/3:
+// `recordEnsureFailure` must route its receipt admission through
+// `ledger.admitStart`, not `ledger.start`, so a scope with an already-
+// unresolved unknown admission refuses a second one instead of minting an
+// unbounded number of them. Reverting that one call site back to
+// `ledger.start` must fail this exact assertion (surviving the same
+// mutation the independent gate audit performed and confirmed passed
+// silently before this test existed).
+test("recordEnsureFailure is scope-gated by admitStart: a scope with an unresolved unknown admission refuses a second failed-ensure receipt", async () => {
+  const ledger = createBrowserSurfaceReplacementLedger();
+  const persistedReceipts: ReplacementReceipt[] = [];
+
+  // Pre-seed the ledger with an unresolved unknown admission in the exact
+  // scope the failed ensure below will target.
+  const preexisting = ledger.start({
+    cause: "allocator_internal_ensure_surface",
+    connection_id: "gate2-connector",
+    idempotency_key: "gate2-preexisting-unknown",
+    profile_key: "gate2-profile",
+    surface_id: "gate2-preexisting-surface",
+  });
+  ledger.markStartedAdmissionUnknown(preexisting.replacement_id);
+
+  const observed = createReplacementObservingAllocator(
+    {
+      ensureSurface: () => Promise.reject(new Error("real allocator failure")),
+      getSurfaceStatus: () => {
+        const { surface_subject_id: _omit, ...withoutSubject } = surface;
+        return Promise.resolve({
+          ...withoutSubject,
+          connector_id: "gate2-connector",
+          container_id: "gate2-container",
+          profile_key: "gate2-profile",
+          surface_id: "gate2-surface",
+        });
+      },
+      listSurfaces: () => Promise.resolve([]),
+      stopSurface: () => Promise.resolve(null),
+    },
+    {
+      createEnsureAttemptId: () => "gate2-attempt",
+      ledger,
+      persist: (receipt) => {
+        persistedReceipts.push(receipt);
+        return Promise.resolve(receipt);
+      },
+      reconcileStartedAdmission: () => Promise.reject(new Error("simulated reconciliation outage")),
+    }
+  );
+
+  // `connection_id` derives from `surfaceSubjectId ?? connectorId`; with no
+  // subject supplied here it is "gate2-connector", matching the pre-seeded
+  // unknown's `connection_id`/`profile_key` scope exactly.
+  await assert.rejects(
+    observed.ensureSurface({
+      connectorId: "gate2-connector",
+      profileKey: "gate2-profile",
+      surfaceId: "gate2-surface",
+    }),
+    REAL_ALLOCATOR_FAILURE
+  );
+
+  assert.equal(
+    persistedReceipts.length,
+    0,
+    "recordEnsureFailure must be refused a new admission in a scope that already owns an unresolved unknown — a bypass to ledger.start would persist a second receipt here"
+  );
+  assert.equal(
+    ledger.list().filter((receipt) => ledger.isAdmissionUnknown(receipt.replacement_id)).length,
+    1,
+    "exactly the pre-existing unknown must remain — no second one minted for the same scope"
+  );
+});
+
+// 2026-08-01 seventh (final) gate revision, required mutation gate 3/3:
+// `startStopReceipt` must route its receipt admission through
+// `ledger.admitStart`, not `ledger.start`, for the same reason as
+// `recordEnsureFailure` above. Reverting that call site back to
+// `ledger.start` must fail this exact assertion.
+test("startStopReceipt is scope-gated by admitStart: a scope with an unresolved unknown admission refuses a second stop receipt", async () => {
+  const ledger = createBrowserSurfaceReplacementLedger();
+  const persistedReceipts: ReplacementReceipt[] = [];
+  const { surface_subject_id: _omit, ...surfaceWithoutSubject } = surface;
+  const stoppingSurface: BrowserSurface = {
+    ...surfaceWithoutSubject,
+    connector_id: "gate3-connector",
+    container_id: "gate3-container",
+    profile_key: "gate3-profile",
+    surface_id: "gate3-surface",
+  };
+
+  // Pre-seed the ledger with an unresolved unknown admission in the exact
+  // scope the stop below will target: `connection_id` for a stop receipt
+  // derives from `surface_subject_id ?? connector_id`, so with no subject
+  // this is "gate3-connector"/"gate3-profile", matching `stoppingSurface`.
+  const preexisting = ledger.start({
+    cause: "idle_ttl",
+    connection_id: "gate3-connector",
+    idempotency_key: "gate3-preexisting-unknown",
+    profile_key: "gate3-profile",
+    surface_id: "gate3-preexisting-surface",
+  });
+  ledger.markStartedAdmissionUnknown(preexisting.replacement_id);
+
+  const observed = createReplacementObservingAllocator(
+    {
+      ensureSurface: () => Promise.resolve(stoppingSurface),
+      getSurfaceStatus: () => Promise.resolve(stoppingSurface),
+      listSurfaces: () => Promise.resolve([stoppingSurface]),
+      stopSurface: () => Promise.resolve(null),
+    },
+    {
+      createStopAttemptId: () => "gate3-attempt",
+      ledger,
+      persist: (receipt) => {
+        persistedReceipts.push(receipt);
+        return Promise.resolve(receipt);
+      },
+      reconcileStartedAdmission: () => Promise.reject(new Error("simulated reconciliation outage")),
+    }
+  );
+
+  await observed.stopSurface({ reason: "idle_ttl", surfaceId: "gate3-surface" });
+
+  assert.equal(
+    persistedReceipts.length,
+    0,
+    "startStopReceipt must be refused a new admission in a scope that already owns an unresolved unknown — a bypass to ledger.start would persist a second receipt here"
+  );
+  assert.equal(
+    ledger.list().filter((receipt) => ledger.isAdmissionUnknown(receipt.replacement_id)).length,
+    1,
+    "exactly the pre-existing unknown must remain — no second one minted for the same scope"
   );
 });

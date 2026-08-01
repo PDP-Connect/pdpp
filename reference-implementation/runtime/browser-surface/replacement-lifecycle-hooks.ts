@@ -10,11 +10,13 @@ import type {
 import type { BrowserSurfaceReplacementReceiptStore } from "../../server/stores/browser-surface-replacement-ledger-store.ts";
 import type { BrowserSurfaceReadinessProbeResult } from "../browser-surface-readiness.ts";
 import {
+  admitAndRecordStart,
   type BrowserSurfaceReplacementLedger,
   createBrowserSurfaceReplacementLedger,
   createReplacementObservingAllocator,
   deriveOpaqueGenerationHash,
   type ReplacementCompletionInput,
+  type ReplacementObservingAllocatorOptions,
   type ReplacementReceipt,
   type ReplacementStartInput,
   type ReplacementTerminalInput,
@@ -43,11 +45,13 @@ export function createReplacementLifecycleHooks(input: {
   readonly log: ControllerLogger;
 }): ReplacementLifecycleHooks {
   const ledger = createBrowserSurfaceReplacementLedger();
-  const allocator = wrapAllocator(input, ledger);
+  const admissionOptions = createAdmissionOptions(input, ledger);
+  const allocator = wrapAllocator(input, admissionOptions);
   return {
     allocator,
     recordBrowserGeneration: (lease, surface, connectorId, runId, result) =>
       recordBrowserGeneration({
+        admissionOptions,
         connectorId,
         lease,
         leaseStore: input.leaseStore,
@@ -57,7 +61,37 @@ export function createReplacementLifecycleHooks(input: {
         runId,
         surface,
       }),
-    recordExternalSurfaceLoss: (surface) => recordExternalSurfaceLoss(input.receiptStore, ledger, surface),
+    recordExternalSurfaceLoss: (surface) => recordExternalSurfaceLoss(admissionOptions, surface),
+  };
+}
+
+/**
+ * The single bounded, uncertain-write-safe admission boundary every audit
+ * receipt admission in this controller passes through (2026-08-01
+ * seventh/final gate revision — closes a state-machine-boundary gap where
+ * `recordExternalSurfaceLoss`, `recordCurrentGeneration`, and
+ * `recordRecoveredFailedSuccessor` each called `ledger.start()` directly and
+ * persisted with a bare `store.append`, bypassing both the per-scope
+ * unknown-admission cap `ledger.admitStart` enforces and the
+ * commit-then-reject reconciliation `admitAndRecordStart` performs). This is
+ * the exact same options shape `wrapAllocator` builds for the allocator
+ * wrapper — one boundary, one options object, reused by every admission
+ * call site in this controller.
+ */
+function createAdmissionOptions(
+  input: {
+    readonly receiptStore: BrowserSurfaceReplacementReceiptStore | null;
+    readonly log: ControllerLogger;
+  },
+  ledger: BrowserSurfaceReplacementLedger
+): ReplacementObservingAllocatorOptions {
+  return {
+    ledger,
+    onPersistenceError: (error) => logReplacementPersistenceError(input.log, error),
+    persist: (receipt) => persistReplacementReceipt(input.receiptStore, receipt),
+    reconcileStartedAdmission: (replacementId) =>
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+      input.receiptStore?.findByReplacementId(replacementId) ?? Promise.resolve(null),
   };
 }
 
@@ -67,12 +101,13 @@ function wrapAllocator(
     readonly receiptStore: BrowserSurfaceReplacementReceiptStore | null;
     readonly log: ControllerLogger;
   },
-  ledger: BrowserSurfaceReplacementLedger
+  admissionOptions: ReplacementObservingAllocatorOptions
 ): BrowserSurfaceAllocator | null {
   if (!(input.allocator && input.receiptStore)) {
     return input.allocator;
   }
   return createReplacementObservingAllocator(input.allocator, {
+    ...admissionOptions,
     // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     findPending: (surfaceId) => input.receiptStore?.findPendingForSurface(surfaceId) ?? Promise.resolve(null),
     findPendingForScope: (scope) => {
@@ -86,12 +121,6 @@ function wrapAllocator(
         surface_subject_id: scope.surfaceSubjectId,
       });
     },
-    ledger,
-    onPersistenceError: (error) => logReplacementPersistenceError(input.log, error),
-    persist: (receipt) => persistReplacementReceipt(input.receiptStore, receipt),
-    reconcileStartedAdmission: (replacementId) =>
-      // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
-      input.receiptStore?.findByReplacementId(replacementId) ?? Promise.resolve(null),
   });
 }
 
@@ -108,16 +137,11 @@ function logReplacementPersistenceError(log: ControllerLogger, error: unknown): 
 }
 
 async function recordExternalSurfaceLoss(
-  store: BrowserSurfaceReplacementReceiptStore | null,
-  ledger: BrowserSurfaceReplacementLedger,
+  admissionOptions: ReplacementObservingAllocatorOptions,
   surface: BrowserSurface
 ): Promise<void> {
-  if (!store) {
-    return;
-  }
   const previousGenerationHash = surface.container_id ? deriveOpaqueGenerationHash(surface.container_id) : undefined;
-  const started = ledger.start(externalLossStartInput(surface, previousGenerationHash));
-  await persistReplacementReceipt(store, started);
+  await admitAndRecordStart(admissionOptions, externalLossStartInput(surface, previousGenerationHash));
 }
 
 function externalLossStartInput(
@@ -138,6 +162,7 @@ function externalLossStartInput(
 }
 
 async function recordBrowserGeneration(input: {
+  readonly admissionOptions: ReplacementObservingAllocatorOptions;
   readonly lease: BrowserSurfaceLease;
   readonly surface: BrowserSurface | null;
   readonly connectorId: string;
@@ -216,6 +241,7 @@ function pendingCompletionInput(pending: ReplacementReceipt, generationHash: str
 
 async function recordCurrentGeneration(
   input: {
+    readonly admissionOptions: ReplacementObservingAllocatorOptions;
     readonly lease: BrowserSurfaceLease;
     readonly surface: BrowserSurface;
     readonly connectorId: string;
@@ -240,14 +266,30 @@ async function recordCurrentGeneration(
   const cause = stableContainerIdentity(input.surface, persistedSurface)
     ? "same_container_browser_generation_change"
     : "external_or_host_loss";
-  const started = input.ledger.start(currentGenerationStartInput(input, previousGenerationHash, generationHash, cause));
-  await persistReplacementReceipt(input.receiptStore, started);
-  await persistReplacementReceipt(input.receiptStore, input.ledger.complete(completionInput(started, generationHash)));
+  const started = await admitAndRecordStart(
+    input.admissionOptions,
+    currentGenerationStartInput(input, previousGenerationHash, generationHash, cause)
+  );
+  // `admitAndRecordStart` returns null when the scope's admission was
+  // refused (a different unresolved unknown already owns it) or confirmed
+  // absent after an uncertain-write rejection — either way there is no
+  // durably admitted `started` receipt beneath it, so completing it would
+  // throw (the ledger refuses to resolve a receipt it never durably
+  // admitted). Skipping the completion here is the correct terminal
+  // outcome for this observation, not a bypass: the next readiness
+  // observation for the same surface will retry admission from scratch.
+  if (started) {
+    await persistReplacementReceipt(
+      input.receiptStore,
+      input.ledger.complete(completionInput(started, generationHash))
+    );
+  }
   await input.leaseStore.updateBrowserGenerationHash(input.surface.surface_id, generationHash);
 }
 
 async function recordRecoveredFailedSuccessor(
   input: {
+    readonly admissionOptions: ReplacementObservingAllocatorOptions;
     readonly receiptStore: BrowserSurfaceReplacementReceiptStore | null;
     readonly ledger: BrowserSurfaceReplacementLedger;
     readonly surface: BrowserSurface;
@@ -266,7 +308,7 @@ async function recordRecoveredFailedSuccessor(
   if (!failed) {
     return;
   }
-  const started = input.ledger.start({
+  const started = await admitAndRecordStart(input.admissionOptions, {
     cause: "allocator_internal_ensure_surface",
     connection_id: failed.connection_id,
     connector_id: input.surface.connector_id,
@@ -275,8 +317,11 @@ async function recordRecoveredFailedSuccessor(
     surface_id: input.surface.surface_id,
     ...(input.surface.surface_subject_id ? { surface_subject_id: input.surface.surface_subject_id } : {}),
   });
-  await persistReplacementReceipt(store, started);
-  await persistReplacementReceipt(store, input.ledger.complete(pendingCompletionInput(started, generationHash)));
+  // Same as `recordCurrentGeneration`: a refused or confirmed-absent
+  // admission has no durably admitted `started` receipt to complete.
+  if (started) {
+    await persistReplacementReceipt(store, input.ledger.complete(pendingCompletionInput(started, generationHash)));
+  }
 }
 
 function stableContainerIdentity(current: BrowserSurface, persisted: BrowserSurface | null): boolean {

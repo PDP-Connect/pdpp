@@ -1387,3 +1387,42 @@ test("discardUnresolvedStart also clears any unknown-admission marker for the di
   assert.equal(ledger.isAdmissionUnknown(started.replacement_id), false);
   assert.deepEqual(ledger.list(), [], "the discarded receipt must not appear in list()");
 });
+
+// 2026-08-01 seventh (final) gate revision, required mutation gate 1/3:
+// `selectCurrent` must EXCLUDE a receipt whose durable admission is still
+// UNKNOWN — an unresolved `started` receipt is ledger-owned uncertainty,
+// not an authoritative "this is the current generation" claim. Reverting
+// `selectCurrent`'s `!isAdmissionUnknown(...)` guard back to an unguarded
+// `selectCurrentForScope(...)` call must fail this exact assertion.
+test("selectCurrent excludes a started receipt whose durable admission is still marked unknown", () => {
+  const ledger = createBrowserSurfaceReplacementLedger();
+  const started = ledger.start({
+    cause: "allocator_internal_ensure_surface",
+    connection_id: "select-current-unknown-connection",
+    idempotency_key: "select-current-unknown-key",
+    profile_key: "select-current-unknown-profile",
+    surface_id: "select-current-unknown-surface",
+  });
+
+  assert.deepEqual(
+    ledger.selectCurrent(started.connection_id),
+    started,
+    "sanity: before marking unknown, the started receipt IS the ordinary current selection"
+  );
+
+  ledger.markStartedAdmissionUnknown(started.replacement_id);
+
+  assert.equal(
+    ledger.selectCurrent(started.connection_id),
+    null,
+    "an unresolved unknown admission must never be returned by the ordinary current-selection API"
+  );
+
+  ledger.adoptConfirmedStart(started.replacement_id);
+
+  assert.deepEqual(
+    ledger.selectCurrent(started.connection_id),
+    started,
+    "once adopted (durable confirmed), the receipt is ordinary current state again"
+  );
+});

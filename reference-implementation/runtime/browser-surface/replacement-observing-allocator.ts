@@ -312,11 +312,28 @@ function ensureTransitionIdempotencyKeyPrefix(
 }
 
 /**
- * Starts (attempts to durably admit) a replacement receipt for the given
- * surface. Returns `null` if the durable persist fails — see `record`'s
- * doc comment for why that means the receipt was never effectively
- * admitted at all, not merely "admitted but not yet resolved."
+ * The one bounded, uncertain-write-safe boundary through which EVERY audit
+ * receipt admission in this system must pass (2026-08-01 seventh/final gate
+ * revision — replaces three independent `ledger.start()` call sites in
+ * `replacement-lifecycle-hooks.ts` that bypassed both the per-scope unknown-
+ * admission cap `ledger.admitStart` enforces and the commit-then-reject
+ * reconciliation `record` performs). `ledger.admitStart` first refuses a NEW
+ * admission if a different unresolved unknown already owns this exact
+ * connection/profile/surface-subject scope (returns `null`, no persist
+ * attempted); otherwise `record` persists it with full reconcile-on-reject /
+ * adopt-on-success semantics. There is no second, distinct terminal path for
+ * starting a receipt: every caller — the allocator wrapper's own ensure/stop
+ * paths and every lifecycle-hook path (external loss, generation recording,
+ * recovered successor) — must call this, not `ledger.start` directly.
  */
+export function admitAndRecordStart(
+  options: ReplacementObservingAllocatorOptions,
+  input: ReplacementStartInput
+): Promise<ReplacementReceipt | null> {
+  const started = options.ledger.admitStart(input);
+  return started ? record(options, started) : Promise.resolve(null);
+}
+
 function ensureReceipt(
   options: ReplacementObservingAllocatorOptions,
   request: EnsureBrowserSurfaceRequest,
@@ -327,7 +344,7 @@ function ensureReceipt(
 ): Promise<ReplacementReceipt | null> {
   const previousHash = deriveOpaqueGenerationHash(previousContainerId);
   const nextHash = nextContainerId ? `:${deriveOpaqueGenerationHash(nextContainerId)}` : "";
-  const started = options.ledger.admitStart({
+  return admitAndRecordStart(options, {
     ...correlation({
       connector_id: request.connectorId,
       profile_key: request.profileKey,
@@ -337,14 +354,6 @@ function ensureReceipt(
     idempotency_key: `ensure:${surface.surface_id}:${previousHash}${nextHash}:${attemptId}`,
     previous_generation_hash: previousHash,
   });
-  // `admitStart` returns null when a DIFFERENT unresolved unknown admission
-  // already owns this connection/profile/surface-subject scope — a bounded
-  // recovery policy (2026-08-01 sixth gate revision) that stops a
-  // continuous run of outages from minting one new unknown receipt per
-  // rotation forever. This is audit-receipt bookkeeping only: the real
-  // allocator effect above has already happened and is returned to the
-  // caller regardless.
-  return started ? record(options, started) : Promise.resolve(null);
 }
 
 async function recordEnsureFailure(
@@ -356,20 +365,20 @@ async function recordEnsureFailure(
   if (!before?.container_id) {
     return;
   }
-  const started = options.ledger.admitStart({
+  // Same bounded scope gate as `ensureReceipt`: a different unresolved
+  // unknown admission already owns this scope, so no new receipt is
+  // admitted — the real ensureSurface failure this records was already
+  // rethrown to the caller by `performEnsureEffect` regardless.
+  const admitted = await admitAndRecordStart(options, {
     ...correlation({
       connector_id: request.connectorId,
       profile_key: request.profileKey,
+      ...(request.surfaceSubjectId ? { surface_subject_id: request.surfaceSubjectId } : {}),
       surface_id: request.surfaceId,
     }),
     idempotency_key: `ensure-failed:${request.surfaceId}:${deriveOpaqueGenerationHash(before.container_id)}:${attemptId}`,
     previous_generation_hash: deriveOpaqueGenerationHash(before.container_id),
   });
-  // Same bounded scope gate as `ensureReceipt`: a different unresolved
-  // unknown admission already owns this scope, so no new receipt is
-  // admitted — the real ensureSurface failure this records was already
-  // rethrown to the caller by `performEnsureEffect` regardless.
-  const admitted = started ? await record(options, started) : null;
   // If `started` was never durably admitted (rolled back by `record`),
   // there is nothing to resolve — a receipt that was never effectively
   // created cannot be terminalized, and attempting to would either no-op
@@ -472,7 +481,11 @@ function startStopReceipt(
   }
   const cause = mapStopReasonToReplacementCause(request.reason);
   const attemptId = options.createStopAttemptId?.(request) ?? randomUUID();
-  const started = options.ledger.admitStart({
+  // Same bounded scope gate as `ensureReceipt`: this runs before the real
+  // `stopSurface` call but only as bookkeeping preparation — its caller
+  // (`startStopReceiptObserved`) already tolerates any failure here without
+  // blocking the real allocator call.
+  return admitAndRecordStart(options, {
     connection_id: before.surface_subject_id ?? before.connector_id,
     connector_id: before.connector_id,
     profile_key: before.profile_key,
@@ -482,11 +495,6 @@ function startStopReceipt(
     previous_generation_hash: deriveOpaqueGenerationHash(before.container_id),
     surface_id: before.surface_id,
   });
-  // Same bounded scope gate as `ensureReceipt`: this runs before the real
-  // `stopSurface` call but only as bookkeeping preparation — its caller
-  // (`startStopReceiptObserved`) already tolerates any failure here without
-  // blocking the real allocator call.
-  return started ? record(options, started) : Promise.resolve(null);
 }
 
 /**
@@ -633,19 +641,19 @@ async function reconcileUnknownAdmissionForScope(
   if (!options.reconcileStartedAdmission) {
     return;
   }
-  // One exact-ID read per observation bounds bookkeeping work even if the
-  // durable store stays transiently unreadable. Unknown admissions fail
-  // open, so the remaining entries cannot suppress this observation; a
-  // later observation retries this oldest unresolved entry.
-  const [unknown] = options.ledger
-    .list()
-    .filter(
-      (receipt) =>
-        receipt.phase === "started" &&
-        isInAdmissionScope(receipt, scope) &&
-        options.ledger.isAdmissionUnknown(receipt.replacement_id)
-    )
-    .sort((left, right) => left.event_seq - right.event_seq);
+  // `findUnknownAdmission` is the ledger's own sole reader of unknown-
+  // admission state (2026-08-01 seventh/final gate revision — this used to
+  // scan `ledger.list()` and call `isAdmissionUnknown` per-receipt itself,
+  // duplicating the ledger's internal selection logic outside it). Because
+  // it exists, a scope only ever holds AT MOST one unknown admission by
+  // construction (`ledger.admitStart` refuses a second one), so there is
+  // nothing left to sort or bound here — the ledger already enforces "one
+  // exact-ID read per observation."
+  const unknown = options.ledger.findUnknownAdmission({
+    connection_id: scope.connectionId,
+    profile_key: scope.profileKey,
+    ...(scope.surfaceSubjectId ? { surface_subject_id: scope.surfaceSubjectId } : {}),
+  });
   if (unknown) {
     await reconcileKnownUnknownAdmission(options, unknown);
   }
@@ -705,14 +713,6 @@ function admissionScopeForSurface(surface: BrowserSurface): ReplacementAdmission
     profileKey: surface.profile_key,
     ...(surface.surface_subject_id ? { surfaceSubjectId: surface.surface_subject_id } : {}),
   };
-}
-
-function isInAdmissionScope(receipt: ReplacementReceipt, scope: ReplacementAdmissionScope): boolean {
-  return (
-    receipt.connection_id === scope.connectionId &&
-    receipt.profile_key === scope.profileKey &&
-    receipt.surface_subject_id === scope.surfaceSubjectId
-  );
 }
 
 function isPendingForSurface(
