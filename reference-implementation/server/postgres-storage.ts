@@ -2182,6 +2182,7 @@ export async function bootstrapPostgresSchema({
     await migratePostgresConnectorSyncStateInstanceColumns(client);
     await migratePostgresConnectorDetailGapInstanceColumns(client);
     await migratePostgresSchedulerInstanceColumns(client);
+    await migratePostgresSynthesizedRevalidationStateSchema(client);
     await migratePostgresRunHistoryRename(client);
     await migratePostgresRunHistoryCompletedAtNullable(client);
     await migratePostgresConnectorMaintenanceCursorNameCheck(client);
@@ -4347,6 +4348,116 @@ async function migratePostgresBlobBindingsJsonPath(client: PoolClient): Promise<
       // Optional cleanup is fail-open during additive migration.
     }
     throw err;
+  }
+}
+
+// The exact canonical shape of `synthesized_revalidation_state`, mirroring
+// server/db.ts's SQLite counterpart. Kept as data so this migration can diff
+// a pre-existing table's actual columns/PK against it instead of trusting
+// `CREATE TABLE IF NOT EXISTS`, which silently no-ops on an incompatible
+// pre-existing table — see gate-stale-owner-v3-cbe4-0801.md P1 #2.
+const SYNTHESIZED_REVALIDATION_STATE_REQUIRED_NOT_NULL_COLUMNS = [
+  "connector_id",
+  "attempt",
+  "anchor_at",
+  "updated_at",
+] as const;
+const SYNTHESIZED_REVALIDATION_STATE_ALL_COLUMNS = [
+  "connector_instance_id",
+  ...SYNTHESIZED_REVALIDATION_STATE_REQUIRED_NOT_NULL_COLUMNS,
+] as const;
+
+async function postgresSynthesizedRevalidationStateMatchesCanonicalShape(client: PoolClient): Promise<boolean> {
+  const columns = await client.query<{ column_name: string; is_nullable: string }>(
+    `SELECT column_name, is_nullable FROM information_schema.columns
+       WHERE table_schema = current_schema() AND table_name = 'synthesized_revalidation_state'`
+  );
+  if (columns.rowCount !== SYNTHESIZED_REVALIDATION_STATE_ALL_COLUMNS.length) {
+    return false;
+  }
+  const byName = new Map(columns.rows.map((row) => [row.column_name, row.is_nullable]));
+  const shapeMatches = SYNTHESIZED_REVALIDATION_STATE_ALL_COLUMNS.every((name) => {
+    if (name === "connector_instance_id") {
+      return byName.has(name);
+    }
+    return byName.get(name) === "NO";
+  });
+  if (!shapeMatches) {
+    return false;
+  }
+  const pk = await client.query<{ column_name: string }>(
+    `SELECT kcu.column_name
+       FROM information_schema.table_constraints tc
+       JOIN information_schema.key_column_usage kcu
+         ON kcu.constraint_name = tc.constraint_name AND kcu.table_schema = tc.table_schema
+      WHERE tc.table_schema = current_schema()
+        AND tc.table_name = 'synthesized_revalidation_state'
+        AND tc.constraint_type = 'PRIMARY KEY'`
+  );
+  return pk.rowCount === 1 && pk.rows[0]?.column_name === "connector_instance_id";
+}
+
+/**
+ * `CREATE TABLE IF NOT EXISTS` is not a fail-safe upgrade: an incompatible
+ * pre-existing `synthesized_revalidation_state` table is silently retained
+ * and every subsequent read/upsert against it fails at query time instead
+ * of boot time. This migration inspects the actual columns/PK and only
+ * no-ops when they already match the canonical shape exactly.
+ *
+ * When a pre-existing table has the wrong shape, rebuild it inside a single
+ * transaction: rows whose required columns (`connector_instance_id`,
+ * `connector_id`, `anchor_at`, `updated_at`) are all present and non-null
+ * are carried forward — `attempt` defaults to 0 for rows missing it —
+ * anything else is dropped rather than risk inserting a NULL into a NOT
+ * NULL canonical column. This is best-effort data preservation for a
+ * cadence anchor (worst case: one connector's revalidation streak resets
+ * to attempt 0, not a durable data loss).
+ */
+async function migratePostgresSynthesizedRevalidationStateSchema(client: PoolClient): Promise<void> {
+  if (!(await hasPostgresTable(client, "synthesized_revalidation_state"))) {
+    return;
+  }
+  if (await postgresSynthesizedRevalidationStateMatchesCanonicalShape(client)) {
+    return;
+  }
+  if (await hasPostgresTable(client, "synthesized_revalidation_state_new")) {
+    throw new Error("Found unfinished synthesized_revalidation_state_new migration table; refusing to overwrite it.");
+  }
+  const hasConnectorId = await hasPostgresColumn(client, "synthesized_revalidation_state", "connector_id");
+  const hasAnchorAt = await hasPostgresColumn(client, "synthesized_revalidation_state", "anchor_at");
+  const hasUpdatedAt = await hasPostgresColumn(client, "synthesized_revalidation_state", "updated_at");
+  const hasAttempt = await hasPostgresColumn(client, "synthesized_revalidation_state", "attempt");
+  const canCarryRowsForward = hasConnectorId && hasAnchorAt && hasUpdatedAt;
+
+  await client.query("BEGIN");
+  try {
+    await client.query("ALTER TABLE synthesized_revalidation_state RENAME TO synthesized_revalidation_state_new");
+    await client.query(`
+      CREATE TABLE synthesized_revalidation_state (
+        connector_instance_id TEXT PRIMARY KEY,
+        connector_id TEXT NOT NULL,
+        attempt BIGINT NOT NULL DEFAULT 0,
+        anchor_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `);
+    if (canCarryRowsForward) {
+      const attemptExpr = hasAttempt ? "COALESCE(attempt, 0)" : "0";
+      await client.query(`
+        INSERT INTO synthesized_revalidation_state(connector_instance_id, connector_id, attempt, anchor_at, updated_at)
+        SELECT connector_instance_id, connector_id, ${attemptExpr}, anchor_at, updated_at
+          FROM synthesized_revalidation_state_new
+         WHERE connector_instance_id IS NOT NULL
+           AND connector_id IS NOT NULL
+           AND anchor_at IS NOT NULL
+           AND updated_at IS NOT NULL
+      `);
+    }
+    await client.query("DROP TABLE synthesized_revalidation_state_new");
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
   }
 }
 

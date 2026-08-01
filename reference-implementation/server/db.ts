@@ -2361,6 +2361,96 @@ function hasTableColumn(raw: SqliteDatabase, table: string, column: string): boo
   return tableColumns(raw, table).includes(column);
 }
 
+// The exact canonical shape of `synthesized_revalidation_state`. Kept as data
+// (not just the SCHEMA string) so the migration below can diff a
+// pre-existing table's actual columns against it instead of trusting
+// `CREATE TABLE IF NOT EXISTS`, which silently no-ops on an incompatible
+// pre-existing table — see gate-stale-owner-v3-cbe4-0801.md P1 #2.
+const SYNTHESIZED_REVALIDATION_STATE_COLUMNS = [
+  "connector_instance_id",
+  "connector_id",
+  "attempt",
+  "anchor_at",
+  "updated_at",
+] as const;
+
+function synthesizedRevalidationStateMatchesCanonicalShape(raw: SqliteDatabase): boolean {
+  const cols = raw.prepare("PRAGMA table_info(synthesized_revalidation_state)").all();
+  if (cols.length !== SYNTHESIZED_REVALIDATION_STATE_COLUMNS.length) {
+    return false;
+  }
+  const byName = new Map(cols.map((c) => [c.name as string, c]));
+  const pk = cols.find((c) => Number(c.pk) === 1);
+  if (pk?.name !== "connector_instance_id") {
+    return false;
+  }
+  return SYNTHESIZED_REVALIDATION_STATE_COLUMNS.every((name) => {
+    const col = byName.get(name);
+    return col !== undefined && (name === "connector_instance_id" || Number(col.notnull) === 1);
+  });
+}
+
+/**
+ * `CREATE TABLE IF NOT EXISTS` is not a fail-safe upgrade: an incompatible
+ * pre-existing `synthesized_revalidation_state` table (e.g. a partial or
+ * stale shape from an interrupted prior boot) is silently retained and
+ * every subsequent read/upsert against it fails at query time instead of
+ * boot time. This migration inspects the actual columns/PK and only
+ * no-ops when they already match the canonical shape exactly.
+ *
+ * When the table is missing entirely, `raw.exec(SCHEMA)` above already
+ * created the canonical shape and this is a no-op.
+ *
+ * When a pre-existing table has the wrong shape, rebuild it: rows whose
+ * required columns (`connector_instance_id`, `connector_id`, `anchor_at`,
+ * `updated_at`) are all present and non-null are carried forward — `attempt`
+ * defaults to 0 for rows missing it — anything else is dropped rather than
+ * risk inserting a NULL into a NOT NULL canonical column. This is best-effort
+ * data preservation for a cadence anchor (worst case: one connector's
+ * revalidation streak resets to attempt 0, not a durable data loss).
+ */
+function migrateSynthesizedRevalidationStateSchema(raw: SqliteDatabase): void {
+  if (synthesizedRevalidationStateMatchesCanonicalShape(raw)) {
+    return;
+  }
+  raw.transaction(() => {
+    if (
+      raw
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'synthesized_revalidation_state_new'")
+        .get()
+    ) {
+      throw new Error("Found unfinished synthesized_revalidation_state_new migration table; refusing to overwrite it.");
+    }
+    const cols = tableColumns(raw, "synthesized_revalidation_state");
+    const missingRequired = SYNTHESIZED_REVALIDATION_STATE_COLUMNS.filter(
+      (name) => name !== "attempt" && !cols.includes(name)
+    );
+    raw.exec("ALTER TABLE synthesized_revalidation_state RENAME TO synthesized_revalidation_state_new");
+    raw.exec(`
+CREATE TABLE synthesized_revalidation_state (
+  connector_instance_id TEXT PRIMARY KEY,
+  connector_id       TEXT NOT NULL,
+  attempt            INTEGER NOT NULL DEFAULT 0,
+  anchor_at          TEXT NOT NULL,
+  updated_at         TEXT NOT NULL
+);
+`);
+    if (missingRequired.length === 0) {
+      const attemptExpr = cols.includes("attempt") ? "COALESCE(attempt, 0)" : "0";
+      raw.exec(`
+INSERT INTO synthesized_revalidation_state(connector_instance_id, connector_id, attempt, anchor_at, updated_at)
+SELECT connector_instance_id, connector_id, ${attemptExpr}, anchor_at, updated_at
+  FROM synthesized_revalidation_state_new
+ WHERE connector_instance_id IS NOT NULL
+   AND connector_id IS NOT NULL
+   AND anchor_at IS NOT NULL
+   AND updated_at IS NOT NULL;
+`);
+    }
+    raw.exec("DROP TABLE synthesized_revalidation_state_new");
+  })();
+}
+
 function migrateClientEventSubscriptionAuthority(raw: SqliteDatabase): void {
   const cols = raw.prepare("PRAGMA table_info(client_event_subscriptions)").all();
   const grantCol = cols.find((c) => c.name === "grant_id");
@@ -5105,6 +5195,7 @@ CREATE INDEX IF NOT EXISTS idx_record_changes_emitted ON record_changes(connecto
 CREATE INDEX IF NOT EXISTS idx_blob_bindings_record ON blob_bindings(connector_instance_id, stream, record_key);
 `);
   runWithSqliteBusyRetrySync(() => migrateSchedulerInstanceColumns(raw));
+  runWithSqliteBusyRetrySync(() => migrateSynthesizedRevalidationStateSchema(raw));
   runWithSqliteBusyRetrySync(() => migrateRunHistoryRename(raw));
   runWithSqliteBusyRetrySync(() => migrateRunHistoryCompletedAtNullable(raw));
   runWithSqliteBusyRetrySync(() => migrateConnectorMaintenanceCursorNameCheck(raw));
