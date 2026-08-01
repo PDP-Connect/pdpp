@@ -3351,6 +3351,22 @@ export function createController(opts: ControllerOptions = {}): Controller {
     if (!(await hasEligibleNonPressureRecoveryWork(input.connectorId, input.connectorInstanceId))) {
       return;
     }
+    // The continuation is the runtime deciding to keep going on its own, not
+    // an owner gesture — it must respect the same automatic-eligibility
+    // policy the scheduler enforces before any unattended dispatch
+    // (`pre-run-gate.ts` `gateAutomationPolicy`). Labeling it `triggerKind:
+    // "manual"` below makes `runNow` treat it as owner-present, so this is
+    // the only place that stands between a `background_safe: false` /
+    // `recommended_mode: "manual"` connector (e.g. USAA, which requires a
+    // fresh interactive OTP login) and a hidden second run.
+    const automaticIneligibility = automaticIneligibilityReason(readManifestRefreshPolicy(input.manifest));
+    if (automaticIneligibility) {
+      log.warn?.(
+        `[controller] recovery continuation skipped for ${input.connectorId} ` +
+          `(connection=${input.connectorInstanceId}): ${automaticIneligibility}`
+      );
+      return;
+    }
     try {
       const continuationOptions: RunNowOptions = {
         connectorInstanceId: input.connectorInstanceId,
