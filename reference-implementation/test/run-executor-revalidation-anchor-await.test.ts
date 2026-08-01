@@ -90,8 +90,9 @@ rl.on('line', (line) => {
   let msg;
   try { msg = JSON.parse(line); } catch { return; }
   if (msg.type !== 'START') return;
-  process.stdout.write(${JSON.stringify(JSON.stringify(donePayload))} + '\\n');
-  process.exit(${exitCode});
+  process.stdout.write(${JSON.stringify(JSON.stringify(donePayload))} + '\\n', () => {
+    process.exit(${exitCode});
+  });
 });
 `,
     "utf8"
