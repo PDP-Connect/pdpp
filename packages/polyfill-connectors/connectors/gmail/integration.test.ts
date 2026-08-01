@@ -2268,6 +2268,27 @@ const SETTLEMENT_TABLE = [
     gaps: [{ hydrateOutcome: "failed" }, { hydrateOutcome: "failed", sameMessageAs: 0 }],
     expectReDeferReason: { 0: "hydration_failed", 1: "hydration_failed" },
   },
+  {
+    name: "two served gaps for the SAME attachment, gap-0's OWN emitRecord rejects it -> gap-0 re-defers (never recovered), gap-1 reuses the memoized BYTES but makes its OWN accepted emit and recovers independently",
+    gaps: [
+      { emitRecordAccepts: false, hydrateOutcome: "hydrated" },
+      { hydrateOutcome: "hydrated", sameMessageAs: 0 },
+    ],
+    expectReDeferReason: { 0: "hydration_failed" },
+  },
+  {
+    name: "two served gaps for the SAME attachment, gap-0's OWN emitRecord accepts it, gap-1's OWN emitRecord rejects it -> gap-0 recovers, gap-1 re-defers (a sibling's earlier accept never forces a later gap's own rejected outcome to 'already emitted')",
+    gaps: [{ hydrateOutcome: "hydrated" }, { emitRecordAccepts: false, hydrateOutcome: "hydrated", sameMessageAs: 0 }],
+    expectReDeferReason: { 1: "hydration_failed" },
+  },
+  {
+    name: "two served gaps for the SAME attachment, BOTH gaps' own emitRecord rejects -> both re-defer independently, neither ever recovers, neither credits coverage",
+    gaps: [
+      { emitRecordAccepts: false, hydrateOutcome: "hydrated" },
+      { emitRecordAccepts: false, hydrateOutcome: "hydrated", sameMessageAs: 0 },
+    ],
+    expectReDeferReason: { 0: "hydration_failed", 1: "hydration_failed" },
+  },
 ] as const;
 
 for (const scenario of SETTLEMENT_TABLE) {
@@ -2279,11 +2300,16 @@ for (const scenario of SETTLEMENT_TABLE) {
     try {
       const messagesById = new Map<string, FetchMessageObject>();
       const servedGaps: DetailGapStartEntry[] = [];
-      // Keyed by attachment id (`${messageId}:1`, since every gap here uses
-      // partIndex 1), not by gap index or emitRecord call order — a
-      // memoized duplicate-attachment settlement never calls emitRecord
-      // again, so a call-order-keyed map would silently misalign.
-      const emitRecordAcceptsByAttachmentId = new Map<string, boolean>();
+      // Keyed by attachment id, holding an ORDERED queue of accept/reject
+      // decisions — one per served gap that shares that attachment id, in
+      // gap-index order. Each gap always makes its OWN emitRecord call now
+      // (the fix under gate: a memoized-hydration duplicate never skips or
+      // reuses a sibling's accept/reject outcome), so for a duplicate
+      // scenario the queue lets gap-0's call consume the first decision and
+      // gap-1's later, separate call consume the second — reproducing a real
+      // host whose scope filter can accept one gap's emission and reject
+      // another's even for identical content.
+      const emitRecordAcceptsQueueByAttachmentId = new Map<string, boolean[]>();
       const searchReturnsNothingByMessageId = new Map<string, boolean>();
       // Attachment id -> hydrate outcome, derived once during gap
       // construction. Duplicate gaps for the same attachment (sameMessageAs)
@@ -2311,11 +2337,11 @@ for (const scenario of SETTLEMENT_TABLE) {
         if ("searchReturnsNothing" in gapSpec && gapSpec.searchReturnsNothing) {
           searchReturnsNothingByMessageId.set(normalizedMessageId, true);
         }
-        emitRecordAcceptsByAttachmentId.set(
-          `${normalizedMessageId}:1`,
-          !("emitRecordAccepts" in gapSpec && gapSpec.emitRecordAccepts === false)
-        );
-        hydrateOutcomeByAttachmentId.set(`${normalizedMessageId}:1`, gapSpec.hydrateOutcome);
+        const attachmentId = `${normalizedMessageId}:1`;
+        const acceptsThisGap = !("emitRecordAccepts" in gapSpec && gapSpec.emitRecordAccepts === false);
+        const existingQueue = emitRecordAcceptsQueueByAttachmentId.get(attachmentId) ?? [];
+        emitRecordAcceptsQueueByAttachmentId.set(attachmentId, [...existingQueue, acceptsThisGap]);
+        hydrateOutcomeByAttachmentId.set(attachmentId, gapSpec.hydrateOutcome);
         servedGaps.push(
           makeServedRecoveryGap({
             ...("attachmentNotFoundInBodystructure" in gapSpec && gapSpec.attachmentNotFoundInBodystructure
@@ -2382,7 +2408,12 @@ for (const scenario of SETTLEMENT_TABLE) {
       const emitHarness = makeRecordingEmit();
       const emitRecord = async (stream: string, data: Record<string, unknown>): Promise<boolean> => {
         const attachmentId = typeof data.id === "string" ? data.id : "";
-        const accepted = emitRecordAcceptsByAttachmentId.get(attachmentId) ?? true;
+        const queue = emitRecordAcceptsQueueByAttachmentId.get(attachmentId);
+        // Consume this call's own decision from the front of the queue —
+        // shift, not peek, so a second real emitRecord call for the same
+        // attachment id (a duplicate served gap's own turn) gets the NEXT
+        // decision, never the first gap's already-consumed one.
+        const accepted = queue && queue.length > 0 ? (queue.shift() ?? true) : true;
         if (!accepted) {
           return false;
         }
@@ -2390,14 +2421,28 @@ for (const scenario of SETTLEMENT_TABLE) {
         return true;
       };
 
+      const attachmentCoverage = makeAttachmentDetailCoverage();
       await recoverServedAttachmentGaps(
         { search, fetchOne },
         {
+          attachmentCoverage,
           detailGaps: servedGaps,
           emitProtocol: emitHarness.emit,
           emitRecord,
           hydrateAttachment: hydrateAttachment as HydrateAttachmentFn,
         }
+      );
+
+      // COVERAGE: credited once per gap whose OWN emitRecord call was
+      // accepted — never once-per-attachment (a duplicate gap's memoized
+      // hydration bytes are NOT a coverage shortcut) and never for a gap
+      // whose own emit was rejected, regardless of what a sibling for the
+      // same attachment id did.
+      const totalAccepted = emitHarness.emitted.filter((rec) => rec.stream === "attachments").length;
+      assert.equal(
+        attachmentCoverage.requiredKeys.length,
+        totalAccepted,
+        `scenario "${scenario.name}": attachmentCoverage must credit exactly the accepted attachment emits, not every hydration attempt`
       );
 
       const gapCount = scenario.gaps.length;
