@@ -50,8 +50,8 @@ function makeChallengePage(sessionActive: () => boolean): Page {
     context(): BrowserContext {
       return makeContext();
     },
-    // checkSession() expects { user } when active; checkLoggedInViaDOM() expects
-    // a boolean. Returning the active flag for both keeps the probe honest.
+    // The API session predicate expects { user } when active; the DOM probe is
+    // diagnostic-only and returns a boolean.
     evaluate(fn: unknown): Promise<unknown> {
       const active = sessionActive();
       // The DOM probe returns a boolean; the session probe returns an object.

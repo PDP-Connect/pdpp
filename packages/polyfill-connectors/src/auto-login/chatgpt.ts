@@ -228,7 +228,12 @@ export function chatGptAllowsInteractiveAuthRepair(env: NodeJS.ProcessEnv = proc
   return triggerKind === "manual";
 }
 
-async function checkSession(page: Page): Promise<boolean> {
+/**
+ * The sole terminal auth predicate: ChatGPT's session endpoint must return a
+ * user. UI evidence is intentionally diagnostic-only because it can survive
+ * an expired or otherwise unusable API session.
+ */
+async function hasChatGptSessionUser(page: Page): Promise<boolean> {
   try {
     const r = await page.evaluate(async (): Promise<SessionResponse | null> => {
       try {
@@ -301,10 +306,6 @@ async function checkLoggedInViaDOMDetails(page: Page): Promise<ChatGptDomSession
     has_sidebar: false,
     has_user_menu: false,
   };
-}
-
-async function checkLoggedInViaDOM(page: Page): Promise<boolean> {
-  return (await checkLoggedInViaDOMDetails(page)).dom_logged_in;
 }
 
 export function isLikelyChatGptPushApprovalText(text: string): boolean {
@@ -382,8 +383,8 @@ function isChatGptOrigin(url: string | null): boolean {
   }
 }
 
-async function isChatGptSessionActiveOnPage(page: Page): Promise<boolean> {
-  return (await checkSession(page)) || (await checkLoggedInViaDOM(page));
+async function isChatGptSessionReadyOnPage(page: Page): Promise<boolean> {
+  return await hasChatGptSessionUser(page);
 }
 
 async function activatePrimaryPageFromChatGptOriginProbe(page: Page): Promise<boolean> {
@@ -400,7 +401,7 @@ async function activatePrimaryPageFromChatGptOriginProbe(page: Page): Promise<bo
       })
       .catch((): undefined => undefined);
     await probePage.waitForTimeout(1000);
-    if (!(await isChatGptSessionActiveOnPage(probePage))) {
+    if (!(await isChatGptSessionReadyOnPage(probePage))) {
       return false;
     }
 
@@ -415,7 +416,7 @@ async function activatePrimaryPageFromChatGptOriginProbe(page: Page): Promise<bo
       })
       .catch((): undefined => undefined);
     await page.waitForTimeout(1000);
-    return await isChatGptSessionActiveOnPage(page);
+    return await isChatGptSessionReadyOnPage(page);
   } catch {
     return false;
   } finally {
@@ -423,8 +424,8 @@ async function activatePrimaryPageFromChatGptOriginProbe(page: Page): Promise<bo
   }
 }
 
-async function isChatGptSessionActive(page: Page, options: { allowOriginProbe?: boolean } = {}): Promise<boolean> {
-  if (await isChatGptSessionActiveOnPage(page)) {
+async function isChatGptSessionReady(page: Page, options: { allowOriginProbe?: boolean } = {}): Promise<boolean> {
+  if (await isChatGptSessionReadyOnPage(page)) {
     return true;
   }
   return options.allowOriginProbe === true ? await activatePrimaryPageFromChatGptOriginProbe(page) : false;
@@ -481,7 +482,7 @@ async function navigateAndProbeSession(page: Page, progress?: EnsureChatGptSessi
     .catch((): undefined => undefined);
   await page.waitForTimeout(3000);
 
-  const apiSessionUser = await checkSession(page);
+  const apiSessionUser = await isChatGptSessionReadyOnPage(page);
   const domProbe = await checkLoggedInViaDOMDetails(page);
   await progress?.(
     chatGptAuthProbeDiagnosticMessage({
@@ -532,7 +533,7 @@ async function pollSessionReadiness({
       await checkpoint?.(`${waitingCheckpointDetailPrefix ?? waitingCheckpointPrefix}-${String(attempt + 1)}`);
     }
     const allowOriginProbe = attempt === 0 || (attempt + 1) % CHATGPT_ORIGIN_PROBE_EVERY_ATTEMPTS === 0;
-    if (await isChatGptSessionActive(page, { allowOriginProbe })) {
+    if (await isChatGptSessionReady(page, { allowOriginProbe })) {
       return true;
     }
   }
@@ -603,7 +604,7 @@ export async function handleBrowserLoginAssistance({
     sendInteraction
   );
   await page.waitForTimeout(3000);
-  return await isChatGptSessionActive(page);
+  return await isChatGptSessionReady(page);
 }
 
 /**
@@ -785,7 +786,7 @@ export async function handlePushApproval({
     sendInteraction
   );
   await page.waitForTimeout(3000);
-  return await isChatGptSessionActive(page);
+  return await isChatGptSessionReady(page);
 }
 
 async function handleOtpIfPresent({
@@ -870,7 +871,7 @@ async function submitPasswordAndHandleSecondFactor({
 async function waitForSubmittedLogin(page: Page): Promise<boolean> {
   for (let attempt = 0; attempt < 18; attempt += 1) {
     await page.waitForTimeout(5000);
-    if (await isChatGptSessionActive(page)) {
+    if (await isChatGptSessionReady(page)) {
       return true;
     }
   }

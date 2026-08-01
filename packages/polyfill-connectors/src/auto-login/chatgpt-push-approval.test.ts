@@ -5,7 +5,7 @@
  * Behavior tests for the ChatGPT push-approval auto-resume fix.
  *
  * The push approval is approved by the owner out of band in the ChatGPT app.
- * The connector observes completion by polling `isChatGptSessionActive(page)` in
+ * The connector observes completion by polling the API-backed session-ready predicate in
  * a non-blocking window (an `act_elsewhere` assistance, no owner response
  * required). This suite proves the three guarantees of the fix:
  *
@@ -54,11 +54,15 @@ const visibleLocator: Pick<Locator, "click" | "count" | "fill" | "first" | "wait
 };
 
 interface PushApprovalPageOptions {
+  /** API session readiness: `/api/auth/session` returns `{ user }`. */
+  readonly apiSessionActive?: () => boolean;
   readonly context?: BrowserContext;
+  /** DOM-only evidence used for UI diagnostics; never sufficient for readiness. */
+  readonly domLoggedIn?: () => boolean;
   readonly onGoto?: (url: string) => void | Promise<void>;
   /** Called on each `page.waitForTimeout` — lets a test advance a logical clock. */
   readonly onWaitTimeout?: (ms: number) => void | Promise<void>;
-  /** Returns true once the session should be observed active. */
+  /** Legacy shorthand used when API and DOM evidence transition together. */
   readonly sessionActive: () => boolean;
   readonly url?: string;
 }
@@ -79,13 +83,14 @@ function makePushApprovalPage(opts: PushApprovalPageOptions): Page {
       return Promise.resolve();
     },
     evaluate(fn: unknown): Promise<unknown> {
-      const active = opts.sessionActive();
-      // checkLoggedInViaDOM() (querySelectorAll source) expects a boolean;
-      // checkSession() expects { user } when active.
+      const apiSessionActive = opts.apiSessionActive?.() ?? opts.sessionActive();
+      const domLoggedIn = opts.domLoggedIn?.() ?? opts.sessionActive();
+      // DOM diagnostics expect a boolean; the API readiness predicate expects
+      // `{ user }` only after `/api/auth/session` is authenticated.
       if (typeof fn === "function" && fn.toString().includes("querySelectorAll")) {
-        return Promise.resolve(active);
+        return Promise.resolve(domLoggedIn);
       }
-      return Promise.resolve(active ? { user: { id: "u" } } : null);
+      return Promise.resolve(apiSessionActive ? { user: { id: "u" } } : null);
     },
     getByText(): Locator {
       return visibleLocator as Locator;
@@ -161,6 +166,13 @@ function clearBudgetEnv(prior: string | undefined): void {
     process.env.PDPP_CHATGPT_PUSH_APPROVAL_TIMEOUT_MS = prior;
   }
 }
+
+const authEvidenceCases = [
+  { apiSessionUser: false, domLoggedIn: false },
+  { apiSessionUser: false, domLoggedIn: true },
+  { apiSessionUser: true, domLoggedIn: false },
+  { apiSessionUser: true, domLoggedIn: true },
+] as const;
 
 // ─── 1. watchdog is not tripped by the (checkpointing) poll ──────────────────
 
@@ -347,6 +359,49 @@ test("push-approval poll checks ChatGPT origin when approval page does not redir
   }
 });
 
+test("push-approval origin probe does not resume from DOM-only evidence", async () => {
+  const prior = process.env.PDPP_CHATGPT_PUSH_APPROVAL_TIMEOUT_MS;
+  shortBudgetEnv();
+  try {
+    const interactions: InteractionRequest[] = [];
+    const primaryNavigations: string[] = [];
+    let probeOpened = 0;
+    const chatGptProbePage = makePushApprovalPage({
+      apiSessionActive: () => false,
+      domLoggedIn: () => true,
+      sessionActive: () => false,
+      url: "https://chatgpt.com/",
+    });
+    const primaryPage = makePushApprovalPage({
+      context: makeProbeContext({
+        ...chatGptProbePage,
+        close: () => {
+          probeOpened += 1;
+          return Promise.resolve();
+        },
+      } as Page),
+      onGoto: (url) => {
+        primaryNavigations.push(url);
+      },
+      sessionActive: () => false,
+      url: "https://auth.openai.com/push-auth-verification/test",
+    });
+
+    const result = await handlePushApproval({
+      checkpoint: () => Promise.resolve(),
+      page: primaryPage,
+      sendInteraction: recordingSendInteraction(interactions),
+    });
+
+    assert.equal(result, false, "DOM-only probe evidence must not resume collection");
+    assert.equal(interactions.length, 1, "repair honestly falls back after the observation budget");
+    assert.deepEqual(primaryNavigations, [], "an API-absent origin probe must not move the collector page");
+    assert.equal(probeOpened, 1, "the temporary ChatGPT-origin probe page is closed");
+  } finally {
+    clearBudgetEnv(prior);
+  }
+});
+
 // ─── 3. exhaustion escalates BEFORE the blocking fallback ────────────────────
 
 test("budget exhausted: assistance is escalated BEFORE the blocking manual_action is emitted", async () => {
@@ -418,6 +473,44 @@ test("budget exhausted with no readiness even after the fallback returns false",
     clearBudgetEnv(prior);
   }
 });
+
+for (const evidence of authEvidenceCases) {
+  test(`push approval terminalizes only on API session user (api=${String(evidence.apiSessionUser)}, dom=${String(evidence.domLoggedIn)})`, async () => {
+    const prior = process.env.PDPP_CHATGPT_PUSH_APPROVAL_TIMEOUT_MS;
+    shortBudgetEnv();
+    try {
+      const interactions: InteractionRequest[] = [];
+      const completions: string[] = [];
+      let pollWaits = 0;
+      const result = await handlePushApproval({
+        assist: () => Promise.resolve("asst_1"),
+        checkpoint: () => Promise.resolve(),
+        completeAssistance: (_id, status) => {
+          completions.push(status);
+          return Promise.resolve();
+        },
+        page: makePushApprovalPage({
+          apiSessionActive: () => evidence.apiSessionUser,
+          domLoggedIn: () => evidence.domLoggedIn,
+          onWaitTimeout: (ms) => {
+            if (ms === 5000) {
+              pollWaits += 1;
+            }
+          },
+          sessionActive: () => false,
+        }),
+        sendInteraction: recordingSendInteraction(interactions),
+      });
+
+      assert.equal(result, evidence.apiSessionUser);
+      assert.deepEqual(completions, [evidence.apiSessionUser ? "resolved" : "escalated"]);
+      assert.equal(interactions.length, evidence.apiSessionUser ? 0 : 1);
+      assert.equal(pollWaits, evidence.apiSessionUser ? 1 : 3, "API-absent repair must exhaust its observation budget");
+    } finally {
+      clearBudgetEnv(prior);
+    }
+  });
+}
 
 // ─── 4. browser-login assistance auto-resumes without owner click ───────────
 
@@ -501,6 +594,44 @@ test("browser-login budget exhaustion escalates before blocking manual_action fa
     clearBrowserLoginBudgetEnv(prior);
   }
 });
+
+for (const evidence of authEvidenceCases) {
+  test(`browser-login assistance terminalizes only on API session user (api=${String(evidence.apiSessionUser)}, dom=${String(evidence.domLoggedIn)})`, async () => {
+    const prior = process.env.PDPP_CHATGPT_BROWSER_LOGIN_TIMEOUT_MS;
+    shortBrowserLoginBudgetEnv();
+    try {
+      const interactions: InteractionRequest[] = [];
+      const completions: string[] = [];
+      let pollWaits = 0;
+      const result = await handleBrowserLoginAssistance({
+        assist: () => Promise.resolve("asst_login"),
+        checkpoint: () => Promise.resolve(),
+        completeAssistance: (_id, status) => {
+          completions.push(status);
+          return Promise.resolve();
+        },
+        page: makePushApprovalPage({
+          apiSessionActive: () => evidence.apiSessionUser,
+          domLoggedIn: () => evidence.domLoggedIn,
+          onWaitTimeout: (ms) => {
+            if (ms === 5000) {
+              pollWaits += 1;
+            }
+          },
+          sessionActive: () => false,
+        }),
+        sendInteraction: recordingSendInteraction(interactions),
+      });
+
+      assert.equal(result, evidence.apiSessionUser);
+      assert.deepEqual(completions, [evidence.apiSessionUser ? "resolved" : "escalated"]);
+      assert.equal(interactions.length, evidence.apiSessionUser ? 0 : 1);
+      assert.equal(pollWaits, evidence.apiSessionUser ? 1 : 3, "API-absent repair must exhaust its observation budget");
+    } finally {
+      clearBrowserLoginBudgetEnv(prior);
+    }
+  });
+}
 
 test("chatGptBrowserLoginAssistance carries browser attachment and timeout", () => {
   const assistance = chatGptBrowserLoginAssistance({ PDPP_CHATGPT_BROWSER_LOGIN_TIMEOUT_MS: "120000" });
