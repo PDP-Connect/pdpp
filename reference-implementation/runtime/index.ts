@@ -4998,12 +4998,23 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         if (!terminalEventRecorded) {
           if (runTimedOut) {
             await recordRunTimedOutTerminal(code);
+          } else if (ownerCancelRequested && doneMessage?.status !== "succeeded") {
+            // The connector's own SIGTERM-teardown race (e.g. a Playwright
+            // call rejecting with "Target closed" as the browser is torn
+            // down) can land a DONE(failed) after the owner already
+            // requested cancellation. That DONE reports a symptom of the
+            // cancellation, not a genuine connector failure — the run must
+            // still terminal as `run.cancelled`, matching `runTimedOut`'s
+            // existing precedence over `doneMessage`. A DONE(succeeded) that
+            // won the race against teardown is still honored below. Clear it
+            // so downstream reads (connector_error, resolution reason) don't
+            // leak the teardown symptom into a cancelled result.
+            doneMessage = null;
+            await handleOwnerCancellationClose(code);
           } else if (doneMessage) {
             if (await handleDoneClose(code)) {
               return;
             }
-          } else if (ownerCancelRequested) {
-            await handleOwnerCancellationClose(code);
           } else {
             await handleConnectorExitClose(code, stderrTailDiagnostic);
           }

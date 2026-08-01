@@ -95,24 +95,45 @@ function startMockRs() {
 // Writes a stub connector that reads START, emits one RECORD and one STATE,
 // announces readiness on stderr, then idles forever. `ignoreSigterm` installs a
 // no-op SIGTERM handler so the runtime must escalate to SIGKILL (the forced
-// path). Records and state are emitted at module top level after START so the
-// runtime flushes the record and stages the cursor before the test aborts.
-function writeStub({ ignoreSigterm }: { ignoreSigterm: boolean }): { stubPath: string; tmpDir: string } {
+// path). `doneFailedOnSigterm` installs a handler that instead reports a
+// DONE(failed) (mimicking a Playwright call rejecting with "Target closed" as
+// the connector's own SIGTERM-teardown races the runtime's terminate) before
+// exiting — the exact live race this file's "reports its own failure" test
+// guards against. Records and state are emitted at module top level after
+// START so the runtime flushes the record and stages the cursor before the
+// test aborts.
+function writeStub({
+  ignoreSigterm = false,
+  doneFailedOnSigterm = false,
+}: {
+  ignoreSigterm?: boolean;
+  doneFailedOnSigterm?: boolean;
+}): { stubPath: string; tmpDir: string } {
   const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-runtime-cancel-"));
   const stubPath = join(tmpDir, "stub.mjs");
-  const sigtermLine = ignoreSigterm
-    ? "process.on('SIGTERM', () => { /* deliberately ignore: force SIGKILL escalation */ });"
-    : "// default SIGTERM disposition: terminate the process";
+  let sigtermLine = "// default SIGTERM disposition: terminate the process";
+  if (ignoreSigterm) {
+    sigtermLine = "process.on('SIGTERM', () => { /* deliberately ignore: force SIGKILL escalation */ });";
+  } else if (doneFailedOnSigterm) {
+    sigtermLine = `process.on('SIGTERM', () => {
+  // Simulate the connector's own SIGTERM-teardown race: an in-flight
+  // Playwright call rejects with "Target closed" as the browser tears
+  // down, and the connector reports it as a genuine DONE(failed) before
+  // exiting — exactly like connector-runtime.ts's emitFailed().
+  emit({ type: 'DONE', status: 'failed', records_emitted: 1, error: { message: 'Target closed', retryable: false } });
+  process.exit(1);
+});`;
+  }
   writeFileSync(
     stubPath,
     `
 import { createInterface } from 'node:readline';
 
-${sigtermLine}
-
 function emit(msg) {
   process.stdout.write(JSON.stringify(msg) + '\\n');
 }
+
+${sigtermLine}
 
 async function main() {
   // Read START.
@@ -123,7 +144,8 @@ async function main() {
 
   // One record, then a STATE checkpoint. Emitting STATE flushes this stream's
   // records to the RS (proving already-collected records survive cancel) and
-  // stages — but does NOT commit — the cursor (no DONE will follow).
+  // stages — but does NOT commit — the cursor (no DONE will follow, except on
+  // the doneFailedOnSigterm path, where SIGTERM itself sends one).
   emit({ type: 'RECORD', stream: '${STREAM}', key: 'r1', data: { id: 'r1' }, emitted_at: new Date().toISOString() });
   emit({ type: 'STATE', stream: '${STREAM}', cursor: { offset: 1 } });
 
@@ -190,14 +212,21 @@ function assertRunEventsUseDefaultAccountBinding(runId: string): SpineEventRow[]
   return events;
 }
 
-async function runCancelScenario(t: TestContext, { ignoreSigterm, runId }: { ignoreSigterm: boolean; runId: string }) {
+async function runCancelScenario(
+  t: TestContext,
+  {
+    ignoreSigterm = false,
+    doneFailedOnSigterm = false,
+    runId,
+  }: { ignoreSigterm?: boolean; doneFailedOnSigterm?: boolean; runId: string }
+) {
   freshDb(t);
   const { server, requests, ingested } = startMockRs();
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   assert.ok(address && typeof address === "object", "expected an AddressInfo from an ephemeral listen(0)");
   const rsUrl = `http://127.0.0.1:${address.port}`;
-  const { stubPath, tmpDir } = writeStub({ ignoreSigterm });
+  const { stubPath, tmpDir } = writeStub({ doneFailedOnSigterm, ignoreSigterm });
 
   const controller = new AbortController();
   // Abort as soon as the RS has received the flushed record: the run is past
@@ -306,4 +335,45 @@ test("runtime owner-cancel: connector that ignores SIGTERM is force-terminated �
   assert.ok(events.includes("run.cancel_requested"), "a non-terminal run.cancel_requested is recorded");
   assert.ok(events.includes("run.cancelled"), "a terminal run.cancelled is recorded");
   assert.ok(!events.includes("run.failed"), "a force-cancelled run does NOT terminal as run.failed");
+});
+
+// Regression for the live owner-cancellation race: POST /_ref/runs/:id/cancel
+// returns `cancel_requested`, then a browser-driven connector's SIGTERM
+// handler races an in-flight Playwright call — the call rejects with
+// "Target closed" as the browser tears down, and the connector reports that
+// as a genuine DONE(failed) (exactly what connector-runtime.ts's
+// `run().catch()` → `emitFailed()` does for any thrown error) before it
+// exits. Before the fix, the runtime's close dispatch checked `doneMessage`
+// before `ownerCancelRequested`, so this teardown symptom was misfiled as
+// `run.failed` (reason: `connector_reported_failed`) instead of the owner's
+// actual cancellation outcome.
+test("runtime owner-cancel: connector's own SIGTERM-teardown DONE(failed) still terminals as owner_cancelled, not run.failed", async (t) => {
+  const runId = "run_cancel_done_failed_race";
+  const { outcome, outcomeError, requests } = await runCancelScenario(t, {
+    doneFailedOnSigterm: true,
+    runId,
+  });
+
+  const result = asStructuredOutcome(outcome ?? outcomeError);
+  assert.equal(result.status, "cancelled", "cancel wins the race over the connector's own DONE(failed)");
+  assert.equal(
+    result.terminal_reason,
+    "owner_cancelled",
+    "the connector's teardown-induced DONE(failed) must not override the owner's cancellation intent"
+  );
+
+  // Records already flushed to the RS are preserved, same as the other
+  // cancellation paths.
+  const ingests = requests.filter((r) => r.method === "POST" && r.pathname.startsWith("/v1/ingest/"));
+  assert.ok(ingests.length >= 1, "the flushed record reached the resource server");
+  const stateCommits = requests.filter((r) => r.method === "PUT" && r.pathname.startsWith("/v1/state/"));
+  assert.equal(stateCommits.length, 0, "staged cursor state is NOT committed when the race's DONE was failed");
+
+  const events = assertRunEventsUseDefaultAccountBinding(runId).map((e) => e.event_type);
+  assert.ok(events.includes("run.cancel_requested"), "a non-terminal run.cancel_requested is recorded");
+  assert.ok(events.includes("run.cancelled"), "a terminal run.cancelled is recorded");
+  assert.ok(
+    !events.includes("run.failed"),
+    "the race's connector-reported DONE(failed) must NOT terminal this run as run.failed"
+  );
 });
