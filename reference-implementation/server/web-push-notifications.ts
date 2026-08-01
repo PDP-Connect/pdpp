@@ -9,6 +9,7 @@ import {
   classifyAssistanceNotification,
   computeInteractionPushTtl,
   NOTIFICATION_TIERS,
+  projectAssistanceTransportPriority,
   projectInteractionTransportPriority,
   projectNotificationDelivery,
   shouldFanoutRenderedVerdict,
@@ -826,6 +827,13 @@ export function shouldFanoutAssistanceProgress(
 export interface AssistancePushInput {
   assistance_request_id?: unknown;
   owner_action?: unknown;
+  /**
+   * Connector-declared assistance window in seconds, as already present on
+   * the `run.assistance_requested` wire event. Read only for RFC 8030
+   * urgency/TTL projection (`notification-policy.ts`) — never surfaced in
+   * push body copy.
+   */
+  timeout_seconds?: unknown;
   [key: string]: unknown;
 }
 
@@ -1278,6 +1286,23 @@ async function fanoutAssistanceWebPushImpl({
     log.warn?.(`[controller] web push assistance for run ${runId} skipped: missing owner subject`);
     return { attempted: 0, sent: 0, unavailable: false };
   }
+  // Assistance is only fanned out here when the caller has already
+  // classified it action_required (`shouldFanoutAssistanceProgress`), so
+  // this only refines urgency/TTL by whether the assistance also carries a
+  // real, bounded window to act in — same "remaining lifetime at send time"
+  // reasoning as the pending-interaction fanout (this call is synchronous
+  // off the ASSISTANCE message's arrival, so the declared timeout IS the
+  // remaining budget).
+  const timeoutSeconds =
+    typeof assistance?.timeout_seconds === "number" && Number.isFinite(assistance.timeout_seconds)
+      ? assistance.timeout_seconds
+      : null;
+  const ttlDecision = computeInteractionPushTtl({ remainingSeconds: timeoutSeconds });
+  if (!ttlDecision.send) {
+    log.warn?.(`[controller] web push assistance for run ${runId} suppressed: assistance already past useful expiry`);
+    return { attempted: 0, sent: 0, suppressed: true, unavailable: false };
+  }
+  const urgency = projectAssistanceTransportPriority({ timeoutSeconds });
   const payload = buildAssistancePushPayload({ assistance, connectorDisplayName, runId });
   return sendPayloadToOwnerSubscriptions({
     config,
@@ -1287,6 +1312,7 @@ async function fanoutAssistanceWebPushImpl({
     payload,
     sender,
     store,
+    transportOptions: { ttlSeconds: ttlDecision.ttlSeconds, urgency },
   });
 }
 

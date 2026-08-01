@@ -29,11 +29,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  ASSISTANCE_URGENT_TIMEOUT_CEILING_SECONDS,
   classifyAssistanceNotification,
   classifyRunEventNotification,
   computeInteractionPushTtl,
   isWithinQuietWindow,
   NOTIFICATION_TIERS,
+  projectAssistanceTransportPriority,
   projectInteractionTransportPriority,
   projectNotificationDelivery,
   shouldFanoutRenderedVerdict,
@@ -313,6 +315,39 @@ test("projectInteractionTransportPriority at the exact 900s boundary is high", (
     "high",
     "900s is the documented inclusive ceiling"
   );
+});
+
+// ─── projectAssistanceTransportPriority — RFC 8030 Urgency for ASSISTANCE ─
+//
+// Distinct, wider ceiling than interaction urgency: assistance is
+// "act in another app", observed at timeout_seconds=1800 on a live ChatGPT
+// dondochaka run (run_9d009f371f2342ee8bd6d338ecbd3066), which must land in
+// the "high" band even though it exceeds the 900s interaction ceiling.
+
+test("projectAssistanceTransportPriority ceiling includes the observed 1800s browser-assistance window", () => {
+  assert.equal(ASSISTANCE_URGENT_TIMEOUT_CEILING_SECONDS, 1800);
+  assert.equal(projectAssistanceTransportPriority({ timeoutSeconds: 1800 }), "high");
+});
+
+test("projectAssistanceTransportPriority is high for any positive, bounded timeout", () => {
+  assert.equal(projectAssistanceTransportPriority({ timeoutSeconds: 1 }), "high");
+  assert.equal(projectAssistanceTransportPriority({ timeoutSeconds: 60 }), "high");
+  assert.equal(projectAssistanceTransportPriority({ timeoutSeconds: 900 }), "high");
+  assert.equal(projectAssistanceTransportPriority({ timeoutSeconds: 1800 }), "high");
+});
+
+test("projectAssistanceTransportPriority is normal just past the ceiling and for excessively long-lived timeouts", () => {
+  assert.equal(projectAssistanceTransportPriority({ timeoutSeconds: 1801 }), "normal");
+  assert.equal(projectAssistanceTransportPriority({ timeoutSeconds: 24 * 60 * 60 }), "normal");
+});
+
+test("projectAssistanceTransportPriority is normal when the timeout is absent, zero, or invalid", () => {
+  assert.equal(projectAssistanceTransportPriority({}), "normal");
+  assert.equal(projectAssistanceTransportPriority(), "normal");
+  assert.equal(projectAssistanceTransportPriority({ timeoutSeconds: null }), "normal");
+  assert.equal(projectAssistanceTransportPriority({ timeoutSeconds: 0 }), "normal");
+  assert.equal(projectAssistanceTransportPriority({ timeoutSeconds: -5 }), "normal");
+  assert.equal(projectAssistanceTransportPriority({ timeoutSeconds: Number.NaN }), "normal");
 });
 
 // ─── computeInteractionPushTtl — durable remaining lifetime at send time ─

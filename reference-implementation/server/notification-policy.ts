@@ -74,6 +74,7 @@ interface AssistanceInput {
   owner_action?: unknown;
   progress_posture?: unknown;
   response_contract?: unknown;
+  timeout_seconds?: unknown;
 }
 
 export function classifyAssistanceNotification(input: AssistanceInput = {}): NotificationTier {
@@ -156,6 +157,44 @@ export function projectInteractionTransportPriority({
     !Number.isFinite(timeoutSeconds) ||
     timeoutSeconds <= 0 ||
     timeoutSeconds > INTERACTION_URGENT_TIMEOUT_CEILING_SECONDS
+  ) {
+    return "normal";
+  }
+  return "high";
+}
+
+/**
+ * Upper bound (inclusive) on `timeout_seconds` for `high` urgency on a
+ * genuinely action-required ASSISTANCE push. Assistance is a different UX
+ * shape than a blocking INTERACTION (owner acts in another app rather than
+ * responding to PDPP directly), so it gets its own, wider ceiling rather than
+ * reusing `INTERACTION_URGENT_TIMEOUT_CEILING_SECONDS` — 30 minutes covers
+ * the observed ChatGPT dondochaka browser-assistance window
+ * (`timeout_seconds=1800`) while still excluding excessively long-lived or
+ * unbounded assistance from an urgent wake.
+ */
+export const ASSISTANCE_URGENT_TIMEOUT_CEILING_SECONDS = 1800;
+
+/**
+ * RFC 8030 `Urgency` for an action-required ASSISTANCE push: `high` only
+ * when the assistance also carries a positive, bounded (<=30min) timeout —
+ * proof the owner has a real window to act in, not just that PDPP is
+ * waiting. Missing/invalid/zero/negative or excessively long-lived timeouts
+ * get `normal`, matching today's behavior for informational/nonblocking
+ * assistance. Callers gate this on `classifyAssistanceNotification` /
+ * `shouldFanoutAssistanceProgress` already having classified the message as
+ * action-required — this function only adds the expiry-bounded refinement.
+ */
+export function projectAssistanceTransportPriority({
+  timeoutSeconds,
+}: {
+  timeoutSeconds?: number | null;
+} = {}): WebPushUrgency {
+  if (
+    typeof timeoutSeconds !== "number" ||
+    !Number.isFinite(timeoutSeconds) ||
+    timeoutSeconds <= 0 ||
+    timeoutSeconds > ASSISTANCE_URGENT_TIMEOUT_CEILING_SECONDS
   ) {
     return "normal";
   }

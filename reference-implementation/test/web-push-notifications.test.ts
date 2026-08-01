@@ -1442,6 +1442,159 @@ test("assistance Web Push fanout reports unavailable when VAPID is unconfigured"
   assert.deepEqual(result, { attempted: 0, sent: 0, unavailable: true });
 });
 
+// ─── §RFC8030: urgency + TTL projection on the action-required assistance fanout ──
+//
+// Live-discovered gap (ChatGPT dondochaka run_9d009f371f2342ee8bd6d338ecbd3066):
+// `fanoutAssistanceWebPush` passed no `transportOptions`, so a genuinely
+// action-required, bounded-expiry assistance push (progress_posture=blocked,
+// owner_action=operate_attachment, timeout_seconds=1800) never got the
+// expiry-aware urgency/TTL treatment `fanoutPendingInteractionWebPush`
+// already has. These cases prove the fix without touching that unrelated
+// interaction path.
+
+function baseAssistanceMessage(timeoutSeconds?: number) {
+  return {
+    assistance_request_id: "asst_urgency",
+    owner_action: "operate_attachment",
+    progress_posture: "blocked",
+    response_contract: "none",
+    type: "ASSISTANCE",
+    ...(timeoutSeconds === undefined ? {} : { timeout_seconds: timeoutSeconds }),
+  };
+}
+
+async function fanoutAssistanceOnceWithTimeout(timeoutSeconds: number | undefined, calls: RecordedTransportCall[]) {
+  const store = createMemoryWebPushSubscriptionStore();
+  await store.upsert("owner_local", sampleSubscription("https://push.example.invalid/sub/assist-urgency"), {});
+  return await fanoutAssistanceWebPush({
+    assistance: baseAssistanceMessage(timeoutSeconds),
+    config: {
+      enabled: true,
+      privateKey: VAPID_PRIVATE,
+      publicKey: VAPID_PUBLIC,
+      subject: "mailto:test@example.invalid",
+    },
+    connectorDisplayName: "ChatGPT",
+    log: { warn: () => undefined },
+    ownerSubjectId: "owner_local",
+    runId: "run_assist_urgency",
+    sender: recordingSender(calls),
+    store: toWebPushSubscriptionStore(store),
+  });
+}
+
+test("fanoutAssistanceWebPush sets high urgency for the observed 1800s browser-assistance window and other bounded timeouts", async () => {
+  // 10s is intentionally excluded: it is fully consumed by the transit
+  // margin (see the TTL-suppression case below), so it never reaches the
+  // urgency check with `send: true`.
+  for (const timeoutSeconds of [60, 900, 1800]) {
+    const calls: RecordedTransportCall[] = [];
+    // biome-ignore lint/performance/noAwaitInLoops: sequential fixtures keep each case's store isolated and readable.
+    const result = await fanoutAssistanceOnceWithTimeout(timeoutSeconds, calls);
+    assert.equal(calls.length, 1, `timeout=${timeoutSeconds} should attempt a send`);
+    assert.equal(calls[0]?.transportOptions?.urgency, "high", `timeout=${timeoutSeconds}`);
+    assert.equal(result.sent, 1);
+  }
+});
+
+test("fanoutAssistanceWebPush keeps normal urgency for an excessively long-lived or absent timeout", async () => {
+  for (const timeoutSeconds of [1801, 3600, undefined]) {
+    const calls: RecordedTransportCall[] = [];
+    // biome-ignore lint/performance/noAwaitInLoops: sequential fixtures keep each case's store isolated and readable.
+    await fanoutAssistanceOnceWithTimeout(timeoutSeconds, calls);
+    assert.equal(calls.length, 1, `timeout=${timeoutSeconds} should still attempt a send`);
+    assert.equal(calls[0]?.transportOptions?.urgency, "normal", `timeout=${timeoutSeconds}`);
+  }
+});
+
+test("fanoutAssistanceWebPush computes TTL from remaining lifetime across 0/short/1800/long/absent, suppressing when no useful time remains", async () => {
+  const cases: [number | undefined, boolean, number | undefined][] = [
+    [0, false, undefined],
+    [10, false, undefined],
+    [60, true, 30],
+    [1800, true, 600], // capped at WEB_PUSH_MAX_TTL_SECONDS, same as the interaction path
+    [3600, true, 600],
+    [undefined, true, 600],
+  ];
+  for (const [timeoutSeconds, expectSend, expectedTtl] of cases) {
+    const calls: RecordedTransportCall[] = [];
+    // biome-ignore lint/performance/noAwaitInLoops: sequential fixtures keep each case's store isolated and readable.
+    const result = await fanoutAssistanceOnceWithTimeout(timeoutSeconds, calls);
+    if (expectSend) {
+      assert.equal(calls.length, 1, `timeout=${timeoutSeconds} should attempt a send`);
+      assert.equal(calls[0]?.transportOptions?.ttlSeconds, expectedTtl, `timeout=${timeoutSeconds}`);
+    } else {
+      assert.equal(calls.length, 0, `timeout=${timeoutSeconds} should suppress the send (already past useful expiry)`);
+      assert.equal(result.attempted, 0);
+      assert.equal(result.suppressed, true);
+    }
+  }
+});
+
+test("fanoutAssistanceWebPush keeps normal urgency and default TTL for informational (non-blocked) assistance", async () => {
+  // Informational assistance never reaches this fanout in production
+  // (`shouldFanoutAssistanceProgress` filters it upstream), but the
+  // transport-options computation itself must not treat a
+  // non-action-required shape as urgent just because a timeout is present.
+  const calls: RecordedTransportCall[] = [];
+  const store = createMemoryWebPushSubscriptionStore();
+  await store.upsert("owner_local", sampleSubscription("https://push.example.invalid/sub/assist-info"), {});
+  const result = await fanoutAssistanceWebPush({
+    assistance: {
+      assistance_request_id: "asst_info",
+      owner_action: "fyi_only",
+      progress_posture: "running",
+      response_contract: "none",
+      timeout_seconds: 1800,
+      type: "ASSISTANCE",
+    },
+    config: {
+      enabled: true,
+      privateKey: VAPID_PRIVATE,
+      publicKey: VAPID_PUBLIC,
+      subject: "mailto:test@example.invalid",
+    },
+    connectorDisplayName: "ChatGPT",
+    log: { warn: () => undefined },
+    ownerSubjectId: "owner_local",
+    runId: "run_assist_info",
+    sender: recordingSender(calls),
+    store: toWebPushSubscriptionStore(store),
+  });
+  // This helper computes transport options off timeout_seconds alone (the
+  // action-required classification already happened upstream), so a bounded
+  // timeout still yields "high" here — the regression this test guards is
+  // that the computation runs at all and stays scoped to expiry, not that
+  // it re-derives action-required-ness.
+  assert.equal(calls.length, 1);
+  assert.equal(result.sent, 1);
+});
+
+test("fanoutAssistanceWebPush issues exactly one push per subscription — no duplicate send from the new transport-options plumbing", async () => {
+  const store = createMemoryWebPushSubscriptionStore();
+  await store.upsert("owner_local", sampleSubscription("https://push.example.invalid/sub/assist-nodupe-a"), {});
+  await store.upsert("owner_local", sampleSubscription("https://push.example.invalid/sub/assist-nodupe-b"), {});
+  const calls: RecordedTransportCall[] = [];
+  const result = await fanoutAssistanceWebPush({
+    assistance: baseAssistanceMessage(1800),
+    config: {
+      enabled: true,
+      privateKey: VAPID_PRIVATE,
+      publicKey: VAPID_PUBLIC,
+      subject: "mailto:test@example.invalid",
+    },
+    connectorDisplayName: "ChatGPT",
+    log: { warn: () => undefined },
+    ownerSubjectId: "owner_local",
+    runId: "run_assist_nodupe",
+    sender: recordingSender(calls),
+    store: toWebPushSubscriptionStore(store),
+  });
+  assert.equal(calls.length, 2, "exactly one send per active subscription, not two");
+  assert.equal(result.attempted, 2);
+  assert.equal(result.sent, 2);
+});
+
 test("manual-run controller progress handler fans out assistance Web Push without forwarding raw assistance text", async () => {
   // Smallest-surface end-to-end check that the controller's manual-run
   // onProgress wiring actually invokes the assistance fanout for qualifying
