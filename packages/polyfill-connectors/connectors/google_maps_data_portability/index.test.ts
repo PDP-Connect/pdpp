@@ -86,6 +86,7 @@ function makeContext({
       },
       requested: new Map(streams.map((stream) => [stream.name, stream])),
       requestDetailGapPage: () => Promise.resolve([]),
+      requestBrowserSurfacePhase: () => Promise.resolve({ kind: "unavailable", reason: "not_managed" }),
       scope: start.scope,
       sendInteraction: () =>
         Promise.resolve({

@@ -8,6 +8,7 @@ import {
   browserConfigPreservationFor,
   browserSurfacePolicyFor,
   connectorRetainsSurfaceProcess,
+  connectorUsesPhaseScopedSurface,
 } from "./browser-surface-policy.ts";
 
 // This registry is the single source of truth binding page preservation and
@@ -47,5 +48,22 @@ test("invariant: any retained connector also preserves both pages", () => {
       assert.equal(policy.preservePageOnSuccess, true, `${name} retains but does not preserve success page`);
       assert.equal(policy.preservePageOnFailure, true, `${name} retains but does not preserve failure page`);
     }
+  }
+});
+
+// I6: run-level connectors (surfaceScope default/"run") must stay unchanged
+// by the bounded phase-lease feature, and only a connector explicitly
+// declaring surfaceScope: "phase" is treated as phase-scoped.
+test("surfaceScope: chatgpt is run-scoped (default), slack is phase-scoped, an unknown connector has no scope", () => {
+  assert.equal(browserSurfacePolicyFor("chatgpt")?.surfaceScope, undefined, "chatgpt relies on the run default");
+  assert.equal(browserSurfacePolicyFor("slack")?.surfaceScope, "phase");
+  assert.equal(browserSurfacePolicyFor("does-not-exist"), null);
+});
+
+test("connectorUsesPhaseScopedSurface: chatgpt=false, slack=true, unknown connector=false", () => {
+  assert.equal(connectorUsesPhaseScopedSurface("chatgpt"), false);
+  assert.equal(connectorUsesPhaseScopedSurface("slack"), true);
+  for (const id of ["does-not-exist", "", null, undefined]) {
+    assert.equal(connectorUsesPhaseScopedSurface(id), false, `${String(id)} must not be phase-scoped`);
   }
 });

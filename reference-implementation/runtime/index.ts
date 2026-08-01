@@ -385,6 +385,41 @@ export interface RuntimeBrowserSurfaceEnv {
   readonly PDPP_BROWSER_SURFACE_STREAM_BASE_URL?: string | null;
 }
 
+/**
+ * Plain-data result of a mid-run phase-scoped browser-surface acquire,
+ * shaped to map directly onto a `BROWSER_SURFACE_RESPONSE` protocol message
+ * (connector-runtime-protocol.ts). Deliberately primitive (no remote-surface
+ * lease/surface types) so this module stays decoupled from the browser-
+ * surface subsystem's internals, the same boundary `browserSurfaceEnv`
+ * already draws for the run-level lease.
+ */
+export type RuntimeBrowserSurfacePhaseAcquireResult =
+  | {
+      readonly kind: "granted";
+      readonly leaseId: string;
+      readonly profileKey: string;
+      readonly remoteCdpUrl: string;
+      readonly streamBaseUrl: string;
+      readonly surfaceId: string;
+    }
+  | { readonly kind: "unavailable"; readonly reason: string };
+
+/**
+ * Injected hook pair backing `BROWSER_SURFACE_REQUEST` (action: "acquire" |
+ * "release") for a phase-scoped connector (surfaceScope: "phase" —
+ * browser-surface-policy.ts). Absent/null means the host has not wired
+ * phase-scoped browser surfaces at all; `handleBrowserSurfaceRequest` treats
+ * that the same as `not_managed` — never hangs, never throws.
+ */
+export interface RuntimeBrowserSurfacePhaseRequestHooks {
+  readonly acquire: (input: {
+    readonly connectorId: string;
+    readonly connectorInstanceId: string;
+    readonly runId: string;
+  }) => Promise<RuntimeBrowserSurfacePhaseAcquireResult>;
+  readonly release: (runId: string) => Promise<void>;
+}
+
 export interface RuntimeRunConnectorOptions {
   /**
    * Trusted run-creation admission. It must validate or materialize one exact
@@ -433,6 +468,14 @@ export interface RuntimeRunConnectorOptions {
   detailGapStore?: RuntimeDetailGapStoreCapabilities;
   grantId?: string | null;
   manifest: ConnectorManifest;
+  /**
+   * Injected hooks serving a phase-scoped connector's mid-run
+   * `BROWSER_SURFACE_REQUEST` (surfaceScope: "phase" — browser-surface-
+   * policy.ts). Absent/null means the host has not wired phase-scoped
+   * browser surfaces; the runtime replies `unavailable`/`not_managed`
+   * rather than hanging or throwing.
+   */
+  onBrowserSurfacePhaseRequest?: RuntimeBrowserSurfacePhaseRequestHooks | null;
   onInteraction?: ((interaction: ConnectorMessage) => unknown) | null;
   onInteractionTerminal?: ((info: { interactionId: string; status: string }) => unknown) | null;
   onProgress?: (message: unknown) => void;
@@ -1896,6 +1939,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     persistState = true,
     grantId = null,
     rsUrl = process.env.RS_URL || "http://localhost:7663",
+    onBrowserSurfacePhaseRequest = null,
     onInteraction = defaultInteractionHandler,
     onInteractionTerminal = null,
     onProgress = defaultOnProgress,
@@ -4115,6 +4159,56 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       });
     }
 
+    async function handleBrowserSurfaceRequest(msg: ConnectorMessage): Promise<void> {
+      // Defensive, non-throwing validation: unlike DETAIL_GAPS_PAGE_REQUEST,
+      // a malformed or unrecognized BROWSER_SURFACE_REQUEST must not fail
+      // the run — it replies `unavailable` so a phase-scoped connector's
+      // honest failure handle (transport rejects, per-stream skip) takes
+      // over rather than the whole run dying on a protocol hiccup (AM-3).
+      const requestId = typeof msg.request_id === "string" && msg.request_id.trim() ? msg.request_id : null;
+      if (!requestId) {
+        return;
+      }
+      const reply = (fields: Record<string, string>): void => {
+        writeChildStdin(
+          `${JSON.stringify({ ...fields, request_id: requestId, type: "BROWSER_SURFACE_RESPONSE" })}\n`,
+          "browser_surface_response"
+        );
+      };
+      const { action } = msg;
+      // An unrecognized action, or a host that never wired phase surfaces,
+      // are the same answer to the connector: no surface is coming.
+      if ((action !== "acquire" && action !== "release") || !onBrowserSurfacePhaseRequest) {
+        reply({ reason: "not_managed", status: "unavailable" });
+        return;
+      }
+      if (action === "release") {
+        // Fire-and-forget from the connector's side (it never awaits a
+        // reply to release), but reply anyway so a future stricter
+        // connector-side implementation can await it if it chooses to.
+        await onBrowserSurfacePhaseRequest.release(runId);
+        reply({ status: "released" });
+        return;
+      }
+      const result = await onBrowserSurfacePhaseRequest.acquire({
+        connectorId,
+        connectorInstanceId: resolvedConnectorInstanceId,
+        runId,
+      });
+      if (result.kind === "granted") {
+        reply({
+          lease_id: result.leaseId,
+          profile_key: result.profileKey,
+          remote_cdp_url: result.remoteCdpUrl,
+          status: "granted",
+          stream_base_url: result.streamBaseUrl,
+          surface_id: result.surfaceId,
+        });
+        return;
+      }
+      reply({ reason: result.reason, status: "unavailable" });
+    }
+
     async function handleDetailGapAttempted(msg: ConnectorMessage): Promise<void> {
       validateDetailGapAttemptedMessage(msg, scopeByStream);
       const lease = allServedGapLeases.get(msg.gap_id as string);
@@ -4384,6 +4478,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     const protocolHandlers: Record<string, (msg: ConnectorMessage) => Promise<void>> = {
       ASSISTANCE: handleAssistanceMessage,
       ASSISTANCE_STATUS: handleAssistanceStatusMessage,
+      BROWSER_SURFACE_REQUEST: handleBrowserSurfaceRequest,
       DETAIL_COVERAGE: handleDetailCoverageMessage,
       DETAIL_GAP: handleDetailGapMessage,
       DETAIL_GAP_ATTEMPTED: handleDetailGapAttempted,

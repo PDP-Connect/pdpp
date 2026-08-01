@@ -51,6 +51,7 @@ import { flushAndExitAfterRuntimeAck } from "./connector-exit.ts";
 import type {
   AssistanceCompletionStatus,
   AssistanceRequest,
+  BrowserSurfacePhaseResponse,
   DetailCoverageMessage,
   DetailGapMessage,
   DetailGapNetworkPressure,
@@ -88,6 +89,10 @@ export type {
   AssistanceSensitivity,
   AttachmentHydrationFailureOutcomeProgress,
   AttachmentRecoveryOutcomeProgress,
+  BrowserSurfacePhaseRequestMessage,
+  BrowserSurfacePhaseResponse,
+  BrowserSurfacePhaseStatus,
+  BrowserSurfacePhaseUnavailableReason,
   CollectionRateProgress,
   DetailCoverageMessage,
   DetailGapAttemptedMessage,
@@ -115,6 +120,29 @@ interface EmitRecordOptions {
   skipResourceFilter?: boolean;
 }
 
+/** Live grant from `requestBrowserSurfacePhase`. */
+export interface BrowserSurfacePhaseHandle {
+  /**
+   * Env overlay shaped exactly like `browserSurfaceLeaseEnv` output
+   * (reference-implementation/runtime/browser-surface-leases.ts) so it
+   * composes with the existing `resolveBrowserLaunchSource(visibility, env)`
+   * seam without mutating `process.env`.
+   */
+  readonly env: Record<string, string>;
+  readonly leaseId: string | undefined;
+  /**
+   * Idempotent and never throws: the controller's run-cleanup backstop owns
+   * final release authority, so a failed/duplicate release here is not fatal
+   * to the run.
+   */
+  release: () => Promise<void>;
+  readonly remoteCdpUrl: string;
+}
+
+export type BrowserSurfacePhaseResult =
+  | { readonly handle: BrowserSurfacePhaseHandle; readonly kind: "granted" }
+  | { readonly kind: "unavailable"; readonly reason: string };
+
 interface BaseCollectContext {
   assist: (req: AssistanceRequest) => Promise<string>;
   capture: CaptureSession | null;
@@ -136,6 +164,14 @@ interface BaseCollectContext {
    * optional so connectors that do not implement recovery-only ignore it.
    */
   recoveryOnly?: boolean;
+  /**
+   * Mid-run acquire of a bounded, phase-scoped managed browser surface (for
+   * `surfaceScope: "phase"` connectors that don't hold a surface for the
+   * whole run — see `browser-surface-policy.ts`). Bounded wait: resolves
+   * `{kind:"unavailable"}` rather than hanging or rejecting when the
+   * controller can't grant one within the timeout.
+   */
+  requestBrowserSurfacePhase: (options?: { timeoutMs?: number }) => Promise<BrowserSurfacePhaseResult>;
   requestDetailGapPage: (req?: {
     maxBytes?: number;
     streams?: readonly string[];
@@ -710,6 +746,11 @@ export function runConnector(config: RunConnectorConfig): void {
     assistanceCounter += 1;
     return `asst_${Date.now()}_${assistanceCounter}`;
   };
+  let browserSurfacePhaseCounter = 0;
+  const nextBrowserSurfacePhaseRequestId = (): string => {
+    browserSurfacePhaseCounter += 1;
+    return `bsp_${Date.now()}_${browserSurfacePhaseCounter}`;
+  };
 
   const sendInteraction = (req: InteractionRequest): Promise<InteractionResponse> => {
     const request_id = req.request_id ?? nextInteractionId();
@@ -816,6 +857,109 @@ export function runConnector(config: RunConnectorConfig): void {
     });
   };
 
+  // Default aligned with DEFAULT_NEKO_READINESS_TIMEOUT_MS
+  // (reference-implementation/runtime/browser-surface-leases.ts) — the
+  // controller-side lease wait and this connector-side round-trip should time
+  // out on comparable horizons.
+  const DEFAULT_BROWSER_SURFACE_PHASE_TIMEOUT_MS = 120_000;
+
+  // Fire-and-forget best-effort emit for a release request: release() must
+  // never throw and must not wait for a response (the controller's run-level
+  // backstop guarantees eventual cleanup even if this emit is lost).
+  const emitBrowserSurfacePhaseRequest = (request_id: string, action: "acquire" | "release"): void => {
+    emit({ type: "BROWSER_SURFACE_REQUEST", reference_only: true, request_id, action }).catch(
+      (): undefined => undefined
+    );
+  };
+
+  // Builds the caller-facing grant from a `granted` response. Kept out of the
+  // stdin listener so that listener stays a thin correlate-and-settle filter.
+  // Keys must match browserSurfaceLeaseEnv exactly (reference-implementation/
+  // runtime/browser-surface-leases.ts:75-87) so this overlay composes with
+  // resolveBrowserLaunchSource(visibility, env) instead of mutating env.
+  const toBrowserSurfacePhaseHandle = (
+    parsed: BrowserSurfacePhaseResponse,
+    remoteCdpUrl: string
+  ): BrowserSurfacePhaseHandle => {
+    const leaseId = parsed.lease_id;
+    const env: Record<string, string> = {
+      PDPP_BROWSER_SURFACE_REQUIRED: "neko",
+      PDPP_BROWSER_SURFACE_REMOTE_CDP_URL: remoteCdpUrl,
+      ...(leaseId ? { PDPP_BROWSER_SURFACE_LEASE_ID: leaseId } : {}),
+      ...(parsed.profile_key ? { PDPP_BROWSER_SURFACE_PROFILE_KEY: parsed.profile_key } : {}),
+      ...(parsed.stream_base_url ? { PDPP_BROWSER_SURFACE_STREAM_BASE_URL: parsed.stream_base_url } : {}),
+      ...(parsed.surface_id ? { PDPP_BROWSER_SURFACE_ID: parsed.surface_id } : {}),
+    };
+    let released = false;
+    const release = (): Promise<void> => {
+      if (released) {
+        return Promise.resolve();
+      }
+      released = true;
+      emitBrowserSurfacePhaseRequest(nextBrowserSurfacePhaseRequestId(), "release");
+      return Promise.resolve();
+    };
+    return { remoteCdpUrl, leaseId, env, release };
+  };
+
+  const requestBrowserSurfacePhase: BaseCollectContext["requestBrowserSurfacePhase"] = (options = {}) => {
+    const request_id = nextBrowserSurfacePhaseRequestId();
+    const timeoutMs =
+      typeof options.timeoutMs === "number" && Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
+        ? options.timeoutMs
+        : DEFAULT_BROWSER_SURFACE_PHASE_TIMEOUT_MS;
+
+    emitBrowserSurfacePhaseRequest(request_id, "acquire");
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const cleanup = (): void => {
+        rl.off("line", onLine);
+        rl.off("close", onClose);
+        process.stdin.off("end", onClose);
+        clearTimeout(timer);
+      };
+      const settle = (result: BrowserSurfacePhaseResult): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        resolve(result);
+      };
+      const onLine = (line: string): void => {
+        let parsed: BrowserSurfacePhaseResponse;
+        try {
+          parsed = JSON.parse(line) as BrowserSurfacePhaseResponse;
+        } catch {
+          // Malformed unrelated stdin line — ignore rather than reject
+          // every pending request (that was the bug in the older
+          // round-trips this one must not repeat).
+          return;
+        }
+        if (parsed.type !== "BROWSER_SURFACE_RESPONSE" || parsed.request_id !== request_id) {
+          return;
+        }
+        const remoteCdpUrl = parsed.remote_cdp_url;
+        if (parsed.status !== "granted" || !remoteCdpUrl) {
+          settle({ kind: "unavailable", reason: parsed.reason ?? "surface_failed" });
+          return;
+        }
+        settle({ kind: "granted", handle: toBrowserSurfacePhaseHandle(parsed, remoteCdpUrl) });
+      };
+      const onClose = (): void => {
+        settle({ kind: "unavailable", reason: "cancelled" });
+      };
+      const timer = setTimeout(() => {
+        settle({ kind: "unavailable", reason: "timeout" });
+      }, timeoutMs);
+
+      rl.on("line", onLine);
+      rl.once("close", onClose);
+      process.stdin.once("end", onClose);
+    });
+  };
+
   const progress = (message: string, extra: ProgressExtra = {}): Promise<void> =>
     emit({ type: "PROGRESS", message, ...extra });
   const assist = async (req: AssistanceRequest): Promise<string> => {
@@ -872,6 +1016,7 @@ export function runConnector(config: RunConnectorConfig): void {
       emittedAt,
       detailGaps: startMsg.detail_gaps ?? [],
       requestDetailGapPage,
+      requestBrowserSurfacePhase,
       // §4.3: forward recovery_only from the START message so connectors can
       // suppress the forward walk while draining non-pressure detail gaps.
       recoveryOnly: startMsg.recovery_only === true,

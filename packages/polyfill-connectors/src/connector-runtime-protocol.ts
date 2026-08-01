@@ -82,6 +82,41 @@ export interface DetailGapsPageResponse {
   type: "DETAIL_GAPS_PAGE_RESPONSE";
 }
 
+/**
+ * Mid-run request for a bounded, phase-scoped browser surface. Distinct from
+ * the pre-spawn run-level lease: a `"phase"`-scoped connector (see
+ * `browser-surface-policy.ts`) does not hold a surface for its whole run, so
+ * it asks for one only while it actually needs a browser and releases it
+ * immediately after (`action: "release"`).
+ */
+export interface BrowserSurfacePhaseRequestMessage {
+  readonly action: "acquire" | "release";
+  readonly reference_only: true;
+  readonly request_id: string;
+  readonly type: "BROWSER_SURFACE_REQUEST";
+}
+
+export type BrowserSurfacePhaseStatus = "granted" | "released" | "unavailable";
+
+export type BrowserSurfacePhaseUnavailableReason =
+  | "capacity_full"
+  | "cancelled"
+  | "not_managed"
+  | "surface_failed"
+  | "timeout";
+
+export interface BrowserSurfacePhaseResponse {
+  readonly lease_id?: string;
+  readonly profile_key?: string;
+  readonly reason?: BrowserSurfacePhaseUnavailableReason;
+  readonly remote_cdp_url?: string;
+  readonly request_id: string;
+  readonly status: BrowserSurfacePhaseStatus;
+  readonly stream_base_url?: string;
+  readonly surface_id?: string;
+  readonly type: "BROWSER_SURFACE_RESPONSE";
+}
+
 export interface InteractionResponse {
   data?: Record<string, string>;
   error?: { message: string };
@@ -340,6 +375,7 @@ export type EmittedMessage =
   | DetailCoverageMessage
   | DetailGapRecoveredMessage
   | DetailGapsPageRequestMessage
+  | BrowserSurfacePhaseRequestMessage
   | {
       type: "DONE";
       status: "succeeded" | "failed";

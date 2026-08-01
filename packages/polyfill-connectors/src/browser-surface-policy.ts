@@ -41,6 +41,24 @@ export interface BrowserSurfacePolicy {
    * the live browser process; always implies page preservation.
    */
   readonly retainSurfaceProcess: boolean;
+  /**
+   * Declares WHEN a connector needs a managed surface, not just how its page
+   * is treated once it has one:
+   *
+   *   - `"run"` (default when absent): today's behavior. The controller
+   *     reserves a managed surface before spawn and holds it for the whole
+   *     run. Right for a connector whose provider auth or interaction lives
+   *     in the browser for the run's duration.
+   *   - `"phase"`: the connector only needs a managed surface for bounded
+   *     phases inside an otherwise browser-free run. The controller must NOT
+   *     reserve a run-level surface for it; the connector requests one
+   *     mid-run (`requestBrowserSurfacePhase`) only while it actually needs
+   *     one, and releases it immediately after.
+   *
+   * This is what lets a mostly-API connector join the managed-surface
+   * allowlist without starving the shared surface pool for its entire run.
+   */
+  readonly surfaceScope?: "phase" | "run";
 }
 
 const BROWSER_SURFACE_POLICY_REGISTRY: Readonly<Record<string, BrowserSurfacePolicy>> = {
@@ -52,6 +70,23 @@ const BROWSER_SURFACE_POLICY_REGISTRY: Readonly<Record<string, BrowserSurfacePol
     preservePageOnSuccess: true,
     preservePageOnFailure: true,
     retainSurfaceProcess: true,
+  },
+  // Slack's browser is a short-lived API transport, NOT a credential
+  // boundary: its provider session lives in durable API tokens, not a live
+  // browser page. Only ~4 quick gap streams near the end of an otherwise
+  // ~1h API-driven run actually need a browser, to route around a source
+  // that blocks plain HTTP for that narrow slice. Declaring `surfaceScope:
+  // "phase"` means the controller does not reserve a managed surface for
+  // the whole hour — it would otherwise starve the shared surface pool for
+  // nearly the entire run to cover a few minutes of real use. Slack
+  // acquires a phase-scoped surface immediately before those streams and
+  // releases it right after, so no page/process preservation is needed
+  // either.
+  slack: {
+    preservePageOnSuccess: false,
+    preservePageOnFailure: false,
+    retainSurfaceProcess: false,
+    surfaceScope: "phase",
   },
 };
 
@@ -90,6 +125,18 @@ export function browserConfigPreservationFor(
  */
 export function connectorRetainsSurfaceProcess(connectorName: string | null | undefined): boolean {
   return browserSurfacePolicyFor(connectorName)?.retainSurfaceProcess === true;
+}
+
+/**
+ * Whether the connector needs a managed surface only for bounded mid-run
+ * phases rather than for its whole run. Consumed by the reference
+ * implementation to skip the pre-spawn run-level lease for this connector
+ * (it requests a phase-scoped surface itself, mid-run) and by
+ * `scheduler-readiness.ts`, which treats a phase-scoped connector as ready on
+ * the same presence-only check as a run-scoped one.
+ */
+export function connectorUsesPhaseScopedSurface(connectorName: string | null | undefined): boolean {
+  return browserSurfacePolicyFor(connectorName)?.surfaceScope === "phase";
 }
 
 export { BROWSER_SURFACE_POLICY_REGISTRY };

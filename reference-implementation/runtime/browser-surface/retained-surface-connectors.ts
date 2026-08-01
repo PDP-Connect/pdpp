@@ -1,7 +1,10 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { connectorRetainsSurfaceProcess as policyRetainsSurfaceProcess } from "../../../packages/polyfill-connectors/src/browser-surface-policy.ts";
+import {
+  connectorRetainsSurfaceProcess as policyRetainsSurfaceProcess,
+  connectorUsesPhaseScopedSurface as policyUsesPhaseScopedSurface,
+} from "../../../packages/polyfill-connectors/src/browser-surface-policy.ts";
 import { canonicalConnectorKey } from "../../server/connector-key.ts";
 
 /**
@@ -25,4 +28,21 @@ export function connectorRetainsSurfaceProcess(connectorId: string): boolean {
     return true;
   }
   return policyRetainsSurfaceProcess(connectorId);
+}
+
+/**
+ * Reference-side adapter over `connectorUsesPhaseScopedSurface` (see the
+ * module doc above): whether this connector declares `surfaceScope: "phase"`
+ * and therefore must NOT receive a pre-spawn run-level browser-surface lease.
+ * Maps the reference's connector id forms the same way
+ * `connectorRetainsSurfaceProcess` does — canonical key first, then the raw
+ * id — so a phase-scoped connector is recognized regardless of which id form
+ * the caller has on hand.
+ */
+export function connectorUsesPhaseScopedSurfaceId(connectorId: string): boolean {
+  const key = canonicalConnectorKey(connectorId);
+  if (key && policyUsesPhaseScopedSurface(key)) {
+    return true;
+  }
+  return policyUsesPhaseScopedSurface(connectorId);
 }

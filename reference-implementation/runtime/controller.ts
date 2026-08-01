@@ -69,6 +69,7 @@ import {
   type BrowserSurfaceReadinessProbe,
   createBrowserSurfaceManager,
 } from "./browser-surface/index.ts";
+import { connectorUsesPhaseScopedSurfaceId } from "./browser-surface/retained-surface-connectors.ts";
 import { runConnector } from "./index.ts";
 import {
   classifyRecoveryGap,
@@ -3056,6 +3057,12 @@ export function createController(opts: ControllerOptions = {}): Controller {
       await opts.beforeBrowserSurfaceLeaseRelease?.({ runId: input.runId });
       await browserSurface.releaseLease(input.browserSurfaceLease, input.connectorId, input.runId, input.traceContext);
     }
+    // Backstop for a phase-scoped connector's mid-run browser surface
+    // (surfaceScope: "phase" — see browser-surface-policy.ts). Idempotent
+    // no-op when no phase lease was ever acquired for this run, so it is
+    // safe to call unconditionally on every cleanup path: normal
+    // completion, cancellation, crash, and the watchdog force-finalize.
+    await browserSurface.releaseManagedBrowserSurfaceForPhase(input.runId);
     resolveCancelledInteraction(input.runId);
   }
 
@@ -3491,6 +3498,22 @@ export function createController(opts: ControllerOptions = {}): Controller {
     return streams.length > 0 ? streams : null;
   }
 
+  /**
+   * Whether this run should take a pre-spawn run-level browser-surface
+   * lease: the connector is lease-managed AND is not `surfaceScope: "phase"`
+   * (browser-surface-policy.ts). A phase-scoped connector skips the
+   * run-level lease entirely — it requests its own surface mid-run via
+   * acquireManagedBrowserSurfaceForPhase instead, so a scarce managed
+   * surface is not reserved for its whole run to cover a few minutes of
+   * real use.
+   */
+  function shouldAcquireRunLevelBrowserSurface(connectorId: string): boolean {
+    return (
+      Boolean(browserSurfaceLeaseManager?.isManagedConnector(connectorId)) &&
+      !connectorUsesPhaseScopedSurfaceId(connectorId)
+    );
+  }
+
   async function runNow(connectorId: string, options: RunNowOptions = {}): Promise<RunNowResult> {
     const runOwnerSubjectId = options.ownerSubjectId || ownerSubjectId;
     const admittedConnection = await resolveAdmittedRunConnection(
@@ -3572,7 +3595,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     let browserSurfaceLease: BrowserSurfaceLease | null = null;
     let browserSurfaceEnv: Record<string, string> | null = null;
     try {
-      const acquireResult = browserSurfaceLeaseManager?.isManagedConnector(connectorId)
+      const acquireResult = shouldAcquireRunLevelBrowserSurface(connectorId)
         ? await browserSurface.acquireManagedBrowserSurfaceForRun({
             automationMetadata,
             connectorId,
@@ -3690,6 +3713,15 @@ export function createController(opts: ControllerOptions = {}): Controller {
           browserSurfaceEnv,
           cancelSignal: cancellation.signal,
           collectionMode,
+          // Backs a phase-scoped connector's mid-run BROWSER_SURFACE_REQUEST
+          // (surfaceScope: "phase"). Adapts the browser-surface manager's
+          // remote-surface-typed grant into runConnector's plain-data hook
+          // shape, the same decoupling boundary browserSurfaceEnv already
+          // draws for the run-level lease.
+          onBrowserSurfacePhaseRequest: {
+            acquire: (input) => browserSurface.acquireManagedBrowserSurfaceForPhase({ ...input, traceContext }),
+            release: (phaseRunId) => browserSurface.releaseManagedBrowserSurfaceForPhase(phaseRunId),
+          },
           onInteraction: interactionHandler,
           onInteractionTerminal: createInteractionTimeoutTerminalHandler(opts.beforeInteractionTerminal, runId),
           onProgress: handleAssistanceProgress,
