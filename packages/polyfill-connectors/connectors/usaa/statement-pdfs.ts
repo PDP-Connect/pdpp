@@ -31,6 +31,7 @@ import type { Locator, Page } from "playwright";
 import {
   attachBodyResponseQueue,
   type BodyResponseQueue,
+  defaultRedactUrl,
   isLikelyPdfResponseBody,
   waitForOptionalBodyResponse,
 } from "../../src/browser-artifact-response.ts";
@@ -133,7 +134,12 @@ function attachPopupWatcher(page: Page): PopupWatcher {
   const urls: string[] = [];
   let context: ReturnType<Page["context"]> | null = null;
   const onPage = (opened: Page): void => {
-    urls.push(opened.url());
+    // Redacted with the same policy as every other URL that reaches
+    // diagnostics (browser-artifact-response.ts's defaultRedactUrl) —
+    // origin+path only, digit runs in query/hash stripped — so a popup URL
+    // carrying an account or document identifier in its query string or
+    // path can't escape into diagnostics unredacted.
+    urls.push(defaultRedactUrl(opened.url()));
   };
   try {
     context = page.context();
@@ -273,9 +279,20 @@ async function downloadViaDirectLink(page: Page, row: Locator): Promise<Download
   const popupWatcher = attachPopupWatcher(page);
   await responseQueue.ready;
   try {
-    await link.click({ timeout: CLICK_TIMEOUT_MS }).catch(() => {
-      /* ignore */
-    });
+    try {
+      await link.click({ timeout: CLICK_TIMEOUT_MS });
+    } catch (err) {
+      // The click itself failed (element not clickable/detached/etc). Report
+      // this as its own causal reason instead of silently proceeding into
+      // consumeDownloadOrResponse, where it would misreport as a generic
+      // download_empty/download_timeout with no evidence the click never
+      // landed.
+      return {
+        ok: false,
+        reason: "direct_link_failed",
+        diag: { error: errMsg(err), popup_urls: popupWatcher.urls() },
+      };
+    }
     const result = await consumeDownloadOrResponse({ downloadQueue, responseQueue });
     if (!result) {
       return { ok: false, reason: "download_empty", diag: { popup_urls: popupWatcher.urls() } };
@@ -727,5 +744,6 @@ export const _internals = {
   STATEMENT_ROOT,
   attachPopupWatcher,
   consumeDownloadOrResponse,
+  downloadViaDirectLink,
   DOWNLOAD_TIMEOUT_MS,
 };

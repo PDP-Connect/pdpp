@@ -27,8 +27,9 @@
  */
 
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { test } from "node:test";
-import type { BrowserContext, Download, Page as PageType } from "playwright";
+import type { BrowserContext, CDPSession, Download, Locator, Page as PageType } from "playwright";
 import type {
   BodyResponseDiagnostics,
   BodyResponseQueue,
@@ -37,7 +38,7 @@ import type {
 import type { DownloadQueue } from "../../src/download-queue.ts";
 import { _internals } from "./statement-pdfs.ts";
 
-const { attachPopupWatcher, consumeDownloadOrResponse, DOWNLOAD_TIMEOUT_MS } = _internals;
+const { attachPopupWatcher, consumeDownloadOrResponse, downloadViaDirectLink, DOWNLOAD_TIMEOUT_MS } = _internals;
 
 function neverSettles<T>(): Promise<T> {
   return new Promise<T>(() => undefined);
@@ -210,6 +211,106 @@ test("outcome 2/4 — popup: attachPopupWatcher never throws when context() is u
   const watcher = attachPopupWatcher(fakePage as PageType);
   assert.deepEqual(watcher.urls(), []);
   watcher.detach();
+});
+
+test("outcome 2/4 — popup: attachPopupWatcher redacts query/hash digit runs the same way response diagnostics do", () => {
+  type PageEventHandler = (opened: PageType) => void;
+  let pageHandler: PageEventHandler | null = null;
+  const fakeContext: Partial<BrowserContext> = {};
+  fakeContext.on = ((event: string, handler: PageEventHandler) => {
+    if (event === "page") {
+      pageHandler = handler;
+    }
+    return fakeContext as BrowserContext;
+  }) as BrowserContext["on"];
+  fakeContext.off = (() => fakeContext as BrowserContext) as BrowserContext["off"];
+
+  const fakePage: Partial<PageType> = {};
+  fakePage.context = (() => fakeContext as BrowserContext) as PageType["context"];
+
+  const watcher = attachPopupWatcher(fakePage as PageType);
+  assert.ok(pageHandler, "expected the watcher to register a context 'page' listener");
+
+  const popup: Partial<PageType> = {};
+  // Query string carries an account-reference-shaped digit run; this must
+  // not reach diagnostics verbatim.
+  popup.url = (() =>
+    "https://www.usaa.com/statements/download-popup?accountRef=90123456&doc=778899") as PageType["url"];
+  (pageHandler as PageEventHandler)(popup as PageType);
+
+  const [url] = watcher.urls();
+  assert.ok(url, "expected a captured popup url");
+  assert.ok(!/\d{4,}/.test(url), `expected digit runs redacted, got: ${url}`);
+  assert.equal(url, "https://www.usaa.com/statements/download-popup?accountRef=[digits]&doc=[digits]");
+  watcher.detach();
+});
+
+// ─── downloadViaDirectLink: click-error classification ───────────────────
+
+type FakeCdpSession = CDPSession & { emitCdp: (event: string, payload: unknown) => void };
+
+function fakeCdpSessionForDirectLink(): FakeCdpSession {
+  const emitter = new EventEmitter();
+  const fake: Partial<CDPSession> = {};
+  fake.on = ((event: string, listener: (...args: unknown[]) => void) => {
+    emitter.on(event, listener);
+    return fake;
+  }) as CDPSession["on"];
+  fake.off = ((event: string, listener: (...args: unknown[]) => void) => {
+    emitter.off(event, listener);
+    return fake;
+  }) as CDPSession["off"];
+  fake.send = (() => Promise.resolve({})) as CDPSession["send"];
+  fake.detach = (() => Promise.resolve()) as CDPSession["detach"];
+  const session = fake as FakeCdpSession;
+  session.emitCdp = (event, payload) => emitter.emit(event, payload);
+  return session;
+}
+
+function fakePageForDirectLink(): { page: PageType } {
+  const emitter = new EventEmitter();
+  const session = fakeCdpSessionForDirectLink();
+  const context: Partial<BrowserContext> = {};
+  context.newCDPSession = (() => Promise.resolve(session)) as BrowserContext["newCDPSession"];
+  context.on = (() => context as BrowserContext) as BrowserContext["on"];
+  context.off = (() => context as BrowserContext) as BrowserContext["off"];
+
+  const fake: Partial<PageType> = {};
+  fake.on = ((event: string, listener: (...args: unknown[]) => void) => {
+    emitter.on(event, listener);
+    return fake;
+  }) as PageType["on"];
+  fake.off = ((event: string, listener: (...args: unknown[]) => void) => {
+    emitter.off(event, listener);
+    return fake;
+  }) as PageType["off"];
+  fake.context = (() => context as BrowserContext) as PageType["context"];
+  return { page: fake as PageType };
+}
+
+function fakeRowWithFailingLink(clickError: Error): Locator {
+  const link: Partial<Locator> = {};
+  link.count = (() => Promise.resolve(1)) as Locator["count"];
+  link.click = (() => Promise.reject(clickError)) as Locator["click"];
+  const chained: Partial<Locator> = {};
+  chained.first = (() => link as Locator) as Locator["first"];
+  const row: Partial<Locator> = {};
+  row.locator = (() => chained as Locator) as Locator["locator"];
+  return row as Locator;
+}
+
+test("downloadViaDirectLink: a failing click is reported as direct_link_failed with the causal error, not swallowed into a generic timeout", async () => {
+  const { page } = fakePageForDirectLink();
+  const clickError = new Error("element is not attached to the DOM");
+  const row = fakeRowWithFailingLink(clickError);
+
+  const result = await downloadViaDirectLink(page, row);
+  assert.ok(result);
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.reason, "direct_link_failed");
+    assert.equal(result.diag?.error, clickError.message);
+  }
 });
 
 // ─── Outcome 3: unmatched response ───────────────────────────────────────

@@ -119,7 +119,10 @@ export function isLikelyPdfResponseBody(body: Buffer, headers: Record<string, st
   return contentType.includes("application/pdf") || disposition.includes(".pdf");
 }
 
-function defaultRedactUrl(rawUrl: string): string {
+// Exported so other diagnostics producers (e.g. the popup watcher in
+// statement-pdfs.ts) can redact URLs with the same policy instead of
+// leaking raw opened.url() values into diagnostics.
+export function defaultRedactUrl(rawUrl: string): string {
   try {
     const url = new URL(rawUrl);
     const search = url.search.replace(/\d{4,}/g, "[digits]");

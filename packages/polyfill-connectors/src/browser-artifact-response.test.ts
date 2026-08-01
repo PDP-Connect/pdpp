@@ -199,3 +199,44 @@ test("waitForNextResponse rejects after timeoutMs when nothing matches", async (
   await assert.rejects(queue.waitForNextResponse({ timeoutMs: 20 }), /body_response_timeout/);
   queue.detach();
 });
+
+test("a fresh attach after detach starts its counters at zero — prior attempt's traffic does not leak forward", async () => {
+  // Each row-download attempt calls attachPdfResponseQueue(page) fresh and
+  // detach()es in a finally, so this models what a real second attempt on
+  // the same page sees. The counters here are per-attempt (queue-lifetime,
+  // where "queue lifetime" == "one attempt"), not accumulated across the
+  // whole hydration run — this test is the isolation guarantee that claim
+  // depends on.
+  const { emitResponse, page, session: firstSession } = fakePage();
+  const firstQueue = attachBodyResponseQueue(page, {
+    isExpectedBody: isLikelyPdfResponseBody,
+    shouldInspect: shouldInspectPdfHeaders,
+  });
+  await firstQueue.ready;
+
+  firstSession.emitCdp("Network.requestWillBeSent", { request: { method: "GET" }, requestId: "prior-1" });
+  emitResponse(fakeResponse({ headers: { "content-type": "text/html" } }));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  const firstDiag = firstQueue.diagnostics();
+  assert.equal(firstDiag.totalCdpRequestsStarted, 1);
+  assert.equal(firstDiag.totalResponsesSeen, 1);
+  firstQueue.detach();
+
+  // Second attempt: brand new attach on the same underlying page object,
+  // same pattern statement-pdfs.ts uses between rows. Its own CDP session
+  // (from a fresh newCDPSession() call) starts from zero regardless of what
+  // the first attempt observed.
+  const secondQueue = attachBodyResponseQueue(page, {
+    isExpectedBody: isLikelyPdfResponseBody,
+    shouldInspect: shouldInspectPdfHeaders,
+  });
+  await secondQueue.ready;
+
+  const secondDiag = secondQueue.diagnostics();
+  assert.equal(secondDiag.totalCdpRequestsStarted, 0);
+  assert.equal(secondDiag.totalCdpResponsesSeen, 0);
+  assert.equal(secondDiag.totalResponsesSeen, 0);
+  assert.deepEqual(secondDiag.candidates, []);
+  secondQueue.detach();
+});

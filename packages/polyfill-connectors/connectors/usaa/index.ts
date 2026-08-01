@@ -2390,18 +2390,15 @@ async function hydratePdfsForIndex(deps: StatementsSubDeps, indexRows: readonly 
             stream: "statements",
             reason: `pdf_download_${reason}`,
             message: `Statement PDF download skipped at row ${statement.rowIndex + 1}: ${reason}`,
-            // row_id is statement.id, the same opaque hash
-            // (hashId(accountReference|date_delivered|title)) already used
-            // for cross-run correlation elsewhere in this connector (see
-            // emitStatementCoverage's statement_id). It is a presentation-
-            // derived, unsalted hash: stable enough to correlate repeated
-            // failures on the same row within/across runs, but not a
-            // guarantee of non-identifiability if diagnostics ever leave
-            // this owner-local boundary — it must never be paired with
-            // title/account text in the same emission. Always included,
-            // even when there are no other diagnostics, so every failure
-            // is correlatable.
-            diagnostics: { ...diag, row_id: statement.id },
+            // row_id is statement.rowIndex, a plain ordinal position within
+            // this run's /my/documents table scrape — not derived from
+            // account reference, date, or title. Unlike a content hash it
+            // carries no information about the statement itself and cannot
+            // be correlated across runs (row order can shift between
+            // scrapes), only within this run's failure set. Always
+            // included, even when there are no other diagnostics, so every
+            // failure is correlatable back to its row for this run.
+            diagnostics: { ...diag, row_id: statement.rowIndex },
           })
           .catch((): undefined => undefined);
       },
