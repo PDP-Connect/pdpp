@@ -36,7 +36,7 @@ import {
   browserSurfacePhaseSessionId,
   createBrowserSurfaceManager,
 } from "../runtime/browser-surface/run-coordinator.ts";
-import { closeDb, initDb } from "../server/db.ts";
+import { closeDb, getDb, initDb } from "../server/db.ts";
 import { makeTemporaryDbPath } from "./helpers/temp-dir.ts";
 
 function tempDbPath(): string {
@@ -131,6 +131,7 @@ function createReadyAllocator(): BrowserSurfaceAllocator & {
 interface SetupOptions {
   leaseManager?: BrowserSurfaceLeaseManager;
   listPersistedActiveRuns?: () => Promise<ReadonlyArray<{ readonly run_id: string }>>;
+  warnCalls?: string[];
 }
 
 // The allocator is a required, separately-constructed argument (rather than
@@ -158,7 +159,12 @@ function setup<TAllocator extends BrowserSurfaceAllocator>(
     browserSurfaceReadinessTimeoutMs: undefined,
     browserSurfaceReplacementReceiptStore: null,
     listPersistedActiveRuns: options.listPersistedActiveRuns ?? (async () => []),
-    log: { error: () => undefined, warn: () => undefined },
+    log: {
+      error: () => undefined,
+      warn: (message: string) => {
+        options.warnCalls?.push(message);
+      },
+    },
     pendingBrowserSurfaceLaunches: new Map(),
     scheduleRun: () => undefined,
     startupControllerRunReconciliation: Promise.resolve(),
@@ -548,5 +554,69 @@ test("I8: a phase lease for one run is preserved while a DIFFERENT inactive run'
     leaseManager.getLease(inactiveAcquire.lease.lease_id)?.status,
     "released",
     "the inactive run's phase lease is still reconciled away — the guard is selective, not blanket"
+  );
+});
+
+// ─── I9: release must retain identity to emit run.browser_surface_released ─
+
+test("I9 (regression): releaseManagedBrowserSurfaceForPhase both terminalizes the lease AND successfully emits run.browser_surface_released, without corrupting the parent run's own history", async (t) => {
+  const warnCalls: string[] = [];
+  // listPersistedActiveRuns mirrors the real persisted-store shape: rows are
+  // keyed by the REAL run_id only ("run_x"), never the derived phase session
+  // id ("run_x#browser-phase"). This is exactly the shape that forced
+  // requireConnectorInstanceIdForRun's fallback lookup to miss and throw
+  // when the in-memory connectorInstanceIdByRunId cache entry for the
+  // session id was cleared before the release's event emission ran.
+  const { leaseManager, manager } = setup(t, createReadyAllocator(), {
+    listPersistedActiveRuns: async () => [{ run_id: "run_x" }],
+    warnCalls,
+  });
+
+  const granted = await manager.acquireManagedBrowserSurfaceForPhase(phaseInput("run_x"));
+  assert.equal(granted.kind, "granted");
+  assert.ok(granted.kind === "granted");
+
+  await manager.releaseManagedBrowserSurfaceForPhase("run_x");
+
+  assert.equal(
+    leaseManager.getLease(granted.leaseId)?.status,
+    "released",
+    "the DB-visible lease must still transition to released (this half already worked pre-fix)"
+  );
+  assert.deepEqual(
+    warnCalls,
+    [],
+    "the release must not fall back to swallowing a 'refusing to persist an unbound run event' failure — " +
+      "the phase session id's connector_instance_id must still be resolvable while the release's own " +
+      "run.browser_surface_released emission is in flight"
+  );
+
+  const sessionId = browserSurfacePhaseSessionId("run_x");
+  const releasedRows = getDb()
+    .prepare("SELECT data_json FROM spine_events WHERE run_id = ? AND event_type = 'run.browser_surface_released'")
+    .all(sessionId) as { data_json: string }[];
+  assert.equal(
+    releasedRows.length,
+    1,
+    "run.browser_surface_released must actually be persisted for the phase session id"
+  );
+  const releasedData = JSON.parse(releasedRows[0].data_json);
+  assert.equal(
+    releasedData.connector_instance_id,
+    "slack",
+    "the emitted event must carry the resolved connector_instance_id, not an unbound/null identity"
+  );
+
+  // The phase session id ("run_x#browser-phase") is a distinct run_id from
+  // the parent ("run_x") in every event/history row — asserting the parent's
+  // own run_id has no phase-release row proves this fix does not leak the
+  // phase's identity resolution into the parent run's history.
+  const parentRows = getDb()
+    .prepare("SELECT 1 FROM spine_events WHERE run_id = ? AND event_type = 'run.browser_surface_released'")
+    .all("run_x");
+  assert.equal(
+    parentRows.length,
+    0,
+    "the parent run's own event history must not gain a browser_surface_released row from the phase release"
   );
 });

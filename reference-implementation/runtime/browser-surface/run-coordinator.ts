@@ -1734,10 +1734,6 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     // connector's own release racing the run-cleanup backstop) sees no
     // entry and no-ops, rather than both racing the same fenced release.
     phaseLeasesByRunId.delete(runId);
-    // A phase has a bounded end, so unlike the run path we can retire its
-    // connector-instance record here instead of growing this map by one
-    // extra entry for every phase-scoped run the controller ever serves.
-    connectorInstanceIdByRunId.delete(browserSurfacePhaseSessionId(runId));
     const lease = browserSurfaceLeaseManager?.getLease(entry.leaseId);
     if (!lease) {
       return;
@@ -1760,6 +1756,15 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
       const message = err instanceof Error ? err.message : String(err);
       log.warn?.(`[controller] failed to release phase browser-surface lease for ${runId}: ${message}`);
     }
+    // A phase has a bounded end, so unlike the run path we can retire its
+    // connector-instance record here instead of growing this map by one
+    // extra entry for every phase-scoped run the controller ever serves.
+    // This must happen AFTER the release call above: releaseBrowserSurfaceLease
+    // emits run.browser_surface_released keyed by this same session id, and
+    // that emit needs connectorInstanceIdByRunId still populated to resolve
+    // the connector_instance_id (the persisted-active-runs fallback can never
+    // find a row for a derived session id, only for a real run_id).
+    connectorInstanceIdByRunId.delete(sessionId);
   }
 
   async function cancelBrowserSurfaceRun(runId: string): Promise<BrowserSurfaceProjection | null> {
