@@ -2022,6 +2022,114 @@ test(
   })
 );
 
+function createPartialSettlementConnector(outputPath: string, settleGapIdsOrder: readonly string[]): ConnectorHandle {
+  const dir = mkdtempSync(join(tmpdir(), "pdpp-detail-gap-partial-settlement-"));
+  const connectorPath = join(dir, "connector.mjs");
+  writeFileSync(
+    connectorPath,
+    `
+import { createInterface } from 'node:readline';
+import { writeFileSync } from 'node:fs';
+const rl = createInterface({ input: process.stdin });
+rl.on('line', (line) => {
+  const start = JSON.parse(line);
+  if (start.type !== 'START') return;
+  writeFileSync(${JSON.stringify(outputPath)}, JSON.stringify(start), 'utf8');
+  const byGapId = new Map(start.detail_gaps.map((gap) => [gap.gap_id, gap]));
+  for (const gapId of ${JSON.stringify(settleGapIdsOrder)}) {
+    const gap = byGapId.get(gapId);
+    if (!gap) continue;
+    process.stdout.write(JSON.stringify({
+      type: 'DETAIL_GAP_RECOVERED', reference_only: true,
+      gap_id: gap.gap_id, stream: gap.stream, record_key: gap.record_key,
+    }) + '\\n');
+  }
+  // The remaining served gaps (not in settleGapIdsOrder) are never mentioned
+  // again -- no DETAIL_GAP_ATTEMPTED, no DETAIL_GAP_RECOVERED, no DETAIL_GAP
+  // update -- exactly the run_cap_deferred/byte_budget shape: leased but
+  // genuinely never attempted this run.
+  process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 0 }) + '\\n');
+  rl.close();
+  process.stdout.write('', () => process.exit(0));
+});
+`,
+    "utf8"
+  );
+  return { cleanup: () => rmSync(dir, { force: true, recursive: true }), connectorPath };
+}
+
+test(
+  "a terminal-succeeded run releases every served lease it never attempted, back to pending with attempt_count unchanged",
+  withTempDb(async (dir) => {
+    const store = createSqliteConnectorDetailGapStore();
+    const connectorId = "gmail";
+    const grantId = "grant_terminal_release";
+    const seeded: DetailGapForTest[] = [];
+    for (const recordKey of ["terminal_release_a", "terminal_release_b", "terminal_release_c"]) {
+      // biome-ignore lint/performance/noAwaitInLoops: ordered setup is intentionally sequential because each iteration advances shared test state.
+      const gap = await store.upsertPendingGap({
+        connectorId,
+        detailLocator: { kind: "gmail.attachment_detail", message_id: recordKey, part_index: "1" },
+        grantId,
+        reason: "temporary_unavailable",
+        recordKey,
+        stream: "attachments",
+      });
+      assert.ok(gap, `${recordKey} gap is present`);
+      seeded.push(gap);
+    }
+    const [settledGap] = seeded;
+    assert.ok(settledGap, "settledGap is present");
+    const startPath = join(dir, "terminal-release-start.json");
+    const { connectorPath, cleanup } = createPartialSettlementConnector(startPath, [settledGap.gap_id]);
+    let result: RuntimeRunConnectorResult | null = null;
+    try {
+      result = await runConnectorWithGapStore({
+        admitRunConnection: fakeAdmitRunConnection(),
+        connectorId,
+        connectorPath,
+        detailGapStore: store,
+        grantId,
+        manifest: { streams: [{ name: "attachments" }] },
+        // biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op test double represents an optional side effect.
+        onProgress: () => {},
+        ownerToken: "owner",
+        persistState: false,
+      });
+    } finally {
+      cleanup();
+    }
+    assert.ok(result, "the run completes without throwing");
+    assert.equal(result.status, "succeeded");
+
+    const start = JSON.parse(readFileSync(startPath, "utf8"));
+    assert.equal(start.detail_gaps.length, 3, "all three pending gaps were leased on START");
+
+    // The settled gap is durably recovered.
+    const settledAfter = await store.getGapById(settledGap.gap_id);
+    assert.ok(settledAfter, "settledAfter is present");
+    assert.equal(settledAfter.status, "recovered");
+
+    // The two never-attempted served gaps must return to pending -- not
+    // stranded in_progress -- with attempt_count untouched (leasing is not
+    // an attempt, and this run's silence about them is a planned stop, not a
+    // real attempt with an unknown outcome).
+    const untouchedGapIds = seeded.slice(1).map((gap) => gap.gap_id);
+    for (const gapId of untouchedGapIds) {
+      // biome-ignore lint/performance/noAwaitInLoops: sequential per-row assertions read more clearly than a batched fetch here.
+      const after = await store.getGapById(gapId);
+      assert.ok(after, `${gapId} still exists`);
+      assert.equal(after.status, "pending", `${gapId} returns to pending, not stranded in_progress`);
+      assert.equal(after.attempt_count, 0, `${gapId} attempt_count is untouched by an unattempted lease`);
+      assert.equal(after.lease_id, null, `${gapId} lease is fully cleared`);
+      assert.equal(after.lease_run_id, null, `${gapId} lease owner is fully cleared`);
+    }
+
+    const stillInProgressCount = await store.countGapsByStatusForConnector(connectorId, { status: "in_progress" });
+    assert.equal(stillInProgressCount, 0, "no gap is left in_progress after a terminal succeeded run");
+  })
+);
+
 test(
   "runtime loads pending detail gaps only for the requested connector instance",
   withTempDb(async (dir) => {
@@ -2318,6 +2426,157 @@ test(
       (await store.listPendingGaps({ connectorId: "chatgpt", grantId: "grant_1", limit: 500, streams: ["messages"] }))
         .length,
       0
+    );
+  })
+);
+
+function createPageOneOnlyRecoveryConnector(
+  outputPath: string,
+  { maxBytes = null }: { maxBytes?: number | null } = {}
+): ConnectorHandle {
+  const dir = mkdtempSync(join(tmpdir(), "pdpp-detail-gap-page-one-only-"));
+  const connectorPath = join(dir, "connector.mjs");
+  writeFileSync(
+    connectorPath,
+    `
+import { createInterface } from 'node:readline';
+import { writeFileSync } from 'node:fs';
+const rl = createInterface({ input: process.stdin });
+const pages = [];
+let requestCounter = 0;
+let requestedSecondPage = false;
+const maxBytes = ${JSON.stringify(maxBytes)};
+function emit(message) {
+  process.stdout.write(JSON.stringify(message) + '\\n');
+}
+function requestNext() {
+  const request_id = 'page_' + (++requestCounter);
+  emit({
+    type: 'DETAIL_GAPS_PAGE_REQUEST',
+    reference_only: true,
+    request_id,
+    streams: ['messages'],
+    ...(maxBytes ? { max_bytes: maxBytes } : {}),
+  });
+}
+rl.on('line', (line) => {
+  const msg = JSON.parse(line);
+  if (msg.type === 'START') {
+    const gaps = msg.detail_gaps || [];
+    pages.push({ source: 'start', count: gaps.length, recovered: gaps.length });
+    for (const gap of gaps) {
+      emit({ type: 'DETAIL_GAP_RECOVERED', reference_only: true, gap_id: gap.gap_id, stream: gap.stream, record_key: gap.record_key });
+    }
+    requestNext();
+    return;
+  }
+  if (msg.type === 'DETAIL_GAPS_PAGE_RESPONSE') {
+    const gaps = msg.detail_gaps || [];
+    // The FIRST requested page (after START) is fully recovered (same as
+    // createPagedRecoveryConnector). Every page requested AFTER that is
+    // deliberately abandoned -- served/leased, but never mentioned again --
+    // to reproduce a run that stops mid-multi-page-walk and reports success
+    // without ever settling every page it was served.
+    if (!requestedSecondPage) {
+      requestedSecondPage = true;
+      pages.push({ source: msg.request_id, count: gaps.length, recovered: gaps.length });
+      for (const gap of gaps) {
+        emit({ type: 'DETAIL_GAP_RECOVERED', reference_only: true, gap_id: gap.gap_id, stream: gap.stream, record_key: gap.record_key });
+      }
+      if (gaps.length > 0) {
+        requestNext();
+        return;
+      }
+    } else {
+      pages.push({ source: msg.request_id, count: gaps.length, recovered: 0 });
+    }
+    writeFileSync(${JSON.stringify(outputPath)}, JSON.stringify({ pages }), 'utf8');
+    rl.close();
+    emit({ type: 'DONE', status: 'succeeded', records_emitted: 0 });
+    process.stdout.write('', () => process.exit(0));
+  }
+});
+`,
+    "utf8"
+  );
+  return { cleanup: () => rmSync(dir, { force: true, recursive: true }), connectorPath };
+}
+
+test(
+  "a run that abandons a later detail-gap page mid-walk still releases every leased row, not just the first page's",
+  withTempDb(async (dir) => {
+    const store = createSqliteConnectorDetailGapStore();
+    await seedPendingDetailGaps(store, 12, { payloadFields: 20 });
+    const pageStatsPath = join(dir, "abandoned-second-page.json");
+    const connector = createPageOneOnlyRecoveryConnector(pageStatsPath, { maxBytes: 16 * 1024 });
+    const priorTarget = process.env.PDPP_DETAIL_GAP_PAGE_TARGET_BYTES;
+    process.env.PDPP_DETAIL_GAP_PAGE_TARGET_BYTES = String(16 * 1024);
+
+    let result: RuntimeRunConnectorResult | null = null;
+    try {
+      result = await runConnectorWithGapStore({
+        admitRunConnection: fakeAdmitRunConnection(),
+        connectorId: "chatgpt",
+        connectorPath: connector.connectorPath,
+        detailGapStore: store,
+        grantId: "grant_1",
+        manifest: { streams: [{ name: "messages" }] },
+        // biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op test double represents an optional side effect.
+        onProgress: () => {},
+        ownerToken: "owner",
+        persistState: false,
+      });
+    } finally {
+      if (priorTarget === undefined) {
+        delete process.env.PDPP_DETAIL_GAP_PAGE_TARGET_BYTES;
+      } else {
+        process.env.PDPP_DETAIL_GAP_PAGE_TARGET_BYTES = priorTarget;
+      }
+      connector.cleanup();
+    }
+    assert.ok(result, "the run completes without throwing");
+    assert.equal(result.status, "succeeded");
+
+    const stats = JSON.parse(readFileSync(pageStatsPath, "utf8")) as {
+      pages: { count: number; recovered: number }[];
+    };
+    const servedPages = stats.pages.filter((page) => page.count > 0);
+    assert.ok(servedPages.length >= 2, "the backlog was actually split across at least two served pages");
+    const recoveredCount = servedPages.reduce((sum, page) => sum + page.recovered, 0);
+    const leasedAndAbandonedCount = servedPages.reduce((sum, page) => sum + (page.count - page.recovered), 0);
+    const servedTotal = servedPages.reduce((sum, page) => sum + page.count, 0);
+    assert.ok(leasedAndAbandonedCount > 0, "at least one later page was leased and then abandoned");
+    // The connector stops requesting further pages once it abandons one, so
+    // rows the runtime never even served (beyond servedTotal) remain
+    // untouched pending -- distinct from rows that WERE leased then
+    // abandoned. Both must end up pending; only the leased-then-abandoned
+    // subset is a lease-release proof.
+    const neverServedCount = 12 - servedTotal;
+
+    // Every abandoned-page row must be back to pending -- none stranded
+    // in_progress, none double-counted into attempt_count -- and the
+    // recovered rows must still read as durably recovered.
+    const stillInProgress = await store.countGapsByStatusForConnector("chatgpt", { status: "in_progress" });
+    assert.equal(stillInProgress, 0, "no row from any served page is left in_progress after terminal success");
+    const stillPending = await store.countGapsByStatusForConnector("chatgpt", { status: "pending" });
+    assert.equal(
+      stillPending,
+      leasedAndAbandonedCount + neverServedCount,
+      "every abandoned-page row returns to pending (plus rows never served at all)"
+    );
+    const stillRecovered = await store.countGapsByStatusForConnector("chatgpt", { status: "recovered" });
+    assert.equal(stillRecovered, recoveredCount, "the recovered rows are unaffected by the later abandonment");
+
+    const pending = await store.listPendingGaps({
+      connectorId: "chatgpt",
+      grantId: "grant_1",
+      limit: 500,
+      streams: ["messages"],
+    });
+    assert.equal(pending.length, leasedAndAbandonedCount + neverServedCount);
+    assert.ok(
+      pending.every((gap) => gap.attempt_count === 0),
+      "an abandoned lease that was never attempted must not inflate attempt_count"
     );
   })
 );
