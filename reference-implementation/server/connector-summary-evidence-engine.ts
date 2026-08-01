@@ -47,7 +47,7 @@ import {
 
 // biome-ignore lint/suspicious/noExplicitAny: the db.js/pg boundary is untyped.
 type Db = any;
-type Row = Record<string, unknown>;
+export type Row = Record<string, unknown>;
 
 /**
  * Test-only synchronous delay between `repairCandidateSqlite`'s read phase
@@ -76,6 +76,20 @@ function testOnlyRepairCandidateSqliteDelay(): void {
   const sab = new SharedArrayBuffer(4);
   Atomics.wait(new Int32Array(sab), 0, 0, ms);
 }
+
+/**
+ * Test-only call counter for `discoverCandidates` (2026-08-01 discovery
+ * de-duplication fix). Query-count instrumentation (`Database.prototype.
+ * prepare` patching) cannot reliably isolate discovery's own cost from a
+ * bounded page's repair-loop cost — the repair path's prepared statements
+ * are not visible to that technique in this codebase's test harness — so
+ * this plain in-memory counter is the direct, unambiguous way to prove
+ * `runBoundedObservationPhases`'s `missing` and `generic` repair phases
+ * share exactly one discovery pass per page, not one each. Always
+ * incremented (cheap, a single integer add); only ever READ by tests.
+ * Never gates or alters behavior — reset/read is entirely test-owned.
+ */
+export const testOnlyDiscoverCandidatesCallCounter = { count: 0 };
 
 export type ComponentState = "current" | "unobserved" | "stale" | "failed";
 export type ManifestState = "current" | "unavailable" | "failed";
@@ -716,10 +730,16 @@ async function readPostgresDiscoveryContext(connectorInstanceIds: readonly strin
  * FIXED number of queries regardless of N connections, and classifies each
  * row. Never acquires a per-connection lock. Discovery-only — no repair, no
  * write.
+ *
+ * Exported so a bounded maintenance page can run discovery ONCE and share it
+ * across multiple same-barrier `reconcileConnectorSummaryEvidence` calls
+ * (see that function's `precomputedDiscovery` option's doc) instead of each
+ * phase paying its own full discovery round-trip.
  */
-async function discoverCandidates(
+export async function discoverCandidates(
   connectorInstanceIds: readonly string[] | null
 ): Promise<{ instanceRows: readonly Row[]; candidates: ReadonlyMap<string, RepairCandidateReason> }> {
+  testOnlyDiscoverCandidatesCallCounter.count += 1;
   const ctx = isPostgresStorageBackend()
     ? await readPostgresDiscoveryContext(connectorInstanceIds)
     : readSqliteDiscoveryContext(connectorInstanceIds);
@@ -1711,9 +1731,30 @@ export async function reconcileConnectorSummaryEvidence(
     readonly deadline?: number;
     readonly maxCandidates?: number;
     readonly maxDurationMs?: number;
+    /**
+     * Reuse a discovery pass an earlier call in the SAME bounded barrier
+     * already ran, instead of re-querying `discoverCandidates` (2026-08-01
+     * live symptom: a bounded maintenance page runs `missing`-only repair
+     * then `generic` repair as two separate calls into this function, each
+     * paying its own full discovery round-trip against the same page's ids
+     * — on a live/active connection this routinely pushed a 25-connection
+     * page past its 2000ms shared deadline on discovery cost alone, before
+     * either repair phase touched a single candidate, so a row dirtied
+     * between the two discovery passes was `skipped` — deferred with no
+     * rewind protection, unlike a genuinely `starved` page — for a full
+     * extra round-robin turn (2026-08-01: observed 163s+ staleness,
+     * exceeding the 120s two-turn bound). Discovery output does not depend
+     * on `candidateReasons`/`maxCandidates` (those only filter/limit the
+     * already-discovered candidate map below), so it is safe to share
+     * verbatim across same-barrier callers with different reason filters.
+     */
+    readonly precomputedDiscovery?: {
+      readonly instanceRows: readonly Row[];
+      readonly candidates: ReadonlyMap<string, RepairCandidateReason>;
+    };
   } = {}
 ): Promise<ReconcileResult> {
-  const { instanceRows, candidates } = await discoverCandidates(connectorInstanceIds);
+  const { instanceRows, candidates } = options.precomputedDiscovery ?? (await discoverCandidates(connectorInstanceIds));
 
   const allowedReasons = options.candidateReasons === undefined ? null : new Set(options.candidateReasons);
   const candidateEntries = [...candidates].filter(

@@ -36,8 +36,9 @@
 
 import { iterateDynamicSqlAcknowledged } from "../lib/db.ts";
 import type { EphemeralBrowserRuntimeProjection } from "../runtime/browser-surface/ephemeral-health-projection.ts";
-import type { RepairCandidateReason } from "./connector-summary-evidence-engine.ts";
+import type { Row as EvidenceEngineRow, RepairCandidateReason } from "./connector-summary-evidence-engine.ts";
 import {
+  discoverCandidates,
   pruneOrphanedEvidenceComplete,
   readAllInstanceIdsForPruning,
   readInstanceIdPage,
@@ -2586,6 +2587,25 @@ async function runBoundedObservationPhases(
       maxEvents: options.maxEvents ?? BOUNDED_FOLD_MAX_EVENTS,
     });
   };
+  // Discovered once per page and shared by BOTH repair phases below (2026-08-01
+  // fairness fix): `missing` and every `GENERIC_REPAIR_CANDIDATE_REASONS`
+  // entry are mutually exclusive per row at classification time
+  // (`classifyCandidate` returns exactly one reason, `missing` first), so a
+  // single discovery snapshot correctly partitions between the two phases —
+  // sharing it drops zero candidates and changes zero classification. Doing
+  // this halves a bounded page's discovery cost (previously one full
+  // discovery round-trip per phase, two per page): on a live/active
+  // connection's page, that discovery cost alone routinely pushed the page
+  // past its shared deadline before either repair phase touched a
+  // candidate, `skip`-ping a row dirtied between the old two discovery
+  // passes with no rewind protection (`skipped`, unlike `starved`, does not
+  // rewind the sweep cursor) — deferred a full extra round-robin turn and
+  // observed live as 163s+ staleness, exceeding the accepted 120s two-turn
+  // bound.
+  let discovery: {
+    instanceRows: readonly EvidenceEngineRow[];
+    candidates: ReadonlyMap<string, RepairCandidateReason>;
+  } | null = null;
   const startRepair = async (
     candidateReasons: readonly RepairCandidateReason[],
     maxCandidates: number | undefined
@@ -2596,9 +2616,11 @@ async function runBoundedObservationPhases(
     }
     noWorkStartedYet = false;
     const startedAt = Date.now();
+    discovery ??= await discoverCandidates(connectorInstanceIds);
     const result = await reconcileConnectorSummaryEvidence(connectorInstanceIds, {
       candidateReasons,
       deadline,
+      precomputedDiscovery: discovery,
       ...(maxCandidates === undefined ? {} : { maxCandidates }),
     });
     repairDurationMs += Date.now() - startedAt;
