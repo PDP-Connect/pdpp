@@ -4144,6 +4144,165 @@ if (POSTGRES_URL) {
       closeDb();
     }
   });
+
+  test("a terminal-succeeded run releases every served lease it never attempted, back to pending with attempt_count unchanged (Postgres)", async () => {
+    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const connectorId = `gap_pg_terminal_release_${suffix}`;
+    const grantId = `grant_pg_terminal_release_${suffix}`;
+    initDb(":memory:");
+    await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
+    try {
+      const store = createPostgresConnectorDetailGapStore();
+      const seeded: DetailGapForTest[] = [];
+      for (const recordKey of ["terminal_release_pg_a", "terminal_release_pg_b", "terminal_release_pg_c"]) {
+        // biome-ignore lint/performance/noAwaitInLoops: ordered setup is intentionally sequential because each iteration advances shared test state.
+        const gap = await store.upsertPendingGap({
+          connectorId,
+          detailLocator: { kind: "gmail.attachment_detail", message_id: recordKey, part_index: "1" },
+          grantId,
+          reason: "temporary_unavailable",
+          recordKey,
+          stream: "attachments",
+        });
+        assert.ok(gap, `${recordKey} gap is present`);
+        seeded.push(gap);
+      }
+      const [settledGap] = seeded;
+      assert.ok(settledGap, "settledGap is present");
+      const startPath = `/tmp/pdpp-pg-terminal-release-start-${suffix}.json`;
+      const { connectorPath, cleanup } = createPartialSettlementConnector(startPath, [settledGap.gap_id]);
+      let result: RuntimeRunConnectorResult | null = null;
+      try {
+        result = await runConnectorWithGapStore({
+          admitRunConnection: fakeAdmitRunConnection(),
+          connectorId,
+          connectorPath,
+          detailGapStore: store,
+          grantId,
+          manifest: { streams: [{ name: "attachments" }] },
+          // biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op test double represents an optional side effect.
+          onProgress: () => {},
+          ownerToken: "owner",
+          persistState: false,
+        });
+      } finally {
+        cleanup();
+      }
+      assert.ok(result, "the run completes without throwing");
+      assert.equal(result.status, "succeeded");
+
+      const start = JSON.parse(readFileSync(startPath, "utf8"));
+      assert.equal(start.detail_gaps.length, 3, "all three pending gaps were leased on START (Postgres)");
+      rmSync(startPath, { force: true });
+
+      const settledAfter = await store.getGapById(settledGap.gap_id);
+      assert.ok(settledAfter, "settledAfter is present");
+      assert.equal(settledAfter.status, "recovered");
+
+      const untouchedGapIds = seeded.slice(1).map((gap) => gap.gap_id);
+      for (const gapId of untouchedGapIds) {
+        // biome-ignore lint/performance/noAwaitInLoops: sequential per-row assertions read more clearly than a batched fetch here.
+        const after = await store.getGapById(gapId);
+        assert.ok(after, `${gapId} still exists`);
+        assert.equal(after.status, "pending", `${gapId} returns to pending, not stranded in_progress (Postgres)`);
+        assert.equal(after.attempt_count, 0, `${gapId} attempt_count is untouched by an unattempted lease (Postgres)`);
+        assert.equal(after.lease_id, null, `${gapId} lease is fully cleared (Postgres)`);
+        assert.equal(after.lease_run_id, null, `${gapId} lease owner is fully cleared (Postgres)`);
+      }
+
+      const stillInProgress = await store.countGapsByStatusForConnector(connectorId, { status: "in_progress" });
+      assert.equal(stillInProgress, 0, "no gap is left in_progress after a terminal succeeded run (Postgres)");
+    } finally {
+      try {
+        await postgresQuery("DELETE FROM connector_detail_gaps WHERE connector_id = $1", [connectorId]);
+        // biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op test double represents an optional side effect.
+      } catch {}
+      await closePostgresStorage();
+      closeDb();
+    }
+  });
+
+  test("a run that abandons a later detail-gap page mid-walk still releases every leased row, not just the first page's (Postgres)", async () => {
+    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const connectorId = `gap_pg_abandon_page_${suffix}`;
+    const grantId = "grant_1";
+    initDb(":memory:");
+    await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
+    try {
+      const store = createPostgresConnectorDetailGapStore();
+      await seedPendingDetailGaps(store, 12, { connectorId, payloadFields: 20 });
+      const pageStatsPath = `/tmp/pdpp-pg-abandoned-second-page-${suffix}.json`;
+      const connector = createPageOneOnlyRecoveryConnector(pageStatsPath, { maxBytes: 16 * 1024 });
+      const priorTarget = process.env.PDPP_DETAIL_GAP_PAGE_TARGET_BYTES;
+      process.env.PDPP_DETAIL_GAP_PAGE_TARGET_BYTES = String(16 * 1024);
+
+      let result: RuntimeRunConnectorResult | null = null;
+      try {
+        result = await runConnectorWithGapStore({
+          admitRunConnection: fakeAdmitRunConnection(),
+          connectorId,
+          connectorPath: connector.connectorPath,
+          detailGapStore: store,
+          grantId,
+          manifest: { streams: [{ name: "messages" }] },
+          // biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op test double represents an optional side effect.
+          onProgress: () => {},
+          ownerToken: "owner",
+          persistState: false,
+        });
+      } finally {
+        if (priorTarget === undefined) {
+          delete process.env.PDPP_DETAIL_GAP_PAGE_TARGET_BYTES;
+        } else {
+          process.env.PDPP_DETAIL_GAP_PAGE_TARGET_BYTES = priorTarget;
+        }
+        connector.cleanup();
+      }
+      assert.ok(result, "the run completes without throwing");
+      assert.equal(result.status, "succeeded");
+
+      const stats = JSON.parse(readFileSync(pageStatsPath, "utf8")) as {
+        pages: { count: number; recovered: number }[];
+      };
+      rmSync(pageStatsPath, { force: true });
+      const servedPages = stats.pages.filter((page) => page.count > 0);
+      assert.ok(servedPages.length >= 2, "the backlog was actually split across at least two served pages (Postgres)");
+      const recoveredCount = servedPages.reduce((sum, page) => sum + page.recovered, 0);
+      const leasedAndAbandonedCount = servedPages.reduce((sum, page) => sum + (page.count - page.recovered), 0);
+      const servedTotal = servedPages.reduce((sum, page) => sum + page.count, 0);
+      assert.ok(leasedAndAbandonedCount > 0, "at least one later page was leased and then abandoned (Postgres)");
+      const neverServedCount = 12 - servedTotal;
+
+      const stillInProgress = await store.countGapsByStatusForConnector(connectorId, { status: "in_progress" });
+      assert.equal(
+        stillInProgress,
+        0,
+        "no row from any served page is left in_progress after terminal success (Postgres)"
+      );
+      const stillPending = await store.countGapsByStatusForConnector(connectorId, { status: "pending" });
+      assert.equal(
+        stillPending,
+        leasedAndAbandonedCount + neverServedCount,
+        "every abandoned-page row returns to pending, plus rows never served at all (Postgres)"
+      );
+      const stillRecovered = await store.countGapsByStatusForConnector(connectorId, { status: "recovered" });
+      assert.equal(stillRecovered, recoveredCount, "recovered rows are unaffected by the later abandonment (Postgres)");
+
+      const pending = await store.listPendingGaps({ connectorId, grantId, limit: 500, streams: ["messages"] });
+      assert.equal(pending.length, leasedAndAbandonedCount + neverServedCount);
+      assert.ok(
+        pending.every((gap) => gap.attempt_count === 0),
+        "an abandoned lease that was never attempted must not inflate attempt_count (Postgres)"
+      );
+    } finally {
+      try {
+        await postgresQuery("DELETE FROM connector_detail_gaps WHERE connector_id = $1", [connectorId]);
+        // biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op test double represents an optional side effect.
+      } catch {}
+      await closePostgresStorage();
+      closeDb();
+    }
+  });
 } else {
   test("connector-emitted DETAIL_GAP survives Postgres persistence and reappears in START.detail_gaps (skipped: PDPP_TEST_POSTGRES_URL unset)", {
     skip: true,
@@ -4162,6 +4321,14 @@ if (POSTGRES_URL) {
     // biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op test double represents an optional side effect.
   }, () => {});
   test("fair-progress: a row past the quarantine threshold is not starved forever behind a large backlog (Postgres) (skipped: PDPP_TEST_POSTGRES_URL unset)", {
+    skip: true,
+    // biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op test double represents an optional side effect.
+  }, () => {});
+  test("a terminal-succeeded run releases every served lease it never attempted, back to pending with attempt_count unchanged (Postgres) (skipped: PDPP_TEST_POSTGRES_URL unset)", {
+    skip: true,
+    // biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op test double represents an optional side effect.
+  }, () => {});
+  test("a run that abandons a later detail-gap page mid-walk still releases every leased row, not just the first page's (Postgres) (skipped: PDPP_TEST_POSTGRES_URL unset)", {
     skip: true,
     // biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op test double represents an optional side effect.
   }, () => {});
