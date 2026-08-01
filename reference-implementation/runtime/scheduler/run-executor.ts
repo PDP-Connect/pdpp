@@ -16,6 +16,7 @@
  *   - buildAttemptCall       — per-attempt call shape (trigger/automation mode)
  *   - finalizeSuccessOrFailure — persist + notify a success or non-exhausted failure
  *   - finalizeExhaustedFailure — persist + notify when retries are exhausted
+ *   - finalizeManagedRunTerminal — persist + notify a managed-controller terminal record
  *   - routeScheduledManagedRun — managed-connector scheduled routing via controller
  *   - scheduledManagedConnectorLacksRoutingSeam — defer guard for missing seam
  *
@@ -103,12 +104,13 @@ export interface RunExecutorDeps {
    * the attempt count, a SUCCEEDED probe clears the anchor. A no-op for
    * every other record shape. Defined in scheduler.ts (which owns
    * `synthesizedRevalidationStore`'s construction) — called here because
-   * `finalizeSuccessOrFailure`/`finalizeExhaustedFailure` are the ACTUAL
-   * funnel for dispatched-run terminal outcomes, not scheduler.ts's
-   * `recordAndNotify` (which only ever sees pre-dispatch skip records in
-   * this module's calls). MUST be awaited before the run's terminal
-   * completion becomes externally observable — see its doc comment in
-   * scheduler.ts.
+   * `finalizeSuccessOrFailure`/`finalizeExhaustedFailure`/
+   * `finalizeManagedRunTerminal` are the ACTUAL funnels for dispatched-run
+   * terminal outcomes, not scheduler.ts's `recordAndNotify` (which only ever
+   * sees pre-dispatch skip records and non-probe transition markers in this
+   * module's calls — never a real success/failure RunRecord). MUST be
+   * awaited before the run's terminal completion becomes externally
+   * observable — see its doc comment in scheduler.ts.
    */
   settleRevalidationProbeAnchor: (record: RunRecord) => Promise<void>;
 }
@@ -1002,6 +1004,43 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     return !(isManual || via) && isManagedConnector(connectorId);
   }
 
+  // Terminal publisher for the managed-controller route (routeScheduledManagedRun):
+  // a genuine succeeded/failed RunRecord (buildManagedRunTerminalRecord /
+  // buildManagedRunControllerFailure), NOT a pre-dispatch skip. Mirrors
+  // finalizeSuccessOrFailure/finalizeExhaustedFailure's settlement-before-
+  // publication ordering (see their identical comments): awaits
+  // settleRevalidationProbeAnchor BEFORE runtime.history, the durable append,
+  // and onRunComplete, and does NOT catch/swallow a settlement rejection — it
+  // propagates out of routeScheduledManagedRun/launchRun so a durable-store
+  // failure fails the run's terminal completion rather than reporting a
+  // false-clean result while the anchor is left stale.
+  //
+  // Deliberately bypasses `recordAndNotify` (the scheduler.ts dep) for this
+  // record: that function performs its own fire-and-forget settle call meant
+  // for the pre-dispatch skip records it otherwise only ever sees (see its
+  // doc comment on RunExecutorDeps.recordAndNotify) — calling it here as well
+  // would settle the SAME terminal record twice, double-incrementing a
+  // failed-probe's attempt counter. Ordinary skip records built in this
+  // function (buildBrowserSurfaceUnavailableSkip) are unaffected and keep
+  // going through recordAndNotify's synchronous/best-effort path: their
+  // status is never "succeeded"/"failed", so settleRevalidationProbeAnchor
+  // no-ops on them regardless of which path they take.
+  async function finalizeManagedRunTerminal(record: RunRecord): Promise<RunRecord> {
+    await settleRevalidationProbeAnchor(record);
+    runtime.history.push(record);
+    if (schedulerStore) {
+      Promise.resolve(schedulerStore.appendRunHistory(toStoredRunRecord(record))).catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[scheduler] failed to persist run history for ${record.connectorId}: ${message}`);
+      });
+    }
+    await Promise.resolve(onRunComplete(record)).catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[scheduler] onRunComplete handler failed for ${record.connectorId}: ${message}`);
+    });
+    return record;
+  }
+
   // Routes a scheduled managed-connector run through controller.runNow and
   // maps every outcome (contention, controller failure, surface unavailable,
   // terminal success/failure) to a RunRecord. Returns null when runNowResult
@@ -1103,7 +1142,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
         }
         const message = err instanceof Error ? err.message : String(err);
         persistLastRunTime(connectorId, connectorInstanceId, Date.now());
-        return recordAndNotify(
+        return finalizeManagedRunTerminal(
           buildManagedRunControllerFailure(
             connectorId,
             connectorInstanceId,
@@ -1143,7 +1182,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
       if (runNowResult.status !== "succeeded" && runRequiresOwnerAuthRepair(runNowResult)) {
         markNeedsHuman(connectorId, connectorInstanceId);
       }
-      return recordAndNotify(
+      return finalizeManagedRunTerminal(
         buildManagedRunTerminalRecord(
           connectorId,
           connectorInstanceId,

@@ -118,6 +118,45 @@ test("SQLite: rows with all required data survive the rebuild; rows missing requ
   }
 });
 
+test("SQLite: a table missing connector_instance_id entirely (but with the other required columns) converges to canonical shape, rows dropped", () => {
+  const dbPath = makeTemporaryDbPath("pdpp-revalidation-schema-missing-cin-");
+  const raw = new BetterSqlite3Database(dbPath);
+  try {
+    // gate-stale-owner-v3-cbe4-0801.md P1 #3: the mirror-image malformed
+    // shape from the other two tests — connector_id/attempt/anchor_at/
+    // updated_at are ALL present, but connector_instance_id itself is
+    // missing. Proves the rebuild can't carry a row forward when the
+    // primary key column doesn't exist, without throwing/failing boot.
+    raw.exec(`CREATE TABLE synthesized_revalidation_state (
+      connector_id TEXT NOT NULL,
+      attempt INTEGER NOT NULL DEFAULT 0,
+      anchor_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`);
+    raw
+      .prepare(
+        "INSERT INTO synthesized_revalidation_state(connector_id, attempt, anchor_at, updated_at) VALUES (?, ?, ?, ?)"
+      )
+      .run("chatgpt", 1, "2026-08-01T00:00:00.000Z", "2026-08-01T00:00:00.000Z");
+  } finally {
+    raw.close();
+  }
+
+  try {
+    initDb(dbPath);
+    assertSqliteCanonicalShape(sqliteSynthesizedRevalidationStateColumns());
+    const rows = getDb().prepare("SELECT * FROM synthesized_revalidation_state").all();
+    assert.equal(
+      rows.length,
+      0,
+      "a row from a table missing connector_instance_id must be dropped, not carried forward"
+    );
+    assertNoLeakedMigrationTable();
+  } finally {
+    closeDb();
+  }
+});
+
 test("SQLite: a healthy canonical table is left untouched by a second boot (idempotent, no needless rebuild)", () => {
   const dbPath = makeTemporaryDbPath("pdpp-revalidation-schema-idempotent-");
   try {
@@ -233,6 +272,46 @@ if (POSTGRES_URL) {
       assertPostgresCanonicalShape(await postgresSynthesizedRevalidationStateColumns());
       const rows = await postgresQuery("SELECT * FROM synthesized_revalidation_state");
       assert.equal(rows.rowCount, 0, "a row missing required columns must be dropped, never inserted with NULLs");
+    } finally {
+      await postgresQuery("DROP TABLE IF EXISTS synthesized_revalidation_state_new");
+      await closePostgresStorage();
+      closeDb();
+    }
+  });
+
+  test("Postgres: a table missing connector_instance_id entirely (but with the other required columns) converges to canonical shape instead of failing boot", async () => {
+    initDb(":memory:");
+    await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
+    try {
+      // gate-stale-owner-v3-cbe4-0801.md P1 #3: `canCarryRowsForward`
+      // omitted `connector_instance_id` from its required-column check
+      // while the carry-forward SELECT still referenced it — for a table
+      // missing that column entirely, this made the migration's own
+      // transaction throw (`column "connector_instance_id" does not
+      // exist`) and roll back, failing boot outright, instead of
+      // converging to the canonical shape with the row dropped the way
+      // SQLite does for the identical malformed shape.
+      await postgresQuery("DROP TABLE IF EXISTS synthesized_revalidation_state");
+      await postgresQuery(`CREATE TABLE synthesized_revalidation_state (
+        connector_id TEXT NOT NULL,
+        attempt BIGINT NOT NULL DEFAULT 0,
+        anchor_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`);
+      await postgresQuery(
+        "INSERT INTO synthesized_revalidation_state(connector_id, attempt, anchor_at, updated_at) VALUES ('chatgpt', 1, '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z')"
+      );
+      await closePostgresStorage();
+
+      await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
+      assertPostgresCanonicalShape(await postgresSynthesizedRevalidationStateColumns());
+      const rows = await postgresQuery("SELECT * FROM synthesized_revalidation_state");
+      assert.equal(
+        rows.rowCount,
+        0,
+        "a row from a table missing connector_instance_id must be dropped, not carried forward"
+      );
+      await assertPostgresNoLeakedMigrationTable();
     } finally {
       await postgresQuery("DROP TABLE IF EXISTS synthesized_revalidation_state_new");
       await closePostgresStorage();

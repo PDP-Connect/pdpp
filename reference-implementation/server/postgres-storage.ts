@@ -4423,11 +4423,16 @@ async function migratePostgresSynthesizedRevalidationStateSchema(client: PoolCli
   if (await hasPostgresTable(client, "synthesized_revalidation_state_new")) {
     throw new Error("Found unfinished synthesized_revalidation_state_new migration table; refusing to overwrite it.");
   }
+  const hasConnectorInstanceId = await hasPostgresColumn(
+    client,
+    "synthesized_revalidation_state",
+    "connector_instance_id"
+  );
   const hasConnectorId = await hasPostgresColumn(client, "synthesized_revalidation_state", "connector_id");
   const hasAnchorAt = await hasPostgresColumn(client, "synthesized_revalidation_state", "anchor_at");
   const hasUpdatedAt = await hasPostgresColumn(client, "synthesized_revalidation_state", "updated_at");
   const hasAttempt = await hasPostgresColumn(client, "synthesized_revalidation_state", "attempt");
-  const canCarryRowsForward = hasConnectorId && hasAnchorAt && hasUpdatedAt;
+  const canCarryRowsForward = hasConnectorInstanceId && hasConnectorId && hasAnchorAt && hasUpdatedAt;
 
   await client.query("BEGIN");
   try {

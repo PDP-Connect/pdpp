@@ -409,3 +409,296 @@ test("immediate restart-visible state: the settled anchor is observable synchron
   assert.ok(anchor, "the anchor must be durably set the instant launchRun resolves — not eventually, not after a poll");
   assert.equal(anchor.attempt, 1);
 });
+
+// ─── Managed-controller route (routeScheduledManagedRun / finalizeManagedRunTerminal) ──
+//
+// combined-uat-candidate-gate-0801.md P1: the managed browser-surface route
+// (isManagedConnector === true, runManagedConnectorViaController wired) built
+// its terminal RunRecord and returned it through scheduler.ts's
+// `recordAndNotify` — the SAME synchronous, best-effort, fire-and-forget path
+// pre-dispatch skip records use — instead of awaiting
+// `settleRevalidationProbeAnchor` first like the two direct-dispatch terminal
+// funnels above. These tests drive `launchRun` through the managed route
+// (isManagedConnector: () => true, a wired runManagedConnectorViaController)
+// and prove the SAME settlement-gates-every-publication invariant now holds
+// there too.
+
+interface ManagedHarnessOptions {
+  readonly runManagedConnectorViaController: NonNullable<RunExecutorDeps["runManagedConnectorViaController"]>;
+  readonly settleRevalidationProbeAnchor: RunExecutorDeps["settleRevalidationProbeAnchor"];
+}
+
+function buildManagedExecutor(opts: ManagedHarnessOptions) {
+  const runtime = buildRuntime();
+  const completedRuns: RunRecord[] = [];
+  const historyAppends: RunRecord[] = [];
+  const deps: RunExecutorDeps = {
+    admitRunConnection: ({ connectorId, connectorInstanceId, ownerSubjectId }) =>
+      Promise.resolve({
+        connectorId,
+        connectorInstanceId: connectorInstanceId ?? CONNECTOR_INSTANCE_ID,
+        ownerSubjectId: ownerSubjectId ?? "owner_local",
+      }),
+    getState: async () => null,
+    handleGrantFailureDisable: () => {
+      // no-op
+    },
+    isManagedConnector: () => true,
+    markNeedsHuman: () => {
+      // no-op
+    },
+    maxRunWallClockMs: 5000,
+    onInteraction: () => ({ request_id: "unused", status: "cancelled", type: "INTERACTION_RESPONSE" }),
+    onRunComplete: (record) => {
+      completedRuns.push(record);
+    },
+    persistLastRunTime: () => {
+      // no-op
+    },
+    recordAndNotify: (record) => {
+      runtime.history.push(record);
+      return record;
+    },
+    referenceBaseUrl: null,
+    registerRunCancellation: undefined,
+    resolveStaticSecretRunEnv: null,
+    rsUrl: "http://localhost.invalid",
+    runManagedConnectorViaController: opts.runManagedConnectorViaController,
+    runtime,
+    schedulerStore: {
+      appendRunHistory: (record) => {
+        historyAppends.push(record as unknown as RunRecord);
+      },
+      deleteActiveRun: () => {
+        // no-op
+      },
+      upsertActiveRun: () => true,
+    },
+    setState: async () => {
+      // no-op
+    },
+    settleRevalidationProbeAnchor: opts.settleRevalidationProbeAnchor,
+  };
+  return { completedRuns, executor: createRunExecutor(deps), historyAppends, runtime };
+}
+
+test("managed route: a rejecting settleRevalidationProbeAnchor makes launchRun reject on a SUCCEEDED managed run — no history/durable-append/notification precedes settlement", async (t) => {
+  freshDb(t);
+  let settleCalls = 0;
+  const { executor, completedRuns, historyAppends, runtime } = buildManagedExecutor({
+    runManagedConnectorViaController: () => ({
+      run_id: "run-managed-success-001",
+      status: "succeeded",
+      trace_id: "trace-managed-success-001",
+    }),
+    settleRevalidationProbeAnchor: (record) => {
+      settleCalls += 1;
+      assert.equal(record.status, "succeeded", "the settle call must see the real succeeded managed record");
+      assert.equal(runtime.history.length, 0, "runtime.history must not have been pushed before settlement");
+      assert.equal(historyAppends.length, 0, "durable history append must not have run before settlement");
+      assert.equal(completedRuns.length, 0, "onRunComplete must not have been called before settlement runs");
+      return Promise.reject(new Error("durable store unreachable (injected)"));
+    },
+  });
+
+  await assert.rejects(
+    () => executor.launchRun(buildSchedule("/unused-managed-path"), false, revalidationAutomationPolicy()),
+    INJECTED_STORE_ERROR_RE,
+    "launchRun must reject when the managed route's anchor settlement fails"
+  );
+  assert.equal(settleCalls, 1, "settleRevalidationProbeAnchor must have been invoked exactly once");
+  assert.equal(runtime.history.length, 0, "a settlement failure must leave runtime.history untouched");
+  assert.equal(historyAppends.length, 0, "a settlement failure must leave the durable store untouched");
+  assert.equal(
+    completedRuns.length,
+    0,
+    "onRunComplete must never observe a managed terminal record whose anchor settlement failed"
+  );
+});
+
+test("managed route: a rejecting settleRevalidationProbeAnchor makes launchRun reject on a FAILED managed run (runNow returned failed)", async (t) => {
+  freshDb(t);
+  let settleCalls = 0;
+  const { executor } = buildManagedExecutor({
+    runManagedConnectorViaController: () => ({
+      failure_reason: "session_required",
+      run_id: "run-managed-failure-001",
+      status: "failed",
+      terminal_reason: "permission_error",
+      trace_id: "trace-managed-failure-001",
+    }),
+    settleRevalidationProbeAnchor: (record) => {
+      settleCalls += 1;
+      assert.equal(record.status, "failed");
+      return Promise.reject(new Error("durable store unreachable (injected)"));
+    },
+  });
+
+  await assert.rejects(
+    () => executor.launchRun(buildSchedule("/unused-managed-path"), false, revalidationAutomationPolicy()),
+    INJECTED_STORE_ERROR_RE,
+    "launchRun must reject for a failed managed run too when anchor settlement fails"
+  );
+  assert.equal(settleCalls, 1);
+});
+
+test("managed route: a rejecting settleRevalidationProbeAnchor makes launchRun reject when controller.runNow THROWS (buildManagedRunControllerFailure path)", async (t) => {
+  freshDb(t);
+  let settleCalls = 0;
+  const { executor } = buildManagedExecutor({
+    runManagedConnectorViaController: () => {
+      throw new Error("provider_pressure_cooldown: simulated controller error");
+    },
+    settleRevalidationProbeAnchor: (record) => {
+      settleCalls += 1;
+      assert.equal(record.status, "failed", "a controller throw must still produce a failed RunRecord");
+      assert.ok(
+        record.error?.includes("controller_run_now_failed"),
+        `expected controller_run_now_failed in error, got: ${record.error}`
+      );
+      return Promise.reject(new Error("durable store unreachable (injected)"));
+    },
+  });
+
+  await assert.rejects(
+    () => executor.launchRun(buildSchedule("/unused-managed-path"), false, revalidationAutomationPolicy()),
+    INJECTED_STORE_ERROR_RE,
+    "launchRun must reject when the controller-throw failure path's anchor settlement fails"
+  );
+  assert.equal(
+    settleCalls,
+    1,
+    "settleRevalidationProbeAnchor must be invoked for the controller-throw failure path too"
+  );
+});
+
+test("managed route: a resolving settleRevalidationProbeAnchor lets launchRun resolve normally with the real managed terminal record (mutation guard)", async (t) => {
+  freshDb(t);
+  let settleCalls = 0;
+  const { executor, completedRuns } = buildManagedExecutor({
+    runManagedConnectorViaController: () => ({
+      run_id: "run-managed-success-002",
+      status: "succeeded",
+      trace_id: "trace-managed-success-002",
+    }),
+    settleRevalidationProbeAnchor: () => {
+      settleCalls += 1;
+      return Promise.resolve();
+    },
+  });
+
+  const record = await executor.launchRun(buildSchedule("/unused-managed-path"), false, revalidationAutomationPolicy());
+  assert.equal(record.status, "succeeded");
+  assert.equal(record.runId, "run-managed-success-002");
+  assert.equal(settleCalls, 1);
+  assert.equal(completedRuns.length, 1, "onRunComplete must have observed the terminal record after settlement");
+});
+
+test("managed route: settleRevalidationProbeAnchor precedes runtime.history push, schedulerStore.appendRunHistory, AND onRunComplete — succeeded and failed", async (t) => {
+  freshDb(t);
+
+  async function assertManagedOrderedRun(outcome: "succeeded" | "failed"): Promise<void> {
+    const callOrder: string[] = [];
+    const runtime = buildRuntime();
+    const historyArray: RunRecord[] = [];
+    const instrumentedHistory = new Proxy(historyArray, {
+      get(target, prop, receiver) {
+        if (prop === "push") {
+          return (...items: RunRecord[]) => {
+            for (const item of items) {
+              callOrder.push(`historyPush:${outcome}:${item.status}`);
+            }
+            return Array.prototype.push.apply(target, items);
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const instrumentedRuntime: RunExecutorRuntimeState = { ...runtime, history: instrumentedHistory };
+    const completedRuns: RunRecord[] = [];
+    const deps: RunExecutorDeps = {
+      admitRunConnection: ({ connectorId, connectorInstanceId, ownerSubjectId }) =>
+        Promise.resolve({
+          connectorId,
+          connectorInstanceId: connectorInstanceId ?? CONNECTOR_INSTANCE_ID,
+          ownerSubjectId: ownerSubjectId ?? "owner_local",
+        }),
+      getState: async () => null,
+      handleGrantFailureDisable: () => {
+        // no-op
+      },
+      isManagedConnector: () => true,
+      markNeedsHuman: () => {
+        // no-op
+      },
+      maxRunWallClockMs: 5000,
+      onInteraction: () => ({ request_id: "unused", status: "cancelled", type: "INTERACTION_RESPONSE" }),
+      onRunComplete: (record) => {
+        callOrder.push(`onRunComplete:${outcome}:${record.status}`);
+        completedRuns.push(record);
+      },
+      persistLastRunTime: () => {
+        // no-op
+      },
+      recordAndNotify: (record) => {
+        instrumentedRuntime.history.push(record);
+        return record;
+      },
+      referenceBaseUrl: null,
+      registerRunCancellation: undefined,
+      resolveStaticSecretRunEnv: null,
+      rsUrl: "http://localhost.invalid",
+      runManagedConnectorViaController: () =>
+        outcome === "succeeded"
+          ? { run_id: `run-managed-order-${outcome}`, status: "succeeded", trace_id: `trace-managed-order-${outcome}` }
+          : {
+              failure_reason: "session_required",
+              run_id: `run-managed-order-${outcome}`,
+              status: "failed",
+              trace_id: `trace-managed-order-${outcome}`,
+            },
+      runtime: instrumentedRuntime,
+      schedulerStore: {
+        appendRunHistory: (record) => {
+          callOrder.push(`appendRunHistory:${outcome}:${record.status}`);
+        },
+        deleteActiveRun: () => {
+          // no-op
+        },
+        upsertActiveRun: () => true,
+      },
+      setState: async () => {
+        // no-op
+      },
+      settleRevalidationProbeAnchor: (record) => {
+        callOrder.push(`settle:${outcome}:${record.status}`);
+        return Promise.resolve();
+      },
+    };
+    const executor = createRunExecutor(deps);
+    const terminalRecord = await executor.launchRun(
+      buildSchedule("/unused-managed-path"),
+      false,
+      revalidationAutomationPolicy()
+    );
+    assert.equal(terminalRecord.status, outcome, `fixture premise: the managed run resolves ${outcome}`);
+    assert.equal(
+      completedRuns.length,
+      1,
+      `fixture premise: exactly one terminal record for the ${outcome} managed run`
+    );
+    assert.deepEqual(
+      callOrder,
+      [
+        `settle:${outcome}:${outcome}`,
+        `historyPush:${outcome}:${outcome}`,
+        `appendRunHistory:${outcome}:${outcome}`,
+        `onRunComplete:${outcome}:${outcome}`,
+      ],
+      "settleRevalidationProbeAnchor must precede EVERY terminal publication step on the managed route too"
+    );
+  }
+
+  await assertManagedOrderedRun("succeeded");
+  await assertManagedOrderedRun("failed");
+});
