@@ -20,6 +20,7 @@ import {
   runUsersStream,
   type SlackApiIsolatedBrowser,
   type StreamDeps,
+  withResolvedRemoteCdpUrl,
 } from "./index.ts";
 import { nodeFetchSlackApiTransport, resetSlackApiGovernor } from "./slack-api.ts";
 
@@ -511,4 +512,68 @@ test("acquireSlackApiBrowserTransport: a cookie-seeding failure is isolated the 
     /slack_api_browser_setup_failed/
   );
   assert.equal(releaseCalls.length, 1, "the underlying browser must still be released even though setup failed");
+});
+
+// ─── withResolvedRemoteCdpUrl: production-image / managed-surface contract ─
+//
+// Regression for the exact production incident this fix addresses: a live
+// canary run (run_1785549724534) proved stars/user_groups/reminders/
+// dm_read_states cannot acquire a browser in the `reference` production
+// image, because `browserType.launchPersistentContext` tried to launch a
+// local Chromium executable
+// (`/opt/patchright-browsers/chromium_headless_shell-1228/...`) that image
+// intentionally never bundles (only `reference-browser` does — see
+// Dockerfile). The canonical browser authority in that image is the managed
+// Remote Surface/n.eko service, reached via a leased `remoteCdpUrl` — never
+// a local executable.
+//
+// OLD BEHAVIOR (pre-fix): `acquireSlackApiBrowserTransport`'s default
+// `acquire` called `acquireBrowserForConnector` with no `remoteCdpUrl`,
+// regardless of environment — so even with a managed n.eko lease active
+// (`PDPP_BROWSER_SURFACE_REMOTE_CDP_URL` set), the four gap streams still
+// attempted a local Chromium launch and failed with the exact production
+// error above. These tests assert the fixed composition directly, and
+// would have failed against the old (options) => options identity
+// passthrough.
+test("withResolvedRemoteCdpUrl: composes remoteCdpUrl from a managed n.eko lease, mirroring connector-runtime.ts's acquireBrowser", () => {
+  const options = withResolvedRemoteCdpUrl(
+    { headless: true, profileName: "slack" },
+    {
+      PDPP_BROWSER_SURFACE_REQUIRED: "neko",
+      PDPP_BROWSER_SURFACE_REMOTE_CDP_URL: "http://managed-neko:9223",
+    }
+  );
+  assert.equal(
+    options.remoteCdpUrl,
+    "http://managed-neko:9223",
+    "a leased managed n.eko surface must be threaded through as remoteCdpUrl, not silently dropped"
+  );
+  assert.equal(options.headless, true, "the caller's own options must survive composition unchanged");
+  assert.equal(options.profileName, "slack");
+});
+
+test("withResolvedRemoteCdpUrl: composes remoteCdpUrl from a legacy per-profile CDP override", () => {
+  const options = withResolvedRemoteCdpUrl(
+    { headless: true, profileName: "slack" },
+    { PDPP_SLACK_REMOTE_CDP_URL: "http://legacy-dev:9223" }
+  );
+  assert.equal(options.remoteCdpUrl, "http://legacy-dev:9223");
+});
+
+test("withResolvedRemoteCdpUrl: leaves options untouched (no remoteCdpUrl) when no remote surface is configured", () => {
+  const options = withResolvedRemoteCdpUrl({ headless: true, profileName: "slack" }, {});
+  assert.equal(
+    "remoteCdpUrl" in options,
+    false,
+    "with no managed lease or legacy override, acquireBrowserForConnector must fall back to its own local-launch default — this function must not fabricate a remoteCdpUrl"
+  );
+  assert.equal(options.headless, true);
+  assert.equal(options.profileName, "slack");
+});
+
+test("withResolvedRemoteCdpUrl: fails closed (throws) when a managed n.eko lease is required but its CDP URL is missing", () => {
+  assert.throws(
+    () => withResolvedRemoteCdpUrl({ headless: true, profileName: "slack" }, { PDPP_BROWSER_SURFACE_REQUIRED: "neko" }),
+    /PDPP_BROWSER_SURFACE_REQUIRED=neko.*PDPP_BROWSER_SURFACE_REMOTE_CDP_URL is missing/u
+  );
 });

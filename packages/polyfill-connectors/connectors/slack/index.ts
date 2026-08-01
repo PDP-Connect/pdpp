@@ -70,6 +70,7 @@ import {
   type EmittedMessage,
   nowIso,
   type RecordData,
+  resolveBrowserLaunchSource,
   runConnector,
 } from "../../src/connector-runtime.ts";
 import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
@@ -2358,6 +2359,34 @@ export interface SlackApiIsolatedBrowser {
 }
 
 /**
+ * Add `remoteCdpUrl` to `acquireBrowserForConnector` options when the
+ * reference implementation has leased a managed Remote Surface/n.eko
+ * browser for this run (`PDPP_BROWSER_SURFACE_REMOTE_CDP_URL`/legacy
+ * per-profile CDP env) or leave options untouched for a local isolated
+ * launch (dev/`reference-browser` image). Same composition
+ * `connector-runtime.ts`'s `acquireBrowser` performs via
+ * `resolveBrowserLaunchSource` for every `runConnector({ browser: {...} })`
+ * connector — factored out here so Slack's own acquisition call site (which
+ * bypasses that framework path; see module header) and its tests can share
+ * one place that proves the composition, instead of only proving it via a
+ * fully-injected fake `acquire`.
+ */
+export function withResolvedRemoteCdpUrl(
+  options: Parameters<typeof acquireBrowserForConnector>[0],
+  env: NodeJS.ProcessEnv = process.env
+): Parameters<typeof acquireBrowserForConnector>[0] {
+  const launchSource = resolveBrowserLaunchSource({ profileName: SLACK_API_BROWSER_PROFILE_NAME }, env);
+  const remoteCdpUrl =
+    launchSource.kind === "managed_neko" || launchSource.kind === "legacy_remote_cdp"
+      ? launchSource.remoteCdpUrl
+      : undefined;
+  return {
+    ...options,
+    ...(remoteCdpUrl ? { remoteCdpUrl } : {}),
+  };
+}
+
+/**
  * Acquire a headless, ephemeral Chromium page (via the existing
  * `acquireBrowserForConnector` primitive already used by the browser-backed
  * connectors) and seed it with the `d`/`d-s` session cookies, so `stars`/
@@ -2386,13 +2415,26 @@ export interface SlackApiIsolatedBrowser {
  * `acquire` defaults to `acquireBrowserForConnector` (the real Chromium
  * launcher); overridable so tests can exercise the acquisition-failure and
  * cookie-seeding paths without spinning up a real browser process.
+ *
+ * The default acquire call composes `remoteCdpUrl` via
+ * `withResolvedRemoteCdpUrl` exactly like `connector-runtime.ts`'s
+ * `acquireBrowser` does for every `runConnector({ browser: {...} })`
+ * connector. Without this, `acquireBrowserForConnector` always falls
+ * through to a local Chromium launch — which does not exist in the
+ * `reference` production image (only `reference-browser` bundles it; see
+ * Dockerfile) — instead of connecting to the managed Remote Surface/n.eko
+ * browser the reference implementation leases via
+ * `PDPP_BROWSER_SURFACE_REMOTE_CDP_URL`. Slack's four browser-assisted
+ * streams don't declare `browser: {...}` in `runConnector` (only these four
+ * of many streams need it), so they never went through that composition —
+ * this restores it at their own acquisition call site.
  */
 export async function acquireSlackApiBrowserTransport(
   progress: ProgressFn,
   cookie: string,
-  acquire: (
-    options: Parameters<typeof acquireBrowserForConnector>[0]
-  ) => Promise<SlackApiIsolatedBrowser> = acquireBrowserForConnector
+  acquire: (options: Parameters<typeof acquireBrowserForConnector>[0]) => Promise<SlackApiIsolatedBrowser> = (
+    options
+  ) => acquireBrowserForConnector(withResolvedRemoteCdpUrl(options))
 ): Promise<SlackApiBrowserTransportHandle> {
   let browser: SlackApiIsolatedBrowser;
   try {
