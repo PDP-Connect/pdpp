@@ -23,7 +23,7 @@
  * guard → preRunGate → launchRun), pre-run gate, or dispatch governor.
  */
 
-import { createTraceContext, type SpineTraceContext } from "../../lib/spine.ts";
+import { createTraceContext, generateRunId, type SpineTraceContext } from "../../lib/spine.ts";
 import type { SchedulerRunHistoryRecord } from "../../server/stores/scheduler-store.ts";
 import { runConnector } from "../index.ts";
 import {
@@ -124,6 +124,28 @@ function getManifestRefreshPolicy(manifest: SchedulerManifest | null | undefined
   }
   const policy = (capabilities as { refresh_policy?: unknown }).refresh_policy;
   return policy && typeof policy === "object" && !Array.isArray(policy) ? (policy as AutomationRefreshPolicy) : null;
+}
+
+// Exported (pure, no closure over RunExecutorDeps) so the run-id mint
+// behavior on the direct-scheduler retry path can be exercised directly in
+// tests without spawning a real connector process through createRunExecutor.
+export function buildAttemptCall(
+  schedule: ConnectorSchedule,
+  call: RunConnectorCall,
+  attempt: number
+): RunConnectorCall {
+  const attemptTriggerKind: RunTriggerKind = attempt === 1 ? (call.triggerKind ?? "scheduled") : "retry";
+  const attemptPolicy = projectRunAutomationPolicy({
+    refreshPolicy: getManifestRefreshPolicy(schedule.manifest),
+    triggerKind: attemptTriggerKind,
+  });
+  return {
+    ...call,
+    automationMode: attemptPolicy.automation_mode,
+    runId: call.runId ?? generateRunId(),
+    traceContext: call.traceContext ?? createTraceContext(),
+    triggerKind: attemptPolicy.trigger_kind,
+  };
 }
 
 function describeFailedRunResult(result: RunConnectorResult): RunConnectorError {
@@ -240,8 +262,10 @@ function toStoredRunRecord(record: RunRecord): SchedulerRunHistoryRecord {
 }
 
 // ─── RunConnectorCall (internal) ──────────────────────────────────────────────
+// Exported so buildAttemptCall's mint behavior can be tested directly (see
+// the export comment above buildAttemptCall).
 
-interface RunConnectorCall {
+export interface RunConnectorCall {
   admitRunConnection?: Exclude<RunExecutorDeps["admitRunConnection"], null>;
   automationMode?: RunAutomationMode;
   cancelSignal?: AbortSignal | null;
@@ -674,7 +698,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
         ? schedulerStore
         : null;
     const watchdog = createAttemptWatchdog(maxRunWallClockMs);
-    const runId = call.runId || `run_${Date.now()}`;
+    const runId = call.runId || generateRunId();
     const traceContext = call.traceContext ?? createTraceContext();
     let admitted = true;
     if (activeRunStore) {
@@ -784,21 +808,6 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     } finally {
       await lease.clear();
     }
-  }
-
-  function buildAttemptCall(schedule: ConnectorSchedule, call: RunConnectorCall, attempt: number): RunConnectorCall {
-    const attemptTriggerKind: RunTriggerKind = attempt === 1 ? (call.triggerKind ?? "scheduled") : "retry";
-    const attemptPolicy = projectRunAutomationPolicy({
-      refreshPolicy: getManifestRefreshPolicy(schedule.manifest),
-      triggerKind: attemptTriggerKind,
-    });
-    return {
-      ...call,
-      automationMode: attemptPolicy.automation_mode,
-      runId: call.runId ?? `run_${Date.now()}_${attempt}`,
-      traceContext: call.traceContext ?? createTraceContext(),
-      triggerKind: attemptPolicy.trigger_kind,
-    };
   }
 
   // Drains the durable failure record for an exhausted-retries run: history,

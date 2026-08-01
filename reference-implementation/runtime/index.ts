@@ -11,7 +11,7 @@ import { spawn } from "node:child_process";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { emitControllerBootedAndStashEpoch } from "../lib/controller-boot.ts";
 import type { SpineEventInput, SpineEventRecord } from "../lib/spine.ts";
-import { createTraceContext, emitSpineEvent, getCurrentBootEpoch } from "../lib/spine.ts";
+import { createTraceContext, emitSpineEvent, generateRunId, getCurrentBootEpoch } from "../lib/spine.ts";
 import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { getDefaultConnectorAttentionStore } from "../server/stores/connector-attention-store.ts";
 import { getDefaultConnectorDetailGapStore } from "../server/stores/connector-detail-gap-store.ts";
@@ -2035,7 +2035,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
   // Compute runId before spawn so it can be threaded into the child env
   // alongside the streaming registration token. The traceContext is
   // computed below alongside the rest of the run-scoped state.
-  const spawnRunId = opts.runId || `run_${Date.now()}`;
+  const spawnRunId = opts.runId || generateRunId();
 
   const launchConfig = buildConnectorLaunchConfig({
     automationMode,

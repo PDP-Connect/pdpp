@@ -1,7 +1,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { getDb } from "../server/db.ts";
 import { isPostgresStorageBackend } from "../server/postgres-storage.ts";
 import {
@@ -263,6 +263,27 @@ export interface SpineSearchResult {
 
 export function generateSpineId(prefix: string): string {
   return `${prefix}_${randomBytes(8).toString("hex")}`;
+}
+
+// The single run_id mint primitive for every run-admission callsite
+// (runtime/controller.ts, runtime/scheduler/run-executor.ts,
+// runtime/index.ts). Each previously minted its own fallback independently
+// as `run_${Date.now()}` (or `run_${Date.now()}_${attempt}` in the
+// scheduler's retry path) -- millisecond resolution, no connection-scoped
+// entropy, so two different connections (or two retry attempts landing in
+// the same millisecond) admitted concurrently produced the identical
+// run_id and collided against controller_active_runs' run_id UNIQUE
+// constraint (live incident 2026-08-01T04:06:18Z).
+//
+// Deliberately NOT generateSpineId (8 random bytes / 64 bits): with a
+// table-wide UNIQUE constraint and no collision-retry loop, 64 bits is not
+// safe at fleet scale (~2.7e-4 collision probability at 100M IDs, ~2.7% at
+// 1B, per the birthday bound). randomUUID() is 122 bits of CSPRNG entropy
+// (128-bit UUIDv4 minus 6 fixed version/variant bits) -- the same margin
+// Node's crypto module and every RFC 4122 UUID consumer relies on for
+// global uniqueness without a retry protocol.
+export function generateRunId(): string {
+  return `run_${randomUUID().replace(/-/g, "")}`;
 }
 
 function nowIso(): string {

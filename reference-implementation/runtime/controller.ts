@@ -30,7 +30,13 @@ import {
   // biome-ignore lint/correctness/noUnresolvedImports: Biome cannot resolve this installed package export; Node and TypeScript resolve it.
 } from "@opendatalabs/remote-surface/leases";
 import { getOne, referenceQueries } from "../lib/db.ts";
-import { createTraceContext, emitSpineEvent, getRunTerminalStatus, type SpineTraceContext } from "../lib/spine.ts";
+import {
+  createTraceContext,
+  emitSpineEvent,
+  generateRunId,
+  getRunTerminalStatus,
+  type SpineTraceContext,
+} from "../lib/spine.ts";
 import {
   approveOwnerDeviceAuthorization,
   getConnectorManifest,
@@ -3543,7 +3549,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     const traceContext =
       options.traceContext ??
       (options.scenarioId ? createTraceContext({ scenarioId: options.scenarioId }) : createTraceContext());
-    const runId = options.runId || `run_${Date.now()}`;
+    const runId = options.runId || generateRunId();
     const startedAt = nowIso();
 
     // Resolve connection-scoped static-secret credentials before acquiring any
