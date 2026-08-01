@@ -1,5 +1,14 @@
 # Tasks
 
+> **2026-07-31 RI revision (design.md D9):** the base-archive resume throttle
+> shipped in tasks 10–11 below (D7/D8) has since been REMOVED — it was a
+> design error that silently froze a connection's `messages` stream for 6+
+> days (live incident `fleet-slack-message-freshness-0731`). This file is a
+> historical execution log of the original work and is left as-is below; do
+> not treat any base-archive-throttle claim past this notice as current
+> behavior. Current behavior: `design.md` D9 and `specs/polyfill-runtime/
+> spec.md`'s "base archive resume SHALL run on every collection" requirement.
+
 ## 1. Incremental message read (run-time fix)
 
 - [x] 1.1 Rewrite `buildMessageRowsQuery` in `connectors/slack/index.ts` to push

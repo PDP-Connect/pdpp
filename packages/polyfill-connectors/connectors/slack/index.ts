@@ -153,27 +153,6 @@ function safeAll<T>(db: DatabaseSync, sql: string): T[] {
 const SOURCE_PARTITION_MISSING_REASON = "source_partition_missing";
 const OPTIONAL_STREAM_FAILED_REASON = "optional_stream_failed";
 /**
- * Reason the `messages` stream reports when the base-archive `resume`
- * subprocess was throttled (`archiveDueForResume` says not due yet, per
- * `SLACK_LOOKBACK_DAYS`) AND this run's read of the existing on-disk archive
- * found zero new message rows past the cursor. This is deliberately
- * distinct from `OPTIONAL_STREAM_FAILED_REASON`: nothing failed, and
- * `messages` is a REQUIRED stream, not an optional gap stream — this
- * SKIP_RESULT exists purely to make a genuinely-not-yet-rechecked run
- * honest in `collection_facts`/coverage reporting, instead of
- * indistinguishable from "caught up, no new Slack activity."
- *
- * The `retry_by_runtime` recovery action (set below) is what actually
- * drives the coverage projection here:
- * `reference-implementation/server/connector-coverage-policy.ts`'s
- * `mapSkipCoverageCondition` checks `recovery_action === "retry_by_runtime"`
- * BEFORE any reason-string pattern match, so this reads `retryable_gap` —
- * never `complete` — and surfaces a "Run the connector to retry the gap"
- * action, which is the precise honest claim: the throttle clears itself
- * once `SLACK_LOOKBACK_DAYS` elapses, no operator intervention needed.
- */
-const BASE_ARCHIVE_RESUME_DEFERRED_REASON = "base_archive_resume_deferred";
-/**
  * Reason for a gap stream (`stars`/`user_groups`/`reminders`/`dm_read_states`)
  * skipped because THIS RUNTIME has no browser binding to acquire, distinct
  * from `OPTIONAL_STREAM_FAILED_REASON` (a live Slack API/auth failure).
@@ -831,48 +810,6 @@ function archiveDueForResume(lastResumedAtIso: string | undefined, lookbackDays:
   const elapsedMs = now - last;
   const lookbackMs = lookbackDays * 24 * 60 * 60 * 1000;
   return elapsedMs >= lookbackMs;
-}
-
-// One-time upgrade compatibility: `base_archive_resumed_at` did not exist
-// before this throttle shipped, so a connection whose base archive already
-// completed a real resume under the OLD code has no entry for it — and
-// `archiveDueForResume` treats "no entry" as "due", which replays the entire
-// base archive on the very first post-upgrade run (the live defect this
-// function exists to close). Deriving a synthetic timestamp is only safe
-// when prior STATE proves an ACTUAL completed base-archive resume, not mere
-// archive presence: `emitStateCheckpoints` (and its pre-this-change
-// predecessor) writes `last_ts`/`channel_last_ts` into `messages` STATE only
-// after a run reaches its normal durable-commit path — a failed or
-// interrupted run commits no STATE at all (see
-// "a failed base archive resume remains owed and retries successfully on
-// the next run"), so an on-disk archive with no such committed fact is
-// exactly the interrupted/failed case this must NOT treat as done. Requiring
-// `priorArchive === archivePath` additionally ties the proof to the base
-// archive's own resolved identity, not a stale or differently-scoped path.
-// The derived value is `nowIso` (this run counts as the fact-finding run
-// itself, not a backdated resume) so the very next scheduled run is
-// immediately throttled, while a genuine resume is still due again after one
-// full lookback window from here — the same lossless cadence a real resume
-// timestamp would produce, applied one run later than an already-migrated
-// connection would see it.
-function deriveMigratedBaseArchiveResumedAt(deps: {
-  archivePath: string;
-  isUnscopedMessageBoundary: boolean;
-  messagesState: MessagesState | undefined;
-  nowIso: string;
-  priorArchive: string | undefined;
-}): string | undefined {
-  const { archivePath, isUnscopedMessageBoundary, messagesState, nowIso: nowIsoValue, priorArchive } = deps;
-  if (!isUnscopedMessageBoundary) {
-    return;
-  }
-  if (priorArchive !== archivePath) {
-    return;
-  }
-  const provenPriorSuccess = Boolean(
-    messagesState?.last_ts || Object.keys(normalizeStringRecord(messagesState?.channel_last_ts)).length > 0
-  );
-  return provenPriorSuccess ? nowIsoValue : undefined;
 }
 
 // A failed resume must surface as durable, governor-paced recovery evidence
@@ -2105,7 +2042,6 @@ export async function runDmReadStatesStream(
 
 interface StateEmitDeps {
   archivePath: string;
-  baseArchiveResumedAt: Record<string, string>;
   channelLastTs: Record<string, string>;
   committedMaxTs: string | null;
   emit: CollectContext["emit"];
@@ -2142,7 +2078,6 @@ function emitStateCheckpoints(deps: StateEmitDeps): void {
       channel_last_ts: deps.channelLastTs,
       observed_channel_ids: [...deps.observedChannelIds].sort(),
       archive_dir: deps.archivePath,
-      base_archive_resumed_at: deps.baseArchiveResumedAt,
       scoped_archive_resumed_at: deps.scopedArchiveResumedAt,
       fetched_at: nowIso(),
     },
@@ -2247,85 +2182,20 @@ async function ensureArchiveOnDisk(deps: EnsureArchiveDeps): Promise<void> {
 }
 
 /**
- * Outcome of a `refreshBaseArchiveIfDue` call. `resumed` mirrors the old
- * boolean return (true only when this run's own resume subprocess
- * completed and should advance `base_archive_resumed_at`). `throttled` is
- * new: true only when the resume was skipped because the lookback window
- * has not elapsed yet (as opposed to skipped because this boundary never
- * uses resume at all, e.g. a scoped/detail pass) — the caller uses it to
- * decide whether a zero-new-messages outcome this run is an honest
- * "genuinely caught up" fact or a "we didn't actually check" fact.
+ * Refresh the normal (unscoped) workspace archive on every run that reaches
+ * this boundary — no cost throttle applies here. The scheduler already owns
+ * run cadence (it decides when a run happens at all), and a `resume` against
+ * the base archive is cheap: live evidence for this connection's successful
+ * 2026-07-25T16:04 UTC base resume shows it completed in ~1.6 minutes, not
+ * the ~58-minute cost that motivated `SLACK_LOOKBACK_DAYS` (that cost was
+ * measured against a *scoped repair* archive — see D5 in this change's
+ * design doc — not the base archive). Scoped archives remain throttled via
+ * `archiveDueForResume`/`SLACK_LOOKBACK_DAYS` in `reconcileMessageSourceCache`
+ * below: they are a separate, genuinely expensive historical-backfill path
+ * with its own reconciliation lifecycle, and that bound is unchanged here.
  */
-interface BaseArchiveResumeOutcome {
-  resumed: boolean;
-  throttled: boolean;
-}
-
-/**
- * Refresh the normal workspace archive only when its own successful-resume
- * fact is due. Scoped archives deliberately do not enter this decision: they
- * have separate paths and their own reconciliation lifecycle.
- */
-async function refreshBaseArchiveIfDue(
-  deps: EnsureArchiveDeps & {
-    isUnscopedMessageBoundary: boolean;
-    lastResumedAt: string | undefined;
-    nowIso: string;
-  }
-): Promise<BaseArchiveResumeOutcome> {
-  const usesResume = deps.isUnscopedMessageBoundary && deps.useResume;
-  const baseResumeDue = !usesResume || archiveDueForResume(deps.lastResumedAt, deps.opts.LOOKBACK_DAYS, deps.nowIso);
-  if (baseResumeDue) {
-    await timedPhase(deps.progress, "slackdump-subprocess", () => ensureArchiveOnDisk(deps));
-    return { resumed: usesResume, throttled: false };
-  }
-  deps.progress(
-    `Slack: base archive at ${deps.archivePath} not due for resume yet ` +
-      `(last resumed within lookback=p${String(deps.opts.LOOKBACK_DAYS)}d) — reading existing data, skipping subprocess`,
-    { stream: "messages" }
-  );
-  return { resumed: false, throttled: true };
-}
-
-/**
- * Honesty gate, split out of `collect()` to keep its cognitive complexity
- * under the repo ceiling (pure extraction, no behavior change beyond the
- * SKIP_RESULT itself, which is this function's entire purpose).
- *
- * A throttled base-archive resume that also found zero new message rows
- * this run (across the base archive and any merged scoped archives) never
- * actually checked Slack for fresh messages — it just re-read the same
- * on-disk snapshot the last real resume produced. Left unreported, this is
- * indistinguishable from a genuinely caught-up connection (`collected: 0`,
- * `checkpoint: "committed"`, no known_gaps entry), which is exactly how a
- * stale archive can silently mask zero-fresh-messages runs for up to
- * `SLACK_LOOKBACK_DAYS`. A real backlog found in the stale archive
- * (`maxMessageTs` non-null) is NOT throttled-empty — it's genuine work
- * this run did, so no gap is reported for it.
- */
-async function reportDeferredMessagesIfThrottledEmpty(args: {
-  archivePath: string;
-  baseResumeOutcome: BaseArchiveResumeOutcome;
-  emit: CollectContext["emit"];
-  lookbackDays: number;
-  messageResult: MessagesPassResult;
-  requested: CollectContext["requested"];
-}): Promise<void> {
-  const { archivePath, baseResumeOutcome, emit, lookbackDays, messageResult, requested } = args;
-  if (!(requested.has("messages") && baseResumeOutcome.throttled && messageResult.maxMessageTs === null)) {
-    return;
-  }
-  await emit({
-    type: "SKIP_RESULT",
-    stream: "messages",
-    reason: BASE_ARCHIVE_RESUME_DEFERRED_REASON,
-    message:
-      `Slack: messages not checked for fresh content this run — base archive at ${archivePath} is not ` +
-      `due for resume yet (last resumed within lookback=${String(lookbackDays)}d). Reading the existing ` +
-      "on-disk archive found no new rows past the cursor, so this run cannot confirm the connection is " +
-      "actually caught up versus simply not having checked.",
-    recovery_hint: { action: "retry_by_runtime", retryable: true },
-  });
+async function refreshBaseArchive(deps: EnsureArchiveDeps): Promise<void> {
+  await timedPhase(deps.progress, "slackdump-subprocess", () => ensureArchiveOnDisk(deps));
 }
 
 /**
@@ -2763,47 +2633,19 @@ if (isMainModule(import.meta.url)) {
       });
       const useResume = Boolean(resumeTarget);
       const messagesState = state.messages as MessagesState | undefined;
-      const priorBaseArchiveResumedAt = normalizeStringRecord(messagesState?.base_archive_resumed_at);
-      const baseArchiveResumedAt = { ...priorBaseArchiveResumedAt };
-      // Upgrade compatibility: a connection whose base archive already
-      // completed a real resume BEFORE this throttle shipped has no
-      // `base_archive_resumed_at` entry yet. Without this, the absent entry
-      // reads as "due" and the first post-upgrade run replays the entire
-      // base archive once more — the exact live defect this closes. Only
-      // fires when prior STATE proves a genuinely completed base-archive
-      // run (never from archive presence alone, which an interrupted/failed
-      // run leaves behind too) and never overrides an existing real fact.
-      const migratedBaseArchiveResumedAt =
-        priorBaseArchiveResumedAt[archivePath] === undefined
-          ? deriveMigratedBaseArchiveResumedAt({
-              archivePath,
-              isUnscopedMessageBoundary,
-              messagesState,
-              nowIso: ctx.emittedAt,
-              priorArchive,
-            })
-          : undefined;
-      if (migratedBaseArchiveResumedAt) {
-        baseArchiveResumedAt[archivePath] = migratedBaseArchiveResumedAt;
-        progress(
-          `Slack: base archive at ${archivePath} has no base_archive_resumed_at fact yet but prior STATE proves ` +
-            "a completed resume before this throttle shipped — seeding the throttle from this run instead of " +
-            "replaying the archive",
-          { stream: "messages" }
-        );
-      }
       // Map time_range from messages stream scope into -time-from / -time-to.
       const { timeFrom, timeTo } = extractMessageTimeRange(
         messagesScope?.time_range as { from?: string | null; to?: string | null } | undefined
       );
 
-      const baseResumeOutcome = await refreshBaseArchiveIfDue({
+      // The base archive resumes on every run that reaches this boundary —
+      // no cost throttle. See refreshBaseArchive's doc comment: the
+      // scheduler already owns cadence, and the base resume is cheap
+      // (~1.6 min live).
+      await refreshBaseArchive({
         archivePath,
         childEnv,
         cookie,
-        isUnscopedMessageBoundary,
-        lastResumedAt: migratedBaseArchiveResumedAt ?? priorBaseArchiveResumedAt[archivePath],
-        nowIso: ctx.emittedAt,
         opts,
         positionalChannels,
         priorArchive,
@@ -2815,11 +2657,6 @@ if (isMainModule(import.meta.url)) {
         token,
         useResume,
       });
-      // This reaches durable STATE only if the entire run commits. A failed
-      // resume, or a later failed run, therefore remains owed and retryable.
-      if (baseResumeOutcome.resumed) {
-        baseArchiveResumedAt[archivePath] = ctx.emittedAt;
-      }
 
       const db = await timedPhase(progress, "archive-open", () =>
         Promise.resolve(new DatabaseSync(sqlitePath, { readOnly: true }))
@@ -2928,15 +2765,6 @@ if (isMainModule(import.meta.url)) {
         });
       }
 
-      await reportDeferredMessagesIfThrottledEmpty({
-        archivePath,
-        baseResumeOutcome,
-        emit,
-        lookbackDays: opts.LOOKBACK_DAYS,
-        messageResult,
-        requested: deps.requested,
-      });
-
       // Drop fingerprint entries for IDs that disappeared from the source
       // since the prior run on streams we actually requested. Streams the
       // caller did not exercise keep their full carry-forward — an
@@ -2959,7 +2787,6 @@ if (isMainModule(import.meta.url)) {
       const stateArchivePath = isUnscopedMessageBoundary ? archivePath : (messagesState?.archive_dir ?? archivePath);
       emitStateCheckpoints({
         archivePath: stateArchivePath,
-        baseArchiveResumedAt,
         channelLastTs: committedChannelLastTs,
         committedMaxTs,
         emit,

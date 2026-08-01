@@ -506,6 +506,94 @@ alone`) proves an archive with no committed success proof still resumes
 normally, so the migration cannot mask a genuinely interrupted/failed prior
 run as done.
 
+### D9 — RI revision on D7/D8: the base-archive throttle was itself the defect — cost bounding and freshness cadence are different concerns (2026-07-31, live incident fleet-slack-message-freshness-0731)
+
+**Supersedes D7 and D8's premise, not their evidence.** D7 shipped a
+`SLACK_LOOKBACK_DAYS`-gated throttle on the *base/unscoped* archive's own
+`resume` subprocess, reusing the same lookback-window mechanism D5 built for
+*scoped repair* archives. D8 then had to build one-time migration machinery
+(`deriveMigratedBaseArchiveResumedAt`) to stop that throttle from replaying
+an already-successful base archive on the first post-upgrade run. Both were
+internally consistent with the design as stated — but the design itself
+conflated two different things under one knob:
+
+1. **Base archive freshness cadence** — how often the main/unscoped archive
+   re-syncs to pick up new Slack messages. This should be driven by the
+   *scheduler's* run cadence (it already decides when a run happens at all),
+   not a separate connector-local multi-day throttle.
+2. **Scoped repair archive cost** — the genuinely expensive (~55–58 minutes
+   live, per D5) historical-backfill work for specific channels/date ranges
+   that D4/D5/D6 correctly bound and throttle.
+
+**Live evidence (2026-07-31 incident investigation) proved these are not the
+same cost.** Connection `cin_f565a96cb0a114b0a27e9606`'s last real BASE
+archive resume (2026-07-25T16:04:06.919Z) completed in **~1.6 minutes** —
+not the ~58 minutes D5's own text attributes to "a `resume` against a
+**retained scoped archive**" (D5, above). D7's throttle, applied to the base
+archive on the strength of "the base `/archive` path... has the same
+`resume -lookback pNd` frequency property as scoped repair archives"
+(original proposal.md), silently froze this connection's `messages` stream
+at its 2026-07-25 state for 6+ days and dozens of scheduled runs — with
+`channel_stats` (unconditional, uncursored) staying non-zero every run, so
+`run_history.status = succeeded` never signalled anything was wrong. Commit
+`5c7ff8c7e` made that freeze honestly *reported* (a `retryable_gap`
+`SKIP_RESULT` instead of silent `collected: 0`), but RI review correctly
+rejected it as incomplete: making a wrong cadence honest is not the same as
+fixing the cadence.
+
+**The fix.** The base-archive throttle (`refreshBaseArchiveIfDue`'s
+`archiveDueForResume` gate, the `base_archive_resumed_at` STATE field, and
+D8's `deriveMigratedBaseArchiveResumedAt` migration) is removed entirely.
+`refreshBaseArchive` now unconditionally invokes `resume` on every run that
+reaches the unscoped/main-archive boundary — the same behavior the connector
+had before D7 ever shipped, restored deliberately rather than accidentally.
+The 5c7ff8c7e "deferred honesty" machinery
+(`BASE_ARCHIVE_RESUME_DEFERRED_REASON`,
+`reportDeferredMessagesIfThrottledEmpty`, the `BaseArchiveResumeOutcome`
+struct) is deleted as unreachable dead code: there is no longer a throttled
+base-archive path for it to report on. `archiveDueForResume` itself is
+**retained** — it still gates scoped repair archives in
+`reconcileMessageSourceCache` exactly as D4/D5/D6 designed, which remains
+correct and untouched.
+
+**Why unthrottled base resume is safe (not a replay/duplicate-work risk).**
+- **No replay.** `resume` (as opposed to `archive`) is `slackdump`'s own
+  incremental primitive — it advances the archive's on-disk cursor via its
+  own `SESSION`/`V_LATEST_MESSAGE` bookkeeping, never re-fetching data it has
+  already durably recorded. Running it every scheduled/manual run is exactly
+  what a connector with no persistent archive at all does implicitly on
+  every run; persisting an archive only makes that resume cheaper than a
+  fresh archive, never more expensive than not persisting one.
+- **No duplicate/overlap emission.** The connector's own `messages` cursor
+  (`last_ts`/`channel_last_ts`, pushed into the incremental CTE by D1) is
+  the actual de-dup boundary for what PDPP ingests — it is independent of
+  whether `resume` ran zero or one extra time this run. Two base resumes in
+  immediate succession cannot double-emit a message, because the second
+  resume's read is filtered by the same committed cursor as the first.
+- **Cost is bounded by the scheduler, not by this connector.** A connector
+  cannot control how often it is invoked; it can only control what it does
+  once invoked. Making the base resume free-running (bounded only by
+  whatever cadence the scheduler already enforces) is the same posture every
+  other first-party connector without a persistent archive already has.
+- **Genuinely cheap.** ~1.6 minutes live, matching a `resume` against an
+  archive that is already current — the cost this throttle was built to
+  bound (~58 minutes) was never the base archive's cost to begin with.
+
+**Tests.** `archive-reclaim.test.ts`'s six base-archive-throttle tests
+(90-minute-follow-up throttle, throttled-zero-new-rows honesty ×2, failed
+base resume retry, seven-day lookback expiry, ×2 upgrade-migration tests)
+are replaced with three tests matching the corrected behavior: (1) a
+90-minute scheduled follow-up invokes `resume` exactly once (was: zero,
+proving the old throttle is gone); (2) a base resume that discovers new
+content advances the committed `messages` cursor past a previously stuck
+point (proves the live bug — 6+ days frozen at 2026-07-25 — is fixed, not
+merely reported honestly); (3) a failed base resume fails the run and
+retries on the very next attempt, with no throttle-suppression state to
+navigate around. Old-code-fails/new-code-passes proven against `5c7ff8c7e`
+(see report). All pre-existing scoped-archive-throttle tests (D4/D5/D6's
+own suite) are untouched and still pass, confirming the scoped-repair bound
+this change correctly preserved is unaffected.
+
 ## Residual risks (owner-only)
 
 - **Live UAT.** Confirm on the real 31 GB archive that (a) run time drops
@@ -553,3 +641,25 @@ run as done.
   failure — synthetic subprocess tests prove the mechanism deterministically
   via a fake `SLACKDUMP_BIN` that fails only for the scoped-archive path, not
   a live failure.
+- **D7/D8's own residual-risk items are superseded, not merely resolved.**
+  D7 and D8 shipped a base-archive throttle whose live-UAT need (originally
+  slated to appear here) is now moot: D9 removed the base-archive throttle
+  entirely, so there is no base-archive "resume again after lookback
+  elapses" behavior left to verify. The connection this incident affected
+  (`cin_f565a96cb0a114b0a27e9606`) is the closest thing to a live UAT this
+  change has: its base archive was demonstrably frozen at 2026-07-25T16:04
+  for 6+ days under the throttle, which is direct live evidence the throttle
+  was actively harmful, not merely un-verified.
+- **D9 live UAT.** Confirm on the real workspace, once deployed, that (a)
+  connection `cin_f565a96cb0a114b0a27e9606`'s next scheduled run invokes a
+  base `resume` and its `messages` record count/`max(emitted_at)` advance
+  past `212833` rows / `2026-07-25T04:34:06.407Z`; (b) `run_history`'s
+  `collection_facts.streams.messages` no longer carries a
+  `base_archive_resume_deferred` skip on subsequent runs (the 5c7ff8c7e
+  reporting path is now unreachable, so this key should be absent going
+  forward, not merely non-`retryable_gap`); (c) steady-state run time for
+  this connection's base-archive phase (`slackdump-subprocess` phase timing)
+  stays in the low-minutes range it showed pre-incident, confirming the
+  ~1.6-minute cost estimate holds on repeat runs, not just the one sampled
+  run. Cannot be verified here without the live host/credentials and without
+  observing at least one real post-deploy scheduled run.

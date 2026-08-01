@@ -47,39 +47,42 @@ that stream
 **AND** this is correct because there is no cursor to push, and the resulting
 emitted set is the connector's declared full coverage for that stream.
 
-### Requirement: A base archive resume SHALL be success-throttled independently of scoped archives
+### Requirement: A base archive resume SHALL run on every collection reaching the unscoped boundary, gated only by run cadence
 
-For an archive-backed connector whose normal unscoped archive may be refreshed
-with `resume -lookback pNd`, the connector SHALL persist a durable successful
-resume fact keyed by that base archive's stable identity. A base archive SHALL
-NOT share this fact with any scoped archive. When the base archive has
-successfully resumed within the configured lookback window, an ordinary
-unscoped scheduled run SHALL read the existing archive without launching a
-second resume subprocess.
+For an archive-backed connector whose normal unscoped archive may be
+refreshed with `resume`, the connector SHALL invoke that resume on every run
+that reaches the unscoped/main-archive boundary, without any connector-local
+cost throttle on how recently it last succeeded. Run cadence (how often a
+run happens at all) is the scheduler's responsibility, not this connector's:
+a base resume against the unscoped archive is cheap relative to a scoped
+repair archive's resume (see the scoped-archive throttle requirement below),
+so bounding its per-run cost is unnecessary and, if applied, silently
+freezes the `messages` stream at a stale point for the duration of any
+throttle window — a data-freshness regression, not a cost optimization.
 
-Only a resume that completes successfully and reaches the run's normal STATE
-commit path SHALL advance the fact. A failed resume SHALL leave it unchanged
-and retryable. First archive creation and explicitly scoped repair behavior
-SHALL remain available.
+A base resume that fails SHALL fail the run in the same way any other
+required-stream failure does; the next run (on its own normal schedule)
+SHALL retry it exactly as it would any other required work, with no
+throttle-driven suppression to bypass. First archive creation is unchanged.
 
-#### Scenario: immediate scheduled follow-up skips the base resume
+Scoped repair archives are a distinct, separately-bounded mechanism (see
+below) and SHALL remain throttled — they are NOT gated by this requirement.
+
+#### Scenario: immediate scheduled follow-up resumes the base archive again
 
 **WHEN** the unscoped base archive successfully resumed 90 minutes ago
-**AND** its configured lookback is seven days
-**THEN** the scheduled collection SHALL read the existing base archive
-**AND** SHALL NOT invoke `slackdump resume`
-**AND** SHALL retain the prior successful base-resume fact unchanged.
+**AND** a new scheduled or manual run reaches the unscoped boundary
+**THEN** the collection SHALL invoke `slackdump resume` against the base
+archive exactly once
+**AND** SHALL NOT skip the subprocess due to how recently the prior resume
+completed.
 
-#### Scenario: failure and expiry leave base work due
+#### Scenario: a new base resume advances the committed cursor past a prior stale point
 
-**WHEN** a due base resume fails
-**THEN** the connector SHALL NOT advance its successful base-resume fact
-**AND** the next run SHALL retry it.
-
-**WHEN** a base archive's successful-resume fact is older than its configured
-lookback window
-**THEN** the connector SHALL invoke resume again and record a new fact only
-after success and normal STATE commit.
+**WHEN** a base archive resume discovers content newer than the previously
+committed cursor
+**THEN** the connector SHALL emit the new records
+**AND** SHALL commit a cursor that has advanced past the previous value.
 
 ### Requirement: Reclaiming persistent archive residue SHALL be opt-in, commit-gated, and SHALL NOT remove resume-critical data
 

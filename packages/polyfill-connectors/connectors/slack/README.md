@@ -58,6 +58,16 @@ profiles — do not conflate them:
   PDPP has no blob copy of them. With `SLACK_SKIP_FILES=true` (the default),
   slackdump runs `-files=false` and `__uploads/` never grows.
 
+**The base/unscoped archive resumes on every run — no cost throttle.** Only
+*scoped repair archives* (below) are throttled by `SLACK_LOOKBACK_DAYS`. An
+earlier revision of this connector applied that same throttle to the base
+archive too, on the assumption its `resume` cost was comparable to a scoped
+repair's; live evidence showed otherwise (~1.6 minutes vs. ~58 minutes) and
+the base-archive throttle silently froze `messages` at a stale point for
+days at a time — see `openspec/changes/bound-slack-archive-steady-state-cost/
+design.md` D9. Run cadence for the base archive is the scheduler's job, not
+this connector's.
+
 **Run time scales with new data, not archive size.** The message read pushes
 the committed per-channel/legacy cursor into the dedup CTE, so the
 `MAX(CHUNK_ID) GROUP BY (CHANNEL_ID, TS)` aggregation only touches rows newer

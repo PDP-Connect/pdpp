@@ -70,14 +70,19 @@ legacy `__uploads/` residue that states exactly what it sacrifices.
   re-scan") from a guess into a measured value on every run, and makes the
   steady-state-cost invariant checkable.
 
-- **Base-archive resume throttle.** The unscoped `/archive` has the same
-  `resume -lookback pNd` frequency property as scoped repair archives, but it
-  is a distinct slackdump database and must not share their cursor. Persist a
-  successful base-resume timestamp keyed by the base archive path; an ordinary
-  scheduled run within the lookback reads the existing archive without
-  launching `slackdump resume`. Only a completed resume that reaches the
-  normal STATE commit path advances this fact; failures remain immediately
-  retryable, and first archive creation is unchanged.
+- **Base archive resumes on every run — no cost throttle (revised
+  2026-07-31, see design.md D9).** The unscoped `/archive` boundary is the
+  normal scheduled/manual collection path, not a scoped repair unit: the
+  scheduler already owns run cadence (it decides when a run happens at all),
+  and a `resume` against the base archive is cheap — live evidence shows a
+  successful base resume completing in ~1.6 minutes. An earlier revision of
+  this change (D7/D8) applied the same `SLACK_LOOKBACK_DAYS` throttle used for
+  scoped repair archives to the base archive too, which silently froze a
+  connection's `messages` stream at a stale point for 6+ days (the actual
+  ~58-minute cost this throttle was built to bound belongs to scoped repair
+  archives — see D5 — not the base archive). That throttle, its
+  `base_archive_resumed_at` STATE field, and its upgrade-migration machinery
+  have been removed from the base-archive path entirely.
 
 - **Opt-in `__uploads/` reclaim escape hatch (NOT automatic, NOT a drain).**
   A new `SLACK_RECLAIM_UPLOADS` option (default off). When explicitly enabled,
@@ -129,8 +134,11 @@ legacy `__uploads/` residue that states exactly what it sacrifices.
 - Modified: `polyfill-runtime` — an archive-backed connector's steady-state
   **main-archive** read cost SHALL scale with new/changed data, not with total
   archive size, and SHALL surface per-phase timing so the bound is measurable.
-  Scoped source-cache reconciliation (healing a channel absent from the main
-  archive) is a distinct, separately-bounded mechanism: its *selected
+  The main/unscoped archive's own `resume` subprocess SHALL run on every
+  collection reaching that boundary — run cadence is the scheduler's
+  responsibility, not a connector-local cost throttle, because a base resume
+  is cheap. Scoped source-cache reconciliation (healing a channel absent from
+  the main archive) is a distinct, separately-bounded mechanism: its *selected
   repair-unit count* SHALL scale with the once-per-run-snapshotted, finite
   prior-observed/scoped-archive work-unit set (computed once from already-
   fixed inputs, never re-queried or re-selected mid-run) plus at most one
