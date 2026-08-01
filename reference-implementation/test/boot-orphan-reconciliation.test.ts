@@ -29,13 +29,13 @@ function tempDbPath() {
 }
 
 interface SeedOrphanOpts {
-  event_id: string;
-  run_id: string;
   actor_id: string;
   boot_epoch?: string | null;
-  controller_id?: string | null;
   /** When set, also seeds a matching connector_instance_id + a `running` run_history row (Slice A shape). */
   connector_instance_id?: string | null;
+  controller_id?: string | null;
+  event_id: string;
+  run_id: string;
 }
 
 /**
@@ -83,17 +83,7 @@ function seedOrphan(
       VALUES (?, 'run.started', ?, ?, 'default', 'trc_seed', 'runtime', ?, 'run', ?, 'started', ?, ?, 'v1', ?, 'connector', ?)
       `
       )
-      .run(
-        event_id,
-        ts,
-        ts,
-        actor_id,
-        run_id,
-        run_id,
-        JSON.stringify(data),
-        connector_instance_id,
-        actor_id
-      );
+      .run(event_id, ts, ts, actor_id, run_id, run_id, JSON.stringify(data), connector_instance_id, actor_id);
     if (connector_instance_id) {
       raw
         .prepare(
@@ -380,7 +370,10 @@ test("cross-boot: reconciler picks up orphans from earlier emission", async () =
 // without disturbing already-terminal or unrelated rows.
 // ─────────────────────────────────────────────────────────────────────────
 
-function readRunHistoryStatus(dbPath: string, runId: string): { status: string; completed_at: string | null } | undefined {
+function readRunHistoryStatus(
+  dbPath: string,
+  runId: string
+): { status: string; completed_at: string | null } | undefined {
   const raw = new Database(dbPath);
   try {
     return raw.prepare("SELECT status, completed_at FROM run_history WHERE run_id = ?").get(runId) as
@@ -461,59 +454,353 @@ test("SQLite: orphan with no run_history row (writer identity guard) does not th
   }
 });
 
-test(
-  "Postgres parity: boot reconciliation converges run_history to terminal status=abandoned",
-  { skip: !POSTGRES_URL },
-  async () => {
-    // biome-ignore lint/style/noNonNullAssertion: guarded by { skip: !POSTGRES_URL } above.
-    await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL! });
-    try {
-      const ts = "2026-05-10T12:00:00.000Z";
-      await postgresQuery(
-        `INSERT INTO spine_events
+test("Postgres parity: boot reconciliation converges run_history to terminal status=abandoned", {
+  skip: !POSTGRES_URL,
+}, async () => {
+  // biome-ignore lint/style/noNonNullAssertion: guarded by { skip: !POSTGRES_URL } above.
+  await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL! });
+  try {
+    const ts = "2026-05-10T12:00:00.000Z";
+    await postgresQuery(
+      `INSERT INTO spine_events
            (event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
             actor_type, actor_id, object_type, object_id, status, run_id, data_json, version,
             connector_instance_id, source_kind, source_id)
          VALUES ($1, 'run.started', $2, $2, 'default', 'trc_seed', 'runtime', $3, 'run', $4, 'started', $4, $5::jsonb, 'v1', $6, 'connector', $3)`,
-        [
-          "evt_orphan_pg_1",
-          ts,
-          "conn_pg_a",
-          "run_rh_pg_orphan_1",
-          JSON.stringify({ connector_instance_id: "cin_pg_orphan_a", connection_id: "cin_pg_orphan_a" }),
-          "cin_pg_orphan_a",
-        ]
-      );
-      await postgresQuery(
-        `INSERT INTO run_history (run_id, connector_instance_id, connector_id, source_json, status, known_gaps_json, started_at, attempt)
+      [
+        "evt_orphan_pg_1",
+        ts,
+        "conn_pg_a",
+        "run_rh_pg_orphan_1",
+        JSON.stringify({ connection_id: "cin_pg_orphan_a", connector_instance_id: "cin_pg_orphan_a" }),
+        "cin_pg_orphan_a",
+      ]
+    );
+    await postgresQuery(
+      `INSERT INTO run_history (run_id, connector_instance_id, connector_id, source_json, status, known_gaps_json, started_at, attempt)
          VALUES ($1, $2, $3, '{}'::jsonb, 'running', '[]'::jsonb, $4, 1)`,
-        ["run_rh_pg_orphan_1", "cin_pg_orphan_a", "conn_pg_a", ts]
-      );
+      ["run_rh_pg_orphan_1", "cin_pg_orphan_a", "conn_pg_a", ts]
+    );
 
-      const epoch = await emitControllerBootedAndStashEpoch({ bootEpoch: "boot-rh-pg-1", controllerId: "host-rh-pg" });
-      const result = await reconcileOrphanedRunsAtBoot(epoch);
-      assert.equal(result.abandoned, 1);
+    const epoch = await emitControllerBootedAndStashEpoch({ bootEpoch: "boot-rh-pg-1", controllerId: "host-rh-pg" });
+    const result = await reconcileOrphanedRunsAtBoot(epoch);
+    assert.equal(result.abandoned, 1);
 
-      const { rows } = await postgresQuery<{ status: string; completed_at: string | null }>(
-        "SELECT status, completed_at FROM run_history WHERE run_id = $1",
-        ["run_rh_pg_orphan_1"]
-      );
-      assert.equal(rows[0]?.status, "abandoned");
-      assert.ok(rows[0]?.completed_at);
+    const { rows } = await postgresQuery<{ status: string; completed_at: string | null }>(
+      "SELECT status, completed_at FROM run_history WHERE run_id = $1",
+      ["run_rh_pg_orphan_1"]
+    );
+    assert.equal(rows[0]?.status, "abandoned");
+    assert.ok(rows[0]?.completed_at);
 
-      // Idempotent repeated boot.
-      const result2 = await reconcileOrphanedRunsAtBoot(epoch);
-      assert.equal(result2.abandoned, 0);
-      const { rows: rowsAgain } = await postgresQuery<{ status: string; completed_at: string | null }>(
-        "SELECT status, completed_at FROM run_history WHERE run_id = $1",
-        ["run_rh_pg_orphan_1"]
-      );
-      assert.equal(rowsAgain[0]?.completed_at, rows[0]?.completed_at, "repeated boot must not perturb completed_at");
-    } finally {
-      await postgresQuery("DELETE FROM run_history WHERE run_id LIKE 'run_rh_pg_%'").catch(() => undefined);
-      await postgresQuery("DELETE FROM spine_events WHERE run_id LIKE 'run_rh_pg_%'").catch(() => undefined);
-      clearCurrentBootEpoch();
-      await closePostgresStorage();
-    }
+    // Idempotent repeated boot.
+    const result2 = await reconcileOrphanedRunsAtBoot(epoch);
+    assert.equal(result2.abandoned, 0);
+    const { rows: rowsAgain } = await postgresQuery<{ status: string; completed_at: string | null }>(
+      "SELECT status, completed_at FROM run_history WHERE run_id = $1",
+      ["run_rh_pg_orphan_1"]
+    );
+    assert.equal(rowsAgain[0]?.completed_at, rows[0]?.completed_at, "repeated boot must not perturb completed_at");
+  } finally {
+    await postgresQuery("DELETE FROM run_history WHERE run_id LIKE 'run_rh_pg_%'").catch(() => undefined);
+    await postgresQuery("DELETE FROM spine_events WHERE run_id LIKE 'run_rh_pg_%'").catch(() => undefined);
+    clearCurrentBootEpoch();
+    await closePostgresStorage();
   }
-);
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Historical repair: terminal spine event ALREADY EXISTS (e.g. run.abandoned
+// written by a prior incarnation of the reconciler, before the writer-
+// authority fix existed), but run_history is stuck at status='running'
+// forever because that prior write never called the run_history writer.
+// The live case this closes: run_1785516896273_1 — spine already has
+// run.abandoned, so the orphan SELECT's NOT EXISTS predicate correctly
+// excludes it (it is not a new orphan), yet run_history was never repaired.
+//
+// This is the exact "terminal spine already exists + stale running
+// run_history" old-fail/new-pass case the owner flagged as BLOCKING.
+// ─────────────────────────────────────────────────────────────────────────
+
+function insertTerminalSpineEvent(
+  dbPath: string,
+  {
+    event_id,
+    run_id,
+    connector_instance_id,
+    actor_id,
+    event_type,
+    status,
+    occurred_at,
+  }: {
+    event_id: string;
+    run_id: string;
+    connector_instance_id: string;
+    actor_id: string;
+    event_type: string;
+    status: string;
+    occurred_at: string;
+  }
+) {
+  const raw = new Database(dbPath);
+  try {
+    raw
+      .prepare(
+        `
+        INSERT INTO spine_events
+          (event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+           actor_type, actor_id, object_type, object_id, status, run_id, data_json, version,
+           connector_instance_id, source_kind, source_id)
+        VALUES (@event_id, @event_type, @occurred_at, @occurred_at, 'default', 'trc_seed', 'runtime', @actor_id,
+                'run', @run_id, @status, @run_id, '{}', 'v1', @connector_instance_id, 'connector', @actor_id)
+        `
+      )
+      .run({ actor_id, connector_instance_id, event_id, event_type, occurred_at, run_id, status });
+  } finally {
+    raw.close();
+  }
+}
+
+function insertRunningRunHistoryRow(
+  dbPath: string,
+  {
+    run_id,
+    connector_instance_id,
+    connector_id,
+    started_at,
+  }: { run_id: string; connector_instance_id: string; connector_id: string; started_at: string }
+) {
+  const raw = new Database(dbPath);
+  try {
+    raw
+      .prepare(
+        `INSERT INTO run_history (run_id, connector_instance_id, connector_id, source_json, status, known_gaps_json, started_at, attempt)
+         VALUES (?, ?, ?, '{}', 'running', '[]', ?, 1)`
+      )
+      .run(run_id, connector_instance_id, connector_id, started_at);
+  } finally {
+    raw.close();
+  }
+}
+
+test("SQLite old-fail/new-pass: terminal spine already exists + stale running run_history converges without re-emitting a spine event", async () => {
+  const dbPath = tempDbPath();
+  initDb(dbPath);
+  try {
+    // Simulates the live historical case (run_1785516896273_1): the
+    // terminal run.abandoned event ALREADY EXISTS in spine_events (written
+    // by a prior boot, before the writer-authority fix), so this run is
+    // NOT selected by the orphan SELECT (its NOT EXISTS predicate correctly
+    // excludes runs with an existing terminal event). Only run_history is
+    // still stuck at status='running'.
+    insertTerminalSpineEvent(dbPath, {
+      actor_id: "conn_hist",
+      connector_instance_id: "cin_hist_1",
+      event_id: "evt_hist_abandoned_1",
+      event_type: "run.abandoned",
+      occurred_at: "2026-05-10T12:30:00.000Z",
+      run_id: "run_hist_stale_1",
+      status: "abandoned",
+    });
+    insertRunningRunHistoryRow(dbPath, {
+      connector_id: "conn_hist",
+      connector_instance_id: "cin_hist_1",
+      run_id: "run_hist_stale_1",
+      started_at: "2026-05-10T12:00:00.000Z",
+    });
+
+    // Unrelated already-terminal row: must remain untouched.
+    insertTerminalSpineEvent(dbPath, {
+      actor_id: "conn_z",
+      connector_instance_id: "cin_unrelated_terminal",
+      event_id: "evt_unrelated_completed",
+      event_type: "run.completed",
+      occurred_at: "2026-05-10T11:05:00.000Z",
+      run_id: "run_unrelated_terminal_2",
+      status: "succeeded",
+    });
+    const rawPreTerminal = new Database(dbPath);
+    rawPreTerminal
+      .prepare(
+        `INSERT INTO run_history (run_id, connector_instance_id, connector_id, source_json, status, known_gaps_json, started_at, completed_at, attempt)
+         VALUES ('run_unrelated_terminal_2', 'cin_unrelated_terminal', 'conn_z', '{}', 'succeeded', '[]', '2026-05-10T11:00:00.000Z', '2026-05-10T11:05:00.000Z', 1)`
+      )
+      .run();
+    rawPreTerminal.close();
+
+    const beforeAbandonCount = new Database(dbPath);
+    const spineCountBefore = (
+      beforeAbandonCount.prepare("SELECT COUNT(*) AS n FROM spine_events WHERE event_type = 'run.abandoned'").get() as {
+        n: number;
+      }
+    ).n;
+    beforeAbandonCount.close();
+    assert.equal(spineCountBefore, 1, "precondition: exactly one run.abandoned already in the spine");
+
+    const epoch = await emitControllerBootedAndStashEpoch({ bootEpoch: "boot-hist-1", controllerId: "host-hist" });
+    const result = await reconcileOrphanedRunsAtBoot(epoch);
+
+    // Not a new orphan: the SELECT's NOT EXISTS predicate excludes it.
+    assert.equal(result.selected, 0, "run with existing terminal spine event must NOT be re-selected as an orphan");
+    assert.equal(result.abandoned, 0, "no new run.abandoned event must be emitted for an already-terminal run");
+    // The historical-backfill pass is what converges it.
+    assert.equal(result.backfilled, 1, "backfill pass must converge exactly the one stale run_history row");
+
+    const raw = new Database(dbPath);
+    try {
+      const spineCountAfter = (
+        raw.prepare("SELECT COUNT(*) AS n FROM spine_events WHERE event_type = 'run.abandoned'").get() as {
+          n: number;
+        }
+      ).n;
+      assert.equal(
+        spineCountAfter,
+        1,
+        "must not fabricate or duplicate a spine event — same single spine row as before"
+      );
+
+      const finalized = raw
+        .prepare("SELECT status, completed_at FROM run_history WHERE run_id = ?")
+        .get("run_hist_stale_1") as { status: string; completed_at: string | null };
+      assert.equal(finalized.status, "abandoned", "stale run_history row must converge to the spine's terminal status");
+      assert.equal(
+        finalized.completed_at,
+        "2026-05-10T12:30:00.000Z",
+        "completed_at must be stamped from the existing terminal spine event's occurred_at"
+      );
+
+      const unrelated = raw
+        .prepare("SELECT status, completed_at FROM run_history WHERE run_id = ?")
+        .get("run_unrelated_terminal_2") as { status: string; completed_at: string | null };
+      assert.equal(unrelated.status, "succeeded", "unrelated already-terminal row must be untouched");
+      assert.equal(
+        unrelated.completed_at,
+        "2026-05-10T11:05:00.000Z",
+        "unrelated row's completed_at must be untouched"
+      );
+    } finally {
+      raw.close();
+    }
+
+    // Idempotent repeated boot: the backfill join is fenced by
+    // status='running', so a second boot finds nothing left to converge.
+    const result2 = await reconcileOrphanedRunsAtBoot(epoch);
+    assert.equal(result2.selected, 0);
+    assert.equal(result2.abandoned, 0);
+    assert.equal(result2.backfilled, 0, "repeated boot must find zero remaining stale rows (self-draining)");
+
+    const rawAgain = new Database(dbPath);
+    try {
+      const finalizedAgain = rawAgain
+        .prepare("SELECT status, completed_at FROM run_history WHERE run_id = ?")
+        .get("run_hist_stale_1") as { status: string; completed_at: string | null };
+      assert.equal(finalizedAgain.status, "abandoned");
+      assert.equal(
+        finalizedAgain.completed_at,
+        "2026-05-10T12:30:00.000Z",
+        "repeated boot must not perturb completed_at"
+      );
+    } finally {
+      rawAgain.close();
+    }
+  } finally {
+    clearCurrentBootEpoch();
+    closeDb();
+  }
+});
+
+test("Postgres parity old-fail/new-pass: terminal spine already exists + stale running run_history converges without re-emitting a spine event", {
+  skip: !POSTGRES_URL,
+}, async () => {
+  // biome-ignore lint/style/noNonNullAssertion: guarded by { skip: !POSTGRES_URL } above.
+  await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL! });
+  try {
+    await postgresQuery(
+      `INSERT INTO spine_events
+           (event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+            actor_type, actor_id, object_type, object_id, status, run_id, data_json, version,
+            connector_instance_id, source_kind, source_id)
+         VALUES ($1, 'run.abandoned', $2, $2, 'default', 'trc_seed', 'runtime', $3, 'run', $4, 'abandoned', $4, '{}'::jsonb, 'v1', $5, 'connector', $3)`,
+      ["evt_hist_pg_abandoned_1", "2026-05-10T12:30:00.000Z", "conn_hist_pg", "run_hist_pg_stale_1", "cin_hist_pg_1"]
+    );
+    await postgresQuery(
+      `INSERT INTO run_history (run_id, connector_instance_id, connector_id, source_json, status, known_gaps_json, started_at, attempt)
+         VALUES ($1, $2, $3, '{}'::jsonb, 'running', '[]'::jsonb, $4, 1)`,
+      ["run_hist_pg_stale_1", "cin_hist_pg_1", "conn_hist_pg", "2026-05-10T12:00:00.000Z"]
+    );
+
+    // Unrelated already-terminal row must be untouched.
+    await postgresQuery(
+      `INSERT INTO spine_events
+           (event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+            actor_type, actor_id, object_type, object_id, status, run_id, data_json, version,
+            connector_instance_id, source_kind, source_id)
+         VALUES ($1, 'run.completed', $2, $2, 'default', 'trc_seed', 'runtime', $3, 'run', $4, 'succeeded', $4, '{}'::jsonb, 'v1', $5, 'connector', $3)`,
+      [
+        "evt_hist_pg_unrelated",
+        "2026-05-10T11:05:00.000Z",
+        "conn_z_pg",
+        "run_hist_pg_unrelated",
+        "cin_hist_pg_unrelated",
+      ]
+    );
+    await postgresQuery(
+      `INSERT INTO run_history (run_id, connector_instance_id, connector_id, source_json, status, known_gaps_json, started_at, completed_at, attempt)
+         VALUES ($1, $2, $3, '{}'::jsonb, 'succeeded', '[]'::jsonb, $4, $5, 1)`,
+      [
+        "run_hist_pg_unrelated",
+        "cin_hist_pg_unrelated",
+        "conn_z_pg",
+        "2026-05-10T11:00:00.000Z",
+        "2026-05-10T11:05:00.000Z",
+      ]
+    );
+
+    const epoch = await emitControllerBootedAndStashEpoch({
+      bootEpoch: "boot-hist-pg-1",
+      controllerId: "host-hist-pg",
+    });
+    const result = await reconcileOrphanedRunsAtBoot(epoch);
+
+    assert.equal(result.selected, 0, "run with existing terminal spine event must NOT be re-selected as an orphan");
+    assert.equal(result.abandoned, 0, "no new run.abandoned event must be emitted for an already-terminal run");
+    assert.equal(result.backfilled, 1, "backfill pass must converge exactly the one stale run_history row");
+
+    const { rows: abandonRows } = await postgresQuery<{ n: string }>(
+      "SELECT COUNT(*)::text AS n FROM spine_events WHERE event_type = 'run.abandoned' AND run_id = $1",
+      ["run_hist_pg_stale_1"]
+    );
+    assert.equal(abandonRows[0]?.n, "1", "must not fabricate or duplicate a spine event");
+
+    const { rows: finalized } = await postgresQuery<{ status: string; completed_at: string }>(
+      "SELECT status, completed_at FROM run_history WHERE run_id = $1",
+      ["run_hist_pg_stale_1"]
+    );
+    assert.equal(finalized[0]?.status, "abandoned");
+    assert.ok(finalized[0]?.completed_at);
+
+    const { rows: unrelated } = await postgresQuery<{ status: string; completed_at: string }>(
+      "SELECT status, completed_at FROM run_history WHERE run_id = $1",
+      ["run_hist_pg_unrelated"]
+    );
+    assert.equal(unrelated[0]?.status, "succeeded", "unrelated already-terminal row must be untouched");
+
+    // Idempotent repeated boot.
+    const result2 = await reconcileOrphanedRunsAtBoot(epoch);
+    assert.equal(result2.backfilled, 0, "repeated boot must find zero remaining stale rows (self-draining)");
+    const { rows: finalizedAgain } = await postgresQuery<{ completed_at: string }>(
+      "SELECT completed_at FROM run_history WHERE run_id = $1",
+      ["run_hist_pg_stale_1"]
+    );
+    assert.equal(
+      finalizedAgain[0]?.completed_at,
+      finalized[0]?.completed_at,
+      "repeated boot must not perturb completed_at"
+    );
+  } finally {
+    await postgresQuery("DELETE FROM run_history WHERE run_id LIKE 'run_hist_pg_%'").catch(() => undefined);
+    await postgresQuery("DELETE FROM spine_events WHERE run_id LIKE 'run_hist_pg_%'").catch(() => undefined);
+    clearCurrentBootEpoch();
+    await closePostgresStorage();
+  }
+});
