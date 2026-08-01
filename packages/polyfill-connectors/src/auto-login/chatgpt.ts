@@ -473,6 +473,19 @@ function classifyChatGptRoute(page: Page): ChatGptRouteClass {
   return "other";
 }
 
+const INITIAL_PROBE_RETRY_ATTEMPTS = 2;
+const INITIAL_PROBE_RETRY_INTERVAL_MS = 2000;
+
+/**
+ * A single `/api/auth/session` fetch on a freshly-navigated (possibly
+ * cold-started) page can transiently fail for reasons that have nothing to do
+ * with whether the session is actually active (network hiccup on a
+ * just-replaced browser process, page still settling). Retrying a bounded
+ * number of times before accepting a negative result distinguishes that from
+ * a genuine logged-out session, without reintroducing DOM evidence into the
+ * terminal decision (`hasChatGptSessionUser` stays the sole predicate — see
+ * its docstring for why DOM evidence is diagnostic-only).
+ */
 async function navigateAndProbeSession(page: Page, progress?: EnsureChatGptSessionArgs["progress"]): Promise<boolean> {
   await page
     .goto("https://chatgpt.com/", {
@@ -482,7 +495,11 @@ async function navigateAndProbeSession(page: Page, progress?: EnsureChatGptSessi
     .catch((): undefined => undefined);
   await page.waitForTimeout(3000);
 
-  const apiSessionUser = await isChatGptSessionReadyOnPage(page);
+  let apiSessionUser = await isChatGptSessionReadyOnPage(page);
+  for (let attempt = 0; !apiSessionUser && attempt < INITIAL_PROBE_RETRY_ATTEMPTS; attempt += 1) {
+    await page.waitForTimeout(INITIAL_PROBE_RETRY_INTERVAL_MS);
+    apiSessionUser = await isChatGptSessionReadyOnPage(page);
+  }
   const domProbe = await checkLoggedInViaDOMDetails(page);
   await progress?.(
     chatGptAuthProbeDiagnosticMessage({

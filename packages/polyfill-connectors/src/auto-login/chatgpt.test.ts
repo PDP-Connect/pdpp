@@ -334,6 +334,85 @@ test("ChatGPT initial auth probe preserves existing API-session decision", async
   assert.equal(diagnostic.decision, "accepted_by_api_session");
 });
 
+test("ChatGPT initial auth probe retries a transient session-check failure before falling to credential repair", async () => {
+  await withEnvUnset(["CHATGPT_USERNAME", "CHATGPT_PASSWORD"], async () => {
+    let sessionProbeCount = 0;
+    const waitTimeouts: number[] = [];
+    const page = {
+      evaluate: (fn: (...args: never[]) => unknown) => {
+        const source = String(fn);
+        if (source.includes("/api/auth/session")) {
+          sessionProbeCount += 1;
+          // Cold/transient failure on the first probe only; a real session is
+          // present from the second probe onward. A single-shot, no-retry
+          // predicate (the pre-fix behavior) would report false negative here.
+          return Promise.resolve(sessionProbeCount >= 2 ? { user: { id: "owner" } } : null);
+        }
+        return Promise.resolve(false);
+      },
+      goto: () => Promise.resolve(null),
+      url: () => "https://chatgpt.com/",
+      waitForTimeout: (ms: number) => {
+        waitTimeouts.push(ms);
+        return Promise.resolve();
+      },
+    };
+
+    const ok = await ensureChatGptSession({
+      allowInteractiveAuthRepair: false,
+      context: {} as never,
+      page: page as never,
+      sendInteraction: (req) => Promise.resolve(response({ request_id: req.request_id ?? "interaction_1" })),
+    });
+
+    assert.equal(ok, true, "a transient first-probe failure must not be treated as a genuine logged-out session");
+    assert.equal(sessionProbeCount, 2, "exactly one retry probe should run after the transient failure");
+    assert.deepEqual(
+      waitTimeouts,
+      [3000, 2000],
+      "the retry waits between the initial settle delay and the second probe"
+    );
+  });
+});
+
+test("ChatGPT initial auth probe still rejects when the session check fails on every retry", async () => {
+  await withEnvUnset(["CHATGPT_USERNAME", "CHATGPT_PASSWORD"], async () => {
+    let sessionProbeCount = 0;
+    const page = {
+      evaluate: (fn: (...args: never[]) => unknown) => {
+        const source = String(fn);
+        if (source.includes("/api/auth/session")) {
+          sessionProbeCount += 1;
+          return Promise.resolve(null);
+        }
+        if (source.includes("querySelectorAll")) {
+          return Promise.resolve({
+            dom_logged_in: false,
+            has_login_or_signup: false,
+            has_sidebar: false,
+            has_user_menu: false,
+          });
+        }
+        return Promise.resolve(false);
+      },
+      goto: () => Promise.resolve(null),
+      url: () => "https://chatgpt.com/",
+      waitForTimeout: async () => undefined,
+    };
+
+    await assert.rejects(
+      ensureChatGptSession({
+        allowInteractiveAuthRepair: false,
+        context: {} as never,
+        page: page as never,
+        sendInteraction: (req) => Promise.resolve(response({ request_id: req.request_id ?? "interaction_1" })),
+      }),
+      /chatgpt_session_required/u
+    );
+    assert.equal(sessionProbeCount, 3, "the probe should retry a bounded number of times, not indefinitely");
+  });
+});
+
 test("ChatGPT auth repair policy only allows owner-started manual runs by default", () => {
   assert.equal(chatGptAllowsInteractiveAuthRepair({}), true);
   assert.equal(chatGptAllowsInteractiveAuthRepair({ PDPP_RUN_TRIGGER_KIND: "manual" }), true);
@@ -427,7 +506,12 @@ test("ChatGPT manual auth repair can use the secure browser without storing a pa
           const source = String(fn);
           if (source.includes("/api/auth/session")) {
             sessionProbeCount += 1;
-            return Promise.resolve(sessionProbeCount >= 2 ? { user: { id: "owner" } } : null);
+            // The initial probe and its bounded retries (see
+            // navigateAndProbeSession's INITIAL_PROBE_RETRY_ATTEMPTS = 2) all
+            // report no session, so this fixture still exercises the genuine
+            // manual-repair path; the session only goes active once the
+            // browser-login poll checks it (probe #4).
+            return Promise.resolve(sessionProbeCount >= 4 ? { user: { id: "owner" } } : null);
           }
           if (source.includes("querySelectorAll")) {
             return Promise.resolve({
